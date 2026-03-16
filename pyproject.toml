@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napariTissueGraph"
+version = "0.1.0"
+description = "A napari plugin for quantifying tissue topology, rearrangement dynamics, and junction mechanics"
+requires-python = ">=3.9"
+license = {text = "GPL-3.0"}
+authors = [
+    {name = "Artur Ruppel"}
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "scikit-image>=0.20.0",
+    "networkx>=3.0",
+    "matplotlib>=3.7.0",
+    "opencv-python>=4.7.0",
+    "napari[all]>=0.4.18",
+    "qtpy>=2.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.entry-points."napari.manifest"]
+napariTissueGraph = "napariTissueGraph:napari.yaml"
+
+[tool.setuptools.packages.find]
+include = ["napariTissueGraph*"]
+
+[tool.setuptools.package-data]
+napariTissueGraph = ["napari.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,10 @@
+name: napariTissueGraph
+display_name: napariTissueGraph
+contributions:
+  commands:
+    - id: napariTissueGraph.launch
+      title: Launch napariTissueGraph
+      python_name: napariTissueGraph:TissueGraphWidget
+  widgets:
+    - command: napariTissueGraph.launch
+      display_name: napariTissueGraph
