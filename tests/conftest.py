@@ -86,3 +86,55 @@ def label_stack():
 @pytest.fixture
 def track_positions():
     return make_track_positions(n_frames=5, nx=4, ny=4, spacing=20.0)
+
+
+def make_label_stack_4d(
+    n_tissues: int = 2, n_frames: int = 3, n_cells_side: int = 4, image_size: int = 200
+) -> np.ndarray:
+    """Create a 4D label stack (n_tissues, T, H, W) with slightly different tissues."""
+    rng = np.random.default_rng(42)
+    stacks = []
+    for t in range(n_tissues):
+        frame = make_label_frame(n_cells_side, image_size)
+        stacks.append(np.stack([frame] * n_frames))
+    return np.stack(stacks)
+
+
+def make_track_positions_4d(
+    n_tissues: int = 2, n_frames: int = 5, nx: int = 4, ny: int = 4, spacing: float = 20.0
+) -> np.ndarray:
+    """Create 4D track positions as (tissue_id, frame, y, x) array."""
+    all_rows = []
+    for t in range(n_tissues):
+        tracks = make_track_positions(n_frames, nx, ny, spacing)
+        tissue_col = np.full((len(tracks), 1), t)
+        all_rows.append(np.hstack([tissue_col, tracks]))
+    return np.vstack(all_rows)
+
+
+def make_label_stacks_ragged(
+    n_frames_per_tissue: list[int] = [5, 8],
+    n_cells_side: int = 4,
+    image_size: int = 200,
+) -> list[np.ndarray]:
+    """Create a list of 3D label stacks with different frame counts per tissue."""
+    stacks = []
+    for n_frames in n_frames_per_tissue:
+        frame = make_label_frame(n_cells_side, image_size)
+        stacks.append(np.stack([frame] * n_frames))
+    return stacks
+
+
+@pytest.fixture
+def label_stack_4d():
+    return make_label_stack_4d(n_tissues=2, n_frames=3, n_cells_side=4, image_size=200)
+
+
+@pytest.fixture
+def label_stacks_ragged():
+    return make_label_stacks_ragged(n_frames_per_tissue=[5, 8])
+
+
+@pytest.fixture
+def track_positions_4d():
+    return make_track_positions_4d(n_tissues=2, n_frames=5, nx=4, ny=4, spacing=20.0)

@@ -1,10 +1,11 @@
-"""High-level API for building TissueGraphTimeSeries."""
+"""High-level API for building TissueGraphTimeSeries and TissueGraphDataset."""
 import logging
 import numpy as np
-from typing import Optional
+from typing import Callable, List, Optional, Union
 
 from ..structures import (
     InputType,
+    TissueGraphDataset,
     TissueGraphFrame,
     TissueGraphTimeSeries,
 )
@@ -102,3 +103,99 @@ def build_from_labels(
         time_interval=time_interval,
         input_type=InputType.SEGMENTATION,
     )
+
+
+def build_from_labels_4d(
+    label_stacks: Union[np.ndarray, List[np.ndarray]],
+    pixel_size: Optional[float] = None,
+    time_interval: Optional[float] = None,
+    condition: str = "",
+    progress_callback: Optional[Callable] = None,
+    **kwargs,
+) -> TissueGraphDataset:
+    """Build dataset from multiple label stacks (multiple tissues).
+
+    Args:
+        label_stacks: Either a 4D array (N_tissues, T, H, W) or a list of
+            3D arrays, each with shape (T_i, H, W). Using a list allows
+            tissues with different numbers of frames.
+        pixel_size: Physical pixel size in µm.
+        time_interval: Time between frames in seconds.
+        condition: Experimental condition label.
+        progress_callback: Optional callback(progress_fraction, message).
+        **kwargs: Passed to build_from_labels (dilation_radius, etc.).
+    """
+    if isinstance(label_stacks, np.ndarray):
+        if label_stacks.ndim != 4:
+            raise ValueError(
+                f"Expected 4D array (N_tissues, T, H, W), got {label_stacks.ndim}D"
+            )
+        stacks = [label_stacks[i] for i in range(label_stacks.shape[0])]
+    else:
+        stacks = list(label_stacks)
+        for i, s in enumerate(stacks):
+            if s.ndim != 3:
+                raise ValueError(
+                    f"Each label stack must be 3D (T, H, W), but stack {i} is {s.ndim}D"
+                )
+
+    dataset = TissueGraphDataset(
+        tissues={},
+        condition=condition,
+        pixel_size=pixel_size,
+        time_interval=time_interval,
+        input_type=InputType.SEGMENTATION,
+    )
+    n_tissues = len(stacks)
+    for i, stack in enumerate(stacks):
+        if progress_callback:
+            progress_callback(i / n_tissues, f"Processing tissue {i + 1}/{n_tissues}")
+        series = build_from_labels(
+            stack,
+            pixel_size=pixel_size,
+            time_interval=time_interval,
+            **kwargs,
+        )
+        dataset.add_tissue(series)
+
+    logger.info(f"Built dataset with {n_tissues} tissues from labels")
+    return dataset
+
+
+def build_from_tracks_4d(
+    positions: np.ndarray,
+    pixel_size: Optional[float] = None,
+    time_interval: Optional[float] = None,
+    condition: str = "",
+    image_shape: Optional[tuple] = None,
+    progress_callback: Optional[Callable] = None,
+) -> TissueGraphDataset:
+    """Build dataset from tracked nuclear positions across multiple tissues.
+
+    Args:
+        positions: Nx4 array with columns (tissue_id, frame, y, x).
+        pixel_size: Physical pixel size in µm.
+        time_interval: Time between frames in seconds.
+        condition: Experimental condition label.
+        image_shape: Optional (H, W) for bounding the Voronoi tessellation.
+        progress_callback: Optional callback(progress_fraction, message).
+    """
+    dataset = TissueGraphDataset(
+        tissues={},
+        condition=condition,
+        pixel_size=pixel_size,
+        time_interval=time_interval,
+        input_type=InputType.VORONOI,
+    )
+    tissue_ids = np.unique(positions[:, 0].astype(int))
+    n_tissues = len(tissue_ids)
+    for idx, tid in enumerate(tissue_ids):
+        if progress_callback:
+            progress_callback(idx / n_tissues, f"Processing tissue {idx + 1}/{n_tissues}")
+        mask = positions[:, 0].astype(int) == tid
+        pos_i = positions[mask, 1:]  # (frame, y, x)
+        series = build_from_tracks(pos_i, pixel_size, time_interval, image_shape)
+        dataset.add_tissue(series)
+
+    logger.info(f"Built dataset with {n_tissues} tissues from tracks")
+    return dataset

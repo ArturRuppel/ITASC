@@ -2,7 +2,7 @@
 import numpy as np
 from typing import List, Tuple
 
-from ..structures import TissueGraphFrame, TissueGraphTimeSeries
+from ..structures import T1Event, TissueGraphFrame, TissueGraphTimeSeries
 
 
 def build_all_junction_lines(series: TissueGraphTimeSeries) -> Tuple[List[np.ndarray], np.ndarray]:
@@ -63,4 +63,23 @@ def build_all_centroids(series: TissueGraphTimeSeries) -> np.ndarray:
 
     if not positions:
         return np.empty((0, 3))
+    return np.array(positions)
+
+
+def build_t1_markers(t1_events: List[T1Event]) -> np.ndarray:
+    """Build T1 event marker positions for all frames at once.
+
+    Returns Nx3 array of (frame, y, x) positions so napari's
+    dim slider handles frame filtering natively.
+    """
+    if not t1_events:
+        return np.empty((0, 3))
+
+    positions = []
+    for event in t1_events:
+        positions.append([
+            float(event.frame),
+            event.location[0],
+            event.location[1],
+        ])
     return np.array(positions)

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional, Set, FrozenSet
+from typing import Any, Dict, List, Tuple, Optional, Set, FrozenSet
 from enum import Enum
 import numpy as np
 import networkx as nx
@@ -87,3 +87,53 @@ class TissueGraphTimeSeries:
     @property
     def frame_indices(self) -> List[int]:
         return sorted(self.frames.keys())
+
+
+@dataclass
+class TissueGraphDataset:
+    """Collection of tissue graph time series — the primary output of the plugin.
+
+    Represents multiple tissues from one experimental condition.
+    This is the object that gets saved to disk and loaded by analysis scripts.
+    """
+    tissues: Dict[int, TissueGraphTimeSeries] = field(default_factory=dict)
+
+    condition: str = ""
+    pixel_size: Optional[float] = None
+    time_interval: Optional[float] = None
+    input_type: Optional[InputType] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def add_tissue(self, series: TissueGraphTimeSeries) -> int:
+        """Add a tissue, returns assigned tissue_id."""
+        tissue_id = max(self.tissues.keys(), default=-1) + 1
+        self.tissues[tissue_id] = series
+        return tissue_id
+
+    def remove_tissue(self, tissue_id: int) -> None:
+        """Remove a tissue (e.g., after QC inspection reveals bad data)."""
+        del self.tissues[tissue_id]
+
+    @property
+    def n_tissues(self) -> int:
+        return len(self.tissues)
+
+    @property
+    def tissue_ids(self) -> List[int]:
+        return sorted(self.tissues.keys())
+
+    def get_all_t1_events(self) -> List[Tuple[int, T1Event]]:
+        """Get all T1 events across all tissues, tagged with tissue_id."""
+        events = []
+        for tid, series in self.tissues.items():
+            for event in series.t1_events:
+                events.append((tid, event))
+        return events
+
+    def get_all_edge_trajectories(self) -> List[Tuple[int, EdgeTrajectory]]:
+        """Get all edge trajectories across all tissues, tagged with tissue_id."""
+        trajectories = []
+        for tid, series in self.tissues.items():
+            for traj in series.edge_trajectories.values():
+                trajectories.append((tid, traj))
+        return trajectories
