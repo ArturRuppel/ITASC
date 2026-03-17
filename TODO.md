@@ -1,4 +1,4 @@
-# TODO — Input Path Refactor & Voronoi Enhancements
+# TODO — napariTissueGraph
 
 ## Overview
 
@@ -157,11 +157,104 @@ Three input modes, two computation problems, one shared output structure.
 
 ---
 
-## Implementation order
+---
 
-1. **Structures** (1a-1d) — foundation, no breaking changes
-2. **TrackMate parser** (2a-2d) — independent, testable
-3. **Voronoi enhancements** (3a-3d) — independent, testable
-4. **Label tracking** (4a-4d) — independent, testable
-5. **Build API** (5a-5d) — integrates 2+3+4
-6. **Widget** (6a-6e) — thin layer on top of 5
+## 7. Analysis parameter tunability
+
+Most analysis steps currently have no user-facing parameters. The algorithms are robust and
+shouldn't need heavy configuration, but if a QC step fails the user needs some knobs to turn
+rather than just discarding the tissue. Keep the core algorithms untouched — expose thresholds
+and filtering criteria only.
+
+### 7a. T1 detection parameters
+- [ ] Minimum junction length threshold — junctions shorter than this are treated as "collapsed" (pre-filter before topology comparison). Default: 0 (current behavior)
+- [ ] Spatial proximity constraint — max distance between lost/gained edge midpoints to pair them as a T1. Currently all lost/gained pairs are checked. Default: unlimited (current behavior)
+- [ ] Pass these through `detect_t1_events()` and `detect_all_t1_events()` without restructuring the core algorithm
+
+### 7b. Edge trajectory filtering parameters
+- [ ] `min_frames` is already exposed in `get_stable_trajectories()` — surface this in the widget
+- [ ] Min trajectory completeness — fraction of total frames that a trajectory must span to be included in analysis (e.g., 0.5 = must exist for at least half the movie)
+- [ ] Max gap tolerance — allow trajectories with brief disappearances (edge not detected for N frames) to still be considered continuous
+
+### 7c. Label tracking parameters
+- [ ] `min_iou` is already exposed — make sure it's adjustable in the Analyze stage (not just at extraction time)
+- [ ] Max area change ratio — reject matches where cell area changes by more than this factor frame-to-frame (catches segmentation errors)
+
+### 7d. Widget: analysis parameter panel
+- [ ] Collapsible "Advanced" section in the Analyze stage of the pipeline
+- [ ] Sensible defaults so users never have to touch it unless QC fails
+- [ ] Tooltips explaining what each parameter does and when to adjust it
+
+---
+
+## 8. Edge & junction tagging
+
+Users need to name/tag specific junctions so they can find them again in the dataset and
+filter downstream analysis to tagged subsets. Primary use case: tagging the "central junction"
+in a T1 rosette so later analysis (MSD, event-triggered averaging) can focus on it.
+
+### 8a. Data model changes (`structures.py`)
+- [x] Add `tags: Set[str]` field to `EdgeTrajectory` (default: empty set)
+- [x] Add `tags: Set[str]` field to `JunctionData` (default: empty set)
+- [x] Add `name: Optional[str]` field to `EdgeTrajectory` (user-assigned label, e.g., "central_junction_1")
+- [x] Tags propagate through save/load (update `core/io.py`)
+
+### 8b. Programmatic tagging API (`analysis/tagging.py`)
+- [x] `tag_trajectory(series, trajectory_id, tag)` / `untag_trajectory()`
+- [x] `tag_junction(frame, cell_pair, tag)` — tags a junction in a specific frame
+- [x] `get_trajectories_by_tag(series, tag)` — filter trajectories by tag
+- [x] `get_junctions_by_tag(frame, tag)` — filter junctions by tag
+- [x] Bulk tagging: `tag_trajectories_near(series, location, radius, tag)` — tag all trajectories whose midpoint falls within a radius of a point
+- [x] `get_trajectory_by_name(series, name)` — find by user-assigned name
+- [x] `name_trajectory(series, trajectory_id, name)` — set/clear name
+- [x] `get_all_tags(series)` — collect all unique tags
+- [x] `clear_tag(series, tag)` — remove a tag from everything
+
+### 8c. Napari interactive tagging
+- [x] Junction Shapes layer carries `features` DataFrame (trajectory_id, cell_pair, tags, name)
+- [x] Selection workflow: user switches Shapes layer to select mode (press 4) → clicks junction lines to select → enters tag name → clicks "Tag Selected" → tags written back to EdgeTrajectory/JunctionData
+- [x] "Color by tags" toggle — switches between trajectory-colored and tag-colored junctions
+- [x] "Show only tagged" toggle — filters the Shapes layer to only tagged junctions
+- [x] Tag list widget showing all tags in the current tissue, with counts + "Clear Selected Tag"
+- [x] Tagging works both during pipeline (after Stage 3) and when inspecting dataset tissues
+
+### 8d. Persistence
+- [x] Tags stored in the NPZ+JSON save format (extend io.py serialization)
+- [x] Tags survive the full round-trip: tag in napari → save → load → tags visible again
+
+---
+
+## 9. Phase 3: Cell-level analysis
+
+### 9a. Velocities & MSD (`analysis/cell_dynamics.py`)
+- [ ] Cell velocity from tracked centroid displacement (with optional temporal smoothing window)
+- [ ] Mean squared displacement per cell and ensemble-averaged MSD
+- [ ] Diffusion coefficient extraction (linear fit to MSD)
+
+### 9b. Statistics (`analysis/statistics.py`)
+- [ ] Distributions: edge lengths, cell areas, coordination number, shape index
+- [ ] Per-frame summary statistics (mean, std, median)
+- [ ] Time-averaged statistics across frames
+
+### 9c. Event-triggered averaging (`analysis/events.py`)
+- [ ] Average junction length trajectory aligned to T1 events
+- [ ] Average cell area/shape index around T1 events
+- [ ] Configurable time window around events
+- [ ] Support filtering to tagged junctions only (integrate with tagging system, §8)
+
+---
+
+## Implementation order (completed + remaining)
+
+### Done
+1. **Structures** (1a-1d)
+2. **TrackMate parser** (2a-2d)
+3. **Voronoi enhancements** (3a-3d)
+4. **Label tracking** (4a-4d)
+5. **Build API** (5a-5d)
+6. **Widget** (6a-6e)
+
+### Next
+7. **Edge & junction tagging** (8a-8d) — data model first, then napari UX
+8. **Analysis parameters** (7a-7d) — expose knobs in existing pipeline
+9. **Cell-level analysis** (9a-9c) — new analysis modules

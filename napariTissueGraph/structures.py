@@ -42,6 +42,7 @@ class JunctionData:
     midpoint: np.ndarray          # (y, x) midpoint of junction
     tension: Optional[float] = None
     normal_stress: Optional[float] = None
+    tags: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -67,6 +68,8 @@ class EdgeTrajectory:
     signed_lengths: List[float]
     coordinates: List[np.ndarray]
     t1_events: List[T1Event] = field(default_factory=list)
+    tags: Set[str] = field(default_factory=set)
+    name: Optional[str] = None
 
 
 @dataclass

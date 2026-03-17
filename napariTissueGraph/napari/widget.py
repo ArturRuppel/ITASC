@@ -21,14 +21,16 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QListWidget,
+    QListWidgetItem,
     QLineEdit,
     QFileDialog,
     QGroupBox,
     QSpinBox,
     QDoubleSpinBox,
     QScrollArea,
+    QCheckBox,
 )
-from qtpy.QtCore import Signal, QThread, QObject, Qt
+from qtpy.QtCore import Signal, QThread, QObject, Qt, QTimer
 
 from ..structures import TissueGraphDataset, TissueGraphTimeSeries, InputType, VoronoiMethod
 from ..core.graph import (
@@ -57,6 +59,15 @@ from .visualization import (
     build_tracked_centroids,
     build_track_breaks,
     build_trajectory_lines,
+    build_trajectory_lines_with_features,
+)
+from ..analysis.tagging import (
+    tag_trajectory,
+    untag_trajectory,
+    tag_junction,
+    untag_junction,
+    get_all_tags,
+    clear_tag,
 )
 
 logger = logging.getLogger(__name__)
@@ -362,6 +373,21 @@ class TissueGraphWidget(QWidget):
         self._current_trackmate_data: Optional[TrackMateData] = None
         self._stage_layers: Dict[int, list] = {1: [], 2: [], 3: []}
 
+        # Tagging state
+        self._tagging_shapes_layer = None  # the Shapes layer used for tagging
+        self._tagging_series = None  # the series currently shown in the tagging layer
+        self._cached_selection = []  # persists selection when layer loses focus
+        self._show_only_tagged = False
+        self._color_by_tags = False
+
+        # Poll the shapes layer selection every 200ms to keep the cache fresh.
+        # napari clears selected_data when the mouse leaves the canvas, and
+        # event-based approaches are unreliable across napari versions.
+        self._selection_timer = QTimer(self)
+        self._selection_timer.setInterval(200)
+        self._selection_timer.timeout.connect(self._poll_selection)
+        self._selection_timer.start()
+
         # Dataset inspection layers
         self._inspect_junction_layer = None
         self._inspect_centroid_layer = None
@@ -564,6 +590,52 @@ class TissueGraphWidget(QWidget):
         self.finalize_group.setLayout(fin_layout)
         layout.addWidget(self.finalize_group)
 
+        # --- Tagging ---
+        self.tagging_group = QGroupBox("Junction Tagging")
+        tag_layout = QVBoxLayout()
+
+        # Selection indicator
+        self.selection_label = QLabel("No junctions selected")
+        tag_layout.addWidget(self.selection_label)
+
+        # Tag input + buttons
+        tag_input_row = QHBoxLayout()
+        self.tag_name_edit = QLineEdit()
+        self.tag_name_edit.setPlaceholderText("Tag name (e.g. central)")
+        tag_input_row.addWidget(self.tag_name_edit)
+        tag_layout.addLayout(tag_input_row)
+
+        tag_btn_row = QHBoxLayout()
+        self.tag_selected_btn = QPushButton("Tag Selected")
+        self.untag_selected_btn = QPushButton("Untag Selected")
+        tag_btn_row.addWidget(self.tag_selected_btn)
+        tag_btn_row.addWidget(self.untag_selected_btn)
+        tag_layout.addLayout(tag_btn_row)
+
+        # Checkboxes
+        self.color_by_tags_cb = QCheckBox("Color by tags")
+        tag_layout.addWidget(self.color_by_tags_cb)
+        self.show_only_tagged_cb = QCheckBox("Show only tagged junctions")
+        tag_layout.addWidget(self.show_only_tagged_cb)
+
+        # Tag list
+        tag_layout.addWidget(QLabel("Tags:"))
+        self.tag_list_widget = QListWidget()
+        self.tag_list_widget.setMaximumHeight(80)
+        tag_layout.addWidget(self.tag_list_widget)
+
+        # Clear tag button
+        clear_tag_row = QHBoxLayout()
+        self.clear_tag_btn = QPushButton("Clear Selected Tag")
+        self.refresh_tags_btn = QPushButton("Refresh")
+        clear_tag_row.addWidget(self.clear_tag_btn)
+        clear_tag_row.addWidget(self.refresh_tags_btn)
+        tag_layout.addLayout(clear_tag_row)
+
+        self.tagging_group.setLayout(tag_layout)
+        layout.addWidget(self.tagging_group)
+        self.tagging_group.setVisible(False)
+
         # --- Batch mode ---
         batch_group = QGroupBox("Batch")
         batch_layout = QVBoxLayout()
@@ -638,6 +710,14 @@ class TissueGraphWidget(QWidget):
         self.analyze_btn.clicked.connect(self._run_analysis)
         self.add_to_dataset_btn.clicked.connect(self._add_preview_to_dataset)
         self.discard_btn.clicked.connect(self._discard_pipeline)
+
+        # Tagging
+        self.tag_selected_btn.clicked.connect(self._tag_selected)
+        self.untag_selected_btn.clicked.connect(self._untag_selected)
+        self.color_by_tags_cb.toggled.connect(self._toggle_color_by_tags)
+        self.show_only_tagged_cb.toggled.connect(self._toggle_show_only_tagged)
+        self.clear_tag_btn.clicked.connect(self._clear_selected_tag)
+        self.refresh_tags_btn.clicked.connect(self._refresh_tagging_layer)
 
         # Batch
         self.build_batch_btn.clicked.connect(self._build_batch)
@@ -983,13 +1063,8 @@ class TissueGraphWidget(QWidget):
             if l in self.viewer.layers
         ]
 
-        traj_lines, traj_colors = build_trajectory_lines(series)
-        if traj_lines:
-            layer = self.viewer.add_shapes(
-                traj_lines, shape_type="path", edge_color=traj_colors,
-                edge_width=2, name="[Pipeline] Trajectories",
-            )
-            self._stage_layers[3].append(layer)
+        # Build junction Shapes layer with features for tagging
+        self._show_tagging_for_series(series, stage_layer=True)
 
         # T1 markers
         t1_positions = build_t1_markers(series.t1_events)
@@ -1022,6 +1097,9 @@ class TissueGraphWidget(QWidget):
 
     def _discard_pipeline(self):
         self._remove_all_stage_layers()
+        self._remove_tagging_layer()
+        self._tagging_series = None
+        self.tagging_group.setVisible(False)
         self._preview_series = None
         self._current_label_stack = None
         self._current_trackmate_data = None
@@ -1152,7 +1230,12 @@ class TissueGraphWidget(QWidget):
             f"{total_cells} cells, {total_junctions} junctions, "
             f"{n_t1} T1 events, {n_trajs} edge trajectories"
         )
-        self._add_inspect_layers(series)
+        if series.edge_trajectories:
+            # Use the tagging-enabled Shapes layer for junctions
+            self._add_inspect_layers(series, skip_junctions=True)
+            self._show_tagging_for_series(series)
+        else:
+            self._add_inspect_layers(series)
 
     def _remove_current_tissue(self):
         if self.dataset is None:
@@ -1286,29 +1369,42 @@ class TissueGraphWidget(QWidget):
         self._inspect_junction_layer = None
         self._inspect_centroid_layer = None
         self._inspect_t1_layer = None
+        self._remove_tagging_layer()
+        self._tagging_series = None
+        self.tagging_group.setVisible(False)
 
-    def _add_inspect_layers(self, series: TissueGraphTimeSeries):
+    def _add_inspect_layers(
+        self, series: TissueGraphTimeSeries, skip_junctions: bool = False,
+    ):
         self._remove_inspect_layers()
-        j, c, t = self._make_layers(series, prefix="")
+        j, c, t = self._make_layers(
+            series, prefix="", skip_junctions=skip_junctions,
+        )
         self._inspect_junction_layer = j
         self._inspect_centroid_layer = c
         self._inspect_t1_layer = t
 
-    def _make_layers(self, series: TissueGraphTimeSeries, prefix: str = ""):
+    def _make_layers(
+        self,
+        series: TissueGraphTimeSeries,
+        prefix: str = "",
+        skip_junctions: bool = False,
+    ):
         """Create junction, centroid, and T1 layers for a tissue."""
         junction_layer = None
         centroid_layer = None
         t1_layer = None
 
-        lines, colors = build_all_junction_lines(series)
-        if lines:
-            junction_layer = self.viewer.add_shapes(
-                lines,
-                shape_type="path",
-                edge_color=colors,
-                edge_width=2,
-                name=f"{prefix}Junctions",
-            )
+        if not skip_junctions:
+            lines, colors = build_all_junction_lines(series)
+            if lines:
+                junction_layer = self.viewer.add_shapes(
+                    lines,
+                    shape_type="path",
+                    edge_color=colors,
+                    edge_width=2,
+                    name=f"{prefix}Junctions",
+                )
 
         centroids = build_all_centroids(series)
         if len(centroids) > 0:
@@ -1332,6 +1428,228 @@ class TissueGraphWidget(QWidget):
         return junction_layer, centroid_layer, t1_layer
 
     # ------------------------------------------------------------------
+    # Tagging
+    # ------------------------------------------------------------------
+    def _show_tagging_for_series(
+        self, series: TissueGraphTimeSeries, stage_layer: bool = False,
+    ):
+        """Create or refresh the junction Shapes layer with features for tagging.
+
+        Parameters
+        ----------
+        series : TissueGraphTimeSeries
+            The series to visualize.
+        stage_layer : bool
+            If True, register the layer as a stage 3 layer (pipeline flow).
+        """
+        self._tagging_series = series
+        self._remove_tagging_layer()
+        self.tagging_group.setVisible(True)
+
+        lines, colors, features = build_trajectory_lines_with_features(
+            series,
+            color_by_tags=self._color_by_tags,
+            show_only_tagged=self._show_only_tagged,
+        )
+        if not lines:
+            self._update_tag_list()
+            return
+
+        layer = self.viewer.add_shapes(
+            lines,
+            shape_type="path",
+            edge_color=colors,
+            edge_width=2,
+            features=features,
+            name="[Pipeline] Trajectories",
+        )
+        self._tagging_shapes_layer = layer
+        self._cached_selection = []
+
+        # Switch to SELECT mode so the user can click to select junctions.
+        # In PAN_ZOOM (the default), hovering highlights shapes but clicking
+        # does not populate selected_data.
+        layer.mode = "select"
+
+        if stage_layer:
+            self._stage_layers[3].append(layer)
+
+        self._update_tag_list()
+
+    def _remove_tagging_layer(self):
+        if (
+            self._tagging_shapes_layer is not None
+            and self._tagging_shapes_layer in self.viewer.layers
+        ):
+            self.viewer.layers.remove(self._tagging_shapes_layer)
+            # Also remove from stage layers if present
+            for stage in self._stage_layers.values():
+                if self._tagging_shapes_layer in stage:
+                    stage.remove(self._tagging_shapes_layer)
+        self._tagging_shapes_layer = None
+
+    def _poll_selection(self):
+        """Poll the shapes layer selection and cache it.
+
+        napari clears selected_data when the mouse leaves the canvas.
+        By polling at 200ms we capture the selection while the user
+        still has the mouse on the canvas, before it gets cleared.
+        """
+        if self._tagging_shapes_layer is None:
+            return
+        try:
+            if self._tagging_shapes_layer not in self.viewer.layers:
+                return
+            current = set(self._tagging_shapes_layer.selected_data)
+        except (RuntimeError, AttributeError):
+            return
+        if current:
+            self._cached_selection = list(current)
+            n = len(current)
+            self.selection_label.setText(f"{n} junction(s) selected")
+
+    def _get_selection(self):
+        """Return the current or cached shape selection."""
+        if self._tagging_shapes_layer is None:
+            return []
+        try:
+            live = list(self._tagging_shapes_layer.selected_data)
+        except (RuntimeError, AttributeError):
+            live = []
+        if live:
+            return live
+        return self._cached_selection
+
+    def _refresh_tagging_layer(self):
+        """Rebuild the tagging layer from the current series."""
+        if self._tagging_series is not None:
+            is_pipeline = self._pipeline_stage == PipelineStage.ANALYZED
+            self._show_tagging_for_series(
+                self._tagging_series, stage_layer=is_pipeline,
+            )
+
+    def _tag_selected(self):
+        """Apply a tag to all selected junctions in the Shapes layer."""
+        tag_name = self.tag_name_edit.text().strip()
+        if not tag_name:
+            self.status_label.setText("Enter a tag name first.")
+            return
+        if self._tagging_shapes_layer is None or self._tagging_series is None:
+            return
+
+        selected = self._get_selection()
+        if not selected:
+            self.status_label.setText("Select junctions first by clicking them on the canvas.")
+            return
+
+        features = self._tagging_shapes_layer.features
+        series = self._tagging_series
+        count = 0
+
+        for idx in selected:
+            row = features.iloc[idx]
+            traj_id = int(row["trajectory_id"])
+            pair = (int(row["cell_pair_a"]), int(row["cell_pair_b"]))
+
+            # Tag the trajectory if it exists
+            if traj_id != -1:
+                tag_trajectory(series, traj_id, tag_name)
+                count += 1
+            else:
+                # Tag the junction directly in all frames where it appears
+                key = frozenset(pair)
+                for frame in series.frames.values():
+                    if key in frame.junctions:
+                        tag_junction(frame, pair, tag_name)
+                count += 1
+
+        self._cached_selection = []
+        self.selection_label.setText("No junctions selected")
+        self.status_label.setText(f"Tagged {count} junction(s) as '{tag_name}'.")
+        self._refresh_tagging_layer()
+
+    def _untag_selected(self):
+        """Remove a tag from all selected junctions in the Shapes layer."""
+        tag_name = self.tag_name_edit.text().strip()
+        if not tag_name:
+            self.status_label.setText("Enter a tag name first.")
+            return
+        if self._tagging_shapes_layer is None or self._tagging_series is None:
+            return
+
+        selected = self._get_selection()
+        if not selected:
+            self.status_label.setText("Select junctions first.")
+            return
+
+        features = self._tagging_shapes_layer.features
+        series = self._tagging_series
+        count = 0
+
+        for idx in selected:
+            row = features.iloc[idx]
+            traj_id = int(row["trajectory_id"])
+            pair = (int(row["cell_pair_a"]), int(row["cell_pair_b"]))
+
+            if traj_id != -1:
+                untag_trajectory(series, traj_id, tag_name)
+                count += 1
+            else:
+                key = frozenset(pair)
+                for frame in series.frames.values():
+                    if key in frame.junctions:
+                        untag_junction(frame, pair, tag_name)
+                count += 1
+
+        self._cached_selection = []
+        self.selection_label.setText("No junctions selected")
+        self.status_label.setText(f"Removed tag '{tag_name}' from {count} junction(s).")
+        self._refresh_tagging_layer()
+
+    def _toggle_color_by_tags(self, checked: bool):
+        self._color_by_tags = checked
+        self._refresh_tagging_layer()
+
+    def _toggle_show_only_tagged(self, checked: bool):
+        self._show_only_tagged = checked
+        self._refresh_tagging_layer()
+
+    def _clear_selected_tag(self):
+        """Clear the tag selected in the tag list from all junctions/trajectories."""
+        item = self.tag_list_widget.currentItem()
+        if item is None or self._tagging_series is None:
+            self.status_label.setText("Select a tag from the list first.")
+            return
+
+        # Extract tag name (format: "tag_name (N)")
+        tag_name = item.text().rsplit(" (", 1)[0]
+        count = clear_tag(self._tagging_series, tag_name)
+        self.status_label.setText(f"Cleared tag '{tag_name}' from {count} item(s).")
+        self._refresh_tagging_layer()
+
+    def _update_tag_list(self):
+        """Refresh the tag list widget from the current series."""
+        self.tag_list_widget.clear()
+        if self._tagging_series is None:
+            return
+
+        tags = get_all_tags(self._tagging_series)
+        if not tags:
+            return
+
+        # Count occurrences per tag
+        for tag in sorted(tags):
+            count = 0
+            for traj in self._tagging_series.edge_trajectories.values():
+                if tag in traj.tags:
+                    count += 1
+            for frame in self._tagging_series.frames.values():
+                for jd in frame.junctions.values():
+                    if tag in jd.tags:
+                        count += 1
+            self.tag_list_widget.addItem(f"{tag} ({count})")
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
     @staticmethod
@@ -1345,7 +1663,9 @@ class TissueGraphWidget(QWidget):
             return None
 
     def cleanup(self):
-        """Clean up background thread if running."""
+        """Clean up background thread and layers if running."""
+        self._selection_timer.stop()
+        self._remove_tagging_layer()
         if self._thread is not None and self._thread.isRunning():
             self._thread.quit()
             self._thread.wait()

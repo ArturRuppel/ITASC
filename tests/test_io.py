@@ -329,3 +329,97 @@ class TestLoadMultiple:
 
         loaded = load_multiple_datasets([tmp_path / "my_data"])
         assert "my_data" in loaded
+
+
+# ------------------------------------------------------------------
+# Tags and names round-trip
+# ------------------------------------------------------------------
+
+class TestTagsRoundTrip:
+    @pytest.fixture
+    def tagged_dataset(self):
+        positions = make_track_positions(n_frames=5, nx=4, ny=4, spacing=20.0)
+        series = build_from_tracks(
+            positions, pixel_size=1.0, time_interval=30.0,
+            image_shape=(100, 100),
+        )
+        events = detect_t1_events(series)
+        build_edge_trajectories(series, events)
+
+        # Tag some junctions
+        first_frame = series.frames[series.frame_indices[0]]
+        for i, key in enumerate(first_frame.junctions):
+            if i < 2:
+                first_frame.junctions[key].tags.add("central")
+            if i == 0:
+                first_frame.junctions[key].tags.add("special")
+
+        # Tag some trajectories
+        traj_ids = sorted(series.edge_trajectories.keys())
+        if traj_ids:
+            series.edge_trajectories[traj_ids[0]].tags = {"central", "primary"}
+            series.edge_trajectories[traj_ids[0]].name = "main_junction"
+            if len(traj_ids) > 1:
+                series.edge_trajectories[traj_ids[1]].tags = {"peripheral"}
+
+        dataset = TissueGraphDataset(condition="tagged_test")
+        dataset.add_tissue(series)
+        return dataset
+
+    def test_junction_tags_round_trip(self, tagged_dataset, tmp_path):
+        save_path = tmp_path / "tagged"
+        save_dataset(tagged_dataset, save_path)
+        loaded = load_dataset(save_path)
+
+        orig = tagged_dataset.tissues[0]
+        loaded_s = loaded.tissues[0]
+
+        first_frame_idx = orig.frame_indices[0]
+        orig_frame = orig.frames[first_frame_idx]
+        loaded_frame = loaded_s.frames[first_frame_idx]
+
+        for key in orig_frame.junctions:
+            assert orig_frame.junctions[key].tags == loaded_frame.junctions[key].tags
+
+    def test_trajectory_tags_round_trip(self, tagged_dataset, tmp_path):
+        save_path = tmp_path / "tagged"
+        save_dataset(tagged_dataset, save_path)
+        loaded = load_dataset(save_path)
+
+        orig = tagged_dataset.tissues[0]
+        loaded_s = loaded.tissues[0]
+
+        for tid in orig.edge_trajectories:
+            assert orig.edge_trajectories[tid].tags == loaded_s.edge_trajectories[tid].tags
+
+    def test_trajectory_names_round_trip(self, tagged_dataset, tmp_path):
+        save_path = tmp_path / "tagged"
+        save_dataset(tagged_dataset, save_path)
+        loaded = load_dataset(save_path)
+
+        orig = tagged_dataset.tissues[0]
+        loaded_s = loaded.tissues[0]
+
+        for tid in orig.edge_trajectories:
+            assert orig.edge_trajectories[tid].name == loaded_s.edge_trajectories[tid].name
+
+    def test_empty_tags_round_trip(self, tmp_path):
+        """Tissues with no tags should still round-trip cleanly."""
+        stack = make_label_stack(n_frames=2, n_cells_side=4, image_size=200)
+        series = build_from_labels(stack)
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+        dataset = TissueGraphDataset()
+        dataset.add_tissue(series)
+
+        save_path = tmp_path / "no_tags"
+        save_dataset(dataset, save_path)
+        loaded = load_dataset(save_path)
+
+        loaded_s = loaded.tissues[0]
+        for frame in loaded_s.frames.values():
+            for jd in frame.junctions.values():
+                assert jd.tags == set()
+        for traj in loaded_s.edge_trajectories.values():
+            assert traj.tags == set()
+            assert traj.name is None

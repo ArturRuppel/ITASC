@@ -1,6 +1,7 @@
 """Napari layer rendering for tissue graphs."""
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+import pandas as pd
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..structures import T1Event, TissueGraphFrame, TissueGraphTimeSeries
 
@@ -211,6 +212,40 @@ def build_trajectory_lines(
     Returns:
         (lines, colors) same format as build_all_junction_lines.
     """
+    lines, colors, _ = build_trajectory_lines_with_features(series)
+    return lines, colors
+
+
+def build_trajectory_lines_with_features(
+    series: TissueGraphTimeSeries,
+    color_by_tags: bool = False,
+    show_only_tagged: bool = False,
+) -> Tuple[List[np.ndarray], np.ndarray, pd.DataFrame]:
+    """Build junction lines with per-shape features for selection and tagging.
+
+    Each shape (line) gets a row in the features DataFrame containing
+    trajectory_id, cell_pair_a, cell_pair_b, tags, and name. This enables
+    napari's built-in shape selection for interactive tagging.
+
+    Parameters
+    ----------
+    series : TissueGraphTimeSeries
+        The time series with edge trajectories.
+    color_by_tags : bool
+        If True, color by tag (first tag wins). If False, color by trajectory_id.
+    show_only_tagged : bool
+        If True, only include junctions that have at least one tag.
+
+    Returns
+    -------
+    lines : List[np.ndarray]
+        List of Nx3 arrays (frame, y, x) — one per junction.
+    colors : np.ndarray
+        Nx4 RGBA color array — one per junction.
+    features : pd.DataFrame
+        Per-shape features with columns: trajectory_id, cell_pair_a,
+        cell_pair_b, frame, tags, name.
+    """
     # Build a lookup: (frame, frozenset(cell_pair)) -> trajectory_id
     traj_lookup: Dict[Tuple[int, frozenset], int] = {}
     for traj in series.edge_trajectories.values():
@@ -218,7 +253,21 @@ def build_trajectory_lines(
             key = (frame_idx, frozenset(traj.cell_pairs[i]))
             traj_lookup[key] = traj.trajectory_id
 
-    # Assign colors to trajectories
+    # Collect all tags for color assignment
+    all_tags: Set[str] = set()
+    if color_by_tags:
+        for traj in series.edge_trajectories.values():
+            all_tags.update(traj.tags)
+        for frame in series.frames.values():
+            for jd in frame.junctions.values():
+                all_tags.update(jd.tags)
+    sorted_tags = sorted(all_tags)
+    tag_color_map = {
+        tag: np.array(_TAG_COLORS[i % len(_TAG_COLORS)])
+        for i, tag in enumerate(sorted_tags)
+    }
+
+    # Assign trajectory colors (for non-tag mode)
     unique_traj_ids = sorted(set(traj_lookup.values()))
     traj_colors = {}
     for i, tid in enumerate(unique_traj_ids):
@@ -228,6 +277,7 @@ def build_trajectory_lines(
 
     lines = []
     colors = []
+    feat_rows = []
 
     for frame_idx in series.frame_indices:
         frame = series.frames[frame_idx]
@@ -235,17 +285,61 @@ def build_trajectory_lines(
             if len(jd.coordinates) < 2:
                 continue
 
+            lookup_key = (frame_idx, frozenset(jd.cell_pair))
+            traj_id = traj_lookup.get(lookup_key, -1)
+
+            # Merge tags from junction and trajectory
+            merged_tags = set(jd.tags)
+            if traj_id != -1:
+                merged_tags |= series.edge_trajectories[traj_id].tags
+            tags_str = ",".join(sorted(merged_tags)) if merged_tags else ""
+
+            if show_only_tagged and not merged_tags:
+                continue
+
+            # Get trajectory name
+            traj_name = ""
+            if traj_id != -1:
+                traj = series.edge_trajectories[traj_id]
+                traj_name = traj.name or ""
+
             coords = jd.coordinates.astype(float)
             frame_col = np.full((len(coords), 1), float(frame_idx))
             lines.append(np.hstack([frame_col, coords]))
 
-            lookup_key = (frame_idx, frozenset(jd.cell_pair))
-            if lookup_key in traj_lookup:
-                colors.append(traj_colors[traj_lookup[lookup_key]])
+            # Color logic
+            if color_by_tags and merged_tags:
+                first_tag = sorted(merged_tags)[0]
+                colors.append(tag_color_map[first_tag])
+            elif traj_id != -1:
+                colors.append(traj_colors[traj_id])
             else:
                 colors.append(gray)
 
-    if not colors:
-        return [], np.empty((0, 4))
+            feat_rows.append({
+                "trajectory_id": traj_id,
+                "cell_pair_a": jd.cell_pair[0],
+                "cell_pair_b": jd.cell_pair[1],
+                "frame": frame_idx,
+                "tags": tags_str,
+                "name": traj_name,
+            })
 
-    return lines, np.array(colors)
+    if not colors:
+        empty_df = pd.DataFrame(columns=[
+            "trajectory_id", "cell_pair_a", "cell_pair_b", "frame", "tags", "name",
+        ])
+        return [], np.empty((0, 4)), empty_df
+
+    return lines, np.array(colors), pd.DataFrame(feat_rows)
+
+
+_TAG_COLORS = [
+    [0.90, 0.10, 0.10, 1.0],  # red
+    [0.10, 0.70, 0.10, 1.0],  # green
+    [0.10, 0.10, 0.90, 1.0],  # blue
+    [0.90, 0.60, 0.10, 1.0],  # orange
+    [0.70, 0.10, 0.70, 1.0],  # magenta
+    [0.10, 0.70, 0.70, 1.0],  # teal
+    [0.90, 0.90, 0.10, 1.0],  # yellow
+]

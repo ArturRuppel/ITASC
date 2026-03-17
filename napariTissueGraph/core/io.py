@@ -33,7 +33,7 @@ from ..structures import (
 
 logger = logging.getLogger(__name__)
 
-_FORMAT_VERSION = "1.0"
+_FORMAT_VERSION = "1.1"
 
 
 # ------------------------------------------------------------------
@@ -191,6 +191,14 @@ def _serialize_tissue(series: TissueGraphTimeSeries) -> Dict[str, np.ndarray]:
         if not np.all(np.isnan(stresses)):
             data[f"{prefix}_junc_stresses"] = stresses
 
+        # Junction tags (stored as JSON-encoded string array)
+        junc_tags = [
+            ",".join(sorted(frame.junctions[k].tags)) if frame.junctions[k].tags else ""
+            for k in junction_keys
+        ]
+        if any(junc_tags):
+            data[f"{prefix}_junc_tags"] = np.array(junc_tags, dtype="U256")
+
         # Input type
         data[f"{prefix}_input_type"] = np.array(
             [frame.input_type.value], dtype="U32"
@@ -282,6 +290,22 @@ def _serialize_tissue(series: TissueGraphTimeSeries) -> Dict[str, np.ndarray]:
         flat, offsets = _serialize_ragged(traj_t1_indices)
         data["traj_t1_refs_flat"] = flat
         data["traj_t1_refs_offsets"] = offsets
+
+        # Trajectory tags and names
+        traj_tags = [
+            ",".join(sorted(series.edge_trajectories[tid].tags))
+            if series.edge_trajectories[tid].tags else ""
+            for tid in traj_ids
+        ]
+        if any(traj_tags):
+            data["traj_tags"] = np.array(traj_tags, dtype="U256")
+
+        traj_names = [
+            series.edge_trajectories[tid].name or ""
+            for tid in traj_ids
+        ]
+        if any(traj_names):
+            data["traj_names"] = np.array(traj_names, dtype="U256")
 
     return data
 
@@ -381,8 +405,10 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
         # Optional junction fields
         has_tensions = f"{prefix}_junc_tensions" in npz
         has_stresses = f"{prefix}_junc_stresses" in npz
+        has_junc_tags = f"{prefix}_junc_tags" in npz
         tensions = npz[f"{prefix}_junc_tensions"] if has_tensions else None
         stresses = npz[f"{prefix}_junc_stresses"] if has_stresses else None
+        junc_tag_strs = npz[f"{prefix}_junc_tags"] if has_junc_tags else None
 
         junctions = {}
         for j in range(len(junc_pairs)):
@@ -390,6 +416,11 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
             key = frozenset(pair)
             tension = float(tensions[j]) if has_tensions and not np.isnan(tensions[j]) else None
             stress = float(stresses[j]) if has_stresses and not np.isnan(stresses[j]) else None
+            tags = set()
+            if has_junc_tags:
+                tag_str = str(junc_tag_strs[j])
+                if tag_str:
+                    tags = set(tag_str.split(","))
             junctions[key] = JunctionData(
                 cell_pair=pair,
                 length=float(junc_lengths[j]),
@@ -397,6 +428,7 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
                 midpoint=junc_midpoints[j].copy(),
                 tension=tension,
                 normal_stress=stress,
+                tags=tags,
             )
 
         input_type_str = str(npz[f"{prefix}_input_type"][0])
@@ -427,6 +459,11 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
             npz["traj_t1_refs_flat"], npz["traj_t1_refs_offsets"]
         )
 
+        has_traj_tags = "traj_tags" in npz
+        has_traj_names = "traj_names" in npz
+        traj_tag_strs = npz["traj_tags"] if has_traj_tags else None
+        traj_name_strs = npz["traj_names"] if has_traj_names else None
+
         for i, tid in enumerate(traj_ids):
             tid = int(tid)
 
@@ -451,6 +488,18 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
             t1_refs = traj_t1_refs_list[i].astype(np.int64).ravel()
             traj_t1 = [t1_events[int(idx)] for idx in t1_refs]
 
+            # Tags and names
+            tags = set()
+            if has_traj_tags:
+                tag_str = str(traj_tag_strs[i])
+                if tag_str:
+                    tags = set(tag_str.split(","))
+            name = None
+            if has_traj_names:
+                name_str = str(traj_name_strs[i])
+                if name_str:
+                    name = name_str
+
             edge_trajectories[tid] = EdgeTrajectory(
                 trajectory_id=tid,
                 frames=traj_frames_list[i].astype(np.int64).ravel().tolist(),
@@ -458,6 +507,8 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
                 signed_lengths=traj_lengths_list[i].astype(np.float64).ravel().tolist(),
                 coordinates=coord_list,
                 t1_events=traj_t1,
+                tags=tags,
+                name=name,
             )
 
     # Determine series-level input type from first frame

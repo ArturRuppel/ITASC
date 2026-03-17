@@ -11,6 +11,7 @@ from napariTissueGraph.napari.visualization import (
     build_tracked_centroids,
     build_track_breaks,
     build_trajectory_lines,
+    build_trajectory_lines_with_features,
     build_all_centroids,
 )
 
@@ -80,6 +81,111 @@ class TestTrajectoryLines:
 
     def test_same_line_count_as_junction_lines(self, label_stack):
         """Should produce same number of lines as build_all_junction_lines."""
+        from napariTissueGraph.napari.visualization import build_all_junction_lines
+        series = build_from_labels(label_stack)
+        j_lines, _ = build_all_junction_lines(series)
+        t_lines, _ = build_trajectory_lines(series)
+        assert len(j_lines) == len(t_lines)
+
+
+class TestTrajectoryLinesWithFeatures:
+    def test_output_format(self, label_stack):
+        series = build_from_labels(label_stack)
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        lines, colors, features = build_trajectory_lines_with_features(series)
+        assert colors.shape[1] == 4  # RGBA
+        assert len(lines) == len(features)
+        assert len(lines) == len(colors)
+        for line in lines:
+            assert line.shape[1] == 3  # (frame, y, x)
+
+    def test_features_columns(self, label_stack):
+        series = build_from_labels(label_stack)
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        _, _, features = build_trajectory_lines_with_features(series)
+        assert "trajectory_id" in features.columns
+        assert "cell_pair_a" in features.columns
+        assert "cell_pair_b" in features.columns
+        assert "frame" in features.columns
+        assert "tags" in features.columns
+        assert "name" in features.columns
+
+    def test_one_shape_per_junction_per_frame(self, label_stack):
+        series = build_from_labels(label_stack)
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        lines, _, _ = build_trajectory_lines_with_features(series)
+        # Count junctions with >= 2 coordinate points
+        total = sum(
+            1 for f in series.frames.values()
+            for jd in f.junctions.values()
+            if len(jd.coordinates) >= 2
+        )
+        assert len(lines) == total
+
+    def test_show_only_tagged_filters(self, label_stack):
+        series = build_from_labels(label_stack)
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        # No tags → show_only_tagged returns empty
+        lines, _, _ = build_trajectory_lines_with_features(
+            series, show_only_tagged=True,
+        )
+        assert len(lines) == 0
+
+    def test_color_by_tags(self, label_stack):
+        series = build_from_labels(label_stack)
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        from napariTissueGraph.analysis.tagging import tag_trajectory
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        traj_ids = sorted(series.edge_trajectories.keys())
+        if traj_ids:
+            tag_trajectory(series, traj_ids[0], "central")
+            _, colors, features = build_trajectory_lines_with_features(
+                series, color_by_tags=True,
+            )
+            # Tagged shapes should have tag color, not trajectory color
+            gray = np.array([0.5, 0.5, 0.5, 0.5])
+            n_colored = sum(1 for c in colors if not np.allclose(c, gray))
+            assert n_colored > 0
+
+    def test_show_only_tagged_returns_tagged(self, label_stack):
+        series = build_from_labels(label_stack)
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        from napariTissueGraph.analysis.tagging import tag_trajectory
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        traj_ids = sorted(series.edge_trajectories.keys())
+        if traj_ids:
+            tag_trajectory(series, traj_ids[0], "central")
+            _, _, features = build_trajectory_lines_with_features(
+                series, show_only_tagged=True,
+            )
+            assert len(features) > 0
+            for _, row in features.iterrows():
+                assert row["tags"] != ""
+
+    def test_backward_compat_with_build_trajectory_lines(self, label_stack):
+        """build_trajectory_lines should still work and return same line count."""
         from napariTissueGraph.napari.visualization import build_all_junction_lines
         series = build_from_labels(label_stack)
         j_lines, _ = build_all_junction_lines(series)
