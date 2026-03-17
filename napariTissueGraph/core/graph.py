@@ -18,6 +18,259 @@ from .trackmate import TrackMateData
 logger = logging.getLogger(__name__)
 
 
+# ------------------------------------------------------------------
+# Stage 1: Graph extraction (no tracking)
+# ------------------------------------------------------------------
+
+def extract_graphs_from_labels(
+    label_stack: np.ndarray,
+    pixel_size: Optional[float] = None,
+    time_interval: Optional[float] = None,
+    dilation_radius: int = 1,
+    min_overlap_pixels: int = 5,
+    min_edge_length: float = 0.0,
+    filter_isolated: bool = True,
+) -> TissueGraphTimeSeries:
+    """Extract per-frame graphs from segmentation labels (no tracking).
+
+    All cell.track_id remain None. Call assign_tracking_labels() afterwards
+    to add tracking as a separate stage.
+    """
+    frames_dict = {}
+
+    for frame_idx in range(len(label_stack)):
+        cells, junctions, graph = labels_to_graph(
+            label_stack[frame_idx],
+            dilation_radius=dilation_radius,
+            min_overlap_pixels=min_overlap_pixels,
+            min_edge_length=min_edge_length,
+            filter_isolated=filter_isolated,
+        )
+
+        # Extract vertices for each cell (no track assignment)
+        for cell_id, cell in cells.items():
+            verts = label_to_vertices(label_stack[frame_idx], cell_id)
+            if verts is not None:
+                cell.vertices = verts
+
+        frames_dict[frame_idx] = TissueGraphFrame(
+            frame=frame_idx,
+            graph=graph,
+            cells=cells,
+            junctions=junctions,
+            input_type=InputType.SEGMENTATION,
+        )
+
+    return TissueGraphTimeSeries(
+        frames=frames_dict,
+        pixel_size=pixel_size,
+        time_interval=time_interval,
+        input_type=InputType.SEGMENTATION,
+    )
+
+
+def extract_graphs_from_tracks(
+    positions: np.ndarray,
+    pixel_size: Optional[float] = None,
+    time_interval: Optional[float] = None,
+    image_shape: Optional[tuple] = None,
+    method: VoronoiMethod = VoronoiMethod.STANDARD,
+    lloyd_iterations: int = 10,
+    lloyd_tol: float = 0.1,
+) -> TissueGraphTimeSeries:
+    """Extract per-frame graphs from nuclear positions (no tracking).
+
+    All cell.track_id remain None. Call assign_tracking_trackmate() afterwards
+    to add tracking as a separate stage.
+    """
+    frames_dict = {}
+    frame_indices = np.unique(positions[:, 0].astype(int))
+
+    for frame_idx in frame_indices:
+        mask = positions[:, 0].astype(int) == frame_idx
+        pts = positions[mask, 1:3]
+
+        n_real = len(pts)
+        vor, pts = compute_voronoi(
+            pts, image_shape=image_shape,
+            method=method, lloyd_iterations=lloyd_iterations, lloyd_tol=lloyd_tol,
+        )
+        cells, junctions, graph = voronoi_to_graph(
+            vor, pts, n_real, image_shape=image_shape
+        )
+
+        frames_dict[int(frame_idx)] = TissueGraphFrame(
+            frame=int(frame_idx),
+            graph=graph,
+            cells=cells,
+            junctions=junctions,
+            input_type=InputType.VORONOI,
+        )
+
+    return TissueGraphTimeSeries(
+        frames=frames_dict,
+        pixel_size=pixel_size,
+        time_interval=time_interval,
+        input_type=InputType.VORONOI,
+    )
+
+
+def extract_graphs_from_trackmate(
+    trackmate_data: TrackMateData,
+    pixel_size: Optional[float] = None,
+    time_interval: Optional[float] = None,
+    method: VoronoiMethod = VoronoiMethod.STANDARD,
+    lloyd_iterations: int = 10,
+    lloyd_tol: float = 0.1,
+) -> TissueGraphTimeSeries:
+    """Extract per-frame graphs from TrackMate data (no tracking).
+
+    Thin wrapper: extracts positions from TrackMate, calls extract_graphs_from_tracks().
+    """
+    if pixel_size is None and trackmate_data.pixel_size_x is not None:
+        pixel_size = trackmate_data.pixel_size_x
+    if time_interval is None and trackmate_data.time_interval is not None:
+        time_interval = trackmate_data.time_interval
+
+    image_shape = trackmate_data.image_shape
+    positions = trackmate_data.to_positions_array()
+
+    return extract_graphs_from_tracks(
+        positions,
+        pixel_size=pixel_size,
+        time_interval=time_interval,
+        image_shape=image_shape,
+        method=method,
+        lloyd_iterations=lloyd_iterations,
+        lloyd_tol=lloyd_tol,
+    )
+
+
+def extract_graphs_from_both(
+    label_stack: np.ndarray,
+    pixel_size: Optional[float] = None,
+    time_interval: Optional[float] = None,
+    dilation_radius: int = 1,
+    min_overlap_pixels: int = 5,
+    min_edge_length: float = 0.0,
+    filter_isolated: bool = True,
+) -> TissueGraphTimeSeries:
+    """Extract per-frame graphs from labels for the labels+tracks workflow (no tracking).
+
+    Same as extract_graphs_from_labels but sets input_type=SEGMENTATION_WITH_TRACKS.
+    """
+    frames_dict = {}
+
+    for frame_idx in range(len(label_stack)):
+        cells, junctions, graph = labels_to_graph(
+            label_stack[frame_idx],
+            dilation_radius=dilation_radius,
+            min_overlap_pixels=min_overlap_pixels,
+            min_edge_length=min_edge_length,
+            filter_isolated=filter_isolated,
+        )
+
+        for cell_id, cell in cells.items():
+            verts = label_to_vertices(label_stack[frame_idx], cell_id)
+            if verts is not None:
+                cell.vertices = verts
+
+        frames_dict[frame_idx] = TissueGraphFrame(
+            frame=frame_idx,
+            graph=graph,
+            cells=cells,
+            junctions=junctions,
+            input_type=InputType.SEGMENTATION_WITH_TRACKS,
+        )
+
+    return TissueGraphTimeSeries(
+        frames=frames_dict,
+        pixel_size=pixel_size,
+        time_interval=time_interval,
+        input_type=InputType.SEGMENTATION_WITH_TRACKS,
+    )
+
+
+# ------------------------------------------------------------------
+# Stage 2: Cell tracking
+# ------------------------------------------------------------------
+
+def assign_tracking_labels(
+    series: TissueGraphTimeSeries,
+    label_stack: np.ndarray,
+    min_iou: float = 0.3,
+) -> None:
+    """Assign track IDs to cells via IoU matching on the label stack.
+
+    Mutates series in place: sets cell.track_id for all matched cells.
+    """
+    track_assignments = assign_track_ids(label_stack, min_iou=min_iou)
+
+    for frame_idx, frame in series.frames.items():
+        frame_tracks = track_assignments.get(frame_idx, {})
+        for cell_id, cell in frame.cells.items():
+            if cell_id in frame_tracks:
+                cell.track_id = frame_tracks[cell_id]
+
+
+def assign_tracking_trackmate(
+    series: TissueGraphTimeSeries,
+    trackmate_data: TrackMateData,
+    match_threshold: float = 10.0,
+) -> None:
+    """Assign track IDs from TrackMate data.
+
+    For VORONOI input_type: maps cell_index -> track_id from TrackMate's spot_to_track.
+    For SEGMENTATION_WITH_TRACKS: nearest-neighbor centroid matching within threshold.
+    Mutates series in place.
+    """
+    if series.input_type == InputType.VORONOI:
+        # Direct index mapping (same order as positions array)
+        for frame_idx, frame in series.frames.items():
+            if frame_idx in trackmate_data.spots_by_frame:
+                spots = trackmate_data.spots_by_frame[frame_idx]
+                for cell_idx, (spot_id, y, x) in enumerate(spots):
+                    if cell_idx in frame.cells and spot_id in trackmate_data.spot_to_track:
+                        frame.cells[cell_idx].track_id = trackmate_data.spot_to_track[spot_id]
+    else:
+        # Nearest-neighbor centroid matching (for SEGMENTATION_WITH_TRACKS)
+        from scipy.spatial.distance import cdist
+
+        for frame_idx, frame in series.frames.items():
+            if frame_idx not in trackmate_data.spots_by_frame:
+                continue
+            spots = trackmate_data.spots_by_frame[frame_idx]
+            if not spots or not frame.cells:
+                continue
+
+            spot_positions = np.array([[y, x] for _, y, x in spots])
+            spot_ids = [sid for sid, _, _ in spots]
+            cell_ids = list(frame.cells.keys())
+            cell_positions = np.array([frame.cells[cid].position for cid in cell_ids])
+
+            dists = cdist(spot_positions, cell_positions)
+            for spot_idx in range(len(spots)):
+                nearest_cell_idx = np.argmin(dists[spot_idx])
+                if dists[spot_idx, nearest_cell_idx] <= match_threshold:
+                    cell_id = cell_ids[nearest_cell_idx]
+                    spot_id = spot_ids[spot_idx]
+                    if spot_id in trackmate_data.spot_to_track:
+                        frame.cells[cell_id].track_id = trackmate_data.spot_to_track[spot_id]
+
+
+def has_tracking(series: TissueGraphTimeSeries) -> bool:
+    """Return True if any cell in any frame has a track_id assigned."""
+    for frame in series.frames.values():
+        for cell in frame.cells.values():
+            if cell.track_id is not None:
+                return True
+    return False
+
+
+# ------------------------------------------------------------------
+# Monolithic build functions (Stage 1 + Stage 2 combined)
+# ------------------------------------------------------------------
+
 def build_from_tracks(
     positions: np.ndarray,
     pixel_size: Optional[float] = None,
@@ -40,43 +293,26 @@ def build_from_tracks(
         lloyd_iterations: Max iterations for Lloyd's relaxation.
         lloyd_tol: Convergence tolerance for Lloyd's.
     """
-    frames_dict = {}
-    frame_indices = np.unique(positions[:, 0].astype(int))
-
-    for frame_idx in frame_indices:
-        mask = positions[:, 0].astype(int) == frame_idx
-        pts = positions[mask, 1:3]  # (y, x)
-
-        n_real = len(pts)
-        vor, pts = compute_voronoi(
-            pts, image_shape=image_shape,
-            method=method, lloyd_iterations=lloyd_iterations, lloyd_tol=lloyd_tol,
-        )
-        cells, junctions, graph = voronoi_to_graph(
-            vor, pts, n_real, image_shape=image_shape
-        )
-
-        # Assign track IDs if provided
-        if track_ids is not None and int(frame_idx) in track_ids:
-            frame_tracks = track_ids[int(frame_idx)]
-            for cell_id, cell in cells.items():
-                if cell_id in frame_tracks:
-                    cell.track_id = frame_tracks[cell_id]
-
-        frames_dict[int(frame_idx)] = TissueGraphFrame(
-            frame=int(frame_idx),
-            graph=graph,
-            cells=cells,
-            junctions=junctions,
-            input_type=InputType.VORONOI,
-        )
-
-    return TissueGraphTimeSeries(
-        frames=frames_dict,
+    series = extract_graphs_from_tracks(
+        positions,
         pixel_size=pixel_size,
         time_interval=time_interval,
-        input_type=InputType.VORONOI,
+        image_shape=image_shape,
+        method=method,
+        lloyd_iterations=lloyd_iterations,
+        lloyd_tol=lloyd_tol,
     )
+
+    # Assign track IDs if provided
+    if track_ids is not None:
+        for frame_idx, frame in series.frames.items():
+            if frame_idx in track_ids:
+                frame_tracks = track_ids[frame_idx]
+                for cell_id, cell in frame.cells.items():
+                    if cell_id in frame_tracks:
+                        cell.track_id = frame_tracks[cell_id]
+
+    return series
 
 
 def build_from_trackmate(
@@ -97,35 +333,16 @@ def build_from_trackmate(
         lloyd_iterations: Max iterations for Lloyd's relaxation.
         lloyd_tol: Convergence tolerance for Lloyd's.
     """
-    if pixel_size is None and trackmate_data.pixel_size_x is not None:
-        pixel_size = trackmate_data.pixel_size_x
-    if time_interval is None and trackmate_data.time_interval is not None:
-        time_interval = trackmate_data.time_interval
-
-    image_shape = trackmate_data.image_shape
-    positions = trackmate_data.to_positions_array()
-
-    # Build track_ids dict: frame -> {cell_index -> track_id}
-    # cell_index in the positions array maps to cell_id in the graph (0-based per frame)
-    track_ids_by_frame: Dict[int, Dict[int, int]] = {}
-    for frame in sorted(trackmate_data.spots_by_frame.keys()):
-        spots = trackmate_data.spots_by_frame[frame]
-        frame_tracks: Dict[int, int] = {}
-        for cell_idx, (spot_id, y, x) in enumerate(spots):
-            if spot_id in trackmate_data.spot_to_track:
-                frame_tracks[cell_idx] = trackmate_data.spot_to_track[spot_id]
-        track_ids_by_frame[frame] = frame_tracks
-
-    return build_from_tracks(
-        positions,
+    series = extract_graphs_from_trackmate(
+        trackmate_data,
         pixel_size=pixel_size,
         time_interval=time_interval,
-        image_shape=image_shape,
-        track_ids=track_ids_by_frame,
         method=method,
         lloyd_iterations=lloyd_iterations,
         lloyd_tol=lloyd_tol,
     )
+    assign_tracking_trackmate(series, trackmate_data)
+    return series
 
 
 def build_from_labels(
@@ -150,43 +367,17 @@ def build_from_labels(
         filter_isolated: Remove edges where either cell has only one neighbor.
         min_iou: Minimum IoU threshold for label tracking.
     """
-    # Assign track IDs across frames
-    track_assignments = assign_track_ids(label_stack, min_iou=min_iou)
-
-    frames_dict = {}
-
-    for frame_idx in range(len(label_stack)):
-        cells, junctions, graph = labels_to_graph(
-            label_stack[frame_idx],
-            dilation_radius=dilation_radius,
-            min_overlap_pixels=min_overlap_pixels,
-            min_edge_length=min_edge_length,
-            filter_isolated=filter_isolated,
-        )
-
-        # Assign track IDs and vertices to cells
-        frame_tracks = track_assignments.get(frame_idx, {})
-        for cell_id, cell in cells.items():
-            if cell_id in frame_tracks:
-                cell.track_id = frame_tracks[cell_id]
-            verts = label_to_vertices(label_stack[frame_idx], cell_id)
-            if verts is not None:
-                cell.vertices = verts
-
-        frames_dict[frame_idx] = TissueGraphFrame(
-            frame=frame_idx,
-            graph=graph,
-            cells=cells,
-            junctions=junctions,
-            input_type=InputType.SEGMENTATION,
-        )
-
-    return TissueGraphTimeSeries(
-        frames=frames_dict,
+    series = extract_graphs_from_labels(
+        label_stack,
         pixel_size=pixel_size,
         time_interval=time_interval,
-        input_type=InputType.SEGMENTATION,
+        dilation_radius=dilation_radius,
+        min_overlap_pixels=min_overlap_pixels,
+        min_edge_length=min_edge_length,
+        filter_isolated=filter_isolated,
     )
+    assign_tracking_labels(series, label_stack, min_iou=min_iou)
+    return series
 
 
 def build_from_both(
@@ -216,65 +407,22 @@ def build_from_both(
         min_edge_length: Minimum junction length to keep.
         filter_isolated: Remove edges where either cell has only one neighbor.
     """
-    from scipy.spatial.distance import cdist
-    from skimage.measure import regionprops
-
     if pixel_size is None and trackmate_data.pixel_size_x is not None:
         pixel_size = trackmate_data.pixel_size_x
     if time_interval is None and trackmate_data.time_interval is not None:
         time_interval = trackmate_data.time_interval
 
-    frames_dict = {}
-
-    for frame_idx in range(len(label_stack)):
-        cells, junctions, graph = labels_to_graph(
-            label_stack[frame_idx],
-            dilation_radius=dilation_radius,
-            min_overlap_pixels=min_overlap_pixels,
-            min_edge_length=min_edge_length,
-            filter_isolated=filter_isolated,
-        )
-
-        # Extract vertices for each cell
-        for cell_id, cell in cells.items():
-            verts = label_to_vertices(label_stack[frame_idx], cell_id)
-            if verts is not None:
-                cell.vertices = verts
-
-        # Match TrackMate spots to label centroids for this frame
-        if frame_idx in trackmate_data.spots_by_frame:
-            spots = trackmate_data.spots_by_frame[frame_idx]
-            if spots and cells:
-                # Build arrays for matching
-                spot_positions = np.array([[y, x] for _, y, x in spots])
-                spot_ids = [sid for sid, _, _ in spots]
-                cell_ids = list(cells.keys())
-                cell_positions = np.array([cells[cid].position for cid in cell_ids])
-
-                # Nearest-neighbor matching
-                dists = cdist(spot_positions, cell_positions)
-                for spot_idx in range(len(spots)):
-                    nearest_cell_idx = np.argmin(dists[spot_idx])
-                    if dists[spot_idx, nearest_cell_idx] <= match_threshold:
-                        cell_id = cell_ids[nearest_cell_idx]
-                        spot_id = spot_ids[spot_idx]
-                        if spot_id in trackmate_data.spot_to_track:
-                            cells[cell_id].track_id = trackmate_data.spot_to_track[spot_id]
-
-        frames_dict[frame_idx] = TissueGraphFrame(
-            frame=frame_idx,
-            graph=graph,
-            cells=cells,
-            junctions=junctions,
-            input_type=InputType.SEGMENTATION_WITH_TRACKS,
-        )
-
-    return TissueGraphTimeSeries(
-        frames=frames_dict,
+    series = extract_graphs_from_both(
+        label_stack,
         pixel_size=pixel_size,
         time_interval=time_interval,
-        input_type=InputType.SEGMENTATION_WITH_TRACKS,
+        dilation_radius=dilation_radius,
+        min_overlap_pixels=min_overlap_pixels,
+        min_edge_length=min_edge_length,
+        filter_isolated=filter_isolated,
     )
+    assign_tracking_trackmate(series, trackmate_data, match_threshold=match_threshold)
+    return series
 
 
 def build_from_labels_4d(

@@ -1,14 +1,15 @@
 """Napari dock widget for napariTissueGraph.
 
 Supports two workflows:
-- Single-tissue: build one tissue, preview, tweak, then add to dataset.
+- Single-tissue: staged pipeline with visual QC at each step.
 - Batch: build multiple tissues at once, add all to dataset.
 
 The dataset accumulates tissues and can be saved/loaded.
 """
 import logging
+from enum import auto, Enum
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 from qtpy.QtWidgets import (
@@ -37,12 +38,26 @@ from ..core.graph import (
     build_from_tracks_4d,
     build_from_both,
     build_from_trackmate,
+    extract_graphs_from_labels,
+    extract_graphs_from_tracks,
+    extract_graphs_from_trackmate,
+    extract_graphs_from_both,
+    assign_tracking_labels,
+    assign_tracking_trackmate,
+    has_tracking,
 )
 from ..core.trackmate import parse_trackmate_xml, TrackMateData
 from ..core.topology import detect_t1_events, detect_all_t1_events
 from ..core.io import save_dataset, load_dataset
 from ..analysis.trajectories import build_edge_trajectories
-from .visualization import build_all_junction_lines, build_all_centroids, build_t1_markers
+from .visualization import (
+    build_all_junction_lines,
+    build_all_centroids,
+    build_t1_markers,
+    build_tracked_centroids,
+    build_track_breaks,
+    build_trajectory_lines,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,31 +66,28 @@ INPUT_TRACKS = "Nuclear Tracks"
 INPUT_BOTH = "Both (Labels + Tracks)"
 
 
+class PipelineStage(Enum):
+    IDLE = auto()
+    GRAPHS_BUILT = auto()
+    TRACKED = auto()
+    ANALYZED = auto()
+
+
 # ------------------------------------------------------------------
 # Workers
 # ------------------------------------------------------------------
 
-class SingleTissueBuildWorker(QObject):
-    """Build one TissueGraphTimeSeries in a background thread."""
+class GraphExtractWorker(QObject):
+    """Stage 1: extract per-frame graphs (no tracking)."""
 
     progress = Signal(int, str)
-    finished = Signal(object)  # emits TissueGraphTimeSeries
+    finished = Signal(object)
     error = Signal(Exception)
 
-    def __init__(
-        self,
-        input_type: str,
-        label_stack=None,
-        track_positions=None,
-        trackmate_data=None,
-        pixel_size=None,
-        time_interval=None,
-        voronoi_method=VoronoiMethod.STANDARD,
-        lloyd_iterations=10,
-        lloyd_tol=0.1,
-        min_iou=0.3,
-        match_threshold=10.0,
-    ):
+    def __init__(self, input_type, label_stack=None, track_positions=None,
+                 trackmate_data=None, pixel_size=None, time_interval=None,
+                 voronoi_method=VoronoiMethod.STANDARD,
+                 lloyd_iterations=10, lloyd_tol=0.1):
         super().__init__()
         self.input_type = input_type
         self.label_stack = label_stack
@@ -86,23 +98,20 @@ class SingleTissueBuildWorker(QObject):
         self.voronoi_method = voronoi_method
         self.lloyd_iterations = lloyd_iterations
         self.lloyd_tol = lloyd_tol
-        self.min_iou = min_iou
-        self.match_threshold = match_threshold
 
     def run(self):
         try:
-            self.progress.emit(10, "Building graph...")
+            self.progress.emit(10, "Extracting graphs...")
 
             if self.input_type == INPUT_SEGMENTATION:
-                series = build_from_labels(
+                series = extract_graphs_from_labels(
                     self.label_stack,
                     pixel_size=self.pixel_size,
                     time_interval=self.time_interval,
-                    min_iou=self.min_iou,
                 )
             elif self.input_type == INPUT_TRACKS:
                 if self.trackmate_data is not None:
-                    series = build_from_trackmate(
+                    series = extract_graphs_from_trackmate(
                         self.trackmate_data,
                         pixel_size=self.pixel_size,
                         time_interval=self.time_interval,
@@ -111,7 +120,7 @@ class SingleTissueBuildWorker(QObject):
                         lloyd_tol=self.lloyd_tol,
                     )
                 else:
-                    series = build_from_tracks(
+                    series = extract_graphs_from_tracks(
                         self.track_positions,
                         pixel_size=self.pixel_size,
                         time_interval=self.time_interval,
@@ -120,22 +129,78 @@ class SingleTissueBuildWorker(QObject):
                         lloyd_tol=self.lloyd_tol,
                     )
             else:
-                # Both mode
-                series = build_from_both(
+                series = extract_graphs_from_both(
                     self.label_stack,
-                    self.trackmate_data,
                     pixel_size=self.pixel_size,
                     time_interval=self.time_interval,
+                )
+
+            self.progress.emit(100, "Graphs extracted.")
+            self.finished.emit(series)
+        except Exception as e:
+            self.error.emit(e)
+
+
+class TrackingWorker(QObject):
+    """Stage 2: assign tracking IDs."""
+
+    progress = Signal(int, str)
+    finished = Signal(object)
+    error = Signal(Exception)
+
+    def __init__(self, series, input_type, label_stack=None,
+                 trackmate_data=None, min_iou=0.3, match_threshold=10.0):
+        super().__init__()
+        self.series = series
+        self.input_type = input_type
+        self.label_stack = label_stack
+        self.trackmate_data = trackmate_data
+        self.min_iou = min_iou
+        self.match_threshold = match_threshold
+
+    def run(self):
+        try:
+            self.progress.emit(10, "Running tracking...")
+
+            if self.input_type == INPUT_SEGMENTATION:
+                assign_tracking_labels(self.series, self.label_stack, min_iou=self.min_iou)
+            elif self.input_type == INPUT_TRACKS:
+                if self.trackmate_data is not None:
+                    assign_tracking_trackmate(self.series, self.trackmate_data)
+                # Points-only tracks mode has no separate tracking source
+            else:
+                assign_tracking_trackmate(
+                    self.series, self.trackmate_data,
                     match_threshold=self.match_threshold,
                 )
 
-            self.progress.emit(70, "Detecting T1 events...")
-            events = detect_t1_events(series)
+            self.progress.emit(100, "Tracking complete.")
+            self.finished.emit(self.series)
+        except Exception as e:
+            self.error.emit(e)
 
-            self.progress.emit(85, "Building edge trajectories...")
-            build_edge_trajectories(series, events)
 
-            self.finished.emit(series)
+class AnalysisWorker(QObject):
+    """Stage 3: T1 detection + edge trajectories."""
+
+    progress = Signal(int, str)
+    finished = Signal(object)
+    error = Signal(Exception)
+
+    def __init__(self, series):
+        super().__init__()
+        self.series = series
+
+    def run(self):
+        try:
+            self.progress.emit(10, "Detecting T1 events...")
+            events = detect_t1_events(self.series)
+
+            self.progress.emit(60, "Building edge trajectories...")
+            build_edge_trajectories(self.series, events)
+
+            self.progress.emit(100, "Analysis complete.")
+            self.finished.emit(self.series)
         except Exception as e:
             self.error.emit(e)
 
@@ -286,14 +351,17 @@ class TissueGraphWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self.dataset: Optional[TissueGraphDataset] = None
-        self._preview_series: Optional[TissueGraphTimeSeries] = None
         self._label_stacks: List[np.ndarray] = []
         self._file_names: List[str] = []
         self._trackmate_data_list: List[TrackMateData] = []
-        # Preview layers (shown before adding to dataset)
-        self._preview_junction_layer = None
-        self._preview_centroid_layer = None
-        self._preview_t1_layer = None
+
+        # Pipeline state
+        self._pipeline_stage = PipelineStage.IDLE
+        self._preview_series: Optional[TissueGraphTimeSeries] = None
+        self._current_label_stack: Optional[np.ndarray] = None
+        self._current_trackmate_data: Optional[TrackMateData] = None
+        self._stage_layers: Dict[int, list] = {1: [], 2: [], 3: []}
+
         # Dataset inspection layers
         self._inspect_junction_layer = None
         self._inspect_centroid_layer = None
@@ -453,45 +521,64 @@ class TissueGraphWidget(QWidget):
         param_group.setLayout(param_layout)
         layout.addWidget(param_group)
 
-        # --- Build buttons ---
-        build_group = QGroupBox("Build")
-        build_layout = QVBoxLayout()
+        # --- Pipeline: Stage 1 ---
+        self.stage1_group = QGroupBox("Stage 1: Graph Extraction")
+        s1_layout = QVBoxLayout()
+        self.extract_btn = QPushButton("Extract Graphs")
+        s1_layout.addWidget(self.extract_btn)
+        self.stage1_info = QLabel("")
+        self.stage1_info.setWordWrap(True)
+        s1_layout.addWidget(self.stage1_info)
+        self.stage1_group.setLayout(s1_layout)
+        layout.addWidget(self.stage1_group)
 
-        build_btn_row = QHBoxLayout()
-        self.build_single_btn = QPushButton("Build Single")
+        # --- Pipeline: Stage 2 ---
+        self.stage2_group = QGroupBox("Stage 2: Cell Tracking")
+        s2_layout = QVBoxLayout()
+        self.track_btn = QPushButton("Run Tracking")
+        s2_layout.addWidget(self.track_btn)
+        self.stage2_info = QLabel("")
+        self.stage2_info.setWordWrap(True)
+        s2_layout.addWidget(self.stage2_info)
+        self.stage2_group.setLayout(s2_layout)
+        layout.addWidget(self.stage2_group)
+
+        # --- Pipeline: Stage 3 ---
+        self.stage3_group = QGroupBox("Stage 3: T1 + Edge Tracking")
+        s3_layout = QVBoxLayout()
+        self.analyze_btn = QPushButton("Run Analysis")
+        s3_layout.addWidget(self.analyze_btn)
+        self.stage3_info = QLabel("")
+        self.stage3_info.setWordWrap(True)
+        s3_layout.addWidget(self.stage3_info)
+        self.stage3_group.setLayout(s3_layout)
+        layout.addWidget(self.stage3_group)
+
+        # --- Pipeline: Add / Discard ---
+        self.finalize_group = QGroupBox("Add / Discard")
+        fin_layout = QHBoxLayout()
+        self.add_to_dataset_btn = QPushButton("Add to Dataset")
+        self.discard_btn = QPushButton("Discard")
+        fin_layout.addWidget(self.add_to_dataset_btn)
+        fin_layout.addWidget(self.discard_btn)
+        self.finalize_group.setLayout(fin_layout)
+        layout.addWidget(self.finalize_group)
+
+        # --- Batch mode ---
+        batch_group = QGroupBox("Batch")
+        batch_layout = QVBoxLayout()
         self.build_batch_btn = QPushButton("Build All (Batch)")
-        build_btn_row.addWidget(self.build_single_btn)
-        build_btn_row.addWidget(self.build_batch_btn)
-        build_layout.addLayout(build_btn_row)
+        batch_layout.addWidget(self.build_batch_btn)
+        batch_group.setLayout(batch_layout)
+        layout.addWidget(batch_group)
 
+        # --- Progress ---
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        build_layout.addWidget(self.progress_bar)
+        layout.addWidget(self.progress_bar)
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
-        build_layout.addWidget(self.status_label)
-
-        build_group.setLayout(build_layout)
-        layout.addWidget(build_group)
-
-        # --- Preview section (after Build Single) ---
-        self.preview_group = QGroupBox("Preview")
-        preview_layout = QVBoxLayout()
-
-        self.preview_info_label = QLabel("")
-        self.preview_info_label.setWordWrap(True)
-        preview_layout.addWidget(self.preview_info_label)
-
-        preview_btn_row = QHBoxLayout()
-        self.add_to_dataset_btn = QPushButton("Add to Dataset")
-        self.discard_preview_btn = QPushButton("Discard")
-        preview_btn_row.addWidget(self.add_to_dataset_btn)
-        preview_btn_row.addWidget(self.discard_preview_btn)
-        preview_layout.addLayout(preview_btn_row)
-
-        self.preview_group.setLayout(preview_layout)
-        self.preview_group.setVisible(False)
-        layout.addWidget(self.preview_group)
+        layout.addWidget(self.status_label)
 
         # --- Dataset section ---
         self.dataset_group = QGroupBox("Dataset")
@@ -534,8 +621,9 @@ class TissueGraphWidget(QWidget):
 
         layout.addStretch()
 
-        # Set initial visibility
+        # Set initial visibility and button state
         self._update_input_mode()
+        self._update_pipeline_buttons()
 
     def _connect_signals(self):
         self.input_type_combo.currentIndexChanged.connect(self._update_input_mode)
@@ -544,13 +632,15 @@ class TissueGraphWidget(QWidget):
         self.trackmate_load_btn.clicked.connect(self._load_trackmate_xml)
         self.voronoi_method_combo.currentIndexChanged.connect(self._update_lloyd_visibility)
 
-        # Build
-        self.build_single_btn.clicked.connect(self._build_single)
-        self.build_batch_btn.clicked.connect(self._build_batch)
-
-        # Preview
+        # Pipeline
+        self.extract_btn.clicked.connect(self._run_extract)
+        self.track_btn.clicked.connect(self._run_tracking)
+        self.analyze_btn.clicked.connect(self._run_analysis)
         self.add_to_dataset_btn.clicked.connect(self._add_preview_to_dataset)
-        self.discard_preview_btn.clicked.connect(self._discard_preview)
+        self.discard_btn.clicked.connect(self._discard_pipeline)
+
+        # Batch
+        self.build_batch_btn.clicked.connect(self._build_batch)
 
         # Dataset
         self.show_tissue_btn.clicked.connect(self._show_selected_tissue)
@@ -560,6 +650,17 @@ class TissueGraphWidget(QWidget):
         self.new_dataset_btn.clicked.connect(self._new_dataset)
 
         self._refresh_layers()
+
+    # ------------------------------------------------------------------
+    # Pipeline stage gating
+    # ------------------------------------------------------------------
+    def _update_pipeline_buttons(self):
+        stage = self._pipeline_stage
+        self.extract_btn.setEnabled(stage == PipelineStage.IDLE)
+        self.track_btn.setEnabled(stage == PipelineStage.GRAPHS_BUILT)
+        self.analyze_btn.setEnabled(stage == PipelineStage.TRACKED)
+        self.add_to_dataset_btn.setEnabled(stage == PipelineStage.ANALYZED)
+        self.discard_btn.setEnabled(stage != PipelineStage.IDLE)
 
     # ------------------------------------------------------------------
     # Input mode switching
@@ -672,19 +773,17 @@ class TissueGraphWidget(QWidget):
     # Selection helpers
     # ------------------------------------------------------------------
     def _selected_label_index(self) -> int:
-        """Return the selected index in the label file list, or 0."""
         row = self.file_list.currentRow()
         return row if row >= 0 else 0
 
     def _selected_trackmate_index(self) -> int:
-        """Return the selected index in the TrackMate file list, or 0."""
         row = self.trackmate_file_list.currentRow()
         return row if row >= 0 else 0
 
     # ------------------------------------------------------------------
-    # Build: single tissue
+    # Stage 1: Extract graphs
     # ------------------------------------------------------------------
-    def _build_single(self):
+    def _run_extract(self):
         input_type = self.input_type_combo.currentText()
         pixel_size = self._parse_float(self.pixel_size_edit.text())
         time_interval = self._parse_float(self.time_interval_edit.text())
@@ -699,9 +798,11 @@ class TissueGraphWidget(QWidget):
             time_interval=time_interval,
             voronoi_method=voronoi_method,
             lloyd_iterations=self.lloyd_iter_spin.value(),
-            min_iou=self.min_iou_spin.value(),
-            match_threshold=self.match_threshold_spin.value(),
         )
+
+        # Collect inputs and validate before discarding previous pipeline
+        label_stack = None
+        trackmate_data = None
 
         if input_type == INPUT_SEGMENTATION:
             if not self._label_stacks:
@@ -709,10 +810,12 @@ class TissueGraphWidget(QWidget):
                 return
             idx = self._selected_label_index()
             kwargs["label_stack"] = self._label_stacks[idx]
+            label_stack = self._label_stacks[idx]
         elif input_type == INPUT_TRACKS:
             if self._trackmate_data_list:
                 idx = self._selected_trackmate_index()
                 kwargs["trackmate_data"] = self._trackmate_data_list[idx]
+                trackmate_data = self._trackmate_data_list[idx]
             else:
                 layer_name = self.layer_combo.currentText()
                 if not layer_name:
@@ -729,32 +832,210 @@ class TissueGraphWidget(QWidget):
                 return
             kwargs["label_stack"] = self._label_stacks[self._selected_label_index()]
             kwargs["trackmate_data"] = self._trackmate_data_list[self._selected_trackmate_index()]
+            label_stack = kwargs["label_stack"]
+            trackmate_data = kwargs["trackmate_data"]
 
-        self._discard_preview()
-        self._run_worker(SingleTissueBuildWorker(**kwargs), self._on_single_finished)
+        # Discard previous pipeline, then set references for Stage 2
+        self._discard_pipeline()
+        self._current_label_stack = label_stack
+        self._current_trackmate_data = trackmate_data
 
-    def _on_single_finished(self, series):
+        self._run_worker(GraphExtractWorker(**kwargs), self._on_extract_finished)
+
+    def _on_extract_finished(self, series):
         self._preview_series = series
-        self.build_single_btn.setEnabled(True)
-        self.build_batch_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
+        self._pipeline_stage = PipelineStage.GRAPHS_BUILT
+        self._finish_worker()
 
-        # Show preview info
-        n_t1 = len(series.t1_events)
+        # Summary
         total_cells = sum(len(f.cells) for f in series.frames.values())
         total_junctions = sum(len(f.junctions) for f in series.frames.values())
-        self.preview_info_label.setText(
-            f"{series.num_frames} frames, {total_cells} cells, "
-            f"{total_junctions} junctions, {n_t1} T1 events"
+        self.stage1_info.setText(
+            f"{series.num_frames} frames, {total_cells} cells, {total_junctions} junctions"
         )
-        self.preview_group.setVisible(True)
-        self.status_label.setText("Preview ready. Add to dataset or discard.")
+        self.status_label.setText("Stage 1 complete. Inspect junctions & centroids, then run tracking.")
 
-        # Show preview layers
-        self._add_preview_layers(series)
+        # Show junction lines (length-colored) + centroids (yellow)
+        self._remove_stage_layers(1)
+        lines, colors = build_all_junction_lines(series)
+        if lines:
+            layer = self.viewer.add_shapes(
+                lines, shape_type="path", edge_color=colors,
+                edge_width=2, name="[Pipeline] Junctions",
+            )
+            self._stage_layers[1].append(layer)
+
+        centroids = build_all_centroids(series)
+        if len(centroids) > 0:
+            layer = self.viewer.add_points(
+                centroids, size=5, face_color="yellow",
+                name="[Pipeline] Cell Centroids",
+            )
+            self._stage_layers[1].append(layer)
+
+        self._update_pipeline_buttons()
 
     # ------------------------------------------------------------------
-    # Build: batch
+    # Stage 2: Tracking
+    # ------------------------------------------------------------------
+    def _run_tracking(self):
+        if self._preview_series is None:
+            return
+
+        input_type = self.input_type_combo.currentText()
+        kwargs = dict(
+            series=self._preview_series,
+            input_type=input_type,
+            label_stack=self._current_label_stack,
+            trackmate_data=self._current_trackmate_data,
+            min_iou=self.min_iou_spin.value(),
+            match_threshold=self.match_threshold_spin.value(),
+        )
+
+        self._run_worker(TrackingWorker(**kwargs), self._on_tracking_finished)
+
+    def _on_tracking_finished(self, series):
+        self._preview_series = series
+        self._pipeline_stage = PipelineStage.TRACKED
+        self._finish_worker()
+
+        # Count unique track_ids, births, deaths
+        all_track_ids = set()
+        for frame in series.frames.values():
+            for cell in frame.cells.values():
+                if cell.track_id is not None:
+                    all_track_ids.add(cell.track_id)
+
+        positions, types = build_track_breaks(series)
+        n_births = types.count("birth")
+        n_deaths = types.count("death")
+
+        self.stage2_info.setText(
+            f"{len(all_track_ids)} tracks, {n_births} births, {n_deaths} deaths"
+        )
+        self.status_label.setText("Stage 2 complete. Inspect track colors, then run analysis.")
+
+        # Replace yellow centroids with track-colored centroids
+        self._remove_stage_layers(2)
+
+        tracked_pos, tracked_colors, _ = build_tracked_centroids(series)
+        if len(tracked_pos) > 0:
+            # Remove stage 1 centroid layer, keep junction layer
+            self._stage_layers[1] = [
+                l for l in self._stage_layers[1]
+                if l in self.viewer.layers and "Centroid" not in l.name
+            ]
+            # Remove old centroid layer from viewer
+            for l in list(self.viewer.layers):
+                if l.name == "[Pipeline] Cell Centroids":
+                    self.viewer.layers.remove(l)
+
+            layer = self.viewer.add_points(
+                tracked_pos, size=5, face_color=tracked_colors,
+                name="[Pipeline] Tracked Centroids",
+            )
+            self._stage_layers[2].append(layer)
+
+        # Add track break markers
+        if len(positions) > 0:
+            break_colors = [
+                [0.0, 1.0, 0.0, 1.0] if t == "birth" else [1.0, 0.0, 0.0, 1.0]
+                for t in types
+            ]
+            layer = self.viewer.add_points(
+                positions, size=10, face_color=break_colors,
+                symbol="diamond", name="[Pipeline] Track Breaks",
+            )
+            self._stage_layers[2].append(layer)
+
+        self._update_pipeline_buttons()
+
+    # ------------------------------------------------------------------
+    # Stage 3: T1 + Edge trajectories
+    # ------------------------------------------------------------------
+    def _run_analysis(self):
+        if self._preview_series is None:
+            return
+        self._run_worker(AnalysisWorker(self._preview_series), self._on_analysis_finished)
+
+    def _on_analysis_finished(self, series):
+        self._preview_series = series
+        self._pipeline_stage = PipelineStage.ANALYZED
+        self._finish_worker()
+
+        n_t1 = len(series.t1_events)
+        n_trajs = len(series.edge_trajectories)
+
+        self.stage3_info.setText(
+            f"{n_t1} T1 events, {n_trajs} edge trajectories"
+        )
+        self.status_label.setText("Stage 3 complete. Inspect T1 events & trajectories, then add to dataset.")
+
+        # Replace length-colored junctions with trajectory-colored junctions
+        self._remove_stage_layers(3)
+
+        # Remove stage 1 junction layer
+        for l in list(self.viewer.layers):
+            if l.name == "[Pipeline] Junctions":
+                self.viewer.layers.remove(l)
+        self._stage_layers[1] = [
+            l for l in self._stage_layers[1]
+            if l in self.viewer.layers
+        ]
+
+        traj_lines, traj_colors = build_trajectory_lines(series)
+        if traj_lines:
+            layer = self.viewer.add_shapes(
+                traj_lines, shape_type="path", edge_color=traj_colors,
+                edge_width=2, name="[Pipeline] Trajectories",
+            )
+            self._stage_layers[3].append(layer)
+
+        # T1 markers
+        t1_positions = build_t1_markers(series.t1_events)
+        if len(t1_positions) > 0:
+            layer = self.viewer.add_points(
+                t1_positions, size=12, face_color="red",
+                symbol="star", name="[Pipeline] T1 Events",
+            )
+            self._stage_layers[3].append(layer)
+
+        self._update_pipeline_buttons()
+
+    # ------------------------------------------------------------------
+    # Add / Discard
+    # ------------------------------------------------------------------
+    def _add_preview_to_dataset(self):
+        if self._preview_series is None:
+            return
+        self._ensure_dataset()
+        tid = self.dataset.add_tissue(self._preview_series)
+        self._remove_all_stage_layers()
+        self._preview_series = None
+        self._current_label_stack = None
+        self._current_trackmate_data = None
+        self._pipeline_stage = PipelineStage.IDLE
+        self._update_pipeline_buttons()
+        self._clear_stage_info()
+        self.status_label.setText(f"Added tissue {tid} to dataset.")
+        self._update_dataset_ui()
+
+    def _discard_pipeline(self):
+        self._remove_all_stage_layers()
+        self._preview_series = None
+        self._current_label_stack = None
+        self._current_trackmate_data = None
+        self._pipeline_stage = PipelineStage.IDLE
+        self._update_pipeline_buttons()
+        self._clear_stage_info()
+
+    def _clear_stage_info(self):
+        self.stage1_info.setText("")
+        self.stage2_info.setText("")
+        self.stage3_info.setText("")
+
+    # ------------------------------------------------------------------
+    # Batch build (monolithic, no per-stage QC)
     # ------------------------------------------------------------------
     def _build_batch(self):
         input_type = self.input_type_combo.currentText()
@@ -813,32 +1094,10 @@ class TissueGraphWidget(QWidget):
         for series in series_list:
             self.dataset.add_tissue(series)
 
-        self.build_single_btn.setEnabled(True)
-        self.build_batch_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
-
+        self._finish_worker()
         n = len(series_list)
         self.status_label.setText(f"Added {n} tissue(s) to dataset.")
         self._update_dataset_ui()
-
-    # ------------------------------------------------------------------
-    # Preview management
-    # ------------------------------------------------------------------
-    def _add_preview_to_dataset(self):
-        if self._preview_series is None:
-            return
-        self._ensure_dataset()
-        tid = self.dataset.add_tissue(self._preview_series)
-        self._remove_preview_layers()
-        self._preview_series = None
-        self.preview_group.setVisible(False)
-        self.status_label.setText(f"Added tissue {tid} to dataset.")
-        self._update_dataset_ui()
-
-    def _discard_preview(self):
-        self._remove_preview_layers()
-        self._preview_series = None
-        self.preview_group.setVisible(False)
 
     # ------------------------------------------------------------------
     # Dataset management
@@ -909,7 +1168,7 @@ class TissueGraphWidget(QWidget):
 
     def _new_dataset(self):
         self._remove_inspect_layers()
-        self._discard_preview()
+        self._discard_pipeline()
         self.dataset = None
         self._update_dataset_ui()
         self.status_label.setText("Created new dataset.")
@@ -929,9 +1188,7 @@ class TissueGraphWidget(QWidget):
         )
 
     def _on_save_finished(self, _):
-        self.build_single_btn.setEnabled(True)
-        self.build_batch_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
+        self._finish_worker()
         self.status_label.setText("Dataset saved.")
 
     def _load_dataset(self):
@@ -944,9 +1201,7 @@ class TissueGraphWidget(QWidget):
 
     def _on_load_finished(self, dataset):
         self.dataset = dataset
-        self.build_single_btn.setEnabled(True)
-        self.build_batch_btn.setEnabled(True)
-        self.progress_bar.setVisible(False)
+        self._finish_worker()
 
         # Populate UI from loaded metadata
         if dataset.condition:
@@ -980,7 +1235,9 @@ class TissueGraphWidget(QWidget):
         self._worker.error.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
 
-        self.build_single_btn.setEnabled(False)
+        self.extract_btn.setEnabled(False)
+        self.track_btn.setEnabled(False)
+        self.analyze_btn.setEnabled(False)
         self.build_batch_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
@@ -988,31 +1245,35 @@ class TissueGraphWidget(QWidget):
 
         self._thread.start()
 
+    def _finish_worker(self):
+        """Re-enable buttons and hide progress bar after worker completes."""
+        self.progress_bar.setVisible(False)
+        self.build_batch_btn.setEnabled(True)
+        self._update_pipeline_buttons()
+
     def _on_progress(self, percent, message):
         self.progress_bar.setValue(percent)
         self.status_label.setText(message)
 
     def _on_error(self, exc):
-        self.build_single_btn.setEnabled(True)
-        self.build_batch_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
+        self.build_batch_btn.setEnabled(True)
+        self._update_pipeline_buttons()
         self.status_label.setText(f"Error: {exc}")
         logger.exception("Worker failed", exc_info=exc)
 
     # ------------------------------------------------------------------
     # Napari layer management
     # ------------------------------------------------------------------
-    def _remove_preview_layers(self):
-        for layer in (
-            self._preview_junction_layer,
-            self._preview_centroid_layer,
-            self._preview_t1_layer,
-        ):
-            if layer is not None and layer in self.viewer.layers:
+    def _remove_stage_layers(self, stage: int):
+        for layer in self._stage_layers[stage]:
+            if layer in self.viewer.layers:
                 self.viewer.layers.remove(layer)
-        self._preview_junction_layer = None
-        self._preview_centroid_layer = None
-        self._preview_t1_layer = None
+        self._stage_layers[stage] = []
+
+    def _remove_all_stage_layers(self):
+        for stage in (1, 2, 3):
+            self._remove_stage_layers(stage)
 
     def _remove_inspect_layers(self):
         for layer in (
@@ -1025,13 +1286,6 @@ class TissueGraphWidget(QWidget):
         self._inspect_junction_layer = None
         self._inspect_centroid_layer = None
         self._inspect_t1_layer = None
-
-    def _add_preview_layers(self, series: TissueGraphTimeSeries):
-        self._remove_preview_layers()
-        j, c, t = self._make_layers(series, prefix="[Preview] ")
-        self._preview_junction_layer = j
-        self._preview_centroid_layer = c
-        self._preview_t1_layer = t
 
     def _add_inspect_layers(self, series: TissueGraphTimeSeries):
         self._remove_inspect_layers()
