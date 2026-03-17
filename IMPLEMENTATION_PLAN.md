@@ -153,21 +153,30 @@ Multi-tissue (batch):
 - `build_all_centroids(series)` — all centroids as Nx3 array
 - `build_t1_markers(t1_events)` — T1 positions as Nx3 array
 
-### `napari/widget.py` — Multi-tissue dock widget
+### `core/io.py` — Save/Load Dataset
 
-- `DatasetBuildWorker` — QThread worker producing `TissueGraphDataset`; supports all three input modes
+- `save_dataset(dataset, path)` — saves to directory with `metadata.json` + one `tissue_NNN.npz` per tissue
+- `load_dataset(path) → TissueGraphDataset` — reconstructs from NPZ files
+- `load_multiple_datasets(paths) → Dict[str, TissueGraphDataset]` — loads multiple, keyed by condition
+- NPZ format: edge lists (no pickle), ragged arrays via flat+offsets, NaN sentinels for None
+- Private helpers: `_serialize_tissue`, `_deserialize_tissue`, `_serialize_ragged`, `_deserialize_ragged`
+
+### `napari/widget.py` — Dock widget (two workflows)
+
+- `SingleTissueBuildWorker` — builds one `TissueGraphTimeSeries` with T1 detection + trajectory building
+- `BatchBuildWorker` — builds multiple tissues, returns list of `TissueGraphTimeSeries`
+- `IOWorker` — save/load dataset in background thread
 - `TissueGraphWidget`:
   - Input type selector (Segmentation Labels / Nuclear Tracks / Both)
-  - Multi-file loading via "Load Labels..." button (variable-length .tif files)
-  - TrackMate XML loading with summary display (visible in Tracks and Both modes)
+  - Multi-file loading: labels (.tif) and TrackMate XML(s) — both support multiple files
   - Layer selector for tracks mode (Points layer)
-  - Voronoi parameter panel: method dropdown (Standard / Lloyd's), iterations spinbox (Tracks mode only)
-  - Segmentation tracking panel: min IoU threshold (Segmentation mode only)
-  - Spot-label matching panel: match threshold in pixels (Both mode only)
+  - Mode-specific parameter panels (Voronoi, tracking, spot-label matching)
   - Parameter inputs (pixel size, time interval, condition) — auto-filled from TrackMate calibration
-  - Build Graph button with progress bar
-  - Tissue inspection: spinner to select tissue, per-tissue layer display, "Remove Tissue" for QC
-  - Dataset summary display
+  - **Build Single**: builds one tissue → preview in napari → "Add to Dataset" or "Discard"
+  - **Build All (Batch)**: builds all loaded inputs → adds all to dataset
+  - Preview layers prefixed with `[Preview]`, separate from dataset inspection layers
+  - **Dataset section**: summary, tissue spinner, Show/Remove tissue, Save/Load/New buttons
+  - Dataset accumulates tissues across multiple builds
 
 ---
 
