@@ -18,15 +18,26 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QSlider,
     QSpinBox,
+    QDoubleSpinBox,
 )
 from qtpy.QtCore import Signal, QThread, QObject, Qt
 
-from ..structures import TissueGraphDataset, TissueGraphTimeSeries, InputType
-from ..core.graph import build_from_labels_4d, build_from_tracks_4d
+from ..structures import TissueGraphDataset, TissueGraphTimeSeries, InputType, VoronoiMethod
+from ..core.graph import (
+    build_from_labels_4d,
+    build_from_tracks_4d,
+    build_from_both,
+    build_from_trackmate,
+)
+from ..core.trackmate import parse_trackmate_xml, TrackMateData
 from ..core.topology import detect_all_t1_events
 from .visualization import build_all_junction_lines, build_all_centroids, build_t1_markers
 
 logger = logging.getLogger(__name__)
+
+INPUT_SEGMENTATION = "Segmentation Labels"
+INPUT_TRACKS = "Nuclear Tracks"
+INPUT_BOTH = "Both (Labels + Tracks)"
 
 
 class DatasetBuildWorker(QObject):
@@ -36,37 +47,98 @@ class DatasetBuildWorker(QObject):
     finished = Signal(object)
     error = Signal(Exception)
 
-    def __init__(self, input_type: str, label_stacks=None, track_positions=None,
-                 pixel_size=None, time_interval=None, condition=""):
+    def __init__(
+        self,
+        input_type: str,
+        label_stacks=None,
+        track_positions=None,
+        trackmate_data=None,
+        pixel_size=None,
+        time_interval=None,
+        condition="",
+        voronoi_method=VoronoiMethod.STANDARD,
+        lloyd_iterations=10,
+        lloyd_tol=0.1,
+        min_iou=0.3,
+        match_threshold=10.0,
+    ):
         super().__init__()
         self.input_type = input_type
         self.label_stacks = label_stacks
         self.track_positions = track_positions
+        self.trackmate_data = trackmate_data
         self.pixel_size = pixel_size
         self.time_interval = time_interval
         self.condition = condition
+        self.voronoi_method = voronoi_method
+        self.lloyd_iterations = lloyd_iterations
+        self.lloyd_tol = lloyd_tol
+        self.min_iou = min_iou
+        self.match_threshold = match_threshold
 
     def run(self):
         try:
             def _progress(frac, msg):
                 self.progress.emit(int(frac * 90), msg)
 
-            if self.input_type == "Segmentation Labels":
+            if self.input_type == INPUT_SEGMENTATION:
                 dataset = build_from_labels_4d(
                     self.label_stacks,
                     pixel_size=self.pixel_size,
                     time_interval=self.time_interval,
                     condition=self.condition,
                     progress_callback=_progress,
+                    min_iou=self.min_iou,
                 )
+            elif self.input_type == INPUT_TRACKS:
+                if self.trackmate_data is not None:
+                    # Single tissue from TrackMate
+                    self.progress.emit(10, "Building from TrackMate data...")
+                    series = build_from_trackmate(
+                        self.trackmate_data,
+                        pixel_size=self.pixel_size,
+                        time_interval=self.time_interval,
+                        method=self.voronoi_method,
+                        lloyd_iterations=self.lloyd_iterations,
+                        lloyd_tol=self.lloyd_tol,
+                    )
+                    dataset = TissueGraphDataset(
+                        tissues={},
+                        condition=self.condition,
+                        pixel_size=self.pixel_size,
+                        time_interval=self.time_interval,
+                        input_type=InputType.VORONOI,
+                    )
+                    dataset.add_tissue(series)
+                else:
+                    dataset = build_from_tracks_4d(
+                        self.track_positions,
+                        pixel_size=self.pixel_size,
+                        time_interval=self.time_interval,
+                        condition=self.condition,
+                        progress_callback=_progress,
+                        method=self.voronoi_method,
+                        lloyd_iterations=self.lloyd_iterations,
+                        lloyd_tol=self.lloyd_tol,
+                    )
             else:
-                dataset = build_from_tracks_4d(
-                    self.track_positions,
+                # Both mode
+                self.progress.emit(10, "Building from labels + tracks...")
+                series = build_from_both(
+                    self.label_stacks[0],
+                    self.trackmate_data,
                     pixel_size=self.pixel_size,
                     time_interval=self.time_interval,
-                    condition=self.condition,
-                    progress_callback=_progress,
+                    match_threshold=self.match_threshold,
                 )
+                dataset = TissueGraphDataset(
+                    tissues={},
+                    condition=self.condition,
+                    pixel_size=self.pixel_size,
+                    time_interval=self.time_interval,
+                    input_type=InputType.SEGMENTATION_WITH_TRACKS,
+                )
+                dataset.add_tissue(series)
 
             self.progress.emit(92, "Detecting T1 events...")
             detect_all_t1_events(dataset)
@@ -83,6 +155,7 @@ class TissueGraphWidget(QWidget):
         self.dataset: TissueGraphDataset = None
         self._label_stacks: list[np.ndarray] = []
         self._file_names: list[str] = []
+        self._trackmate_data: TrackMateData = None
         self._junction_layer = None
         self._centroid_layer = None
         self._t1_layer = None
@@ -103,16 +176,16 @@ class TissueGraphWidget(QWidget):
         type_row = QHBoxLayout()
         type_row.addWidget(QLabel("Input type:"))
         self.input_type_combo = QComboBox()
-        self.input_type_combo.addItems(["Segmentation Labels", "Nuclear Tracks"])
+        self.input_type_combo.addItems([INPUT_SEGMENTATION, INPUT_TRACKS, INPUT_BOTH])
         type_row.addWidget(self.input_type_combo)
         layout.addLayout(type_row)
 
-        # --- Layer selection (for single-layer / tracks mode) ---
+        # --- Layer selection (for tracks mode with Points layer) ---
         self.layer_group = QGroupBox("Layer")
         layer_layout = QHBoxLayout()
         self.layer_combo = QComboBox()
         layer_layout.addWidget(self.layer_combo)
-        self.refresh_btn = QPushButton("↻")
+        self.refresh_btn = QPushButton("\u21bb")
         self.refresh_btn.setFixedWidth(30)
         layer_layout.addWidget(self.refresh_btn)
         self.layer_group.setLayout(layer_layout)
@@ -131,12 +204,80 @@ class TissueGraphWidget(QWidget):
         self.file_group.setLayout(file_layout)
         layout.addWidget(self.file_group)
 
+        # --- TrackMate XML loading ---
+        self.trackmate_group = QGroupBox("TrackMate XML")
+        tm_layout = QVBoxLayout()
+        self.trackmate_load_btn = QPushButton("Load TrackMate XML...")
+        tm_layout.addWidget(self.trackmate_load_btn)
+        self.trackmate_info_label = QLabel("")
+        self.trackmate_info_label.setWordWrap(True)
+        tm_layout.addWidget(self.trackmate_info_label)
+        self.trackmate_group.setLayout(tm_layout)
+        layout.addWidget(self.trackmate_group)
+
+        # --- Voronoi parameters (Nuclear Tracks mode) ---
+        self.voronoi_group = QGroupBox("Voronoi Parameters")
+        vor_layout = QVBoxLayout()
+
+        method_row = QHBoxLayout()
+        method_row.addWidget(QLabel("Method:"))
+        self.voronoi_method_combo = QComboBox()
+        self.voronoi_method_combo.addItems(["Standard", "Lloyd's relaxation"])
+        method_row.addWidget(self.voronoi_method_combo)
+        vor_layout.addLayout(method_row)
+
+        lloyd_row = QHBoxLayout()
+        lloyd_row.addWidget(QLabel("Lloyd iterations:"))
+        self.lloyd_iter_spin = QSpinBox()
+        self.lloyd_iter_spin.setMinimum(0)
+        self.lloyd_iter_spin.setMaximum(100)
+        self.lloyd_iter_spin.setValue(10)
+        lloyd_row.addWidget(self.lloyd_iter_spin)
+        vor_layout.addLayout(lloyd_row)
+
+        self.voronoi_group.setLayout(vor_layout)
+        layout.addWidget(self.voronoi_group)
+
+        # --- Segmentation tracking parameters ---
+        self.tracking_group = QGroupBox("Tracking Parameters")
+        track_layout = QVBoxLayout()
+
+        iou_row = QHBoxLayout()
+        iou_row.addWidget(QLabel("Min IoU:"))
+        self.min_iou_spin = QDoubleSpinBox()
+        self.min_iou_spin.setMinimum(0.0)
+        self.min_iou_spin.setMaximum(1.0)
+        self.min_iou_spin.setSingleStep(0.05)
+        self.min_iou_spin.setValue(0.3)
+        iou_row.addWidget(self.min_iou_spin)
+        track_layout.addLayout(iou_row)
+
+        self.tracking_group.setLayout(track_layout)
+        layout.addWidget(self.tracking_group)
+
+        # --- Both mode: matching threshold ---
+        self.match_group = QGroupBox("Spot-Label Matching")
+        match_layout = QVBoxLayout()
+
+        thresh_row = QHBoxLayout()
+        thresh_row.addWidget(QLabel("Match threshold (px):"))
+        self.match_threshold_spin = QDoubleSpinBox()
+        self.match_threshold_spin.setMinimum(1.0)
+        self.match_threshold_spin.setMaximum(100.0)
+        self.match_threshold_spin.setSingleStep(1.0)
+        self.match_threshold_spin.setValue(10.0)
+        thresh_row.addWidget(self.match_threshold_spin)
+        match_layout.addLayout(thresh_row)
+
+        self.match_group.setLayout(match_layout)
+        layout.addWidget(self.match_group)
+
         # --- Parameters ---
         param_group = QGroupBox("Parameters")
         param_layout = QVBoxLayout()
 
         px_row = QHBoxLayout()
-        px_row.addWidget(QLabel("Pixel size (µm/px):"))
+        px_row.addWidget(QLabel("Pixel size (\u00b5m/px):"))
         self.pixel_size_edit = QLineEdit("")
         self.pixel_size_edit.setPlaceholderText("optional")
         px_row.addWidget(self.pixel_size_edit)
@@ -205,27 +346,71 @@ class TissueGraphWidget(QWidget):
         self.input_type_combo.currentIndexChanged.connect(self._update_input_mode)
         self.refresh_btn.clicked.connect(self._refresh_layers)
         self.load_btn.clicked.connect(self._load_label_files)
+        self.trackmate_load_btn.clicked.connect(self._load_trackmate_xml)
         self.build_btn.clicked.connect(self._build_graph)
         self.tissue_spinner.valueChanged.connect(self._on_tissue_changed)
         self.remove_tissue_btn.clicked.connect(self._remove_current_tissue)
+        self.voronoi_method_combo.currentIndexChanged.connect(self._update_lloyd_visibility)
         self._refresh_layers()
 
     # ------------------------------------------------------------------
     # Input mode switching
     # ------------------------------------------------------------------
     def _update_input_mode(self):
-        is_labels = self.input_type_combo.currentText() == "Segmentation Labels"
-        self.file_group.setVisible(is_labels)
-        self.layer_group.setVisible(not is_labels)
+        mode = self.input_type_combo.currentText()
+        is_seg = mode == INPUT_SEGMENTATION
+        is_tracks = mode == INPUT_TRACKS
+        is_both = mode == INPUT_BOTH
+
+        self.file_group.setVisible(is_seg or is_both)
+        self.layer_group.setVisible(is_tracks)
+        self.trackmate_group.setVisible(is_tracks or is_both)
+        self.voronoi_group.setVisible(is_tracks)
+        self.tracking_group.setVisible(is_seg)
+        self.match_group.setVisible(is_both)
+
+        self._update_lloyd_visibility()
         self._refresh_layers()
+
+    def _update_lloyd_visibility(self):
+        is_lloyd = self.voronoi_method_combo.currentIndex() == 1
+        self.lloyd_iter_spin.setEnabled(is_lloyd)
 
     def _refresh_layers(self):
         self.layer_combo.clear()
         import napari
         input_type = self.input_type_combo.currentText()
         for layer in self.viewer.layers:
-            if input_type == "Nuclear Tracks" and isinstance(layer, napari.layers.Points):
+            if input_type == INPUT_TRACKS and isinstance(layer, napari.layers.Points):
                 self.layer_combo.addItem(layer.name)
+
+    # ------------------------------------------------------------------
+    # TrackMate XML loading
+    # ------------------------------------------------------------------
+    def _load_trackmate_xml(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select TrackMate XML", "", "XML files (*.xml);;All files (*)"
+        )
+        if not path:
+            return
+
+        try:
+            self._trackmate_data = parse_trackmate_xml(path)
+            d = self._trackmate_data
+            self.trackmate_info_label.setText(
+                f"{Path(path).name}\n"
+                f"{d.n_spots} spots, {d.n_tracks} tracks, "
+                f"{len(d.spots_by_frame)} frames"
+                + (f"\nImage: {d.image_shape[1]}x{d.image_shape[0]}" if d.image_shape else "")
+            )
+            # Auto-fill calibration if available
+            if d.pixel_size_x is not None and not self.pixel_size_edit.text().strip():
+                self.pixel_size_edit.setText(str(d.pixel_size_x))
+            if d.time_interval is not None and not self.time_interval_edit.text().strip():
+                self.time_interval_edit.setText(str(d.time_interval))
+        except Exception as e:
+            self.trackmate_info_label.setText(f"Error: {e}")
+            self._trackmate_data = None
 
     # ------------------------------------------------------------------
     # Multi-file loading
@@ -260,7 +445,7 @@ class TissueGraphWidget(QWidget):
         n = len(self._label_stacks)
         frame_counts = [s.shape[0] for s in self._label_stacks]
         self.file_info_label.setText(
-            f"{n} tissue(s) loaded — frames: {frame_counts}"
+            f"{n} tissue(s) loaded \u2014 frames: {frame_counts}"
         )
 
     # ------------------------------------------------------------------
@@ -274,7 +459,14 @@ class TissueGraphWidget(QWidget):
         time_interval = self._parse_float(self.time_interval_edit.text())
         condition = self.condition_edit.text().strip()
 
-        if input_type == "Segmentation Labels":
+        # Voronoi parameters
+        voronoi_method = (
+            VoronoiMethod.LLOYD if self.voronoi_method_combo.currentIndex() == 1
+            else VoronoiMethod.STANDARD
+        )
+        lloyd_iterations = self.lloyd_iter_spin.value()
+
+        if input_type == INPUT_SEGMENTATION:
             if not self._label_stacks:
                 self.status_label.setText("No label files loaded. Use 'Load Labels...' first.")
                 return
@@ -285,21 +477,56 @@ class TissueGraphWidget(QWidget):
                 pixel_size=pixel_size,
                 time_interval=time_interval,
                 condition=condition,
+                min_iou=self.min_iou_spin.value(),
             )
+        elif input_type == INPUT_TRACKS:
+            if self._trackmate_data is not None:
+                # Use TrackMate data
+                self._thread = QThread()
+                self._worker = DatasetBuildWorker(
+                    input_type=input_type,
+                    trackmate_data=self._trackmate_data,
+                    pixel_size=pixel_size,
+                    time_interval=time_interval,
+                    condition=condition,
+                    voronoi_method=voronoi_method,
+                    lloyd_iterations=lloyd_iterations,
+                )
+            else:
+                # Use Points layer
+                layer_name = self.layer_combo.currentText()
+                if not layer_name:
+                    self.status_label.setText("No layer selected and no TrackMate XML loaded.")
+                    return
+                layer = self.viewer.layers[layer_name]
+                positions = layer.data
+                self._thread = QThread()
+                self._worker = DatasetBuildWorker(
+                    input_type=input_type,
+                    track_positions=positions,
+                    pixel_size=pixel_size,
+                    time_interval=time_interval,
+                    condition=condition,
+                    voronoi_method=voronoi_method,
+                    lloyd_iterations=lloyd_iterations,
+                )
         else:
-            layer_name = self.layer_combo.currentText()
-            if not layer_name:
-                self.status_label.setText("No layer selected.")
+            # Both mode
+            if not self._label_stacks:
+                self.status_label.setText("No label files loaded.")
                 return
-            layer = self.viewer.layers[layer_name]
-            positions = layer.data
+            if self._trackmate_data is None:
+                self.status_label.setText("No TrackMate XML loaded.")
+                return
             self._thread = QThread()
             self._worker = DatasetBuildWorker(
                 input_type=input_type,
-                track_positions=positions,
+                label_stacks=self._label_stacks,
+                trackmate_data=self._trackmate_data,
                 pixel_size=pixel_size,
                 time_interval=time_interval,
                 condition=condition,
+                match_threshold=self.match_threshold_spin.value(),
             )
 
         self._worker.moveToThread(self._thread)

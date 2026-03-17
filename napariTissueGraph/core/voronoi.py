@@ -5,7 +5,7 @@ import networkx as nx
 from typing import Dict, Tuple, Optional, FrozenSet
 from scipy.spatial import Voronoi
 
-from ..structures import CellData, JunctionData
+from ..structures import CellData, JunctionData, VoronoiMethod
 
 logger = logging.getLogger(__name__)
 
@@ -13,18 +13,37 @@ logger = logging.getLogger(__name__)
 def compute_voronoi(
     positions: np.ndarray,
     image_shape: Optional[Tuple[int, int]] = None,
-) -> Voronoi:
+    method: VoronoiMethod = VoronoiMethod.STANDARD,
+    lloyd_iterations: int = 10,
+    lloyd_tol: float = 0.1,
+) -> Tuple[Voronoi, np.ndarray]:
     """Compute Voronoi tessellation from 2D positions.
 
     Args:
         positions: Nx2 array of (y, x) positions.
         image_shape: Optional (H, W) to add mirror points for bounded tessellation.
+        method: VoronoiMethod.STANDARD or VoronoiMethod.LLOYD.
+        lloyd_iterations: Max iterations for Lloyd's relaxation.
+        lloyd_tol: Convergence tolerance (max displacement) for Lloyd's.
 
     Returns:
-        scipy.spatial.Voronoi object.
+        (Voronoi object, final positions after any relaxation).
     """
+    if method == VoronoiMethod.LLOYD and image_shape is not None:
+        positions = lloyd_relaxation(
+            positions, image_shape, lloyd_iterations, lloyd_tol
+        )
+
+    vor = _raw_voronoi(positions, image_shape)
+    return vor, positions
+
+
+def _raw_voronoi(
+    positions: np.ndarray,
+    image_shape: Optional[Tuple[int, int]] = None,
+) -> Voronoi:
+    """Compute raw Voronoi tessellation with optional mirror points."""
     if image_shape is not None:
-        # Add mirror points beyond each boundary to close edge regions
         H, W = image_shape
         mirrored = [positions]
         mirrored.append(np.column_stack((-positions[:, 0], positions[:, 1])))  # top
@@ -36,6 +55,59 @@ def compute_voronoi(
         all_points = positions
 
     return Voronoi(all_points)
+
+
+def lloyd_relaxation(
+    positions: np.ndarray,
+    image_shape: Tuple[int, int],
+    n_iterations: int = 10,
+    tol: float = 0.1,
+) -> np.ndarray:
+    """Lloyd's algorithm (centroidal Voronoi tessellation).
+
+    Each iteration: compute Voronoi -> move seeds to polygon centroids -> repeat.
+    After convergence, position == shape centroid.
+
+    Args:
+        positions: Nx2 array of (y, x) seed positions.
+        image_shape: (H, W) bounding box.
+        n_iterations: Maximum iterations.
+        tol: Stop when max displacement < tol.
+
+    Returns:
+        Final Nx2 positions after relaxation.
+    """
+    H, W = image_shape
+    pts = positions.copy()
+
+    for iteration in range(n_iterations):
+        vor = _raw_voronoi(pts, image_shape)
+        n_real = len(pts)
+        new_pts = pts.copy()
+
+        for i in range(n_real):
+            region_idx = vor.point_region[i]
+            region = vor.regions[region_idx]
+
+            if -1 in region or len(region) < 3:
+                continue
+
+            verts = vor.vertices[region]
+            # Clip vertices to image bounds
+            verts = np.clip(verts, [0, 0], [H, W])
+
+            centroid = _polygon_centroid(verts)
+            if centroid is not None:
+                new_pts[i] = centroid
+
+        max_disp = np.max(np.linalg.norm(new_pts - pts, axis=1))
+        pts = new_pts
+
+        if max_disp < tol:
+            logger.debug(f"Lloyd's converged after {iteration + 1} iterations (max_disp={max_disp:.4f})")
+            break
+
+    return pts
 
 
 def voronoi_to_graph(
@@ -120,6 +192,11 @@ def voronoi_to_graph(
             continue
 
         verts = vor.vertices[region]
+        # Clip vertices to image bounds if provided
+        if image_shape is not None:
+            H, W = image_shape
+            verts = np.clip(verts, [0, 0], [H, W])
+
         area = _polygon_area(verts)
         perimeter = _polygon_perimeter(verts)
         shape_index = perimeter / np.sqrt(area) if area > 0 else 0.0
@@ -132,6 +209,7 @@ def voronoi_to_graph(
             perimeter=perimeter,
             shape_index=shape_index,
             num_neighbors=num_neighbors,
+            vertices=verts,
         )
 
     return cells, junctions, graph
@@ -154,3 +232,23 @@ def _polygon_perimeter(vertices: np.ndarray) -> float:
     closed = np.vstack([vertices, vertices[0:1]])
     diffs = np.diff(closed, axis=0)
     return float(np.sum(np.sqrt(np.sum(diffs**2, axis=1))))
+
+
+def _polygon_centroid(vertices: np.ndarray) -> Optional[np.ndarray]:
+    """Centroid of a simple polygon using the shoelace-derived formula.
+
+    Returns (y, x) centroid, or None if degenerate.
+    """
+    n = len(vertices)
+    if n < 3:
+        return None
+    y = vertices[:, 0]
+    x = vertices[:, 1]
+    # Signed area (2x)
+    cross = x * np.roll(y, -1) - np.roll(x, -1) * y
+    signed_area = np.sum(cross)
+    if abs(signed_area) < 1e-12:
+        return np.mean(vertices, axis=0)
+    cy = np.sum((y + np.roll(y, -1)) * cross) / (3 * signed_area)
+    cx = np.sum((x + np.roll(x, -1)) * cross) / (3 * signed_area)
+    return np.array([cy, cx])

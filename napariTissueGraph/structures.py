@@ -9,6 +9,13 @@ class InputType(Enum):
     """How the graph was constructed."""
     VORONOI = "voronoi"
     SEGMENTATION = "segmentation"
+    SEGMENTATION_WITH_TRACKS = "segmentation_with_tracks"
+
+
+class VoronoiMethod(Enum):
+    """Voronoi tessellation method."""
+    STANDARD = "standard"
+    LLOYD = "lloyd"
 
 
 @dataclass
@@ -20,6 +27,8 @@ class CellData:
     perimeter: float
     shape_index: float          # p0 = perimeter / sqrt(area)
     num_neighbors: int
+    track_id: Optional[int] = None
+    vertices: Optional[np.ndarray] = None  # Nx2 ordered polygon boundary
     velocity: Optional[np.ndarray] = None
     instantaneous_speed: Optional[float] = None
 

@@ -53,8 +53,10 @@ napariTissueGraph/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── graph.py               # High-level build API (single + batch)
-│   │   ├── voronoi.py             # Nuclear positions → Voronoi tessellation → graph
+│   │   ├── voronoi.py             # Nuclear positions → Voronoi tessellation → graph (+ Lloyd's)
 │   │   ├── labels.py              # Segmentation labels → graph
+│   │   ├── label_tracking.py      # IoU-based label tracking + contour extraction
+│   │   ├── trackmate.py           # TrackMate XML parser
 │   │   ├── topology.py            # T1 detection, batch T1 detection
 │   │   ├── tracks.py              # Cell track analysis (Layer 1: MSD, velocities)
 │   │   ├── mechanics.py           # Optional TFM/MSM force mapping (Layer 4)
@@ -74,6 +76,8 @@ napariTissueGraph/
 │   ├── test_graph.py
 │   ├── test_voronoi.py
 │   ├── test_labels.py
+│   ├── test_label_tracking.py
+│   ├── test_trackmate.py
 │   ├── test_topology.py
 │   └── test_dataset.py
 ├── pyproject.toml
@@ -84,7 +88,7 @@ napariTissueGraph/
 
 ## Data Structures (`structures.py`)
 
-- `CellData` — Per-cell properties at a single timepoint (position, area, perimeter, shape_index, num_neighbors)
+- `CellData` — Per-cell properties at a single timepoint (position, area, perimeter, shape_index, num_neighbors, track_id, vertices)
 - `JunctionData` — Per-junction properties (cell_pair, length, coordinates, midpoint; optional tension/stress)
 - `T1Event` — T1 transition (frame, losing_pair, gaining_pair, location, all 4 cells)
 - `EdgeTrajectory` — Junction tracked through time with sign convention (positive before T1, negative after)
@@ -99,22 +103,39 @@ napariTissueGraph/
 ### `core/graph.py` — Build API
 
 Single-tissue:
-- `build_from_labels(label_stack, ...) → TissueGraphTimeSeries`
-- `build_from_tracks(positions, ...) → TissueGraphTimeSeries`
+- `build_from_labels(label_stack, ..., min_iou) → TissueGraphTimeSeries` — now assigns track IDs via IoU matching and extracts cell vertices
+- `build_from_tracks(positions, ..., track_ids, method, lloyd_iterations, lloyd_tol) → TissueGraphTimeSeries` — supports track IDs and Voronoi method selection
+- `build_from_trackmate(trackmate_data, ..., method) → TissueGraphTimeSeries` — builds from parsed TrackMate data with track IDs
+- `build_from_both(label_stack, trackmate_data, ..., match_threshold) → TissueGraphTimeSeries` — shapes from labels, tracking from TrackMate (nearest-neighbor spot-to-centroid matching)
 
 Multi-tissue (batch):
 - `build_from_labels_4d(label_stacks, ...) → TissueGraphDataset` — accepts `Union[np.ndarray, List[np.ndarray]]` for variable-length movies
-- `build_from_tracks_4d(positions, ...) → TissueGraphDataset` — positions as Nx4 array (tissue_id, frame, y, x)
+- `build_from_tracks_4d(positions, ..., method) → TissueGraphDataset` — positions as Nx4 array (tissue_id, frame, y, x)
+- `build_from_both_4d(label_stacks, trackmate_data, ...) → TissueGraphDataset` — combined mode for multiple tissues
 
 ### `core/voronoi.py` — Voronoi from positions
 
-- `compute_voronoi(positions, image_shape)` — scipy Voronoi with mirror-point boundary handling
-- `voronoi_to_graph(vor, positions, n_real, image_shape)` — extract cells, junctions, networkx graph
+- `compute_voronoi(positions, image_shape, method, lloyd_iterations, lloyd_tol)` — scipy Voronoi with mirror-point boundary handling; supports standard and Lloyd's relaxation
+- `voronoi_to_graph(vor, positions, n_real, image_shape)` — extract cells (with vertices), junctions, networkx graph
+- `lloyd_relaxation(positions, image_shape, n_iterations, tol)` — centroidal Voronoi tessellation
+- `_polygon_centroid(vertices)` — polygon centroid for Lloyd's algorithm
 
 ### `core/labels.py` — Graph from segmentation labels
 
 - `labels_to_graph(label_frame, ...)` — regionprops + dilation/overlap adjacency detection + skeletonized boundaries
 - `find_shared_boundary()`, `order_boundary_pixels()`, `calculate_edge_length()` — helpers
+
+### `core/trackmate.py` — TrackMate XML parser
+
+- `parse_trackmate_xml(path) → TrackMateData` — parses spots, tracks, filtered tracks, image metadata, calibration
+- `TrackMateData` dataclass: `spots_by_frame`, `spot_to_track`, `image_shape`, calibration, `to_positions_array()`, `to_positions_array_with_track_ids()`
+- Converts physical coordinates to pixel coordinates using calibration
+
+### `core/label_tracking.py` — Label-based cell tracking
+
+- `match_labels(frame_t, frame_t1, min_iou)` — IoU-based frame-to-frame label matching
+- `assign_track_ids(label_stack, min_iou)` — consistent track ID assignment across all frames
+- `label_to_vertices(label_frame, cell_id)` — ordered boundary vertices via cv2 contour extraction
 
 ### `core/topology.py` — T1 detection
 
@@ -134,15 +155,32 @@ Multi-tissue (batch):
 
 ### `napari/widget.py` — Multi-tissue dock widget
 
-- `DatasetBuildWorker` — QThread worker producing `TissueGraphDataset`
+- `DatasetBuildWorker` — QThread worker producing `TissueGraphDataset`; supports all three input modes
 - `TissueGraphWidget`:
-  - Input type selector (Segmentation Labels / Nuclear Tracks)
+  - Input type selector (Segmentation Labels / Nuclear Tracks / Both)
   - Multi-file loading via "Load Labels..." button (variable-length .tif files)
-  - Layer selector for tracks mode
-  - Parameter inputs (pixel size, time interval, condition)
+  - TrackMate XML loading with summary display (visible in Tracks and Both modes)
+  - Layer selector for tracks mode (Points layer)
+  - Voronoi parameter panel: method dropdown (Standard / Lloyd's), iterations spinbox (Tracks mode only)
+  - Segmentation tracking panel: min IoU threshold (Segmentation mode only)
+  - Spot-label matching panel: match threshold in pixels (Both mode only)
+  - Parameter inputs (pixel size, time interval, condition) — auto-filled from TrackMate calibration
   - Build Graph button with progress bar
   - Tissue inspection: spinner to select tissue, per-tissue layer display, "Remove Tissue" for QC
   - Dataset summary display
+
+---
+
+## Completed: Input Path Refactor (TODO.md)
+
+All items in TODO.md are complete (as of 2026-03-17):
+- Three input modes: Segmentation, Nuclear Tracks, Both (Labels + Tracks)
+- TrackMate XML parser with calibration and filtered tracks
+- Lloyd's relaxation (centroidal Voronoi tessellation)
+- IoU-based label tracking for consistent track IDs
+- Cell vertex extraction (contours from labels, Voronoi regions from tracks)
+- All build APIs updated + widget with mode-specific parameter panels
+- 103 tests passing
 
 ---
 
