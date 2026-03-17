@@ -198,7 +198,24 @@ All items in TODO.md are complete (as of 2026-03-17):
 - Build Single uses selected file in list, not always first
 - Preview layers prefixed `[Preview]`, separate from dataset inspection layers
 - Save/Load/New dataset buttons, scrollable layout
-- 121 tests passing
+
+## Completed: Staged Pipeline with Visual QC
+
+- Split monolithic `build_from_*` into Stage 1 (graph extraction) and Stage 2 (tracking assignment)
+  - `extract_graphs_from_labels()`, `extract_graphs_from_tracks()`, `extract_graphs_from_trackmate()`, `extract_graphs_from_both()` — all produce graphs with `track_id=None`
+  - `assign_tracking_labels()`, `assign_tracking_trackmate()` — mutate series in place
+  - `has_tracking()` — helper to check if any cell has tracking
+  - Original `build_from_*` wrappers preserved (call stage-1 then stage-2), all signatures unchanged
+- New QC visualization functions in `napari/visualization.py`:
+  - `build_tracked_centroids()` — centroids colored by track_id (gray for untracked)
+  - `build_track_breaks()` — marks where tracks start/end mid-series (births/deaths)
+  - `build_trajectory_lines()` — junction lines colored by trajectory_id
+- Widget redesigned with 4-stage pipeline: Extract → Track → Analyze → Add/Discard
+  - `PipelineStage` enum: IDLE → GRAPHS_BUILT → TRACKED → ANALYZED
+  - Stage gating: each button enabled only when previous stage completes
+  - Per-stage layer management: Stage 1 shows junctions + yellow centroids, Stage 2 replaces with track-colored centroids + break markers, Stage 3 replaces with trajectory-colored junctions + T1 stars
+  - Batch mode preserved as monolithic (no per-stage QC)
+- 137 tests passing (16 new: 8 in test_staged_pipeline.py, 8 in test_visualization.py)
 
 ---
 
@@ -216,8 +233,9 @@ All items in TODO.md are complete (as of 2026-03-17):
 
 ### Testing with real data
 
+- Test staged pipeline: Extract → inspect junctions → Track → inspect colors → Analyze → inspect T1s → Add
 - Test widget with 2-3 real segmentation movies of different lengths
-- Verify Build Single preview, Build All batch, Save/Load round-trip, tissue removal all work end-to-end
+- Verify batch mode, Save/Load round-trip, tissue removal all work end-to-end
 
 ---
 
