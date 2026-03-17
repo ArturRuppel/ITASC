@@ -189,7 +189,16 @@ All items in TODO.md are complete (as of 2026-03-17):
 - IoU-based label tracking for consistent track IDs
 - Cell vertex extraction (contours from labels, Voronoi regions from tracks)
 - All build APIs updated + widget with mode-specific parameter panels
-- 103 tests passing
+
+## Completed: Save/Load and Widget Redesign
+
+- `core/io.py` — `save_dataset()`, `load_dataset()`, `load_multiple_datasets()` with NPZ + metadata.json format
+- Widget redesigned with two workflows: Build Single (preview → Add to Dataset) and Build All (Batch)
+- Multi-file TrackMate XML loading
+- Build Single uses selected file in list, not always first
+- Preview layers prefixed `[Preview]`, separate from dataset inspection layers
+- Save/Load/New dataset buttons, scrollable layout
+- 121 tests passing
 
 ---
 
@@ -201,18 +210,14 @@ All items in TODO.md are complete (as of 2026-03-17):
 - `analysis/statistics.py` — Shape index distributions, T1 rates (single-tissue + dataset-level), neighbor number distributions
 - `analysis/events.py` — Event-triggered averaging of junction length around T1s, pooled across tissues
 
-### Phase 5: Force mapping and I/O
+### Phase 5: Force mapping
 
 - `core/mechanics.py` — `map_traction_forces()`, `map_msm_stress()` (optional Layer 4)
-- `core/io.py`:
-  - `save_dataset(dataset, path)` — directory of NPZ files + metadata.json
-  - `load_dataset(path) → TissueGraphDataset`
-  - `load_multiple_datasets(paths) → Dict[str, TissueGraphDataset]` for cross-condition analysis
 
 ### Testing with real data
 
 - Test widget with 2-3 real segmentation movies of different lengths
-- Verify frame slider, T1 detection, tissue removal all work end-to-end
+- Verify Build Single preview, Build All batch, Save/Load round-trip, tissue removal all work end-to-end
 
 ---
 
