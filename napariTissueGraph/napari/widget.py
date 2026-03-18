@@ -51,7 +51,7 @@ from ..core.graph import (
 from ..core.trackmate import parse_trackmate_xml, TrackMateData
 from ..core.topology import detect_t1_events, detect_all_t1_events
 from ..core.io import save_dataset, load_dataset
-from ..analysis.trajectories import build_edge_trajectories
+from ..analysis.trajectories import build_edge_trajectories, filter_trajectories
 from .visualization import (
     build_all_junction_lines,
     build_all_centroids,
@@ -160,7 +160,8 @@ class TrackingWorker(QObject):
     error = Signal(Exception)
 
     def __init__(self, series, input_type, label_stack=None,
-                 trackmate_data=None, min_iou=0.3, match_threshold=10.0):
+                 trackmate_data=None, min_iou=0.3, match_threshold=10.0,
+                 max_area_change=0.0):
         super().__init__()
         self.series = series
         self.input_type = input_type
@@ -168,13 +169,18 @@ class TrackingWorker(QObject):
         self.trackmate_data = trackmate_data
         self.min_iou = min_iou
         self.match_threshold = match_threshold
+        # 0 in the UI means "no limit"
+        self.max_area_change = float('inf') if max_area_change == 0 else max_area_change
 
     def run(self):
         try:
             self.progress.emit(10, "Running tracking...")
 
             if self.input_type == INPUT_SEGMENTATION:
-                assign_tracking_labels(self.series, self.label_stack, min_iou=self.min_iou)
+                assign_tracking_labels(
+                    self.series, self.label_stack,
+                    min_iou=self.min_iou, max_area_change=self.max_area_change,
+                )
             elif self.input_type == INPUT_TRACKS:
                 if self.trackmate_data is not None:
                     assign_tracking_trackmate(self.series, self.trackmate_data)
@@ -198,17 +204,39 @@ class AnalysisWorker(QObject):
     finished = Signal(object)
     error = Signal(Exception)
 
-    def __init__(self, series):
+    def __init__(self, series, min_junction_length=0.0, max_t1_distance=0.0,
+                 min_traj_frames=1, min_completeness=0.0, max_gap=0):
         super().__init__()
         self.series = series
+        self.min_junction_length = min_junction_length
+        # 0 in the UI means "no limit"
+        self.max_t1_distance = float('inf') if max_t1_distance == 0 else max_t1_distance
+        self.min_traj_frames = min_traj_frames
+        self.min_completeness = min_completeness
+        self.max_gap = max_gap
 
     def run(self):
         try:
             self.progress.emit(10, "Detecting T1 events...")
-            events = detect_t1_events(self.series)
+            events = detect_t1_events(
+                self.series,
+                min_junction_length=self.min_junction_length,
+                max_t1_distance=self.max_t1_distance,
+            )
 
             self.progress.emit(60, "Building edge trajectories...")
             build_edge_trajectories(self.series, events)
+
+            # Filter trajectories if any non-default filtering requested
+            if (self.min_traj_frames > 1 or self.min_completeness > 0
+                    or self.max_gap > 0):
+                self.progress.emit(80, "Filtering trajectories...")
+                self.series.edge_trajectories = filter_trajectories(
+                    self.series,
+                    min_frames=self.min_traj_frames,
+                    min_completeness=self.min_completeness,
+                    max_gap=self.max_gap,
+                )
 
             self.progress.emit(100, "Analysis complete.")
             self.finished.emit(self.series)
@@ -236,6 +264,12 @@ class BatchBuildWorker(QObject):
         lloyd_tol=0.1,
         min_iou=0.3,
         match_threshold=10.0,
+        max_area_change=0.0,
+        min_junction_length=0.0,
+        max_t1_distance=0.0,
+        min_traj_frames=1,
+        min_completeness=0.0,
+        max_gap=0,
     ):
         super().__init__()
         self.input_type = input_type
@@ -249,6 +283,29 @@ class BatchBuildWorker(QObject):
         self.lloyd_tol = lloyd_tol
         self.min_iou = min_iou
         self.match_threshold = match_threshold
+        self.max_area_change = float('inf') if max_area_change == 0 else max_area_change
+        self.min_junction_length = min_junction_length
+        self.max_t1_distance = float('inf') if max_t1_distance == 0 else max_t1_distance
+        self.min_traj_frames = min_traj_frames
+        self.min_completeness = min_completeness
+        self.max_gap = max_gap
+
+    def _analyze_series(self, series):
+        """Run T1 detection, trajectory building, and filtering on a series."""
+        detect_t1_events(
+            series,
+            min_junction_length=self.min_junction_length,
+            max_t1_distance=self.max_t1_distance,
+        )
+        build_edge_trajectories(series, series.t1_events)
+        if (self.min_traj_frames > 1 or self.min_completeness > 0
+                or self.max_gap > 0):
+            series.edge_trajectories = filter_trajectories(
+                series,
+                min_frames=self.min_traj_frames,
+                min_completeness=self.min_completeness,
+                max_gap=self.max_gap,
+            )
 
     def run(self):
         try:
@@ -266,9 +323,22 @@ class BatchBuildWorker(QObject):
                         pixel_size=self.pixel_size,
                         time_interval=self.time_interval,
                         min_iou=self.min_iou,
+                        max_area_change=self.max_area_change,
                     )
-                    detect_t1_events(series)
+                    detect_t1_events(
+                        series,
+                        min_junction_length=self.min_junction_length,
+                        max_t1_distance=self.max_t1_distance,
+                    )
                     build_edge_trajectories(series, series.t1_events)
+                    if (self.min_traj_frames > 1 or self.min_completeness > 0
+                            or self.max_gap > 0):
+                        series.edge_trajectories = filter_trajectories(
+                            series,
+                            min_frames=self.min_traj_frames,
+                            min_completeness=self.min_completeness,
+                            max_gap=self.max_gap,
+                        )
                     results.append(series)
 
             elif self.input_type == INPUT_TRACKS:
@@ -287,8 +357,7 @@ class BatchBuildWorker(QObject):
                             lloyd_iterations=self.lloyd_iterations,
                             lloyd_tol=self.lloyd_tol,
                         )
-                        detect_t1_events(series)
-                        build_edge_trajectories(series, series.t1_events)
+                        self._analyze_series(series)
                         results.append(series)
                 else:
                     # Points layer — single tissue in batch mode
@@ -301,8 +370,7 @@ class BatchBuildWorker(QObject):
                         lloyd_iterations=self.lloyd_iterations,
                         lloyd_tol=self.lloyd_tol,
                     )
-                    detect_t1_events(series)
-                    build_edge_trajectories(series, series.t1_events)
+                    self._analyze_series(series)
                     results.append(series)
 
             else:
@@ -320,8 +388,7 @@ class BatchBuildWorker(QObject):
                         time_interval=self.time_interval,
                         match_threshold=self.match_threshold,
                     )
-                    detect_t1_events(series)
-                    build_edge_trajectories(series, series.t1_events)
+                    self._analyze_series(series)
                     results.append(series)
 
             self.finished.emit(results)
@@ -499,6 +566,20 @@ class TissueGraphWidget(QWidget):
         iou_row.addWidget(self.min_iou_spin)
         track_layout.addLayout(iou_row)
 
+        area_row = QHBoxLayout()
+        area_row.addWidget(QLabel("Max area change:"))
+        self.max_area_change_spin = QDoubleSpinBox()
+        self.max_area_change_spin.setMinimum(0.0)
+        self.max_area_change_spin.setMaximum(100.0)
+        self.max_area_change_spin.setSingleStep(0.5)
+        self.max_area_change_spin.setValue(0.0)
+        self.max_area_change_spin.setToolTip(
+            "Max area ratio between matched labels. "
+            "0 = no limit. Try 2.0 to reject segmentation errors."
+        )
+        area_row.addWidget(self.max_area_change_spin)
+        track_layout.addLayout(area_row)
+
         self.tracking_group.setLayout(track_layout)
         layout.addWidget(self.tracking_group)
 
@@ -572,6 +653,92 @@ class TissueGraphWidget(QWidget):
         # --- Pipeline: Stage 3 ---
         self.stage3_group = QGroupBox("Stage 3: T1 + Edge Tracking")
         s3_layout = QVBoxLayout()
+
+        # Advanced analysis parameters (collapsible)
+        self.advanced_toggle = QPushButton("Advanced \u25b6")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setChecked(False)
+        self.advanced_toggle.setStyleSheet("text-align: left; padding: 2px 6px;")
+        s3_layout.addWidget(self.advanced_toggle)
+
+        self.advanced_widget = QWidget()
+        adv_layout = QVBoxLayout()
+        adv_layout.setContentsMargins(10, 0, 0, 0)
+
+        # T1 detection parameters
+        mjl_row = QHBoxLayout()
+        mjl_row.addWidget(QLabel("Min junction length (px):"))
+        self.min_junction_length_spin = QDoubleSpinBox()
+        self.min_junction_length_spin.setMinimum(0.0)
+        self.min_junction_length_spin.setMaximum(1000.0)
+        self.min_junction_length_spin.setSingleStep(1.0)
+        self.min_junction_length_spin.setValue(0.0)
+        self.min_junction_length_spin.setToolTip(
+            "Junctions shorter than this are ignored for T1 detection. "
+            "Increase if noisy short edges cause false T1s."
+        )
+        mjl_row.addWidget(self.min_junction_length_spin)
+        adv_layout.addLayout(mjl_row)
+
+        mtd_row = QHBoxLayout()
+        mtd_row.addWidget(QLabel("Max T1 distance (px):"))
+        self.max_t1_distance_spin = QDoubleSpinBox()
+        self.max_t1_distance_spin.setMinimum(0.0)
+        self.max_t1_distance_spin.setMaximum(10000.0)
+        self.max_t1_distance_spin.setSingleStep(5.0)
+        self.max_t1_distance_spin.setValue(0.0)
+        self.max_t1_distance_spin.setToolTip(
+            "Max distance between lost/gained edge midpoints to pair as T1. "
+            "0 = no limit. Reduce to avoid pairing distant events."
+        )
+        mtd_row.addWidget(self.max_t1_distance_spin)
+        adv_layout.addLayout(mtd_row)
+
+        # Trajectory filtering parameters
+        mtf_row = QHBoxLayout()
+        mtf_row.addWidget(QLabel("Min trajectory frames:"))
+        self.min_traj_frames_spin = QSpinBox()
+        self.min_traj_frames_spin.setMinimum(1)
+        self.min_traj_frames_spin.setMaximum(10000)
+        self.min_traj_frames_spin.setValue(1)
+        self.min_traj_frames_spin.setToolTip(
+            "Minimum frames a junction must exist to keep its trajectory."
+        )
+        mtf_row.addWidget(self.min_traj_frames_spin)
+        adv_layout.addLayout(mtf_row)
+
+        mc_row = QHBoxLayout()
+        mc_row.addWidget(QLabel("Min completeness:"))
+        self.min_completeness_spin = QDoubleSpinBox()
+        self.min_completeness_spin.setMinimum(0.0)
+        self.min_completeness_spin.setMaximum(1.0)
+        self.min_completeness_spin.setSingleStep(0.05)
+        self.min_completeness_spin.setValue(0.0)
+        self.min_completeness_spin.setToolTip(
+            "Fraction of total frames a trajectory must span (0.0-1.0)."
+        )
+        mc_row.addWidget(self.min_completeness_spin)
+        adv_layout.addLayout(mc_row)
+
+        mg_row = QHBoxLayout()
+        mg_row.addWidget(QLabel("Max gap tolerance:"))
+        self.max_gap_spin = QSpinBox()
+        self.max_gap_spin.setMinimum(0)
+        self.max_gap_spin.setMaximum(1000)
+        self.max_gap_spin.setValue(0)
+        self.max_gap_spin.setToolTip(
+            "Max consecutive missing frames allowed in a trajectory. "
+            "0 = no gaps allowed."
+        )
+        mg_row.addWidget(self.max_gap_spin)
+        adv_layout.addLayout(mg_row)
+
+        self.advanced_widget.setLayout(adv_layout)
+        self.advanced_widget.setVisible(False)
+        s3_layout.addWidget(self.advanced_widget)
+
+        self.advanced_toggle.toggled.connect(self._toggle_advanced)
+
         self.analyze_btn = QPushButton("Run Analysis")
         s3_layout.addWidget(self.analyze_btn)
         self.stage3_info = QLabel("")
@@ -734,6 +901,10 @@ class TissueGraphWidget(QWidget):
     # ------------------------------------------------------------------
     # Pipeline stage gating
     # ------------------------------------------------------------------
+    def _toggle_advanced(self, checked):
+        self.advanced_widget.setVisible(checked)
+        self.advanced_toggle.setText("Advanced \u25bc" if checked else "Advanced \u25b6")
+
     def _update_pipeline_buttons(self):
         stage = self._pipeline_stage
         self.extract_btn.setEnabled(stage == PipelineStage.IDLE)
@@ -970,6 +1141,7 @@ class TissueGraphWidget(QWidget):
             trackmate_data=self._current_trackmate_data,
             min_iou=self.min_iou_spin.value(),
             match_threshold=self.match_threshold_spin.value(),
+            max_area_change=self.max_area_change_spin.value(),
         )
 
         self._run_worker(TrackingWorker(**kwargs), self._on_tracking_finished)
@@ -1036,7 +1208,15 @@ class TissueGraphWidget(QWidget):
     def _run_analysis(self):
         if self._preview_series is None:
             return
-        self._run_worker(AnalysisWorker(self._preview_series), self._on_analysis_finished)
+        worker = AnalysisWorker(
+            self._preview_series,
+            min_junction_length=self.min_junction_length_spin.value(),
+            max_t1_distance=self.max_t1_distance_spin.value(),
+            min_traj_frames=self.min_traj_frames_spin.value(),
+            min_completeness=self.min_completeness_spin.value(),
+            max_gap=self.max_gap_spin.value(),
+        )
+        self._run_worker(worker, self._on_analysis_finished)
 
     def _on_analysis_finished(self, series):
         self._preview_series = series
@@ -1132,6 +1312,12 @@ class TissueGraphWidget(QWidget):
             lloyd_iterations=self.lloyd_iter_spin.value(),
             min_iou=self.min_iou_spin.value(),
             match_threshold=self.match_threshold_spin.value(),
+            max_area_change=self.max_area_change_spin.value(),
+            min_junction_length=self.min_junction_length_spin.value(),
+            max_t1_distance=self.max_t1_distance_spin.value(),
+            min_traj_frames=self.min_traj_frames_spin.value(),
+            min_completeness=self.min_completeness_spin.value(),
+            max_gap=self.max_gap_spin.value(),
         )
 
         if input_type == INPUT_SEGMENTATION:

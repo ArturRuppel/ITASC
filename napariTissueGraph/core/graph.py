@@ -199,12 +199,15 @@ def assign_tracking_labels(
     series: TissueGraphTimeSeries,
     label_stack: np.ndarray,
     min_iou: float = 0.3,
+    max_area_change: float = float('inf'),
 ) -> None:
     """Assign track IDs to cells via IoU matching on the label stack.
 
     Mutates series in place: sets cell.track_id for all matched cells.
     """
-    track_assignments = assign_track_ids(label_stack, min_iou=min_iou)
+    track_assignments = assign_track_ids(
+        label_stack, min_iou=min_iou, max_area_change=max_area_change,
+    )
 
     for frame_idx, frame in series.frames.items():
         frame_tracks = track_assignments.get(frame_idx, {})
@@ -354,6 +357,7 @@ def build_from_labels(
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
     min_iou: float = 0.3,
+    max_area_change: float = float('inf'),
 ) -> TissueGraphTimeSeries:
     """Build tissue graph time series from segmentation labels.
 
@@ -366,6 +370,7 @@ def build_from_labels(
         min_edge_length: Minimum junction length to keep.
         filter_isolated: Remove edges where either cell has only one neighbor.
         min_iou: Minimum IoU threshold for label tracking.
+        max_area_change: Max area ratio for label matching (inf = no limit).
     """
     series = extract_graphs_from_labels(
         label_stack,
@@ -376,7 +381,9 @@ def build_from_labels(
         min_edge_length=min_edge_length,
         filter_isolated=filter_isolated,
     )
-    assign_tracking_labels(series, label_stack, min_iou=min_iou)
+    assign_tracking_labels(
+        series, label_stack, min_iou=min_iou, max_area_change=max_area_change,
+    )
     return series
 
 

@@ -63,6 +63,25 @@ class TestMatchLabels:
         # No overlap at all, so nothing should match
         assert all(v is None for v in mapping.values())
 
+    def test_max_area_change_rejects_large_change(self):
+        """Matches with area change beyond threshold should be rejected."""
+        # Label 1 is small in frame_t, large in frame_t1
+        frame_t = np.zeros((100, 100), dtype=np.int32)
+        frame_t[40:60, 40:60] = 1  # 20x20 = 400 pixels
+        frame_t1 = np.zeros((100, 100), dtype=np.int32)
+        frame_t1[10:90, 10:90] = 1  # 80x80 = 6400 pixels
+        # They overlap, so IoU > 0
+        mapping = match_labels(frame_t, frame_t1, min_iou=0.01, max_area_change=2.0)
+        # Area ratio is 6400/400 = 16, way above 2.0
+        assert mapping[1] is None
+
+    def test_max_area_change_inf_preserves_behavior(self):
+        """Default max_area_change=inf should not reject any matches."""
+        frame = _make_simple_frame([[25, 25], [75, 75]])
+        mapping = match_labels(frame, frame, min_iou=0.3, max_area_change=float('inf'))
+        for label, matched in mapping.items():
+            assert matched == label
+
 
 class TestAssignTrackIds:
     def test_static_cells_same_track(self):

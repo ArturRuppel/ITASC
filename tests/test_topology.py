@@ -19,6 +19,7 @@ from napariTissueGraph.analysis.trajectories import (
     build_edge_trajectories,
     get_t1_trajectories,
     get_stable_trajectories,
+    filter_trajectories,
 )
 
 
@@ -279,3 +280,127 @@ class TestEdgeTrajectories:
         events = detect_t1_events(series)
         trajs = build_edge_trajectories(series, events)
         assert series.edge_trajectories is trajs
+
+
+# ---- Tests for T1 detection parameters ----
+
+class TestT1DetectionParams:
+    def test_min_junction_length_filters_short_edges(self):
+        """Short junctions below threshold should be excluded from T1 detection."""
+        series = _make_t1_series()
+        # Default junction length from _make_junction is 10.0
+        # With threshold above 10, the T1 should not be detected
+        events = detect_t1_events(series, min_junction_length=15.0)
+        assert len(events) == 0
+
+    def test_min_junction_length_zero_preserves_behavior(self):
+        """Default min_junction_length=0 should detect T1 as before."""
+        series = _make_t1_series()
+        events = detect_t1_events(series, min_junction_length=0.0)
+        assert len(events) == 1
+
+    def test_max_t1_distance_filters_distant_events(self):
+        """T1 events with distant lost/gained midpoints should be filtered."""
+        # Create a series where lost and gained midpoints are far apart
+        edges_0 = [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4)]
+        edges_1 = [(3, 4), (1, 3), (1, 4), (2, 3), (2, 4)]
+
+        positions = {1: (0, 0), 2: (10, 0), 3: (0, 100), 4: (10, 100)}
+
+        f0 = _make_frame(0, edges_0, positions)
+        f1 = _make_frame(1, edges_1, positions)
+
+        # Set different midpoints for lost and gained junctions
+        lost_key = frozenset({1, 2})
+        gained_key = frozenset({3, 4})
+        f0.junctions[lost_key] = JunctionData(
+            cell_pair=(1, 2), length=10.0,
+            coordinates=np.array([[0, 0], [10, 0]]),
+            midpoint=np.array([5.0, 0.0]),
+        )
+        f1.junctions[gained_key] = JunctionData(
+            cell_pair=(3, 4), length=10.0,
+            coordinates=np.array([[0, 100], [10, 100]]),
+            midpoint=np.array([5.0, 100.0]),
+        )
+
+        series = TissueGraphTimeSeries(
+            frames={0: f0, 1: f1}, input_type=InputType.VORONOI
+        )
+
+        # With a tight distance constraint, the T1 should be filtered out
+        events = detect_t1_events(series, max_t1_distance=10.0)
+        assert len(events) == 0
+
+        # With no constraint, it should be detected
+        events = detect_t1_events(series)
+        assert len(events) == 1
+
+    def test_max_t1_distance_inf_preserves_behavior(self):
+        """Default max_t1_distance=inf should detect T1 as before."""
+        series = _make_t1_series()
+        events = detect_t1_events(series, max_t1_distance=float('inf'))
+        assert len(events) == 1
+
+
+# ---- Tests for filter_trajectories ----
+
+class TestFilterTrajectories:
+    def _make_series_with_trajectories(self):
+        """Build a series and trajectories for filtering tests."""
+        series = _make_t1_series()
+        events = detect_t1_events(series)
+        build_edge_trajectories(series, events)
+        return series
+
+    def test_min_frames_filter(self):
+        """Trajectories shorter than min_frames should be excluded."""
+        series = self._make_series_with_trajectories()
+        # All stable trajectories span 3 frames, T1 trajectory spans 3 frames
+        filtered = filter_trajectories(series, min_frames=4)
+        assert len(filtered) == 0
+
+        filtered = filter_trajectories(series, min_frames=3)
+        assert len(filtered) == len(series.edge_trajectories)
+
+    def test_min_completeness_filter(self):
+        """Trajectories below completeness threshold should be excluded."""
+        series = self._make_series_with_trajectories()
+        # Series has 3 frames, all trajectories span 3 frames = 100% complete
+        filtered = filter_trajectories(series, min_completeness=1.0)
+        assert len(filtered) == len(series.edge_trajectories)
+
+        # Add a short trajectory (only 1 frame)
+        from napariTissueGraph.structures import EdgeTrajectory
+        series.edge_trajectories[999] = EdgeTrajectory(
+            trajectory_id=999, frames=[0], cell_pairs=[(10, 11)],
+            signed_lengths=[5.0], coordinates=[np.zeros((2, 2))],
+            t1_events=[],
+        )
+        filtered = filter_trajectories(series, min_completeness=0.5)
+        assert 999 not in filtered
+
+    def test_max_gap_filter(self):
+        """Trajectories with gaps exceeding max_gap should be excluded."""
+        series = self._make_series_with_trajectories()
+        # Add a trajectory with a gap (exists in frame 0 and 2 but not 1)
+        from napariTissueGraph.structures import EdgeTrajectory
+        series.edge_trajectories[998] = EdgeTrajectory(
+            trajectory_id=998, frames=[0, 2], cell_pairs=[(10, 11), (10, 11)],
+            signed_lengths=[5.0, 5.0], coordinates=[np.zeros((2, 2))] * 2,
+            t1_events=[],
+        )
+
+        # max_gap=0: no gaps allowed, trajectory 998 should be excluded
+        filtered = filter_trajectories(series, max_gap=0)
+        assert 998 not in filtered
+
+        # max_gap=1: 1-frame gap allowed, trajectory 998 should pass
+        filtered = filter_trajectories(series, max_gap=1)
+        assert 998 in filtered
+
+    def test_default_params_keep_all(self):
+        """Default parameters should keep all trajectories."""
+        series = self._make_series_with_trajectories()
+        filtered = filter_trajectories(series)
+        assert len(filtered) == len(series.edge_trajectories)

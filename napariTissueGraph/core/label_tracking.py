@@ -12,6 +12,7 @@ def match_labels(
     frame_t: np.ndarray,
     frame_t1: np.ndarray,
     min_iou: float = 0.3,
+    max_area_change: float = float('inf'),
 ) -> Dict[int, Optional[int]]:
     """Match labels across two consecutive frames by intersection-over-union.
 
@@ -19,6 +20,9 @@ def match_labels(
         frame_t: Label frame at time t (2D integer array, 0=background).
         frame_t1: Label frame at time t+1.
         min_iou: Minimum IoU for a match.
+        max_area_change: Maximum allowed area ratio between matched labels.
+            Ratio is max(a1,a2)/min(a1,a2). Matches exceeding this are
+            rejected. Default inf (no limit).
 
     Returns:
         Dict mapping label_t -> label_t1 (or None if no match above threshold).
@@ -57,8 +61,15 @@ def match_labels(
                 best_match = label_t1
 
         if best_iou >= min_iou and best_match is not None:
-            mapping[label_t] = best_match
-            claimed.add(best_match)
+            # Check area change constraint
+            area_ratio = max(area_t, areas_t1[best_match]) / max(
+                min(area_t, areas_t1[best_match]), 1
+            )
+            if area_ratio <= max_area_change:
+                mapping[label_t] = best_match
+                claimed.add(best_match)
+            else:
+                mapping[label_t] = None
         else:
             mapping[label_t] = None
 
@@ -68,12 +79,14 @@ def match_labels(
 def assign_track_ids(
     label_stack: np.ndarray,
     min_iou: float = 0.3,
+    max_area_change: float = float('inf'),
 ) -> Dict[int, Dict[int, int]]:
     """Assign consistent track IDs across all frames via IoU matching.
 
     Args:
         label_stack: Shape (T, H, W) integer labels.
         min_iou: Minimum IoU threshold for matching.
+        max_area_change: Maximum allowed area ratio between matched labels.
 
     Returns:
         Dict: frame_idx -> {cell_label -> track_id}
@@ -92,7 +105,10 @@ def assign_track_ids(
 
     # Subsequent frames: match to previous frame
     for f in range(1, n_frames):
-        matching = match_labels(label_stack[f - 1], label_stack[f], min_iou=min_iou)
+        matching = match_labels(
+            label_stack[f - 1], label_stack[f],
+            min_iou=min_iou, max_area_change=max_area_change,
+        )
         prev_tracks = track_assignments[f - 1]
         frame_tracks: Dict[int, int] = {}
 

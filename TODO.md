@@ -167,23 +167,23 @@ rather than just discarding the tissue. Keep the core algorithms untouched — e
 and filtering criteria only.
 
 ### 7a. T1 detection parameters
-- [ ] Minimum junction length threshold — junctions shorter than this are treated as "collapsed" (pre-filter before topology comparison). Default: 0 (current behavior)
-- [ ] Spatial proximity constraint — max distance between lost/gained edge midpoints to pair them as a T1. Currently all lost/gained pairs are checked. Default: unlimited (current behavior)
-- [ ] Pass these through `detect_t1_events()` and `detect_all_t1_events()` without restructuring the core algorithm
+- [x] Minimum junction length threshold — junctions shorter than this are treated as "collapsed" (pre-filter before topology comparison). Default: 0 (current behavior)
+- [x] Spatial proximity constraint — max distance between lost/gained edge midpoints to pair them as a T1. Currently all lost/gained pairs are checked. Default: unlimited (current behavior)
+- [x] Pass these through `detect_t1_events()` and `detect_all_t1_events()` without restructuring the core algorithm
 
 ### 7b. Edge trajectory filtering parameters
-- [ ] `min_frames` is already exposed in `get_stable_trajectories()` — surface this in the widget
-- [ ] Min trajectory completeness — fraction of total frames that a trajectory must span to be included in analysis (e.g., 0.5 = must exist for at least half the movie)
-- [ ] Max gap tolerance — allow trajectories with brief disappearances (edge not detected for N frames) to still be considered continuous
+- [x] `min_frames` is already exposed in `get_stable_trajectories()` — surface this in the widget
+- [x] Min trajectory completeness — fraction of total frames that a trajectory must span to be included in analysis (e.g., 0.5 = must exist for at least half the movie)
+- [x] Max gap tolerance — allow trajectories with brief disappearances (edge not detected for N frames) to still be considered continuous
 
 ### 7c. Label tracking parameters
-- [ ] `min_iou` is already exposed — make sure it's adjustable in the Analyze stage (not just at extraction time)
-- [ ] Max area change ratio — reject matches where cell area changes by more than this factor frame-to-frame (catches segmentation errors)
+- [x] `min_iou` is already exposed — make sure it's adjustable in the Analyze stage (not just at extraction time)
+- [x] Max area change ratio — reject matches where cell area changes by more than this factor frame-to-frame (catches segmentation errors)
 
 ### 7d. Widget: analysis parameter panel
-- [ ] Collapsible "Advanced" section in the Analyze stage of the pipeline
-- [ ] Sensible defaults so users never have to touch it unless QC fails
-- [ ] Tooltips explaining what each parameter does and when to adjust it
+- [x] Collapsible "Advanced" section in the Analyze stage of the pipeline
+- [x] Sensible defaults so users never have to touch it unless QC fails
+- [x] Tooltips explaining what each parameter does and when to adjust it
 
 ---
 
@@ -244,6 +244,30 @@ in a T1 rosette so later analysis (MSD, event-triggered averaging) can focus on 
 
 ---
 
+## 10. UI/UX redesign
+
+Rethink the widget workflow to feel native to napari and simplify the pipeline.
+
+### 10a. Load labels from napari viewer
+- [ ] Replace file-picker label loading with a layer dropdown that lists napari Labels layers
+- [ ] User selects an existing Labels layer (or loads one via napari's built-in file open)
+- [ ] Remove batch loading of labels — unnecessary complexity
+
+### 10b. Reorder pipeline: track first, then extract
+- [ ] Stage 1: Cell tracking — run tracking on the label stack, show tracked segmentation in the viewer (color-coded by track ID)
+- [ ] Stage 2: Graph extraction — extract cell graph from the tracked labels, with user-facing parameters (dilation radius, min overlap pixels, min edge length, filter isolated)
+- [ ] Stage 3: T1 + edge trajectory analysis (unchanged)
+
+### 10c. Consolidate tracking parameters
+- [ ] Move `max_area_change` into the cell tracking panel alongside `min_iou` (not a separate panel)
+- [ ] Keep tracking parameters grouped logically: IoU threshold, max area change ratio
+
+### 10d. Graph extraction parameters
+- [ ] Expose in widget: dilation radius, min overlap pixels, min edge length, filter isolated toggle
+- [ ] Collapsible or inline in the graph extraction stage
+
+---
+
 ## Implementation order (completed + remaining)
 
 ### Done
@@ -253,8 +277,9 @@ in a T1 rosette so later analysis (MSD, event-triggered averaging) can focus on 
 4. **Label tracking** (4a-4d)
 5. **Build API** (5a-5d)
 6. **Widget** (6a-6e)
+7. **Edge & junction tagging** (8a-8d)
+8. **Analysis parameters** (7a-7d)
 
 ### Next
-7. **Edge & junction tagging** (8a-8d) — data model first, then napari UX
-8. **Analysis parameters** (7a-7d) — expose knobs in existing pipeline
-9. **Cell-level analysis** (9a-9c) — new analysis modules
+9. **UI/UX redesign** (10a-10d) — napari-native label loading, reordered pipeline, parameter consolidation
+10. **Cell-level analysis** (9a-9c) — new analysis modules

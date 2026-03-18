@@ -117,6 +117,66 @@ def build_edge_trajectories(
     return trajectories
 
 
+def filter_trajectories(
+    series: TissueGraphTimeSeries,
+    min_frames: int = 1,
+    min_completeness: float = 0.0,
+    max_gap: int = 0,
+) -> Dict[int, EdgeTrajectory]:
+    """Filter edge trajectories by duration and continuity.
+
+    Parameters
+    ----------
+    series : TissueGraphTimeSeries
+        Must have edge_trajectories populated.
+    min_frames : int
+        Minimum number of frames a trajectory must span.
+    min_completeness : float
+        Minimum fraction of total series frames the trajectory must
+        span (0.0-1.0). E.g., 0.5 means the trajectory must appear
+        in at least half the frames.
+    max_gap : int
+        Maximum number of consecutive missing frames allowed.
+        0 means no gaps allowed (trajectory must be fully continuous).
+        Trajectories with larger gaps are excluded.
+
+    Returns
+    -------
+    Dict[int, EdgeTrajectory]
+        Filtered trajectories (not mutated in place).
+    """
+    n_total_frames = len(series.frame_indices)
+    min_from_completeness = int(np.ceil(min_completeness * n_total_frames))
+    effective_min = max(min_frames, min_from_completeness)
+
+    result = {}
+    for traj_id, traj in series.edge_trajectories.items():
+        if len(traj.frames) < effective_min:
+            continue
+
+        # Check gap constraint (max_gap=0 means only consecutive frames OK)
+        if max_gap >= 0 and len(traj.frames) > 1:
+            frames_sorted = sorted(traj.frames)
+            # Use the series frame indices to compute actual gaps
+            all_indices = series.frame_indices
+            has_large_gap = False
+            for i in range(len(frames_sorted) - 1):
+                # Count how many series frames lie between consecutive
+                # trajectory frames
+                idx_cur = all_indices.index(frames_sorted[i])
+                idx_nxt = all_indices.index(frames_sorted[i + 1])
+                gap = idx_nxt - idx_cur - 1
+                if gap > max_gap:
+                    has_large_gap = True
+                    break
+            if has_large_gap:
+                continue
+
+        result[traj_id] = traj
+
+    return result
+
+
 def get_t1_trajectories(
     series: TissueGraphTimeSeries,
 ) -> List[EdgeTrajectory]:

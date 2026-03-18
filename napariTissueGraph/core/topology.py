@@ -73,6 +73,8 @@ def _validate_t1_transition(
 def _detect_t1_between_frames(
     frame_prev: TissueGraphFrame,
     frame_next: TissueGraphFrame,
+    min_junction_length: float = 0.0,
+    max_t1_distance: float = float('inf'),
 ) -> List[T1Event]:
     """Detect T1 transitions between two consecutive frames.
 
@@ -82,6 +84,12 @@ def _detect_t1_between_frames(
         The earlier frame.
     frame_next : TissueGraphFrame
         The later frame.
+    min_junction_length : float
+        Junctions shorter than this are excluded from the removed/added
+        sets. Default 0 (no filtering).
+    max_t1_distance : float
+        Maximum distance between lost and gained edge midpoints to
+        pair them as a T1. Default inf (no limit).
 
     Returns
     -------
@@ -93,6 +101,19 @@ def _detect_t1_between_frames(
 
     removed = edges_prev - edges_next
     added = edges_next - edges_prev
+
+    # Filter out short junctions
+    if min_junction_length > 0:
+        removed = {
+            e for e in removed
+            if frozenset(e) in frame_prev.junctions
+            and frame_prev.junctions[frozenset(e)].length >= min_junction_length
+        }
+        added = {
+            e for e in added
+            if frozenset(e) in frame_next.junctions
+            and frame_next.junctions[frozenset(e)].length >= min_junction_length
+        }
 
     events = []
     used_removed = set()
@@ -111,6 +132,13 @@ def _detect_t1_between_frames(
                 jdata = frame_prev.junctions.get(lost)
                 if jdata is not None:
                     location = jdata.midpoint.copy()
+                    # Check spatial proximity constraint
+                    if max_t1_distance < float('inf'):
+                        jdata_gained = frame_next.junctions.get(gained)
+                        if jdata_gained is not None:
+                            dist = np.linalg.norm(location - jdata_gained.midpoint)
+                            if dist > max_t1_distance:
+                                continue
                 else:
                     # Fallback: average position of the two losing cells
                     positions = []
@@ -134,7 +162,11 @@ def _detect_t1_between_frames(
     return events
 
 
-def detect_t1_events(series: TissueGraphTimeSeries) -> List[T1Event]:
+def detect_t1_events(
+    series: TissueGraphTimeSeries,
+    min_junction_length: float = 0.0,
+    max_t1_distance: float = float('inf'),
+) -> List[T1Event]:
     """Detect all T1 transitions in a time series.
 
     Compares graph topology between consecutive frames to find
@@ -145,6 +177,10 @@ def detect_t1_events(series: TissueGraphTimeSeries) -> List[T1Event]:
     ----------
     series : TissueGraphTimeSeries
         The tissue graph time series to analyze.
+    min_junction_length : float
+        Junctions shorter than this (px) are excluded from T1 detection.
+    max_t1_distance : float
+        Max distance between lost/gained edge midpoints to pair as T1.
 
     Returns
     -------
@@ -157,7 +193,11 @@ def detect_t1_events(series: TissueGraphTimeSeries) -> List[T1Event]:
     for i in range(len(indices) - 1):
         f1 = indices[i]
         f2 = indices[i + 1]
-        events = _detect_t1_between_frames(series.frames[f1], series.frames[f2])
+        events = _detect_t1_between_frames(
+            series.frames[f1], series.frames[f2],
+            min_junction_length=min_junction_length,
+            max_t1_distance=max_t1_distance,
+        )
         all_events.extend(events)
 
     all_events.sort(key=lambda e: e.frame)
@@ -170,6 +210,8 @@ def detect_t1_events(series: TissueGraphTimeSeries) -> List[T1Event]:
 def detect_all_t1_events(
     dataset: TissueGraphDataset,
     progress_callback=None,
+    min_junction_length: float = 0.0,
+    max_t1_distance: float = float('inf'),
 ) -> None:
     """Run T1 detection and edge trajectory construction on all tissues.
 
@@ -182,6 +224,10 @@ def detect_all_t1_events(
         The dataset to analyze.
     progress_callback : callable, optional
         Optional callback(progress_fraction, message).
+    min_junction_length : float
+        Junctions shorter than this (px) are excluded from T1 detection.
+    max_t1_distance : float
+        Max distance between lost/gained edge midpoints to pair as T1.
     """
     for idx, (tid, series) in enumerate(dataset.tissues.items()):
         if progress_callback:
@@ -189,7 +235,11 @@ def detect_all_t1_events(
                 idx / dataset.n_tissues,
                 f"T1 detection: tissue {idx + 1}/{dataset.n_tissues}",
             )
-        events = detect_t1_events(series)
+        events = detect_t1_events(
+            series,
+            min_junction_length=min_junction_length,
+            max_t1_distance=max_t1_distance,
+        )
         series.t1_events = events
         trajectories = build_edge_trajectories(series, events)
         series.edge_trajectories = trajectories
