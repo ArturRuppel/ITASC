@@ -1,4 +1,4 @@
-"""Tests for staged pipeline: extract (Stage 1) → track (Stage 2) → equivalence."""
+"""Tests for staged pipeline: extract → track / track → extract equivalence."""
 import numpy as np
 import pytest
 
@@ -8,8 +8,10 @@ from napariTissueGraph.core.graph import (
     extract_graphs_from_labels,
     extract_graphs_from_tracks,
     assign_tracking_labels,
+    apply_track_map,
     has_tracking,
 )
+from napariTissueGraph.core.label_tracking import assign_track_ids
 from napariTissueGraph.structures import InputType
 
 
@@ -63,6 +65,68 @@ class TestStage2Tracking:
         assert has_tracking(series) is False
         assign_tracking_labels(series, label_stack)
         assert has_tracking(series) is True
+
+
+class TestApplyTrackMap:
+    """Test apply_track_map() applies pre-computed tracking correctly."""
+
+    def test_apply_track_map_sets_track_ids(self, label_stack):
+        series = extract_graphs_from_labels(label_stack)
+        track_map = assign_track_ids(label_stack)
+        apply_track_map(series, track_map)
+
+        assert has_tracking(series) is True
+        for frame_idx, frame in series.frames.items():
+            frame_tracks = track_map.get(frame_idx, {})
+            for cell_id, cell in frame.cells.items():
+                if cell_id in frame_tracks:
+                    assert cell.track_id == frame_tracks[cell_id]
+
+    def test_apply_track_map_equivalent_to_assign_tracking(self, label_stack):
+        """apply_track_map + assign_track_ids should match assign_tracking_labels."""
+        # Method 1: assign_tracking_labels (the original monolithic way)
+        series1 = extract_graphs_from_labels(label_stack)
+        assign_tracking_labels(series1, label_stack)
+
+        # Method 2: assign_track_ids + apply_track_map (the new staged way)
+        series2 = extract_graphs_from_labels(label_stack)
+        track_map = assign_track_ids(label_stack)
+        apply_track_map(series2, track_map)
+
+        for frame_idx in series1.frame_indices:
+            cells1 = series1.frames[frame_idx].cells
+            cells2 = series2.frames[frame_idx].cells
+            assert set(cells1.keys()) == set(cells2.keys())
+            for cell_id in cells1:
+                assert cells1[cell_id].track_id == cells2[cell_id].track_id
+
+    def test_apply_track_map_empty_map(self, label_stack):
+        """Empty track map should leave all track_ids as None."""
+        series = extract_graphs_from_labels(label_stack)
+        apply_track_map(series, {})
+        assert has_tracking(series) is False
+
+
+class TestSegmentationPipelineOrder:
+    """Segmentation pipeline should work as Track→Extract→Analyze."""
+
+    def test_track_then_extract_matches_monolithic(self, label_stack):
+        """Track→Extract+apply should produce same result as monolithic."""
+        # Monolithic
+        mono = build_from_labels(label_stack, min_iou=0.3)
+
+        # Staged: Track first, then Extract + apply_track_map
+        track_map = assign_track_ids(label_stack, min_iou=0.3)
+        series = extract_graphs_from_labels(label_stack)
+        apply_track_map(series, track_map)
+
+        for frame_idx in mono.frame_indices:
+            mono_cells = mono.frames[frame_idx].cells
+            staged_cells = series.frames[frame_idx].cells
+
+            assert set(mono_cells.keys()) == set(staged_cells.keys())
+            for cell_id in mono_cells:
+                assert mono_cells[cell_id].track_id == staged_cells[cell_id].track_id
 
 
 class TestStagedEqualsMonolithic:

@@ -249,22 +249,46 @@ in a T1 rosette so later analysis (MSD, event-triggered averaging) can focus on 
 Rethink the widget workflow to feel native to napari and simplify the pipeline.
 
 ### 10a. Load labels from napari viewer
-- [ ] Replace file-picker label loading with a layer dropdown that lists napari Labels layers
-- [ ] User selects an existing Labels layer (or loads one via napari's built-in file open)
-- [ ] Remove batch loading of labels — unnecessary complexity
+- [x] Replace file-picker label loading with a layer dropdown that lists napari Labels layers
+- [x] User selects an existing Labels layer (or loads one via napari's built-in file open)
+- [x] Remove batch loading of labels — unnecessary complexity
+- [x] Auto-sync dropdowns with viewer layer events (inserted/removed/changed)
+- [x] Auto-select active layer
 
 ### 10b. Reorder pipeline: track first, then extract
-- [ ] Stage 1: Cell tracking — run tracking on the label stack, show tracked segmentation in the viewer (color-coded by track ID)
-- [ ] Stage 2: Graph extraction — extract cell graph from the tracked labels, with user-facing parameters (dilation radius, min overlap pixels, min edge length, filter isolated)
-- [ ] Stage 3: T1 + edge trajectory analysis (unchanged)
+- [x] Stage 1: Cell tracking — run tracking on the label stack, show tracked segmentation in the viewer (color-coded by track ID)
+- [x] Stage 2: Graph extraction — extract cell graph from the tracked labels, with user-facing parameters (dilation radius, min overlap pixels, min edge length, filter isolated)
+- [x] Stage 3: T1 + edge trajectory analysis (unchanged)
+- [x] Non-segmentation modes keep Extract→Track→Analyze order
 
 ### 10c. Consolidate tracking parameters
-- [ ] Move `max_area_change` into the cell tracking panel alongside `min_iou` (not a separate panel)
-- [ ] Keep tracking parameters grouped logically: IoU threshold, max area change ratio
+- [x] Move `max_area_change` into the cell tracking panel alongside `min_iou` (not a separate panel)
+- [x] Keep tracking parameters grouped logically: IoU threshold, max area change ratio
+- [x] Each stage has its own parameter area — symmetric layout across all 3 stages
 
 ### 10d. Graph extraction parameters
-- [ ] Expose in widget: dilation radius, min overlap pixels, min edge length, filter isolated toggle
-- [ ] Collapsible or inline in the graph extraction stage
+- [x] Expose in widget: dilation radius, min overlap pixels, min edge length, filter isolated toggle
+- [x] Inline in the graph extraction stage (Stage 2 for segmentation, Stage 1 for Both mode)
+
+### 10e. Stage re-runnability
+- [x] Stage 1 button stays enabled after completion — user can tweak params and re-run
+
+---
+
+## 11. Next UI/UX improvements
+
+### 11a. Move "Add to Dataset" below tagging
+- [ ] Move the Add/Discard controls to after the tagging group, so users tag junctions before committing to the dataset
+
+### 11b. Accept Image layers for tracking and graph building
+- [ ] Tracking (CellTrackingWorker) and graph extraction (GraphExtractWorker) should also accept napari Image layers
+- [ ] Auto-convert Image layer data to integer labels (e.g. via unique-value casting or thresholding)
+- [ ] Graph builder should accept the active layer (Labels or Image) directly
+
+### 11c. Include border edges and auto-tag them
+- [ ] Graph extraction should include edges at the image border (currently filtered by `filter_isolated`)
+- [ ] Border edges should be automatically tagged with `"edge_border"` so they can be excluded from downstream analysis
+- [ ] This preserves the full graph while letting users filter border artifacts
 
 ---
 
@@ -279,7 +303,8 @@ Rethink the widget workflow to feel native to napari and simplify the pipeline.
 6. **Widget** (6a-6e)
 7. **Edge & junction tagging** (8a-8d)
 8. **Analysis parameters** (7a-7d)
+9. **UI/UX redesign** (10a-10e)
 
 ### Next
-9. **UI/UX redesign** (10a-10d) — napari-native label loading, reordered pipeline, parameter consolidation
-10. **Cell-level analysis** (9a-9c) — new analysis modules
+10. **UI/UX improvements** (11a-11c) — layout polish, Image layer support, border edge handling
+11. **Cell-level analysis** (9a-9c) — new analysis modules

@@ -261,6 +261,26 @@ def assign_tracking_trackmate(
                         frame.cells[cell_id].track_id = trackmate_data.spot_to_track[spot_id]
 
 
+def apply_track_map(
+    series: TissueGraphTimeSeries,
+    track_map: Dict[int, Dict[int, int]],
+) -> None:
+    """Apply a pre-computed track map to a series.
+
+    Sets cell.track_id = track_map[frame_idx][cell_id] for each cell
+    where a mapping exists. Mutates series in place.
+
+    Args:
+        series: The time series to update.
+        track_map: Dict of {frame_idx: {cell_id: track_id}}.
+    """
+    for frame_idx, frame in series.frames.items():
+        frame_tracks = track_map.get(frame_idx, {})
+        for cell_id, cell in frame.cells.items():
+            if cell_id in frame_tracks:
+                cell.track_id = frame_tracks[cell_id]
+
+
 def has_tracking(series: TissueGraphTimeSeries) -> bool:
     """Return True if any cell in any frame has a track_id assigned."""
     for frame in series.frames.values():

@@ -6,6 +6,54 @@ from typing import Dict, List, Optional, Set, Tuple
 from ..structures import T1Event, TissueGraphFrame, TissueGraphTimeSeries
 
 
+def build_tracked_labels(
+    label_stack: np.ndarray,
+    track_map: Dict[int, Dict[int, int]],
+) -> np.ndarray:
+    """Create a label array where pixel values are track IDs instead of cell labels.
+
+    Untracked cells get unique IDs above max_track_id so they remain visible
+    but are distinguishable from tracked cells.
+
+    Args:
+        label_stack: Shape (T, H, W) integer labels, 0 = background.
+        track_map: Dict of {frame_idx: {cell_id: track_id}}.
+
+    Returns:
+        Array of same shape as label_stack with track IDs as pixel values.
+    """
+    result = np.zeros_like(label_stack)
+
+    # Find max track_id across all frames
+    max_track_id = 0
+    for frame_tracks in track_map.values():
+        if frame_tracks:
+            max_track_id = max(max_track_id, max(frame_tracks.values()))
+
+    next_id = max_track_id + 1
+
+    for frame_idx in range(len(label_stack)):
+        frame = label_stack[frame_idx]
+        frame_tracks = track_map.get(frame_idx, {})
+
+        # Map to assign untracked cells unique IDs (per-frame)
+        untracked_ids: Dict[int, int] = {}
+
+        for cell_id in np.unique(frame):
+            if cell_id == 0:
+                continue
+            mask = frame == cell_id
+            if cell_id in frame_tracks:
+                result[frame_idx][mask] = frame_tracks[cell_id]
+            else:
+                if cell_id not in untracked_ids:
+                    untracked_ids[cell_id] = next_id
+                    next_id += 1
+                result[frame_idx][mask] = untracked_ids[cell_id]
+
+    return result
+
+
 def build_all_junction_lines(series: TissueGraphTimeSeries) -> Tuple[List[np.ndarray], np.ndarray]:
     """Build junction line data for all frames at once.
 

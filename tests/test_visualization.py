@@ -7,13 +7,61 @@ from napariTissueGraph.core.graph import (
     extract_graphs_from_labels,
     assign_tracking_labels,
 )
+from napariTissueGraph.core.label_tracking import assign_track_ids
 from napariTissueGraph.napari.visualization import (
     build_tracked_centroids,
+    build_tracked_labels,
     build_track_breaks,
     build_trajectory_lines,
     build_trajectory_lines_with_features,
     build_all_centroids,
 )
+
+
+class TestTrackedLabels:
+    def test_output_shape_matches_input(self, label_stack):
+        track_map = assign_track_ids(label_stack)
+        result = build_tracked_labels(label_stack, track_map)
+        assert result.shape == label_stack.shape
+
+    def test_background_stays_zero(self, label_stack):
+        track_map = assign_track_ids(label_stack)
+        result = build_tracked_labels(label_stack, track_map)
+        bg_mask = label_stack == 0
+        assert np.all(result[bg_mask] == 0)
+
+    def test_tracked_cells_get_track_ids(self, label_stack):
+        track_map = assign_track_ids(label_stack)
+        result = build_tracked_labels(label_stack, track_map)
+        for frame_idx in range(len(label_stack)):
+            frame_tracks = track_map.get(frame_idx, {})
+            for cell_id, track_id in frame_tracks.items():
+                mask = label_stack[frame_idx] == cell_id
+                if mask.any():
+                    assert np.all(result[frame_idx][mask] == track_id)
+
+    def test_untracked_cells_get_unique_ids(self, label_stack):
+        """Untracked cells should get IDs above max track_id."""
+        # Use an empty track_map so all cells are untracked
+        result = build_tracked_labels(label_stack, {})
+        # All non-zero pixels should have IDs >= 1
+        assert np.all(result[label_stack > 0] >= 1)
+        # Each unique cell should have a unique ID
+        for frame_idx in range(len(label_stack)):
+            cell_ids = np.unique(label_stack[frame_idx])
+            cell_ids = cell_ids[cell_ids > 0]
+            result_ids = set()
+            for cid in cell_ids:
+                mask = label_stack[frame_idx] == cid
+                rid = result[frame_idx][mask][0]
+                result_ids.add(rid)
+            assert len(result_ids) == len(cell_ids)
+
+    def test_no_cells_returns_zeros(self):
+        """Empty label stack should return zeros."""
+        stack = np.zeros((3, 10, 10), dtype=np.int32)
+        result = build_tracked_labels(stack, {})
+        assert np.all(result == 0)
 
 
 class TestTrackedCentroids:
