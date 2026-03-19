@@ -406,6 +406,30 @@ statistics over tissue graph datasets. The dashboard should be modular so that a
 
 ---
 
+## 15. Separate Voronoi/tracks workflow from main widget
+
+The main TissueGraphWidget should always work with segmentation labels. The Voronoi
+tessellation path (creating labels from nuclear tracks) is a preprocessing step that
+belongs in its own widget or tool.
+
+### 15a. Extract Voronoi preprocessing into separate widget
+- [ ] Create a dedicated widget (e.g. `VoronoiLabelWidget`) that takes nuclear tracks (Points layer or TrackMate XML) and produces a Labels layer via Voronoi tessellation
+- [ ] Expose Voronoi method (Standard / Lloyd's), Lloyd iterations, and other tessellation parameters
+- [ ] Output: a napari Labels layer that can then be used as input to the main TissueGraphWidget
+- [ ] Register as a separate dock widget in `napari.yaml`
+
+### 15b. Simplify main widget to segmentation-only
+- [ ] Remove Nuclear Tracks and Both input modes from TissueGraphWidget
+- [ ] Remove Voronoi parameters from the main widget
+- [ ] Main widget always expects a Labels/Image layer as input
+- [ ] Simplify pipeline: always Track → Extract → Analyze (no mode-dependent stage swapping)
+
+### 15c. Preserve TrackMate tracking integration
+- [ ] The Voronoi widget should optionally output track IDs alongside labels (stored as layer metadata or a separate Points layer)
+- [ ] Main widget can pick up track IDs from the Voronoi-generated labels, avoiding redundant IoU tracking
+
+---
+
 ## Implementation order (completed + remaining)
 
 ### Done
@@ -421,7 +445,8 @@ statistics over tissue graph datasets. The dashboard should be modular so that a
 10. **UI/UX improvements** (11a-11c)
 
 ### Next
-11. **Tagging UI/UX** (12a-12c) — viewer tag labels, interactive deletion
-12. **Cell-level analysis** (9a-9c) — new analysis modules
-13. **Force inference** (13a-13f) — ForSys integration for tension/pressure inference
-14. **Analysis dashboard** (14a-14d) — data API, module system, Panel-based dashboard
+11. **Separate Voronoi/tracks into own widget** (15) — the main widget should always deal with segmentation labels; Voronoi tessellation from nuclear tracks needs its own widget or preprocessing step
+12. **Tagging UI/UX** (12a-12c) — viewer tag labels, interactive deletion
+13. **Cell-level analysis** (9a-9c) — new analysis modules
+14. **Force inference** (13a-13f) — ForSys integration for tension/pressure inference
+15. **Analysis dashboard** (14a-14d) — data API, module system, Panel-based dashboard

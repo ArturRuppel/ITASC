@@ -479,6 +479,9 @@ class TissueGraphWidget(QWidget):
         self.viewer = napari_viewer
         self.dataset: Optional[TissueGraphDataset] = None
         self._trackmate_data_list: List[TrackMateData] = []
+        self._batch_label_stacks: List[np.ndarray] = []
+        self._batch_trackmate_data: List[TrackMateData] = []
+        self._batch_file_paths: List[str] = []
 
         # Pipeline state
         self._pipeline_stage = PipelineStage.IDLE
@@ -488,6 +491,7 @@ class TissueGraphWidget(QWidget):
         self._current_track_map: Optional[Dict] = None
         self._tracked_labels_layer = None
         self._stage_layers: Dict[int, list] = {1: [], 2: [], 3: []}
+        self._auto_pipeline = False  # flag for Run Pipeline chaining
 
         # Tagging state
         self._tagging_shapes_layer = None  # the Shapes layer used for tagging
@@ -606,9 +610,96 @@ class TissueGraphWidget(QWidget):
         param_group.setLayout(param_layout)
         layout.addWidget(param_group)
 
+        # --- Run Pipeline (one-click) ---
+        self.run_pipeline_btn = QPushButton("Run Pipeline")
+        self.run_pipeline_btn.setStyleSheet(
+            "QPushButton { font-weight: bold; padding: 6px; }"
+        )
+        layout.addWidget(self.run_pipeline_btn)
+
+        # Pipeline info labels (always visible)
+        self.stage1_info = QLabel("")
+        self.stage1_info.setWordWrap(True)
+        layout.addWidget(self.stage1_info)
+        self.stage2_info = QLabel("")
+        self.stage2_info.setWordWrap(True)
+        layout.addWidget(self.stage2_info)
+        self.stage3_info = QLabel("")
+        self.stage3_info.setWordWrap(True)
+        layout.addWidget(self.stage3_info)
+
+        # --- Pipeline: Add / Discard ---
+        self.finalize_group = QGroupBox("Add / Discard")
+        fin_layout = QHBoxLayout()
+        self.add_to_dataset_btn = QPushButton("Add to Dataset")
+        self.discard_btn = QPushButton("Discard")
+        fin_layout.addWidget(self.add_to_dataset_btn)
+        fin_layout.addWidget(self.discard_btn)
+        self.finalize_group.setLayout(fin_layout)
+        layout.addWidget(self.finalize_group)
+
+        # --- Tagging ---
+        self.tagging_group = QGroupBox("Junction Tagging")
+        tag_layout = QVBoxLayout()
+
+        # Selection indicator
+        self.selection_label = QLabel("No junctions selected")
+        tag_layout.addWidget(self.selection_label)
+
+        # Tag input + buttons
+        tag_input_row = QHBoxLayout()
+        self.tag_name_edit = QLineEdit()
+        self.tag_name_edit.setPlaceholderText("Tag name (e.g. central)")
+        tag_input_row.addWidget(self.tag_name_edit)
+        tag_layout.addLayout(tag_input_row)
+
+        tag_btn_row = QHBoxLayout()
+        self.tag_selected_btn = QPushButton("Tag Selected")
+        self.untag_selected_btn = QPushButton("Untag Selected")
+        tag_btn_row.addWidget(self.tag_selected_btn)
+        tag_btn_row.addWidget(self.untag_selected_btn)
+        tag_layout.addLayout(tag_btn_row)
+
+        # Checkboxes
+        self.color_by_tags_cb = QCheckBox("Color by tags")
+        tag_layout.addWidget(self.color_by_tags_cb)
+        self.show_only_tagged_cb = QCheckBox("Show only tagged junctions")
+        tag_layout.addWidget(self.show_only_tagged_cb)
+        self.show_tag_labels_cb = QCheckBox("Show tag labels")
+        tag_layout.addWidget(self.show_tag_labels_cb)
+
+        # Tag list
+        tag_layout.addWidget(QLabel("Tags:"))
+        self.tag_list_widget = QListWidget()
+        self.tag_list_widget.setMaximumHeight(80)
+        tag_layout.addWidget(self.tag_list_widget)
+
+        # Clear tag button
+        clear_tag_row = QHBoxLayout()
+        self.clear_tag_btn = QPushButton("Clear Selected Tag")
+        self.refresh_tags_btn = QPushButton("Refresh")
+        clear_tag_row.addWidget(self.clear_tag_btn)
+        clear_tag_row.addWidget(self.refresh_tags_btn)
+        tag_layout.addLayout(clear_tag_row)
+
+        self.tagging_group.setLayout(tag_layout)
+        layout.addWidget(self.tagging_group)
+        self.tagging_group.setVisible(False)
+
+        # --- Advanced Parameters (collapsed by default) ---
+        self.advanced_toggle_btn = QPushButton("\u25b6 Advanced Parameters")
+        self.advanced_toggle_btn.setStyleSheet(
+            "QPushButton { text-align: left; font-weight: bold; border: none; padding: 4px; }"
+        )
+        self.advanced_toggle_btn.setCheckable(True)
+        self.advanced_toggle_btn.setChecked(False)
+        layout.addWidget(self.advanced_toggle_btn)
+
+        self.advanced_container = QWidget()
+        adv_layout = QVBoxLayout()
+        adv_layout.setContentsMargins(0, 0, 0, 0)
+
         # --- Pipeline: Stage 1 ---
-        # Parameters for both possible Stage 1 operations live here.
-        # _update_input_mode toggles which set is visible.
         self.stage1_group = QGroupBox("Stage 1")
         s1_layout = QVBoxLayout()
 
@@ -744,14 +835,10 @@ class TissueGraphWidget(QWidget):
 
         self.stage1_btn = QPushButton("Run Stage 1")
         s1_layout.addWidget(self.stage1_btn)
-        self.stage1_info = QLabel("")
-        self.stage1_info.setWordWrap(True)
-        s1_layout.addWidget(self.stage1_info)
         self.stage1_group.setLayout(s1_layout)
-        layout.addWidget(self.stage1_group)
+        adv_layout.addWidget(self.stage1_group)
 
         # --- Pipeline: Stage 2 ---
-        # Parameters for both possible Stage 2 operations live here.
         self.stage2_group = QGroupBox("Stage 2")
         s2_layout = QVBoxLayout()
 
@@ -845,11 +932,8 @@ class TissueGraphWidget(QWidget):
 
         self.stage2_btn = QPushButton("Run Stage 2")
         s2_layout.addWidget(self.stage2_btn)
-        self.stage2_info = QLabel("")
-        self.stage2_info.setWordWrap(True)
-        s2_layout.addWidget(self.stage2_info)
         self.stage2_group.setLayout(s2_layout)
-        layout.addWidget(self.stage2_group)
+        adv_layout.addWidget(self.stage2_group)
 
         # --- Pipeline: Stage 3 ---
         self.stage3_group = QGroupBox("Stage 3: T1 + Edge Tracking")
@@ -925,75 +1009,30 @@ class TissueGraphWidget(QWidget):
 
         self.analyze_btn = QPushButton("Run Analysis")
         s3_layout.addWidget(self.analyze_btn)
-        self.stage3_info = QLabel("")
-        self.stage3_info.setWordWrap(True)
-        s3_layout.addWidget(self.stage3_info)
         self.stage3_group.setLayout(s3_layout)
-        layout.addWidget(self.stage3_group)
+        adv_layout.addWidget(self.stage3_group)
 
-        # --- Tagging ---
-        self.tagging_group = QGroupBox("Junction Tagging")
-        tag_layout = QVBoxLayout()
-
-        # Selection indicator
-        self.selection_label = QLabel("No junctions selected")
-        tag_layout.addWidget(self.selection_label)
-
-        # Tag input + buttons
-        tag_input_row = QHBoxLayout()
-        self.tag_name_edit = QLineEdit()
-        self.tag_name_edit.setPlaceholderText("Tag name (e.g. central)")
-        tag_input_row.addWidget(self.tag_name_edit)
-        tag_layout.addLayout(tag_input_row)
-
-        tag_btn_row = QHBoxLayout()
-        self.tag_selected_btn = QPushButton("Tag Selected")
-        self.untag_selected_btn = QPushButton("Untag Selected")
-        tag_btn_row.addWidget(self.tag_selected_btn)
-        tag_btn_row.addWidget(self.untag_selected_btn)
-        tag_layout.addLayout(tag_btn_row)
-
-        # Checkboxes
-        self.color_by_tags_cb = QCheckBox("Color by tags")
-        tag_layout.addWidget(self.color_by_tags_cb)
-        self.show_only_tagged_cb = QCheckBox("Show only tagged junctions")
-        tag_layout.addWidget(self.show_only_tagged_cb)
-        self.show_tag_labels_cb = QCheckBox("Show tag labels")
-        tag_layout.addWidget(self.show_tag_labels_cb)
-
-        # Tag list
-        tag_layout.addWidget(QLabel("Tags:"))
-        self.tag_list_widget = QListWidget()
-        self.tag_list_widget.setMaximumHeight(80)
-        tag_layout.addWidget(self.tag_list_widget)
-
-        # Clear tag button
-        clear_tag_row = QHBoxLayout()
-        self.clear_tag_btn = QPushButton("Clear Selected Tag")
-        self.refresh_tags_btn = QPushButton("Refresh")
-        clear_tag_row.addWidget(self.clear_tag_btn)
-        clear_tag_row.addWidget(self.refresh_tags_btn)
-        tag_layout.addLayout(clear_tag_row)
-
-        self.tagging_group.setLayout(tag_layout)
-        layout.addWidget(self.tagging_group)
-        self.tagging_group.setVisible(False)
-
-        # --- Pipeline: Add / Discard (after tagging so users tag before committing) ---
-        self.finalize_group = QGroupBox("Add / Discard")
-        fin_layout = QHBoxLayout()
-        self.add_to_dataset_btn = QPushButton("Add to Dataset")
-        self.discard_btn = QPushButton("Discard")
-        fin_layout.addWidget(self.add_to_dataset_btn)
-        fin_layout.addWidget(self.discard_btn)
-        self.finalize_group.setLayout(fin_layout)
-        layout.addWidget(self.finalize_group)
+        self.advanced_container.setLayout(adv_layout)
+        self.advanced_container.setVisible(False)
+        layout.addWidget(self.advanced_container)
 
         # --- Batch mode ---
         self.batch_group = QGroupBox("Batch")
         batch_layout = QVBoxLayout()
-        self.build_batch_btn = QPushButton("Build All (Batch)")
-        batch_layout.addWidget(self.build_batch_btn)
+        self.batch_load_btn = QPushButton("Load Files...")
+        batch_layout.addWidget(self.batch_load_btn)
+        self.batch_file_list = QListWidget()
+        self.batch_file_list.setMaximumHeight(100)
+        batch_layout.addWidget(self.batch_file_list)
+        self.batch_file_info = QLabel("")
+        self.batch_file_info.setWordWrap(True)
+        batch_layout.addWidget(self.batch_file_info)
+        btn_row = QHBoxLayout()
+        self.build_batch_btn = QPushButton("Run Batch")
+        self.batch_clear_btn = QPushButton("Clear")
+        btn_row.addWidget(self.build_batch_btn)
+        btn_row.addWidget(self.batch_clear_btn)
+        batch_layout.addLayout(btn_row)
         self.batch_group.setLayout(batch_layout)
         layout.addWidget(self.batch_group)
 
@@ -1062,7 +1101,13 @@ class TissueGraphWidget(QWidget):
         self.viewer.layers.events.removed.connect(self._refresh_layers)
         self.viewer.layers.events.changed.connect(self._refresh_layers)
 
-        # Pipeline
+        # Run Pipeline (one-click)
+        self.run_pipeline_btn.clicked.connect(self._run_full_pipeline)
+
+        # Advanced toggle
+        self.advanced_toggle_btn.toggled.connect(self._toggle_advanced)
+
+        # Pipeline (individual stages)
         self.stage1_btn.clicked.connect(self._run_stage1)
         self.stage2_btn.clicked.connect(self._run_stage2)
         self.analyze_btn.clicked.connect(self._run_analysis)
@@ -1079,7 +1124,9 @@ class TissueGraphWidget(QWidget):
         self.refresh_tags_btn.clicked.connect(self._refresh_tagging_layer)
 
         # Batch
+        self.batch_load_btn.clicked.connect(self._load_batch_files)
         self.build_batch_btn.clicked.connect(self._build_batch)
+        self.batch_clear_btn.clicked.connect(self._clear_batch_files)
 
         # Dataset
         self.show_tissue_btn.clicked.connect(self._show_selected_tissue)
@@ -1097,6 +1144,7 @@ class TissueGraphWidget(QWidget):
         stage = self._pipeline_stage
         # Allow re-running earlier stages from any later stage so users can
         # tweak parameters without having to discard and start over.
+        self.run_pipeline_btn.setEnabled(True)
         self.stage1_btn.setEnabled(True)
         self.stage2_btn.setEnabled(stage.value >= PipelineStage.STAGE1_DONE.value)
         self.analyze_btn.setEnabled(stage.value >= PipelineStage.STAGE2_DONE.value)
@@ -1116,7 +1164,6 @@ class TissueGraphWidget(QWidget):
         self.labels_layer_group.setVisible(is_seg or is_both)
         self.layer_group.setVisible(is_tracks)
         self.trackmate_group.setVisible(is_tracks or is_both)
-        self.batch_group.setVisible(not is_seg)
 
         # Stage 1 & 2: swap params based on mode
         if is_seg:
@@ -1147,6 +1194,11 @@ class TissueGraphWidget(QWidget):
 
         self._update_lloyd_visibility()
         self._refresh_layers()
+
+    def _toggle_advanced(self, checked: bool):
+        self.advanced_container.setVisible(checked)
+        arrow = "\u25bc" if checked else "\u25b6"
+        self.advanced_toggle_btn.setText(f"{arrow} Advanced Parameters")
 
     def _update_lloyd_visibility(self):
         is_lloyd = self.voronoi_method_combo.currentIndex() == 1
@@ -1265,6 +1317,14 @@ class TissueGraphWidget(QWidget):
         return row if row >= 0 else 0
 
     # ------------------------------------------------------------------
+    # Run full pipeline (one-click)
+    # ------------------------------------------------------------------
+    def _run_full_pipeline(self):
+        """Chain stages 1 -> 2 -> 3 and auto-add to dataset."""
+        self._auto_pipeline = True
+        self._run_stage1()
+
+    # ------------------------------------------------------------------
     # Stage 1: mode-dependent dispatch
     # ------------------------------------------------------------------
     def _run_stage1(self):
@@ -1317,18 +1377,23 @@ class TissueGraphWidget(QWidget):
         self.stage1_info.setText(
             f"{len(all_track_ids)} tracks, {n_births} births, {n_deaths} deaths"
         )
-        self.status_label.setText("Stage 1 complete. Inspect tracked labels, then extract graphs.")
 
-        # Show tracked labels as napari Labels layer
-        self._remove_stage_layers(1)
-        tracked = build_tracked_labels(self._current_label_stack, track_map)
-        layer = self.viewer.add_labels(
-            tracked, name="[Pipeline] Tracked Labels",
-        )
-        self._tracked_labels_layer = layer
-        self._stage_layers[1].append(layer)
+        if not self._auto_pipeline:
+            self.status_label.setText("Stage 1 complete. Inspect tracked labels, then extract graphs.")
+
+            # Show tracked labels as napari Labels layer
+            self._remove_stage_layers(1)
+            tracked = build_tracked_labels(self._current_label_stack, track_map)
+            layer = self.viewer.add_labels(
+                tracked, name="[Pipeline] Tracked Labels",
+            )
+            self._tracked_labels_layer = layer
+            self._stage_layers[1].append(layer)
 
         self._update_pipeline_buttons()
+
+        if self._auto_pipeline:
+            QTimer.singleShot(0, self._run_stage2)
 
     def _run_extract(self):
         """Non-segmentation Stage 1 / Segmentation Stage 2: graph extraction."""
@@ -1423,26 +1488,31 @@ class TissueGraphWidget(QWidget):
             self.stage1_info.setText(
                 f"{series.num_frames} frames, {total_cells} cells, {total_junctions} junctions"
             )
-            self.status_label.setText("Stage 1 complete. Inspect junctions & centroids, then run tracking.")
 
-            self._remove_stage_layers(1)
-            lines, colors = build_all_junction_lines(series)
-            if lines:
-                layer = self.viewer.add_shapes(
-                    lines, shape_type="path", edge_color=colors,
-                    edge_width=2, name="[Pipeline] Junctions",
-                )
-                self._stage_layers[1].append(layer)
+            if not self._auto_pipeline:
+                self.status_label.setText("Stage 1 complete. Inspect junctions & centroids, then run tracking.")
 
-            centroids = build_all_centroids(series)
-            if len(centroids) > 0:
-                layer = self.viewer.add_points(
-                    centroids, size=5, face_color="yellow",
-                    name="[Pipeline] Cell Centroids",
-                )
-                self._stage_layers[1].append(layer)
+                self._remove_stage_layers(1)
+                lines, colors = build_all_junction_lines(series)
+                if lines:
+                    layer = self.viewer.add_shapes(
+                        lines, shape_type="path", edge_color=colors,
+                        edge_width=2, name="[Pipeline] Junctions",
+                    )
+                    self._stage_layers[1].append(layer)
+
+                centroids = build_all_centroids(series)
+                if len(centroids) > 0:
+                    layer = self.viewer.add_points(
+                        centroids, size=5, face_color="yellow",
+                        name="[Pipeline] Cell Centroids",
+                    )
+                    self._stage_layers[1].append(layer)
 
             self._update_pipeline_buttons()
+
+            if self._auto_pipeline:
+                QTimer.singleShot(0, self._run_stage2)
 
     def _on_seg_extract_done(self, series):
         """Segmentation Stage 2 finish: apply track_map, show junctions + tracked centroids."""
@@ -1465,30 +1535,35 @@ class TissueGraphWidget(QWidget):
             f"{series.num_frames} frames, {total_cells} cells ({n_tracked} tracked), "
             f"{total_junctions} junctions"
         )
-        self.status_label.setText("Stage 2 complete. Inspect junctions & tracked centroids, then run analysis.")
 
-        # Keep tracked labels layer visible underneath for context
-        self._remove_stage_layers(2)
+        if not self._auto_pipeline:
+            self.status_label.setText("Stage 2 complete. Inspect junctions & tracked centroids, then run analysis.")
 
-        # Show junctions
-        lines, colors = build_all_junction_lines(series)
-        if lines:
-            layer = self.viewer.add_shapes(
-                lines, shape_type="path", edge_color=colors,
-                edge_width=2, name="[Pipeline] Junctions",
-            )
-            self._stage_layers[2].append(layer)
+            # Keep tracked labels layer visible underneath for context
+            self._remove_stage_layers(2)
 
-        # Show tracked centroids (graph cells only)
-        tracked_pos, tracked_colors, _ = build_tracked_centroids(series)
-        if len(tracked_pos) > 0:
-            layer = self.viewer.add_points(
-                tracked_pos, size=5, face_color=tracked_colors,
-                name="[Pipeline] Tracked Centroids",
-            )
-            self._stage_layers[2].append(layer)
+            # Show junctions
+            lines, colors = build_all_junction_lines(series)
+            if lines:
+                layer = self.viewer.add_shapes(
+                    lines, shape_type="path", edge_color=colors,
+                    edge_width=2, name="[Pipeline] Junctions",
+                )
+                self._stage_layers[2].append(layer)
+
+            # Show tracked centroids (graph cells only)
+            tracked_pos, tracked_colors, _ = build_tracked_centroids(series)
+            if len(tracked_pos) > 0:
+                layer = self.viewer.add_points(
+                    tracked_pos, size=5, face_color=tracked_colors,
+                    name="[Pipeline] Tracked Centroids",
+                )
+                self._stage_layers[2].append(layer)
 
         self._update_pipeline_buttons()
+
+        if self._auto_pipeline:
+            QTimer.singleShot(0, self._run_analysis)
 
     # ------------------------------------------------------------------
     # Stage 2: mode-dependent dispatch
@@ -1537,42 +1612,47 @@ class TissueGraphWidget(QWidget):
         self.stage2_info.setText(
             f"{len(all_track_ids)} tracks, {n_births} births, {n_deaths} deaths"
         )
-        self.status_label.setText("Stage 2 complete. Inspect track colors, then run analysis.")
 
-        # Replace yellow centroids with track-colored centroids
-        self._remove_stage_layers(2)
+        if not self._auto_pipeline:
+            self.status_label.setText("Stage 2 complete. Inspect track colors, then run analysis.")
 
-        tracked_pos, tracked_colors, _ = build_tracked_centroids(series)
-        if len(tracked_pos) > 0:
-            # Remove stage 1 centroid layer, keep junction layer
-            self._stage_layers[1] = [
-                l for l in self._stage_layers[1]
-                if l in self.viewer.layers and "Centroid" not in l.name
-            ]
-            # Remove old centroid layer from viewer
-            for l in list(self.viewer.layers):
-                if l.name == "[Pipeline] Cell Centroids":
-                    self.viewer.layers.remove(l)
+            # Replace yellow centroids with track-colored centroids
+            self._remove_stage_layers(2)
 
-            layer = self.viewer.add_points(
-                tracked_pos, size=5, face_color=tracked_colors,
-                name="[Pipeline] Tracked Centroids",
-            )
-            self._stage_layers[2].append(layer)
+            tracked_pos, tracked_colors, _ = build_tracked_centroids(series)
+            if len(tracked_pos) > 0:
+                # Remove stage 1 centroid layer, keep junction layer
+                self._stage_layers[1] = [
+                    l for l in self._stage_layers[1]
+                    if l in self.viewer.layers and "Centroid" not in l.name
+                ]
+                # Remove old centroid layer from viewer
+                for l in list(self.viewer.layers):
+                    if l.name == "[Pipeline] Cell Centroids":
+                        self.viewer.layers.remove(l)
 
-        # Add track break markers
-        if len(positions) > 0:
-            break_colors = [
-                [0.0, 1.0, 0.0, 1.0] if t == "birth" else [1.0, 0.0, 0.0, 1.0]
-                for t in types
-            ]
-            layer = self.viewer.add_points(
-                positions, size=10, face_color=break_colors,
-                symbol="diamond", name="[Pipeline] Track Breaks",
-            )
-            self._stage_layers[2].append(layer)
+                layer = self.viewer.add_points(
+                    tracked_pos, size=5, face_color=tracked_colors,
+                    name="[Pipeline] Tracked Centroids",
+                )
+                self._stage_layers[2].append(layer)
+
+            # Add track break markers
+            if len(positions) > 0:
+                break_colors = [
+                    [0.0, 1.0, 0.0, 1.0] if t == "birth" else [1.0, 0.0, 0.0, 1.0]
+                    for t in types
+                ]
+                layer = self.viewer.add_points(
+                    positions, size=10, face_color=break_colors,
+                    symbol="diamond", name="[Pipeline] Track Breaks",
+                )
+                self._stage_layers[2].append(layer)
 
         self._update_pipeline_buttons()
+
+        if self._auto_pipeline:
+            QTimer.singleShot(0, self._run_analysis)
 
     # ------------------------------------------------------------------
     # Stage 3: T1 + Edge trajectories
@@ -1601,6 +1681,12 @@ class TissueGraphWidget(QWidget):
         self.stage3_info.setText(
             f"{n_t1} T1 events, {n_trajs} edge trajectories"
         )
+
+        if self._auto_pipeline:
+            self._auto_pipeline = False
+            QTimer.singleShot(0, self._add_preview_to_dataset)
+            return
+
         self.status_label.setText("Stage 3 complete. Inspect T1 events & trajectories, then add to dataset.")
 
         # Replace length-colored junctions with trajectory-colored junctions
@@ -1675,6 +1761,127 @@ class TissueGraphWidget(QWidget):
         self.stage3_info.setText("")
 
     # ------------------------------------------------------------------
+    # Batch file management
+    # ------------------------------------------------------------------
+    def _load_batch_files(self):
+        """Load files for batch processing based on current input type."""
+        input_type = self.input_type_combo.currentText()
+
+        if input_type == INPUT_SEGMENTATION:
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Select Label Files",
+                "", "Image files (*.tif *.tiff *.npy *.npz);;All files (*)",
+            )
+            if not files:
+                return
+            self._batch_label_stacks = []
+            self._batch_file_paths = []
+            self.batch_file_list.clear()
+            errors = []
+            for path in sorted(files):
+                try:
+                    stack = self._load_label_file(path)
+                    self._batch_label_stacks.append(stack)
+                    self._batch_file_paths.append(path)
+                    self.batch_file_list.addItem(
+                        f"{Path(path).name}  ({stack.shape[0]} frames, "
+                        f"{stack.shape[1]}x{stack.shape[2]})"
+                    )
+                except Exception as e:
+                    errors.append(f"{Path(path).name}: {e}")
+            info = f"{len(self._batch_label_stacks)} file(s) loaded"
+            if errors:
+                info += f"\nErrors: {'; '.join(errors)}"
+            self.batch_file_info.setText(info)
+
+        elif input_type == INPUT_TRACKS:
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Select TrackMate XML(s)",
+                "", "XML files (*.xml);;All files (*)",
+            )
+            if not files:
+                return
+            self._batch_trackmate_data = []
+            self._batch_file_paths = []
+            self.batch_file_list.clear()
+            errors = []
+            for path in sorted(files):
+                try:
+                    tm_data = parse_trackmate_xml(path)
+                    self._batch_trackmate_data.append(tm_data)
+                    self._batch_file_paths.append(path)
+                    self.batch_file_list.addItem(
+                        f"{Path(path).name}  ({tm_data.n_spots} spots, "
+                        f"{tm_data.n_tracks} tracks)"
+                    )
+                except Exception as e:
+                    errors.append(f"{Path(path).name}: {e}")
+            info = f"{len(self._batch_trackmate_data)} file(s) loaded"
+            if errors:
+                info += f"\nErrors: {'; '.join(errors)}"
+            self.batch_file_info.setText(info)
+
+        else:
+            # Both mode: load TrackMate XMLs (labels come from viewer)
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Select TrackMate XML(s)",
+                "", "XML files (*.xml);;All files (*)",
+            )
+            if not files:
+                return
+            self._batch_trackmate_data = []
+            self._batch_file_paths = []
+            self.batch_file_list.clear()
+            errors = []
+            for path in sorted(files):
+                try:
+                    tm_data = parse_trackmate_xml(path)
+                    self._batch_trackmate_data.append(tm_data)
+                    self._batch_file_paths.append(path)
+                    self.batch_file_list.addItem(
+                        f"{Path(path).name}  ({tm_data.n_spots} spots, "
+                        f"{tm_data.n_tracks} tracks)"
+                    )
+                except Exception as e:
+                    errors.append(f"{Path(path).name}: {e}")
+            info = f"{len(self._batch_trackmate_data)} file(s) loaded"
+            if errors:
+                info += f"\nErrors: {'; '.join(errors)}"
+            self.batch_file_info.setText(info)
+
+    @staticmethod
+    def _load_label_file(path: str) -> np.ndarray:
+        """Load a label stack from a .tif/.tiff or .npy/.npz file."""
+        from pathlib import Path as _P
+        ext = _P(path).suffix.lower()
+        if ext in (".tif", ".tiff"):
+            from tifffile import imread
+            data = imread(path)
+        elif ext == ".npy":
+            data = np.load(path)
+        elif ext == ".npz":
+            npz = np.load(path)
+            # Use first array in the archive
+            data = npz[list(npz.keys())[0]]
+        else:
+            raise ValueError(f"Unsupported file format: {ext}")
+
+        if not np.issubdtype(data.dtype, np.integer):
+            data = np.round(data).astype(np.int32)
+        if data.ndim == 2:
+            data = data[np.newaxis, ...]
+        if data.ndim != 3:
+            raise ValueError(f"Expected 2D or 3D array, got {data.ndim}D")
+        return data
+
+    def _clear_batch_files(self):
+        self._batch_label_stacks = []
+        self._batch_trackmate_data = []
+        self._batch_file_paths = []
+        self.batch_file_list.clear()
+        self.batch_file_info.setText("")
+
+    # ------------------------------------------------------------------
     # Batch build (monolithic, no per-stage QC)
     # ------------------------------------------------------------------
     def _build_batch(self):
@@ -1702,30 +1909,33 @@ class TissueGraphWidget(QWidget):
             max_gap=self.max_gap_spin.value(),
         )
 
-        # Batch not available for segmentation mode (single tissue from viewer)
         if input_type == INPUT_SEGMENTATION:
-            self.status_label.setText("Batch mode not available for segmentation. Use the staged pipeline.")
-            return
+            if not self._batch_label_stacks:
+                self.status_label.setText("Load label files first using 'Load Files...'.")
+                return
+            kwargs["label_stacks"] = self._batch_label_stacks
         elif input_type == INPUT_TRACKS:
-            if self._trackmate_data_list:
+            if self._batch_trackmate_data:
+                kwargs["trackmate_data_list"] = self._batch_trackmate_data
+            elif self._trackmate_data_list:
                 kwargs["trackmate_data_list"] = self._trackmate_data_list
             else:
                 layer_name = self.layer_combo.currentText()
                 if not layer_name:
-                    self.status_label.setText("No layer selected and no TrackMate XML loaded.")
+                    self.status_label.setText("No files loaded and no layer selected.")
                     return
                 kwargs["track_positions"] = self.viewer.layers[layer_name].data
         else:
             # Both mode: labels from viewer + TrackMate XMLs
+            tm_list = self._batch_trackmate_data or self._trackmate_data_list
+            if not tm_list:
+                self.status_label.setText("No TrackMate XML loaded.")
+                return
             label_stack = self._get_selected_label_stack()
             if label_stack is None:
                 return
-            if not self._trackmate_data_list:
-                self.status_label.setText("No TrackMate XML loaded.")
-                return
-            # Single label stack paired with each TrackMate file
-            kwargs["label_stacks"] = [label_stack] * len(self._trackmate_data_list)
-            kwargs["trackmate_data_list"] = self._trackmate_data_list
+            kwargs["label_stacks"] = [label_stack] * len(tm_list)
+            kwargs["trackmate_data_list"] = tm_list
 
         self._run_worker(BatchBuildWorker(**kwargs), self._on_batch_finished)
 
@@ -1737,6 +1947,7 @@ class TissueGraphWidget(QWidget):
         self._finish_worker()
         n = len(series_list)
         self.status_label.setText(f"Added {n} tissue(s) to dataset.")
+        self._clear_batch_files()
         self._update_dataset_ui()
 
     # ------------------------------------------------------------------
@@ -1880,6 +2091,7 @@ class TissueGraphWidget(QWidget):
         self._worker.error.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
 
+        self.run_pipeline_btn.setEnabled(False)
         self.stage1_btn.setEnabled(False)
         self.stage2_btn.setEnabled(False)
         self.analyze_btn.setEnabled(False)
@@ -1901,6 +2113,7 @@ class TissueGraphWidget(QWidget):
         self.status_label.setText(message)
 
     def _on_error(self, exc):
+        self._auto_pipeline = False
         self.progress_bar.setVisible(False)
         self.build_batch_btn.setEnabled(True)
         self._update_pipeline_buttons()
