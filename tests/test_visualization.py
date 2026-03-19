@@ -14,6 +14,7 @@ from napariTissueGraph.napari.visualization import (
     build_track_breaks,
     build_trajectory_lines,
     build_trajectory_lines_with_features,
+    build_tag_text_annotations,
     build_all_centroids,
 )
 
@@ -240,3 +241,96 @@ class TestTrajectoryLinesWithFeatures:
         j_lines, _ = build_all_junction_lines(series)
         t_lines, _ = build_trajectory_lines(series)
         assert len(j_lines) == len(t_lines)
+
+
+class TestTagTextAnnotations:
+    def test_no_tags_returns_empty(self, label_stack):
+        series = build_from_labels(label_stack, filter_isolated=False)
+        positions, texts, colors, features = build_tag_text_annotations(series)
+        assert len(positions) == 0
+        assert len(texts) == 0
+        assert len(colors) == 0
+        assert len(features) == 0
+
+    def test_tagged_trajectory_produces_annotations(self, label_stack):
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        from napariTissueGraph.analysis.tagging import tag_trajectory
+
+        series = build_from_labels(label_stack)
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        traj_ids = sorted(series.edge_trajectories.keys())
+        if not traj_ids:
+            pytest.skip("No trajectories found")
+
+        tag_trajectory(series, traj_ids[0], "central")
+        positions, texts, colors, features = build_tag_text_annotations(series)
+
+        assert len(positions) > 0
+        assert len(texts) == len(positions)
+        assert len(colors) == len(positions)
+        assert len(features) == len(positions)
+        assert any("central" in t for t in texts)
+
+    def test_positions_are_3d(self, label_stack):
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        from napariTissueGraph.analysis.tagging import tag_trajectory
+
+        series = build_from_labels(label_stack)
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        traj_ids = sorted(series.edge_trajectories.keys())
+        if not traj_ids:
+            pytest.skip("No trajectories found")
+
+        tag_trajectory(series, traj_ids[0], "test_tag")
+        positions, _, _, _ = build_tag_text_annotations(series)
+
+        assert positions.ndim == 2
+        assert positions.shape[1] == 3  # (frame, y, x)
+
+    def test_multiple_tags_comma_separated(self, label_stack):
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        from napariTissueGraph.analysis.tagging import tag_trajectory
+
+        series = build_from_labels(label_stack)
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        traj_ids = sorted(series.edge_trajectories.keys())
+        if not traj_ids:
+            pytest.skip("No trajectories found")
+
+        tag_trajectory(series, traj_ids[0], "alpha")
+        tag_trajectory(series, traj_ids[0], "beta")
+        positions, texts, _, features = build_tag_text_annotations(series)
+
+        # At least one annotation should contain both tags
+        assert any("alpha" in t and "beta" in t for t in texts)
+
+    def test_features_contain_junction_metadata(self, label_stack):
+        from napariTissueGraph.core.topology import detect_t1_events
+        from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+        from napariTissueGraph.analysis.tagging import tag_trajectory
+
+        series = build_from_labels(label_stack)
+        detect_t1_events(series)
+        build_edge_trajectories(series, series.t1_events)
+
+        traj_ids = sorted(series.edge_trajectories.keys())
+        if not traj_ids:
+            pytest.skip("No trajectories found")
+
+        tag_trajectory(series, traj_ids[0], "test")
+        _, _, _, features = build_tag_text_annotations(series)
+
+        assert "trajectory_id" in features.columns
+        assert "cell_pair_a" in features.columns
+        assert "cell_pair_b" in features.columns
+        assert "frame" in features.columns
+        assert "tags" in features.columns

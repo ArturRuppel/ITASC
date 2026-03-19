@@ -10,7 +10,7 @@ The tool takes cell positions over time (from nuclear tracking or segmentation l
 
 1. **Layered architecture**: Each layer builds on the previous. Users get analysis depth proportional to their input data.
 2. **External tools for segmentation and tracking**: This tool does NOT do segmentation or tracking. It accepts their outputs.
-3. **TFM/MSM is optional**: Force mapping enriches the analysis but is never required.
+3. **Force inference is optional**: ForSys-based tension/pressure inference enriches the analysis but is never required.
 4. **Two input paths, one internal representation**: Segmentation labels and nuclear tracks both produce the same `TissueGraph` object.
 5. **Separation of core logic and GUI**: All analysis code must work without napari. The napari widget is a thin visualization/interaction layer on top.
 6. **Multi-tissue first**: The primary output is `TissueGraphDataset` (multiple tissues from one condition). Single-tissue is just a dataset with one entry.
@@ -38,9 +38,10 @@ Layer 3: Topology dynamics
   → Requires Layer 2
 
 Layer 4 (optional): Mechanics
-  Input: Layer 2 graph + external TFM/MSM force data
-  Output: Junction tensions, force-topology correlations
-  → Requires Layer 2 + external force data (e.g., from napariTFM)
+  Input: Layer 2 graph (cell boundary geometry)
+  Output: Inferred junction tensions, cell pressures, force-topology correlations
+  → Uses ForSys (optional dep) for non-invasive force inference from geometry alone
+  → Static mode: single-frame inference; Dynamic mode: uses vertex velocities across frames
 ```
 
 ### Directory Structure
@@ -59,7 +60,8 @@ napariTissueGraph/
 │   │   ├── trackmate.py           # TrackMate XML parser
 │   │   ├── topology.py            # T1 detection, batch T1 detection
 │   │   ├── tracks.py              # Cell track analysis (Layer 1: MSD, velocities)
-│   │   ├── mechanics.py           # Optional TFM/MSM force mapping (Layer 4)
+│   │   ├── forsys_adapter.py       # TissueGraphFrame ↔ ForSys Frame conversion
+│   │   ├── mechanics.py           # Force inference API (wraps ForSys solver)
 │   │   └── io.py                  # Import/export
 │   ├── analysis/
 │   │   ├── __init__.py
@@ -247,9 +249,61 @@ All items in TODO.md are complete (as of 2026-03-17):
 - `analysis/statistics.py` — Shape index distributions, T1 rates (single-tissue + dataset-level), neighbor number distributions
 - `analysis/events.py` — Event-triggered averaging of junction length around T1s, pooled across tissues
 
-### Phase 5: Force mapping
+### Phase 4: Force inference via ForSys integration
 
-- `core/mechanics.py` — `map_traction_forces()`, `map_msm_stress()` (optional Layer 4)
+Membrane tension and cell pressure inference using [ForSys](https://github.com/borgesaugusto/forsys) (Borges et al., iScience 2025). ForSys solves an inverse mechanical problem: given cell boundary geometry, it infers the forces (tensions on edges, pressures in cells) that produce the observed shapes. This replaces the earlier plan of requiring external TFM/MSM data for Layer 4.
+
+**Why ForSys:** ForSys provides non-invasive force inference from segmentation alone — no traction force microscopy needed. It supports both static (single-frame) and dynamic (time-series with vertex velocities) inference. Its data model (Vertex, Edge, Cell, Frame) maps directly onto our TissueGraphFrame.
+
+**Integration strategy:** Use ForSys as an **optional dependency** (`pip install napariTissueGraph[forces]`). Only the solver is used — our graph extraction is more mature and already integrated with napari. A thin adapter converts between data structures.
+
+#### ForSys technical reference (for implementation)
+
+**Package:** `pip install forsys` (v1.1.5, BSD-3-Clause)
+
+**Key dependency constraints:** `numpy < 2.0`, `scikit-image <= 0.21.0` — these are restrictive and may conflict. Plan to pin carefully or contribute upstream fixes.
+
+**ForSys data model:**
+- `forsys.vertex.Vertex(id, x, y)` — position in space
+- `forsys.edge.Edge(id, v1, v2)` — connects two vertices, carries inferred tension
+- `forsys.cell.Cell(id, vertices, edges)` — closed polygon, carries inferred pressure
+- `forsys.frames.Frame(id, vertices_dict, edges_dict, cells_dict, time=t)` — one timepoint
+- `forsys.ForSys(frames_dict)` — main solver wrapper
+
+**Solver pipeline (per frame):**
+```python
+solver = forsys.ForSys(frames)
+solver.build_force_matrix(when=0)
+solver.solve_stress(when=0, allow_negatives=False)
+solver.build_pressure_matrix(when=0)
+solver.solve_pressure(when=0, method="lagrange_pressure")
+```
+
+**Dynamic mode:** With multiple frames and known time intervals, use `b_matrix="velocity"` in `solve_stress()` to incorporate vertex velocities for improved accuracy.
+
+**Meshing:** ForSys subdivides edges into virtual segments (`forsys.virtual_edges.generate_mesh(vertices, edges, cells, ne=6)`) to capture curvature. This should be applied after converting our data.
+
+**Input formats ForSys supports natively:** TIFF skeletons, CellPose `.npy` masks, Surface Evolver files. We bypass all of these — we feed pre-built graph data directly.
+
+#### Implementation plan
+
+- `core/forsys_adapter.py` — convert `TissueGraphFrame` → ForSys `Frame` objects
+  - Map `CellData.vertices` → ForSys `Vertex` objects (deduplicate shared vertices between cells)
+  - Map `JunctionData.coordinates` → ForSys `Edge` objects
+  - Map cells → ForSys `Cell` objects with correct vertex/edge references
+  - Handle border cells (ForSys may need special treatment for incomplete polygons)
+- `core/mechanics.py` — high-level API
+  - `infer_tensions(series, method="static") → TissueGraphTimeSeries` — runs ForSys on each frame, writes tensions back into `JunctionData.tension`
+  - `infer_pressures(series) → TissueGraphTimeSeries` — writes pressures into `CellData` (may need new field)
+  - Dynamic mode: pass vertex positions across frames for velocity-based inference
+  - All ForSys imports guarded with try/except + clear error message
+- Widget integration:
+  - "Infer Forces" button in Stage 3 (after graph extraction, before/alongside T1 analysis)
+  - Static vs Dynamic toggle
+  - Visualization: junction lines colored by tension, cells colored by pressure
+- `napari/visualization.py` updates:
+  - `build_tension_colored_junctions(series)` — color edges by inferred tension
+  - `build_pressure_colored_cells(series)` — color cell polygons by inferred pressure
 
 ### Testing with real data
 

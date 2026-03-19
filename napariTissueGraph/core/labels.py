@@ -246,7 +246,7 @@ def labels_to_graph(
         min_overlap_pixels: Minimum boundary pixels to count as adjacent.
         min_edge_length: Minimum junction length to keep.
         filter_isolated: If True, edges where either cell has only one neighbor
-            are kept but auto-tagged with ``"edge_border"`` rather than removed.
+            are kept but auto-tagged with ``"border"`` rather than removed.
             Edges involving cells that touch the image border are also tagged.
         min_border_edge_length: Minimum length (px) for a border boundary
             segment to count.  Segments shorter than this are ignored, which
@@ -334,7 +334,7 @@ def labels_to_graph(
                     length=length,
                     coordinates=coords,
                     midpoint=midpoint,
-                    tags={"edge_border"},
+                    tags={"border"},
                 )
                 junctions[key] = jd
                 graph.add_edge(0, cell_id, length=length)

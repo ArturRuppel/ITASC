@@ -406,7 +406,7 @@ class TestTagsRoundTrip:
     def test_empty_tags_round_trip(self, tmp_path):
         """Tissues with no user tags should round-trip cleanly.
 
-        Border junctions may carry the auto-generated 'edge_border' tag, which
+        Border junctions may carry the auto-generated 'border' tag, which
         is expected and should survive the round-trip.
         """
         stack = make_label_stack(n_frames=2, n_cells_side=4, image_size=200)
@@ -424,7 +424,7 @@ class TestTagsRoundTrip:
         for frame in loaded_s.frames.values():
             for jd in frame.junctions.values():
                 # Only auto-generated border tags allowed; no user-assigned tags
-                assert jd.tags <= {"edge_border"}
+                assert jd.tags <= {"border"}
         for traj in loaded_s.edge_trajectories.values():
             assert traj.tags == set()
             assert traj.name is None

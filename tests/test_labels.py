@@ -142,7 +142,7 @@ class TestBorderTaggingWithMinLength:
 
     def test_small_hole_does_not_tag_junctions(self):
         """Two adjacent cells, one with a tiny internal hole, should not
-        get edge_border tags on their shared junction."""
+        get border tags on their shared junction."""
         frame = np.zeros((30, 30), dtype=np.int32)
         frame[0:15, :] = 1
         frame[15:30, :] = 2

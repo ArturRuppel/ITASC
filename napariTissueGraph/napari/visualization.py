@@ -391,3 +391,90 @@ _TAG_COLORS = [
     [0.10, 0.70, 0.70, 1.0],  # teal
     [0.90, 0.90, 0.10, 1.0],  # yellow
 ]
+
+
+def build_tag_text_annotations(
+    series: TissueGraphTimeSeries,
+) -> Tuple[np.ndarray, List[str], np.ndarray, pd.DataFrame]:
+    """Build text annotation data for tagged junctions.
+
+    Returns one point per tagged junction at its midpoint, with the
+    tag string as the text label plus a features DataFrame for mapping
+    back to the underlying junction/trajectory.
+
+    Parameters
+    ----------
+    series : TissueGraphTimeSeries
+        The time series with edge trajectories and junction tags.
+
+    Returns
+    -------
+    positions : np.ndarray
+        Nx3 array of (frame, y, x) positions for text anchors.
+    texts : list of str
+        One label string per point (comma-separated tags).
+    colors : np.ndarray
+        Nx4 RGBA array — color matches the first tag.
+    features : pd.DataFrame
+        Per-point features: trajectory_id, cell_pair_a, cell_pair_b, frame, tags.
+    """
+    traj_lookup: Dict[Tuple[int, frozenset], int] = {}
+    for traj in series.edge_trajectories.values():
+        for i, frame_idx in enumerate(traj.frames):
+            key = (frame_idx, frozenset(traj.cell_pairs[i]))
+            traj_lookup[key] = traj.trajectory_id
+
+    # Build tag -> color map
+    all_tags: Set[str] = set()
+    for traj in series.edge_trajectories.values():
+        all_tags.update(traj.tags)
+    for frame in series.frames.values():
+        for jd in frame.junctions.values():
+            all_tags.update(jd.tags)
+    sorted_tags = sorted(all_tags)
+    tag_color_map = {
+        tag: np.array(_TAG_COLORS[i % len(_TAG_COLORS)])
+        for i, tag in enumerate(sorted_tags)
+    }
+
+    positions = []
+    texts = []
+    colors = []
+    feat_rows = []
+
+    for frame_idx in series.frame_indices:
+        frame = series.frames[frame_idx]
+        for jd in frame.junctions.values():
+            lookup_key = (frame_idx, frozenset(jd.cell_pair))
+            traj_id = traj_lookup.get(lookup_key, -1)
+
+            merged_tags = set(jd.tags)
+            if traj_id != -1:
+                merged_tags |= series.edge_trajectories[traj_id].tags
+
+            if not merged_tags:
+                continue
+
+            label = ", ".join(sorted(merged_tags))
+            first_tag = sorted(merged_tags)[0]
+
+            # Place text at the junction midpoint, offset slightly upward
+            y, x = jd.midpoint
+            positions.append([float(frame_idx), y - 3.0, x])
+            texts.append(label)
+            colors.append(tag_color_map[first_tag])
+            feat_rows.append({
+                "trajectory_id": traj_id,
+                "cell_pair_a": jd.cell_pair[0],
+                "cell_pair_b": jd.cell_pair[1],
+                "frame": frame_idx,
+                "tags": label,
+            })
+
+    if not positions:
+        empty_df = pd.DataFrame(
+            columns=["trajectory_id", "cell_pair_a", "cell_pair_b", "frame", "tags"],
+        )
+        return np.empty((0, 3)), [], np.empty((0, 4)), empty_df
+
+    return np.array(positions), texts, np.array(colors), pd.DataFrame(feat_rows)

@@ -63,6 +63,7 @@ from .visualization import (
     build_track_breaks,
     build_trajectory_lines,
     build_trajectory_lines_with_features,
+    build_tag_text_annotations,
 )
 from ..analysis.tagging import (
     tag_trajectory,
@@ -490,10 +491,12 @@ class TissueGraphWidget(QWidget):
 
         # Tagging state
         self._tagging_shapes_layer = None  # the Shapes layer used for tagging
+        self._tagging_text_layer = None  # Points layer for tag text annotations
         self._tagging_series = None  # the series currently shown in the tagging layer
         self._cached_selection = []  # persists selection when layer loses focus
         self._show_only_tagged = False
         self._color_by_tags = False
+        self._show_tag_labels = False
 
         # Poll the shapes layer selection every 200ms to keep the cache fresh.
         # napari clears selected_data when the mouse leaves the canvas, and
@@ -715,7 +718,7 @@ class TissueGraphWidget(QWidget):
         self.s1_filter_isolated_cb = QCheckBox("Tag border edges")
         self.s1_filter_isolated_cb.setChecked(True)
         self.s1_filter_isolated_cb.setToolTip(
-            "Tag border/isolated edges as 'edge_border' for downstream filtering."
+            "Tag border/isolated edges as 'border' for downstream filtering."
         )
         s1_le_layout.addWidget(self.s1_filter_isolated_cb)
 
@@ -797,7 +800,7 @@ class TissueGraphWidget(QWidget):
         self.filter_isolated_cb = QCheckBox("Tag border edges")
         self.filter_isolated_cb.setChecked(True)
         self.filter_isolated_cb.setToolTip(
-            "Tag border/isolated edges as 'edge_border' for downstream filtering."
+            "Tag border/isolated edges as 'border' for downstream filtering."
         )
         s2_ext_layout.addWidget(self.filter_isolated_cb)
 
@@ -955,6 +958,8 @@ class TissueGraphWidget(QWidget):
         tag_layout.addWidget(self.color_by_tags_cb)
         self.show_only_tagged_cb = QCheckBox("Show only tagged junctions")
         tag_layout.addWidget(self.show_only_tagged_cb)
+        self.show_tag_labels_cb = QCheckBox("Show tag labels")
+        tag_layout.addWidget(self.show_tag_labels_cb)
 
         # Tag list
         tag_layout.addWidget(QLabel("Tags:"))
@@ -1069,6 +1074,7 @@ class TissueGraphWidget(QWidget):
         self.untag_selected_btn.clicked.connect(self._untag_selected)
         self.color_by_tags_cb.toggled.connect(self._toggle_color_by_tags)
         self.show_only_tagged_cb.toggled.connect(self._toggle_show_only_tagged)
+        self.show_tag_labels_cb.toggled.connect(self._toggle_show_tag_labels)
         self.clear_tag_btn.clicked.connect(self._clear_selected_tag)
         self.refresh_tags_btn.clicked.connect(self._refresh_tagging_layer)
 
@@ -2030,9 +2036,128 @@ class TissueGraphWidget(QWidget):
         if stage_layer:
             self._stage_layers[3].append(layer)
 
+        # Add text annotations for tagged junctions
+        self._add_tag_text_layer(series, stage_layer)
+
         self._update_tag_list()
 
+    def _add_tag_text_layer(
+        self, series: TissueGraphTimeSeries, stage_layer: bool = False,
+    ):
+        """Create a Points layer showing tag names next to tagged junctions."""
+        self._remove_tag_text_layer()
+        if not self._show_tag_labels:
+            return
+
+        import pandas as pd
+
+        positions, texts, colors, features = build_tag_text_annotations(series)
+        if len(positions) == 0:
+            return
+
+        features = features.copy()
+        features["tag_label"] = texts
+        text_layer = self.viewer.add_points(
+            positions,
+            size=8,
+            face_color=colors,
+            features=features,
+            text={
+                "string": "tag_label",
+                "color": colors,
+                "anchor": "upper_left",
+                "size": 10,
+            },
+            name="[Pipeline] Tag Labels",
+        )
+        text_layer.mode = "select"
+
+        @text_layer.mouse_drag_callbacks.append
+        def _on_tag_click(layer, event):
+            self._on_tag_text_clicked(layer)
+
+        text_layer.bind_key("Delete", self._delete_tag_from_text_selection)
+        text_layer.bind_key("Backspace", self._delete_tag_from_text_selection)
+
+        self._tagging_text_layer = text_layer
+        if stage_layer:
+            self._stage_layers[3].append(text_layer)
+
+    def _remove_tag_text_layer(self):
+        if (
+            self._tagging_text_layer is not None
+            and self._tagging_text_layer in self.viewer.layers
+        ):
+            self.viewer.layers.remove(self._tagging_text_layer)
+            for stage in self._stage_layers.values():
+                if self._tagging_text_layer in stage:
+                    stage.remove(self._tagging_text_layer)
+        self._tagging_text_layer = None
+
+    def _on_tag_text_clicked(self, layer):
+        """When a tag text point is clicked, select the corresponding edge."""
+        selected = set(layer.selected_data)
+        if not selected or self._tagging_shapes_layer is None:
+            return
+
+        text_features = layer.features
+        shapes_features = self._tagging_shapes_layer.features
+        shape_indices = set()
+
+        for pt_idx in selected:
+            row = text_features.iloc[pt_idx]
+            traj_id = int(row["trajectory_id"])
+            pair_a = int(row["cell_pair_a"])
+            pair_b = int(row["cell_pair_b"])
+            frame = int(row["frame"])
+
+            # Find matching shape(s) in the Shapes layer
+            for i, srow in shapes_features.iterrows():
+                if (
+                    int(srow["trajectory_id"]) == traj_id
+                    and int(srow["cell_pair_a"]) == pair_a
+                    and int(srow["cell_pair_b"]) == pair_b
+                    and int(srow["frame"]) == frame
+                ):
+                    shape_indices.add(i)
+
+        if shape_indices:
+            self._tagging_shapes_layer.selected_data = shape_indices
+            self._cached_selection = list(shape_indices)
+            n = len(shape_indices)
+            self.selection_label.setText(f"{n} junction(s) selected")
+
+    def _delete_tag_from_text_selection(self, layer):
+        """Delete all tags from the junction under the selected text point."""
+        selected = set(layer.selected_data)
+        if not selected or self._tagging_series is None:
+            return
+
+        features = layer.features
+        series = self._tagging_series
+        count = 0
+
+        for pt_idx in selected:
+            row = features.iloc[pt_idx]
+            traj_id = int(row["trajectory_id"])
+            pair = (int(row["cell_pair_a"]), int(row["cell_pair_b"]))
+            tags_str = row["tags"]
+            tags_to_remove = [t.strip() for t in tags_str.split(",") if t.strip()]
+
+            for tag_name in tags_to_remove:
+                if traj_id != -1:
+                    untag_trajectory(series, traj_id, tag_name)
+                key = frozenset(pair)
+                for frame in series.frames.values():
+                    if key in frame.junctions:
+                        untag_junction(frame, pair, tag_name)
+            count += 1
+
+        self.status_label.setText(f"Removed tags from {count} junction(s).")
+        self._refresh_tagging_layer()
+
     def _remove_tagging_layer(self):
+        self._remove_tag_text_layer()
         if (
             self._tagging_shapes_layer is not None
             and self._tagging_shapes_layer in self.viewer.layers
@@ -2170,6 +2295,10 @@ class TissueGraphWidget(QWidget):
         self._show_only_tagged = checked
         self._refresh_tagging_layer()
 
+    def _toggle_show_tag_labels(self, checked: bool):
+        self._show_tag_labels = checked
+        self._refresh_tagging_layer()
+
     def _clear_selected_tag(self):
         """Remove the tag (chosen in the tag list) from the selected junctions.
 
@@ -2226,17 +2355,28 @@ class TissueGraphWidget(QWidget):
         if not tags:
             return
 
-        # Count occurrences per tag
+        # Count unique edges per tag (deduplicated by cell pair).
+        # An edge has the tag if it appears on its trajectory OR any of
+        # its per-frame junctions.
+        traj_tag_lookup: dict = {}  # frozenset(pair) -> set of tags from trajectory
+        for traj in self._tagging_series.edge_trajectories.values():
+            if traj.tags:
+                for cp in traj.cell_pairs:
+                    key = frozenset(cp)
+                    traj_tag_lookup.setdefault(key, set()).update(traj.tags)
+
         for tag in sorted(tags):
-            count = 0
-            for traj in self._tagging_series.edge_trajectories.values():
-                if tag in traj.tags:
-                    count += 1
+            tagged_pairs: set = set()
+            # From trajectories
+            for pair_key, traj_tags in traj_tag_lookup.items():
+                if tag in traj_tags:
+                    tagged_pairs.add(pair_key)
+            # From junctions (covers junction-level tags and edges without trajectories)
             for frame in self._tagging_series.frames.values():
                 for jd in frame.junctions.values():
                     if tag in jd.tags:
-                        count += 1
-            self.tag_list_widget.addItem(f"{tag} ({count})")
+                        tagged_pairs.add(frozenset(jd.cell_pair))
+            self.tag_list_widget.addItem(f"{tag} ({len(tagged_pairs)})")
 
     # ------------------------------------------------------------------
     # Helpers

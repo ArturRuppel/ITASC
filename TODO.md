@@ -289,7 +289,120 @@ Rethink the widget workflow to feel native to napari and simplify the pipeline.
 - [x] Graph extraction should include edges at the image border (currently filtered by `filter_isolated`)
 - [x] Border edges should be automatically tagged with `"edge_border"` so they can be excluded from downstream analysis
 - [x] This preserves the full graph while letting users filter border artifacts
-- **Known bug:** Border edge detection (`find_border_boundary`) is unreliable — border edges may not display correctly in some tissue configurations. Needs debugging.
+- ~~**Known bug:** Border edge detection (`find_border_boundary`) is unreliable~~ — Fixed: segments are now split by contiguity, `min_border_edge_length` filters small holes, only cell-vs-background boundaries get `edge_border` tag.
+
+---
+
+## 12. Tagging UI/UX improvements
+
+The current tagging workflow is functional but clunky. Improve discoverability and
+direct manipulation of tags in the viewer.
+
+### 12a. Display tag labels in the viewer
+- [x] Show tag names as text annotations next to tagged edges (napari Points layer with text)
+- [x] Toggle to show/hide tag labels in the viewer ("Show tag labels" checkbox)
+- [x] Tags should be readable at typical zoom levels without overlapping
+
+### 12b. Interactive tag selection and deletion from the viewer
+- [x] Clicking a tag label in the viewer should highlight/select the corresponding edge
+- [x] Delete key (or a "Remove Tag" button) should remove the tag from the selected edge — both from the viewer display and the internal data (JunctionData.tags / EdgeTrajectory.tags)
+- [x] Deleting a tag should immediately update the tag list counts
+
+### 12c. General tagging UX polish
+- [ ] Streamline the tag/untag workflow so it requires fewer clicks
+- [ ] Consider tag auto-complete in the tag name input field
+
+---
+
+## 13. Force inference via ForSys
+
+Non-invasive inference of membrane tensions and cell pressures from segmentation geometry,
+using [ForSys](https://github.com/borgesaugusto/forsys) (Borges et al., iScience 2025) as
+an optional dependency. ForSys solves an inverse problem: given cell boundary shapes, it
+computes the mechanical forces (edge tensions, cell pressures) that produce those shapes.
+Supports static (single frame) and dynamic (multi-frame with vertex velocities) inference.
+
+**Key constraint:** ForSys pins `numpy < 2.0` and `scikit-image <= 0.21.0`. Install as
+optional extra: `pip install napariTissueGraph[forces]`.
+
+### 13a. Data model updates (`structures.py`)
+- [ ] Add `pressure: Optional[float] = None` to `CellData`
+- [ ] `JunctionData.tension` and `JunctionData.normal_stress` already exist — verify they're included in io.py serialization
+
+### 14b. ForSys adapter (`core/forsys_adapter.py`)
+- [ ] `tissue_frame_to_forsys(frame: TissueGraphFrame) → forsys.frames.Frame`
+  - Deduplicate shared vertices across cells (CellData.vertices share boundary points)
+  - Build ForSys Vertex objects from unique vertex positions
+  - Build ForSys Edge objects from JunctionData.coordinates
+  - Build ForSys Cell objects with correct vertex/edge winding order
+  - Handle border cells (incomplete polygons at image boundary)
+- [ ] `forsys_results_to_tissue(forsys_frame, tissue_frame)` — write tensions/pressures back
+  - Map ForSys edge tensions → JunctionData.tension (match by vertex positions)
+  - Map ForSys cell pressures → CellData.pressure
+- [ ] Apply ForSys meshing (`virtual_edges.generate_mesh(ne=6)`) for curved boundaries
+- [ ] Guard all ForSys imports with try/except, raise clear ImportError
+
+### 14c. Mechanics API (`core/mechanics.py`)
+- [ ] `infer_tensions(series, method="static") → TissueGraphTimeSeries`
+  - Static: run ForSys solver independently per frame
+  - Dynamic: pass vertex positions across consecutive frames for velocity-based inference (`b_matrix="velocity"`)
+  - Write results into JunctionData.tension for each frame
+- [ ] `infer_pressures(series) → TissueGraphTimeSeries`
+  - Run pressure solver (Lagrange multiplier method) per frame
+  - Write results into CellData.pressure
+- [ ] `infer_forces(series, method="static")` — convenience wrapper: tensions + pressures in one call
+
+### 14d. Visualization (`napari/visualization.py`)
+- [ ] `build_tension_colored_junctions(series)` — junction lines colored by inferred tension (continuous colormap)
+- [ ] `build_pressure_colored_cells(series)` — cell polygon fills colored by inferred pressure
+
+### 13e. Widget integration
+- [ ] "Infer Forces" button (enabled after Stage 2 graph extraction)
+- [ ] Static / Dynamic toggle
+- [ ] Results shown as overlay layers (tension-colored edges, pressure-colored cells)
+- [ ] Graceful handling if forsys not installed (button disabled with tooltip)
+
+### 13f. Tests
+- [ ] Test adapter round-trip: TissueGraphFrame → ForSys Frame → solve → write back
+- [ ] Test with synthetic regular hexagonal lattice (known analytical tensions)
+- [ ] Test dynamic mode with 2-frame series
+- [ ] Test graceful failure when forsys not installed
+
+---
+
+## 14. Analysis dashboard
+
+Napari is the right tool for spatial visualization and interactive annotation, but not for
+exploratory data analysis. Users need a separate dashboard to query, filter, plot, and compute
+statistics over tissue graph datasets. The dashboard should be modular so that analysis
+"modules" can be developed independently, shared, and installed by the community.
+
+### 14a. Data API (`core/api.py`)
+- [ ] Clean Python API for querying the tissue graph: cells, edges, junctions, trajectories
+- [ ] Filtering by tags, timepoint ranges, topological properties (e.g. neighbor count, coordination number)
+- [ ] Temporal queries: T1 events, trajectory histories, time-since-last-event
+- [ ] Returns pandas DataFrames / standard Python objects for easy downstream use
+
+### 14b. Analysis module interface
+- [ ] Standard base class / protocol that all analysis modules implement
+- [ ] Each module declares its parameters (auto-generates UI widgets in the dashboard)
+- [ ] Each module has a `compute()` method (takes data API + parameters, returns results) and a `visualize()` method (returns figures/tables)
+- [ ] Modules are discoverable via entry points or a plugin folder — users can pip-install, download, or write their own
+
+### 14c. Dashboard application
+- [ ] Built with Panel (HoloViz) — serves as a web app and works inside Jupyter
+- [ ] Dataset loader: open saved tissue graph datasets
+- [ ] Module browser: lists installed analysis modules, user selects one to run
+- [ ] Parameter panel: auto-generated from the module's declared parameters
+- [ ] Results area: displays plots, tables, and summary statistics from the module
+- [ ] "Open in napari" button to launch spatial visualization of the current selection
+
+### 14d. Built-in analysis modules
+- [ ] Junction length distribution — histogram of junction lengths, filterable by tag and neighbor count
+- [ ] T1 transition rate — transition rate as a function of time since last transition
+- [ ] Cell area / shape index distributions — per-frame and time-averaged
+- [ ] MSD and diffusion — mean squared displacement per cell, ensemble average, diffusion coefficient
+- [ ] Event-triggered averaging — average junction length / cell area aligned to T1 events
 
 ---
 
@@ -308,4 +421,7 @@ Rethink the widget workflow to feel native to napari and simplify the pipeline.
 10. **UI/UX improvements** (11a-11c)
 
 ### Next
-11. **Cell-level analysis** (9a-9c) — new analysis modules
+11. **Tagging UI/UX** (12a-12c) — viewer tag labels, interactive deletion
+12. **Cell-level analysis** (9a-9c) — new analysis modules
+13. **Force inference** (13a-13f) — ForSys integration for tension/pressure inference
+14. **Analysis dashboard** (14a-14d) — data API, module system, Panel-based dashboard
