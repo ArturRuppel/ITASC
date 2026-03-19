@@ -278,17 +278,18 @@ Rethink the widget workflow to feel native to napari and simplify the pipeline.
 ## 11. Next UI/UX improvements
 
 ### 11a. Move "Add to Dataset" below tagging
-- [ ] Move the Add/Discard controls to after the tagging group, so users tag junctions before committing to the dataset
+- [x] Move the Add/Discard controls to after the tagging group, so users tag junctions before committing to the dataset
 
 ### 11b. Accept Image layers for tracking and graph building
-- [ ] Tracking (CellTrackingWorker) and graph extraction (GraphExtractWorker) should also accept napari Image layers
-- [ ] Auto-convert Image layer data to integer labels (e.g. via unique-value casting or thresholding)
-- [ ] Graph builder should accept the active layer (Labels or Image) directly
+- [x] Tracking (CellTrackingWorker) and graph extraction (GraphExtractWorker) should also accept napari Image layers
+- [x] Auto-convert Image layer data to integer labels (e.g. via unique-value casting or thresholding)
+- [x] Graph builder should accept the active layer (Labels or Image) directly
 
 ### 11c. Include border edges and auto-tag them
-- [ ] Graph extraction should include edges at the image border (currently filtered by `filter_isolated`)
-- [ ] Border edges should be automatically tagged with `"edge_border"` so they can be excluded from downstream analysis
-- [ ] This preserves the full graph while letting users filter border artifacts
+- [x] Graph extraction should include edges at the image border (currently filtered by `filter_isolated`)
+- [x] Border edges should be automatically tagged with `"edge_border"` so they can be excluded from downstream analysis
+- [x] This preserves the full graph while letting users filter border artifacts
+- **Known bug:** Border edge detection (`find_border_boundary`) is unreliable — border edges may not display correctly in some tissue configurations. Needs debugging.
 
 ---
 
@@ -304,7 +305,7 @@ Rethink the widget workflow to feel native to napari and simplify the pipeline.
 7. **Edge & junction tagging** (8a-8d)
 8. **Analysis parameters** (7a-7d)
 9. **UI/UX redesign** (10a-10e)
+10. **UI/UX improvements** (11a-11c)
 
 ### Next
-10. **UI/UX improvements** (11a-11c) — layout polish, Image layer support, border edge handling
 11. **Cell-level analysis** (9a-9c) — new analysis modules

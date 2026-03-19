@@ -16,6 +16,88 @@ from ..structures import CellData, JunctionData
 logger = logging.getLogger(__name__)
 
 
+def find_border_cells(label_frame: np.ndarray) -> set:
+    """Return the set of cell IDs that touch the image border or background."""
+    border_ids = set()
+    # Top and bottom rows
+    border_ids.update(np.unique(label_frame[0, :]))
+    border_ids.update(np.unique(label_frame[-1, :]))
+    # Left and right columns
+    border_ids.update(np.unique(label_frame[:, 0]))
+    border_ids.update(np.unique(label_frame[:, -1]))
+
+    # Also include cells that touch background (label 0) anywhere
+    kernel = np.ones((3, 3), np.uint8)
+    bg_mask = (label_frame == 0).astype(np.uint8)
+    bg_dilated = cv2.dilate(bg_mask, kernel)
+    # Any cell label that overlaps with dilated background touches background
+    touching_bg = np.unique(label_frame[bg_dilated > 0])
+    border_ids.update(touching_bg)
+
+    border_ids.discard(0)  # remove background
+    return border_ids
+
+
+def find_border_boundary(
+    frame: np.ndarray,
+    cell_id: int,
+    min_edge_length: float = 0.0,
+) -> Optional[Tuple[np.ndarray, float]]:
+    """Find the boundary of a cell with the image border or background.
+
+    Returns (ordered_coordinates, length) or None if the cell has no
+    border/background boundary.
+    """
+    mask = (frame == cell_id).astype(np.uint8)
+
+    # Find contour of the cell
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return None
+
+    # Use the largest contour
+    contour = max(contours, key=cv2.contourArea)
+    # contour shape is (N, 1, 2) with (x, y) order
+    contour_pts = contour.squeeze(1)  # (N, 2) in (x, y)
+    if len(contour_pts) < 2:
+        return None
+
+    # Find contour points that are NOT shared with another non-zero cell
+    # A border point is on the image edge OR adjacent to background
+    h, w = frame.shape
+    border_pts = []
+    for x, y in contour_pts:
+        is_border = False
+        # Image edge
+        if x == 0 or x == w - 1 or y == 0 or y == h - 1:
+            is_border = True
+        else:
+            # Check if any neighbor is background
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx_ = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx_ < w:
+                        if frame[ny, nx_] == 0:
+                            is_border = True
+                            break
+                if is_border:
+                    break
+        if is_border:
+            border_pts.append([y, x])  # store as (y, x) for consistency
+
+    if len(border_pts) < 2:
+        return None
+
+    coords = np.array(border_pts)
+    length = calculate_edge_length(coords)
+    if min_edge_length > 0 and length < min_edge_length:
+        return None
+
+    return coords, length
+
+
 def find_shared_boundary(
     frame: np.ndarray,
     cell1_id: int,
@@ -138,7 +220,9 @@ def labels_to_graph(
         dilation_radius: Radius for dilation when detecting adjacency.
         min_overlap_pixels: Minimum boundary pixels to count as adjacent.
         min_edge_length: Minimum junction length to keep.
-        filter_isolated: Remove edges where either cell has only one neighbor.
+        filter_isolated: If True, edges where either cell has only one neighbor
+            are kept but auto-tagged with ``"edge_border"`` rather than removed.
+            Edges involving cells that touch the image border are also tagged.
 
     Returns:
         (cells, junctions, graph)
@@ -165,19 +249,21 @@ def labels_to_graph(
                 pair = frozenset((int(cell1), int(cell2)))
                 raw_junctions[pair] = (coords, length)
 
-    # Filter isolated edges
+    # Identify border cells and isolated edges for tagging
+    border_cells = find_border_cells(label_frame)
+
+    from collections import defaultdict
+    connections = defaultdict(set)
+    for pair in raw_junctions:
+        c1, c2 = pair
+        connections[c1].add(c2)
+        connections[c2].add(c1)
+
+    isolated_pairs = set()
     if filter_isolated:
-        from collections import defaultdict
-        connections = defaultdict(set)
         for pair in raw_junctions:
-            c1, c2 = pair
-            connections[c1].add(c2)
-            connections[c2].add(c1)
-        raw_junctions = {
-            pair: val
-            for pair, val in raw_junctions.items()
-            if all(len(connections[c]) > 1 for c in pair)
-        }
+            if not all(len(connections[c]) > 1 for c in pair):
+                isolated_pairs.add(pair)
 
     # Build graph
     graph = nx.Graph()
@@ -186,14 +272,46 @@ def labels_to_graph(
     for pair, (coords, length) in raw_junctions.items():
         sorted_pair = tuple(sorted(pair))
         midpoint = coords[len(coords) // 2].astype(float)
+
+        # Tag junctions involving border cells or isolated edges
+        tags: set = set()
+        if any(c in border_cells for c in pair):
+            tags.add("edge_border")
+        if pair in isolated_pairs:
+            tags.add("edge_border")
+
         jd = JunctionData(
             cell_pair=sorted_pair,
             length=length,
             coordinates=coords,
             midpoint=midpoint,
+            tags=tags,
         )
         junctions[pair] = jd
         graph.add_edge(sorted_pair[0], sorted_pair[1], length=length)
+
+    # Add border boundary edges: cell boundary facing background or image edge.
+    # These are stored as junctions with cell_pair (0, cell_id) and tagged.
+    if filter_isolated:
+        for cell_id in border_cells:
+            result = find_border_boundary(
+                label_frame, int(cell_id),
+                min_edge_length=min_edge_length,
+            )
+            if result is not None:
+                coords, length = result
+                pair = frozenset((0, int(cell_id)))
+                sorted_pair = (0, int(cell_id))
+                midpoint = coords[len(coords) // 2].astype(float)
+                jd = JunctionData(
+                    cell_pair=sorted_pair,
+                    length=length,
+                    coordinates=coords,
+                    midpoint=midpoint,
+                    tags={"edge_border"},
+                )
+                junctions[pair] = jd
+                graph.add_edge(0, int(cell_id), length=length)
 
     # Build cell data — only for cells that appear in junctions
     cells_in_graph = set()

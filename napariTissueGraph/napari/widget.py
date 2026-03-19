@@ -535,8 +535,8 @@ class TissueGraphWidget(QWidget):
         type_row.addWidget(self.input_type_combo)
         layout.addLayout(type_row)
 
-        # --- Labels layer dropdown (for segmentation + both modes) ---
-        self.labels_layer_group = QGroupBox("Labels Layer")
+        # --- Labels / Image layer dropdown (for segmentation + both modes) ---
+        self.labels_layer_group = QGroupBox("Labels / Image Layer")
         labels_layout = QHBoxLayout()
         self.labels_layer_combo = QComboBox()
         labels_layout.addWidget(self.labels_layer_combo)
@@ -708,10 +708,10 @@ class TissueGraphWidget(QWidget):
         mel_row.addWidget(self.s1_min_edge_length_spin)
         s1_le_layout.addLayout(mel_row)
 
-        self.s1_filter_isolated_cb = QCheckBox("Filter isolated edges")
+        self.s1_filter_isolated_cb = QCheckBox("Tag border edges")
         self.s1_filter_isolated_cb.setChecked(True)
         self.s1_filter_isolated_cb.setToolTip(
-            "Remove edges where either cell has only one neighbor."
+            "Tag border/isolated edges as 'edge_border' for downstream filtering."
         )
         s1_le_layout.addWidget(self.s1_filter_isolated_cb)
 
@@ -776,10 +776,10 @@ class TissueGraphWidget(QWidget):
         mel_row2.addWidget(self.min_edge_length_spin)
         s2_ext_layout.addLayout(mel_row2)
 
-        self.filter_isolated_cb = QCheckBox("Filter isolated edges")
+        self.filter_isolated_cb = QCheckBox("Tag border edges")
         self.filter_isolated_cb.setChecked(True)
         self.filter_isolated_cb.setToolTip(
-            "Remove edges where either cell has only one neighbor."
+            "Tag border/isolated edges as 'edge_border' for downstream filtering."
         )
         s2_ext_layout.addWidget(self.filter_isolated_cb)
 
@@ -896,16 +896,6 @@ class TissueGraphWidget(QWidget):
         self.stage3_group.setLayout(s3_layout)
         layout.addWidget(self.stage3_group)
 
-        # --- Pipeline: Add / Discard ---
-        self.finalize_group = QGroupBox("Add / Discard")
-        fin_layout = QHBoxLayout()
-        self.add_to_dataset_btn = QPushButton("Add to Dataset")
-        self.discard_btn = QPushButton("Discard")
-        fin_layout.addWidget(self.add_to_dataset_btn)
-        fin_layout.addWidget(self.discard_btn)
-        self.finalize_group.setLayout(fin_layout)
-        layout.addWidget(self.finalize_group)
-
         # --- Tagging ---
         self.tagging_group = QGroupBox("Junction Tagging")
         tag_layout = QVBoxLayout()
@@ -951,6 +941,16 @@ class TissueGraphWidget(QWidget):
         self.tagging_group.setLayout(tag_layout)
         layout.addWidget(self.tagging_group)
         self.tagging_group.setVisible(False)
+
+        # --- Pipeline: Add / Discard (after tagging so users tag before committing) ---
+        self.finalize_group = QGroupBox("Add / Discard")
+        fin_layout = QHBoxLayout()
+        self.add_to_dataset_btn = QPushButton("Add to Dataset")
+        self.discard_btn = QPushButton("Discard")
+        fin_layout.addWidget(self.add_to_dataset_btn)
+        fin_layout.addWidget(self.discard_btn)
+        self.finalize_group.setLayout(fin_layout)
+        layout.addWidget(self.finalize_group)
 
         # --- Batch mode ---
         self.batch_group = QGroupBox("Batch")
@@ -1118,10 +1118,10 @@ class TissueGraphWidget(QWidget):
     def _refresh_layers(self, event=None):
         import napari
 
-        # Populate Labels layer dropdown
+        # Populate Labels / Image layer dropdown
         self.labels_layer_combo.clear()
         for layer in self.viewer.layers:
-            if isinstance(layer, napari.layers.Labels):
+            if isinstance(layer, (napari.layers.Labels, napari.layers.Image)):
                 self.labels_layer_combo.addItem(layer.name)
 
         # Populate Points layer dropdown
@@ -1133,7 +1133,7 @@ class TissueGraphWidget(QWidget):
         # Auto-select the active layer if it matches the expected type
         active = self.viewer.layers.selection.active
         if active is not None:
-            if isinstance(active, napari.layers.Labels):
+            if isinstance(active, (napari.layers.Labels, napari.layers.Image)):
                 idx = self.labels_layer_combo.findText(active.name)
                 if idx >= 0:
                     self.labels_layer_combo.setCurrentIndex(idx)
@@ -1186,21 +1186,36 @@ class TissueGraphWidget(QWidget):
     # Label stack from viewer
     # ------------------------------------------------------------------
     def _get_selected_label_stack(self) -> Optional[np.ndarray]:
-        """Return the data from the selected Labels layer, or None."""
+        """Return the data from the selected Labels/Image layer, or None.
+
+        Image layers are auto-converted to integer labels by casting unique
+        pixel values to integers.
+        """
+        import napari
+
         layer_name = self.labels_layer_combo.currentText()
         if not layer_name:
-            self.status_label.setText("No Labels layer selected.")
+            self.status_label.setText("No Labels/Image layer selected.")
             return None
         try:
-            data = self.viewer.layers[layer_name].data
+            layer = self.viewer.layers[layer_name]
         except KeyError:
             self.status_label.setText(f"Layer '{layer_name}' not found.")
             return None
+
+        data = layer.data
+
+        # Auto-convert Image layer data to integer labels
+        if isinstance(layer, napari.layers.Image):
+            if not np.issubdtype(data.dtype, np.integer):
+                data = np.round(data).astype(np.int32)
+            logger.info("Converted Image layer '%s' to integer labels.", layer_name)
+
         if data.ndim == 2:
             data = data[np.newaxis, ...]
         if data.ndim != 3:
             self.status_label.setText(
-                f"Labels layer must be 2D or 3D (T, H, W), got {data.ndim}D."
+                f"Layer must be 2D or 3D (T, H, W), got {data.ndim}D."
             )
             return None
         return data
