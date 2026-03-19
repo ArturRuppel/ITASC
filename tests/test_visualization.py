@@ -183,13 +183,14 @@ class TestTrajectoryLinesWithFeatures:
         assert len(lines) == total
 
     def test_show_only_tagged_filters(self, label_stack):
-        series = build_from_labels(label_stack)
+        # Disable border tagging so no junctions have any tags
+        series = build_from_labels(label_stack, filter_isolated=False)
         from napariTissueGraph.core.topology import detect_t1_events
         from napariTissueGraph.analysis.trajectories import build_edge_trajectories
         detect_t1_events(series)
         build_edge_trajectories(series, series.t1_events)
 
-        # No tags → show_only_tagged returns empty
+        # No tags at all → show_only_tagged returns empty
         lines, _, _ = build_trajectory_lines_with_features(
             series, show_only_tagged=True,
         )

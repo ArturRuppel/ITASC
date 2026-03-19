@@ -30,6 +30,7 @@ def extract_graphs_from_labels(
     min_overlap_pixels: int = 5,
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
+    min_border_edge_length: float = 5.0,
 ) -> TissueGraphTimeSeries:
     """Extract per-frame graphs from segmentation labels (no tracking).
 
@@ -45,6 +46,7 @@ def extract_graphs_from_labels(
             min_overlap_pixels=min_overlap_pixels,
             min_edge_length=min_edge_length,
             filter_isolated=filter_isolated,
+            min_border_edge_length=min_border_edge_length,
         )
 
         # Extract vertices for each cell (no track assignment)
@@ -154,6 +156,7 @@ def extract_graphs_from_both(
     min_overlap_pixels: int = 5,
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
+    min_border_edge_length: float = 5.0,
 ) -> TissueGraphTimeSeries:
     """Extract per-frame graphs from labels for the labels+tracks workflow (no tracking).
 
@@ -168,6 +171,7 @@ def extract_graphs_from_both(
             min_overlap_pixels=min_overlap_pixels,
             min_edge_length=min_edge_length,
             filter_isolated=filter_isolated,
+            min_border_edge_length=min_border_edge_length,
         )
 
         for cell_id, cell in cells.items():
@@ -376,6 +380,7 @@ def build_from_labels(
     min_overlap_pixels: int = 5,
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
+    min_border_edge_length: float = 5.0,
     min_iou: float = 0.3,
     max_area_change: float = float('inf'),
 ) -> TissueGraphTimeSeries:
@@ -389,6 +394,7 @@ def build_from_labels(
         min_overlap_pixels: Minimum boundary pixels for adjacency.
         min_edge_length: Minimum junction length to keep.
         filter_isolated: Remove edges where either cell has only one neighbor.
+        min_border_edge_length: Minimum length for border boundary segments.
         min_iou: Minimum IoU threshold for label tracking.
         max_area_change: Max area ratio for label matching (inf = no limit).
     """
@@ -400,6 +406,7 @@ def build_from_labels(
         min_overlap_pixels=min_overlap_pixels,
         min_edge_length=min_edge_length,
         filter_isolated=filter_isolated,
+        min_border_edge_length=min_border_edge_length,
     )
     assign_tracking_labels(
         series, label_stack, min_iou=min_iou, max_area_change=max_area_change,
@@ -417,6 +424,7 @@ def build_from_both(
     min_overlap_pixels: int = 5,
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
+    min_border_edge_length: float = 5.0,
 ) -> TissueGraphTimeSeries:
     """Build tissue graph from labels (shapes) + TrackMate (tracking).
 
@@ -433,6 +441,7 @@ def build_from_both(
         min_overlap_pixels: Minimum boundary pixels for adjacency.
         min_edge_length: Minimum junction length to keep.
         filter_isolated: Remove edges where either cell has only one neighbor.
+        min_border_edge_length: Minimum length for border boundary segments.
     """
     if pixel_size is None and trackmate_data.pixel_size_x is not None:
         pixel_size = trackmate_data.pixel_size_x
@@ -447,6 +456,7 @@ def build_from_both(
         min_overlap_pixels=min_overlap_pixels,
         min_edge_length=min_edge_length,
         filter_isolated=filter_isolated,
+        min_border_edge_length=min_border_edge_length,
     )
     assign_tracking_trackmate(series, trackmate_data, match_threshold=match_threshold)
     return series

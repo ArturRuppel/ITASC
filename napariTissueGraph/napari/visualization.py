@@ -342,9 +342,7 @@ def build_trajectory_lines_with_features(
                 merged_tags |= series.edge_trajectories[traj_id].tags
             tags_str = ",".join(sorted(merged_tags)) if merged_tags else ""
 
-            # For "show only tagged", ignore auto-generated tags like edge_border
-            user_tags = merged_tags - {"edge_border"}
-            if show_only_tagged and not user_tags:
+            if show_only_tagged and not merged_tags:
                 continue
 
             # Get trajectory name

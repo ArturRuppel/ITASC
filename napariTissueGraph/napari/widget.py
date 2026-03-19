@@ -130,7 +130,8 @@ class GraphExtractWorker(QObject):
                  voronoi_method=VoronoiMethod.STANDARD,
                  lloyd_iterations=10, lloyd_tol=0.1,
                  dilation_radius=1, min_overlap_pixels=5,
-                 min_edge_length=0.0, filter_isolated=True):
+                 min_edge_length=0.0, filter_isolated=True,
+                 min_border_edge_length=5.0):
         super().__init__()
         self.input_type = input_type
         self.label_stack = label_stack
@@ -145,6 +146,7 @@ class GraphExtractWorker(QObject):
         self.min_overlap_pixels = min_overlap_pixels
         self.min_edge_length = min_edge_length
         self.filter_isolated = filter_isolated
+        self.min_border_edge_length = min_border_edge_length
 
     def run(self):
         try:
@@ -159,6 +161,7 @@ class GraphExtractWorker(QObject):
                     min_overlap_pixels=self.min_overlap_pixels,
                     min_edge_length=self.min_edge_length,
                     filter_isolated=self.filter_isolated,
+                    min_border_edge_length=self.min_border_edge_length,
                 )
             elif self.input_type == INPUT_TRACKS:
                 if self.trackmate_data is not None:
@@ -188,6 +191,7 @@ class GraphExtractWorker(QObject):
                     min_overlap_pixels=self.min_overlap_pixels,
                     min_edge_length=self.min_edge_length,
                     filter_isolated=self.filter_isolated,
+                    min_border_edge_length=self.min_border_edge_length,
                 )
 
             self.progress.emit(100, "Graphs extracted.")
@@ -715,6 +719,20 @@ class TissueGraphWidget(QWidget):
         )
         s1_le_layout.addWidget(self.s1_filter_isolated_cb)
 
+        mbel_row = QHBoxLayout()
+        mbel_row.addWidget(QLabel("Min border edge (px):"))
+        self.s1_min_border_edge_spin = QDoubleSpinBox()
+        self.s1_min_border_edge_spin.setMinimum(0.0)
+        self.s1_min_border_edge_spin.setMaximum(1000.0)
+        self.s1_min_border_edge_spin.setSingleStep(1.0)
+        self.s1_min_border_edge_spin.setValue(5.0)
+        self.s1_min_border_edge_spin.setToolTip(
+            "Minimum length for a border boundary segment to count as a real\n"
+            "border edge. Increase to ignore small segmentation holes."
+        )
+        mbel_row.addWidget(self.s1_min_border_edge_spin)
+        s1_le_layout.addLayout(mbel_row)
+
         self.s1_label_extract_widget.setLayout(s1_le_layout)
         s1_ext_layout.addWidget(self.s1_label_extract_widget)
 
@@ -782,6 +800,20 @@ class TissueGraphWidget(QWidget):
             "Tag border/isolated edges as 'edge_border' for downstream filtering."
         )
         s2_ext_layout.addWidget(self.filter_isolated_cb)
+
+        mbel_row2 = QHBoxLayout()
+        mbel_row2.addWidget(QLabel("Min border edge (px):"))
+        self.min_border_edge_spin = QDoubleSpinBox()
+        self.min_border_edge_spin.setMinimum(0.0)
+        self.min_border_edge_spin.setMaximum(1000.0)
+        self.min_border_edge_spin.setSingleStep(1.0)
+        self.min_border_edge_spin.setValue(5.0)
+        self.min_border_edge_spin.setToolTip(
+            "Minimum length for a border boundary segment to count as a real\n"
+            "border edge. Increase to ignore small segmentation holes."
+        )
+        mbel_row2.addWidget(self.min_border_edge_spin)
+        s2_ext_layout.addLayout(mbel_row2)
 
         self.s2_extract_widget.setLayout(s2_ext_layout)
         s2_layout.addWidget(self.s2_extract_widget)
@@ -1057,12 +1089,11 @@ class TissueGraphWidget(QWidget):
     # ------------------------------------------------------------------
     def _update_pipeline_buttons(self):
         stage = self._pipeline_stage
-        # Stage 1 can be re-run after completion (user tweaks params)
-        self.stage1_btn.setEnabled(
-            stage in (PipelineStage.IDLE, PipelineStage.STAGE1_DONE)
-        )
-        self.stage2_btn.setEnabled(stage == PipelineStage.STAGE1_DONE)
-        self.analyze_btn.setEnabled(stage == PipelineStage.STAGE2_DONE)
+        # Allow re-running earlier stages from any later stage so users can
+        # tweak parameters without having to discard and start over.
+        self.stage1_btn.setEnabled(True)
+        self.stage2_btn.setEnabled(stage.value >= PipelineStage.STAGE1_DONE.value)
+        self.analyze_btn.setEnabled(stage.value >= PipelineStage.STAGE2_DONE.value)
         self.add_to_dataset_btn.setEnabled(stage == PipelineStage.STAGE3_DONE)
         self.discard_btn.setEnabled(stage != PipelineStage.IDLE)
 
@@ -1310,12 +1341,14 @@ class TissueGraphWidget(QWidget):
             min_overlap_pixels = self.min_overlap_spin.value()
             min_edge_length = self.min_edge_length_spin.value()
             filter_isolated = self.filter_isolated_cb.isChecked()
+            min_border_edge_length = self.min_border_edge_spin.value()
         else:
             # Non-seg Stage 1: params in s1_label_extract_widget
             dilation_radius = self.s1_dilation_radius_spin.value()
             min_overlap_pixels = self.s1_min_overlap_spin.value()
             min_edge_length = self.s1_min_edge_length_spin.value()
             filter_isolated = self.s1_filter_isolated_cb.isChecked()
+            min_border_edge_length = self.s1_min_border_edge_spin.value()
 
         kwargs = dict(
             input_type=input_type,
@@ -1327,6 +1360,7 @@ class TissueGraphWidget(QWidget):
             min_overlap_pixels=min_overlap_pixels,
             min_edge_length=min_edge_length,
             filter_isolated=filter_isolated,
+            min_border_edge_length=min_border_edge_length,
         )
 
         label_stack = None
@@ -2137,7 +2171,11 @@ class TissueGraphWidget(QWidget):
         self._refresh_tagging_layer()
 
     def _clear_selected_tag(self):
-        """Clear the tag selected in the tag list from all junctions/trajectories."""
+        """Remove the tag (chosen in the tag list) from the selected junctions.
+
+        If no shapes are selected on the canvas, falls back to removing the
+        tag from *all* junctions/trajectories in the series.
+        """
         item = self.tag_list_widget.currentItem()
         if item is None or self._tagging_series is None:
             self.status_label.setText("Select a tag from the list first.")
@@ -2145,8 +2183,37 @@ class TissueGraphWidget(QWidget):
 
         # Extract tag name (format: "tag_name (N)")
         tag_name = item.text().rsplit(" (", 1)[0]
-        count = clear_tag(self._tagging_series, tag_name)
-        self.status_label.setText(f"Cleared tag '{tag_name}' from {count} item(s).")
+
+        selected = self._get_selection()
+        if selected and self._tagging_shapes_layer is not None:
+            # Remove the tag only from the selected shapes
+            features = self._tagging_shapes_layer.features
+            series = self._tagging_series
+            count = 0
+            for idx in selected:
+                row = features.iloc[idx]
+                traj_id = int(row["trajectory_id"])
+                pair = (int(row["cell_pair_a"]), int(row["cell_pair_b"]))
+                if traj_id != -1:
+                    untag_trajectory(series, traj_id, tag_name)
+                    count += 1
+                else:
+                    key = frozenset(pair)
+                    for frame in series.frames.values():
+                        if key in frame.junctions:
+                            untag_junction(frame, pair, tag_name)
+                    count += 1
+            self._cached_selection = []
+            self.selection_label.setText("No junctions selected")
+            self.status_label.setText(
+                f"Removed tag '{tag_name}' from {count} selected junction(s)."
+            )
+        else:
+            # No selection — clear from everything
+            count = clear_tag(self._tagging_series, tag_name)
+            self.status_label.setText(
+                f"Cleared tag '{tag_name}' from all {count} item(s)."
+            )
         self._refresh_tagging_layer()
 
     def _update_tag_list(self):

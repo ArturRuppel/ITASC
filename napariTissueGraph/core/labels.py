@@ -42,60 +42,84 @@ def find_border_boundary(
     frame: np.ndarray,
     cell_id: int,
     min_edge_length: float = 0.0,
-) -> Optional[Tuple[np.ndarray, float]]:
-    """Find the boundary of a cell with the image border or background.
+) -> list:
+    """Find the boundary segments of a cell with the image border or background.
 
-    Returns (ordered_coordinates, length) or None if the cell has no
-    border/background boundary.
+    A cell may have multiple disconnected border segments (e.g. a corner cell
+    touching the top and right image edges).  Each segment is returned
+    separately so that lengths are computed correctly.
+
+    Returns a list of ``(ordered_coordinates, length)`` tuples.  The list is
+    empty when the cell has no qualifying border boundary.
     """
     mask = (frame == cell_id).astype(np.uint8)
 
     # Find contour of the cell
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
-        return None
+        return []
 
     # Use the largest contour
     contour = max(contours, key=cv2.contourArea)
     # contour shape is (N, 1, 2) with (x, y) order
     contour_pts = contour.squeeze(1)  # (N, 2) in (x, y)
     if len(contour_pts) < 2:
-        return None
+        return []
 
-    # Find contour points that are NOT shared with another non-zero cell
-    # A border point is on the image edge OR adjacent to background
+    # Classify each contour point as border or not.
+    # A border point sits on the image edge OR has a background (0) neighbour.
     h, w = frame.shape
-    border_pts = []
-    for x, y in contour_pts:
-        is_border = False
-        # Image edge
+    is_border_mask = np.zeros(len(contour_pts), dtype=bool)
+    for idx, (x, y) in enumerate(contour_pts):
         if x == 0 or x == w - 1 or y == 0 or y == h - 1:
-            is_border = True
+            is_border_mask[idx] = True
         else:
-            # Check if any neighbor is background
             for dy in [-1, 0, 1]:
                 for dx in [-1, 0, 1]:
                     if dy == 0 and dx == 0:
                         continue
                     ny, nx_ = y + dy, x + dx
-                    if 0 <= ny < h and 0 <= nx_ < w:
-                        if frame[ny, nx_] == 0:
-                            is_border = True
-                            break
-                if is_border:
+                    if 0 <= ny < h and 0 <= nx_ < w and frame[ny, nx_] == 0:
+                        is_border_mask[idx] = True
+                        break
+                if is_border_mask[idx]:
                     break
-        if is_border:
-            border_pts.append([y, x])  # store as (y, x) for consistency
 
-    if len(border_pts) < 2:
-        return None
+    if not np.any(is_border_mask):
+        return []
 
-    coords = np.array(border_pts)
-    length = calculate_edge_length(coords)
-    if min_edge_length > 0 and length < min_edge_length:
-        return None
+    # Split into contiguous segments.  The contour is a closed loop, so we
+    # need to handle wrap-around: if border points span the start/end of the
+    # contour array they belong to the same segment.
+    segments: list = []
+    current: list = []
+    for idx in range(len(contour_pts)):
+        if is_border_mask[idx]:
+            x, y = contour_pts[idx]
+            current.append([int(y), int(x)])  # store as (y, x)
+        else:
+            if current:
+                segments.append(current)
+                current = []
+    if current:
+        # If the very first point was also a border point the last and first
+        # segments are actually one contiguous run around the loop.
+        if segments and is_border_mask[0]:
+            segments[0] = current + segments[0]
+        else:
+            segments.append(current)
 
-    return coords, length
+    results = []
+    for seg in segments:
+        if len(seg) < 2:
+            continue
+        coords = np.array(seg)
+        length = calculate_edge_length(coords)
+        if min_edge_length > 0 and length < min_edge_length:
+            continue
+        results.append((coords, length))
+
+    return results
 
 
 def find_shared_boundary(
@@ -212,6 +236,7 @@ def labels_to_graph(
     min_overlap_pixels: int = 5,
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
+    min_border_edge_length: float = 5.0,
 ) -> Tuple[Dict[int, CellData], Dict[FrozenSet[int], JunctionData], nx.Graph]:
     """Build cell data, junction data, and graph from a single label frame.
 
@@ -223,6 +248,9 @@ def labels_to_graph(
         filter_isolated: If True, edges where either cell has only one neighbor
             are kept but auto-tagged with ``"edge_border"`` rather than removed.
             Edges involving cells that touch the image border are also tagged.
+        min_border_edge_length: Minimum length (px) for a border boundary
+            segment to count.  Segments shorter than this are ignored, which
+            prevents small background holes from creating spurious border edges.
 
     Returns:
         (cells, junctions, graph)
@@ -249,21 +277,27 @@ def labels_to_graph(
                 pair = frozenset((int(cell1), int(cell2)))
                 raw_junctions[pair] = (coords, length)
 
-    # Identify border cells and isolated edges for tagging
-    border_cells = find_border_cells(label_frame)
+    # Identify border cells that have a *significant* border boundary.
+    # ``find_border_cells`` catches every cell touching any background pixel,
+    # including tiny segmentation holes.  We refine: a cell is only treated as
+    # a true border cell if ``find_border_boundary`` returns at least one
+    # segment whose length meets ``min_border_edge_length``.
+    candidate_border_cells = find_border_cells(label_frame)
 
-    from collections import defaultdict
-    connections = defaultdict(set)
-    for pair in raw_junctions:
-        c1, c2 = pair
-        connections[c1].add(c2)
-        connections[c2].add(c1)
-
-    isolated_pairs = set()
+    # Compute border segments per cell (used both for tagging and for creating
+    # border-boundary junctions).
+    border_segments: Dict[int, list] = {}
     if filter_isolated:
-        for pair in raw_junctions:
-            if not all(len(connections[c]) > 1 for c in pair):
-                isolated_pairs.add(pair)
+        for cell_id in candidate_border_cells:
+            segs = find_border_boundary(
+                label_frame, int(cell_id),
+                min_edge_length=min_border_edge_length,
+            )
+            if segs:
+                border_segments[int(cell_id)] = segs
+
+    # Only cells with qualifying segments are real border cells.
+    border_cells = set(border_segments.keys())
 
     # Build graph
     graph = nx.Graph()
@@ -273,35 +307,27 @@ def labels_to_graph(
         sorted_pair = tuple(sorted(pair))
         midpoint = coords[len(coords) // 2].astype(float)
 
-        # Tag junctions involving border cells or isolated edges
-        tags: set = set()
-        if any(c in border_cells for c in pair):
-            tags.add("edge_border")
-        if pair in isolated_pairs:
-            tags.add("edge_border")
-
         jd = JunctionData(
             cell_pair=sorted_pair,
             length=length,
             coordinates=coords,
             midpoint=midpoint,
-            tags=tags,
         )
         junctions[pair] = jd
         graph.add_edge(sorted_pair[0], sorted_pair[1], length=length)
 
     # Add border boundary edges: cell boundary facing background or image edge.
     # These are stored as junctions with cell_pair (0, cell_id) and tagged.
+    # A single cell may produce multiple disconnected segments (e.g. a corner
+    # cell touching the top and right edges).
     if filter_isolated:
-        for cell_id in border_cells:
-            result = find_border_boundary(
-                label_frame, int(cell_id),
-                min_edge_length=min_edge_length,
-            )
-            if result is not None:
-                coords, length = result
-                pair = frozenset((0, int(cell_id)))
-                sorted_pair = (0, int(cell_id))
+        for cell_id, segs in border_segments.items():
+            for seg_idx, (coords, length) in enumerate(segs):
+                pair = frozenset((0, cell_id))
+                sorted_pair = (0, cell_id)
+                # When a cell has multiple border segments, use unique keys
+                # so they don't overwrite each other.
+                key = pair if seg_idx == 0 else frozenset((-seg_idx, cell_id))
                 midpoint = coords[len(coords) // 2].astype(float)
                 jd = JunctionData(
                     cell_pair=sorted_pair,
@@ -310,8 +336,8 @@ def labels_to_graph(
                     midpoint=midpoint,
                     tags={"edge_border"},
                 )
-                junctions[pair] = jd
-                graph.add_edge(0, int(cell_id), length=length)
+                junctions[key] = jd
+                graph.add_edge(0, cell_id, length=length)
 
     # Build cell data — only for cells that appear in junctions
     cells_in_graph = set()
