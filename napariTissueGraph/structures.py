@@ -30,6 +30,7 @@ class CellData:
     vertices: Optional[np.ndarray] = None  # Nx2 ordered polygon boundary
     velocity: Optional[np.ndarray] = None
     instantaneous_speed: Optional[float] = None
+    pressure: Optional[float] = None
 
 
 @dataclass

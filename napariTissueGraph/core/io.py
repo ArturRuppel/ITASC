@@ -33,7 +33,7 @@ from ..structures import (
 
 logger = logging.getLogger(__name__)
 
-_FORMAT_VERSION = "1.1"
+_FORMAT_VERSION = "1.2"
 
 
 # ------------------------------------------------------------------
@@ -138,6 +138,15 @@ def _serialize_tissue(series: TissueGraphTimeSeries) -> Dict[str, np.ndarray]:
              for c in cell_ids],
             dtype=np.int64,
         )
+
+        # Cell pressures (NaN sentinel for None)
+        pressures = np.array(
+            [frame.cells[c].pressure if frame.cells[c].pressure is not None else np.nan
+             for c in cell_ids],
+            dtype=np.float64,
+        )
+        if not np.all(np.isnan(pressures)):
+            data[f"{prefix}_cell_pressures"] = pressures
 
         # Cell vertices (ragged)
         vert_arrays = []
@@ -360,6 +369,10 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
         num_neighbors = npz[f"{prefix}_cell_num_neighbors"]
         track_ids = npz[f"{prefix}_cell_track_ids"]
 
+        # Cell pressures
+        has_pressures = f"{prefix}_cell_pressures" in npz
+        cell_pressures = npz[f"{prefix}_cell_pressures"] if has_pressures else None
+
         # Cell vertices
         has_verts = f"{prefix}_cell_vert_flat" in npz
         if has_verts:
@@ -377,6 +390,10 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
             verts = vert_list[i] if has_verts else None
             if verts is not None and len(verts) == 0:
                 verts = None
+            pressure = None
+            if has_pressures and not np.isnan(cell_pressures[i]):
+                pressure = float(cell_pressures[i])
+
             cells[cid] = CellData(
                 cell_id=cid,
                 position=positions[i].copy(),
@@ -386,6 +403,7 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
                 num_neighbors=int(num_neighbors[i]),
                 track_id=tid if tid != -1 else None,
                 vertices=verts,
+                pressure=pressure,
             )
 
         # Junctions
