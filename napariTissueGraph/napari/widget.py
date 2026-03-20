@@ -7,7 +7,6 @@ Supports two workflows:
 The dataset accumulates tissues and can be saved/loaded.
 """
 import logging
-from enum import auto, Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -17,11 +16,9 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
-    QComboBox,
     QLabel,
     QProgressBar,
     QListWidget,
-    QListWidgetItem,
     QLineEdit,
     QFileDialog,
     QGroupBox,
@@ -30,38 +27,16 @@ from qtpy.QtWidgets import (
     QScrollArea,
     QCheckBox,
 )
-from qtpy.QtCore import Signal, QThread, QObject, Qt, QTimer
+from qtpy.QtCore import QThread, Qt, QTimer
 
-from ..structures import TissueGraphDataset, TissueGraphTimeSeries, InputType, VoronoiMethod
-from ..core.graph import (
-    build_from_labels,
-    build_from_labels_4d,
-    build_from_tracks,
-    build_from_tracks_4d,
-    build_from_both,
-    build_from_trackmate,
-    extract_graphs_from_labels,
-    extract_graphs_from_tracks,
-    extract_graphs_from_trackmate,
-    extract_graphs_from_both,
-    assign_tracking_labels,
-    assign_tracking_trackmate,
-    apply_track_map,
-    has_tracking,
-)
-from ..core.label_tracking import assign_track_ids
-from ..core.trackmate import parse_trackmate_xml, TrackMateData
-from ..core.topology import detect_t1_events, detect_all_t1_events
-from ..core.io import save_dataset, load_dataset
-from ..analysis.trajectories import build_edge_trajectories, filter_trajectories
+from ..structures import TissueGraphDataset, TissueGraphTimeSeries
+from ..core.graph import apply_track_map
 from .visualization import (
     build_all_junction_lines,
     build_all_centroids,
     build_t1_markers,
     build_tracked_centroids,
     build_tracked_labels,
-    build_track_breaks,
-    build_trajectory_lines,
     build_trajectory_lines_with_features,
     build_tag_text_annotations,
 )
@@ -73,400 +48,16 @@ from ..analysis.tagging import (
     get_all_tags,
     clear_tag,
 )
+from .workers import (
+    PipelineStage,
+    CellTrackingWorker,
+    GraphExtractWorker,
+    AnalysisWorker,
+    BatchBuildWorker,
+    IOWorker,
+)
 
 logger = logging.getLogger(__name__)
-
-INPUT_SEGMENTATION = "Segmentation Labels"
-INPUT_TRACKS = "Nuclear Tracks"
-INPUT_BOTH = "Both (Labels + Tracks)"
-
-
-class PipelineStage(Enum):
-    IDLE = auto()
-    STAGE1_DONE = auto()
-    STAGE2_DONE = auto()
-    STAGE3_DONE = auto()
-
-
-# ------------------------------------------------------------------
-# Workers
-# ------------------------------------------------------------------
-
-class CellTrackingWorker(QObject):
-    """Track cells via IoU matching on label stack (segmentation Stage 1)."""
-
-    progress = Signal(int, str)
-    finished = Signal(object)  # emits track_map dict
-    error = Signal(Exception)
-
-    def __init__(self, label_stack, min_iou=0.3, max_area_change=0.0):
-        super().__init__()
-        self.label_stack = label_stack
-        self.min_iou = min_iou
-        self.max_area_change = float('inf') if max_area_change == 0 else max_area_change
-
-    def run(self):
-        try:
-            self.progress.emit(10, "Running cell tracking...")
-            track_map = assign_track_ids(
-                self.label_stack,
-                min_iou=self.min_iou,
-                max_area_change=self.max_area_change,
-            )
-            self.progress.emit(100, "Cell tracking complete.")
-            self.finished.emit(track_map)
-        except Exception as e:
-            self.error.emit(e)
-
-
-class GraphExtractWorker(QObject):
-    """Extract per-frame graphs (no tracking)."""
-
-    progress = Signal(int, str)
-    finished = Signal(object)
-    error = Signal(Exception)
-
-    def __init__(self, input_type, label_stack=None, track_positions=None,
-                 trackmate_data=None, pixel_size=None, time_interval=None,
-                 voronoi_method=VoronoiMethod.STANDARD,
-                 lloyd_iterations=10, lloyd_tol=0.1,
-                 dilation_radius=1, min_overlap_pixels=5,
-                 min_edge_length=0.0, filter_isolated=True,
-                 min_border_edge_length=5.0):
-        super().__init__()
-        self.input_type = input_type
-        self.label_stack = label_stack
-        self.track_positions = track_positions
-        self.trackmate_data = trackmate_data
-        self.pixel_size = pixel_size
-        self.time_interval = time_interval
-        self.voronoi_method = voronoi_method
-        self.lloyd_iterations = lloyd_iterations
-        self.lloyd_tol = lloyd_tol
-        self.dilation_radius = dilation_radius
-        self.min_overlap_pixels = min_overlap_pixels
-        self.min_edge_length = min_edge_length
-        self.filter_isolated = filter_isolated
-        self.min_border_edge_length = min_border_edge_length
-
-    def run(self):
-        try:
-            self.progress.emit(10, "Extracting graphs...")
-
-            if self.input_type == INPUT_SEGMENTATION:
-                series = extract_graphs_from_labels(
-                    self.label_stack,
-                    pixel_size=self.pixel_size,
-                    time_interval=self.time_interval,
-                    dilation_radius=self.dilation_radius,
-                    min_overlap_pixels=self.min_overlap_pixels,
-                    min_edge_length=self.min_edge_length,
-                    filter_isolated=self.filter_isolated,
-                    min_border_edge_length=self.min_border_edge_length,
-                )
-            elif self.input_type == INPUT_TRACKS:
-                if self.trackmate_data is not None:
-                    series = extract_graphs_from_trackmate(
-                        self.trackmate_data,
-                        pixel_size=self.pixel_size,
-                        time_interval=self.time_interval,
-                        method=self.voronoi_method,
-                        lloyd_iterations=self.lloyd_iterations,
-                        lloyd_tol=self.lloyd_tol,
-                    )
-                else:
-                    series = extract_graphs_from_tracks(
-                        self.track_positions,
-                        pixel_size=self.pixel_size,
-                        time_interval=self.time_interval,
-                        method=self.voronoi_method,
-                        lloyd_iterations=self.lloyd_iterations,
-                        lloyd_tol=self.lloyd_tol,
-                    )
-            else:
-                series = extract_graphs_from_both(
-                    self.label_stack,
-                    pixel_size=self.pixel_size,
-                    time_interval=self.time_interval,
-                    dilation_radius=self.dilation_radius,
-                    min_overlap_pixels=self.min_overlap_pixels,
-                    min_edge_length=self.min_edge_length,
-                    filter_isolated=self.filter_isolated,
-                    min_border_edge_length=self.min_border_edge_length,
-                )
-
-            self.progress.emit(100, "Graphs extracted.")
-            self.finished.emit(series)
-        except Exception as e:
-            self.error.emit(e)
-
-
-class TrackingWorker(QObject):
-    """Stage 2: assign tracking IDs."""
-
-    progress = Signal(int, str)
-    finished = Signal(object)
-    error = Signal(Exception)
-
-    def __init__(self, series, input_type, label_stack=None,
-                 trackmate_data=None, min_iou=0.3, match_threshold=10.0,
-                 max_area_change=0.0):
-        super().__init__()
-        self.series = series
-        self.input_type = input_type
-        self.label_stack = label_stack
-        self.trackmate_data = trackmate_data
-        self.min_iou = min_iou
-        self.match_threshold = match_threshold
-        # 0 in the UI means "no limit"
-        self.max_area_change = float('inf') if max_area_change == 0 else max_area_change
-
-    def run(self):
-        try:
-            self.progress.emit(10, "Running tracking...")
-
-            if self.input_type == INPUT_SEGMENTATION:
-                assign_tracking_labels(
-                    self.series, self.label_stack,
-                    min_iou=self.min_iou, max_area_change=self.max_area_change,
-                )
-            elif self.input_type == INPUT_TRACKS:
-                if self.trackmate_data is not None:
-                    assign_tracking_trackmate(self.series, self.trackmate_data)
-                # Points-only tracks mode has no separate tracking source
-            else:
-                assign_tracking_trackmate(
-                    self.series, self.trackmate_data,
-                    match_threshold=self.match_threshold,
-                )
-
-            self.progress.emit(100, "Tracking complete.")
-            self.finished.emit(self.series)
-        except Exception as e:
-            self.error.emit(e)
-
-
-class AnalysisWorker(QObject):
-    """Stage 3: T1 detection + edge trajectories."""
-
-    progress = Signal(int, str)
-    finished = Signal(object)
-    error = Signal(Exception)
-
-    def __init__(self, series, min_junction_length=0.0, max_t1_distance=0.0,
-                 min_traj_frames=1, min_completeness=0.0, max_gap=0):
-        super().__init__()
-        self.series = series
-        self.min_junction_length = min_junction_length
-        # 0 in the UI means "no limit"
-        self.max_t1_distance = float('inf') if max_t1_distance == 0 else max_t1_distance
-        self.min_traj_frames = min_traj_frames
-        self.min_completeness = min_completeness
-        self.max_gap = max_gap
-
-    def run(self):
-        try:
-            self.progress.emit(10, "Detecting T1 events...")
-            events = detect_t1_events(
-                self.series,
-                min_junction_length=self.min_junction_length,
-                max_t1_distance=self.max_t1_distance,
-            )
-
-            self.progress.emit(60, "Building edge trajectories...")
-            build_edge_trajectories(self.series, events)
-
-            # Filter trajectories if any non-default filtering requested
-            if (self.min_traj_frames > 1 or self.min_completeness > 0
-                    or self.max_gap > 0):
-                self.progress.emit(80, "Filtering trajectories...")
-                self.series.edge_trajectories = filter_trajectories(
-                    self.series,
-                    min_frames=self.min_traj_frames,
-                    min_completeness=self.min_completeness,
-                    max_gap=self.max_gap,
-                )
-
-            self.progress.emit(100, "Analysis complete.")
-            self.finished.emit(self.series)
-        except Exception as e:
-            self.error.emit(e)
-
-
-class BatchBuildWorker(QObject):
-    """Build multiple tissues in a background thread, returns a list."""
-
-    progress = Signal(int, str)
-    finished = Signal(object)  # emits list of TissueGraphTimeSeries
-    error = Signal(Exception)
-
-    def __init__(
-        self,
-        input_type: str,
-        label_stacks=None,
-        track_positions=None,
-        trackmate_data_list=None,
-        pixel_size=None,
-        time_interval=None,
-        voronoi_method=VoronoiMethod.STANDARD,
-        lloyd_iterations=10,
-        lloyd_tol=0.1,
-        min_iou=0.3,
-        match_threshold=10.0,
-        max_area_change=0.0,
-        min_junction_length=0.0,
-        max_t1_distance=0.0,
-        min_traj_frames=1,
-        min_completeness=0.0,
-        max_gap=0,
-    ):
-        super().__init__()
-        self.input_type = input_type
-        self.label_stacks = label_stacks
-        self.track_positions = track_positions
-        self.trackmate_data_list = trackmate_data_list
-        self.pixel_size = pixel_size
-        self.time_interval = time_interval
-        self.voronoi_method = voronoi_method
-        self.lloyd_iterations = lloyd_iterations
-        self.lloyd_tol = lloyd_tol
-        self.min_iou = min_iou
-        self.match_threshold = match_threshold
-        self.max_area_change = float('inf') if max_area_change == 0 else max_area_change
-        self.min_junction_length = min_junction_length
-        self.max_t1_distance = float('inf') if max_t1_distance == 0 else max_t1_distance
-        self.min_traj_frames = min_traj_frames
-        self.min_completeness = min_completeness
-        self.max_gap = max_gap
-
-    def _analyze_series(self, series):
-        """Run T1 detection, trajectory building, and filtering on a series."""
-        detect_t1_events(
-            series,
-            min_junction_length=self.min_junction_length,
-            max_t1_distance=self.max_t1_distance,
-        )
-        build_edge_trajectories(series, series.t1_events)
-        if (self.min_traj_frames > 1 or self.min_completeness > 0
-                or self.max_gap > 0):
-            series.edge_trajectories = filter_trajectories(
-                series,
-                min_frames=self.min_traj_frames,
-                min_completeness=self.min_completeness,
-                max_gap=self.max_gap,
-            )
-
-    def run(self):
-        try:
-            results = []
-
-            if self.input_type == INPUT_SEGMENTATION:
-                n = len(self.label_stacks)
-                for i, stack in enumerate(self.label_stacks):
-                    self.progress.emit(
-                        int((i / n) * 80),
-                        f"Building tissue {i + 1}/{n}...",
-                    )
-                    series = build_from_labels(
-                        stack,
-                        pixel_size=self.pixel_size,
-                        time_interval=self.time_interval,
-                        min_iou=self.min_iou,
-                        max_area_change=self.max_area_change,
-                    )
-                    detect_t1_events(
-                        series,
-                        min_junction_length=self.min_junction_length,
-                        max_t1_distance=self.max_t1_distance,
-                    )
-                    build_edge_trajectories(series, series.t1_events)
-                    if (self.min_traj_frames > 1 or self.min_completeness > 0
-                            or self.max_gap > 0):
-                        series.edge_trajectories = filter_trajectories(
-                            series,
-                            min_frames=self.min_traj_frames,
-                            min_completeness=self.min_completeness,
-                            max_gap=self.max_gap,
-                        )
-                    results.append(series)
-
-            elif self.input_type == INPUT_TRACKS:
-                if self.trackmate_data_list:
-                    n = len(self.trackmate_data_list)
-                    for i, tm_data in enumerate(self.trackmate_data_list):
-                        self.progress.emit(
-                            int((i / n) * 80),
-                            f"Building tissue {i + 1}/{n}...",
-                        )
-                        series = build_from_trackmate(
-                            tm_data,
-                            pixel_size=self.pixel_size,
-                            time_interval=self.time_interval,
-                            method=self.voronoi_method,
-                            lloyd_iterations=self.lloyd_iterations,
-                            lloyd_tol=self.lloyd_tol,
-                        )
-                        self._analyze_series(series)
-                        results.append(series)
-                else:
-                    # Points layer — single tissue in batch mode
-                    self.progress.emit(10, "Building from points...")
-                    series = build_from_tracks(
-                        self.track_positions,
-                        pixel_size=self.pixel_size,
-                        time_interval=self.time_interval,
-                        method=self.voronoi_method,
-                        lloyd_iterations=self.lloyd_iterations,
-                        lloyd_tol=self.lloyd_tol,
-                    )
-                    self._analyze_series(series)
-                    results.append(series)
-
-            else:
-                # Both mode: pair label stacks with TrackMate files
-                n = len(self.label_stacks)
-                for i in range(n):
-                    self.progress.emit(
-                        int((i / n) * 80),
-                        f"Building tissue {i + 1}/{n}...",
-                    )
-                    series = build_from_both(
-                        self.label_stacks[i],
-                        self.trackmate_data_list[i],
-                        pixel_size=self.pixel_size,
-                        time_interval=self.time_interval,
-                        match_threshold=self.match_threshold,
-                    )
-                    self._analyze_series(series)
-                    results.append(series)
-
-            self.finished.emit(results)
-        except Exception as e:
-            self.error.emit(e)
-
-
-class IOWorker(QObject):
-    """Save or load a dataset in a background thread."""
-
-    finished = Signal(object)  # emits TissueGraphDataset (load) or None (save)
-    error = Signal(Exception)
-
-    def __init__(self, mode: str, path: str, dataset=None):
-        super().__init__()
-        self.mode = mode
-        self.path = path
-        self.dataset = dataset
-
-    def run(self):
-        try:
-            if self.mode == "save":
-                save_dataset(self.dataset, self.path)
-                self.finished.emit(None)
-            else:
-                ds = load_dataset(self.path)
-                self.finished.emit(ds)
-        except Exception as e:
-            self.error.emit(e)
 
 
 # ------------------------------------------------------------------
@@ -478,16 +69,13 @@ class TissueGraphWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self.dataset: Optional[TissueGraphDataset] = None
-        self._trackmate_data_list: List[TrackMateData] = []
         self._batch_label_stacks: List[np.ndarray] = []
-        self._batch_trackmate_data: List[TrackMateData] = []
         self._batch_file_paths: List[str] = []
 
         # Pipeline state
         self._pipeline_stage = PipelineStage.IDLE
         self._preview_series: Optional[TissueGraphTimeSeries] = None
         self._current_label_stack: Optional[np.ndarray] = None
-        self._current_trackmate_data: Optional[TrackMateData] = None
         self._current_track_map: Optional[Dict] = None
         self._tracked_labels_layer = None
         self._stage_layers: Dict[int, list] = {1: [], 2: [], 3: []}
@@ -538,50 +126,6 @@ class TissueGraphWidget(QWidget):
         container.setLayout(layout)
         scroll.setWidget(container)
 
-        # --- Input type ---
-        type_row = QHBoxLayout()
-        type_row.addWidget(QLabel("Input type:"))
-        self.input_type_combo = QComboBox()
-        self.input_type_combo.addItems([INPUT_SEGMENTATION, INPUT_TRACKS, INPUT_BOTH])
-        type_row.addWidget(self.input_type_combo)
-        layout.addLayout(type_row)
-
-        # --- Labels / Image layer dropdown (for segmentation + both modes) ---
-        self.labels_layer_group = QGroupBox("Labels / Image Layer")
-        labels_layout = QHBoxLayout()
-        self.labels_layer_combo = QComboBox()
-        labels_layout.addWidget(self.labels_layer_combo)
-        self.labels_refresh_btn = QPushButton("\u21bb")
-        self.labels_refresh_btn.setFixedWidth(30)
-        labels_layout.addWidget(self.labels_refresh_btn)
-        self.labels_layer_group.setLayout(labels_layout)
-        layout.addWidget(self.labels_layer_group)
-
-        # --- Points layer selection (for tracks mode) ---
-        self.layer_group = QGroupBox("Points Layer")
-        layer_layout = QHBoxLayout()
-        self.layer_combo = QComboBox()
-        layer_layout.addWidget(self.layer_combo)
-        self.refresh_btn = QPushButton("\u21bb")
-        self.refresh_btn.setFixedWidth(30)
-        layer_layout.addWidget(self.refresh_btn)
-        self.layer_group.setLayout(layer_layout)
-        layout.addWidget(self.layer_group)
-
-        # --- TrackMate XML loading (multi-file) ---
-        self.trackmate_group = QGroupBox("TrackMate XML")
-        tm_layout = QVBoxLayout()
-        self.trackmate_load_btn = QPushButton("Load TrackMate XML(s)...")
-        tm_layout.addWidget(self.trackmate_load_btn)
-        self.trackmate_file_list = QListWidget()
-        self.trackmate_file_list.setMaximumHeight(80)
-        tm_layout.addWidget(self.trackmate_file_list)
-        self.trackmate_info_label = QLabel("")
-        self.trackmate_info_label.setWordWrap(True)
-        tm_layout.addWidget(self.trackmate_info_label)
-        self.trackmate_group.setLayout(tm_layout)
-        layout.addWidget(self.trackmate_group)
-
         # --- Parameters ---
         param_group = QGroupBox("Parameters")
         param_layout = QVBoxLayout()
@@ -616,6 +160,11 @@ class TissueGraphWidget(QWidget):
             "QPushButton { font-weight: bold; padding: 6px; }"
         )
         layout.addWidget(self.run_pipeline_btn)
+
+        # Active layer indicator (shown after pipeline starts)
+        self.active_layer_label = QLabel("")
+        self.active_layer_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.active_layer_label)
 
         # Pipeline info labels (always visible)
         self.stage1_info = QLabel("")
@@ -699,14 +248,9 @@ class TissueGraphWidget(QWidget):
         adv_layout = QVBoxLayout()
         adv_layout.setContentsMargins(0, 0, 0, 0)
 
-        # --- Pipeline: Stage 1 ---
-        self.stage1_group = QGroupBox("Stage 1")
+        # --- Pipeline: Stage 1 — Cell Tracking ---
+        self.stage1_group = QGroupBox("Stage 1: Cell Tracking")
         s1_layout = QVBoxLayout()
-
-        # -- Tracking parameters (segmentation Stage 1) --
-        self.s1_tracking_widget = QWidget()
-        s1_track_layout = QVBoxLayout()
-        s1_track_layout.setContentsMargins(0, 0, 0, 0)
 
         iou_row = QHBoxLayout()
         iou_row.addWidget(QLabel("Min IoU:"))
@@ -716,7 +260,7 @@ class TissueGraphWidget(QWidget):
         self.min_iou_spin.setSingleStep(0.05)
         self.min_iou_spin.setValue(0.3)
         iou_row.addWidget(self.min_iou_spin)
-        s1_track_layout.addLayout(iou_row)
+        s1_layout.addLayout(iou_row)
 
         area_row = QHBoxLayout()
         area_row.addWidget(QLabel("Max area change:"))
@@ -730,125 +274,19 @@ class TissueGraphWidget(QWidget):
             "0 = no limit. Try 2.0 to reject segmentation errors."
         )
         area_row.addWidget(self.max_area_change_spin)
-        s1_track_layout.addLayout(area_row)
+        s1_layout.addLayout(area_row)
 
-        self.s1_tracking_widget.setLayout(s1_track_layout)
-        s1_layout.addWidget(self.s1_tracking_widget)
-
-        # -- Graph extraction parameters (non-seg Stage 1) --
-        self.s1_extract_widget = QWidget()
-        s1_ext_layout = QVBoxLayout()
-        s1_ext_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Voronoi parameters (tracks mode only)
-        self.voronoi_widget = QWidget()
-        vor_layout = QVBoxLayout()
-        vor_layout.setContentsMargins(0, 0, 0, 0)
-
-        method_row = QHBoxLayout()
-        method_row.addWidget(QLabel("Method:"))
-        self.voronoi_method_combo = QComboBox()
-        self.voronoi_method_combo.addItems(["Standard", "Lloyd's relaxation"])
-        method_row.addWidget(self.voronoi_method_combo)
-        vor_layout.addLayout(method_row)
-
-        lloyd_row = QHBoxLayout()
-        lloyd_row.addWidget(QLabel("Lloyd iterations:"))
-        self.lloyd_iter_spin = QSpinBox()
-        self.lloyd_iter_spin.setMinimum(0)
-        self.lloyd_iter_spin.setMaximum(100)
-        self.lloyd_iter_spin.setValue(10)
-        lloyd_row.addWidget(self.lloyd_iter_spin)
-        vor_layout.addLayout(lloyd_row)
-
-        self.voronoi_widget.setLayout(vor_layout)
-        s1_ext_layout.addWidget(self.voronoi_widget)
-
-        # Label extraction parameters (both mode Stage 1)
-        self.s1_label_extract_widget = QWidget()
-        s1_le_layout = QVBoxLayout()
-        s1_le_layout.setContentsMargins(0, 0, 0, 0)
-
-        dr_row = QHBoxLayout()
-        dr_row.addWidget(QLabel("Dilation radius:"))
-        self.s1_dilation_radius_spin = QSpinBox()
-        self.s1_dilation_radius_spin.setMinimum(1)
-        self.s1_dilation_radius_spin.setMaximum(20)
-        self.s1_dilation_radius_spin.setValue(1)
-        self.s1_dilation_radius_spin.setToolTip(
-            "Radius for morphological dilation when detecting cell adjacency."
-        )
-        dr_row.addWidget(self.s1_dilation_radius_spin)
-        s1_le_layout.addLayout(dr_row)
-
-        mo_row = QHBoxLayout()
-        mo_row.addWidget(QLabel("Min overlap (px):"))
-        self.s1_min_overlap_spin = QSpinBox()
-        self.s1_min_overlap_spin.setMinimum(1)
-        self.s1_min_overlap_spin.setMaximum(1000)
-        self.s1_min_overlap_spin.setValue(5)
-        self.s1_min_overlap_spin.setToolTip(
-            "Minimum boundary overlap pixels to consider two cells adjacent."
-        )
-        mo_row.addWidget(self.s1_min_overlap_spin)
-        s1_le_layout.addLayout(mo_row)
-
-        mel_row = QHBoxLayout()
-        mel_row.addWidget(QLabel("Min edge length (px):"))
-        self.s1_min_edge_length_spin = QDoubleSpinBox()
-        self.s1_min_edge_length_spin.setMinimum(0.0)
-        self.s1_min_edge_length_spin.setMaximum(1000.0)
-        self.s1_min_edge_length_spin.setSingleStep(1.0)
-        self.s1_min_edge_length_spin.setValue(0.0)
-        self.s1_min_edge_length_spin.setToolTip(
-            "Minimum junction length to keep. Shorter junctions are discarded."
-        )
-        mel_row.addWidget(self.s1_min_edge_length_spin)
-        s1_le_layout.addLayout(mel_row)
-
-        self.s1_filter_isolated_cb = QCheckBox("Tag border edges")
-        self.s1_filter_isolated_cb.setChecked(True)
-        self.s1_filter_isolated_cb.setToolTip(
-            "Tag border/isolated edges as 'border' for downstream filtering."
-        )
-        s1_le_layout.addWidget(self.s1_filter_isolated_cb)
-
-        mbel_row = QHBoxLayout()
-        mbel_row.addWidget(QLabel("Min border edge (px):"))
-        self.s1_min_border_edge_spin = QDoubleSpinBox()
-        self.s1_min_border_edge_spin.setMinimum(0.0)
-        self.s1_min_border_edge_spin.setMaximum(1000.0)
-        self.s1_min_border_edge_spin.setSingleStep(1.0)
-        self.s1_min_border_edge_spin.setValue(5.0)
-        self.s1_min_border_edge_spin.setToolTip(
-            "Minimum length for a border boundary segment to count as a real\n"
-            "border edge. Increase to ignore small segmentation holes."
-        )
-        mbel_row.addWidget(self.s1_min_border_edge_spin)
-        s1_le_layout.addLayout(mbel_row)
-
-        self.s1_label_extract_widget.setLayout(s1_le_layout)
-        s1_ext_layout.addWidget(self.s1_label_extract_widget)
-
-        self.s1_extract_widget.setLayout(s1_ext_layout)
-        s1_layout.addWidget(self.s1_extract_widget)
-
-        self.stage1_btn = QPushButton("Run Stage 1")
+        self.stage1_btn = QPushButton("Run Tracking")
         s1_layout.addWidget(self.stage1_btn)
         self.stage1_group.setLayout(s1_layout)
         adv_layout.addWidget(self.stage1_group)
 
-        # --- Pipeline: Stage 2 ---
-        self.stage2_group = QGroupBox("Stage 2")
+        # --- Pipeline: Stage 2 — Graph Extraction ---
+        self.stage2_group = QGroupBox("Stage 2: Graph Extraction")
         s2_layout = QVBoxLayout()
 
-        # -- Graph extraction parameters (segmentation Stage 2) --
-        self.s2_extract_widget = QWidget()
-        s2_ext_layout = QVBoxLayout()
-        s2_ext_layout.setContentsMargins(0, 0, 0, 0)
-
-        dr_row2 = QHBoxLayout()
-        dr_row2.addWidget(QLabel("Dilation radius:"))
+        dr_row = QHBoxLayout()
+        dr_row.addWidget(QLabel("Dilation radius:"))
         self.dilation_radius_spin = QSpinBox()
         self.dilation_radius_spin.setMinimum(1)
         self.dilation_radius_spin.setMaximum(20)
@@ -856,11 +294,11 @@ class TissueGraphWidget(QWidget):
         self.dilation_radius_spin.setToolTip(
             "Radius for morphological dilation when detecting cell adjacency."
         )
-        dr_row2.addWidget(self.dilation_radius_spin)
-        s2_ext_layout.addLayout(dr_row2)
+        dr_row.addWidget(self.dilation_radius_spin)
+        s2_layout.addLayout(dr_row)
 
-        mo_row2 = QHBoxLayout()
-        mo_row2.addWidget(QLabel("Min overlap (px):"))
+        mo_row = QHBoxLayout()
+        mo_row.addWidget(QLabel("Min overlap (px):"))
         self.min_overlap_spin = QSpinBox()
         self.min_overlap_spin.setMinimum(1)
         self.min_overlap_spin.setMaximum(1000)
@@ -868,11 +306,11 @@ class TissueGraphWidget(QWidget):
         self.min_overlap_spin.setToolTip(
             "Minimum boundary overlap pixels to consider two cells adjacent."
         )
-        mo_row2.addWidget(self.min_overlap_spin)
-        s2_ext_layout.addLayout(mo_row2)
+        mo_row.addWidget(self.min_overlap_spin)
+        s2_layout.addLayout(mo_row)
 
-        mel_row2 = QHBoxLayout()
-        mel_row2.addWidget(QLabel("Min edge length (px):"))
+        mel_row = QHBoxLayout()
+        mel_row.addWidget(QLabel("Min edge length (px):"))
         self.min_edge_length_spin = QDoubleSpinBox()
         self.min_edge_length_spin.setMinimum(0.0)
         self.min_edge_length_spin.setMaximum(1000.0)
@@ -881,18 +319,18 @@ class TissueGraphWidget(QWidget):
         self.min_edge_length_spin.setToolTip(
             "Minimum junction length to keep. Shorter junctions are discarded."
         )
-        mel_row2.addWidget(self.min_edge_length_spin)
-        s2_ext_layout.addLayout(mel_row2)
+        mel_row.addWidget(self.min_edge_length_spin)
+        s2_layout.addLayout(mel_row)
 
         self.filter_isolated_cb = QCheckBox("Tag border edges")
         self.filter_isolated_cb.setChecked(True)
         self.filter_isolated_cb.setToolTip(
             "Tag border/isolated edges as 'border' for downstream filtering."
         )
-        s2_ext_layout.addWidget(self.filter_isolated_cb)
+        s2_layout.addWidget(self.filter_isolated_cb)
 
-        mbel_row2 = QHBoxLayout()
-        mbel_row2.addWidget(QLabel("Min border edge (px):"))
+        mbel_row = QHBoxLayout()
+        mbel_row.addWidget(QLabel("Min border edge (px):"))
         self.min_border_edge_spin = QDoubleSpinBox()
         self.min_border_edge_spin.setMinimum(0.0)
         self.min_border_edge_spin.setMaximum(1000.0)
@@ -902,44 +340,18 @@ class TissueGraphWidget(QWidget):
             "Minimum length for a border boundary segment to count as a real\n"
             "border edge. Increase to ignore small segmentation holes."
         )
-        mbel_row2.addWidget(self.min_border_edge_spin)
-        s2_ext_layout.addLayout(mbel_row2)
+        mbel_row.addWidget(self.min_border_edge_spin)
+        s2_layout.addLayout(mbel_row)
 
-        self.s2_extract_widget.setLayout(s2_ext_layout)
-        s2_layout.addWidget(self.s2_extract_widget)
-
-        # -- Tracking parameters (non-seg Stage 2) --
-        self.s2_tracking_widget = QWidget()
-        s2_track_layout = QVBoxLayout()
-        s2_track_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Match threshold (Both mode)
-        self.match_threshold_row = QWidget()
-        mt_layout = QHBoxLayout()
-        mt_layout.setContentsMargins(0, 0, 0, 0)
-        mt_layout.addWidget(QLabel("Match threshold (px):"))
-        self.match_threshold_spin = QDoubleSpinBox()
-        self.match_threshold_spin.setMinimum(1.0)
-        self.match_threshold_spin.setMaximum(100.0)
-        self.match_threshold_spin.setSingleStep(1.0)
-        self.match_threshold_spin.setValue(10.0)
-        mt_layout.addWidget(self.match_threshold_spin)
-        self.match_threshold_row.setLayout(mt_layout)
-        s2_track_layout.addWidget(self.match_threshold_row)
-
-        self.s2_tracking_widget.setLayout(s2_track_layout)
-        s2_layout.addWidget(self.s2_tracking_widget)
-
-        self.stage2_btn = QPushButton("Run Stage 2")
+        self.stage2_btn = QPushButton("Extract Graphs")
         s2_layout.addWidget(self.stage2_btn)
         self.stage2_group.setLayout(s2_layout)
         adv_layout.addWidget(self.stage2_group)
 
-        # --- Pipeline: Stage 3 ---
+        # --- Pipeline: Stage 3 — T1 + Edge Tracking ---
         self.stage3_group = QGroupBox("Stage 3: T1 + Edge Tracking")
         s3_layout = QVBoxLayout()
 
-        # T1 detection parameters
         mjl_row = QHBoxLayout()
         mjl_row.addWidget(QLabel("Min junction length (px):"))
         self.min_junction_length_spin = QDoubleSpinBox()
@@ -968,7 +380,6 @@ class TissueGraphWidget(QWidget):
         mtd_row.addWidget(self.max_t1_distance_spin)
         s3_layout.addLayout(mtd_row)
 
-        # Trajectory filtering parameters
         mtf_row = QHBoxLayout()
         mtf_row.addWidget(QLabel("Min trajectory frames:"))
         self.min_traj_frames_spin = QSpinBox()
@@ -1085,22 +496,10 @@ class TissueGraphWidget(QWidget):
 
         layout.addStretch()
 
-        # Set initial visibility and button state
-        self._update_input_mode()
+        # Set initial button state
         self._update_pipeline_buttons()
 
     def _connect_signals(self):
-        self.input_type_combo.currentIndexChanged.connect(self._update_input_mode)
-        self.labels_refresh_btn.clicked.connect(self._refresh_layers)
-        self.refresh_btn.clicked.connect(self._refresh_layers)
-        self.trackmate_load_btn.clicked.connect(self._load_trackmate_xml)
-        self.voronoi_method_combo.currentIndexChanged.connect(self._update_lloyd_visibility)
-
-        # Auto-sync layer dropdowns when layers are added/removed/renamed
-        self.viewer.layers.events.inserted.connect(self._refresh_layers)
-        self.viewer.layers.events.removed.connect(self._refresh_layers)
-        self.viewer.layers.events.changed.connect(self._refresh_layers)
-
         # Run Pipeline (one-click)
         self.run_pipeline_btn.clicked.connect(self._run_full_pipeline)
 
@@ -1135,8 +534,6 @@ class TissueGraphWidget(QWidget):
         self.load_dataset_btn.clicked.connect(self._load_dataset)
         self.new_dataset_btn.clicked.connect(self._new_dataset)
 
-        self._refresh_layers()
-
     # ------------------------------------------------------------------
     # Pipeline stage gating
     # ------------------------------------------------------------------
@@ -1151,154 +548,35 @@ class TissueGraphWidget(QWidget):
         self.add_to_dataset_btn.setEnabled(stage == PipelineStage.STAGE3_DONE)
         self.discard_btn.setEnabled(stage != PipelineStage.IDLE)
 
-    # ------------------------------------------------------------------
-    # Input mode switching
-    # ------------------------------------------------------------------
-    def _update_input_mode(self):
-        mode = self.input_type_combo.currentText()
-        is_seg = mode == INPUT_SEGMENTATION
-        is_tracks = mode == INPUT_TRACKS
-        is_both = mode == INPUT_BOTH
-
-        # Input sources
-        self.labels_layer_group.setVisible(is_seg or is_both)
-        self.layer_group.setVisible(is_tracks)
-        self.trackmate_group.setVisible(is_tracks or is_both)
-
-        # Stage 1 & 2: swap params based on mode
-        if is_seg:
-            # Stage 1 = Tracking, Stage 2 = Graph Extraction
-            self.stage1_group.setTitle("Stage 1: Cell Tracking")
-            self.stage1_btn.setText("Run Tracking")
-            self.s1_tracking_widget.setVisible(True)
-            self.s1_extract_widget.setVisible(False)
-
-            self.stage2_group.setTitle("Stage 2: Graph Extraction")
-            self.stage2_btn.setText("Extract Graphs")
-            self.s2_extract_widget.setVisible(True)
-            self.s2_tracking_widget.setVisible(False)
-        else:
-            # Stage 1 = Graph Extraction, Stage 2 = Tracking
-            self.stage1_group.setTitle("Stage 1: Graph Extraction")
-            self.stage1_btn.setText("Extract Graphs")
-            self.s1_tracking_widget.setVisible(False)
-            self.s1_extract_widget.setVisible(True)
-            self.voronoi_widget.setVisible(is_tracks)
-            self.s1_label_extract_widget.setVisible(is_both)
-
-            self.stage2_group.setTitle("Stage 2: Cell Tracking")
-            self.stage2_btn.setText("Run Tracking")
-            self.s2_extract_widget.setVisible(False)
-            self.s2_tracking_widget.setVisible(True)
-            self.match_threshold_row.setVisible(is_both)
-
-        self._update_lloyd_visibility()
-        self._refresh_layers()
-
     def _toggle_advanced(self, checked: bool):
         self.advanced_container.setVisible(checked)
         arrow = "\u25bc" if checked else "\u25b6"
         self.advanced_toggle_btn.setText(f"{arrow} Advanced Parameters")
 
-    def _update_lloyd_visibility(self):
-        is_lloyd = self.voronoi_method_combo.currentIndex() == 1
-        self.lloyd_iter_spin.setEnabled(is_lloyd)
-
-    def _refresh_layers(self, event=None):
+    # ------------------------------------------------------------------
+    # Label stack from viewer (uses active layer)
+    # ------------------------------------------------------------------
+    def _get_active_label_stack(self) -> Optional[np.ndarray]:
+        """Return the data from the active Labels/Image layer, or None."""
         import napari
 
-        # Populate Labels / Image layer dropdown
-        self.labels_layer_combo.clear()
-        for layer in self.viewer.layers:
-            if isinstance(layer, (napari.layers.Labels, napari.layers.Image)):
-                self.labels_layer_combo.addItem(layer.name)
-
-        # Populate Points layer dropdown
-        self.layer_combo.clear()
-        for layer in self.viewer.layers:
-            if isinstance(layer, napari.layers.Points):
-                self.layer_combo.addItem(layer.name)
-
-        # Auto-select the active layer if it matches the expected type
         active = self.viewer.layers.selection.active
-        if active is not None:
-            if isinstance(active, (napari.layers.Labels, napari.layers.Image)):
-                idx = self.labels_layer_combo.findText(active.name)
-                if idx >= 0:
-                    self.labels_layer_combo.setCurrentIndex(idx)
-            elif isinstance(active, napari.layers.Points):
-                idx = self.layer_combo.findText(active.name)
-                if idx >= 0:
-                    self.layer_combo.setCurrentIndex(idx)
-
-    # ------------------------------------------------------------------
-    # TrackMate XML loading (multi-file)
-    # ------------------------------------------------------------------
-    def _load_trackmate_xml(self):
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Select TrackMate XML(s)", "", "XML files (*.xml);;All files (*)"
-        )
-        if not files:
-            return
-
-        self._trackmate_data_list = []
-        self.trackmate_file_list.clear()
-        errors = []
-
-        for path in sorted(files):
-            try:
-                tm_data = parse_trackmate_xml(path)
-                self._trackmate_data_list.append(tm_data)
-                self.trackmate_file_list.addItem(
-                    f"{Path(path).name}  ({tm_data.n_spots} spots, "
-                    f"{tm_data.n_tracks} tracks, {len(tm_data.spots_by_frame)} frames)"
-                )
-            except Exception as e:
-                errors.append(f"{Path(path).name}: {e}")
-
-        n = len(self._trackmate_data_list)
-        total_spots = sum(d.n_spots for d in self._trackmate_data_list)
-        info = f"{n} file(s), {total_spots} spots total"
-        if errors:
-            info += f"\nErrors: {'; '.join(errors)}"
-        self.trackmate_info_label.setText(info)
-
-        # Auto-fill calibration from first file
-        if self._trackmate_data_list:
-            d = self._trackmate_data_list[0]
-            if d.pixel_size_x is not None and not self.pixel_size_edit.text().strip():
-                self.pixel_size_edit.setText(str(d.pixel_size_x))
-            if d.time_interval is not None and not self.time_interval_edit.text().strip():
-                self.time_interval_edit.setText(str(d.time_interval))
-
-    # ------------------------------------------------------------------
-    # Label stack from viewer
-    # ------------------------------------------------------------------
-    def _get_selected_label_stack(self) -> Optional[np.ndarray]:
-        """Return the data from the selected Labels/Image layer, or None.
-
-        Image layers are auto-converted to integer labels by casting unique
-        pixel values to integers.
-        """
-        import napari
-
-        layer_name = self.labels_layer_combo.currentText()
-        if not layer_name:
-            self.status_label.setText("No Labels/Image layer selected.")
+        if active is None:
+            self.status_label.setText("No active layer. Select a Labels or Image layer.")
             return None
-        try:
-            layer = self.viewer.layers[layer_name]
-        except KeyError:
-            self.status_label.setText(f"Layer '{layer_name}' not found.")
+        if not isinstance(active, (napari.layers.Labels, napari.layers.Image)):
+            self.status_label.setText(
+                f"Active layer '{active.name}' is not a Labels or Image layer."
+            )
             return None
 
-        data = layer.data
+        data = active.data
 
         # Auto-convert Image layer data to integer labels
-        if isinstance(layer, napari.layers.Image):
+        if isinstance(active, napari.layers.Image):
             if not np.issubdtype(data.dtype, np.integer):
                 data = np.round(data).astype(np.int32)
-            logger.info("Converted Image layer '%s' to integer labels.", layer_name)
+            logger.info("Converted Image layer '%s' to integer labels.", active.name)
 
         if data.ndim == 2:
             data = data[np.newaxis, ...]
@@ -1307,14 +585,9 @@ class TissueGraphWidget(QWidget):
                 f"Layer must be 2D or 3D (T, H, W), got {data.ndim}D."
             )
             return None
-        return data
 
-    # ------------------------------------------------------------------
-    # Selection helpers
-    # ------------------------------------------------------------------
-    def _selected_trackmate_index(self) -> int:
-        row = self.trackmate_file_list.currentRow()
-        return row if row >= 0 else 0
+        self.active_layer_label.setText(f"Layer: {active.name}")
+        return data
 
     # ------------------------------------------------------------------
     # Run full pipeline (one-click)
@@ -1325,19 +598,10 @@ class TissueGraphWidget(QWidget):
         self._run_stage1()
 
     # ------------------------------------------------------------------
-    # Stage 1: mode-dependent dispatch
+    # Stage 1: Cell Tracking (IoU)
     # ------------------------------------------------------------------
     def _run_stage1(self):
-        input_type = self.input_type_combo.currentText()
-
-        if input_type == INPUT_SEGMENTATION:
-            self._run_seg_tracking()
-        else:
-            self._run_extract()
-
-    def _run_seg_tracking(self):
-        """Segmentation Stage 1: Cell tracking via IoU matching."""
-        label_stack = self._get_selected_label_stack()
+        label_stack = self._get_active_label_stack()
         if label_stack is None:
             return
 
@@ -1349,9 +613,9 @@ class TissueGraphWidget(QWidget):
             min_iou=self.min_iou_spin.value(),
             max_area_change=self.max_area_change_spin.value(),
         )
-        self._run_worker(worker, self._on_seg_tracking_done)
+        self._run_worker(worker, self._on_stage1_done)
 
-    def _on_seg_tracking_done(self, track_map):
+    def _on_stage1_done(self, track_map):
         self._current_track_map = track_map
         self._pipeline_stage = PipelineStage.STAGE1_DONE
         self._finish_worker()
@@ -1395,127 +659,29 @@ class TissueGraphWidget(QWidget):
         if self._auto_pipeline:
             QTimer.singleShot(0, self._run_stage2)
 
-    def _run_extract(self):
-        """Non-segmentation Stage 1 / Segmentation Stage 2: graph extraction."""
-        input_type = self.input_type_combo.currentText()
+    # ------------------------------------------------------------------
+    # Stage 2: Graph Extraction
+    # ------------------------------------------------------------------
+    def _run_stage2(self):
+        if self._current_label_stack is None:
+            return
+
         pixel_size = self._parse_float(self.pixel_size_edit.text())
         time_interval = self._parse_float(self.time_interval_edit.text())
-        voronoi_method = (
-            VoronoiMethod.LLOYD if self.voronoi_method_combo.currentIndex() == 1
-            else VoronoiMethod.STANDARD
-        )
 
-        # Read extraction params from the correct stage group
-        if input_type == INPUT_SEGMENTATION:
-            # Segmentation Stage 2: params in s2_extract_widget
-            dilation_radius = self.dilation_radius_spin.value()
-            min_overlap_pixels = self.min_overlap_spin.value()
-            min_edge_length = self.min_edge_length_spin.value()
-            filter_isolated = self.filter_isolated_cb.isChecked()
-            min_border_edge_length = self.min_border_edge_spin.value()
-        else:
-            # Non-seg Stage 1: params in s1_label_extract_widget
-            dilation_radius = self.s1_dilation_radius_spin.value()
-            min_overlap_pixels = self.s1_min_overlap_spin.value()
-            min_edge_length = self.s1_min_edge_length_spin.value()
-            filter_isolated = self.s1_filter_isolated_cb.isChecked()
-            min_border_edge_length = self.s1_min_border_edge_spin.value()
-
-        kwargs = dict(
-            input_type=input_type,
+        worker = GraphExtractWorker(
+            self._current_label_stack,
             pixel_size=pixel_size,
             time_interval=time_interval,
-            voronoi_method=voronoi_method,
-            lloyd_iterations=self.lloyd_iter_spin.value(),
-            dilation_radius=dilation_radius,
-            min_overlap_pixels=min_overlap_pixels,
-            min_edge_length=min_edge_length,
-            filter_isolated=filter_isolated,
-            min_border_edge_length=min_border_edge_length,
+            dilation_radius=self.dilation_radius_spin.value(),
+            min_overlap_pixels=self.min_overlap_spin.value(),
+            min_edge_length=self.min_edge_length_spin.value(),
+            filter_isolated=self.filter_isolated_cb.isChecked(),
+            min_border_edge_length=self.min_border_edge_spin.value(),
         )
+        self._run_worker(worker, self._on_stage2_done)
 
-        label_stack = None
-        trackmate_data = None
-
-        if input_type == INPUT_SEGMENTATION:
-            # Called as Stage 2 for segmentation — label_stack already stored
-            kwargs["label_stack"] = self._current_label_stack
-            label_stack = self._current_label_stack
-        elif input_type == INPUT_TRACKS:
-            if self._trackmate_data_list:
-                idx = self._selected_trackmate_index()
-                kwargs["trackmate_data"] = self._trackmate_data_list[idx]
-                trackmate_data = self._trackmate_data_list[idx]
-            else:
-                layer_name = self.layer_combo.currentText()
-                if not layer_name:
-                    self.status_label.setText("No layer selected and no TrackMate XML loaded.")
-                    return
-                kwargs["track_positions"] = self.viewer.layers[layer_name].data
-        else:
-            # Both
-            label_stack = self._get_selected_label_stack()
-            if label_stack is None:
-                return
-            if not self._trackmate_data_list:
-                self.status_label.setText("No TrackMate XML loaded.")
-                return
-            kwargs["label_stack"] = label_stack
-            trackmate_data = self._trackmate_data_list[self._selected_trackmate_index()]
-
-        # For non-segmentation, discard previous pipeline and set references
-        if input_type != INPUT_SEGMENTATION:
-            self._discard_pipeline()
-            self._current_label_stack = label_stack
-            self._current_trackmate_data = trackmate_data
-
-        self._run_worker(GraphExtractWorker(**kwargs), self._on_extract_finished)
-
-    def _on_extract_finished(self, series):
-        input_type = self.input_type_combo.currentText()
-
-        if input_type == INPUT_SEGMENTATION:
-            # Segmentation Stage 2: apply track_map after graph extraction
-            self._on_seg_extract_done(series)
-        else:
-            # Non-segmentation Stage 1
-            self._preview_series = series
-            self._pipeline_stage = PipelineStage.STAGE1_DONE
-            self._finish_worker()
-
-            total_cells = sum(len(f.cells) for f in series.frames.values())
-            total_junctions = sum(len(f.junctions) for f in series.frames.values())
-            self.stage1_info.setText(
-                f"{series.num_frames} frames, {total_cells} cells, {total_junctions} junctions"
-            )
-
-            if not self._auto_pipeline:
-                self.status_label.setText("Stage 1 complete. Inspect junctions & centroids, then run tracking.")
-
-                self._remove_stage_layers(1)
-                lines, colors = build_all_junction_lines(series)
-                if lines:
-                    layer = self.viewer.add_shapes(
-                        lines, shape_type="path", edge_color=colors,
-                        edge_width=2, name="[Pipeline] Junctions",
-                    )
-                    self._stage_layers[1].append(layer)
-
-                centroids = build_all_centroids(series)
-                if len(centroids) > 0:
-                    layer = self.viewer.add_points(
-                        centroids, size=5, face_color="yellow",
-                        name="[Pipeline] Cell Centroids",
-                    )
-                    self._stage_layers[1].append(layer)
-
-            self._update_pipeline_buttons()
-
-            if self._auto_pipeline:
-                QTimer.singleShot(0, self._run_stage2)
-
-    def _on_seg_extract_done(self, series):
-        """Segmentation Stage 2 finish: apply track_map, show junctions + tracked centroids."""
+    def _on_stage2_done(self, series):
         if self._current_track_map is not None:
             apply_track_map(series, self._current_track_map)
 
@@ -1557,95 +723,6 @@ class TissueGraphWidget(QWidget):
                 layer = self.viewer.add_points(
                     tracked_pos, size=5, face_color=tracked_colors,
                     name="[Pipeline] Tracked Centroids",
-                )
-                self._stage_layers[2].append(layer)
-
-        self._update_pipeline_buttons()
-
-        if self._auto_pipeline:
-            QTimer.singleShot(0, self._run_analysis)
-
-    # ------------------------------------------------------------------
-    # Stage 2: mode-dependent dispatch
-    # ------------------------------------------------------------------
-    def _run_stage2(self):
-        input_type = self.input_type_combo.currentText()
-
-        if input_type == INPUT_SEGMENTATION:
-            self._run_extract()
-        else:
-            self._run_tracking()
-
-    def _run_tracking(self):
-        if self._preview_series is None:
-            return
-
-        input_type = self.input_type_combo.currentText()
-        kwargs = dict(
-            series=self._preview_series,
-            input_type=input_type,
-            label_stack=self._current_label_stack,
-            trackmate_data=self._current_trackmate_data,
-            min_iou=self.min_iou_spin.value(),
-            match_threshold=self.match_threshold_spin.value(),
-            max_area_change=self.max_area_change_spin.value(),
-        )
-
-        self._run_worker(TrackingWorker(**kwargs), self._on_tracking_finished)
-
-    def _on_tracking_finished(self, series):
-        self._preview_series = series
-        self._pipeline_stage = PipelineStage.STAGE2_DONE
-        self._finish_worker()
-
-        # Count unique track_ids, births, deaths
-        all_track_ids = set()
-        for frame in series.frames.values():
-            for cell in frame.cells.values():
-                if cell.track_id is not None:
-                    all_track_ids.add(cell.track_id)
-
-        positions, types = build_track_breaks(series)
-        n_births = types.count("birth")
-        n_deaths = types.count("death")
-
-        self.stage2_info.setText(
-            f"{len(all_track_ids)} tracks, {n_births} births, {n_deaths} deaths"
-        )
-
-        if not self._auto_pipeline:
-            self.status_label.setText("Stage 2 complete. Inspect track colors, then run analysis.")
-
-            # Replace yellow centroids with track-colored centroids
-            self._remove_stage_layers(2)
-
-            tracked_pos, tracked_colors, _ = build_tracked_centroids(series)
-            if len(tracked_pos) > 0:
-                # Remove stage 1 centroid layer, keep junction layer
-                self._stage_layers[1] = [
-                    l for l in self._stage_layers[1]
-                    if l in self.viewer.layers and "Centroid" not in l.name
-                ]
-                # Remove old centroid layer from viewer
-                for l in list(self.viewer.layers):
-                    if l.name == "[Pipeline] Cell Centroids":
-                        self.viewer.layers.remove(l)
-
-                layer = self.viewer.add_points(
-                    tracked_pos, size=5, face_color=tracked_colors,
-                    name="[Pipeline] Tracked Centroids",
-                )
-                self._stage_layers[2].append(layer)
-
-            # Add track break markers
-            if len(positions) > 0:
-                break_colors = [
-                    [0.0, 1.0, 0.0, 1.0] if t == "birth" else [1.0, 0.0, 0.0, 1.0]
-                    for t in types
-                ]
-                layer = self.viewer.add_points(
-                    positions, size=10, face_color=break_colors,
-                    symbol="diamond", name="[Pipeline] Track Breaks",
                 )
                 self._stage_layers[2].append(layer)
 
@@ -1726,7 +803,6 @@ class TissueGraphWidget(QWidget):
         self._remove_all_stage_layers()
         self._preview_series = None
         self._current_label_stack = None
-        self._current_trackmate_data = None
         self._current_track_map = None
         if self._tracked_labels_layer is not None:
             if self._tracked_labels_layer in self.viewer.layers:
@@ -1745,7 +821,6 @@ class TissueGraphWidget(QWidget):
         self.tagging_group.setVisible(False)
         self._preview_series = None
         self._current_label_stack = None
-        self._current_trackmate_data = None
         self._current_track_map = None
         if self._tracked_labels_layer is not None:
             if self._tracked_labels_layer in self.viewer.layers:
@@ -1756,6 +831,7 @@ class TissueGraphWidget(QWidget):
         self._clear_stage_info()
 
     def _clear_stage_info(self):
+        self.active_layer_label.setText("")
         self.stage1_info.setText("")
         self.stage2_info.setText("")
         self.stage3_info.setText("")
@@ -1764,90 +840,32 @@ class TissueGraphWidget(QWidget):
     # Batch file management
     # ------------------------------------------------------------------
     def _load_batch_files(self):
-        """Load files for batch processing based on current input type."""
-        input_type = self.input_type_combo.currentText()
-
-        if input_type == INPUT_SEGMENTATION:
-            files, _ = QFileDialog.getOpenFileNames(
-                self, "Select Label Files",
-                "", "Image files (*.tif *.tiff *.npy *.npz);;All files (*)",
-            )
-            if not files:
-                return
-            self._batch_label_stacks = []
-            self._batch_file_paths = []
-            self.batch_file_list.clear()
-            errors = []
-            for path in sorted(files):
-                try:
-                    stack = self._load_label_file(path)
-                    self._batch_label_stacks.append(stack)
-                    self._batch_file_paths.append(path)
-                    self.batch_file_list.addItem(
-                        f"{Path(path).name}  ({stack.shape[0]} frames, "
-                        f"{stack.shape[1]}x{stack.shape[2]})"
-                    )
-                except Exception as e:
-                    errors.append(f"{Path(path).name}: {e}")
-            info = f"{len(self._batch_label_stacks)} file(s) loaded"
-            if errors:
-                info += f"\nErrors: {'; '.join(errors)}"
-            self.batch_file_info.setText(info)
-
-        elif input_type == INPUT_TRACKS:
-            files, _ = QFileDialog.getOpenFileNames(
-                self, "Select TrackMate XML(s)",
-                "", "XML files (*.xml);;All files (*)",
-            )
-            if not files:
-                return
-            self._batch_trackmate_data = []
-            self._batch_file_paths = []
-            self.batch_file_list.clear()
-            errors = []
-            for path in sorted(files):
-                try:
-                    tm_data = parse_trackmate_xml(path)
-                    self._batch_trackmate_data.append(tm_data)
-                    self._batch_file_paths.append(path)
-                    self.batch_file_list.addItem(
-                        f"{Path(path).name}  ({tm_data.n_spots} spots, "
-                        f"{tm_data.n_tracks} tracks)"
-                    )
-                except Exception as e:
-                    errors.append(f"{Path(path).name}: {e}")
-            info = f"{len(self._batch_trackmate_data)} file(s) loaded"
-            if errors:
-                info += f"\nErrors: {'; '.join(errors)}"
-            self.batch_file_info.setText(info)
-
-        else:
-            # Both mode: load TrackMate XMLs (labels come from viewer)
-            files, _ = QFileDialog.getOpenFileNames(
-                self, "Select TrackMate XML(s)",
-                "", "XML files (*.xml);;All files (*)",
-            )
-            if not files:
-                return
-            self._batch_trackmate_data = []
-            self._batch_file_paths = []
-            self.batch_file_list.clear()
-            errors = []
-            for path in sorted(files):
-                try:
-                    tm_data = parse_trackmate_xml(path)
-                    self._batch_trackmate_data.append(tm_data)
-                    self._batch_file_paths.append(path)
-                    self.batch_file_list.addItem(
-                        f"{Path(path).name}  ({tm_data.n_spots} spots, "
-                        f"{tm_data.n_tracks} tracks)"
-                    )
-                except Exception as e:
-                    errors.append(f"{Path(path).name}: {e}")
-            info = f"{len(self._batch_trackmate_data)} file(s) loaded"
-            if errors:
-                info += f"\nErrors: {'; '.join(errors)}"
-            self.batch_file_info.setText(info)
+        """Load label files for batch processing."""
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select Label Files",
+            "", "Image files (*.tif *.tiff *.npy *.npz);;All files (*)",
+        )
+        if not files:
+            return
+        self._batch_label_stacks = []
+        self._batch_file_paths = []
+        self.batch_file_list.clear()
+        errors = []
+        for path in sorted(files):
+            try:
+                stack = self._load_label_file(path)
+                self._batch_label_stacks.append(stack)
+                self._batch_file_paths.append(path)
+                self.batch_file_list.addItem(
+                    f"{Path(path).name}  ({stack.shape[0]} frames, "
+                    f"{stack.shape[1]}x{stack.shape[2]})"
+                )
+            except Exception as e:
+                errors.append(f"{Path(path).name}: {e}")
+        info = f"{len(self._batch_label_stacks)} file(s) loaded"
+        if errors:
+            info += f"\nErrors: {'; '.join(errors)}"
+        self.batch_file_info.setText(info)
 
     @staticmethod
     def _load_label_file(path: str) -> np.ndarray:
@@ -1876,7 +894,6 @@ class TissueGraphWidget(QWidget):
 
     def _clear_batch_files(self):
         self._batch_label_stacks = []
-        self._batch_trackmate_data = []
         self._batch_file_paths = []
         self.batch_file_list.clear()
         self.batch_file_info.setText("")
@@ -1885,22 +902,18 @@ class TissueGraphWidget(QWidget):
     # Batch build (monolithic, no per-stage QC)
     # ------------------------------------------------------------------
     def _build_batch(self):
-        input_type = self.input_type_combo.currentText()
+        if not self._batch_label_stacks:
+            self.status_label.setText("Load label files first using 'Load Files...'.")
+            return
+
         pixel_size = self._parse_float(self.pixel_size_edit.text())
         time_interval = self._parse_float(self.time_interval_edit.text())
-        voronoi_method = (
-            VoronoiMethod.LLOYD if self.voronoi_method_combo.currentIndex() == 1
-            else VoronoiMethod.STANDARD
-        )
 
-        kwargs = dict(
-            input_type=input_type,
+        worker = BatchBuildWorker(
+            label_stacks=self._batch_label_stacks,
             pixel_size=pixel_size,
             time_interval=time_interval,
-            voronoi_method=voronoi_method,
-            lloyd_iterations=self.lloyd_iter_spin.value(),
             min_iou=self.min_iou_spin.value(),
-            match_threshold=self.match_threshold_spin.value(),
             max_area_change=self.max_area_change_spin.value(),
             min_junction_length=self.min_junction_length_spin.value(),
             max_t1_distance=self.max_t1_distance_spin.value(),
@@ -1908,36 +921,7 @@ class TissueGraphWidget(QWidget):
             min_completeness=self.min_completeness_spin.value(),
             max_gap=self.max_gap_spin.value(),
         )
-
-        if input_type == INPUT_SEGMENTATION:
-            if not self._batch_label_stacks:
-                self.status_label.setText("Load label files first using 'Load Files...'.")
-                return
-            kwargs["label_stacks"] = self._batch_label_stacks
-        elif input_type == INPUT_TRACKS:
-            if self._batch_trackmate_data:
-                kwargs["trackmate_data_list"] = self._batch_trackmate_data
-            elif self._trackmate_data_list:
-                kwargs["trackmate_data_list"] = self._trackmate_data_list
-            else:
-                layer_name = self.layer_combo.currentText()
-                if not layer_name:
-                    self.status_label.setText("No files loaded and no layer selected.")
-                    return
-                kwargs["track_positions"] = self.viewer.layers[layer_name].data
-        else:
-            # Both mode: labels from viewer + TrackMate XMLs
-            tm_list = self._batch_trackmate_data or self._trackmate_data_list
-            if not tm_list:
-                self.status_label.setText("No TrackMate XML loaded.")
-                return
-            label_stack = self._get_selected_label_stack()
-            if label_stack is None:
-                return
-            kwargs["label_stacks"] = [label_stack] * len(tm_list)
-            kwargs["trackmate_data_list"] = tm_list
-
-        self._run_worker(BatchBuildWorker(**kwargs), self._on_batch_finished)
+        self._run_worker(worker, self._on_batch_finished)
 
     def _on_batch_finished(self, series_list):
         self._ensure_dataset()
