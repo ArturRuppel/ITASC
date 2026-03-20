@@ -412,21 +412,17 @@ The main TissueGraphWidget should always work with segmentation labels. The Voro
 tessellation path (creating labels from nuclear tracks) is a preprocessing step that
 belongs in its own widget or tool.
 
-### 15a. Extract Voronoi preprocessing into separate widget
-- [ ] Create a dedicated widget (e.g. `VoronoiLabelWidget`) that takes nuclear tracks (Points layer or TrackMate XML) and produces a Labels layer via Voronoi tessellation
-- [ ] Expose Voronoi method (Standard / Lloyd's), Lloyd iterations, and other tessellation parameters
-- [ ] Output: a napari Labels layer that can then be used as input to the main TissueGraphWidget
-- [ ] Register as a separate dock widget in `napari.yaml`
+### 15a. Refactor main widget architecture
+- [x] Extract workers into `napari/workers.py`
+- [x] Remove input type mode switching; main widget is segmentation-only
+- [x] Use active layer instead of layer dropdown
+- [x] Create per-viewer registry (`napari/registry.py`) for shared state between widgets
 
-### 15b. Simplify main widget to segmentation-only
-- [ ] Remove Nuclear Tracks and Both input modes from TissueGraphWidget
-- [ ] Remove Voronoi parameters from the main widget
-- [ ] Main widget always expects a Labels/Image layer as input
-- [ ] Simplify pipeline: always Track → Extract → Analyze (no mode-dependent stage swapping)
-
-### 15c. Preserve TrackMate tracking integration
-- [ ] The Voronoi widget should optionally output track IDs alongside labels (stored as layer metadata or a separate Points layer)
-- [ ] Main widget can pick up track IDs from the Voronoi-generated labels, avoiding redundant IoU tracking
+### 15b. Create Nuclear Tracks widget
+- [ ] Add `voronoi_to_labels()` in `core/voronoi.py` (rasterize Voronoi → Labels layer)
+- [ ] Create Nuclear Tracks widget (`napari/tracks_widget.py`) — TrackMate XML loading, Voronoi → Labels layer, track ID assignment
+- [ ] Register both widgets in `napari.yaml`
+- [ ] Clean up unused core functions and `InputType` enum values
 
 ---
 
