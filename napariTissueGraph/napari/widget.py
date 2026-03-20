@@ -29,7 +29,7 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import QThread, Qt, QTimer
 
-from ..structures import TissueGraphDataset, TissueGraphTimeSeries
+from ..structures import TissueGraphTimeSeries
 from ..core.graph import apply_track_map
 from .visualization import (
     build_all_junction_lines,
@@ -56,6 +56,7 @@ from .workers import (
     BatchBuildWorker,
     IOWorker,
 )
+from .registry import get_state
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class TissueGraphWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
-        self.dataset: Optional[TissueGraphDataset] = None
+        self._state = get_state(napari_viewer)
         self._batch_label_stacks: List[np.ndarray] = []
         self._batch_file_paths: List[str] = []
 
@@ -534,6 +535,9 @@ class TissueGraphWidget(QWidget):
         self.load_dataset_btn.clicked.connect(self._load_dataset)
         self.new_dataset_btn.clicked.connect(self._new_dataset)
 
+        # Registry: react to dataset changes from any widget
+        self._state.dataset_changed.connect(self._update_dataset_ui)
+
     # ------------------------------------------------------------------
     # Pipeline stage gating
     # ------------------------------------------------------------------
@@ -798,8 +802,12 @@ class TissueGraphWidget(QWidget):
     def _add_preview_to_dataset(self):
         if self._preview_series is None:
             return
-        self._ensure_dataset()
-        tid = self.dataset.add_tissue(self._preview_series)
+        self._state.ensure_dataset(
+            condition=self.condition_edit.text().strip(),
+            pixel_size=self._parse_float(self.pixel_size_edit.text()),
+            time_interval=self._parse_float(self.time_interval_edit.text()),
+        )
+        tid = self._state.add_tissue(self._preview_series)
         self._remove_all_stage_layers()
         self._preview_series = None
         self._current_label_stack = None
@@ -812,7 +820,6 @@ class TissueGraphWidget(QWidget):
         self._update_pipeline_buttons()
         self._clear_stage_info()
         self.status_label.setText(f"Added tissue {tid} to dataset.")
-        self._update_dataset_ui()
 
     def _discard_pipeline(self):
         self._remove_all_stage_layers()
@@ -924,29 +931,24 @@ class TissueGraphWidget(QWidget):
         self._run_worker(worker, self._on_batch_finished)
 
     def _on_batch_finished(self, series_list):
-        self._ensure_dataset()
+        self._state.ensure_dataset(
+            condition=self.condition_edit.text().strip(),
+            pixel_size=self._parse_float(self.pixel_size_edit.text()),
+            time_interval=self._parse_float(self.time_interval_edit.text()),
+        )
         for series in series_list:
-            self.dataset.add_tissue(series)
+            self._state.add_tissue(series)
 
         self._finish_worker()
         n = len(series_list)
         self.status_label.setText(f"Added {n} tissue(s) to dataset.")
         self._clear_batch_files()
-        self._update_dataset_ui()
 
     # ------------------------------------------------------------------
     # Dataset management
     # ------------------------------------------------------------------
-    def _ensure_dataset(self):
-        if self.dataset is None:
-            self.dataset = TissueGraphDataset(
-                condition=self.condition_edit.text().strip(),
-                pixel_size=self._parse_float(self.pixel_size_edit.text()),
-                time_interval=self._parse_float(self.time_interval_edit.text()),
-            )
-
     def _update_dataset_ui(self):
-        ds = self.dataset
+        ds = self._state.dataset
         if ds is None or ds.n_tissues == 0:
             self.dataset_summary_label.setText("No dataset" if ds is None else "Dataset empty")
             self.tissue_spinner.setMinimum(0)
@@ -967,14 +969,14 @@ class TissueGraphWidget(QWidget):
         self.tissue_spinner.setMaximum(max(ids))
 
     def _show_selected_tissue(self):
-        if self.dataset is None:
+        if self._state.dataset is None:
             return
         tid = self.tissue_spinner.value()
-        if tid not in self.dataset.tissue_ids:
+        if tid not in self._state.dataset.tissue_ids:
             self.status_label.setText(f"Tissue {tid} does not exist.")
             return
         self._remove_inspect_layers()
-        series = self.dataset.tissues[tid]
+        series = self._state.dataset.tissues[tid]
         n_t1 = len(series.t1_events)
         n_trajs = len(series.edge_trajectories)
         total_cells = sum(len(f.cells) for f in series.frames.values())
@@ -995,36 +997,35 @@ class TissueGraphWidget(QWidget):
             self._add_inspect_layers(series)
 
     def _remove_current_tissue(self):
-        if self.dataset is None:
+        if self._state.dataset is None:
             return
         tid = self.tissue_spinner.value()
-        if tid not in self.dataset.tissue_ids:
+        if tid not in self._state.dataset.tissue_ids:
             self.status_label.setText(f"Tissue {tid} does not exist.")
             return
-        self.dataset.remove_tissue(tid)
+        self._state.remove_tissue(tid)
         self._remove_inspect_layers()
         self.status_label.setText(f"Removed tissue {tid}.")
-        self._update_dataset_ui()
 
     def _new_dataset(self):
         self._remove_inspect_layers()
         self._discard_pipeline()
-        self.dataset = None
-        self._update_dataset_ui()
+        self._state.dataset = None
         self.status_label.setText("Created new dataset.")
 
     # ------------------------------------------------------------------
     # Save / Load
     # ------------------------------------------------------------------
     def _save_dataset(self):
-        if self.dataset is None or self.dataset.n_tissues == 0:
+        ds = self._state.dataset
+        if ds is None or ds.n_tissues == 0:
             self.status_label.setText("No dataset to save.")
             return
         path = QFileDialog.getExistingDirectory(self, "Save Dataset To")
         if not path:
             return
         self._run_worker(
-            IOWorker("save", path, self.dataset), self._on_save_finished
+            IOWorker("save", path, ds), self._on_save_finished
         )
 
     def _on_save_finished(self, _):
@@ -1040,7 +1041,7 @@ class TissueGraphWidget(QWidget):
         )
 
     def _on_load_finished(self, dataset):
-        self.dataset = dataset
+        self._state.dataset = dataset  # triggers dataset_changed signal
         self._finish_worker()
 
         # Populate UI from loaded metadata
@@ -1051,7 +1052,6 @@ class TissueGraphWidget(QWidget):
         if dataset.time_interval is not None:
             self.time_interval_edit.setText(str(dataset.time_interval))
 
-        self._update_dataset_ui()
         self.status_label.setText(
             f"Loaded dataset: {dataset.n_tissues} tissue(s), "
             f"condition: {dataset.condition or '(none)'}"
