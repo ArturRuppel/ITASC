@@ -5,11 +5,6 @@ contributions:
     - id: napariTissueGraph.launch
       title: Launch napariTissueGraph
       python_name: napariTissueGraph:TissueGraphWidget
-    - id: napariTissueGraph.nuclear_tracks
-      title: Launch Nuclear Tracks
-      python_name: napariTissueGraph:NuclearTracksWidget
   widgets:
     - command: napariTissueGraph.launch
       display_name: napariTissueGraph
-    - command: napariTissueGraph.nuclear_tracks
-      display_name: Nuclear Tracks

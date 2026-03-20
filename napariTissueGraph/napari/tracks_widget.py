@@ -337,6 +337,16 @@ class NuclearTracksWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _run_worker(self, worker, on_finished):
+        if self._thread is not None:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    self._thread.wait()
+            except RuntimeError:
+                pass  # C++ object already deleted by deleteLater
+            self._thread = None
+            self._worker = None
+
         self._thread = QThread()
         self._worker = worker
         self._worker.moveToThread(self._thread)

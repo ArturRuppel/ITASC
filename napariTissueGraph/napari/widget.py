@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QScrollArea,
     QCheckBox,
+    QTabWidget,
 )
 from qtpy.QtCore import QThread, Qt, QTimer
 
@@ -117,10 +118,19 @@ class TissueGraphWidget(QWidget):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(outer_layout)
 
+        self.tab_widget = QTabWidget()
+        outer_layout.addWidget(self.tab_widget)
+
+        # ========== Pipeline tab ==========
+        pipeline_page = QWidget()
+        page_layout = QVBoxLayout()
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        pipeline_page.setLayout(page_layout)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        outer_layout.addWidget(scroll)
+        page_layout.addWidget(scroll)
 
         container = QWidget()
         layout = QVBoxLayout()
@@ -155,103 +165,18 @@ class TissueGraphWidget(QWidget):
         param_group.setLayout(param_layout)
         layout.addWidget(param_group)
 
-        # --- Run Pipeline (one-click) ---
-        self.run_pipeline_btn = QPushButton("Run Pipeline")
-        self.run_pipeline_btn.setStyleSheet(
-            "QPushButton { font-weight: bold; padding: 6px; }"
+        # --- Stage 1: Cell Tracking ---
+        self.stage1_toggle = QPushButton("\u25b6 Cell Tracking")
+        self.stage1_toggle.setStyleSheet(
+            "QPushButton { text-align: left; border: none; padding: 2px; }"
         )
-        layout.addWidget(self.run_pipeline_btn)
+        self.stage1_toggle.setCheckable(True)
+        self.stage1_toggle.setChecked(False)
+        layout.addWidget(self.stage1_toggle)
 
-        # Active layer indicator (shown after pipeline starts)
-        self.active_layer_label = QLabel("")
-        self.active_layer_label.setStyleSheet("color: gray;")
-        layout.addWidget(self.active_layer_label)
-
-        # Pipeline info labels (always visible)
-        self.stage1_info = QLabel("")
-        self.stage1_info.setWordWrap(True)
-        layout.addWidget(self.stage1_info)
-        self.stage2_info = QLabel("")
-        self.stage2_info.setWordWrap(True)
-        layout.addWidget(self.stage2_info)
-        self.stage3_info = QLabel("")
-        self.stage3_info.setWordWrap(True)
-        layout.addWidget(self.stage3_info)
-
-        # --- Pipeline: Add / Discard ---
-        self.finalize_group = QGroupBox("Add / Discard")
-        fin_layout = QHBoxLayout()
-        self.add_to_dataset_btn = QPushButton("Add to Dataset")
-        self.discard_btn = QPushButton("Discard")
-        fin_layout.addWidget(self.add_to_dataset_btn)
-        fin_layout.addWidget(self.discard_btn)
-        self.finalize_group.setLayout(fin_layout)
-        layout.addWidget(self.finalize_group)
-
-        # --- Tagging ---
-        self.tagging_group = QGroupBox("Junction Tagging")
-        tag_layout = QVBoxLayout()
-
-        # Selection indicator
-        self.selection_label = QLabel("No junctions selected")
-        tag_layout.addWidget(self.selection_label)
-
-        # Tag input + buttons
-        tag_input_row = QHBoxLayout()
-        self.tag_name_edit = QLineEdit()
-        self.tag_name_edit.setPlaceholderText("Tag name (e.g. central)")
-        tag_input_row.addWidget(self.tag_name_edit)
-        tag_layout.addLayout(tag_input_row)
-
-        tag_btn_row = QHBoxLayout()
-        self.tag_selected_btn = QPushButton("Tag Selected")
-        self.untag_selected_btn = QPushButton("Untag Selected")
-        tag_btn_row.addWidget(self.tag_selected_btn)
-        tag_btn_row.addWidget(self.untag_selected_btn)
-        tag_layout.addLayout(tag_btn_row)
-
-        # Checkboxes
-        self.color_by_tags_cb = QCheckBox("Color by tags")
-        tag_layout.addWidget(self.color_by_tags_cb)
-        self.show_only_tagged_cb = QCheckBox("Show only tagged junctions")
-        tag_layout.addWidget(self.show_only_tagged_cb)
-        self.show_tag_labels_cb = QCheckBox("Show tag labels")
-        tag_layout.addWidget(self.show_tag_labels_cb)
-
-        # Tag list
-        tag_layout.addWidget(QLabel("Tags:"))
-        self.tag_list_widget = QListWidget()
-        self.tag_list_widget.setMaximumHeight(80)
-        tag_layout.addWidget(self.tag_list_widget)
-
-        # Clear tag button
-        clear_tag_row = QHBoxLayout()
-        self.clear_tag_btn = QPushButton("Clear Selected Tag")
-        self.refresh_tags_btn = QPushButton("Refresh")
-        clear_tag_row.addWidget(self.clear_tag_btn)
-        clear_tag_row.addWidget(self.refresh_tags_btn)
-        tag_layout.addLayout(clear_tag_row)
-
-        self.tagging_group.setLayout(tag_layout)
-        layout.addWidget(self.tagging_group)
-        self.tagging_group.setVisible(False)
-
-        # --- Advanced Parameters (collapsed by default) ---
-        self.advanced_toggle_btn = QPushButton("\u25b6 Advanced Parameters")
-        self.advanced_toggle_btn.setStyleSheet(
-            "QPushButton { text-align: left; font-weight: bold; border: none; padding: 4px; }"
-        )
-        self.advanced_toggle_btn.setCheckable(True)
-        self.advanced_toggle_btn.setChecked(False)
-        layout.addWidget(self.advanced_toggle_btn)
-
-        self.advanced_container = QWidget()
-        adv_layout = QVBoxLayout()
-        adv_layout.setContentsMargins(0, 0, 0, 0)
-
-        # --- Pipeline: Stage 1 — Cell Tracking ---
-        self.stage1_group = QGroupBox("Stage 1: Cell Tracking")
-        s1_layout = QVBoxLayout()
+        self.stage1_params = QWidget()
+        s1p_layout = QVBoxLayout()
+        s1p_layout.setContentsMargins(10, 0, 0, 0)
 
         iou_row = QHBoxLayout()
         iou_row.addWidget(QLabel("Min IoU:"))
@@ -261,7 +186,7 @@ class TissueGraphWidget(QWidget):
         self.min_iou_spin.setSingleStep(0.05)
         self.min_iou_spin.setValue(0.3)
         iou_row.addWidget(self.min_iou_spin)
-        s1_layout.addLayout(iou_row)
+        s1p_layout.addLayout(iou_row)
 
         area_row = QHBoxLayout()
         area_row.addWidget(QLabel("Max area change:"))
@@ -275,16 +200,31 @@ class TissueGraphWidget(QWidget):
             "0 = no limit. Try 2.0 to reject segmentation errors."
         )
         area_row.addWidget(self.max_area_change_spin)
-        s1_layout.addLayout(area_row)
+        s1p_layout.addLayout(area_row)
+
+        self.stage1_params.setLayout(s1p_layout)
+        self.stage1_params.setVisible(False)
+        layout.addWidget(self.stage1_params)
 
         self.stage1_btn = QPushButton("Run Tracking")
-        s1_layout.addWidget(self.stage1_btn)
-        self.stage1_group.setLayout(s1_layout)
-        adv_layout.addWidget(self.stage1_group)
+        layout.addWidget(self.stage1_btn)
 
-        # --- Pipeline: Stage 2 — Graph Extraction ---
-        self.stage2_group = QGroupBox("Stage 2: Graph Extraction")
-        s2_layout = QVBoxLayout()
+        self.stage1_info = QLabel("")
+        self.stage1_info.setWordWrap(True)
+        layout.addWidget(self.stage1_info)
+
+        # --- Stage 2: Graph Extraction ---
+        self.stage2_toggle = QPushButton("\u25b6 Graph Extraction")
+        self.stage2_toggle.setStyleSheet(
+            "QPushButton { text-align: left; border: none; padding: 2px; }"
+        )
+        self.stage2_toggle.setCheckable(True)
+        self.stage2_toggle.setChecked(False)
+        layout.addWidget(self.stage2_toggle)
+
+        self.stage2_params = QWidget()
+        s2p_layout = QVBoxLayout()
+        s2p_layout.setContentsMargins(10, 0, 0, 0)
 
         dr_row = QHBoxLayout()
         dr_row.addWidget(QLabel("Dilation radius:"))
@@ -296,7 +236,7 @@ class TissueGraphWidget(QWidget):
             "Radius for morphological dilation when detecting cell adjacency."
         )
         dr_row.addWidget(self.dilation_radius_spin)
-        s2_layout.addLayout(dr_row)
+        s2p_layout.addLayout(dr_row)
 
         mo_row = QHBoxLayout()
         mo_row.addWidget(QLabel("Min overlap (px):"))
@@ -308,7 +248,7 @@ class TissueGraphWidget(QWidget):
             "Minimum boundary overlap pixels to consider two cells adjacent."
         )
         mo_row.addWidget(self.min_overlap_spin)
-        s2_layout.addLayout(mo_row)
+        s2p_layout.addLayout(mo_row)
 
         mel_row = QHBoxLayout()
         mel_row.addWidget(QLabel("Min edge length (px):"))
@@ -321,14 +261,14 @@ class TissueGraphWidget(QWidget):
             "Minimum junction length to keep. Shorter junctions are discarded."
         )
         mel_row.addWidget(self.min_edge_length_spin)
-        s2_layout.addLayout(mel_row)
+        s2p_layout.addLayout(mel_row)
 
         self.filter_isolated_cb = QCheckBox("Tag border edges")
         self.filter_isolated_cb.setChecked(True)
         self.filter_isolated_cb.setToolTip(
             "Tag border/isolated edges as 'border' for downstream filtering."
         )
-        s2_layout.addWidget(self.filter_isolated_cb)
+        s2p_layout.addWidget(self.filter_isolated_cb)
 
         mbel_row = QHBoxLayout()
         mbel_row.addWidget(QLabel("Min border edge (px):"))
@@ -342,16 +282,31 @@ class TissueGraphWidget(QWidget):
             "border edge. Increase to ignore small segmentation holes."
         )
         mbel_row.addWidget(self.min_border_edge_spin)
-        s2_layout.addLayout(mbel_row)
+        s2p_layout.addLayout(mbel_row)
+
+        self.stage2_params.setLayout(s2p_layout)
+        self.stage2_params.setVisible(False)
+        layout.addWidget(self.stage2_params)
 
         self.stage2_btn = QPushButton("Extract Graphs")
-        s2_layout.addWidget(self.stage2_btn)
-        self.stage2_group.setLayout(s2_layout)
-        adv_layout.addWidget(self.stage2_group)
+        layout.addWidget(self.stage2_btn)
 
-        # --- Pipeline: Stage 3 — T1 + Edge Tracking ---
-        self.stage3_group = QGroupBox("Stage 3: T1 + Edge Tracking")
-        s3_layout = QVBoxLayout()
+        self.stage2_info = QLabel("")
+        self.stage2_info.setWordWrap(True)
+        layout.addWidget(self.stage2_info)
+
+        # --- Stage 3: T1 + Edge Tracking ---
+        self.stage3_toggle = QPushButton("\u25b6 T1 + Edge Tracking")
+        self.stage3_toggle.setStyleSheet(
+            "QPushButton { text-align: left; border: none; padding: 2px; }"
+        )
+        self.stage3_toggle.setCheckable(True)
+        self.stage3_toggle.setChecked(False)
+        layout.addWidget(self.stage3_toggle)
+
+        self.stage3_params = QWidget()
+        s3p_layout = QVBoxLayout()
+        s3p_layout.setContentsMargins(10, 0, 0, 0)
 
         mjl_row = QHBoxLayout()
         mjl_row.addWidget(QLabel("Min junction length (px):"))
@@ -365,7 +320,7 @@ class TissueGraphWidget(QWidget):
             "Increase if noisy short edges cause false T1s."
         )
         mjl_row.addWidget(self.min_junction_length_spin)
-        s3_layout.addLayout(mjl_row)
+        s3p_layout.addLayout(mjl_row)
 
         mtd_row = QHBoxLayout()
         mtd_row.addWidget(QLabel("Max T1 distance (px):"))
@@ -379,7 +334,7 @@ class TissueGraphWidget(QWidget):
             "0 = no limit. Reduce to avoid pairing distant events."
         )
         mtd_row.addWidget(self.max_t1_distance_spin)
-        s3_layout.addLayout(mtd_row)
+        s3p_layout.addLayout(mtd_row)
 
         mtf_row = QHBoxLayout()
         mtf_row.addWidget(QLabel("Min trajectory frames:"))
@@ -391,7 +346,7 @@ class TissueGraphWidget(QWidget):
             "Minimum frames a junction must exist to keep its trajectory."
         )
         mtf_row.addWidget(self.min_traj_frames_spin)
-        s3_layout.addLayout(mtf_row)
+        s3p_layout.addLayout(mtf_row)
 
         mc_row = QHBoxLayout()
         mc_row.addWidget(QLabel("Min completeness:"))
@@ -404,7 +359,7 @@ class TissueGraphWidget(QWidget):
             "Fraction of total frames a trajectory must span (0.0-1.0)."
         )
         mc_row.addWidget(self.min_completeness_spin)
-        s3_layout.addLayout(mc_row)
+        s3p_layout.addLayout(mc_row)
 
         mg_row = QHBoxLayout()
         mg_row.addWidget(QLabel("Max gap tolerance:"))
@@ -417,16 +372,83 @@ class TissueGraphWidget(QWidget):
             "0 = no gaps allowed."
         )
         mg_row.addWidget(self.max_gap_spin)
-        s3_layout.addLayout(mg_row)
+        s3p_layout.addLayout(mg_row)
+
+        self.stage3_params.setLayout(s3p_layout)
+        self.stage3_params.setVisible(False)
+        layout.addWidget(self.stage3_params)
 
         self.analyze_btn = QPushButton("Run Analysis")
-        s3_layout.addWidget(self.analyze_btn)
-        self.stage3_group.setLayout(s3_layout)
-        adv_layout.addWidget(self.stage3_group)
+        layout.addWidget(self.analyze_btn)
 
-        self.advanced_container.setLayout(adv_layout)
-        self.advanced_container.setVisible(False)
-        layout.addWidget(self.advanced_container)
+        self.stage3_info = QLabel("")
+        self.stage3_info.setWordWrap(True)
+        layout.addWidget(self.stage3_info)
+
+        # --- Run Full Pipeline (one-click, chains all 3 stages) ---
+        self.run_pipeline_btn = QPushButton("Run Full Pipeline")
+        self.run_pipeline_btn.setStyleSheet(
+            "QPushButton { font-weight: bold; padding: 6px; }"
+        )
+        layout.addWidget(self.run_pipeline_btn)
+
+        # Active layer indicator (shown after pipeline starts)
+        self.active_layer_label = QLabel("")
+        self.active_layer_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.active_layer_label)
+
+        # --- Add / Discard ---
+        self.finalize_group = QGroupBox("Add / Discard")
+        fin_layout = QHBoxLayout()
+        self.add_to_dataset_btn = QPushButton("Add to Dataset")
+        self.discard_btn = QPushButton("Discard")
+        fin_layout.addWidget(self.add_to_dataset_btn)
+        fin_layout.addWidget(self.discard_btn)
+        self.finalize_group.setLayout(fin_layout)
+        layout.addWidget(self.finalize_group)
+
+        # --- Junction Tagging ---
+        self.tagging_group = QGroupBox("Junction Tagging")
+        tag_layout = QVBoxLayout()
+
+        self.selection_label = QLabel("No junctions selected")
+        tag_layout.addWidget(self.selection_label)
+
+        tag_input_row = QHBoxLayout()
+        self.tag_name_edit = QLineEdit()
+        self.tag_name_edit.setPlaceholderText("Tag name (e.g. central)")
+        tag_input_row.addWidget(self.tag_name_edit)
+        tag_layout.addLayout(tag_input_row)
+
+        tag_btn_row = QHBoxLayout()
+        self.tag_selected_btn = QPushButton("Tag Selected")
+        self.untag_selected_btn = QPushButton("Untag Selected")
+        tag_btn_row.addWidget(self.tag_selected_btn)
+        tag_btn_row.addWidget(self.untag_selected_btn)
+        tag_layout.addLayout(tag_btn_row)
+
+        self.color_by_tags_cb = QCheckBox("Color by tags")
+        tag_layout.addWidget(self.color_by_tags_cb)
+        self.show_only_tagged_cb = QCheckBox("Show only tagged junctions")
+        tag_layout.addWidget(self.show_only_tagged_cb)
+        self.show_tag_labels_cb = QCheckBox("Show tag labels")
+        tag_layout.addWidget(self.show_tag_labels_cb)
+
+        tag_layout.addWidget(QLabel("Tags:"))
+        self.tag_list_widget = QListWidget()
+        self.tag_list_widget.setMaximumHeight(80)
+        tag_layout.addWidget(self.tag_list_widget)
+
+        clear_tag_row = QHBoxLayout()
+        self.clear_tag_btn = QPushButton("Clear Selected Tag")
+        self.refresh_tags_btn = QPushButton("Refresh")
+        clear_tag_row.addWidget(self.clear_tag_btn)
+        clear_tag_row.addWidget(self.refresh_tags_btn)
+        tag_layout.addLayout(clear_tag_row)
+
+        self.tagging_group.setLayout(tag_layout)
+        layout.addWidget(self.tagging_group)
+        self.tagging_group.setVisible(False)
 
         # --- Batch mode ---
         self.batch_group = QGroupBox("Batch")
@@ -464,7 +486,6 @@ class TissueGraphWidget(QWidget):
         self.dataset_summary_label.setWordWrap(True)
         dataset_layout.addWidget(self.dataset_summary_label)
 
-        # Tissue inspector
         tissue_row = QHBoxLayout()
         tissue_row.addWidget(QLabel("Tissue:"))
         self.tissue_spinner = QSpinBox()
@@ -482,7 +503,6 @@ class TissueGraphWidget(QWidget):
         tissue_btn_row.addWidget(self.remove_tissue_btn)
         dataset_layout.addLayout(tissue_btn_row)
 
-        # Save/Load
         io_row = QHBoxLayout()
         self.save_btn = QPushButton("Save Dataset...")
         self.load_dataset_btn = QPushButton("Load Dataset...")
@@ -497,6 +517,13 @@ class TissueGraphWidget(QWidget):
 
         layout.addStretch()
 
+        self.tab_widget.addTab(pipeline_page, "Pipeline")
+
+        # ========== Nuclear Tracks tab ==========
+        from .tracks_widget import NuclearTracksWidget
+        self._tracks_widget = NuclearTracksWidget(self.viewer)
+        self.tab_widget.addTab(self._tracks_widget, "Nuclear Tracks")
+
         # Set initial button state
         self._update_pipeline_buttons()
 
@@ -504,8 +531,16 @@ class TissueGraphWidget(QWidget):
         # Run Pipeline (one-click)
         self.run_pipeline_btn.clicked.connect(self._run_full_pipeline)
 
-        # Advanced toggle
-        self.advanced_toggle_btn.toggled.connect(self._toggle_advanced)
+        # Stage parameter toggles
+        self.stage1_toggle.toggled.connect(
+            lambda checked: self._toggle_stage(1, checked)
+        )
+        self.stage2_toggle.toggled.connect(
+            lambda checked: self._toggle_stage(2, checked)
+        )
+        self.stage3_toggle.toggled.connect(
+            lambda checked: self._toggle_stage(3, checked)
+        )
 
         # Pipeline (individual stages)
         self.stage1_btn.clicked.connect(self._run_stage1)
@@ -552,10 +587,14 @@ class TissueGraphWidget(QWidget):
         self.add_to_dataset_btn.setEnabled(stage == PipelineStage.STAGE3_DONE)
         self.discard_btn.setEnabled(stage != PipelineStage.IDLE)
 
-    def _toggle_advanced(self, checked: bool):
-        self.advanced_container.setVisible(checked)
+    _stage_titles = {1: "Cell Tracking", 2: "Graph Extraction", 3: "T1 + Edge Tracking"}
+
+    def _toggle_stage(self, stage: int, checked: bool):
+        containers = {1: self.stage1_params, 2: self.stage2_params, 3: self.stage3_params}
+        toggles = {1: self.stage1_toggle, 2: self.stage2_toggle, 3: self.stage3_toggle}
+        containers[stage].setVisible(checked)
         arrow = "\u25bc" if checked else "\u25b6"
-        self.advanced_toggle_btn.setText(f"{arrow} Advanced Parameters")
+        toggles[stage].setText(f"{arrow} {self._stage_titles[stage]}")
 
     # ------------------------------------------------------------------
     # Label stack from viewer (uses active layer)
@@ -1061,6 +1100,17 @@ class TissueGraphWidget(QWidget):
     # Worker management
     # ------------------------------------------------------------------
     def _run_worker(self, worker, on_finished):
+        # Ensure any previous thread is fully stopped before starting a new one.
+        if self._thread is not None:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    self._thread.wait()
+            except RuntimeError:
+                pass  # C++ object already deleted by deleteLater
+            self._thread = None
+            self._worker = None
+
         self._thread = QThread()
         self._worker = worker
         self._worker.moveToThread(self._thread)
