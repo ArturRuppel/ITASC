@@ -5,6 +5,7 @@ import pytest
 from napariTissueGraph.core.voronoi import (
     compute_voronoi,
     voronoi_to_graph,
+    voronoi_to_labels,
     lloyd_relaxation,
     _polygon_area,
     _polygon_perimeter,
@@ -130,3 +131,50 @@ class TestLloyd:
         pts = lloyd_relaxation(positions, image_shape, n_iterations=10, tol=0.01)
         assert np.all(pts[:, 0] >= 0) and np.all(pts[:, 0] <= 100)
         assert np.all(pts[:, 1] >= 0) and np.all(pts[:, 1] <= 100)
+
+
+class TestVoronoiToLabels:
+    def test_output_shape_and_dtype(self, grid_positions):
+        image_shape = (100, 100)
+        labels, _ = voronoi_to_labels(grid_positions, image_shape)
+        assert labels.shape == image_shape
+        assert labels.dtype == np.int32
+
+    def test_labels_are_one_indexed(self, grid_positions):
+        image_shape = (100, 100)
+        labels, _ = voronoi_to_labels(grid_positions, image_shape)
+        assert labels.min() >= 1
+        assert labels.max() == len(grid_positions)
+
+    def test_all_cells_have_pixels(self, grid_positions):
+        """Every cell should own at least one pixel."""
+        image_shape = (100, 100)
+        labels, _ = voronoi_to_labels(grid_positions, image_shape)
+        unique_labels = set(np.unique(labels))
+        expected = set(range(1, len(grid_positions) + 1))
+        assert expected == unique_labels
+
+    def test_every_pixel_assigned(self, grid_positions):
+        """No pixel should be zero (background)."""
+        image_shape = (100, 100)
+        labels, _ = voronoi_to_labels(grid_positions, image_shape)
+        assert np.all(labels > 0)
+
+    def test_cell_contains_its_seed(self, grid_positions):
+        """Each cell's seed pixel should have that cell's label."""
+        image_shape = (100, 100)
+        labels, final_pos = voronoi_to_labels(grid_positions, image_shape)
+        for i, (y, x) in enumerate(final_pos):
+            yi, xi = int(round(y)), int(round(x))
+            if 0 <= yi < image_shape[0] and 0 <= xi < image_shape[1]:
+                assert labels[yi, xi] == i + 1
+
+    def test_lloyd_method(self, grid_positions):
+        """Lloyd's method should produce valid labels and different positions."""
+        image_shape = (100, 100)
+        labels, final_pos = voronoi_to_labels(
+            grid_positions, image_shape,
+            method=VoronoiMethod.LLOYD, lloyd_iterations=5,
+        )
+        assert labels.shape == image_shape
+        assert np.all(labels > 0)

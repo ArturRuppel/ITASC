@@ -419,10 +419,10 @@ belongs in its own widget or tool.
 - [x] Create per-viewer registry (`napari/registry.py`) for shared state between widgets
 
 ### 15b. Create Nuclear Tracks widget
-- [ ] Add `voronoi_to_labels()` in `core/voronoi.py` (rasterize Voronoi → Labels layer)
-- [ ] Create Nuclear Tracks widget (`napari/tracks_widget.py`) — TrackMate XML loading, Voronoi → Labels layer, track ID assignment
-- [ ] Register both widgets in `napari.yaml`
-- [ ] Clean up unused core functions and `InputType` enum values
+- [x] Add `voronoi_to_labels()` in `core/voronoi.py` (rasterize Voronoi → Labels layer)
+- [x] Create Nuclear Tracks widget (`napari/tracks_widget.py`) — TrackMate XML loading, Voronoi → Labels layer, track ID assignment
+- [x] Register both widgets in `napari.yaml`
+- [x] Clean up unused core functions and `InputType` enum values
 
 ---
 

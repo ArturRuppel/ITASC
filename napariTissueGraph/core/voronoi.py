@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import networkx as nx
 from typing import Dict, Tuple, Optional, FrozenSet
-from scipy.spatial import Voronoi
+from scipy.spatial import Voronoi, cKDTree
 
 from ..structures import CellData, JunctionData, VoronoiMethod
 
@@ -213,6 +213,49 @@ def voronoi_to_graph(
         )
 
     return cells, junctions, graph
+
+
+def voronoi_to_labels(
+    positions: np.ndarray,
+    image_shape: Tuple[int, int],
+    method: VoronoiMethod = VoronoiMethod.STANDARD,
+    lloyd_iterations: int = 10,
+    lloyd_tol: float = 0.1,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Rasterize a Voronoi tessellation into an integer label array.
+
+    Each pixel is assigned to the nearest cell (1-indexed labels).
+    Uses a KD-tree for efficient nearest-neighbor assignment.
+
+    Args:
+        positions: Nx2 array of (y, x) cell positions.
+        image_shape: (H, W) of the output label array.
+        method: VoronoiMethod.STANDARD or VoronoiMethod.LLOYD.
+        lloyd_iterations: Max iterations for Lloyd's relaxation.
+        lloyd_tol: Convergence tolerance for Lloyd's.
+
+    Returns:
+        (labels, final_positions) where labels is an (H, W) int32 array
+        with cell IDs 1..N, and final_positions are the (possibly relaxed)
+        seed positions.
+    """
+    _, final_positions = compute_voronoi(
+        positions, image_shape=image_shape,
+        method=method, lloyd_iterations=lloyd_iterations, lloyd_tol=lloyd_tol,
+    )
+
+    H, W = image_shape
+    tree = cKDTree(final_positions)
+
+    # Query all pixel coordinates at once
+    yy, xx = np.mgrid[0:H, 0:W]
+    pixel_coords = np.column_stack([yy.ravel(), xx.ravel()])
+    _, nearest = tree.query(pixel_coords)
+
+    # Reshape and convert to 1-indexed labels
+    labels = (nearest.reshape(H, W) + 1).astype(np.int32)
+
+    return labels, final_positions
 
 
 def _polygon_area(vertices: np.ndarray) -> float:

@@ -9,7 +9,6 @@ class InputType(Enum):
     """How the graph was constructed."""
     VORONOI = "voronoi"
     SEGMENTATION = "segmentation"
-    SEGMENTATION_WITH_TRACKS = "segmentation_with_tracks"
 
 
 class VoronoiMethod(Enum):
