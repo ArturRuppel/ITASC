@@ -308,10 +308,6 @@ direct manipulation of tags in the viewer.
 - [x] Delete key (or a "Remove Tag" button) should remove the tag from the selected edge — both from the viewer display and the internal data (JunctionData.tags / EdgeTrajectory.tags)
 - [x] Deleting a tag should immediately update the tag list counts
 
-### 12c. General tagging UX polish
-- [ ] Streamline the tag/untag workflow so it requires fewer clicks
-- [ ] Consider tag auto-complete in the tag name input field
-
 ---
 
 ## 13. Force inference via ForSys
@@ -384,25 +380,29 @@ statistics over tissue graph datasets. The dashboard should be modular so that a
 - [ ] Returns pandas DataFrames / standard Python objects for easy downstream use
 
 ### 14b. Analysis module interface
-- [ ] Standard base class / protocol that all analysis modules implement
-- [ ] Each module declares its parameters (auto-generates UI widgets in the dashboard)
-- [ ] Each module has a `compute()` method (takes data API + parameters, returns results) and a `visualize()` method (returns figures/tables)
-- [ ] Modules are discoverable via entry points or a plugin folder — users can pip-install, download, or write their own
+- [x] Standard base class / protocol that all analysis modules implement
+- [x] Each module declares its parameters (auto-generates UI widgets in the dashboard)
+- [x] Each module has a `compute()` method (takes data API + parameters, returns results) and a `visualize()` method (returns figures/tables)
+- [x] Modules are discoverable via entry points or a plugin folder — users can pip-install, download, or write their own
 
 ### 14c. Dashboard application
-- [ ] Built with Panel (HoloViz) — serves as a web app and works inside Jupyter
-- [ ] Dataset loader: open saved tissue graph datasets
-- [ ] Module browser: lists installed analysis modules, user selects one to run
-- [ ] Parameter panel: auto-generated from the module's declared parameters
-- [ ] Results area: displays plots, tables, and summary statistics from the module
+- [x] Built with Dash + Plotly — serves as a web app and works inside Jupyter
+- [x] Dataset loader: open saved tissue graph datasets
+- [x] Module browser: lists installed analysis modules, user selects one to run
+- [x] Parameter panel: auto-generated from the module's declared parameters
+- [x] Results area: displays interactive Plotly plots, sortable/filterable tables, and summary statistics
+- [x] "Open Dashboard" button in napari widget launches dashboard with current dataset
+- [x] Theme switcher with 4 themes (Midnight, Ocean, Slate, Light) — instant CSS variable swap
+- [ ] Fix theme styling: Dash DataTable and component internals (filter inputs, pagination, tooltips) don't fully pick up CSS custom properties — may need per-render inline styles or a full page reload on theme change
+- [ ] Tissue map visualization — interactive Plotly figure showing cell polygons and junction lines, colored by metric
 - [ ] "Open in napari" button to launch spatial visualization of the current selection
 
 ### 14d. Built-in analysis modules
-- [ ] Junction length distribution — histogram of junction lengths, filterable by tag and neighbor count
-- [ ] T1 transition rate — transition rate as a function of time since last transition
-- [ ] Cell area / shape index distributions — per-frame and time-averaged
+- [x] Junction length distribution — histogram of junction lengths, filterable by tag and neighbor count
+- [x] T1 transition rate — transition rate as a function of time since last transition
+- [x] Cell area / shape index distributions — per-frame and time-averaged
 - [ ] MSD and diffusion — mean squared displacement per cell, ensemble average, diffusion coefficient
-- [ ] Event-triggered averaging — average junction length / cell area aligned to T1 events
+- [x] Event-triggered averaging — average junction length / cell area aligned to T1 events
 
 ---
 
@@ -439,10 +439,15 @@ belongs in its own widget or tool.
 8. **Analysis parameters** (7a-7d)
 9. **UI/UX redesign** (10a-10e)
 10. **UI/UX improvements** (11a-11c)
+11. **Separate Voronoi/tracks into own widget** (15)
+12. **Tagging UI/UX** (12a-12b)
+13. **Data API** (14a)
+14. **Analysis module interface** (14b)
+15. **Dashboard application** (14c) — Dash + Plotly, theme system, napari launch button
+16. **Built-in analysis modules** (14d) — junction lengths, T1 rate, cell distributions, event-triggered averaging
 
 ### Next
-11. **Separate Voronoi/tracks into own widget** (15) — the main widget should always deal with segmentation labels; Voronoi tessellation from nuclear tracks needs its own widget or preprocessing step
-12. **Tagging UI/UX** (12a-12c) — viewer tag labels, interactive deletion
-13. **Cell-level analysis** (9a-9c) — new analysis modules
-14. **Force inference** (13a-13f) — ForSys integration for tension/pressure inference
-15. **Analysis dashboard** (14a-14d) — data API, module system, Panel-based dashboard
+17. **Dashboard polish** — fix theme styling for Dash internals, tissue map visualization
+18. **MSD and diffusion** (9a, 14d) — cell dynamics analysis module
+19. **Cell-level analysis** (9a-9c) — velocities, statistics, event-triggered cell metrics
+20. **Force inference** (13a-13f) — ForSys integration for tension/pressure inference

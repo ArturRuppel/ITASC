@@ -512,6 +512,10 @@ class TissueGraphWidget(QWidget):
         io_row.addWidget(self.new_dataset_btn)
         dataset_layout.addLayout(io_row)
 
+        self.open_dashboard_btn = QPushButton("Open Dashboard...")
+        self.open_dashboard_btn.setToolTip("Launch the analysis dashboard in your browser")
+        dataset_layout.addWidget(self.open_dashboard_btn)
+
         self.dataset_group.setLayout(dataset_layout)
         layout.addWidget(self.dataset_group)
 
@@ -569,6 +573,7 @@ class TissueGraphWidget(QWidget):
         self.save_btn.clicked.connect(self._save_dataset)
         self.load_dataset_btn.clicked.connect(self._load_dataset)
         self.new_dataset_btn.clicked.connect(self._new_dataset)
+        self.open_dashboard_btn.clicked.connect(self._open_dashboard)
 
         # Registry: react to dataset changes from any widget
         self._state.dataset_changed.connect(self._update_dataset_ui)
@@ -1051,6 +1056,35 @@ class TissueGraphWidget(QWidget):
         self._discard_pipeline()
         self._state.dataset = None
         self.status_label.setText("Created new dataset.")
+
+    # ------------------------------------------------------------------
+    # Dashboard
+    # ------------------------------------------------------------------
+    def _open_dashboard(self):
+        """Save dataset to a temp dir and launch the Dash dashboard."""
+        ds = self._state.dataset
+        if ds is None or ds.n_tissues == 0:
+            self.status_label.setText("No dataset to open in dashboard.")
+            return
+        try:
+            import tempfile
+            tmpdir = Path(tempfile.mkdtemp(prefix="tissuegraph_dashboard_"))
+            from ..core.io import save_dataset
+            save_dataset(ds, tmpdir)
+
+            import subprocess
+            import sys
+            subprocess.Popen(
+                [sys.executable, "-m", "napariTissueGraph.dashboard", str(tmpdir)],
+            )
+            self.status_label.setText("Dashboard launched in browser.")
+        except ImportError:
+            self.status_label.setText(
+                "Dashboard requires dash+plotly. Install with: "
+                "pip install napariTissueGraph[dashboard]"
+            )
+        except Exception as exc:
+            self.status_label.setText(f"Failed to launch dashboard: {exc}")
 
     # ------------------------------------------------------------------
     # Save / Load

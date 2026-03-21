@@ -24,12 +24,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dashboard = [
+    "dash>=2.14.0",
+    "plotly>=5.18.0",
+]
 dev = [
     "pytest>=7.0.0",
 ]
 
 [project.entry-points."napari.manifest"]
 napariTissueGraph = "napariTissueGraph:napari.yaml"
+
+# Analysis modules are discovered via this entry-point group.
+# Third-party packages can register their own modules here.
+# [project.entry-points."napariTissueGraph.analysis_modules"]
+# my_module = "my_package:MyModule"
 
 [tool.setuptools.packages.find]
 include = ["napariTissueGraph*"]
