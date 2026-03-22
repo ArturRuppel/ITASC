@@ -234,6 +234,27 @@ input[type="text"]:focus {{ border-color: var(--tg-blue) !important; outline: no
 .dash-table-container .page-number {{
     color: var(--tg-subtext) !important;
 }}
+/* Table export button */
+.dash-table-container .export,
+.dash-table-container button.export {{
+    background-color: var(--tg-surface0) !important;
+    color: var(--tg-text) !important;
+    border: 1px solid var(--tg-surface1) !important;
+    border-radius: 4px !important;
+    font-family: {FONT_STACK} !important;
+    font-size: 0.82em !important;
+    padding: 4px 10px !important;
+    cursor: pointer !important;
+}}
+.dash-table-container .export:hover,
+.dash-table-container button.export:hover {{
+    background-color: var(--tg-surface1) !important;
+}}
+/* Table selected row */
+.dash-table-container td.cell--selected {{
+    background-color: var(--tg-surface1) !important;
+    color: var(--tg-text) !important;
+}}
 
 /* ---- Dash Dropdown deep overrides ---- */
 .Select-arrow-zone,
@@ -640,7 +661,11 @@ def _build_edge_viewer_layout() -> html.Div:
             html.Div([
                 dcc.Graph(id="ev-tissue-map", figure=go.Figure(),
                           config={"displayModeBar": True, "displaylogo": False,
-                                  "scrollZoom": True},
+                                  "scrollZoom": True,
+                                  "toImageButtonOptions": {
+                                      "format": "svg",
+                                      "filename": "tissue_map",
+                                  }},
                           style={"height": "500px"}),
             ], className="ev-map"),
 
@@ -661,6 +686,7 @@ def _build_edge_viewer_layout() -> html.Div:
                     selected_rows=[],
                     sort_action="native",
                     filter_action="native",
+                    export_format="csv",
                     page_size=12,
                     style_table={"overflowX": "auto", "borderRadius": "8px"},
                     style_cell={
@@ -754,6 +780,9 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
         dcc.Store(id="dataset-store"),
         dcc.Store(id="theme-store", data=DEFAULT_THEME),
         dcc.Store(id="theme-css-map", data=theme_css_map),
+        dcc.Store(id="analysis-module-store"),
+        dcc.Store(id="analysis-params-store"),
+        dcc.Store(id="analysis-tables-store"),
 
         html.Div([
             # ===== Sidebar =====
@@ -930,6 +959,9 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
         Output("metadata-pane", "children"),
         Output("status-bar", "children", allow_duplicate=True),
         Output("status-bar", "className", allow_duplicate=True),
+        Output("analysis-module-store", "data"),
+        Output("analysis-params-store", "data"),
+        Output("analysis-tables-store", "data"),
         Input("run-btn", "n_clicks"),
         State("dataset-store", "data"),
         State("module-select", "value"),
@@ -938,8 +970,11 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
         prevent_initial_call=True,
     )
     def run_analysis(n_clicks, dataset_path, module_name, param_children, theme_name):
+        no_stores = (no_update, no_update, no_update)
         if not dataset_path or not module_name:
-            return no_update, no_update, "Load a dataset first.", "tg-status tg-status-warning"
+            return (no_update, no_update,
+                    "Load a dataset first.", "tg-status tg-status-warning",
+                    *no_stores)
 
         try:
             # Apply current theme's Plotly template
@@ -970,18 +1005,33 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
 
             results_children = []
 
-            # Figures
-            for fig in figs:
-                results_children.append(
+            # Figures — wrapped in a container with stable ID for filter-update callback
+            fig_children = []
+            for i, fig in enumerate(figs):
+                fig_children.append(
                     dcc.Graph(
+                        id=f"analysis-fig-{i}",
                         figure=fig,
                         style={"marginBottom": "24px"},
-                        config={"displayModeBar": True, "displaylogo": False},
+                        config={
+                            "displayModeBar": True,
+                            "displaylogo": False,
+                            "toImageButtonOptions": {
+                                "format": "svg",
+                                "filename": f"tissue_graph_{module_name}_{i}",
+                            },
+                        },
                     )
                 )
+            results_children.append(html.Div(fig_children, id="analysis-figures"))
 
-            # Tables
-            theme = get_theme(theme_name)
+            # Serialize tables for the filter callback
+            serialized_tables = {}
+            for tname, tdf in result.tables.items():
+                if not tdf.empty:
+                    serialized_tables[tname] = tdf.head(500).to_dict("records")
+
+            # Tables — main table gets a stable ID for filter-driven plot updates
             for tname, tdf in result.tables.items():
                 if tdf.empty:
                     continue
@@ -989,46 +1039,33 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
                 for col in display_df.select_dtypes(include="float").columns:
                     display_df[col] = display_df[col].round(4)
 
+                table_id = ("analysis-main-table" if tname == "main"
+                            else f"analysis-table-{tname}")
                 results_children.append(
                     html.Div([
                         html.H4(tname, className="tg-table-title"),
                         dash_table.DataTable(
+                            id=table_id,
                             data=display_df.to_dict("records"),
                             columns=[{"name": c, "id": c} for c in display_df.columns],
                             page_size=15,
                             sort_action="native",
                             filter_action="native",
+                            export_format="csv",
                             style_table={"overflowX": "auto", "borderRadius": "8px"},
                             style_cell={
                                 "textAlign": "left", "padding": "8px 12px",
                                 "minWidth": "80px", "fontFamily": FONT_STACK,
-                            },
-                            style_header={
-                                "backgroundColor": theme["surface0"],
-                                "color": theme["text"],
-                                "fontWeight": "600",
-                                "border": f"1px solid {theme['surface1']}",
-                                "fontFamily": FONT_STACK,
-                            },
-                            style_data={
-                                "backgroundColor": theme["base"],
-                                "color": theme["subtext"],
-                                "border": f"1px solid {theme['surface0']}",
                                 "fontSize": "0.85em",
                             },
-                            style_filter={
-                                "backgroundColor": theme["surface0"],
-                                "color": theme["text"],
-                                "border": f"1px solid {theme['surface1']}",
-                            },
-                            style_data_conditional=[{
-                                "if": {"state": "active"},
-                                "backgroundColor": theme["surface1"],
-                                "border": f"1px solid {theme['surface2']}",
-                            }],
+                            style_header={"fontWeight": "600"},
                         ),
                     ])
                 )
+
+            # Serialize params (only JSON-safe values)
+            safe_params = {k: v for k, v in params.items()
+                          if isinstance(v, (str, int, float, bool, type(None)))}
 
             # Metadata cards
             metadata_div = html.Div()
@@ -1052,6 +1089,9 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
                 metadata_div,
                 "Analysis complete.",
                 "tg-status tg-status-success",
+                module_name,
+                safe_params,
+                serialized_tables,
             )
 
         except Exception as exc:
@@ -1060,7 +1100,72 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
                 no_update, no_update,
                 f"Analysis failed: {exc}",
                 "tg-status tg-status-danger",
+                *no_stores,
             )
+
+    # ----- Filter-driven plot update -----
+    # When the user filters the main analysis table, re-render plots with
+    # only the filtered rows so figures stay in sync with the visible data.
+
+    @app.callback(
+        Output("analysis-figures", "children"),
+        Input("analysis-main-table", "derived_virtual_data"),
+        State("analysis-module-store", "data"),
+        State("analysis-params-store", "data"),
+        State("analysis-tables-store", "data"),
+        State("theme-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_plots_from_filter(filtered_rows, module_name, params,
+                                 all_tables, theme_name):
+        if not module_name or module_name not in modules or filtered_rows is None:
+            return no_update
+        if all_tables is None:
+            return no_update
+
+        # Check if filter actually changed the data (skip if same as full)
+        main_full = all_tables.get("main")
+        if main_full is not None and len(filtered_rows) == len(main_full):
+            # No filter active — skip re-render to avoid flicker
+            return no_update
+
+        try:
+            pio.templates.default = f"tg-{theme_name}"
+            mod = modules[module_name]()
+            params = params or {}
+
+            # Reconstruct AnalysisResult with filtered main table
+            tables = {}
+            for tname, records in all_tables.items():
+                if tname == "main":
+                    tables[tname] = pd.DataFrame(filtered_rows)
+                else:
+                    tables[tname] = pd.DataFrame(records)
+
+            filtered_result = AnalysisResult(tables=tables, metadata={})
+            figs = mod.visualize(filtered_result, **params)
+
+            fig_children = []
+            for i, fig in enumerate(figs):
+                fig_children.append(
+                    dcc.Graph(
+                        id=f"analysis-fig-{i}",
+                        figure=fig,
+                        style={"marginBottom": "24px"},
+                        config={
+                            "displayModeBar": True,
+                            "displaylogo": False,
+                            "toImageButtonOptions": {
+                                "format": "svg",
+                                "filename": f"tissue_graph_{module_name}_{i}",
+                            },
+                        },
+                    )
+                )
+            return fig_children
+        except Exception:
+            logger.exception("Failed to update plots from filter")
+            return no_update
 
     # ----- Edge Viewer callbacks -----
 

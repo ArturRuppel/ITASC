@@ -393,7 +393,10 @@ statistics over tissue graph datasets. The dashboard should be modular so that a
 - [x] Results area: displays interactive Plotly plots, sortable/filterable tables, and summary statistics
 - [x] "Open Dashboard" button in napari widget launches dashboard with current dataset
 - [x] Theme switcher with 4 themes (Midnight, Ocean, Slate, Light) — instant CSS variable swap
-- [ ] Fix theme styling: Dash DataTable and component internals (filter inputs, pagination, tooltips) don't fully pick up CSS custom properties — may need per-render inline styles or a full page reload on theme change
+- [x] Fix theme styling: removed inline theme colors from DataTables; CSS custom property overrides now work across all themes
+- [x] SVG export: Plotly modebar downloads SVG by default on all plots
+- [x] DataFrame export: all DataTables have CSV export button
+- [x] Table filtering updates plots: filtering the main analysis table re-renders figures with only visible data
 - [ ] Tissue map visualization — interactive Plotly figure showing cell polygons and junction lines, colored by metric
 - [ ] "Open in napari" button to launch spatial visualization of the current selection
 
@@ -447,7 +450,12 @@ belongs in its own widget or tool.
 16. **Built-in analysis modules** (14d) — junction lengths, T1 rate, cell distributions, event-triggered averaging
 
 ### Next
-17. **Dashboard polish** — fix theme styling for Dash internals, tissue map visualization
+17. **Dashboard polish** — ~~fix theme styling~~, ~~SVG/CSV export~~, ~~filter→plot sync~~; tissue map visualization still open
 18. **MSD and diffusion** (9a, 14d) — cell dynamics analysis module
 19. **Cell-level analysis** (9a-9c) — velocities, statistics, event-triggered cell metrics
 20. **Force inference** (13a-13f) — ForSys integration for tension/pressure inference
+
+
+hand notes:
+~~filtering data frames should update the plots in the dashboard~~ — done
+~~peripheral junctions should exclude border junctions~~ — done: border junctions (cell_id=0 or tagged "border") are now classified as "unclassified" instead of "peripheral"
