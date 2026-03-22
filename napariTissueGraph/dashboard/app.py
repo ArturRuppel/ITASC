@@ -16,10 +16,10 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple, Type
 
 import pandas as pd
-from dash import Dash, Input, Output, State, clientside_callback, dash_table, dcc, html, no_update
+from dash import Dash, Input, Output, State, callback_context, clientside_callback, dash_table, dcc, html, no_update
 import plotly.graph_objects as go
 import plotly.io as pio
 
@@ -30,7 +30,14 @@ from ..analysis.modules import (
     Parameter,
     discover_modules,
 )
-from ..core.io import load_dataset
+from ..analysis.tagging import (
+    tag_junction,
+    tag_trajectory,
+    untag_junction,
+    untag_trajectory,
+    get_all_tags,
+)
+from ..core.io import load_dataset, save_dataset
 from ..structures import TissueGraphDataset
 from .themes import (
     DEFAULT_THEME,
@@ -40,6 +47,9 @@ from .themes import (
     css_variables,
     get_theme,
 )
+
+# Server-side dataset cache (avoids reloading from disk on every callback)
+_dataset_cache: Dict[str, TissueGraphDataset] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +262,56 @@ input[type="text"]:focus {{ border-color: var(--tg-blue) !important; outline: no
 .modebar-btn {{ color: var(--tg-overlay0) !important; }}
 .modebar-btn:hover {{ color: var(--tg-text) !important; }}
 .modebar {{ background: transparent !important; }}
+
+/* ---- Tabs ---- */
+.tg-tabs .tab {{
+    background: var(--tg-mantle) !important;
+    border: 1px solid var(--tg-surface0) !important;
+    border-bottom: none !important;
+    color: var(--tg-overlay0) !important;
+    padding: 10px 20px !important;
+    font-family: {FONT_STACK} !important;
+    font-weight: 500 !important;
+    font-size: 0.9em !important;
+}}
+.tg-tabs .tab--selected {{
+    background: var(--tg-base) !important;
+    color: var(--tg-text) !important;
+    border-bottom: 2px solid var(--tg-blue) !important;
+}}
+
+/* ---- Edge Viewer ---- */
+.ev-controls {{
+    display: flex; gap: 16px; align-items: flex-end;
+    margin-bottom: 16px; flex-wrap: wrap;
+}}
+.ev-controls label {{ font-size: 0.82em; color: var(--tg-overlay0); font-weight: 500; display: block; margin-bottom: 4px; }}
+.ev-split {{
+    display: flex; gap: 20px; margin-top: 12px;
+}}
+.ev-map {{ flex: 1; min-width: 0; }}
+.ev-panel {{ flex: 1; min-width: 0; }}
+.ev-details {{
+    background: var(--tg-surface0); border-radius: 8px;
+    padding: 14px 18px; margin-top: 16px; font-size: 0.88em;
+    color: var(--tg-subtext); line-height: 1.6;
+}}
+.ev-details strong {{ color: var(--tg-text); }}
+.ev-ops {{
+    display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap;
+}}
+.ev-ops input {{
+    width: 70px;
+}}
+.tg-btn-sm {{
+    padding: 7px 14px; border: none; border-radius: 6px;
+    font-weight: 500; font-size: 0.82em; cursor: pointer;
+    font-family: {FONT_STACK}; letter-spacing: 0.01em;
+    transition: opacity 0.15s, filter 0.15s;
+}}
+.tg-btn-sm:hover {{ filter: brightness(1.1); }}
+.tg-btn-danger {{ background: var(--tg-red); color: var(--tg-crust); }}
+.tg-btn-secondary {{ background: var(--tg-surface1); color: var(--tg-text); }}
 """
 
 
@@ -330,6 +390,322 @@ def _read_widget_value(p: Parameter, raw_value: Any) -> Any:
     if p.type == ParamType.FLOAT and raw_value is not None:
         return float(raw_value)
     return raw_value
+
+
+# ------------------------------------------------------------------
+# Edge Viewer helpers
+# ------------------------------------------------------------------
+
+
+def _get_cached_dataset(path: str) -> Optional[TissueGraphDataset]:
+    """Return dataset from cache, loading if needed."""
+    if not path:
+        return None
+    if path not in _dataset_cache:
+        try:
+            _dataset_cache[path] = load_dataset(Path(path))
+        except Exception:
+            return None
+    return _dataset_cache[path]
+
+
+_EDGE_COLORWAY = [
+    "#89b4fa", "#a6e3a1", "#f9e2af", "#f38ba8",
+    "#cba6f7", "#94e2d5", "#fab387", "#74c7ec",
+    "#f5c2e7", "#b4befe", "#eba0ac", "#89dceb",
+]
+
+_TAG_COLORWAY = [
+    "#f38ba8", "#a6e3a1", "#89b4fa", "#fab387",
+    "#cba6f7", "#94e2d5", "#f9e2af", "#f5c2e7",
+]
+
+
+def _build_tissue_map(ds: TissueGraphDataset, tissue_id: int, frame_idx: int,
+                      selected_edge: Optional[Tuple[int, int]] = None,
+                      color_mode: str = "uniform",
+                      theme_name: str = DEFAULT_THEME) -> go.Figure:
+    """Build a Plotly figure showing cell polygons and junction lines for one frame."""
+    theme = get_theme(theme_name)
+    fig = go.Figure()
+
+    if tissue_id not in ds.tissues:
+        return fig
+
+    series = ds.tissues[tissue_id]
+    if frame_idx not in series.frames:
+        return fig
+
+    frame = series.frames[frame_idx]
+
+    # Draw cell polygons (if vertices available)
+    for cell in frame.cells.values():
+        if cell.vertices is not None and len(cell.vertices) >= 3:
+            verts = cell.vertices
+            ys = list(verts[:, 0]) + [verts[0, 0]]
+            xs = list(verts[:, 1]) + [verts[0, 1]]
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="lines",
+                line=dict(color=theme["surface2"], width=1),
+                hoverinfo="skip", showlegend=False,
+            ))
+        fig.add_trace(go.Scatter(
+            x=[cell.position[1]], y=[cell.position[0]],
+            mode="text", text=[str(cell.cell_id)],
+            textfont=dict(size=9, color=theme["overlay0"]),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    # Build color assignments based on mode
+    # Build trajectory lookup for color-by-trajectory
+    traj_lookup: Dict[FrozenSet[int], int] = {}
+    for traj in series.edge_trajectories.values():
+        for i, fi in enumerate(traj.frames):
+            if fi == frame_idx:
+                traj_lookup[frozenset(traj.cell_pairs[i])] = traj.trajectory_id
+
+    # Collect all tags for color-by-tag
+    all_tags_sorted: List[str] = []
+    if color_mode == "tag":
+        tag_set: Set[str] = set()
+        for jd in frame.junctions.values():
+            tag_set.update(jd.tags)
+            traj_id = traj_lookup.get(frozenset(jd.cell_pair))
+            if traj_id is not None and traj_id in series.edge_trajectories:
+                tag_set.update(series.edge_trajectories[traj_id].tags)
+        all_tags_sorted = sorted(tag_set)
+    tag_color_map = {t: _TAG_COLORWAY[i % len(_TAG_COLORWAY)] for i, t in enumerate(all_tags_sorted)}
+
+    # Unique trajectory IDs for coloring
+    unique_traj_ids = sorted(set(traj_lookup.values()))
+    traj_color_map = {tid: _EDGE_COLORWAY[i % len(_EDGE_COLORWAY)] for i, tid in enumerate(unique_traj_ids)}
+
+    # Number junctions for click identification
+    n_bg_traces = len(fig.data)  # cell polygons + labels drawn above
+
+    for jd in frame.junctions.values():
+        if len(jd.coordinates) < 2:
+            continue
+        coords = jd.coordinates
+        is_selected = (selected_edge is not None
+                       and tuple(sorted(selected_edge)) == tuple(sorted(jd.cell_pair)))
+
+        # Determine color
+        edge_key_fs = frozenset(jd.cell_pair)
+        merged_tags: Set[str] = set(jd.tags)
+        traj_id = traj_lookup.get(edge_key_fs)
+        if traj_id is not None and traj_id in series.edge_trajectories:
+            merged_tags |= series.edge_trajectories[traj_id].tags
+
+        if is_selected:
+            color = "#ffffff"
+            width = 5
+        elif color_mode == "trajectory" and traj_id is not None:
+            color = traj_color_map.get(traj_id, theme["accent"])
+            width = 2.5
+        elif color_mode == "tag" and merged_tags:
+            first_tag = sorted(merged_tags)[0]
+            color = tag_color_map.get(first_tag, theme["accent"])
+            width = 2.5
+        else:
+            color = theme["accent"]
+            width = 2
+
+        tag_str = ", ".join(sorted(merged_tags)) if merged_tags else ""
+        hover = (f"Edge ({jd.cell_pair[0]}, {jd.cell_pair[1]})<br>"
+                 f"Length: {jd.length:.1f}<br>"
+                 f"Tags: {tag_str or 'none'}")
+
+        fig.add_trace(go.Scatter(
+            x=coords[:, 1].tolist(), y=coords[:, 0].tolist(),
+            mode="lines", line=dict(color=color, width=width),
+            opacity=1.0 if is_selected else 0.8,
+            hovertext=hover, hoverinfo="text",
+            showlegend=False,
+            customdata=[[jd.cell_pair[0], jd.cell_pair[1]]],
+        ))
+
+    fig.update_layout(
+        xaxis=dict(scaleanchor="y", constrain="domain", showgrid=False,
+                   zeroline=False, showticklabels=False),
+        yaxis=dict(autorange="reversed", showgrid=False,
+                   zeroline=False, showticklabels=False),
+        margin=dict(l=5, r=5, t=5, b=5),
+        height=500,
+        dragmode="pan",
+        clickmode="event",
+        paper_bgcolor=theme["base"],
+        plot_bgcolor=theme["base"],
+    )
+    return fig, n_bg_traces
+
+
+def _build_edge_table_data(ds: TissueGraphDataset, tissue_id: int,
+                           frame_idx: int) -> List[Dict[str, Any]]:
+    """Build edge table rows for one frame."""
+    if tissue_id not in ds.tissues:
+        return []
+    series = ds.tissues[tissue_id]
+    if frame_idx not in series.frames:
+        return []
+
+    frame = series.frames[frame_idx]
+
+    # Build trajectory lookup for this frame
+    traj_lookup: Dict[FrozenSet[int], Tuple[int, str]] = {}
+    for traj in series.edge_trajectories.values():
+        for i, fi in enumerate(traj.frames):
+            if fi == frame_idx:
+                key = frozenset(traj.cell_pairs[i])
+                traj_lookup[key] = (traj.trajectory_id, traj.name or "")
+
+    rows = []
+    for edge_key, jd in frame.junctions.items():
+        traj_id, traj_name = traj_lookup.get(frozenset(jd.cell_pair), (-1, ""))
+        merged_tags: Set[str] = set(jd.tags)
+        if traj_id != -1 and traj_id in series.edge_trajectories:
+            merged_tags |= series.edge_trajectories[traj_id].tags
+        rows.append({
+            "cell_a": jd.cell_pair[0],
+            "cell_b": jd.cell_pair[1],
+            "length": round(jd.length, 2),
+            "tags": ", ".join(sorted(merged_tags)) if merged_tags else "",
+            "traj_id": traj_id if traj_id != -1 else "",
+            "name": traj_name,
+            "n_coords": len(jd.coordinates),
+        })
+    return rows
+
+
+def _build_edge_viewer_layout() -> html.Div:
+    """Build the Edge Viewer tab layout."""
+    arrow_btn_style = {
+        "padding": "4px 10px", "border": "1px solid var(--tg-surface1)",
+        "borderRadius": "6px", "background": "var(--tg-surface0)",
+        "color": "var(--tg-text)", "cursor": "pointer", "fontSize": "1.1em",
+        "lineHeight": "1", "fontFamily": FONT_STACK,
+    }
+    return html.Div([
+        # Hidden stores for tissue navigation
+        dcc.Store(id="ev-tissue-index", data=0),
+        dcc.Store(id="ev-tissue-ids", data=[]),
+        dcc.Store(id="ev-n-bg-traces", data=0),
+
+        # Navigation controls
+        html.Div([
+            # Tissue arrows
+            html.Div([
+                html.Label("Tissue", style={"marginBottom": "4px"}),
+                html.Div([
+                    html.Button("\u25c0", id="ev-tissue-prev", n_clicks=0, style=arrow_btn_style),
+                    html.Span(id="ev-tissue-label", children="--",
+                              style={"minWidth": "80px", "textAlign": "center",
+                                     "fontWeight": "600", "color": "var(--tg-text)",
+                                     "fontSize": "0.92em"}),
+                    html.Button("\u25b6", id="ev-tissue-next", n_clicks=0, style=arrow_btn_style),
+                ], style={"display": "flex", "alignItems": "center", "gap": "6px"}),
+            ]),
+            # Frame arrows + slider
+            html.Div([
+                html.Label("Frame", style={"marginBottom": "4px"}),
+                html.Div([
+                    html.Button("\u25c0", id="ev-frame-prev", n_clicks=0, style=arrow_btn_style),
+                    html.Div([
+                        dcc.Slider(id="ev-frame-slider", min=0, max=0, step=1, value=0,
+                                   marks=None, updatemode="drag",
+                                   tooltip={"placement": "bottom", "always_visible": True}),
+                    ], style={"flex": "1", "minWidth": "180px"}),
+                    html.Button("\u25b6", id="ev-frame-next", n_clicks=0, style=arrow_btn_style),
+                ], style={"display": "flex", "alignItems": "center", "gap": "6px"}),
+            ], style={"flex": "1"}),
+            # Color mode
+            html.Div([
+                html.Label("Color", style={"marginBottom": "4px"}),
+                dcc.Dropdown(id="ev-color-mode", options=[
+                    {"label": "Uniform", "value": "uniform"},
+                    {"label": "By trajectory", "value": "trajectory"},
+                    {"label": "By tag", "value": "tag"},
+                ], value="uniform", clearable=False, style={"width": "150px"}),
+            ]),
+        ], className="ev-controls"),
+
+        # Info bar
+        html.Div(id="ev-info", style={
+            "fontSize": "0.85em", "color": "var(--tg-subtext)", "marginBottom": "12px",
+        }),
+
+        # Split: map + panel
+        html.Div([
+            # Left: tissue map
+            html.Div([
+                dcc.Graph(id="ev-tissue-map", figure=go.Figure(),
+                          config={"displayModeBar": True, "displaylogo": False,
+                                  "scrollZoom": True},
+                          style={"height": "500px"}),
+            ], className="ev-map"),
+
+            # Right: edge table + details + operations
+            html.Div([
+                dash_table.DataTable(
+                    id="ev-edge-table",
+                    columns=[
+                        {"name": "Cell A", "id": "cell_a"},
+                        {"name": "Cell B", "id": "cell_b"},
+                        {"name": "Length", "id": "length"},
+                        {"name": "Tags", "id": "tags"},
+                        {"name": "Traj ID", "id": "traj_id"},
+                        {"name": "Name", "id": "name"},
+                    ],
+                    data=[],
+                    row_selectable="multi",
+                    selected_rows=[],
+                    sort_action="native",
+                    filter_action="native",
+                    page_size=12,
+                    style_table={"overflowX": "auto", "borderRadius": "8px"},
+                    style_cell={
+                        "textAlign": "left", "padding": "6px 10px",
+                        "minWidth": "60px", "fontFamily": FONT_STACK,
+                        "fontSize": "0.85em",
+                    },
+                ),
+
+                # Edge details
+                html.Div(id="ev-edge-details", className="ev-details",
+                         children="Select an edge to see details."),
+
+                # Tag operations
+                html.Div([
+                    html.Label("Tag operations", style={
+                        "fontSize": "0.82em", "color": "var(--tg-overlay0)",
+                        "fontWeight": "500", "marginBottom": "6px", "display": "block",
+                    }),
+                    html.Div([
+                        dcc.Input(id="ev-tag-input", type="text",
+                                  placeholder="Tag name...",
+                                  style={"width": "140px", "marginRight": "6px"}),
+                        html.Button("Tag", id="ev-tag-btn", n_clicks=0,
+                                    className="tg-btn-sm tg-btn-primary"),
+                        html.Button("Untag", id="ev-untag-btn", n_clicks=0,
+                                    className="tg-btn-sm tg-btn-secondary",
+                                    style={"marginLeft": "4px"}),
+                    ], style={"display": "flex", "alignItems": "center", "gap": "4px"}),
+                ], style={"marginTop": "14px"}),
+
+                # Save
+                html.Div([
+                    html.Button("Save to dataset", id="ev-save-btn", n_clicks=0,
+                                className="tg-btn-sm tg-btn-primary"),
+                ], style={"marginTop": "14px"}),
+
+                # Edge viewer status
+                html.Div(id="ev-status", style={
+                    "marginTop": "10px", "fontSize": "0.82em",
+                    "color": "var(--tg-overlay0)",
+                }),
+            ], className="ev-panel"),
+        ], className="ev-split"),
+    ])
 
 
 # ------------------------------------------------------------------
@@ -448,8 +824,21 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
             html.Div([
                 html.Div("Load a dataset to get started.",
                          id="status-bar", className="tg-status tg-status-info"),
-                html.Div(id="metadata-pane", style={"marginBottom": "20px"}),
-                html.Div(id="results-area"),
+
+                dcc.Tabs(id="main-tabs", value="analysis", className="tg-tabs", children=[
+                    dcc.Tab(label="Analysis", value="analysis", className="tab", selected_className="tab--selected", children=[
+                        html.Div([
+                            html.Div(id="metadata-pane", style={"marginBottom": "20px"}),
+                            html.Div(id="results-area"),
+                        ], style={"paddingTop": "16px"}),
+                    ]),
+                    dcc.Tab(label="Edge Viewer", value="edge-viewer", className="tab", selected_className="tab--selected", children=[
+                        html.Div([
+                            _build_edge_viewer_layout(),
+                        ], style={"paddingTop": "16px"}),
+                    ]),
+                ]),
+
             ], className="tg-main"),
 
         ], style={"display": "flex", "height": "100vh"}),
@@ -495,6 +884,7 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
         path = path.strip()
         try:
             ds = load_dataset(Path(path))
+            _dataset_cache[path] = ds
             n_tissues = len(ds.tissue_ids)
             total_frames = sum(ds.tissues[tid].num_frames for tid in ds.tissue_ids)
             info = html.Div([
@@ -555,12 +945,27 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
             # Apply current theme's Plotly template
             pio.templates.default = f"tg-{theme_name}"
 
-            ds = load_dataset(Path(dataset_path))
+            # Use cached dataset so analysis results can be applied to it
+            ds = _get_cached_dataset(dataset_path)
+            if ds is None:
+                ds = load_dataset(Path(dataset_path))
+                _dataset_cache[dataset_path] = ds
             mod = modules[module_name]()
             param_specs = mod.parameters()
             params = _extract_params_from_children(param_specs, param_children)
 
             result = mod.compute(ds, **params)
+
+            # Apply central junction tags to cached dataset when that module is run
+            if module_name == "central_junction_identifier":
+                from ..analysis.builtins.central_junction_identifier import apply_central_tags
+                n_tagged = apply_central_tags(
+                    ds, result,
+                    tag_name=params.get("tag_name", "central"),
+                    peripheral_tag_name=params.get("peripheral_tag_name", "peripheral"),
+                )
+                logger.info("Applied central junction tags to %d trajectories", n_tagged)
+
             figs = mod.visualize(result, **params)
 
             results_children = []
@@ -657,9 +1062,289 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
                 "tg-status tg-status-danger",
             )
 
+    # ----- Edge Viewer callbacks -----
+
+    # Tissue arrow navigation: update tissue index store
+    @app.callback(
+        Output("ev-tissue-ids", "data"),
+        Input("dataset-store", "data"),
+    )
+    def ev_load_tissue_ids(dataset_path):
+        if not dataset_path:
+            return []
+        ds = _get_cached_dataset(dataset_path)
+        if ds is None:
+            return []
+        return ds.tissue_ids
+
+    @app.callback(
+        Output("ev-tissue-index", "data"),
+        Input("ev-tissue-prev", "n_clicks"),
+        Input("ev-tissue-next", "n_clicks"),
+        Input("ev-tissue-ids", "data"),
+        State("ev-tissue-index", "data"),
+        prevent_initial_call=True,
+    )
+    def ev_navigate_tissue(prev_clicks, next_clicks, tissue_ids, current_idx):
+        ctx = callback_context
+        if not ctx.triggered or not tissue_ids:
+            return 0
+        triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        if triggered_id == "ev-tissue-prev":
+            return max(0, (current_idx or 0) - 1)
+        elif triggered_id == "ev-tissue-next":
+            return min(len(tissue_ids) - 1, (current_idx or 0) + 1)
+        # tissue_ids changed — reset to 0
+        return 0
+
+    @app.callback(
+        Output("ev-tissue-label", "children"),
+        Input("ev-tissue-index", "data"),
+        State("ev-tissue-ids", "data"),
+    )
+    def ev_update_tissue_label(idx, tissue_ids):
+        if not tissue_ids or idx is None or idx >= len(tissue_ids):
+            return "--"
+        return f"Tissue {tissue_ids[idx]} ({idx + 1}/{len(tissue_ids)})"
+
+    # Frame slider range updates when tissue changes
+    @app.callback(
+        Output("ev-frame-slider", "min"),
+        Output("ev-frame-slider", "max"),
+        Output("ev-frame-slider", "value"),
+        Input("ev-tissue-index", "data"),
+        State("ev-tissue-ids", "data"),
+        State("dataset-store", "data"),
+    )
+    def ev_update_frame_slider(idx, tissue_ids, dataset_path):
+        if not tissue_ids or idx is None or idx >= len(tissue_ids) or not dataset_path:
+            return 0, 0, 0
+        tissue_id = tissue_ids[idx]
+        ds = _get_cached_dataset(dataset_path)
+        if ds is None or tissue_id not in ds.tissues:
+            return 0, 0, 0
+        frames = ds.tissues[tissue_id].frame_indices
+        if not frames:
+            return 0, 0, 0
+        return frames[0], frames[-1], frames[0]
+
+    # Frame arrow navigation
+    @app.callback(
+        Output("ev-frame-slider", "value", allow_duplicate=True),
+        Input("ev-frame-prev", "n_clicks"),
+        Input("ev-frame-next", "n_clicks"),
+        State("ev-frame-slider", "value"),
+        State("ev-frame-slider", "min"),
+        State("ev-frame-slider", "max"),
+        prevent_initial_call=True,
+    )
+    def ev_navigate_frame(prev_clicks, next_clicks, current, fmin, fmax):
+        ctx = callback_context
+        if not ctx.triggered:
+            return no_update
+        triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        if triggered_id == "ev-frame-prev":
+            return max(fmin, (current or 0) - 1)
+        elif triggered_id == "ev-frame-next":
+            return min(fmax, (current or 0) + 1)
+        return no_update
+
+    # Main view update: map + table + info
+    @app.callback(
+        Output("ev-tissue-map", "figure"),
+        Output("ev-edge-table", "data"),
+        Output("ev-edge-table", "selected_rows"),
+        Output("ev-info", "children"),
+        Output("ev-n-bg-traces", "data"),
+        Input("ev-frame-slider", "value"),
+        Input("ev-tissue-index", "data"),
+        Input("ev-color-mode", "value"),
+        State("ev-tissue-ids", "data"),
+        State("dataset-store", "data"),
+        State("theme-store", "data"),
+    )
+    def ev_update_view(frame_idx, tissue_idx, color_mode, tissue_ids, dataset_path, theme_name):
+        if not tissue_ids or tissue_idx is None or tissue_idx >= len(tissue_ids) or not dataset_path:
+            return go.Figure(), [], [], "", 0
+        tissue_id = tissue_ids[tissue_idx]
+        ds = _get_cached_dataset(dataset_path)
+        if ds is None or tissue_id not in ds.tissues:
+            return go.Figure(), [], [], "", 0
+
+        series = ds.tissues[tissue_id]
+        valid_frames = series.frame_indices
+        if frame_idx not in series.frames and valid_frames:
+            frame_idx = min(valid_frames, key=lambda f: abs(f - frame_idx))
+
+        fig, n_bg = _build_tissue_map(
+            ds, tissue_id, frame_idx,
+            color_mode=color_mode or "uniform",
+            theme_name=theme_name or DEFAULT_THEME,
+        )
+        table_data = _build_edge_table_data(ds, tissue_id, frame_idx)
+
+        n_edges = len(table_data)
+        n_tagged = sum(1 for r in table_data if r["tags"])
+        info = f"Tissue {tissue_id}, Frame {frame_idx}: {n_edges} edges, {n_tagged} tagged"
+
+        return fig, table_data, [], info, n_bg
+
+    # Click on plot edge -> select in table
+    @app.callback(
+        Output("ev-edge-table", "selected_rows", allow_duplicate=True),
+        Input("ev-tissue-map", "clickData"),
+        State("ev-edge-table", "data"),
+        State("ev-n-bg-traces", "data"),
+        prevent_initial_call=True,
+    )
+    def ev_click_edge(click_data, table_data, n_bg_traces):
+        if not click_data or not table_data:
+            return no_update
+        points = click_data.get("points", [])
+        if not points:
+            return no_update
+        point = points[0]
+        curve_idx = point.get("curveNumber", -1)
+        # Edge traces start after n_bg_traces background traces
+        edge_idx = curve_idx - (n_bg_traces or 0)
+        if edge_idx < 0 or edge_idx >= len(table_data):
+            return no_update
+        return [edge_idx]
+
+    # Edge details
+    @app.callback(
+        Output("ev-edge-details", "children"),
+        Input("ev-edge-table", "selected_rows"),
+        State("ev-edge-table", "data"),
+        State("ev-tissue-index", "data"),
+        State("ev-tissue-ids", "data"),
+        State("dataset-store", "data"),
+    )
+    def ev_show_details(selected_rows, table_data, tissue_idx, tissue_ids, dataset_path):
+        if not selected_rows or not table_data:
+            return "Select an edge to see details."
+        tissue_id = tissue_ids[tissue_idx] if tissue_ids and tissue_idx is not None and tissue_idx < len(tissue_ids) else None
+        ds = _get_cached_dataset(dataset_path) if dataset_path else None
+        details = []
+        for row_idx in selected_rows:
+            if row_idx >= len(table_data):
+                continue
+            row = table_data[row_idx]
+            cell_a, cell_b = row["cell_a"], row["cell_b"]
+            parts = [
+                html.Div([html.Strong(f"Edge ({cell_a}, {cell_b})")]),
+                html.Div(f"Length: {row['length']} px"),
+                html.Div(f"Coordinates: {row['n_coords']} points"),
+                html.Div(f"Tags: {row['tags'] or 'none'}"),
+            ]
+            traj_id = row.get("traj_id", "")
+            if traj_id != "" and traj_id != -1 and ds is not None and tissue_id is not None and tissue_id in ds.tissues:
+                series = ds.tissues[tissue_id]
+                if int(traj_id) in series.edge_trajectories:
+                    traj = series.edge_trajectories[int(traj_id)]
+                    parts.append(html.Div(
+                        f"Trajectory: #{traj_id} ({len(traj.frames)} frames, "
+                        f"{len(traj.t1_events)} T1 events)"
+                    ))
+            if row.get("name"):
+                parts.append(html.Div(f"Name: {row['name']}"))
+            details.append(html.Div(parts, style={"marginBottom": "8px"}))
+        return details
+
+    # Tag / untag
+    @app.callback(
+        Output("ev-edge-table", "data", allow_duplicate=True),
+        Output("ev-tissue-map", "figure", allow_duplicate=True),
+        Output("ev-n-bg-traces", "data", allow_duplicate=True),
+        Output("ev-status", "children", allow_duplicate=True),
+        Input("ev-tag-btn", "n_clicks"),
+        Input("ev-untag-btn", "n_clicks"),
+        State("ev-tag-input", "value"),
+        State("ev-edge-table", "selected_rows"),
+        State("ev-edge-table", "data"),
+        State("ev-tissue-index", "data"),
+        State("ev-tissue-ids", "data"),
+        State("ev-frame-slider", "value"),
+        State("ev-color-mode", "value"),
+        State("dataset-store", "data"),
+        State("theme-store", "data"),
+        prevent_initial_call=True,
+    )
+    def ev_tag_untag(tag_clicks, untag_clicks, tag_name, selected_rows,
+                     table_data, tissue_idx, tissue_ids, frame_idx,
+                     color_mode, dataset_path, theme_name):
+        ctx = callback_context
+        if not ctx.triggered or not selected_rows or not tag_name or not tag_name.strip():
+            return no_update, no_update, no_update, "Enter a tag name and select edges first."
+
+        if not tissue_ids or tissue_idx is None or tissue_idx >= len(tissue_ids):
+            return no_update, no_update, no_update, "No tissue selected."
+        tissue_id = tissue_ids[tissue_idx]
+
+        triggered_id = ctx.triggered[0]["prop_id"].split(".")[0]
+        is_tag = triggered_id == "ev-tag-btn"
+        tag_name = tag_name.strip()
+
+        ds = _get_cached_dataset(dataset_path)
+        if ds is None or tissue_id not in ds.tissues:
+            return no_update, no_update, no_update, "No dataset loaded."
+
+        series = ds.tissues[tissue_id]
+        frame = series.frames.get(frame_idx)
+        if frame is None:
+            return no_update, no_update, no_update, "Invalid frame."
+
+        count = 0
+        for row_idx in selected_rows:
+            if row_idx >= len(table_data):
+                continue
+            row = table_data[row_idx]
+            cell_pair = (int(row["cell_a"]), int(row["cell_b"]))
+            traj_id = row.get("traj_id", "")
+
+            if is_tag:
+                tag_junction(frame, cell_pair, tag_name)
+                if traj_id != "" and traj_id != -1 and int(traj_id) in series.edge_trajectories:
+                    tag_trajectory(series, int(traj_id), tag_name)
+            else:
+                untag_junction(frame, cell_pair, tag_name)
+                if traj_id != "" and traj_id != -1 and int(traj_id) in series.edge_trajectories:
+                    untag_trajectory(series, int(traj_id), tag_name)
+            count += 1
+
+        action = "Tagged" if is_tag else "Untagged"
+        new_table = _build_edge_table_data(ds, tissue_id, frame_idx)
+        new_fig, n_bg = _build_tissue_map(
+            ds, tissue_id, frame_idx,
+            color_mode=color_mode or "uniform",
+            theme_name=theme_name or DEFAULT_THEME,
+        )
+        return new_table, new_fig, n_bg, f"{action} {count} edge(s) as '{tag_name}'."
+
+    # Save to dataset
+    @app.callback(
+        Output("ev-status", "children", allow_duplicate=True),
+        Input("ev-save-btn", "n_clicks"),
+        State("dataset-store", "data"),
+        prevent_initial_call=True,
+    )
+    def ev_save_changes(n_clicks, dataset_path):
+        if not dataset_path:
+            return "No dataset loaded."
+        ds = _get_cached_dataset(dataset_path)
+        if ds is None:
+            return "No dataset in cache."
+        try:
+            save_dataset(ds, Path(dataset_path))
+            return "Changes saved to disk."
+        except Exception as exc:
+            return f"Save failed: {exc}"
+
     # Auto-load on startup
     if dataset_path:
         app.layout.children[0].data = dataset_path
+        # Pre-populate cache
+        _get_cached_dataset(dataset_path)
 
     return app
 
