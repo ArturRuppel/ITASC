@@ -28,6 +28,9 @@ dashboard = [
     "dash>=2.14.0",
     "plotly>=5.18.0",
 ]
+forces = [
+    "forsys>=1.0.0",
+]
 dev = [
     "pytest>=7.0.0",
 ]

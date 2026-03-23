@@ -140,9 +140,9 @@ def voronoi_to_graph(
         if -1 in ridge_verts:
             continue
 
-        # Map mirror points back to real cell indices
-        real_p1 = p1 if p1 < n_real else p1 % n_real
-        real_p2 = p2 if p2 < n_real else p2 % n_real
+        # Map mirror points back to real cell indices (1-indexed; 0 = background)
+        real_p1 = (p1 if p1 < n_real else p1 % n_real) + 1
+        real_p2 = (p2 if p2 < n_real else p2 % n_real) + 1
 
         if real_p1 == real_p2:
             continue
@@ -173,16 +173,17 @@ def voronoi_to_graph(
         )
         graph.add_edge(sorted_pair[0], sorted_pair[1], length=length)
 
-    # Build cell data
+    # Build cell data (1-indexed; 0 = background)
     for i in range(n_real):
+        cid = i + 1
         region_idx = vor.point_region[i]
         region = vor.regions[region_idx]
 
         if -1 in region or len(region) == 0:
             # Boundary cell with infinite region — still include with estimated properties
-            num_neighbors = graph.degree(i) if graph.has_node(i) else 0
-            cells[i] = CellData(
-                cell_id=i,
+            num_neighbors = graph.degree(cid) if graph.has_node(cid) else 0
+            cells[cid] = CellData(
+                cell_id=cid,
                 position=positions[i],
                 area=0.0,
                 perimeter=0.0,
@@ -200,10 +201,10 @@ def voronoi_to_graph(
         area = _polygon_area(verts)
         perimeter = _polygon_perimeter(verts)
         shape_index = perimeter / np.sqrt(area) if area > 0 else 0.0
-        num_neighbors = graph.degree(i) if graph.has_node(i) else 0
+        num_neighbors = graph.degree(cid) if graph.has_node(cid) else 0
 
-        cells[i] = CellData(
-            cell_id=i,
+        cells[cid] = CellData(
+            cell_id=cid,
             position=positions[i],
             area=area,
             perimeter=perimeter,

@@ -1,12 +1,16 @@
 """Graph extraction from segmentation labels.
 
-Ported from napariCellFlow's edge_analysis.py, refactored into standalone functions.
+Uses contour-based boundary detection inspired by ForSys's Skeleton approach:
+boundary pixels between adjacent cells are detected directly from the label
+image, and triple junction points (where 3+ cells meet) are computed so that
+every junction extends fully to its endpoints.
 """
 import cv2
 import logging
 import numpy as np
 import networkx as nx
-from typing import Dict, Tuple, Optional, FrozenSet
+from collections import defaultdict
+from typing import Dict, List, Tuple, Optional, FrozenSet
 from scipy.spatial.distance import cdist
 from skimage.morphology import skeletonize
 from skimage.measure import regionprops
@@ -122,104 +126,103 @@ def find_border_boundary(
     return results
 
 
-def find_shared_boundary(
-    frame: np.ndarray,
-    cell1_id: int,
-    cell2_id: int,
-    dilation_radius: int = 1,
-    min_overlap_pixels: int = 5,
-    min_edge_length: float = 0.0,
-) -> Optional[Tuple[np.ndarray, float]]:
-    """Find the shared boundary between two cells in a label frame.
+def _find_boundary_pixels(
+    label_frame: np.ndarray,
+) -> Dict[FrozenSet[int], List]:
+    """Detect all boundary pixels between adjacent cells.
 
-    Returns (ordered_coordinates, length) or None if no valid boundary.
+    For each pair of horizontally or vertically adjacent pixels with different
+    non-zero labels, a boundary point is recorded at their sub-pixel midpoint.
+    This produces boundary coordinates that lie exactly on the cell–cell
+    interface.
+
+    Returns a dict mapping ``frozenset(cell_a, cell_b)`` to a list of
+    ``[y, x]`` boundary positions (floats).
     """
-    mask1 = (frame == cell1_id).astype(np.uint8)
-    mask2 = (frame == cell2_id).astype(np.uint8)
+    # Horizontal boundaries at (y, x + 0.5)
+    h_left = label_frame[:, :-1]
+    h_right = label_frame[:, 1:]
+    h_mask = (h_left != h_right) & (h_left > 0) & (h_right > 0)
+    h_ys, h_xs = np.where(h_mask)
 
-    # Dilate to find overlap
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (2 * dilation_radius + 1, 2 * dilation_radius + 1),
-    )
-    dilated1 = cv2.dilate(mask1, kernel)
-    dilated2 = cv2.dilate(mask2, kernel)
-    overlap = dilated1 & dilated2
+    # Vertical boundaries at (y + 0.5, x)
+    v_top = label_frame[:-1, :]
+    v_bot = label_frame[1:, :]
+    v_mask = (v_top != v_bot) & (v_top > 0) & (v_bot > 0)
+    v_ys, v_xs = np.where(v_mask)
 
-    if not np.any(overlap):
-        return None
+    junction_pixels: Dict[FrozenSet[int], List] = defaultdict(list)
 
-    # Thin dilation for precise boundary
-    thin_kernel = np.ones((3, 3), np.uint8)
-    thin_dilated1 = cv2.dilate(mask1, thin_kernel)
-    thin_dilated2 = cv2.dilate(mask2, thin_kernel)
-    boundary_region = thin_dilated1 & thin_dilated2
+    for i in range(len(h_ys)):
+        pair = frozenset((int(h_left[h_ys[i], h_xs[i]]),
+                          int(h_right[h_ys[i], h_xs[i]])))
+        junction_pixels[pair].append([float(h_ys[i]), h_xs[i] + 0.5])
 
-    if np.sum(boundary_region) < min_overlap_pixels:
-        return None
+    for i in range(len(v_ys)):
+        pair = frozenset((int(v_top[v_ys[i], v_xs[i]]),
+                          int(v_bot[v_ys[i], v_xs[i]])))
+        junction_pixels[pair].append([v_ys[i] + 0.5, float(v_xs[i])])
 
-    skeleton = skeletonize(boundary_region)
-    if not np.any(skeleton):
-        return None
-
-    ordered_coords = order_boundary_pixels(skeleton)
-    if len(ordered_coords) < 2:
-        return None
-
-    length = calculate_edge_length(ordered_coords)
-    if min_edge_length > 0 and length < min_edge_length:
-        return None
-
-    return ordered_coords, length
+    return dict(junction_pixels)
 
 
-def order_boundary_pixels(skeleton: np.ndarray) -> np.ndarray:
-    """Order pixels along a skeletonized boundary from endpoint to endpoint."""
-    points = np.column_stack(np.where(skeleton))
-    if len(points) <= 2:
+def _find_triple_junctions(
+    label_frame: np.ndarray,
+) -> List[Tuple[float, float, FrozenSet[int]]]:
+    """Find triple (or higher) junction positions from a label image.
+
+    A triple junction is the meeting point of 3+ cells. It is detected by
+    scanning every 2×2 pixel block: when 3+ distinct non-zero labels appear
+    in the block, the centre ``(y + 0.5, x + 0.5)`` is a junction point.
+
+    Returns a list of ``(y, x, frozenset_of_cell_ids)`` tuples.
+    """
+    tl = label_frame[:-1, :-1]
+    tr = label_frame[:-1, 1:]
+    bl = label_frame[1:, :-1]
+    br = label_frame[1:, 1:]
+
+    # Quick reject: blocks where all 4 pixels are the same
+    candidate = ~((tl == tr) & (tr == bl) & (bl == br))
+    tj_ys, tj_xs = np.where(candidate)
+
+    results: List[Tuple[float, float, FrozenSet[int]]] = []
+    for idx in range(len(tj_ys)):
+        y, x = int(tj_ys[idx]), int(tj_xs[idx])
+        block = {int(tl[y, x]), int(tr[y, x]),
+                 int(bl[y, x]), int(br[y, x])}
+        block.discard(0)
+        if len(block) >= 3:
+            results.append((y + 0.5, x + 0.5, frozenset(block)))
+    return results
+
+
+def _order_point_set(points: np.ndarray) -> np.ndarray:
+    """Order 2-D points into a path by nearest-neighbour walk.
+
+    Starts from one of the two most distant points (an endpoint) and
+    greedily visits the nearest unvisited point.
+    """
+    n = len(points)
+    if n <= 2:
         return points
 
-    # Find endpoints (pixels with exactly 1 neighbor)
-    endpoint_indices = []
-    for i, point in enumerate(points):
-        y, x = point
-        neighbors = 0
-        for dy in [-1, 0, 1]:
-            for dx in [-1, 0, 1]:
-                if dy == 0 and dx == 0:
-                    continue
-                ny, nx_ = y + dy, x + dx
-                if 0 <= ny < skeleton.shape[0] and 0 <= nx_ < skeleton.shape[1]:
-                    if skeleton[ny, nx_]:
-                        neighbors += 1
-        if neighbors == 1:
-            endpoint_indices.append(i)
+    D = cdist(points, points)
+    # Start from one endpoint (point farthest from the centroid)
+    start, _ = np.unravel_index(np.argmax(D), D.shape)
 
-    if len(endpoint_indices) != 2:
-        distances = cdist(points, points)
-        i, j = np.unravel_index(np.argmax(distances), distances.shape)
-        endpoint_indices = [i, j]
+    ordered = np.empty_like(points)
+    visited = np.zeros(n, dtype=bool)
+    current = start
+    for step in range(n):
+        ordered[step] = points[current]
+        visited[current] = True
+        if step < n - 1:
+            dists = D[current].copy()
+            dists[visited] = np.inf
+            current = int(np.argmin(dists))
 
-    # Walk from one endpoint to the other
-    ordered = [points[endpoint_indices[0]]]
-    remaining = list(range(len(points)))
-    remaining.remove(endpoint_indices[0])
-
-    while remaining:
-        current = ordered[-1]
-        min_dist = float("inf")
-        next_idx = None
-        for idx in remaining:
-            dist = np.sum((points[idx] - current) ** 2)
-            if dist < min_dist:
-                min_dist = dist
-                next_idx = idx
-        if next_idx is None:
-            break
-        ordered.append(points[next_idx])
-        remaining.remove(next_idx)
-
-    return np.array(ordered)
+    return ordered
 
 
 def calculate_edge_length(coords: np.ndarray) -> float:
@@ -232,114 +235,119 @@ def calculate_edge_length(coords: np.ndarray) -> float:
 
 def labels_to_graph(
     label_frame: np.ndarray,
-    dilation_radius: int = 1,
-    min_overlap_pixels: int = 5,
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
     min_border_edge_length: float = 5.0,
+    **kwargs,
 ) -> Tuple[Dict[int, CellData], Dict[FrozenSet[int], JunctionData], nx.Graph]:
     """Build cell data, junction data, and graph from a single label frame.
 
+    Uses contour-based boundary detection: for each pair of adjacent pixels
+    with different labels, a boundary point is placed at their sub-pixel
+    midpoint.  Triple junction points (where 3+ cells meet) are detected
+    from 2×2 pixel blocks and added as junction endpoints.  This ensures
+    that junctions extend fully to where cells meet, matching the topology
+    produced by ForSys's Skeleton approach.
+
     Args:
-        label_frame: 2D integer array, 0 = background.
-        dilation_radius: Radius for dilation when detecting adjacency.
-        min_overlap_pixels: Minimum boundary pixels to count as adjacent.
-        min_edge_length: Minimum junction length to keep.
-        filter_isolated: If True, edges where either cell has only one neighbor
-            are kept but auto-tagged with ``"border"`` rather than removed.
-            Edges involving cells that touch the image border are also tagged.
+        label_frame: 2-D integer array, 0 = background.  Cells should be
+            touching (no gaps) for best results; use
+            ``skimage.segmentation.expand_labels`` to fill gaps first.
+        min_edge_length: Minimum junction length (px) to keep.
+        filter_isolated: If True, detect border cells and add tagged
+            ``"border"`` junctions for cell–background boundaries.
         min_border_edge_length: Minimum length (px) for a border boundary
-            segment to count.  Segments shorter than this are ignored, which
-            prevents small background holes from creating spurious border edges.
+            segment to count.
 
     Returns:
         (cells, junctions, graph)
     """
+    H, W = label_frame.shape
     cell_ids = np.unique(label_frame)
     cell_ids = cell_ids[cell_ids != 0]
 
-    # Get cell properties from regionprops
+    if len(cell_ids) == 0:
+        return {}, {}, nx.Graph()
+
     props = regionprops(label_frame)
     props_by_label = {p.label: p for p in props}
 
-    # Detect all junctions
-    raw_junctions = {}
-    for i, cell1 in enumerate(cell_ids):
-        for cell2 in cell_ids[i + 1:]:
-            result = find_shared_boundary(
-                label_frame, int(cell1), int(cell2),
-                dilation_radius=dilation_radius,
-                min_overlap_pixels=min_overlap_pixels,
-                min_edge_length=min_edge_length,
-            )
-            if result is not None:
-                coords, length = result
-                pair = frozenset((int(cell1), int(cell2)))
-                raw_junctions[pair] = (coords, length)
+    # ---- Step 1: boundary pixels between adjacent cells ----
+    junction_pixels = _find_boundary_pixels(label_frame)
 
-    # Identify border cells that have a *significant* border boundary.
-    # ``find_border_cells`` catches every cell touching any background pixel,
-    # including tiny segmentation holes.  We refine: a cell is only treated as
-    # a true border cell if ``find_border_boundary`` returns at least one
-    # segment whose length meets ``min_border_edge_length``.
-    candidate_border_cells = find_border_cells(label_frame)
+    # ---- Step 2: triple junction detection ----
+    triple_junctions = _find_triple_junctions(label_frame)
 
-    # Compute border segments per cell (used both for tagging and for creating
-    # border-boundary junctions).
-    border_segments: Dict[int, list] = {}
+    # Map each cell pair to its triple junction endpoints
+    pair_to_tjs: Dict[FrozenSet[int], List] = defaultdict(list)
+    for tj_y, tj_x, tj_cells in triple_junctions:
+        cells_list = sorted(tj_cells)
+        for i in range(len(cells_list)):
+            for j in range(i + 1, len(cells_list)):
+                pair_to_tjs[frozenset((cells_list[i], cells_list[j]))].append(
+                    [tj_y, tj_x]
+                )
+
+    # ---- Step 3: build junctions ----
+    graph = nx.Graph()
+    junctions: Dict[FrozenSet[int], JunctionData] = {}
+
+    for pair, pixels in junction_pixels.items():
+        coords = np.array(pixels)
+
+        # Append triple junction endpoints so the junction reaches them
+        tjs = pair_to_tjs.get(pair, [])
+        if tjs:
+            coords = np.vstack([coords, np.array(tjs)])
+
+        if len(coords) < 2:
+            continue
+
+        ordered = _order_point_set(coords)
+        length = calculate_edge_length(ordered)
+
+        if min_edge_length > 0 and length < min_edge_length:
+            continue
+
+        sorted_pair = tuple(sorted(pair))
+        midpoint = ordered[len(ordered) // 2].astype(float)
+
+        junctions[pair] = JunctionData(
+            cell_pair=sorted_pair,
+            length=length,
+            coordinates=ordered,
+            midpoint=midpoint,
+        )
+        graph.add_edge(sorted_pair[0], sorted_pair[1], length=length)
+
+    # ---- Step 4: border junctions ----
     if filter_isolated:
-        for cell_id in candidate_border_cells:
+        # Detect border cells by checking if contour touches image edge
+        border_cells_with_segs: Dict[int, list] = {}
+        candidate_border = find_border_cells(label_frame)
+        for cell_id in candidate_border:
             segs = find_border_boundary(
                 label_frame, int(cell_id),
                 min_edge_length=min_border_edge_length,
             )
             if segs:
-                border_segments[int(cell_id)] = segs
+                border_cells_with_segs[int(cell_id)] = segs
 
-    # Only cells with qualifying segments are real border cells.
-    border_cells = set(border_segments.keys())
-
-    # Build graph
-    graph = nx.Graph()
-    junctions: Dict[FrozenSet[int], JunctionData] = {}
-
-    for pair, (coords, length) in raw_junctions.items():
-        sorted_pair = tuple(sorted(pair))
-        midpoint = coords[len(coords) // 2].astype(float)
-
-        jd = JunctionData(
-            cell_pair=sorted_pair,
-            length=length,
-            coordinates=coords,
-            midpoint=midpoint,
-        )
-        junctions[pair] = jd
-        graph.add_edge(sorted_pair[0], sorted_pair[1], length=length)
-
-    # Add border boundary edges: cell boundary facing background or image edge.
-    # These are stored as junctions with cell_pair (0, cell_id) and tagged.
-    # A single cell may produce multiple disconnected segments (e.g. a corner
-    # cell touching the top and right edges).
-    if filter_isolated:
-        for cell_id, segs in border_segments.items():
+        for cell_id, segs in border_cells_with_segs.items():
             for seg_idx, (coords, length) in enumerate(segs):
                 pair = frozenset((0, cell_id))
-                sorted_pair = (0, cell_id)
-                # When a cell has multiple border segments, use unique keys
-                # so they don't overwrite each other.
                 key = pair if seg_idx == 0 else frozenset((-seg_idx, cell_id))
                 midpoint = coords[len(coords) // 2].astype(float)
-                jd = JunctionData(
-                    cell_pair=sorted_pair,
+                junctions[key] = JunctionData(
+                    cell_pair=(0, cell_id),
                     length=length,
                     coordinates=coords,
                     midpoint=midpoint,
                     tags={"border"},
                 )
-                junctions[key] = jd
                 graph.add_edge(0, cell_id, length=length)
 
-    # Build cell data — only for cells that appear in junctions
+    # ---- Step 5: build cell data ----
     cells_in_graph = set()
     for pair in junctions:
         cells_in_graph.update(pair)
@@ -353,6 +361,18 @@ def labels_to_graph(
         perimeter = float(p.perimeter)
         shape_index = perimeter / np.sqrt(area) if area > 0 else 0.0
         num_neighbors = graph.degree(cid) if graph.has_node(cid) else 0
+
+        # Extract cell contour for polygon vertices
+        mask = (label_frame == cid).astype(np.uint8)
+        contours_cv, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE,
+        )
+        vertices = None
+        if contours_cv:
+            contour = max(contours_cv, key=cv2.contourArea).squeeze(1)
+            if contour.ndim == 2 and len(contour) >= 3:
+                vertices = contour[:, ::-1].astype(float)  # OpenCV (x,y) → (y,x)
+
         cells[cid] = CellData(
             cell_id=cid,
             position=np.array(p.centroid),
@@ -360,6 +380,7 @@ def labels_to_graph(
             perimeter=perimeter,
             shape_index=shape_index,
             num_neighbors=num_neighbors,
+            vertices=vertices,
         )
 
     return cells, junctions, graph

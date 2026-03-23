@@ -3,7 +3,6 @@ import numpy as np
 import pytest
 
 from napariTissueGraph.core.labels import (
-    find_shared_boundary,
     find_border_boundary,
     find_border_cells,
     calculate_edge_length,
@@ -23,26 +22,6 @@ class TestCalculateEdgeLength:
     def test_single_point(self):
         coords = np.array([[0, 0]])
         assert calculate_edge_length(coords) == 0.0
-
-
-class TestFindSharedBoundary:
-    def test_adjacent_cells(self, label_frame):
-        # Cells 1 and 2 should be adjacent in our grid layout
-        result = find_shared_boundary(label_frame, 1, 2)
-        # They may or may not be adjacent depending on Voronoi layout;
-        # just check the function doesn't crash
-        if result is not None:
-            coords, length = result
-            assert len(coords) >= 2
-            assert length > 0
-
-    def test_distant_cells(self, label_frame):
-        # Very distant cells shouldn't share a boundary
-        # Cell 1 is top-left, cell with highest id is bottom-right
-        max_id = label_frame.max()
-        result = find_shared_boundary(label_frame, 1, max_id)
-        # May or may not be adjacent — just verify it returns valid type
-        assert result is None or len(result) == 2
 
 
 class TestLabelsToGraph:

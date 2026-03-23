@@ -218,6 +218,75 @@ class BatchBuildWorker(QObject):
             self.error.emit(e)
 
 
+class ForceInferenceWorker(QObject):
+    """Run ForSys force inference on one or more tissues."""
+
+    progress = Signal(int, str)
+    finished = Signal()
+    error = Signal(Exception)
+
+    def __init__(self, dataset, tissue_ids=None, frame_indices=None,
+                 endpoint_cluster_tol=3.0, allow_negatives=False):
+        super().__init__()
+        self.dataset = dataset
+        self.tissue_ids = tissue_ids  # None = all
+        self.frame_indices = frame_indices  # None = all frames per tissue
+        self.endpoint_cluster_tol = endpoint_cluster_tol
+        self.allow_negatives = allow_negatives
+
+    def run(self):
+        try:
+            from ..core.forsys_adapter import tissue_frame_to_forsys, forsys_results_to_tissue
+            import forsys as fsys
+
+            tids = self.tissue_ids or self.dataset.tissue_ids
+            total_frames = 0
+            for tid in tids:
+                series = self.dataset.tissues[tid]
+                fids = self.frame_indices or series.frame_indices
+                total_frames += len(fids)
+
+            done = 0
+            for tid in tids:
+                series = self.dataset.tissues[tid]
+                fids = self.frame_indices or series.frame_indices
+
+                for frame_idx in fids:
+                    pct = int((done / total_frames) * 95)
+                    self.progress.emit(pct, f"Tissue {tid}, frame {frame_idx}...")
+
+                    tissue_frame = series.frames[frame_idx]
+                    try:
+                        fs_frame = tissue_frame_to_forsys(
+                            tissue_frame,
+                            endpoint_cluster_tol=self.endpoint_cluster_tol,
+                        )
+                        fs_obj = fsys.ForSys(frames={0: fs_frame})
+                        fs_obj.build_force_matrix(when=0)
+                        fs_obj.solve_stress(
+                            when=0, allow_negatives=self.allow_negatives
+                        )
+                        try:
+                            fs_obj.build_pressure_matrix(when=0)
+                            fs_obj.solve_pressure(
+                                when=0, method="lagrange_pressure"
+                            )
+                        except Exception:
+                            pass  # pressure can fail; tensions still valid
+                        forsys_results_to_tissue(fs_frame, tissue_frame)
+                    except Exception as e:
+                        logger.warning(
+                            f"Tissue {tid} frame {frame_idx}: {e}"
+                        )
+
+                    done += 1
+
+            self.progress.emit(100, "Force inference complete.")
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(e)
+
+
 class IOWorker(QObject):
     """Save or load a dataset in a background thread."""
 

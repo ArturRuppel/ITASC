@@ -93,7 +93,7 @@ def assign_track_ids(
     """
     n_frames = label_stack.shape[0]
     track_assignments: Dict[int, Dict[int, int]] = {}
-    next_track_id = 0
+    next_track_id = 1  # 0 is reserved for background
 
     # First frame: each cell gets a new track ID
     labels_0 = set(np.unique(label_stack[0])) - {0}

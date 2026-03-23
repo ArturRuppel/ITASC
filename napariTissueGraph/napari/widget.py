@@ -528,6 +528,11 @@ class TissueGraphWidget(QWidget):
         self._tracks_widget = NuclearTracksWidget(self.viewer)
         self.tab_widget.addTab(self._tracks_widget, "Nuclear Tracks")
 
+        # ========== Forces tab ==========
+        from .forces_widget import ForcesWidget
+        self._forces_widget = ForcesWidget(self.viewer)
+        self.tab_widget.addTab(self._forces_widget, "Forces")
+
         # Set initial button state
         self._update_pipeline_buttons()
 

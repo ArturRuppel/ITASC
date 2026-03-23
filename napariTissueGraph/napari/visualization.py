@@ -99,6 +99,103 @@ def build_all_junction_lines(series: TissueGraphTimeSeries) -> Tuple[List[np.nda
     return lines, np.array(colors)
 
 
+def build_tension_colored_junctions(
+    series: TissueGraphTimeSeries,
+) -> Tuple[List[np.ndarray], np.ndarray]:
+    """Build junction line data colored by inferred tension.
+
+    Junctions without tension values are shown in gray.  Internal junctions
+    are colored on a blue (low) → red (high) continuous scale.
+
+    Returns:
+        (lines, colors) same format as build_all_junction_lines.
+    """
+    lines = []
+    colors = []
+
+    # Collect all non-None tensions for global normalization
+    all_tensions = []
+    for frame in series.frames.values():
+        for jd in frame.junctions.values():
+            if jd.tension is not None and len(jd.coordinates) >= 2:
+                all_tensions.append(jd.tension)
+
+    if not all_tensions:
+        return [], np.empty((0, 4))
+
+    vmin, vmax = min(all_tensions), max(all_tensions)
+
+    gray = [0.5, 0.5, 0.5, 0.4]
+
+    for frame_idx in series.frame_indices:
+        frame = series.frames[frame_idx]
+        for jd in frame.junctions.values():
+            if len(jd.coordinates) < 2:
+                continue
+
+            coords = jd.coordinates.astype(float)
+            frame_col = np.full((len(coords), 1), float(frame_idx))
+            lines.append(np.hstack([frame_col, coords]))
+
+            if jd.tension is not None and vmax > vmin:
+                normed = (jd.tension - vmin) / (vmax - vmin)
+                colors.append([normed, 0.0, 1.0 - normed, 1.0])
+            elif jd.tension is not None:
+                colors.append([0.5, 0.0, 0.5, 1.0])
+            else:
+                colors.append(gray)
+
+    return lines, np.array(colors)
+
+
+def build_pressure_colored_cells(
+    series: TissueGraphTimeSeries,
+) -> Tuple[List[np.ndarray], np.ndarray]:
+    """Build cell polygon data colored by inferred pressure.
+
+    Only cells with both vertices and pressure values are included.
+    Colored on a blue (low) → red (high) continuous scale.
+
+    Returns:
+        (polygons, colors) where polygons is a list of Nx3 arrays
+        (frame, y, x) and colors is an Nx4 RGBA array.
+    """
+    polygons = []
+    colors = []
+
+    # Collect all pressures for global normalization
+    all_pressures = []
+    for frame in series.frames.values():
+        for cd in frame.cells.values():
+            if cd.pressure is not None and cd.vertices is not None:
+                all_pressures.append(cd.pressure)
+
+    if not all_pressures:
+        return [], np.empty((0, 4))
+
+    vmin, vmax = min(all_pressures), max(all_pressures)
+
+    for frame_idx in series.frame_indices:
+        frame = series.frames[frame_idx]
+        for cd in frame.cells.values():
+            if cd.vertices is None or cd.pressure is None:
+                continue
+            if len(cd.vertices) < 3:
+                continue
+
+            coords = cd.vertices.astype(float)
+            frame_col = np.full((len(coords), 1), float(frame_idx))
+            polygons.append(np.hstack([frame_col, coords]))
+
+            if vmax > vmin:
+                normed = (cd.pressure - vmin) / (vmax - vmin)
+            else:
+                normed = 0.5
+            colors.append([normed, 0.0, 1.0 - normed, 0.5])
+
+    return polygons, np.array(colors)
+
+
 def build_all_centroids(series: TissueGraphTimeSeries) -> np.ndarray:
     """Build centroid positions for all frames at once.
 
