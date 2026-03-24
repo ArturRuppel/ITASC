@@ -1,0 +1,10 @@
+name: napariTissueFlow
+display_name: napariTissueFlow
+contributions:
+  commands:
+    - id: napariTissueFlow.launch
+      title: Launch napariTissueFlow
+      python_name: napariTissueFlow:TissueFlowWidget
+  widgets:
+    - command: napariTissueFlow.launch
+      display_name: napariTissueFlow

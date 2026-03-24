@@ -3,17 +3,17 @@
 Defines the base class that all analysis modules implement, plus
 parameter declarations for auto-generating dashboard UI widgets.
 
-Modules are discovered via the ``napariTissueGraph.analysis_modules``
+Modules are discovered via the ``napariTissueFlow.analysis_modules``
 entry-point group, or by scanning a plugin folder.
 
 Example third-party module (in ``pyproject.toml``)::
 
-    [project.entry-points."napariTissueGraph.analysis_modules"]
+    [project.entry-points."napariTissueFlow.analysis_modules"]
     my_module = "my_package:MyModule"
 
 Example usage::
 
-    from napariTissueGraph.analysis.modules import discover_modules
+    from napariTissueFlow.analysis.modules import discover_modules
 
     for name, module_cls in discover_modules().items():
         mod = module_cls()
@@ -38,7 +38,7 @@ from ..core.api import Source
 
 logger = logging.getLogger(__name__)
 
-ENTRY_POINT_GROUP = "napariTissueGraph.analysis_modules"
+ENTRY_POINT_GROUP = "napariTissueFlow.analysis_modules"
 
 
 # ------------------------------------------------------------------
@@ -216,8 +216,8 @@ def discover_modules(
 
     Discovery sources (checked in order):
 
-    1. Built-in modules in ``napariTissueGraph.analysis.builtins``
-    2. Entry points in the ``napariTissueGraph.analysis_modules`` group
+    1. Built-in modules in ``napariTissueFlow.analysis.builtins``
+    2. Entry points in the ``napariTissueFlow.analysis_modules`` group
     3. Python files in *plugin_dirs* (each file may define one or more
        ``AnalysisModule`` subclasses)
 
@@ -277,7 +277,7 @@ def discover_modules(
         for py_file in sorted(dirpath.glob("*.py")):
             if py_file.name.startswith("_"):
                 continue
-            module_name = f"napariTissueGraph_plugin_{py_file.stem}"
+            module_name = f"napariTissueFlow_plugin_{py_file.stem}"
             try:
                 spec = importlib.util.spec_from_file_location(module_name, py_file)
                 if spec and spec.loader:

@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from napariTissueGraph.core.label_tracking import (
+from napariTissueFlow.core.label_tracking import (
     match_labels,
     assign_track_ids,
     label_to_vertices,

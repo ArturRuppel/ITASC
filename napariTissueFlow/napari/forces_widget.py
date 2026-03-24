@@ -74,7 +74,7 @@ class ForcesWidget(QWidget):
         if not forsys_available():
             banner = QLabel(
                 "forsys is not installed.\n"
-                "Install with: pip install napariTissueGraph[forces]"
+                "Install with: pip install napariTissueFlow[forces]"
             )
             banner.setStyleSheet(
                 "QLabel { color: #cc4444; padding: 8px; "

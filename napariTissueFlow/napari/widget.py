@@ -1,4 +1,4 @@
-"""Napari dock widget for napariTissueGraph.
+"""Napari dock widget for napariTissueFlow.
 
 Supports two workflows:
 - Single-tissue: staged pipeline with visual QC at each step.
@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 # Widget
 # ------------------------------------------------------------------
 
-class TissueGraphWidget(QWidget):
+class TissueFlowWidget(QWidget):
     def __init__(self, napari_viewer):
         super().__init__()
         self.viewer = napari_viewer
@@ -1096,13 +1096,13 @@ class TissueGraphWidget(QWidget):
             import subprocess
             import sys
             subprocess.Popen(
-                [sys.executable, "-m", "napariTissueGraph.dashboard", str(tmpdir)],
+                [sys.executable, "-m", "napariTissueFlow.dashboard", str(tmpdir)],
             )
             self.status_label.setText("Dashboard launched in browser.")
         except ImportError:
             self.status_label.setText(
                 "Dashboard requires dash+plotly. Install with: "
-                "pip install napariTissueGraph[dashboard]"
+                "pip install napariTissueFlow[dashboard]"
             )
         except Exception as exc:
             self.status_label.setText(f"Failed to launch dashboard: {exc}")

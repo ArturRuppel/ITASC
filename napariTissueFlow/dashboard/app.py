@@ -2,12 +2,12 @@
 
 Launch standalone::
 
-    python -m napariTissueGraph.dashboard          # serves at localhost:8050
-    python -m napariTissueGraph.dashboard /path/to/dataset
+    python -m napariTissueFlow.dashboard          # serves at localhost:8050
+    python -m napariTissueFlow.dashboard /path/to/dataset
 
 Use in Jupyter::
 
-    from napariTissueGraph.dashboard import create_app
+    from napariTissueFlow.dashboard import create_app
     app = create_app()
     app.run(jupyter_mode="inline")
 """

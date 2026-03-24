@@ -22,7 +22,7 @@ def _require_forsys():
     if not forsys_available():
         raise ImportError(
             "forsys is not installed. Install it with: "
-            "pip install napariTissueGraph[forces]"
+            "pip install napariTissueFlow[forces]"
         )
 
 

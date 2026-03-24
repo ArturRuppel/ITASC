@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from napariTissueGraph.core.forsys_adapter import forsys_available
+from napariTissueFlow.core.forsys_adapter import forsys_available
 
 
 # Skip all tests if forsys is not installed
@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(
 def _build_series_from_labels():
     """Build a small TissueGraphTimeSeries from labels for testing."""
     from tests.conftest import make_label_stack
-    from napariTissueGraph.core.graph import build_from_labels
+    from napariTissueFlow.core.graph import build_from_labels
 
     label_stack = make_label_stack(n_frames=1, n_cells_side=4, image_size=200)
     return build_from_labels(label_stack)
@@ -23,7 +23,7 @@ def _build_series_from_labels():
 def _build_series_from_voronoi():
     """Build a small TissueGraphTimeSeries from Voronoi for testing."""
     from tests.conftest import make_track_positions
-    from napariTissueGraph.core.graph import build_from_tracks
+    from napariTissueFlow.core.graph import build_from_tracks
 
     positions = make_track_positions(n_frames=1, nx=4, ny=4, spacing=25.0)
     return build_from_tracks(positions, image_shape=(120, 120))
@@ -33,7 +33,7 @@ class TestForSysAdapter:
     """Test the geometry conversion layer."""
 
     def test_tissue_frame_to_forsys_voronoi(self):
-        from napariTissueGraph.core.forsys_adapter import tissue_frame_to_forsys
+        from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
 
         series = _build_series_from_voronoi()
         frame = list(series.frames.values())[0]
@@ -44,7 +44,7 @@ class TestForSysAdapter:
         assert len(fs_frame.cells) > 0
 
     def test_tissue_frame_to_forsys_labels(self):
-        from napariTissueGraph.core.forsys_adapter import tissue_frame_to_forsys
+        from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
 
         series = _build_series_from_labels()
         frame = list(series.frames.values())[0]
@@ -55,7 +55,7 @@ class TestForSysAdapter:
         assert len(fs_frame.cells) > 0
 
     def test_forsys_frame_has_big_edges(self):
-        from napariTissueGraph.core.forsys_adapter import tissue_frame_to_forsys
+        from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
 
         series = _build_series_from_voronoi()
         frame = list(series.frames.values())[0]
@@ -66,8 +66,8 @@ class TestForSysAdapter:
 
     def test_no_vertices_raises(self):
         """Frames without cell vertices should raise ValueError."""
-        from napariTissueGraph.core.forsys_adapter import tissue_frame_to_forsys
-        from napariTissueGraph.structures import (
+        from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
+        from napariTissueFlow.structures import (
             CellData, JunctionData, TissueGraphFrame, InputType,
         )
         import networkx as nx
@@ -91,7 +91,7 @@ class TestForceInference:
     """Test the full inference pipeline."""
 
     def test_infer_forces_voronoi(self):
-        from napariTissueGraph.core.mechanics import infer_forces
+        from napariTissueFlow.core.mechanics import infer_forces
 
         series = _build_series_from_voronoi()
         infer_forces(series, method="static")
@@ -104,7 +104,7 @@ class TestForceInference:
         assert n_tensions > 0, "No tensions were inferred"
 
     def test_infer_forces_labels(self):
-        from napariTissueGraph.core.mechanics import infer_forces
+        from napariTissueFlow.core.mechanics import infer_forces
 
         series = _build_series_from_labels()
         infer_forces(series, method="static")
@@ -116,7 +116,7 @@ class TestForceInference:
         assert n_tensions > 0, "No tensions were inferred"
 
     def test_infer_pressures(self):
-        from napariTissueGraph.core.mechanics import infer_forces
+        from napariTissueFlow.core.mechanics import infer_forces
 
         series = _build_series_from_voronoi()
         infer_forces(series, method="static")
@@ -128,7 +128,7 @@ class TestForceInference:
         assert n_pressures > 0, "No pressures were inferred"
 
     def test_tensions_are_finite(self):
-        from napariTissueGraph.core.mechanics import infer_forces
+        from napariTissueFlow.core.mechanics import infer_forces
 
         series = _build_series_from_voronoi()
         infer_forces(series, method="static")
@@ -139,14 +139,14 @@ class TestForceInference:
                     assert np.isfinite(jd.tension), f"Non-finite tension: {jd.tension}"
 
     def test_dynamic_not_implemented(self):
-        from napariTissueGraph.core.mechanics import infer_forces
+        from napariTissueFlow.core.mechanics import infer_forces
 
         series = _build_series_from_voronoi()
         with pytest.raises(NotImplementedError):
             infer_forces(series, method="dynamic")
 
     def test_invalid_method(self):
-        from napariTissueGraph.core.mechanics import infer_forces
+        from napariTissueFlow.core.mechanics import infer_forces
 
         series = _build_series_from_voronoi()
         with pytest.raises(ValueError):
@@ -155,8 +155,8 @@ class TestForceInference:
     def test_multiframe(self):
         """Test inference across multiple frames."""
         from tests.conftest import make_track_positions
-        from napariTissueGraph.core.graph import build_from_tracks
-        from napariTissueGraph.core.mechanics import infer_forces
+        from napariTissueFlow.core.graph import build_from_tracks
+        from napariTissueFlow.core.mechanics import infer_forces
 
         positions = make_track_positions(n_frames=3, nx=4, ny=4, spacing=25.0)
         series = build_from_tracks(positions, image_shape=(120, 120))
@@ -172,9 +172,9 @@ class TestResultPersistence:
     """Test that inferred values survive save/load."""
 
     def test_save_load_round_trip(self, tmp_path):
-        from napariTissueGraph.core.mechanics import infer_forces
-        from napariTissueGraph.core.io import save_dataset, load_dataset
-        from napariTissueGraph.structures import TissueGraphDataset
+        from napariTissueFlow.core.mechanics import infer_forces
+        from napariTissueFlow.core.io import save_dataset, load_dataset
+        from napariTissueFlow.structures import TissueGraphDataset
 
         series = _build_series_from_voronoi()
         infer_forces(series, method="static")
@@ -208,8 +208,8 @@ class TestVisualization:
     """Test tension/pressure visualization builders."""
 
     def test_tension_colored_junctions(self):
-        from napariTissueGraph.core.mechanics import infer_forces
-        from napariTissueGraph.napari.visualization import build_tension_colored_junctions
+        from napariTissueFlow.core.mechanics import infer_forces
+        from napariTissueFlow.napari.visualization import build_tension_colored_junctions
 
         series = _build_series_from_voronoi()
         infer_forces(series, method="static")
@@ -220,8 +220,8 @@ class TestVisualization:
         assert colors.shape[1] == 4  # RGBA
 
     def test_pressure_colored_cells(self):
-        from napariTissueGraph.core.mechanics import infer_forces
-        from napariTissueGraph.napari.visualization import build_pressure_colored_cells
+        from napariTissueFlow.core.mechanics import infer_forces
+        from napariTissueFlow.napari.visualization import build_pressure_colored_cells
 
         series = _build_series_from_voronoi()
         infer_forces(series, method="static")
@@ -232,7 +232,7 @@ class TestVisualization:
         assert colors.shape[1] == 4
 
     def test_no_tensions_returns_empty(self):
-        from napariTissueGraph.napari.visualization import build_tension_colored_junctions
+        from napariTissueFlow.napari.visualization import build_tension_colored_junctions
 
         series = _build_series_from_voronoi()
         # No inference run — all tensions are None
@@ -244,5 +244,5 @@ class TestGracefulFailure:
     """Test behavior when forsys is not available."""
 
     def test_forsys_available_returns_bool(self):
-        from napariTissueGraph.core.forsys_adapter import forsys_available
+        from napariTissueFlow.core.forsys_adapter import forsys_available
         assert isinstance(forsys_available(), bool)

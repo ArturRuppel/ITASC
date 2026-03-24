@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from napariTissueGraph.core.graph import build_from_labels, build_from_tracks
-from napariTissueGraph.structures import InputType
+from napariTissueFlow.core.graph import build_from_labels, build_from_tracks
+from napariTissueFlow.structures import InputType
 
 
 class TestBuildFromLabels:

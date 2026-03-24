@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m napariTissueGraph.dashboard [/path/to/dataset] [--port 8050] [--no-show]
+    python -m napariTissueFlow.dashboard [/path/to/dataset] [--port 8050] [--no-show]
 """
 import argparse
 

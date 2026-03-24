@@ -7,22 +7,22 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from napariTissueGraph.analysis.modules import (
+from napariTissueFlow.analysis.modules import (
     AnalysisModule,
     AnalysisResult,
     Parameter,
     ParamType,
     discover_modules,
 )
-from napariTissueGraph.analysis.builtins import (
+from napariTissueFlow.analysis.builtins import (
     JunctionLengthDistribution,
     T1TransitionRate,
     CellDistributions,
     EventTriggeredAveraging,
 )
-from napariTissueGraph.core.graph import build_from_labels
-from napariTissueGraph.core.topology import detect_t1_events
-from napariTissueGraph.analysis.trajectories import build_edge_trajectories
+from napariTissueFlow.core.graph import build_from_labels
+from napariTissueFlow.core.topology import detect_t1_events
+from napariTissueFlow.analysis.trajectories import build_edge_trajectories
 
 from conftest import make_label_stack
 

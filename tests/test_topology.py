@@ -3,19 +3,19 @@ import numpy as np
 import networkx as nx
 import pytest
 
-from napariTissueGraph.structures import (
+from napariTissueFlow.structures import (
     CellData,
     JunctionData,
     TissueGraphFrame,
     TissueGraphTimeSeries,
     InputType,
 )
-from napariTissueGraph.core.topology import (
+from napariTissueFlow.core.topology import (
     detect_t1_events,
     _validate_t1_transition,
     _detect_t1_between_frames,
 )
-from napariTissueGraph.analysis.trajectories import (
+from napariTissueFlow.analysis.trajectories import (
     build_edge_trajectories,
     get_t1_trajectories,
     get_stable_trajectories,
@@ -371,7 +371,7 @@ class TestFilterTrajectories:
         assert len(filtered) == len(series.edge_trajectories)
 
         # Add a short trajectory (only 1 frame)
-        from napariTissueGraph.structures import EdgeTrajectory
+        from napariTissueFlow.structures import EdgeTrajectory
         series.edge_trajectories[999] = EdgeTrajectory(
             trajectory_id=999, frames=[0], cell_pairs=[(10, 11)],
             signed_lengths=[5.0], coordinates=[np.zeros((2, 2))],
@@ -384,7 +384,7 @@ class TestFilterTrajectories:
         """Trajectories with gaps exceeding max_gap should be excluded."""
         series = self._make_series_with_trajectories()
         # Add a trajectory with a gap (exists in frame 0 and 2 but not 1)
-        from napariTissueGraph.structures import EdgeTrajectory
+        from napariTissueFlow.structures import EdgeTrajectory
         series.edge_trajectories[998] = EdgeTrajectory(
             trajectory_id=998, frames=[0, 2], cell_pairs=[(10, 11), (10, 11)],
             signed_lengths=[5.0, 5.0], coordinates=[np.zeros((2, 2))] * 2,

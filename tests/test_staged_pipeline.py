@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from napariTissueGraph.core.graph import (
+from napariTissueFlow.core.graph import (
     build_from_labels,
     build_from_tracks,
     extract_graphs_from_labels,
@@ -11,8 +11,8 @@ from napariTissueGraph.core.graph import (
     apply_track_map,
     has_tracking,
 )
-from napariTissueGraph.core.label_tracking import assign_track_ids
-from napariTissueGraph.structures import InputType
+from napariTissueFlow.core.label_tracking import assign_track_ids
+from napariTissueFlow.structures import InputType
 
 
 class TestStage1NoTracking:

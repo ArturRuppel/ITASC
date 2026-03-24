@@ -1,4 +1,4 @@
-"""Background workers for napariTissueGraph pipeline stages.
+"""Background workers for napariTissueFlow pipeline stages.
 
 All QObject-based workers that run in QThreads are defined here,
 shared by both the main widget and the nuclear tracks widget.

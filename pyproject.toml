@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "napariTissueGraph"
+name = "napariTissueFlow"
 version = "0.1.0"
-description = "A napari plugin for quantifying tissue topology, rearrangement dynamics, and junction mechanics"
+description = "A napari plugin for cell segmentation, tracking, and tissue topology analysis"
 requires-python = ">=3.9"
 license = {text = "GPL-3.0"}
 authors = [
@@ -21,6 +21,10 @@ dependencies = [
     "pandas>=1.5.0",
     "napari[all]>=0.4.18",
     "qtpy>=2.3.0",
+    "cellpose>=3.1.0",
+    "laptrack>=0.14.0",
+    "tifffile>=2024.1.1",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -36,18 +40,18 @@ dev = [
 ]
 
 [project.entry-points."napari.manifest"]
-napariTissueGraph = "napariTissueGraph:napari.yaml"
+napariTissueFlow = "napariTissueFlow:napari.yaml"
 
 # Analysis modules are discovered via this entry-point group.
 # Third-party packages can register their own modules here.
-# [project.entry-points."napariTissueGraph.analysis_modules"]
+# [project.entry-points."napariTissueFlow.analysis_modules"]
 # my_module = "my_package:MyModule"
 
 [tool.setuptools.packages.find]
-include = ["napariTissueGraph*"]
+include = ["napariTissueFlow*"]
 
 [tool.setuptools.package-data]
-napariTissueGraph = ["napari.yaml"]
+napariTissueFlow = ["napari.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

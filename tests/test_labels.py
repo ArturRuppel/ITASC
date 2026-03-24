@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from napariTissueGraph.core.labels import (
+from napariTissueFlow.core.labels import (
     find_border_boundary,
     find_border_cells,
     calculate_edge_length,

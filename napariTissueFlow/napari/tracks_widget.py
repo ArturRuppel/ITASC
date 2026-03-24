@@ -2,7 +2,7 @@
 
 This is a preprocessing widget: it takes nuclear tracking data (TrackMate XML),
 computes a Voronoi tessellation, rasterizes it into a Labels layer, and assigns
-track IDs so the main TissueGraphWidget can consume the result.
+track IDs so the main TissueFlowWidget can consume the result.
 """
 import logging
 from pathlib import Path
@@ -329,7 +329,7 @@ class NuclearTracksWidget(QWidget):
         self.status_label.setText(
             f"Labels added to viewer: {n_frames} frames, "
             f"~{avg_cells:.0f} cells/frame. "
-            f"Use TissueGraphWidget to run the pipeline."
+            f"Use TissueFlowWidget to run the pipeline."
         )
 
     # ------------------------------------------------------------------

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from napariTissueGraph.core.trackmate import TrackMateData, parse_trackmate_xml
+from napariTissueFlow.core.trackmate import TrackMateData, parse_trackmate_xml
 
 SAMPLE_XML = """\
 <?xml version="1.0" encoding="UTF-8"?>

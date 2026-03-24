@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from napariTissueGraph.core.voronoi import (
+from napariTissueFlow.core.voronoi import (
     compute_voronoi,
     voronoi_to_graph,
     voronoi_to_labels,
@@ -10,7 +10,7 @@ from napariTissueGraph.core.voronoi import (
     _polygon_area,
     _polygon_perimeter,
 )
-from napariTissueGraph.structures import VoronoiMethod
+from napariTissueFlow.structures import VoronoiMethod
 
 
 class TestPolygonHelpers:

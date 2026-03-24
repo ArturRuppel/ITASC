@@ -1,4 +1,4 @@
-"""Bridge between napariTissueGraph data structures and ForSys.
+"""Bridge between napariTissueFlow data structures and ForSys.
 
 ForSys (Borges et al., iScience 2025) infers membrane tensions and cell
 pressures from tissue geometry.  This module converts our TissueGraphFrame
@@ -48,7 +48,7 @@ def _require_forsys():
     if not _FORSYS_AVAILABLE:
         raise ImportError(
             "forsys is not installed. Install it with: "
-            "pip install napariTissueGraph[forces]"
+            "pip install napariTissueFlow[forces]"
         )
 
 
@@ -71,7 +71,7 @@ def tissue_frame_to_forsys(
     Parameters
     ----------
     frame : TissueGraphFrame
-        A single timepoint from napariTissueGraph.
+        A single timepoint from napariTissueFlow.
     vertices_per_edge : int
         Target number of vertices per BigEdge (including TJ endpoints).
         Junction coordinates are subsampled to this count.
