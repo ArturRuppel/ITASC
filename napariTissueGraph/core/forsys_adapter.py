@@ -346,15 +346,54 @@ def tissue_frame_to_forsys(
 
     frame_obj.big_edges_list = big_edges_list
 
-    # Identify external edges
+    # Identify external (border) edges.
+    # Native ForSys detects border edges via vertices with ownCells < 2,
+    # but our adapter always has ≥2 ownCells per vertex (since junctions
+    # connect two cells).  Instead, use the "border" tag set by
+    # labels_to_graph on junctions touching border cells.
     frame_obj.external_edges_id = []
-    try:
-        border_edges = fvirtual.get_border_edge(big_edges_list, fs_vertices)
-        frame_obj.external_edges_id = [
-            big_edges_list.index(e) for e in border_edges
-        ]
-    except Exception:
-        pass
+    for bid, key in enumerate(junction_key_order):
+        if bid not in frame_obj.big_edges:
+            continue
+        jd = frame.junctions.get(key)
+        if jd is not None and "border" in jd.tags:
+            frame_obj.big_edges[bid].external = True
+            frame_obj.external_edges_id.append(bid)
+
+    # --- Orient BigEdges consistently with cell winding ---
+    # The pressure solver depends on curvature sign, which is determined by
+    # vertex traversal direction.  Ensure each BigEdge's vertices follow
+    # own_cells[0]'s winding so that curvature sign is physically correct.
+    n_reversed = 0
+    for bid, be in frame_obj.big_edges.items():
+        if be.external or len(be.own_cells) != 2:
+            continue
+        cell0_id = be.own_cells[0]
+        if cell0_id not in fs_cells:
+            continue
+        cell0 = fs_cells[cell0_id]
+        cell_vids = [v.id for v in cell0.vertices]
+        be_start = be.vertices[0].id
+        be_end = be.vertices[-1].id
+        if be_start not in cell_vids or be_end not in cell_vids:
+            continue
+        idx_s = cell_vids.index(be_start)
+        idx_e = cell_vids.index(be_end)
+        n_ring = len(cell_vids)
+        fwd = (idx_e - idx_s) % n_ring
+        bwd = (idx_s - idx_e) % n_ring
+        if fwd > bwd:
+            # BigEdge goes opposite to cell0's winding — reverse it
+            be.vertices = be.vertices[::-1]
+            be.xs = be.xs[::-1]
+            be.ys = be.ys[::-1]
+            n_reversed += 1
+
+    if n_reversed > 0:
+        logger.info(
+            f"Frame {frame.frame}: reversed {n_reversed} BigEdges "
+            f"to match cell winding"
+        )
 
     # Determine which TJ vertices are "valid" for force balance:
     # a vertex needs ≥3 non-external BigEdges to produce a meaningful
