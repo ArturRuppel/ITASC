@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import QThread, Qt
 
 from ..core.forsys_adapter import forsys_available
+from ..structures import InputType
 from .registry import get_state
 from .visualization import (
     build_tension_colored_junctions,
@@ -82,6 +83,20 @@ class ForcesWidget(QWidget):
             )
             banner.setWordWrap(True)
             layout.addWidget(banner)
+
+        # --- Voronoi geometry warning banner ---
+        self._voronoi_banner = QLabel(
+            "\u26a0\ufe0f  This tissue uses Voronoi-derived geometry.\n"
+            "Force inference on Voronoi tessellations may be less accurate "
+            "than on segmentation-derived cell boundaries."
+        )
+        self._voronoi_banner.setStyleSheet(
+            "QLabel { color: #885500; background: #fff8e1; padding: 8px; "
+            "border: 1px solid #e6ac00; border-radius: 4px; }"
+        )
+        self._voronoi_banner.setWordWrap(True)
+        self._voronoi_banner.setVisible(False)
+        layout.addWidget(self._voronoi_banner)
 
         # --- Dataset status ---
         self.dataset_label = QLabel("No dataset loaded")
@@ -232,6 +247,7 @@ class ForcesWidget(QWidget):
             self.frame_info.setText("")
             self.infer_btn.setEnabled(False)
             self.results_label.setText("")
+            self._voronoi_banner.setVisible(False)
             return
 
         ids = ds.tissue_ids
@@ -258,6 +274,7 @@ class ForcesWidget(QWidget):
         self.frame_spin.setMaximum(max(fi))
         self._on_frame_changed(self.frame_spin.value())
         self._update_results_label()
+        self._update_voronoi_banner(series)
 
         # Update visualization if showing
         if self.show_tensions_cb.isChecked() or self.show_pressures_cb.isChecked():
@@ -289,6 +306,17 @@ class ForcesWidget(QWidget):
 
     def _on_scope_changed(self):
         self.frame_spin.setEnabled(self.scope_frame.isChecked())
+
+    def _update_voronoi_banner(self, series):
+        """Show warning if any frame in the series is Voronoi-derived."""
+        is_voronoi = (
+            series.input_type == InputType.VORONOI
+            or any(
+                f.input_type == InputType.VORONOI
+                for f in series.frames.values()
+            )
+        )
+        self._voronoi_banner.setVisible(is_voronoi)
 
     # ------------------------------------------------------------------
     # Force inference

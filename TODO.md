@@ -452,6 +452,36 @@ belongs in its own widget or tool.
 21. **Pressure colorbar** — add a colorbar legend to the pressure overlay in napari (Shapes layer; may need a custom napari widget or a separate matplotlib inset)
 
 
+## 16. Refactor Edge Analysis tab — separation of concerns
+
+The current Edge Analysis tab conflates three distinct responsibilities:
+- **Dataset management** (saving/loading, tissue collection)
+- **Cell tracking** (IoU matching, track assignment)
+- **Topology analysis** (graph extraction, T1 detection, edge trajectory building)
+
+Graph extraction + T1 + edge trajectory analysis should be a single unified step
+(they are tightly coupled and rarely run independently). Cell tracking should stay
+separate. Dataset management should be its own panel or dedicated widget.
+
+### 16a. Collapse graph extraction and T1/edge analysis into one step
+- [ ] Merge Stage 2 (graph extraction) and Stage 3 (T1 + edge tracking) into a single
+      "Analyse" step with a single button — parameters from both stages stay visible but
+      run as one atomic operation
+- [ ] Drop the intermediate stage gate between extraction and analysis
+
+### 16b. Separate dataset management
+- [ ] Move Save/Load/New Dataset controls out of the analysis flow into a dedicated
+      "Dataset" panel (could be a collapsible group or a separate dock widget)
+- [ ] The analysis pipeline should not need to know about the dataset — just produce a
+      TissueGraphTimeSeries and hand it off
+
+### 16c. Relabel stages clearly
+- [ ] Stage 1: "Track Cells" (IoU label tracking)
+- [ ] Stage 2: "Analyse Tissue" (graph extraction + T1 + edge trajectories, one click)
+- [ ] Add-to-dataset / tagging remain after Stage 2 completes
+
+---
+
 hand notes:
 ~~filtering data frames should update the plots in the dashboard~~ — done
 ~~peripheral junctions should exclude border junctions~~ — done: border junctions (cell_id=0 or tagged "border") are now classified as "unclassified" instead of "peripheral"

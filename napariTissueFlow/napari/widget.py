@@ -522,17 +522,39 @@ class TissueFlowWidget(QWidget):
 
         layout.addStretch()
 
-        self.tab_widget.addTab(pipeline_page, "Pipeline")
+        # ========== Segmentation tab ==========
+        from ..segtrack._segmentation_tab import SegmentationTab
+        self._segmentation_tab = SegmentationTab(self.viewer)
+        self.tab_widget.addTab(self._segmentation_tab, "Segmentation")
 
-        # ========== Nuclear Tracks tab ==========
+        # ========== Tracking tab ==========
+        from ..segtrack._tracking_tab import TrackingTab
+        self._tracking_tab = TrackingTab(self.viewer)
+        self.tab_widget.addTab(self._tracking_tab, "Tracking")
+
+        # ========== Voronoi tab (cell body expansion + nuclear tracks) ==========
+        from ..segtrack._voronoi_tab import VoronoiTab
         from .tracks_widget import NuclearTracksWidget
+        from qtpy.QtWidgets import QTabWidget as _QTabWidget
+        voronoi_outer = QWidget()
+        voronoi_outer_layout = QVBoxLayout()
+        voronoi_outer_layout.setContentsMargins(0, 0, 0, 0)
+        voronoi_outer.setLayout(voronoi_outer_layout)
+        voronoi_inner_tabs = _QTabWidget()
+        self._voronoi_tab = VoronoiTab(self.viewer)
+        voronoi_inner_tabs.addTab(self._voronoi_tab, "Expand")
         self._tracks_widget = NuclearTracksWidget(self.viewer)
-        self.tab_widget.addTab(self._tracks_widget, "Nuclear Tracks")
+        voronoi_inner_tabs.addTab(self._tracks_widget, "From Tracks")
+        voronoi_outer_layout.addWidget(voronoi_inner_tabs)
+        self.tab_widget.addTab(voronoi_outer, "Voronoi")
 
-        # ========== Forces tab ==========
+        # ========== Edge Analysis tab (formerly Pipeline) ==========
+        self.tab_widget.addTab(pipeline_page, "Edge Analysis")
+
+        # ========== ForSys tab ==========
         from .forces_widget import ForcesWidget
         self._forces_widget = ForcesWidget(self.viewer)
-        self.tab_widget.addTab(self._forces_widget, "Forces")
+        self.tab_widget.addTab(self._forces_widget, "ForSys")
 
         # Set initial button state
         self._update_pipeline_buttons()
