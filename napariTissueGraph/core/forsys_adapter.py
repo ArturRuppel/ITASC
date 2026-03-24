@@ -86,11 +86,9 @@ def tissue_frame_to_forsys(
     """
     _require_forsys()
 
-    # --- Step 1: Collect internal junctions ---
+    # --- Step 1: Collect junctions with valid coordinates ---
     internal_junctions = {}
     for key, jd in frame.junctions.items():
-        if "border" in jd.tags or 0 in key:
-            continue
         if jd.coordinates is None or len(jd.coordinates) < 2:
             continue
         internal_junctions[key] = jd
@@ -214,6 +212,11 @@ def tissue_frame_to_forsys(
                          if k in junction_chains}
 
     # --- Step 5: Build Cell objects ---
+    # Collect border cell IDs from the frame's CellData
+    border_cell_ids = {
+        cid for cid, cd in frame.cells.items() if cd.is_border
+    }
+
     # Group junctions by participating cell
     cell_junc_keys = defaultdict(list)
     for key in internal_junctions:
@@ -293,7 +296,7 @@ def tissue_frame_to_forsys(
         fs_cells[cell_id] = fcell.Cell(
             id=cell_id,
             vertices=cell_vertices,
-            is_border=False,
+            is_border=(cell_id in border_cell_ids),
         )
 
     if not fs_cells:
@@ -444,8 +447,6 @@ def _match_big_edge_to_junction(
     best_key = None
     best_dist = float("inf")
     for key, jd in junctions.items():
-        if 0 in key:
-            continue
         # Our midpoint is (y, x), ForSys uses (x, y)
         dist = np.sqrt((jd.midpoint[0] - be_midy) ** 2 +
                         (jd.midpoint[1] - be_midx) ** 2)

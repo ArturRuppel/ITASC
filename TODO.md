@@ -318,51 +318,46 @@ an optional dependency. ForSys solves an inverse problem: given cell boundary sh
 computes the mechanical forces (edge tensions, cell pressures) that produce those shapes.
 Supports static (single frame) and dynamic (multi-frame with vertex velocities) inference.
 
-**Key constraint:** ForSys pins `numpy < 2.0` and `scikit-image <= 0.21.0`. Install as
-optional extra: `pip install napariTissueGraph[forces]`.
+**Key constraint:** ForSys nominally pins `numpy < 2.0` and `scikit-image <= 0.21.0`, but
+works fine with numpy 2.x in practice. Install as optional extra: `pip install napariTissueGraph[forces]`.
 
 ### 13a. Data model updates (`structures.py`)
-- [ ] Add `pressure: Optional[float] = None` to `CellData`
-- [ ] `JunctionData.tension` and `JunctionData.normal_stress` already exist — verify they're included in io.py serialization
+- [x] Add `pressure: Optional[float] = None` to `CellData` (already existed)
+- [x] `JunctionData.tension` and `JunctionData.normal_stress` already exist — verified in io.py serialization
 
 ### 14b. ForSys adapter (`core/forsys_adapter.py`)
-- [ ] `tissue_frame_to_forsys(frame: TissueGraphFrame) → forsys.frames.Frame`
+- [x] `tissue_frame_to_forsys(frame: TissueGraphFrame) → forsys.frames.Frame`
   - Deduplicate shared vertices across cells (CellData.vertices share boundary points)
   - Build ForSys Vertex objects from unique vertex positions
-  - Build ForSys Edge objects from JunctionData.coordinates
+  - Build ForSys SmallEdge objects from cell polygon adjacency
   - Build ForSys Cell objects with correct vertex/edge winding order
   - Handle border cells (incomplete polygons at image boundary)
-- [ ] `forsys_results_to_tissue(forsys_frame, tissue_frame)` — write tensions/pressures back
-  - Map ForSys edge tensions → JunctionData.tension (match by vertex positions)
+- [x] `forsys_results_to_tissue(forsys_frame, tissue_frame)` — write tensions/pressures back
+  - Map ForSys BigEdge tensions → JunctionData.tension (match by cell pair)
   - Map ForSys cell pressures → CellData.pressure
 - [ ] Apply ForSys meshing (`virtual_edges.generate_mesh(ne=6)`) for curved boundaries
-- [ ] Guard all ForSys imports with try/except, raise clear ImportError
+- [x] Guard all ForSys imports with try/except, raise clear ImportError
 
 ### 14c. Mechanics API (`core/mechanics.py`)
-- [ ] `infer_tensions(series, method="static") → TissueGraphTimeSeries`
+- [x] `infer_forces(series, method="static")` — runs tensions + pressures per frame
   - Static: run ForSys solver independently per frame
-  - Dynamic: pass vertex positions across consecutive frames for velocity-based inference (`b_matrix="velocity"`)
-  - Write results into JunctionData.tension for each frame
-- [ ] `infer_pressures(series) → TissueGraphTimeSeries`
-  - Run pressure solver (Lagrange multiplier method) per frame
-  - Write results into CellData.pressure
-- [ ] `infer_forces(series, method="static")` — convenience wrapper: tensions + pressures in one call
+  - Dynamic: placeholder raises NotImplementedError (future work)
 
 ### 14d. Visualization (`napari/visualization.py`)
-- [ ] `build_tension_colored_junctions(series)` — junction lines colored by inferred tension (continuous colormap)
-- [ ] `build_pressure_colored_cells(series)` — cell polygon fills colored by inferred pressure
+- [x] `build_tension_colored_junctions(series)` — junction lines colored by inferred tension (blue→red)
+- [x] `build_pressure_colored_cells(series)` — cell polygon fills colored by inferred pressure
 
 ### 13e. Widget integration
-- [ ] "Infer Forces" button (enabled after Stage 2 graph extraction)
-- [ ] Static / Dynamic toggle
-- [ ] Results shown as overlay layers (tension-colored edges, pressure-colored cells)
-- [ ] Graceful handling if forsys not installed (button disabled with tooltip)
+- [x] "Infer Forces" button (enabled after Stage 2 graph extraction)
+- [ ] Static / Dynamic toggle (dynamic not yet implemented)
+- [x] Results shown as overlay layers (tension-colored edges, pressure-colored cells)
+- [x] Graceful handling if forsys not installed (button disabled with tooltip)
 
 ### 13f. Tests
-- [ ] Test adapter round-trip: TissueGraphFrame → ForSys Frame → solve → write back
+- [x] Test adapter round-trip: TissueGraphFrame → ForSys Frame → solve → write back
 - [ ] Test with synthetic regular hexagonal lattice (known analytical tensions)
 - [ ] Test dynamic mode with 2-frame series
-- [ ] Test graceful failure when forsys not installed
+- [x] Test graceful failure when forsys not installed
 
 ---
 
@@ -454,8 +449,10 @@ belongs in its own widget or tool.
 18. **MSD and diffusion** (9a, 14d) — cell dynamics analysis module
 19. **Cell-level analysis** (9a-9c) — velocities, statistics, event-triggered cell metrics
 20. **Force inference** (13a-13f) — ForSys integration for tension/pressure inference
+21. **Pressure colorbar** — add a colorbar legend to the pressure overlay in napari (Shapes layer; may need a custom napari widget or a separate matplotlib inset)
 
 
 hand notes:
 ~~filtering data frames should update the plots in the dashboard~~ — done
 ~~peripheral junctions should exclude border junctions~~ — done: border junctions (cell_id=0 or tagged "border") are now classified as "unclassified" instead of "peripheral"
+~~bug: filtering data in the dataframes updates the graph, but shows the wrong metric afterwards. tested with shape_factor, jumped to an area plot then. plot then froze and further filtering had no impact anymore.

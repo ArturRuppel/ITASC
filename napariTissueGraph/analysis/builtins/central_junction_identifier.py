@@ -99,10 +99,8 @@ class CentralJunctionIdentifier(AnalysisModule):
 
             # Match trajectories to central/peripheral classification
             for traj in series.edge_trajectories.values():
-                # Border junctions (involving cell_id=0 or tagged "border")
-                # are never peripheral — they are unclassified.
-                is_border = ("border" in traj.tags
-                             or any(0 in cp for cp in traj.cell_pairs))
+                # Border junctions are never peripheral — they are unclassified.
+                is_border = "border" in traj.tags
 
                 n_central = 0
                 n_peripheral = 0

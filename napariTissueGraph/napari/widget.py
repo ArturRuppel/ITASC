@@ -79,6 +79,7 @@ class TissueGraphWidget(QWidget):
         self._preview_series: Optional[TissueGraphTimeSeries] = None
         self._current_label_stack: Optional[np.ndarray] = None
         self._current_track_map: Optional[Dict] = None
+        self._source_layer = None  # original layer, hidden during QC
         self._tracked_labels_layer = None
         self._stage_layers: Dict[int, list] = {1: [], 2: [], 3: []}
         self._auto_pipeline = False  # flag for Run Pipeline chaining
@@ -660,6 +661,7 @@ class TissueGraphWidget(QWidget):
 
         self._discard_pipeline()
         self._current_label_stack = label_stack
+        self._source_layer = self.viewer.layers.selection.active
 
         worker = CellTrackingWorker(
             label_stack,
@@ -706,6 +708,13 @@ class TissueGraphWidget(QWidget):
             )
             self._tracked_labels_layer = layer
             self._stage_layers[1].append(layer)
+
+            # Hide the source layer so its background color doesn't show through
+            if self._source_layer is not None:
+                try:
+                    self._source_layer.visible = False
+                except Exception:
+                    pass
 
         self._update_pipeline_buttons()
 
@@ -882,6 +891,13 @@ class TissueGraphWidget(QWidget):
             if self._tracked_labels_layer in self.viewer.layers:
                 self.viewer.layers.remove(self._tracked_labels_layer)
             self._tracked_labels_layer = None
+        # Restore source layer visibility
+        if self._source_layer is not None:
+            try:
+                self._source_layer.visible = True
+            except Exception:
+                pass
+            self._source_layer = None
         self._pipeline_stage = PipelineStage.IDLE
         self._update_pipeline_buttons()
         self._clear_stage_info()

@@ -148,6 +148,13 @@ def _serialize_tissue(series: TissueGraphTimeSeries) -> Dict[str, np.ndarray]:
         if not np.all(np.isnan(pressures)):
             data[f"{prefix}_cell_pressures"] = pressures
 
+        # Cell is_border flags
+        border_flags = np.array(
+            [frame.cells[c].is_border for c in cell_ids], dtype=np.bool_
+        )
+        if np.any(border_flags):
+            data[f"{prefix}_cell_is_border"] = border_flags
+
         # Cell vertices (ragged)
         vert_arrays = []
         has_vertices = False
@@ -373,6 +380,10 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
         has_pressures = f"{prefix}_cell_pressures" in npz
         cell_pressures = npz[f"{prefix}_cell_pressures"] if has_pressures else None
 
+        # Cell is_border flags
+        has_border = f"{prefix}_cell_is_border" in npz
+        cell_border = npz[f"{prefix}_cell_is_border"] if has_border else None
+
         # Cell vertices
         has_verts = f"{prefix}_cell_vert_flat" in npz
         if has_verts:
@@ -404,6 +415,7 @@ def _deserialize_tissue(npz) -> TissueGraphTimeSeries:
                 track_id=tid if tid != -1 else None,
                 vertices=verts,
                 pressure=pressure,
+                is_border=bool(cell_border[i]) if has_border else False,
             )
 
         # Junctions

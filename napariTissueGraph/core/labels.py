@@ -201,7 +201,9 @@ def _order_point_set(points: np.ndarray) -> np.ndarray:
     """Order 2-D points into a path by nearest-neighbour walk.
 
     Starts from one of the two most distant points (an endpoint) and
-    greedily visits the nearest unvisited point.
+    greedily visits the nearest unvisited point.  After ordering, any
+    large gap (where the walk jumps back) is detected and the longest
+    contiguous segment is kept.
     """
     n = len(points)
     if n <= 2:
@@ -221,6 +223,52 @@ def _order_point_set(points: np.ndarray) -> np.ndarray:
             dists = D[current].copy()
             dists[visited] = np.inf
             current = int(np.argmin(dists))
+
+    # Detect large gaps (spurious jumps) and re-stitch segments in
+    # spatial order so that all points are preserved.
+    if n > 3:
+        diffs = np.diff(ordered, axis=0)
+        step_dists = np.sqrt(np.sum(diffs**2, axis=1))
+        median_step = np.median(step_dists)
+        if median_step > 0:
+            gap_threshold = max(8.0 * median_step, 5.0)
+            gap_indices = np.where(step_dists > gap_threshold)[0]
+            if len(gap_indices) > 0:
+                # Split at gaps into segments
+                boundaries = np.concatenate([[0], gap_indices + 1, [n]])
+                segments = [
+                    ordered[boundaries[i]:boundaries[i + 1]]
+                    for i in range(len(boundaries) - 1)
+                    if boundaries[i + 1] > boundaries[i]
+                ]
+                if len(segments) > 1:
+                    # Stitch segments by connecting nearest endpoints
+                    result = [segments.pop(0)]
+                    while segments:
+                        tail = result[-1][-1]
+                        head = result[0][0]
+                        best_i = 0
+                        best_d = np.inf
+                        best_flip = False
+                        best_prepend = False
+                        for i, seg in enumerate(segments):
+                            for d, flip, pre in [
+                                (np.linalg.norm(tail - seg[0]), False, False),
+                                (np.linalg.norm(tail - seg[-1]), True, False),
+                                (np.linalg.norm(head - seg[-1]), False, True),
+                                (np.linalg.norm(head - seg[0]), True, True),
+                            ]:
+                                if d < best_d:
+                                    best_d, best_i = d, i
+                                    best_flip, best_prepend = flip, pre
+                        seg = segments.pop(best_i)
+                        if best_flip:
+                            seg = seg[::-1]
+                        if best_prepend:
+                            result.insert(0, seg)
+                        else:
+                            result.append(seg)
+                    ordered = np.concatenate(result)
 
     return ordered
 
@@ -320,10 +368,11 @@ def labels_to_graph(
         )
         graph.add_edge(sorted_pair[0], sorted_pair[1], length=length)
 
-    # ---- Step 4: border junctions ----
+    # ---- Step 4: detect border cells ----
+    # Border cells touch the image edge or background.  We tag them on
+    # CellData.is_border and tag their junctions as "border".
+    border_cell_ids: set = set()
     if filter_isolated:
-        # Detect border cells by checking if contour touches image edge
-        border_cells_with_segs: Dict[int, list] = {}
         candidate_border = find_border_cells(label_frame)
         for cell_id in candidate_border:
             segs = find_border_boundary(
@@ -331,21 +380,12 @@ def labels_to_graph(
                 min_edge_length=min_border_edge_length,
             )
             if segs:
-                border_cells_with_segs[int(cell_id)] = segs
+                border_cell_ids.add(int(cell_id))
 
-        for cell_id, segs in border_cells_with_segs.items():
-            for seg_idx, (coords, length) in enumerate(segs):
-                pair = frozenset((0, cell_id))
-                key = pair if seg_idx == 0 else frozenset((-seg_idx, cell_id))
-                midpoint = coords[len(coords) // 2].astype(float)
-                junctions[key] = JunctionData(
-                    cell_pair=(0, cell_id),
-                    length=length,
-                    coordinates=coords,
-                    midpoint=midpoint,
-                    tags={"border"},
-                )
-                graph.add_edge(0, cell_id, length=length)
+        # Tag junctions where at least one cell is a border cell
+        for pair, jd in junctions.items():
+            if pair & border_cell_ids:
+                jd.tags.add("border")
 
     # ---- Step 5: build cell data ----
     cells_in_graph = set()
@@ -381,6 +421,7 @@ def labels_to_graph(
             shape_index=shape_index,
             num_neighbors=num_neighbors,
             vertices=vertices,
+            is_border=(cid in border_cell_ids),
         )
 
     return cells, junctions, graph

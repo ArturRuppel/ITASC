@@ -1,9 +1,13 @@
 """Napari layer rendering for tissue graphs."""
 import numpy as np
 import pandas as pd
+from matplotlib import colormaps as _cm
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..structures import T1Event, TissueGraphFrame, TissueGraphTimeSeries
+
+_MAGMA = _cm["magma"]
+_CIVIDIS = _cm["cividis"]
 
 
 def build_tracked_labels(
@@ -13,7 +17,9 @@ def build_tracked_labels(
     """Create a label array where pixel values are track IDs instead of cell labels.
 
     Untracked cells get unique IDs above max_track_id so they remain visible
-    but are distinguishable from tracked cells.
+    but are distinguishable from tracked cells.  Border cells (touching the
+    image edge) are set to 0 (transparent) so they don't appear as
+    coloured background.
 
     Args:
         label_stack: Shape (T, H, W) integer labels, 0 = background.
@@ -22,6 +28,8 @@ def build_tracked_labels(
     Returns:
         Array of same shape as label_stack with track IDs as pixel values.
     """
+    from ..core.labels import find_border_cells
+
     result = np.zeros_like(label_stack)
 
     # Find max track_id across all frames
@@ -35,12 +43,13 @@ def build_tracked_labels(
     for frame_idx in range(len(label_stack)):
         frame = label_stack[frame_idx]
         frame_tracks = track_map.get(frame_idx, {})
+        border_ids = find_border_cells(frame)
 
         # Map to assign untracked cells unique IDs (per-frame)
         untracked_ids: Dict[int, int] = {}
 
         for cell_id in np.unique(frame):
-            if cell_id == 0:
+            if cell_id == 0 or cell_id in border_ids:
                 continue
             mask = frame == cell_id
             if cell_id in frame_tracks:
@@ -105,7 +114,7 @@ def build_tension_colored_junctions(
     """Build junction line data colored by inferred tension.
 
     Junctions without tension values are shown in gray.  Internal junctions
-    are colored on a blue (low) → red (high) continuous scale.
+    are colored using the magma colormap.
 
     Returns:
         (lines, colors) same format as build_all_junction_lines.
@@ -139,9 +148,9 @@ def build_tension_colored_junctions(
 
             if jd.tension is not None and vmax > vmin:
                 normed = (jd.tension - vmin) / (vmax - vmin)
-                colors.append([normed, 0.0, 1.0 - normed, 1.0])
+                colors.append(_MAGMA(normed))
             elif jd.tension is not None:
-                colors.append([0.5, 0.0, 0.5, 1.0])
+                colors.append(_MAGMA(0.5))
             else:
                 colors.append(gray)
 
@@ -154,7 +163,7 @@ def build_pressure_colored_cells(
     """Build cell polygon data colored by inferred pressure.
 
     Only cells with both vertices and pressure values are included.
-    Colored on a blue (low) → red (high) continuous scale.
+    Colored using the cividis colormap.
 
     Returns:
         (polygons, colors) where polygons is a list of Nx3 arrays
@@ -163,10 +172,12 @@ def build_pressure_colored_cells(
     polygons = []
     colors = []
 
-    # Collect all pressures for global normalization
+    # Collect all pressures for global normalization (skip border cells)
     all_pressures = []
     for frame in series.frames.values():
         for cd in frame.cells.values():
+            if cd.is_border:
+                continue
             if cd.pressure is not None and cd.vertices is not None:
                 all_pressures.append(cd.pressure)
 
@@ -178,6 +189,8 @@ def build_pressure_colored_cells(
     for frame_idx in series.frame_indices:
         frame = series.frames[frame_idx]
         for cd in frame.cells.values():
+            if cd.is_border:
+                continue
             if cd.vertices is None or cd.pressure is None:
                 continue
             if len(cd.vertices) < 3:
@@ -191,7 +204,9 @@ def build_pressure_colored_cells(
                 normed = (cd.pressure - vmin) / (vmax - vmin)
             else:
                 normed = 0.5
-            colors.append([normed, 0.0, 1.0 - normed, 0.5])
+            rgba = list(_CIVIDIS(normed))
+            rgba[3] = 0.5
+            colors.append(rgba)
 
     return polygons, np.array(colors)
 
@@ -199,12 +214,17 @@ def build_pressure_colored_cells(
 def build_all_centroids(series: TissueGraphTimeSeries) -> np.ndarray:
     """Build centroid positions for all frames at once.
 
+    Border cells are excluded so that tissue-edge cells (which often
+    look like "background") don't get markers.
+
     Returns Nx3 array of (frame, y, x) positions.
     """
     positions = []
     for frame_idx in series.frame_indices:
         frame = series.frames[frame_idx]
         for cd in frame.cells.values():
+            if cd.is_border:
+                continue
             positions.append([float(frame_idx), cd.position[0], cd.position[1]])
 
     if not positions:
@@ -268,6 +288,8 @@ def build_tracked_centroids(
     for frame_idx in series.frame_indices:
         frame = series.frames[frame_idx]
         for cd in frame.cells.values():
+            if cd.is_border:
+                continue
             positions.append([float(frame_idx), cd.position[0], cd.position[1]])
             track_ids_per_point.append(cd.track_id)
 

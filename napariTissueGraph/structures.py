@@ -31,6 +31,7 @@ class CellData:
     velocity: Optional[np.ndarray] = None
     instantaneous_speed: Optional[float] = None
     pressure: Optional[float] = None
+    is_border: bool = False
 
 
 @dataclass

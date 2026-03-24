@@ -32,31 +32,37 @@ class TestTrackedLabels:
         assert np.all(result[bg_mask] == 0)
 
     def test_tracked_cells_get_track_ids(self, label_stack):
+        from napariTissueGraph.core.labels import find_border_cells
+
         track_map = assign_track_ids(label_stack)
         result = build_tracked_labels(label_stack, track_map)
         for frame_idx in range(len(label_stack)):
             frame_tracks = track_map.get(frame_idx, {})
+            border_ids = find_border_cells(label_stack[frame_idx])
             for cell_id, track_id in frame_tracks.items():
+                if cell_id in border_ids:
+                    continue  # border cells are set to 0
                 mask = label_stack[frame_idx] == cell_id
                 if mask.any():
                     assert np.all(result[frame_idx][mask] == track_id)
 
     def test_untracked_cells_get_unique_ids(self, label_stack):
-        """Untracked cells should get IDs above max track_id."""
-        # Use an empty track_map so all cells are untracked
+        """Untracked non-border cells should get unique IDs."""
+        from napariTissueGraph.core.labels import find_border_cells
+
         result = build_tracked_labels(label_stack, {})
-        # All non-zero pixels should have IDs >= 1
-        assert np.all(result[label_stack > 0] >= 1)
-        # Each unique cell should have a unique ID
         for frame_idx in range(len(label_stack)):
+            border_ids = find_border_cells(label_stack[frame_idx])
             cell_ids = np.unique(label_stack[frame_idx])
-            cell_ids = cell_ids[cell_ids > 0]
+            cell_ids = cell_ids[(cell_ids > 0)]
+            interior_ids = [c for c in cell_ids if c not in border_ids]
             result_ids = set()
-            for cid in cell_ids:
+            for cid in interior_ids:
                 mask = label_stack[frame_idx] == cid
                 rid = result[frame_idx][mask][0]
+                assert rid > 0
                 result_ids.add(rid)
-            assert len(result_ids) == len(cell_ids)
+            assert len(result_ids) == len(interior_ids)
 
     def test_no_cells_returns_zeros(self):
         """Empty label stack should return zeros."""
