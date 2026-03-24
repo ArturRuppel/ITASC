@@ -2,9 +2,16 @@ name: napariTissueFlow
 display_name: napariTissueFlow
 contributions:
   commands:
-    - id: napariTissueFlow.launch
-      title: Launch napariTissueFlow
+    - id: napariTissueFlow.seg_track
+      title: "1. Segmentation & Tracking"
+      python_name: napariTissueFlow.segtrack:SegTrackWidget
+    - id: napariTissueFlow.tissue_flow
+      title: "2. Tissue Flow Analysis"
       python_name: napariTissueFlow:TissueFlowWidget
   widgets:
-    - command: napariTissueFlow.launch
-      display_name: napariTissueFlow
+    - command: napariTissueFlow.seg_track
+      display_name: "1. Seg & Track"
+      autogenerate: false
+    - command: napariTissueFlow.tissue_flow
+      display_name: "2. Tissue Flow"
+      autogenerate: false
