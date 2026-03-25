@@ -141,7 +141,7 @@ def make_cp_model(model_type, custom_model_path=None, gpu=True):
 
     Parameters
     ----------
-    model_type        : "cyto3" | "nuclei" | "cpsam" | "custom"
+    model_type        : "cpsam" | "custom"  (cellpose ≥ 4.0: all standard models use cpsam)
     custom_model_path : path to .pt file when model_type == "custom"
     gpu               : use GPU if available
     """
@@ -168,8 +168,8 @@ def make_cp_model(model_type, custom_model_path=None, gpu=True):
             raise ValueError("custom_model_path is required when model_type='custom'")
         return CellposeModel(gpu=gpu, pretrained_model=custom_model_path)
 
-    # Models bundled with / auto-downloaded by cellpose itself.
-    _BUNDLED = {"cyto", "cyto2", "cyto3", "nuclei", "bact_omni", "cyto2_omni"}
+    # In cellpose ≥ 4.0, "cpsam" is the only bundled model; it is auto-downloaded.
+    _BUNDLED = {"cyto", "cyto2", "cyto3", "nuclei", "bact_omni", "cyto2_omni", "cpsam"}
     if model_type not in _BUNDLED:
         # Use cellpose's own model-directory lookup so we honour whatever path
         # cellpose itself would use, then verify the file actually exists.

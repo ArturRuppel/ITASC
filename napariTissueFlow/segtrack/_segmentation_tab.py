@@ -49,7 +49,7 @@ def _sep(title):
 # ── defaults ───────────────────────────────────────────────────────────
 
 SEG_DEFAULTS = {
-    "model_type":         "cyto3",
+    "model_type":         "cpsam",
     "diameter":           30.0,
     "auto_diameter":      False,
     "flow_threshold":     0.4,
@@ -192,7 +192,9 @@ class SegmentationTab(QWidget):
         # Model
         add(_sep("Model"))
         self._model_combo = QComboBox()
-        self._model_combo.addItems(["cyto3", "nuclei", "cpsam", "custom"])
+        # In cellpose ≥ 4.0, all standard models (cyto3, nuclei, …) use the
+        # same cpsam weights. Only cpsam and custom are meaningfully distinct.
+        self._model_combo.addItems(["cpsam", "custom"])
         self._model_combo.setCurrentText(SEG_DEFAULTS["model_type"])
         self._model_combo.currentTextChanged.connect(self._on_model_changed)
         add("Model:", self._model_combo)
