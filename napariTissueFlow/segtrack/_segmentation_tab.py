@@ -74,10 +74,12 @@ class SegmentationTab(QWidget):
         self._cellpose_proc = None
         self._temp_frame_idx = None
 
-        self._setup_ui()
+        # ── data manager ──
+        self._input_data     = None   # (H,W) or (T,H,W) numpy, single-ch or primary
+        self._secondary_data = None   # (H,W) or (T,H,W) numpy, secondary channel
+        self._seg_data       = None   # (H,W) or (T,H,W) uint32, current segmentation
 
-        viewer.layers.events.inserted.connect(self._refresh_layer_combos)
-        viewer.layers.events.removed.connect(self._refresh_layer_combos)
+        self._setup_ui()
 
     # ── UI construction ────────────────────────────────────────────────
 
@@ -104,6 +106,9 @@ class SegmentationTab(QWidget):
         root.addWidget(self._single_panel)
         root.addWidget(self._two_ch_panel)
         self._two_ch_panel.setVisible(False)
+
+        # ── Load segmentation layer ──
+        root.addWidget(self._build_load_seg_panel())
 
         # ── Cellpose parameters (scrollable, collapsible) ──
         params_box = QGroupBox("Cellpose Parameters")
@@ -164,26 +169,71 @@ class SegmentationTab(QWidget):
         root.addWidget(self._log)
 
         root.addStretch()
-        self._refresh_layer_combos()
 
     # ── Input panels ───────────────────────────────────────────────────
 
+    @staticmethod
+    def _make_load_row(btn_label):
+        """Return (widget, btn, status) for a [Load btn] [status] pair."""
+        w = QWidget()
+        hlay = QHBoxLayout(w)
+        hlay.setContentsMargins(0, 0, 0, 0)
+        btn = QPushButton(btn_label)
+        btn.setFixedWidth(150)
+        btn.setFixedHeight(25)
+        status = QLabel("Not loaded")
+        status.setWordWrap(True)
+        hlay.addWidget(btn)
+        hlay.addWidget(status)
+        return w, btn, status
+
     def _build_single_panel(self):
         box = QGroupBox("Inputs – Single Channel")
-        lay = QFormLayout(box)
-        self._single_combo = QComboBox()
-        lay.addRow("Image layer:", self._single_combo)
+        lay = QVBoxLayout(box)
+        w, self._single_load_btn, self._single_status = self._make_load_row("Load Input Stack")
+        self._single_load_btn.clicked.connect(self._on_load_single_input)
+        self._single_clear_btn = QPushButton("Clear")
+        self._single_clear_btn.setFixedWidth(50)
+        self._single_clear_btn.setFixedHeight(25)
+        self._single_clear_btn.clicked.connect(self._on_clear_single_input)
+        w.layout().addWidget(self._single_clear_btn)
+        lay.addWidget(w)
         return box
 
     def _build_two_ch_panel(self):
         box = QGroupBox("Inputs – Two Channel")
-        lay = QFormLayout(box)
-        self._primary_combo   = QComboBox()
-        self._secondary_combo = QComboBox()
-        self._primary_combo.setToolTip("Primary channel (cell body / cytoplasm)")
-        self._secondary_combo.setToolTip("Secondary channel (nucleus / helper)")
-        lay.addRow("Primary (cell):", self._primary_combo)
-        lay.addRow("Secondary (nucleus):", self._secondary_combo)
+        lay = QVBoxLayout(box)
+        wp, self._primary_load_btn, self._primary_status = self._make_load_row("Load Primary")
+        self._primary_load_btn.clicked.connect(self._on_load_primary_input)
+        self._primary_clear_btn = QPushButton("Clear")
+        self._primary_clear_btn.setFixedWidth(50)
+        self._primary_clear_btn.setFixedHeight(25)
+        self._primary_clear_btn.clicked.connect(self._on_clear_primary_input)
+        wp.layout().addWidget(self._primary_clear_btn)
+
+        ws, self._secondary_load_btn, self._secondary_status = self._make_load_row("Load Secondary")
+        self._secondary_load_btn.clicked.connect(self._on_load_secondary_input)
+        self._secondary_clear_btn = QPushButton("Clear")
+        self._secondary_clear_btn.setFixedWidth(50)
+        self._secondary_clear_btn.setFixedHeight(25)
+        self._secondary_clear_btn.clicked.connect(self._on_clear_secondary_input)
+        ws.layout().addWidget(self._secondary_clear_btn)
+
+        lay.addWidget(wp)
+        lay.addWidget(ws)
+        return box
+
+    def _build_load_seg_panel(self):
+        box = QGroupBox("Load Segmentation Layer")
+        lay = QVBoxLayout(box)
+        w, self._load_seg_btn, self._seg_status = self._make_load_row("Load as Segmentation")
+        self._load_seg_btn.clicked.connect(self._on_load_seg_layer)
+        self._seg_clear_btn = QPushButton("Clear")
+        self._seg_clear_btn.setFixedWidth(50)
+        self._seg_clear_btn.setFixedHeight(25)
+        self._seg_clear_btn.clicked.connect(self._on_clear_seg)
+        w.layout().addWidget(self._seg_clear_btn)
+        lay.addWidget(w)
         return box
 
     def _build_params(self):
@@ -255,27 +305,6 @@ class SegmentationTab(QWidget):
             self._custom_model_path = path
             self._custom_path_edit.setText(path)
 
-    # ── Layer combo refresh ────────────────────────────────────────────
-
-    def _refresh_layer_combos(self, *_):
-        img_names = [
-            lay.name for lay in self.viewer.layers
-            if isinstance(lay, napari.layers.Image)
-        ]
-        for combo, items in [
-            (self._single_combo,    img_names),
-            (self._primary_combo,   img_names),
-            (self._secondary_combo, img_names),
-        ]:
-            prev = combo.currentText()
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItems(items)
-            idx = combo.findText(prev)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-            combo.blockSignals(False)
-
     # ── Parameter collection ───────────────────────────────────────────
 
     def _collect_params(self):
@@ -311,11 +340,9 @@ class SegmentationTab(QWidget):
         return "single" if self._rb_single.isChecked() else "two_ch"
 
     def _reference_stack_shape(self):
-        name = (self._single_combo.currentText() if self._rb_single.isChecked()
-                else self._primary_combo.currentText())
-        if not name:
+        if self._input_data is None:
             return (512, 512)
-        return np.asarray(self.viewer.layers[name].data).shape
+        return self._input_data.shape
 
     # ── Segment Frame ──────────────────────────────────────────────────
 
@@ -356,25 +383,17 @@ class SegmentationTab(QWidget):
     def _get_inputs_for_frame(self):
         mode = self._current_mode()
         if mode == "single":
-            name = self._single_combo.currentText()
-            if not name:
-                raise ValueError("Select an image layer.")
-            data = np.asarray(self.viewer.layers[name].data)
-            t = self._current_frame_idx(data)
-            return {"img": self._get_frame(data, t)}, t
+            if self._input_data is None:
+                raise ValueError("Load an input stack first.")
+            t = self._current_frame_idx(self._input_data)
+            return {"img": self._get_frame(self._input_data, t)}, t
         else:  # two_ch
-            p_name = self._primary_combo.currentText()
-            s_name = self._secondary_combo.currentText()
-            if not p_name or not s_name:
-                raise ValueError("Select both primary and secondary layers.")
-            if p_name == s_name:
-                raise ValueError("Primary and secondary layers must differ.")
-            p_data = np.asarray(self.viewer.layers[p_name].data)
-            s_data = np.asarray(self.viewer.layers[s_name].data)
-            t = self._current_frame_idx(p_data)
+            if self._input_data is None or self._secondary_data is None:
+                raise ValueError("Load both primary and secondary stacks first.")
+            t = self._current_frame_idx(self._input_data)
             return {
-                "primary":   self._get_frame(p_data, t),
-                "secondary": self._get_frame(s_data, t),
+                "primary":   self._get_frame(self._input_data, t),
+                "secondary": self._get_frame(self._secondary_data, t),
             }, t
 
     def _on_frame_done(self, masks, t):
@@ -392,6 +411,8 @@ class SegmentationTab(QWidget):
             data[t] = masks.astype(np.uint32)
             layer.data = data
         layer.refresh()
+        self._seg_data = np.asarray(layer.data)
+        self._seg_status.setText(f"Loaded: {self._seg_data.shape}")
         self._log_append("Frame segmentation complete.")
 
     # ── Segment Stack ──────────────────────────────────────────────────
@@ -434,22 +455,16 @@ class SegmentationTab(QWidget):
     def _get_all_frames(self):
         mode = self._current_mode()
         if mode == "single":
-            name = self._single_combo.currentText()
-            if not name:
-                raise ValueError("Select an image layer.")
-            data = np.asarray(self.viewer.layers[name].data)
+            if self._input_data is None:
+                raise ValueError("Load an input stack first.")
+            data = self._input_data
             if data.ndim == 2:
                 return [{"img": data}]
             return [{"img": data[t]} for t in range(data.shape[0])]
         else:  # two_ch
-            p_name = self._primary_combo.currentText()
-            s_name = self._secondary_combo.currentText()
-            if not p_name or not s_name:
-                raise ValueError("Select both primary and secondary layers.")
-            if p_name == s_name:
-                raise ValueError("Primary and secondary layers must differ.")
-            p_data = np.asarray(self.viewer.layers[p_name].data)
-            s_data = np.asarray(self.viewer.layers[s_name].data)
+            if self._input_data is None or self._secondary_data is None:
+                raise ValueError("Load both primary and secondary stacks first.")
+            p_data, s_data = self._input_data, self._secondary_data
             if p_data.ndim == 2:
                 return [{"primary": p_data, "secondary": s_data}]
             return [
@@ -472,6 +487,8 @@ class SegmentationTab(QWidget):
         layer = self._get_or_create_labels_layer(stack.shape)
         layer.data = stack
         layer.refresh()
+        self._seg_data = stack
+        self._seg_status.setText(f"Loaded: {stack.shape}")
         self._log_append(f"Stack segmentation complete: {stack.shape[0]} frame(s).")
 
     # ── Cellpose GUI integration ───────────────────────────────────────
@@ -594,6 +611,8 @@ class SegmentationTab(QWidget):
                 data[t] = masks
             layer.data = data
         layer.refresh()
+        self._seg_data = np.asarray(layer.data)
+        self._seg_status.setText(f"Loaded: {self._seg_data.shape}")
 
         n = len(np.unique(masks[masks > 0]))
         self._log_append(f"Imported {n} mask(s) into frame {t} from Cellpose GUI.")
@@ -608,6 +627,82 @@ class SegmentationTab(QWidget):
                 if t < data.shape[0]:
                     return data[t]
         return None
+
+    # ── Input / segmentation load + clear handlers ────────────────────
+
+    def _on_load_single_input(self):
+        active = self.viewer.layers.selection.active
+        if active is None or not isinstance(active, napari.layers.Image):
+            self._single_status.setText("Select an Image layer in napari first")
+            return
+        self._input_data = np.asarray(active.data)
+        self._single_status.setText(f"Loaded: {self._input_data.shape}")
+
+    def _on_load_primary_input(self):
+        active = self.viewer.layers.selection.active
+        if active is None or not isinstance(active, napari.layers.Image):
+            self._primary_status.setText("Select an Image layer in napari first")
+            return
+        self._input_data = np.asarray(active.data)
+        self._primary_status.setText(f"Loaded: {self._input_data.shape}")
+
+    def _on_load_secondary_input(self):
+        active = self.viewer.layers.selection.active
+        if active is None or not isinstance(active, napari.layers.Image):
+            self._secondary_status.setText("Select an Image layer in napari first")
+            return
+        self._secondary_data = np.asarray(active.data)
+        self._secondary_status.setText(f"Loaded: {self._secondary_data.shape}")
+
+    def _on_clear_single_input(self):
+        self._input_data = None
+        self._single_status.setText("Not loaded")
+
+    def _on_clear_primary_input(self):
+        self._input_data = None
+        self._primary_status.setText("Not loaded")
+
+    def _on_clear_secondary_input(self):
+        self._secondary_data = None
+        self._secondary_status.setText("Not loaded")
+
+    def _on_clear_seg(self):
+        self._seg_data = None
+        self._seg_status.setText("Not loaded")
+
+    def _on_load_seg_layer(self):
+        active = self.viewer.layers.selection.active
+        if active is None:
+            self._seg_status.setText("Select a layer in napari first")
+            return
+
+        src_data = np.asarray(active.data).astype(np.uint32)
+
+        if self._input_data is not None and src_data.shape != self._input_data.shape:
+            self._seg_status.setText(
+                f"Shape mismatch: {src_data.shape} vs input {self._input_data.shape}"
+            )
+            self._log_append(
+                f"ERROR: Shape mismatch — '{active.name}' is {src_data.shape} "
+                f"but input stack is {self._input_data.shape}."
+            )
+            return
+
+        self._seg_data = src_data
+        old_name = active.name
+
+        # Update "Segmentation" layer in-place if it exists; otherwise rename.
+        for lay in self.viewer.layers:
+            if isinstance(lay, napari.layers.Labels) and lay.name == "Segmentation":
+                lay.data = src_data
+                lay.refresh()
+                self._seg_status.setText(f"Loaded: {src_data.shape}")
+                self._log_append(f"Loaded '{old_name}' into Segmentation layer.")
+                return
+
+        active.name = "Segmentation"
+        self._seg_status.setText(f"Loaded: {src_data.shape}")
+        self._log_append(f"Renamed '{old_name}' → 'Segmentation'.")
 
     # ── Error handling ─────────────────────────────────────────────────
 

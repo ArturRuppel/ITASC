@@ -482,6 +482,24 @@ separate. Dataset management should be its own panel or dedicated widget.
 
 ---
 
+## 17. Segmentation tab data manager — complete the loop
+
+`Segment Frame`, `Segment Stack`, and `Import from Cellpose GUI` should always write their
+result into `self._seg_data` (already partially done for stack/frame done callbacks) **and**
+overwrite the napari layer that corresponds to the current data manager state rather than
+creating a new one. Concretely:
+
+- If `self._seg_data` is already set (i.e. a segmentation was loaded or previously generated),
+  the viewer layer that holds that data should be updated **in-place** — no new layer should
+  ever be added as a side-effect of running segmentation or importing from Cellpose GUI.
+- `_get_or_create_labels_layer` is the current mechanism; it should be rethought so that
+  it updates an existing layer whose data matches `self._seg_data` (by identity or name),
+  only creating a new one if none exists yet.
+- Same applies to `_on_import_from_cellpose_gui`: after import it should sync `_seg_data`
+  and update exactly the same layer.
+
+---
+
 hand notes:
 ~~filtering data frames should update the plots in the dashboard~~ — done
 ~~peripheral junctions should exclude border junctions~~ — done: border junctions (cell_id=0 or tagged "border") are now classified as "unclassified" instead of "peripheral"
