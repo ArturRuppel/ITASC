@@ -3,8 +3,8 @@ Tracking tab for napariSegTrack.
 
 Input  : a Labels layer (nuclear masks, possibly from the Segmentation tab)
          OR an Image layer (will be segmented with Cellpose first)
-Optional: Voronoi expansion to derive cell body masks from tracked nuclei
-Output : tracked Labels layer(s) added to the napari viewer
+Output : tracked Labels layer written back to the input layer (Labels input)
+         or added as a new layer (Image input)
 
 Tracking is performed with LapTrack (centroid-distance LAP with gap closing).
 Optional temporal correction detects and merges false nuclear splits.
@@ -17,7 +17,6 @@ from qtpy.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QFileDialog,
     QTextEdit, QProgressBar, QScrollArea,
 )
-from qtpy.QtCore import Qt
 from napari.qt.threading import thread_worker
 import napari
 
@@ -50,10 +49,8 @@ TRACK_DEFAULTS = {
     "cellprob_threshold":        0.0,
     "min_size":                  15,
     "gpu":                       True,
-    # voronoi expansion
+    # voronoi expansion (used internally by temporal correction only)
     "max_expand":                30,
-    "smooth_sigma":              4.0,
-    "smooth_thresh":             0.4,
     # laptrack
     "max_link_dist":             20,
     "max_gap_dist":              25,
@@ -117,29 +114,6 @@ class TrackingTab(QWidget):
         cp_scroll.setVisible(False)
         self._cp_box.setVisible(False)   # hidden when Labels layer selected
         root.addWidget(self._cp_box)
-
-        # ── Voronoi expansion (optional) ──
-        expand_box = QGroupBox("Cell Body Expansion (optional)")
-        expand_lay = QVBoxLayout(expand_box)
-        self._expand_chk = QCheckBox("Expand nuclei to cell bodies (Voronoi)")
-        self._expand_chk.setChecked(False)
-        self._expand_chk.toggled.connect(self._on_expand_toggled)
-        expand_lay.addWidget(self._expand_chk)
-        root.addWidget(expand_box)
-
-        # ── Voronoi params (shown when expansion enabled) ──
-        self._ws_box = QGroupBox("Voronoi Parameters")
-        ws_lay = QFormLayout(self._ws_box)
-        self._ws_maxexp = QSpinBox()
-        self._ws_maxexp.setRange(1, 500)
-        self._ws_maxexp.setValue(TRACK_DEFAULTS["max_expand"])
-        self._ws_sigma  = _dspin(0.1, 20, TRACK_DEFAULTS["smooth_sigma"],  1, 0.5)
-        self._ws_thresh = _dspin(0.0,  1, TRACK_DEFAULTS["smooth_thresh"], 2, 0.05)
-        ws_lay.addRow("Max expand (px):", self._ws_maxexp)
-        ws_lay.addRow("Smooth sigma:",    self._ws_sigma)
-        ws_lay.addRow("Smooth thresh:",   self._ws_thresh)
-        self._ws_box.setVisible(False)
-        root.addWidget(self._ws_box)
 
         # ── Tracking parameters ──
         track_box = QGroupBox("LapTrack Parameters")
@@ -299,9 +273,6 @@ class TrackingTab(QWidget):
             is_image = layer is not None and isinstance(layer, napari.layers.Image)
         self._cp_box.setVisible(is_image)
 
-    def _on_expand_toggled(self, checked):
-        self._ws_box.setVisible(checked)
-
     def _on_cp_model_changed(self, text):
         is_custom = (text == "custom")
         self._cp_custom_edit.setEnabled(is_custom)
@@ -347,9 +318,6 @@ class TrackingTab(QWidget):
             "division_confirm_frames":     self._p_divconf.value(),
             "division_sep_min_px":         self._p_divsep.value(),
             "max_split_radius_factor":     self._p_splitr.value(),
-            "max_expand":                  self._ws_maxexp.value(),
-            "smooth_sigma":                self._ws_sigma.value(),
-            "smooth_thresh":               self._ws_thresh.value(),
         }
 
     # ── Run ────────────────────────────────────────────────────────────
@@ -375,7 +343,6 @@ class TrackingTab(QWidget):
 
         is_image     = isinstance(nuc_layer, napari.layers.Image)
         nuc_data     = np.asarray(nuc_layer.data)
-        expand_cells = self._expand_chk.isChecked()
 
         cp_params    = self._collect_cp_params() if is_image else None
         track_params = self._collect_track_params()
@@ -394,7 +361,7 @@ class TrackingTab(QWidget):
         def _work():
             from napariTissueFlow.segtrack._pipeline import (
                 make_cp_model, run_cp,
-                track_nuclei_laptrack, cells_from_nuclei,
+                track_nuclei_laptrack,
                 correct_false_splits,
             )
 
@@ -437,19 +404,8 @@ class TrackingTab(QWidget):
             n_tracks = track_df["track_id"].nunique() if len(track_df) > 0 else 0
             yield f"  {n_tracks} track(s) found"
 
-            # ── Voronoi expansion (optional) ──
-            tracked_cell = None
-            if expand_cells:
-                yield "Expanding nuclei via Voronoi tessellation…"
-                tracked_cell = cells_from_nuclei(
-                    tracked_nuc,
-                    max_expand   = track_params["max_expand"],
-                    smooth_sigma = track_params["smooth_sigma"],
-                    smooth_thresh= track_params["smooth_thresh"],
-                )
-
             # ── Temporal correction (requires raw nuclear images for re-segmentation) ──
-            corr_nuc = corr_cell = None
+            corr_nuc = None
             if not track_params["skip_temporal"]:
                 if not is_image:
                     yield ("Skipping temporal correction: raw nuclear images needed "
@@ -461,7 +417,7 @@ class TrackingTab(QWidget):
                         "flow_threshold":          cp_params["flow_threshold"],
                         "cellprob_threshold":      cp_params["cellprob_threshold"],
                         "min_size":                cp_params["min_size"],
-                        "max_expand":              track_params["max_expand"],
+                        "max_expand":              TRACK_DEFAULTS["max_expand"],
                         "max_split_radius_factor": track_params["max_split_radius_factor"],
                         "division_confirm_frames": track_params["division_confirm_frames"],
                         "division_sep_min_px":     track_params["division_sep_min_px"],
@@ -473,15 +429,6 @@ class TrackingTab(QWidget):
                     for m in log_buf:
                         yield m
 
-                    if expand_cells:
-                        yield "Deriving corrected cell bodies…"
-                        corr_cell = cells_from_nuclei(
-                            corr_nuc,
-                            max_expand   = track_params["max_expand"],
-                            smooth_sigma = track_params["smooth_sigma"],
-                            smooth_thresh= track_params["smooth_thresh"],
-                        )
-
             # ── Optionally save ──
             if save_output and out_dir:
                 import os
@@ -489,22 +436,17 @@ class TrackingTab(QWidget):
                 os.makedirs(out_dir, exist_ok=True)
                 def _stack(lst):
                     return np.stack(lst, axis=0).astype(np.uint16)
-                imwrite(os.path.join(out_dir, "nuclei_tracked.tif"),   _stack(tracked_nuc))
-                if tracked_cell:
-                    imwrite(os.path.join(out_dir, "cells_tracked.tif"), _stack(tracked_cell))
+                imwrite(os.path.join(out_dir, "nuclei_tracked.tif"), _stack(tracked_nuc))
                 if corr_nuc:
                     imwrite(os.path.join(out_dir, "nuclei_corrected.tif"), _stack(corr_nuc))
-                if corr_cell:
-                    imwrite(os.path.join(out_dir, "cells_corrected.tif"),  _stack(corr_cell))
                 yield f"Saved to {out_dir}"
 
             yield "Tracking complete!"
             return {
-                "tracked_nuc":  tracked_nuc,
-                "tracked_cell": tracked_cell,
-                "corr_nuc":     corr_nuc,
-                "corr_cell":    corr_cell,
-                "nuc_name":     nuc_name,
+                "tracked_nuc": tracked_nuc,
+                "corr_nuc":    corr_nuc,
+                "nuc_name":    nuc_name,
+                "is_image":    is_image,
             }
 
         self._worker = _work()
@@ -516,24 +458,20 @@ class TrackingTab(QWidget):
         def _stack(lst):
             return np.stack(lst, axis=0).astype(np.uint16)
 
-        prefix = result["nuc_name"]
+        nuc_name = result["nuc_name"]
+        best_nuc = result["corr_nuc"] if result["corr_nuc"] else result["tracked_nuc"]
+        stacked  = _stack(best_nuc)
 
-        self.viewer.add_labels(
-            _stack(result["tracked_nuc"]), name=f"{prefix}_tracked_nuclei"
-        )
-        if result["tracked_cell"]:
-            self.viewer.add_labels(
-                _stack(result["tracked_cell"]), name=f"{prefix}_tracked_cells"
-            )
-        if result["corr_nuc"]:
-            self.viewer.add_labels(
-                _stack(result["corr_nuc"]), name=f"{prefix}_corrected_nuclei"
-            )
-        if result["corr_cell"]:
-            self.viewer.add_labels(
-                _stack(result["corr_cell"]), name=f"{prefix}_corrected_cells"
-            )
-        self._log_append("Done! Results added as napari layers.")
+        if not result["is_image"]:
+            try:
+                self.viewer.layers[nuc_name].data = stacked
+                self._log_append("Done! Segmentation layer updated with tracked result.")
+                return
+            except KeyError:
+                pass
+
+        self.viewer.add_labels(stacked, name=f"{nuc_name}_tracked_nuclei")
+        self._log_append("Done! Results added as napari layer.")
 
     def _on_error(self, exc):
         self._run_btn.setEnabled(True)
