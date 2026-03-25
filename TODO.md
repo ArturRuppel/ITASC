@@ -497,6 +497,20 @@ mismatch — it updates the data in-place. `_on_load_seg_layer` and `_on_clear_s
 
 ---
 
+## 18. Tracking tab — no implicit segmentation
+
+`Run Tracking` in the tracking tab should only perform tracking. It must not trigger any
+Cellpose segmentation. Segmentation is the responsibility of the Segmentation tab.
+
+### 18a. Remove Image layer path from tracking tab
+- [ ] Drop the branch in the tracking worker that runs Cellpose when the input is an Image layer
+- [ ] Accept Labels layers only; show a clear error/warning if the user selects an Image layer
+      (and tell them to run the Segmentation tab first)
+- [ ] Remove Cellpose parameters from the tracking tab UI (model type, diameter, flow threshold,
+      cellprob threshold, min size — all belong in the Segmentation tab)
+
+---
+
 hand notes:
 ~~filtering data frames should update the plots in the dashboard~~ — done
 ~~peripheral junctions should exclude border junctions~~ — done: border junctions (cell_id=0 or tagged "border") are now classified as "unclassified" instead of "peripheral"

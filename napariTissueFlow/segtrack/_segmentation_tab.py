@@ -87,6 +87,8 @@ class SegmentationTab(QWidget):
         self._cp_model     = None   # CellposeModel instance currently on GPU
         self._cp_model_key = None   # (model_type, custom_model_path, gpu) for the cached model
 
+        self._export_dir = None  # user-configured export directory for Cellpose GUI
+
         self._setup_ui()
 
     # ── UI construction ────────────────────────────────────────────────
@@ -149,16 +151,42 @@ class SegmentationTab(QWidget):
         # ── Cellpose GUI integration ──
         gui_box = QGroupBox("Cellpose GUI Correction")
         gui_lay = QVBoxLayout(gui_box)
-        gui_btns = QHBoxLayout()
-        self._open_gui_btn   = QPushButton("Open Frame in Cellpose GUI")
-        self._import_gui_btn = QPushButton("Import from Cellpose GUI")
+
+        # Directory picker
+        dir_row = QHBoxLayout()
+        dir_row.addWidget(QLabel("Directory:"))
+        self._export_dir_edit = QLineEdit()
+        self._export_dir_edit.setPlaceholderText("Leave empty to use a temp directory")
+        self._export_dir_edit.textChanged.connect(self._on_export_dir_changed)
+        self._browse_export_dir_btn = QPushButton("Browse")
+        self._browse_export_dir_btn.setFixedWidth(60)
+        self._browse_export_dir_btn.clicked.connect(self._browse_export_dir)
+        dir_row.addWidget(self._export_dir_edit)
+        dir_row.addWidget(self._browse_export_dir_btn)
+        gui_lay.addLayout(dir_row)
+
+        # Frame buttons
+        frame_btns = QHBoxLayout()
+        self._open_gui_btn   = QPushButton("Export Frame to Cellpose GUI")
+        self._import_gui_btn = QPushButton("Import Frame from Cellpose GUI")
         self._import_gui_btn.setEnabled(False)
         self._open_gui_btn.clicked.connect(self._on_open_in_cellpose_gui)
         self._import_gui_btn.clicked.connect(self._on_import_from_cellpose_gui)
-        gui_btns.addWidget(self._open_gui_btn)
-        gui_btns.addWidget(self._import_gui_btn)
-        gui_lay.addLayout(gui_btns)
-        self._gui_status = QLabel("Export the current frame, correct it in Cellpose GUI, then import.")
+        frame_btns.addWidget(self._open_gui_btn)
+        frame_btns.addWidget(self._import_gui_btn)
+        gui_lay.addLayout(frame_btns)
+
+        # Stack buttons
+        stack_btns = QHBoxLayout()
+        self._export_stack_gui_btn = QPushButton("Export Stack to Cellpose GUI")
+        self._import_stack_gui_btn = QPushButton("Import Stack from Cellpose GUI")
+        self._export_stack_gui_btn.clicked.connect(self._on_export_stack_to_cellpose_gui)
+        self._import_stack_gui_btn.clicked.connect(self._on_import_stack_from_cellpose_gui)
+        stack_btns.addWidget(self._export_stack_gui_btn)
+        stack_btns.addWidget(self._import_stack_gui_btn)
+        gui_lay.addLayout(stack_btns)
+
+        self._gui_status = QLabel("Set a directory, then export frame(s) to edit in Cellpose GUI.")
         self._gui_status.setWordWrap(True)
         self._gui_status.setStyleSheet("color: palette(mid);")
         gui_lay.addWidget(self._gui_status)
@@ -571,15 +599,14 @@ class SegmentationTab(QWidget):
                 )
             return
 
-        if self._temp_dir is None or not os.path.isdir(self._temp_dir):
-            self._temp_dir = tempfile.mkdtemp(prefix="napariTissueFlow.segtrack_cellpose_")
+        export_dir = self._get_export_dir()
         self._temp_frame_idx = t
 
         # Use frame-indexed filenames so multiple exports never overwrite each other.
         # The frame index is also embedded in the seg file so import does not rely
         # solely on the in-memory variable (which is lost on restart).
-        img_path = Path(self._temp_dir) / f"frame_{t}.tif"
-        seg_path = Path(self._temp_dir) / f"frame_{t}_seg.npy"
+        img_path = Path(export_dir) / f"frame_{t}.tif"
+        seg_path = Path(export_dir) / f"frame_{t}_seg.npy"
 
         display_img = imgs.get("img") if imgs.get("img") is not None else imgs.get("primary")
 
@@ -628,7 +655,7 @@ class SegmentationTab(QWidget):
             except Exception:
                 pass
 
-        launcher = Path(self._temp_dir) / "launch_cellpose.py"
+        launcher = Path(export_dir) / "launch_cellpose.py"
         launcher.write_text(
             f"from cellpose.gui.gui import run\n"
             f"run(image={str(img_path)!r})\n"
@@ -649,11 +676,11 @@ class SegmentationTab(QWidget):
         self._import_gui_btn.setEnabled(True)
 
     def _on_import_from_cellpose_gui(self):
-        if self._temp_dir is None or self._temp_frame_idx is None:
-            self._log_append("No Cellpose GUI session found. Open a frame first.")
+        if self._temp_frame_idx is None:
+            self._log_append("No Cellpose GUI session found. Export a frame first.")
             return
 
-        seg_path = Path(self._temp_dir) / f"frame_{self._temp_frame_idx}_seg.npy"
+        seg_path = Path(self._get_export_dir()) / f"frame_{self._temp_frame_idx}_seg.npy"
         if not seg_path.exists():
             self._log_append(
                 f"No seg file found at {seg_path}.\n"
@@ -688,6 +715,179 @@ class SegmentationTab(QWidget):
         n = len(np.unique(masks[masks > 0]))
         self._log_append(f"Imported {n} mask(s) into frame {t} from Cellpose GUI.")
         self._gui_status.setText(f"Imported {n} mask(s) for frame {t}.")
+
+    # ── Export directory helpers ───────────────────────────────────────
+
+    def _browse_export_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Select Cellpose Export Directory", "")
+        if d:
+            self._export_dir = d
+            self._export_dir_edit.setText(d)
+
+    def _on_export_dir_changed(self, text):
+        self._export_dir = text.strip() if text.strip() else None
+
+    def _get_export_dir(self):
+        """Return the configured export dir, or a persistent temp dir as fallback."""
+        if self._export_dir and os.path.isdir(self._export_dir):
+            return self._export_dir
+        if self._temp_dir is None or not os.path.isdir(self._temp_dir):
+            self._temp_dir = tempfile.mkdtemp(prefix="napariTissueFlow.segtrack_cellpose_")
+        return self._temp_dir
+
+    # ── Stack Cellpose GUI export / import ────────────────────────────
+
+    def _on_export_stack_to_cellpose_gui(self):
+        """Export all frames as TIF + NPY to the configured directory, then open Cellpose GUI."""
+        if self._is_running:
+            self._log_append("Already processing.")
+            return
+
+        try:
+            all_frames = self._get_all_frames()
+        except ValueError as e:
+            self._log_append(f"ERROR: {e}")
+            return
+
+        export_dir = Path(self._get_export_dir())
+        n_frames = len(all_frames)
+        t_current = (
+            self._current_frame_idx(self._input_data)
+            if self._input_data is not None
+            else 0
+        )
+
+        # Guard: if Cellpose is open for a specific frame, warn the user.
+        if self._cellpose_proc is not None and self._cellpose_proc.poll() is None:
+            self._log_append(
+                "Cellpose GUI is still open. Import the current frame before exporting the stack."
+            )
+            return
+
+        from tifffile import imwrite
+
+        self._log_append(f"Exporting {n_frames} frame(s) to {export_dir} …")
+        for i, imgs in enumerate(all_frames):
+            display_img = imgs.get("img") if imgs.get("img") is not None else imgs.get("primary")
+            img_path = export_dir / f"frame_{i}.tif"
+            seg_path = export_dir / f"frame_{i}_seg.npy"
+
+            imwrite(str(img_path), display_img.astype(np.uint16))
+
+            existing_masks = self._get_existing_masks(i)
+            if existing_masks is not None and existing_masks.max() > 0:
+                try:
+                    from cellpose.utils import masks_to_outlines
+                    outlines = masks_to_outlines(existing_masks)
+                except Exception:
+                    outlines = np.zeros_like(existing_masks, dtype=bool)
+
+                n_cells = int(existing_masks.max())
+                seg_data = {
+                    "img":              display_img.astype(np.uint16),
+                    "masks":            existing_masks.astype(np.uint16),
+                    "outlines":         outlines,
+                    "colors":           np.random.randint(0, 255, (n_cells + 1, 3), dtype=np.uint8),
+                    "filename":         str(img_path),
+                    "flows":            [],
+                    "chan_choose":      [0, 0],
+                    "ismanual":         np.zeros(n_cells + 1, dtype=bool),
+                    "diameter":         self._diam_spin.value(),
+                    "napari_frame_idx": i,
+                }
+                np.save(str(seg_path), seg_data)
+            else:
+                if seg_path.exists():
+                    seg_path.unlink()
+
+            self._log_append(f"  Frame {i+1}/{n_frames} exported.")
+
+        self._log_append(f"Stack export complete: {n_frames} frame(s).")
+
+        # Release GPU memory before spawning Cellpose GUI.
+        if self._cp_model is not None:
+            del self._cp_model
+            self._cp_model = None
+            self._cp_model_key = None
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        # Open Cellpose GUI with the current frame.
+        self._temp_frame_idx = t_current
+        img_path = export_dir / f"frame_{t_current}.tif"
+        launcher = export_dir / "launch_cellpose.py"
+        launcher.write_text(
+            f"from cellpose.gui.gui import run\n"
+            f"run(image={str(img_path)!r})\n"
+        )
+        try:
+            self._cellpose_proc = subprocess.Popen(
+                [sys.executable, str(launcher)],
+                start_new_session=True,
+            )
+        except Exception as exc:
+            self._log_append(f"ERROR launching Cellpose GUI: {exc}")
+            return
+
+        self._import_gui_btn.setEnabled(True)
+        self._gui_status.setText(
+            f"Stack exported to {export_dir}.\n"
+            f"Frame {t_current} opened in Cellpose GUI.\n"
+            "Correct and save each frame, then click 'Import Stack from Cellpose GUI'."
+        )
+
+    def _on_import_stack_from_cellpose_gui(self):
+        """Import all frame_*_seg.npy files from the configured directory into the segmentation layer."""
+        import glob
+
+        export_dir = Path(self._get_export_dir())
+        seg_files = sorted(glob.glob(str(export_dir / "frame_*_seg.npy")))
+
+        if not seg_files:
+            self._log_append(f"No frame_*_seg.npy files found in {export_dir}.")
+            return
+
+        shape = self._reference_stack_shape()
+        layer = self._get_or_create_labels_layer(shape)
+        data = layer.data.copy()
+
+        imported = 0
+        for f in seg_files:
+            fname = Path(f).name
+            try:
+                idx_str = fname.removeprefix("frame_").removesuffix("_seg.npy")
+                default_idx = int(idx_str)
+            except ValueError:
+                self._log_append(f"WARNING: Cannot parse frame index from {fname}, skipping.")
+                continue
+
+            try:
+                seg_data = np.load(f, allow_pickle=True).item()
+                masks = np.asarray(seg_data["masks"]).astype(np.uint32)
+                t = int(seg_data.get("napari_frame_idx", default_idx))
+            except Exception as exc:
+                self._log_append(f"ERROR reading {fname}: {exc}")
+                continue
+
+            if data.ndim == 2:
+                data = masks
+            elif t < data.shape[0]:
+                data[t] = masks
+            else:
+                self._log_append(f"WARNING: Frame index {t} out of range, skipping {fname}.")
+                continue
+
+            imported += 1
+
+        layer.data = data
+        layer.refresh()
+        self._seg_data = np.asarray(layer.data)
+        self._seg_status.setText(f"Loaded: {self._seg_data.shape}")
+        self._log_append(f"Imported {imported} frame(s) from {export_dir}.")
+        self._gui_status.setText(f"Imported {imported} frame(s) from {export_dir}.")
 
     def _get_existing_masks(self, t):
         for lay in self.viewer.layers:
