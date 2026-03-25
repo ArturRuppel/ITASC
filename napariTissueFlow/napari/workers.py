@@ -68,7 +68,7 @@ class GraphExtractWorker(QObject):
     def __init__(self, label_stack, pixel_size=None, time_interval=None,
                  dilation_radius=1, min_overlap_pixels=5,
                  min_edge_length=0.0, filter_isolated=True,
-                 min_border_edge_length=5.0):
+                 min_border_edge_length=5.0, min_bg_hole_size=500):
         super().__init__()
         self.label_stack = label_stack
         self.pixel_size = pixel_size
@@ -78,6 +78,7 @@ class GraphExtractWorker(QObject):
         self.min_edge_length = min_edge_length
         self.filter_isolated = filter_isolated
         self.min_border_edge_length = min_border_edge_length
+        self.min_bg_hole_size = min_bg_hole_size
 
     def run(self):
         try:
@@ -91,6 +92,7 @@ class GraphExtractWorker(QObject):
                 min_edge_length=self.min_edge_length,
                 filter_isolated=self.filter_isolated,
                 min_border_edge_length=self.min_border_edge_length,
+                min_bg_hole_size=self.min_bg_hole_size,
             )
             self.progress.emit(100, "Graphs extracted.")
             self.finished.emit(series)

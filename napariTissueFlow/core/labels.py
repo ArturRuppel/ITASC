@@ -13,7 +13,8 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, FrozenSet
 from scipy.spatial.distance import cdist
 from skimage.morphology import skeletonize
-from skimage.measure import regionprops
+from skimage.measure import regionprops, label as cc_label
+from skimage.segmentation import expand_labels
 
 from ..structures import CellData, JunctionData
 
@@ -286,6 +287,7 @@ def labels_to_graph(
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
     min_border_edge_length: float = 5.0,
+    min_bg_hole_size: int = 500,
     **kwargs,
 ) -> Tuple[Dict[int, CellData], Dict[FrozenSet[int], JunctionData], nx.Graph]:
     """Build cell data, junction data, and graph from a single label frame.
@@ -306,6 +308,9 @@ def labels_to_graph(
             ``"border"`` junctions for cell–background boundaries.
         min_border_edge_length: Minimum length (px) for a border boundary
             segment to count.
+        min_bg_hole_size: Background regions smaller than this many pixels
+            are treated as segmentation artifacts and ignored when detecting
+            cell-background borders.  Set to 0 to disable filtering.
 
     Returns:
         (cells, junctions, graph)
@@ -320,11 +325,40 @@ def labels_to_graph(
     props = regionprops(label_frame)
     props_by_label = {p.label: p for p in props}
 
+    # ---- Step 0: fill artifact background gaps ----
+    # smooth_labels (sigma≈4, thresh≈0.4) leaves thin (1–3 px) background
+    # strips at every cell junction.  These strips prevent direct-adjacency
+    # detection between neighbouring cells and make peripheral cells appear
+    # isolated (no edges).  We build a clean frame by:
+    #   - keeping real outer tissue background (connected region ≥ 1 % of image)
+    #   - filling all smaller background components with the nearest cell label
+    # The clean frame is used for both junction detection and border detection.
+    bg_mask = label_frame == 0
+    bg_labeled = cc_label(bg_mask)
+    if bg_labeled.max() > 0:
+        bg_sizes = np.bincount(bg_labeled.ravel())
+        bg_sizes[0] = 0
+        size_threshold = max(1, int(0.01 * label_frame.size))
+        real_bg_ids = np.where(bg_sizes >= size_threshold)[0]
+        if real_bg_ids.size == 0:
+            real_bg_ids = np.array([int(bg_sizes.argmax())])
+        outer_bg_mask = np.isin(bg_labeled, real_bg_ids)
+    else:
+        outer_bg_mask = bg_mask  # no background at all
+
+    artifact_mask = bg_mask & ~outer_bg_mask
+    if artifact_mask.any():
+        filled = expand_labels(label_frame, distance=label_frame.shape[0])
+        clean_frame = label_frame.copy()
+        clean_frame[artifact_mask] = filled[artifact_mask]
+    else:
+        clean_frame = label_frame
+
     # ---- Step 1: boundary pixels between adjacent cells ----
-    junction_pixels = _find_boundary_pixels(label_frame)
+    junction_pixels = _find_boundary_pixels(clean_frame)
 
     # ---- Step 2: triple junction detection ----
-    triple_junctions = _find_triple_junctions(label_frame)
+    triple_junctions = _find_triple_junctions(clean_frame)
 
     # Map each cell pair to its triple junction endpoints
     pair_to_tjs: Dict[FrozenSet[int], List] = defaultdict(list)
@@ -368,24 +402,94 @@ def labels_to_graph(
         )
         graph.add_edge(sorted_pair[0], sorted_pair[1], length=length)
 
-    # ---- Step 4: detect border cells ----
-    # Border cells touch the image edge or background.  We tag them on
-    # CellData.is_border and tag their junctions as "border".
+    # ---- Step 4: detect border cells and add cell-background edges ----
+    # Binarise label_frame → fill holes → trace the outer tissue contour →
+    # assign each contour pixel to the cell it belongs to (via clean_frame) →
+    # any cell whose total contour arc is ≥ min_border_edge_length is a border cell.
+    # For each border cell, create a JunctionData representing the cell-background
+    # interface (cell_pair=(0, cell_id)), tagged as "border".
     border_cell_ids: set = set()
     if filter_isolated:
-        candidate_border = find_border_cells(label_frame)
-        for cell_id in candidate_border:
-            segs = find_border_boundary(
-                label_frame, int(cell_id),
-                min_edge_length=min_border_edge_length,
-            )
-            if segs:
-                border_cell_ids.add(int(cell_id))
+        from scipy.ndimage import binary_fill_holes
 
-        # Tag junctions where at least one cell is a border cell
-        for pair, jd in junctions.items():
-            if pair & border_cell_ids:
-                jd.tags.add("border")
+        binary = (label_frame > 0).astype(np.uint8)
+        filled_binary = binary_fill_holes(binary).astype(np.uint8)
+
+        contours_cv, _ = cv2.findContours(
+            filled_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE,
+        )
+        if contours_cv:
+            tissue_contour = max(contours_cv, key=cv2.contourArea).squeeze(1)
+            # tissue_contour: (N, 2) in (x, y) order
+
+            # Accumulate border arc-length per cell.  Only sum distances between
+            # consecutive contour pixels that belong to the same cell so that
+            # short isolated touches don't inflate a cell's border length.
+            border_length: Dict[int, float] = defaultdict(float)
+            prev_cell: int = -1
+            prev_xy: Optional[Tuple[int, int]] = None
+            for (x, y) in tissue_contour:
+                cell_id = int(clean_frame[y, x])
+                if cell_id <= 0:
+                    prev_cell = -1
+                    prev_xy = None
+                    continue
+                if cell_id == prev_cell and prev_xy is not None:
+                    dx = x - prev_xy[0]
+                    dy = y - prev_xy[1]
+                    border_length[cell_id] += np.sqrt(dx * dx + dy * dy)
+                prev_cell = cell_id
+                prev_xy = (x, y)
+
+            for cell_id, length in border_length.items():
+                if length >= min_border_edge_length:
+                    border_cell_ids.add(cell_id)
+
+        # Build a frame for border detection where small background holes
+        # (segmentation artifacts between cells) are filled in so they don't
+        # create spurious border junctions.
+        if min_bg_hole_size > 0:
+            bg_mask_bd = label_frame == 0
+            bg_labeled_bd = cc_label(bg_mask_bd)
+            if bg_labeled_bd.max() > 0:
+                bg_sizes_bd = np.bincount(bg_labeled_bd.ravel())
+                bg_sizes_bd[0] = 0
+                small_ids = np.where(
+                    (bg_sizes_bd > 0) & (bg_sizes_bd < min_bg_hole_size)
+                )[0]
+                if small_ids.size > 0:
+                    border_frame = label_frame.copy()
+                    small_mask = np.isin(bg_labeled_bd, small_ids)
+                    filled_bd = expand_labels(
+                        label_frame, distance=label_frame.shape[0]
+                    )
+                    border_frame[small_mask] = filled_bd[small_mask]
+                else:
+                    border_frame = label_frame
+            else:
+                border_frame = label_frame
+        else:
+            border_frame = label_frame
+
+        # For each border cell, create a JunctionData for the cell-background
+        # interface using the actual contour of the cell against background.
+        for border_cid in border_cell_ids:
+            segments = find_border_boundary(border_frame, border_cid, min_edge_length=0.0)
+            if not segments:
+                continue
+            all_coords = np.vstack([seg[0] for seg in segments])
+            total_length = sum(seg[1] for seg in segments)
+            if total_length < min_border_edge_length:
+                continue
+            midpoint = all_coords[len(all_coords) // 2].astype(float)
+            pair_key = frozenset({0, border_cid})
+            junctions[pair_key] = JunctionData(
+                cell_pair=(0, border_cid),
+                length=total_length,
+                coordinates=all_coords,
+                midpoint=midpoint,
+                tags={"border"},
+            )
 
     # ---- Step 5: build cell data ----
     cells_in_graph = set()

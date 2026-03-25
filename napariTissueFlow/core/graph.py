@@ -29,6 +29,7 @@ def extract_graphs_from_labels(
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
     min_border_edge_length: float = 5.0,
+    min_bg_hole_size: int = 500,
 ) -> TissueGraphTimeSeries:
     """Extract per-frame graphs from segmentation labels (no tracking).
 
@@ -45,6 +46,7 @@ def extract_graphs_from_labels(
             min_edge_length=min_edge_length,
             filter_isolated=filter_isolated,
             min_border_edge_length=min_border_edge_length,
+            min_bg_hole_size=min_bg_hole_size,
         )
 
         # Extract vertices for each cell (no track assignment)
@@ -226,6 +228,7 @@ def build_from_labels(
     min_edge_length: float = 0.0,
     filter_isolated: bool = True,
     min_border_edge_length: float = 5.0,
+    min_bg_hole_size: int = 500,
     min_iou: float = 0.3,
     max_area_change: float = float('inf'),
 ) -> TissueGraphTimeSeries:
@@ -252,6 +255,7 @@ def build_from_labels(
         min_edge_length=min_edge_length,
         filter_isolated=filter_isolated,
         min_border_edge_length=min_border_edge_length,
+        min_bg_hole_size=min_bg_hole_size,
     )
     assign_tracking_labels(
         series, label_stack, min_iou=min_iou, max_area_change=max_area_change,

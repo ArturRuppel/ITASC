@@ -196,6 +196,22 @@ class TissueFlowWidget(QWidget):
         mbel_row.addWidget(self.min_border_edge_spin)
         s2p_layout.addLayout(mbel_row)
 
+        mbhs_row = QHBoxLayout()
+        mbhs_row.addWidget(QLabel("Min bg hole (px\u00b2):"))
+        self.min_bg_hole_spin = QSpinBox()
+        self.min_bg_hole_spin.setMinimum(0)
+        self.min_bg_hole_spin.setMaximum(100000)
+        self.min_bg_hole_spin.setSingleStep(100)
+        self.min_bg_hole_spin.setValue(500)
+        self.min_bg_hole_spin.setToolTip(
+            "Background regions smaller than this many pixels are treated as\n"
+            "segmentation artifacts and ignored during border detection.\n"
+            "Increase if small holes between cells create spurious border edges.\n"
+            "Set to 0 to disable filtering."
+        )
+        mbhs_row.addWidget(self.min_bg_hole_spin)
+        s2p_layout.addLayout(mbhs_row)
+
         mjl_row = QHBoxLayout()
         mjl_row.addWidget(QLabel("Min junction length (px):"))
         self.min_junction_length_spin = QDoubleSpinBox()
@@ -434,7 +450,9 @@ class TissueFlowWidget(QWidget):
             )
             return None
 
-        data = active.data
+        # Force a concrete numpy array — Labels layers may back their data with
+        # dask or zarr, and some operations (cv2, scipy) require a real ndarray.
+        data = np.asarray(active.data)
 
         # Auto-convert Image layer data to integer labels
         if isinstance(active, napari.layers.Image):
@@ -477,6 +495,7 @@ class TissueFlowWidget(QWidget):
             min_edge_length=self.min_edge_length_spin.value(),
             filter_isolated=self.filter_isolated_cb.isChecked(),
             min_border_edge_length=self.min_border_edge_spin.value(),
+            min_bg_hole_size=self.min_bg_hole_spin.value(),
         )
         self._run_worker(worker, self._on_stage2_done)
 
