@@ -503,10 +503,10 @@ mismatch — it updates the data in-place. `_on_load_seg_layer` and `_on_clear_s
 Cellpose segmentation. Segmentation is the responsibility of the Segmentation tab.
 
 ### 18a. Remove Image layer path from tracking tab
-- [ ] Drop the branch in the tracking worker that runs Cellpose when the input is an Image layer
-- [ ] Accept Labels layers only; show a clear error/warning if the user selects an Image layer
+- [x] Drop the branch in the tracking worker that runs Cellpose when the input is an Image layer
+- [x] Accept Labels layers only; show a clear error/warning if the user selects an Image layer
       (and tell them to run the Segmentation tab first)
-- [ ] Remove Cellpose parameters from the tracking tab UI (model type, diameter, flow threshold,
+- [x] Remove Cellpose parameters from the tracking tab UI (model type, diameter, flow threshold,
       cellprob threshold, min size — all belong in the Segmentation tab)
 
 ---

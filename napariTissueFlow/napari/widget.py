@@ -459,7 +459,7 @@ class TissueFlowWidget(QWidget):
 
         # ========== Tracking tab ==========
         from ..segtrack._tracking_tab import TrackingTab
-        self._tracking_tab = TrackingTab(self.viewer)
+        self._tracking_tab = TrackingTab(self.viewer, self._segmentation_tab)
         self.tab_widget.addTab(self._tracking_tab, "Tracking")
 
         # ========== Voronoi tab (cell body expansion + nuclear tracks) ==========

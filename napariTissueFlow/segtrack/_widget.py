@@ -26,10 +26,11 @@ class SegTrackWidget(QWidget):
         super().__init__()
         self.viewer = viewer
 
+        seg_tab = SegmentationTab(viewer)
         tabs = QTabWidget()
-        tabs.addTab(SegmentationTab(viewer), "Segmentation")
-        tabs.addTab(VoronoiTab(viewer),      "Cell Bodies")
-        tabs.addTab(TrackingTab(viewer),     "Tracking")
+        tabs.addTab(seg_tab,                        "Segmentation")
+        tabs.addTab(VoronoiTab(viewer),             "Cell Bodies")
+        tabs.addTab(TrackingTab(viewer, seg_tab),   "Tracking")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

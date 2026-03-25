@@ -77,8 +77,9 @@ class SegmentationTab(QWidget):
         # ── data manager ──
         self._input_data     = None   # (H,W) or (T,H,W) numpy, single-ch or primary
         self._secondary_data = None   # (H,W) or (T,H,W) numpy, secondary channel
-        self._seg_data       = None   # (H,W) or (T,H,W) uint32, current segmentation
-        self._seg_layer      = None   # napari Labels layer that holds _seg_data
+        # Single source of truth for segmentation: the napari Labels layer.
+        # _seg_layer.data IS the segmentation — no shadow copy is kept.
+        self._seg_layer      = None   # napari Labels layer (single source of truth)
 
         # ── model cache ──
         # Persists between runs so GPU memory is not thrashed on every segment call.
@@ -496,8 +497,7 @@ class SegmentationTab(QWidget):
             data[t] = masks.astype(np.uint32)
             layer.data = data
         layer.refresh()
-        self._seg_data = np.asarray(layer.data)
-        self._seg_status.setText(f"Loaded: {self._seg_data.shape}")
+        self._seg_status.setText(f"Loaded: {layer.data.shape}")
         self._log_append("Frame segmentation complete.")
 
     # ── Segment Stack ──────────────────────────────────────────────────
@@ -572,8 +572,7 @@ class SegmentationTab(QWidget):
         layer = self._get_or_create_labels_layer(stack.shape)
         layer.data = stack
         layer.refresh()
-        self._seg_data = stack
-        self._seg_status.setText(f"Loaded: {stack.shape}")
+        self._seg_status.setText(f"Loaded: {layer.data.shape}")
         self._log_append(f"Stack segmentation complete: {stack.shape[0]} frame(s).")
 
     # ── Cellpose GUI integration ───────────────────────────────────────
@@ -709,8 +708,7 @@ class SegmentationTab(QWidget):
                 data[t] = masks
             layer.data = data
         layer.refresh()
-        self._seg_data = np.asarray(layer.data)
-        self._seg_status.setText(f"Loaded: {self._seg_data.shape}")
+        self._seg_status.setText(f"Loaded: {layer.data.shape}")
 
         n = len(np.unique(masks[masks > 0]))
         self._log_append(f"Imported {n} mask(s) into frame {t} from Cellpose GUI.")
@@ -884,8 +882,7 @@ class SegmentationTab(QWidget):
 
         layer.data = data
         layer.refresh()
-        self._seg_data = np.asarray(layer.data)
-        self._seg_status.setText(f"Loaded: {self._seg_data.shape}")
+        self._seg_status.setText(f"Loaded: {layer.data.shape}")
         self._log_append(f"Imported {imported} frame(s) from {export_dir}.")
         self._gui_status.setText(f"Imported {imported} frame(s) from {export_dir}.")
 
@@ -938,7 +935,6 @@ class SegmentationTab(QWidget):
         self._secondary_status.setText("Not loaded")
 
     def _on_clear_seg(self):
-        self._seg_data = None
         self._seg_layer = None
         self._seg_status.setText("Not loaded")
 
@@ -960,7 +956,6 @@ class SegmentationTab(QWidget):
             )
             return
 
-        self._seg_data = src_data
         old_name = active.name
 
         # Update tracked layer in-place if available; otherwise search by name or rename.
