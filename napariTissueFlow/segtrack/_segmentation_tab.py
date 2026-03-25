@@ -68,6 +68,7 @@ class SegmentationTab(QWidget):
         super().__init__()
         self.viewer = viewer
         self._worker = None
+        self._is_running = False  # explicit guard; avoids is_running race on worker teardown
         self._custom_model_path = None
         self._temp_dir = None
         self._cellpose_proc = None
@@ -317,7 +318,7 @@ class SegmentationTab(QWidget):
     # ── Segment Frame ──────────────────────────────────────────────────
 
     def _on_segment_frame(self):
-        if self._worker is not None and self._worker.is_running:
+        if self._is_running:
             self._log_append("Already processing.")
             return
 
@@ -330,6 +331,7 @@ class SegmentationTab(QWidget):
         params = self._collect_params()
         mode   = self._current_mode()
 
+        self._is_running = True
         self._seg_frame_btn.setEnabled(False)
         self._seg_stack_btn.setEnabled(False)
         self._progress.setVisible(True)
@@ -374,6 +376,7 @@ class SegmentationTab(QWidget):
             }, t
 
     def _on_frame_done(self, masks, t):
+        self._is_running = False
         self._seg_frame_btn.setEnabled(True)
         self._seg_stack_btn.setEnabled(True)
         self._progress.setVisible(False)
@@ -392,7 +395,7 @@ class SegmentationTab(QWidget):
     # ── Segment Stack ──────────────────────────────────────────────────
 
     def _on_segment_stack(self):
-        if self._worker is not None and self._worker.is_running:
+        if self._is_running:
             self._log_append("Already processing.")
             return
 
@@ -406,6 +409,7 @@ class SegmentationTab(QWidget):
         mode     = self._current_mode()
         n_frames = len(all_frames)
 
+        self._is_running = True
         self._seg_frame_btn.setEnabled(False)
         self._seg_stack_btn.setEnabled(False)
         self._progress.setVisible(True)
@@ -452,6 +456,7 @@ class SegmentationTab(QWidget):
             ]
 
     def _on_stack_done(self, results):
+        self._is_running = False
         self._seg_frame_btn.setEnabled(True)
         self._seg_stack_btn.setEnabled(True)
         self._progress.setVisible(False)
@@ -605,6 +610,7 @@ class SegmentationTab(QWidget):
     # ── Error handling ─────────────────────────────────────────────────
 
     def _on_error(self, exc):
+        self._is_running = False
         self._seg_frame_btn.setEnabled(True)
         self._seg_stack_btn.setEnabled(True)
         self._progress.setVisible(False)

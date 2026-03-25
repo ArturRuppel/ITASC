@@ -145,11 +145,40 @@ def make_cp_model(model_type, custom_model_path=None, gpu=True):
     custom_model_path : path to .pt file when model_type == "custom"
     gpu               : use GPU if available
     """
+    import logging as _logging
     from cellpose.models import CellposeModel
+
+    # Verify CUDA availability; warn and fall back instead of silently using CPU.
+    if gpu:
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                _logging.getLogger(__name__).warning(
+                    "GPU requested but CUDA is not available; using CPU."
+                )
+                gpu = False
+        except ImportError:
+            _logging.getLogger(__name__).warning(
+                "GPU requested but torch is not importable; using CPU."
+            )
+            gpu = False
+
     if model_type == "custom":
         if not custom_model_path:
             raise ValueError("custom_model_path is required when model_type='custom'")
         return CellposeModel(gpu=gpu, pretrained_model=custom_model_path)
+
+    # Models bundled with / auto-downloaded by cellpose itself.
+    _BUNDLED = {"cyto", "cyto2", "cyto3", "nuclei", "bact_omni", "cyto2_omni"}
+    if model_type not in _BUNDLED:
+        from pathlib import Path
+        model_path = Path.home() / ".cellpose" / "models" / model_type
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Cellpose model '{model_type}' not found at {model_path}.\n"
+                "Download it first or choose a different model (cyto3, nuclei, …)."
+            )
+
     return CellposeModel(gpu=gpu, pretrained_model=model_type)
 
 
@@ -158,7 +187,6 @@ def run_cp(img, model, diameter, flow_threshold, cellprob_threshold, min_size):
     masks, _, _ = model.eval(
         img,
         diameter=diameter,
-        channels=[0, 0],
         flow_threshold=flow_threshold,
         cellprob_threshold=cellprob_threshold,
         min_size=min_size,
@@ -172,13 +200,15 @@ def run_cp_two_channel(img_primary, img_secondary, model, diameter,
 
     img_primary   : (H, W) array – cell / cytoplasm channel
     img_secondary : (H, W) array – nuclear / helper channel
-    Cellpose channels=[1, 2] → channel 1 = primary, channel 2 = secondary.
+
+    Cellpose v4+: channels are inferred from array shape. Stack as (H, W, 2)
+    with cell channel first, nuclear channel second (same convention as the
+    old channels=[1, 2] but without the deprecated kwarg).
     """
     img_2ch = np.stack([img_primary, img_secondary], axis=-1)  # (H, W, 2)
     masks, _, _ = model.eval(
         img_2ch,
         diameter=diameter,
-        channels=[1, 2],
         flow_threshold=flow_threshold,
         cellprob_threshold=cellprob_threshold,
         min_size=min_size,
@@ -415,14 +445,12 @@ def run_pipeline(dapi_imgs, params, log=None, skip_temporal=False):
         'corr_nuc'     : (only if not skip_temporal) list of (H,W) uint16 arrays
         'corr_cell'    : (only if not skip_temporal) list of (H,W) uint16 arrays
     """
-    from cellpose.models import CellposeModel
-
     def _log(msg):
         if log:
             log(msg)
 
     _log("Loading Cellpose model...")
-    model = CellposeModel(gpu=params["gpu"], pretrained_model=params["model"])
+    model = make_cp_model(params["model"], gpu=params.get("gpu", True))
 
     _log("Running Cellpose on DAPI frames...")
     nuc_raw = []
