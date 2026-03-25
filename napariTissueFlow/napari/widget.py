@@ -1,14 +1,13 @@
 """Napari dock widget for napariTissueFlow.
 
-Supports two workflows:
-- Single-tissue: staged pipeline with visual QC at each step.
-- Batch: build multiple tissues at once, add all to dataset.
-
-The dataset accumulates tissues and can be saved/loaded.
+Provides the Edge Analysis tab: graph extraction, T1 detection, edge
+trajectory analysis, and junction tagging.  Pixel size / time interval
+are read from the Databank tab; cell tracking is handled by the
+Tracking tab.  The resulting tissue series can be added to the dataset
+or discarded.
 """
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import numpy as np
 from qtpy.QtWidgets import (
@@ -20,7 +19,6 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QListWidget,
     QLineEdit,
-    QFileDialog,
     QGroupBox,
     QSpinBox,
     QDoubleSpinBox,
@@ -31,13 +29,10 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import QThread, Qt, QTimer
 
 from ..structures import TissueGraphTimeSeries
-from ..core.graph import apply_track_map
 from .visualization import (
     build_all_junction_lines,
     build_all_centroids,
     build_t1_markers,
-    build_tracked_centroids,
-    build_tracked_labels,
     build_trajectory_lines_with_features,
     build_tag_text_annotations,
 )
@@ -51,10 +46,8 @@ from ..analysis.tagging import (
 )
 from .workers import (
     PipelineStage,
-    CellTrackingWorker,
     GraphExtractWorker,
     AnalysisWorker,
-    BatchBuildWorker,
 )
 from .registry import get_state
 
@@ -70,18 +63,13 @@ class TissueFlowWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self._state = get_state(napari_viewer)
-        self._batch_label_stacks: List[np.ndarray] = []
-        self._batch_file_paths: List[str] = []
-
         # Pipeline state
         self._pipeline_stage = PipelineStage.IDLE
         self._preview_series: Optional[TissueGraphTimeSeries] = None
         self._current_label_stack: Optional[np.ndarray] = None
-        self._current_track_map: Optional[Dict] = None
         self._source_layer = None  # original layer, hidden during QC
         self._tracked_labels_layer = None
-        self._stage_layers: Dict[int, list] = {1: [], 2: [], 3: []}
-        self._auto_pipeline = False  # flag for Run Pipeline chaining
+        self._stage_layers: Dict[int, list] = {2: [], 3: []}
 
         # Tagging state
         self._tagging_shapes_layer = None  # the Shapes layer used for tagging
@@ -137,76 +125,7 @@ class TissueFlowWidget(QWidget):
         container.setLayout(layout)
         scroll.setWidget(container)
 
-        # --- Parameters ---
-        param_group = QGroupBox("Parameters")
-        param_layout = QVBoxLayout()
-
-        px_row = QHBoxLayout()
-        px_row.addWidget(QLabel("Pixel size (\u00b5m/px):"))
-        self.pixel_size_edit = QLineEdit("")
-        self.pixel_size_edit.setPlaceholderText("optional")
-        px_row.addWidget(self.pixel_size_edit)
-        param_layout.addLayout(px_row)
-
-        dt_row = QHBoxLayout()
-        dt_row.addWidget(QLabel("Time interval (s):"))
-        self.time_interval_edit = QLineEdit("")
-        self.time_interval_edit.setPlaceholderText("optional")
-        dt_row.addWidget(self.time_interval_edit)
-        param_layout.addLayout(dt_row)
-
-        param_group.setLayout(param_layout)
-        layout.addWidget(param_group)
-
-        # --- Stage 1: Cell Tracking ---
-        self.stage1_toggle = QPushButton("\u25b6 Cell Tracking")
-        self.stage1_toggle.setStyleSheet(
-            "QPushButton { text-align: left; border: none; padding: 2px; }"
-        )
-        self.stage1_toggle.setCheckable(True)
-        self.stage1_toggle.setChecked(False)
-        layout.addWidget(self.stage1_toggle)
-
-        self.stage1_params = QWidget()
-        s1p_layout = QVBoxLayout()
-        s1p_layout.setContentsMargins(10, 0, 0, 0)
-
-        iou_row = QHBoxLayout()
-        iou_row.addWidget(QLabel("Min IoU:"))
-        self.min_iou_spin = QDoubleSpinBox()
-        self.min_iou_spin.setMinimum(0.0)
-        self.min_iou_spin.setMaximum(1.0)
-        self.min_iou_spin.setSingleStep(0.05)
-        self.min_iou_spin.setValue(0.3)
-        iou_row.addWidget(self.min_iou_spin)
-        s1p_layout.addLayout(iou_row)
-
-        area_row = QHBoxLayout()
-        area_row.addWidget(QLabel("Max area change:"))
-        self.max_area_change_spin = QDoubleSpinBox()
-        self.max_area_change_spin.setMinimum(0.0)
-        self.max_area_change_spin.setMaximum(100.0)
-        self.max_area_change_spin.setSingleStep(0.5)
-        self.max_area_change_spin.setValue(0.0)
-        self.max_area_change_spin.setToolTip(
-            "Max area ratio between matched labels. "
-            "0 = no limit. Try 2.0 to reject segmentation errors."
-        )
-        area_row.addWidget(self.max_area_change_spin)
-        s1p_layout.addLayout(area_row)
-
-        self.stage1_params.setLayout(s1p_layout)
-        self.stage1_params.setVisible(False)
-        layout.addWidget(self.stage1_params)
-
-        self.stage1_btn = QPushButton("Run Tracking")
-        layout.addWidget(self.stage1_btn)
-
-        self.stage1_info = QLabel("")
-        self.stage1_info.setWordWrap(True)
-        layout.addWidget(self.stage1_info)
-
-        # --- Stage 2: Analyse Tissue (graph extraction + T1 + edge tracking) ---
+        # --- Analyse Tissue (graph extraction + T1 + edge tracking) ---
         self.stage2_toggle = QPushButton("\u25b6 Analyse Tissue")
         self.stage2_toggle.setStyleSheet(
             "QPushButton { text-align: left; border: none; padding: 2px; }"
@@ -348,18 +267,14 @@ class TissueFlowWidget(QWidget):
         layout.addWidget(self.stage2_params)
 
         self.stage2_btn = QPushButton("Analyse Tissue")
+        self.stage2_btn.setStyleSheet(
+            "QPushButton { font-weight: bold; padding: 6px; }"
+        )
         layout.addWidget(self.stage2_btn)
 
         self.stage2_info = QLabel("")
         self.stage2_info.setWordWrap(True)
         layout.addWidget(self.stage2_info)
-
-        # --- Run Full Pipeline (one-click, chains all 3 stages) ---
-        self.run_pipeline_btn = QPushButton("Run Full Pipeline")
-        self.run_pipeline_btn.setStyleSheet(
-            "QPushButton { font-weight: bold; padding: 6px; }"
-        )
-        layout.addWidget(self.run_pipeline_btn)
 
         # Active layer indicator (shown after pipeline starts)
         self.active_layer_label = QLabel("")
@@ -419,26 +334,6 @@ class TissueFlowWidget(QWidget):
         layout.addWidget(self.tagging_group)
         self.tagging_group.setVisible(False)
 
-        # --- Batch mode ---
-        self.batch_group = QGroupBox("Batch")
-        batch_layout = QVBoxLayout()
-        self.batch_load_btn = QPushButton("Load Files...")
-        batch_layout.addWidget(self.batch_load_btn)
-        self.batch_file_list = QListWidget()
-        self.batch_file_list.setMaximumHeight(100)
-        batch_layout.addWidget(self.batch_file_list)
-        self.batch_file_info = QLabel("")
-        self.batch_file_info.setWordWrap(True)
-        batch_layout.addWidget(self.batch_file_info)
-        btn_row = QHBoxLayout()
-        self.build_batch_btn = QPushButton("Run Batch")
-        self.batch_clear_btn = QPushButton("Clear")
-        btn_row.addWidget(self.build_batch_btn)
-        btn_row.addWidget(self.batch_clear_btn)
-        batch_layout.addLayout(btn_row)
-        self.batch_group.setLayout(batch_layout)
-        layout.addWidget(self.batch_group)
-
         # --- Progress ---
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -484,19 +379,12 @@ class TissueFlowWidget(QWidget):
         self._update_pipeline_buttons()
 
     def _connect_signals(self):
-        # Run Pipeline (one-click)
-        self.run_pipeline_btn.clicked.connect(self._run_full_pipeline)
-
-        # Stage parameter toggles
-        self.stage1_toggle.toggled.connect(
-            lambda checked: self._toggle_stage(1, checked)
-        )
+        # Stage parameter toggle
         self.stage2_toggle.toggled.connect(
             lambda checked: self._toggle_stage(2, checked)
         )
 
-        # Pipeline (individual stages)
-        self.stage1_btn.clicked.connect(self._run_stage1)
+        # Pipeline
         self.stage2_btn.clicked.connect(self._run_stage2)
         self.add_to_dataset_btn.clicked.connect(self._add_preview_to_dataset)
         self.discard_btn.clicked.connect(self._discard_pipeline)
@@ -510,11 +398,7 @@ class TissueFlowWidget(QWidget):
         self.clear_tag_btn.clicked.connect(self._clear_selected_tag)
         self.refresh_tags_btn.clicked.connect(self._refresh_tagging_layer)
 
-        # Batch
-        self.batch_load_btn.clicked.connect(self._load_batch_files)
-        self.build_batch_btn.clicked.connect(self._build_batch)
         self.cancel_btn.clicked.connect(self._cancel_worker)
-        self.batch_clear_btn.clicked.connect(self._clear_batch_files)
 
         # Databank: show tissue in viewer when requested from the Databank tab
         self._databank_widget.show_tissue_requested.connect(self._show_tissue_from_databank)
@@ -524,22 +408,14 @@ class TissueFlowWidget(QWidget):
     # ------------------------------------------------------------------
     def _update_pipeline_buttons(self):
         stage = self._pipeline_stage
-        # Allow re-running earlier stages from any later stage so users can
-        # tweak parameters without having to discard and start over.
-        self.run_pipeline_btn.setEnabled(True)
-        self.stage1_btn.setEnabled(True)
-        self.stage2_btn.setEnabled(stage.value >= PipelineStage.STAGE1_DONE.value)
+        self.stage2_btn.setEnabled(True)
         self.add_to_dataset_btn.setEnabled(stage == PipelineStage.STAGE3_DONE)
         self.discard_btn.setEnabled(stage != PipelineStage.IDLE)
 
-    _stage_titles = {1: "Cell Tracking", 2: "Analyse Tissue"}
-
     def _toggle_stage(self, stage: int, checked: bool):
-        containers = {1: self.stage1_params, 2: self.stage2_params}
-        toggles = {1: self.stage1_toggle, 2: self.stage2_toggle}
-        containers[stage].setVisible(checked)
+        self.stage2_params.setVisible(checked)
         arrow = "\u25bc" if checked else "\u25b6"
-        toggles[stage].setText(f"{arrow} {self._stage_titles[stage]}")
+        self.stage2_toggle.setText(f"{arrow} Analyse Tissue")
 
     # ------------------------------------------------------------------
     # Label stack from viewer (uses active layer)
@@ -578,17 +454,9 @@ class TissueFlowWidget(QWidget):
         return data
 
     # ------------------------------------------------------------------
-    # Run full pipeline (one-click)
+    # Analyse Tissue (graph extraction + T1 + edge trajectories)
     # ------------------------------------------------------------------
-    def _run_full_pipeline(self):
-        """Chain stages 1 -> 2 -> 3 and auto-add to dataset."""
-        self._auto_pipeline = True
-        self._run_stage1()
-
-    # ------------------------------------------------------------------
-    # Stage 1: Cell Tracking (IoU)
-    # ------------------------------------------------------------------
-    def _run_stage1(self):
+    def _run_stage2(self):
         label_stack = self._get_active_label_stack()
         if label_stack is None:
             return
@@ -597,73 +465,8 @@ class TissueFlowWidget(QWidget):
         self._current_label_stack = label_stack
         self._source_layer = self.viewer.layers.selection.active
 
-        worker = CellTrackingWorker(
-            label_stack,
-            min_iou=self.min_iou_spin.value(),
-            max_area_change=self.max_area_change_spin.value(),
-        )
-        self._run_worker(worker, self._on_stage1_done)
-
-    def _on_stage1_done(self, track_map):
-        self._current_track_map = track_map
-        self._pipeline_stage = PipelineStage.STAGE1_DONE
-        self._finish_worker()
-
-        # Count tracks and breaks from the track_map
-        all_track_ids = set()
-        for frame_tracks in track_map.values():
-            all_track_ids.update(frame_tracks.values())
-
-        # Count births/deaths from track_map
-        frame_indices = sorted(track_map.keys())
-        track_first = {}
-        track_last = {}
-        for f_idx in frame_indices:
-            for tid in track_map[f_idx].values():
-                if tid not in track_first:
-                    track_first[tid] = f_idx
-                track_last[tid] = f_idx
-
-        n_births = sum(1 for f in track_first.values() if f > frame_indices[0]) if frame_indices else 0
-        n_deaths = sum(1 for f in track_last.values() if f < frame_indices[-1]) if frame_indices else 0
-
-        self.stage1_info.setText(
-            f"{len(all_track_ids)} tracks, {n_births} births, {n_deaths} deaths"
-        )
-
-        if not self._auto_pipeline:
-            self.status_label.setText("Stage 1 complete. Inspect tracked labels, then extract graphs.")
-
-            # Show tracked labels as napari Labels layer
-            self._remove_stage_layers(1)
-            tracked = build_tracked_labels(self._current_label_stack, track_map)
-            layer = self.viewer.add_labels(
-                tracked, name="[Pipeline] Tracked Labels",
-            )
-            self._tracked_labels_layer = layer
-            self._stage_layers[1].append(layer)
-
-            # Hide the source layer so its background color doesn't show through
-            if self._source_layer is not None:
-                try:
-                    self._source_layer.visible = False
-                except Exception:
-                    pass
-
-        self._update_pipeline_buttons()
-
-        if self._auto_pipeline:
-            QTimer.singleShot(0, self._run_stage2)
-
-    # ------------------------------------------------------------------
-    # Stage 2: Graph Extraction
-    # ------------------------------------------------------------------
-    def _run_stage2(self):
-        if self._current_label_stack is None:
-            return
-
-        pixel_size = self._parse_float(self.pixel_size_edit.text())
-        time_interval = self._parse_float(self.time_interval_edit.text())
+        pixel_size = self._parse_float(self._databank_widget.pixel_size_edit.text())
+        time_interval = self._parse_float(self._databank_widget.time_interval_edit.text())
 
         worker = GraphExtractWorker(
             self._current_label_stack,
@@ -678,9 +481,6 @@ class TissueFlowWidget(QWidget):
         self._run_worker(worker, self._on_stage2_done)
 
     def _on_stage2_done(self, series):
-        if self._current_track_map is not None:
-            apply_track_map(series, self._current_track_map)
-
         self._preview_series = series
         self._pipeline_stage = PipelineStage.STAGE2_DONE
 
@@ -723,11 +523,6 @@ class TissueFlowWidget(QWidget):
             f"{n_t1} T1 events, {n_trajs} edge trajectories"
         )
 
-        if self._auto_pipeline:
-            self._auto_pipeline = False
-            QTimer.singleShot(0, self._add_preview_to_dataset)
-            return
-
         self.status_label.setText("Analysis complete. Inspect T1 events & trajectories, then add to dataset.")
 
         self._remove_stage_layers(3)
@@ -754,14 +549,13 @@ class TissueFlowWidget(QWidget):
             return
         self._state.ensure_dataset(
             condition=self._databank_widget.condition_edit.text().strip(),
-            pixel_size=self._parse_float(self.pixel_size_edit.text()),
-            time_interval=self._parse_float(self.time_interval_edit.text()),
+            pixel_size=self._parse_float(self._databank_widget.pixel_size_edit.text()),
+            time_interval=self._parse_float(self._databank_widget.time_interval_edit.text()),
         )
         tid = self._state.add_tissue(self._preview_series)
         self._remove_all_stage_layers()
         self._preview_series = None
         self._current_label_stack = None
-        self._current_track_map = None
         if self._tracked_labels_layer is not None:
             if self._tracked_labels_layer in self.viewer.layers:
                 self.viewer.layers.remove(self._tracked_labels_layer)
@@ -779,7 +573,6 @@ class TissueFlowWidget(QWidget):
         self.tagging_group.setVisible(False)
         self._preview_series = None
         self._current_label_stack = None
-        self._current_track_map = None
         if self._tracked_labels_layer is not None:
             if self._tracked_labels_layer in self.viewer.layers:
                 self.viewer.layers.remove(self._tracked_labels_layer)
@@ -797,110 +590,7 @@ class TissueFlowWidget(QWidget):
 
     def _clear_stage_info(self):
         self.active_layer_label.setText("")
-        self.stage1_info.setText("")
         self.stage2_info.setText("")
-
-    # ------------------------------------------------------------------
-    # Batch file management
-    # ------------------------------------------------------------------
-    def _load_batch_files(self):
-        """Load label files for batch processing."""
-        files, _ = QFileDialog.getOpenFileNames(
-            self, "Select Label Files",
-            "", "Image files (*.tif *.tiff *.npy *.npz);;All files (*)",
-        )
-        if not files:
-            return
-        self._batch_label_stacks = []
-        self._batch_file_paths = []
-        self.batch_file_list.clear()
-        errors = []
-        for path in sorted(files):
-            try:
-                stack = self._load_label_file(path)
-                self._batch_label_stacks.append(stack)
-                self._batch_file_paths.append(path)
-                self.batch_file_list.addItem(
-                    f"{Path(path).name}  ({stack.shape[0]} frames, "
-                    f"{stack.shape[1]}x{stack.shape[2]})"
-                )
-            except Exception as e:
-                errors.append(f"{Path(path).name}: {e}")
-        info = f"{len(self._batch_label_stacks)} file(s) loaded"
-        if errors:
-            info += f"\nErrors: {'; '.join(errors)}"
-        self.batch_file_info.setText(info)
-
-    @staticmethod
-    def _load_label_file(path: str) -> np.ndarray:
-        """Load a label stack from a .tif/.tiff or .npy/.npz file."""
-        from pathlib import Path as _P
-        ext = _P(path).suffix.lower()
-        if ext in (".tif", ".tiff"):
-            from tifffile import imread
-            data = imread(path)
-        elif ext == ".npy":
-            data = np.load(path)
-        elif ext == ".npz":
-            npz = np.load(path)
-            # Use first array in the archive
-            data = npz[list(npz.keys())[0]]
-        else:
-            raise ValueError(f"Unsupported file format: {ext}")
-
-        if not np.issubdtype(data.dtype, np.integer):
-            data = np.round(data).astype(np.int32)
-        if data.ndim == 2:
-            data = data[np.newaxis, ...]
-        if data.ndim != 3:
-            raise ValueError(f"Expected 2D or 3D array, got {data.ndim}D")
-        return data
-
-    def _clear_batch_files(self):
-        self._batch_label_stacks = []
-        self._batch_file_paths = []
-        self.batch_file_list.clear()
-        self.batch_file_info.setText("")
-
-    # ------------------------------------------------------------------
-    # Batch build (monolithic, no per-stage QC)
-    # ------------------------------------------------------------------
-    def _build_batch(self):
-        if not self._batch_label_stacks:
-            self.status_label.setText("Load label files first using 'Load Files...'.")
-            return
-
-        pixel_size = self._parse_float(self.pixel_size_edit.text())
-        time_interval = self._parse_float(self.time_interval_edit.text())
-
-        worker = BatchBuildWorker(
-            label_stacks=self._batch_label_stacks,
-            pixel_size=pixel_size,
-            time_interval=time_interval,
-            min_iou=self.min_iou_spin.value(),
-            max_area_change=self.max_area_change_spin.value(),
-            min_junction_length=self.min_junction_length_spin.value(),
-            max_t1_distance=self.max_t1_distance_spin.value(),
-            min_traj_frames=self.min_traj_frames_spin.value(),
-            min_completeness=self.min_completeness_spin.value(),
-            max_gap=self.max_gap_spin.value(),
-        )
-        self._run_worker(worker, self._on_batch_finished)
-
-    def _on_batch_finished(self, series_list):
-        self._state.ensure_dataset(
-            condition=self._databank_widget.condition_edit.text().strip(),
-            pixel_size=self._parse_float(self.pixel_size_edit.text()),
-            time_interval=self._parse_float(self.time_interval_edit.text()),
-        )
-        for series in series_list:
-            self._state.add_tissue(series)
-
-        self._finish_worker()
-        n = len(series_list)
-        self.status_label.setText(f"Added {n} tissue(s) to dataset.")
-        self._clear_batch_files()
-        self.tab_widget.setCurrentWidget(self._databank_widget)
 
     # ------------------------------------------------------------------
     # Dataset inspection (triggered from Databank tab)
@@ -956,10 +646,7 @@ class TissueFlowWidget(QWidget):
         self._worker.error.connect(self._worker.deleteLater)
         self._thread.finished.connect(self._thread.deleteLater)
 
-        self.run_pipeline_btn.setEnabled(False)
-        self.stage1_btn.setEnabled(False)
         self.stage2_btn.setEnabled(False)
-        self.build_batch_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.cancel_btn.setVisible(True)
@@ -971,7 +658,6 @@ class TissueFlowWidget(QWidget):
         """Re-enable buttons and hide progress bar after worker completes."""
         self.progress_bar.setVisible(False)
         self.cancel_btn.setVisible(False)
-        self.build_batch_btn.setEnabled(True)
         self._update_pipeline_buttons()
 
     def _on_progress(self, percent, message):
@@ -979,10 +665,8 @@ class TissueFlowWidget(QWidget):
         self.status_label.setText(message)
 
     def _on_error(self, exc):
-        self._auto_pipeline = False
         self.progress_bar.setVisible(False)
         self.cancel_btn.setVisible(False)
-        self.build_batch_btn.setEnabled(True)
         self._update_pipeline_buttons()
         self.status_label.setText(f"Error: {exc}")
         logger.exception("Worker failed", exc_info=exc)
@@ -997,10 +681,8 @@ class TissueFlowWidget(QWidget):
                 pass
             self._thread = None
             self._worker = None
-        self._auto_pipeline = False
         self.cancel_btn.setVisible(False)
         self.progress_bar.setVisible(False)
-        self.build_batch_btn.setEnabled(True)
         self._update_pipeline_buttons()
         self.status_label.setText("Cancelled.")
 
@@ -1014,7 +696,7 @@ class TissueFlowWidget(QWidget):
         self._stage_layers[stage] = []
 
     def _remove_all_stage_layers(self):
-        for stage in (1, 2, 3):
+        for stage in (2, 3):
             self._remove_stage_layers(stage)
 
     def _remove_inspect_layers(self):
