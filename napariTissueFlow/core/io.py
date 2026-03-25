@@ -584,6 +584,10 @@ def save_dataset(dataset: TissueGraphDataset, path: Union[str, Path]) -> None:
         "n_tissues": dataset.n_tissues,
         "tissue_ids": dataset.tissue_ids,
         "metadata": dataset.metadata,
+        "tissue_metadata": {
+            str(tid): dataset.tissues[tid].metadata
+            for tid in dataset.tissue_ids
+        },
         "created": datetime.now().isoformat(),
     }
     with open(path / "metadata.json", "w") as f:
@@ -624,12 +628,14 @@ def load_dataset(path: Union[str, Path]) -> TissueGraphDataset:
         metadata=meta.get("metadata", {}),
     )
 
+    tissue_metadata = meta.get("tissue_metadata", {})
     for tid in meta["tissue_ids"]:
         npz_path = path / f"tissue_{tid:03d}.npz"
         with np.load(npz_path, allow_pickle=False) as npz:
             series = _deserialize_tissue(npz)
             series.pixel_size = meta.get("pixel_size")
             series.time_interval = meta.get("time_interval")
+            series.metadata = dict(tissue_metadata.get(str(tid), {}))
         dataset.tissues[tid] = series
 
     logger.info(f"Loaded dataset with {dataset.n_tissues} tissues from {path}")

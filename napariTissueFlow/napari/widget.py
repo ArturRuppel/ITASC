@@ -55,7 +55,6 @@ from .workers import (
     GraphExtractWorker,
     AnalysisWorker,
     BatchBuildWorker,
-    IOWorker,
 )
 from .registry import get_state
 
@@ -156,13 +155,6 @@ class TissueFlowWidget(QWidget):
         dt_row.addWidget(self.time_interval_edit)
         param_layout.addLayout(dt_row)
 
-        cond_row = QHBoxLayout()
-        cond_row.addWidget(QLabel("Condition:"))
-        self.condition_edit = QLineEdit("")
-        self.condition_edit.setPlaceholderText("e.g. WT, vim_KO")
-        cond_row.addWidget(self.condition_edit)
-        param_layout.addLayout(cond_row)
-
         param_group.setLayout(param_layout)
         layout.addWidget(param_group)
 
@@ -214,8 +206,8 @@ class TissueFlowWidget(QWidget):
         self.stage1_info.setWordWrap(True)
         layout.addWidget(self.stage1_info)
 
-        # --- Stage 2: Graph Extraction ---
-        self.stage2_toggle = QPushButton("\u25b6 Graph Extraction")
+        # --- Stage 2: Analyse Tissue (graph extraction + T1 + edge tracking) ---
+        self.stage2_toggle = QPushButton("\u25b6 Analyse Tissue")
         self.stage2_toggle.setStyleSheet(
             "QPushButton { text-align: left; border: none; padding: 2px; }"
         )
@@ -285,30 +277,6 @@ class TissueFlowWidget(QWidget):
         mbel_row.addWidget(self.min_border_edge_spin)
         s2p_layout.addLayout(mbel_row)
 
-        self.stage2_params.setLayout(s2p_layout)
-        self.stage2_params.setVisible(False)
-        layout.addWidget(self.stage2_params)
-
-        self.stage2_btn = QPushButton("Extract Graphs")
-        layout.addWidget(self.stage2_btn)
-
-        self.stage2_info = QLabel("")
-        self.stage2_info.setWordWrap(True)
-        layout.addWidget(self.stage2_info)
-
-        # --- Stage 3: T1 + Edge Tracking ---
-        self.stage3_toggle = QPushButton("\u25b6 T1 + Edge Tracking")
-        self.stage3_toggle.setStyleSheet(
-            "QPushButton { text-align: left; border: none; padding: 2px; }"
-        )
-        self.stage3_toggle.setCheckable(True)
-        self.stage3_toggle.setChecked(False)
-        layout.addWidget(self.stage3_toggle)
-
-        self.stage3_params = QWidget()
-        s3p_layout = QVBoxLayout()
-        s3p_layout.setContentsMargins(10, 0, 0, 0)
-
         mjl_row = QHBoxLayout()
         mjl_row.addWidget(QLabel("Min junction length (px):"))
         self.min_junction_length_spin = QDoubleSpinBox()
@@ -321,7 +289,7 @@ class TissueFlowWidget(QWidget):
             "Increase if noisy short edges cause false T1s."
         )
         mjl_row.addWidget(self.min_junction_length_spin)
-        s3p_layout.addLayout(mjl_row)
+        s2p_layout.addLayout(mjl_row)
 
         mtd_row = QHBoxLayout()
         mtd_row.addWidget(QLabel("Max T1 distance (px):"))
@@ -335,7 +303,7 @@ class TissueFlowWidget(QWidget):
             "0 = no limit. Reduce to avoid pairing distant events."
         )
         mtd_row.addWidget(self.max_t1_distance_spin)
-        s3p_layout.addLayout(mtd_row)
+        s2p_layout.addLayout(mtd_row)
 
         mtf_row = QHBoxLayout()
         mtf_row.addWidget(QLabel("Min trajectory frames:"))
@@ -347,7 +315,7 @@ class TissueFlowWidget(QWidget):
             "Minimum frames a junction must exist to keep its trajectory."
         )
         mtf_row.addWidget(self.min_traj_frames_spin)
-        s3p_layout.addLayout(mtf_row)
+        s2p_layout.addLayout(mtf_row)
 
         mc_row = QHBoxLayout()
         mc_row.addWidget(QLabel("Min completeness:"))
@@ -360,7 +328,7 @@ class TissueFlowWidget(QWidget):
             "Fraction of total frames a trajectory must span (0.0-1.0)."
         )
         mc_row.addWidget(self.min_completeness_spin)
-        s3p_layout.addLayout(mc_row)
+        s2p_layout.addLayout(mc_row)
 
         mg_row = QHBoxLayout()
         mg_row.addWidget(QLabel("Max gap tolerance:"))
@@ -373,18 +341,18 @@ class TissueFlowWidget(QWidget):
             "0 = no gaps allowed."
         )
         mg_row.addWidget(self.max_gap_spin)
-        s3p_layout.addLayout(mg_row)
+        s2p_layout.addLayout(mg_row)
 
-        self.stage3_params.setLayout(s3p_layout)
-        self.stage3_params.setVisible(False)
-        layout.addWidget(self.stage3_params)
+        self.stage2_params.setLayout(s2p_layout)
+        self.stage2_params.setVisible(False)
+        layout.addWidget(self.stage2_params)
 
-        self.analyze_btn = QPushButton("Run Analysis")
-        layout.addWidget(self.analyze_btn)
+        self.stage2_btn = QPushButton("Analyse Tissue")
+        layout.addWidget(self.stage2_btn)
 
-        self.stage3_info = QLabel("")
-        self.stage3_info.setWordWrap(True)
-        layout.addWidget(self.stage3_info)
+        self.stage2_info = QLabel("")
+        self.stage2_info.setWordWrap(True)
+        layout.addWidget(self.stage2_info)
 
         # --- Run Full Pipeline (one-click, chains all 3 stages) ---
         self.run_pipeline_btn = QPushButton("Run Full Pipeline")
@@ -479,47 +447,6 @@ class TissueFlowWidget(QWidget):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        # --- Dataset section ---
-        self.dataset_group = QGroupBox("Dataset")
-        dataset_layout = QVBoxLayout()
-
-        self.dataset_summary_label = QLabel("No dataset")
-        self.dataset_summary_label.setWordWrap(True)
-        dataset_layout.addWidget(self.dataset_summary_label)
-
-        tissue_row = QHBoxLayout()
-        tissue_row.addWidget(QLabel("Tissue:"))
-        self.tissue_spinner = QSpinBox()
-        self.tissue_spinner.setMinimum(0)
-        self.tissue_spinner.setMaximum(0)
-        tissue_row.addWidget(self.tissue_spinner)
-        self.tissue_info_label = QLabel("")
-        tissue_row.addWidget(self.tissue_info_label)
-        dataset_layout.addLayout(tissue_row)
-
-        self.show_tissue_btn = QPushButton("Show Tissue")
-        self.remove_tissue_btn = QPushButton("Remove Tissue")
-        tissue_btn_row = QHBoxLayout()
-        tissue_btn_row.addWidget(self.show_tissue_btn)
-        tissue_btn_row.addWidget(self.remove_tissue_btn)
-        dataset_layout.addLayout(tissue_btn_row)
-
-        io_row = QHBoxLayout()
-        self.save_btn = QPushButton("Save Dataset...")
-        self.load_dataset_btn = QPushButton("Load Dataset...")
-        self.new_dataset_btn = QPushButton("New")
-        io_row.addWidget(self.save_btn)
-        io_row.addWidget(self.load_dataset_btn)
-        io_row.addWidget(self.new_dataset_btn)
-        dataset_layout.addLayout(io_row)
-
-        self.open_dashboard_btn = QPushButton("Open Dashboard...")
-        self.open_dashboard_btn.setToolTip("Launch the analysis dashboard in your browser")
-        dataset_layout.addWidget(self.open_dashboard_btn)
-
-        self.dataset_group.setLayout(dataset_layout)
-        layout.addWidget(self.dataset_group)
-
         layout.addStretch()
 
         # ========== Segmentation tab ==========
@@ -556,6 +483,11 @@ class TissueFlowWidget(QWidget):
         self._forces_widget = ForcesWidget(self.viewer)
         self.tab_widget.addTab(self._forces_widget, "ForSys")
 
+        # ========== Databank tab ==========
+        from .databank_widget import DataBankWidget
+        self._databank_widget = DataBankWidget(self.viewer)
+        self.tab_widget.addTab(self._databank_widget, "Databank")
+
         # Set initial button state
         self._update_pipeline_buttons()
 
@@ -570,14 +502,10 @@ class TissueFlowWidget(QWidget):
         self.stage2_toggle.toggled.connect(
             lambda checked: self._toggle_stage(2, checked)
         )
-        self.stage3_toggle.toggled.connect(
-            lambda checked: self._toggle_stage(3, checked)
-        )
 
         # Pipeline (individual stages)
         self.stage1_btn.clicked.connect(self._run_stage1)
         self.stage2_btn.clicked.connect(self._run_stage2)
-        self.analyze_btn.clicked.connect(self._run_analysis)
         self.add_to_dataset_btn.clicked.connect(self._add_preview_to_dataset)
         self.discard_btn.clicked.connect(self._discard_pipeline)
 
@@ -595,16 +523,8 @@ class TissueFlowWidget(QWidget):
         self.build_batch_btn.clicked.connect(self._build_batch)
         self.batch_clear_btn.clicked.connect(self._clear_batch_files)
 
-        # Dataset
-        self.show_tissue_btn.clicked.connect(self._show_selected_tissue)
-        self.remove_tissue_btn.clicked.connect(self._remove_current_tissue)
-        self.save_btn.clicked.connect(self._save_dataset)
-        self.load_dataset_btn.clicked.connect(self._load_dataset)
-        self.new_dataset_btn.clicked.connect(self._new_dataset)
-        self.open_dashboard_btn.clicked.connect(self._open_dashboard)
-
-        # Registry: react to dataset changes from any widget
-        self._state.dataset_changed.connect(self._update_dataset_ui)
+        # Databank: show tissue in viewer when requested from the Databank tab
+        self._databank_widget.show_tissue_requested.connect(self._show_tissue_from_databank)
 
     # ------------------------------------------------------------------
     # Pipeline stage gating
@@ -616,15 +536,14 @@ class TissueFlowWidget(QWidget):
         self.run_pipeline_btn.setEnabled(True)
         self.stage1_btn.setEnabled(True)
         self.stage2_btn.setEnabled(stage.value >= PipelineStage.STAGE1_DONE.value)
-        self.analyze_btn.setEnabled(stage.value >= PipelineStage.STAGE2_DONE.value)
         self.add_to_dataset_btn.setEnabled(stage == PipelineStage.STAGE3_DONE)
         self.discard_btn.setEnabled(stage != PipelineStage.IDLE)
 
-    _stage_titles = {1: "Cell Tracking", 2: "Graph Extraction", 3: "T1 + Edge Tracking"}
+    _stage_titles = {1: "Cell Tracking", 2: "Analyse Tissue"}
 
     def _toggle_stage(self, stage: int, checked: bool):
-        containers = {1: self.stage1_params, 2: self.stage2_params, 3: self.stage3_params}
-        toggles = {1: self.stage1_toggle, 2: self.stage2_toggle, 3: self.stage3_toggle}
+        containers = {1: self.stage1_params, 2: self.stage2_params}
+        toggles = {1: self.stage1_toggle, 2: self.stage2_toggle}
         containers[stage].setVisible(checked)
         arrow = "\u25bc" if checked else "\u25b6"
         toggles[stage].setText(f"{arrow} {self._stage_titles[stage]}")
@@ -771,49 +690,17 @@ class TissueFlowWidget(QWidget):
 
         self._preview_series = series
         self._pipeline_stage = PipelineStage.STAGE2_DONE
-        self._finish_worker()
 
         total_cells = sum(len(f.cells) for f in series.frames.values())
         total_junctions = sum(len(f.junctions) for f in series.frames.values())
-
-        # Count how many cells have tracking
-        n_tracked = sum(
-            1 for f in series.frames.values()
-            for c in f.cells.values() if c.track_id is not None
-        )
-        self.stage2_info.setText(
-            f"{series.num_frames} frames, {total_cells} cells ({n_tracked} tracked), "
-            f"{total_junctions} junctions"
+        self.status_label.setText(
+            f"Graphs extracted ({series.num_frames} frames, "
+            f"{total_cells} cells, {total_junctions} junctions). "
+            f"Running analysis..."
         )
 
-        if not self._auto_pipeline:
-            self.status_label.setText("Stage 2 complete. Inspect junctions & tracked centroids, then run analysis.")
-
-            # Keep tracked labels layer visible underneath for context
-            self._remove_stage_layers(2)
-
-            # Show junctions
-            lines, colors = build_all_junction_lines(series)
-            if lines:
-                layer = self.viewer.add_shapes(
-                    lines, shape_type="path", edge_color=colors,
-                    edge_width=2, name="[Pipeline] Junctions",
-                )
-                self._stage_layers[2].append(layer)
-
-            # Show tracked centroids (graph cells only)
-            tracked_pos, tracked_colors, _ = build_tracked_centroids(series)
-            if len(tracked_pos) > 0:
-                layer = self.viewer.add_points(
-                    tracked_pos, size=5, face_color=tracked_colors,
-                    name="[Pipeline] Tracked Centroids",
-                )
-                self._stage_layers[2].append(layer)
-
-        self._update_pipeline_buttons()
-
-        if self._auto_pipeline:
-            QTimer.singleShot(0, self._run_analysis)
+        # Stages 2 and 3 are merged — always chain directly to analysis.
+        QTimer.singleShot(0, self._run_analysis)
 
     # ------------------------------------------------------------------
     # Stage 3: T1 + Edge trajectories
@@ -839,7 +726,7 @@ class TissueFlowWidget(QWidget):
         n_t1 = len(series.t1_events)
         n_trajs = len(series.edge_trajectories)
 
-        self.stage3_info.setText(
+        self.stage2_info.setText(
             f"{n_t1} T1 events, {n_trajs} edge trajectories"
         )
 
@@ -848,19 +735,9 @@ class TissueFlowWidget(QWidget):
             QTimer.singleShot(0, self._add_preview_to_dataset)
             return
 
-        self.status_label.setText("Stage 3 complete. Inspect T1 events & trajectories, then add to dataset.")
+        self.status_label.setText("Analysis complete. Inspect T1 events & trajectories, then add to dataset.")
 
-        # Replace length-colored junctions with trajectory-colored junctions
         self._remove_stage_layers(3)
-
-        # Remove stage 1 junction layer
-        for l in list(self.viewer.layers):
-            if l.name == "[Pipeline] Junctions":
-                self.viewer.layers.remove(l)
-        self._stage_layers[1] = [
-            l for l in self._stage_layers[1]
-            if l in self.viewer.layers
-        ]
 
         # Build junction Shapes layer with features for tagging
         self._show_tagging_for_series(series, stage_layer=True)
@@ -883,7 +760,7 @@ class TissueFlowWidget(QWidget):
         if self._preview_series is None:
             return
         self._state.ensure_dataset(
-            condition=self.condition_edit.text().strip(),
+            condition=self._databank_widget.condition_edit.text().strip(),
             pixel_size=self._parse_float(self.pixel_size_edit.text()),
             time_interval=self._parse_float(self.time_interval_edit.text()),
         )
@@ -900,6 +777,7 @@ class TissueFlowWidget(QWidget):
         self._update_pipeline_buttons()
         self._clear_stage_info()
         self.status_label.setText(f"Added tissue {tid} to dataset.")
+        self.tab_widget.setCurrentWidget(self._databank_widget)
 
     def _discard_pipeline(self):
         self._remove_all_stage_layers()
@@ -928,7 +806,6 @@ class TissueFlowWidget(QWidget):
         self.active_layer_label.setText("")
         self.stage1_info.setText("")
         self.stage2_info.setText("")
-        self.stage3_info.setText("")
 
     # ------------------------------------------------------------------
     # Batch file management
@@ -1019,7 +896,7 @@ class TissueFlowWidget(QWidget):
 
     def _on_batch_finished(self, series_list):
         self._state.ensure_dataset(
-            condition=self.condition_edit.text().strip(),
+            condition=self._databank_widget.condition_edit.text().strip(),
             pixel_size=self._parse_float(self.pixel_size_edit.text()),
             time_interval=self._parse_float(self.time_interval_edit.text()),
         )
@@ -1030,37 +907,15 @@ class TissueFlowWidget(QWidget):
         n = len(series_list)
         self.status_label.setText(f"Added {n} tissue(s) to dataset.")
         self._clear_batch_files()
+        self.tab_widget.setCurrentWidget(self._databank_widget)
 
     # ------------------------------------------------------------------
-    # Dataset management
+    # Dataset inspection (triggered from Databank tab)
     # ------------------------------------------------------------------
-    def _update_dataset_ui(self):
-        ds = self._state.dataset
-        if ds is None or ds.n_tissues == 0:
-            self.dataset_summary_label.setText("No dataset" if ds is None else "Dataset empty")
-            self.tissue_spinner.setMinimum(0)
-            self.tissue_spinner.setMaximum(0)
-            return
-
-        parts = [f"{ds.n_tissues} tissue(s)"]
-        if ds.condition:
-            parts.append(f"Condition: {ds.condition}")
-        for tid in ds.tissue_ids:
-            s = ds.tissues[tid]
-            n_t1 = len(s.t1_events)
-            parts.append(f"  T{tid}: {s.num_frames} frames, {n_t1} T1 events")
-        self.dataset_summary_label.setText("\n".join(parts))
-
-        ids = ds.tissue_ids
-        self.tissue_spinner.setMinimum(min(ids))
-        self.tissue_spinner.setMaximum(max(ids))
-
-    def _show_selected_tissue(self):
+    def _show_tissue_from_databank(self, tid: int):
         if self._state.dataset is None:
             return
-        tid = self.tissue_spinner.value()
         if tid not in self._state.dataset.tissue_ids:
-            self.status_label.setText(f"Tissue {tid} does not exist.")
             return
         self._remove_inspect_layers()
         series = self._state.dataset.tissues[tid]
@@ -1068,110 +923,16 @@ class TissueFlowWidget(QWidget):
         n_trajs = len(series.edge_trajectories)
         total_cells = sum(len(f.cells) for f in series.frames.values())
         total_junctions = sum(len(f.junctions) for f in series.frames.values())
-        self.tissue_info_label.setText(
-            f"{series.num_frames}f, {total_cells}c, {total_junctions}j, {n_t1} T1"
-        )
         self.status_label.setText(
             f"Tissue {tid}: {series.num_frames} frames, "
             f"{total_cells} cells, {total_junctions} junctions, "
             f"{n_t1} T1 events, {n_trajs} edge trajectories"
         )
         if series.edge_trajectories:
-            # Use the tagging-enabled Shapes layer for junctions
             self._add_inspect_layers(series, skip_junctions=True)
             self._show_tagging_for_series(series)
         else:
             self._add_inspect_layers(series)
-
-    def _remove_current_tissue(self):
-        if self._state.dataset is None:
-            return
-        tid = self.tissue_spinner.value()
-        if tid not in self._state.dataset.tissue_ids:
-            self.status_label.setText(f"Tissue {tid} does not exist.")
-            return
-        self._state.remove_tissue(tid)
-        self._remove_inspect_layers()
-        self.status_label.setText(f"Removed tissue {tid}.")
-
-    def _new_dataset(self):
-        self._remove_inspect_layers()
-        self._discard_pipeline()
-        self._state.dataset = None
-        self.status_label.setText("Created new dataset.")
-
-    # ------------------------------------------------------------------
-    # Dashboard
-    # ------------------------------------------------------------------
-    def _open_dashboard(self):
-        """Save dataset to a temp dir and launch the Dash dashboard."""
-        ds = self._state.dataset
-        if ds is None or ds.n_tissues == 0:
-            self.status_label.setText("No dataset to open in dashboard.")
-            return
-        try:
-            import tempfile
-            tmpdir = Path(tempfile.mkdtemp(prefix="tissuegraph_dashboard_"))
-            from ..core.io import save_dataset
-            save_dataset(ds, tmpdir)
-
-            import subprocess
-            import sys
-            subprocess.Popen(
-                [sys.executable, "-m", "napariTissueFlow.dashboard", str(tmpdir)],
-            )
-            self.status_label.setText("Dashboard launched in browser.")
-        except ImportError:
-            self.status_label.setText(
-                "Dashboard requires dash+plotly. Install with: "
-                "pip install napariTissueFlow[dashboard]"
-            )
-        except Exception as exc:
-            self.status_label.setText(f"Failed to launch dashboard: {exc}")
-
-    # ------------------------------------------------------------------
-    # Save / Load
-    # ------------------------------------------------------------------
-    def _save_dataset(self):
-        ds = self._state.dataset
-        if ds is None or ds.n_tissues == 0:
-            self.status_label.setText("No dataset to save.")
-            return
-        path = QFileDialog.getExistingDirectory(self, "Save Dataset To")
-        if not path:
-            return
-        self._run_worker(
-            IOWorker("save", path, ds), self._on_save_finished
-        )
-
-    def _on_save_finished(self, _):
-        self._finish_worker()
-        self.status_label.setText("Dataset saved.")
-
-    def _load_dataset(self):
-        path = QFileDialog.getExistingDirectory(self, "Load Dataset From")
-        if not path:
-            return
-        self._run_worker(
-            IOWorker("load", path), self._on_load_finished
-        )
-
-    def _on_load_finished(self, dataset):
-        self._state.dataset = dataset  # triggers dataset_changed signal
-        self._finish_worker()
-
-        # Populate UI from loaded metadata
-        if dataset.condition:
-            self.condition_edit.setText(dataset.condition)
-        if dataset.pixel_size is not None:
-            self.pixel_size_edit.setText(str(dataset.pixel_size))
-        if dataset.time_interval is not None:
-            self.time_interval_edit.setText(str(dataset.time_interval))
-
-        self.status_label.setText(
-            f"Loaded dataset: {dataset.n_tissues} tissue(s), "
-            f"condition: {dataset.condition or '(none)'}"
-        )
 
     # ------------------------------------------------------------------
     # Worker management
@@ -1205,7 +966,6 @@ class TissueFlowWidget(QWidget):
         self.run_pipeline_btn.setEnabled(False)
         self.stage1_btn.setEnabled(False)
         self.stage2_btn.setEnabled(False)
-        self.analyze_btn.setEnabled(False)
         self.build_batch_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)

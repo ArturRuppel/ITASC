@@ -92,6 +92,7 @@ class TissueGraphTimeSeries:
     pixel_size: Optional[float] = None
     time_interval: Optional[float] = None
     input_type: Optional[InputType] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def num_frames(self) -> int:
