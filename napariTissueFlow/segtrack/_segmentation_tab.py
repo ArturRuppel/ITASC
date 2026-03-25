@@ -78,6 +78,14 @@ class SegmentationTab(QWidget):
         self._input_data     = None   # (H,W) or (T,H,W) numpy, single-ch or primary
         self._secondary_data = None   # (H,W) or (T,H,W) numpy, secondary channel
         self._seg_data       = None   # (H,W) or (T,H,W) uint32, current segmentation
+        self._seg_layer      = None   # napari Labels layer that holds _seg_data
+
+        # ── model cache ──
+        # Persists between runs so GPU memory is not thrashed on every segment call.
+        # Both fields are written only from the worker thread, but _is_running ensures
+        # at most one worker is active, so there is no concurrent access.
+        self._cp_model     = None   # CellposeModel instance currently on GPU
+        self._cp_model_key = None   # (model_type, custom_model_path, gpu) for the cached model
 
         self._setup_ui()
 
@@ -319,6 +327,38 @@ class SegmentationTab(QWidget):
             "gpu":                self._gpu_chk.isChecked(),
         }
 
+    # ── Model cache ────────────────────────────────────────────────────
+
+    def _ensure_model(self, params):
+        """Return the cached CellposeModel, reloading only when params change.
+
+        Called from the worker thread. Safe because _is_running ensures at most
+        one worker is active at a time — no concurrent reads/writes to _cp_model.
+        """
+        from napariTissueFlow.segtrack._pipeline import make_cp_model
+
+        key = (params["model_type"], params.get("custom_model_path"), params["gpu"])
+        if self._cp_model is not None and self._cp_model_key == key:
+            return self._cp_model
+
+        # Free the old model explicitly before loading a new one.
+        if self._cp_model is not None:
+            del self._cp_model
+            self._cp_model = None
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        self._cp_model = make_cp_model(
+            params["model_type"],
+            custom_model_path=params.get("custom_model_path"),
+            gpu=params["gpu"],
+        )
+        self._cp_model_key = key
+        return self._cp_model
+
     # ── Frame helpers ──────────────────────────────────────────────────
 
     def _current_frame_idx(self, data):
@@ -331,10 +371,19 @@ class SegmentationTab(QWidget):
         return data if data.ndim == 2 else data[t]
 
     def _get_or_create_labels_layer(self, shape, name="Segmentation"):
+        # Prefer tracked layer reference — avoids creating a duplicate when the
+        # layer was renamed or when a new stack has a different shape.
+        if self._seg_layer is not None and self._seg_layer in self.viewer.layers:
+            return self._seg_layer
+        # Fall back to name-based search so we can adopt an existing layer.
         for lay in self.viewer.layers:
             if isinstance(lay, napari.layers.Labels) and lay.name == name:
+                self._seg_layer = lay
                 return lay
-        return self.viewer.add_labels(np.zeros(shape, dtype=np.uint32), name=name)
+        # Nothing found — create a fresh layer and track it.
+        lay = self.viewer.add_labels(np.zeros(shape, dtype=np.uint32), name=name)
+        self._seg_layer = lay
+        return lay
 
     def _current_mode(self):
         return "single" if self._rb_single.isChecked() else "two_ch"
@@ -373,7 +422,8 @@ class SegmentationTab(QWidget):
         })
         def _work():
             yield f"Segmenting frame {t}…"
-            masks = _run_segmentation(imgs, mode, params)
+            model = self._ensure_model(params)
+            masks = _run_segmentation(imgs, mode, params, model=model)
             n = len(np.unique(masks[masks > 0]))
             yield f"  {n} object(s) detected"
             return masks
@@ -444,10 +494,12 @@ class SegmentationTab(QWidget):
             "errored":  self._on_error,
         })
         def _work():
+            yield "Loading model…"
+            model = self._ensure_model(params)
             results = []
             for i, imgs in enumerate(all_frames):
                 yield f"Frame {i+1}/{n_frames}…"
-                results.append(_run_segmentation(imgs, mode, params).astype(np.uint32))
+                results.append(_run_segmentation(imgs, mode, params, model=model).astype(np.uint32))
             return results
 
         self._worker = _work()
@@ -479,11 +531,6 @@ class SegmentationTab(QWidget):
         self._progress.setVisible(False)
 
         stack = np.stack(results, axis=0)
-        for lay in list(self.viewer.layers):
-            if isinstance(lay, napari.layers.Labels) and lay.name == "Segmentation":
-                if lay.data.shape != stack.shape:
-                    self.viewer.layers.remove(lay)
-                break
         layer = self._get_or_create_labels_layer(stack.shape)
         layer.data = stack
         layer.refresh()
@@ -556,6 +603,20 @@ class SegmentationTab(QWidget):
             if seg_path.exists():
                 seg_path.unlink()
             self._log_append(f"Exported frame {t} (no prior segmentation) to Cellpose GUI.")
+
+        # Release the cached model from GPU before spawning Cellpose GUI.
+        # cpsam is ~2 GiB on GPU; without this the subprocess OOMs trying to load
+        # its own copy into the same device.  The model is re-cached on the next
+        # Segment Frame / Segment Stack call.
+        if self._cp_model is not None:
+            del self._cp_model
+            self._cp_model = None
+            self._cp_model_key = None
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
         launcher = Path(self._temp_dir) / "launch_cellpose.py"
         launcher.write_text(
@@ -668,6 +729,7 @@ class SegmentationTab(QWidget):
 
     def _on_clear_seg(self):
         self._seg_data = None
+        self._seg_layer = None
         self._seg_status.setText("Not loaded")
 
     def _on_load_seg_layer(self):
@@ -691,16 +753,25 @@ class SegmentationTab(QWidget):
         self._seg_data = src_data
         old_name = active.name
 
-        # Update "Segmentation" layer in-place if it exists; otherwise rename.
+        # Update tracked layer in-place if available; otherwise search by name or rename.
+        if self._seg_layer is not None and self._seg_layer in self.viewer.layers:
+            self._seg_layer.data = src_data
+            self._seg_layer.refresh()
+            self._seg_status.setText(f"Loaded: {src_data.shape}")
+            self._log_append(f"Loaded '{old_name}' into Segmentation layer.")
+            return
+
         for lay in self.viewer.layers:
             if isinstance(lay, napari.layers.Labels) and lay.name == "Segmentation":
                 lay.data = src_data
                 lay.refresh()
+                self._seg_layer = lay
                 self._seg_status.setText(f"Loaded: {src_data.shape}")
                 self._log_append(f"Loaded '{old_name}' into Segmentation layer.")
                 return
 
         active.name = "Segmentation"
+        self._seg_layer = active
         self._seg_status.setText(f"Loaded: {src_data.shape}")
         self._log_append(f"Renamed '{old_name}' → 'Segmentation'.")
 
@@ -722,23 +793,27 @@ class SegmentationTab(QWidget):
 
 # ── Segmentation dispatcher (called in background thread) ──────────────
 
-def _run_segmentation(imgs, mode, params):
+def _run_segmentation(imgs, mode, params, model=None):
     """
     Run Cellpose segmentation for a single frame.
 
     imgs   : dict from _get_inputs_for_frame / _get_all_frames
     mode   : "single" | "two_ch"
     params : dict from _collect_params()
+    model  : pre-loaded CellposeModel; if None one is created (and immediately
+             discarded — prefer passing the cached model from SegmentationTab)
 
     Returns (H, W) integer mask array.
     """
     from napariTissueFlow.segtrack._pipeline import make_cp_model, run_cp, run_cp_two_channel
 
-    model = make_cp_model(
-        params["model_type"],
-        custom_model_path=params.get("custom_model_path"),
-        gpu=params["gpu"],
-    )
+    if model is None:
+        model = make_cp_model(
+            params["model_type"],
+            custom_model_path=params.get("custom_model_path"),
+            gpu=params["gpu"],
+        )
+
     cp_kwargs = dict(
         model              = model,
         diameter           = params["diameter"],
