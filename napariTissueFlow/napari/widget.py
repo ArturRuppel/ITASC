@@ -464,19 +464,8 @@ class TissueFlowWidget(QWidget):
 
         # ========== Voronoi tab (cell body expansion + nuclear tracks) ==========
         from ..segtrack._voronoi_tab import VoronoiTab
-        from .tracks_widget import NuclearTracksWidget
-        from qtpy.QtWidgets import QTabWidget as _QTabWidget
-        voronoi_outer = QWidget()
-        voronoi_outer_layout = QVBoxLayout()
-        voronoi_outer_layout.setContentsMargins(0, 0, 0, 0)
-        voronoi_outer.setLayout(voronoi_outer_layout)
-        voronoi_inner_tabs = _QTabWidget()
         self._voronoi_tab = VoronoiTab(self.viewer)
-        voronoi_inner_tabs.addTab(self._voronoi_tab, "Expand")
-        self._tracks_widget = NuclearTracksWidget(self.viewer)
-        voronoi_inner_tabs.addTab(self._tracks_widget, "From Tracks")
-        voronoi_outer_layout.addWidget(voronoi_inner_tabs)
-        self.tab_widget.addTab(voronoi_outer, "Voronoi")
+        self.tab_widget.addTab(self._voronoi_tab, "Voronoi")
 
         # ========== Edge Analysis tab (formerly Pipeline) ==========
         self.tab_widget.addTab(pipeline_page, "Edge Analysis")
