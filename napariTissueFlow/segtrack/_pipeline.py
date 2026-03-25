@@ -187,34 +187,7 @@ def make_cp_model(model_type, custom_model_path=None, gpu=True):
                 "Download it first or choose a different model (cyto3, nuclei, …)."
             )
 
-    # Construct the model and immediately verify it loaded the requested weights.
-    # CellposeModel silently falls back to a default model when the file is
-    # unreadable (e.g. stale download from a different cellpose major version).
-    # Catching that silent fallback here turns it into a visible error.
-    model = CellposeModel(gpu=gpu, pretrained_model=model_type)
-    loaded = getattr(model, "pretrained_model", None)
-    if loaded is not None:
-        from pathlib import Path
-        loaded_name = Path(loaded[0] if isinstance(loaded, list) else loaded).name
-        if loaded_name != model_type:
-            if model_type not in _BUNDLED:
-                try:
-                    from cellpose import models as _cp_models
-                    _md = Path(getattr(_cp_models, "model_dir",
-                                       Path.home() / ".cellpose" / "models"))
-                except Exception:
-                    _md = Path.home() / ".cellpose" / "models"
-                hint = (
-                    f" Delete the stale file at {_md / model_type} "
-                    "and restart napari to let cellpose re-download it."
-                )
-            else:
-                hint = ""
-            raise RuntimeError(
-                f"Cellpose loaded '{loaded_name}' instead of '{model_type}'. "
-                f"The model file may be corrupt or from an incompatible cellpose version.{hint}"
-            )
-    return model
+    return CellposeModel(gpu=gpu, pretrained_model=model_type)
 
 
 def run_cp(img, model, diameter, flow_threshold, cellprob_threshold, min_size):

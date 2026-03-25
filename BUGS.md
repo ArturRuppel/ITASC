@@ -39,8 +39,8 @@ WARNING : channels deprecated in v4.0.1+. If data contain more than 3 channels, 
 - `channels=[0, 0]` (in `run_cp`) and `channels=[1, 2]` (in `run_cp_two_channel`) are deprecated since cellpose 4.0.1. In v4, image channels are inferred from array shape.
 **Fix (committed):**
 - `make_cp_model` now resolves the model path via `cellpose.models.model_dir` (with fallback to `~/.cellpose/models/`) and raises a `FileNotFoundError` with a download hint if the file is absent.
-- Additionally, after constructing `CellposeModel`, the loaded `pretrained_model` attribute is checked. If cellpose silently substituted a different model (e.g. because the file at `~/.cellpose/models/cpsam` is a stale cellpose 3.x download incompatible with 4.x), a `RuntimeError` is raised with the exact path to delete, turning the silent fallback into an actionable error.
-- `cpsam` is kept in the dropdown — it is the highest-performing cellpose 4.x model. If the stale 3.x file is present, the error message now tells the user to delete it so cellpose 4.x can re-download.
+- Post-load validation via `model.pretrained_model` was attempted but removed: in cellpose 4.x the internal file names do not match user-facing model names (e.g. `cyto3` uses a file named `cpsam` internally), making name-comparison checks produce false positives.
+- `cpsam` is kept in the dropdown. The stale cellpose 3.x file at `~/.cellpose/models/cpsam` was deleted; cellpose 4.x will re-download the correct version on the next segmentation run.
 - Removed `channels=[0, 0]` from `run_cp` and `channels=[1, 2]` from `run_cp_two_channel`. Cellpose v4 infers channel layout from array shape: `(H, W)` → grayscale; `(H, W, 2)` → two-channel.
 - `run_pipeline` now calls `make_cp_model` instead of constructing `CellposeModel` directly, so it gets the same GPU and model-validation logic.
 **Files:** `segtrack/_pipeline.py` (`make_cp_model`, `run_cp`, `run_cp_two_channel`, `run_pipeline`)
