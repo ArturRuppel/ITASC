@@ -224,6 +224,9 @@ class NuclearTracksWidget(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setVisible(False)
+        layout.addWidget(self.cancel_btn)
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
@@ -239,6 +242,7 @@ class NuclearTracksWidget(QWidget):
         self.load_xml_btn.clicked.connect(self._on_load_xml)
         self.generate_btn.clicked.connect(self._on_generate)
         self.method_combo.currentIndexChanged.connect(self._update_lloyd_visibility)
+        self.cancel_btn.clicked.connect(self._cancel_worker)
 
     def _update_lloyd_visibility(self):
         is_lloyd = self.method_combo.currentIndex() == 1
@@ -364,12 +368,14 @@ class NuclearTracksWidget(QWidget):
         self.load_xml_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.cancel_btn.setVisible(True)
         self.status_label.setText("Working...")
 
         self._thread.start()
 
     def _finish_worker(self):
         self.progress_bar.setVisible(False)
+        self.cancel_btn.setVisible(False)
         self.generate_btn.setEnabled(True)
         self.load_xml_btn.setEnabled(True)
 
@@ -381,3 +387,19 @@ class NuclearTracksWidget(QWidget):
         self._finish_worker()
         self.status_label.setText(f"Error: {exc}")
         logger.exception("VoronoiToLabels worker failed", exc_info=exc)
+
+    def _cancel_worker(self):
+        if self._thread is not None:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    self._thread.wait()
+            except RuntimeError:
+                pass
+            self._thread = None
+            self._worker = None
+        self.cancel_btn.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.generate_btn.setEnabled(True)
+        self.load_xml_btn.setEnabled(True)
+        self.status_label.setText("Cancelled.")

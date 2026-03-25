@@ -160,6 +160,10 @@ class TrackingTab(QWidget):
         self._progress.setRange(0, 0)
         self._progress.setVisible(False)
         root.addWidget(self._progress)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        root.addWidget(self._cancel_btn)
 
         self._log = QTextEdit()
         self._log.setReadOnly(True)
@@ -352,6 +356,7 @@ class TrackingTab(QWidget):
         self._log.clear()
         self._run_btn.setEnabled(False)
         self._progress.setVisible(True)
+        self._cancel_btn.setVisible(True)
 
         @thread_worker(connect={
             "yielded":  lambda m: self._log_append(m),
@@ -450,10 +455,12 @@ class TrackingTab(QWidget):
             }
 
         self._worker = _work()
+        self._worker.aborted.connect(self._on_aborted)
 
     def _on_done(self, result):
         self._run_btn.setEnabled(True)
         self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
 
         def _stack(lst):
             return np.stack(lst, axis=0).astype(np.uint16)
@@ -476,7 +483,18 @@ class TrackingTab(QWidget):
     def _on_error(self, exc):
         self._run_btn.setEnabled(True)
         self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
         self._log_append(f"ERROR: {exc}")
+
+    def _on_cancel(self):
+        if self._worker is not None:
+            self._worker.quit()
+
+    def _on_aborted(self):
+        self._run_btn.setEnabled(True)
+        self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
+        self._log_append("Cancelled.")
         import traceback
         self._log_append(traceback.format_exc())
 

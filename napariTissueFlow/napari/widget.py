@@ -443,6 +443,9 @@ class TissueFlowWidget(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setVisible(False)
+        layout.addWidget(self.cancel_btn)
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -521,6 +524,7 @@ class TissueFlowWidget(QWidget):
         # Batch
         self.batch_load_btn.clicked.connect(self._load_batch_files)
         self.build_batch_btn.clicked.connect(self._build_batch)
+        self.cancel_btn.clicked.connect(self._cancel_worker)
         self.batch_clear_btn.clicked.connect(self._clear_batch_files)
 
         # Databank: show tissue in viewer when requested from the Databank tab
@@ -969,6 +973,7 @@ class TissueFlowWidget(QWidget):
         self.build_batch_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.cancel_btn.setVisible(True)
         self.status_label.setText("Working...")
 
         self._thread.start()
@@ -976,6 +981,7 @@ class TissueFlowWidget(QWidget):
     def _finish_worker(self):
         """Re-enable buttons and hide progress bar after worker completes."""
         self.progress_bar.setVisible(False)
+        self.cancel_btn.setVisible(False)
         self.build_batch_btn.setEnabled(True)
         self._update_pipeline_buttons()
 
@@ -986,10 +992,28 @@ class TissueFlowWidget(QWidget):
     def _on_error(self, exc):
         self._auto_pipeline = False
         self.progress_bar.setVisible(False)
+        self.cancel_btn.setVisible(False)
         self.build_batch_btn.setEnabled(True)
         self._update_pipeline_buttons()
         self.status_label.setText(f"Error: {exc}")
         logger.exception("Worker failed", exc_info=exc)
+
+    def _cancel_worker(self):
+        if self._thread is not None:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    self._thread.wait()
+            except RuntimeError:
+                pass
+            self._thread = None
+            self._worker = None
+        self._auto_pipeline = False
+        self.cancel_btn.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.build_batch_btn.setEnabled(True)
+        self._update_pipeline_buttons()
+        self.status_label.setText("Cancelled.")
 
     # ------------------------------------------------------------------
     # Napari layer management

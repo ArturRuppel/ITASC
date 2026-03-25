@@ -137,6 +137,10 @@ class VoronoiTab(QWidget):
         self._progress.setRange(0, 0)
         self._progress.setVisible(False)
         root.addWidget(self._progress)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        root.addWidget(self._cancel_btn)
 
         self._log = QTextEdit()
         self._log.setReadOnly(True)
@@ -193,6 +197,7 @@ class VoronoiTab(QWidget):
         self._frame_btn.setEnabled(not is_busy)
         self._stack_btn.setEnabled(not is_busy)
         self._progress.setVisible(is_busy)
+        self._cancel_btn.setVisible(is_busy)
 
     def _log_append(self, msg):
         self._log.append(str(msg))
@@ -203,6 +208,14 @@ class VoronoiTab(QWidget):
         self._log_append(f"ERROR: {exc}")
         import traceback
         self._log_append(traceback.format_exc())
+
+    def _on_cancel(self):
+        if self._worker is not None:
+            self._worker.quit()
+
+    def _on_aborted(self):
+        self._busy(False)
+        self._log_append("Cancelled.")
 
     def _get_or_create_cells_layer(self, shape):
         for lay in self.viewer.layers:
@@ -244,6 +257,7 @@ class VoronoiTab(QWidget):
             return result
 
         self._worker = _work()
+        self._worker.aborted.connect(self._on_aborted)
 
     def _on_frame_done(self, result, orig_shape, t):
         self._busy(False)
@@ -293,6 +307,7 @@ class VoronoiTab(QWidget):
             return results
 
         self._worker = _work()
+        self._worker.aborted.connect(self._on_aborted)
 
     def _on_stack_done(self, results):
         self._busy(False)

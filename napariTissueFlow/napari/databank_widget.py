@@ -127,6 +127,9 @@ class DataBankWidget(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setVisible(False)
+        layout.addWidget(self.cancel_btn)
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
@@ -141,6 +144,7 @@ class DataBankWidget(QWidget):
         self.show_tissue_btn.clicked.connect(self._show_selected)
         self.remove_tissue_btn.clicked.connect(self._remove_selected)
         self.open_dashboard_btn.clicked.connect(self._open_dashboard)
+        self.cancel_btn.clicked.connect(self._cancel_io_worker)
 
         self.condition_edit.editingFinished.connect(self._apply_metadata)
         self.pixel_size_edit.editingFinished.connect(self._apply_metadata)
@@ -389,12 +393,14 @@ class DataBankWidget(QWidget):
         self.save_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.cancel_btn.setVisible(True)
         self.status_label.setText("Working...")
 
         self._thread.start()
 
     def _finish_io_worker(self):
         self.progress_bar.setVisible(False)
+        self.cancel_btn.setVisible(False)
         self.new_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
         self.save_btn.setEnabled(True)
@@ -407,6 +413,19 @@ class DataBankWidget(QWidget):
         self._finish_io_worker()
         self.status_label.setText(f"Error: {exc}")
         logger.exception("IO operation failed", exc_info=exc)
+
+    def _cancel_io_worker(self):
+        if self._thread is not None:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    self._thread.wait()
+            except RuntimeError:
+                pass
+            self._thread = None
+            self._worker = None
+        self._finish_io_worker()
+        self.status_label.setText("Cancelled.")
 
     # ------------------------------------------------------------------
     # Helpers

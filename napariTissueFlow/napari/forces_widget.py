@@ -189,6 +189,9 @@ class ForcesWidget(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setVisible(False)
+        layout.addWidget(self.cancel_btn)
 
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
@@ -231,6 +234,7 @@ class ForcesWidget(QWidget):
         self.frame_spin.valueChanged.connect(self._on_frame_changed)
         self._scope_group.buttonToggled.connect(self._on_scope_changed)
         self.infer_btn.clicked.connect(self._run_inference)
+        self.cancel_btn.clicked.connect(self._cancel_worker)
         self.show_tensions_cb.toggled.connect(self._update_visualization)
         self.show_pressures_cb.toggled.connect(self._update_visualization)
 
@@ -376,6 +380,7 @@ class ForcesWidget(QWidget):
         self.infer_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.cancel_btn.setVisible(True)
         self.status_label.setText("Starting force inference...")
 
         self._thread.start()
@@ -386,6 +391,7 @@ class ForcesWidget(QWidget):
 
     def _on_finished(self):
         self.progress_bar.setVisible(False)
+        self.cancel_btn.setVisible(False)
         self.infer_btn.setEnabled(True)
         self.status_label.setText("Force inference complete.")
 
@@ -397,8 +403,24 @@ class ForcesWidget(QWidget):
 
     def _on_error(self, exc):
         self.progress_bar.setVisible(False)
+        self.cancel_btn.setVisible(False)
         self.infer_btn.setEnabled(True)
         self.status_label.setText(f"Error: {exc}")
+
+    def _cancel_worker(self):
+        if self._thread is not None:
+            try:
+                if self._thread.isRunning():
+                    self._thread.quit()
+                    self._thread.wait()
+            except RuntimeError:
+                pass
+            self._thread = None
+            self._worker = None
+        self.cancel_btn.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.infer_btn.setEnabled(True)
+        self.status_label.setText("Cancelled.")
 
     # ------------------------------------------------------------------
     # Results summary

@@ -169,6 +169,10 @@ class SegmentationTab(QWidget):
         self._progress.setRange(0, 0)
         self._progress.setVisible(False)
         root.addWidget(self._progress)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        root.addWidget(self._cancel_btn)
 
         self._log = QTextEdit()
         self._log.setReadOnly(True)
@@ -413,6 +417,7 @@ class SegmentationTab(QWidget):
         self._seg_frame_btn.setEnabled(False)
         self._seg_stack_btn.setEnabled(False)
         self._progress.setVisible(True)
+        self._cancel_btn.setVisible(True)
         self._log.clear()
 
         @thread_worker(connect={
@@ -429,6 +434,7 @@ class SegmentationTab(QWidget):
             return masks
 
         self._worker = _work()
+        self._worker.aborted.connect(self._on_aborted)
 
     def _get_inputs_for_frame(self):
         mode = self._current_mode()
@@ -451,6 +457,7 @@ class SegmentationTab(QWidget):
         self._seg_frame_btn.setEnabled(True)
         self._seg_stack_btn.setEnabled(True)
         self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
 
         shape = self._reference_stack_shape()
         layer = self._get_or_create_labels_layer(shape)
@@ -486,6 +493,7 @@ class SegmentationTab(QWidget):
         self._seg_frame_btn.setEnabled(False)
         self._seg_stack_btn.setEnabled(False)
         self._progress.setVisible(True)
+        self._cancel_btn.setVisible(True)
         self._log.clear()
 
         @thread_worker(connect={
@@ -503,6 +511,7 @@ class SegmentationTab(QWidget):
             return results
 
         self._worker = _work()
+        self._worker.aborted.connect(self._on_aborted)
 
     def _get_all_frames(self):
         mode = self._current_mode()
@@ -529,6 +538,7 @@ class SegmentationTab(QWidget):
         self._seg_frame_btn.setEnabled(True)
         self._seg_stack_btn.setEnabled(True)
         self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
 
         stack = np.stack(results, axis=0)
         layer = self._get_or_create_labels_layer(stack.shape)
@@ -782,7 +792,20 @@ class SegmentationTab(QWidget):
         self._seg_frame_btn.setEnabled(True)
         self._seg_stack_btn.setEnabled(True)
         self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
         self._log_append(f"ERROR: {exc}")
+
+    def _on_cancel(self):
+        if self._worker is not None:
+            self._worker.quit()
+
+    def _on_aborted(self):
+        self._is_running = False
+        self._seg_frame_btn.setEnabled(True)
+        self._seg_stack_btn.setEnabled(True)
+        self._progress.setVisible(False)
+        self._cancel_btn.setVisible(False)
+        self._log_append("Cancelled.")
         import traceback
         self._log_append(traceback.format_exc())
 
