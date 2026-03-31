@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from napariTissueFlow.core.graph import build_from_labels, build_from_tracks
+from napariTissueFlow.core.graph import build_from_labels
 from napariTissueFlow.core.io import (
     save_dataset,
     load_dataset,
@@ -20,7 +20,7 @@ from napariTissueFlow.structures import (
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
-from conftest import make_label_stack, make_track_positions
+from conftest import make_label_stack
 
 
 # ------------------------------------------------------------------
@@ -173,61 +173,6 @@ class TestSaveLoadLabels:
 
 
 # ------------------------------------------------------------------
-# Round-trip: tracks-based dataset
-# ------------------------------------------------------------------
-
-class TestSaveLoadTracks:
-    @pytest.fixture
-    def tracks_dataset(self):
-        positions = make_track_positions(n_frames=5, nx=4, ny=4, spacing=20.0)
-        series = build_from_tracks(
-            positions, pixel_size=1.0, time_interval=30.0,
-            image_shape=(100, 100),
-        )
-        events = detect_t1_events(series)
-        build_edge_trajectories(series, events)
-        dataset = TissueGraphDataset(
-            condition="KO",
-            pixel_size=1.0,
-            time_interval=30.0,
-            input_type=InputType.VORONOI,
-        )
-        dataset.add_tissue(series)
-        return dataset
-
-    def test_round_trip(self, tracks_dataset, tmp_path):
-        save_path = tmp_path / "test_tracks"
-        save_dataset(tracks_dataset, save_path)
-        loaded = load_dataset(save_path)
-
-        assert loaded.condition == "KO"
-        assert loaded.n_tissues == 1
-        assert loaded.input_type == InputType.VORONOI
-
-        orig = tracks_dataset.tissues[0]
-        loaded_s = loaded.tissues[0]
-        assert loaded_s.num_frames == orig.num_frames
-
-    def test_cell_vertices_preserved(self, tracks_dataset, tmp_path):
-        save_path = tmp_path / "test_tracks"
-        save_dataset(tracks_dataset, save_path)
-        loaded = load_dataset(save_path)
-
-        orig = tracks_dataset.tissues[0]
-        loaded_s = loaded.tissues[0]
-
-        for f in orig.frame_indices:
-            for cid in orig.frames[f].cells:
-                ov = orig.frames[f].cells[cid].vertices
-                lv = loaded_s.frames[f].cells[cid].vertices
-                if ov is not None:
-                    assert lv is not None
-                    np.testing.assert_allclose(ov, lv)
-                else:
-                    assert lv is None
-
-
-# ------------------------------------------------------------------
 # Multi-tissue dataset
 # ------------------------------------------------------------------
 
@@ -338,11 +283,8 @@ class TestLoadMultiple:
 class TestTagsRoundTrip:
     @pytest.fixture
     def tagged_dataset(self):
-        positions = make_track_positions(n_frames=5, nx=4, ny=4, spacing=20.0)
-        series = build_from_tracks(
-            positions, pixel_size=1.0, time_interval=30.0,
-            image_shape=(100, 100),
-        )
+        stack = make_label_stack(n_frames=5, n_cells_side=4, image_size=200)
+        series = build_from_labels(stack, pixel_size=1.0, time_interval=30.0)
         events = detect_t1_events(series)
         build_edge_trajectories(series, events)
 

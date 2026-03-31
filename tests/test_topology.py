@@ -82,7 +82,7 @@ def _make_frame(frame_idx, edges, cell_positions=None):
         graph=G,
         cells=cells,
         junctions=junctions,
-        input_type=InputType.VORONOI,
+        input_type=InputType.SEGMENTATION,
     )
 
 
@@ -116,7 +116,7 @@ def _make_t1_series():
 
     return TissueGraphTimeSeries(
         frames={0: f0, 1: f1, 2: f2},
-        input_type=InputType.VORONOI,
+        input_type=InputType.SEGMENTATION,
     )
 
 
@@ -171,7 +171,7 @@ class TestDetectT1:
         f0 = _make_frame(0, edges)
         f1 = _make_frame(1, edges)
         series = TissueGraphTimeSeries(
-            frames={0: f0, 1: f1}, input_type=InputType.VORONOI
+            frames={0: f0, 1: f1}, input_type=InputType.SEGMENTATION
         )
         events = detect_t1_events(series)
         assert len(events) == 0
@@ -198,7 +198,7 @@ class TestDetectT1:
         f0 = _make_frame(0, edges_0)
         f1 = _make_frame(1, edges_1)
         series = TissueGraphTimeSeries(
-            frames={0: f0, 1: f1}, input_type=InputType.VORONOI
+            frames={0: f0, 1: f1}, input_type=InputType.SEGMENTATION
         )
         events = detect_t1_events(series)
         assert len(events) == 0
@@ -214,7 +214,7 @@ class TestEdgeTrajectories:
         f1 = _make_frame(1, edges)
         f2 = _make_frame(2, edges)
         series = TissueGraphTimeSeries(
-            frames={0: f0, 1: f1, 2: f2}, input_type=InputType.VORONOI
+            frames={0: f0, 1: f1, 2: f2}, input_type=InputType.SEGMENTATION
         )
 
         trajs = build_edge_trajectories(series, [])
@@ -325,7 +325,7 @@ class TestT1DetectionParams:
         )
 
         series = TissueGraphTimeSeries(
-            frames={0: f0, 1: f1}, input_type=InputType.VORONOI
+            frames={0: f0, 1: f1}, input_type=InputType.SEGMENTATION
         )
 
         # With a tight distance constraint, the T1 should be filtered out

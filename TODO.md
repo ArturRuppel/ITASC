@@ -511,6 +511,17 @@ Cellpose segmentation. Segmentation is the responsibility of the Segmentation ta
 
 ---
 
+---
+
+## ~~19. Remove Voronoi and TrackMate features (deprecated)~~ DONE
+
+Removed in full: Voronoi tabs, TrackMate widgets, core/voronoi.py, core/trackmate.py,
+build_from_tracks/both functions, VoronoiMethod enum, pipeline Voronoi functions,
+Nuclear Tracks widget, all related tests. InputType.VORONOI kept for backward
+compatibility with saved datasets.
+
+---
+
 hand notes:
 ~~filtering data frames should update the plots in the dashboard~~ — done
 ~~peripheral junctions should exclude border junctions~~ — done: border junctions (cell_id=0 or tagged "border") are now classified as "unclassified" instead of "peripheral"

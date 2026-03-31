@@ -1,8 +1,8 @@
-"""Tests for core graph building from both labels and tracks."""
+"""Tests for core graph building from labels."""
 import numpy as np
 import pytest
 
-from napariTissueFlow.core.graph import build_from_labels, build_from_tracks
+from napariTissueFlow.core.graph import build_from_labels
 from napariTissueFlow.structures import InputType
 
 
@@ -46,30 +46,3 @@ class TestBuildFromLabels:
     def test_pixel_size_stored(self, label_stack):
         series = build_from_labels(label_stack, pixel_size=0.65)
         assert series.pixel_size == 0.65
-
-
-class TestBuildFromTracks:
-    def test_basic_construction(self, track_positions):
-        image_shape = (100, 100)
-        series = build_from_tracks(track_positions, image_shape=image_shape)
-        assert series.num_frames == 5
-        assert series.input_type == InputType.VORONOI
-
-    def test_frames_have_cells(self, track_positions):
-        series = build_from_tracks(track_positions, image_shape=(100, 100))
-        for frame_idx, frame in series.frames.items():
-            assert len(frame.cells) > 0, f"Frame {frame_idx} has no cells"
-
-    def test_frames_have_junctions(self, track_positions):
-        series = build_from_tracks(track_positions, image_shape=(100, 100))
-        for frame_idx, frame in series.frames.items():
-            assert len(frame.junctions) > 0, f"Frame {frame_idx} has no junctions"
-
-    def test_cell_positions_match(self, track_positions):
-        series = build_from_tracks(track_positions, image_shape=(100, 100))
-        # Check first frame
-        frame0_mask = track_positions[:, 0] == 0
-        expected_positions = track_positions[frame0_mask, 1:3]
-        frame0 = series.frames[0]
-        for i, cell in frame0.cells.items():
-            np.testing.assert_allclose(cell.position, expected_positions[i], atol=1e-10)

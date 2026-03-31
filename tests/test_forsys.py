@@ -11,42 +11,22 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _build_series_from_labels():
+def _build_series(n_frames=1):
     """Build a small TissueGraphTimeSeries from labels for testing."""
     from tests.conftest import make_label_stack
     from napariTissueFlow.core.graph import build_from_labels
 
-    label_stack = make_label_stack(n_frames=1, n_cells_side=4, image_size=200)
+    label_stack = make_label_stack(n_frames=n_frames, n_cells_side=4, image_size=200)
     return build_from_labels(label_stack)
-
-
-def _build_series_from_voronoi():
-    """Build a small TissueGraphTimeSeries from Voronoi for testing."""
-    from tests.conftest import make_track_positions
-    from napariTissueFlow.core.graph import build_from_tracks
-
-    positions = make_track_positions(n_frames=1, nx=4, ny=4, spacing=25.0)
-    return build_from_tracks(positions, image_shape=(120, 120))
 
 
 class TestForSysAdapter:
     """Test the geometry conversion layer."""
 
-    def test_tissue_frame_to_forsys_voronoi(self):
+    def test_tissue_frame_to_forsys(self):
         from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
 
-        series = _build_series_from_voronoi()
-        frame = list(series.frames.values())[0]
-        fs_frame = tissue_frame_to_forsys(frame)
-
-        assert len(fs_frame.vertices) > 0
-        assert len(fs_frame.edges) > 0
-        assert len(fs_frame.cells) > 0
-
-    def test_tissue_frame_to_forsys_labels(self):
-        from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
-
-        series = _build_series_from_labels()
+        series = _build_series()
         frame = list(series.frames.values())[0]
         fs_frame = tissue_frame_to_forsys(frame)
 
@@ -57,7 +37,7 @@ class TestForSysAdapter:
     def test_forsys_frame_has_big_edges(self):
         from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         frame = list(series.frames.values())[0]
         fs_frame = tissue_frame_to_forsys(frame)
 
@@ -90,10 +70,10 @@ class TestForSysAdapter:
 class TestForceInference:
     """Test the full inference pipeline."""
 
-    def test_infer_forces_voronoi(self):
+    def test_infer_forces(self):
         from napariTissueFlow.core.mechanics import infer_forces
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         infer_forces(series, method="static")
 
         # Check that some junctions got tension values
@@ -103,22 +83,10 @@ class TestForceInference:
         )
         assert n_tensions > 0, "No tensions were inferred"
 
-    def test_infer_forces_labels(self):
-        from napariTissueFlow.core.mechanics import infer_forces
-
-        series = _build_series_from_labels()
-        infer_forces(series, method="static")
-
-        n_tensions = sum(
-            1 for f in series.frames.values()
-            for jd in f.junctions.values() if jd.tension is not None
-        )
-        assert n_tensions > 0, "No tensions were inferred"
-
     def test_infer_pressures(self):
         from napariTissueFlow.core.mechanics import infer_forces
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         infer_forces(series, method="static")
 
         n_pressures = sum(
@@ -130,7 +98,7 @@ class TestForceInference:
     def test_tensions_are_finite(self):
         from napariTissueFlow.core.mechanics import infer_forces
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         infer_forces(series, method="static")
 
         for f in series.frames.values():
@@ -141,25 +109,22 @@ class TestForceInference:
     def test_dynamic_not_implemented(self):
         from napariTissueFlow.core.mechanics import infer_forces
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         with pytest.raises(NotImplementedError):
             infer_forces(series, method="dynamic")
 
     def test_invalid_method(self):
         from napariTissueFlow.core.mechanics import infer_forces
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         with pytest.raises(ValueError):
             infer_forces(series, method="invalid")
 
     def test_multiframe(self):
         """Test inference across multiple frames."""
-        from tests.conftest import make_track_positions
-        from napariTissueFlow.core.graph import build_from_tracks
         from napariTissueFlow.core.mechanics import infer_forces
 
-        positions = make_track_positions(n_frames=3, nx=4, ny=4, spacing=25.0)
-        series = build_from_tracks(positions, image_shape=(120, 120))
+        series = _build_series(n_frames=3)
         infer_forces(series, method="static")
 
         # Each frame should have some tensions
@@ -176,7 +141,7 @@ class TestResultPersistence:
         from napariTissueFlow.core.io import save_dataset, load_dataset
         from napariTissueFlow.structures import TissueGraphDataset
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         infer_forces(series, method="static")
 
         dataset = TissueGraphDataset()
@@ -211,7 +176,7 @@ class TestVisualization:
         from napariTissueFlow.core.mechanics import infer_forces
         from napariTissueFlow.napari.visualization import build_tension_colored_junctions
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         infer_forces(series, method="static")
 
         lines, colors = build_tension_colored_junctions(series)
@@ -223,7 +188,7 @@ class TestVisualization:
         from napariTissueFlow.core.mechanics import infer_forces
         from napariTissueFlow.napari.visualization import build_pressure_colored_cells
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         infer_forces(series, method="static")
 
         polys, colors = build_pressure_colored_cells(series)
@@ -234,7 +199,7 @@ class TestVisualization:
     def test_no_tensions_returns_empty(self):
         from napariTissueFlow.napari.visualization import build_tension_colored_junctions
 
-        series = _build_series_from_voronoi()
+        series = _build_series()
         # No inference run — all tensions are None
         lines, colors = build_tension_colored_junctions(series)
         assert len(lines) == 0

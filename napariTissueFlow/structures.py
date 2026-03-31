@@ -11,11 +11,6 @@ class InputType(Enum):
     SEGMENTATION = "segmentation"
 
 
-class VoronoiMethod(Enum):
-    """Voronoi tessellation method."""
-    STANDARD = "standard"
-    LLOYD = "lloyd"
-
 
 @dataclass
 class CellData:

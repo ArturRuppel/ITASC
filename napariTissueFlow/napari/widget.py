@@ -373,11 +373,6 @@ class TissueFlowWidget(QWidget):
         self._tracking_tab = TrackingTab(self.viewer, self._segmentation_tab)
         self.tab_widget.addTab(self._tracking_tab, "Tracking")
 
-        # ========== Voronoi tab (cell body expansion + nuclear tracks) ==========
-        from ..segtrack._voronoi_tab import VoronoiTab
-        self._voronoi_tab = VoronoiTab(self.viewer)
-        self.tab_widget.addTab(self._voronoi_tab, "Voronoi")
-
         # ========== Edge Analysis tab (formerly Pipeline) ==========
         self.tab_widget.addTab(pipeline_page, "Edge Analysis")
 

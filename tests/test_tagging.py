@@ -48,7 +48,7 @@ def _make_frame(frame_idx, junctions_spec):
         graph=graph,
         cells=cells,
         junctions=junctions,
-        input_type=InputType.VORONOI,
+        input_type=InputType.SEGMENTATION,
     )
 
 

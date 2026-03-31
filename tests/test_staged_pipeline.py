@@ -4,9 +4,7 @@ import pytest
 
 from napariTissueFlow.core.graph import (
     build_from_labels,
-    build_from_tracks,
     extract_graphs_from_labels,
-    extract_graphs_from_tracks,
     assign_tracking_labels,
     apply_track_map,
     has_tracking,
@@ -22,15 +20,6 @@ class TestStage1NoTracking:
         series = extract_graphs_from_labels(label_stack)
         assert series.num_frames == 3
         assert series.input_type == InputType.SEGMENTATION
-        for frame in series.frames.values():
-            assert len(frame.cells) > 0
-            for cell in frame.cells.values():
-                assert cell.track_id is None
-
-    def test_extract_graphs_from_tracks_no_tracking(self, track_positions):
-        series = extract_graphs_from_tracks(track_positions, image_shape=(100, 100))
-        assert series.num_frames == 5
-        assert series.input_type == InputType.VORONOI
         for frame in series.frames.values():
             assert len(frame.cells) > 0
             for cell in frame.cells.values():
@@ -148,14 +137,3 @@ class TestStagedEqualsMonolithic:
             for cell_id in mono_cells:
                 assert mono_cells[cell_id].track_id == staged_cells[cell_id].track_id
 
-    def test_staged_equals_monolithic_tracks(self, track_positions):
-        image_shape = (100, 100)
-        # Monolithic (no track_ids arg → no tracking)
-        mono = build_from_tracks(track_positions, image_shape=image_shape)
-
-        # Staged
-        staged = extract_graphs_from_tracks(track_positions, image_shape=image_shape)
-
-        for frame_idx in mono.frame_indices:
-            assert len(mono.frames[frame_idx].cells) == len(staged.frames[frame_idx].cells)
-            assert len(mono.frames[frame_idx].junctions) == len(staged.frames[frame_idx].junctions)

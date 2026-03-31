@@ -9,11 +9,10 @@ The tool takes cell positions over time (from nuclear tracking or segmentation l
 ### Key Design Principles
 
 1. **Layered architecture**: Each layer builds on the previous. Users get analysis depth proportional to their input data.
-2. **External tools for segmentation and tracking**: This tool does NOT do segmentation or tracking. It accepts their outputs.
+2. **External tools for segmentation**: This tool does NOT do segmentation. It accepts segmentation labels as input.
 3. **Force inference is optional**: ForSys-based tension/pressure inference enriches the analysis but is never required.
-4. **Two input paths, one internal representation**: Segmentation labels and nuclear tracks both produce the same `TissueGraph` object.
-5. **Separation of core logic and GUI**: All analysis code must work without napari. The napari widget is a thin visualization/interaction layer on top.
-6. **Multi-tissue first**: The primary output is `TissueGraphDataset` (multiple tissues from one condition). Single-tissue is just a dataset with one entry.
+4. **Separation of core logic and GUI**: All analysis code must work without napari. The napari widget is a thin visualization/interaction layer on top.
+5. **Multi-tissue first**: The primary output is `TissueGraphDataset` (multiple tissues from one condition). Single-tissue is just a dataset with one entry.
 
 ---
 
@@ -23,14 +22,12 @@ The tool takes cell positions over time (from nuclear tracking or segmentation l
 
 ```
 Layer 1: Cell positions over time
-  Input: nuclear tracks (N×3 array: frame, y, x) OR segmentation labels (T×H×W array)
+  Input: segmentation labels (T×H×W array)
   Output: cell positions, velocities, MSD, pairwise distances
-  → Available from both input types
 
-Layer 2: Cell graph (Voronoi or segmentation-derived)
-  Input: Layer 1 positions OR segmentation labels
+Layer 2: Cell graph (segmentation-derived)
+  Input: segmentation labels
   Output: TissueGraph — nodes (cells) with area/shape index, edges (junctions) with lengths/coordinates
-  → Available from both input types, but segmentation gives real boundaries
 
 Layer 3: Topology dynamics
   Input: TissueGraph time series from Layer 2
@@ -54,10 +51,8 @@ napariTissueGraph/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── graph.py               # High-level build API (single + batch)
-│   │   ├── voronoi.py             # Nuclear positions → Voronoi tessellation → graph (+ Lloyd's)
 │   │   ├── labels.py              # Segmentation labels → graph
 │   │   ├── label_tracking.py      # IoU-based label tracking + contour extraction
-│   │   ├── trackmate.py           # TrackMate XML parser
 │   │   ├── topology.py            # T1 detection, batch T1 detection
 │   │   ├── tracks.py              # Cell track analysis (Layer 1: MSD, velocities)
 │   │   ├── forsys_adapter.py       # TissueGraphFrame ↔ ForSys Frame conversion
@@ -76,10 +71,8 @@ napariTissueGraph/
 ├── tests/
 │   ├── conftest.py                # Shared fixtures (synthetic data generators)
 │   ├── test_graph.py
-│   ├── test_voronoi.py
 │   ├── test_labels.py
 │   ├── test_label_tracking.py
-│   ├── test_trackmate.py
 │   ├── test_topology.py
 │   └── test_dataset.py
 ├── pyproject.toml
@@ -105,33 +98,19 @@ napariTissueGraph/
 ### `core/graph.py` — Build API
 
 Single-tissue:
-- `build_from_labels(label_stack, ..., min_iou) → TissueGraphTimeSeries` — now assigns track IDs via IoU matching and extracts cell vertices
-- `build_from_tracks(positions, ..., track_ids, method, lloyd_iterations, lloyd_tol) → TissueGraphTimeSeries` — supports track IDs and Voronoi method selection
-- `build_from_trackmate(trackmate_data, ..., method) → TissueGraphTimeSeries` — builds from parsed TrackMate data with track IDs
-- `build_from_both(label_stack, trackmate_data, ..., match_threshold) → TissueGraphTimeSeries` — shapes from labels, tracking from TrackMate (nearest-neighbor spot-to-centroid matching)
+- `build_from_labels(label_stack, ..., min_iou) → TissueGraphTimeSeries` — assigns track IDs via IoU matching and extracts cell vertices
+- `extract_graphs_from_labels(label_stack, ...) → TissueGraphTimeSeries` — Stage 1: graph extraction without tracking
+- `assign_tracking_labels(series, label_stack, ...) → None` — Stage 2: IoU-based tracking, mutates in place
+- `apply_track_map(series, track_map) → None` — apply pre-computed track map dict
+- `has_tracking(series) → bool` — check if any cell has tracking
 
 Multi-tissue (batch):
 - `build_from_labels_4d(label_stacks, ...) → TissueGraphDataset` — accepts `Union[np.ndarray, List[np.ndarray]]` for variable-length movies
-- `build_from_tracks_4d(positions, ..., method) → TissueGraphDataset` — positions as Nx4 array (tissue_id, frame, y, x)
-- `build_from_both_4d(label_stacks, trackmate_data, ...) → TissueGraphDataset` — combined mode for multiple tissues
-
-### `core/voronoi.py` — Voronoi from positions
-
-- `compute_voronoi(positions, image_shape, method, lloyd_iterations, lloyd_tol)` — scipy Voronoi with mirror-point boundary handling; supports standard and Lloyd's relaxation
-- `voronoi_to_graph(vor, positions, n_real, image_shape)` — extract cells (with vertices), junctions, networkx graph
-- `lloyd_relaxation(positions, image_shape, n_iterations, tol)` — centroidal Voronoi tessellation
-- `_polygon_centroid(vertices)` — polygon centroid for Lloyd's algorithm
 
 ### `core/labels.py` — Graph from segmentation labels
 
 - `labels_to_graph(label_frame, ...)` — regionprops + dilation/overlap adjacency detection + skeletonized boundaries
 - `find_shared_boundary()`, `order_boundary_pixels()`, `calculate_edge_length()` — helpers
-
-### `core/trackmate.py` — TrackMate XML parser
-
-- `parse_trackmate_xml(path) → TrackMateData` — parses spots, tracks, filtered tracks, image metadata, calibration
-- `TrackMateData` dataclass: `spots_by_frame`, `spot_to_track`, `image_shape`, calibration, `to_positions_array()`, `to_positions_array_with_track_ids()`
-- Converts physical coordinates to pixel coordinates using calibration
 
 ### `core/label_tracking.py` — Label-based cell tracking
 
@@ -163,52 +142,40 @@ Multi-tissue (batch):
 - NPZ format: edge lists (no pickle), ragged arrays via flat+offsets, NaN sentinels for None
 - Private helpers: `_serialize_tissue`, `_deserialize_tissue`, `_serialize_ragged`, `_deserialize_ragged`
 
-### `napari/widget.py` — Dock widget (two workflows)
+### `napari/widget.py` — Dock widget
 
-- `SingleTissueBuildWorker` — builds one `TissueGraphTimeSeries` with T1 detection + trajectory building
-- `BatchBuildWorker` — builds multiple tissues, returns list of `TissueGraphTimeSeries`
-- `IOWorker` — save/load dataset in background thread
-- `TissueGraphWidget`:
-  - Input type selector (Segmentation Labels / Nuclear Tracks / Both)
-  - Multi-file loading: labels (.tif) and TrackMate XML(s) — both support multiple files
-  - Layer selector for tracks mode (Points layer)
-  - Mode-specific parameter panels (Voronoi, tracking, spot-label matching)
-  - Parameter inputs (pixel size, time interval, condition) — auto-filled from TrackMate calibration
-  - **Build Single**: builds one tissue → preview in napari → "Add to Dataset" or "Discard"
-  - **Build All (Batch)**: builds all loaded inputs → adds all to dataset
-  - Preview layers prefixed with `[Preview]`, separate from dataset inspection layers
+- `TissueFlowWidget`:
+  - Segmentation labels input from napari Labels layer
+  - Staged pipeline: Track → Extract → Analyze
+  - Parameter inputs (pixel size, time interval, condition)
+  - Preview layers, tagging UI, dataset management
   - **Dataset section**: summary, tissue spinner, Show/Remove tissue, Save/Load/New buttons
-  - Dataset accumulates tissues across multiple builds
 
 ---
 
 ## Completed: Input Path Refactor (TODO.md)
 
-All items in TODO.md are complete (as of 2026-03-17):
-- Three input modes: Segmentation, Nuclear Tracks, Both (Labels + Tracks)
-- TrackMate XML parser with calibration and filtered tracks
-- Lloyd's relaxation (centroidal Voronoi tessellation)
 - IoU-based label tracking for consistent track IDs
-- Cell vertex extraction (contours from labels, Voronoi regions from tracks)
-- All build APIs updated + widget with mode-specific parameter panels
+- Cell vertex extraction from label contours
+- Build APIs for segmentation labels
+
+*Note: Voronoi/TrackMate/nuclear tracks input paths were removed (2026-03-31). Only segmentation labels input remains.*
 
 ## Completed: Save/Load and Widget Redesign
 
 - `core/io.py` — `save_dataset()`, `load_dataset()`, `load_multiple_datasets()` with NPZ + metadata.json format
-- Widget redesigned with two workflows: Build Single (preview → Add to Dataset) and Build All (Batch)
-- Multi-file TrackMate XML loading
-- Build Single uses selected file in list, not always first
+- Widget redesigned with staged pipeline workflow
 - Preview layers prefixed `[Preview]`, separate from dataset inspection layers
 - Save/Load/New dataset buttons, scrollable layout
 
 ## Completed: Staged Pipeline with Visual QC
 
-- Split monolithic `build_from_*` into Stage 1 (graph extraction) and Stage 2 (tracking assignment)
-  - `extract_graphs_from_labels()`, `extract_graphs_from_tracks()`, `extract_graphs_from_trackmate()`, `extract_graphs_from_both()` — all produce graphs with `track_id=None`
-  - `assign_tracking_labels()`, `assign_tracking_trackmate()` — mutate series in place
+- Split monolithic `build_from_labels` into Stage 1 (graph extraction) and Stage 2 (tracking assignment)
+  - `extract_graphs_from_labels()` — produces graphs with `track_id=None`
+  - `assign_tracking_labels()` — mutates series in place
   - `apply_track_map()` — apply pre-computed track map dict to a series
   - `has_tracking()` — helper to check if any cell has tracking
-  - Original `build_from_*` wrappers preserved (call stage-1 then stage-2), all signatures unchanged
+  - Original `build_from_labels` wrapper preserved (calls stage-1 then stage-2)
 - New QC visualization functions in `napari/visualization.py`:
   - `build_tracked_centroids()` — centroids colored by track_id (gray for untracked)
   - `build_tracked_labels()` — label array with track IDs as pixel values for napari Labels layer QC
@@ -222,7 +189,6 @@ All items in TODO.md are complete (as of 2026-03-17):
   - `CellTrackingWorker` — runs `assign_track_ids()` directly, returns track_map dict
   - Stage 1 shows tracked labels as napari Labels layer for QC
   - Stage 2 extracts graphs then applies `apply_track_map()`, keeps tracked labels visible underneath
-  - Non-segmentation modes keep Extract → Track → Analyze order
 - **Symmetric parameter layout**: each stage group contains its own parameters inline
   - Stage 1: tracking params (seg) or Voronoi/extraction params (non-seg)
   - Stage 2: extraction params (seg) or tracking params (non-seg)

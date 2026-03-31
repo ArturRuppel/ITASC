@@ -10,7 +10,6 @@ from napariTissueFlow.structures import (
 from napariTissueFlow.core.graph import (
     build_from_labels,
     build_from_labels_4d,
-    build_from_tracks_4d,
 )
 from napariTissueFlow.core.topology import detect_all_t1_events
 
@@ -187,39 +186,6 @@ class TestBuildFromLabels4DRagged:
         for series in ds.tissues.values():
             assert isinstance(series.t1_events, list)
             assert isinstance(series.edge_trajectories, dict)
-
-
-class TestBuildFromTracks4D:
-    """Tests for build_from_tracks_4d."""
-
-    def test_basic_build(self, track_positions_4d):
-        ds = build_from_tracks_4d(track_positions_4d, condition="ctrl")
-        assert ds.n_tissues == 2
-        assert ds.condition == "ctrl"
-        assert ds.input_type == InputType.VORONOI
-        for series in ds.tissues.values():
-            assert series.num_frames == 5
-            assert series.input_type == InputType.VORONOI
-
-    def test_pixel_size_propagated(self, track_positions_4d):
-        ds = build_from_tracks_4d(track_positions_4d, pixel_size=0.325)
-        for series in ds.tissues.values():
-            assert series.pixel_size == 0.325
-
-    def test_progress_callback(self, track_positions_4d):
-        calls = []
-        ds = build_from_tracks_4d(
-            track_positions_4d,
-            progress_callback=lambda frac, msg: calls.append((frac, msg)),
-        )
-        assert len(calls) == 2
-
-    def test_graph_has_cells_and_junctions(self, track_positions_4d):
-        ds = build_from_tracks_4d(track_positions_4d)
-        for series in ds.tissues.values():
-            for frame in series.frames.values():
-                assert len(frame.cells) > 0
-                assert len(frame.junctions) > 0
 
 
 class TestDetectAllT1Events:

@@ -1,7 +1,6 @@
 """Background workers for napariTissueFlow pipeline stages.
 
-All QObject-based workers that run in QThreads are defined here,
-shared by both the main widget and the nuclear tracks widget.
+All QObject-based workers that run in QThreads are defined here.
 """
 import logging
 from enum import auto, Enum
@@ -9,7 +8,7 @@ from enum import auto, Enum
 import numpy as np
 from qtpy.QtCore import Signal, QObject
 
-from ..structures import TissueGraphTimeSeries, VoronoiMethod
+from ..structures import TissueGraphTimeSeries
 from ..core.graph import (
     build_from_labels,
     extract_graphs_from_labels,
