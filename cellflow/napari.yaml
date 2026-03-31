@@ -5,7 +5,13 @@ contributions:
     - id: cellflow.cell_flow
       title: "CellFlow"
       python_name: cellflow:CellFlowWidget
+    - id: cellflow.correction
+      title: "CellFlow Correction"
+      python_name: cellflow.correction._widget:CorrectionWidget
   widgets:
     - command: cellflow.cell_flow
       display_name: "CellFlow"
+      autogenerate: false
+    - command: cellflow.correction
+      display_name: "CellFlow Correction"
       autogenerate: false
