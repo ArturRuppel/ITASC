@@ -1,8 +1,8 @@
-# napariTissueGraph — Implementation Plan
+# CellFlow — Implementation Plan
 
 ## Project Overview
 
-**napariTissueGraph** is a napari plugin for quantifying tissue topology, rearrangement dynamics, and junction mechanics from microscopy data. It replaces and extends napariCellFlow.
+**CellFlow** is a napari plugin for quantifying tissue topology, rearrangement dynamics, and junction mechanics from microscopy data. It replaces and extends napariCellFlow.
 
 The tool takes cell positions over time (from nuclear tracking or segmentation labels) and builds a dynamic graph representation of the tissue. It tracks junction lengths, detects T1 transitions (cell intercalation events), computes cell-level statistics, and optionally maps traction force data onto junction edges.
 
@@ -44,8 +44,8 @@ Layer 4 (optional): Mechanics
 ### Directory Structure
 
 ```
-napariTissueGraph/
-├── napariTissueGraph/
+CellFlow/
+├── CellFlow/
 │   ├── __init__.py
 │   ├── napari.yaml                # napari manifest
 │   ├── core/
@@ -144,7 +144,7 @@ Multi-tissue (batch):
 
 ### `napari/widget.py` — Dock widget
 
-- `TissueFlowWidget`:
+- `CellFlowWidget`:
   - Segmentation labels input from napari Labels layer
   - Staged pipeline: Track → Extract → Analyze
   - Parameter inputs (pixel size, time interval, condition)
@@ -221,7 +221,7 @@ Membrane tension and cell pressure inference using [ForSys](https://github.com/b
 
 **Why ForSys:** ForSys provides non-invasive force inference from segmentation alone — no traction force microscopy needed. It supports both static (single-frame) and dynamic (time-series with vertex velocities) inference. Its data model (Vertex, Edge, Cell, Frame) maps directly onto our TissueGraphFrame.
 
-**Integration strategy:** Use ForSys as an **optional dependency** (`pip install napariTissueGraph[forces]`). Only the solver is used — our graph extraction is more mature and already integrated with napari. A thin adapter converts between data structures.
+**Integration strategy:** Use ForSys as an **optional dependency** (`pip install CellFlow[forces]`). Only the solver is used — our graph extraction is more mature and already integrated with napari. A thin adapter converts between data structures.
 
 #### ForSys technical reference (for implementation)
 
@@ -284,9 +284,9 @@ solver.solve_pressure(when=0, method="lagrange_pressure")
 Analysis and plotting happen in standalone scripts/notebooks:
 
 ```python
-from napariTissueGraph.core.io import load_dataset, load_multiple_datasets
-from napariTissueGraph.analysis.statistics import compute_t1_rates, pool_shape_index_distributions
-from napariTissueGraph.analysis.events import event_triggered_average_dataset
+from CellFlow.core.io import load_dataset, load_multiple_datasets
+from CellFlow.analysis.statistics import compute_t1_rates, pool_shape_index_distributions
+from CellFlow.analysis.events import event_triggered_average_dataset
 
 datasets = load_multiple_datasets(["data/wt/", "data/ko/", "data/mix/"])
 for condition, ds in datasets.items():

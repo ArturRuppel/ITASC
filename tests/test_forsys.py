@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from napariTissueFlow.core.forsys_adapter import forsys_available
+from cellflow.core.forsys_adapter import forsys_available
 
 
 # Skip all tests if forsys is not installed
@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(
 def _build_series(n_frames=1):
     """Build a small TissueGraphTimeSeries from labels for testing."""
     from tests.conftest import make_label_stack
-    from napariTissueFlow.core.graph import build_from_labels
+    from cellflow.core.graph import build_from_labels
 
     label_stack = make_label_stack(n_frames=n_frames, n_cells_side=4, image_size=200)
     return build_from_labels(label_stack)
@@ -24,7 +24,7 @@ class TestForSysAdapter:
     """Test the geometry conversion layer."""
 
     def test_tissue_frame_to_forsys(self):
-        from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
+        from cellflow.core.forsys_adapter import tissue_frame_to_forsys
 
         series = _build_series()
         frame = list(series.frames.values())[0]
@@ -35,7 +35,7 @@ class TestForSysAdapter:
         assert len(fs_frame.cells) > 0
 
     def test_forsys_frame_has_big_edges(self):
-        from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
+        from cellflow.core.forsys_adapter import tissue_frame_to_forsys
 
         series = _build_series()
         frame = list(series.frames.values())[0]
@@ -46,8 +46,8 @@ class TestForSysAdapter:
 
     def test_no_vertices_raises(self):
         """Frames without cell vertices should raise ValueError."""
-        from napariTissueFlow.core.forsys_adapter import tissue_frame_to_forsys
-        from napariTissueFlow.structures import (
+        from cellflow.core.forsys_adapter import tissue_frame_to_forsys
+        from cellflow.structures import (
             CellData, JunctionData, TissueGraphFrame, InputType,
         )
         import networkx as nx
@@ -71,7 +71,7 @@ class TestForceInference:
     """Test the full inference pipeline."""
 
     def test_infer_forces(self):
-        from napariTissueFlow.core.mechanics import infer_forces
+        from cellflow.core.mechanics import infer_forces
 
         series = _build_series()
         infer_forces(series, method="static")
@@ -84,7 +84,7 @@ class TestForceInference:
         assert n_tensions > 0, "No tensions were inferred"
 
     def test_infer_pressures(self):
-        from napariTissueFlow.core.mechanics import infer_forces
+        from cellflow.core.mechanics import infer_forces
 
         series = _build_series()
         infer_forces(series, method="static")
@@ -96,7 +96,7 @@ class TestForceInference:
         assert n_pressures > 0, "No pressures were inferred"
 
     def test_tensions_are_finite(self):
-        from napariTissueFlow.core.mechanics import infer_forces
+        from cellflow.core.mechanics import infer_forces
 
         series = _build_series()
         infer_forces(series, method="static")
@@ -107,14 +107,14 @@ class TestForceInference:
                     assert np.isfinite(jd.tension), f"Non-finite tension: {jd.tension}"
 
     def test_dynamic_not_implemented(self):
-        from napariTissueFlow.core.mechanics import infer_forces
+        from cellflow.core.mechanics import infer_forces
 
         series = _build_series()
         with pytest.raises(NotImplementedError):
             infer_forces(series, method="dynamic")
 
     def test_invalid_method(self):
-        from napariTissueFlow.core.mechanics import infer_forces
+        from cellflow.core.mechanics import infer_forces
 
         series = _build_series()
         with pytest.raises(ValueError):
@@ -122,7 +122,7 @@ class TestForceInference:
 
     def test_multiframe(self):
         """Test inference across multiple frames."""
-        from napariTissueFlow.core.mechanics import infer_forces
+        from cellflow.core.mechanics import infer_forces
 
         series = _build_series(n_frames=3)
         infer_forces(series, method="static")
@@ -137,9 +137,9 @@ class TestResultPersistence:
     """Test that inferred values survive save/load."""
 
     def test_save_load_round_trip(self, tmp_path):
-        from napariTissueFlow.core.mechanics import infer_forces
-        from napariTissueFlow.core.io import save_dataset, load_dataset
-        from napariTissueFlow.structures import TissueGraphDataset
+        from cellflow.core.mechanics import infer_forces
+        from cellflow.core.io import save_dataset, load_dataset
+        from cellflow.structures import TissueGraphDataset
 
         series = _build_series()
         infer_forces(series, method="static")
@@ -173,8 +173,8 @@ class TestVisualization:
     """Test tension/pressure visualization builders."""
 
     def test_tension_colored_junctions(self):
-        from napariTissueFlow.core.mechanics import infer_forces
-        from napariTissueFlow.napari.visualization import build_tension_colored_junctions
+        from cellflow.core.mechanics import infer_forces
+        from cellflow.napari.visualization import build_tension_colored_junctions
 
         series = _build_series()
         infer_forces(series, method="static")
@@ -185,8 +185,8 @@ class TestVisualization:
         assert colors.shape[1] == 4  # RGBA
 
     def test_pressure_colored_cells(self):
-        from napariTissueFlow.core.mechanics import infer_forces
-        from napariTissueFlow.napari.visualization import build_pressure_colored_cells
+        from cellflow.core.mechanics import infer_forces
+        from cellflow.napari.visualization import build_pressure_colored_cells
 
         series = _build_series()
         infer_forces(series, method="static")
@@ -197,7 +197,7 @@ class TestVisualization:
         assert colors.shape[1] == 4
 
     def test_no_tensions_returns_empty(self):
-        from napariTissueFlow.napari.visualization import build_tension_colored_junctions
+        from cellflow.napari.visualization import build_tension_colored_junctions
 
         series = _build_series()
         # No inference run — all tensions are None
@@ -209,5 +209,5 @@ class TestGracefulFailure:
     """Test behavior when forsys is not available."""
 
     def test_forsys_available_returns_bool(self):
-        from napariTissueFlow.core.forsys_adapter import forsys_available
+        from cellflow.core.forsys_adapter import forsys_available
         assert isinstance(forsys_available(), bool)

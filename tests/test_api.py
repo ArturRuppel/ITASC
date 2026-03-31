@@ -9,16 +9,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 from conftest import make_label_stack
 
-from napariTissueFlow.core.graph import build_from_labels
-from napariTissueFlow.core.topology import detect_t1_events
-from napariTissueFlow.core.io import save_dataset, load_dataset
-from napariTissueFlow.analysis.trajectories import build_edge_trajectories
-from napariTissueFlow.structures import (
+from cellflow.core.graph import build_from_labels
+from cellflow.core.topology import detect_t1_events
+from cellflow.core.io import save_dataset, load_dataset
+from cellflow.analysis.trajectories import build_edge_trajectories
+from cellflow.structures import (
     InputType,
     TissueGraphDataset,
     TissueGraphTimeSeries,
 )
-from napariTissueFlow.core.api import (
+from cellflow.core.api import (
     _resolve_source,
     get_cells,
     get_junctions,

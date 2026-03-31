@@ -2,15 +2,15 @@
 import numpy as np
 import pytest
 
-from napariTissueFlow.core.graph import (
+from cellflow.core.graph import (
     build_from_labels,
     extract_graphs_from_labels,
     assign_tracking_labels,
     apply_track_map,
     has_tracking,
 )
-from napariTissueFlow.core.label_tracking import assign_track_ids
-from napariTissueFlow.structures import InputType
+from cellflow.core.label_tracking import assign_track_ids
+from cellflow.structures import InputType
 
 
 class TestStage1NoTracking:

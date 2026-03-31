@@ -1,0 +1,13 @@
+{
+  "version": "1.2",
+  "condition": "",
+  "pixel_size": null,
+  "time_interval": null,
+  "input_type": null,
+  "n_tissues": 1,
+  "tissue_ids": [
+    0
+  ],
+  "metadata": {},
+  "created": "2026-03-22T21:04:17.603575"
+}

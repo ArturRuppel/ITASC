@@ -1,4 +1,4 @@
-"""Generate synthetic sample data for testing napariTissueFlow.
+"""Generate synthetic sample data for testing cellflow.
 
 Creates:
   - sample_data/segmentation_labels.tif  (T x H x W label stack)

@@ -2,14 +2,14 @@
 import numpy as np
 import pytest
 
-from napariTissueFlow.structures import (
+from cellflow.structures import (
     EdgeTrajectory,
     JunctionData,
     TissueGraphFrame,
     TissueGraphTimeSeries,
     InputType,
 )
-from napariTissueFlow.analysis.tagging import (
+from cellflow.analysis.tagging import (
     tag_trajectory,
     untag_trajectory,
     name_trajectory,

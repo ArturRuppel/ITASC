@@ -1,4 +1,4 @@
-# Bug Log — napariTissueFlow
+# Bug Log — CellFlow
 
 ---
 
@@ -21,7 +21,7 @@
 **Symptom:** Enabling the GPU checkbox does not result in GPU inference. Cellpose runs on CPU regardless.
 **Root cause:** `make_cp_model` passed `gpu=True` without first verifying that `torch.cuda.is_available()`. If CUDA is absent, cellpose silently fell back to CPU without informing the user.
 **Fix (committed):** `make_cp_model` now calls `torch.cuda.is_available()` before constructing the model. If CUDA is not available and the user requested GPU, a `WARNING` is logged: *"GPU requested but CUDA is not available; using CPU."* This makes the fallback visible rather than silent.
-**Residual (env issue):** The `napariTissueFlow` conda environment ships with CPU-only torch. GPU will not work until a CUDA-enabled torch is installed in that env: `pip install torch --index-url https://download.pytorch.org/whl/cu128` (match CUDA version to system).
+**Residual (env issue):** The `CellFlow` conda environment ships with CPU-only torch. GPU will not work until a CUDA-enabled torch is installed in that env: `pip install torch --index-url https://download.pytorch.org/whl/cu128` (match CUDA version to system).
 **Files:** `segtrack/_pipeline.py` (`make_cp_model`)
 
 ---

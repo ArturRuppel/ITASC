@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "napariTissueFlow"
+name = "cellflow"
 version = "0.1.0"
 description = "A napari plugin for cell segmentation, tracking, and tissue topology analysis"
 requires-python = ">=3.9"
@@ -40,18 +40,18 @@ dev = [
 ]
 
 [project.entry-points."napari.manifest"]
-napariTissueFlow = "napariTissueFlow:napari.yaml"
+cellflow = "cellflow:napari.yaml"
 
 # Analysis modules are discovered via this entry-point group.
 # Third-party packages can register their own modules here.
-# [project.entry-points."napariTissueFlow.analysis_modules"]
+# [project.entry-points."cellflow.analysis_modules"]
 # my_module = "my_package:MyModule"
 
 [tool.setuptools.packages.find]
-include = ["napariTissueFlow*"]
+include = ["cellflow*"]
 
 [tool.setuptools.package-data]
-napariTissueFlow = ["napari.yaml"]
+cellflow = ["napari.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

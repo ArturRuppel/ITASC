@@ -1,4 +1,4 @@
-"""Compare native ForSys pipeline vs napariTissueFlow adapter.
+"""Compare native ForSys pipeline vs cellflow adapter.
 
 Runs both pipelines on the same label image (t_0_cells.tif) and compares
 the inferred tensions and pressures.
@@ -191,13 +191,13 @@ print()
 # 3.  OUR ADAPTER pipeline
 # ══════════════════════════════════════════════════════════════════════
 print("=" * 70)
-print("napariTissueFlow ADAPTER")
+print("cellflow ADAPTER")
 print("=" * 70)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from napariTissueFlow.core.graph import build_from_labels
-from napariTissueFlow.core.mechanics import infer_forces
+from cellflow.core.graph import build_from_labels
+from cellflow.core.mechanics import infer_forces
 
 label_stack = label_img[np.newaxis, ...]  # (1, H, W)
 series = build_from_labels(label_stack)

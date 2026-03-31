@@ -1,4 +1,4 @@
-# TODO — napariTissueGraph
+# TODO — CellFlow
 
 ## Overview
 
@@ -319,7 +319,7 @@ computes the mechanical forces (edge tensions, cell pressures) that produce thos
 Supports static (single frame) and dynamic (multi-frame with vertex velocities) inference.
 
 **Key constraint:** ForSys nominally pins `numpy < 2.0` and `scikit-image <= 0.21.0`, but
-works fine with numpy 2.x in practice. Install as optional extra: `pip install napariTissueGraph[forces]`.
+works fine with numpy 2.x in practice. Install as optional extra: `pip install CellFlow[forces]`.
 
 ### 13a. Data model updates (`structures.py`)
 - [x] Add `pressure: Optional[float] = None` to `CellData` (already existed)

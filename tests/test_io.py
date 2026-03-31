@@ -2,17 +2,17 @@
 import numpy as np
 import pytest
 
-from napariTissueFlow.core.graph import build_from_labels
-from napariTissueFlow.core.io import (
+from cellflow.core.graph import build_from_labels
+from cellflow.core.io import (
     save_dataset,
     load_dataset,
     load_multiple_datasets,
     _serialize_ragged,
     _deserialize_ragged,
 )
-from napariTissueFlow.core.topology import detect_t1_events
-from napariTissueFlow.analysis.trajectories import build_edge_trajectories
-from napariTissueFlow.structures import (
+from cellflow.core.topology import detect_t1_events
+from cellflow.analysis.trajectories import build_edge_trajectories
+from cellflow.structures import (
     InputType,
     TissueGraphDataset,
     TissueGraphTimeSeries,
