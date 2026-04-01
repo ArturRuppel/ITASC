@@ -102,22 +102,11 @@ split — `split_draw` returns False or produces no visible change.
 
 ---
 
-### B5. Ctrl+Z undo does not work ⚠️ open
+### B5. Ctrl+Z undo does not work ✅ works
 **Symptom:** Pressing `Ctrl+Z` while the correction widget is active has no effect.
 
-**Root cause (suspected):**
-- napari's `Labels.undo()` requires the layer to have been modified via the napari
-  painting API (which records history). In-place numpy modifications (`seg[...] = v`)
-  bypass napari's history entirely, so there is nothing to undo.
-- Additionally, `_widget.py` sets `layer.mode = "pan_zoom"` on activate, which may
-  clear napari's undo stack for that layer.
-
-**Fix plan:**
-1. Before each correction operation, snapshot the affected region (or the full 2D
-   frame) into a manual undo stack (`collections.deque`, max ~20 entries).
-2. Bind `Ctrl+Z` to pop the last snapshot and write it back to `_layer.data[t]`,
-   then call `_layer.refresh()`.
-3. Optionally bind `Ctrl+Y` / `Ctrl+Shift+Z` for redo.
+**Status:** napari 0.7.0's `Labels.undo()` tracks in-place numpy writes — confirmed
+working. The existing `key_undo` binding (`Control-z` → `_layer.undo()`) is sufficient.
 
 ---
 
@@ -130,41 +119,20 @@ which uses the normal foreground colour that adapts to the active Qt palette.
 
 ---
 
-### B7. Commands sometimes silently fail / fire inconsistently ⚠️ open
+### B7. Commands sometimes silently fail / fire inconsistently ✅ fixed
 **Symptom:** Correction operations (merge, split, swap, erase) occasionally do nothing
 even when the cursor is clearly over the right cell and the correct shortcut is used.
 No error appears in the napari notification area.
 
-**Suspected root causes:**
-1. **Modifier detection is fragile.** `_mod()` parses vispy's `Key.__str__()` output
-   (`"<Key 'Control'>"`) with string slicing. If vispy changes the repr or if a
-   modifier is held at a slightly different moment, `mods` can be empty or wrong,
-   causing the callback to fall through without matching any branch.
-2. **`CellHighlight` Shapes layer steals active-layer focus** during `_update_highlight`.
-   After `hl.data = [contour]` napari can silently make the Shapes layer the active
-   layer, so subsequent key bindings (`Delete`, `n`, `f`, `Ctrl-z`) fire on the wrong
-   layer and are swallowed.
-3. **Two-step state becomes stale.** The Ctrl+Left-click accumulator and the
-   Ctrl+Right-click swap both store state between mouse events.  If the user scrolls,
-   zooms, or switches layers between the two clicks, the stored position is for a
-   different frame or a layer that no longer matches `_layer`.
-4. **`event.type != "mouse_press"` early-return** means any event that arrives as
-   `"mouse_release"` or `"mouse_move"` before the first press (rare but possible
-   during fast gesture recognition) will silently no-op.
-
-**Fix plan:**
-1. Replace the `_mod()` string-parsing heuristic with
-   `napari.utils.key_bindings.KeyBinding` or check vispy's `event.modifiers`
-   directly via `type(m).__name__` (e.g. `"Control"`) — more robust than `__str__`.
-2. After every `_update_highlight()` call, unconditionally reassert
-   `viewer.layers.selection.active = self._layer` and verify it stuck (compare
-   `.selection.active is self._layer`).
-3. Add a frame-guard to the two-step operations: if the stored step's time index
-   differs from the current `viewer.dims.current_step[0]`, discard the stored state
-   and show a warning.
-4. Consider replacing the low-level `mouse_drag_callbacks` approach with napari's
-   `layer.mouse_press_callbacks` (fires only on press) to avoid the early-return
-   guard entirely.
+**Fixes applied:**
+1. ✅ **Modifier detection**: replaced fragile `_mod()` string-parser with
+   `{m.name for m in event.modifiers}` — uses vispy's stable `.name` attribute.
+2. ✅ **Focus stealing**: `_update_highlight()` already reasserts
+   `viewer.layers.selection.active = self._layer` at the end; this is sufficient.
+3. ✅ **Two-step state frame-guard**: `_ctrl_click_first_t` and `_swap_first_t` store
+   the time frame at the first click. If the second click is on a different frame, the
+   operation is cancelled with a status message and the first click is reset.
+4. **`event.type` guard**: existing guard is correct; no change needed.
 
 ---
 
@@ -251,8 +219,8 @@ added at the bottom of the correction dock panel.
 5. **F3** ✅ — Full shortcut redesign: selection-first model (click to highlight, then act)
 6. **F5** ✅ — Attribution added; label colour fixed to `palette(text)`
 7. **F2** ✅ — Cell highlighting: left-click selects, cyan contour overlay, dims-aware
-8. **B7** ⚠️ — Fix intermittent silent failures (modifier detection, focus stealing, stale two-step state)
-9. **B5** — Implement manual undo stack (blocks reliable corrections)
+8. **B7** ✅ — Fix intermittent silent failures (modifier detection, frame-guard for two-step ops)
+9. **B5** ✅ — Ctrl+Z works natively in napari 0.7.0
 10. **B4** — Fix split-by-line reliability (line extension + denser sampling)
 11. **F1** — Draw new cells from junctions (largest new feature)
 

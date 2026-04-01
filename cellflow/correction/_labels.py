@@ -97,6 +97,30 @@ def _draw_line(shape: tuple[int, int], pts: list[tuple[int, int]]) -> np.ndarray
     return line
 
 
+def _extend_endpoints(
+    pts: list[tuple[float, float]], distance: float
+) -> list[tuple[float, float]]:
+    """Prepend and append one extra point beyond each endpoint along the endpoint tangent.
+
+    This ensures the drawn line reaches (and crosses) the cell boundary even
+    when the user's drag started or ended slightly inside the cell.
+    """
+    if len(pts) < 2:
+        return pts
+
+    def _extend(pt: tuple, neighbor: tuple, dist: float) -> tuple[float, float]:
+        dr = pt[0] - neighbor[0]
+        dc = pt[1] - neighbor[1]
+        mag = (dr ** 2 + dc ** 2) ** 0.5
+        if mag < 1e-6:
+            return pt
+        return (pt[0] + dr / mag * dist, pt[1] + dc / mag * dist)
+
+    new_start = _extend(pts[0],  pts[1],       distance)
+    new_end   = _extend(pts[-1], pts[-2],       distance)
+    return [new_start] + list(pts) + [new_end]
+
+
 # ── misc helpers ──────────────────────────────────────────────────────────────
 
 def _free_label(seg: np.ndarray) -> int:
@@ -259,6 +283,12 @@ def split_draw(seg: np.ndarray, positions: list, *, curlabel: int | None = None)
     bbox = _extend_bbox(bbox, 1.25, seg.shape)
     crop = _crop(seg, bbox).copy()
     local_pts = _to_local(positions, bbox)
+
+    # Extend endpoints so the line is guaranteed to cross the cell boundary
+    h = bbox[2] - bbox[0]
+    w = bbox[3] - bbox[1]
+    extend_dist = max(int(np.sqrt(h ** 2 + w ** 2) / 2), 10)
+    local_pts = _extend_endpoints(local_pts, extend_dist)
 
     interp = _interpolate(local_pts)
     line = _draw_line(crop.shape, interp)

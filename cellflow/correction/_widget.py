@@ -9,13 +9,14 @@ Correction shortcuts
 --------------------
 Left-click              Select / highlight cell (click background to deselect)
 Delete                  Erase selected cell
-Ctrl+Left-click (×2)   Merge or split:
-                          • same cell twice  → split (watershed, 2 seed clicks)
-                          • two diff cells   → merge
-Ctrl+Right-click        Start swap — then Right-click second cell
+Ctrl+Left-click         Merge (if a cell is selected) or start split:
+                          • cell selected + click diff cell → merge
+                          • click same cell twice          → split (watershed)
+Ctrl+Right-click        Swap: if a cell is selected, swaps immediately;
+                          otherwise starts two-step swap (Right-click second cell)
 n                       Select next free label, switch to paint mode
 f                       Select next free label, switch to fill mode
-Ctrl-z                  Undo
+Ctrl-z                  Undo (native napari)
 Shift+Right-drag        Split by drawn line (uses selected cell if set)
 Shift+Left-drag         Redraw junction
 """
@@ -52,9 +53,12 @@ class CorrectionWidget(QWidget):
 
         # selection / operation state
         self._selected_label: int = 0          # currently highlighted cell
-        self._ctrl_click_first        = None   # first Ctrl+Left-Click position
+        self._selected_pos            = None   # world position of the left-click selection
+        self._ctrl_click_first        = None   # first Ctrl+Left-Click position (split mode)
         self._ctrl_click_first_label: int = 0
+        self._ctrl_click_first_t: int = -1     # time frame of first Ctrl+Left-Click
         self._swap_first_pos          = None   # first Ctrl+Right-Click position
+        self._swap_first_t: int = -1           # time frame of first Ctrl+Right-Click
 
         self._drag_callbacks: list = []
         self._bound_keys: list = []
@@ -109,16 +113,17 @@ class CorrectionWidget(QWidget):
         lbl_ref = QGroupBox("Correction shortcuts")
         lbl_lay = QVBoxLayout(lbl_ref)
         for key, desc in [
-            ("Left-click",                   "Select / highlight cell"),
-            ("Delete",                        "Erase selected cell"),
-            ("Ctrl+Left-click → same cell",   "Split (watershed, 2 seed clicks)"),
-            ("Ctrl+Left-click → diff cell",   "Merge two cells"),
-            ("Ctrl+Right-click → Right-click","Swap labels"),
-            ("n",                             "Paint with new label"),
-            ("f",                             "Fill with new label"),
-            ("Ctrl-z",                        "Undo"),
-            ("Shift+Right-drag",              "Split by drawn line"),
-            ("Shift+Left-drag",               "Redraw junction"),
+            ("Left-click",                          "Select / highlight cell"),
+            ("Delete",                              "Erase selected cell"),
+            ("Ctrl+Left-click (cell selected)",     "Merge with clicked cell"),
+            ("Ctrl+Left-click × 2 (same cell)",     "Split (watershed, 2 seeds)"),
+            ("Ctrl+Right-click (cell selected)",      "Swap with clicked cell"),
+            ("Ctrl+Right-click → Right-click",        "Swap (two-step, no selection)"),
+            ("n",                                   "Paint with new label"),
+            ("f",                                   "Fill with new label"),
+            ("Ctrl-z",                              "Undo (native napari)"),
+            ("Shift+Right-drag",                    "Split by drawn line"),
+            ("Shift+Left-drag",                     "Redraw junction"),
         ]:
             lbl_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
         root.addWidget(lbl_ref)
@@ -175,9 +180,12 @@ class CorrectionWidget(QWidget):
     def _activate(self, layer: napari.layers.Labels):
         self._layer = layer
         self._selected_label = 0
+        self._selected_pos = None
         self._ctrl_click_first = None
         self._ctrl_click_first_label = 0
+        self._ctrl_click_first_t = -1
         self._swap_first_pos = None
+        self._swap_first_t = -1
 
         # ── suspend conflicting napari callbacks ──────────────────────────
         self._saved_viewer_drag_cbs = list(self.viewer.mouse_drag_callbacks)
@@ -225,9 +233,12 @@ class CorrectionWidget(QWidget):
 
         self._layer = None
         self._selected_label = 0
+        self._selected_pos = None
         self._ctrl_click_first = None
         self._ctrl_click_first_label = 0
+        self._ctrl_click_first_t = -1
         self._swap_first_pos = None
+        self._swap_first_t = -1
         self._saved_viewer_drag_cbs = []
         self._saved_layer_drag_cbs = []
         self._activate_btn.setText("Activate")
@@ -354,17 +365,10 @@ class CorrectionWidget(QWidget):
             except Exception as exc:
                 show_error(f"delete error: {exc}")
 
-        def key_undo(_layer):
-            try:
-                _layer.undo()
-            except Exception as exc:
-                show_error(f"undo error: {exc}")
-
         for key, fn in [
-            ("n",         key_n),
-            ("f",         key_f),
-            ("Delete",    key_delete),
-            ("Control-z", key_undo),
+            ("n",      key_n),
+            ("f",      key_f),
+            ("Delete", key_delete),
         ]:
             layer.bind_key(key, fn, overwrite=True)
             self._bound_keys.append(key)
@@ -378,56 +382,80 @@ class CorrectionWidget(QWidget):
 
                 t   = int(self.viewer.dims.current_step[0])
                 btn = event.button
-                def _mod(k):
-                    s = str(k)
-                    return s[6:-2] if s.startswith("<Key '") and s.endswith("'>") else s
-                mods = {_mod(m) for m in event.modifiers}
+                mods = {m.name for m in event.modifiers}
 
                 seg2d = _layer.data[t]
                 pos   = _layer.world_to_data(event.position)
 
-                # ── Ctrl+Right-click: start swap ──────────────────────────
+                # ── Ctrl+Right-click: swap ────────────────────────────────
                 if btn == 2 and mods == {"Control"}:
                     lab = _label_at(seg2d, pos)
                     if lab == 0:
                         self._set_status("Swap — click on a cell (not background)")
                         return
-                    self._swap_first_pos = pos
-                    self._set_status(
-                        f"Swap — label {lab} selected, right-click second cell"
-                    )
+                    if (
+                        self._selected_label != 0
+                        and self._selected_pos is not None
+                        and lab != self._selected_label
+                    ):
+                        # Cell already selected → swap directly
+                        if swap_labels(seg2d, self._selected_pos, pos):
+                            _layer.refresh()
+                            self._selected_label = 0
+                            self._selected_pos = None
+                            self._update_highlight(t, 0)
+                            self._set_status(f"Swapped — Active on '{_layer.name}'")
+                        else:
+                            self._set_status("Swap failed — click on two different cells")
+                    else:
+                        # No prior selection → enter two-step swap mode
+                        self._swap_first_pos = pos
+                        self._swap_first_t = t
+                        self._set_status(
+                            f"Swap — label {lab} selected, right-click second cell"
+                        )
                     return
 
                 # ── Plain Right-click: complete swap ──────────────────────
                 if btn == 2 and not mods:
                     if self._swap_first_pos is not None:
-                        if swap_labels(seg2d, self._swap_first_pos, pos):
+                        if t != self._swap_first_t:
+                            self._swap_first_pos = None
+                            self._swap_first_t = -1
+                            self._set_status("Frame changed — swap cancelled")
+                        elif swap_labels(seg2d, self._swap_first_pos, pos):
                             _layer.refresh()
+                            self._swap_first_pos = None
+                            self._swap_first_t = -1
                             self._set_status(f"Swapped — Active on '{_layer.name}'")
                         else:
                             self._set_status(
                                 "Swap failed — click on two different cells"
                             )
-                        self._swap_first_pos = None
+                            self._swap_first_pos = None
+                            self._swap_first_t = -1
                     return
 
-                # ── Ctrl+Left-click: merge or split (two-click) ───────────
+                # ── Ctrl+Left-click: merge (if cell selected) or split ────
                 if btn == 1 and mods == {"Control"}:
                     lab = _label_at(seg2d, pos)
                     if lab == 0:
                         self._set_status("Click on a cell, not background")
                         return
-                    if self._ctrl_click_first is None:
-                        self._ctrl_click_first = pos
-                        self._ctrl_click_first_label = lab
-                        self._update_highlight(t, lab)
-                        self._set_status(
-                            f"Label {lab} — Ctrl+click same cell again to split, "
-                            f"or Ctrl+click a different cell to merge"
-                        )
-                    else:
-                        if lab == self._ctrl_click_first_label:
-                            # same cell → watershed split (two seeds)
+
+                    if self._ctrl_click_first is not None:
+                        # ── already in split mode (waiting for second seed) ──
+                        if t != self._ctrl_click_first_t:
+                            # Frame changed — restart split mode
+                            self._ctrl_click_first = pos
+                            self._ctrl_click_first_label = lab
+                            self._ctrl_click_first_t = t
+                            self._update_highlight(t, lab)
+                            self._set_status(
+                                f"Frame changed — restarted: label {lab} selected"
+                            )
+                        elif lab == self._ctrl_click_first_label:
+                            # Second seed on same cell → split
                             ok = split_across(
                                 seg2d, self._image_frame(t),
                                 self._ctrl_click_first, pos,
@@ -436,18 +464,44 @@ class CorrectionWidget(QWidget):
                                 f"Split — Active on '{_layer.name}'"
                                 if ok else "Split failed — seeds too close or result too small"
                             )
+                            _layer.refresh()
+                            self._ctrl_click_first = None
+                            self._ctrl_click_first_label = 0
+                            self._ctrl_click_first_t = -1
+                            self._update_highlight(t, _label_at(seg2d, pos))
                         else:
-                            # different cell → merge
-                            ok = merge_cells(seg2d, self._ctrl_click_first, pos)
+                            # Different cell during split mode — cancel split,
+                            # fall through to merge-or-new-split logic below
+                            self._ctrl_click_first = None
+                            self._ctrl_click_first_label = 0
+                            self._ctrl_click_first_t = -1
+
+                    if self._ctrl_click_first is None:
+                        # ── fresh click ───────────────────────────────────────
+                        if (
+                            self._selected_label != 0
+                            and self._selected_pos is not None
+                            and lab != self._selected_label
+                        ):
+                            # Cell already selected → merge directly
+                            ok = merge_cells(seg2d, self._selected_pos, pos)
                             self._set_status(
                                 f"Merged — Active on '{_layer.name}'"
                                 if ok else "Merge failed — labels not touching"
                             )
-                        _layer.refresh()
-                        self._ctrl_click_first = None
-                        self._ctrl_click_first_label = 0
-                        # keep highlight on the cell at current click position
-                        self._update_highlight(t, _label_at(seg2d, pos))
+                            _layer.refresh()
+                            self._selected_label = 0
+                            self._selected_pos = None
+                            self._update_highlight(t, _label_at(seg2d, pos))
+                        else:
+                            # No prior selection (or clicking same cell) → start split
+                            self._ctrl_click_first = pos
+                            self._ctrl_click_first_label = lab
+                            self._ctrl_click_first_t = t
+                            self._update_highlight(t, lab)
+                            self._set_status(
+                                f"Label {lab} — Ctrl+click same cell again for second split seed"
+                            )
                     return
 
                 # ── Plain Left-click: select / highlight cell ─────────────
@@ -455,8 +509,11 @@ class CorrectionWidget(QWidget):
                     # cancel any in-progress multi-step operations
                     self._ctrl_click_first = None
                     self._ctrl_click_first_label = 0
+                    self._ctrl_click_first_t = -1
                     self._swap_first_pos = None
+                    self._swap_first_t = -1
                     lab = _label_at(seg2d, pos)
+                    self._selected_pos = pos if lab != 0 else None
                     self._update_highlight(t, lab)
                     if lab:
                         self._set_status(
