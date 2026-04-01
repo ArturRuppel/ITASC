@@ -109,15 +109,15 @@ class CellFlowWidget(QWidget):
         # Single scroll area around the whole plugin so that when another
         # dock panel is open and the available height shrinks, the entire
         # CellFlow panel scrolls as one unit rather than getting clipped.
-        _outer_scroll = QScrollArea()
-        _outer_scroll.setWidgetResizable(False)   # preserve natural tab height
-        _outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        outer_layout.addWidget(_outer_scroll)
+        self._outer_scroll = QScrollArea()
+        self._outer_scroll.setWidgetResizable(False)   # preserve natural tab height
+        self._outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer_layout.addWidget(self._outer_scroll)
 
         _plugin_root = QWidget()
         _plugin_layout = QVBoxLayout(_plugin_root)
         _plugin_layout.setContentsMargins(0, 0, 0, 0)
-        _outer_scroll.setWidget(_plugin_root)
+        self._outer_scroll.setWidget(_plugin_root)
 
         self.tab_widget = QTabWidget()
         _plugin_layout.addWidget(self.tab_widget)
@@ -403,6 +403,10 @@ class CellFlowWidget(QWidget):
         from .databank_widget import DataBankWidget
         self._databank_widget = DataBankWidget(self.viewer)
         self.tab_widget.addTab(self._databank_widget, "Database")
+
+        # Now that all tabs have been added the tab widget has a real sizeHint;
+        # resize the scroll container to match so scrollbars appear correctly.
+        self._outer_scroll.widget().adjustSize()
 
         # Set initial button state
         self._update_pipeline_buttons()
