@@ -186,36 +186,43 @@ def split_across(
     r0, c0, r1, c1 = bbox
     crop_seg = _crop(seg, bbox)
     mask = (crop_seg == la).astype(np.uint8)
+    interior = mask.astype(bool)
 
-    rs = int(round(float(pos_start[-2]))) - r0
-    cs = int(round(float(pos_start[-1]))) - c0
-    re = int(round(float(pos_end[-2]))) - r0
-    ce = int(round(float(pos_end[-1]))) - c0
-    rs = max(0, min(rs, mask.shape[0] - 1))
-    cs = max(0, min(cs, mask.shape[1] - 1))
-    re = max(0, min(re, mask.shape[0] - 1))
-    ce = max(0, min(ce, mask.shape[1] - 1))
+    rs = max(0, min(int(round(float(pos_start[-2]))) - r0, mask.shape[0] - 1))
+    cs = max(0, min(int(round(float(pos_start[-1]))) - c0, mask.shape[1] - 1))
+    re = max(0, min(int(round(float(pos_end[-2]))) - r0, mask.shape[0] - 1))
+    ce = max(0, min(int(round(float(pos_end[-1]))) - c0, mask.shape[1] - 1))
 
     new_lab = _free_label(seg)
-    markers = np.zeros(mask.shape, dtype=np.int32)
-    markers[rs, cs] = la
-    markers[re, ce] = new_lab
 
-    if img is not None:
-        crop_img = _crop(img, bbox)
-        ws = watershed(crop_img, markers=markers, mask=mask)
-    else:
-        dist = distance_transform_edt(mask)
-        ws = watershed(-dist, markers=markers, mask=mask)
+    for radius in range(7):
+        markers = np.zeros(mask.shape, dtype=np.int32)
+        if radius == 0:
+            markers[rs, cs] = la
+            markers[re, ce] = new_lab
+        else:
+            d = disk(radius)
+            seed_a = np.zeros(mask.shape, dtype=bool)
+            seed_a[rs, cs] = True
+            seed_b = np.zeros(mask.shape, dtype=bool)
+            seed_b[re, ce] = True
+            markers[binary_dilation(seed_a, d) & interior] = la
+            markers[binary_dilation(seed_b, d) & interior] = new_lab
 
-    if np.sum(ws == la) < MIN_CELL_SIZE or np.sum(ws == new_lab) < MIN_CELL_SIZE:
-        return False
+        if img is not None:
+            crop_img = _crop(img, bbox)
+            ws = watershed(crop_img, markers=markers, mask=mask)
+        else:
+            dist = distance_transform_edt(mask)
+            ws = watershed(-dist, markers=markers, mask=mask)
 
-    seg[r0:r1, c0:c1][ws == new_lab] = new_lab
-    # Only create boundary between the two split regions, not at the outer cell edge
-    junction = _boundary_between(ws == la, ws == new_lab) & mask.astype(bool)
-    seg[r0:r1, c0:c1][junction] = 0
-    return True
+        if np.sum(ws == la) >= MIN_CELL_SIZE and np.sum(ws == new_lab) >= MIN_CELL_SIZE:
+            seg[r0:r1, c0:c1][ws == new_lab] = new_lab
+            junction = _boundary_between(ws == la, ws == new_lab) & interior
+            seg[r0:r1, c0:c1][junction] = 0
+            return True
+
+    return False
 
 
 def split_draw(seg: np.ndarray, positions: list) -> bool:

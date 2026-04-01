@@ -9,7 +9,7 @@ Label shortcuts
 ---------------
 n                       Select next free label, switch to paint mode
 Shift-n                 Select next free label, switch to fill mode
-w  →  Ctrl+drag         Swap two labels (single frame)
+s  →  Ctrl+drag         Swap two labels (single frame)
 Ctrl-z                  Undo
 
 Right-click             Erase cell
@@ -103,7 +103,7 @@ class CorrectionWidget(QWidget):
         for key, desc in [
             ("n",                  "Paint with new label"),
             ("Shift-n",            "Fill with new label"),
-            ("w → Ctrl+drag",      "Swap two labels"),
+            ("s → Ctrl+drag",      "Swap two labels"),
             ("Right-click",        "Erase cell"),
             ("Ctrl+Left-drag",     "Merge cells (A→B, touching)"),
             ("Ctrl+Right-drag",    "Split (watershed, same cell)"),
@@ -216,6 +216,7 @@ class CorrectionWidget(QWidget):
             return self.viewer.layers[_DRAW_LAYER]
         dl = self.viewer.add_shapes(
             name=_DRAW_LAYER,
+            ndim=2,
             edge_color="yellow",
             edge_width=1,
             face_color="transparent",
@@ -272,7 +273,7 @@ class CorrectionWidget(QWidget):
         for key, fn in [
             ("n",         key_n),
             ("Shift-n",   key_shift_n),
-            ("w",         key_w),
+            ("s",         key_w),
             ("Control-z", key_undo),
         ]:
             layer.bind_key(key, fn, overwrite=True)
@@ -349,7 +350,7 @@ class CorrectionWidget(QWidget):
                     while event.type == "mouse_move":
                         pos.append(_layer.world_to_data(event.position))
                         if len(pos) % 3 == 0:
-                            dl.data = [np.array(pos)]
+                            dl.data = [np.array([[p[-2], p[-1]] for p in pos])]
                             dl.shape_type = ["path"]
                         yield
                     pos.append(_layer.world_to_data(event.position))
@@ -373,7 +374,7 @@ class CorrectionWidget(QWidget):
                     while event.type == "mouse_move":
                         pos.append(_layer.world_to_data(event.position))
                         if len(pos) % 3 == 0:
-                            dl.data = [np.array(pos)]
+                            dl.data = [np.array([[p[-2], p[-1]] for p in pos])]
                             dl.shape_type = ["path"]
                         yield
                     pos.append(_layer.world_to_data(event.position))
