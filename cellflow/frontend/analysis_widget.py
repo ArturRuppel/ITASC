@@ -106,8 +106,21 @@ class CellFlowWidget(QWidget):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(outer_layout)
 
+        # Single scroll area around the whole plugin so that when another
+        # dock panel is open and the available height shrinks, the entire
+        # CellFlow panel scrolls as one unit rather than getting clipped.
+        _outer_scroll = QScrollArea()
+        _outer_scroll.setWidgetResizable(False)   # preserve natural tab height
+        _outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer_layout.addWidget(_outer_scroll)
+
+        _plugin_root = QWidget()
+        _plugin_layout = QVBoxLayout(_plugin_root)
+        _plugin_layout.setContentsMargins(0, 0, 0, 0)
+        _outer_scroll.setWidget(_plugin_root)
+
         self.tab_widget = QTabWidget()
-        outer_layout.addWidget(self.tab_widget)
+        _plugin_layout.addWidget(self.tab_widget)
 
         # ========== Pipeline tab ==========
         pipeline_page = QWidget()
