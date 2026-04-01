@@ -53,24 +53,6 @@
 
 ---
 
-## Correction Widget
-
-- **`draw_cell_path` (Shift+Left-drag) — rework behaviour and line thickness**:
-  Current implementation (`backend/labels.py:draw_cell_path`) thickens the stroke with
-  `binary_dilation(radius=3)` and assigns those pixels directly. Intended behaviour:
-  1. Draw a **thin 1-px line** (identical to `split_draw` / `_draw_line`) — no dilation.
-  2. Use the line as a **barrier**: flood-fill outward from the existing selected cell's
-     pixels, blocked by the line and by any other non-zero label. Assign all reached
-     background pixels to the cell label (so the enclosed region between the drawn line
-     and the cell boundary is filled in).
-  3. When no cell is selected (`curlabel=None`), keep creating a new cell — seeding from
-     the drawn path itself and flood-filling the enclosed area, or falling back to a
-     thin-stroke new cell if the path doesn't enclose anything.
-  - The draw-preview layer in `correction_widget.py` already uses `edge_width=1`; no
-    change needed there — the preview visually matches the thin line.
-
----
-
 ## UI / UX
 
 - **Scrollable widgets**: All tab widgets should be wrapped in a `QScrollArea` so

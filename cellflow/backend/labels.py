@@ -954,37 +954,81 @@ def draw_cell_path(
     positions: list,
     *,
     curlabel: int | None = None,
-    radius: int = 3,
 ) -> bool:
     """
-    Paint a thickened stroke onto the segmentation, overwriting existing labels.
+    Draw a thin 1-px barrier line and flood-fill the target cell into the
+    enclosed background region.
 
-    All pixels within *radius* of the interpolated path are assigned to
-    *curlabel*.  If *curlabel* is 0 or absent a new free label is created.
-    Returns True on success, False if the stroke is too short or empty.
+    If *curlabel* is set and present in *seg*, background pixels that are
+    connected to the cell's existing pixels — but cut off from the rest of the
+    image by the drawn line and other cell labels — are absorbed into the cell.
+
+    If no cell is selected, a new label is created from the enclosed background
+    region adjacent to the drawn line.  If the path encloses nothing, the thin
+    line pixels themselves become the new cell (fallback).
+
+    Returns True on success, False if the stroke is too short or the fill area
+    is too small.
     """
-    log.debug("draw_cell_path: %d raw positions, curlabel=%s radius=%d", len(positions), curlabel, radius)
+    log.debug("draw_cell_path: %d raw positions, curlabel=%s", len(positions), curlabel)
     if len(positions) < 2:
         return False
 
     local_pts = [(float(p[-2]), float(p[-1])) for p in positions]
-    extended = _extend_endpoints(local_pts, radius * 2)
-    interp = _interpolate(extended)
-    line = _draw_line(seg.shape, interp)
-    thickened = binary_dilation(line.astype(bool), disk(radius))
+    interp = _interpolate(local_pts)
+    line_mask = _draw_line(seg.shape, interp).astype(bool)
 
-    n_px = int(np.sum(thickened))
-    log.debug("draw_cell_path: thickened px=%d", n_px)
+    if not np.any(line_mask):
+        log.debug("draw_cell_path: rejected — empty line")
+        return False
+
+    has_cell = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
+
+    if has_cell:
+        # Flood-fill from the cell's pixels into background, blocked by the
+        # drawn line and every other non-zero label.
+        traversable = (seg == curlabel) | ((seg == 0) & ~line_mask)
+        labeled_t, _ = nd_label(traversable)
+        cell_comp_ids = set(np.unique(labeled_t[seg == curlabel])) - {0}
+        fill_mask = (seg == 0) & np.isin(labeled_t, list(cell_comp_ids))
+        n_px = int(np.sum(fill_mask))
+        log.debug("draw_cell_path: flood-fill px=%d for label=%s", n_px, curlabel)
+        if n_px < MIN_CELL_SIZE:
+            log.debug("draw_cell_path: rejected — fill area too small")
+            return False
+        seg[fill_mask] = curlabel
+        return True
+
+    # No cell selected: find background regions enclosed by the drawn line.
+    background_open = (seg == 0) & ~line_mask
+    labeled_bg, n_comp = nd_label(background_open)
+    border_ids: set = set()
+    for edge in (labeled_bg[0, :], labeled_bg[-1, :],
+                 labeled_bg[:, 0], labeled_bg[:, -1]):
+        border_ids.update(np.unique(edge))
+    border_ids.discard(0)
+    enclosed_ids = [i for i in range(1, n_comp + 1) if i not in border_ids]
+
+    if enclosed_ids:
+        fill_mask = np.isin(labeled_bg, enclosed_ids)
+        n_px = int(np.sum(fill_mask))
+        log.debug("draw_cell_path: enclosed fill px=%d", n_px)
+        if n_px >= MIN_CELL_SIZE:
+            new_label = _free_label(seg)
+            seg[fill_mask] = new_label
+            log.debug("draw_cell_path: new label=%s from enclosed region", new_label)
+            return True
+
+    # Fallback: assign the thin line pixels themselves as a new cell.
+    stroke_mask = line_mask & (seg == 0)
+    n_px = int(np.sum(stroke_mask))
+    log.debug("draw_cell_path: fallback thin stroke px=%d", n_px)
     if n_px < MIN_CELL_SIZE:
         log.debug("draw_cell_path: rejected — stroke too small")
         return False
-
-    if not curlabel or not np.any(seg == curlabel):
-        curlabel = _free_label(seg)
-        log.debug("draw_cell_path: new label=%s", curlabel)
-
-    seg[thickened] = curlabel
-    log.debug("draw_cell_path: assigned %d px to label=%s", n_px, curlabel)
+    new_label = _free_label(seg)
+    seg[stroke_mask] = new_label
+    log.debug("draw_cell_path: new label=%s from thin stroke", new_label)
     return True
 
 
