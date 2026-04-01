@@ -210,6 +210,25 @@ added at the bottom of the correction dock panel.
 
 ---
 
+### B8. Selecting a cell with Ctrl held blocks subsequent merge/swap ⚠️ open
+**Symptom:** If the user holds Ctrl while left-clicking to select a cell (instead of a
+plain left-click), the `ctrl_first` split-seed state is set on that click.  A subsequent
+Ctrl+Left-click on a *different* cell then hits the "different cell during split mode —
+cancel split" branch, clearing the state and falling through to the merge logic — but
+by that point `_ctrl_click_first` is already `None` and the merge branch requires
+`_selected_label != 0` with a stored `_selected_pos`, which may not be set.
+Similarly, entering split mode (Ctrl+click A) and then trying Ctrl+Right-click to swap
+requires a prior plain left-click selection, which a Ctrl-heavy workflow skips.
+
+**Fix plan:**
+- On a plain Left-click, also clear `_ctrl_click_first` state (already done).
+- On Ctrl+Left-click that lands on a *different* cell than the current `_ctrl_click_first_label`,
+  treat it as the *first* click of a merge (i.e. set `_selected_label`/`_selected_pos` from the
+  first seed, then immediately attempt the merge with the new click) rather than silently
+  dropping the state.
+
+---
+
 ## Implementation Order (suggested)
 
 1. **B2** ✅ — Fix IndexError on Shift+Right-drag

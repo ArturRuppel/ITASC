@@ -21,6 +21,9 @@ Shift+Right-drag        Split by drawn line (uses selected cell if set)
 Shift+Left-drag         Redraw junction
 """
 
+import logging
+import os
+
 import numpy as np
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -32,11 +35,34 @@ import napari.layers
 from napari.utils.notifications import show_error, show_info
 from skimage.measure import find_contours
 
+log = logging.getLogger("cellflow.correction")
+if os.environ.get("CELLFLOW_DEBUG"):
+    log.setLevel(logging.DEBUG)
+    if not log.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("[cellflow.correction] %(levelname)s %(message)s"))
+        log.addHandler(_h)
+
 from ._labels import (
     erase_cell, merge_cells, split_across,
     split_draw, redraw_junction, swap_labels,
     _free_label, _label_at,
 )
+
+
+def _record_history(layer, t: int, before: np.ndarray) -> None:
+    """Push changed pixels in frame *t* onto napari's undo stack.
+
+    Call *after* the in-place modification, passing the pre-modification
+    snapshot as *before*.  Only pixels that actually changed are stored,
+    so the undo atom is compact even for large frames.
+    """
+    after = layer.data[t]
+    changed = np.where(before != after)
+    if not changed[0].size:
+        return
+    indices = (np.full(changed[0].size, t, dtype=layer.data.dtype), *changed)
+    layer._save_history((indices, before[changed], after[changed]))
 
 _DRAW_LAYER      = "CorrectionDraw"
 _HIGHLIGHT_LAYER = "CellHighlight"
@@ -178,6 +204,7 @@ class CorrectionWidget(QWidget):
             self._deactivate()
 
     def _activate(self, layer: napari.layers.Labels):
+        log.debug("activate: layer='%s' shape=%s", layer.name, layer.data.shape)
         self._layer = layer
         self._selected_label = 0
         self._selected_pos = None
@@ -211,6 +238,7 @@ class CorrectionWidget(QWidget):
         self._set_status(f"Active on '{layer.name}'")
 
     def _deactivate(self):
+        log.debug("deactivate: layer='%s'", self._layer.name if self._layer else None)
         if self._layer is not None:
             self._remove_callbacks()
 
@@ -336,6 +364,7 @@ class CorrectionWidget(QWidget):
         def key_n(_layer):
             try:
                 lab = _free_label(_layer.data)
+                log.debug("key_n: new label=%s", lab)
                 _layer.selected_label = lab
                 _layer.mode = "paint"
                 self._set_status(f"Paint — new label {lab}")
@@ -345,6 +374,7 @@ class CorrectionWidget(QWidget):
         def key_f(_layer):
             try:
                 lab = _free_label(_layer.data)
+                log.debug("key_f: new label=%s", lab)
                 _layer.selected_label = lab
                 _layer.mode = "fill"
                 self._set_status(f"Fill — new label {lab}")
@@ -353,12 +383,15 @@ class CorrectionWidget(QWidget):
 
         def key_delete(_layer):
             try:
+                log.debug("key_delete: selected_label=%s", self._selected_label)
                 if self._selected_label == 0:
                     self._set_status("No cell selected — left-click a cell first")
                     return
                 t = int(self.viewer.dims.current_step[0])
                 seg2d = _layer.data[t]
+                before = seg2d.copy()
                 if erase_cell(seg2d, label=self._selected_label):
+                    _record_history(_layer, t, before)
                     _layer.refresh()
                     self._update_highlight(t, 0)
                     self._set_status(f"Erased — Active on '{_layer.name}'")
@@ -386,10 +419,17 @@ class CorrectionWidget(QWidget):
 
                 seg2d = _layer.data[t]
                 pos   = _layer.world_to_data(event.position)
+                log.debug(
+                    "on_drag: type=%s btn=%s mods=%s  world=%s data_pos=%s  t=%d "
+                    "selected=%s ctrl_first=%s swap_first=%s",
+                    event.type, btn, mods, event.position, pos, t,
+                    self._selected_label, self._ctrl_click_first_label, self._swap_first_pos,
+                )
 
                 # ── Ctrl+Right-click: swap ────────────────────────────────
                 if btn == 2 and mods == {"Control"}:
                     lab = _label_at(seg2d, pos)
+                    log.debug("swap-ctrl-right: label_at_click=%s selected=%s", lab, self._selected_label)
                     if lab == 0:
                         self._set_status("Swap — click on a cell (not background)")
                         return
@@ -399,7 +439,11 @@ class CorrectionWidget(QWidget):
                         and lab != self._selected_label
                     ):
                         # Cell already selected → swap directly
-                        if swap_labels(seg2d, self._selected_pos, pos):
+                        before = seg2d.copy()
+                        ok = swap_labels(seg2d, self._selected_pos, pos)
+                        log.debug("swap direct: ok=%s", ok)
+                        if ok:
+                            _record_history(_layer, t, before)
                             _layer.refresh()
                             self._selected_label = 0
                             self._selected_pos = None
@@ -411,6 +455,7 @@ class CorrectionWidget(QWidget):
                         # No prior selection → enter two-step swap mode
                         self._swap_first_pos = pos
                         self._swap_first_t = t
+                        log.debug("swap: two-step mode started, first_pos=%s first_t=%d", pos, t)
                         self._set_status(
                             f"Swap — label {lab} selected, right-click second cell"
                         )
@@ -418,27 +463,34 @@ class CorrectionWidget(QWidget):
 
                 # ── Plain Right-click: complete swap ──────────────────────
                 if btn == 2 and not mods:
+                    log.debug("plain right-click: swap_first_pos=%s swap_first_t=%s t=%d", self._swap_first_pos, self._swap_first_t, t)
                     if self._swap_first_pos is not None:
                         if t != self._swap_first_t:
                             self._swap_first_pos = None
                             self._swap_first_t = -1
                             self._set_status("Frame changed — swap cancelled")
-                        elif swap_labels(seg2d, self._swap_first_pos, pos):
-                            _layer.refresh()
-                            self._swap_first_pos = None
-                            self._swap_first_t = -1
-                            self._set_status(f"Swapped — Active on '{_layer.name}'")
                         else:
-                            self._set_status(
-                                "Swap failed — click on two different cells"
-                            )
-                            self._swap_first_pos = None
-                            self._swap_first_t = -1
+                            before = seg2d.copy()
+                            ok = swap_labels(seg2d, self._swap_first_pos, pos)
+                            log.debug("swap two-step: ok=%s", ok)
+                            if ok:
+                                _record_history(_layer, t, before)
+                                _layer.refresh()
+                                self._swap_first_pos = None
+                                self._swap_first_t = -1
+                                self._set_status(f"Swapped — Active on '{_layer.name}'")
+                            else:
+                                self._set_status(
+                                    "Swap failed — click on two different cells"
+                                )
+                                self._swap_first_pos = None
+                                self._swap_first_t = -1
                     return
 
                 # ── Ctrl+Left-click: merge (if cell selected) or split ────
                 if btn == 1 and mods == {"Control"}:
                     lab = _label_at(seg2d, pos)
+                    log.debug("ctrl-left-click: label_at_click=%s selected=%s ctrl_first=%s", lab, self._selected_label, self._ctrl_click_first_label)
                     if lab == 0:
                         self._set_status("Click on a cell, not background")
                         return
@@ -456,14 +508,19 @@ class CorrectionWidget(QWidget):
                             )
                         elif lab == self._ctrl_click_first_label:
                             # Second seed on same cell → split
+                            log.debug("split_across: first=%s second=%s label=%s", self._ctrl_click_first, pos, lab)
+                            before = seg2d.copy()
                             ok = split_across(
                                 seg2d, self._image_frame(t),
                                 self._ctrl_click_first, pos,
                             )
+                            log.debug("split_across result: ok=%s", ok)
                             self._set_status(
                                 f"Split — Active on '{_layer.name}'"
                                 if ok else "Split failed — seeds too close or result too small"
                             )
+                            if ok:
+                                _record_history(_layer, t, before)
                             _layer.refresh()
                             self._ctrl_click_first = None
                             self._ctrl_click_first_label = 0
@@ -472,6 +529,7 @@ class CorrectionWidget(QWidget):
                         else:
                             # Different cell during split mode — cancel split,
                             # fall through to merge-or-new-split logic below
+                            log.debug("ctrl-left: different cell clicked during split mode — cancelling split")
                             self._ctrl_click_first = None
                             self._ctrl_click_first_label = 0
                             self._ctrl_click_first_t = -1
@@ -484,11 +542,16 @@ class CorrectionWidget(QWidget):
                             and lab != self._selected_label
                         ):
                             # Cell already selected → merge directly
+                            log.debug("merge: selected=%s clicked=%s", self._selected_label, lab)
+                            before = seg2d.copy()
                             ok = merge_cells(seg2d, self._selected_pos, pos)
+                            log.debug("merge result: ok=%s", ok)
                             self._set_status(
                                 f"Merged — Active on '{_layer.name}'"
                                 if ok else "Merge failed — labels not touching"
                             )
+                            if ok:
+                                _record_history(_layer, t, before)
                             _layer.refresh()
                             self._selected_label = 0
                             self._selected_pos = None
@@ -499,6 +562,7 @@ class CorrectionWidget(QWidget):
                             self._ctrl_click_first_label = lab
                             self._ctrl_click_first_t = t
                             self._update_highlight(t, lab)
+                            log.debug("split mode: first seed set label=%s pos=%s", lab, pos)
                             self._set_status(
                                 f"Label {lab} — Ctrl+click same cell again for second split seed"
                             )
@@ -513,6 +577,7 @@ class CorrectionWidget(QWidget):
                     self._swap_first_pos = None
                     self._swap_first_t = -1
                     lab = _label_at(seg2d, pos)
+                    log.debug("left-click select: label_at_click=%s pos=%s", lab, pos)
                     self._selected_pos = pos if lab != 0 else None
                     self._update_highlight(t, lab)
                     if lab:
@@ -540,11 +605,16 @@ class CorrectionWidget(QWidget):
                     dl.data = []
                     dl.visible = False
                     curlabel = self._selected_label if self._selected_label else None
+                    log.debug("split_draw: %d positions collected, curlabel=%s", len(pos_list), curlabel)
+                    before = seg2d.copy()
                     ok = split_draw(seg2d, pos_list, curlabel=curlabel)
+                    log.debug("split_draw result: ok=%s", ok)
                     self._set_status(
                         f"Split — Active on '{_layer.name}'"
                         if ok else "Split draw failed — line did not divide the cell"
                     )
+                    if ok:
+                        _record_history(_layer, t, before)
                     _layer.refresh()
                     return
 
@@ -564,11 +634,16 @@ class CorrectionWidget(QWidget):
                     pos_list.append(_layer.world_to_data(event.position))
                     dl.data = []
                     dl.visible = False
+                    log.debug("redraw_junction: %d positions collected", len(pos_list))
+                    before = seg2d.copy()
                     ok = redraw_junction(seg2d, pos_list)
+                    log.debug("redraw_junction result: ok=%s", ok)
                     self._set_status(
                         f"Junction redrawn — Active on '{_layer.name}'"
                         if ok else "Redraw failed — could not find two adjacent cells"
                     )
+                    if ok:
+                        _record_history(_layer, t, before)
                     _layer.refresh()
                     return
 

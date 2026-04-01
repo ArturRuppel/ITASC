@@ -10,6 +10,8 @@ No CellFlow graph is modified — re-run graph extraction after corrections.
 
 from __future__ import annotations
 
+import logging
+import os
 from collections import Counter
 
 import numpy as np
@@ -17,6 +19,14 @@ from scipy.ndimage import binary_dilation, binary_closing, label as nd_label
 from scipy.ndimage import distance_transform_edt
 from skimage.morphology import disk
 from skimage.segmentation import watershed, find_boundaries, expand_labels
+
+log = logging.getLogger("cellflow.correction")
+if os.environ.get("CELLFLOW_DEBUG"):
+    log.setLevel(logging.DEBUG)
+    if not log.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("[cellflow.correction] %(levelname)s %(message)s"))
+        log.addHandler(_h)
 
 MIN_CELL_SIZE: int = 4
 
@@ -150,9 +160,13 @@ def erase_cell(seg: np.ndarray, pos: tuple | None = None, *, label: int | None =
         if pos is None:
             return False
         label = _label_at(seg, pos)
+    log.debug("erase_cell: label=%s pos=%s", label, pos)
     if label == 0:
+        log.debug("erase_cell: rejected — label is background")
         return False
+    count = int(np.sum(seg == label))
     seg[seg == label] = 0
+    log.debug("erase_cell: erased %d pixels", count)
     return True
 
 
@@ -165,9 +179,13 @@ def merge_cells(seg: np.ndarray, pos_start: tuple, pos_end: tuple) -> bool:
     """
     la = _label_at(seg, pos_start)
     lb = _label_at(seg, pos_end)
+    log.debug("merge_cells: la=%s pos_start=%s  lb=%s pos_end=%s", la, pos_start, lb, pos_end)
     if la == 0 or lb == 0 or la == lb:
+        log.debug("merge_cells: rejected — background or same label (la=%s lb=%s)", la, lb)
         return False
-    if not _touches(seg, la, lb):
+    touching = _touches(seg, la, lb)
+    log.debug("merge_cells: touching=%s", touching)
+    if not touching:
         return False
 
     bbox = _bbox_of_two(seg, la, lb)
@@ -199,7 +217,9 @@ def split_across(
     """
     la = _label_at(seg, pos_start)
     lb = _label_at(seg, pos_end)
+    log.debug("split_across: la=%s lb=%s pos_start=%s pos_end=%s", la, lb, pos_start, pos_end)
     if la == 0 or la != lb:
+        log.debug("split_across: rejected — background or different labels (la=%s lb=%s)", la, lb)
         return False
 
     bbox = _bbox_of_label(seg, la)
@@ -213,6 +233,10 @@ def split_across(
     cs = max(0, min(int(round(float(pos_start[-1]))) - c0, mask.shape[1] - 1))
     re = max(0, min(int(round(float(pos_end[-2]))) - r0, mask.shape[0] - 1))
     ce = max(0, min(int(round(float(pos_end[-1]))) - c0, mask.shape[1] - 1))
+    log.debug(
+        "split_across: label=%s cell_px=%d bbox=%s seed_A_local=(%d,%d) seed_B_local=(%d,%d) img=%s",
+        la, int(mask.sum()), bbox, rs, cs, re, ce, "yes" if img is not None else "no",
+    )
 
     new_lab = _free_label(seg)
 
@@ -237,10 +261,15 @@ def split_across(
             dist = distance_transform_edt(mask)
             ws = watershed(-dist, markers=markers, mask=mask)
 
-        if np.sum(ws == la) >= MIN_CELL_SIZE and np.sum(ws == new_lab) >= MIN_CELL_SIZE:
+        size_a = int(np.sum(ws == la))
+        size_b = int(np.sum(ws == new_lab))
+        log.debug("split_across: radius=%d  ws_A=%d ws_B=%d (min=%d)", radius, size_a, size_b, MIN_CELL_SIZE)
+        if size_a >= MIN_CELL_SIZE and size_b >= MIN_CELL_SIZE:
             seg[r0:r1, c0:c1][ws == new_lab] = new_lab
+            log.debug("split_across: success new_lab=%s", new_lab)
             return True
 
+    log.debug("split_across: failed after all radii")
     return False
 
 
@@ -259,6 +288,7 @@ def split_draw(seg: np.ndarray, positions: list, *, curlabel: int | None = None)
     line — only the target cell's own bounding box is used for the final split,
     so enclosed regions far from the line cannot become spurious new cells.
     """
+    log.debug("split_draw: %d raw positions, curlabel=%s", len(positions), curlabel)
     if curlabel is None or curlabel == 0 or not np.any(seg == curlabel):
         # identify the target cell from a tight crop around the drawn line
         tight_bbox = _bbox_of_pts(positions)
@@ -272,11 +302,15 @@ def split_draw(seg: np.ndarray, positions: list, *, curlabel: int | None = None)
             if 0 <= int(round(r)) < crop_tight.shape[0]
             and 0 <= int(round(c)) < crop_tight.shape[1]
         ]
+        log.debug("split_draw: labels_under counter=%s", Counter(labels_under).most_common(4))
         if not labels_under:
+            log.debug("split_draw: rejected — no labels under drawn path")
             return False
         curlabel = max(set(labels_under), key=labels_under.count)
         if curlabel == 0:
+            log.debug("split_draw: rejected — most common label is background")
             return False
+    log.debug("split_draw: target label=%s", curlabel)
 
     # re-crop around the cell itself so only that cell's region is in play
     bbox = _bbox_of_label(seg, curlabel)
@@ -292,6 +326,56 @@ def split_draw(seg: np.ndarray, positions: list, *, curlabel: int | None = None)
 
     interp = _interpolate(local_pts)
     line = _draw_line(crop.shape, interp)
+    cell_px = int(np.sum(crop == curlabel))
+    line_on_cell = int(np.sum(line & (crop == curlabel)))
+    log.debug(
+        "split_draw: bbox=%s cell_px=%d  interp_pts=%d line_on_cell=%d extend_dist=%d",
+        bbox, cell_px, len(interp), line_on_cell, extend_dist,
+    )
+
+    if line_on_cell == 0:
+        # The drawn stroke missed the target cell entirely.  Fall back to
+        # inferring the target from the labels actually under the path.
+        log.debug("split_draw: line_on_cell=0 — falling back to path inference")
+        tight_bbox = _bbox_of_pts(positions)
+        tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape)
+        crop_tight = _crop(seg, tight_bbox)
+        local_pts_tight = _to_local(positions, tight_bbox)
+        labels_under = [
+            int(crop_tight[int(round(r)), int(round(c))])
+            for r, c in local_pts_tight
+            if 0 <= int(round(r)) < crop_tight.shape[0]
+            and 0 <= int(round(c)) < crop_tight.shape[1]
+        ]
+        log.debug("split_draw fallback: labels_under=%s", Counter(labels_under).most_common(4))
+        fallback_label = max(
+            (lab for lab in set(labels_under) if lab != 0),
+            key=labels_under.count,
+            default=0,
+        )
+        if fallback_label == 0 or fallback_label == curlabel:
+            log.debug("split_draw fallback: no usable label found — giving up")
+            return False
+        log.debug("split_draw fallback: switching target to label=%s", fallback_label)
+        curlabel = fallback_label
+        bbox = _bbox_of_label(seg, curlabel)
+        bbox = _extend_bbox(bbox, 1.25, seg.shape)
+        crop = _crop(seg, bbox).copy()
+        local_pts = _to_local(positions, bbox)
+        h = bbox[2] - bbox[0]
+        w = bbox[3] - bbox[1]
+        extend_dist = max(int(np.sqrt(h ** 2 + w ** 2) / 2), 10)
+        local_pts = _extend_endpoints(local_pts, extend_dist)
+        interp = _interpolate(local_pts)
+        line = _draw_line(crop.shape, interp)
+        line_on_cell = int(np.sum(line & (crop == curlabel)))
+        log.debug(
+            "split_draw fallback: bbox=%s cell_px=%d interp_pts=%d line_on_cell=%d",
+            bbox, int(np.sum(crop == curlabel)), len(interp), line_on_cell,
+        )
+        if line_on_cell == 0:
+            log.debug("split_draw fallback: line still misses cell — giving up")
+            return False
 
     return _split_in_crop(seg, crop, line, bbox, curlabel)
 
@@ -305,6 +389,7 @@ def _split_in_crop(
     retry: int = 0,
 ) -> bool:
     if retry > 6:
+        log.debug("_split_in_crop: failed after 6 retries")
         return False
 
     dilated = binary_dilation(line, disk(retry)) if retry > 0 else line.astype(bool)
@@ -313,6 +398,8 @@ def _split_in_crop(
     mask[dilated] = 0
 
     regions, n = nd_label(mask)
+    sizes = [int(np.sum(regions == i)) for i in range(1, n + 1)]
+    log.debug("_split_in_crop: retry=%d n_regions=%d sizes=%s", retry, n, sizes)
     if (
         n == 2
         and np.sum(regions == 1) >= MIN_CELL_SIZE
@@ -324,6 +411,7 @@ def _split_in_crop(
         new_lab = _free_label(seg)
         orig_cell = crop == curlabel
         seg[r0:r1, c0:c1][(expanded == 2) & orig_cell] = new_lab
+        log.debug("_split_in_crop: success new_lab=%s at retry=%d", new_lab, retry)
         return True
 
     return _split_in_crop(seg, crop, line, bbox, curlabel, retry + 1)
@@ -336,6 +424,7 @@ def redraw_junction(seg: np.ndarray, positions: list) -> bool:
     The two cells are identified as the most common labels adjacent to the
     drawn path.  Their shared boundary is replaced by the new line.
     """
+    log.debug("redraw_junction: %d raw positions", len(positions))
     tight_bbox = _bbox_of_pts(positions)
     tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape, min_pad=4)
     crop_tight = _crop(seg, tight_bbox)
@@ -349,9 +438,12 @@ def redraw_junction(seg: np.ndarray, positions: list) -> bool:
         labs_near.extend(int(v) for v in region.flat if v > 0)
 
     top = [lab for lab, _ in Counter(labs_near).most_common(2)]
+    log.debug("redraw_junction: nearby labels most_common=%s", Counter(labs_near).most_common(4))
     if len(top) < 2:
+        log.debug("redraw_junction: rejected — fewer than 2 distinct labels near path")
         return False
     lab_a, lab_b = top[0], top[1]
+    log.debug("redraw_junction: lab_a=%s lab_b=%s", lab_a, lab_b)
 
     bbox = _bbox_of_two(seg, lab_a, lab_b)
     bbox = _extend_bbox(bbox, 1.25, seg.shape)
@@ -380,6 +472,7 @@ def _move_junction(
     retry: int = 0,
 ) -> bool:
     if retry > 6:
+        log.debug("_move_junction: failed after 6 retries")
         return False
 
     dilated = binary_dilation(line, disk(retry)) if retry > 0 else line.astype(bool)
@@ -387,6 +480,8 @@ def _move_junction(
     mask[dilated] = 0
 
     regions, n = nd_label(mask)
+    sizes = [int(np.sum(regions == i)) for i in range(1, n + 1)]
+    log.debug("_move_junction: retry=%d n_regions=%d sizes=%s", retry, n, sizes)
     if (
         n == 2
         and np.sum(regions == 1) >= MIN_CELL_SIZE
@@ -401,7 +496,9 @@ def _move_junction(
             vals, cnts = np.unique(init_crop[region_mask], return_counts=True)
             if len(vals):
                 orig_lab = int(vals[np.argmax(cnts)])
+                log.debug("_move_junction: region %d → label %s", reg_id, orig_lab)
                 seg[r0:r1, c0:c1][region_mask] = orig_lab
+        log.debug("_move_junction: success at retry=%d", retry)
         return True
 
     return _move_junction(seg, init_crop, merged, line, bbox, lab_a, lab_b, retry + 1)
@@ -411,10 +508,15 @@ def swap_labels(seg: np.ndarray, pos_a: tuple, pos_b: tuple) -> bool:
     """Swap the label values at the two click positions across the whole frame."""
     la = _label_at(seg, pos_a)
     lb = _label_at(seg, pos_b)
+    log.debug("swap_labels: la=%s pos_a=%s  lb=%s pos_b=%s", la, pos_a, lb, pos_b)
     if la == 0 or lb == 0 or la == lb:
+        log.debug("swap_labels: rejected — background or same label (la=%s lb=%s)", la, lb)
         return False
+    count_a = int(np.sum(seg == la))
+    count_b = int(np.sum(seg == lb))
     mask_a = seg == la
     mask_b = seg == lb
     seg[mask_a] = lb
     seg[mask_b] = la
+    log.debug("swap_labels: swapped la=%s(%dpx) ↔ lb=%s(%dpx)", la, count_a, lb, count_b)
     return True
