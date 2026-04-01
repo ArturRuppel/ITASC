@@ -51,7 +51,7 @@ def _sep(title):
 SEG_DEFAULTS = {
     "model_type":         "cpsam",
     "diameter":           30.0,
-    "auto_diameter":      False,
+    "auto_diameter":      True,
     "flow_threshold":     0.4,
     "cellprob_threshold": 0.0,
     "min_size":           15,
@@ -211,6 +211,19 @@ class SegmentationTab(QWidget):
         root.addWidget(self._log)
 
         root.addStretch()
+
+        # attribution
+        attrib = QLabel(
+            'Segmentation powered by '
+            '<a href="https://github.com/MouseLand/cellpose">Cellpose</a>.'
+            '<br>If you use segmentation, please cite:<br>'
+            '<a href="https://doi.org/10.1038/s41592-022-01663-4">'
+            'doi:10.1038/s41592-022-01663-4</a>'
+        )
+        attrib.setOpenExternalLinks(True)
+        attrib.setWordWrap(True)
+        attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
+        root.addWidget(attrib)
 
     # ── Input panels ───────────────────────────────────────────────────
 

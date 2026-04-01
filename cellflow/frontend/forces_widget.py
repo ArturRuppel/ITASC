@@ -210,6 +210,16 @@ class ForcesWidget(QWidget):
 
         layout.addStretch()
 
+        # attribution
+        attrib = QLabel(
+            'Force inference powered by ForSys (Borges et al., iScience 2025).'
+            '<br>If you use force inference, please cite the ForSys paper.'
+        )
+        attrib.setOpenExternalLinks(True)
+        attrib.setWordWrap(True)
+        attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
+        layout.addWidget(attrib)
+
     # ------------------------------------------------------------------
     # Signals
     # ------------------------------------------------------------------

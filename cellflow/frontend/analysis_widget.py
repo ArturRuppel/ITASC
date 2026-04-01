@@ -2,7 +2,7 @@
 
 Provides the Edge Analysis tab: graph extraction, T1 detection, edge
 trajectory analysis, and junction tagging.  Pixel size / time interval
-are read from the Databank tab; cell tracking is handled by the
+are read from the Database tab; cell tracking is handled by the
 Tracking tab.  The resulting tissue series can be added to the dataset
 or discarded.
 """
@@ -386,10 +386,10 @@ class CellFlowWidget(QWidget):
         self._forces_widget = ForcesWidget(self.viewer)
         self.tab_widget.addTab(self._forces_widget, "ForSys")
 
-        # ========== Databank tab ==========
+        # ========== Database tab ==========
         from .databank_widget import DataBankWidget
         self._databank_widget = DataBankWidget(self.viewer)
-        self.tab_widget.addTab(self._databank_widget, "Databank")
+        self.tab_widget.addTab(self._databank_widget, "Database")
 
         # Set initial button state
         self._update_pipeline_buttons()
@@ -416,7 +416,7 @@ class CellFlowWidget(QWidget):
 
         self.cancel_btn.clicked.connect(self._cancel_worker)
 
-        # Databank: show tissue in viewer when requested from the Databank tab
+        # Databank: show tissue in viewer when requested from the Database tab
         self._databank_widget.show_tissue_requested.connect(self._show_tissue_from_databank)
 
     # ------------------------------------------------------------------
@@ -612,7 +612,7 @@ class CellFlowWidget(QWidget):
         self.stage2_info.setText("")
 
     # ------------------------------------------------------------------
-    # Dataset inspection (triggered from Databank tab)
+    # Dataset inspection (triggered from Database tab)
     # ------------------------------------------------------------------
     def _show_tissue_from_databank(self, tid: int):
         if self._state.dataset is None:

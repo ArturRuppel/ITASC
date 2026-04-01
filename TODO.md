@@ -1,528 +1,83 @@
-# TODO — CellFlow
+# CellFlow TODO
 
-## Overview
+## Tracking
 
-Three input modes, two computation problems, one shared output structure.
-
-| | **Segmentation** | **Nuclear Tracks** | **Both** |
-|---|---|---|---|
-| Shapes from | Label boundaries | Voronoi tessellation | Label boundaries |
-| Tracking from | Label matching (IoU) | TrackMate (given) | TrackMate (given) |
-| Positions | Label centroids | Nuclear positions | Nuclear positions |
+- **Tracks layer**: After tracking completes, create a dedicated napari `Tracks` layer
+  showing the cell trajectories. This layer should be overwritten (not duplicated) when
+  tracking is re-run. It should also be regenerated when the segmentation labels change
+  (e.g. after corrections), by wiring a callback on the labels layer or by exposing a
+  `rebuild_tracks_layer()` function that other widgets can call.
 
 ---
 
-## 1. Data structure updates (`structures.py`)
+## Data IO / Shared State
 
-### 1a. Add `track_id` to `CellData`
-- [x] Add `track_id: Optional[int] = None` field
-- [x] For segmentation path: assigned by label matching across frames
-- [x] For tracks path: comes directly from TrackMate track ID
+- **Correction widget**: `CorrectionWidget` loads data by picking existing napari layers
+  via a `QComboBox`; it does not participate in the shared `ViewerState` / registry
+  system used by the other widgets. Audit and align its data-loading pattern with the
+  rest of the plugin.
 
-### 1b. Add `vertices` to `CellData`
-- [x] Add `vertices: Optional[np.ndarray] = None` — ordered polygon boundary (Nx2 array)
-- [x] Segmentation path: extract from label contour
-- [x] Voronoi path: Voronoi region vertices (clipped to image bounds)
-- [x] Needed for uniform downstream analysis (area, shape index from actual polygon)
+- **Common data IO widget**: Consider extracting a shared "Data IO" panel (load image,
+  load labels, pixel size, time interval) that all tabs — segmentation, tracking,
+  correction, edge analysis — embed rather than each reinventing the same UI.
 
-### 1c. Expand `InputType` enum
-- [x] Add `SEGMENTATION_WITH_TRACKS = "segmentation_with_tracks"`
-
-### 1d. Add Voronoi method enum
-- [x] `VoronoiMethod` enum: `STANDARD`, `LLOYD` (centroidal Voronoi)
+- **Metadata**: Metadata fields (pixel size, time interval, condition) currently live
+  only in the Database tab. Move them (or expose them) in a common widget so every tab
+  can read them without going through the Database.
 
 ---
 
-## 2. TrackMate XML parser (`core/trackmate.py`)
+## DataBank → Database
 
-### 2a. Parse spots
-- [x] Extract per-spot: `ID`, `POSITION_X`, `POSITION_Y`, `FRAME`
-- [x] Build dict: `frame -> list of (spot_id, y, x)`
-- [x] Extract spatial units and calibration from `<Model spatialunits=...>`
+- **Common widget**: Evaluate whether the Database widget should become the single
+  shared hub for data IO + metadata, replacing the per-widget load/clear buttons. All
+  other tabs would read the active dataset/labels from there.
 
-### 2b. Parse tracks
-- [x] Parse `<AllTracks>` section: track ID, edges (source_id -> target_id)
-- [x] Build mapping: `spot_id -> track_id`
-- [x] Handle splits (TrackMate allows splitting tracks) — assign child spots to parent track or create new track ID
-
-### 2c. Parse metadata
-- [x] Image dimensions from `<ImageData>` section (for Voronoi bounding)
-- [x] Detector/tracker settings (informational, store in dataset metadata)
-- [x] Time interval (`dt`) and pixel size (`dx`, `dy`) from geometry section
-
-### 2d. Output format
-- [x] Return a dataclass or dict with: positions per frame, track assignments, image shape, calibration
-- [x] Write tests with the sample XML file
+- **Pointer-based storage**: Instead of copying edge data into the dataset, the Database
+  could store pointers (file paths) to the raw data and read them on demand. This
+  keeps memory usage low and makes it easy for the user to make corrections outside
+  the plugin and reload without re-running the full pipeline.
 
 ---
 
-## 3. Voronoi enhancements (`core/voronoi.py`)
+## Batch Mode
 
-### 3a. Store cell vertices in `voronoi_to_graph`
-- [x] Extract ordered polygon vertices per cell from `vor.regions`
-- [x] Clip to image bounds
-- [x] Store in `CellData.vertices`
+- Design a batch processing mode: run segmentation → tracking → graph extraction on a
+  list of files/directories without manual intervention.
 
-### 3b. Lloyd's algorithm (centroidal Voronoi tessellation)
-- [x] Implement `lloyd_relaxation(positions, image_shape, n_iterations, tol)`
-- [x] Each iteration: compute Voronoi -> move seeds to polygon centroids -> repeat
-- [x] Stop when max displacement < `tol` or `n_iterations` reached
-- [x] Return final positions + final Voronoi
-- [x] After convergence: `position == shape_centroid` (the nice property)
+- This requires first settling on the data IO story (see above): how intermediate
+  results are saved between stages, and where the Database stores its pointers.
 
-### 3c. Parameterize `compute_voronoi`
-- [x] Add `method: VoronoiMethod = VoronoiMethod.STANDARD` parameter
-- [x] Add `lloyd_iterations: int = 10` and `lloyd_tol: float = 0.1` parameters
-- [x] Route to standard or Lloyd's path accordingly
-
-### 3d. Tests
-- [x] Test Lloyd's converges (centroid displacement decreases)
-- [x] Test Lloyd's output matches standard Voronoi when `n_iterations=0`
-- [x] Test vertex extraction produces valid closed polygons
+- The user should be able to interrupt the batch at any stage, make manual corrections
+  (via the correction widget), save, and resume.
 
 ---
 
-## 4. Segmentation label tracking (`core/label_tracking.py`)
+## Correction Widget
 
-### 4a. IoU-based frame-to-frame matching
-- [x] `match_labels(frame_t, frame_t1, min_iou)` — match labels across two frames by intersection-over-union
-- [x] Return mapping: `label_t -> label_t1` (or None if no match)
-- [x] Handle appearing/disappearing cells (division, death, entering/leaving FOV)
-
-### 4b. Build track IDs from label matching
-- [x] `assign_track_ids(label_stack, min_iou)` — run matching across all frames
-- [x] Assign consistent `track_id` to cells tracked across frames
-- [x] New track ID for cells that appear without a match
-
-### 4c. Extract label contours as vertices
-- [x] `label_to_vertices(label_frame, cell_id)` — ordered boundary points
-- [x] Store in `CellData.vertices` during `labels_to_graph`
-
-### 4d. Tests
-- [x] Test matching with known overlapping labels
-- [x] Test track ID assignment across 3+ frames with a cell disappearing
-- [x] Test contour extraction produces valid closed polygons
+- **`draw_cell_path` (Shift+Left-drag) — rework behaviour and line thickness**:
+  Current implementation (`backend/labels.py:draw_cell_path`) thickens the stroke with
+  `binary_dilation(radius=3)` and assigns those pixels directly. Intended behaviour:
+  1. Draw a **thin 1-px line** (identical to `split_draw` / `_draw_line`) — no dilation.
+  2. Use the line as a **barrier**: flood-fill outward from the existing selected cell's
+     pixels, blocked by the line and by any other non-zero label. Assign all reached
+     background pixels to the cell label (so the enclosed region between the drawn line
+     and the cell boundary is filled in).
+  3. When no cell is selected (`curlabel=None`), keep creating a new cell — seeding from
+     the drawn path itself and flood-filling the enclosed area, or falling back to a
+     thin-stroke new cell if the path doesn't enclose anything.
+  - The draw-preview layer in `correction_widget.py` already uses `edge_width=1`; no
+    change needed there — the preview visually matches the thin line.
 
 ---
 
-## 5. Build API updates (`core/graph.py`)
+## UI / UX
 
-### 5a. Update `build_from_tracks`
-- [x] Accept TrackMate parsed data (not just raw positions)
-- [x] Pass `track_id` into `CellData`
-- [x] Pass Voronoi method parameters through
-- [x] Store cell vertices from Voronoi
+- **Scrollable widgets**: All tab widgets should be wrapped in a `QScrollArea` so
+  content is accessible when the napari dock panel is narrow. `ForcesWidget` and parts
+  of `SegmentationTab` already do this — apply the same pattern everywhere.
 
-### 5b. Update `build_from_labels`
-- [x] Run label tracking to assign `track_id`
-- [x] Extract and store cell vertices
-- [x] Accept tracking parameters (min_iou, etc.)
+- **Collapsible parameter sections**: Replace the `QGroupBox.setCheckable(True)` pattern
+  (checkbox toggle) used for parameter panels with a disclosure triangle / arrow button
+  (`QToolButton` with `setArrowType`) for a more conventional look.
 
-### 5c. Add `build_from_both`
-- [x] Accept label stack + TrackMate data
-- [x] Shapes from labels, track IDs from TrackMate
-- [x] Match TrackMate spots to label centroids (nearest neighbor within threshold)
-- [x] Requires spatial alignment between tracking and segmentation data
-
-### 5d. Update `build_from_labels_4d` and `build_from_tracks_4d`
-- [x] Pass through new parameters
-- [x] Add `build_from_both_4d` for combined mode
-
----
-
-## 6. Widget updates (`napari/widget.py`)
-
-### 6a. TrackMate XML file picker
-- [x] Add "Load TrackMate XML..." button (visible in Nuclear Tracks and Both modes)
-- [x] Parse XML on load, show summary (N spots, N tracks, N frames, image dims)
-- [x] Store parsed data for build step
-
-### 6b. Voronoi parameter panel
-- [x] Voronoi method dropdown: Standard / Lloyd's relaxation
-- [x] Lloyd's iterations spinbox (default 10)
-- [x] Only visible in Nuclear Tracks mode
-
-### 6c. Segmentation tracking parameter panel
-- [x] Min IoU threshold (default 0.3)
-- [x] Only visible in Segmentation mode
-
-### 6d. "Both" input mode
-- [x] Add third option to input type combo
-- [x] Show both file pickers (labels + TrackMate XML)
-- [x] Matching threshold parameter for spot-to-label assignment
-
-### 6e. Update build pipeline
-- [x] Route to correct `build_from_*` based on input mode
-- [x] Pass Voronoi/tracking parameters to workers
-
----
-
----
-
-## 7. Analysis parameter tunability
-
-Most analysis steps currently have no user-facing parameters. The algorithms are robust and
-shouldn't need heavy configuration, but if a QC step fails the user needs some knobs to turn
-rather than just discarding the tissue. Keep the core algorithms untouched — expose thresholds
-and filtering criteria only.
-
-### 7a. T1 detection parameters
-- [x] Minimum junction length threshold — junctions shorter than this are treated as "collapsed" (pre-filter before topology comparison). Default: 0 (current behavior)
-- [x] Spatial proximity constraint — max distance between lost/gained edge midpoints to pair them as a T1. Currently all lost/gained pairs are checked. Default: unlimited (current behavior)
-- [x] Pass these through `detect_t1_events()` and `detect_all_t1_events()` without restructuring the core algorithm
-
-### 7b. Edge trajectory filtering parameters
-- [x] `min_frames` is already exposed in `get_stable_trajectories()` — surface this in the widget
-- [x] Min trajectory completeness — fraction of total frames that a trajectory must span to be included in analysis (e.g., 0.5 = must exist for at least half the movie)
-- [x] Max gap tolerance — allow trajectories with brief disappearances (edge not detected for N frames) to still be considered continuous
-
-### 7c. Label tracking parameters
-- [x] `min_iou` is already exposed — make sure it's adjustable in the Analyze stage (not just at extraction time)
-- [x] Max area change ratio — reject matches where cell area changes by more than this factor frame-to-frame (catches segmentation errors)
-
-### 7d. Widget: analysis parameter panel
-- [x] Collapsible "Advanced" section in the Analyze stage of the pipeline
-- [x] Sensible defaults so users never have to touch it unless QC fails
-- [x] Tooltips explaining what each parameter does and when to adjust it
-
----
-
-## 8. Edge & junction tagging
-
-Users need to name/tag specific junctions so they can find them again in the dataset and
-filter downstream analysis to tagged subsets. Primary use case: tagging the "central junction"
-in a T1 rosette so later analysis (MSD, event-triggered averaging) can focus on it.
-
-### 8a. Data model changes (`structures.py`)
-- [x] Add `tags: Set[str]` field to `EdgeTrajectory` (default: empty set)
-- [x] Add `tags: Set[str]` field to `JunctionData` (default: empty set)
-- [x] Add `name: Optional[str]` field to `EdgeTrajectory` (user-assigned label, e.g., "central_junction_1")
-- [x] Tags propagate through save/load (update `core/io.py`)
-
-### 8b. Programmatic tagging API (`analysis/tagging.py`)
-- [x] `tag_trajectory(series, trajectory_id, tag)` / `untag_trajectory()`
-- [x] `tag_junction(frame, cell_pair, tag)` — tags a junction in a specific frame
-- [x] `get_trajectories_by_tag(series, tag)` — filter trajectories by tag
-- [x] `get_junctions_by_tag(frame, tag)` — filter junctions by tag
-- [x] Bulk tagging: `tag_trajectories_near(series, location, radius, tag)` — tag all trajectories whose midpoint falls within a radius of a point
-- [x] `get_trajectory_by_name(series, name)` — find by user-assigned name
-- [x] `name_trajectory(series, trajectory_id, name)` — set/clear name
-- [x] `get_all_tags(series)` — collect all unique tags
-- [x] `clear_tag(series, tag)` — remove a tag from everything
-
-### 8c. Napari interactive tagging
-- [x] Junction Shapes layer carries `features` DataFrame (trajectory_id, cell_pair, tags, name)
-- [x] Selection workflow: user switches Shapes layer to select mode (press 4) → clicks junction lines to select → enters tag name → clicks "Tag Selected" → tags written back to EdgeTrajectory/JunctionData
-- [x] "Color by tags" toggle — switches between trajectory-colored and tag-colored junctions
-- [x] "Show only tagged" toggle — filters the Shapes layer to only tagged junctions
-- [x] Tag list widget showing all tags in the current tissue, with counts + "Clear Selected Tag"
-- [x] Tagging works both during pipeline (after Stage 3) and when inspecting dataset tissues
-
-### 8d. Persistence
-- [x] Tags stored in the NPZ+JSON save format (extend io.py serialization)
-- [x] Tags survive the full round-trip: tag in napari → save → load → tags visible again
-
----
-
-## 9. Phase 3: Cell-level analysis
-
-### 9a. Velocities & MSD (`analysis/cell_dynamics.py`)
-- [ ] Cell velocity from tracked centroid displacement (with optional temporal smoothing window)
-- [ ] Mean squared displacement per cell and ensemble-averaged MSD
-- [ ] Diffusion coefficient extraction (linear fit to MSD)
-
-### 9b. Statistics (`analysis/statistics.py`)
-- [ ] Distributions: edge lengths, cell areas, coordination number, shape index
-- [ ] Per-frame summary statistics (mean, std, median)
-- [ ] Time-averaged statistics across frames
-
-### 9c. Event-triggered averaging (`analysis/events.py`)
-- [ ] Average junction length trajectory aligned to T1 events
-- [ ] Average cell area/shape index around T1 events
-- [ ] Configurable time window around events
-- [ ] Support filtering to tagged junctions only (integrate with tagging system, §8)
-
----
-
-## 10. UI/UX redesign
-
-Rethink the widget workflow to feel native to napari and simplify the pipeline.
-
-### 10a. Load labels from napari viewer
-- [x] Replace file-picker label loading with a layer dropdown that lists napari Labels layers
-- [x] User selects an existing Labels layer (or loads one via napari's built-in file open)
-- [x] Remove batch loading of labels — unnecessary complexity
-- [x] Auto-sync dropdowns with viewer layer events (inserted/removed/changed)
-- [x] Auto-select active layer
-
-### 10b. Reorder pipeline: track first, then extract
-- [x] Stage 1: Cell tracking — run tracking on the label stack, show tracked segmentation in the viewer (color-coded by track ID)
-- [x] Stage 2: Graph extraction — extract cell graph from the tracked labels, with user-facing parameters (dilation radius, min overlap pixels, min edge length, filter isolated)
-- [x] Stage 3: T1 + edge trajectory analysis (unchanged)
-- [x] Non-segmentation modes keep Extract→Track→Analyze order
-
-### 10c. Consolidate tracking parameters
-- [x] Move `max_area_change` into the cell tracking panel alongside `min_iou` (not a separate panel)
-- [x] Keep tracking parameters grouped logically: IoU threshold, max area change ratio
-- [x] Each stage has its own parameter area — symmetric layout across all 3 stages
-
-### 10d. Graph extraction parameters
-- [x] Expose in widget: dilation radius, min overlap pixels, min edge length, filter isolated toggle
-- [x] Inline in the graph extraction stage (Stage 2 for segmentation, Stage 1 for Both mode)
-
-### 10e. Stage re-runnability
-- [x] Stage 1 button stays enabled after completion — user can tweak params and re-run
-
----
-
-## 11. Next UI/UX improvements
-
-### 11a. Move "Add to Dataset" below tagging
-- [x] Move the Add/Discard controls to after the tagging group, so users tag junctions before committing to the dataset
-
-### 11b. Accept Image layers for tracking and graph building
-- [x] Tracking (CellTrackingWorker) and graph extraction (GraphExtractWorker) should also accept napari Image layers
-- [x] Auto-convert Image layer data to integer labels (e.g. via unique-value casting or thresholding)
-- [x] Graph builder should accept the active layer (Labels or Image) directly
-
-### 11c. Include border edges and auto-tag them
-- [x] Graph extraction should include edges at the image border (currently filtered by `filter_isolated`)
-- [x] Border edges should be automatically tagged with `"edge_border"` so they can be excluded from downstream analysis
-- [x] This preserves the full graph while letting users filter border artifacts
-- ~~**Known bug:** Border edge detection (`find_border_boundary`) is unreliable~~ — Fixed: segments are now split by contiguity, `min_border_edge_length` filters small holes, only cell-vs-background boundaries get `edge_border` tag.
-
----
-
-## 12. Tagging UI/UX improvements
-
-The current tagging workflow is functional but clunky. Improve discoverability and
-direct manipulation of tags in the viewer.
-
-### 12a. Display tag labels in the viewer
-- [x] Show tag names as text annotations next to tagged edges (napari Points layer with text)
-- [x] Toggle to show/hide tag labels in the viewer ("Show tag labels" checkbox)
-- [x] Tags should be readable at typical zoom levels without overlapping
-
-### 12b. Interactive tag selection and deletion from the viewer
-- [x] Clicking a tag label in the viewer should highlight/select the corresponding edge
-- [x] Delete key (or a "Remove Tag" button) should remove the tag from the selected edge — both from the viewer display and the internal data (JunctionData.tags / EdgeTrajectory.tags)
-- [x] Deleting a tag should immediately update the tag list counts
-
----
-
-## 13. Force inference via ForSys
-
-Non-invasive inference of membrane tensions and cell pressures from segmentation geometry,
-using [ForSys](https://github.com/borgesaugusto/forsys) (Borges et al., iScience 2025) as
-an optional dependency. ForSys solves an inverse problem: given cell boundary shapes, it
-computes the mechanical forces (edge tensions, cell pressures) that produce those shapes.
-Supports static (single frame) and dynamic (multi-frame with vertex velocities) inference.
-
-**Key constraint:** ForSys nominally pins `numpy < 2.0` and `scikit-image <= 0.21.0`, but
-works fine with numpy 2.x in practice. Install as optional extra: `pip install CellFlow[forces]`.
-
-### 13a. Data model updates (`structures.py`)
-- [x] Add `pressure: Optional[float] = None` to `CellData` (already existed)
-- [x] `JunctionData.tension` and `JunctionData.normal_stress` already exist — verified in io.py serialization
-
-### 14b. ForSys adapter (`core/forsys_adapter.py`)
-- [x] `tissue_frame_to_forsys(frame: TissueGraphFrame) → forsys.frames.Frame`
-  - Deduplicate shared vertices across cells (CellData.vertices share boundary points)
-  - Build ForSys Vertex objects from unique vertex positions
-  - Build ForSys SmallEdge objects from cell polygon adjacency
-  - Build ForSys Cell objects with correct vertex/edge winding order
-  - Handle border cells (incomplete polygons at image boundary)
-- [x] `forsys_results_to_tissue(forsys_frame, tissue_frame)` — write tensions/pressures back
-  - Map ForSys BigEdge tensions → JunctionData.tension (match by cell pair)
-  - Map ForSys cell pressures → CellData.pressure
-- [ ] Apply ForSys meshing (`virtual_edges.generate_mesh(ne=6)`) for curved boundaries
-- [x] Guard all ForSys imports with try/except, raise clear ImportError
-
-### 14c. Mechanics API (`core/mechanics.py`)
-- [x] `infer_forces(series, method="static")` — runs tensions + pressures per frame
-  - Static: run ForSys solver independently per frame
-  - Dynamic: placeholder raises NotImplementedError (future work)
-
-### 14d. Visualization (`napari/visualization.py`)
-- [x] `build_tension_colored_junctions(series)` — junction lines colored by inferred tension (blue→red)
-- [x] `build_pressure_colored_cells(series)` — cell polygon fills colored by inferred pressure
-
-### 13e. Widget integration
-- [x] "Infer Forces" button (enabled after Stage 2 graph extraction)
-- [ ] Static / Dynamic toggle (dynamic not yet implemented)
-- [x] Results shown as overlay layers (tension-colored edges, pressure-colored cells)
-- [x] Graceful handling if forsys not installed (button disabled with tooltip)
-
-### 13f. Tests
-- [x] Test adapter round-trip: TissueGraphFrame → ForSys Frame → solve → write back
-- [ ] Test with synthetic regular hexagonal lattice (known analytical tensions)
-- [ ] Test dynamic mode with 2-frame series
-- [x] Test graceful failure when forsys not installed
-
----
-
-## 14. Analysis dashboard
-
-Napari is the right tool for spatial visualization and interactive annotation, but not for
-exploratory data analysis. Users need a separate dashboard to query, filter, plot, and compute
-statistics over tissue graph datasets. The dashboard should be modular so that analysis
-"modules" can be developed independently, shared, and installed by the community.
-
-### 14a. Data API (`core/api.py`)
-- [ ] Clean Python API for querying the tissue graph: cells, edges, junctions, trajectories
-- [ ] Filtering by tags, timepoint ranges, topological properties (e.g. neighbor count, coordination number)
-- [ ] Temporal queries: T1 events, trajectory histories, time-since-last-event
-- [ ] Returns pandas DataFrames / standard Python objects for easy downstream use
-
-### 14b. Analysis module interface
-- [x] Standard base class / protocol that all analysis modules implement
-- [x] Each module declares its parameters (auto-generates UI widgets in the dashboard)
-- [x] Each module has a `compute()` method (takes data API + parameters, returns results) and a `visualize()` method (returns figures/tables)
-- [x] Modules are discoverable via entry points or a plugin folder — users can pip-install, download, or write their own
-
-### 14c. Dashboard application
-- [x] Built with Dash + Plotly — serves as a web app and works inside Jupyter
-- [x] Dataset loader: open saved tissue graph datasets
-- [x] Module browser: lists installed analysis modules, user selects one to run
-- [x] Parameter panel: auto-generated from the module's declared parameters
-- [x] Results area: displays interactive Plotly plots, sortable/filterable tables, and summary statistics
-- [x] "Open Dashboard" button in napari widget launches dashboard with current dataset
-- [x] Theme switcher with 4 themes (Midnight, Ocean, Slate, Light) — instant CSS variable swap
-- [x] Fix theme styling: removed inline theme colors from DataTables; CSS custom property overrides now work across all themes
-- [x] SVG export: Plotly modebar downloads SVG by default on all plots
-- [x] DataFrame export: all DataTables have CSV export button
-- [x] Table filtering updates plots: filtering the main analysis table re-renders figures with only visible data
-- [ ] Tissue map visualization — interactive Plotly figure showing cell polygons and junction lines, colored by metric
-- [ ] "Open in napari" button to launch spatial visualization of the current selection
-
-### 14d. Built-in analysis modules
-- [x] Junction length distribution — histogram of junction lengths, filterable by tag and neighbor count
-- [x] T1 transition rate — transition rate as a function of time since last transition
-- [x] Cell area / shape index distributions — per-frame and time-averaged
-- [ ] MSD and diffusion — mean squared displacement per cell, ensemble average, diffusion coefficient
-- [x] Event-triggered averaging — average junction length / cell area aligned to T1 events
-
----
-
-## 15. Separate Voronoi/tracks workflow from main widget
-
-The main TissueGraphWidget should always work with segmentation labels. The Voronoi
-tessellation path (creating labels from nuclear tracks) is a preprocessing step that
-belongs in its own widget or tool.
-
-### 15a. Refactor main widget architecture
-- [x] Extract workers into `napari/workers.py`
-- [x] Remove input type mode switching; main widget is segmentation-only
-- [x] Use active layer instead of layer dropdown
-- [x] Create per-viewer registry (`napari/registry.py`) for shared state between widgets
-
-### 15b. Create Nuclear Tracks widget
-- [x] Add `voronoi_to_labels()` in `core/voronoi.py` (rasterize Voronoi → Labels layer)
-- [x] Create Nuclear Tracks widget (`napari/tracks_widget.py`) — TrackMate XML loading, Voronoi → Labels layer, track ID assignment
-- [x] Register both widgets in `napari.yaml`
-- [x] Clean up unused core functions and `InputType` enum values
-
----
-
-## Implementation order (completed + remaining)
-
-### Done
-1. **Structures** (1a-1d)
-2. **TrackMate parser** (2a-2d)
-3. **Voronoi enhancements** (3a-3d)
-4. **Label tracking** (4a-4d)
-5. **Build API** (5a-5d)
-6. **Widget** (6a-6e)
-7. **Edge & junction tagging** (8a-8d)
-8. **Analysis parameters** (7a-7d)
-9. **UI/UX redesign** (10a-10e)
-10. **UI/UX improvements** (11a-11c)
-11. **Separate Voronoi/tracks into own widget** (15)
-12. **Tagging UI/UX** (12a-12b)
-13. **Data API** (14a)
-14. **Analysis module interface** (14b)
-15. **Dashboard application** (14c) — Dash + Plotly, theme system, napari launch button
-16. **Built-in analysis modules** (14d) — junction lengths, T1 rate, cell distributions, event-triggered averaging
-
-### Next
-17. **Dashboard polish** — ~~fix theme styling~~, ~~SVG/CSV export~~, ~~filter→plot sync~~; tissue map visualization still open
-18. **MSD and diffusion** (9a, 14d) — cell dynamics analysis module
-19. **Cell-level analysis** (9a-9c) — velocities, statistics, event-triggered cell metrics
-20. **Force inference** (13a-13f) — ForSys integration for tension/pressure inference
-21. **Pressure colorbar** — add a colorbar legend to the pressure overlay in napari (Shapes layer; may need a custom napari widget or a separate matplotlib inset)
-
-
-## 16. Refactor Edge Analysis tab — separation of concerns
-
-The current Edge Analysis tab conflates three distinct responsibilities:
-- **Dataset management** (saving/loading, tissue collection)
-- **Cell tracking** (IoU matching, track assignment)
-- **Topology analysis** (graph extraction, T1 detection, edge trajectory building)
-
-Graph extraction + T1 + edge trajectory analysis should be a single unified step
-(they are tightly coupled and rarely run independently). Cell tracking should stay
-separate. Dataset management should be its own panel or dedicated widget.
-
-### 16a. Collapse graph extraction and T1/edge analysis into one step
-- [ ] Merge Stage 2 (graph extraction) and Stage 3 (T1 + edge tracking) into a single
-      "Analyse" step with a single button — parameters from both stages stay visible but
-      run as one atomic operation
-- [ ] Drop the intermediate stage gate between extraction and analysis
-
-### 16b. Separate dataset management
-- [ ] Move Save/Load/New Dataset controls out of the analysis flow into a dedicated
-      "Dataset" panel (could be a collapsible group or a separate dock widget)
-- [ ] The analysis pipeline should not need to know about the dataset — just produce a
-      TissueGraphTimeSeries and hand it off
-
-### 16c. Relabel stages clearly
-- [ ] Stage 1: "Track Cells" (IoU label tracking)
-- [ ] Stage 2: "Analyse Tissue" (graph extraction + T1 + edge trajectories, one click)
-- [ ] Add-to-dataset / tagging remain after Stage 2 completes
-
----
-
-## 17. Segmentation tab data manager — complete the loop ✓ FIXED
-
-`Segment Frame`, `Segment Stack`, and `Import from Cellpose GUI` should always write their
-result into `self._seg_data` (already partially done for stack/frame done callbacks) **and**
-overwrite the napari layer that corresponds to the current data manager state rather than
-creating a new one.
-
-**Fix:** Added `self._seg_layer` to track the actual layer object. `_get_or_create_labels_layer`
-now prefers the tracked reference, falls back to name-based search, and only creates a new
-layer as a last resort. `_on_stack_done` no longer removes and recreates the layer on shape
-mismatch — it updates the data in-place. `_on_load_seg_layer` and `_on_clear_seg` keep
-`_seg_layer` in sync.
-
----
-
-## 18. Tracking tab — no implicit segmentation
-
-`Run Tracking` in the tracking tab should only perform tracking. It must not trigger any
-Cellpose segmentation. Segmentation is the responsibility of the Segmentation tab.
-
-### 18a. Remove Image layer path from tracking tab
-- [x] Drop the branch in the tracking worker that runs Cellpose when the input is an Image layer
-- [x] Accept Labels layers only; show a clear error/warning if the user selects an Image layer
-      (and tell them to run the Segmentation tab first)
-- [x] Remove Cellpose parameters from the tracking tab UI (model type, diameter, flow threshold,
-      cellprob threshold, min size — all belong in the Segmentation tab)
-
----
-
----
-
-## ~~19. Remove Voronoi and TrackMate features (deprecated)~~ DONE
-
-Removed in full: Voronoi tabs, TrackMate widgets, core/voronoi.py, core/trackmate.py,
-build_from_tracks/both functions, VoronoiMethod enum, pipeline Voronoi functions,
-Nuclear Tracks widget, all related tests. InputType.VORONOI kept for backward
-compatibility with saved datasets.
-
----
-
-hand notes:
-~~filtering data frames should update the plots in the dashboard~~ — done
-~~peripheral junctions should exclude border junctions~~ — done: border junctions (cell_id=0 or tagged "border") are now classified as "unclassified" instead of "peripheral"
-~~bug: filtering data in the dataframes updates the graph, but shows the wrong metric afterwards. tested with shape_factor, jumped to an area plot then. plot then froze and further filtering had no impact anymore.

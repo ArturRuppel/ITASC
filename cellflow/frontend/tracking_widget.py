@@ -100,6 +100,19 @@ class TrackingTab(QWidget):
 
         root.addStretch()
 
+        # attribution
+        attrib = QLabel(
+            'Tracking powered by '
+            '<a href="https://github.com/yfukai/laptrack">LapTrack</a>.'
+            '<br>If you use tracking, please cite:<br>'
+            '<a href="https://doi.org/10.1093/bioinformatics/btac799">'
+            'doi:10.1093/bioinformatics/btac799</a>'
+        )
+        attrib.setOpenExternalLinks(True)
+        attrib.setWordWrap(True)
+        attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
+        root.addWidget(attrib)
+
     def _build_nuc_input_panel(self):
         box = QGroupBox("Nuclear Input")
         lay = QVBoxLayout(box)
@@ -108,7 +121,7 @@ class TrackingTab(QWidget):
         hlay = QHBoxLayout(w)
         hlay.setContentsMargins(0, 0, 0, 0)
 
-        self._load_nuc_btn = QPushButton("Load Nuclear Labels")
+        self._load_nuc_btn = QPushButton("Load Segmentation")
         self._load_nuc_btn.setFixedWidth(150)
         self._load_nuc_btn.setFixedHeight(25)
         self._load_nuc_btn.setToolTip(
@@ -192,7 +205,7 @@ class TrackingTab(QWidget):
         # from any further layer writes while it runs.
         seg_layer = self._seg_tab._seg_layer
         if seg_layer is None or seg_layer not in self.viewer.layers:
-            self._log_append("ERROR: Load a Nuclear Labels layer first.")
+            self._log_append("ERROR: Load a Segmentation layer first.")
             return
         nuc_data = np.array(seg_layer.data, dtype=np.int32)  # explicit copy
 
