@@ -2,14 +2,14 @@
 import numpy as np
 import pytest
 
-from cellflow.structures import (
+from cellflow.utils.structures import (
     EdgeTrajectory,
     JunctionData,
     TissueGraphFrame,
     TissueGraphTimeSeries,
     InputType,
 )
-from cellflow.analysis.tagging import (
+from cellflow.backend.tagging import (
     tag_trajectory,
     untag_trajectory,
     name_trajectory,

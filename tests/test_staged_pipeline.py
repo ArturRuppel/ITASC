@@ -2,15 +2,15 @@
 import numpy as np
 import pytest
 
-from cellflow.core.graph import (
+from cellflow.backend.graph import (
     build_from_labels,
     extract_graphs_from_labels,
     assign_tracking_labels,
     apply_track_map,
     has_tracking,
 )
-from cellflow.core.label_tracking import assign_track_ids
-from cellflow.structures import InputType
+from cellflow.backend.tracking import assign_track_ids
+from cellflow.utils.structures import InputType
 
 
 class TestStage1NoTracking:

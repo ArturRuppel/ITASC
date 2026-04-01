@@ -7,11 +7,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 from conftest import make_label_stack
 
-from cellflow.core.graph import build_from_labels
-from cellflow.core.topology import detect_t1_events
-from cellflow.core.io import save_dataset
-from cellflow.analysis.trajectories import build_edge_trajectories
-from cellflow.structures import TissueGraphDataset
+from cellflow.backend.graph import build_from_labels
+from cellflow.backend.topology import detect_t1_events
+from cellflow.utils.io import save_dataset
+from cellflow.backend.trajectories import build_edge_trajectories
+from cellflow.utils.structures import TissueGraphDataset
 
 
 @pytest.fixture
@@ -48,35 +48,35 @@ class TestDashAppCreation:
 class TestWidgetMapping:
     def test_int_param(self):
         from cellflow.dashboard.app import _make_input
-        from cellflow.analysis.modules import Parameter, ParamType
+        from cellflow.backend.analysis_modules import Parameter, ParamType
         p = Parameter(name="x", label="X", type=ParamType.INT, default=5, min=0, max=10)
         div = _make_input(p)
         assert div is not None
 
     def test_bool_param(self):
         from cellflow.dashboard.app import _make_input
-        from cellflow.analysis.modules import Parameter, ParamType
+        from cellflow.backend.analysis_modules import Parameter, ParamType
         p = Parameter(name="flag", label="Flag", type=ParamType.BOOL, default=True)
         div = _make_input(p)
         assert div is not None
 
     def test_choice_param(self):
         from cellflow.dashboard.app import _make_input
-        from cellflow.analysis.modules import Parameter, ParamType
+        from cellflow.backend.analysis_modules import Parameter, ParamType
         p = Parameter(name="m", label="M", type=ParamType.CHOICE, default="a", choices=["a", "b"])
         div = _make_input(p)
         assert div is not None
 
     def test_read_bool_value(self):
         from cellflow.dashboard.app import _read_widget_value
-        from cellflow.analysis.modules import Parameter, ParamType
+        from cellflow.backend.analysis_modules import Parameter, ParamType
         p = Parameter(name="flag", label="Flag", type=ParamType.BOOL, default=True)
         assert _read_widget_value(p, ["on"]) is True
         assert _read_widget_value(p, []) is False
 
     def test_read_int_value(self):
         from cellflow.dashboard.app import _read_widget_value
-        from cellflow.analysis.modules import Parameter, ParamType
+        from cellflow.backend.analysis_modules import Parameter, ParamType
         p = Parameter(name="x", label="X", type=ParamType.INT, default=5)
         assert _read_widget_value(p, 10) == 10
         assert isinstance(_read_widget_value(p, 10), int)
@@ -85,7 +85,7 @@ class TestWidgetMapping:
 class TestParamExtraction:
     def test_extract_params_from_children(self):
         from cellflow.dashboard.app import _extract_params_from_children
-        from cellflow.analysis.modules import Parameter, ParamType
+        from cellflow.backend.analysis_modules import Parameter, ParamType
 
         specs = [
             Parameter(name="n_bins", label="Bins", type=ParamType.INT, default=30),
@@ -119,7 +119,7 @@ class TestParamExtraction:
 
     def test_missing_params_get_defaults(self):
         from cellflow.dashboard.app import _extract_params_from_children
-        from cellflow.analysis.modules import Parameter, ParamType
+        from cellflow.backend.analysis_modules import Parameter, ParamType
 
         specs = [
             Parameter(name="n_bins", label="Bins", type=ParamType.INT, default=30),

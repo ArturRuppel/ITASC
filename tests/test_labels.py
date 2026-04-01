@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from cellflow.core.labels import (
+from cellflow.backend.labels import (
     find_border_boundary,
     find_border_cells,
     calculate_edge_length,

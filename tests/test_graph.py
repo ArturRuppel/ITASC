@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from cellflow.core.graph import build_from_labels
-from cellflow.structures import InputType
+from cellflow.backend.graph import build_from_labels
+from cellflow.utils.structures import InputType
 
 
 class TestBuildFromLabels:

@@ -7,22 +7,22 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from cellflow.analysis.modules import (
+from cellflow.backend.analysis_modules import (
     AnalysisModule,
     AnalysisResult,
     Parameter,
     ParamType,
     discover_modules,
 )
-from cellflow.analysis.builtins import (
+from cellflow.backend.builtins import (
     JunctionLengthDistribution,
     T1TransitionRate,
     CellDistributions,
     EventTriggeredAveraging,
 )
-from cellflow.core.graph import build_from_labels
-from cellflow.core.topology import detect_t1_events
-from cellflow.analysis.trajectories import build_edge_trajectories
+from cellflow.backend.graph import build_from_labels
+from cellflow.backend.topology import detect_t1_events
+from cellflow.backend.trajectories import build_edge_trajectories
 
 from conftest import make_label_stack
 

@@ -2,16 +2,16 @@
 import numpy as np
 import pytest
 
-from cellflow.structures import (
+from cellflow.utils.structures import (
     InputType,
     TissueGraphDataset,
     TissueGraphTimeSeries,
 )
-from cellflow.core.graph import (
+from cellflow.backend.graph import (
     build_from_labels,
     build_from_labels_4d,
 )
-from cellflow.core.topology import detect_all_t1_events
+from cellflow.backend.topology import detect_all_t1_events
 
 
 class TestTissueGraphDataset:

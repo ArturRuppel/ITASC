@@ -196,8 +196,8 @@ print("=" * 70)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from cellflow.core.graph import build_from_labels
-from cellflow.core.mechanics import infer_forces
+from cellflow.backend.graph import build_from_labels
+from cellflow.utils.mechanics import infer_forces
 
 label_stack = label_img[np.newaxis, ...]  # (1, H, W)
 series = build_from_labels(label_stack)

@@ -2,17 +2,17 @@
 import numpy as np
 import pytest
 
-from cellflow.core.graph import build_from_labels
-from cellflow.core.io import (
+from cellflow.backend.graph import build_from_labels
+from cellflow.utils.io import (
     save_dataset,
     load_dataset,
     load_multiple_datasets,
     _serialize_ragged,
     _deserialize_ragged,
 )
-from cellflow.core.topology import detect_t1_events
-from cellflow.analysis.trajectories import build_edge_trajectories
-from cellflow.structures import (
+from cellflow.backend.topology import detect_t1_events
+from cellflow.backend.trajectories import build_edge_trajectories
+from cellflow.utils.structures import (
     InputType,
     TissueGraphDataset,
     TissueGraphTimeSeries,

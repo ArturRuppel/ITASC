@@ -23,21 +23,21 @@ from dash import Dash, Input, Output, State, callback_context, clientside_callba
 import plotly.graph_objects as go
 import plotly.io as pio
 
-from ..analysis.modules import (
+from ..backend.analysis_modules import (
     AnalysisModule,
     AnalysisResult,
     ParamType,
     Parameter,
     discover_modules,
 )
-from ..analysis.tagging import (
+from ..backend.tagging import (
     tag_junction,
     tag_trajectory,
     untag_junction,
     untag_trajectory,
     get_all_tags,
 )
-from ..core.io import load_dataset, save_dataset
+from ..utils.io import load_dataset, save_dataset
 from ..structures import TissueGraphDataset
 from .themes import (
     DEFAULT_THEME,
@@ -993,7 +993,7 @@ def create_app(dataset_path: Optional[str] = None) -> Dash:
 
             # Apply central junction tags to cached dataset when that module is run
             if module_name == "central_junction_identifier":
-                from ..analysis.builtins.central_junction_identifier import apply_central_tags
+                from ..backend.builtins.central_junction_identifier import apply_central_tags
                 n_tagged = apply_central_tags(
                     ds, result,
                     tag_name=params.get("tag_name", "central"),

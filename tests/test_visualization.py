@@ -2,13 +2,13 @@
 import numpy as np
 import pytest
 
-from cellflow.core.graph import (
+from cellflow.backend.graph import (
     build_from_labels,
     extract_graphs_from_labels,
     assign_tracking_labels,
 )
-from cellflow.core.label_tracking import assign_track_ids
-from cellflow.napari.visualization import (
+from cellflow.backend.tracking import assign_track_ids
+from cellflow.frontend.visualization import (
     build_tracked_centroids,
     build_tracked_labels,
     build_track_breaks,
@@ -32,7 +32,7 @@ class TestTrackedLabels:
         assert np.all(result[bg_mask] == 0)
 
     def test_tracked_cells_get_track_ids(self, label_stack):
-        from cellflow.core.labels import find_border_cells
+        from cellflow.backend.labels import find_border_cells
 
         track_map = assign_track_ids(label_stack)
         result = build_tracked_labels(label_stack, track_map)
@@ -48,7 +48,7 @@ class TestTrackedLabels:
 
     def test_untracked_cells_get_unique_ids(self, label_stack):
         """Untracked non-border cells should get unique IDs."""
-        from cellflow.core.labels import find_border_cells
+        from cellflow.backend.labels import find_border_cells
 
         result = build_tracked_labels(label_stack, {})
         for frame_idx in range(len(label_stack)):
@@ -117,7 +117,7 @@ class TestTrackBreaks:
 
     def test_empty_series(self):
         """Single frame should return empty."""
-        from cellflow.structures import TissueGraphTimeSeries
+        from cellflow.utils.structures import TissueGraphTimeSeries
         series = TissueGraphTimeSeries(frames={})
         positions, types = build_track_breaks(series)
         assert len(positions) == 0
@@ -136,7 +136,7 @@ class TestTrajectoryLines:
 
     def test_same_line_count_as_junction_lines(self, label_stack):
         """Should produce same number of lines as build_all_junction_lines."""
-        from cellflow.napari.visualization import build_all_junction_lines
+        from cellflow.frontend.visualization import build_all_junction_lines
         series = build_from_labels(label_stack)
         j_lines, _ = build_all_junction_lines(series)
         t_lines, _ = build_trajectory_lines(series)
@@ -146,8 +146,8 @@ class TestTrajectoryLines:
 class TestTrajectoryLinesWithFeatures:
     def test_output_format(self, label_stack):
         series = build_from_labels(label_stack)
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
         detect_t1_events(series)
         build_edge_trajectories(series, series.t1_events)
 
@@ -160,8 +160,8 @@ class TestTrajectoryLinesWithFeatures:
 
     def test_features_columns(self, label_stack):
         series = build_from_labels(label_stack)
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
         detect_t1_events(series)
         build_edge_trajectories(series, series.t1_events)
 
@@ -175,8 +175,8 @@ class TestTrajectoryLinesWithFeatures:
 
     def test_one_shape_per_junction_per_frame(self, label_stack):
         series = build_from_labels(label_stack)
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
         detect_t1_events(series)
         build_edge_trajectories(series, series.t1_events)
 
@@ -192,8 +192,8 @@ class TestTrajectoryLinesWithFeatures:
     def test_show_only_tagged_filters(self, label_stack):
         # Disable border tagging so no junctions have any tags
         series = build_from_labels(label_stack, filter_isolated=False)
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
         detect_t1_events(series)
         build_edge_trajectories(series, series.t1_events)
 
@@ -205,9 +205,9 @@ class TestTrajectoryLinesWithFeatures:
 
     def test_color_by_tags(self, label_stack):
         series = build_from_labels(label_stack)
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
-        from cellflow.analysis.tagging import tag_trajectory
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
+        from cellflow.backend.tagging import tag_trajectory
         detect_t1_events(series)
         build_edge_trajectories(series, series.t1_events)
 
@@ -224,9 +224,9 @@ class TestTrajectoryLinesWithFeatures:
 
     def test_show_only_tagged_returns_tagged(self, label_stack):
         series = build_from_labels(label_stack)
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
-        from cellflow.analysis.tagging import tag_trajectory
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
+        from cellflow.backend.tagging import tag_trajectory
         detect_t1_events(series)
         build_edge_trajectories(series, series.t1_events)
 
@@ -242,7 +242,7 @@ class TestTrajectoryLinesWithFeatures:
 
     def test_backward_compat_with_build_trajectory_lines(self, label_stack):
         """build_trajectory_lines should still work and return same line count."""
-        from cellflow.napari.visualization import build_all_junction_lines
+        from cellflow.frontend.visualization import build_all_junction_lines
         series = build_from_labels(label_stack)
         j_lines, _ = build_all_junction_lines(series)
         t_lines, _ = build_trajectory_lines(series)
@@ -259,9 +259,9 @@ class TestTagTextAnnotations:
         assert len(features) == 0
 
     def test_tagged_trajectory_produces_annotations(self, label_stack):
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
-        from cellflow.analysis.tagging import tag_trajectory
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
+        from cellflow.backend.tagging import tag_trajectory
 
         series = build_from_labels(label_stack)
         detect_t1_events(series)
@@ -281,9 +281,9 @@ class TestTagTextAnnotations:
         assert any("central" in t for t in texts)
 
     def test_positions_are_3d(self, label_stack):
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
-        from cellflow.analysis.tagging import tag_trajectory
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
+        from cellflow.backend.tagging import tag_trajectory
 
         series = build_from_labels(label_stack)
         detect_t1_events(series)
@@ -300,9 +300,9 @@ class TestTagTextAnnotations:
         assert positions.shape[1] == 3  # (frame, y, x)
 
     def test_multiple_tags_comma_separated(self, label_stack):
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
-        from cellflow.analysis.tagging import tag_trajectory
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
+        from cellflow.backend.tagging import tag_trajectory
 
         series = build_from_labels(label_stack)
         detect_t1_events(series)
@@ -320,9 +320,9 @@ class TestTagTextAnnotations:
         assert any("alpha" in t and "beta" in t for t in texts)
 
     def test_features_contain_junction_metadata(self, label_stack):
-        from cellflow.core.topology import detect_t1_events
-        from cellflow.analysis.trajectories import build_edge_trajectories
-        from cellflow.analysis.tagging import tag_trajectory
+        from cellflow.backend.topology import detect_t1_events
+        from cellflow.backend.trajectories import build_edge_trajectories
+        from cellflow.backend.tagging import tag_trajectory
 
         series = build_from_labels(label_stack)
         detect_t1_events(series)
