@@ -2,28 +2,31 @@
 
 ## Tracking
 
-- **Tracks layer**: After tracking completes, create a dedicated napari `Tracks` layer
+- ~~**Tracks layer**: After tracking completes, create a dedicated napari `Tracks` layer
   showing the cell trajectories. This layer should be overwritten (not duplicated) when
   tracking is re-run. It should also be regenerated when the segmentation labels change
   (e.g. after corrections), by wiring a callback on the labels layer or by exposing a
-  `rebuild_tracks_layer()` function that other widgets can call.
+  `rebuild_tracks_layer()` function that other widgets can call.~~ **Done** (commit 5b88fb7)
 
 ---
 
 ## Data IO / Shared State
 
-- **Correction widget**: `CorrectionWidget` loads data by picking existing napari layers
+- ~~**Correction widget**: `CorrectionWidget` loads data by picking existing napari layers
   via a `QComboBox`; it does not participate in the shared `ViewerState` / registry
   system used by the other widgets. Audit and align its data-loading pattern with the
-  rest of the plugin.
+  rest of the plugin.~~ **Done** — `CorrectionWidget` now receives `seg_tab`, auto-selects
+  `seg_tab._seg_layer` on `showEvent`/refresh, matching the `TrackingTab` pattern.
 
 - **Common data IO widget**: Consider extracting a shared "Data IO" panel (load image,
   load labels, pixel size, time interval) that all tabs — segmentation, tracking,
   correction, edge analysis — embed rather than each reinventing the same UI.
 
-- **Metadata**: Metadata fields (pixel size, time interval, condition) currently live
+- ~~**Metadata**: Metadata fields (pixel size, time interval, condition) currently live
   only in the Database tab. Move them (or expose them) in a common widget so every tab
-  can read them without going through the Database.
+  can read them without going through the Database.~~ **Done** — `pixel_size`,
+  `time_interval`, `condition` added to `ViewerState`; `DataBankWidget` writes to the
+  state on edit/load; `analysis_widget` reads from `self._state` directly.
 
 ---
 

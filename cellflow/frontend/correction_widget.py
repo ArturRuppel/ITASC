@@ -70,9 +70,10 @@ _HIGHLIGHT_LAYER = "CellHighlight"
 class CorrectionWidget(QWidget):
     """Dock widget for interactive label correction."""
 
-    def __init__(self, viewer: napari.Viewer):
+    def __init__(self, viewer: napari.Viewer, seg_tab=None):
         super().__init__()
         self.viewer = viewer
+        self._seg_tab = seg_tab  # SegmentationTab — single source of truth for labels
 
         self._layer: napari.layers.Labels = None
 
@@ -176,6 +177,11 @@ class CorrectionWidget(QWidget):
         attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
         root.addWidget(attrib)
 
+    def showEvent(self, event):
+        """Auto-select the current seg_tab layer when this tab becomes visible."""
+        super().showEvent(event)
+        self._refresh_layers()
+
     def _refresh_layers(self):
         current_lab = self._layer_combo.currentText()
         current_img = self._image_combo.currentText()
@@ -186,11 +192,27 @@ class CorrectionWidget(QWidget):
                 self._layer_combo.addItem(layer.name)
             elif isinstance(layer, napari.layers.Image):
                 self._image_combo.addItem(layer.name)
-        for combo, prev in [(self._layer_combo, current_lab),
-                            (self._image_combo, current_img)]:
-            idx = combo.findText(prev)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
+
+        # Prefer the seg_tab's current layer over the previously selected name.
+        seg_layer_name = None
+        if self._seg_tab is not None:
+            sl = getattr(self._seg_tab, "_seg_layer", None)
+            if sl is not None and sl in self.viewer.layers:
+                seg_layer_name = sl.name
+
+        for combo, preferred, prev in [
+            (self._layer_combo, seg_layer_name, current_lab),
+            (self._image_combo, None, current_img),
+        ]:
+            # Try the preferred name first (seg_tab layer), then fall back to
+            # the previously selected name so the combo is as stable as possible.
+            for name in (preferred, prev):
+                if name is None:
+                    continue
+                idx = combo.findText(name)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                    break
 
     # ── activation ────────────────────────────────────────────────────────
 

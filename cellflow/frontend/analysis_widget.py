@@ -388,7 +388,7 @@ class CellFlowWidget(QWidget):
 
         # ========== Correction tab ==========
         from .correction_widget import CorrectionWidget
-        self._correction_widget = CorrectionWidget(self.viewer)
+        self._correction_widget = CorrectionWidget(self.viewer, self._segmentation_tab)
         self.tab_widget.addTab(self._correction_widget, "Correction")
 
         # ========== Edge Analysis tab (formerly Pipeline) ==========
@@ -500,8 +500,8 @@ class CellFlowWidget(QWidget):
         self._current_label_stack = label_stack
         self._source_layer = self.viewer.layers.selection.active
 
-        pixel_size = self._parse_float(self._databank_widget.pixel_size_edit.text())
-        time_interval = self._parse_float(self._databank_widget.time_interval_edit.text())
+        pixel_size = self._state.pixel_size
+        time_interval = self._state.time_interval
 
         worker = GraphExtractWorker(
             self._current_label_stack,
@@ -584,9 +584,9 @@ class CellFlowWidget(QWidget):
         if self._preview_series is None:
             return
         self._state.ensure_dataset(
-            condition=self._databank_widget.condition_edit.text().strip(),
-            pixel_size=self._parse_float(self._databank_widget.pixel_size_edit.text()),
-            time_interval=self._parse_float(self._databank_widget.time_interval_edit.text()),
+            condition=self._state.condition,
+            pixel_size=self._state.pixel_size,
+            time_interval=self._state.time_interval,
         )
         tid = self._state.add_tissue(self._preview_series)
         self._remove_all_stage_layers()

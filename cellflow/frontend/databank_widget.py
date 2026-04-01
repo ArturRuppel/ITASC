@@ -174,12 +174,16 @@ class DataBankWidget(QWidget):
         self.tissues_label.setText(f"{ds.n_tissues} tissue(s)")
 
         # Populate metadata fields if they are empty (e.g. after first add or load)
+        # and sync the shared state so other tabs see the values immediately.
         if ds.condition and not self.condition_edit.text():
             self.condition_edit.setText(ds.condition)
+            self._state.condition = ds.condition
         if ds.pixel_size is not None and not self.pixel_size_edit.text():
             self.pixel_size_edit.setText(str(ds.pixel_size))
+            self._state.pixel_size = ds.pixel_size
         if ds.time_interval is not None and not self.time_interval_edit.text():
             self.time_interval_edit.setText(str(ds.time_interval))
+            self._state.time_interval = ds.time_interval
 
         for tid in ds.tissue_ids:
             series = ds.tissues[tid]
@@ -220,13 +224,23 @@ class DataBankWidget(QWidget):
             ds.tissues[tid].metadata["note"] = note_item.text()
 
     def _apply_metadata(self):
-        """Write edited metadata fields back to the dataset."""
+        """Write edited metadata fields back to the dataset and shared state."""
+        condition = self.condition_edit.text().strip()
+        px = self._parse_float(self.pixel_size_edit.text())
+        dt = self._parse_float(self.time_interval_edit.text())
+
+        # Always update the shared state so other tabs can read it without
+        # going through this widget directly.
+        self._state.condition = condition
+        if px is not None:
+            self._state.pixel_size = px
+        if dt is not None:
+            self._state.time_interval = dt
+
         ds = self._state.dataset
         if ds is None:
             return
-        ds.condition = self.condition_edit.text().strip()
-        px = self._parse_float(self.pixel_size_edit.text())
-        dt = self._parse_float(self.time_interval_edit.text())
+        ds.condition = condition
         if px is not None:
             ds.pixel_size = px
         if dt is not None:

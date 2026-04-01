@@ -31,14 +31,20 @@ class ViewerState(QObject):
     dataset_changed
         Emitted whenever the dataset is replaced or a tissue is
         added / removed.  Listeners should refresh their UI.
+    metadata_changed
+        Emitted when pixel_size, time_interval, or condition changes.
     """
 
     dataset_changed = Signal()
+    metadata_changed = Signal()
 
     def __init__(self, viewer) -> None:
         super().__init__()
         self._viewer_ref = weakref.ref(viewer)
         self._dataset: Optional[TissueGraphDataset] = None
+        self._pixel_size: Optional[float] = None
+        self._time_interval: Optional[float] = None
+        self._condition: str = ""
 
     # -- viewer accessor ---------------------------------------------------
 
@@ -48,6 +54,35 @@ class ViewerState(QObject):
         if v is None:
             raise RuntimeError("Viewer has been closed")
         return v
+
+    # -- metadata properties -----------------------------------------------
+
+    @property
+    def pixel_size(self) -> Optional[float]:
+        return self._pixel_size
+
+    @pixel_size.setter
+    def pixel_size(self, value: Optional[float]) -> None:
+        self._pixel_size = value
+        self.metadata_changed.emit()
+
+    @property
+    def time_interval(self) -> Optional[float]:
+        return self._time_interval
+
+    @time_interval.setter
+    def time_interval(self, value: Optional[float]) -> None:
+        self._time_interval = value
+        self.metadata_changed.emit()
+
+    @property
+    def condition(self) -> str:
+        return self._condition
+
+    @condition.setter
+    def condition(self, value: str) -> None:
+        self._condition = value or ""
+        self.metadata_changed.emit()
 
     # -- dataset property --------------------------------------------------
 
