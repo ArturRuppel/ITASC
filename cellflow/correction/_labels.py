@@ -103,12 +103,6 @@ def _free_label(seg: np.ndarray) -> int:
     return int(seg.max()) + 1
 
 
-def _boundary_between(mask_a: np.ndarray, mask_b: np.ndarray) -> np.ndarray:
-    """Return pixels of *mask_a* 4-adjacent to *mask_b* and vice-versa."""
-    cross = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
-    return (binary_dilation(mask_a, cross) & mask_b) | \
-           (binary_dilation(mask_b, cross) & mask_a)
-
 
 def _touches(seg: np.ndarray, la: int, lb: int) -> bool:
     """Check if labels are adjacent (within ~2 px, handles 0-valued boundaries)."""
@@ -126,12 +120,15 @@ def _label_at(seg: np.ndarray, pos: tuple) -> int:
 
 # ── public operations ─────────────────────────────────────────────────────────
 
-def erase_cell(seg: np.ndarray, pos: tuple) -> bool:
-    """Set all pixels of the label under *pos* to 0."""
-    lab = _label_at(seg, pos)
-    if lab == 0:
+def erase_cell(seg: np.ndarray, pos: tuple | None = None, *, label: int | None = None) -> bool:
+    """Set all pixels of the label under *pos* (or *label*) to 0."""
+    if label is None:
+        if pos is None:
+            return False
+        label = _label_at(seg, pos)
+    if label == 0:
         return False
-    seg[seg == lab] = 0
+    seg[seg == label] = 0
     return True
 
 
@@ -218,42 +215,44 @@ def split_across(
 
         if np.sum(ws == la) >= MIN_CELL_SIZE and np.sum(ws == new_lab) >= MIN_CELL_SIZE:
             seg[r0:r1, c0:c1][ws == new_lab] = new_lab
-            junction = _boundary_between(ws == la, ws == new_lab) & interior
-            seg[r0:r1, c0:c1][junction] = 0
             return True
 
     return False
 
 
-def split_draw(seg: np.ndarray, positions: list) -> bool:
+def split_draw(seg: np.ndarray, positions: list, *, curlabel: int | None = None) -> bool:
     """
     Split a cell along a manually drawn line.
 
     *positions* is a list of (t,r,c) or (r,c) world coordinates collected
     during the mouse drag.
 
+    Pass *curlabel* to target a specific cell (e.g. from a prior selection).
+    When omitted the target cell is inferred from the labels under the drawn path.
+
     Existing labels are used as barriers (the line is only active within the
     target cell's pixels).  The bounding box is kept tight around the drawn
     line — only the target cell's own bounding box is used for the final split,
     so enclosed regions far from the line cannot become spurious new cells.
     """
-    # identify the target cell from a tight crop around the drawn line
-    tight_bbox = _bbox_of_pts(positions)
-    tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape)
-    crop_tight = _crop(seg, tight_bbox)
-    local_pts = _to_local(positions, tight_bbox)
+    if curlabel is None or curlabel == 0 or not np.any(seg == curlabel):
+        # identify the target cell from a tight crop around the drawn line
+        tight_bbox = _bbox_of_pts(positions)
+        tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape)
+        crop_tight = _crop(seg, tight_bbox)
+        local_pts = _to_local(positions, tight_bbox)
 
-    labels_under = [
-        int(crop_tight[int(round(r)), int(round(c))])
-        for r, c in local_pts
-        if 0 <= int(round(r)) < crop_tight.shape[0]
-        and 0 <= int(round(c)) < crop_tight.shape[1]
-    ]
-    if not labels_under:
-        return False
-    curlabel = max(set(labels_under), key=labels_under.count)
-    if curlabel == 0:
-        return False
+        labels_under = [
+            int(crop_tight[int(round(r)), int(round(c))])
+            for r, c in local_pts
+            if 0 <= int(round(r)) < crop_tight.shape[0]
+            and 0 <= int(round(c)) < crop_tight.shape[1]
+        ]
+        if not labels_under:
+            return False
+        curlabel = max(set(labels_under), key=labels_under.count)
+        if curlabel == 0:
+            return False
 
     # re-crop around the cell itself so only that cell's region is in play
     bbox = _bbox_of_label(seg, curlabel)
@@ -295,10 +294,6 @@ def _split_in_crop(
         new_lab = _free_label(seg)
         orig_cell = crop == curlabel
         seg[r0:r1, c0:c1][(expanded == 2) & orig_cell] = new_lab
-        junction = _boundary_between(
-            (expanded == 1) & orig_cell, (expanded == 2) & orig_cell
-        )
-        seg[r0:r1, c0:c1][junction] = 0
         return True
 
     return _split_in_crop(seg, crop, line, bbox, curlabel, retry + 1)
@@ -377,10 +372,6 @@ def _move_junction(
             if len(vals):
                 orig_lab = int(vals[np.argmax(cnts)])
                 seg[r0:r1, c0:c1][region_mask] = orig_lab
-        junction = _boundary_between(
-            (expanded == 1) & orig_cells, (expanded == 2) & orig_cells
-        )
-        seg[r0:r1, c0:c1][junction] = 0
         return True
 
     return _move_junction(seg, init_crop, merged, line, bbox, lab_a, lab_b, retry + 1)
