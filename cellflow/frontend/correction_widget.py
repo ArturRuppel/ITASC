@@ -26,7 +26,7 @@ import os
 import numpy as np
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QComboBox, QGroupBox,
+    QLabel, QPushButton, QComboBox, QGroupBox, QScrollArea,
 )
 from qtpy.QtCore import Qt
 import napari
@@ -98,8 +98,18 @@ class CorrectionWidget(QWidget):
     # ── UI ────────────────────────────────────────────────────────────────
 
     def _setup_ui(self):
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+        _container = QWidget()
+        root = QVBoxLayout(_container)
         root.setSpacing(6)
+        scroll.setWidget(_container)
 
         # layer selectors
         row = QHBoxLayout()

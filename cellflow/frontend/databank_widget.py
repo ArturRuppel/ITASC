@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -45,8 +46,18 @@ class DataBankWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        layout = QVBoxLayout()
-        self.setLayout(layout)
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(outer)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+        _container = QWidget()
+        layout = QVBoxLayout(_container)
+        scroll.setWidget(_container)
 
         # --- Dataset metadata ---
         meta_group = QGroupBox("Dataset metadata")

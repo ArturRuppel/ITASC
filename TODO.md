@@ -55,10 +55,6 @@
 
 ## UI / UX
 
-- **Scrollable widgets**: All tab widgets should be wrapped in a `QScrollArea` so
-  content is accessible when the napari dock panel is narrow. `ForcesWidget` and parts
-  of `SegmentationTab` already do this — apply the same pattern everywhere.
-
 - **Collapsible parameter sections**: Replace the `QGroupBox.setCheckable(True)` pattern
   (checkbox toggle) used for parameter panels with a disclosure triangle / arrow button
   (`QToolButton` with `setArrowType`) for a more conventional look.
