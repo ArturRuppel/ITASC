@@ -1,6 +1,7 @@
 """Dataset management tab widget for cellflow."""
 import logging
 from pathlib import Path
+from typing import Optional
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
