@@ -16,7 +16,7 @@ import numpy as np
 from scipy.ndimage import binary_dilation, binary_closing, label as nd_label
 from scipy.ndimage import distance_transform_edt
 from skimage.morphology import disk
-from skimage.segmentation import watershed, find_boundaries
+from skimage.segmentation import watershed, find_boundaries, expand_labels
 
 MIN_CELL_SIZE: int = 4
 
@@ -46,10 +46,11 @@ def _extend_bbox(
     bbox: tuple[int, int, int, int],
     factor: float,
     shape: tuple[int, int],
+    min_pad: int = 0,
 ) -> tuple[int, int, int, int]:
     r0, c0, r1, c1 = bbox
-    dr = int((r1 - r0) * (factor - 1) / 2)
-    dc = int((c1 - c0) * (factor - 1) / 2)
+    dr = max(int((r1 - r0) * (factor - 1) / 2), min_pad)
+    dc = max(int((c1 - c0) * (factor - 1) / 2), min_pad)
     return (
         max(0, r0 - dr), max(0, c0 - dc),
         min(shape[0], r1 + dr), min(shape[1], c1 + dc),
@@ -102,9 +103,18 @@ def _free_label(seg: np.ndarray) -> int:
     return int(seg.max()) + 1
 
 
+def _boundary_between(mask_a: np.ndarray, mask_b: np.ndarray) -> np.ndarray:
+    """Return pixels of *mask_a* 4-adjacent to *mask_b* and vice-versa."""
+    cross = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
+    return (binary_dilation(mask_a, cross) & mask_b) | \
+           (binary_dilation(mask_b, cross) & mask_a)
+
+
 def _touches(seg: np.ndarray, la: int, lb: int) -> bool:
-    boundary_a = find_boundaries(seg == la, mode="outer")
-    return bool(np.any(boundary_a & (seg == lb)))
+    """Check if labels are adjacent (within ~2 px, handles 0-valued boundaries)."""
+    dilated_a = binary_dilation(seg == la, disk(1))
+    dilated_b = binary_dilation(seg == lb, disk(1))
+    return bool(np.any(dilated_a & dilated_b))
 
 
 def _label_at(seg: np.ndarray, pos: tuple) -> int:
@@ -144,12 +154,12 @@ def merge_cells(seg: np.ndarray, pos_start: tuple, pos_end: tuple) -> bool:
     r0, c0, r1, c1 = bbox
     crop = _crop(seg, bbox)
 
-    merged = np.isin(crop, [la, lb]).astype(np.uint8)
-    closed = binary_closing(merged, disk(2)).astype(bool)
+    combined = np.isin(crop, [la, lb])
+    closed = binary_closing(combined, disk(2))
+    # prevent the closing from overwriting pixels belonging to other cells
+    other_cells = (crop != 0) & ~combined
+    closed = closed & ~other_cells
     seg[r0:r1, c0:c1][closed] = lb
-    # redraw boundary between merged area and background
-    bound = find_boundaries((seg[r0:r1, c0:c1] == lb).astype(np.uint8), mode="inner")
-    seg[r0:r1, c0:c1][bound] = 0
     return True
 
 
@@ -202,8 +212,9 @@ def split_across(
         return False
 
     seg[r0:r1, c0:c1][ws == new_lab] = new_lab
-    bound = find_boundaries(ws * mask, mode="inner")
-    seg[r0:r1, c0:c1][bound.astype(bool) & mask.astype(bool)] = 0
+    # Only create boundary between the two split regions, not at the outer cell edge
+    junction = _boundary_between(ws == la, ws == new_lab) & mask.astype(bool)
+    seg[r0:r1, c0:c1][junction] = 0
     return True
 
 
@@ -265,18 +276,22 @@ def _split_in_crop(
     mask[crop == curlabel] = 1
     mask[dilated] = 0
 
-    regions, n = nd_label(mask, background=0)
+    regions, n = nd_label(mask)
     if (
         n == 2
         and np.sum(regions == 1) >= MIN_CELL_SIZE
         and np.sum(regions == 2) >= MIN_CELL_SIZE
     ):
+        # Fill the gap left by the dilated line so labels are contiguous
+        expanded = expand_labels(regions, distance=max(retry + 2, 3))
         r0, c0, r1, c1 = bbox
         new_lab = _free_label(seg)
-        target = (regions == 2) & (crop == curlabel)
-        seg[r0:r1, c0:c1][target] = new_lab
-        bound = find_boundaries(regions * (crop == curlabel), mode="inner")
-        seg[r0:r1, c0:c1][bound & (crop == curlabel)] = 0
+        orig_cell = crop == curlabel
+        seg[r0:r1, c0:c1][(expanded == 2) & orig_cell] = new_lab
+        junction = _boundary_between(
+            (expanded == 1) & orig_cell, (expanded == 2) & orig_cell
+        )
+        seg[r0:r1, c0:c1][junction] = 0
         return True
 
     return _split_in_crop(seg, crop, line, bbox, curlabel, retry + 1)
@@ -290,19 +305,16 @@ def redraw_junction(seg: np.ndarray, positions: list) -> bool:
     drawn path.  Their shared boundary is replaced by the new line.
     """
     tight_bbox = _bbox_of_pts(positions)
-    tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape)
+    tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape, min_pad=4)
     crop_tight = _crop(seg, tight_bbox)
     local_pts = _to_local(positions, tight_bbox)
 
-    # find cells adjacent to the drawn path via distance transform to junctions
-    _, idx = distance_transform_edt(crop_tight, return_distances=True, return_indices=True)
+    # find cells adjacent to the drawn path by sampling labels in a neighbourhood
     labs_near: list[int] = []
     for r, c in local_pts:
         ri, ci = int(round(r)), int(round(c))
-        if 0 <= ri < crop_tight.shape[0] and 0 <= ci < crop_tight.shape[1]:
-            jr, jc = idx[0, ri, ci], idx[1, ri, ci]
-            region = crop_tight[max(0, jr - 2):jr + 3, max(0, jc - 2):jc + 3]
-            labs_near.extend(int(v) for v in region.flat if v > 0)
+        region = crop_tight[max(0, ri - 2):ri + 3, max(0, ci - 2):ci + 3]
+        labs_near.extend(int(v) for v in region.flat if v > 0)
 
     top = [lab for lab, _ in Counter(labs_near).most_common(2)]
     if len(top) < 2:
@@ -342,21 +354,26 @@ def _move_junction(
     mask = (merged > 0).astype(np.uint8)
     mask[dilated] = 0
 
-    regions, n = nd_label(mask, background=0)
+    regions, n = nd_label(mask)
     if (
         n == 2
         and np.sum(regions == 1) >= MIN_CELL_SIZE
         and np.sum(regions == 2) >= MIN_CELL_SIZE
     ):
+        # Fill the gap left by the dilated line
+        expanded = expand_labels(regions, distance=max(retry + 2, 3))
         r0, c0, r1, c1 = bbox
+        orig_cells = np.isin(init_crop, [lab_a, lab_b])
         for reg_id in (1, 2):
-            region_mask = (regions == reg_id) & np.isin(init_crop, [lab_a, lab_b])
+            region_mask = (expanded == reg_id) & orig_cells
             vals, cnts = np.unique(init_crop[region_mask], return_counts=True)
             if len(vals):
                 orig_lab = int(vals[np.argmax(cnts)])
                 seg[r0:r1, c0:c1][region_mask] = orig_lab
-        bound = find_boundaries(regions * mask, mode="inner")
-        seg[r0:r1, c0:c1][bound & np.isin(init_crop, [lab_a, lab_b]).astype(bool)] = 0
+        junction = _boundary_between(
+            (expanded == 1) & orig_cells, (expanded == 2) & orig_cells
+        )
+        seg[r0:r1, c0:c1][junction] = 0
         return True
 
     return _move_junction(seg, init_crop, merged, line, bbox, lab_a, lab_b, retry + 1)

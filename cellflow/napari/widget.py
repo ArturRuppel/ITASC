@@ -373,6 +373,11 @@ class CellFlowWidget(QWidget):
         self._tracking_tab = TrackingTab(self.viewer, self._segmentation_tab)
         self.tab_widget.addTab(self._tracking_tab, "Tracking")
 
+        # ========== Correction tab ==========
+        from ..correction._widget import CorrectionWidget
+        self._correction_widget = CorrectionWidget(self.viewer)
+        self.tab_widget.addTab(self._correction_widget, "Correction")
+
         # ========== Edge Analysis tab (formerly Pipeline) ==========
         self.tab_widget.addTab(pipeline_page, "Edge Analysis")
 

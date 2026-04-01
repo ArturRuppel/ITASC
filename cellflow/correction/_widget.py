@@ -13,10 +13,10 @@ w  →  Ctrl+click        Swap two labels (single frame)
 Ctrl-z                  Undo
 
 Right-click             Erase cell
-Ctrl + Left-drag        Merge cells
-Ctrl + Right-drag       Split (watershed, two seeds)
-Alt  + Right-drag       Split by drawn line
-Ctrl + Alt + Left-drag  Redraw junction
+Ctrl + Left-drag        Merge cells (drag from cell A onto touching cell B)
+Ctrl + Right-drag       Split (watershed): drag two seed points on the SAME cell
+Shift + Right-drag      Split by drawn line
+Shift + Left-drag       Redraw junction
 
 Track shortcuts  (press t to enter/leave track-edit mode)
 ---------------------------------------------------------
@@ -79,6 +79,11 @@ class CorrectionWidget(QWidget):
         self._drag_callbacks: list = []
         self._bound_keys: list = []
 
+        # saved napari state (populated on activate, cleared on deactivate)
+        self._saved_viewer_drag_cbs: list = []
+        self._saved_layer_mode: str = "pan_zoom"
+        self._saved_layer_drag_cbs: list = []
+
         self._setup_ui()
 
     # ── UI ────────────────────────────────────────────────────────────────
@@ -87,18 +92,26 @@ class CorrectionWidget(QWidget):
         root = QVBoxLayout(self)
         root.setSpacing(6)
 
-        # layer selector
+        # layer selectors
         row = QHBoxLayout()
         row.addWidget(QLabel("Labels layer:"))
         self._layer_combo = QComboBox()
-        self._refresh_layers()
         row.addWidget(self._layer_combo, stretch=1)
+        root.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Image layer:"))
+        self._image_combo = QComboBox()
+        self._image_combo.setToolTip("Image used for watershed split (Ctrl+Right-drag)")
+        row2.addWidget(self._image_combo, stretch=1)
         refresh_btn = QPushButton("↻")
         refresh_btn.setFixedWidth(28)
         refresh_btn.setToolTip("Refresh layer list")
         refresh_btn.clicked.connect(self._refresh_layers)
-        row.addWidget(refresh_btn)
-        root.addLayout(row)
+        row2.addWidget(refresh_btn)
+        root.addLayout(row2)
+
+        self._refresh_layers()
 
         # activate toggle
         self._activate_btn = QPushButton("Activate")
@@ -118,12 +131,12 @@ class CorrectionWidget(QWidget):
         for key, desc in [
             ("n",                  "Paint with new label"),
             ("Shift-n",            "Fill with new label"),
-            ("w → Ctrl+click",     "Swap two labels"),
+            ("w → Ctrl+drag",      "Swap two labels"),
             ("Right-click",        "Erase cell"),
-            ("Ctrl+drag",          "Merge cells"),
-            ("Ctrl+Right-drag",    "Split (watershed)"),
-            ("Alt+Right-drag",     "Split by drawn line"),
-            ("Ctrl+Alt+drag",      "Redraw junction"),
+            ("Ctrl+Left-drag",     "Merge cells (A→B, touching)"),
+            ("Ctrl+Right-drag",    "Split (watershed, same cell)"),
+            ("Shift+Right-drag",   "Split by drawn line"),
+            ("Shift+Left-drag",    "Redraw junction"),
         ]:
             lbl_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
         root.addWidget(lbl_ref)
@@ -147,14 +160,20 @@ class CorrectionWidget(QWidget):
         root.addStretch()
 
     def _refresh_layers(self):
-        current = self._layer_combo.currentText()
+        current_lab = self._layer_combo.currentText()
+        current_img = self._image_combo.currentText()
         self._layer_combo.clear()
+        self._image_combo.clear()
         for layer in self.viewer.layers:
             if isinstance(layer, napari.layers.Labels):
                 self._layer_combo.addItem(layer.name)
-        idx = self._layer_combo.findText(current)
-        if idx >= 0:
-            self._layer_combo.setCurrentIndex(idx)
+            elif isinstance(layer, napari.layers.Image):
+                self._image_combo.addItem(layer.name)
+        for combo, prev in [(self._layer_combo, current_lab),
+                            (self._image_combo, current_img)]:
+            idx = combo.findText(prev)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
 
     # ── activation ────────────────────────────────────────────────────────
 
@@ -178,18 +197,54 @@ class CorrectionWidget(QWidget):
         self._layer = layer
         self._swap_mode = False
         self._reset_track_state()
+
+        # ── suspend conflicting napari callbacks ──────────────────────────
+        # 1. viewer-level: drag_to_zoom intercepts all Alt+drag (and any
+        #    future viewer-level drag callbacks that might interfere)
+        self._saved_viewer_drag_cbs = list(self.viewer.mouse_drag_callbacks)
+        self.viewer.mouse_drag_callbacks.clear()
+
+        # 2. layer-level: force pan_zoom so napari doesn't add its own
+        #    drawing callbacks (e.g. the 'draw' callback added in paint/erase
+        #    mode) that would run alongside ours
+        self._saved_layer_mode = layer.mode
+        self._saved_layer_drag_cbs = list(layer.mouse_drag_callbacks)
+        layer.mode = "pan_zoom"
+        layer.mouse_drag_callbacks.clear()
+
+        # ── make the layer the active selection so key bindings fire ──────
+        self.viewer.layers.selection.active = layer
+
+        # Pre-create the draw layer now (while Labels is the active layer) so
+        # that _get_draw_layer() during a drag never triggers a layer switch.
+        self._get_draw_layer()
+
         self._register_callbacks()
         self._activate_btn.setText("Deactivate")
-        n_drag = len(layer.mouse_drag_callbacks)
-        n_keys = len(self._bound_keys)
-        self._set_status(f"Active on '{layer.name}' — {n_drag} drag cb, {n_keys} keys")
+        self._set_status(f"Active on '{layer.name}'")
 
     def _deactivate(self):
         if self._layer is not None:
             self._remove_callbacks()
+
+            # ── restore layer state ───────────────────────────────────────
+            self._layer.mouse_drag_callbacks.clear()
+            self._layer.mode = self._saved_layer_mode   # re-adds mode callbacks
+            # re-add any non-mode custom callbacks that were present before
+            for cb in self._saved_layer_drag_cbs:
+                if cb not in self._layer.mouse_drag_callbacks:
+                    self._layer.mouse_drag_callbacks.append(cb)
+
+            # ── restore viewer callbacks ──────────────────────────────────
+            self.viewer.mouse_drag_callbacks.clear()
+            for cb in self._saved_viewer_drag_cbs:
+                self.viewer.mouse_drag_callbacks.append(cb)
+
         self._layer = None
         self._swap_mode = False
         self._reset_track_state()
+        self._saved_viewer_drag_cbs = []
+        self._saved_layer_drag_cbs = []
         self._activate_btn.setText("Activate")
         self._activate_btn.setChecked(False)
         self._set_status("Inactive")
@@ -223,6 +278,10 @@ class CorrectionWidget(QWidget):
             face_color="transparent",
         )
         dl.visible = False
+        # Adding a layer makes it the active layer, which would steal mouse
+        # events from our Labels layer.  Restore the active layer immediately.
+        if self._layer is not None:
+            self.viewer.layers.selection.active = self._layer
         return dl
 
     def _cleanup_draw_layer(self):
@@ -496,8 +555,8 @@ class CorrectionWidget(QWidget):
                     _layer.refresh()
                     return
 
-                # split draw: Alt+Right-drag
-                if mods == {"Alt"} and btn == 2:
+                # split draw: Shift+Right-drag
+                if mods == {"Shift"} and btn == 2:
                     dl = self._get_draw_layer()
                     dl.data = []
                     dl.visible = True
@@ -520,8 +579,8 @@ class CorrectionWidget(QWidget):
                     _layer.refresh()
                     return
 
-                # redraw junction: Ctrl+Alt+Left-drag
-                if mods == {"Control", "Alt"} and btn == 1:
+                # redraw junction: Shift+Left-drag
+                if mods == {"Shift"} and btn == 1:
                     dl = self._get_draw_layer()
                     dl.data = []
                     dl.visible = True
@@ -569,8 +628,13 @@ class CorrectionWidget(QWidget):
     # ── helpers ───────────────────────────────────────────────────────────
 
     def _image_frame(self, t: int):
-        for lyr in self.viewer.layers:
+        name = self._image_combo.currentText()
+        if name and name in self.viewer.layers:
+            lyr = self.viewer.layers[name]
             if isinstance(lyr, napari.layers.Image):
                 d = lyr.data
-                return d[t] if d.ndim == 3 else d if d.ndim == 2 else None
+                if d.ndim == 3:
+                    return d[t]
+                if d.ndim == 2:
+                    return d
         return None
