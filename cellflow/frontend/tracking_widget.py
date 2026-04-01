@@ -11,10 +11,11 @@ Tracking is performed with LapTrack (centroid-distance LAP with gap closing).
 """
 
 import numpy as np
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QSpinBox,
-    QPushButton, QLabel,
+    QPushButton, QLabel, QToolButton,
     QTextEdit, QProgressBar, QScrollArea,
 )
 from napari.qt.threading import thread_worker
@@ -61,9 +62,15 @@ class TrackingTab(QWidget):
         root.addWidget(self._build_nuc_input_panel())
 
         # ── Tracking parameters ──
-        track_box = QGroupBox("LapTrack Parameters")
-        track_box.setCheckable(True)
-        track_box.setChecked(False)
+        track_toggle = QToolButton()
+        track_toggle.setText("LapTrack Parameters")
+        track_toggle.setArrowType(Qt.RightArrow)
+        track_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        track_toggle.setCheckable(True)
+        track_toggle.setChecked(False)
+        track_toggle.setStyleSheet("QToolButton { font-weight: bold; }")
+        root.addWidget(track_toggle)
+
         track_inner = QWidget()
         self._track_form = QFormLayout(track_inner)
         self._track_form.setSpacing(4)
@@ -72,11 +79,13 @@ class TrackingTab(QWidget):
         t_scroll.setWidget(track_inner)
         t_scroll.setWidgetResizable(True)
         t_scroll.setFixedHeight(160)
-        t_vlay = QVBoxLayout(track_box)
-        t_vlay.addWidget(t_scroll)
-        track_box.toggled.connect(t_scroll.setVisible)
         t_scroll.setVisible(False)
-        root.addWidget(track_box)
+        root.addWidget(t_scroll)
+
+        def _toggle_track(checked):
+            track_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+            t_scroll.setVisible(checked)
+        track_toggle.toggled.connect(_toggle_track)
 
         # ── Run button ──
         self._run_btn = QPushButton("Run Tracking")

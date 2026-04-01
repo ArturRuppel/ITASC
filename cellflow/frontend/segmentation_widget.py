@@ -18,11 +18,12 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QRadioButton, QButtonGroup,
     QComboBox, QCheckBox, QDoubleSpinBox, QSpinBox,
-    QPushButton, QLabel, QLineEdit, QFileDialog,
+    QPushButton, QLabel, QLineEdit, QFileDialog, QToolButton,
     QTextEdit, QProgressBar, QScrollArea,
 )
 from napari.qt.threading import thread_worker
@@ -123,9 +124,15 @@ class SegmentationTab(QWidget):
         root.addWidget(self._build_load_seg_panel())
 
         # ── Cellpose parameters (scrollable, collapsible) ──
-        params_box = QGroupBox("Cellpose Parameters")
-        params_box.setCheckable(True)
-        params_box.setChecked(False)
+        params_toggle = QToolButton()
+        params_toggle.setText("Cellpose Parameters")
+        params_toggle.setArrowType(Qt.RightArrow)
+        params_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        params_toggle.setCheckable(True)
+        params_toggle.setChecked(False)
+        params_toggle.setStyleSheet("QToolButton { font-weight: bold; }")
+        root.addWidget(params_toggle)
+
         params_inner = QWidget()
         self._params_form = QFormLayout(params_inner)
         self._params_form.setSpacing(4)
@@ -134,11 +141,13 @@ class SegmentationTab(QWidget):
         scroll.setWidget(params_inner)
         scroll.setWidgetResizable(True)
         scroll.setFixedHeight(240)
-        pb_lay = QVBoxLayout(params_box)
-        pb_lay.addWidget(scroll)
-        params_box.toggled.connect(scroll.setVisible)
         scroll.setVisible(False)
-        root.addWidget(params_box)
+        root.addWidget(scroll)
+
+        def _toggle_params(checked):
+            params_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+            scroll.setVisible(checked)
+        params_toggle.toggled.connect(_toggle_params)
 
         # ── Segmentation action buttons ──
         seg_btns = QHBoxLayout()

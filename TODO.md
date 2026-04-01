@@ -55,7 +55,4 @@
 
 ## UI / UX
 
-- **Collapsible parameter sections**: Replace the `QGroupBox.setCheckable(True)` pattern
-  (checkbox toggle) used for parameter panels with a disclosure triangle / arrow button
-  (`QToolButton` with `setArrowType`) for a more conventional look.
 
