@@ -117,7 +117,13 @@ class CellFlowWidget(QWidget):
         _plugin_root = QWidget()
         _plugin_layout = QVBoxLayout(_plugin_root)
         _plugin_layout.setContentsMargins(0, 0, 0, 0)
+        _plugin_layout.setSpacing(0)
         self._outer_scroll.setWidget(_plugin_root)
+
+        # ── Project bar (fixed strip above all tabs) ──────────────────────
+        from .project_bar import ProjectBar
+        self._project_bar = ProjectBar(self.viewer, self._state)
+        _plugin_layout.addWidget(self._project_bar)
 
         self.tab_widget = QTabWidget()
         _plugin_layout.addWidget(self.tab_widget)

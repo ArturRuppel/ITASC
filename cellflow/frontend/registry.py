@@ -37,6 +37,7 @@ class ViewerState(QObject):
 
     dataset_changed = Signal()
     metadata_changed = Signal()
+    project_changed = Signal()   # emitted when project_path changes
 
     def __init__(self, viewer) -> None:
         super().__init__()
@@ -45,6 +46,7 @@ class ViewerState(QObject):
         self._pixel_size: Optional[float] = None
         self._time_interval: Optional[float] = None
         self._condition: str = ""
+        self._project_path: Optional[str] = None  # current .h5 file path
 
     # -- viewer accessor ---------------------------------------------------
 
@@ -83,6 +85,17 @@ class ViewerState(QObject):
     def condition(self, value: str) -> None:
         self._condition = value or ""
         self.metadata_changed.emit()
+
+    # -- project path ------------------------------------------------------
+
+    @property
+    def project_path(self) -> Optional[str]:
+        return self._project_path
+
+    @project_path.setter
+    def project_path(self, value: Optional[str]) -> None:
+        self._project_path = value
+        self.project_changed.emit()
 
     # -- dataset property --------------------------------------------------
 

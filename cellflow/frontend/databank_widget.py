@@ -1,17 +1,14 @@
 """Dataset management tab widget for cellflow."""
 import logging
 from pathlib import Path
-from typing import Optional
 
-from qtpy.QtCore import QThread, Qt, Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
-    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -21,7 +18,6 @@ from qtpy.QtWidgets import (
 )
 
 from .registry import get_state
-from .workers import IOWorker
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +31,6 @@ class DataBankWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self._state = get_state(napari_viewer)
-        self._thread: Optional[QThread] = None
-        self._worker = None
         self._build_ui()
         self._connect_signals()
 
@@ -76,15 +70,8 @@ class DataBankWidget(QWidget):
         meta_group.setLayout(meta_layout)
         layout.addWidget(meta_group)
 
-        # --- Dataset actions ---
-        ds_btn_row = QHBoxLayout()
-        self.new_btn = QPushButton("New")
-        self.load_btn = QPushButton("Load...")
-        self.save_btn = QPushButton("Save...")
-        ds_btn_row.addWidget(self.new_btn)
-        ds_btn_row.addWidget(self.load_btn)
-        ds_btn_row.addWidget(self.save_btn)
-        layout.addLayout(ds_btn_row)
+        # New / Load / Save are handled by the Project Bar above the tabs.
+        # This tab focuses on inspecting tissues and editing their metadata.
 
         # --- Tissue table ---
         self.tissues_label = QLabel("No dataset")
@@ -123,14 +110,6 @@ class DataBankWidget(QWidget):
         self.open_dashboard_btn.setToolTip("Launch the analysis dashboard in your browser")
         layout.addWidget(self.open_dashboard_btn)
 
-        # --- Progress + status ---
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setVisible(False)
-        layout.addWidget(self.cancel_btn)
-
         self.status_label = QLabel("")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -138,13 +117,9 @@ class DataBankWidget(QWidget):
         layout.addStretch()
 
     def _connect_signals(self):
-        self.new_btn.clicked.connect(self._new_dataset)
-        self.load_btn.clicked.connect(self._load_dataset)
-        self.save_btn.clicked.connect(self._save_dataset)
         self.show_tissue_btn.clicked.connect(self._show_selected)
         self.remove_tissue_btn.clicked.connect(self._remove_selected)
         self.open_dashboard_btn.clicked.connect(self._open_dashboard)
-        self.cancel_btn.clicked.connect(self._cancel_io_worker)
 
         self.condition_edit.editingFinished.connect(self._apply_metadata)
         self.pixel_size_edit.editingFinished.connect(self._apply_metadata)
@@ -275,75 +250,6 @@ class DataBankWidget(QWidget):
         self.status_label.setText(f"Removed tissue {tid}.")
 
     # ------------------------------------------------------------------
-    # Dataset operations
-    # ------------------------------------------------------------------
-
-    def _new_dataset(self):
-        ds = self._state.dataset
-        if ds is not None and ds.n_tissues > 0:
-            reply = QMessageBox.question(
-                self, "New Dataset",
-                f"Discard current dataset ({ds.n_tissues} tissue(s))?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-        self._state.dataset = None
-        self.condition_edit.clear()
-        self.pixel_size_edit.clear()
-        self.time_interval_edit.clear()
-        self.status_label.setText("New dataset created.")
-
-    def _load_dataset(self):
-        ds = self._state.dataset
-        if ds is not None and ds.n_tissues > 0:
-            reply = QMessageBox.question(
-                self, "Load Dataset",
-                f"Replace current dataset ({ds.n_tissues} tissue(s)) with loaded one?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-        path = QFileDialog.getExistingDirectory(self, "Load Dataset From")
-        if not path:
-            return
-        self._run_io_worker(IOWorker("load", path), self._on_load_finished)
-
-    def _on_load_finished(self, dataset):
-        self._state.dataset = dataset
-        self._finish_io_worker()
-
-        # Populate metadata fields from loaded dataset
-        self.condition_edit.setText(dataset.condition or "")
-        if dataset.pixel_size is not None:
-            self.pixel_size_edit.setText(str(dataset.pixel_size))
-        else:
-            self.pixel_size_edit.clear()
-        if dataset.time_interval is not None:
-            self.time_interval_edit.setText(str(dataset.time_interval))
-        else:
-            self.time_interval_edit.clear()
-
-        self.status_label.setText(
-            f"Loaded: {dataset.n_tissues} tissue(s), "
-            f"condition: {dataset.condition or '(none)'}"
-        )
-
-    def _save_dataset(self):
-        ds = self._state.dataset
-        if ds is None or ds.n_tissues == 0:
-            self.status_label.setText("No dataset to save.")
-            return
-        self._apply_metadata()
-        path = QFileDialog.getExistingDirectory(self, "Save Dataset To")
-        if not path:
-            return
-        self._run_io_worker(IOWorker("save", path, ds), self._on_save_finished)
-
-    def _on_save_finished(self, _):
-        self._finish_io_worker()
-        self.status_label.setText("Dataset saved.")
-
     # ------------------------------------------------------------------
     # Dashboard
     # ------------------------------------------------------------------
@@ -354,15 +260,15 @@ class DataBankWidget(QWidget):
             self.status_label.setText("No dataset to open in dashboard.")
             return
         try:
-            import tempfile
-            tmpdir = Path(tempfile.mkdtemp(prefix="tissuegraph_dashboard_"))
+            import tempfile, os
+            tmp_h5 = Path(tempfile.mktemp(prefix="tissuegraph_dashboard_", suffix=".h5"))
             from ..utils.io import save_dataset
-            save_dataset(ds, tmpdir)
+            save_dataset(ds, tmp_h5)
 
             import subprocess
             import sys
             subprocess.Popen(
-                [sys.executable, "-m", "cellflow.dashboard", str(tmpdir)],
+                [sys.executable, "-m", "cellflow.dashboard", str(tmp_h5)],
             )
             self.status_label.setText("Dashboard launched in browser.")
         except ImportError:
@@ -373,73 +279,6 @@ class DataBankWidget(QWidget):
         except Exception as exc:
             self.status_label.setText(f"Failed to launch dashboard: {exc}")
 
-    # ------------------------------------------------------------------
-    # IO worker management
-    # ------------------------------------------------------------------
-
-    def _run_io_worker(self, worker, on_finished):
-        if self._thread is not None:
-            try:
-                if self._thread.isRunning():
-                    self._thread.quit()
-                    self._thread.wait()
-            except RuntimeError:
-                pass
-            self._thread = None
-            self._worker = None
-
-        self._thread = QThread()
-        self._worker = worker
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        if hasattr(self._worker, "progress"):
-            self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(on_finished)
-        self._worker.error.connect(self._on_error)
-        self._worker.finished.connect(self._thread.quit)
-        self._worker.error.connect(self._thread.quit)
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.error.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-
-        self.new_btn.setEnabled(False)
-        self.load_btn.setEnabled(False)
-        self.save_btn.setEnabled(False)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.cancel_btn.setVisible(True)
-        self.status_label.setText("Working...")
-
-        self._thread.start()
-
-    def _finish_io_worker(self):
-        self.progress_bar.setVisible(False)
-        self.cancel_btn.setVisible(False)
-        self.new_btn.setEnabled(True)
-        self.load_btn.setEnabled(True)
-        self.save_btn.setEnabled(True)
-
-    def _on_progress(self, percent, message):
-        self.progress_bar.setValue(percent)
-        self.status_label.setText(message)
-
-    def _on_error(self, exc):
-        self._finish_io_worker()
-        self.status_label.setText(f"Error: {exc}")
-        logger.exception("IO operation failed", exc_info=exc)
-
-    def _cancel_io_worker(self):
-        if self._thread is not None:
-            try:
-                if self._thread.isRunning():
-                    self._thread.quit()
-                    self._thread.wait()
-            except RuntimeError:
-                pass
-            self._thread = None
-            self._worker = None
-        self._finish_io_worker()
-        self.status_label.setText("Cancelled.")
 
     # ------------------------------------------------------------------
     # Helpers

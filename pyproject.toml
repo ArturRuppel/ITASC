@@ -24,6 +24,7 @@ dependencies = [
     "cellpose>=3.1.0",
     "laptrack>=0.14.0",
     "tifffile>=2024.1.1",
+    "h5py>=3.8.0",
     "PyYAML>=6.0",
 ]
 
