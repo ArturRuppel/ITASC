@@ -46,9 +46,10 @@ class TrackingTab(QWidget):
 
     def __init__(self, viewer: napari.Viewer, seg_tab):
         super().__init__()
-        self.viewer   = viewer
-        self._seg_tab = seg_tab   # SegmentationTab — single source of truth for labels data
-        self._worker  = None
+        self.viewer        = viewer
+        self._seg_tab      = seg_tab   # SegmentationTab — single source of truth for labels data
+        self._worker       = None
+        self._tracks_layer = None      # dedicated napari Tracks layer
 
         self._setup_ui()
 
@@ -275,6 +276,53 @@ class TrackingTab(QWidget):
 
         self._seg_tab._seg_status.setText(f"Loaded: {seg_layer.data.shape}")
         self._sync_status()
+
+        self._rebuild_tracks_layer(stacked)
+
+    # ── Tracks layer ───────────────────────────────────────────────────
+
+    def rebuild_tracks_layer(self):
+        """Public: rebuild the Tracks layer from the current segmentation.
+
+        Call this after external label edits (e.g. corrections) to keep the
+        Tracks layer in sync with the labels.
+        """
+        seg_layer = self._seg_tab._seg_layer
+        if seg_layer is None or seg_layer not in self.viewer.layers:
+            return
+        stacked = seg_layer.data
+        if stacked.ndim < 3:
+            return
+        self._rebuild_tracks_layer(stacked)
+
+    def _rebuild_tracks_layer(self, stacked):
+        """Compute centroids per frame and update (or create) the Tracks layer."""
+        from skimage.measure import regionprops_table
+
+        if stacked.ndim < 3:
+            return
+
+        rows = []
+        for t in range(stacked.shape[0]):
+            frame = stacked[t]
+            if frame.max() == 0:
+                continue
+            props = regionprops_table(frame, properties=["label", "centroid"])
+            for lbl, y, x in zip(props["label"], props["centroid-0"], props["centroid-1"]):
+                rows.append([int(lbl), t, y, x])
+
+        if not rows:
+            return
+
+        track_data = np.array(rows, dtype=float)  # (N, 4): [track_id, t, y, x]
+        # napari requires rows sorted by track_id then t
+        idx = np.lexsort((track_data[:, 1], track_data[:, 0]))
+        track_data = track_data[idx]
+
+        if self._tracks_layer is not None and self._tracks_layer in self.viewer.layers:
+            self._tracks_layer.data = track_data
+        else:
+            self._tracks_layer = self.viewer.add_tracks(track_data, name="Tracks")
 
     def _on_error(self, exc):
         self._run_btn.setEnabled(True)
