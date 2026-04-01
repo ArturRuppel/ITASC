@@ -14,11 +14,10 @@ Ctrl+Left-click         Merge (if a cell is selected) or start split:
                           • click same cell twice          → split (watershed)
 Ctrl+Right-click        Swap: if a cell is selected, swaps immediately;
                           otherwise starts two-step swap (Right-click second cell)
-n                       Select next free label, switch to paint mode
-f                       Select next free label, switch to fill mode
-Ctrl-z                  Undo (native napari)
+Ctrl-z                  Undo
 Shift+Right-drag        Split by drawn line (uses selected cell if set)
-Shift+Left-drag         Redraw junction
+Shift+Left-drag         Draw cell path: extends selected cell along stroke,
+                          or creates new cell if none selected
 """
 
 import logging
@@ -45,7 +44,7 @@ if os.environ.get("CELLFLOW_DEBUG"):
 
 from ._labels import (
     erase_cell, merge_cells, split_across,
-    split_draw, redraw_junction, swap_labels,
+    split_draw, draw_cell_path, swap_labels,
     _free_label, _label_at,
 )
 
@@ -129,6 +128,16 @@ class CorrectionWidget(QWidget):
         self._activate_btn.clicked.connect(self._toggle_active)
         root.addWidget(self._activate_btn)
 
+        # mode-change warning (hidden until napari steals the tool mode)
+        self._reset_mode_btn = QPushButton("⚠  Restore correction mode")
+        self._reset_mode_btn.setVisible(False)
+        self._reset_mode_btn.setStyleSheet(
+            "QPushButton { background-color: #7a3c00; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #a05000; }"
+        )
+        self._reset_mode_btn.clicked.connect(self._reset_tool_mode)
+        root.addWidget(self._reset_mode_btn)
+
         # status
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -145,11 +154,9 @@ class CorrectionWidget(QWidget):
             ("Ctrl+Left-click × 2 (same cell)",     "Split (watershed, 2 seeds)"),
             ("Ctrl+Right-click (cell selected)",      "Swap with clicked cell"),
             ("Ctrl+Right-click → Right-click",        "Swap (two-step, no selection)"),
-            ("n",                                   "Paint with new label"),
-            ("f",                                   "Fill with new label"),
-            ("Ctrl-z",                              "Undo (native napari)"),
+            ("Ctrl-z",                              "Undo"),
             ("Shift+Right-drag",                    "Split by drawn line"),
-            ("Shift+Left-drag",                     "Redraw junction"),
+            ("Shift+Left-drag",                     "Draw cell path (extends selected cell or creates new)"),
         ]:
             lbl_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
         root.addWidget(lbl_ref)
@@ -233,6 +240,9 @@ class CorrectionWidget(QWidget):
         # Update highlight when the user scrubs through time
         self.viewer.dims.events.current_step.connect(self._on_dims_change)
 
+        # Detect napari toolbar / shortcut stealing the tool mode
+        layer.events.mode.connect(self._on_layer_mode_change)
+
         self._register_callbacks()
         self._activate_btn.setText("Deactivate")
         self._set_status(f"Active on '{layer.name}'")
@@ -244,6 +254,11 @@ class CorrectionWidget(QWidget):
 
             try:
                 self.viewer.dims.events.current_step.disconnect(self._on_dims_change)
+            except Exception:
+                pass
+
+            try:
+                self._layer.events.mode.disconnect(self._on_layer_mode_change)
             except Exception:
                 pass
 
@@ -354,32 +369,33 @@ class CorrectionWidget(QWidget):
             t = int(self.viewer.dims.current_step[0])
             self._update_highlight(t, self._selected_label)
 
+    def _on_layer_mode_change(self, event=None):
+        """Show warning when napari changes the layer mode away from pan_zoom."""
+        if self._layer is None:
+            return
+        mode = getattr(event, "value", None) or self._layer.mode
+        log.debug("_on_layer_mode_change: mode=%s", mode)
+        if mode != "pan_zoom":
+            self._reset_mode_btn.setVisible(True)
+            self._set_status("Tool mode changed — corrections disabled", error=True)
+        else:
+            self._reset_mode_btn.setVisible(False)
+            if self._layer is not None:
+                self._set_status(f"Active on '{self._layer.name}'")
+
+    def _reset_tool_mode(self):
+        """Restore pan_zoom mode so correction shortcuts work again."""
+        if self._layer is not None:
+            log.debug("_reset_tool_mode: restoring pan_zoom")
+            self._layer.mode = "pan_zoom"
+            # _on_layer_mode_change will hide the button and update status
+
     # ── callback registration ─────────────────────────────────────────────
 
     def _register_callbacks(self):
         layer = self._layer
 
         # ── key bindings ──────────────────────────────────────────────────
-
-        def key_n(_layer):
-            try:
-                lab = _free_label(_layer.data)
-                log.debug("key_n: new label=%s", lab)
-                _layer.selected_label = lab
-                _layer.mode = "paint"
-                self._set_status(f"Paint — new label {lab}")
-            except Exception as exc:
-                show_error(f"key_n error: {exc}")
-
-        def key_f(_layer):
-            try:
-                lab = _free_label(_layer.data)
-                log.debug("key_f: new label=%s", lab)
-                _layer.selected_label = lab
-                _layer.mode = "fill"
-                self._set_status(f"Fill — new label {lab}")
-            except Exception as exc:
-                show_error(f"key_f error: {exc}")
 
         def key_delete(_layer):
             try:
@@ -399,8 +415,6 @@ class CorrectionWidget(QWidget):
                 show_error(f"delete error: {exc}")
 
         for key, fn in [
-            ("n",      key_n),
-            ("f",      key_f),
             ("Delete", key_delete),
         ]:
             layer.bind_key(key, fn, overwrite=True)
@@ -618,7 +632,7 @@ class CorrectionWidget(QWidget):
                     _layer.refresh()
                     return
 
-                # ── Shift+Left-drag: redraw junction ──────────────────────
+                # ── Shift+Left-drag: draw cell path ───────────────────────
                 if mods == {"Shift"} and btn == 1:
                     dl = self._get_draw_layer()
                     dl.data = []
@@ -634,13 +648,14 @@ class CorrectionWidget(QWidget):
                     pos_list.append(_layer.world_to_data(event.position))
                     dl.data = []
                     dl.visible = False
-                    log.debug("redraw_junction: %d positions collected", len(pos_list))
+                    curlabel = self._selected_label if self._selected_label else None
+                    log.debug("draw_cell_path: %d positions collected, curlabel=%s", len(pos_list), curlabel)
                     before = seg2d.copy()
-                    ok = redraw_junction(seg2d, pos_list)
-                    log.debug("redraw_junction result: ok=%s", ok)
+                    ok = draw_cell_path(seg2d, pos_list, curlabel=curlabel)
+                    log.debug("draw_cell_path result: ok=%s", ok)
                     self._set_status(
-                        f"Junction redrawn — Active on '{_layer.name}'"
-                        if ok else "Redraw failed — could not find two adjacent cells"
+                        f"Drew cell path — Active on '{_layer.name}'"
+                        if ok else "Draw failed — stroke too short"
                     )
                     if ok:
                         _record_history(_layer, t, before)

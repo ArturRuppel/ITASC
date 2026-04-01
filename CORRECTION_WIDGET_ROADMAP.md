@@ -8,34 +8,17 @@ Reference implementation: [Epicure](https://github.com/Image-Analysis-Hub/Epicur
 
 ## Known Bugs
 
-### B1. Ctrl+Right-drag split is unreliable ⚠️ partially fixed
-**Symptom:** Watershed split via two-seed drag usually does nothing; occasionally splits
-but leaves a thin barrier between the resulting cells.
+### B1. Ctrl+Right-drag split is unreliable ✅ fixed
+**Symptom:** Watershed split via two-seed Ctrl+Left-click occasionally splits
+but left a thin barrier between the resulting cells, or did nothing.
 
-**Root cause (suspected):**
-- Seed detection during drag may be picking up incorrect positions (coordinate
-  space mismatch, or seeds fall on the boundary rather than cell interior).
-- The barrier artifact suggests `split_across()` in `_labels.py` does not remove the
-  boundary pixels separating the two seeds before running watershed.
-
-**Reference:** `Epicure/src/epicure/editing.py` — `split_in_crop()` uses a
-`disk(radius)` dilation with a retry loop (up to 6 radii) to bridge noisy
-boundaries. CellFlow has no retry mechanism and no pre-dilation of seeds.
-
-**Fix plan:**
-1. ~~Add debug logging to confirm seed coordinates at the moment of the callback.~~
-2. ✅ Adopt the retry-with-increasing-dilation pattern from Epicure.
-3. After watershed, use `remove_small_objects` or explicit erosion to eliminate
-   sub-pixel barriers before writing back to the labels array.
-
-**Status:** Retry loop with seed dilation (radii 0–6) added to `split_across()`.
-Step 3 applied: boundary-zeroing removed entirely — cells now share a direct border
-(0-pixel gap). Applied to `split_across`, `_split_in_crop`, and `_move_junction`.
-Possible coordinate-space edge cases still to be investigated if split misfires.
+**Fix applied:** Retry loop with seed dilation (radii 0–6) added to `split_across()`.
+Boundary-zeroing removed — cells now share a direct 0-pixel-gap border.
+Applied to `split_across`, `_split_in_crop`.
 
 ---
 
-### B2. Shift+Right-drag split gives an IndexError ⚠️ partially fixed
+### B2. Shift+Right-drag split gives an IndexError ✅ fixed
 **Symptom:**
 ```
 IndexError: tuple index out of range
@@ -45,114 +28,94 @@ IndexError: tuple index out of range
 Triggered when the temporary `CorrectionDraw` shapes layer is added/modified
 while napari's camera/dims state is not yet consistent.
 
-**Fix plan:**
-- ~~Delay shapes-layer creation until after the viewer has finished initialising
-  (connect to `viewer.dims.events.ndisplay` if necessary).~~
-- ✅ Create the shapes layer with `ndim=2` explicitly set; `dl.data` updates now
-  use only (y, x) coordinates to match.
-
-**Status:** IndexError resolved. Unexpected behaviour during Shift+Right-drag
-still observed; further investigation needed.
+**Fix:** Shapes layer created with `ndim=2` explicitly set; `dl.data` updates use
+only (y, x) coordinates.
 
 ---
 
-### B3. Swap mode unreliable ⚠️ partially fixed
-**Symptom:** The swap-mode key binding appears to register but the mode flag never
-flips, so the swap operation is never triggered.
+### B3. Swap mode unreliable ✅ fixed
+**Symptom:** The swap-mode key binding appeared to register but the mode flag never
+flipped, so the swap operation was never triggered.
 
-**Fix plan:** ✅ Audit the key-binding registration order in `_widget.py`; napari may
-be consuming `Ctrl+W` before the layer callback fires. Consider rebinding to a
-key that doesn't conflict with napari/Qt defaults.
-
-**Status:** Partially fixed. Rebound from `w` to `s`. Swap rewritten as a two-click
-operation (press `s` → click cell A → click cell B).
-
-**Remaining issue:** Toggle behaviour is unreliable. Should be **hold-to-activate**
-(swap fires while `s` is held, returns to normal on key release) rather than a
-sticky toggle, to avoid getting stuck in swap mode after a failed click.
-
-**Fix plan:** Bind `s` as a hold key using `napari.layers.Labels.bind_key` with the
-`on_release` callback to reset `_swap_mode`. On press: set `_swap_mode = True` and
-`_swap_first_pos = None`. On release: reset both.
+**Fix:** Rebound from `w` to `Ctrl+Right-click`. Swap rewritten as a two-click
+operation (Ctrl+Right-click A → Right-click B), eliminating the toggle.
 
 ---
 
-### B4. Shift+Right-drag split by drawn line is unreliable ⚠️ open
-**Symptom:** Drawing a line across a cell with Shift+Right-drag frequently fails to
-split — `split_draw` returns False or produces no visible change.
+### B4. Shift+Right-drag split by drawn line is unreliable ✅ fixed
+**Symptom:** Drawing a line across a cell frequently failed to split.
 
-**Root cause (suspected):**
-- The drawn path positions are collected at irregular intervals during mouse_move;
-  thin or fast strokes may not cross enough cell pixels to divide it cleanly.
-- `_split_in_crop` requires the line to completely separate the cell into exactly
-  2 connected components after dilation; a partial line that doesn't reach both
-  sides of the cell will always fail even with the retry loop.
-- Coordinate precision: `world_to_data` positions may be sub-pixel; rounding errors
-  on small cells could misplace the line.
-
-**Fix plan:**
-1. Extend line endpoints to the cell boundary before running `_split_in_crop`, so
-   a partial stroke still produces a full cut (similar to Epicure's approach of
-   projecting the line to the nearest boundary pixel on each side).
-2. Add fallback: if the drawn line doesn't divide the cell, dilate it progressively
-   until it does (already done in `_split_in_crop` retry loop — check if max
-   dilation radius of 6 is sufficient for thick cells; increase if needed).
-3. Collect points more densely (interpolate between consecutive mouse_move events
-   that are far apart) to handle fast strokes.
+**Fixes applied:**
+1. ✅ Endpoint extension: `_extend_endpoints()` prepends/appends points beyond each
+   end of the stroke so the line crosses the cell boundary even with a partial drag.
+2. ✅ Retry dilation in `_split_in_crop` (radii 0–6) bridges gaps from fast/thin strokes.
+3. ✅ Fallback: if the extended line still misses the target cell, infer the target
+   from the labels actually under the drawn path.
 
 ---
 
 ### B5. Ctrl+Z undo does not work ✅ works
-**Symptom:** Pressing `Ctrl+Z` while the correction widget is active has no effect.
+**Symptom:** Pressing `Ctrl+Z` while the correction widget is active had no effect.
 
-**Status:** napari 0.7.0's `Labels.undo()` tracks in-place numpy writes — confirmed
-working. The existing `key_undo` binding (`Control-z` → `_layer.undo()`) is sufficient.
+**Status:** All correction ops call `_record_history()` which pushes a
+`(indices, old_values, new_values)` atom onto napari's undo stack.
 
 ---
 
 ### B6. Attribution label unreadable in dark theme ✅ fixed
-**Symptom:** The Epicure attribution `QLabel` was dark and hard to read in napari's
-default dark theme.
-
-**Fix:** Changed `setStyleSheet` from `color: palette(mid)` to `color: palette(text)`,
-which uses the normal foreground colour that adapts to the active Qt palette.
+**Fix:** `color: palette(text)` instead of `color: palette(mid)`.
 
 ---
 
 ### B7. Commands sometimes silently fail / fire inconsistently ✅ fixed
-**Symptom:** Correction operations (merge, split, swap, erase) occasionally do nothing
-even when the cursor is clearly over the right cell and the correct shortcut is used.
-No error appears in the napari notification area.
-
 **Fixes applied:**
-1. ✅ **Modifier detection**: replaced fragile `_mod()` string-parser with
-   `{m.name for m in event.modifiers}` — uses vispy's stable `.name` attribute.
-2. ✅ **Focus stealing**: `_update_highlight()` already reasserts
-   `viewer.layers.selection.active = self._layer` at the end; this is sufficient.
-3. ✅ **Two-step state frame-guard**: `_ctrl_click_first_t` and `_swap_first_t` store
-   the time frame at the first click. If the second click is on a different frame, the
-   operation is cancelled with a status message and the first click is reset.
-4. **`event.type` guard**: existing guard is correct; no change needed.
+1. ✅ **Modifier detection**: `{m.name for m in event.modifiers}` instead of a string parser.
+2. ✅ **Focus stealing**: `_update_highlight()` reasserts `viewer.layers.selection.active`.
+3. ✅ **Two-step state frame-guard**: `_ctrl_click_first_t` and `_swap_first_t` cancel
+   the pending operation if the time frame changes between clicks.
+
+---
+
+### B8. Selecting a cell with Ctrl held blocks subsequent merge/swap ⚠️ open
+**Symptom:** If the user holds Ctrl while left-clicking a cell, `_ctrl_click_first`
+split-seed state is set. A subsequent Ctrl+Left-click on a *different* cell cancels
+the split state but doesn't trigger a merge because `_selected_label` was never set.
+
+**Fix plan:** When Ctrl+Left-click lands on a different cell than `_ctrl_click_first_label`,
+promote the first seed to `_selected_label`/`_selected_pos` and immediately attempt
+the merge with the new click, rather than silently dropping state.
+
+---
+
+### B9. Napari tool mode change breaks correction shortcuts ⚠️ open
+**Symptom:** Clicking the napari toolbar (paint brush, fill, erase, etc.) or pressing
+napari's native label shortcuts switches the Labels layer mode away from `pan_zoom`.
+In any mode other than `pan_zoom`, napari intercepts mouse events before the
+correction widget's callbacks fire, silently breaking all shortcuts.
+
+**Fix plan:**
+1. Connect `layer.events.mode` in `_activate()` and disconnect in `_deactivate()`.
+2. When mode changes to anything other than `pan_zoom`, show a visible warning in
+   the widget (status label + a "Restore correction mode" button).
+3. The button sets `layer.mode = "pan_zoom"` and hides itself.
+4. Note: `n` and `f` key bindings have been removed from the correction widget to
+   avoid confusing users; the shortcut table no longer lists them.
 
 ---
 
 ## Planned Features
 
-### F1. Draw new cells that respect existing boundaries
-**Description:** Allow the user to draw a closed or open path on top of an existing
-cell (or in an unlabelled gap) and have a new cell label created that follows the
-existing segmentation boundaries.
+### F1. Draw cell path ✅ done (merged with old junction-redraw)
+**Description:** Shift+Left-drag draws a thickened stroke that overwrites existing
+label boundaries.
 
-**Reference:** `Epicure/src/epicure/editing.py` — `create_cell_from_line()` and
-`drawing_junction_mode()`. Activated with the `j` key; the drawn path is used to
-seed a watershed that is constrained by the existing label boundaries.
+- **Cell selected:** pixels along the stroke are assigned to the selected cell
+  (extends it along the drawn path).
+- **No cell selected:** pixels are assigned to a new free label.
 
-**Implementation sketch:**
-1. Add a `drawing_junction` mode toggle (key `d` or `j`).
-2. When active, capture the drawn path via the shapes layer.
-3. Dilate path to produce seed regions; run watershed constrained by existing
-   label boundaries.
-4. Assign new label, update layer.
+**Implementation:** `draw_cell_path(seg, positions, curlabel, radius)` in `_labels.py`.
+Stroke is interpolated, endpoints extended by `radius*2`, then dilated with `disk(radius)`
+before writing to the segmentation.
 
 ---
 
@@ -162,22 +125,9 @@ on a persistent `CellHighlight` Shapes layer.  The highlight updates automatical
 when the time-slider changes.  Clicking the background or starting a new operation
 clears the selection.
 
-**Implementation:**
-- `_get_highlight_layer()` creates/returns the `CellHighlight` Shapes layer (ndim=2,
-  cyan edge, transparent fill).
-- `_update_highlight(t, lab)` runs `skimage.measure.find_contours` on the cell mask
-  and sets the largest contour as a polygon.
-- `_on_dims_change()` is connected to `viewer.dims.events.current_step` so the
-  highlight re-renders across time frames.
-- State: `_selected_label`, `_ctrl_click_first`, `_ctrl_click_first_label`,
-  `_swap_first_pos` in `CorrectionWidget`.
-
 ---
 
 ### F3. Redesign keyboard shortcuts ✅ done
-**Previous issues:** drag-based merge/split were not robust; `s`-toggle swap was
-unreliable; right-click-erase conflicted with swap-second-click.
-
 **Current mapping (selection-first model):**
 
 | Action | Shortcut |
@@ -188,19 +138,13 @@ unreliable; right-click-erase conflicted with swap-second-click.
 | Split cell (watershed, 2 seeds) | Ctrl+Left-click A → Ctrl+Left-click A again (same label) |
 | Swap labels | Ctrl+Right-click A → Right-click B |
 | Split (drawn line) | `Shift` + Right-drag (uses selected cell if set) |
-| Redraw junction | `Shift` + Left-drag |
-| Paint new cell | `N` |
-| Fill new cell | `F` |
+| Draw cell path | `Shift` + Left-drag (extends selected cell, or new cell) |
 | Undo | `Ctrl+Z` |
-
-**Add `D` to toggle draw-new-cell mode once F1 is implemented.**
 
 ---
 
 ### F4. Remove native napari label shortcuts from widget UI ✅ done
-**Description:** The help panel now shows only CellFlow custom shortcuts under
-the group box "Correction shortcuts" (previously "Label shortcuts"). Undo added
-to the help text. Fill changed from `Shift-N` to `F`.
+**Description:** The help panel shows only CellFlow custom shortcuts.
 
 ---
 
@@ -210,38 +154,21 @@ added at the bottom of the correction dock panel.
 
 ---
 
-### B8. Selecting a cell with Ctrl held blocks subsequent merge/swap ⚠️ open
-**Symptom:** If the user holds Ctrl while left-clicking to select a cell (instead of a
-plain left-click), the `ctrl_first` split-seed state is set on that click.  A subsequent
-Ctrl+Left-click on a *different* cell then hits the "different cell during split mode —
-cancel split" branch, clearing the state and falling through to the merge logic — but
-by that point `_ctrl_click_first` is already `None` and the merge branch requires
-`_selected_label != 0` with a stored `_selected_pos`, which may not be set.
-Similarly, entering split mode (Ctrl+click A) and then trying Ctrl+Right-click to swap
-requires a prior plain left-click selection, which a Ctrl-heavy workflow skips.
-
-**Fix plan:**
-- On a plain Left-click, also clear `_ctrl_click_first` state (already done).
-- On Ctrl+Left-click that lands on a *different* cell than the current `_ctrl_click_first_label`,
-  treat it as the *first* click of a merge (i.e. set `_selected_label`/`_selected_pos` from the
-  first seed, then immediately attempt the merge with the new click) rather than silently
-  dropping the state.
-
----
-
 ## Implementation Order (suggested)
 
 1. **B2** ✅ — Fix IndexError on Shift+Right-drag
-2. **B1** ⚠️ — Fix watershed split (0-px boundary done; coordinate edge cases remain)
-3. **B3** ✅ — Swap rewritten as Ctrl+Right-click → Right-click (no more `s` toggle)
-4. **F4** ✅ — Cleaned up help panel (CellFlow shortcuts only, undo added)
-5. **F3** ✅ — Full shortcut redesign: selection-first model (click to highlight, then act)
-6. **F5** ✅ — Attribution added; label colour fixed to `palette(text)`
-7. **F2** ✅ — Cell highlighting: left-click selects, cyan contour overlay, dims-aware
-8. **B7** ✅ — Fix intermittent silent failures (modifier detection, frame-guard for two-step ops)
-9. **B5** ✅ — Ctrl+Z works natively in napari 0.7.0
-10. **B4** — Fix split-by-line reliability (line extension + denser sampling)
-11. **F1** — Draw new cells from junctions (largest new feature)
+2. **B1** ✅ — Fix watershed split
+3. **B3** ✅ — Swap rewritten as Ctrl+Right-click → Right-click
+4. **F4** ✅ — Cleaned up help panel
+5. **F3** ✅ — Full shortcut redesign: selection-first model
+6. **F5** ✅ — Attribution added
+7. **F2** ✅ — Cell highlighting
+8. **B7** ✅ — Fix intermittent silent failures
+9. **B5** ✅ — Ctrl+Z works
+10. **B4** ✅ — Fix split-by-line reliability
+11. **F1** ✅ — Draw cell path (replaces junction-redraw)
+12. **B9** ⚠️ — Napari tool mode warning + reset button
+13. **B8** ⚠️ — Ctrl-held merge/swap state fix
 
 ---
 

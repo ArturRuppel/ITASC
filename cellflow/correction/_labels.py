@@ -417,91 +417,43 @@ def _split_in_crop(
     return _split_in_crop(seg, crop, line, bbox, curlabel, retry + 1)
 
 
-def redraw_junction(seg: np.ndarray, positions: list) -> bool:
-    """
-    Redraw the boundary between two cells along a manually drawn line.
-
-    The two cells are identified as the most common labels adjacent to the
-    drawn path.  Their shared boundary is replaced by the new line.
-    """
-    log.debug("redraw_junction: %d raw positions", len(positions))
-    tight_bbox = _bbox_of_pts(positions)
-    tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape, min_pad=4)
-    crop_tight = _crop(seg, tight_bbox)
-    local_pts = _to_local(positions, tight_bbox)
-
-    # find cells adjacent to the drawn path by sampling labels in a neighbourhood
-    labs_near: list[int] = []
-    for r, c in local_pts:
-        ri, ci = int(round(r)), int(round(c))
-        region = crop_tight[max(0, ri - 2):ri + 3, max(0, ci - 2):ci + 3]
-        labs_near.extend(int(v) for v in region.flat if v > 0)
-
-    top = [lab for lab, _ in Counter(labs_near).most_common(2)]
-    log.debug("redraw_junction: nearby labels most_common=%s", Counter(labs_near).most_common(4))
-    if len(top) < 2:
-        log.debug("redraw_junction: rejected — fewer than 2 distinct labels near path")
-        return False
-    lab_a, lab_b = top[0], top[1]
-    log.debug("redraw_junction: lab_a=%s lab_b=%s", lab_a, lab_b)
-
-    bbox = _bbox_of_two(seg, lab_a, lab_b)
-    bbox = _extend_bbox(bbox, 1.25, seg.shape)
-    r0, c0, r1, c1 = bbox
-    init_crop = _crop(seg, bbox).copy()
-    local_pts = _to_local(positions, bbox)
-
-    # temporarily merge both cells so the line can split them freely
-    merged_bin = np.isin(init_crop, [lab_a, lab_b]).astype(np.uint8)
-    merged = binary_closing(merged_bin, disk(2)).astype(np.uint8) * lab_a
-
-    interp = _interpolate(local_pts)
-    line = _draw_line(merged.shape, interp)
-
-    return _move_junction(seg, init_crop, merged, line, bbox, lab_a, lab_b)
-
-
-def _move_junction(
+def draw_cell_path(
     seg: np.ndarray,
-    init_crop: np.ndarray,
-    merged: np.ndarray,
-    line: np.ndarray,
-    bbox: tuple,
-    lab_a: int,
-    lab_b: int,
-    retry: int = 0,
+    positions: list,
+    *,
+    curlabel: int | None = None,
+    radius: int = 3,
 ) -> bool:
-    if retry > 6:
-        log.debug("_move_junction: failed after 6 retries")
+    """
+    Paint a thickened stroke onto the segmentation, overwriting existing labels.
+
+    All pixels within *radius* of the interpolated path are assigned to
+    *curlabel*.  If *curlabel* is 0 or absent a new free label is created.
+    Returns True on success, False if the stroke is too short or empty.
+    """
+    log.debug("draw_cell_path: %d raw positions, curlabel=%s radius=%d", len(positions), curlabel, radius)
+    if len(positions) < 2:
         return False
 
-    dilated = binary_dilation(line, disk(retry)) if retry > 0 else line.astype(bool)
-    mask = (merged > 0).astype(np.uint8)
-    mask[dilated] = 0
+    local_pts = [(float(p[-2]), float(p[-1])) for p in positions]
+    extended = _extend_endpoints(local_pts, radius * 2)
+    interp = _interpolate(extended)
+    line = _draw_line(seg.shape, interp)
+    thickened = binary_dilation(line.astype(bool), disk(radius))
 
-    regions, n = nd_label(mask)
-    sizes = [int(np.sum(regions == i)) for i in range(1, n + 1)]
-    log.debug("_move_junction: retry=%d n_regions=%d sizes=%s", retry, n, sizes)
-    if (
-        n == 2
-        and np.sum(regions == 1) >= MIN_CELL_SIZE
-        and np.sum(regions == 2) >= MIN_CELL_SIZE
-    ):
-        # Fill the gap left by the dilated line
-        expanded = expand_labels(regions, distance=max(retry + 2, 3))
-        r0, c0, r1, c1 = bbox
-        orig_cells = np.isin(init_crop, [lab_a, lab_b])
-        for reg_id in (1, 2):
-            region_mask = (expanded == reg_id) & orig_cells
-            vals, cnts = np.unique(init_crop[region_mask], return_counts=True)
-            if len(vals):
-                orig_lab = int(vals[np.argmax(cnts)])
-                log.debug("_move_junction: region %d → label %s", reg_id, orig_lab)
-                seg[r0:r1, c0:c1][region_mask] = orig_lab
-        log.debug("_move_junction: success at retry=%d", retry)
-        return True
+    n_px = int(np.sum(thickened))
+    log.debug("draw_cell_path: thickened px=%d", n_px)
+    if n_px < MIN_CELL_SIZE:
+        log.debug("draw_cell_path: rejected — stroke too small")
+        return False
 
-    return _move_junction(seg, init_crop, merged, line, bbox, lab_a, lab_b, retry + 1)
+    if not curlabel or not np.any(seg == curlabel):
+        curlabel = _free_label(seg)
+        log.debug("draw_cell_path: new label=%s", curlabel)
+
+    seg[thickened] = curlabel
+    log.debug("draw_cell_path: assigned %d px to label=%s", n_px, curlabel)
+    return True
 
 
 def swap_labels(seg: np.ndarray, pos_a: tuple, pos_b: tuple) -> bool:
