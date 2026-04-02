@@ -233,6 +233,9 @@ class CorrectionWidget(QWidget):
         # Update highlight when the user scrubs through time
         self.viewer.dims.events.current_step.connect(self._on_dims_change)
 
+        # Refresh highlight after undo (Ctrl+Z) or any external data change
+        layer.events.data.connect(self._on_layer_data_changed)
+
         # Auto-deactivate if the active layer is removed from the viewer
         self.viewer.layers.events.removed.connect(self._on_layer_removed)
 
@@ -255,6 +258,11 @@ class CorrectionWidget(QWidget):
 
             try:
                 self.viewer.layers.events.removed.disconnect(self._on_layer_removed)
+            except Exception:
+                pass
+
+            try:
+                self._layer.events.data.disconnect(self._on_layer_data_changed)
             except Exception:
                 pass
 
@@ -377,6 +385,18 @@ class CorrectionWidget(QWidget):
         step = self.viewer.dims.current_step
         # Viewer may temporarily drop to ndim=2 during layer removal;
         # current_step[0] would then be the Y-axis center, not a frame index.
+        if self._layer.data.ndim < 3 or len(step) < self._layer.data.ndim:
+            return
+        t = int(step[0])
+        if t >= self._layer.data.shape[0]:
+            return
+        self._update_highlight(t, self._selected_label)
+
+    def _on_layer_data_changed(self, event=None):
+        """Refresh highlight after undo or any external data modification."""
+        if not (self._selected_label and self._layer is not None):
+            return
+        step = self.viewer.dims.current_step
         if self._layer.data.ndim < 3 or len(step) < self._layer.data.ndim:
             return
         t = int(step[0])
