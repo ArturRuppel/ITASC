@@ -42,12 +42,16 @@
   stored because images are typically loaded from napari layers whose source path is
   unreliable.
 
-- **Multi-file dataset**: Add a meta/project file (e.g. a lightweight JSON or TOML) that
+- ~~**Multi-file dataset**: Add a meta/project file (e.g. a lightweight JSON or TOML) that
   assembles several `.h5` files into a single logical dataset. The panel should show
   which `.h5` is currently *active* (the one being worked on), and any newly added
   tissues or metadata edits should be written back to that file. Switching the active
   file should be a single click. This enables multi-condition or multi-replicate
-  experiments to live as separate `.h5` files but be analysed together.
+  experiments to live as separate `.h5` files but be analysed together.~~ **Done** —
+  `ProjectManifest` / `ProjectEntry` dataclasses + `save_manifest` / `load_manifest`
+  added to `cellflow/utils/io.py`; `ProjectPanel` now loads `.cfproj` manifests,
+  shows a "Project files" list, supports Add / Remove, switches active file on
+  double-click, and auto-saves the manifest on any change.
 
 ---
 

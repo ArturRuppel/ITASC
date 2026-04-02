@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -46,7 +47,44 @@ from .structures import (
 logger = logging.getLogger(__name__)
 
 _FORMAT_VERSION = "2.0"
+_MANIFEST_VERSION = "1.0"
 _STR_DTYPE = h5py.string_dtype()
+
+
+# ------------------------------------------------------------------
+# Multi-file project manifest
+# ------------------------------------------------------------------
+
+@dataclass
+class ProjectEntry:
+    """One .h5 file within a project manifest.
+
+    ``path`` is stored relative to the manifest file (or absolute as a
+    fallback when the files are on different drives).
+    """
+
+    path: str
+    display_name: str = ""
+    note: str = ""
+
+
+@dataclass
+class ProjectManifest:
+    """Multi-file project: an ordered list of .h5 files with one active.
+
+    The *active* file is the one currently loaded in the viewer; all
+    save operations write to it.  Switching the active file is a single
+    click in :class:`~cellflow.frontend.project_panel.ProjectPanel`.
+    """
+
+    entries: List[ProjectEntry] = field(default_factory=list)
+    active_index: int = 0
+
+    @property
+    def active_entry(self) -> Optional[ProjectEntry]:
+        if 0 <= self.active_index < len(self.entries):
+            return self.entries[self.active_index]
+        return None
 
 
 # ------------------------------------------------------------------
@@ -510,6 +548,47 @@ def load_project(path: Union[str, Path]) -> dict:
 
     logger.info("Loaded project from %s", path)
     return result
+
+
+# ------------------------------------------------------------------
+# Manifest IO
+# ------------------------------------------------------------------
+
+def save_manifest(path: Union[str, Path], manifest: ProjectManifest) -> None:
+    """Write a :class:`ProjectManifest` to a JSON file (``.cfproj``).
+
+    File paths inside the manifest are stored as-is (relative paths
+    are resolved at load time against the manifest directory).
+    """
+    path = Path(path)
+    data = {
+        "version": _MANIFEST_VERSION,
+        "active_index": manifest.active_index,
+        "files": [
+            {"path": e.path, "display_name": e.display_name, "note": e.note}
+            for e in manifest.entries
+        ],
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    logger.info("Saved manifest to %s", path)
+
+
+def load_manifest(path: Union[str, Path]) -> ProjectManifest:
+    """Load a :class:`ProjectManifest` from a ``.cfproj`` JSON file."""
+    path = Path(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    entries = [
+        ProjectEntry(
+            path=f["path"],
+            display_name=f.get("display_name", ""),
+            note=f.get("note", ""),
+        )
+        for f in data.get("files", [])
+    ]
+    active_index = data.get("active_index", 0)
+    if entries:
+        active_index = max(0, min(active_index, len(entries) - 1))
+    return ProjectManifest(entries=entries, active_index=active_index)
 
 
 # ------------------------------------------------------------------
