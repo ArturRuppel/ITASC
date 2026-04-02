@@ -38,6 +38,7 @@ class ViewerState(QObject):
     dataset_changed = Signal()
     metadata_changed = Signal()
     project_changed = Signal()   # emitted when project_path changes
+    preview_changed = Signal()   # emitted when preview_series changes
 
     def __init__(self, viewer) -> None:
         super().__init__()
@@ -47,6 +48,7 @@ class ViewerState(QObject):
         self._time_interval: Optional[float] = None
         self._condition: str = ""
         self._project_path: Optional[str] = None  # current .h5 file path
+        self._preview_series: Optional[TissueGraphTimeSeries] = None
 
     # -- viewer accessor ---------------------------------------------------
 
@@ -96,6 +98,17 @@ class ViewerState(QObject):
     def project_path(self, value: Optional[str]) -> None:
         self._project_path = value
         self.project_changed.emit()
+
+    # -- preview_series property -------------------------------------------
+
+    @property
+    def preview_series(self) -> Optional[TissueGraphTimeSeries]:
+        return self._preview_series
+
+    @preview_series.setter
+    def preview_series(self, value: Optional[TissueGraphTimeSeries]) -> None:
+        self._preview_series = value
+        self.preview_changed.emit()
 
     # -- dataset property --------------------------------------------------
 

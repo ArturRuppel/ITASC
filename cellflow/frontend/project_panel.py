@@ -1,16 +1,15 @@
 """Project panel — fixed strip above the tab widget.
 
 Shows the current project file, Load / Save buttons, dataset metadata
-(pixel size, time interval, condition), and the tissue table that was
-previously in the Database tab.  All metadata values are kept in sync
-with ViewerState so every tab reads the same values without touching
-this widget directly.
+(pixel size, time interval, condition), and the tissue table.
 
-When a multi-file manifest (.cfproj) is loaded an additional
-"Project files" group becomes visible, listing all .h5 files with
-the active one highlighted.  Double-clicking a row switches the active
-file (loads its dataset).  The manifest is auto-saved whenever its
-contents change.
+When a multi-file manifest (.cfproj) is loaded a collapsible "Project
+files" section appears listing all .h5 files with the active one marked.
+
+The "Add to dataset" / "Discard" buttons are enabled only when the Edge
+Analysis pipeline has a finished result ready (state.preview_series is
+not None).  Clicking "Add" commits the result to the dataset and signals
+the analysis widget to clean up its visualization layers.
 """
 from __future__ import annotations
 
@@ -67,7 +66,7 @@ class ProjectPanel(QWidget):
 
         # ── Row 1: file operations ────────────────────────────────────
         file_row = QHBoxLayout()
-        file_row.setSpacing(6)
+        file_row.setSpacing(4)
 
         self._path_label = QLabel("No project")
         self._path_label.setStyleSheet("color: palette(mid); font-size: 9pt;")
@@ -101,39 +100,50 @@ class ProjectPanel(QWidget):
 
         # ── Row 2: metadata ───────────────────────────────────────────
         meta_row = QHBoxLayout()
-        meta_row.setSpacing(6)
+        meta_row.setSpacing(4)
 
         meta_row.addWidget(QLabel("px (µm):"))
         self._px_edit = QLineEdit()
-        self._px_edit.setFixedWidth(56)
+        self._px_edit.setFixedWidth(52)
         self._px_edit.setPlaceholderText("—")
         self._px_edit.setToolTip("Pixel size in µm/px")
         meta_row.addWidget(self._px_edit)
 
         meta_row.addWidget(QLabel("dt (s):"))
         self._dt_edit = QLineEdit()
-        self._dt_edit.setFixedWidth(56)
+        self._dt_edit.setFixedWidth(52)
         self._dt_edit.setPlaceholderText("—")
         self._dt_edit.setToolTip("Time interval between frames in seconds")
         meta_row.addWidget(self._dt_edit)
 
         meta_row.addWidget(QLabel("Condition:"))
         self._condition_edit = QLineEdit()
-        self._condition_edit.setPlaceholderText("e.g. WT, vim_KO")
+        self._condition_edit.setPlaceholderText("e.g. WT")
         self._condition_edit.setToolTip("Experimental condition label")
         meta_row.addWidget(self._condition_edit)
 
         layout.addLayout(meta_row)
 
-        # ── Project files group (hidden unless manifest is loaded) ────
-        self._files_group = QGroupBox("Project files")
-        files_layout = QVBoxLayout()
-        files_layout.setSpacing(4)
+        # ── Project files (collapsible, hidden unless manifest loaded) ─
+        self._files_toggle_btn = QPushButton("▶ Project files")
+        self._files_toggle_btn.setCheckable(True)
+        self._files_toggle_btn.setChecked(False)
+        self._files_toggle_btn.setFlat(True)
+        self._files_toggle_btn.setStyleSheet(
+            "QPushButton { text-align: left; font-weight: bold; padding: 2px 0; }"
+        )
+        self._files_toggle_btn.setVisible(False)
+        layout.addWidget(self._files_toggle_btn)
+
+        self._files_content = QWidget()
+        files_cl = QVBoxLayout()
+        files_cl.setContentsMargins(0, 0, 0, 0)
+        files_cl.setSpacing(2)
 
         self._files_list = QListWidget()
-        self._files_list.setMaximumHeight(120)
+        self._files_list.setMaximumHeight(100)
         self._files_list.setToolTip("Double-click a file to make it active")
-        files_layout.addWidget(self._files_list)
+        files_cl.addWidget(self._files_list)
 
         files_btn_row = QHBoxLayout()
         self._add_file_btn = QPushButton("Add .h5…")
@@ -143,19 +153,43 @@ class ProjectPanel(QWidget):
         files_btn_row.addWidget(self._add_file_btn)
         files_btn_row.addWidget(self._remove_file_btn)
         files_btn_row.addStretch()
-        files_layout.addLayout(files_btn_row)
+        files_cl.addLayout(files_btn_row)
 
-        self._files_group.setLayout(files_layout)
-        self._files_group.setVisible(False)
-        layout.addWidget(self._files_group)
+        self._files_content.setLayout(files_cl)
+        self._files_content.setVisible(False)
+        layout.addWidget(self._files_content)
 
         # ── Dataset group ─────────────────────────────────────────────
         ds_group = QGroupBox("Dataset")
         ds_layout = QVBoxLayout()
-        ds_layout.setSpacing(4)
+        ds_layout.setContentsMargins(6, 4, 6, 4)
+        ds_layout.setSpacing(3)
+
+        # Header row: tissue count + Add / Discard / Dashboard
+        ds_header = QHBoxLayout()
+        ds_header.setSpacing(4)
 
         self._tissues_label = QLabel("No dataset")
-        ds_layout.addWidget(self._tissues_label)
+        self._tissues_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        ds_header.addWidget(self._tissues_label)
+
+        self._add_preview_btn = QPushButton("Add ✓")
+        self._add_preview_btn.setFixedWidth(56)
+        self._add_preview_btn.setEnabled(False)
+        self._add_preview_btn.setToolTip("Add the finished analysis result to the dataset")
+        ds_header.addWidget(self._add_preview_btn)
+
+        self._discard_preview_btn = QPushButton("Discard ✗")
+        self._discard_preview_btn.setFixedWidth(64)
+        self._discard_preview_btn.setEnabled(False)
+        self._discard_preview_btn.setToolTip("Discard the finished analysis result")
+        ds_header.addWidget(self._discard_preview_btn)
+
+        self._dashboard_btn = QPushButton("Dashboard ↗")
+        self._dashboard_btn.setToolTip("Launch the analysis dashboard in your browser")
+        ds_header.addWidget(self._dashboard_btn)
+
+        ds_layout.addLayout(ds_header)
 
         self._tissue_table = QTableWidget(0, 4)
         self._tissue_table.setHorizontalHeaderLabels(["ID", "Frames", "T1s", "Note"])
@@ -173,24 +207,21 @@ class ProjectPanel(QWidget):
         )
         self._tissue_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._tissue_table.setSelectionMode(QTableWidget.SingleSelection)
-        self._tissue_table.setMaximumHeight(150)
+        self._tissue_table.setMaximumHeight(110)
         ds_layout.addWidget(self._tissue_table)
 
         tissue_btn_row = QHBoxLayout()
+        tissue_btn_row.setSpacing(4)
         self._show_tissue_btn = QPushButton("Show in viewer")
         self._remove_tissue_btn = QPushButton("Remove")
         tissue_btn_row.addWidget(self._show_tissue_btn)
         tissue_btn_row.addWidget(self._remove_tissue_btn)
         tissue_btn_row.addStretch()
-
-        self._dashboard_btn = QPushButton("Open Dashboard ↗")
-        self._dashboard_btn.setToolTip("Launch the analysis dashboard in your browser")
-        tissue_btn_row.addWidget(self._dashboard_btn)
-
         ds_layout.addLayout(tissue_btn_row)
 
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet("font-size: 8pt;")
         ds_layout.addWidget(self._status_label)
 
         ds_group.setLayout(ds_layout)
@@ -206,18 +237,22 @@ class ProjectPanel(QWidget):
         self._dt_edit.editingFinished.connect(self._on_metadata_edited)
         self._condition_edit.editingFinished.connect(self._on_metadata_edited)
 
+        self._files_toggle_btn.toggled.connect(self._on_files_toggled)
+        self._files_list.itemDoubleClicked.connect(self._on_file_double_clicked)
+        self._add_file_btn.clicked.connect(self._on_add_file)
+        self._remove_file_btn.clicked.connect(self._on_remove_file)
+
+        self._add_preview_btn.clicked.connect(self._on_add_preview)
+        self._discard_preview_btn.clicked.connect(self._on_discard_preview)
         self._show_tissue_btn.clicked.connect(self._show_selected)
         self._remove_tissue_btn.clicked.connect(self._remove_selected)
         self._dashboard_btn.clicked.connect(self._open_dashboard)
         self._tissue_table.cellChanged.connect(self._on_note_changed)
 
-        self._files_list.itemDoubleClicked.connect(self._on_file_double_clicked)
-        self._add_file_btn.clicked.connect(self._on_add_file)
-        self._remove_file_btn.clicked.connect(self._on_remove_file)
-
         self._state.metadata_changed.connect(self._sync_from_state)
         self._state.project_changed.connect(self._sync_path_label)
         self._state.dataset_changed.connect(self._refresh_table)
+        self._state.preview_changed.connect(self._on_preview_changed)
 
     # ------------------------------------------------------------------
     # State → UI sync
@@ -302,6 +337,21 @@ class ProjectPanel(QWidget):
 
         self._tissue_table.blockSignals(False)
 
+    def _on_preview_changed(self):
+        has = self._state.preview_series is not None
+        self._add_preview_btn.setEnabled(has)
+        self._discard_preview_btn.setEnabled(has)
+        if has:
+            s = self._state.preview_series
+            n_t1 = len(s.t1_events)
+            n_trajs = len(s.edge_trajectories)
+            self._add_preview_btn.setToolTip(
+                f"Add analysis result to dataset\n"
+                f"({s.num_frames} frames, {n_t1} T1s, {n_trajs} trajectories)"
+            )
+        else:
+            self._add_preview_btn.setToolTip("No analysis result pending")
+
     # ------------------------------------------------------------------
     # UI → State sync
     # ------------------------------------------------------------------
@@ -341,7 +391,8 @@ class ProjectPanel(QWidget):
         else:
             self._manifest = None
             self._manifest_path = None
-            self._files_group.setVisible(False)
+            self._files_toggle_btn.setVisible(False)
+            self._files_content.setVisible(False)
             self._load_from_path(path)
 
     def _load_from_path(self, path: str):
@@ -374,8 +425,8 @@ class ProjectPanel(QWidget):
 
         self._manifest = manifest
         self._manifest_path = path
-        self._files_group.setVisible(True)
-        self._refresh_files_list()
+        self._files_toggle_btn.setVisible(True)
+        self._update_files_toggle_label()
 
         active = manifest.active_entry
         if active:
@@ -426,8 +477,8 @@ class ProjectPanel(QWidget):
 
         self._manifest = manifest
         self._manifest_path = path
-        self._files_group.setVisible(True)
-        self._refresh_files_list()
+        self._files_toggle_btn.setVisible(True)
+        self._update_files_toggle_label()
         self._sync_path_label()
 
     def _on_save(self):
@@ -440,7 +491,6 @@ class ProjectPanel(QWidget):
 
     def _on_save_as(self):
         if self._manifest_path:
-            # In manifest mode: let the user save the manifest to a new location.
             path, _ = QFileDialog.getSaveFileName(
                 self, "Save manifest as", self._manifest_path,
                 "CellFlow manifest (*.cfproj);;All files (*)",
@@ -503,8 +553,49 @@ class ProjectPanel(QWidget):
         return None
 
     # ------------------------------------------------------------------
+    # Add / Discard pending analysis
+    # ------------------------------------------------------------------
+
+    def _on_add_preview(self):
+        series = self._state.preview_series
+        if series is None:
+            return
+        self._state.ensure_dataset(
+            condition=self._state.condition,
+            pixel_size=self._state.pixel_size,
+            time_interval=self._state.time_interval,
+        )
+        tid = self._state.add_tissue(series)
+        self._state.preview_series = None   # triggers cleanup in analysis widget
+        self._status_label.setText(f"Added tissue {tid} to dataset.")
+
+    def _on_discard_preview(self):
+        if self._state.preview_series is None:
+            return
+        self._state.preview_series = None   # triggers cleanup in analysis widget
+        self._status_label.setText("Analysis result discarded.")
+
+    # ------------------------------------------------------------------
     # Manifest / project-files list
     # ------------------------------------------------------------------
+
+    def _on_files_toggled(self, checked: bool):
+        self._files_content.setVisible(checked)
+        if checked:
+            self._refresh_files_list()
+        self._update_files_toggle_label()
+
+    def _update_files_toggle_label(self):
+        checked = self._files_toggle_btn.isChecked()
+        arrow = "▼" if checked else "▶"
+        if self._manifest and self._manifest.entries:
+            n = len(self._manifest.entries)
+            active_path = self._manifest.entries[self._manifest.active_index].path
+            active_name = Path(active_path).name
+            suffix = f" ({n} file{'s' if n != 1 else ''}, {active_name} active)"
+        else:
+            suffix = " (empty)"
+        self._files_toggle_btn.setText(f"{arrow} Project files{suffix}")
 
     def _refresh_files_list(self):
         self._files_list.clear()
@@ -529,6 +620,7 @@ class ProjectPanel(QWidget):
             return
         self._manifest.active_index = index
         self._refresh_files_list()
+        self._update_files_toggle_label()
         self._save_manifest_if_active()
 
         entry = self._manifest.entries[index]
@@ -555,6 +647,7 @@ class ProjectPanel(QWidget):
         )
         self._manifest.entries.append(entry)
         self._refresh_files_list()
+        self._update_files_toggle_label()
         self._save_manifest_if_active()
 
     def _on_remove_file(self):
@@ -568,10 +661,10 @@ class ProjectPanel(QWidget):
         if self._manifest.active_index >= len(self._manifest.entries):
             self._manifest.active_index = max(0, len(self._manifest.entries) - 1)
         self._refresh_files_list()
+        self._update_files_toggle_label()
         self._save_manifest_if_active()
 
     def _resolve_entry_path(self, entry_path: str) -> str:
-        """Resolve an entry path (possibly relative) to absolute."""
         p = Path(entry_path)
         if p.is_absolute():
             return str(p)

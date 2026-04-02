@@ -316,16 +316,6 @@ class CellFlowWidget(QWidget):
         self.active_layer_label.setStyleSheet("color: gray;")
         layout.addWidget(self.active_layer_label)
 
-        # --- Add / Discard ---
-        self.finalize_group = QGroupBox("Add / Discard")
-        fin_layout = QHBoxLayout()
-        self.add_to_dataset_btn = QPushButton("Add to Dataset")
-        self.discard_btn = QPushButton("Discard")
-        fin_layout.addWidget(self.add_to_dataset_btn)
-        fin_layout.addWidget(self.discard_btn)
-        self.finalize_group.setLayout(fin_layout)
-        layout.addWidget(self.finalize_group)
-
         # --- Junction Tagging ---
         self.tagging_group = QGroupBox("Junction Tagging")
         tag_layout = QVBoxLayout()
@@ -420,8 +410,7 @@ class CellFlowWidget(QWidget):
 
         # Pipeline
         self.stage2_btn.clicked.connect(self._run_stage2)
-        self.add_to_dataset_btn.clicked.connect(self._add_preview_to_dataset)
-        self.discard_btn.clicked.connect(self._discard_pipeline)
+        self._state.preview_changed.connect(self._on_preview_cleared)
 
         # Tagging
         self.tag_selected_btn.clicked.connect(self._tag_selected)
@@ -441,10 +430,7 @@ class CellFlowWidget(QWidget):
     # Pipeline stage gating
     # ------------------------------------------------------------------
     def _update_pipeline_buttons(self):
-        stage = self._pipeline_stage
         self.stage2_btn.setEnabled(True)
-        self.add_to_dataset_btn.setEnabled(stage == PipelineStage.STAGE3_DONE)
-        self.discard_btn.setEnabled(stage != PipelineStage.IDLE)
 
     def _toggle_stage(self, stage: int, checked: bool):
         self.stage2_params.setVisible(checked)
@@ -550,6 +536,7 @@ class CellFlowWidget(QWidget):
 
     def _on_analysis_finished(self, series):
         self._preview_series = series
+        self._state.preview_series = series  # enables Add/Discard in ProjectPanel
         self._pipeline_stage = PipelineStage.STAGE3_DONE
         self._finish_worker()
 
@@ -560,7 +547,9 @@ class CellFlowWidget(QWidget):
             f"{n_t1} T1 events, {n_trajs} edge trajectories"
         )
 
-        self.status_label.setText("Analysis complete. Inspect T1 events & trajectories, then add to dataset.")
+        self.status_label.setText(
+            "Analysis complete. Inspect results, then use the Project panel to add to dataset."
+        )
 
         self._remove_stage_layers(3)
 
@@ -579,30 +568,28 @@ class CellFlowWidget(QWidget):
         self._update_pipeline_buttons()
 
     # ------------------------------------------------------------------
-    # Add / Discard
+    # Pipeline cleanup
     # ------------------------------------------------------------------
-    def _add_preview_to_dataset(self):
-        if self._preview_series is None:
-            return
-        self._state.ensure_dataset(
-            condition=self._state.condition,
-            pixel_size=self._state.pixel_size,
-            time_interval=self._state.time_interval,
-        )
-        tid = self._state.add_tissue(self._preview_series)
-        self._remove_all_stage_layers()
-        self._preview_series = None
-        self._current_label_stack = None
-        if self._tracked_labels_layer is not None:
-            if self._tracked_labels_layer in self.viewer.layers:
-                self.viewer.layers.remove(self._tracked_labels_layer)
-            self._tracked_labels_layer = None
+
+    def _on_preview_cleared(self):
+        """Called when state.preview_series is set to None (add or discard from ProjectPanel)."""
+        if self._pipeline_stage == PipelineStage.IDLE:
+            return  # already clean, nothing to do
+        self._do_pipeline_cleanup()
         self._pipeline_stage = PipelineStage.IDLE
         self._update_pipeline_buttons()
         self._clear_stage_info()
-        self.status_label.setText(f"Added tissue {tid} to dataset.")
 
     def _discard_pipeline(self):
+        """Reset pipeline state (called before a new run, or to cancel an in-progress run)."""
+        # Set IDLE first so _on_preview_cleared short-circuits when the signal fires.
+        self._pipeline_stage = PipelineStage.IDLE
+        self._state.preview_series = None  # notifies ProjectPanel; _on_preview_cleared returns early
+        self._do_pipeline_cleanup()
+        self._update_pipeline_buttons()
+        self._clear_stage_info()
+
+    def _do_pipeline_cleanup(self):
         self._remove_all_stage_layers()
         self._remove_tagging_layer()
         self._tagging_series = None
@@ -613,16 +600,12 @@ class CellFlowWidget(QWidget):
             if self._tracked_labels_layer in self.viewer.layers:
                 self.viewer.layers.remove(self._tracked_labels_layer)
             self._tracked_labels_layer = None
-        # Restore source layer visibility
         if self._source_layer is not None:
             try:
                 self._source_layer.visible = True
             except Exception:
                 pass
             self._source_layer = None
-        self._pipeline_stage = PipelineStage.IDLE
-        self._update_pipeline_buttons()
-        self._clear_stage_info()
 
     def _clear_stage_info(self):
         self.active_layer_label.setText("")
