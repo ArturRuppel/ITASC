@@ -597,12 +597,20 @@ def load_tissue(path: Union[str, Path]):
 def read_tissue_summary(path: Union[str, Path]) -> dict:
     """Read only the metadata needed for a catalog summary without loading arrays.
 
-    Returns a dict with keys: n_frames, avg_cells, n_t1_events, n_trajectories.
+    Returns a dict with keys: n_frames, avg_cells, n_t1_events, n_trajectories, condition.
     Opens the HDF5 file but does not load any large datasets.
     """
     path = Path(path)
     summary: dict = {}
     with h5py.File(path, "r") as f:
+        # Read condition from metadata group first, fall back to analysis group
+        condition = ""
+        if "metadata" in f:
+            condition = f["metadata"].attrs.get("condition", "")
+        if not condition and "analysis" in f:
+            condition = f["analysis"].attrs.get("condition", "")
+        summary["condition"] = condition
+
         if "analysis" not in f:
             return summary
         ana = f["analysis"]
@@ -653,7 +661,7 @@ def save_catalog(path: Union[str, Path], catalog) -> None:
             {
                 "path": e.path,
                 "display_name": e.display_name,
-                "note": e.note,
+                "condition": e.condition,
                 "summary": e.summary,
             }
             for e in catalog.entries
@@ -679,7 +687,7 @@ def load_catalog(path: Union[str, Path]):
         entries.append(CatalogEntry(
             path=e["path"],
             display_name=e.get("display_name", ""),
-            note=e.get("note", ""),
+            condition=e.get("condition", e.get("note", "")),  # note: legacy "note" field fallback
             summary=e.get("summary", {}),
         ))
 
@@ -689,7 +697,7 @@ def load_catalog(path: Union[str, Path]):
             entries.append(CatalogEntry(
                 path=f["path"],
                 display_name=f.get("display_name", ""),
-                note=f.get("note", ""),
+                condition=f.get("condition", f.get("note", "")),
             ))
 
     catalog = DatasetCatalog(

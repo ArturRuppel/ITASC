@@ -34,11 +34,13 @@ class TissueData:
     image:   Optional[object]                   = None  # np.ndarray (T,H,W) or None
     labels:  Optional[object]                   = None  # np.ndarray (T,H,W) or None
     series:  Optional[TissueGraphTimeSeries]    = None
+    forsys:  Optional[object]                   = None  # ForSys/pressure inference result
     path:    Optional[str]                      = None  # .h5 path if saved, else None
 
     # names of the linked napari layers (for regeneration / sync)
     image_layer:  Optional[str]  = None
     labels_layer: Optional[str]  = None
+    forsys_layer: Optional[str]  = None
 
 
 @dataclass
@@ -46,7 +48,7 @@ class CatalogEntry:
     """One row in the dataset catalog."""
     path:         str
     display_name: str  = ""
-    note:         str  = ""
+    condition:    str  = ""
     # summary written at add-time; never needs to open H5 files to show the table
     summary: Dict = field(default_factory=dict)
     # e.g. {"n_frames": 48, "avg_cells": 450, "n_t1_events": 12, "n_trajectories": 230}
