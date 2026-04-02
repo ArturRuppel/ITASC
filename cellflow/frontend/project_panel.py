@@ -89,6 +89,10 @@ class ProjectPanel(QWidget):
         self._image_row = _FieldRow("Image:", self)
         tg_layout.addLayout(self._image_row)
 
+        # Row 1b: Secondary image field (optional — for two-channel segmentation)
+        self._image2_row = _FieldRow("Image 2 (opt.):", self)
+        tg_layout.addLayout(self._image2_row)
+
         # Row 2: Segmentation (labels) field
         self._labels_row = _FieldRow("Segmentation:", self)
         tg_layout.addLayout(self._labels_row)
@@ -204,6 +208,11 @@ class ProjectPanel(QWidget):
         self._image_row.to_layer_btn.clicked.connect(self._on_image_to_layer)
         self._image_row.clear_btn.clicked.connect(self._on_clear_image)
 
+        # Image 2 field
+        self._image2_row.capture_btn.clicked.connect(self._on_capture_image2)
+        self._image2_row.to_layer_btn.clicked.connect(self._on_image2_to_layer)
+        self._image2_row.clear_btn.clicked.connect(self._on_clear_image2)
+
         # Labels field
         self._labels_row.capture_btn.clicked.connect(self._on_capture_labels)
         self._labels_row.to_layer_btn.clicked.connect(self._on_labels_to_layer)
@@ -259,6 +268,16 @@ class ProjectPanel(QWidget):
             self._image_row.set_status("not loaded")
         self._image_row.to_layer_btn.setEnabled(tissue.image is not None)
         self._image_row.clear_btn.setEnabled(tissue.image is not None)
+
+        # image2 row
+        if tissue.image2 is not None:
+            arr = tissue.image2
+            shape_str = " × ".join(str(d) for d in arr.shape)
+            self._image2_row.set_status(shape_str)
+        else:
+            self._image2_row.set_status("not loaded")
+        self._image2_row.to_layer_btn.setEnabled(tissue.image2 is not None)
+        self._image2_row.clear_btn.setEnabled(tissue.image2 is not None)
 
         # labels row
         if tissue.labels is not None:
@@ -477,6 +496,32 @@ class ProjectPanel(QWidget):
     def _on_clear_image(self):
         self._state._tissue.image = None
         self._state._tissue.image_layer = None
+        self._state.tissue_changed.emit()
+
+    def _on_capture_image2(self):
+        import napari.layers
+        # Capture the topmost Image layer that is NOT the primary image
+        primary_name = self._state.tissue.image_layer
+        for layer in reversed(self.viewer.layers):
+            if isinstance(layer, napari.layers.Image) and layer.name != primary_name:
+                self._state.set_tissue_image2(np.asarray(layer.data), layer.name)
+                self._status_label.setText(f"Captured secondary image from '{layer.name}'.")
+                return
+        self._status_label.setText("No secondary Image layer found.")
+
+    def _on_image2_to_layer(self):
+        tissue = self._state.tissue
+        if tissue.image2 is None:
+            return
+        name = tissue.image2_layer or "tissue_image2"
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = tissue.image2
+        else:
+            self.viewer.add_image(tissue.image2, name=name)
+
+    def _on_clear_image2(self):
+        self._state._tissue.image2 = None
+        self._state._tissue.image2_layer = None
         self._state.tissue_changed.emit()
 
     def _on_capture_labels(self):

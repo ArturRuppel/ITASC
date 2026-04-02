@@ -78,9 +78,8 @@ class SegmentationTab(QWidget):
         self._temp_frame_idx = None
 
         # ── data manager ──
-        self._input_data     = None   # (H,W) or (T,H,W) numpy, single-ch or primary
-        self._secondary_data = None   # (H,W) or (T,H,W) numpy, secondary channel
-        self._input_scale    = None   # spatial scale tuple from the source image layer
+        # Input data is read directly from state (no local copy).
+        # Use the _input_data / _secondary_data / _input_scale properties below.
         # Single source of truth for segmentation: the napari Labels layer.
         # _seg_layer.data IS the segmentation — no shadow copy is kept.
         self._seg_layer      = None   # napari Labels layer (single source of truth)
@@ -97,6 +96,28 @@ class SegmentationTab(QWidget):
 
         self._setup_ui()
         self._state.tissue_changed.connect(self._on_tissue_changed)
+
+    # ── State-backed data properties ───────────────────────────────────
+
+    @property
+    def _input_data(self):
+        """Primary image — read directly from state; no local copy."""
+        img = self._state.tissue.image
+        return np.asarray(img) if img is not None else None
+
+    @property
+    def _secondary_data(self):
+        """Secondary image for two-channel mode — read directly from state."""
+        img2 = self._state.tissue.image2
+        return np.asarray(img2) if img2 is not None else None
+
+    @property
+    def _input_scale(self):
+        """Spatial scale from the linked napari Image layer."""
+        layer_name = self._state.tissue.image_layer
+        if layer_name and layer_name in self.viewer.layers:
+            return tuple(self.viewer.layers[layer_name].scale)
+        return None
 
     # ── UI construction ────────────────────────────────────────────────
 
@@ -116,13 +137,6 @@ class SegmentationTab(QWidget):
             self._mode_grp.addButton(rb)
         root.addWidget(mode_box)
         self._mode_grp.buttonClicked.connect(self._on_mode_changed)
-
-        # ── Input panels (one per mode) ──
-        self._single_panel = self._build_single_panel()
-        self._two_ch_panel = self._build_two_ch_panel()
-        root.addWidget(self._single_panel)
-        root.addWidget(self._two_ch_panel)
-        self._two_ch_panel.setVisible(False)
 
         # ── Load segmentation layer ──
         root.addWidget(self._build_load_seg_panel())
@@ -255,42 +269,6 @@ class SegmentationTab(QWidget):
         hlay.addWidget(status)
         return w, btn, status
 
-    def _build_single_panel(self):
-        box = QGroupBox("Inputs – Single Channel")
-        lay = QVBoxLayout(box)
-        w, self._single_load_btn, self._single_status = self._make_load_row("Load Input Stack")
-        self._single_load_btn.clicked.connect(self._on_load_single_input)
-        self._single_clear_btn = QPushButton("Clear")
-        self._single_clear_btn.setFixedWidth(50)
-        self._single_clear_btn.setFixedHeight(25)
-        self._single_clear_btn.clicked.connect(self._on_clear_single_input)
-        w.layout().addWidget(self._single_clear_btn)
-        lay.addWidget(w)
-        return box
-
-    def _build_two_ch_panel(self):
-        box = QGroupBox("Inputs – Two Channel")
-        lay = QVBoxLayout(box)
-        wp, self._primary_load_btn, self._primary_status = self._make_load_row("Load Primary")
-        self._primary_load_btn.clicked.connect(self._on_load_primary_input)
-        self._primary_clear_btn = QPushButton("Clear")
-        self._primary_clear_btn.setFixedWidth(50)
-        self._primary_clear_btn.setFixedHeight(25)
-        self._primary_clear_btn.clicked.connect(self._on_clear_primary_input)
-        wp.layout().addWidget(self._primary_clear_btn)
-
-        ws, self._secondary_load_btn, self._secondary_status = self._make_load_row("Load Secondary")
-        self._secondary_load_btn.clicked.connect(self._on_load_secondary_input)
-        self._secondary_clear_btn = QPushButton("Clear")
-        self._secondary_clear_btn.setFixedWidth(50)
-        self._secondary_clear_btn.setFixedHeight(25)
-        self._secondary_clear_btn.clicked.connect(self._on_clear_secondary_input)
-        ws.layout().addWidget(self._secondary_clear_btn)
-
-        lay.addWidget(wp)
-        lay.addWidget(ws)
-        return box
-
     def _build_load_seg_panel(self):
         box = QGroupBox("Load Segmentation Layer")
         lay = QVBoxLayout(box)
@@ -367,8 +345,7 @@ class SegmentationTab(QWidget):
     # ── Mode / model switching ─────────────────────────────────────────
 
     def _on_mode_changed(self, _=None):
-        self._single_panel.setVisible(self._rb_single.isChecked())
-        self._two_ch_panel.setVisible(self._rb_two_ch.isChecked())
+        pass  # panels removed; mode affects segmentation logic only
 
     def _on_3d_mode_changed(self, text):
         self._stitch_thresh_spin.setEnabled(text == "Stitch")
@@ -516,12 +493,12 @@ class SegmentationTab(QWidget):
         mode = self._current_mode()
         if mode == "single":
             if self._input_data is None:
-                raise ValueError("Load an input stack first.")
+                raise ValueError("Capture an Image layer in the Project Panel first.")
             t = self._current_frame_idx(self._input_data)
             return {"img": self._get_frame(self._input_data, t)}, t
         else:  # two_ch
             if self._input_data is None or self._secondary_data is None:
-                raise ValueError("Load both primary and secondary stacks first.")
+                raise ValueError("Capture Image and Image 2 in the Project Panel first.")
             t = self._current_frame_idx(self._input_data)
             return {
                 "primary":   self._get_frame(self._input_data, t),
@@ -529,13 +506,7 @@ class SegmentationTab(QWidget):
             }, t
 
     def _on_tissue_changed(self):
-        """Phase 2: auto-populate input data from state when image becomes available."""
-        tissue = self._state.tissue
-        if tissue.image is not None and self._input_data is None:
-            self._input_data = np.asarray(tissue.image)
-            shape_str = f"Loaded (from state): {self._input_data.shape}"
-            self._single_status.setText(shape_str)
-            self._primary_status.setText(shape_str)
+        """Input data is read from state via properties — nothing to sync here."""
 
     def _sync_labels_to_state(self):
         """Mirror the current seg_layer data to internal TissueData state."""
@@ -632,14 +603,14 @@ class SegmentationTab(QWidget):
         mode = self._current_mode()
         if mode == "single":
             if self._input_data is None:
-                raise ValueError("Load an input stack first.")
+                raise ValueError("Capture an Image layer in the Project Panel first.")
             data = self._input_data
             if data.ndim == 2:
                 return [{"img": data}]
             return [{"img": data[t]} for t in range(data.shape[0])]
         else:  # two_ch
             if self._input_data is None or self._secondary_data is None:
-                raise ValueError("Load both primary and secondary stacks first.")
+                raise ValueError("Capture Image and Image 2 in the Project Panel first.")
             p_data, s_data = self._input_data, self._secondary_data
             if p_data.ndim == 2:
                 return [{"primary": p_data, "secondary": s_data}]
@@ -653,11 +624,11 @@ class SegmentationTab(QWidget):
         mode = self._current_mode()
         if mode == "single":
             if self._input_data is None:
-                raise ValueError("Load an input stack first.")
+                raise ValueError("Capture an Image layer in the Project Panel first.")
             return {"img": self._input_data}
         else:
             if self._input_data is None or self._secondary_data is None:
-                raise ValueError("Load both primary and secondary stacks first.")
+                raise ValueError("Capture Image and Image 2 in the Project Panel first.")
             return {"primary": self._input_data, "secondary": self._secondary_data}
 
     def _on_stack_done(self, stack):
@@ -998,45 +969,7 @@ class SegmentationTab(QWidget):
                     return data[t]
         return None
 
-    # ── Input / segmentation load + clear handlers ────────────────────
-
-    def _on_load_single_input(self):
-        active = self.viewer.layers.selection.active
-        if active is None or not isinstance(active, napari.layers.Image):
-            self._single_status.setText("Select an Image layer in napari first")
-            return
-        self._input_data = np.asarray(active.data)
-        self._input_scale = tuple(active.scale)
-        self._single_status.setText(f"Loaded: {self._input_data.shape}")
-
-    def _on_load_primary_input(self):
-        active = self.viewer.layers.selection.active
-        if active is None or not isinstance(active, napari.layers.Image):
-            self._primary_status.setText("Select an Image layer in napari first")
-            return
-        self._input_data = np.asarray(active.data)
-        self._input_scale = tuple(active.scale)
-        self._primary_status.setText(f"Loaded: {self._input_data.shape}")
-
-    def _on_load_secondary_input(self):
-        active = self.viewer.layers.selection.active
-        if active is None or not isinstance(active, napari.layers.Image):
-            self._secondary_status.setText("Select an Image layer in napari first")
-            return
-        self._secondary_data = np.asarray(active.data)
-        self._secondary_status.setText(f"Loaded: {self._secondary_data.shape}")
-
-    def _on_clear_single_input(self):
-        self._input_data = None
-        self._single_status.setText("Not loaded")
-
-    def _on_clear_primary_input(self):
-        self._input_data = None
-        self._primary_status.setText("Not loaded")
-
-    def _on_clear_secondary_input(self):
-        self._secondary_data = None
-        self._secondary_status.setText("Not loaded")
+    # ── Segmentation load + clear handlers ───────────────────────────
 
     def _on_clear_seg(self):
         self._seg_layer = None

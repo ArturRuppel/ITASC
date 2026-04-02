@@ -37,8 +37,10 @@ class TissueData:
     forsys:  Optional[object]                   = None  # ForSys/pressure inference result
     path:    Optional[str]                      = None  # .h5 path if saved, else None
 
+    image2:  Optional[object]  = None  # np.ndarray secondary channel for two-channel segmentation
     # names of the linked napari layers (for regeneration / sync)
     image_layer:  Optional[str]  = None
+    image2_layer: Optional[str]  = None
     labels_layer: Optional[str]  = None
     forsys_layer: Optional[str]  = None
 
@@ -148,6 +150,12 @@ class ViewerState(QObject):
         self._tissue.image = arr
         if layer_name is not None:
             self._tissue.image_layer = layer_name
+        self.tissue_changed.emit()
+
+    def set_tissue_image2(self, arr, layer_name: Optional[str] = None) -> None:
+        self._tissue.image2 = arr
+        if layer_name is not None:
+            self._tissue.image2_layer = layer_name
         self.tissue_changed.emit()
 
     def clear_tissue(self) -> None:
