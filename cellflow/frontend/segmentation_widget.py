@@ -1,9 +1,8 @@
 """
 Segmentation tab for napariSegTrack.
 
-Supports two modes:
-  - Single Channel : Cellpose on one channel (grayscale)
-  - Two Channel    : Cellpose two-channel mode (cell body + nucleus)
+Runs Cellpose on the primary image channel. If a secondary channel (Image 2) is
+set in the Project Panel, two-channel mode is used automatically.
 
 Includes "Open in Cellpose GUI / Import from Cellpose GUI" for manual correction
 of the current frame via a temp directory.
@@ -21,7 +20,7 @@ import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QGroupBox, QRadioButton, QButtonGroup,
+    QGroupBox,
     QComboBox, QCheckBox, QDoubleSpinBox, QSpinBox,
     QPushButton, QLabel, QLineEdit, QFileDialog, QToolButton,
     QTextEdit, QProgressBar, QScrollArea,
@@ -125,21 +124,9 @@ class SegmentationTab(QWidget):
         root = QVBoxLayout(self)
         root.setSpacing(6)
 
-        # ── Mode selector ──
-        mode_box = QGroupBox("Segmentation Mode")
-        mode_lay = QHBoxLayout(mode_box)
-        self._rb_single = QRadioButton("Single Channel")
-        self._rb_two_ch = QRadioButton("Two Channel")
-        self._rb_single.setChecked(True)
-        self._mode_grp = QButtonGroup(self)
-        for rb in (self._rb_single, self._rb_two_ch):
-            mode_lay.addWidget(rb)
-            self._mode_grp.addButton(rb)
-        root.addWidget(mode_box)
-        self._mode_grp.buttonClicked.connect(self._on_mode_changed)
-
-        # ── Load segmentation layer ──
-        root.addWidget(self._build_load_seg_panel())
+        # ── Segmentation status ──
+        self._seg_status = QLabel("No segmentation")
+        root.addWidget(self._seg_status)
 
         # ── Cellpose parameters (scrollable, collapsible) ──
         params_toggle = QToolButton()
@@ -252,36 +239,6 @@ class SegmentationTab(QWidget):
         attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
         root.addWidget(attrib)
 
-    # ── Input panels ───────────────────────────────────────────────────
-
-    @staticmethod
-    def _make_load_row(btn_label):
-        """Return (widget, btn, status) for a [Load btn] [status] pair."""
-        w = QWidget()
-        hlay = QHBoxLayout(w)
-        hlay.setContentsMargins(0, 0, 0, 0)
-        btn = QPushButton(btn_label)
-        btn.setFixedWidth(150)
-        btn.setFixedHeight(25)
-        status = QLabel("Not loaded")
-        status.setWordWrap(True)
-        hlay.addWidget(btn)
-        hlay.addWidget(status)
-        return w, btn, status
-
-    def _build_load_seg_panel(self):
-        box = QGroupBox("Load Segmentation Layer")
-        lay = QVBoxLayout(box)
-        w, self._load_seg_btn, self._seg_status = self._make_load_row("Load as Segmentation")
-        self._load_seg_btn.clicked.connect(self._on_load_seg_layer)
-        self._seg_clear_btn = QPushButton("Clear")
-        self._seg_clear_btn.setFixedWidth(50)
-        self._seg_clear_btn.setFixedHeight(25)
-        self._seg_clear_btn.clicked.connect(self._on_clear_seg)
-        w.layout().addWidget(self._seg_clear_btn)
-        lay.addWidget(w)
-        return box
-
     def _build_params(self):
         add = self._params_form.addRow
 
@@ -332,25 +289,8 @@ class SegmentationTab(QWidget):
         self._gpu_chk.setChecked(SEG_DEFAULTS["gpu"])
         add("GPU:", self._gpu_chk)
 
-        # 3D Mode
-        add(_sep("3D Mode"))
-        self._3d_mode_combo = QComboBox()
-        self._3d_mode_combo.addItems(["Off (2D)", "Stitch", "True 3D"])
-        self._3d_mode_combo.currentTextChanged.connect(self._on_3d_mode_changed)
-        add("Mode:", self._3d_mode_combo)
-        self._stitch_thresh_spin = _dspin(0.0, 1.0, 0.5, 2, 0.05)
-        self._stitch_thresh_spin.setEnabled(False)
-        add("Stitch threshold:", self._stitch_thresh_spin)
 
     # ── Mode / model switching ─────────────────────────────────────────
-
-    def _on_mode_changed(self, _=None):
-        pass  # panels removed; mode affects segmentation logic only
-
-    def _on_3d_mode_changed(self, text):
-        self._stitch_thresh_spin.setEnabled(text == "Stitch")
-        # "Segment Frame" is inherently 2D; disable it when a 3D mode is active.
-        self._seg_frame_btn.setEnabled(text == "Off (2D)")
 
     def _on_model_changed(self, text):
         is_custom = (text == "custom")
@@ -377,8 +317,6 @@ class SegmentationTab(QWidget):
             "cellprob_threshold": self._prob_spin.value(),
             "min_size":           self._minsize_spin.value(),
             "gpu":                self._gpu_chk.isChecked(),
-            "3d_mode":            self._3d_mode_combo.currentText(),
-            "stitch_threshold":   self._stitch_thresh_spin.value(),
         }
 
     # ── Model cache ────────────────────────────────────────────────────
@@ -443,7 +381,8 @@ class SegmentationTab(QWidget):
         return lay
 
     def _current_mode(self):
-        return "single" if self._rb_single.isChecked() else "two_ch"
+        """Auto-detect mode: use two-channel if Image 2 is available."""
+        return "two_ch" if self._secondary_data is not None else "single"
 
     def _reference_stack_shape(self):
         if self._input_data is None:
@@ -542,23 +481,15 @@ class SegmentationTab(QWidget):
             self._log_append("Already processing.")
             return
 
-        params  = self._collect_params()
-        mode    = self._current_mode()
-        mode_3d = params["3d_mode"]
+        params = self._collect_params()
+        mode   = self._current_mode()
 
-        if mode_3d != "Off (2D)":
-            try:
-                vol_imgs = self._get_volume()
-            except ValueError as e:
-                self._log_append(f"ERROR: {e}")
-                return
-        else:
-            try:
-                all_frames = self._get_all_frames()
-            except ValueError as e:
-                self._log_append(f"ERROR: {e}")
-                return
-            n_frames = len(all_frames)
+        try:
+            all_frames = self._get_all_frames()
+        except ValueError as e:
+            self._log_append(f"ERROR: {e}")
+            return
+        n_frames = len(all_frames)
 
         self._is_running = True
         self._seg_frame_btn.setEnabled(False)
@@ -567,34 +498,19 @@ class SegmentationTab(QWidget):
         self._cancel_btn.setVisible(True)
         self._log.clear()
 
-        if mode_3d != "Off (2D)":
-            @thread_worker(connect={
-                "yielded":  lambda m: self._log_append(m),
-                "returned": self._on_stack_done,
-                "errored":  self._on_error,
-            })
-            def _work():
-                yield f"Loading model…"
-                model = self._ensure_model(params)
-                yield f"Running {mode_3d} 3D segmentation on full stack…"
-                result = _run_segmentation(vol_imgs, mode, params, model=model).astype(np.uint32)
-                n = len(np.unique(result[result > 0]))
-                yield f"  {n} object(s) detected"
-                return result
-        else:
-            @thread_worker(connect={
-                "yielded":  lambda m: self._log_append(m),
-                "returned": self._on_stack_done,
-                "errored":  self._on_error,
-            })
-            def _work():
-                yield "Loading model…"
-                model = self._ensure_model(params)
-                results = []
-                for i, imgs in enumerate(all_frames):
-                    yield f"Frame {i+1}/{n_frames}…"
-                    results.append(_run_segmentation(imgs, mode, params, model=model).astype(np.uint32))
-                return np.stack(results, axis=0)
+        @thread_worker(connect={
+            "yielded":  lambda m: self._log_append(m),
+            "returned": self._on_stack_done,
+            "errored":  self._on_error,
+        })
+        def _work():
+            yield "Loading model…"
+            model = self._ensure_model(params)
+            results = []
+            for i, imgs in enumerate(all_frames):
+                yield f"Frame {i+1}/{n_frames}…"
+                results.append(_run_segmentation(imgs, mode, params, model=model).astype(np.uint32))
+            return np.stack(results, axis=0)
 
         self._worker = _work()
         self._worker.aborted.connect(self._on_aborted)
@@ -619,22 +535,9 @@ class SegmentationTab(QWidget):
                 for t in range(p_data.shape[0])
             ]
 
-    def _get_volume(self):
-        """Return the full input as a dict of arrays for 3D segmentation."""
-        mode = self._current_mode()
-        if mode == "single":
-            if self._input_data is None:
-                raise ValueError("Capture an Image layer in the Project Panel first.")
-            return {"img": self._input_data}
-        else:
-            if self._input_data is None or self._secondary_data is None:
-                raise ValueError("Capture Image and Image 2 in the Project Panel first.")
-            return {"primary": self._input_data, "secondary": self._secondary_data}
-
     def _on_stack_done(self, stack):
         self._is_running = False
-        mode_3d = self._3d_mode_combo.currentText()
-        self._seg_frame_btn.setEnabled(mode_3d == "Off (2D)")
+        self._seg_frame_btn.setEnabled(True)
         self._seg_stack_btn.setEnabled(True)
         self._progress.setVisible(False)
         self._cancel_btn.setVisible(False)
@@ -678,10 +581,16 @@ class SegmentationTab(QWidget):
         img_path = Path(export_dir) / f"frame_{t}.tif"
         seg_path = Path(export_dir) / f"frame_{t}_seg.npy"
 
-        display_img = imgs.get("img") if imgs.get("img") is not None else imgs.get("primary")
+        primary_img = imgs.get("img") if imgs.get("img") is not None else imgs.get("primary")
+        secondary_img = imgs.get("secondary")
 
         from tifffile import imwrite
-        imwrite(str(img_path), display_img.astype(np.uint16))
+        if secondary_img is not None:
+            # Write a two-channel TIF (2, H, W) so Cellpose GUI can use both channels.
+            imwrite(str(img_path), np.stack([primary_img, secondary_img], axis=0).astype(np.uint16))
+        else:
+            imwrite(str(img_path), primary_img.astype(np.uint16))
+        display_img = primary_img  # used for the seg npy below
 
         existing_masks = self._get_existing_masks(t)
         if existing_masks is not None and existing_masks.max() > 0:
@@ -838,11 +747,16 @@ class SegmentationTab(QWidget):
 
         self._log_append(f"Exporting {n_frames} frame(s) to {export_dir} …")
         for i, imgs in enumerate(all_frames):
-            display_img = imgs.get("img") if imgs.get("img") is not None else imgs.get("primary")
+            primary_img = imgs.get("img") if imgs.get("img") is not None else imgs.get("primary")
+            secondary_img = imgs.get("secondary")
             img_path = export_dir / f"frame_{i}.tif"
             seg_path = export_dir / f"frame_{i}_seg.npy"
 
-            imwrite(str(img_path), display_img.astype(np.uint16))
+            if secondary_img is not None:
+                imwrite(str(img_path), np.stack([primary_img, secondary_img], axis=0).astype(np.uint16))
+            else:
+                imwrite(str(img_path), primary_img.astype(np.uint16))
+            display_img = primary_img  # used for the seg npy below
 
             existing_masks = self._get_existing_masks(i)
             if existing_masks is not None and existing_masks.max() > 0:
@@ -969,54 +883,6 @@ class SegmentationTab(QWidget):
                     return data[t]
         return None
 
-    # ── Segmentation load + clear handlers ───────────────────────────
-
-    def _on_clear_seg(self):
-        self._seg_layer = None
-        self._seg_status.setText("Not loaded")
-
-    def _on_load_seg_layer(self):
-        active = self.viewer.layers.selection.active
-        if active is None:
-            self._seg_status.setText("Select a layer in napari first")
-            return
-
-        src_data = np.asarray(active.data).astype(np.uint32)
-
-        if self._input_data is not None and src_data.shape != self._input_data.shape:
-            self._seg_status.setText(
-                f"Shape mismatch: {src_data.shape} vs input {self._input_data.shape}"
-            )
-            self._log_append(
-                f"ERROR: Shape mismatch — '{active.name}' is {src_data.shape} "
-                f"but input stack is {self._input_data.shape}."
-            )
-            return
-
-        old_name = active.name
-
-        # Update tracked layer in-place if available; otherwise search by name or rename.
-        if self._seg_layer is not None and self._seg_layer in self.viewer.layers:
-            self._seg_layer.data = src_data
-            self._seg_layer.refresh()
-            self._seg_status.setText(f"Loaded: {src_data.shape}")
-            self._log_append(f"Loaded '{old_name}' into Segmentation layer.")
-            return
-
-        for lay in self.viewer.layers:
-            if isinstance(lay, napari.layers.Labels) and lay.name == "Segmentation":
-                lay.data = src_data
-                lay.refresh()
-                self._seg_layer = lay
-                self._seg_status.setText(f"Loaded: {src_data.shape}")
-                self._log_append(f"Loaded '{old_name}' into Segmentation layer.")
-                return
-
-        active.name = "Segmentation"
-        self._seg_layer = active
-        self._seg_status.setText(f"Loaded: {src_data.shape}")
-        self._log_append(f"Renamed '{old_name}' → 'Segmentation'.")
-
     # ── Error handling ─────────────────────────────────────────────────
 
     def _on_error(self, exc):
@@ -1050,15 +916,15 @@ class SegmentationTab(QWidget):
 
 def _run_segmentation(imgs, mode, params, model=None):
     """
-    Run Cellpose segmentation for a single frame or a 3D volume.
+    Run Cellpose segmentation for a single frame.
 
-    imgs   : dict from _get_inputs_for_frame / _get_all_frames / _get_volume
+    imgs   : dict from _get_inputs_for_frame / _get_all_frames
     mode   : "single" | "two_ch"
     params : dict from _collect_params()
     model  : pre-loaded CellposeModel; if None one is created (and immediately
              discarded — prefer passing the cached model from SegmentationTab)
 
-    Returns (H, W) mask for 2D or (Z, H, W) mask for 3D.
+    Returns (H, W) mask.
     """
     from cellflow.backend.segmentation import make_cp_model, run_cp, run_cp_two_channel
 
@@ -1069,15 +935,12 @@ def _run_segmentation(imgs, mode, params, model=None):
             gpu=params["gpu"],
         )
 
-    mode_3d = params.get("3d_mode", "Off (2D)")
     cp_kwargs = dict(
         model              = model,
         diameter           = params["diameter"],
         flow_threshold     = params["flow_threshold"],
         cellprob_threshold = params["cellprob_threshold"],
         min_size           = params["min_size"],
-        do_3D              = (mode_3d == "True 3D"),
-        stitch_threshold   = params["stitch_threshold"] if mode_3d == "Stitch" else None,
     )
 
     if mode == "single":
