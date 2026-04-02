@@ -568,8 +568,9 @@ def save_tissue(path: Union[str, Path], tissue) -> None:
         path,
         labels=tissue.labels,
         dataset=dataset,
-        pixel_size=(tissue.series.pixel_size if tissue.series else None),
-        time_interval=(tissue.series.time_interval if tissue.series else None),
+        pixel_size=tissue.pixel_size,
+        time_interval=tissue.time_interval,
+        condition=tissue.condition,
     )
 
 

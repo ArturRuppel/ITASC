@@ -653,6 +653,7 @@ class CorrectionWidget(QWidget):
                     if ok:
                         _record_history(_layer, t, before)
                     _layer.refresh()
+                    self._update_highlight(t, self._selected_label)
                     return
 
                 # ── Shift+Left-drag: draw cell path ───────────────────────
@@ -683,6 +684,7 @@ class CorrectionWidget(QWidget):
                     if ok:
                         _record_history(_layer, t, before)
                     _layer.refresh()
+                    self._update_highlight(t, self._selected_label)
                     return
 
             except Exception as exc:
@@ -724,6 +726,8 @@ class CorrectionWidget(QWidget):
                 changed_frames += 1
         if changed_frames:
             self._layer.refresh()
+            t_cur = int(self.viewer.dims.current_step[0]) if self._layer.data.ndim >= 3 else 0
+            self._update_highlight(t_cur, self._selected_label)
             self._set_status(
                 f"Fixed borders (r={radius}) in {changed_frames}/{n_frames} frames"
                 f" — Active on '{self._layer.name}'"

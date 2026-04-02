@@ -434,6 +434,11 @@ class ProjectPanel(QWidget):
         if not path.endswith(".h5"):
             path += ".h5"
 
+        # Sync current UI metadata into tissue before writing
+        tissue.pixel_size = self._state.pixel_size
+        tissue.time_interval = self._state.time_interval
+        tissue.condition = self._state.condition
+
         from ..utils.io import save_tissue
         try:
             save_tissue(path, tissue)
