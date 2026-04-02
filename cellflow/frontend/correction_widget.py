@@ -47,6 +47,7 @@ from ..backend.labels import (
     split_draw, draw_cell_path, swap_labels,
     _free_label, _label_at,
 )
+from .registry import get_state
 
 
 def _record_history(layer, t: int, before: np.ndarray) -> None:
@@ -74,6 +75,7 @@ class CorrectionWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self._seg_tab = seg_tab  # SegmentationTab — single source of truth for labels
+        self._state = get_state(viewer)
 
         self._layer: napari.layers.Labels = None
 
@@ -193,9 +195,9 @@ class CorrectionWidget(QWidget):
             elif isinstance(layer, napari.layers.Image):
                 self._image_combo.addItem(layer.name)
 
-        # Prefer the seg_tab's current layer over the previously selected name.
-        seg_layer_name = None
-        if self._seg_tab is not None:
+        # Phase 2: prefer state labels_layer, then seg_tab layer, then previous selection.
+        seg_layer_name = self._state.tissue.labels_layer or None
+        if seg_layer_name is None and self._seg_tab is not None:
             sl = getattr(self._seg_tab, "_seg_layer", None)
             if sl is not None and sl in self.viewer.layers:
                 seg_layer_name = sl.name
@@ -295,6 +297,10 @@ class CorrectionWidget(QWidget):
             self.viewer.mouse_drag_callbacks.clear()
             for cb in self._saved_viewer_drag_cbs:
                 self.viewer.mouse_drag_callbacks.append(cb)
+
+        # Sync corrected labels to internal state before releasing the layer
+        if self._layer is not None:
+            self._state.set_tissue_labels(np.asarray(self._layer.data), self._layer.name)
 
         self._layer = None
         self._selected_label = 0

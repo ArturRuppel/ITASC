@@ -9,45 +9,109 @@ Typical usage inside a widget::
     from .registry import get_state
 
     state = get_state(self.viewer)
-    state.dataset_changed.connect(self._on_dataset_changed)
-    state.dataset = my_dataset          # triggers signal
-    state.add_tissue(series)            # triggers signal
+    state.tissue_changed.connect(self._on_tissue_changed)
+    state.catalog_changed.connect(self._on_catalog_changed)
+    state.set_tissue_series(series)   # triggers tissue_changed
 """
 from __future__ import annotations
 
 import weakref
-from typing import Dict, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 from qtpy.QtCore import QObject, Signal
 
 from ..utils.structures import TissueGraphDataset, TissueGraphTimeSeries
 
 
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TissueData:
+    """The single active working tissue (in-memory, independent of napari layers)."""
+    image:   Optional[object]                   = None  # np.ndarray (T,H,W) or None
+    labels:  Optional[object]                   = None  # np.ndarray (T,H,W) or None
+    series:  Optional[TissueGraphTimeSeries]    = None
+    path:    Optional[str]                      = None  # .h5 path if saved, else None
+
+    # names of the linked napari layers (for regeneration / sync)
+    image_layer:  Optional[str]  = None
+    labels_layer: Optional[str]  = None
+
+
+@dataclass
+class CatalogEntry:
+    """One row in the dataset catalog."""
+    path:         str
+    display_name: str  = ""
+    note:         str  = ""
+    # summary written at add-time; never needs to open H5 files to show the table
+    summary: Dict = field(default_factory=dict)
+    # e.g. {"n_frames": 48, "avg_cells": 450, "n_t1_events": 12, "n_trajectories": 230}
+
+    # runtime cache — populated on first access, never persisted
+    _series_cache: Optional[TissueGraphTimeSeries] = field(default=None, repr=False)
+
+
+@dataclass
+class DatasetCatalog:
+    """Ordered collection of saved tissue H5 files, lazy-loaded."""
+    entries:       List[CatalogEntry] = field(default_factory=list)
+    path:          Optional[str]      = None   # .cfproj file path
+    pixel_size:    Optional[float]    = None
+    time_interval: Optional[float]    = None
+    condition:     str                = ""
+
+    def get_series(self, index: int) -> TissueGraphTimeSeries:
+        """Load from H5 if not cached, return from cache otherwise."""
+        from ..utils.io import load_tissue
+        entry = self.entries[index]
+        if entry._series_cache is None:
+            result = load_tissue(entry.path)
+            entry._series_cache = result.series
+        return entry._series_cache
+
+
+# ---------------------------------------------------------------------------
+# ViewerState
+# ---------------------------------------------------------------------------
+
 class ViewerState(QObject):
     """Shared state bound to a single napari viewer.
 
     Signals
     -------
-    dataset_changed
-        Emitted whenever the dataset is replaced or a tissue is
-        added / removed.  Listeners should refresh their UI.
+    tissue_changed
+        Emitted whenever any field of the active TissueData changes.
+    catalog_changed
+        Emitted whenever the DatasetCatalog changes (entry added/removed).
     metadata_changed
         Emitted when pixel_size, time_interval, or condition changes.
     """
 
-    dataset_changed = Signal()
+    tissue_changed  = Signal()
+    catalog_changed = Signal()
     metadata_changed = Signal()
-    project_changed = Signal()   # emitted when project_path changes
-    preview_changed = Signal()   # emitted when preview_series changes
+
+    # --- legacy signals kept for any remaining call-sites ---
+    dataset_changed  = Signal()
+    project_changed  = Signal()
+    preview_changed  = Signal()
 
     def __init__(self, viewer) -> None:
         super().__init__()
         self._viewer_ref = weakref.ref(viewer)
-        self._dataset: Optional[TissueGraphDataset] = None
+        self._tissue:  TissueData     = TissueData()
+        self._catalog: DatasetCatalog = DatasetCatalog()
         self._pixel_size: Optional[float] = None
         self._time_interval: Optional[float] = None
         self._condition: str = ""
-        self._project_path: Optional[str] = None  # current .h5 file path
+        self._project_path: Optional[str] = None
+
+        # --- legacy shim backing store ---
+        self._dataset: Optional[TissueGraphDataset] = None
         self._preview_series: Optional[TissueGraphTimeSeries] = None
 
     # -- viewer accessor ---------------------------------------------------
@@ -59,6 +123,51 @@ class ViewerState(QObject):
             raise RuntimeError("Viewer has been closed")
         return v
 
+    # -- TissueData --------------------------------------------------------
+
+    @property
+    def tissue(self) -> TissueData:
+        return self._tissue
+
+    def set_tissue_labels(self, arr, layer_name: Optional[str] = None) -> None:
+        self._tissue.labels = arr
+        if layer_name is not None:
+            self._tissue.labels_layer = layer_name
+        self.tissue_changed.emit()
+
+    def set_tissue_series(self, series: Optional[TissueGraphTimeSeries]) -> None:
+        self._tissue.series = series
+        self.tissue_changed.emit()
+        # keep legacy preview_series in sync for widgets not yet migrated
+        self._preview_series = series
+        self.preview_changed.emit()
+
+    def set_tissue_image(self, arr, layer_name: Optional[str] = None) -> None:
+        self._tissue.image = arr
+        if layer_name is not None:
+            self._tissue.image_layer = layer_name
+        self.tissue_changed.emit()
+
+    def clear_tissue(self) -> None:
+        self._tissue = TissueData()
+        self.tissue_changed.emit()
+
+    # -- DatasetCatalog ----------------------------------------------------
+
+    @property
+    def catalog(self) -> DatasetCatalog:
+        return self._catalog
+
+    def add_to_catalog(self, entry: CatalogEntry) -> None:
+        self._catalog.entries.append(entry)
+        self.catalog_changed.emit()
+        self.dataset_changed.emit()
+
+    def remove_from_catalog(self, index: int) -> None:
+        del self._catalog.entries[index]
+        self.catalog_changed.emit()
+        self.dataset_changed.emit()
+
     # -- metadata properties -----------------------------------------------
 
     @property
@@ -68,6 +177,7 @@ class ViewerState(QObject):
     @pixel_size.setter
     def pixel_size(self, value: Optional[float]) -> None:
         self._pixel_size = value
+        self._catalog.pixel_size = value
         self.metadata_changed.emit()
 
     @property
@@ -77,6 +187,7 @@ class ViewerState(QObject):
     @time_interval.setter
     def time_interval(self, value: Optional[float]) -> None:
         self._time_interval = value
+        self._catalog.time_interval = value
         self.metadata_changed.emit()
 
     @property
@@ -86,9 +197,10 @@ class ViewerState(QObject):
     @condition.setter
     def condition(self, value: str) -> None:
         self._condition = value or ""
+        self._catalog.condition = value or ""
         self.metadata_changed.emit()
 
-    # -- project path ------------------------------------------------------
+    # -- project path (legacy, kept for ProjectPanel compat) ---------------
 
     @property
     def project_path(self) -> Optional[str]:
@@ -99,7 +211,7 @@ class ViewerState(QObject):
         self._project_path = value
         self.project_changed.emit()
 
-    # -- preview_series property -------------------------------------------
+    # -- legacy: preview_series --------------------------------------------
 
     @property
     def preview_series(self) -> Optional[TissueGraphTimeSeries]:
@@ -108,9 +220,11 @@ class ViewerState(QObject):
     @preview_series.setter
     def preview_series(self, value: Optional[TissueGraphTimeSeries]) -> None:
         self._preview_series = value
+        self._tissue.series = value
         self.preview_changed.emit()
+        self.tissue_changed.emit()
 
-    # -- dataset property --------------------------------------------------
+    # -- legacy: dataset ---------------------------------------------------
 
     @property
     def dataset(self) -> Optional[TissueGraphDataset]:
@@ -121,20 +235,13 @@ class ViewerState(QObject):
         self._dataset = value
         self.dataset_changed.emit()
 
-    # -- convenience mutators that emit dataset_changed --------------------
-
     def ensure_dataset(self, **kwargs) -> TissueGraphDataset:
-        """Return the existing dataset or create a new one."""
         if self._dataset is None:
             self._dataset = TissueGraphDataset(**kwargs)
             self.dataset_changed.emit()
         return self._dataset
 
     def add_tissue(self, series: TissueGraphTimeSeries) -> int:
-        """Add *series* to the dataset and emit *dataset_changed*.
-
-        Creates the dataset first if it does not exist yet.
-        """
         ds = self.ensure_dataset()
         tid = ds.add_tissue(series)
         self.dataset_changed.emit()
@@ -160,7 +267,6 @@ def get_state(viewer) -> ViewerState:
     vid = id(viewer)
     if vid in _states:
         state = _states[vid]
-        # Verify the viewer is still alive
         try:
             _ = state.viewer
         except RuntimeError:
@@ -169,7 +275,6 @@ def get_state(viewer) -> ViewerState:
             return state
 
     state = ViewerState(viewer)
-    # Remove the entry when the viewer is garbage-collected.
     weakref.finalize(viewer, _states.pop, vid, None)
     _states[vid] = state
     return state

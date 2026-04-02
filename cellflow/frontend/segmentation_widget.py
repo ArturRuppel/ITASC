@@ -29,6 +29,8 @@ from qtpy.QtWidgets import (
 from napari.qt.threading import thread_worker
 import napari
 
+from .registry import get_state
+
 
 # ── helpers ────────────────────────────────────────────────────────────
 
@@ -91,8 +93,10 @@ class SegmentationTab(QWidget):
         self._cp_model_key = None   # (model_type, custom_model_path, gpu) for the cached model
 
         self._export_dir = None  # user-configured export directory for Cellpose GUI
+        self._state = get_state(viewer)
 
         self._setup_ui()
+        self._state.tissue_changed.connect(self._on_tissue_changed)
 
     # ── UI construction ────────────────────────────────────────────────
 
@@ -524,6 +528,22 @@ class SegmentationTab(QWidget):
                 "secondary": self._get_frame(self._secondary_data, t),
             }, t
 
+    def _on_tissue_changed(self):
+        """Phase 2: auto-populate input data from state when image becomes available."""
+        tissue = self._state.tissue
+        if tissue.image is not None and self._input_data is None:
+            self._input_data = np.asarray(tissue.image)
+            shape_str = f"Loaded (from state): {self._input_data.shape}"
+            self._single_status.setText(shape_str)
+            self._primary_status.setText(shape_str)
+
+    def _sync_labels_to_state(self):
+        """Mirror the current seg_layer data to internal TissueData state."""
+        if self._seg_layer is not None and self._seg_layer in self.viewer.layers:
+            self._state.set_tissue_labels(
+                np.asarray(self._seg_layer.data), self._seg_layer.name
+            )
+
     def _on_frame_done(self, masks, t):
         self._is_running = False
         self._seg_frame_btn.setEnabled(True)
@@ -542,6 +562,7 @@ class SegmentationTab(QWidget):
         layer.refresh()
         self._seg_status.setText(f"Loaded: {layer.data.shape}")
         self._log_append("Frame segmentation complete.")
+        self._sync_labels_to_state()
 
     # ── Segment Stack ──────────────────────────────────────────────────
 
@@ -652,6 +673,7 @@ class SegmentationTab(QWidget):
         layer.refresh()
         self._seg_status.setText(f"Loaded: {layer.data.shape}")
         self._log_append(f"Stack segmentation complete: {stack.shape}.")
+        self._sync_labels_to_state()
 
     # ── Cellpose GUI integration ───────────────────────────────────────
 
@@ -787,6 +809,7 @@ class SegmentationTab(QWidget):
             layer.data = data
         layer.refresh()
         self._seg_status.setText(f"Loaded: {layer.data.shape}")
+        self._sync_labels_to_state()
 
         n = len(np.unique(masks[masks > 0]))
         self._log_append(f"Imported {n} mask(s) into frame {t} from Cellpose GUI.")
@@ -961,6 +984,7 @@ class SegmentationTab(QWidget):
         layer.data = data
         layer.refresh()
         self._seg_status.setText(f"Loaded: {layer.data.shape}")
+        self._sync_labels_to_state()
         self._log_append(f"Imported {imported} frame(s) from {export_dir}.")
         self._gui_status.setText(f"Imported {imported} frame(s) from {export_dir}.")
 

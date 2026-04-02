@@ -1,15 +1,10 @@
 """Project panel — fixed strip above the tab widget.
 
-Shows the current project file, Load / Save buttons, dataset metadata
-(pixel size, time interval, condition), and the tissue table.
+Three sections:
 
-When a multi-file manifest (.cfproj) is loaded a collapsible "Project
-files" section appears listing all .h5 files with the active one marked.
-
-The "Add to dataset" / "Discard" buttons are enabled only when the Edge
-Analysis pipeline has a finished result ready (state.preview_series is
-not None).  Clicking "Add" commits the result to the dataset and signals
-the analysis widget to clean up its visualization layers.
+  Tissue    — active working tissue (load/save/capture/push/clear per field)
+  Metadata  — pixel size, time interval, condition
+  Dataset   — catalog of saved tissues with summary table
 """
 from __future__ import annotations
 
@@ -18,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -26,7 +21,6 @@ from qtpy.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
     QPushButton,
     QSizePolicy,
     QTableWidget,
@@ -35,189 +29,163 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from .registry import ViewerState
+from .registry import CatalogEntry, DatasetCatalog, TissueData, ViewerState
 
 logger = logging.getLogger(__name__)
 
 
 class ProjectPanel(QWidget):
-    """Panel fixed above the tab widget: file ops, metadata, tissue table."""
-
-    show_tissue_requested = Signal(int)  # tissue_id
+    """Panel fixed above the tab widget: tissue ops, metadata, dataset table."""
 
     def __init__(self, viewer, state: ViewerState):
         super().__init__()
         self.viewer = viewer
         self._state = state
-        self._manifest = None        # Optional[ProjectManifest]
-        self._manifest_path: Optional[str] = None
         self._build_ui()
         self._connect_signals()
+        self._refresh_tissue()
+        self._refresh_catalog()
+        self._sync_from_state()
 
     # ------------------------------------------------------------------
     # Build
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        layout = QVBoxLayout()
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(4)
-        self.setLayout(layout)
+        root = QVBoxLayout()
+        root.setContentsMargins(6, 4, 6, 4)
+        root.setSpacing(4)
+        self.setLayout(root)
 
-        # ── Row 1: file operations ────────────────────────────────────
-        file_row = QHBoxLayout()
-        file_row.setSpacing(4)
+        # ── Tissue section ────────────────────────────────────────────
+        tissue_group = QGroupBox("Tissue")
+        tg_layout = QVBoxLayout()
+        tg_layout.setContentsMargins(6, 4, 6, 4)
+        tg_layout.setSpacing(3)
 
-        self._path_label = QLabel("No project")
-        self._path_label.setStyleSheet("color: palette(mid); font-size: 9pt;")
-        self._path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._path_label.setToolTip("Current project file")
-        file_row.addWidget(self._path_label)
+        # Row 0: file path + Load / Save
+        path_row = QHBoxLayout()
+        path_row.setSpacing(4)
+        self._tissue_path_label = QLabel("[unsaved]")
+        self._tissue_path_label.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        self._tissue_path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        path_row.addWidget(self._tissue_path_label)
+        self._tissue_load_btn = QPushButton("Load tissue…")
+        self._tissue_load_btn.setToolTip("Load image, labels and analysis from an .h5 file")
+        path_row.addWidget(self._tissue_load_btn)
+        self._tissue_save_btn = QPushButton("Save tissue…")
+        self._tissue_save_btn.setToolTip("Save current tissue to an .h5 file")
+        path_row.addWidget(self._tissue_save_btn)
+        tg_layout.addLayout(path_row)
 
-        self._load_btn = QPushButton("Load…")
-        self._load_btn.setFixedWidth(52)
-        self._load_btn.setToolTip("Load a .h5 project or .cfproj manifest")
-        file_row.addWidget(self._load_btn)
+        # Row 1: Image field
+        self._image_row = _FieldRow("Image:", self)
+        tg_layout.addLayout(self._image_row)
 
-        self._new_manifest_btn = QPushButton("New manifest…")
-        self._new_manifest_btn.setToolTip(
-            "Create a new multi-file manifest (.cfproj) that assembles several "
-            ".h5 files into one logical dataset"
+        # Row 2: Labels field
+        self._labels_row = _FieldRow("Labels:", self)
+        tg_layout.addLayout(self._labels_row)
+
+        # Row 3: Analysis field (series; no capture button — comes from pipeline)
+        self._analysis_row = _FieldRow("Analysis:", self, has_capture=False)
+        tg_layout.addLayout(self._analysis_row)
+
+        # Row 4: Add to dataset
+        add_row = QHBoxLayout()
+        add_row.setSpacing(4)
+        add_row.addStretch()
+        self._add_to_dataset_btn = QPushButton("Add to dataset…")
+        self._add_to_dataset_btn.setEnabled(False)
+        self._add_to_dataset_btn.setToolTip(
+            "Tissue must be saved first.\n"
+            "Adds the saved .h5 to the catalog and clears the working tissue."
         )
-        file_row.addWidget(self._new_manifest_btn)
+        add_row.addWidget(self._add_to_dataset_btn)
+        tg_layout.addLayout(add_row)
 
-        self._save_btn = QPushButton("Save")
-        self._save_btn.setFixedWidth(44)
-        self._save_btn.setToolTip("Save the current project")
-        file_row.addWidget(self._save_btn)
+        tissue_group.setLayout(tg_layout)
+        root.addWidget(tissue_group)
 
-        self._save_as_btn = QPushButton("Save as…")
-        self._save_as_btn.setFixedWidth(68)
-        self._save_as_btn.setToolTip("Save to a new file")
-        file_row.addWidget(self._save_as_btn)
-
-        layout.addLayout(file_row)
-
-        # ── Row 2: metadata ───────────────────────────────────────────
+        # ── Metadata section ──────────────────────────────────────────
         meta_row = QHBoxLayout()
         meta_row.setSpacing(4)
-
         meta_row.addWidget(QLabel("px (µm):"))
         self._px_edit = QLineEdit()
         self._px_edit.setFixedWidth(52)
         self._px_edit.setPlaceholderText("—")
         self._px_edit.setToolTip("Pixel size in µm/px")
         meta_row.addWidget(self._px_edit)
-
         meta_row.addWidget(QLabel("dt (s):"))
         self._dt_edit = QLineEdit()
         self._dt_edit.setFixedWidth(52)
         self._dt_edit.setPlaceholderText("—")
         self._dt_edit.setToolTip("Time interval between frames in seconds")
         meta_row.addWidget(self._dt_edit)
-
         meta_row.addWidget(QLabel("Condition:"))
         self._condition_edit = QLineEdit()
         self._condition_edit.setPlaceholderText("e.g. WT")
         self._condition_edit.setToolTip("Experimental condition label")
         meta_row.addWidget(self._condition_edit)
+        root.addLayout(meta_row)
 
-        layout.addLayout(meta_row)
-
-        # ── Project files (collapsible, hidden unless manifest loaded) ─
-        self._files_toggle_btn = QPushButton("▶ Project files")
-        self._files_toggle_btn.setCheckable(True)
-        self._files_toggle_btn.setChecked(False)
-        self._files_toggle_btn.setFlat(True)
-        self._files_toggle_btn.setStyleSheet(
-            "QPushButton { text-align: left; font-weight: bold; padding: 2px 0; }"
-        )
-        self._files_toggle_btn.setVisible(False)
-        layout.addWidget(self._files_toggle_btn)
-
-        self._files_content = QWidget()
-        files_cl = QVBoxLayout()
-        files_cl.setContentsMargins(0, 0, 0, 0)
-        files_cl.setSpacing(2)
-
-        self._files_list = QListWidget()
-        self._files_list.setMaximumHeight(100)
-        self._files_list.setToolTip("Double-click a file to make it active")
-        files_cl.addWidget(self._files_list)
-
-        files_btn_row = QHBoxLayout()
-        self._add_file_btn = QPushButton("Add .h5…")
-        self._add_file_btn.setToolTip("Add an existing .h5 file to this manifest")
-        self._remove_file_btn = QPushButton("Remove")
-        self._remove_file_btn.setToolTip("Remove the selected file from this manifest")
-        files_btn_row.addWidget(self._add_file_btn)
-        files_btn_row.addWidget(self._remove_file_btn)
-        files_btn_row.addStretch()
-        files_cl.addLayout(files_btn_row)
-
-        self._files_content.setLayout(files_cl)
-        self._files_content.setVisible(False)
-        layout.addWidget(self._files_content)
-
-        # ── Dataset group ─────────────────────────────────────────────
+        # ── Dataset section ───────────────────────────────────────────
         ds_group = QGroupBox("Dataset")
         ds_layout = QVBoxLayout()
         ds_layout.setContentsMargins(6, 4, 6, 4)
         ds_layout.setSpacing(3)
 
-        # Header row: tissue count + Add / Discard / Dashboard
-        ds_header = QHBoxLayout()
-        ds_header.setSpacing(4)
+        # Header: path label + Load / Save
+        ds_path_row = QHBoxLayout()
+        ds_path_row.setSpacing(4)
+        self._catalog_path_label = QLabel("[no dataset]")
+        self._catalog_path_label.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        self._catalog_path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        ds_path_row.addWidget(self._catalog_path_label)
+        self._ds_load_btn = QPushButton("Load dataset…")
+        self._ds_load_btn.setToolTip("Load a .cfproj dataset file")
+        ds_path_row.addWidget(self._ds_load_btn)
+        self._ds_save_btn = QPushButton("Save dataset…")
+        self._ds_save_btn.setToolTip("Save the dataset catalog to a .cfproj file")
+        ds_path_row.addWidget(self._ds_save_btn)
+        ds_layout.addLayout(ds_path_row)
 
-        self._tissues_label = QLabel("No dataset")
-        self._tissues_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        ds_header.addWidget(self._tissues_label)
+        # Entry count toggle label
+        self._catalog_count_label = QLabel("▶ 0 entries")
+        self._catalog_count_label.setStyleSheet("font-weight: bold; font-size: 9pt;")
+        ds_layout.addWidget(self._catalog_count_label)
 
-        self._add_preview_btn = QPushButton("Add ✓")
-        self._add_preview_btn.setFixedWidth(56)
-        self._add_preview_btn.setEnabled(False)
-        self._add_preview_btn.setToolTip("Add the finished analysis result to the dataset")
-        ds_header.addWidget(self._add_preview_btn)
+        # Summary table
+        self._catalog_table = QTableWidget(0, 5)
+        self._catalog_table.setHorizontalHeaderLabels(
+            ["Name", "Frames", "Cells", "T1s", "Note"]
+        )
+        hh = self._catalog_table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        self._catalog_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._catalog_table.setSelectionMode(QTableWidget.SingleSelection)
+        self._catalog_table.setMaximumHeight(130)
+        ds_layout.addWidget(self._catalog_table)
 
-        self._discard_preview_btn = QPushButton("Discard ✗")
-        self._discard_preview_btn.setFixedWidth(64)
-        self._discard_preview_btn.setEnabled(False)
-        self._discard_preview_btn.setToolTip("Discard the finished analysis result")
-        ds_header.addWidget(self._discard_preview_btn)
-
+        # Action buttons
+        ds_btn_row = QHBoxLayout()
+        ds_btn_row.setSpacing(4)
+        self._show_in_viewer_btn = QPushButton("Show in viewer")
+        self._show_in_viewer_btn.setToolTip(
+            "Load the selected entry's labels from .h5 into a napari layer"
+        )
+        self._remove_from_ds_btn = QPushButton("Remove from dataset")
+        self._remove_from_ds_btn.setToolTip("Remove the selected entry from the catalog")
         self._dashboard_btn = QPushButton("Dashboard ↗")
         self._dashboard_btn.setToolTip("Launch the analysis dashboard in your browser")
-        ds_header.addWidget(self._dashboard_btn)
-
-        ds_layout.addLayout(ds_header)
-
-        self._tissue_table = QTableWidget(0, 4)
-        self._tissue_table.setHorizontalHeaderLabels(["ID", "Frames", "T1s", "Note"])
-        self._tissue_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeToContents
-        )
-        self._tissue_table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeToContents
-        )
-        self._tissue_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeToContents
-        )
-        self._tissue_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.Stretch
-        )
-        self._tissue_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self._tissue_table.setSelectionMode(QTableWidget.SingleSelection)
-        self._tissue_table.setMaximumHeight(110)
-        ds_layout.addWidget(self._tissue_table)
-
-        tissue_btn_row = QHBoxLayout()
-        tissue_btn_row.setSpacing(4)
-        self._show_tissue_btn = QPushButton("Show in viewer")
-        self._remove_tissue_btn = QPushButton("Remove")
-        tissue_btn_row.addWidget(self._show_tissue_btn)
-        tissue_btn_row.addWidget(self._remove_tissue_btn)
-        tissue_btn_row.addStretch()
-        ds_layout.addLayout(tissue_btn_row)
+        ds_btn_row.addWidget(self._show_in_viewer_btn)
+        ds_btn_row.addWidget(self._remove_from_ds_btn)
+        ds_btn_row.addStretch()
+        ds_btn_row.addWidget(self._dashboard_btn)
+        ds_layout.addLayout(ds_btn_row)
 
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
@@ -225,135 +193,156 @@ class ProjectPanel(QWidget):
         ds_layout.addWidget(self._status_label)
 
         ds_group.setLayout(ds_layout)
-        layout.addWidget(ds_group)
+        root.addWidget(ds_group)
 
     def _connect_signals(self):
-        self._load_btn.clicked.connect(self._on_load)
-        self._new_manifest_btn.clicked.connect(self._on_new_manifest)
-        self._save_btn.clicked.connect(self._on_save)
-        self._save_as_btn.clicked.connect(self._on_save_as)
+        # Tissue buttons
+        self._tissue_load_btn.clicked.connect(self._on_load_tissue)
+        self._tissue_save_btn.clicked.connect(self._on_save_tissue)
+        self._add_to_dataset_btn.clicked.connect(self._on_add_to_dataset)
 
+        # Image field
+        self._image_row.capture_btn.clicked.connect(self._on_capture_image)
+        self._image_row.to_layer_btn.clicked.connect(self._on_image_to_layer)
+        self._image_row.clear_btn.clicked.connect(self._on_clear_image)
+
+        # Labels field
+        self._labels_row.capture_btn.clicked.connect(self._on_capture_labels)
+        self._labels_row.to_layer_btn.clicked.connect(self._on_labels_to_layer)
+        self._labels_row.clear_btn.clicked.connect(self._on_clear_labels)
+
+        # Analysis field (no capture — generated by pipeline)
+        self._analysis_row.to_layer_btn.clicked.connect(self._on_analysis_to_layer)
+        self._analysis_row.clear_btn.clicked.connect(self._on_clear_analysis)
+
+        # Metadata
         self._px_edit.editingFinished.connect(self._on_metadata_edited)
         self._dt_edit.editingFinished.connect(self._on_metadata_edited)
         self._condition_edit.editingFinished.connect(self._on_metadata_edited)
 
-        self._files_toggle_btn.toggled.connect(self._on_files_toggled)
-        self._files_list.itemDoubleClicked.connect(self._on_file_double_clicked)
-        self._add_file_btn.clicked.connect(self._on_add_file)
-        self._remove_file_btn.clicked.connect(self._on_remove_file)
+        # Dataset buttons
+        self._ds_load_btn.clicked.connect(self._on_load_catalog)
+        self._ds_save_btn.clicked.connect(self._on_save_catalog)
+        self._show_in_viewer_btn.clicked.connect(self._on_show_in_viewer)
+        self._remove_from_ds_btn.clicked.connect(self._on_remove_from_catalog)
+        self._dashboard_btn.clicked.connect(self._on_open_dashboard)
 
-        self._add_preview_btn.clicked.connect(self._on_add_preview)
-        self._discard_preview_btn.clicked.connect(self._on_discard_preview)
-        self._show_tissue_btn.clicked.connect(self._show_selected)
-        self._remove_tissue_btn.clicked.connect(self._remove_selected)
-        self._dashboard_btn.clicked.connect(self._open_dashboard)
-        self._tissue_table.cellChanged.connect(self._on_note_changed)
+        self._catalog_table.cellChanged.connect(self._on_note_changed)
 
+        # State signals
+        self._state.tissue_changed.connect(self._refresh_tissue)
+        self._state.catalog_changed.connect(self._refresh_catalog)
         self._state.metadata_changed.connect(self._sync_from_state)
-        self._state.project_changed.connect(self._sync_path_label)
-        self._state.dataset_changed.connect(self._refresh_table)
-        self._state.preview_changed.connect(self._on_preview_changed)
+        # legacy compat
+        self._state.dataset_changed.connect(self._refresh_catalog)
 
     # ------------------------------------------------------------------
-    # State → UI sync
+    # State → UI
     # ------------------------------------------------------------------
+
+    def _refresh_tissue(self):
+        tissue = self._state.tissue
+        # path label
+        if tissue.path:
+            self._tissue_path_label.setText(Path(tissue.path).name)
+            self._tissue_path_label.setToolTip(tissue.path)
+        else:
+            self._tissue_path_label.setText("[unsaved]")
+            self._tissue_path_label.setToolTip("")
+
+        # image row
+        if tissue.image is not None:
+            arr = tissue.image
+            shape_str = " × ".join(str(d) for d in arr.shape)
+            self._image_row.set_status(shape_str)
+        else:
+            self._image_row.set_status("not loaded")
+        self._image_row.to_layer_btn.setEnabled(tissue.image is not None)
+        self._image_row.clear_btn.setEnabled(tissue.image is not None)
+
+        # labels row
+        if tissue.labels is not None:
+            arr = tissue.labels
+            shape_str = " × ".join(str(d) for d in arr.shape)
+            self._labels_row.set_status(shape_str)
+        else:
+            self._labels_row.set_status("not loaded")
+        self._labels_row.to_layer_btn.setEnabled(tissue.labels is not None)
+        self._labels_row.clear_btn.setEnabled(tissue.labels is not None)
+
+        # analysis row
+        if tissue.series is not None:
+            s = tissue.series
+            n_t1 = len(s.t1_events)
+            n_traj = len(s.edge_trajectories)
+            self._analysis_row.set_status(f"{n_t1} T1s  {n_traj} traj.")
+        else:
+            self._analysis_row.set_status("not loaded")
+        self._analysis_row.to_layer_btn.setEnabled(tissue.series is not None)
+        self._analysis_row.clear_btn.setEnabled(tissue.series is not None)
+
+        # "Add to dataset" requires a saved path
+        self._add_to_dataset_btn.setEnabled(bool(tissue.path))
+
+    def _refresh_catalog(self):
+        catalog = self._state.catalog
+        # also reflect legacy dataset if catalog is empty
+        entries = catalog.entries
+
+        # path label
+        if catalog.path:
+            self._catalog_path_label.setText(Path(catalog.path).name)
+            self._catalog_path_label.setToolTip(catalog.path)
+        else:
+            self._catalog_path_label.setText("[no dataset]")
+            self._catalog_path_label.setToolTip("")
+
+        n = len(entries)
+        self._catalog_count_label.setText(f"▶ {n} entr{'y' if n == 1 else 'ies'}")
+
+        self._catalog_table.blockSignals(True)
+        self._catalog_table.setRowCount(0)
+
+        for entry in entries:
+            row = self._catalog_table.rowCount()
+            self._catalog_table.insertRow(row)
+
+            name = entry.display_name or Path(entry.path).stem
+            name_item = QTableWidgetItem(name)
+            name_item.setToolTip(entry.path)
+            self._catalog_table.setItem(row, 0, name_item)
+
+            s = entry.summary
+            frames_item = QTableWidgetItem(str(s.get("n_frames", "—")))
+            frames_item.setFlags(frames_item.flags() & ~Qt.ItemIsEditable)
+            self._catalog_table.setItem(row, 1, frames_item)
+
+            cells_item = QTableWidgetItem(str(s.get("avg_cells", "—")))
+            cells_item.setFlags(cells_item.flags() & ~Qt.ItemIsEditable)
+            self._catalog_table.setItem(row, 2, cells_item)
+
+            t1_item = QTableWidgetItem(str(s.get("n_t1_events", "—")))
+            t1_item.setFlags(t1_item.flags() & ~Qt.ItemIsEditable)
+            self._catalog_table.setItem(row, 3, t1_item)
+
+            note_item = QTableWidgetItem(entry.note)
+            self._catalog_table.setItem(row, 4, note_item)
+
+        self._catalog_table.blockSignals(False)
 
     def _sync_from_state(self):
-        """Refresh editable fields from ViewerState (without re-emitting)."""
-        for widget in (self._px_edit, self._dt_edit, self._condition_edit):
-            widget.blockSignals(True)
-
+        for w in (self._px_edit, self._dt_edit, self._condition_edit):
+            w.blockSignals(True)
         px = self._state.pixel_size
         dt = self._state.time_interval
         self._px_edit.setText(str(px) if px is not None else "")
         self._dt_edit.setText(str(dt) if dt is not None else "")
         self._condition_edit.setText(self._state.condition)
-
-        for widget in (self._px_edit, self._dt_edit, self._condition_edit):
-            widget.blockSignals(False)
-
-    def _sync_path_label(self):
-        if self._manifest_path:
-            m_name = Path(self._manifest_path).name
-            p = self._state.project_path
-            h5_name = Path(p).name if p else "—"
-            self._path_label.setText(f"{m_name}  ›  {h5_name}")
-            self._path_label.setToolTip(
-                f"Manifest: {self._manifest_path}\nActive: {p or '—'}"
-            )
-        else:
-            p = self._state.project_path
-            if p:
-                self._path_label.setText(Path(p).name)
-                self._path_label.setToolTip(p)
-            else:
-                self._path_label.setText("No project")
-                self._path_label.setToolTip("")
-
-    def _refresh_table(self):
-        ds = self._state.dataset
-        self._tissue_table.blockSignals(True)
-        self._tissue_table.setRowCount(0)
-
-        if ds is None or ds.n_tissues == 0:
-            self._tissues_label.setText("No dataset" if ds is None else "No tissues yet")
-            self._tissue_table.blockSignals(False)
-            return
-
-        self._tissues_label.setText(f"{ds.n_tissues} tissue(s)")
-
-        # Populate metadata fields from dataset if they are currently empty.
-        if ds.condition and not self._condition_edit.text():
-            self._condition_edit.setText(ds.condition)
-            self._state.condition = ds.condition
-        if ds.pixel_size is not None and not self._px_edit.text():
-            self._px_edit.setText(str(ds.pixel_size))
-            self._state.pixel_size = ds.pixel_size
-        if ds.time_interval is not None and not self._dt_edit.text():
-            self._dt_edit.setText(str(ds.time_interval))
-            self._state.time_interval = ds.time_interval
-
-        for tid in ds.tissue_ids:
-            series = ds.tissues[tid]
-            n_t1 = len(series.t1_events)
-            note = series.metadata.get("note", "")
-            row = self._tissue_table.rowCount()
-            self._tissue_table.insertRow(row)
-
-            id_item = QTableWidgetItem(str(tid))
-            id_item.setFlags(id_item.flags() & ~Qt.ItemIsEditable)
-            self._tissue_table.setItem(row, 0, id_item)
-
-            frames_item = QTableWidgetItem(str(series.num_frames))
-            frames_item.setFlags(frames_item.flags() & ~Qt.ItemIsEditable)
-            self._tissue_table.setItem(row, 1, frames_item)
-
-            t1_item = QTableWidgetItem(str(n_t1))
-            t1_item.setFlags(t1_item.flags() & ~Qt.ItemIsEditable)
-            self._tissue_table.setItem(row, 2, t1_item)
-
-            note_item = QTableWidgetItem(note)
-            self._tissue_table.setItem(row, 3, note_item)
-
-        self._tissue_table.blockSignals(False)
-
-    def _on_preview_changed(self):
-        has = self._state.preview_series is not None
-        self._add_preview_btn.setEnabled(has)
-        self._discard_preview_btn.setEnabled(has)
-        if has:
-            s = self._state.preview_series
-            n_t1 = len(s.t1_events)
-            n_trajs = len(s.edge_trajectories)
-            self._add_preview_btn.setToolTip(
-                f"Add analysis result to dataset\n"
-                f"({s.num_frames} frames, {n_t1} T1s, {n_trajs} trajectories)"
-            )
-        else:
-            self._add_preview_btn.setToolTip("No analysis result pending")
+        for w in (self._px_edit, self._dt_edit, self._condition_edit):
+            w.blockSignals(False)
 
     # ------------------------------------------------------------------
-    # UI → State sync
+    # UI → State: metadata
     # ------------------------------------------------------------------
 
     def _on_metadata_edited(self):
@@ -364,79 +353,309 @@ class ProjectPanel(QWidget):
         self._state.time_interval = dt
         self._state.condition = condition
 
-        ds = self._state.dataset
-        if ds is not None:
-            if px is not None:
-                ds.pixel_size = px
-            if dt is not None:
-                ds.time_interval = dt
-            ds.condition = condition
-
     # ------------------------------------------------------------------
-    # File operations
+    # Tissue file operations
     # ------------------------------------------------------------------
 
-    def _on_load(self):
+    def _on_load_tissue(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load CellFlow project", "",
-            "CellFlow files (*.h5 *.cfproj);;"
-            "CellFlow project (*.h5);;"
-            "CellFlow manifest (*.cfproj);;"
-            "All files (*)",
+            self, "Load tissue", "",
+            "CellFlow tissue (*.h5);;All files (*)",
         )
         if not path:
             return
-        if path.endswith(".cfproj"):
-            self._load_manifest_from_path(path)
-        else:
-            self._manifest = None
-            self._manifest_path = None
-            self._files_toggle_btn.setVisible(False)
-            self._files_content.setVisible(False)
-            self._load_from_path(path)
-
-    def _load_from_path(self, path: str):
-        from ..utils.io import load_project
+        from ..utils.io import load_tissue
         try:
-            result = load_project(path)
+            tissue = load_tissue(path)
         except Exception as exc:
-            logger.error("Failed to load project: %s", exc)
-            self._path_label.setText(f"Error: {exc}")
+            logger.error("Failed to load tissue: %s", exc)
+            self._status_label.setText(f"Error: {exc}")
             return
 
-        self._state.pixel_size = result["pixel_size"]
-        self._state.time_interval = result["time_interval"]
-        self._state.condition = result["condition"]
-        self._state.dataset = result["dataset"]
-        self._state.project_path = path  # triggers _sync_path_label
+        self._state._tissue = tissue
+        self._state.tissue_changed.emit()
 
-        labels = result.get("labels")
-        if labels is not None:
-            self._load_labels_into_viewer(labels, Path(path).stem)
+        # Push metadata from series if state is empty
+        if tissue.series:
+            s = tissue.series
+            if self._state.pixel_size is None and s.pixel_size is not None:
+                self._state.pixel_size = s.pixel_size
+            if self._state.time_interval is None and s.time_interval is not None:
+                self._state.time_interval = s.time_interval
 
-    def _load_manifest_from_path(self, path: str):
-        from ..utils.io import load_manifest
+        # Load labels into viewer
+        if tissue.labels is not None:
+            self._load_labels_into_viewer(tissue.labels, Path(path).stem)
+
+    def _on_save_tissue(self):
+        tissue = self._state.tissue
+        default = tissue.path or "tissue.h5"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save tissue", default,
+            "CellFlow tissue (*.h5);;All files (*)",
+        )
+        if not path:
+            return
+        if not path.endswith(".h5"):
+            path += ".h5"
+
+        from ..utils.io import save_tissue
         try:
-            manifest = load_manifest(path)
+            save_tissue(path, tissue)
         except Exception as exc:
-            logger.error("Failed to load manifest: %s", exc)
-            self._status_label.setText(f"Error loading manifest: {exc}")
+            logger.error("Failed to save tissue: %s", exc)
+            self._status_label.setText(f"Save error: {exc}")
             return
 
-        self._manifest = manifest
-        self._manifest_path = path
-        self._files_toggle_btn.setVisible(True)
-        self._update_files_toggle_label()
+        self._state._tissue.path = path
+        self._state.tissue_changed.emit()
+        self._status_label.setText(f"Saved: {Path(path).name}")
 
-        active = manifest.active_entry
-        if active:
-            h5_path = self._resolve_entry_path(active.path)
-            if Path(h5_path).exists():
-                self._load_from_path(h5_path)
+    def _on_add_to_dataset(self):
+        tissue = self._state.tissue
+        if not tissue.path:
+            self._status_label.setText("Save the tissue first.")
+            return
+
+        from ..utils.io import read_tissue_summary
+        try:
+            summary = read_tissue_summary(tissue.path)
+        except Exception as exc:
+            logger.warning("Could not read summary from %s: %s", tissue.path, exc)
+            summary = {}
+
+        catalog = self._state.catalog
+        # Resolve to relative path if we have a catalog file
+        h5_path = tissue.path
+        if catalog.path:
+            h5_path = _make_entry_path(h5_path, catalog.path)
+
+        entry = CatalogEntry(
+            path=h5_path,
+            display_name=Path(tissue.path).stem,
+            summary=summary,
+        )
+        self._state.add_to_catalog(entry)
+        self._state.clear_tissue()
+        self._status_label.setText(f"Added {Path(tissue.path).name} to dataset.")
+
+    # ------------------------------------------------------------------
+    # Tissue field buttons
+    # ------------------------------------------------------------------
+
+    def _on_capture_image(self):
+        import napari.layers
+        for layer in reversed(self.viewer.layers):
+            if isinstance(layer, napari.layers.Image):
+                self._state.set_tissue_image(np.asarray(layer.data), layer.name)
+                self._status_label.setText(f"Captured image from '{layer.name}'.")
                 return
-            self._status_label.setText(f"Active file not found: {h5_path}")
+        self._status_label.setText("No Image layer found.")
 
-        self._sync_path_label()
+    def _on_image_to_layer(self):
+        tissue = self._state.tissue
+        if tissue.image is None:
+            return
+        name = tissue.image_layer or "tissue_image"
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = tissue.image
+        else:
+            self.viewer.add_image(tissue.image, name=name)
+
+    def _on_clear_image(self):
+        self._state._tissue.image = None
+        self._state._tissue.image_layer = None
+        self._state.tissue_changed.emit()
+
+    def _on_capture_labels(self):
+        import napari.layers
+        active = self.viewer.layers.selection.active
+        if active is not None and isinstance(active, napari.layers.Labels):
+            self._state.set_tissue_labels(np.asarray(active.data), active.name)
+            self._status_label.setText(f"Captured labels from '{active.name}'.")
+            return
+        for layer in reversed(self.viewer.layers):
+            if isinstance(layer, napari.layers.Labels):
+                self._state.set_tissue_labels(np.asarray(layer.data), layer.name)
+                self._status_label.setText(f"Captured labels from '{layer.name}'.")
+                return
+        self._status_label.setText("No Labels layer found.")
+
+    def _on_labels_to_layer(self):
+        tissue = self._state.tissue
+        if tissue.labels is None:
+            return
+        name = tissue.labels_layer or "tissue_labels"
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = tissue.labels
+        else:
+            self.viewer.add_labels(tissue.labels, name=name)
+
+    def _on_clear_labels(self):
+        self._state._tissue.labels = None
+        self._state._tissue.labels_layer = None
+        self._state.tissue_changed.emit()
+
+    def _on_analysis_to_layer(self):
+        # Push analysis visualization — delegate to analysis widget via series on state
+        tissue = self._state.tissue
+        if tissue.series is None:
+            return
+        # Re-emit tissue_changed; the analysis widget picks it up to redraw layers
+        self._state.tissue_changed.emit()
+        self._status_label.setText("Analysis pushed to viewer layers.")
+
+    def _on_clear_analysis(self):
+        self._state.set_tissue_series(None)
+        self._status_label.setText("Analysis cleared.")
+
+    # ------------------------------------------------------------------
+    # Dataset catalog operations
+    # ------------------------------------------------------------------
+
+    def _on_load_catalog(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load dataset", "",
+            "CellFlow dataset (*.cfproj);;All files (*)",
+        )
+        if not path:
+            return
+        from ..utils.io import load_catalog
+        try:
+            catalog = load_catalog(path)
+        except Exception as exc:
+            logger.error("Failed to load catalog: %s", exc)
+            self._status_label.setText(f"Error: {exc}")
+            return
+
+        self._state._catalog = catalog
+        self._state.catalog_changed.emit()
+
+        # Populate metadata from catalog if currently empty
+        if catalog.pixel_size is not None and self._state.pixel_size is None:
+            self._state.pixel_size = catalog.pixel_size
+        if catalog.time_interval is not None and self._state.time_interval is None:
+            self._state.time_interval = catalog.time_interval
+        if catalog.condition and not self._state.condition:
+            self._state.condition = catalog.condition
+
+    def _on_save_catalog(self):
+        catalog = self._state.catalog
+        default = catalog.path or "dataset.cfproj"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save dataset", default,
+            "CellFlow dataset (*.cfproj);;All files (*)",
+        )
+        if not path:
+            return
+        if not path.endswith(".cfproj"):
+            path += ".cfproj"
+
+        # Sync metadata into catalog before saving
+        catalog.pixel_size = self._state.pixel_size
+        catalog.time_interval = self._state.time_interval
+        catalog.condition = self._state.condition
+
+        from ..utils.io import save_catalog
+        try:
+            save_catalog(path, catalog)
+        except Exception as exc:
+            logger.error("Failed to save catalog: %s", exc)
+            self._status_label.setText(f"Save error: {exc}")
+            return
+
+        self._state._catalog.path = path
+        self._state.catalog_changed.emit()
+        self._status_label.setText(f"Saved: {Path(path).name}")
+
+    def _on_show_in_viewer(self):
+        row = self._catalog_table.currentRow()
+        if row < 0:
+            self._status_label.setText("Select a row first.")
+            return
+        catalog = self._state.catalog
+        if row >= len(catalog.entries):
+            return
+        entry = catalog.entries[row]
+        h5_path = self._resolve_entry_path(entry.path)
+        from ..utils.io import load_tissue
+        try:
+            tissue = load_tissue(h5_path)
+        except Exception as exc:
+            logger.error("Failed to load tissue: %s", exc)
+            self._status_label.setText(f"Error: {exc}")
+            return
+        if tissue.labels is not None:
+            name = entry.display_name or Path(h5_path).stem
+            self._load_labels_into_viewer(tissue.labels, name)
+            self._status_label.setText(f"Loaded labels: {name}")
+        else:
+            self._status_label.setText("No labels in that file.")
+
+    def _on_remove_from_catalog(self):
+        row = self._catalog_table.currentRow()
+        if row < 0:
+            self._status_label.setText("Select a row first.")
+            return
+        catalog = self._state.catalog
+        if row >= len(catalog.entries):
+            return
+        name = catalog.entries[row].display_name or str(row)
+        self._state.remove_from_catalog(row)
+        self._status_label.setText(f"Removed '{name}' from dataset.")
+
+    def _on_note_changed(self, row: int, col: int):
+        if col != 4:
+            return
+        catalog = self._state.catalog
+        if row >= len(catalog.entries):
+            return
+        item = self._catalog_table.item(row, col)
+        if item is not None:
+            catalog.entries[row].note = item.text()
+
+    def _on_open_dashboard(self):
+        catalog = self._state.catalog
+        # Build a TissueGraphDataset from catalog entries for the dashboard
+        from ..utils.structures import TissueGraphDataset
+        ds = TissueGraphDataset(
+            condition=self._state.condition,
+            pixel_size=self._state.pixel_size,
+            time_interval=self._state.time_interval,
+        )
+        for i, entry in enumerate(catalog.entries):
+            try:
+                series = catalog.get_series(i)
+                ds.tissues[i] = series
+            except Exception as exc:
+                logger.warning("Could not load series for entry %d: %s", i, exc)
+
+        # Fall back to legacy dataset
+        if not ds.tissues and self._state.dataset is not None:
+            ds = self._state.dataset
+
+        if not ds.tissues:
+            self._status_label.setText("No dataset to open in dashboard.")
+            return
+
+        try:
+            import tempfile
+            tmp_h5 = Path(tempfile.mktemp(prefix="cellflow_dashboard_", suffix=".h5"))
+            from ..utils.io import save_dataset
+            save_dataset(ds, tmp_h5)
+            import subprocess, sys
+            subprocess.Popen([sys.executable, "-m", "cellflow.dashboard", str(tmp_h5)])
+            self._status_label.setText("Dashboard launched in browser.")
+        except ImportError:
+            self._status_label.setText(
+                "Dashboard requires dash+plotly. Install with: pip install cellflow[dashboard]"
+            )
+        except Exception as exc:
+            self._status_label.setText(f"Failed to launch dashboard: {exc}")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     def _load_labels_into_viewer(self, labels: np.ndarray, name: str):
         import napari.layers
@@ -446,305 +665,61 @@ class ProjectPanel(QWidget):
         else:
             self.viewer.add_labels(labels, name=layer_name)
 
-    def _on_new_manifest(self):
-        current_h5 = self._state.project_path
-        default_dir = str(Path(current_h5).parent) if current_h5 else ""
-        default = str(Path(default_dir) / "project.cfproj") if default_dir else "project.cfproj"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Create new manifest", default,
-            "CellFlow manifest (*.cfproj);;All files (*)",
-        )
-        if not path:
-            return
-        if not path.endswith(".cfproj"):
-            path += ".cfproj"
-
-        from ..utils.io import ProjectEntry, ProjectManifest, save_manifest
-        entries = []
-        if current_h5 and current_h5.endswith(".h5"):
-            entries.append(ProjectEntry(
-                path=_make_entry_path(current_h5, path),
-                display_name=Path(current_h5).stem,
-            ))
-
-        manifest = ProjectManifest(entries=entries, active_index=0)
-        try:
-            save_manifest(path, manifest)
-        except Exception as exc:
-            logger.error("Failed to save manifest: %s", exc)
-            self._status_label.setText(f"Error saving manifest: {exc}")
-            return
-
-        self._manifest = manifest
-        self._manifest_path = path
-        self._files_toggle_btn.setVisible(True)
-        self._update_files_toggle_label()
-        self._sync_path_label()
-
-    def _on_save(self):
-        path = self._state.project_path
-        if not path:
-            self._on_save_as()
-            return
-        self._save_to_path(path)
-        self._save_manifest_if_active()
-
-    def _on_save_as(self):
-        if self._manifest_path:
-            path, _ = QFileDialog.getSaveFileName(
-                self, "Save manifest as", self._manifest_path,
-                "CellFlow manifest (*.cfproj);;All files (*)",
-            )
-            if not path:
-                return
-            if not path.endswith(".cfproj"):
-                path += ".cfproj"
-            self._manifest_path = path
-            self._save_manifest_if_active()
-            self._sync_path_label()
-        else:
-            default = self._state.project_path or "project.h5"
-            path, _ = QFileDialog.getSaveFileName(
-                self, "Save CellFlow project", default,
-                "CellFlow project (*.h5);;All files (*)",
-            )
-            if not path:
-                return
-            if not path.endswith(".h5"):
-                path += ".h5"
-            self._save_to_path(path)
-
-    def _save_to_path(self, path: str):
-        from ..utils.io import save_project
-        labels = self._collect_labels()
-        try:
-            save_project(
-                path,
-                labels=labels,
-                dataset=self._state.dataset,
-                pixel_size=self._state.pixel_size,
-                time_interval=self._state.time_interval,
-                condition=self._state.condition,
-            )
-        except Exception as exc:
-            logger.error("Failed to save project: %s", exc)
-            self._path_label.setText(f"Save error: {exc}")
-            return
-        self._state.project_path = path
-
-    def _save_manifest_if_active(self):
-        if self._manifest is None or self._manifest_path is None:
-            return
-        from ..utils.io import save_manifest
-        try:
-            save_manifest(self._manifest_path, self._manifest)
-        except Exception as exc:
-            logger.error("Failed to save manifest: %s", exc)
-            self._status_label.setText(f"Manifest save error: {exc}")
-
-    def _collect_labels(self) -> Optional[np.ndarray]:
-        import napari.layers
-        active = self.viewer.layers.selection.active
-        if active is not None and isinstance(active, napari.layers.Labels):
-            return np.asarray(active.data)
-        for layer in self.viewer.layers:
-            if isinstance(layer, napari.layers.Labels):
-                return np.asarray(layer.data)
-        return None
-
-    # ------------------------------------------------------------------
-    # Add / Discard pending analysis
-    # ------------------------------------------------------------------
-
-    def _on_add_preview(self):
-        series = self._state.preview_series
-        if series is None:
-            return
-        self._state.ensure_dataset(
-            condition=self._state.condition,
-            pixel_size=self._state.pixel_size,
-            time_interval=self._state.time_interval,
-        )
-        tid = self._state.add_tissue(series)
-        self._state.preview_series = None   # triggers cleanup in analysis widget
-        self._status_label.setText(f"Added tissue {tid} to dataset.")
-
-    def _on_discard_preview(self):
-        if self._state.preview_series is None:
-            return
-        self._state.preview_series = None   # triggers cleanup in analysis widget
-        self._status_label.setText("Analysis result discarded.")
-
-    # ------------------------------------------------------------------
-    # Manifest / project-files list
-    # ------------------------------------------------------------------
-
-    def _on_files_toggled(self, checked: bool):
-        self._files_content.setVisible(checked)
-        if checked:
-            self._refresh_files_list()
-        self._update_files_toggle_label()
-
-    def _update_files_toggle_label(self):
-        checked = self._files_toggle_btn.isChecked()
-        arrow = "▼" if checked else "▶"
-        if self._manifest and self._manifest.entries:
-            n = len(self._manifest.entries)
-            active_path = self._manifest.entries[self._manifest.active_index].path
-            active_name = Path(active_path).name
-            suffix = f" ({n} file{'s' if n != 1 else ''}, {active_name} active)"
-        else:
-            suffix = " (empty)"
-        self._files_toggle_btn.setText(f"{arrow} Project files{suffix}")
-
-    def _refresh_files_list(self):
-        self._files_list.clear()
-        if self._manifest is None:
-            return
-        for i, entry in enumerate(self._manifest.entries):
-            active = (i == self._manifest.active_index)
-            prefix = "►  " if active else "    "
-            label = f"{prefix}{Path(entry.path).name}"
-            if entry.display_name and entry.display_name != Path(entry.path).stem:
-                label += f"  —  {entry.display_name}"
-            self._files_list.addItem(label)
-            if active:
-                self._files_list.setCurrentRow(i)
-
-    def _on_file_double_clicked(self, item):
-        row = self._files_list.row(item)
-        self._switch_active_file(row)
-
-    def _switch_active_file(self, index: int):
-        if self._manifest is None or not (0 <= index < len(self._manifest.entries)):
-            return
-        self._manifest.active_index = index
-        self._refresh_files_list()
-        self._update_files_toggle_label()
-        self._save_manifest_if_active()
-
-        entry = self._manifest.entries[index]
-        h5_path = self._resolve_entry_path(entry.path)
-        if Path(h5_path).exists():
-            self._load_from_path(h5_path)
-        else:
-            self._status_label.setText(f"File not found: {h5_path}")
-            self._sync_path_label()
-
-    def _on_add_file(self):
-        if self._manifest is None:
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Add .h5 file to manifest", "",
-            "CellFlow project (*.h5);;All files (*)",
-        )
-        if not path:
-            return
-        from ..utils.io import ProjectEntry
-        entry = ProjectEntry(
-            path=_make_entry_path(path, self._manifest_path),
-            display_name=Path(path).stem,
-        )
-        self._manifest.entries.append(entry)
-        self._refresh_files_list()
-        self._update_files_toggle_label()
-        self._save_manifest_if_active()
-
-    def _on_remove_file(self):
-        if self._manifest is None:
-            return
-        row = self._files_list.currentRow()
-        if row < 0:
-            self._status_label.setText("Select a file to remove.")
-            return
-        self._manifest.entries.pop(row)
-        if self._manifest.active_index >= len(self._manifest.entries):
-            self._manifest.active_index = max(0, len(self._manifest.entries) - 1)
-        self._refresh_files_list()
-        self._update_files_toggle_label()
-        self._save_manifest_if_active()
-
     def _resolve_entry_path(self, entry_path: str) -> str:
         p = Path(entry_path)
         if p.is_absolute():
             return str(p)
-        if self._manifest_path:
-            return str(Path(self._manifest_path).parent / p)
+        catalog_path = self._state.catalog.path
+        if catalog_path:
+            return str(Path(catalog_path).parent / p)
         return str(p)
-
-    # ------------------------------------------------------------------
-    # Tissue table actions
-    # ------------------------------------------------------------------
-
-    def _get_selected_tid(self) -> Optional[int]:
-        row = self._tissue_table.currentRow()
-        if row < 0:
-            return None
-        id_item = self._tissue_table.item(row, 0)
-        if id_item is None:
-            return None
-        return int(id_item.text())
-
-    def _show_selected(self):
-        tid = self._get_selected_tid()
-        if tid is None:
-            self._status_label.setText("Select a tissue row first.")
-            return
-        self.show_tissue_requested.emit(tid)
-
-    def _remove_selected(self):
-        tid = self._get_selected_tid()
-        if tid is None:
-            self._status_label.setText("Select a tissue row first.")
-            return
-        self._state.remove_tissue(tid)
-        self._status_label.setText(f"Removed tissue {tid}.")
-
-    def _on_note_changed(self, row: int, col: int):
-        if col != 3:
-            return
-        ds = self._state.dataset
-        if ds is None:
-            return
-        tid_item = self._tissue_table.item(row, 0)
-        note_item = self._tissue_table.item(row, 3)
-        if tid_item is None or note_item is None:
-            return
-        tid = int(tid_item.text())
-        if tid in ds.tissues:
-            ds.tissues[tid].metadata["note"] = note_item.text()
-
-    # ------------------------------------------------------------------
-    # Dashboard
-    # ------------------------------------------------------------------
-
-    def _open_dashboard(self):
-        ds = self._state.dataset
-        if ds is None or ds.n_tissues == 0:
-            self._status_label.setText("No dataset to open in dashboard.")
-            return
-        try:
-            import tempfile
-            tmp_h5 = Path(tempfile.mktemp(prefix="tissuegraph_dashboard_", suffix=".h5"))
-            from ..utils.io import save_dataset
-            save_dataset(ds, tmp_h5)
-
-            import subprocess
-            import sys
-            subprocess.Popen([sys.executable, "-m", "cellflow.dashboard", str(tmp_h5)])
-            self._status_label.setText("Dashboard launched in browser.")
-        except ImportError:
-            self._status_label.setText(
-                "Dashboard requires dash+plotly. Install with: "
-                "pip install cellflow[dashboard]"
-            )
-        except Exception as exc:
-            self._status_label.setText(f"Failed to launch dashboard: {exc}")
 
 
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+class _FieldRow(QHBoxLayout):
+    """One data-field row: label | status | [⊕ capture] | [⊕ to layer] | [✕ clear]"""
+
+    def __init__(self, label_text: str, parent_widget: QWidget, has_capture: bool = True):
+        super().__init__()
+        self.setSpacing(4)
+
+        lbl = QLabel(label_text)
+        lbl.setFixedWidth(60)
+        self.addWidget(lbl)
+
+        self._status = QLabel("not loaded")
+        self._status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._status.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        self.addWidget(self._status)
+
+        if has_capture:
+            self.capture_btn = QPushButton("⊕ capture")
+            self.capture_btn.setFixedWidth(74)
+            self.capture_btn.setToolTip("Pull from active napari layer into internal storage")
+            self.addWidget(self.capture_btn)
+        else:
+            # placeholder so callers can always reference capture_btn
+            self.capture_btn = QPushButton()
+            self.capture_btn.setVisible(False)
+
+        self.to_layer_btn = QPushButton("⊕ to layer")
+        self.to_layer_btn.setFixedWidth(74)
+        self.to_layer_btn.setEnabled(False)
+        self.to_layer_btn.setToolTip("Push internal data to a napari layer")
+        self.addWidget(self.to_layer_btn)
+
+        self.clear_btn = QPushButton("✕ clear")
+        self.clear_btn.setFixedWidth(58)
+        self.clear_btn.setEnabled(False)
+        self.clear_btn.setToolTip("Remove from internal storage (napari layer unaffected)")
+        self.addWidget(self.clear_btn)
+
+    def set_status(self, text: str) -> None:
+        self._status.setText(text)
+
 
 def _parse_float(text: str) -> Optional[float]:
     try:
@@ -753,11 +728,11 @@ def _parse_float(text: str) -> Optional[float]:
         return None
 
 
-def _make_entry_path(h5_path: str, manifest_path: Optional[str]) -> str:
-    """Return *h5_path* relative to the manifest directory, or absolute as fallback."""
-    if not manifest_path:
+def _make_entry_path(h5_path: str, catalog_path: Optional[str]) -> str:
+    """Return *h5_path* relative to the catalog directory, or absolute as fallback."""
+    if not catalog_path:
         return h5_path
     try:
-        return str(Path(h5_path).relative_to(Path(manifest_path).parent))
+        return str(Path(h5_path).relative_to(Path(catalog_path).parent))
     except ValueError:
         return h5_path

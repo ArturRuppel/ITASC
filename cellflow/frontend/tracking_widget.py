@@ -21,6 +21,8 @@ from qtpy.QtWidgets import (
 from napari.qt.threading import thread_worker
 import napari
 
+from .registry import get_state
+
 
 # ── helpers ────────────────────────────────────────────────────────────
 
@@ -50,6 +52,7 @@ class TrackingTab(QWidget):
         self._seg_tab      = seg_tab   # SegmentationTab — single source of truth for labels data
         self._worker       = None
         self._tracks_layer = None      # dedicated napari Tracks layer
+        self._state        = get_state(viewer)
 
         self._setup_ui()
 
@@ -210,14 +213,17 @@ class TrackingTab(QWidget):
             self._log_append("Tracking already running.")
             return
 
-        # Read directly from the live napari layer — the single source of truth.
+        # Phase 2: prefer internal state labels over the napari layer.
         # Take an explicit copy so the worker holds a snapshot and is isolated
         # from any further layer writes while it runs.
-        seg_layer = self._seg_tab._seg_layer
-        if seg_layer is None or seg_layer not in self.viewer.layers:
-            self._log_append("ERROR: Load a Segmentation layer first.")
-            return
-        nuc_data = np.array(seg_layer.data, dtype=np.int32)  # explicit copy
+        if self._state.tissue.labels is not None:
+            nuc_data = np.array(self._state.tissue.labels, dtype=np.int32)
+        else:
+            seg_layer = self._seg_tab._seg_layer
+            if seg_layer is None or seg_layer not in self.viewer.layers:
+                self._log_append("ERROR: Load a Segmentation layer first.")
+                return
+            nuc_data = np.array(seg_layer.data, dtype=np.int32)
 
         track_params = self._collect_track_params()
 
@@ -277,6 +283,7 @@ class TrackingTab(QWidget):
         self._seg_tab._seg_status.setText(f"Loaded: {seg_layer.data.shape}")
         self._sync_status()
 
+        self._state.set_tissue_labels(np.asarray(seg_layer.data), seg_layer.name)
         self._rebuild_tracks_layer(stacked)
 
     # ── Tracks layer ───────────────────────────────────────────────────

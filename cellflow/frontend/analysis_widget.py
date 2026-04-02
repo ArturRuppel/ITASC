@@ -110,7 +110,7 @@ class CellFlowWidget(QWidget):
         # dock panel is open and the available height shrinks, the entire
         # CellFlow panel scrolls as one unit rather than getting clipped.
         self._outer_scroll = QScrollArea()
-        self._outer_scroll.setWidgetResizable(False)   # preserve natural tab height
+        self._outer_scroll.setWidgetResizable(True)
         self._outer_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer_layout.addWidget(self._outer_scroll)
 
@@ -395,10 +395,6 @@ class CellFlowWidget(QWidget):
         self._forces_widget = ForcesWidget(self.viewer)
         self.tab_widget.addTab(self._forces_widget, "ForSys")
 
-        # Now that all tabs have been added the tab widget has a real sizeHint;
-        # resize the scroll container to match so scrollbars appear correctly.
-        self._outer_scroll.widget().adjustSize()
-
         # Set initial button state
         self._update_pipeline_buttons()
 
@@ -423,8 +419,6 @@ class CellFlowWidget(QWidget):
 
         self.cancel_btn.clicked.connect(self._cancel_worker)
 
-        # Project panel: show tissue in viewer when requested
-        self._project_panel.show_tissue_requested.connect(self._show_tissue_from_databank)
 
     # ------------------------------------------------------------------
     # Pipeline stage gating
@@ -441,9 +435,29 @@ class CellFlowWidget(QWidget):
     # Label stack from viewer (uses active layer)
     # ------------------------------------------------------------------
     def _get_active_label_stack(self) -> Optional[np.ndarray]:
-        """Return the data from the active Labels/Image layer, or None."""
+        """Return the label stack to analyse, or None.
+
+        Phase 2: if ``state.tissue.labels`` is already set, use it directly
+        without requiring the user to select a napari layer.  Otherwise fall
+        back to the active napari Labels/Image layer.
+        """
         import napari
 
+        # -- Phase 2 fast-path: use internal state labels if available --------
+        if self._state.tissue.labels is not None:
+            data = np.asarray(self._state.tissue.labels)
+            if data.ndim == 2:
+                data = data[np.newaxis, ...]
+            if data.ndim != 3:
+                self.status_label.setText(
+                    f"State labels must be 2D or 3D (T, H, W), got {data.ndim}D."
+                )
+                return None
+            layer_name = self._state.tissue.labels_layer or "state"
+            self.active_layer_label.setText(f"Layer: {layer_name} (state)")
+            return data
+
+        # -- Fallback: read from the active napari layer ----------------------
         active = self.viewer.layers.selection.active
         if active is None:
             self.status_label.setText("No active layer. Select a Labels or Image layer.")
@@ -485,7 +499,11 @@ class CellFlowWidget(QWidget):
 
         self._discard_pipeline()
         self._current_label_stack = label_stack
-        self._source_layer = self.viewer.layers.selection.active
+        # Only record a source layer when reading from napari (not from internal state)
+        self._source_layer = (
+            None if self._state.tissue.labels is not None
+            else self.viewer.layers.selection.active
+        )
 
         pixel_size = self._state.pixel_size
         time_interval = self._state.time_interval
@@ -536,7 +554,7 @@ class CellFlowWidget(QWidget):
 
     def _on_analysis_finished(self, series):
         self._preview_series = series
-        self._state.preview_series = series  # enables Add/Discard in ProjectPanel
+        self._state.set_tissue_series(series)  # writes to tissue.series + emits tissue_changed
         self._pipeline_stage = PipelineStage.STAGE3_DONE
         self._finish_worker()
 
@@ -584,7 +602,7 @@ class CellFlowWidget(QWidget):
         """Reset pipeline state (called before a new run, or to cancel an in-progress run)."""
         # Set IDLE first so _on_preview_cleared short-circuits when the signal fires.
         self._pipeline_stage = PipelineStage.IDLE
-        self._state.preview_series = None  # notifies ProjectPanel; _on_preview_cleared returns early
+        self._state.set_tissue_series(None)  # clears tissue.series; _on_preview_cleared returns early
         self._do_pipeline_cleanup()
         self._update_pipeline_buttons()
         self._clear_stage_info()

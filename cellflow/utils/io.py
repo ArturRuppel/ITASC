@@ -48,20 +48,17 @@ logger = logging.getLogger(__name__)
 
 _FORMAT_VERSION = "2.0"
 _MANIFEST_VERSION = "1.0"
+_CATALOG_VERSION = "2.0"
 _STR_DTYPE = h5py.string_dtype()
 
 
 # ------------------------------------------------------------------
-# Multi-file project manifest
+# Multi-file project manifest (legacy — kept for backward compat)
 # ------------------------------------------------------------------
 
 @dataclass
 class ProjectEntry:
-    """One .h5 file within a project manifest.
-
-    ``path`` is stored relative to the manifest file (or absolute as a
-    fallback when the files are on different drives).
-    """
+    """One .h5 file within a project manifest."""
 
     path: str
     display_name: str = ""
@@ -70,12 +67,7 @@ class ProjectEntry:
 
 @dataclass
 class ProjectManifest:
-    """Multi-file project: an ordered list of .h5 files with one active.
-
-    The *active* file is the one currently loaded in the viewer; all
-    save operations write to it.  Switching the active file is a single
-    click in :class:`~cellflow.frontend.project_panel.ProjectPanel`.
-    """
+    """Multi-file project: an ordered list of .h5 files with one active."""
 
     entries: List[ProjectEntry] = field(default_factory=list)
     active_index: int = 0
@@ -551,7 +543,168 @@ def load_project(path: Union[str, Path]) -> dict:
 
 
 # ------------------------------------------------------------------
-# Manifest IO
+# Single-tissue IO  (new API)
+# ------------------------------------------------------------------
+
+def save_tissue(path: Union[str, Path], tissue) -> None:
+    """Write a TissueData to a single-tissue HDF5 file.
+
+    *tissue* is a :class:`~cellflow.frontend.registry.TissueData` instance.
+    Any of its fields (image, labels, series) may be None and will be skipped.
+    """
+    from ..frontend.registry import TissueData  # avoid circular at module level
+
+    path = Path(path)
+    dataset: Optional[TissueGraphDataset] = None
+    if tissue.series is not None:
+        dataset = TissueGraphDataset(
+            condition="",
+            pixel_size=tissue.series.pixel_size,
+            time_interval=tissue.series.time_interval,
+        )
+        dataset.tissues[0] = tissue.series
+
+    save_project(
+        path,
+        labels=tissue.labels,
+        dataset=dataset,
+        pixel_size=(tissue.series.pixel_size if tissue.series else None),
+        time_interval=(tissue.series.time_interval if tissue.series else None),
+    )
+
+
+def load_tissue(path: Union[str, Path]):
+    """Load a single-tissue HDF5 file into a TissueData.
+
+    Returns a :class:`~cellflow.frontend.registry.TissueData` instance.
+    """
+    from ..frontend.registry import TissueData  # avoid circular at module level
+
+    result = load_project(path)
+    ds = result.get("dataset")
+    series: Optional[TissueGraphTimeSeries] = None
+    if ds is not None and ds.tissues:
+        # take the first tissue (single-tissue convention)
+        series = ds.tissues[min(ds.tissues.keys())]
+
+    return TissueData(
+        labels=result.get("labels"),
+        series=series,
+        path=str(path),
+    )
+
+
+def read_tissue_summary(path: Union[str, Path]) -> dict:
+    """Read only the metadata needed for a catalog summary without loading arrays.
+
+    Returns a dict with keys: n_frames, avg_cells, n_t1_events, n_trajectories.
+    Opens the HDF5 file but does not load any large datasets.
+    """
+    path = Path(path)
+    summary: dict = {}
+    with h5py.File(path, "r") as f:
+        if "analysis" not in f:
+            return summary
+        ana = f["analysis"]
+        tissue_keys = sorted(k for k in ana.keys() if k.startswith("tissue_"))
+        if not tissue_keys:
+            return summary
+
+        # use the first tissue group
+        tg = ana[tissue_keys[0]]
+        frames_grp = tg.get("frames", {})
+        n_frames = len(frames_grp)
+        summary["n_frames"] = n_frames
+
+        # count cells per frame for avg
+        total_cells = 0
+        for fi_str in frames_grp:
+            fg = frames_grp[fi_str]
+            cells_grp = fg.get("cells", {})
+            if "ids" in cells_grp:
+                total_cells += len(cells_grp["ids"])
+        summary["avg_cells"] = round(total_cells / n_frames, 1) if n_frames else 0
+
+        t1_grp = tg.get("t1_events", {})
+        summary["n_t1_events"] = len(t1_grp.get("frames", [])) if "frames" in t1_grp else 0
+
+        traj_grp = tg.get("trajectories", {})
+        summary["n_trajectories"] = len(traj_grp)
+
+    return summary
+
+
+# ------------------------------------------------------------------
+# Dataset catalog IO  (new v2.0 cfproj format)
+# ------------------------------------------------------------------
+
+def save_catalog(path: Union[str, Path], catalog) -> None:
+    """Write a DatasetCatalog to a v2.0 JSON .cfproj file.
+
+    *catalog* is a :class:`~cellflow.frontend.registry.DatasetCatalog`.
+    """
+    path = Path(path)
+    data = {
+        "version": _CATALOG_VERSION,
+        "pixel_size": catalog.pixel_size,
+        "time_interval": catalog.time_interval,
+        "condition": catalog.condition or "",
+        "entries": [
+            {
+                "path": e.path,
+                "display_name": e.display_name,
+                "note": e.note,
+                "summary": e.summary,
+            }
+            for e in catalog.entries
+        ],
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    logger.info("Saved catalog to %s", path)
+
+
+def load_catalog(path: Union[str, Path]):
+    """Load a v2.0 .cfproj file into a DatasetCatalog.
+
+    Returns a :class:`~cellflow.frontend.registry.DatasetCatalog`.
+    """
+    from ..frontend.registry import CatalogEntry, DatasetCatalog  # avoid circular
+
+    path = Path(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    version = data.get("version", "1.0")
+
+    entries = []
+    for e in data.get("entries", []):
+        entries.append(CatalogEntry(
+            path=e["path"],
+            display_name=e.get("display_name", ""),
+            note=e.get("note", ""),
+            summary=e.get("summary", {}),
+        ))
+
+    # v1.0 cfproj used a "files" key instead of "entries"
+    if not entries and "files" in data:
+        for f in data["files"]:
+            entries.append(CatalogEntry(
+                path=f["path"],
+                display_name=f.get("display_name", ""),
+                note=f.get("note", ""),
+            ))
+
+    catalog = DatasetCatalog(
+        entries=entries,
+        path=str(path),
+        pixel_size=data.get("pixel_size"),
+        time_interval=data.get("time_interval"),
+        condition=data.get("condition", ""),
+    )
+    logger.info("Loaded catalog from %s", path)
+    return catalog
+
+
+# ------------------------------------------------------------------
+# Manifest IO  (legacy)
 # ------------------------------------------------------------------
 
 def save_manifest(path: Union[str, Path], manifest: ProjectManifest) -> None:
