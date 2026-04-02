@@ -44,7 +44,7 @@ def _dspin(lo, hi, default, decimals=2, step=0.1):
 
 def _sep(title):
     lbl = QLabel(f"<b>{title}</b>")
-    lbl.setStyleSheet("color: palette(mid); margin-top: 4px;")
+    lbl.setStyleSheet("color: palette(text); margin-top: 4px;")
     return lbl
 
 
@@ -204,7 +204,7 @@ class SegmentationTab(QWidget):
 
         self._gui_status = QLabel("Set a directory, then export frame(s) to edit in Cellpose GUI.")
         self._gui_status.setWordWrap(True)
-        self._gui_status.setStyleSheet("color: palette(mid);")
+        self._gui_status.setStyleSheet("color: palette(text);")
         gui_lay.addWidget(self._gui_status)
         root.addWidget(gui_box)
 

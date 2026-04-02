@@ -1,11 +1,9 @@
 """
 Tracking tab for napariSegTrack.
 
-Input  : the Labels layer managed by the Segmentation tab (shared data manager).
-         Load / Clear here and in the Segmentation tab are identical operations —
-         there is exactly one segmentation layer at all times.
-Output : tracked Labels written back into the same shared layer so both tabs
-         always reflect the latest state.
+Input  : segmentation labels from the Project Panel state, or the Segmentation
+         tab's active Labels layer as fallback.
+Output : tracked Labels written back into the same shared layer.
 
 Tracking is performed with LapTrack (centroid-distance LAP with gap closing).
 """
@@ -13,8 +11,8 @@ Tracking is performed with LapTrack (centroid-distance LAP with gap closing).
 import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QGroupBox, QSpinBox,
+    QWidget, QVBoxLayout, QFormLayout,
+    QSpinBox,
     QPushButton, QLabel, QToolButton,
     QTextEdit, QProgressBar, QScrollArea,
 )
@@ -28,7 +26,7 @@ from .registry import get_state
 
 def _sep(title):
     lbl = QLabel(f"<b>{title}</b>")
-    lbl.setStyleSheet("color: palette(mid); margin-top: 4px;")
+    lbl.setStyleSheet("color: palette(text); margin-top: 4px;")
     return lbl
 
 
@@ -61,9 +59,6 @@ class TrackingTab(QWidget):
     def _setup_ui(self):
         root = QVBoxLayout(self)
         root.setSpacing(6)
-
-        # ── Nuclear input (mirrors seg tab's data manager) ──
-        root.addWidget(self._build_nuc_input_panel())
 
         # ── Tracking parameters ──
         track_toggle = QToolButton()
@@ -126,47 +121,6 @@ class TrackingTab(QWidget):
         attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
         root.addWidget(attrib)
 
-    def _build_nuc_input_panel(self):
-        box = QGroupBox("Nuclear Input")
-        lay = QVBoxLayout(box)
-
-        w = QWidget()
-        hlay = QHBoxLayout(w)
-        hlay.setContentsMargins(0, 0, 0, 0)
-
-        self._load_nuc_btn = QPushButton("Load Segmentation")
-        self._load_nuc_btn.setFixedWidth(150)
-        self._load_nuc_btn.setFixedHeight(25)
-        self._load_nuc_btn.setToolTip(
-            "Select a Labels layer in the napari layer list, then click this button.\n"
-            "This is the same data as the Segmentation tab's 'Load Segmentation Layer'."
-        )
-        self._load_nuc_btn.clicked.connect(self._on_load_nuc)
-
-        # Own label — synced from seg_tab rather than stealing its widget
-        self._nuc_status = QLabel("Not loaded")
-        self._nuc_status.setWordWrap(True)
-
-        self._clear_nuc_btn = QPushButton("Clear")
-        self._clear_nuc_btn.setFixedWidth(50)
-        self._clear_nuc_btn.setFixedHeight(25)
-        self._clear_nuc_btn.clicked.connect(self._on_clear_nuc)
-
-        hlay.addWidget(self._load_nuc_btn)
-        hlay.addWidget(self._nuc_status)
-        hlay.addWidget(self._clear_nuc_btn)
-
-        lay.addWidget(w)
-        return box
-
-    def showEvent(self, event):
-        """Sync status whenever the tracking tab becomes visible."""
-        super().showEvent(event)
-        self._sync_status()
-
-    def _sync_status(self):
-        self._nuc_status.setText(self._seg_tab._seg_status.text())
-
     def _build_track_params(self):
         add = self._track_form.addRow
 
@@ -185,18 +139,6 @@ class TrackingTab(QWidget):
         self._p_gapf.setValue(TRACK_DEFAULTS["gap_closing_max_frame_count"])
         add("Gap closing frames:", self._p_gapf)
 
-    # ── Data manager (delegates to seg tab — single source of truth) ───
-
-    def _on_load_nuc(self):
-        """Load active Labels layer as segmentation data (same as seg tab's Load)."""
-        self._seg_tab._on_load_seg_layer()
-        self._sync_status()
-
-    def _on_clear_nuc(self):
-        """Clear segmentation data (same as seg tab's Clear)."""
-        self._seg_tab._on_clear_seg()
-        self._sync_status()
-
     # ── Parameter collection ───────────────────────────────────────────
 
     def _collect_track_params(self):
@@ -213,17 +155,12 @@ class TrackingTab(QWidget):
             self._log_append("Tracking already running.")
             return
 
-        # Phase 2: prefer internal state labels over the napari layer.
         # Take an explicit copy so the worker holds a snapshot and is isolated
         # from any further layer writes while it runs.
-        if self._state.tissue.labels is not None:
-            nuc_data = np.array(self._state.tissue.labels, dtype=np.int32)
-        else:
-            seg_layer = self._seg_tab._seg_layer
-            if seg_layer is None or seg_layer not in self.viewer.layers:
-                self._log_append("ERROR: Load a Segmentation layer first.")
-                return
-            nuc_data = np.array(seg_layer.data, dtype=np.int32)
+        if self._state.tissue.labels is None:
+            self._log_append("ERROR: Load a tissue with segmentation in the Project Panel first.")
+            return
+        nuc_data = np.array(self._state.tissue.labels, dtype=np.int32)
 
         track_params = self._collect_track_params()
 
@@ -280,10 +217,8 @@ class TrackingTab(QWidget):
             seg_layer = new_layer
             self._log_append("Done! Tracked labels added as Segmentation layer.")
 
-        self._seg_tab._seg_status.setText(f"Loaded: {seg_layer.data.shape}")
-        self._sync_status()
-
         self._state.set_tissue_labels(np.asarray(seg_layer.data), seg_layer.name)
+        self._seg_tab._seg_status.setText(f"Tracked: {seg_layer.data.shape}")
         self._rebuild_tracks_layer(stacked)
 
     # ── Tracks layer ───────────────────────────────────────────────────

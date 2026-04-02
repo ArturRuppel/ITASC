@@ -25,8 +25,8 @@ import os
 
 import numpy as np
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QComboBox, QGroupBox,
+    QWidget, QVBoxLayout,
+    QLabel, QPushButton, QGroupBox,
 )
 from qtpy.QtCore import Qt
 import napari
@@ -71,10 +71,9 @@ _HIGHLIGHT_LAYER = "CellHighlight"
 class CorrectionWidget(QWidget):
     """Dock widget for interactive label correction."""
 
-    def __init__(self, viewer: napari.Viewer, seg_tab=None):
+    def __init__(self, viewer: napari.Viewer):
         super().__init__()
         self.viewer = viewer
-        self._seg_tab = seg_tab  # SegmentationTab — single source of truth for labels
         self._state = get_state(viewer)
 
         self._layer: napari.layers.Labels = None
@@ -104,27 +103,6 @@ class CorrectionWidget(QWidget):
         root = QVBoxLayout(self)
         root.setSpacing(6)
 
-        # layer selectors
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Labels layer:"))
-        self._layer_combo = QComboBox()
-        row.addWidget(self._layer_combo, stretch=1)
-        root.addLayout(row)
-
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Image layer:"))
-        self._image_combo = QComboBox()
-        self._image_combo.setToolTip("Image used for watershed split (Ctrl+Left-click split)")
-        row2.addWidget(self._image_combo, stretch=1)
-        refresh_btn = QPushButton("↻")
-        refresh_btn.setFixedWidth(28)
-        refresh_btn.setToolTip("Refresh layer list")
-        refresh_btn.clicked.connect(self._refresh_layers)
-        row2.addWidget(refresh_btn)
-        root.addLayout(row2)
-
-        self._refresh_layers()
-
         # activate toggle
         self._activate_btn = QPushButton("Activate")
         self._activate_btn.setCheckable(True)
@@ -144,7 +122,7 @@ class CorrectionWidget(QWidget):
         # status
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status.setStyleSheet("color: palette(mid); font-style: italic;")
+        self._status.setStyleSheet("color: palette(text); font-style: italic;")
         root.addWidget(self._status)
 
         # correction shortcuts reference (CellFlow custom — not napari native)
@@ -179,48 +157,11 @@ class CorrectionWidget(QWidget):
         attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
         root.addWidget(attrib)
 
-    def showEvent(self, event):
-        """Auto-select the current seg_tab layer when this tab becomes visible."""
-        super().showEvent(event)
-        self._refresh_layers()
-
-    def _refresh_layers(self):
-        current_lab = self._layer_combo.currentText()
-        current_img = self._image_combo.currentText()
-        self._layer_combo.clear()
-        self._image_combo.clear()
-        for layer in self.viewer.layers:
-            if isinstance(layer, napari.layers.Labels):
-                self._layer_combo.addItem(layer.name)
-            elif isinstance(layer, napari.layers.Image):
-                self._image_combo.addItem(layer.name)
-
-        # Phase 2: prefer state labels_layer, then seg_tab layer, then previous selection.
-        seg_layer_name = self._state.tissue.labels_layer or None
-        if seg_layer_name is None and self._seg_tab is not None:
-            sl = getattr(self._seg_tab, "_seg_layer", None)
-            if sl is not None and sl in self.viewer.layers:
-                seg_layer_name = sl.name
-
-        for combo, preferred, prev in [
-            (self._layer_combo, seg_layer_name, current_lab),
-            (self._image_combo, None, current_img),
-        ]:
-            # Try the preferred name first (seg_tab layer), then fall back to
-            # the previously selected name so the combo is as stable as possible.
-            for name in (preferred, prev):
-                if name is None:
-                    continue
-                idx = combo.findText(name)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-                    break
-
     # ── activation ────────────────────────────────────────────────────────
 
     def _toggle_active(self, checked: bool):
         if checked:
-            name = self._layer_combo.currentText()
+            name = self._state.tissue.labels_layer
             if not name or name not in self.viewer.layers:
                 self._activate_btn.setChecked(False)
                 self._set_status("Layer not found", error=True)
@@ -320,7 +261,7 @@ class CorrectionWidget(QWidget):
 
     def _set_status(self, msg: str, error: bool = False):
         self._status.setText(msg)
-        colour = "red" if error else "palette(mid)"
+        colour = "red" if error else "palette(text)"
         self._status.setStyleSheet(f"color: {colour}; font-style: italic;")
 
     # ── draw layer ────────────────────────────────────────────────────────
@@ -715,7 +656,7 @@ class CorrectionWidget(QWidget):
     # ── helpers ───────────────────────────────────────────────────────────
 
     def _image_frame(self, t: int):
-        name = self._image_combo.currentText()
+        name = self._state.tissue.image_layer
         if name and name in self.viewer.layers:
             lyr = self.viewer.layers[name]
             if isinstance(lyr, napari.layers.Image):
