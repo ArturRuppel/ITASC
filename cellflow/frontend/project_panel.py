@@ -67,7 +67,7 @@ class ProjectPanel(QWidget):
         path_row = QHBoxLayout()
         path_row.setSpacing(4)
         self._tissue_path_label = QLabel("[unsaved]")
-        self._tissue_path_label.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        self._tissue_path_label.setStyleSheet("font-size: 9pt;")
         self._tissue_path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         path_row.addWidget(self._tissue_path_label)
         self._tissue_load_btn = QPushButton("Load tissue…")
@@ -140,7 +140,7 @@ class ProjectPanel(QWidget):
         ds_path_row = QHBoxLayout()
         ds_path_row.setSpacing(4)
         self._catalog_path_label = QLabel("[no dataset]")
-        self._catalog_path_label.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        self._catalog_path_label.setStyleSheet("font-size: 9pt;")
         self._catalog_path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         ds_path_row.addWidget(self._catalog_path_label)
         self._ds_load_btn = QPushButton("Load dataset…")
@@ -195,7 +195,8 @@ class ProjectPanel(QWidget):
         ds_layout.addWidget(self._status_label)
 
         ds_group.setLayout(ds_layout)
-        root.addWidget(ds_group)
+        # Exposed so the parent widget can place the dataset panel below the tab widget.
+        self.dataset_widget = ds_group
 
     def _connect_signals(self):
         # Tissue buttons
@@ -402,16 +403,20 @@ class ProjectPanel(QWidget):
             self._status_label.setText(f"Error: {exc}")
             return
 
+        # Set layer name before emitting so the correction widget can find it immediately
+        if tissue.labels is not None:
+            tissue.labels_layer = f"{Path(path).stem}_labels"
+
         self._state._tissue = tissue
         self._state.tissue_changed.emit()
 
-        # Push metadata from series if state is empty
-        if tissue.series:
-            s = tissue.series
-            if self._state.pixel_size is None and s.pixel_size is not None:
-                self._state.pixel_size = s.pixel_size
-            if self._state.time_interval is None and s.time_interval is not None:
-                self._state.time_interval = s.time_interval
+        # Push metadata from the loaded tissue (H5 metadata group takes priority over series)
+        if self._state.pixel_size is None and tissue.pixel_size is not None:
+            self._state.pixel_size = tissue.pixel_size
+        if self._state.time_interval is None and tissue.time_interval is not None:
+            self._state.time_interval = tissue.time_interval
+        if not self._state.condition and tissue.condition:
+            self._state.condition = tissue.condition
 
         # Load labels into viewer
         if tissue.labels is not None:
@@ -770,7 +775,7 @@ class _FieldRow(QHBoxLayout):
 
         self._status = QLabel("not loaded")
         self._status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._status.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        self._status.setStyleSheet("font-size: 9pt;")
         self.addWidget(self._status)
 
         if has_capture:

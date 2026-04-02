@@ -128,6 +128,8 @@ class CellFlowWidget(QWidget):
         self.tab_widget = QTabWidget()
         _plugin_layout.addWidget(self.tab_widget)
 
+        _plugin_layout.addWidget(self._project_panel.dataset_widget)
+
         # ========== Pipeline tab ==========
         pipeline_page = QWidget()
         page_layout = QVBoxLayout()
@@ -384,7 +386,7 @@ class CellFlowWidget(QWidget):
 
         # ========== Correction tab ==========
         from .correction_widget import CorrectionWidget
-        self._correction_widget = CorrectionWidget(self.viewer, self._segmentation_tab)
+        self._correction_widget = CorrectionWidget(self.viewer)
         self.tab_widget.addTab(self._correction_widget, "Correction")
 
         # ========== Edge Analysis tab (formerly Pipeline) ==========
@@ -435,58 +437,22 @@ class CellFlowWidget(QWidget):
     # Label stack from viewer (uses active layer)
     # ------------------------------------------------------------------
     def _get_active_label_stack(self) -> Optional[np.ndarray]:
-        """Return the label stack to analyse, or None.
-
-        Phase 2: if ``state.tissue.labels`` is already set, use it directly
-        without requiring the user to select a napari layer.  Otherwise fall
-        back to the active napari Labels/Image layer.
-        """
-        import napari
-
-        # -- Phase 2 fast-path: use internal state labels if available --------
-        if self._state.tissue.labels is not None:
-            data = np.asarray(self._state.tissue.labels)
-            if data.ndim == 2:
-                data = data[np.newaxis, ...]
-            if data.ndim != 3:
-                self.status_label.setText(
-                    f"State labels must be 2D or 3D (T, H, W), got {data.ndim}D."
-                )
-                return None
-            layer_name = self._state.tissue.labels_layer or "state"
-            self.active_layer_label.setText(f"Layer: {layer_name} (state)")
-            return data
-
-        # -- Fallback: read from the active napari layer ----------------------
-        active = self.viewer.layers.selection.active
-        if active is None:
-            self.status_label.setText("No active layer. Select a Labels or Image layer.")
-            return None
-        if not isinstance(active, (napari.layers.Labels, napari.layers.Image)):
-            self.status_label.setText(
-                f"Active layer '{active.name}' is not a Labels or Image layer."
-            )
+        """Return the label stack to analyse from state, or None."""
+        if self._state.tissue.labels is None:
+            self.status_label.setText("No segmentation loaded. Load a tissue in the Project Panel first.")
             return None
 
-        # Force a concrete numpy array — Labels layers may back their data with
-        # dask or zarr, and some operations (cv2, scipy) require a real ndarray.
-        data = np.asarray(active.data)
-
-        # Auto-convert Image layer data to integer labels
-        if isinstance(active, napari.layers.Image):
-            if not np.issubdtype(data.dtype, np.integer):
-                data = np.round(data).astype(np.int32)
-            logger.info("Converted Image layer '%s' to integer labels.", active.name)
-
+        data = np.asarray(self._state.tissue.labels)
         if data.ndim == 2:
             data = data[np.newaxis, ...]
         if data.ndim != 3:
             self.status_label.setText(
-                f"Layer must be 2D or 3D (T, H, W), got {data.ndim}D."
+                f"Labels must be 2D or 3D (T, H, W), got {data.ndim}D."
             )
             return None
 
-        self.active_layer_label.setText(f"Layer: {active.name}")
+        layer_name = self._state.tissue.labels_layer or "state"
+        self.active_layer_label.setText(f"Layer: {layer_name}")
         return data
 
     # ------------------------------------------------------------------

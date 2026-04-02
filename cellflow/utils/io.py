@@ -591,6 +591,9 @@ def load_tissue(path: Union[str, Path]):
         labels=result.get("labels"),
         series=series,
         path=str(path),
+        pixel_size=result.get("pixel_size"),
+        time_interval=result.get("time_interval"),
+        condition=result.get("condition", ""),
     )
 
 

@@ -44,6 +44,11 @@ class TissueData:
     labels_layer: Optional[str]  = None
     forsys_layer: Optional[str]  = None
 
+    # project-level metadata read from the H5 file
+    pixel_size:    Optional[float]  = None
+    time_interval: Optional[float]  = None
+    condition:     str              = ""
+
 
 @dataclass
 class CatalogEntry:
