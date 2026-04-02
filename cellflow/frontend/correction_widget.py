@@ -25,8 +25,8 @@ import os
 
 import numpy as np
 from qtpy.QtWidgets import (
-    QWidget, QVBoxLayout,
-    QLabel, QPushButton, QGroupBox,
+    QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QGroupBox, QSpinBox,
 )
 from qtpy.QtCore import Qt
 import napari
@@ -45,6 +45,7 @@ if os.environ.get("CELLFLOW_DEBUG"):
 from ..backend.labels import (
     erase_cell, merge_cells, split_across,
     split_draw, draw_cell_path, swap_labels,
+    fix_cell_borders,
     _free_label, _label_at,
 )
 from .registry import get_state
@@ -141,6 +142,32 @@ class CorrectionWidget(QWidget):
         ]:
             lbl_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
         root.addWidget(lbl_ref)
+
+        # fix-borders batch operation
+        fix_box = QGroupBox("Fix borders")
+        fix_lay = QVBoxLayout(fix_box)
+
+        fix_row = QHBoxLayout()
+        fix_row.addWidget(QLabel("Radius (px):"))
+        self._border_radius = QSpinBox()
+        self._border_radius.setRange(1, 50)
+        self._border_radius.setValue(2)
+        fix_row.addWidget(self._border_radius)
+        fix_lay.addLayout(fix_row)
+
+        fix_desc = QLabel(
+            "Dilates cells into narrow gaps between them.\n"
+            "Free edges (open border) are not grown."
+        )
+        fix_desc.setWordWrap(True)
+        fix_desc.setStyleSheet("font-size: 9pt; color: palette(text);")
+        fix_lay.addWidget(fix_desc)
+
+        self._fix_borders_btn = QPushButton("Fix borders (all frames)")
+        self._fix_borders_btn.clicked.connect(self._run_fix_borders)
+        fix_lay.addWidget(self._fix_borders_btn)
+
+        root.addWidget(fix_box)
 
         root.addStretch()
 
@@ -652,6 +679,30 @@ class CorrectionWidget(QWidget):
             except Exception:
                 pass
         self._bound_keys.clear()
+
+    def _run_fix_borders(self):
+        """Apply fix_cell_borders to every frame of the active labels layer."""
+        if self._layer is None:
+            show_error("Activate the correction widget first")
+            return
+        radius = self._border_radius.value()
+        data = self._layer.data
+        n_frames = data.shape[0]
+        changed_frames = 0
+        for t in range(n_frames):
+            frame = data[t]
+            before = frame.copy()
+            if fix_cell_borders(frame, radius=radius):
+                _record_history(self._layer, t, before)
+                changed_frames += 1
+        if changed_frames:
+            self._layer.refresh()
+            self._set_status(
+                f"Fixed borders (r={radius}) in {changed_frames}/{n_frames} frames"
+                f" — Active on '{self._layer.name}'"
+            )
+        else:
+            self._set_status(f"Fix borders: no gaps found — Active on '{self._layer.name}'")
 
     # ── helpers ───────────────────────────────────────────────────────────
 

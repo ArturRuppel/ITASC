@@ -956,16 +956,23 @@ def draw_cell_path(
     curlabel: int | None = None,
 ) -> bool:
     """
-    Draw a thin 1-px barrier line and flood-fill the target cell into the
-    enclosed background region.
+    Draw a closed region from the user's stroke and fill its interior.
 
-    If *curlabel* is set and present in *seg*, background pixels that are
-    connected to the cell's existing pixels — but cut off from the rest of the
-    image by the drawn line and other cell labels — are absorbed into the cell.
+    Algorithm:
+    1. Rasterise the stroke.
+    2. Close the loop by connecting the first and last stroke points with a
+       straight line, forming a closed boundary.
+    3. On a temporary canvas containing only this closed boundary, find
+       connected components of non-boundary pixels.  Components that do NOT
+       touch the image border are geometrically "inside" the drawn region.
+       When several inside components exist, use all of them (this handles
+       concave strokes that produce multiple pockets).
+    4. Within that inside region, paint only pixels that were background (0).
+       Non-background pixels (other cells) are left untouched.
+    5. Use *curlabel* if provided, otherwise allocate a new label.
 
-    If no cell is selected, a new label is created from the enclosed background
-    region adjacent to the drawn line.  If the path encloses nothing, the thin
-    line pixels themselves become the new cell (fallback).
+    Fallback: if the stroke encloses no pixels (nearly straight line), assign
+    the stroke pixels themselves as the cell.
 
     Returns True on success, False if the stroke is too short or the fill area
     is too small.
@@ -982,53 +989,61 @@ def draw_cell_path(
         log.debug("draw_cell_path: rejected — empty line")
         return False
 
-    has_cell = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
+    # ── Close the loop: connect first → last endpoint ─────────────────────
+    r0, c0 = interp[0]
+    r1, c1 = interp[-1]
+    n_close = max(abs(r1 - r0), abs(c1 - c0), 1)
+    closed_mask = line_mask.copy()
+    for t in np.linspace(0, 1, n_close + 1):
+        r = int(round(r0 + t * (r1 - r0)))
+        c = int(round(c0 + t * (c1 - c0)))
+        if 0 <= r < seg.shape[0] and 0 <= c < seg.shape[1]:
+            closed_mask[r, c] = True
 
-    if has_cell:
-        # Flood-fill from the cell's pixels into background, blocked by the
-        # drawn line and every other non-zero label.
-        traversable = (seg == curlabel) | ((seg == 0) & ~line_mask)
-        labeled_t, _ = nd_label(traversable)
-        cell_comp_ids = set(np.unique(labeled_t[seg == curlabel])) - {0}
-        fill_mask = (seg == 0) & np.isin(labeled_t, list(cell_comp_ids))
-        n_px = int(np.sum(fill_mask))
-        log.debug("draw_cell_path: flood-fill px=%d for label=%s", n_px, curlabel)
-        if n_px < MIN_CELL_SIZE:
-            log.debug("draw_cell_path: rejected — fill area too small")
-            return False
-        seg[fill_mask] = curlabel
-        return True
+    # ── Find geometrically enclosed regions ───────────────────────────────
+    # Work only from the boundary shape, ignoring existing segmentation.
+    # Dilate by 1 px (full 3×3) first: a rasterised diagonal line has corner
+    # gaps that leak under 4-connectivity without thickening.  Then use
+    # 4-connectivity so the thickened boundary properly separates regions.
+    closed_mask_thick = binary_dilation(closed_mask)
+    traversable = ~closed_mask_thick
+    _struct4 = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.int32)
+    labeled_regions, n_comp = nd_label(traversable, structure=_struct4)
 
-    # No cell selected: find background regions enclosed by the drawn line.
-    background_open = (seg == 0) & ~line_mask
-    labeled_bg, n_comp = nd_label(background_open)
     border_ids: set = set()
-    for edge in (labeled_bg[0, :], labeled_bg[-1, :],
-                 labeled_bg[:, 0], labeled_bg[:, -1]):
+    for edge in (labeled_regions[0, :], labeled_regions[-1, :],
+                 labeled_regions[:, 0], labeled_regions[:, -1]):
         border_ids.update(np.unique(edge))
     border_ids.discard(0)
-    enclosed_ids = [i for i in range(1, n_comp + 1) if i not in border_ids]
 
-    if enclosed_ids:
-        fill_mask = np.isin(labeled_bg, enclosed_ids)
+    inside_ids = [i for i in range(1, n_comp + 1) if i not in border_ids]
+    log.debug("draw_cell_path: n_comp=%d inside_ids=%s", n_comp, inside_ids)
+
+    if inside_ids:
+        inside_mask = np.isin(labeled_regions, inside_ids)
+        extending = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
+        # Extending an existing cell: fill everything inside (overwrite other
+        # cells too).  Creating a new cell: only fill background pixels so we
+        # don't accidentally eat into neighbouring cells.
+        fill_mask = inside_mask if extending else (inside_mask & (seg == 0))
         n_px = int(np.sum(fill_mask))
-        log.debug("draw_cell_path: enclosed fill px=%d", n_px)
+        log.debug("draw_cell_path: enclosed fill px=%d extending=%s", n_px, extending)
         if n_px >= MIN_CELL_SIZE:
-            new_label = _free_label(seg)
-            seg[fill_mask] = new_label
-            log.debug("draw_cell_path: new label=%s from enclosed region", new_label)
+            label = curlabel if (curlabel and curlabel != 0) else _free_label(seg)
+            seg[fill_mask] = label
+            log.debug("draw_cell_path: label=%s from enclosed region", label)
             return True
 
-    # Fallback: assign the thin line pixels themselves as a new cell.
+    # ── Fallback: assign the stroke pixels as the cell ────────────────────
     stroke_mask = line_mask & (seg == 0)
     n_px = int(np.sum(stroke_mask))
     log.debug("draw_cell_path: fallback thin stroke px=%d", n_px)
     if n_px < MIN_CELL_SIZE:
         log.debug("draw_cell_path: rejected — stroke too small")
         return False
-    new_label = _free_label(seg)
-    seg[stroke_mask] = new_label
-    log.debug("draw_cell_path: new label=%s from thin stroke", new_label)
+    label = curlabel if (curlabel and curlabel != 0) else _free_label(seg)
+    seg[stroke_mask] = label
+    log.debug("draw_cell_path: label=%s from thin stroke", label)
     return True
 
 
@@ -1048,3 +1063,60 @@ def swap_labels(seg: np.ndarray, pos_a: tuple, pos_b: tuple) -> bool:
     seg[mask_b] = la
     log.debug("swap_labels: swapped la=%s(%dpx) ↔ lb=%s(%dpx)", la, count_a, lb, count_b)
     return True
+
+
+def fix_cell_borders(seg: np.ndarray, radius: int = 2) -> bool:
+    """Fill narrow gaps between cells up to *radius* pixels wide.
+
+    Only background regions that are fully enclosed by cells are filled.
+    Free edges (background connected to the image boundary) are left as-is,
+    so cells do not grow into open space at the tissue margin.
+
+    Modifies *seg* in-place.  Returns True if any pixel was changed.
+    """
+    if radius <= 0:
+        return False
+
+    bg = seg == 0
+    if not np.any(bg):
+        return False
+
+    # ── identify open (border-touching) vs enclosed background regions ───
+    bg_labeled = cc_label(bg, connectivity=2)
+
+    open_ids: set = set()
+    for edge in (
+        bg_labeled[0, :], bg_labeled[-1, :],
+        bg_labeled[:, 0], bg_labeled[:, -1],
+    ):
+        open_ids.update(np.unique(edge))
+    open_ids.discard(0)
+
+    open_bg  = bg & np.isin(bg_labeled, list(open_ids))
+    enclosed = bg & ~open_bg
+
+    if not np.any(enclosed):
+        log.debug("fix_cell_borders: no enclosed background found — nothing to do")
+        return False
+
+    # ── expand cells, but block expansion into open background ───────────
+    # Use a SENTINEL label for open-BG pixels so expand_labels treats them
+    # as an existing "cell" and won't overwrite them.  Because enclosed gaps
+    # are surrounded by real cells (by definition), the real cell labels will
+    # always win the nearest-neighbour race for enclosed pixels.
+    SENTINEL = int(seg.max()) + 1
+    seg_work = seg.copy()
+    seg_work[open_bg] = SENTINEL
+
+    expanded = expand_labels(seg_work, distance=radius)
+
+    # Restore open background (remove SENTINEL and any accidental expansion)
+    expanded[open_bg] = 0
+    expanded[expanded == SENTINEL] = 0
+
+    changed = bool(np.any(expanded != seg))
+    if changed:
+        n_filled = int(np.sum(expanded != seg))
+        seg[:] = expanded
+        log.debug("fix_cell_borders: radius=%d  pixels filled=%d", radius, n_filled)
+    return changed
