@@ -94,7 +94,6 @@ class CorrectionWidget(QWidget):
         # saved napari state (populated on activate, cleared on deactivate)
         self._saved_viewer_drag_cbs: list = []
         self._saved_layer_mode: str = "pan_zoom"
-        self._saved_layer_drag_cbs: list = []
 
         self._setup_ui()
 
@@ -218,9 +217,11 @@ class CorrectionWidget(QWidget):
         self.viewer.mouse_drag_callbacks.clear()
 
         self._saved_layer_mode = layer.mode
-        self._saved_layer_drag_cbs = list(layer.mouse_drag_callbacks)
         layer.mode = "pan_zoom"
-        layer.mouse_drag_callbacks.clear()
+        # Do NOT clear layer.mouse_drag_callbacks — napari's internal callbacks
+        # (e.g. VispyLabelsPolygonOverlay) must stay registered so that napari
+        # can remove them cleanly when the layer is deleted.  pan_zoom mode
+        # keeps those callbacks inert while we are active.
 
         # ── make the layer the active selection so key bindings fire ──────
         self.viewer.layers.selection.active = layer
@@ -231,6 +232,9 @@ class CorrectionWidget(QWidget):
 
         # Update highlight when the user scrubs through time
         self.viewer.dims.events.current_step.connect(self._on_dims_change)
+
+        # Auto-deactivate if the active layer is removed from the viewer
+        self.viewer.layers.events.removed.connect(self._on_layer_removed)
 
         # Detect napari toolbar / shortcut stealing the tool mode
         layer.events.mode.connect(self._on_layer_mode_change)
@@ -250,16 +254,20 @@ class CorrectionWidget(QWidget):
                 pass
 
             try:
+                self.viewer.layers.events.removed.disconnect(self._on_layer_removed)
+            except Exception:
+                pass
+
+            try:
                 self._layer.events.mode.disconnect(self._on_layer_mode_change)
             except Exception:
                 pass
 
             # ── restore layer state ───────────────────────────────────────
-            self._layer.mouse_drag_callbacks.clear()
-            self._layer.mode = self._saved_layer_mode
-            for cb in self._saved_layer_drag_cbs:
-                if cb not in self._layer.mouse_drag_callbacks:
-                    self._layer.mouse_drag_callbacks.append(cb)
+            try:
+                self._layer.mode = self._saved_layer_mode
+            except Exception:
+                pass
 
             # ── restore viewer callbacks ──────────────────────────────────
             self.viewer.mouse_drag_callbacks.clear()
@@ -267,8 +275,12 @@ class CorrectionWidget(QWidget):
                 self.viewer.mouse_drag_callbacks.append(cb)
 
         # Sync corrected labels to internal state before releasing the layer
-        if self._layer is not None:
-            self._state.set_tissue_labels(np.asarray(self._layer.data), self._layer.name)
+        # (skip if the layer was deleted — data is gone)
+        if self._layer is not None and self._layer.name in self.viewer.layers:
+            try:
+                self._state.set_tissue_labels(np.asarray(self._layer.data), self._layer.name)
+            except Exception:
+                pass
 
         self._layer = None
         self._selected_label = 0
@@ -279,7 +291,6 @@ class CorrectionWidget(QWidget):
         self._swap_first_pos = None
         self._swap_first_t = -1
         self._saved_viewer_drag_cbs = []
-        self._saved_layer_drag_cbs = []
         self._activate_btn.setText("Activate")
         self._activate_btn.setChecked(False)
         self._set_status("Inactive")
@@ -361,9 +372,17 @@ class CorrectionWidget(QWidget):
 
     def _on_dims_change(self, event=None):
         """Keep highlight current when the user changes the time slider."""
-        if self._selected_label and self._layer is not None:
-            t = int(self.viewer.dims.current_step[0])
-            self._update_highlight(t, self._selected_label)
+        if not (self._selected_label and self._layer is not None):
+            return
+        step = self.viewer.dims.current_step
+        # Viewer may temporarily drop to ndim=2 during layer removal;
+        # current_step[0] would then be the Y-axis center, not a frame index.
+        if self._layer.data.ndim < 3 or len(step) < self._layer.data.ndim:
+            return
+        t = int(step[0])
+        if t >= self._layer.data.shape[0]:
+            return
+        self._update_highlight(t, self._selected_label)
 
     def _on_layer_mode_change(self, event=None):
         """Show warning when napari changes the layer mode away from pan_zoom."""
@@ -378,6 +397,14 @@ class CorrectionWidget(QWidget):
             self._reset_mode_btn.setVisible(False)
             if self._layer is not None:
                 self._set_status(f"Active on '{self._layer.name}'")
+
+    def _on_layer_removed(self, event=None):
+        """Deactivate cleanly when the active labels layer or an auxiliary layer is removed."""
+        removed = getattr(event, "value", None)
+        removed_name = getattr(removed, "name", None)
+        if removed is self._layer or removed_name in (_DRAW_LAYER, _HIGHLIGHT_LAYER):
+            log.debug("_on_layer_removed: '%s' removed, deactivating", removed_name)
+            self._deactivate()
 
     def _reset_tool_mode(self):
         """Restore pan_zoom mode so correction shortcuts work again."""
