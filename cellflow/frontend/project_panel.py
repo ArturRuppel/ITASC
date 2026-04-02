@@ -14,6 +14,7 @@ from typing import Optional
 
 import numpy as np
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -22,6 +23,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QShortcut,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -203,6 +205,11 @@ class ProjectPanel(QWidget):
         self._tissue_load_btn.clicked.connect(self._on_load_tissue)
         self._tissue_save_btn.clicked.connect(self._on_save_tissue)
         self._add_to_dataset_btn.clicked.connect(self._on_add_to_dataset)
+
+        # Ctrl+S shortcut: save to current path (no dialog) or open dialog if unsaved
+        self._save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
+        self._save_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._save_shortcut.activated.connect(self._on_save_tissue_quick)
 
         # Image field
         self._image_row.capture_btn.clicked.connect(self._on_capture_image)
@@ -422,19 +429,17 @@ class ProjectPanel(QWidget):
         if tissue.labels is not None:
             self._load_labels_into_viewer(tissue.labels, Path(path).stem)
 
-    def _on_save_tissue(self):
+    def _on_save_tissue_quick(self):
+        """Ctrl+S: save to current file without dialog, or open dialog if unsaved."""
         tissue = self._state.tissue
-        default = tissue.path or "tissue.h5"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save tissue", default,
-            "CellFlow tissue (*.h5);;All files (*)",
-        )
-        if not path:
-            return
-        if not path.endswith(".h5"):
-            path += ".h5"
+        if tissue.path:
+            self._save_to_path(tissue.path)
+        else:
+            self._on_save_tissue()
 
-        # Sync current UI metadata into tissue before writing
+    def _save_to_path(self, path: str):
+        """Write the current tissue to *path* (no dialog)."""
+        tissue = self._state.tissue
         tissue.pixel_size = self._state.pixel_size
         tissue.time_interval = self._state.time_interval
         tissue.condition = self._state.condition
@@ -450,6 +455,19 @@ class ProjectPanel(QWidget):
         self._state._tissue.path = path
         self._state.tissue_changed.emit()
         self._status_label.setText(f"Saved: {Path(path).name}")
+
+    def _on_save_tissue(self):
+        tissue = self._state.tissue
+        default = tissue.path or "tissue.h5"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save tissue", default,
+            "CellFlow tissue (*.h5);;All files (*)",
+        )
+        if not path:
+            return
+        if not path.endswith(".h5"):
+            path += ".h5"
+        self._save_to_path(path)
 
     def _on_add_to_dataset(self):
         tissue = self._state.tissue

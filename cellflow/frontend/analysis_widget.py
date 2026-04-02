@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
+    QToolButton,
     QLabel,
     QProgressBar,
     QListWidget,
@@ -147,12 +148,13 @@ class CellFlowWidget(QWidget):
         scroll.setWidget(container)
 
         # --- Analyse Tissue (graph extraction + T1 + edge tracking) ---
-        self.stage2_toggle = QPushButton("\u25b6 Analyse Tissue")
-        self.stage2_toggle.setStyleSheet(
-            "QPushButton { text-align: left; border: none; padding: 2px; }"
-        )
+        self.stage2_toggle = QToolButton()
+        self.stage2_toggle.setText("Analyse Tissue")
+        self.stage2_toggle.setArrowType(Qt.RightArrow)
+        self.stage2_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.stage2_toggle.setCheckable(True)
         self.stage2_toggle.setChecked(False)
+        self.stage2_toggle.setStyleSheet("QToolButton { font-weight: bold; }")
         layout.addWidget(self.stage2_toggle)
 
         self.stage2_params = QWidget()
@@ -430,8 +432,7 @@ class CellFlowWidget(QWidget):
 
     def _toggle_stage(self, stage: int, checked: bool):
         self.stage2_params.setVisible(checked)
-        arrow = "\u25bc" if checked else "\u25b6"
-        self.stage2_toggle.setText(f"{arrow} Analyse Tissue")
+        self.stage2_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
     # ------------------------------------------------------------------
     # Label stack from viewer (uses active layer)

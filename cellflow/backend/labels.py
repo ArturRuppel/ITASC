@@ -702,15 +702,25 @@ def erase_cell(seg: np.ndarray, pos: tuple | None = None, *, label: int | None =
     return True
 
 
-def merge_cells(seg: np.ndarray, pos_start: tuple, pos_end: tuple) -> bool:
+def merge_cells(
+    seg: np.ndarray,
+    pos_start: tuple,
+    pos_end: tuple,
+    *,
+    label_a: int | None = None,
+    label_b: int | None = None,
+) -> bool:
     """
     Merge the cell at *pos_start* into the cell at *pos_end*.
+
+    Pass *label_a* / *label_b* to override position-based label lookup (useful
+    when the click position may be stale after a prior edit operation).
 
     The two labels must be touching; otherwise the operation is rejected
     with a return value of ``False``.
     """
-    la = _label_at(seg, pos_start)
-    lb = _label_at(seg, pos_end)
+    la = label_a if label_a is not None else _label_at(seg, pos_start)
+    lb = label_b if label_b is not None else _label_at(seg, pos_end)
     log.debug("merge_cells: la=%s pos_start=%s  lb=%s pos_end=%s", la, pos_start, lb, pos_end)
     if la == 0 or lb == 0 or la == lb:
         log.debug("merge_cells: rejected — background or same label (la=%s lb=%s)", la, lb)
@@ -967,12 +977,18 @@ def draw_cell_path(
        touch the image border are geometrically "inside" the drawn region.
        When several inside components exist, use all of them (this handles
        concave strokes that produce multiple pockets).
-    4. Within that inside region, paint only pixels that were background (0).
-       Non-background pixels (other cells) are left untouched.
+    4. Within that inside region:
+         - Extending an existing cell (*curlabel* set): fill ALL enclosed pixels,
+           including those belonging to other cells (the drawn boundary is the
+           new authoritative outline).
+         - Creating a new cell: fill only background (0) pixels so neighbouring
+           cells are not overwritten.
     5. Use *curlabel* if provided, otherwise allocate a new label.
 
     Fallback: if the stroke encloses no pixels (nearly straight line), assign
-    the stroke pixels themselves as the cell.
+    the stroke pixels as the cell.  When extending, the stroke paints over
+    background AND the cell's own existing pixels (but not other cells), so
+    short border strokes adjacent to the cell edge are not incorrectly rejected.
 
     Returns True on success, False if the stroke is too short or the fill area
     is too small.
@@ -1035,9 +1051,16 @@ def draw_cell_path(
             return True
 
     # ── Fallback: assign the stroke pixels as the cell ────────────────────
-    stroke_mask = line_mask & (seg == 0)
+    # When extending an existing cell, allow the stroke to paint over
+    # background AND over the existing cell pixels so that short extension
+    # strokes adjacent to the cell border are not rejected.
+    extending = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
+    if extending:
+        stroke_mask = line_mask & ((seg == 0) | (seg == curlabel))
+    else:
+        stroke_mask = line_mask & (seg == 0)
     n_px = int(np.sum(stroke_mask))
-    log.debug("draw_cell_path: fallback thin stroke px=%d", n_px)
+    log.debug("draw_cell_path: fallback thin stroke px=%d extending=%s", n_px, extending)
     if n_px < MIN_CELL_SIZE:
         log.debug("draw_cell_path: rejected — stroke too small")
         return False
@@ -1120,3 +1143,68 @@ def fix_cell_borders(seg: np.ndarray, radius: int = 2) -> bool:
         seg[:] = expanded
         log.debug("fix_cell_borders: radius=%d  pixels filled=%d", radius, n_filled)
     return changed
+
+
+def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
+    """Remove isolated pixel groups too small to be valid cells, and fill tiny
+    orphaned background holes left by draw/redraw operations.
+
+    Two passes:
+    1. Cell labels — for each non-background label, any connected component
+       smaller than *min_size* pixels is set to background (0).
+    2. Background (0) — enclosed background components (not touching the image
+       border) smaller than *min_size* pixels are filled with the nearest cell
+       label via ``expand_labels``.
+
+    Modifies *seg* in-place.  Returns the total number of pixels changed.
+    """
+    from skimage.measure import label as _cc_label
+    cleared = 0
+
+    # ── pass 1: stranded cell pixels ─────────────────────────────────────────
+    for cell_id in np.unique(seg):
+        if cell_id == 0:
+            continue
+        mask = seg == cell_id
+        labeled, n_comp = _cc_label(mask, return_num=True, connectivity=2)
+        if n_comp <= 1:
+            continue
+        for comp_id in range(1, n_comp + 1):
+            comp_mask = labeled == comp_id
+            n_px = int(np.sum(comp_mask))
+            if n_px < min_size:
+                seg[comp_mask] = 0
+                cleared += n_px
+                log.debug(
+                    "clean_stranded_pixels: removed %d px of label %s (comp %d/%d)",
+                    n_px, cell_id, comp_id, n_comp,
+                )
+
+    # ── pass 2: orphaned background holes ────────────────────────────────────
+    bg = seg == 0
+    if np.any(bg):
+        bg_labeled, _ = _cc_label(bg, return_num=True, connectivity=2)
+        open_ids: set = set()
+        for edge in (
+            bg_labeled[0, :], bg_labeled[-1, :],
+            bg_labeled[:, 0], bg_labeled[:, -1],
+        ):
+            open_ids.update(np.unique(edge))
+        open_ids.discard(0)
+
+        for comp_id in np.unique(bg_labeled):
+            if comp_id == 0 or comp_id in open_ids:
+                continue
+            comp_mask = bg_labeled == comp_id
+            n_px = int(np.sum(comp_mask))
+            if n_px < min_size:
+                # Fill with nearest cell label
+                filled = expand_labels(seg, distance=n_px + 2)
+                seg[comp_mask] = filled[comp_mask]
+                cleared += n_px
+                log.debug(
+                    "clean_stranded_pixels: filled %d orphaned bg px (comp %d)",
+                    n_px, comp_id,
+                )
+
+    return cleared

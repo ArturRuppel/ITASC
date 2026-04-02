@@ -45,7 +45,7 @@ if os.environ.get("CELLFLOW_DEBUG"):
 from ..backend.labels import (
     erase_cell, merge_cells, split_across,
     split_draw, draw_cell_path, swap_labels,
-    fix_cell_borders,
+    fix_cell_borders, clean_stranded_pixels,
     _free_label, _label_at,
 )
 from .registry import get_state
@@ -109,6 +109,13 @@ class CorrectionWidget(QWidget):
         self._activate_btn.clicked.connect(self._toggle_active)
         root.addWidget(self._activate_btn)
 
+        # outline toggle
+        self._outline_btn = QPushButton("Show outlines only")
+        self._outline_btn.setCheckable(True)
+        self._outline_btn.setEnabled(False)
+        self._outline_btn.clicked.connect(self._toggle_outline)
+        root.addWidget(self._outline_btn)
+
         # mode-change warning (hidden until napari steals the tool mode)
         self._reset_mode_btn = QPushButton("⚠  Restore correction mode")
         self._reset_mode_btn.setVisible(False)
@@ -162,11 +169,36 @@ class CorrectionWidget(QWidget):
         fix_desc.setStyleSheet("font-size: 9pt; color: palette(text);")
         fix_lay.addWidget(fix_desc)
 
+        fix_btns = QHBoxLayout()
+        self._fix_borders_frame_btn = QPushButton("Fix borders (this frame)")
+        self._fix_borders_frame_btn.clicked.connect(self._run_fix_borders_frame)
+        fix_btns.addWidget(self._fix_borders_frame_btn)
         self._fix_borders_btn = QPushButton("Fix borders (all frames)")
         self._fix_borders_btn.clicked.connect(self._run_fix_borders)
-        fix_lay.addWidget(self._fix_borders_btn)
+        fix_btns.addWidget(self._fix_borders_btn)
+        fix_lay.addLayout(fix_btns)
 
         root.addWidget(fix_box)
+
+        # clean stranded pixels
+        clean_box = QGroupBox("Cleanup")
+        clean_lay = QVBoxLayout(clean_box)
+        clean_desc = QLabel(
+            "Removes isolated pixel groups disconnected from their cell.\n"
+            "Run after draw/redraw operations that may leave orphaned pixels."
+        )
+        clean_desc.setWordWrap(True)
+        clean_desc.setStyleSheet("font-size: 9pt; color: palette(text);")
+        clean_lay.addWidget(clean_desc)
+        clean_btns = QHBoxLayout()
+        self._clean_frame_btn = QPushButton("Clean (this frame)")
+        self._clean_frame_btn.clicked.connect(self._run_clean_frame)
+        clean_btns.addWidget(self._clean_frame_btn)
+        self._clean_all_btn = QPushButton("Clean (all frames)")
+        self._clean_all_btn.clicked.connect(self._run_clean_all)
+        clean_btns.addWidget(self._clean_all_btn)
+        clean_lay.addLayout(clean_btns)
+        root.addWidget(clean_box)
 
         root.addStretch()
 
@@ -244,6 +276,7 @@ class CorrectionWidget(QWidget):
 
         self._register_callbacks()
         self._activate_btn.setText("Deactivate")
+        self._outline_btn.setEnabled(True)
         self._set_status(f"Active on '{layer.name}'")
 
     def _deactivate(self):
@@ -301,6 +334,8 @@ class CorrectionWidget(QWidget):
         self._saved_viewer_drag_cbs = []
         self._activate_btn.setText("Activate")
         self._activate_btn.setChecked(False)
+        self._outline_btn.setChecked(False)
+        self._outline_btn.setEnabled(False)
         self._set_status("Inactive")
         self._cleanup_draw_layer()
         self._cleanup_highlight_layer()
@@ -595,13 +630,18 @@ class CorrectionWidget(QWidget):
                         # ── fresh click ───────────────────────────────────────
                         if (
                             self._selected_label != 0
-                            and self._selected_pos is not None
                             and lab != self._selected_label
+                            and np.any(seg2d == self._selected_label)
                         ):
-                            # Cell already selected → merge directly
+                            # Cell already selected → merge directly.
+                            # Use label IDs instead of positions to avoid stale
+                            # click coordinates after prior edit operations.
                             log.debug("merge: selected=%s clicked=%s", self._selected_label, lab)
                             before = seg2d.copy()
-                            ok = merge_cells(seg2d, self._selected_pos, pos)
+                            ok = merge_cells(
+                                seg2d, pos, pos,
+                                label_a=self._selected_label, label_b=lab,
+                            )
                             log.debug("merge result: ok=%s", ok)
                             self._set_status(
                                 f"Merged — Active on '{_layer.name}'"
@@ -729,6 +769,28 @@ class CorrectionWidget(QWidget):
                 pass
         self._bound_keys.clear()
 
+    def _run_fix_borders_frame(self):
+        """Apply fix_cell_borders to the current frame only."""
+        if self._layer is None:
+            show_error("Activate the correction widget first")
+            return
+        radius = self._border_radius.value()
+        t = int(self.viewer.dims.current_step[0]) if self._layer.data.ndim >= 3 else 0
+        frame = self._layer.data[t]
+        before = frame.copy()
+        if fix_cell_borders(frame, radius=radius):
+            _record_history(self._layer, t, before)
+            self._layer.refresh()
+            self._update_highlight(t, self._selected_label)
+            self._set_status(
+                f"Fixed borders (r={radius}) in frame {t}"
+                f" — Active on '{self._layer.name}'"
+            )
+        else:
+            self._set_status(
+                f"Fix borders: no gaps in frame {t} — Active on '{self._layer.name}'"
+            )
+
     def _run_fix_borders(self):
         """Apply fix_cell_borders to every frame of the active labels layer."""
         if self._layer is None:
@@ -754,6 +816,63 @@ class CorrectionWidget(QWidget):
             )
         else:
             self._set_status(f"Fix borders: no gaps found — Active on '{self._layer.name}'")
+
+    def _run_clean_frame(self):
+        """Remove stranded pixels in the current frame."""
+        if self._layer is None:
+            show_error("Activate the correction widget first")
+            return
+        t = int(self.viewer.dims.current_step[0]) if self._layer.data.ndim >= 3 else 0
+        frame = self._layer.data[t]
+        before = frame.copy()
+        n = clean_stranded_pixels(frame)
+        if n:
+            _record_history(self._layer, t, before)
+            self._layer.refresh()
+            self._update_highlight(t, self._selected_label)
+            self._set_status(
+                f"Cleaned {n} stranded px in frame {t}"
+                f" — Active on '{self._layer.name}'"
+            )
+        else:
+            self._set_status(
+                f"Clean: no stranded pixels in frame {t} — Active on '{self._layer.name}'"
+            )
+
+    def _run_clean_all(self):
+        """Remove stranded pixels in all frames."""
+        if self._layer is None:
+            show_error("Activate the correction widget first")
+            return
+        data = self._layer.data
+        n_frames = data.shape[0]
+        total = 0
+        for t in range(n_frames):
+            frame = data[t]
+            before = frame.copy()
+            n = clean_stranded_pixels(frame)
+            if n:
+                _record_history(self._layer, t, before)
+                total += n
+        if total:
+            self._layer.refresh()
+            t_cur = int(self.viewer.dims.current_step[0]) if self._layer.data.ndim >= 3 else 0
+            self._update_highlight(t_cur, self._selected_label)
+            self._set_status(
+                f"Cleaned {total} stranded px across {n_frames} frames"
+                f" — Active on '{self._layer.name}'"
+            )
+        else:
+            self._set_status(
+                f"Clean: no stranded pixels found — Active on '{self._layer.name}'"
+            )
+
+    def _toggle_outline(self, checked: bool):
+        """Toggle between filled labels and outline-only display."""
+        if self._layer is None:
+            self._outline_btn.setChecked(False)
+            return
+        self._layer.contour = 2 if checked else 0
 
     # ── helpers ───────────────────────────────────────────────────────────
 

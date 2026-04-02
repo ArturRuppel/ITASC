@@ -204,19 +204,26 @@ class TrackingTab(QWidget):
 
         stacked = np.stack(tracked_nuc, axis=0).astype(np.uint16)
 
-        seg_layer = self._seg_tab._seg_layer
-        if seg_layer is not None and seg_layer in self.viewer.layers:
+        # Prefer writing back to the source layer (by name from state), then
+        # fall back to the segmentation tab's tracked reference, then create new.
+        seg_layer = None
+        src_name = self._state.tissue.labels_layer
+        if src_name and src_name in self.viewer.layers:
+            seg_layer = self.viewer.layers[src_name]
+        elif self._seg_tab._seg_layer is not None and self._seg_tab._seg_layer in self.viewer.layers:
+            seg_layer = self._seg_tab._seg_layer
+
+        if seg_layer is not None:
             seg_layer.data = stacked
             seg_layer.refresh()
             self._log_append("Done! Segmentation layer updated with tracked result.")
         else:
             scale = self._seg_tab._input_scale
             kw = {"scale": scale[-stacked.ndim:]} if scale is not None else {}
-            new_layer = self.viewer.add_labels(stacked, name="Segmentation", **kw)
-            self._seg_tab._seg_layer = new_layer
-            seg_layer = new_layer
+            seg_layer = self.viewer.add_labels(stacked, name="Segmentation", **kw)
             self._log_append("Done! Tracked labels added as Segmentation layer.")
 
+        self._seg_tab._seg_layer = seg_layer
         self._state.set_tissue_labels(np.asarray(seg_layer.data), seg_layer.name)
         self._seg_tab._seg_status.setText(f"Tracked: {seg_layer.data.shape}")
         self._rebuild_tracks_layer(stacked)
