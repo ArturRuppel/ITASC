@@ -18,28 +18,36 @@
   rest of the plugin.~~ **Done** — `CorrectionWidget` now receives `seg_tab`, auto-selects
   `seg_tab._seg_layer` on `showEvent`/refresh, matching the `TrackingTab` pattern.
 
-- **Common data IO widget**: Consider extracting a shared "Data IO" panel (load image,
-  load labels, pixel size, time interval) that all tabs — segmentation, tracking,
-  correction, edge analysis — embed rather than each reinventing the same UI.
+- ~~**Common data IO widget**: Project bar and Database tab merged into a single always-visible
+  `ProjectPanel` above the tab widget. Handles Load / Save / Save As, metadata (px, dt,
+  condition), tissue table, and dashboard launch. `New` button removed.~~ **Done**
 
 - ~~**Metadata**: Metadata fields (pixel size, time interval, condition) currently live
   only in the Database tab. Move them (or expose them) in a common widget so every tab
   can read them without going through the Database.~~ **Done** — `pixel_size`,
-  `time_interval`, `condition` added to `ViewerState`; `DataBankWidget` writes to the
-  state on edit/load; `analysis_widget` reads from `self._state` directly.
+  `time_interval`, `condition` added to `ViewerState`; now live in `ProjectPanel` and
+  sync through `ViewerState` to all tabs.
 
 ---
 
 ## DataBank → Database
 
-- **Common widget**: Evaluate whether the Database widget should become the single
+- ~~**Common widget**: Evaluate whether the Database widget should become the single
   shared hub for data IO + metadata, replacing the per-widget load/clear buttons. All
-  other tabs would read the active dataset/labels from there.
+  other tabs would read the active dataset/labels from there.~~ **Done** — merged into
+  `ProjectPanel`.
 
-- **Pointer-based storage**: Instead of copying edge data into the dataset, the Database
-  could store pointers (file paths) to the raw data and read them on demand. This
-  keeps memory usage low and makes it easy for the user to make corrections outside
-  the plugin and reload without re-running the full pipeline.
+- ~~**Pointer-based storage**~~ **Reconsidered** — keeping the single `.h5` format for
+  integrity (segmentation and graph data stay atomically linked). Image paths are not
+  stored because images are typically loaded from napari layers whose source path is
+  unreliable.
+
+- **Multi-file dataset**: Add a meta/project file (e.g. a lightweight JSON or TOML) that
+  assembles several `.h5` files into a single logical dataset. The panel should show
+  which `.h5` is currently *active* (the one being worked on), and any newly added
+  tissues or metadata edits should be written back to that file. Switching the active
+  file should be a single click. This enables multi-condition or multi-replicate
+  experiments to live as separate `.h5` files but be analysed together.
 
 ---
 
@@ -58,4 +66,10 @@
 
 ## UI / UX
 
+---
 
+## Tagging
+
+- **Tag cells (not only edges)**: Currently tagging is only supported for edges. Extend
+  the tagging feature to also support cells (nodes). Where exactly in the codebase /
+  UI this feature should live still needs to be determined.

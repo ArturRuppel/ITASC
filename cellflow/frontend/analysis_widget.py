@@ -120,10 +120,10 @@ class CellFlowWidget(QWidget):
         _plugin_layout.setSpacing(0)
         self._outer_scroll.setWidget(_plugin_root)
 
-        # ── Project bar (fixed strip above all tabs) ──────────────────────
-        from .project_bar import ProjectBar
-        self._project_bar = ProjectBar(self.viewer, self._state)
-        _plugin_layout.addWidget(self._project_bar)
+        # ── Project panel (fixed strip above all tabs) ────────────────────
+        from .project_panel import ProjectPanel
+        self._project_panel = ProjectPanel(self.viewer, self._state)
+        _plugin_layout.addWidget(self._project_panel)
 
         self.tab_widget = QTabWidget()
         _plugin_layout.addWidget(self.tab_widget)
@@ -405,11 +405,6 @@ class CellFlowWidget(QWidget):
         self._forces_widget = ForcesWidget(self.viewer)
         self.tab_widget.addTab(self._forces_widget, "ForSys")
 
-        # ========== Database tab ==========
-        from .databank_widget import DataBankWidget
-        self._databank_widget = DataBankWidget(self.viewer)
-        self.tab_widget.addTab(self._databank_widget, "Database")
-
         # Now that all tabs have been added the tab widget has a real sizeHint;
         # resize the scroll container to match so scrollbars appear correctly.
         self._outer_scroll.widget().adjustSize()
@@ -439,8 +434,8 @@ class CellFlowWidget(QWidget):
 
         self.cancel_btn.clicked.connect(self._cancel_worker)
 
-        # Databank: show tissue in viewer when requested from the Database tab
-        self._databank_widget.show_tissue_requested.connect(self._show_tissue_from_databank)
+        # Project panel: show tissue in viewer when requested
+        self._project_panel.show_tissue_requested.connect(self._show_tissue_from_databank)
 
     # ------------------------------------------------------------------
     # Pipeline stage gating
@@ -606,7 +601,6 @@ class CellFlowWidget(QWidget):
         self._update_pipeline_buttons()
         self._clear_stage_info()
         self.status_label.setText(f"Added tissue {tid} to dataset.")
-        self.tab_widget.setCurrentWidget(self._databank_widget)
 
     def _discard_pipeline(self):
         self._remove_all_stage_layers()
