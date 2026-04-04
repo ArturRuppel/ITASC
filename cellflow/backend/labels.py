@@ -1169,16 +1169,18 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
         labeled, n_comp = _cc_label(mask, return_num=True, connectivity=2)
         if n_comp <= 1:
             continue
-        for comp_id in range(1, n_comp + 1):
+        comp_sizes = {comp_id: int(np.sum(labeled == comp_id)) for comp_id in range(1, n_comp + 1)}
+        largest = max(comp_sizes, key=comp_sizes.__getitem__)
+        for comp_id, n_px in comp_sizes.items():
+            if comp_id == largest:
+                continue
             comp_mask = labeled == comp_id
-            n_px = int(np.sum(comp_mask))
-            if n_px < min_size:
-                seg[comp_mask] = 0
-                cleared += n_px
-                log.debug(
-                    "clean_stranded_pixels: removed %d px of label %s (comp %d/%d)",
-                    n_px, cell_id, comp_id, n_comp,
-                )
+            seg[comp_mask] = 0
+            cleared += n_px
+            log.debug(
+                "clean_stranded_pixels: removed %d px of label %s (comp %d/%d)",
+                n_px, cell_id, comp_id, n_comp,
+            )
 
     # ── pass 2: orphaned background holes ────────────────────────────────────
     bg = seg == 0

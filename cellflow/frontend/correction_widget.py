@@ -701,6 +701,7 @@ class CorrectionWidget(QWidget):
                     pos_list.append(_layer.world_to_data(event.position))
                     dl.data = []
                     dl.visible = False
+                    self.viewer.layers.selection.active = _layer
                     curlabel = self._selected_label if self._selected_label else None
                     log.debug("split_draw: %d positions collected, curlabel=%s", len(pos_list), curlabel)
                     before = seg2d.copy()
@@ -732,6 +733,7 @@ class CorrectionWidget(QWidget):
                     pos_list.append(_layer.world_to_data(event.position))
                     dl.data = []
                     dl.visible = False
+                    self.viewer.layers.selection.active = _layer
                     curlabel = self._selected_label if self._selected_label else None
                     log.debug("draw_cell_path: %d positions collected, curlabel=%s", len(pos_list), curlabel)
                     before = seg2d.copy()
