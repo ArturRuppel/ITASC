@@ -1,3 +1,6 @@
+export to cellpose uses open segmentation layer instead of loaded in the datamanager
+→ DONE: segmentation widget now syncs _seg_layer from state.tissue.labels_layer on tissue_changed, and _get_or_create_labels_layer checks state before falling back to name search.
+
 redrawing sometimes leads to stranded pixels. disconnected from their cells but still with the same id. we should clean this up. with a button? or in regular intervalls?
 → DONE: "Cleanup" group added to correction widget with "Clean (this frame)" and "Clean (all frames)" buttons.
 
@@ -20,4 +23,4 @@ it should be possible to toggle between seeing the full label and only the outli
 → DONE: "Show outlines only" toggle button added to correction widget (sets layer.contour = 2 / 0).
 
 there should be a shortcut for saving a tissue to the current file.
-→ DONE: Ctrl+S saves to current path without dialog; opens dialog if tissue is unsaved.
+→ ATTEMPS: Ctrl+S shoul saves to current path without dialog; opens dialog if tissue is unsaved, but it's not working. Might be interferring with napari native shortcut

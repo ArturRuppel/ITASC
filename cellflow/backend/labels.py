@@ -942,19 +942,26 @@ def _split_in_crop(
     regions, n = nd_label(mask)
     sizes = [int(np.sum(regions == i)) for i in range(1, n + 1)]
     log.debug("_split_in_crop: retry=%d n_regions=%d sizes=%s", retry, n, sizes)
-    if (
-        n == 2
-        and np.sum(regions == 1) >= MIN_CELL_SIZE
-        and np.sum(regions == 2) >= MIN_CELL_SIZE
-    ):
-        # Fill the gap left by the dilated line so labels are contiguous
-        expanded = expand_labels(regions, distance=max(retry + 2, 3))
-        r0, c0, r1, c1 = bbox
-        new_lab = _free_label(seg)
-        orig_cell = crop == curlabel
-        seg[r0:r1, c0:c1][(expanded == 2) & orig_cell] = new_lab
-        log.debug("_split_in_crop: success new_lab=%s at retry=%d", new_lab, retry)
-        return True
+
+    if n >= 2:
+        # Pick the two largest regions — ignores tiny slivers created by
+        # diagonal-line rasterisation artefacts under 4-connectivity.
+        ids_by_size = sorted(range(1, n + 1), key=lambda i: sizes[i - 1], reverse=True)
+        id_a, id_b = ids_by_size[0], ids_by_size[1]
+        size_a, size_b = sizes[id_a - 1], sizes[id_b - 1]
+        log.debug("_split_in_crop: top-2 id_a=%d(%d px) id_b=%d(%d px)", id_a, size_a, id_b, size_b)
+        if size_a >= MIN_CELL_SIZE and size_b >= MIN_CELL_SIZE:
+            # Remap to 1/2 so expand_labels fills the line gap and any slivers.
+            regions_2 = np.zeros_like(regions)
+            regions_2[regions == id_a] = 1
+            regions_2[regions == id_b] = 2
+            expanded = expand_labels(regions_2, distance=max(retry + 2, 3))
+            r0, c0, r1, c1 = bbox
+            new_lab = _free_label(seg)
+            orig_cell = crop == curlabel
+            seg[r0:r1, c0:c1][(expanded == 2) & orig_cell] = new_lab
+            log.debug("_split_in_crop: success new_lab=%s at retry=%d", new_lab, retry)
+            return True
 
     return _split_in_crop(seg, crop, line, bbox, curlabel, retry + 1)
 
@@ -978,9 +985,8 @@ def draw_cell_path(
        When several inside components exist, use all of them (this handles
        concave strokes that produce multiple pockets).
     4. Within that inside region:
-         - Extending an existing cell (*curlabel* set): fill ALL enclosed pixels,
-           including those belonging to other cells (the drawn boundary is the
-           new authoritative outline).
+         - Extending an existing cell (*curlabel* set): fill enclosed background
+           and the cell's own pixels (does not overwrite other cells).
          - Creating a new cell: fill only background (0) pixels so neighbouring
            cells are not overwritten.
     5. Use *curlabel* if provided, otherwise allocate a new label.
@@ -1038,10 +1044,9 @@ def draw_cell_path(
     if inside_ids:
         inside_mask = np.isin(labeled_regions, inside_ids)
         extending = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
-        # Extending an existing cell: fill everything inside (overwrite other
-        # cells too).  Creating a new cell: only fill background pixels so we
-        # don't accidentally eat into neighbouring cells.
-        fill_mask = inside_mask if extending else (inside_mask & (seg == 0))
+        # Only fill background or own-cell pixels — never silently overwrite
+        # neighbouring cells (consistent with the fallback stroke path below).
+        fill_mask = inside_mask & ((seg == 0) | (seg == curlabel)) if extending else (inside_mask & (seg == 0))
         n_px = int(np.sum(fill_mask))
         log.debug("draw_cell_path: enclosed fill px=%d extending=%s", n_px, extending)
         if n_px >= MIN_CELL_SIZE:
@@ -1176,9 +1181,13 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
                 continue
             comp_mask = labeled == comp_id
             seg[comp_mask] = 0
+            # Reassign to nearest neighbouring cell — avoids leaving background
+            # holes regardless of component size (pass 2 only fills < min_size).
+            filled = expand_labels(seg, distance=n_px + 2)
+            seg[comp_mask] = filled[comp_mask]
             cleared += n_px
             log.debug(
-                "clean_stranded_pixels: removed %d px of label %s (comp %d/%d)",
+                "clean_stranded_pixels: reassigned %d px of label %s (comp %d/%d)",
                 n_px, cell_id, comp_id, n_comp,
             )
 

@@ -43,6 +43,7 @@ class ProjectPanel(QWidget):
         super().__init__()
         self.viewer = viewer
         self._state = state
+        self._tracked_layer_objects = {}  # layer object → tissue field attr name
         self._build_ui()
         self._connect_signals()
         self._refresh_tissue()
@@ -271,7 +272,7 @@ class ProjectPanel(QWidget):
         if tissue.image is not None:
             arr = tissue.image
             shape_str = " × ".join(str(d) for d in arr.shape)
-            self._image_row.set_status(shape_str)
+            self._image_row.set_status(shape_str, tissue.image_layer or "")
         else:
             self._image_row.set_status("not loaded")
         self._image_row.to_layer_btn.setEnabled(tissue.image is not None)
@@ -281,7 +282,7 @@ class ProjectPanel(QWidget):
         if tissue.image2 is not None:
             arr = tissue.image2
             shape_str = " × ".join(str(d) for d in arr.shape)
-            self._image2_row.set_status(shape_str)
+            self._image2_row.set_status(shape_str, tissue.image2_layer or "")
         else:
             self._image2_row.set_status("not loaded")
         self._image2_row.to_layer_btn.setEnabled(tissue.image2 is not None)
@@ -291,11 +292,13 @@ class ProjectPanel(QWidget):
         if tissue.labels is not None:
             arr = tissue.labels
             shape_str = " × ".join(str(d) for d in arr.shape)
-            self._labels_row.set_status(shape_str)
+            self._labels_row.set_status(shape_str, tissue.labels_layer or "")
         else:
             self._labels_row.set_status("not loaded")
         self._labels_row.to_layer_btn.setEnabled(tissue.labels is not None)
         self._labels_row.clear_btn.setEnabled(tissue.labels is not None)
+
+        self._rebuild_layer_tracking()
 
         # edge analysis row
         if tissue.series is not None:
@@ -365,6 +368,42 @@ class ProjectPanel(QWidget):
             self._catalog_table.setItem(row, 4, cond_item)
 
         self._catalog_table.blockSignals(False)
+
+    def _rebuild_layer_tracking(self):
+        """Reconnect name-change watchers for all tissue-linked layers."""
+        # Disconnect old watchers
+        for layer in list(self._tracked_layer_objects):
+            try:
+                layer.events.name.disconnect(self._on_layer_renamed)
+            except Exception:
+                pass
+        self._tracked_layer_objects = {}
+
+        tissue = self._state.tissue
+        field_map = {
+            "image_layer":  tissue.image_layer,
+            "image2_layer": tissue.image2_layer,
+            "labels_layer": tissue.labels_layer,
+            "forsys_layer": tissue.forsys_layer,
+        }
+        for field, layer_name in field_map.items():
+            if layer_name and layer_name in self.viewer.layers:
+                layer = self.viewer.layers[layer_name]
+                self._tracked_layer_objects[layer] = field
+                try:
+                    layer.events.name.connect(self._on_layer_renamed)
+                except Exception:
+                    pass
+
+    def _on_layer_renamed(self, event):
+        """Update tissue layer name field when a tracked napari layer is renamed."""
+        layer = event.source
+        new_name = layer.name
+        field = self._tracked_layer_objects.get(layer)
+        if field is None:
+            return
+        setattr(self._state.tissue, field, new_name)
+        self._state.tissue_changed.emit()
 
     def _sync_from_state(self):
         for w in (self._px_edit, self._dt_edit, self._condition_edit):
@@ -823,8 +862,13 @@ class _FieldRow(QHBoxLayout):
         self.clear_btn.setToolTip("Remove from internal storage (napari layer unaffected)")
         self.addWidget(self.clear_btn)
 
-    def set_status(self, text: str) -> None:
-        self._status.setText(text)
+    def set_status(self, text: str, layer_name: str = "") -> None:
+        if layer_name:
+            self._status.setText(layer_name)
+            self._status.setToolTip(text)
+        else:
+            self._status.setText(text)
+            self._status.setToolTip("")
 
 
 def _parse_float(text: str) -> Optional[float]:

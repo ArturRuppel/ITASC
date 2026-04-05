@@ -367,6 +367,13 @@ class SegmentationTab(QWidget):
         # layer was renamed or when a new stack has a different shape.
         if self._seg_layer is not None and self._seg_layer in self.viewer.layers:
             return self._seg_layer
+        # Try the layer recorded in state (loaded via Project Panel).
+        state_name = self._state.tissue.labels_layer
+        if state_name and state_name in self.viewer.layers:
+            lay = self.viewer.layers[state_name]
+            if isinstance(lay, napari.layers.Labels):
+                self._seg_layer = lay
+                return lay
         # Fall back to name-based search so we can adopt an existing layer.
         for lay in self.viewer.layers:
             if isinstance(lay, napari.layers.Labels) and lay.name == name:
@@ -431,10 +438,19 @@ class SegmentationTab(QWidget):
     def _get_inputs_for_frame(self):
         mode = self._current_mode()
         if mode == "single":
-            if self._input_data is None:
-                raise ValueError("Capture an Image layer in the Project Panel first.")
-            t = self._current_frame_idx(self._input_data)
-            return {"img": self._get_frame(self._input_data, t)}, t
+            if self._input_data is not None:
+                data = self._input_data
+            else:
+                # Fall back to any Image layer in the viewer (externally loaded)
+                img_layer = next(
+                    (lay for lay in self.viewer.layers if isinstance(lay, napari.layers.Image)),
+                    None,
+                )
+                if img_layer is None:
+                    raise ValueError("Capture an Image layer in the Project Panel first.")
+                data = np.asarray(img_layer.data)
+            t = self._current_frame_idx(data)
+            return {"img": self._get_frame(data, t)}, t
         else:  # two_ch
             if self._input_data is None or self._secondary_data is None:
                 raise ValueError("Capture Image and Image 2 in the Project Panel first.")
@@ -445,7 +461,12 @@ class SegmentationTab(QWidget):
             }, t
 
     def _on_tissue_changed(self):
-        """Input data is read from state via properties — nothing to sync here."""
+        """Sync tracked seg layer from state when tissue is loaded externally."""
+        labels_layer = self._state.tissue.labels_layer
+        if labels_layer and labels_layer in self.viewer.layers:
+            lay = self.viewer.layers[labels_layer]
+            if isinstance(lay, napari.layers.Labels):
+                self._seg_layer = lay
 
     def _sync_labels_to_state(self):
         """Mirror the current seg_layer data to internal TissueData state."""
@@ -874,13 +895,20 @@ class SegmentationTab(QWidget):
         self._gui_status.setText(f"Imported {imported} frame(s) from {export_dir}.")
 
     def _get_existing_masks(self, t):
-        for lay in self.viewer.layers:
-            if isinstance(lay, napari.layers.Labels) and lay.name == "Segmentation":
-                data = lay.data
-                if data.ndim == 2:
-                    return data
-                if t < data.shape[0]:
-                    return data[t]
+        # Prefer the tracked seg layer, then any Labels layer in the viewer
+        candidates = []
+        if self._seg_layer is not None and self._seg_layer in self.viewer.layers:
+            candidates.append(self._seg_layer)
+        candidates.extend(
+            lay for lay in self.viewer.layers
+            if isinstance(lay, napari.layers.Labels) and lay is not self._seg_layer
+        )
+        for lay in candidates:
+            data = lay.data
+            if data.ndim == 2:
+                return data
+            if t < data.shape[0]:
+                return data[t]
         return None
 
     # ── Error handling ─────────────────────────────────────────────────
