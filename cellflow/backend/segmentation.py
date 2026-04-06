@@ -133,7 +133,10 @@ def run_cp_two_channel(img_primary, img_secondary, model, diameter,
 # ── Tracking ───────────────────────────────────────────────────────────
 
 def track_nuclei_laptrack(nuc_raw, max_link_dist, max_gap_dist,
-                           gap_closing_max_frame_count):
+                           gap_closing_max_frame_count,
+                           track_start_cost=None, track_end_cost=None,
+                           alternative_cost_factor=1.05,
+                           alternative_cost_percentile=90):
     """
     Track nuclei across frames using LapTrack (centroid-distance LAP).
 
@@ -166,6 +169,10 @@ def track_nuclei_laptrack(nuc_raw, max_link_dist, max_gap_dist,
         gap_closing_max_frame_count=gap_closing_max_frame_count,
         splitting_cutoff=False,
         merging_cutoff=False,
+        track_start_cost=track_start_cost,
+        track_end_cost=track_end_cost,
+        alternative_cost_factor=alternative_cost_factor,
+        alternative_cost_percentile=alternative_cost_percentile,
     )
     track_df, _, _ = tracker.predict_dataframe(
         det_df, coordinate_cols=["y", "x"], frame_col="frame"

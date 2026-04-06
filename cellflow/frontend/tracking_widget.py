@@ -12,7 +12,7 @@ import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout,
-    QSpinBox,
+    QSpinBox, QDoubleSpinBox,
     QPushButton, QLabel, QToolButton,
     QTextEdit, QProgressBar, QScrollArea,
 )
@@ -36,6 +36,11 @@ TRACK_DEFAULTS = {
     "max_link_dist":               20,
     "max_gap_dist":                25,
     "gap_closing_max_frame_count": 3,
+    # 0.0 = Auto (let LapTrack compute from cost percentile)
+    "track_start_cost":            0.0,
+    "track_end_cost":              0.0,
+    "alternative_cost_factor":     1.05,
+    "alternative_cost_percentile": 90,
 }
 
 
@@ -77,7 +82,7 @@ class TrackingTab(QWidget):
         t_scroll = QScrollArea()
         t_scroll.setWidget(track_inner)
         t_scroll.setWidgetResizable(True)
-        t_scroll.setFixedHeight(160)
+        t_scroll.setFixedHeight(240)
         t_scroll.setVisible(False)
         root.addWidget(t_scroll)
 
@@ -139,13 +144,63 @@ class TrackingTab(QWidget):
         self._p_gapf.setValue(TRACK_DEFAULTS["gap_closing_max_frame_count"])
         add("Gap closing frames:", self._p_gapf)
 
+        self._p_start_cost = QDoubleSpinBox()
+        self._p_start_cost.setRange(0.0, 100000.0)
+        self._p_start_cost.setDecimals(1)
+        self._p_start_cost.setSingleStep(10.0)
+        self._p_start_cost.setSpecialValueText("Auto")
+        self._p_start_cost.setValue(TRACK_DEFAULTS["track_start_cost"])
+        self._p_start_cost.setToolTip(
+            "Cost for starting a new track (no prior frame link).\n"
+            "Higher = fewer spurious new tracks. Auto = derived from cost percentile."
+        )
+        add("Track start cost:", self._p_start_cost)
+
+        self._p_end_cost = QDoubleSpinBox()
+        self._p_end_cost.setRange(0.0, 100000.0)
+        self._p_end_cost.setDecimals(1)
+        self._p_end_cost.setSingleStep(10.0)
+        self._p_end_cost.setSpecialValueText("Auto")
+        self._p_end_cost.setValue(TRACK_DEFAULTS["track_end_cost"])
+        self._p_end_cost.setToolTip(
+            "Cost for ending a track (no subsequent frame link).\n"
+            "Higher = fewer tracks that disappear prematurely. Auto = derived from cost percentile."
+        )
+        add("Track end cost:", self._p_end_cost)
+
+        self._p_alt_factor = QDoubleSpinBox()
+        self._p_alt_factor.setRange(1.0, 10.0)
+        self._p_alt_factor.setDecimals(2)
+        self._p_alt_factor.setSingleStep(0.05)
+        self._p_alt_factor.setValue(TRACK_DEFAULTS["alternative_cost_factor"])
+        self._p_alt_factor.setToolTip(
+            "Multiplier on the cost percentile used to auto-compute start/end costs.\n"
+            "Increase to make new-track / track-end events more expensive."
+        )
+        add("Alt cost factor:", self._p_alt_factor)
+
+        self._p_alt_pct = QSpinBox()
+        self._p_alt_pct.setRange(50, 100)
+        self._p_alt_pct.setValue(TRACK_DEFAULTS["alternative_cost_percentile"])
+        self._p_alt_pct.setToolTip(
+            "Percentile of linking costs used to set the auto start/end cost baseline.\n"
+            "Higher = auto costs scale with more expensive links in the dataset."
+        )
+        add("Alt cost percentile:", self._p_alt_pct)
+
     # ── Parameter collection ───────────────────────────────────────────
 
     def _collect_track_params(self):
+        start = self._p_start_cost.value()
+        end   = self._p_end_cost.value()
         return {
             "max_link_dist":               self._p_link.value(),
             "max_gap_dist":                self._p_gap.value(),
             "gap_closing_max_frame_count": self._p_gapf.value(),
+            "track_start_cost":            None if start == 0.0 else start,
+            "track_end_cost":              None if end   == 0.0 else end,
+            "alternative_cost_factor":     self._p_alt_factor.value(),
+            "alternative_cost_percentile": self._p_alt_pct.value(),
         }
 
     # ── Run ────────────────────────────────────────────────────────────
@@ -185,9 +240,13 @@ class TrackingTab(QWidget):
             yield "Running LapTrack…"
             tracked_nuc, track_df = track_nuclei_laptrack(
                 nuc_frames,
-                max_link_dist              = track_params["max_link_dist"],
-                max_gap_dist               = track_params["max_gap_dist"],
-                gap_closing_max_frame_count= track_params["gap_closing_max_frame_count"],
+                max_link_dist               = track_params["max_link_dist"],
+                max_gap_dist                = track_params["max_gap_dist"],
+                gap_closing_max_frame_count = track_params["gap_closing_max_frame_count"],
+                track_start_cost            = track_params["track_start_cost"],
+                track_end_cost              = track_params["track_end_cost"],
+                alternative_cost_factor     = track_params["alternative_cost_factor"],
+                alternative_cost_percentile = track_params["alternative_cost_percentile"],
             )
             n_tracks = track_df["track_id"].nunique() if len(track_df) > 0 else 0
             yield f"  {n_tracks} track(s) found"

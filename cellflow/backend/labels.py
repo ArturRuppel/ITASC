@@ -1044,9 +1044,10 @@ def draw_cell_path(
     if inside_ids:
         inside_mask = np.isin(labeled_regions, inside_ids)
         extending = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
-        # Only fill background or own-cell pixels — never silently overwrite
-        # neighbouring cells (consistent with the fallback stroke path below).
-        fill_mask = inside_mask & ((seg == 0) | (seg == curlabel)) if extending else (inside_mask & (seg == 0))
+        # Extending an existing cell: fill everything inside the drawn boundary
+        # (overwrites other cells too — the stroke is the new authoritative outline).
+        # Creating a new cell: only fill background pixels.
+        fill_mask = inside_mask if extending else (inside_mask & (seg == 0))
         n_px = int(np.sum(fill_mask))
         log.debug("draw_cell_path: enclosed fill px=%d extending=%s", n_px, extending)
         if n_px >= MIN_CELL_SIZE:
