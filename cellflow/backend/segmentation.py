@@ -132,25 +132,108 @@ def run_cp_two_channel(img_primary, img_secondary, model, diameter,
 
 # ── Tracking ───────────────────────────────────────────────────────────
 
+def _iou_cost_matrix(f0, f1, centroids0, centroids1, max_link_dist,
+                     iou_weight):
+    """Compute the combined (centroid + IoU) cost matrix for one frame pair.
+
+    Only computes mask IoU for pairs whose centroids are within max_link_dist,
+    avoiding O(n²·H·W) work for distant cell pairs.
+
+    Returns an (n0 × n1) float32 array in pixel units.
+    """
+    labels0 = np.array(sorted(set(np.unique(f0)) - {0}), dtype=np.int32)
+    labels1 = np.array(sorted(set(np.unique(f1)) - {0}), dtype=np.int32)
+    n0, n1  = len(labels0), len(labels1)
+    if n0 == 0 or n1 == 0:
+        return np.full((n0, n1), np.inf, dtype=np.float32)
+
+    # Vectorised centroid distance matrix (n0 × n1)
+    c0 = np.array([centroids0[l] for l in labels0])   # (n0, 2)
+    c1 = np.array([centroids1[l] for l in labels1])   # (n1, 2)
+    diff = c0[:, None, :] - c1[None, :, :]            # (n0, n1, 2)
+    d    = np.sqrt((diff ** 2).sum(axis=2))            # (n0, n1)
+
+    if iou_weight == 0.0:
+        return d.astype(np.float32)
+
+    # Only compute mask IoU for candidate pairs (centroid within max_link_dist)
+    iou_mat  = np.zeros((n0, n1), dtype=np.float32)
+    areas0   = {l: int((f0 == l).sum()) for l in labels0}
+    masks1   = {l: (f1 == l)            for l in labels1}
+    areas1   = {l: int(m.sum())         for l, m in masks1.items()}
+
+    rows0, cols1 = np.where(d <= max_link_dist)
+    for r, c in zip(rows0, cols1):
+        la, lb   = int(labels0[r]), int(labels1[c])
+        mask_a   = f0 == la
+        inter    = int(np.sum(mask_a & masks1[lb]))
+        if inter > 0:
+            union = areas0[la] + areas1[lb] - inter
+            iou_mat[r, c] = inter / union
+
+    cost = ((1.0 - iou_weight) * d
+            + iou_weight * max_link_dist * (1.0 - iou_mat))
+    return cost.astype(np.float32)
+
+
+def _make_matrix_metric(cost_mat, labels_row, labels_col):
+    """Return a cdist callable that looks up a precomputed cost matrix.
+
+    Coordinate vector: [y, x, label]
+    Labels are used as keys into per-row/col index maps.
+    """
+    row_idx = {int(l): i for i, l in enumerate(labels_row)}
+    col_idx = {int(l): i for i, l in enumerate(labels_col)}
+
+    def _metric(u, v):
+        r = row_idx.get(int(round(u[2])))
+        c = col_idx.get(int(round(v[2])))
+        if r is None or c is None:
+            return np.inf
+        return float(cost_mat[r, c])
+    return _metric
+
+
+def _gap_closing_metric(u, v):
+    """Plain euclidean on the centroid coords; ignores the label tail."""
+    return np.sqrt((u[0] - v[0]) ** 2 + (u[1] - v[1]) ** 2)
+
+
 def track_nuclei_laptrack(nuc_raw, max_link_dist, max_gap_dist,
                            gap_closing_max_frame_count,
                            metric="euclidean", gap_closing_metric="euclidean",
                            track_start_cost=None, track_end_cost=None,
                            alternative_cost_factor=1.05,
-                           alternative_cost_percentile=90):
+                           alternative_cost_percentile=90,
+                           iou_weight=0.0,
+                           progress_cb=None):
     """
     Track nuclei across frames using LapTrack (centroid-distance LAP).
+
+    Parameters
+    ----------
+    iou_weight : float in [0, 1]
+        Blend between pure centroid distance (0.0) and IoU-informed cost (1.0).
+        Cost = (1-w)*d_euclidean + w*max_link_dist*(1-IoU).
+        Gap closing always uses plain euclidean distance.
+    progress_cb : callable(str) or None
+        Called with progress messages during IoU precomputation so the caller
+        can forward them to a log widget.
 
     Returns
     -------
     tracked_nuc : list of (H,W) uint16 arrays with consistent track IDs (1-based)
     track_df    : LapTrack output dataframe
     """
+    def _log(msg):
+        if progress_cb is not None:
+            progress_cb(msg)
+
     records = []
     for t, nuc in enumerate(nuc_raw):
         if nuc.max() == 0:
             continue
-        props = regionprops_table(nuc, properties=["label", "centroid", "area"])
+        props = regionprops_table(nuc, properties=["label", "centroid"])
         df_t  = pd.DataFrame(props)
         df_t.rename(columns={"centroid-0": "y", "centroid-1": "x"}, inplace=True)
         df_t["frame"] = t
@@ -162,10 +245,67 @@ def track_nuclei_laptrack(nuc_raw, max_link_dist, max_gap_dist,
     det_df = pd.concat(records, ignore_index=True)
     det_df["frame"] = det_df["frame"].astype(int)
 
+    use_iou = iou_weight > 0.0
+    if use_iou:
+        # Build centroid lookup: frame -> {label: (y, x)}
+        centroids = {}
+        for t, nuc in enumerate(nuc_raw):
+            if nuc.max() == 0:
+                continue
+            props = regionprops_table(nuc, properties=["label", "centroid"])
+            centroids[t] = {
+                int(l): (cy, cx)
+                for l, cy, cx in zip(props["label"],
+                                     props["centroid-0"],
+                                     props["centroid-1"])
+            }
+
+        # Precompute one cost matrix per consecutive frame pair.
+        # Each is an (n0 × n1) float32 array; labels are stored alongside for
+        # index mapping.  Progress is reported so callers can log each frame.
+        precomputed = {}   # t -> (cost_mat, {label: row}, sorted_col_labels, {label: col})
+        n_pairs = len(nuc_raw) - 1
+        for t in range(n_pairs):
+            if nuc_raw[t].max() == 0 or nuc_raw[t + 1].max() == 0:
+                _log(f"  IoU precompute frame {t + 1}/{n_pairs}")
+                continue
+            labels0 = np.array(sorted(set(np.unique(nuc_raw[t]))     - {0}), dtype=np.int32)
+            labels1 = np.array(sorted(set(np.unique(nuc_raw[t + 1])) - {0}), dtype=np.int32)
+            cost_mat = _iou_cost_matrix(
+                nuc_raw[t], nuc_raw[t + 1],
+                centroids[t], centroids[t + 1],
+                float(max_link_dist), iou_weight,
+            )
+            row_idx = {int(l): i for i, l in enumerate(labels0)}
+            col_idx = {int(l): i for i, l in enumerate(labels1)}
+            precomputed[t] = (cost_mat, row_idx, col_idx)
+            _log(f"  IoU precompute frame {t + 1}/{n_pairs}")
+
+        def link_metric(u, v):
+            # coord vector: [y, x, frame, label]
+            t  = int(round(min(u[2], v[2])))
+            la = int(round(u[3])) if u[2] <= v[2] else int(round(v[3]))
+            lb = int(round(v[3])) if u[2] <= v[2] else int(round(u[3]))
+            entry = precomputed.get(t)
+            if entry is None:
+                return float(max_link_dist) + 1.0
+            r = entry[1].get(la)
+            c = entry[2].get(lb)
+            if r is None or c is None:
+                return float(max_link_dist) + 1.0
+            return float(entry[0][r, c])
+
+        gap_metric = _gap_closing_metric
+        coord_cols = ["y", "x", "frame", "label"]
+    else:
+        link_metric = metric
+        gap_metric  = gap_closing_metric
+        coord_cols  = ["y", "x"]
+
     tracker = LapTrack(
-        metric=metric,
+        metric=link_metric,
         cutoff=float(max_link_dist),
-        gap_closing_metric=gap_closing_metric,
+        gap_closing_metric=gap_metric,
         gap_closing_cutoff=float(max_gap_dist),
         gap_closing_max_frame_count=gap_closing_max_frame_count,
         splitting_cutoff=False,
@@ -176,7 +316,7 @@ def track_nuclei_laptrack(nuc_raw, max_link_dist, max_gap_dist,
         alternative_cost_percentile=alternative_cost_percentile,
     )
     track_df, _, _ = tracker.predict_dataframe(
-        det_df, coordinate_cols=["y", "x"], frame_col="frame"
+        det_df, coordinate_cols=coord_cols, frame_col="frame"
     )
     track_df = track_df.copy()
     track_df["track_id"] = track_df["track_id"] + 1  # 1-based (0 = background)

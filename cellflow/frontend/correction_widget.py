@@ -149,6 +149,27 @@ class CorrectionWidget(QWidget):
             lbl_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
         root.addWidget(lbl_ref)
 
+        # inspect cell
+        inspect_box = QGroupBox("Inspect cell")
+        inspect_lay = QVBoxLayout(inspect_box)
+        inspect_row = QHBoxLayout()
+        inspect_row.addWidget(QLabel("Cell ID:"))
+        self._goto_cell_id = QSpinBox()
+        self._goto_cell_id.setRange(0, 999_999)
+        self._goto_cell_id.setValue(0)
+        self._goto_cell_id.setSpecialValueText("—")
+        inspect_row.addWidget(self._goto_cell_id)
+        self._goto_btn = QPushButton("Go")
+        self._goto_btn.setEnabled(False)
+        self._goto_btn.clicked.connect(self._goto_cell)
+        inspect_row.addWidget(self._goto_btn)
+        inspect_lay.addLayout(inspect_row)
+        self._inspect_frames_label = QLabel("")
+        self._inspect_frames_label.setWordWrap(True)
+        self._inspect_frames_label.setStyleSheet("font-size: 9pt; color: palette(text);")
+        inspect_lay.addWidget(self._inspect_frames_label)
+        root.addWidget(inspect_box)
+
         # fix-borders batch operation
         fix_box = QGroupBox("Fix borders")
         fix_lay = QVBoxLayout(fix_box)
@@ -277,6 +298,7 @@ class CorrectionWidget(QWidget):
         self._register_callbacks()
         self._activate_btn.setText("Deactivate")
         self._outline_btn.setEnabled(True)
+        self._goto_btn.setEnabled(True)
         self._set_status(f"Active on '{layer.name}'")
 
     def _deactivate(self):
@@ -336,6 +358,9 @@ class CorrectionWidget(QWidget):
         self._activate_btn.setChecked(False)
         self._outline_btn.setChecked(False)
         self._outline_btn.setEnabled(False)
+        self._goto_btn.setEnabled(False)
+        self._goto_cell_id.setValue(0)
+        self._inspect_frames_label.setText("")
         self._set_status("Inactive")
         self._cleanup_draw_layer()
         self._cleanup_highlight_layer()
@@ -467,6 +492,40 @@ class CorrectionWidget(QWidget):
             log.debug("_reset_tool_mode: restoring pan_zoom")
             self._layer.mode = "pan_zoom"
             # _on_layer_mode_change will hide the button and update status
+
+    # ── inspect cell ──────────────────────────────────────────────────────
+
+    def _goto_cell(self):
+        """Highlight the requested cell and list frames where it appears."""
+        lab = self._goto_cell_id.value()
+        if lab == 0:
+            step = self.viewer.dims.current_step
+            t = int(step[0]) if self._layer is not None and self._layer.data.ndim >= 3 and len(step) >= 1 else 0
+            self._update_highlight(t, 0)
+            self._inspect_frames_label.setText("")
+            return
+        if self._layer is None:
+            return
+        data = self._layer.data
+        frames = [i for i in range(data.shape[0]) if np.any(data[i] == lab)]
+        if not frames:
+            self._inspect_frames_label.setText(f"Cell {lab} not found in any frame.")
+            step = self.viewer.dims.current_step
+            t = int(step[0]) if len(step) >= 1 else 0
+            self._update_highlight(t, 0)
+            return
+        # Build a compact frame-list string (truncate if > 20 entries)
+        _MAX = 20
+        if len(frames) <= _MAX:
+            frames_str = ", ".join(str(f) for f in frames)
+        else:
+            shown = ", ".join(str(f) for f in frames[:_MAX])
+            frames_str = f"{shown}, … ({len(frames)} frames total)"
+        self._inspect_frames_label.setText(f"Frames: {frames_str}")
+        # Highlight in the current frame (may be empty if cell not present there)
+        step = self.viewer.dims.current_step
+        t = int(step[0]) if len(step) >= 1 else 0
+        self._update_highlight(t, lab)
 
     # ── callback registration ─────────────────────────────────────────────
 

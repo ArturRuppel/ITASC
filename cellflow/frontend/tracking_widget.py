@@ -48,6 +48,7 @@ TRACK_DEFAULTS = {
 }
 
 
+
 # ── widget ─────────────────────────────────────────────────────────────
 
 class TrackingTab(QWidget):
@@ -94,6 +95,24 @@ class TrackingTab(QWidget):
             track_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
             t_scroll.setVisible(checked)
         track_toggle.toggled.connect(_toggle_track)
+
+        # ── IoU weight ──
+        iou_row = QFormLayout()
+        iou_row.setSpacing(4)
+        self._p_iou_weight = QDoubleSpinBox()
+        self._p_iou_weight.setRange(0.0, 1.0)
+        self._p_iou_weight.setDecimals(2)
+        self._p_iou_weight.setSingleStep(0.1)
+        self._p_iou_weight.setValue(0.0)
+        self._p_iou_weight.setToolTip(
+            "Blend between centroid distance (0) and IoU-based cost (1).\n"
+            "Higher values penalise linking cells with low mask overlap.\n"
+            "Gap closing always uses plain centroid distance."
+        )
+        iou_row.addRow("IoU weight:", self._p_iou_weight)
+        iou_widget = QWidget()
+        iou_widget.setLayout(iou_row)
+        root.addWidget(iou_widget)
 
         # ── Run button ──
         self._run_btn = QPushButton("Run Tracking")
@@ -219,6 +238,7 @@ class TrackingTab(QWidget):
             "track_end_cost":              None if end   == 0.0 else end,
             "alternative_cost_factor":     self._p_alt_factor.value(),
             "alternative_cost_percentile": self._p_alt_pct.value(),
+            "iou_weight":                  self._p_iou_weight.value(),
         }
 
     # ── Run ────────────────────────────────────────────────────────────
@@ -248,6 +268,7 @@ class TrackingTab(QWidget):
             "errored":  self._on_error,
         })
         def _work():
+            import queue
             from cellflow.backend.segmentation import track_nuclei_laptrack
 
             if nuc_data.ndim == 2:
@@ -255,7 +276,14 @@ class TrackingTab(QWidget):
             else:
                 nuc_frames = [nuc_data[t] for t in range(nuc_data.shape[0])]
 
-            yield "Running LapTrack…"
+            # Progress messages from the backend are queued so we can yield
+            # them here — yielding is the only point where cancel is checked.
+            msg_queue = queue.SimpleQueue()
+            if track_params["iou_weight"] > 0.0:
+                yield "Precomputing IoU costs…"
+            else:
+                yield "Running LapTrack…"
+
             tracked_nuc, track_df = track_nuclei_laptrack(
                 nuc_frames,
                 metric                      = track_params["metric"],
@@ -267,7 +295,11 @@ class TrackingTab(QWidget):
                 track_end_cost              = track_params["track_end_cost"],
                 alternative_cost_factor     = track_params["alternative_cost_factor"],
                 alternative_cost_percentile = track_params["alternative_cost_percentile"],
+                iou_weight                  = track_params["iou_weight"],
+                progress_cb                 = msg_queue.put,
             )
+            while not msg_queue.empty():
+                yield msg_queue.get_nowait()
             n_tracks = track_df["track_id"].nunique() if len(track_df) > 0 else 0
             yield f"  {n_tracks} track(s) found"
             yield "Tracking complete!"
