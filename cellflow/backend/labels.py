@@ -544,7 +544,6 @@ No CellFlow graph is modified — re-run graph extraction after corrections.
 
 import logging
 import os
-from collections import Counter
 
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_closing, label as nd_label
@@ -639,28 +638,6 @@ def _draw_line(shape: tuple[int, int], pts: list[tuple[int, int]]) -> np.ndarray
     return line
 
 
-def _extend_endpoints(
-    pts: list[tuple[float, float]], distance: float
-) -> list[tuple[float, float]]:
-    """Prepend and append one extra point beyond each endpoint along the endpoint tangent.
-
-    This ensures the drawn line reaches (and crosses) the cell boundary even
-    when the user's drag started or ended slightly inside the cell.
-    """
-    if len(pts) < 2:
-        return pts
-
-    def _extend(pt: tuple, neighbor: tuple, dist: float) -> tuple[float, float]:
-        dr = pt[0] - neighbor[0]
-        dc = pt[1] - neighbor[1]
-        mag = (dr ** 2 + dc ** 2) ** 0.5
-        if mag < 1e-6:
-            return pt
-        return (pt[0] + dr / mag * dist, pt[1] + dc / mag * dist)
-
-    new_start = _extend(pts[0],  pts[1],       distance)
-    new_end   = _extend(pts[-1], pts[-2],       distance)
-    return [new_start] + list(pts) + [new_end]
 
 
 # ── misc helpers ──────────────────────────────────────────────────────────────
@@ -819,105 +796,61 @@ def split_draw(seg: np.ndarray, positions: list, *, curlabel: int | None = None)
     """
     Split a cell along a manually drawn line.
 
-    *positions* is a list of (t,r,c) or (r,c) world coordinates collected
-    during the mouse drag.
+    *curlabel* must be provided and must exist in *seg*; if not, returns False
+    immediately (no stroke-based target inference).
 
-    Pass *curlabel* to target a specific cell (e.g. from a prior selection).
-    When omitted the target cell is inferred from the labels under the drawn path.
-
-    Existing labels are used as barriers (the line is only active within the
-    target cell's pixels).  The bounding box is kept tight around the drawn
-    line — only the target cell's own bounding box is used for the final split,
-    so enclosed regions far from the line cannot become spurious new cells.
+    Algorithm:
+    1. Crop around the target cell.
+    2. Filter the stroke to points that fall on the target cell's pixels.
+    3. Connect consecutive in-cell points to form the interior cut line.
+    4. Extend each endpoint outward along the tangent defined by its in-cell
+       neighbour — this reaches the cell boundary without depending on the
+       overall drag direction.
+    5. Erase the line from the cell mask and split into two pieces.
     """
     log.debug("split_draw: %d raw positions, curlabel=%s", len(positions), curlabel)
     if curlabel is None or curlabel == 0 or not np.any(seg == curlabel):
-        # identify the target cell from a tight crop around the drawn line
-        tight_bbox = _bbox_of_pts(positions)
-        tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape)
-        crop_tight = _crop(seg, tight_bbox)
-        local_pts = _to_local(positions, tight_bbox)
+        log.debug("split_draw: no valid curlabel — doing nothing")
+        return False
 
-        labels_under = [
-            int(crop_tight[int(round(r)), int(round(c))])
-            for r, c in local_pts
-            if 0 <= int(round(r)) < crop_tight.shape[0]
-            and 0 <= int(round(c)) < crop_tight.shape[1]
-        ]
-        log.debug("split_draw: labels_under counter=%s", Counter(labels_under).most_common(4))
-        if not labels_under:
-            log.debug("split_draw: rejected — no labels under drawn path")
-            return False
-        curlabel = max(set(labels_under), key=labels_under.count)
-        if curlabel == 0:
-            log.debug("split_draw: rejected — most common label is background")
-            return False
-    log.debug("split_draw: target label=%s", curlabel)
-
-    # re-crop around the cell itself so only that cell's region is in play
     bbox = _bbox_of_label(seg, curlabel)
     bbox = _extend_bbox(bbox, 1.25, seg.shape)
     crop = _crop(seg, bbox).copy()
     local_pts = _to_local(positions, bbox)
 
-    # Extend endpoints so the line is guaranteed to cross the cell boundary
-    h = bbox[2] - bbox[0]
-    w = bbox[3] - bbox[1]
-    extend_dist = max(int(np.sqrt(h ** 2 + w ** 2) / 2), 10)
-    local_pts = _extend_endpoints(local_pts, extend_dist)
+    # Find the indices of the first and last in-cell points in the stroke
+    in_cell_indices = [
+        i for i, p in enumerate(local_pts)
+        if 0 <= int(round(p[0])) < crop.shape[0]
+        and 0 <= int(round(p[1])) < crop.shape[1]
+        and crop[int(round(p[0])), int(round(p[1]))] == curlabel
+    ]
+    log.debug("split_draw: in_cell points=%d / total=%d", len(in_cell_indices), len(local_pts))
+    if len(in_cell_indices) < 2:
+        log.debug("split_draw: stroke missed the cell")
+        return False
 
-    interp = _interpolate(local_pts)
+    first_idx, last_idx = in_cell_indices[0], in_cell_indices[-1]
+    in_cell = [local_pts[i] for i in in_cell_indices]
+
+    # Extend to the stroke point just outside each end of the in-cell segment.
+    # These are the actual drawn positions immediately beyond the cell boundary,
+    # so the extension can never re-enter a concave part of the cell.
+    ext_start = local_pts[first_idx - 1] if first_idx > 0 else in_cell[0]
+    ext_end   = local_pts[last_idx + 1]  if last_idx < len(local_pts) - 1 else in_cell[-1]
+
+    all_pts = [ext_start] + in_cell + [ext_end]
+    interp = _interpolate(all_pts)
     line = _draw_line(crop.shape, interp)
-    cell_px = int(np.sum(crop == curlabel))
+
     line_on_cell = int(np.sum(line & (crop == curlabel)))
     log.debug(
-        "split_draw: bbox=%s cell_px=%d  interp_pts=%d line_on_cell=%d extend_dist=%d",
-        bbox, cell_px, len(interp), line_on_cell, extend_dist,
+        "split_draw: bbox=%s cell_px=%d interp_pts=%d line_on_cell=%d",
+        bbox, int(np.sum(crop == curlabel)), len(interp), line_on_cell,
     )
-
     if line_on_cell == 0:
-        # The drawn stroke missed the target cell entirely.  Fall back to
-        # inferring the target from the labels actually under the path.
-        log.debug("split_draw: line_on_cell=0 — falling back to path inference")
-        tight_bbox = _bbox_of_pts(positions)
-        tight_bbox = _extend_bbox(tight_bbox, 1.1, seg.shape)
-        crop_tight = _crop(seg, tight_bbox)
-        local_pts_tight = _to_local(positions, tight_bbox)
-        labels_under = [
-            int(crop_tight[int(round(r)), int(round(c))])
-            for r, c in local_pts_tight
-            if 0 <= int(round(r)) < crop_tight.shape[0]
-            and 0 <= int(round(c)) < crop_tight.shape[1]
-        ]
-        log.debug("split_draw fallback: labels_under=%s", Counter(labels_under).most_common(4))
-        fallback_label = max(
-            (lab for lab in set(labels_under) if lab != 0),
-            key=labels_under.count,
-            default=0,
-        )
-        if fallback_label == 0 or fallback_label == curlabel:
-            log.debug("split_draw fallback: no usable label found — giving up")
-            return False
-        log.debug("split_draw fallback: switching target to label=%s", fallback_label)
-        curlabel = fallback_label
-        bbox = _bbox_of_label(seg, curlabel)
-        bbox = _extend_bbox(bbox, 1.25, seg.shape)
-        crop = _crop(seg, bbox).copy()
-        local_pts = _to_local(positions, bbox)
-        h = bbox[2] - bbox[0]
-        w = bbox[3] - bbox[1]
-        extend_dist = max(int(np.sqrt(h ** 2 + w ** 2) / 2), 10)
-        local_pts = _extend_endpoints(local_pts, extend_dist)
-        interp = _interpolate(local_pts)
-        line = _draw_line(crop.shape, interp)
-        line_on_cell = int(np.sum(line & (crop == curlabel)))
-        log.debug(
-            "split_draw fallback: bbox=%s cell_px=%d interp_pts=%d line_on_cell=%d",
-            bbox, int(np.sum(crop == curlabel)), len(interp), line_on_cell,
-        )
-        if line_on_cell == 0:
-            log.debug("split_draw fallback: line still misses cell — giving up")
-            return False
+        log.debug("split_draw: line does not cross cell — giving up")
+        return False
 
     return _split_in_crop(seg, crop, line, bbox, curlabel)
 

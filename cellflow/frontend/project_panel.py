@@ -14,7 +14,6 @@ from typing import Optional
 
 import numpy as np
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -23,7 +22,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QShortcut,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -207,10 +205,9 @@ class ProjectPanel(QWidget):
         self._tissue_save_btn.clicked.connect(self._on_save_tissue)
         self._add_to_dataset_btn.clicked.connect(self._on_add_to_dataset)
 
-        # Ctrl+S shortcut: save to current path (no dialog) or open dialog if unsaved
-        self._save_shortcut = QShortcut(QKeySequence("Ctrl+S"), self)
-        self._save_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self._save_shortcut.activated.connect(self._on_save_tissue_quick)
+        # Ctrl+S shortcut: save to current path (no dialog) or open dialog if unsaved.
+        # Use napari's key-binding system so it overrides any conflicting napari shortcut.
+        self.viewer.bind_key("Control-S", lambda _: self._on_save_tissue_quick(), overwrite=True)
 
         # Image field
         self._image_row.capture_btn.clicked.connect(self._on_capture_image)
@@ -543,7 +540,12 @@ class ProjectPanel(QWidget):
 
     def _on_capture_image(self):
         import napari.layers
-        for layer in reversed(self.viewer.layers):
+        active = self.viewer.layers.selection.active
+        candidates = (
+            [active] + [l for l in reversed(self.viewer.layers) if l is not active]
+            if active is not None else list(reversed(self.viewer.layers))
+        )
+        for layer in candidates:
             if isinstance(layer, napari.layers.Image):
                 self._state.set_tissue_image(np.asarray(layer.data), layer.name)
                 self._status_label.setText(f"Captured image from '{layer.name}'.")

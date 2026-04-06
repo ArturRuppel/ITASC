@@ -299,7 +299,7 @@ class SegmentationTab(QWidget):
 
     def _browse_custom_model(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select custom Cellpose model", "", "Model files (*.pt *.pth);;All files (*)"
+            self, "Select custom Cellpose model", "", "All files (*);;Model files (*.pt *.pth)"
         )
         if path:
             self._custom_model_path = path

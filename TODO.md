@@ -1,26 +1,18 @@
-export to cellpose uses open segmentation layer instead of loaded in the datamanager
-→ DONE: segmentation widget now syncs _seg_layer from state.tissue.labels_layer on tissue_changed, and _get_or_create_labels_layer checks state before falling back to name search.
+clean function in correction widget should also fill holes in cells.
 
-redrawing sometimes leads to stranded pixels. disconnected from their cells but still with the same id. we should clean this up. with a button? or in regular intervalls?
-→ DONE: "Cleanup" group added to correction widget with "Clean (this frame)" and "Clean (all frames)" buttons.
+restore correctin mode warning get's stuck sometimes
 
-draw fails sometimes because a stroke is too short, though it should be valid, why?
-→ DONE: draw_cell_path fallback now allows stroke to paint over existing cell pixels when extending, so short border strokes no longer fail.
+still weird bug in cell splitting tool... when line crosses a segment of a cell where the extension of that line crosses the cell again at another spot, the other part gets cut instead of the one where to cut was made
 
-merging cells doesn't always work. a cell needs to be cleanly selected (no ctrl+click, no splitting or merging action before, no redraw etc.) for it to work.
-→ DONE: merge now uses label IDs directly instead of stale click positions, so it works after prior edits.
+cellpose model dialog looks for "model files" but model files don't have file extensions, so they are not detected. switching to all files and then using the model does work though (e.g. /home/aruppel/projects/cellpose_training/cpsam_U251)
+→ FIXED: swapped filter order so "All files (*)" is the default in the dialog
 
-fix borders should be possible to run on one frame only.
-→ DONE: "Fix borders (this frame)" button added alongside "Fix borders (all frames)".
 
-edge analysis param header looks different than the other widgets
-→ DONE: "Analyse Tissue" toggle changed from QPushButton to QToolButton with arrow, matching the tracking widget style.
-
-Tracking widget creates a new segmentation layer if input layer was not called Segmentation. which one is ground truth now? 
-→ DONE: tracking result is now written back to the source layer by name (from state.tissue.labels_layer), falling back to the segmentation tab's layer, then creating new only as last resort.
-
-it should be possible to toggle between seeing the full label and only the outlines of the labels in the correction widget. epicure has this feature already, could be explored there.
-→ DONE: "Show outlines only" toggle button added to correction widget (sets layer.contour = 2 / 0).
+load image doesn't always load the active image layer for some reason
+→ FIXED: _on_capture_image now checks the active layer first before falling back to the topmost Image layer
 
 there should be a shortcut for saving a tissue to the current file.
-→ ATTEMPS: Ctrl+S shoul saves to current path without dialog; opens dialog if tissue is unsaved, but it's not working. Might be interferring with napari native shortcut
+→ FIXED: replaced QShortcut(ApplicationShortcut) with viewer.bind_key("Control-S", overwrite=True) to avoid napari conflict
+
+draw cell path is unreliable, sometimes doesn't cut into neighboring cells properly
+→ FIXED: removed the seg==0 background-only restriction for new-cell creation; the drawn closed region always becomes the new cell, overwriting neighbors
