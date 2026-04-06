@@ -134,6 +134,7 @@ def run_cp_two_channel(img_primary, img_secondary, model, diameter,
 
 def track_nuclei_laptrack(nuc_raw, max_link_dist, max_gap_dist,
                            gap_closing_max_frame_count,
+                           metric="euclidean", gap_closing_metric="euclidean",
                            track_start_cost=None, track_end_cost=None,
                            alternative_cost_factor=1.05,
                            alternative_cost_percentile=90):
@@ -162,9 +163,9 @@ def track_nuclei_laptrack(nuc_raw, max_link_dist, max_gap_dist,
     det_df["frame"] = det_df["frame"].astype(int)
 
     tracker = LapTrack(
-        metric="euclidean",
+        metric=metric,
         cutoff=float(max_link_dist),
-        gap_closing_metric="euclidean",
+        gap_closing_metric=gap_closing_metric,
         gap_closing_cutoff=float(max_gap_dist),
         gap_closing_max_frame_count=gap_closing_max_frame_count,
         splitting_cutoff=False,

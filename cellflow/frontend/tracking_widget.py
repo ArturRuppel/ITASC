@@ -12,7 +12,7 @@ import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout,
-    QSpinBox, QDoubleSpinBox,
+    QSpinBox, QDoubleSpinBox, QComboBox,
     QPushButton, QLabel, QToolButton,
     QTextEdit, QProgressBar, QScrollArea,
 )
@@ -32,7 +32,11 @@ def _sep(title):
 
 # ── defaults ───────────────────────────────────────────────────────────
 
+_METRICS = ["euclidean", "sqeuclidean", "cityblock", "cosine"]
+
 TRACK_DEFAULTS = {
+    "metric":                      "euclidean",
+    "gap_closing_metric":          "euclidean",
     "max_link_dist":               20,
     "max_gap_dist":                25,
     "gap_closing_max_frame_count": 3,
@@ -129,6 +133,18 @@ class TrackingTab(QWidget):
     def _build_track_params(self):
         add = self._track_form.addRow
 
+        self._p_metric = QComboBox()
+        self._p_metric.addItems(_METRICS)
+        self._p_metric.setCurrentText(TRACK_DEFAULTS["metric"])
+        self._p_metric.setToolTip("Distance metric used for frame-to-frame linking.")
+        add("Link metric:", self._p_metric)
+
+        self._p_gap_metric = QComboBox()
+        self._p_gap_metric.addItems(_METRICS)
+        self._p_gap_metric.setCurrentText(TRACK_DEFAULTS["gap_closing_metric"])
+        self._p_gap_metric.setToolTip("Distance metric used for gap closing.")
+        add("Gap metric:", self._p_gap_metric)
+
         self._p_link = QSpinBox()
         self._p_link.setRange(1, 500)
         self._p_link.setValue(TRACK_DEFAULTS["max_link_dist"])
@@ -194,6 +210,8 @@ class TrackingTab(QWidget):
         start = self._p_start_cost.value()
         end   = self._p_end_cost.value()
         return {
+            "metric":                      self._p_metric.currentText(),
+            "gap_closing_metric":          self._p_gap_metric.currentText(),
             "max_link_dist":               self._p_link.value(),
             "max_gap_dist":                self._p_gap.value(),
             "gap_closing_max_frame_count": self._p_gapf.value(),
@@ -240,6 +258,8 @@ class TrackingTab(QWidget):
             yield "Running LapTrack…"
             tracked_nuc, track_df = track_nuclei_laptrack(
                 nuc_frames,
+                metric                      = track_params["metric"],
+                gap_closing_metric          = track_params["gap_closing_metric"],
                 max_link_dist               = track_params["max_link_dist"],
                 max_gap_dist                = track_params["max_gap_dist"],
                 gap_closing_max_frame_count = track_params["gap_closing_max_frame_count"],
