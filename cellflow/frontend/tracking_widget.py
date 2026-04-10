@@ -70,6 +70,22 @@ class TrackingTab(QWidget):
         root = QVBoxLayout(self)
         root.setSpacing(6)
 
+        # ── Target layer picker ──
+        target_form = QFormLayout()
+        target_form.setSpacing(4)
+        self._target_combo = QComboBox()
+        self._target_combo.addItems(["Cell Labels", "Nuclear Labels"])
+        self._target_combo.setToolTip(
+            "Which labels layer to track.\n"
+            "Cell Labels: standard cell segmentation — the usual path.\n"
+            "Nuclear Labels: run tracking on the nuclear layer first, then "
+            "use the tracked nuclear IDs as seeds for Guided Segmentation."
+        )
+        target_form.addRow("Track target:", self._target_combo)
+        target_w = QWidget()
+        target_w.setLayout(target_form)
+        root.addWidget(target_w)
+
         # ── Tracking parameters ──
         track_toggle = QToolButton()
         track_toggle.setText("LapTrack Parameters")
@@ -248,12 +264,28 @@ class TrackingTab(QWidget):
             self._log_append("Tracking already running.")
             return
 
+        # Determine which labels to track based on the target picker
+        track_nuclear = self._target_combo.currentText() == "Nuclear Labels"
+
+        if track_nuclear:
+            src_arr = self._state.tissue.nuclear_labels
+            if src_arr is None:
+                self._log_append(
+                    "ERROR: No nuclear labels in state. "
+                    "Run Nuclear Segmentation first."
+                )
+                return
+            src_layer_name = self._state.tissue.nuclear_labels_layer
+        else:
+            src_arr = self._state.tissue.labels
+            if src_arr is None:
+                self._log_append("ERROR: Load a tissue with segmentation in the Project Panel first.")
+                return
+            src_layer_name = self._state.tissue.labels_layer
+
         # Take an explicit copy so the worker holds a snapshot and is isolated
         # from any further layer writes while it runs.
-        if self._state.tissue.labels is None:
-            self._log_append("ERROR: Load a tissue with segmentation in the Project Panel first.")
-            return
-        nuc_data = np.array(self._state.tissue.labels, dtype=np.int32)
+        nuc_data = np.array(src_arr, dtype=np.int32)
 
         track_params = self._collect_track_params()
 
@@ -314,29 +346,46 @@ class TrackingTab(QWidget):
         self._cancel_btn.setVisible(False)
 
         stacked = np.stack(tracked_nuc, axis=0).astype(np.uint16)
+        track_nuclear = self._target_combo.currentText() == "Nuclear Labels"
 
-        # Prefer writing back to the source layer (by name from state), then
-        # fall back to the segmentation tab's tracked reference, then create new.
-        seg_layer = None
-        src_name = self._state.tissue.labels_layer
-        if src_name and src_name in self.viewer.layers:
-            seg_layer = self.viewer.layers[src_name]
-        elif self._seg_tab._seg_layer is not None and self._seg_tab._seg_layer in self.viewer.layers:
-            seg_layer = self._seg_tab._seg_layer
-
-        if seg_layer is not None:
-            seg_layer.data = stacked
-            seg_layer.refresh()
-            self._log_append("Done! Segmentation layer updated with tracked result.")
+        if track_nuclear:
+            # Write result back to the Nuclear Labels layer
+            src_name = self._state.tissue.nuclear_labels_layer or "Nuclear Labels"
+            seg_layer = None
+            if src_name and src_name in self.viewer.layers:
+                seg_layer = self.viewer.layers[src_name]
+            if seg_layer is not None:
+                seg_layer.data = stacked
+                seg_layer.refresh()
+                self._log_append("Done! Nuclear Labels layer updated with tracked result.")
+            else:
+                seg_layer = self.viewer.add_labels(stacked, name="Nuclear Labels")
+                self._log_append("Done! Tracked nuclear labels added as Nuclear Labels layer.")
+            self._state.set_tissue_nuclear_labels(np.asarray(seg_layer.data), seg_layer.name)
         else:
-            scale = self._seg_tab._input_scale
-            kw = {"scale": scale[-stacked.ndim:]} if scale is not None else {}
-            seg_layer = self.viewer.add_labels(stacked, name="Segmentation", **kw)
-            self._log_append("Done! Tracked labels added as Segmentation layer.")
+            # Write result back to the cell segmentation layer
+            seg_layer = None
+            src_name = self._state.tissue.labels_layer
+            if src_name and src_name in self.viewer.layers:
+                seg_layer = self.viewer.layers[src_name]
+            elif (self._seg_tab._seg_layer is not None
+                  and self._seg_tab._seg_layer in self.viewer.layers):
+                seg_layer = self._seg_tab._seg_layer
 
-        self._seg_tab._seg_layer = seg_layer
-        self._state.set_tissue_labels(np.asarray(seg_layer.data), seg_layer.name)
-        self._seg_tab._seg_status.setText(f"Tracked: {seg_layer.data.shape}")
+            if seg_layer is not None:
+                seg_layer.data = stacked
+                seg_layer.refresh()
+                self._log_append("Done! Segmentation layer updated with tracked result.")
+            else:
+                scale = self._seg_tab._input_scale
+                kw = {"scale": scale[-stacked.ndim:]} if scale is not None else {}
+                seg_layer = self.viewer.add_labels(stacked, name="Segmentation", **kw)
+                self._log_append("Done! Tracked labels added as Segmentation layer.")
+
+            self._seg_tab._seg_layer = seg_layer
+            self._state.set_tissue_labels(np.asarray(seg_layer.data), seg_layer.name)
+            self._seg_tab._seg_status.setText(f"Tracked: {seg_layer.data.shape}")
+
         self._rebuild_tracks_layer(stacked)
 
     # ── Tracks layer ───────────────────────────────────────────────────

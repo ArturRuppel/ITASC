@@ -208,6 +208,29 @@ class SegmentationTab(QWidget):
         gui_lay.addWidget(self._gui_status)
         root.addWidget(gui_box)
 
+        # ── Guided Segmentation section ──
+        guided_toggle = QToolButton()
+        guided_toggle.setText("Guided Segmentation (nuclear seeds)")
+        guided_toggle.setArrowType(Qt.RightArrow)
+        guided_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        guided_toggle.setCheckable(True)
+        guided_toggle.setChecked(False)
+        guided_toggle.setStyleSheet("QToolButton { font-weight: bold; }")
+        root.addWidget(guided_toggle)
+
+        guided_inner = QWidget()
+        guided_lay = QVBoxLayout(guided_inner)
+        guided_lay.setContentsMargins(0, 0, 0, 0)
+        guided_lay.setSpacing(6)
+        self._build_guided_section(guided_lay)
+        guided_inner.setVisible(False)
+        root.addWidget(guided_inner)
+
+        def _toggle_guided(checked):
+            guided_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+            guided_inner.setVisible(checked)
+        guided_toggle.toggled.connect(_toggle_guided)
+
         # ── Progress + log ──
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
@@ -289,6 +312,201 @@ class SegmentationTab(QWidget):
         self._gpu_chk.setChecked(SEG_DEFAULTS["gpu"])
         add("GPU:", self._gpu_chk)
 
+
+    def _build_guided_section(self, lay):
+        """Build the Guided Segmentation sub-section inside the collapsible panel."""
+        hint = QLabel(
+            "Use nuclear labels as watershed seeds on a cellpose probability map. "
+            "Requires nuclear labels to be tracked first (IDs consistent across frames)."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: palette(mid); font-size: 8pt;")
+        lay.addWidget(hint)
+
+        form = QFormLayout()
+        form.setSpacing(4)
+
+        # Membrane channel picker
+        self._guided_mem_combo = QComboBox()
+        self._guided_mem_combo.setToolTip(
+            "Membrane / cytoplasm channel. Shape: (T, H, W) or (T, Z, H, W).\n"
+            "If 4-D, Z is max-projected before running cellpose."
+        )
+        form.addRow("Membrane channel:", self._guided_mem_combo)
+
+        # Nuclear labels picker
+        self._guided_nuc_combo = QComboBox()
+        self._guided_nuc_combo.setToolTip(
+            "Tracked nuclear labels (T, H, W). Each nonzero region becomes a seed.\n"
+            "Cell IDs in the output will match these nuclear label IDs."
+        )
+        form.addRow("Nuclear labels:", self._guided_nuc_combo)
+
+        # Cellpose parameters for guided mode (shared with main params)
+        self._guided_flow = _dspin(-10, 10, SEG_DEFAULTS["cellprob_threshold"], 1, 0.5)
+        self._guided_flow.setToolTip(
+            "Cellprob threshold: pixels below this are treated as background in the watershed mask."
+        )
+        form.addRow("Cellprob threshold:", self._guided_flow)
+
+        form_w = QWidget()
+        form_w.setLayout(form)
+        lay.addWidget(form_w)
+
+        self._guided_run_btn = QPushButton("Run Guided Segmentation")
+        self._guided_run_btn.clicked.connect(self._on_run_guided)
+        lay.addWidget(self._guided_run_btn)
+
+        self._guided_progress = QProgressBar()
+        self._guided_progress.setRange(0, 0)
+        self._guided_progress.setVisible(False)
+        lay.addWidget(self._guided_progress)
+
+        self._guided_log = QTextEdit()
+        self._guided_log.setReadOnly(True)
+        self._guided_log.setFixedHeight(80)
+        self._guided_log.setPlaceholderText("Guided segmentation log…")
+        lay.addWidget(self._guided_log)
+
+        # Refresh layer lists when napari layers change
+        self._refresh_guided_layers()
+        self.viewer.layers.events.inserted.connect(self._refresh_guided_layers)
+        self.viewer.layers.events.removed.connect(self._refresh_guided_layers)
+
+    def _refresh_guided_layers(self, *_):
+        # Membrane channel
+        cur_mem = self._guided_mem_combo.currentText()
+        self._guided_mem_combo.blockSignals(True)
+        self._guided_mem_combo.clear()
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Image):
+                self._guided_mem_combo.addItem(layer.name)
+        # prefer state membrane layer
+        prefer = self._state.tissue.image_layer or cur_mem
+        idx = self._guided_mem_combo.findText(prefer)
+        if idx >= 0:
+            self._guided_mem_combo.setCurrentIndex(idx)
+        self._guided_mem_combo.blockSignals(False)
+
+        # Nuclear labels
+        cur_nuc = self._guided_nuc_combo.currentText()
+        self._guided_nuc_combo.blockSignals(True)
+        self._guided_nuc_combo.clear()
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Labels):
+                self._guided_nuc_combo.addItem(layer.name)
+        # prefer state nuclear labels layer
+        nuc_prefer = self._state.tissue.nuclear_labels_layer or "Nuclear Labels" or cur_nuc
+        idx = self._guided_nuc_combo.findText(nuc_prefer)
+        if idx >= 0:
+            self._guided_nuc_combo.setCurrentIndex(idx)
+        self._guided_nuc_combo.blockSignals(False)
+
+    def _guided_log_append(self, msg):
+        self._guided_log.append(msg)
+        self._guided_log.verticalScrollBar().setValue(
+            self._guided_log.verticalScrollBar().maximum()
+        )
+
+    def _on_run_guided(self):
+        from cellflow.backend.segmentation import (
+            make_cp_model, run_guided_segmentation_from_labels,
+        )
+
+        mem_name = self._guided_mem_combo.currentText()
+        nuc_name = self._guided_nuc_combo.currentText()
+
+        if not mem_name or mem_name not in self.viewer.layers:
+            self._guided_log_append("No membrane channel selected.")
+            return
+        if not nuc_name or nuc_name not in self.viewer.layers:
+            self._guided_log_append("No nuclear labels layer selected.")
+            return
+
+        mem_data = np.asarray(self.viewer.layers[mem_name].data)
+        nuc_data = np.asarray(self.viewer.layers[nuc_name].data)
+
+        if mem_data.ndim not in (3, 4):
+            self._guided_log_append(f"Membrane must be (T,H,W) or (T,Z,H,W), got {mem_data.shape}.")
+            return
+        if nuc_data.ndim != 3:
+            self._guided_log_append(
+                f"Nuclear labels must be (T,H,W) — run Flatten in Nuclear Seg tab first. "
+                f"Got shape {nuc_data.shape}."
+            )
+            return
+
+        params     = self._collect_params()
+        cellprob   = float(self._guided_flow.value())
+        model_key  = (params["model_type"], params.get("custom_model_path"), params["gpu"])
+        src_scale  = list(self.viewer.layers[mem_name].scale)
+
+        self._guided_log.clear()
+        self._guided_log_append(
+            f"Running guided segmentation on {mem_data.shape[0]} frame(s)…"
+        )
+        self._guided_progress.setVisible(True)
+        self._guided_run_btn.setEnabled(False)
+
+        @thread_worker(connect={
+            "returned": lambda r: self._on_guided_done(r, src_scale),
+            "errored":  self._on_guided_error,
+            "yielded":  self._guided_log_append,
+        })
+        def _work():
+            if self._cp_model is None or self._cp_model_key != model_key:
+                yield "Loading cellpose model…"
+                self._cp_model = make_cp_model(
+                    params["model_type"],
+                    custom_model_path=params.get("custom_model_path"),
+                    gpu=params["gpu"],
+                )
+                self._cp_model_key = model_key
+
+            label_stack = run_guided_segmentation_from_labels(
+                mem_data, nuc_data, self._cp_model,
+                diameter           = params["diameter"] or 0,
+                flow_threshold     = params["flow_threshold"],
+                cellprob_threshold = cellprob,
+                min_size           = params["min_size"],
+                progress_cb        = lambda m: None,  # yielded below per-frame
+            )
+            return label_stack
+
+        _work()
+
+    def _on_guided_done(self, label_stack, src_scale):
+        self._guided_progress.setVisible(False)
+        self._guided_run_btn.setEnabled(True)
+
+        ndim  = label_stack.ndim
+        scale = list(src_scale[-ndim:]) if src_scale else None
+        kw    = {"scale": scale} if scale is not None else {}
+
+        out_name = "Segmentation"
+        if out_name in self.viewer.layers:
+            lyr = self.viewer.layers[out_name]
+            if lyr.data.shape != label_stack.shape:
+                self.viewer.layers.remove(out_name)
+                lyr = self.viewer.add_labels(label_stack, name=out_name, **kw)
+            else:
+                lyr.data = label_stack
+        else:
+            lyr = self.viewer.add_labels(label_stack, name=out_name, **kw)
+
+        self._seg_layer = lyr
+        self._state.set_tissue_labels(np.asarray(lyr.data), lyr.name)
+        self._seg_status.setText(f"Guided seg: {label_stack.shape}")
+
+        n_cells = int(np.unique(label_stack[label_stack > 0]).shape[0])
+        self._guided_log_append(
+            f"Done. {label_stack.shape[0]} frames, {n_cells} unique cell IDs."
+        )
+
+    def _on_guided_error(self, exc):
+        self._guided_progress.setVisible(False)
+        self._guided_run_btn.setEnabled(True)
+        self._guided_log_append(f"Error: {exc}")
 
     # ── Mode / model switching ─────────────────────────────────────────
 

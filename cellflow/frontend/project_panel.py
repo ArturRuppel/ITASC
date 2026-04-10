@@ -94,8 +94,12 @@ class ProjectPanel(QWidget):
         self._image2_row = _FieldRow("Image 2 (opt.):", self)
         tg_layout.addLayout(self._image2_row)
 
-        # Row 2: Segmentation (labels) field
-        self._labels_row = _FieldRow("Segmentation:", self)
+        # Row 2a: Nuclear Segmentation (labels) field
+        self._nuclear_labels_row = _FieldRow("Nuclear Seg:", self)
+        tg_layout.addLayout(self._nuclear_labels_row)
+
+        # Row 2b: Cell Segmentation (labels) field
+        self._labels_row = _FieldRow("Cell Seg:", self)
         tg_layout.addLayout(self._labels_row)
 
         # Row 3: Edge Analysis field (series; no capture button — comes from pipeline)
@@ -219,6 +223,11 @@ class ProjectPanel(QWidget):
         self._image2_row.to_layer_btn.clicked.connect(self._on_image2_to_layer)
         self._image2_row.clear_btn.clicked.connect(self._on_clear_image2)
 
+        # Nuclear Labels field
+        self._nuclear_labels_row.capture_btn.clicked.connect(self._on_capture_nuclear_labels)
+        self._nuclear_labels_row.to_layer_btn.clicked.connect(self._on_nuclear_labels_to_layer)
+        self._nuclear_labels_row.clear_btn.clicked.connect(self._on_clear_nuclear_labels)
+
         # Labels field
         self._labels_row.capture_btn.clicked.connect(self._on_capture_labels)
         self._labels_row.to_layer_btn.clicked.connect(self._on_labels_to_layer)
@@ -284,6 +293,16 @@ class ProjectPanel(QWidget):
             self._image2_row.set_status("not loaded")
         self._image2_row.to_layer_btn.setEnabled(tissue.image2 is not None)
         self._image2_row.clear_btn.setEnabled(tissue.image2 is not None)
+
+        # nuclear labels row
+        if tissue.nuclear_labels is not None:
+            arr = tissue.nuclear_labels
+            shape_str = " × ".join(str(d) for d in arr.shape)
+            self._nuclear_labels_row.set_status(shape_str, tissue.nuclear_labels_layer or "")
+        else:
+            self._nuclear_labels_row.set_status("not loaded")
+        self._nuclear_labels_row.to_layer_btn.setEnabled(tissue.nuclear_labels is not None)
+        self._nuclear_labels_row.clear_btn.setEnabled(tissue.nuclear_labels is not None)
 
         # labels row
         if tissue.labels is not None:
@@ -591,6 +610,35 @@ class ProjectPanel(QWidget):
     def _on_clear_image2(self):
         self._state._tissue.image2 = None
         self._state._tissue.image2_layer = None
+        self._state.tissue_changed.emit()
+
+    def _on_capture_nuclear_labels(self):
+        import napari.layers
+        active = self.viewer.layers.selection.active
+        if active is not None and isinstance(active, napari.layers.Labels):
+            self._state.set_tissue_nuclear_labels(np.asarray(active.data), active.name)
+            self._status_label.setText(f"Captured nuclear labels from '{active.name}'.")
+            return
+        for layer in reversed(self.viewer.layers):
+            if isinstance(layer, napari.layers.Labels) and "nuclear" in layer.name.lower():
+                self._state.set_tissue_nuclear_labels(np.asarray(layer.data), layer.name)
+                self._status_label.setText(f"Captured nuclear labels from '{layer.name}'.")
+                return
+        self._status_label.setText("No nuclear Labels layer found.")
+
+    def _on_nuclear_labels_to_layer(self):
+        tissue = self._state.tissue
+        if tissue.nuclear_labels is None:
+            return
+        name = tissue.nuclear_labels_layer or "Nuclear Labels"
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = tissue.nuclear_labels
+        else:
+            self.viewer.add_labels(tissue.nuclear_labels, name=name)
+
+    def _on_clear_nuclear_labels(self):
+        self._state._tissue.nuclear_labels = None
+        self._state._tissue.nuclear_labels_layer = None
         self._state.tissue_changed.emit()
 
     def _on_capture_labels(self):

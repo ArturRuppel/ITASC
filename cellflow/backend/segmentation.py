@@ -130,6 +130,374 @@ def run_cp_two_channel(img_primary, img_secondary, model, diameter,
     return masks
 
 
+# ── Guided segmentation ────────────────────────────────────────────────
+
+def run_cp_get_probability_map(img, model, diameter, flow_threshold,
+                                cellprob_threshold, min_size):
+    """Run cellpose on a 2D image and return the cell probability map.
+
+    Unlike run_cp(), discards masks and returns flows[1] — the per-pixel
+    cell probability (values roughly in [0, 1]) produced by the neural
+    network before thresholding.  Used by guided segmentation: watershed
+    uses this map as the elevation surface while nuclear track positions
+    supply the seeds, so cell identity is fully determined by tracking
+    and cellpose only contributes boundary information.
+
+    Parameters
+    ----------
+    img : (H, W) array
+
+    Returns
+    -------
+    prob_map : (H, W) float32 array
+    """
+    _, flows, _ = model.eval(
+        img,
+        diameter=diameter,
+        flow_threshold=flow_threshold,
+        cellprob_threshold=cellprob_threshold,
+        min_size=min_size,
+    )
+    # cellpose eval returns flows = [dx_to_circ(dP), dP, cellprob]:
+    #   flows[0] = HSV visualization
+    #   flows[1] = dP gradient maps  (2, H, W) — NOT the probability
+    #   flows[2] = cellprob          (H, W)    — what we actually need
+    return np.asarray(flows[2], dtype=np.float32)
+
+
+def make_nuclear_seeds(track_df, frame, shape):
+    """Build a (H, W) seed image from nuclear track positions for one frame.
+
+    Parameters
+    ----------
+    track_df : DataFrame with columns (frame, track_id, y, x)
+    frame    : int
+    shape    : (H, W)
+
+    Returns
+    -------
+    seeds : (H, W) int32; pixel value = track_id, 0 = background
+    """
+    seeds = np.zeros(shape, dtype=np.int32)
+    H, W = shape
+    for _, row in track_df[track_df["frame"] == frame].iterrows():
+        yi = int(round(float(row["y"])))
+        xi = int(round(float(row["x"])))
+        if 0 <= yi < H and 0 <= xi < W:
+            seeds[yi, xi] = int(row["track_id"])
+    return seeds
+
+
+def run_guided_segmentation(membrane_stack, track_df, model,
+                             diameter, flow_threshold, cellprob_threshold,
+                             min_size, progress_cb=None):
+    """Segment cells using cellpose probability maps seeded by nuclear tracks.
+
+    For each frame: run the cellpose network to get a probability map,
+    plant one seed per tracked nucleus, then run watershed.  Output pixel
+    values are track IDs — no post-hoc relabelling is needed.
+
+    Parameters
+    ----------
+    membrane_stack : (T, H, W) or (T, Z, H, W) array
+        For 4-D input the Z-axis is max-projected before running cellpose.
+    track_df       : DataFrame with columns (frame, track_id, y, x)
+                     as returned by track_nuclei_laptrack.
+    model          : CellposeModel
+    progress_cb    : callable(str) or None
+
+    Returns
+    -------
+    label_stack : uint16 array with the same shape as membrane_stack.
+        For (T, H, W) input: (T, H, W).
+        For (T, Z, H, W) input: (T, Z, H, W) — each Z-plane carries the
+        same 2-D segmentation (the per-frame max-projection result).
+    """
+    from skimage.segmentation import watershed
+
+    membrane_stack = np.asarray(membrane_stack)
+    input_shape = membrane_stack.shape
+
+    if membrane_stack.ndim == 3:
+        T, H, W = input_shape
+        proj_stack = membrane_stack          # already (T, H, W)
+    elif membrane_stack.ndim == 4:
+        T, Z, H, W = input_shape
+        proj_stack = membrane_stack.max(axis=1)   # max-project Z → (T, H, W)
+    else:
+        raise ValueError(
+            f"membrane_stack must be (T, H, W) or (T, Z, H, W), "
+            f"got shape {input_shape}"
+        )
+
+    label_stack = np.zeros(input_shape, dtype=np.uint16)
+
+    for t in range(T):
+        if progress_cb:
+            progress_cb(f"Frame {t + 1}/{T}")
+
+        prob_map = run_cp_get_probability_map(
+            proj_stack[t], model,
+            diameter, flow_threshold, cellprob_threshold, min_size,
+        )
+        seeds = make_nuclear_seeds(track_df, t, (H, W))
+
+        if seeds.max() == 0:
+            continue
+
+        cell_mask = prob_map > cellprob_threshold
+        seg2d = watershed(
+            -prob_map, markers=seeds, mask=cell_mask,
+        ).astype(np.uint16)
+
+        if membrane_stack.ndim == 4:
+            label_stack[t] = seg2d[np.newaxis]   # broadcast 2-D result to all Z-planes
+        else:
+            label_stack[t] = seg2d
+
+    return label_stack
+
+
+def flatten_nuclear_labels(labels, method="max", hole_fill_radius=0,
+                           min_size=0, split_touching=False):
+    """Flatten a (T, Z, H, W) or (T, H, W) nuclear label stack to (T, H, W).
+
+    Parameters
+    ----------
+    labels           : (T, Z, H, W) or (T, H, W) integer array
+    method           : "max" | "mean" | "sum" — Z-projection method for 4-D input
+    hole_fill_radius : int; fills holes up to this radius inside each label
+    min_size         : int; remove labeled regions smaller than this (px²)
+    split_touching   : bool; watershed on distance map to separate merged nuclei
+
+    Returns
+    -------
+    out : (T, H, W) uint16 array
+    """
+    from skimage.morphology import remove_small_objects, disk, binary_closing
+    from skimage.measure import label as sk_label, regionprops
+
+    labels = np.asarray(labels)
+    if labels.ndim == 4:
+        if method == "max":
+            flat = labels.max(axis=1)
+        elif method == "mean":
+            flat = labels.mean(axis=1).astype(labels.dtype)
+        else:
+            flat = labels.sum(axis=1).astype(labels.dtype)
+    elif labels.ndim == 3:
+        flat = labels.copy()
+    else:
+        raise ValueError(
+            f"Expected (T, H, W) or (T, Z, H, W), got shape {labels.shape}"
+        )
+
+    T, H, W = flat.shape
+    out = np.zeros((T, H, W), dtype=np.uint16)
+
+    for t in range(T):
+        frame = flat[t].astype(np.int32)
+        if frame.max() == 0:
+            continue
+
+        mask = frame > 0
+
+        # Hole filling: close holes within labeled regions
+        if hole_fill_radius > 0:
+            from scipy.ndimage import binary_fill_holes
+            filled_mask = binary_fill_holes(mask)
+            # only fill in pixels that were holes (background surrounded by labels)
+            newly_filled = filled_mask & ~mask
+            if newly_filled.any():
+                from scipy.ndimage import label as ndi_label
+                filled_struct, _ = ndi_label(newly_filled)
+                for hole_lbl in np.unique(filled_struct[filled_struct > 0]):
+                    hole_pix = filled_struct == hole_lbl
+                    # find which nucleus label surrounds this hole
+                    border = np.zeros_like(mask, dtype=bool)
+                    from scipy.ndimage import binary_dilation
+                    dilated = binary_dilation(hole_pix, iterations=1)
+                    border = dilated & mask
+                    neighbors = frame[border]
+                    if neighbors.size > 0:
+                        fill_val = int(np.bincount(neighbors[neighbors > 0]).argmax())
+                        frame[hole_pix] = fill_val
+
+        # Min size filtering
+        if min_size > 0:
+            for region_lbl in np.unique(frame[frame > 0]):
+                if int((frame == region_lbl).sum()) < min_size:
+                    frame[frame == region_lbl] = 0
+
+        # Split touching nuclei via watershed on distance map
+        if split_touching:
+            from scipy.ndimage import distance_transform_edt, binary_dilation
+            from skimage.segmentation import watershed
+            from skimage.feature import peak_local_max
+            current_mask = frame > 0
+            dist = distance_transform_edt(current_mask)
+            coords = peak_local_max(dist, footprint=np.ones((3, 3)),
+                                    labels=current_mask)
+            seeds = np.zeros_like(current_mask, dtype=np.int32)
+            seeds[tuple(coords.T)] = 1
+            from scipy.ndimage import label as ndi_label
+            seeds, _ = ndi_label(seeds)
+            frame = watershed(-dist, seeds, mask=current_mask).astype(np.int32)
+
+        out[t] = np.clip(frame, 0, 65535).astype(np.uint16)
+
+    return out
+
+
+def run_guided_segmentation_from_labels(membrane_stack, nuclear_labels_stack,
+                                         model, diameter, flow_threshold,
+                                         cellprob_threshold, min_size,
+                                         progress_cb=None):
+    """Segment cells using cellpose probability maps seeded by nuclear labels.
+
+    Uses nuclear label regions directly as watershed seeds (rather than point
+    centroids), which produces more stable boundaries and does not require a
+    prior tracking step.  Cell IDs in the output match nuclear label IDs —
+    if the nuclear labels have been tracked, the cell segmentation is
+    automatically tracked too.
+
+    Parameters
+    ----------
+    membrane_stack      : (T, H, W) or (T, Z, H, W) array
+    nuclear_labels_stack: (T, H, W) uint integer array — 2D nuclear labels,
+                          one per time frame. Each unique nonzero value is one seed.
+    model               : CellposeModel
+    progress_cb         : callable(str) or None
+
+    Returns
+    -------
+    label_stack : uint16 (T, H, W) array; pixel values = nuclear label IDs.
+    """
+    from skimage.segmentation import watershed
+
+    membrane_stack       = np.asarray(membrane_stack)
+    nuclear_labels_stack = np.asarray(nuclear_labels_stack)
+
+    if membrane_stack.ndim == 4:
+        proj_stack = membrane_stack.max(axis=1)   # (T, H, W)
+    elif membrane_stack.ndim == 3:
+        proj_stack = membrane_stack
+    else:
+        raise ValueError(
+            f"membrane_stack must be (T, H, W) or (T, Z, H, W), "
+            f"got shape {membrane_stack.shape}"
+        )
+
+    T, H, W = proj_stack.shape
+    label_stack = np.zeros((T, H, W), dtype=np.uint16)
+
+    if nuclear_labels_stack.ndim != 3 or nuclear_labels_stack.shape[0] != T:
+        raise ValueError(
+            f"nuclear_labels_stack must be (T, H, W) with T={T}, "
+            f"got shape {nuclear_labels_stack.shape}"
+        )
+
+    for t in range(T):
+        if progress_cb:
+            progress_cb(f"Frame {t + 1}/{T}")
+
+        prob_map = run_cp_get_probability_map(
+            proj_stack[t], model,
+            diameter, flow_threshold, cellprob_threshold, min_size,
+        )
+
+        seeds = nuclear_labels_stack[t].astype(np.int32)
+        if seeds.max() == 0:
+            continue
+
+        cell_mask = prob_map > cellprob_threshold
+        seg2d = watershed(-prob_map, markers=seeds, mask=cell_mask).astype(np.uint16)
+        label_stack[t] = seg2d
+
+    return label_stack
+
+
+def track_nuclei_3d_laptrack(nuclear_volumes, z_scale,
+                              max_link_dist, max_gap_dist,
+                              gap_closing_max_frame_count,
+                              metric="euclidean",
+                              gap_closing_metric="euclidean",
+                              track_start_cost=None,
+                              track_end_cost=None,
+                              alternative_cost_factor=1.05,
+                              alternative_cost_percentile=90,
+                              progress_cb=None):
+    """Track nuclei across time points using 3D centroids.
+
+    Parameters
+    ----------
+    nuclear_volumes : list of (Z, H, W) integer arrays, one per time point.
+                      Each array is one time point's nuclear label volume.
+    z_scale         : float
+                      z-spacing in xy-pixel units (z_spacing_um / xy_pixel_um).
+                      z centroids are multiplied by this so that max_link_dist
+                      can be specified in xy-pixel units throughout.
+    max_link_dist   : float, max linking distance in xy-pixel units
+    progress_cb     : callable(str) or None
+
+    Returns
+    -------
+    track_df : DataFrame with columns (frame, track_id, label, z, y, x).
+               (y, x) are the 2D centroid — ready for use as watershed seeds.
+    """
+    def _log(msg):
+        if progress_cb is not None:
+            progress_cb(msg)
+
+    records = []
+    for t, vol in enumerate(nuclear_volumes):
+        if vol.ndim == 2:
+            # Treat a 2D (H,W) frame as a single-slice volume
+            vol = vol[np.newaxis]
+        if vol.max() == 0:
+            _log(f"  Frame {t}: no nuclei")
+            continue
+        props = regionprops_table(vol, properties=["label", "centroid"])
+        df_t = pd.DataFrame(props)
+        df_t.rename(columns={
+            "centroid-0": "z",
+            "centroid-1": "y",
+            "centroid-2": "x",
+        }, inplace=True)
+        df_t["frame"] = t
+        # Scale z so distances are comparable to xy-pixel distances
+        df_t["z_s"] = df_t["z"] * z_scale
+        records.append(df_t)
+        _log(f"  Frame {t}: {len(df_t)} nuclei detected")
+
+    if not records:
+        return pd.DataFrame(columns=["frame", "track_id", "label", "z", "y", "x"])
+
+    det_df = pd.concat(records, ignore_index=True)
+    det_df["frame"] = det_df["frame"].astype(int)
+
+    tracker = LapTrack(
+        metric=metric,
+        cutoff=float(max_link_dist),
+        gap_closing_metric=gap_closing_metric,
+        gap_closing_cutoff=float(max_gap_dist),
+        gap_closing_max_frame_count=gap_closing_max_frame_count,
+        splitting_cutoff=False,
+        merging_cutoff=False,
+        track_start_cost=track_start_cost,
+        track_end_cost=track_end_cost,
+        alternative_cost_factor=alternative_cost_factor,
+        alternative_cost_percentile=alternative_cost_percentile,
+    )
+    track_df, _, _ = tracker.predict_dataframe(
+        det_df, coordinate_cols=["z_s", "y", "x"], frame_col="frame",
+    )
+    track_df = track_df.reset_index(drop=True).copy()
+    track_df["track_id"] = track_df["track_id"] + 1  # 1-based
+
+    return track_df[["frame", "track_id", "label", "z", "y", "x"]].copy()
+
+
 # ── Tracking ───────────────────────────────────────────────────────────
 
 def _iou_cost_matrix(f0, f1, centroids0, centroids1, max_link_dist,

@@ -377,9 +377,14 @@ class CellFlowWidget(QWidget):
         layout.addStretch()
 
         # ========== Segmentation tab ==========
+        # ========== Nuclear Seg tab ==========
+        from .nuclear_seg_widget import NuclearSegWidget
+        self._nuclear_seg_tab = NuclearSegWidget(self.viewer)
+        self.tab_widget.addTab(self._nuclear_seg_tab, "Nuclear Seg")
+
         from .segmentation_widget import SegmentationTab
         self._segmentation_tab = SegmentationTab(self.viewer)
-        self.tab_widget.addTab(self._segmentation_tab, "Segmentation")
+        self.tab_widget.addTab(self._segmentation_tab, "Cell Seg")
 
         # ========== Tracking tab ==========
         from .tracking_widget import TrackingTab
