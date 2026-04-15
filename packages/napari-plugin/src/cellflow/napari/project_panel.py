@@ -80,6 +80,22 @@ class ProjectPanel(QWidget):
         proj_btn_row.addWidget(self._project_dir_label)
         pg_layout.addLayout(proj_btn_row)
 
+        # Row: import button + status
+        import_row = QHBoxLayout()
+        import_row.setSpacing(4)
+        self._import_pipeline_btn = QPushButton("Import from pipeline…")
+        self._import_pipeline_btn.setToolTip(
+            "Load the tracked labels from the pipeline output for pos 0\n"
+            "and auto-fill pixel size / time interval from the schema."
+        )
+        self._import_pipeline_btn.setEnabled(False)
+        self._import_status_label = QLabel("")
+        self._import_status_label.setStyleSheet("font-size: 9pt;")
+        self._import_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        import_row.addWidget(self._import_pipeline_btn)
+        import_row.addWidget(self._import_status_label)
+        pg_layout.addLayout(import_row)
+
         # Stage status table: Name | Status | Last Run
         self._pipeline_table = QTableWidget(0, 3)
         self._pipeline_table.setHorizontalHeaderLabels(["Stage", "Status", "Last Run"])
@@ -91,6 +107,16 @@ class ProjectPanel(QWidget):
         self._pipeline_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._pipeline_table.setSelectionMode(QTableWidget.NoSelection)
         pg_layout.addWidget(self._pipeline_table)
+
+        # Resume banner — shown when manifest has failed/running stages
+        self._resume_banner = QLabel("")
+        self._resume_banner.setWordWrap(True)
+        self._resume_banner.setStyleSheet(
+            "QLabel { color: #cc8800; font-size: 9pt; padding: 3px; "
+            "border: 1px solid #cc8800; border-radius: 3px; }"
+        )
+        self._resume_banner.setVisible(False)
+        pg_layout.addWidget(self._resume_banner)
 
         pipeline_group.setLayout(pg_layout)
         root.addWidget(pipeline_group)
@@ -244,7 +270,9 @@ class ProjectPanel(QWidget):
         # Pipeline project buttons
         self._new_project_btn.clicked.connect(self._on_new_project)
         self._open_project_btn.clicked.connect(self._on_open_project)
+        self._import_pipeline_btn.clicked.connect(self._on_import_from_pipeline)
         self._state.pipeline_schema_changed.connect(self._refresh_pipeline_status)
+        self._state.pipeline_schema_changed.connect(self._update_import_btn_state)
 
         # Auto-refresh pipeline status every 3 s when a project is open
         self._pipeline_timer = QTimer(self)
@@ -324,6 +352,76 @@ class ProjectPanel(QWidget):
         if d:
             self._state.set_project_dir(d)
 
+    def _update_import_btn_state(self) -> None:
+        """Enable the import button only when a project with a schema is open."""
+        schema = self._state.pipeline_schema
+        self._import_pipeline_btn.setEnabled(schema is not None)
+
+    def _on_import_from_pipeline(self) -> None:
+        """Load tracked labels from the pipeline output and populate state."""
+        schema = self._state.pipeline_schema
+        project_dir = self._state.project_dir
+        if schema is None or project_dir is None:
+            self._import_status_label.setText("No project open.")
+            return
+
+        # Resolve the tracked-labels path for pos 0.
+        # Try the schema interface first; fall back to the conventional path.
+        from cellflow.core.paths import stage_dir
+        label_path = None
+        iface = schema.interfaces.get("tracking.output.tracked_labels")
+        if iface and iface.path_template:
+            try:
+                rel = iface.path_template.format(pos=0, stem="tracked_labels")
+                candidate = project_dir / rel
+                if candidate.exists():
+                    label_path = candidate
+            except Exception:
+                pass
+
+        if label_path is None:
+            # Conventional fallback: <root>/pos00/3_tracking/tracked_labels.tif
+            candidate = stage_dir(project_dir, 0, "tracking") / "tracked_labels.tif"
+            if candidate.exists():
+                label_path = candidate
+
+        if label_path is None:
+            self._import_status_label.setText("tracked_labels.tif not found for pos 0.")
+            return
+
+        # Validate TIFF header before loading
+        try:
+            import tifffile
+            with tifffile.TiffFile(str(label_path)) as tf:
+                page = tf.pages[0]
+                shape = (len(tf.pages),) + page.shape if len(tf.pages) > 1 else page.shape
+        except Exception as exc:
+            self._import_status_label.setText(f"Invalid TIFF: {exc}")
+            return
+
+        # Load the label array
+        try:
+            import tifffile
+            labels = tifffile.imread(str(label_path))
+        except Exception as exc:
+            self._import_status_label.setText(f"Load error: {exc}")
+            return
+
+        # Push into state
+        self._state.set_tissue_labels(labels, layer_name=label_path.name)
+        self.viewer.add_labels(labels, name=label_path.name)
+
+        # Auto-fill metadata from schema
+        meta = schema.metadata
+        if meta.pixel_size_um is not None:
+            self._state.pixel_size = meta.pixel_size_um
+        if meta.time_interval_s is not None:
+            self._state.time_interval = meta.time_interval_s
+
+        self._import_status_label.setText(
+            f"Loaded {label_path.name} ({labels.shape})"
+        )
+
     def _refresh_pipeline_status(self) -> None:
         """Read manifest for pos 0 and update the pipeline status table."""
         project_dir = self._state.project_dir
@@ -373,6 +471,7 @@ class ProjectPanel(QWidget):
         }
 
         self._pipeline_table.setRowCount(len(stage_names))
+        incomplete_stages = []
         for row, name in enumerate(stage_names):
             record = manifest.stages.get(name)
             status = record.status if record else "pending"
@@ -387,6 +486,21 @@ class ProjectPanel(QWidget):
             badge_item.setForeground(__import__("qtpy.QtGui", fromlist=["QColor"]).QColor(color))
             self._pipeline_table.setItem(row, 1, badge_item)
             self._pipeline_table.setItem(row, 2, QTableWidgetItem(last_run))
+
+            if status in ("failed", "running"):
+                incomplete_stages.append((display, status))
+
+        # Show resume banner when there are failed or interrupted stages
+        if incomplete_stages:
+            parts = ", ".join(
+                f"{n} ({s})" for n, s in incomplete_stages
+            )
+            self._resume_banner.setText(
+                f"⚠ Incomplete stages detected — open the relevant tab to resume:\n{parts}"
+            )
+            self._resume_banner.setVisible(True)
+        else:
+            self._resume_banner.setVisible(False)
 
     # ------------------------------------------------------------------
     # State → UI

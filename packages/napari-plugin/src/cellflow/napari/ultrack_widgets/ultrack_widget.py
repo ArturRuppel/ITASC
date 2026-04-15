@@ -35,6 +35,8 @@ from napari.qt.threading import thread_worker
 from cellflow.cellpose.config import CellposeContoursConfig
 from cellflow.ultrack.config import TrackingConfig
 from cellflow.napari.runners.terminal import launch_in_terminal
+from cellflow.napari.log_viewer import StageLogViewer
+from cellflow.napari.registry import get_state
 from cellflow.cellpose.stages.contours import (
     compute_single_from_arrays as compute_cp_contours_single,
     discover_dp_files,
@@ -165,6 +167,9 @@ class UltrackAnalysisWidget(QWidget):
 
         self._all_status = QLabel("")
         lay.addWidget(self._all_status)
+
+        self._log_viewer = StageLogViewer(get_state(viewer))
+        lay.addWidget(self._log_viewer)
 
     # ══════════════════════════════════════════════════════════════════════
     # Shared path helpers
@@ -1217,6 +1222,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_worker = None
         self._tr_status.setText("Tracking complete \u2014 loading results\u2026")
         self._tr_load_results()
+        self._log_viewer.refresh()
 
     def _tr_on_error(self, exc: Exception) -> None:
         self._tr_run_btn.setEnabled(True)
@@ -1224,6 +1230,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_progress.setVisible(False)
         self._tr_worker = None
         self._tr_status.setText(f"Error: {exc}")
+        self._log_viewer.refresh()
 
     # ── Per-stage run methods ────────────────────────────────────────────
 
@@ -1917,6 +1924,7 @@ class UltrackAnalysisWidget(QWidget):
         self._all_worker = None
         self._all_status.setText("Run All complete \u2014 loading results\u2026")
         self._tr_load_results()
+        self._log_viewer.refresh()
 
     def _on_all_error(self, exc: Exception) -> None:
         self._run_all_btn.setEnabled(True)
@@ -1924,6 +1932,7 @@ class UltrackAnalysisWidget(QWidget):
         self._all_progress.setVisible(False)
         self._all_worker = None
         self._all_status.setText(f"Run All error: {exc}")
+        self._log_viewer.refresh()
 
     # ══════════════════════════════════════════════════════════════════════
     # Save / Load all parameters

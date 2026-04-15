@@ -357,12 +357,13 @@ class _TrackingStageClass:
 
     def run(self, foreground_path, contours_path, working_dir, cfg: TrackingConfig = None):
         from cellflow.core.logging import StageLogger
-        from cellflow.core.paths import log_path
+        from cellflow.core.paths import STAGE_DIRS
 
         cfg = cfg or self.config
-        # Derive root/pos from working_dir for logging (best-effort)
         wd = Path(working_dir)
-        log_file = wd / "pipeline.log"
+        # Write pipeline.log to the position directory (parent of 3_tracking/)
+        pos_dir = wd.parent
+        log_file = pos_dir / "pipeline.log"
         log = StageLogger(log_file, self.name)
         with log:
             for progress in run(
@@ -372,6 +373,16 @@ class _TrackingStageClass:
                 cfg=cfg,
             ):
                 yield StageProgress(*progress)
+            # Checkpoint: copy tracked_labels.tif to 4_analysis/ so CellFlow
+            # analysis stages can use it without knowing the tracking stage path.
+            src = wd / "tracked_labels.tif"
+            if src.exists():
+                analysis_dir = pos_dir / STAGE_DIRS.get("graph_extraction", "4_analysis")
+                analysis_dir.mkdir(parents=True, exist_ok=True)
+                dst = analysis_dir / "tracked_labels.tif"
+                if not dst.exists():
+                    shutil.copy2(str(src), str(dst))
+                    log.info(f"Checkpoint: copied tracked_labels.tif → {dst}")
 
     def validate_inputs(self, schema, root_dir, pos) -> ValidationResult:
         from cellflow.core.validation import validate_inputs

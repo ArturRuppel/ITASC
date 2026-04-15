@@ -73,11 +73,14 @@ class CatalogEntry:
 @dataclass
 class DatasetCatalog:
     """Ordered collection of saved tissue H5 files, lazy-loaded."""
-    entries:       List[CatalogEntry] = field(default_factory=list)
-    path:          Optional[str]      = None   # .cfproj file path
-    pixel_size:    Optional[float]    = None
-    time_interval: Optional[float]    = None
-    condition:     str                = ""
+    entries:          List[CatalogEntry]       = field(default_factory=list)
+    path:             Optional[str]            = None   # .cfproj file path
+    pixel_size:       Optional[float]          = None
+    time_interval:    Optional[float]          = None
+    condition:        str                      = ""
+    # Maps a group label (e.g. "WT", "KO") to a list of entry paths/keys.
+    # Populated from the v3.0 .cfproj ``condition_groups`` field.
+    condition_groups: Dict[str, List[str]]     = field(default_factory=dict)
 
     def get_series(self, index: int) -> TissueGraphTimeSeries:
         """Load from H5 if not cached, return from cache otherwise."""
@@ -112,10 +115,9 @@ class ViewerState(QObject):
     nuclear_labels_changed   = Signal()
     pipeline_schema_changed  = Signal()   # emitted when project_dir / schema changes
 
-    # --- legacy signals kept for any remaining call-sites ---
+    # legacy — kept for forces_widget and project_panel; remove in Phase 6
     dataset_changed  = Signal()
     project_changed  = Signal()
-    preview_changed  = Signal()
 
     def __init__(self, viewer) -> None:
         super().__init__()
@@ -131,9 +133,8 @@ class ViewerState(QObject):
         self._project_dir: Optional[Path] = None
         self._pipeline_schema: "Optional[PipelineSchema]" = None
 
-        # --- legacy shim backing store ---
+        # --- legacy backing store (dataset still used by forces_widget) ---
         self._dataset: Optional[TissueGraphDataset] = None
-        self._preview_series: Optional[TissueGraphTimeSeries] = None
 
     # -- viewer accessor ---------------------------------------------------
 
@@ -159,9 +160,6 @@ class ViewerState(QObject):
     def set_tissue_series(self, series: Optional[TissueGraphTimeSeries]) -> None:
         self._tissue.series = series
         self.tissue_changed.emit()
-        # keep legacy preview_series in sync for widgets not yet migrated
-        self._preview_series = series
-        self.preview_changed.emit()
 
     def set_tissue_image(self, arr, layer_name: Optional[str] = None) -> None:
         self._tissue.image = arr
@@ -277,19 +275,6 @@ class ViewerState(QObject):
     def pipeline_schema(self, value: "Optional[PipelineSchema]") -> None:
         self._pipeline_schema = value
         self.pipeline_schema_changed.emit()
-
-    # -- legacy: preview_series --------------------------------------------
-
-    @property
-    def preview_series(self) -> Optional[TissueGraphTimeSeries]:
-        return self._preview_series
-
-    @preview_series.setter
-    def preview_series(self, value: Optional[TissueGraphTimeSeries]) -> None:
-        self._preview_series = value
-        self._tissue.series = value
-        self.preview_changed.emit()
-        self.tissue_changed.emit()
 
     # -- legacy: dataset ---------------------------------------------------
 

@@ -34,6 +34,8 @@ from cellflow.cellpose.stages.nucleus_3d import (
     run as run_s01a,
 )
 from cellflow.cellpose.stages.cell_2d import run as run_s01b
+from cellflow.napari.log_viewer import StageLogViewer
+from cellflow.napari.registry import get_state
 
 
 class CellposeWidget(QWidget):
@@ -54,6 +56,9 @@ class CellposeWidget(QWidget):
         self._tabs.addTab(self._s01a_widget, "s01a — 3D Nucleus")
         self._tabs.addTab(self._s01b_widget, "s01b — 2D Cell")
         layout.addWidget(self._tabs)
+
+        self._log_viewer = StageLogViewer(get_state(viewer))
+        layout.addWidget(self._log_viewer)
 
         self.setLayout(layout)
 
@@ -490,6 +495,7 @@ class CellposeWidget(QWidget):
         self._s01a_status_label.setText("Done \u2014 Cellpose outputs written.")
         self._worker_s01a = None
         self._load_s01a_prob_stack()
+        self._log_viewer.refresh()
 
     def _on_s01a_error(self, exc: Exception) -> None:
         self._s01a_run_btn.setEnabled(True)
@@ -497,6 +503,7 @@ class CellposeWidget(QWidget):
         self._s01a_progress.setVisible(False)
         self._s01a_status_label.setText(f"Error: {exc}")
         self._worker_s01a = None
+        self._log_viewer.refresh()
 
     # ── s01b Progress / finished / error callbacks ────────────────────────
 
@@ -512,12 +519,14 @@ class CellposeWidget(QWidget):
         self._s01b_status_label.setText("Done \u2014 Cellpose outputs written.")
         self._worker_s01b = None
         self._load_s01b_results()
+        self._log_viewer.refresh()
 
     def _on_s01b_error(self, exc: Exception) -> None:
         self._s01b_run_btn.setEnabled(True)
         self._s01b_progress.setVisible(False)
         self._s01b_status_label.setText(f"Error: {exc}")
         self._worker_s01b = None
+        self._log_viewer.refresh()
 
     # ── s01a Load results ────────────────────────────────────────────────
 

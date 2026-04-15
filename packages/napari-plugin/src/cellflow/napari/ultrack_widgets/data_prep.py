@@ -22,6 +22,8 @@ from napari.qt.threading import thread_worker
 
 from cellflow.cellpose.config import DatasetConfig
 from cellflow.cellpose.stages.raw_import import run as run_s00
+from cellflow.napari.log_viewer import StageLogViewer
+from cellflow.napari.registry import get_state
 
 
 class DataPrepWidget(QWidget):
@@ -101,6 +103,9 @@ class DataPrepWidget(QWidget):
 
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
+
+        self._log_viewer = StageLogViewer(get_state(viewer))
+        layout.addWidget(self._log_viewer)
 
         self.setLayout(layout)
 
@@ -185,9 +190,11 @@ class DataPrepWidget(QWidget):
         self._progress.setVisible(False)
         self._status_label.setText(f"Done — exported {self._n_positions} position(s).")
         self._worker = None
+        self._log_viewer.refresh()
 
     def _on_error(self, exc: Exception) -> None:
         self._run_btn.setEnabled(True)
         self._progress.setVisible(False)
         self._status_label.setText(f"Error: {exc}")
         self._worker = None
+        self._log_viewer.refresh()

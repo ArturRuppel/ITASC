@@ -7,6 +7,7 @@ with napari overlay visualization.
 import logging
 from typing import Optional
 
+from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -22,7 +23,7 @@ from qtpy.QtWidgets import (
     QButtonGroup,
     QScrollArea,
 )
-from qtpy.QtCore import QThread, Qt
+from qtpy.QtCore import Qt
 
 from cellflow.backend.forsys import forsys_available
 from .registry import get_state
@@ -30,7 +31,6 @@ from .visualization import (
     build_tension_colored_junctions,
     build_pressure_colored_cells,
 )
-from .workers import ForceInferenceWorker
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,7 @@ class ForcesWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self._state = get_state(napari_viewer)
-        self._thread: Optional[QThread] = None
-        self._worker: Optional[ForceInferenceWorker] = None
+        self._worker = None  # thread_worker handle
 
         self._build_ui()
         self._connect_signals()
@@ -314,15 +313,12 @@ class ForcesWidget(QWidget):
         if not forsys_available():
             return
 
-        # Clean up any previous thread
-        if self._thread is not None:
+        # Cancel any in-progress worker
+        if self._worker is not None:
             try:
-                if self._thread.isRunning():
-                    self._thread.quit()
-                    self._thread.wait()
-            except RuntimeError:
-                pass  # C++ object already deleted by deleteLater
-            self._thread = None
+                self._worker.quit()
+            except Exception:
+                pass
             self._worker = None
 
         scope = self._scope_group.checkedId()
@@ -338,40 +334,73 @@ class ForcesWidget(QWidget):
             tissue_ids = [tid]
             frame_indices = [self.frame_spin.value()]
 
-        worker = ForceInferenceWorker(
-            dataset=ds,
-            tissue_ids=tissue_ids,
-            frame_indices=frame_indices,
-            endpoint_cluster_tol=self.tol_spin.value(),
-            allow_negatives=self.allow_neg_cb.isChecked(),
-        )
+        endpoint_cluster_tol = self.tol_spin.value()
+        allow_negatives = self.allow_neg_cb.isChecked()
 
-        self._thread = QThread()
-        self._worker = worker
-        worker.moveToThread(self._thread)
-        self._thread.started.connect(worker.run)
-        worker.progress.connect(self._on_progress)
-        worker.finished.connect(self._on_finished)
-        worker.error.connect(self._on_error)
-        worker.finished.connect(self._thread.quit)
-        worker.error.connect(self._thread.quit)
-        worker.finished.connect(worker.deleteLater)
-        worker.error.connect(worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
+        @thread_worker(connect={
+            "yielded":   self._on_progress,
+            "returned":  self._on_finished,
+            "errored":   self._on_error,
+        })
+        def _work():
+            from cellflow.backend.forsys import (
+                tissue_frame_to_forsys,
+                forsys_results_to_tissue,
+            )
+            import forsys as fsys
+
+            tids = tissue_ids if tissue_ids is not None else list(ds.tissues.keys())
+            total_frames = sum(
+                len(frame_indices if frame_indices is not None else ds.tissues[t].frame_indices)
+                for t in tids
+                if t in ds.tissues
+            )
+
+            done = 0
+            for t in tids:
+                if t not in ds.tissues:
+                    continue
+                series = ds.tissues[t]
+                fids = frame_indices if frame_indices is not None else series.frame_indices
+
+                for frame_idx in fids:
+                    pct = int((done / max(total_frames, 1)) * 95)
+                    yield (pct, f"Tissue {t}, frame {frame_idx}…")
+
+                    tissue_frame = series.frames[frame_idx]
+                    try:
+                        fs_frame = tissue_frame_to_forsys(
+                            tissue_frame,
+                            endpoint_cluster_tol=endpoint_cluster_tol,
+                        )
+                        fs_obj = fsys.ForSys(frames={0: fs_frame})
+                        fs_obj.build_force_matrix(when=0)
+                        fs_obj.solve_stress(when=0, allow_negatives=allow_negatives)
+                        try:
+                            fs_obj.build_pressure_matrix(when=0)
+                            fs_obj.solve_pressure(when=0, method="lagrange_pressure")
+                        except Exception:
+                            pass  # pressure can fail; tensions still valid
+                        forsys_results_to_tissue(fs_frame, tissue_frame)
+                    except Exception as e:
+                        logger.warning("Tissue %s frame %s: %s", t, frame_idx, e)
+
+                    done += 1
 
         self.infer_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.cancel_btn.setVisible(True)
-        self.status_label.setText("Starting force inference...")
+        self.status_label.setText("Starting force inference…")
+        self._worker = _work()
 
-        self._thread.start()
-
-    def _on_progress(self, pct, msg):
+    def _on_progress(self, payload):
+        pct, msg = payload
         self.progress_bar.setValue(pct)
         self.status_label.setText(msg)
 
-    def _on_finished(self):
+    def _on_finished(self, _=None):
+        self._worker = None
         self.progress_bar.setVisible(False)
         self.cancel_btn.setVisible(False)
         self.infer_btn.setEnabled(True)
@@ -384,20 +413,18 @@ class ForcesWidget(QWidget):
         self.show_tensions_cb.setChecked(True)
 
     def _on_error(self, exc):
+        self._worker = None
         self.progress_bar.setVisible(False)
         self.cancel_btn.setVisible(False)
         self.infer_btn.setEnabled(True)
         self.status_label.setText(f"Error: {exc}")
 
     def _cancel_worker(self):
-        if self._thread is not None:
+        if self._worker is not None:
             try:
-                if self._thread.isRunning():
-                    self._thread.quit()
-                    self._thread.wait()
-            except RuntimeError:
+                self._worker.quit()
+            except Exception:
                 pass
-            self._thread = None
             self._worker = None
         self.cancel_btn.setVisible(False)
         self.progress_bar.setVisible(False)

@@ -48,7 +48,8 @@ logger = logging.getLogger(__name__)
 
 _FORMAT_VERSION = "2.0"
 _MANIFEST_VERSION = "1.0"
-_CATALOG_VERSION = "2.0"
+_CATALOG_VERSION = "3.0"
+_DATASET_VERSION = "3.0"
 _STR_DTYPE = h5py.string_dtype()
 
 
@@ -93,20 +94,40 @@ def _get_opt_attr(group, name: str, default=None):
     return group.attrs[name] if name in group.attrs else default
 
 
-def _save_ragged(group, name: str, arrays: List[np.ndarray]) -> None:
-    """Save a list of variable-length 2-D arrays as flat+offsets datasets."""
+def _serialize_ragged(
+    arrays: List[np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Flatten a list of variable-length arrays into ``(flat, offsets)``.
+
+    Each input array is cast to ``float64`` and reshaped to 2-D
+    (rows × cols).  The returned *flat* array is the row-wise concatenation;
+    *offsets* is an ``int64`` array of length ``len(arrays) + 1`` where
+    ``flat[offsets[i]:offsets[i+1]]`` reconstructs ``arrays[i]``.
+    """
     if not arrays:
-        group.create_dataset(f"{name}_flat", data=np.empty((0, 2), dtype=np.float64))
-        group.create_dataset(f"{name}_offsets", data=np.zeros(1, dtype=np.int64))
-        return
+        return np.empty((0, 2), dtype=np.float64), np.zeros(1, dtype=np.int64)
     offsets = np.zeros(len(arrays) + 1, dtype=np.int64)
-    parts = []
+    parts: List[np.ndarray] = []
     for i, a in enumerate(arrays):
         a = np.asarray(a, dtype=np.float64)
         offsets[i + 1] = offsets[i] + len(a)
         if len(a):
             parts.append(a.reshape(len(a), -1))
     flat = np.concatenate(parts, axis=0) if parts else np.empty((0, 2), dtype=np.float64)
+    return flat, offsets
+
+
+def _deserialize_ragged(
+    flat: np.ndarray, offsets: np.ndarray
+) -> List[np.ndarray]:
+    """Reconstruct a list of arrays from the ``(flat, offsets)`` pair
+    produced by :func:`_serialize_ragged`."""
+    return [flat[offsets[i]:offsets[i + 1]] for i in range(len(offsets) - 1)]
+
+
+def _save_ragged(group, name: str, arrays: List[np.ndarray]) -> None:
+    """Save a list of variable-length 2-D arrays as flat+offsets datasets."""
+    flat, offsets = _serialize_ragged(arrays)
     group.create_dataset(f"{name}_flat", data=flat, compression="gzip", compression_opts=4)
     group.create_dataset(f"{name}_offsets", data=offsets)
 
@@ -114,23 +135,29 @@ def _save_ragged(group, name: str, arrays: List[np.ndarray]) -> None:
 def _load_ragged(group, name: str) -> List[np.ndarray]:
     flat = group[f"{name}_flat"][:]
     offsets = group[f"{name}_offsets"][:]
-    return [flat[offsets[i]:offsets[i + 1]] for i in range(len(offsets) - 1)]
+    return _deserialize_ragged(flat, offsets)
 
 
-def _save_ragged_1d(group, name: str, arrays: List[np.ndarray]) -> None:
-    """Save a list of variable-length 1-D arrays as flat+offsets datasets."""
+def _serialize_ragged_1d(
+    arrays: List[np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Like :func:`_serialize_ragged` but keeps arrays 1-D (int64)."""
     if not arrays:
-        group.create_dataset(f"{name}_flat", data=np.empty(0, dtype=np.int64))
-        group.create_dataset(f"{name}_offsets", data=np.zeros(1, dtype=np.int64))
-        return
+        return np.empty(0, dtype=np.int64), np.zeros(1, dtype=np.int64)
     offsets = np.zeros(len(arrays) + 1, dtype=np.int64)
-    parts = []
+    parts: List[np.ndarray] = []
     for i, a in enumerate(arrays):
         a = np.asarray(a, dtype=np.int64).ravel()
         offsets[i + 1] = offsets[i] + len(a)
         if len(a):
             parts.append(a)
     flat = np.concatenate(parts) if parts else np.empty(0, dtype=np.int64)
+    return flat, offsets
+
+
+def _save_ragged_1d(group, name: str, arrays: List[np.ndarray]) -> None:
+    """Save a list of variable-length 1-D arrays as flat+offsets datasets."""
+    flat, offsets = _serialize_ragged_1d(arrays)
     group.create_dataset(f"{name}_flat", data=flat)
     group.create_dataset(f"{name}_offsets", data=offsets)
 
@@ -426,6 +453,7 @@ def save_project(
     pixel_size: Optional[float] = None,
     time_interval: Optional[float] = None,
     condition: str = "",
+    provenance: Optional[Dict] = None,
 ) -> None:
     """Save a CellFlow project to a single HDF5 file.
 
@@ -484,6 +512,12 @@ def save_project(
                 tg = ana.create_group(f"tissue_{tid:03d}")
                 tg.attrs["tissue_id"] = tid
                 _save_tissue(tg, dataset.tissues[tid])
+
+        # Provenance (optional — pipeline manifest + config hashes)
+        if provenance is not None:
+            prov = f.create_group("provenance")
+            prov.attrs["saved_at"] = datetime.now().isoformat()
+            prov.attrs["provenance_json"] = json.dumps(provenance)
 
     logger.info("Saved project to %s", path)
 
@@ -569,7 +603,7 @@ def save_tissue(path: Union[str, Path], tissue) -> None:
     *tissue* is a :class:`~cellflow.frontend.registry.TissueData` instance.
     Any of its fields (image, labels, series) may be None and will be skipped.
     """
-    from ..frontend.registry import TissueData  # avoid circular at module level
+    from cellflow.napari.registry import TissueData  # avoid circular at module level
 
     path = Path(path)
     dataset: Optional[TissueGraphDataset] = None
@@ -597,7 +631,7 @@ def load_tissue(path: Union[str, Path]):
 
     Returns a :class:`~cellflow.frontend.registry.TissueData` instance.
     """
-    from ..frontend.registry import TissueData  # avoid circular at module level
+    from cellflow.napari.registry import TissueData  # avoid circular at module level
 
     result = load_project(path)
     ds = result.get("dataset")
@@ -670,9 +704,9 @@ def read_tissue_summary(path: Union[str, Path]) -> dict:
 # ------------------------------------------------------------------
 
 def save_catalog(path: Union[str, Path], catalog) -> None:
-    """Write a DatasetCatalog to a v2.0 JSON .cfproj file.
+    """Write a DatasetCatalog to a v3.0 JSON .cfproj file.
 
-    *catalog* is a :class:`~cellflow.frontend.registry.DatasetCatalog`.
+    *catalog* is a :class:`~cellflow.napari.registry.DatasetCatalog`.
     """
     path = Path(path)
     data = {
@@ -680,6 +714,7 @@ def save_catalog(path: Union[str, Path], catalog) -> None:
         "pixel_size": catalog.pixel_size,
         "time_interval": catalog.time_interval,
         "condition": catalog.condition or "",
+        "condition_groups": getattr(catalog, "condition_groups", {}),
         "entries": [
             {
                 "path": e.path,
@@ -695,22 +730,21 @@ def save_catalog(path: Union[str, Path], catalog) -> None:
 
 
 def load_catalog(path: Union[str, Path]):
-    """Load a v2.0 .cfproj file into a DatasetCatalog.
+    """Load a .cfproj file into a DatasetCatalog (v1.0 / v2.0 / v3.0).
 
-    Returns a :class:`~cellflow.frontend.registry.DatasetCatalog`.
+    Returns a :class:`~cellflow.napari.registry.DatasetCatalog`.
     """
-    from ..frontend.registry import CatalogEntry, DatasetCatalog  # avoid circular
+    from cellflow.napari.registry import CatalogEntry, DatasetCatalog  # avoid circular
 
     path = Path(path)
     data = json.loads(path.read_text(encoding="utf-8"))
-    version = data.get("version", "1.0")
 
     entries = []
     for e in data.get("entries", []):
         entries.append(CatalogEntry(
             path=e["path"],
             display_name=e.get("display_name", ""),
-            condition=e.get("condition", e.get("note", "")),  # note: legacy "note" field fallback
+            condition=e.get("condition", e.get("note", "")),  # "note" is legacy v1.0 field
             summary=e.get("summary", {}),
         ))
 
@@ -729,6 +763,7 @@ def load_catalog(path: Union[str, Path]):
         pixel_size=data.get("pixel_size"),
         time_interval=data.get("time_interval"),
         condition=data.get("condition", ""),
+        condition_groups=data.get("condition_groups", {}),
     )
     logger.info("Loaded catalog from %s", path)
     return catalog
@@ -776,24 +811,485 @@ def load_manifest(path: Union[str, Path]) -> ProjectManifest:
 
 
 # ------------------------------------------------------------------
-# Convenience aliases used by the dashboard / old callers
+# Directory-format dataset IO  (v3.0 — metadata.json + tissue_NNN.npz)
 # ------------------------------------------------------------------
 
-def save_dataset(dataset: TissueGraphDataset, path: Union[str, Path]) -> None:
-    """Save just the analysis dataset (no labels) to an HDF5 file."""
-    save_project(
-        path,
-        dataset=dataset,
-        pixel_size=dataset.pixel_size,
-        time_interval=dataset.time_interval,
-        condition=dataset.condition or "",
+def _tissue_to_arrays(series: TissueGraphTimeSeries) -> dict:
+    """Serialize a TissueGraphTimeSeries to a flat dict of numpy arrays for npz."""
+    a: dict = {}
+
+    # Scalar metadata
+    a['pixel_size'] = np.array([series.pixel_size if series.pixel_size is not None else np.nan])
+    a['time_interval'] = np.array([series.time_interval if series.time_interval is not None else np.nan])
+    a['input_type'] = np.array([series.input_type.value if series.input_type else ''])
+    a['metadata_json'] = np.array([json.dumps(series.metadata or {})])
+
+    frame_indices = sorted(series.frames.keys())
+    n_frames = len(frame_indices)
+    a['frame_indices'] = np.array(frame_indices, dtype=np.int64)
+    a['frame_input_types'] = np.array([series.frames[fi].input_type.value for fi in frame_indices])
+
+    # T1 events
+    t1_events = series.t1_events
+    n_t1 = len(t1_events)
+    if n_t1:
+        a['t1_frames'] = np.array([e.frame for e in t1_events], dtype=np.int64)
+        a['t1_losing_pairs'] = np.array([list(e.losing_pair) for e in t1_events], dtype=np.int64)
+        a['t1_gaining_pairs'] = np.array([list(e.gaining_pair) for e in t1_events], dtype=np.int64)
+        a['t1_locations'] = np.array([e.location for e in t1_events], dtype=np.float64)
+        all_cells = [np.array(sorted(e.all_cells), dtype=np.int64) for e in t1_events]
+        t1_flat, t1_offsets = _serialize_ragged_1d(all_cells)
+        a['t1_all_cells_flat'] = t1_flat
+        a['t1_all_cells_offsets'] = t1_offsets
+    else:
+        a['t1_frames'] = np.empty(0, dtype=np.int64)
+        a['t1_losing_pairs'] = np.empty((0, 2), dtype=np.int64)
+        a['t1_gaining_pairs'] = np.empty((0, 2), dtype=np.int64)
+        a['t1_locations'] = np.empty((0, 2), dtype=np.float64)
+        a['t1_all_cells_flat'] = np.empty(0, dtype=np.int64)
+        a['t1_all_cells_offsets'] = np.zeros(1, dtype=np.int64)
+
+    # Per-frame cells (concatenated across all frames)
+    cells_offsets = np.zeros(n_frames + 1, dtype=np.int64)
+    cids_all: List = []
+    pos_all: List = []
+    area_all: List = []
+    peri_all: List = []
+    si_all: List = []
+    nn_all: List = []
+    tid_all: List = []
+    pres_all: List = []
+    bord_all: List = []
+    verts_all: List = []
+
+    for fi_idx, fi in enumerate(frame_indices):
+        frame = series.frames[fi]
+        cids = sorted(frame.cells.keys())
+        cells_offsets[fi_idx + 1] = cells_offsets[fi_idx] + len(cids)
+        for cid in cids:
+            c = frame.cells[cid]
+            cids_all.append(cid)
+            pos_all.append(c.position)
+            area_all.append(c.area)
+            peri_all.append(c.perimeter)
+            si_all.append(c.shape_index)
+            nn_all.append(c.num_neighbors)
+            tid_all.append(c.track_id if c.track_id is not None else -1)
+            pres_all.append(c.pressure if c.pressure is not None else np.nan)
+            bord_all.append(c.is_border)
+            verts_all.append(c.vertices if c.vertices is not None else np.empty((0, 2), dtype=np.float64))
+
+    tc = int(cells_offsets[-1])
+    a['cells_offsets'] = cells_offsets
+    a['cells_ids'] = np.array(cids_all, dtype=np.int64) if tc else np.empty(0, dtype=np.int64)
+    a['cells_positions'] = np.array(pos_all, dtype=np.float64).reshape(tc, 2) if tc else np.empty((0, 2), dtype=np.float64)
+    a['cells_areas'] = np.array(area_all, dtype=np.float64) if tc else np.empty(0, dtype=np.float64)
+    a['cells_perimeters'] = np.array(peri_all, dtype=np.float64) if tc else np.empty(0, dtype=np.float64)
+    a['cells_shape_indices'] = np.array(si_all, dtype=np.float64) if tc else np.empty(0, dtype=np.float64)
+    a['cells_num_neighbors'] = np.array(nn_all, dtype=np.int64) if tc else np.empty(0, dtype=np.int64)
+    a['cells_track_ids'] = np.array(tid_all, dtype=np.int64) if tc else np.empty(0, dtype=np.int64)
+    a['cells_pressures'] = np.array(pres_all, dtype=np.float64) if tc else np.empty(0, dtype=np.float64)
+    a['cells_is_border'] = np.array(bord_all, dtype=bool) if tc else np.empty(0, dtype=bool)
+    vf, vo = _serialize_ragged(verts_all) if verts_all else (np.empty((0, 2), dtype=np.float64), np.zeros(1, dtype=np.int64))
+    a['cells_verts_flat'] = vf
+    a['cells_verts_offsets'] = vo
+
+    # Per-frame junctions (concatenated)
+    juncs_offsets = np.zeros(n_frames + 1, dtype=np.int64)
+    jp_all: List = []
+    jl_all: List = []
+    jm_all: List = []
+    jt_all: List = []
+    js_all: List = []
+    jtags_all: List = []
+    jcoords_all: List = []
+
+    for fi_idx, fi in enumerate(frame_indices):
+        frame = series.frames[fi]
+        jkeys = sorted(frame.junctions.keys(), key=lambda fs: tuple(sorted(fs)))
+        juncs_offsets[fi_idx + 1] = juncs_offsets[fi_idx] + len(jkeys)
+        for k in jkeys:
+            j = frame.junctions[k]
+            jp_all.append(tuple(sorted(k)))
+            jl_all.append(j.length)
+            jm_all.append(j.midpoint)
+            jt_all.append(j.tension if j.tension is not None else np.nan)
+            js_all.append(j.normal_stress if j.normal_stress is not None else np.nan)
+            jtags_all.append(",".join(sorted(j.tags)))
+            jcoords_all.append(j.coordinates)
+
+    tj = int(juncs_offsets[-1])
+    a['juncs_offsets'] = juncs_offsets
+    a['juncs_pairs'] = np.array(jp_all, dtype=np.int64).reshape(tj, 2) if tj else np.empty((0, 2), dtype=np.int64)
+    a['juncs_lengths'] = np.array(jl_all, dtype=np.float64) if tj else np.empty(0, dtype=np.float64)
+    a['juncs_midpoints'] = np.array(jm_all, dtype=np.float64).reshape(tj, 2) if tj else np.empty((0, 2), dtype=np.float64)
+    a['juncs_tensions'] = np.array(jt_all, dtype=np.float64) if tj else np.empty(0, dtype=np.float64)
+    a['juncs_stresses'] = np.array(js_all, dtype=np.float64) if tj else np.empty(0, dtype=np.float64)
+    a['juncs_tags'] = np.array(jtags_all) if tj else np.empty(0, dtype='U1')
+    jcf, jco = _serialize_ragged(jcoords_all) if jcoords_all else (np.empty((0, 2), dtype=np.float64), np.zeros(1, dtype=np.int64))
+    a['juncs_coords_flat'] = jcf
+    a['juncs_coords_offsets'] = jco
+
+    # Per-frame graph edges (concatenated)
+    edges_offsets = np.zeros(n_frames + 1, dtype=np.int64)
+    ep_all: List = []
+    ew_all: List = []
+
+    for fi_idx, fi in enumerate(frame_indices):
+        frame = series.frames[fi]
+        graph_edges = list(frame.graph.edges(data=True))
+        edges_offsets[fi_idx + 1] = edges_offsets[fi_idx] + len(graph_edges)
+        for u, v, d in graph_edges:
+            ep_all.append((u, v))
+            ew_all.append(d.get("length", 0.0))
+
+    te = int(edges_offsets[-1])
+    a['edges_offsets'] = edges_offsets
+    a['edges_pairs'] = np.array(ep_all, dtype=np.int64).reshape(te, 2) if te else np.empty((0, 2), dtype=np.int64)
+    a['edges_weights'] = np.array(ew_all, dtype=np.float64) if te else np.empty(0, dtype=np.float64)
+
+    # Trajectories
+    traj_items = sorted(series.edge_trajectories.items())
+    n_traj = len(traj_items)
+
+    if n_traj:
+        traj_ids_arr = np.array([tid for tid, _ in traj_items], dtype=np.int64)
+        traj_names_arr = np.array([t.name or "" for _, t in traj_items])
+        traj_tags_arr = np.array([",".join(sorted(t.tags)) if t.tags else "" for _, t in traj_items])
+
+        tf_lists = [np.array(t.frames, dtype=np.int64) for _, t in traj_items]
+        tl_lists = [np.array(t.signed_lengths, dtype=np.float64) for _, t in traj_items]
+        tp_lists = [
+            np.array(t.cell_pairs, dtype=np.int64).reshape(-1, 2) if t.cell_pairs else np.empty((0, 2), dtype=np.int64)
+            for _, t in traj_items
+        ]
+
+        traj_frames_offsets = np.zeros(n_traj + 1, dtype=np.int64)
+        for i, arr in enumerate(tf_lists):
+            traj_frames_offsets[i + 1] = traj_frames_offsets[i] + len(arr)
+        traj_frames_flat = np.concatenate([a2 for a2 in tf_lists if len(a2)]) if any(len(a2) for a2 in tf_lists) else np.empty(0, dtype=np.int64)
+        traj_lengths_flat = np.concatenate([a2 for a2 in tl_lists if len(a2)]) if any(len(a2) for a2 in tl_lists) else np.empty(0, dtype=np.float64)
+        traj_pairs_flat = np.concatenate([a2 for a2 in tp_lists if len(a2)], axis=0) if any(len(a2) for a2 in tp_lists) else np.empty((0, 2), dtype=np.int64)
+
+        # Coordinates: ragged of ragged
+        traj_coord_seg_offsets = np.zeros(n_traj + 1, dtype=np.int64)
+        all_coord_arrs: List = []
+        for i, (_, t) in enumerate(traj_items):
+            traj_coord_seg_offsets[i + 1] = traj_coord_seg_offsets[i] + len(t.coordinates)
+            all_coord_arrs.extend(t.coordinates or [])
+        tcf, tco = _serialize_ragged(all_coord_arrs) if all_coord_arrs else (np.empty((0, 2), dtype=np.float64), np.zeros(1, dtype=np.int64))
+
+        # T1 back-references
+        traj_t1_offsets = np.zeros(n_traj + 1, dtype=np.int64)
+        traj_t1_parts: List = []
+        for i, (_, t) in enumerate(traj_items):
+            idxs = []
+            for evt in t.t1_events:
+                for i_t1, se in enumerate(t1_events):
+                    if se is evt:
+                        idxs.append(i_t1)
+                        break
+            arr_t1 = np.array(idxs, dtype=np.int64)
+            traj_t1_offsets[i + 1] = traj_t1_offsets[i] + len(arr_t1)
+            if len(arr_t1):
+                traj_t1_parts.append(arr_t1)
+        traj_t1_flat = np.concatenate(traj_t1_parts) if traj_t1_parts else np.empty(0, dtype=np.int64)
+
+        a['traj_ids'] = traj_ids_arr
+        a['traj_names'] = traj_names_arr
+        a['traj_tags'] = traj_tags_arr
+        a['traj_frames_flat'] = traj_frames_flat
+        a['traj_frames_offsets'] = traj_frames_offsets
+        a['traj_lengths_flat'] = traj_lengths_flat
+        a['traj_pairs_flat'] = traj_pairs_flat
+        a['traj_coord_seg_offsets'] = traj_coord_seg_offsets
+        a['traj_coords_flat'] = tcf
+        a['traj_coords_offsets'] = tco
+        a['traj_t1_flat'] = traj_t1_flat
+        a['traj_t1_offsets'] = traj_t1_offsets
+    else:
+        a['traj_ids'] = np.empty(0, dtype=np.int64)
+        a['traj_names'] = np.empty(0, dtype='U1')
+        a['traj_tags'] = np.empty(0, dtype='U1')
+        a['traj_frames_flat'] = np.empty(0, dtype=np.int64)
+        a['traj_frames_offsets'] = np.zeros(1, dtype=np.int64)
+        a['traj_lengths_flat'] = np.empty(0, dtype=np.float64)
+        a['traj_pairs_flat'] = np.empty((0, 2), dtype=np.int64)
+        a['traj_coord_seg_offsets'] = np.zeros(1, dtype=np.int64)
+        a['traj_coords_flat'] = np.empty((0, 2), dtype=np.float64)
+        a['traj_coords_offsets'] = np.zeros(1, dtype=np.int64)
+        a['traj_t1_flat'] = np.empty(0, dtype=np.int64)
+        a['traj_t1_offsets'] = np.zeros(1, dtype=np.int64)
+
+    return a
+
+
+def _arrays_to_tissue(a: dict) -> TissueGraphTimeSeries:
+    """Reconstruct a TissueGraphTimeSeries from the dict produced by _tissue_to_arrays."""
+    from .structures import CellData, EdgeTrajectory, JunctionData, T1Event  # local to avoid circular
+
+    px_raw = float(a['pixel_size'][0])
+    pixel_size = None if np.isnan(px_raw) else px_raw
+    dt_raw = float(a['time_interval'][0])
+    time_interval = None if np.isnan(dt_raw) else dt_raw
+    input_type_str = str(a['input_type'][0])
+    series_input_type = InputType(input_type_str) if input_type_str else None
+    metadata = json.loads(str(a['metadata_json'][0]))
+
+    frame_indices = a['frame_indices'].astype(np.int64).tolist()
+    frame_input_types = [str(s) for s in a['frame_input_types']]
+
+    # T1 events
+    t1_events: List[T1Event] = []
+    t1_frames_arr = a['t1_frames']
+    if len(t1_frames_arr):
+        t1_losing = a['t1_losing_pairs']
+        t1_gaining = a['t1_gaining_pairs']
+        t1_locs = a['t1_locations']
+        t1_flat = a['t1_all_cells_flat']
+        t1_off = a['t1_all_cells_offsets']
+        for i in range(len(t1_frames_arr)):
+            cells_slice = t1_flat[int(t1_off[i]):int(t1_off[i + 1])]
+            t1_events.append(T1Event(
+                frame=int(t1_frames_arr[i]),
+                losing_pair=tuple(int(x) for x in t1_losing[i]),
+                gaining_pair=tuple(int(x) for x in t1_gaining[i]),
+                location=t1_locs[i].copy(),
+                all_cells={int(x) for x in cells_slice},
+            ))
+
+    # Load cell arrays once
+    cells_offsets = a['cells_offsets']
+    cells_ids = a['cells_ids']
+    cells_positions = a['cells_positions']
+    cells_areas = a['cells_areas']
+    cells_perimeters = a['cells_perimeters']
+    cells_si = a['cells_shape_indices']
+    cells_nn = a['cells_num_neighbors']
+    cells_track = a['cells_track_ids']
+    cells_pres = a['cells_pressures']
+    cells_border = a['cells_is_border']
+    verts_list = _deserialize_ragged(a['cells_verts_flat'], a['cells_verts_offsets'])
+
+    # Load junction arrays once
+    juncs_offsets = a['juncs_offsets']
+    juncs_pairs = a['juncs_pairs']
+    juncs_lengths = a['juncs_lengths']
+    juncs_midpoints = a['juncs_midpoints']
+    juncs_tensions = a['juncs_tensions']
+    juncs_stresses = a['juncs_stresses']
+    juncs_tags = a['juncs_tags']
+    jcoords_list = _deserialize_ragged(a['juncs_coords_flat'], a['juncs_coords_offsets'])
+
+    # Load edge arrays once
+    edges_offsets = a['edges_offsets']
+    edges_pairs = a['edges_pairs']
+    edges_weights = a['edges_weights']
+
+    # Reconstruct frames
+    frames: Dict[int, TissueGraphFrame] = {}
+    for fi_idx, fi in enumerate(frame_indices):
+        c_s, c_e = int(cells_offsets[fi_idx]), int(cells_offsets[fi_idx + 1])
+        cells: Dict = {}
+        for k in range(c_s, c_e):
+            cid = int(cells_ids[k])
+            verts = verts_list[k] if len(verts_list[k]) > 0 else None
+            pres = float(cells_pres[k])
+            pres = None if np.isnan(pres) else pres
+            tid_val = int(cells_track[k])
+            cells[cid] = CellData(
+                cell_id=cid,
+                position=cells_positions[k].copy(),
+                area=float(cells_areas[k]),
+                perimeter=float(cells_perimeters[k]),
+                shape_index=float(cells_si[k]),
+                num_neighbors=int(cells_nn[k]),
+                track_id=tid_val if tid_val != -1 else None,
+                vertices=verts,
+                pressure=pres,
+                is_border=bool(cells_border[k]),
+            )
+
+        j_s, j_e = int(juncs_offsets[fi_idx]), int(juncs_offsets[fi_idx + 1])
+        junctions: Dict = {}
+        for k in range(j_s, j_e):
+            pair = (int(juncs_pairs[k, 0]), int(juncs_pairs[k, 1]))
+            key = frozenset(pair)
+            tension = float(juncs_tensions[k])
+            tension = None if np.isnan(tension) else tension
+            stress = float(juncs_stresses[k])
+            stress = None if np.isnan(stress) else stress
+            tag_raw = juncs_tags[k]
+            tag_str = tag_raw.decode() if isinstance(tag_raw, bytes) else str(tag_raw)
+            tags = set(tag_str.split(",")) - {""} if tag_str else set()
+            junctions[key] = JunctionData(
+                cell_pair=pair,
+                length=float(juncs_lengths[k]),
+                coordinates=jcoords_list[k].copy(),
+                midpoint=juncs_midpoints[k].copy(),
+                tension=tension,
+                normal_stress=stress,
+                tags=tags,
+            )
+
+        e_s, e_e = int(edges_offsets[fi_idx]), int(edges_offsets[fi_idx + 1])
+        graph = nx.Graph()
+        for cid in cells:
+            graph.add_node(cid)
+        for k in range(e_s, e_e):
+            graph.add_edge(int(edges_pairs[k, 0]), int(edges_pairs[k, 1]),
+                           length=float(edges_weights[k]))
+
+        frames[fi] = TissueGraphFrame(
+            frame=fi,
+            graph=graph,
+            cells=cells,
+            junctions=junctions,
+            input_type=InputType(frame_input_types[fi_idx]),
+        )
+
+    # Trajectories
+    edge_trajectories: Dict[int, EdgeTrajectory] = {}
+    traj_ids_arr = a['traj_ids']
+    if len(traj_ids_arr):
+        traj_names_arr = a['traj_names']
+        traj_tags_arr = a['traj_tags']
+        traj_frames_flat = a['traj_frames_flat']
+        traj_frames_offsets = a['traj_frames_offsets']
+        traj_lengths_flat = a['traj_lengths_flat']
+        traj_pairs_flat = a['traj_pairs_flat']
+        traj_coord_seg_offsets = a['traj_coord_seg_offsets']
+        all_coord_arrs = _deserialize_ragged(a['traj_coords_flat'], a['traj_coords_offsets'])
+        traj_t1_flat = a['traj_t1_flat']
+        traj_t1_offsets = a['traj_t1_offsets']
+
+        for ti in range(len(traj_ids_arr)):
+            tid = int(traj_ids_arr[ti])
+            name_raw = str(traj_names_arr[ti])
+            name = name_raw if name_raw else None
+            tags_raw = str(traj_tags_arr[ti])
+            tags = set(tags_raw.split(",")) - {""} if tags_raw else set()
+
+            f_s, f_e = int(traj_frames_offsets[ti]), int(traj_frames_offsets[ti + 1])
+            traj_frames = traj_frames_flat[f_s:f_e].astype(np.int64).tolist()
+            traj_lengths = traj_lengths_flat[f_s:f_e].astype(np.float64).tolist()
+            if len(traj_pairs_flat) and f_e > f_s:
+                pairs = [(int(traj_pairs_flat[k, 0]), int(traj_pairs_flat[k, 1]))
+                         for k in range(f_s, f_e)]
+            else:
+                pairs = []
+
+            cs_s, cs_e = int(traj_coord_seg_offsets[ti]), int(traj_coord_seg_offsets[ti + 1])
+            coords = [all_coord_arrs[k].copy() for k in range(cs_s, cs_e) if k < len(all_coord_arrs)]
+
+            t1_s, t1_e = int(traj_t1_offsets[ti]), int(traj_t1_offsets[ti + 1])
+            t1_idxs = traj_t1_flat[t1_s:t1_e].astype(np.int64).tolist()
+            traj_t1 = [t1_events[idx] for idx in t1_idxs if idx < len(t1_events)]
+
+            edge_trajectories[tid] = EdgeTrajectory(
+                trajectory_id=tid,
+                frames=traj_frames,
+                cell_pairs=pairs,
+                signed_lengths=traj_lengths,
+                coordinates=coords,
+                t1_events=traj_t1,
+                tags=tags,
+                name=name,
+            )
+
+    return TissueGraphTimeSeries(
+        frames=frames,
+        edge_trajectories=edge_trajectories,
+        t1_events=t1_events,
+        pixel_size=pixel_size,
+        time_interval=time_interval,
+        input_type=series_input_type,
+        metadata=metadata,
     )
 
 
+def save_dataset(dataset: TissueGraphDataset, path: Union[str, Path]) -> None:
+    """Save a TissueGraphDataset to a directory (``metadata.json`` + ``tissue_NNN.npz``).
+
+    Parameters
+    ----------
+    dataset:
+        The dataset to persist.
+    path:
+        Target directory path (created if absent).
+    """
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+    meta = {
+        "version": _DATASET_VERSION,
+        "condition": dataset.condition or "",
+        "pixel_size": dataset.pixel_size,
+        "time_interval": dataset.time_interval,
+        "input_type": dataset.input_type.value if dataset.input_type else "",
+        "metadata": dataset.metadata or {},
+        "n_tissues": dataset.n_tissues,
+        "tissue_ids": dataset.tissue_ids,
+    }
+    (path / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    for tid in dataset.tissue_ids:
+        arrays = _tissue_to_arrays(dataset.tissues[tid])
+        np.savez(path / f"tissue_{tid:03d}.npz", **arrays)
+
+    logger.info("Saved dataset to %s", path)
+
+
 def load_dataset(path: Union[str, Path]) -> TissueGraphDataset:
-    """Load a TissueGraphDataset from an HDF5 project file."""
-    result = load_project(path)
-    ds = result.get("dataset")
-    if ds is None:
-        raise ValueError(f"No analysis data found in {path}")
-    return ds
+    """Load a TissueGraphDataset from a directory written by :func:`save_dataset`.
+
+    Returns
+    -------
+    TissueGraphDataset
+    """
+    path = Path(path)
+    meta_path = path / "metadata.json"
+    if not meta_path.exists():
+        raise ValueError(f"No metadata.json found in {path}; not a v3 dataset directory")
+
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    input_type_str = meta.get("input_type", "")
+    dataset = TissueGraphDataset(
+        condition=meta.get("condition", ""),
+        pixel_size=meta.get("pixel_size"),
+        time_interval=meta.get("time_interval"),
+        input_type=InputType(input_type_str) if input_type_str else None,
+        metadata=meta.get("metadata", {}),
+    )
+
+    for tid in meta.get("tissue_ids", list(range(meta.get("n_tissues", 0)))):
+        npz_path = path / f"tissue_{tid:03d}.npz"
+        if npz_path.exists():
+            arrays = dict(np.load(npz_path, allow_pickle=False))
+            dataset.tissues[tid] = _arrays_to_tissue(arrays)
+
+    logger.info("Loaded dataset from %s", path)
+    return dataset
+
+
+def load_multiple_datasets(paths) -> Dict[str, TissueGraphDataset]:
+    """Load several datasets at once, keyed by condition (or directory name as fallback).
+
+    Parameters
+    ----------
+    paths:
+        Iterable of directory paths, each written by :func:`save_dataset`.
+
+    Returns
+    -------
+    Dict[str, TissueGraphDataset]
+        Keys are the ``condition`` field from each dataset's metadata, falling
+        back to the directory basename when the condition is empty.
+    """
+    result: Dict[str, TissueGraphDataset] = {}
+    for p in paths:
+        ds = load_dataset(p)
+        key = ds.condition or Path(p).name
+        result[key] = ds
+    return result

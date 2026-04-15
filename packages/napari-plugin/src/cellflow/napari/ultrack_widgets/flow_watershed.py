@@ -30,6 +30,8 @@ from napari.qt.threading import thread_worker
 
 from cellflow.core.paths import stage_dir
 from cellflow.napari.runners.terminal import launch_in_terminal
+from cellflow.napari.log_viewer import StageLogViewer
+from cellflow.napari.registry import get_state
 
 
 def cellpose_cell_dir(root_dir, pos):
@@ -508,6 +510,9 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._all_status = QLabel("")
         lay.addWidget(self._all_status)
 
+        self._log_viewer = StageLogViewer(get_state(viewer))
+        lay.addWidget(self._log_viewer)
+
     def _browse_root(self) -> None:
         d = QFileDialog.getExistingDirectory(
             self, "Select root project directory (parent of pos00, pos01, etc.)"
@@ -913,6 +918,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._seg_status.setText("Done — Segmentation complete.")
 
         self._seg_worker = None
+        self._log_viewer.refresh()
 
     def _seg_on_error(self, exc: Exception) -> None:
         """Callback on segmentation error."""
@@ -922,6 +928,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_progress.setVisible(False)
         self._seg_status.setText(f"Error: {exc}")
         self._seg_worker = None
+        self._log_viewer.refresh()
 
     def _seg_on_cancelled(self) -> None:
         """Callback when segmentation is cancelled."""
@@ -1132,6 +1139,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._pp_status.setText("Done — Post-processing complete.")
 
         self._pp_worker = None
+        self._log_viewer.refresh()
 
     def _pp_on_error(self, exc: Exception) -> None:
         """Callback on post-processing error."""
@@ -1141,6 +1149,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._pp_progress.setVisible(False)
         self._pp_status.setText(f"Error: {exc}")
         self._pp_worker = None
+        self._log_viewer.refresh()
 
     def _pp_on_cancelled(self) -> None:
         """Callback when post-processing is cancelled."""
@@ -1276,6 +1285,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._all_status.setText("Done — Full pipeline complete.")
 
         self._all_worker = None
+        self._log_viewer.refresh()
 
     def _all_on_error(self, exc: Exception) -> None:
         """Callback on full pipeline error."""
@@ -1285,6 +1295,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._all_progress.setVisible(False)
         self._all_status.setText(f"Error: {exc}")
         self._all_worker = None
+        self._log_viewer.refresh()
 
     def _all_on_cancelled(self) -> None:
         """Callback when full pipeline is cancelled."""
