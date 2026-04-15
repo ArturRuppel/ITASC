@@ -8,7 +8,7 @@ from cellflow.backend.graph import (
     assign_tracking_labels,
 )
 from cellflow.backend.tracking import assign_track_ids
-from cellflow.frontend.visualization import (
+from cellflow.napari.visualization import (
     build_tracked_centroids,
     build_tracked_labels,
     build_track_breaks,
@@ -136,7 +136,7 @@ class TestTrajectoryLines:
 
     def test_same_line_count_as_junction_lines(self, label_stack):
         """Should produce same number of lines as build_all_junction_lines."""
-        from cellflow.frontend.visualization import build_all_junction_lines
+        from cellflow.napari.visualization import build_all_junction_lines
         series = build_from_labels(label_stack)
         j_lines, _ = build_all_junction_lines(series)
         t_lines, _ = build_trajectory_lines(series)
@@ -242,7 +242,7 @@ class TestTrajectoryLinesWithFeatures:
 
     def test_backward_compat_with_build_trajectory_lines(self, label_stack):
         """build_trajectory_lines should still work and return same line count."""
-        from cellflow.frontend.visualization import build_all_junction_lines
+        from cellflow.napari.visualization import build_all_junction_lines
         series = build_from_labels(label_stack)
         j_lines, _ = build_all_junction_lines(series)
         t_lines, _ = build_trajectory_lines(series)

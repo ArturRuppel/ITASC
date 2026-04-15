@@ -1,0 +1,11 @@
+name: cellflow-napari
+display_name: CellFlow
+contributions:
+  commands:
+    - id: cellflow-napari.cell_flow
+      title: "CellFlow"
+      python_name: cellflow.napari:CellFlowWidget
+  widgets:
+    - command: cellflow-napari.cell_flow
+      display_name: "CellFlow"
+      autogenerate: false

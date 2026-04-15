@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cellflow-cellpose"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "cellflow-core",
+    "pydantic>=2.0",
+    "numpy",
+    "tifffile>=2022.2.2",
+    "scikit-image",
+    "scipy",
+]
+
+[project.optional-dependencies]
+gpu = ["torch"]
+ndtiff = ["ndtiff"]
+
+[project.entry-points."cellflow.stages"]
+raw_import        = "cellflow.cellpose.stages.raw_import:RawImportStage"
+cellpose_nucleus  = "cellflow.cellpose.stages.nucleus_3d:CellposeNucleusStage"
+cellpose_cell     = "cellflow.cellpose.stages.cell_2d:CellposeCellStage"
+flow_watershed    = "cellflow.cellpose.stages.flow_watershed:FlowWatershedStage"
+contours          = "cellflow.cellpose.stages.contours:ContoursStage"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cellflow"]
