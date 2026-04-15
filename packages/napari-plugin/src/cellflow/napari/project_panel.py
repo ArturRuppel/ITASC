@@ -74,7 +74,8 @@ class ProjectPanel(QWidget):
         self._open_project_btn.setToolTip("Open an existing pipeline project directory")
         self._project_dir_label = QLabel("[no project]")
         self._project_dir_label.setStyleSheet("font-size: 9pt;")
-        self._project_dir_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._project_dir_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._project_dir_label.setMinimumWidth(0)
         proj_btn_row.addWidget(self._new_project_btn)
         proj_btn_row.addWidget(self._open_project_btn)
         proj_btn_row.addWidget(self._project_dir_label)
@@ -432,7 +433,9 @@ class ProjectPanel(QWidget):
             self._pipeline_table.setRowCount(0)
             return
 
-        self._project_dir_label.setText(str(project_dir))
+        # Show a short path (last 2 components) to avoid widget expanding horizontally.
+        short = "/".join(project_dir.parts[-2:]) if len(project_dir.parts) >= 2 else str(project_dir)
+        self._project_dir_label.setText(short)
         self._project_dir_label.setToolTip(str(project_dir))
 
         # Determine which stages to show (from schema, or all installed)

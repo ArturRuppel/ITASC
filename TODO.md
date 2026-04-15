@@ -1,18 +1,21 @@
-clean function in correction widget should also fill holes in cells.
+## packaging (do before adding more stages)
 
-restore correctin mode warning get's stuck sometimes
+goal: `pip install cellflow[correction]`, `cellflow[edge-analysis]`, `cellflow[all]`
 
-still weird bug in cell splitting tool... when line crosses a segment of a cell where the extension of that line crosses the cell again at another spot, the other part gets cut instead of the one where to cut was made
+- correction+tracking only (no cellpose/ultrack): for users who segmented elsewhere
+- edge-analysis: correction + graph/topology/forces, for users with tracked labels
+- all: the full nuclear-guided pipeline (cellpose + ultrack + everything)
 
-cellpose model dialog looks for "model files" but model files don't have file extensions, so they are not detected. switching to all files and then using the model does work though (e.g. /home/aruppel/projects/cellpose_training/cpsam_U251)
-→ FIXED: swapped filter order so "All files (*)" is the default in the dialog
+steps:
+1. move `cellpose>=3.1.0` and `laptrack>=0.14.0` out of `cellflow-napari` hard deps
+   - `cellflow-analysis` stays as a hard dep (its deps are appropriate for edge-analysis)
+   - add extras: `correction = ["laptrack"]`, `pipeline = ["cellflow-cellpose", "cellflow-ultrack", "cellpose", "laptrack"]`, `all = ["cellflow-napari[correction,pipeline]"]`
+2. guard laptrack imports in `tracking_widget.py` — missing package should disable the tab, not crash
+3. guard cellpose imports in `segmentation_widget.py` and `ultrack_widgets/` — same
+4. any new pipeline stage widgets go into their stage package (`cellflow-cellpose`, `cellflow-ultrack`), not into `cellflow-napari` directly
 
+there is grey text in some places which is impossible to read on the dark grey background. make white please.
 
-load image doesn't always load the active image layer for some reason
-→ FIXED: _on_capture_image now checks the active layer first before falling back to the topmost Image layer
+manifest and actual folder names mismatch sometimes. to be verified.
 
-there should be a shortcut for saving a tissue to the current file.
-→ FIXED: replaced QShortcut(ApplicationShortcut) with viewer.bind_key("Control-S", overwrite=True) to avoid napari conflict
-
-draw cell path is unreliable, sometimes doesn't cut into neighboring cells properly
-→ FIXED: removed the seg==0 background-only restriction for new-cell creation; the drawn closed region always becomes the new cell, overwriting neighbors
+the ordering of the steps and the logic of the folders is messed up. it's 2_contours, then 3_ultrack (instead of just tracking) 4_nucleus_anchored_cell_segmentation (that name makes more sense, should be changed in the UI and maybe code as well)

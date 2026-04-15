@@ -16,9 +16,9 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
 from napari.qt.threading import thread_worker
 
 from cellflow.cellpose.config import CellposeConfig
+from cellflow.core.paths import stage_dir
 from cellflow.napari.runners.terminal import launch_in_terminal
 from cellflow.cellpose.stages.nucleus_3d import (
     discover_input_files,
@@ -44,10 +45,25 @@ class CellposeWidget(QWidget):
     def __init__(self, viewer: "napari.Viewer") -> None:
         super().__init__()
         self.viewer = viewer
+        self._state = get_state(viewer)
         self._worker_s01a = None
         self._worker_s01b = None
 
-        layout = QVBoxLayout()
+        # ── Outer scroll area ────────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout()
+        inner_layout.setAlignment(Qt.AlignTop)
+        inner.setLayout(inner_layout)
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+        self.setLayout(outer)
 
         # Create tab widget for s01a and s01b
         self._tabs = QTabWidget()
@@ -55,12 +71,53 @@ class CellposeWidget(QWidget):
         self._s01b_widget = self._create_s01b_widget()
         self._tabs.addTab(self._s01a_widget, "s01a — 3D Nucleus")
         self._tabs.addTab(self._s01b_widget, "s01b — 2D Cell")
-        layout.addWidget(self._tabs)
+        inner_layout.addWidget(self._tabs)
 
-        self._log_viewer = StageLogViewer(get_state(viewer))
-        layout.addWidget(self._log_viewer)
+        self._log_viewer = StageLogViewer(self._state)
+        inner_layout.addWidget(self._log_viewer)
 
-        self.setLayout(layout)
+        # Connect project-change signal to auto-fill paths
+        self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+        self._sync_project_dir()
+
+    # ── Project-derived path helpers ─────────────────────────────────────
+
+    def _get_project_dir(self) -> Path | None:
+        return self._state.project_dir
+
+    def _s01a_input_dir(self, pos: int) -> Path | None:
+        root = self._get_project_dir()
+        if root is None:
+            return None
+        return stage_dir(root, pos, "raw_import")
+
+    def _s01a_output_dir(self, pos: int) -> Path | None:
+        root = self._get_project_dir()
+        if root is None:
+            return None
+        return stage_dir(root, pos, "cellpose_nucleus")
+
+    def _s01b_root_dir(self) -> Path | None:
+        return self._get_project_dir()
+
+    def _sync_project_dir(self) -> None:
+        """Refresh path-info labels when the project changes."""
+        root = self._get_project_dir()
+        pos_a = self._s01a_pos_spin.value()
+        pos_b = self._s01b_pos_spin.value()
+
+        if root is None:
+            msg = "No project open — create or open one via the Project panel."
+            self._s01a_paths_label.setText(msg)
+            self._s01b_paths_label.setText(msg)
+            return
+
+        inp = self._s01a_input_dir(pos_a)
+        out = self._s01a_output_dir(pos_a)
+        self._s01a_paths_label.setText(f"Input:  {inp}\nOutput: {out}")
+
+        rb = self._s01b_root_dir()
+        self._s01b_paths_label.setText(f"Root: {rb}")
 
     def _create_s01a_widget(self) -> QWidget:
         """Create the s01a (3D nucleus) panel."""
@@ -68,26 +125,21 @@ class CellposeWidget(QWidget):
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop)
 
-        # ── Input directory ──────────────────────────────────────────────
-        layout.addWidget(QLabel("Input directory (raw nucleus TIFFs)"))
-        row = QHBoxLayout()
-        self._s01a_input_edit = QLineEdit()
-        self._s01a_input_edit.setPlaceholderText("/path/to/0_raw/nucleus")
-        row.addWidget(self._s01a_input_edit)
-        btn = QPushButton("Browse\u2026")
-        btn.clicked.connect(self._browse_s01a_input)
-        row.addWidget(btn)
-        layout.addLayout(row)
+        # ── Paths info (derived from project) ───────────────────────────
+        layout.addWidget(QLabel("<b>Paths</b> (derived from project)"))
+        self._s01a_paths_label = QLabel("No project open.")
+        self._s01a_paths_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._s01a_paths_label.setWordWrap(True)
+        layout.addWidget(self._s01a_paths_label)
 
-        # ── Output directory ─────────────────────────────────────────────
-        layout.addWidget(QLabel("Output directory"))
         row = QHBoxLayout()
-        self._s01a_output_edit = QLineEdit()
-        self._s01a_output_edit.setPlaceholderText("/path/to/1a_cellpose_nucleus")
-        row.addWidget(self._s01a_output_edit)
-        btn = QPushButton("Browse\u2026")
-        btn.clicked.connect(self._browse_s01a_output)
-        row.addWidget(btn)
+        row.addWidget(QLabel("Position"))
+        self._s01a_pos_spin = QSpinBox()
+        self._s01a_pos_spin.setRange(0, 1000)
+        self._s01a_pos_spin.setValue(0)
+        self._s01a_pos_spin.valueChanged.connect(self._sync_project_dir)
+        row.addWidget(self._s01a_pos_spin)
+        row.addStretch()
         layout.addLayout(row)
 
         # ── Model parameters ─────────────────────────────────────────────
@@ -178,10 +230,10 @@ class CellposeWidget(QWidget):
 
         # ── Save / Load parameters ───────────────────────────────────────
         row = QHBoxLayout()
-        save_btn = QPushButton("Save Parameters\u2026")
+        save_btn = QPushButton("Save Parameters…")
         save_btn.clicked.connect(self._on_s01a_save_params)
         row.addWidget(save_btn)
-        load_btn = QPushButton("Load Parameters\u2026")
+        load_btn = QPushButton("Load Parameters…")
         load_btn.clicked.connect(self._on_s01a_load_params)
         row.addWidget(load_btn)
         layout.addLayout(row)
@@ -203,25 +255,21 @@ class CellposeWidget(QWidget):
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop)
 
-        # ── Root directory ───────────────────────────────────────────────
-        layout.addWidget(QLabel("Root project directory"))
-        layout.addWidget(QLabel("<small>Parent directory of pos00, pos01, etc.</small>"))
-        row = QHBoxLayout()
-        self._s01b_root_edit = QLineEdit()
-        self._s01b_root_edit.setPlaceholderText("/path/to/project (will auto-detect if you select a subdirectory)")
-        row.addWidget(self._s01b_root_edit)
-        btn = QPushButton("Browse\u2026")
-        btn.clicked.connect(self._browse_s01b_root)
-        row.addWidget(btn)
-        layout.addLayout(row)
+        # ── Paths info (derived from project) ───────────────────────────
+        layout.addWidget(QLabel("<b>Paths</b> (derived from project)"))
+        self._s01b_paths_label = QLabel("No project open.")
+        self._s01b_paths_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._s01b_paths_label.setWordWrap(True)
+        layout.addWidget(self._s01b_paths_label)
 
-        # ── Position ─────────────────────────────────────────────────────
         row = QHBoxLayout()
         row.addWidget(QLabel("Position"))
         self._s01b_pos_spin = QSpinBox()
         self._s01b_pos_spin.setRange(0, 1000)
         self._s01b_pos_spin.setValue(0)
+        self._s01b_pos_spin.valueChanged.connect(self._sync_project_dir)
         row.addWidget(self._s01b_pos_spin)
+        row.addStretch()
         layout.addLayout(row)
 
         # ── Model parameters ─────────────────────────────────────────────
@@ -300,10 +348,10 @@ class CellposeWidget(QWidget):
 
         # ── Save / Load parameters ───────────────────────────────────────
         row = QHBoxLayout()
-        save_btn = QPushButton("Save Parameters\u2026")
+        save_btn = QPushButton("Save Parameters…")
         save_btn.clicked.connect(self._on_s01b_save_params)
         row.addWidget(save_btn)
-        load_btn = QPushButton("Load Parameters\u2026")
+        load_btn = QPushButton("Load Parameters…")
         load_btn.clicked.connect(self._on_s01b_load_params)
         row.addWidget(load_btn)
         layout.addLayout(row)
@@ -319,33 +367,7 @@ class CellposeWidget(QWidget):
         widget.setLayout(layout)
         return widget
 
-    # ── s01a Helpers ─────────────────────────────────────────────────────
-
-    def _browse_s01a_input(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Select raw nucleus TIFF directory")
-        if d:
-            self._s01a_input_edit.setText(d)
-
-    def _browse_s01a_output(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Select cellpose output directory")
-        if d:
-            self._s01a_output_edit.setText(d)
-
-    # ── s01b Helpers ─────────────────────────────────────────────────────
-
-    def _browse_s01b_root(self) -> None:
-        d = QFileDialog.getExistingDirectory(
-            self,
-            "Select root project directory (parent of pos00, pos01, etc.)"
-        )
-        if d:
-            # Auto-detect: if user selected a pos## or stage directory, go up
-            d_path = Path(d)
-            if d_path.name.startswith("pos") and d_path.name[3:].isdigit():
-                d = str(d_path.parent)
-            elif d_path.name in ["0_raw", "1a_cellpose_nucleus", "1b_cellpose_cell"]:
-                d = str(d_path.parent.parent)
-            self._s01b_root_edit.setText(d)
+    # ── Helpers ──────────────────────────────────────────────────────────
 
     def _on_s01a_gamma_toggled(self, checked: bool) -> None:
         self._s01a_gamma_spin.setEnabled(checked)
@@ -401,10 +423,11 @@ class CellposeWidget(QWidget):
     # ── s01a Run inline ──────────────────────────────────────────────────
 
     def _on_s01a_run(self) -> None:
-        input_dir = self._s01a_input_edit.text().strip()
-        output_dir = self._s01a_output_edit.text().strip()
-        if not input_dir or not output_dir:
-            self._s01a_status_label.setText("Set both input and output directories.")
+        pos = self._s01a_pos_spin.value()
+        input_dir = self._s01a_input_dir(pos)
+        output_dir = self._s01a_output_dir(pos)
+        if input_dir is None or output_dir is None:
+            self._s01a_status_label.setText("No project open. Create or open a project first.")
             return
         cfg = self._build_s01a_config()
         overwrite = self._s01a_overwrite_check.isChecked()
@@ -412,7 +435,10 @@ class CellposeWidget(QWidget):
         self._s01a_run_terminal_btn.setEnabled(False)
         self._s01a_progress.setVisible(True)
         self._s01a_progress.setValue(0)
-        self._s01a_status_label.setText("Starting\u2026")
+        self._s01a_status_label.setText("Starting…")
+
+        input_dir_str = str(input_dir)
+        output_dir_str = str(output_dir)
 
         @thread_worker(
             connect={
@@ -422,7 +448,7 @@ class CellposeWidget(QWidget):
             }
         )
         def _work():
-            for update in run_s01a(input_dir, output_dir, cfg, overwrite=overwrite):
+            for update in run_s01a(input_dir_str, output_dir_str, cfg, overwrite=overwrite):
                 yield update
 
         self._worker_s01a = _work()
@@ -430,9 +456,9 @@ class CellposeWidget(QWidget):
     # ── s01b Run inline ──────────────────────────────────────────────────
 
     def _on_s01b_run(self) -> None:
-        root_dir = self._s01b_root_edit.text().strip()
-        if not root_dir:
-            self._s01b_status_label.setText("Set root project directory.")
+        root_dir = self._s01b_root_dir()
+        if root_dir is None:
+            self._s01b_status_label.setText("No project open. Create or open a project first.")
             return
         pos = self._s01b_pos_spin.value()
         cfg = self._build_s01b_config()
@@ -440,7 +466,9 @@ class CellposeWidget(QWidget):
         self._s01b_run_btn.setEnabled(False)
         self._s01b_progress.setVisible(True)
         self._s01b_progress.setValue(0)
-        self._s01b_status_label.setText("Starting\u2026")
+        self._s01b_status_label.setText("Starting…")
+
+        root_dir_str = str(root_dir)
 
         @thread_worker(
             connect={
@@ -450,7 +478,7 @@ class CellposeWidget(QWidget):
             }
         )
         def _work():
-            for update in run_s01b(root_dir, pos, cfg, overwrite=overwrite):
+            for update in run_s01b(root_dir_str, pos, cfg, overwrite=overwrite):
                 yield update
 
         self._worker_s01b = _work()
@@ -458,10 +486,11 @@ class CellposeWidget(QWidget):
     # ── s01a Run in terminal ─────────────────────────────────────────────
 
     def _on_s01a_run_terminal(self) -> None:
-        input_dir = self._s01a_input_edit.text().strip()
-        output_dir = self._s01a_output_edit.text().strip()
-        if not input_dir or not output_dir:
-            self._s01a_status_label.setText("Set both input and output directories.")
+        pos = self._s01a_pos_spin.value()
+        input_dir = self._s01a_input_dir(pos)
+        output_dir = self._s01a_output_dir(pos)
+        if input_dir is None or output_dir is None:
+            self._s01a_status_label.setText("No project open. Create or open a project first.")
             return
         cfg = self._build_s01a_config()
         cfg_path = Path(tempfile.mktemp(suffix="_cp_config.json"))
@@ -492,7 +521,7 @@ class CellposeWidget(QWidget):
         self._s01a_run_btn.setEnabled(True)
         self._s01a_run_terminal_btn.setEnabled(True)
         self._s01a_progress.setVisible(False)
-        self._s01a_status_label.setText("Done \u2014 Cellpose outputs written.")
+        self._s01a_status_label.setText("Done — Cellpose outputs written.")
         self._worker_s01a = None
         self._load_s01a_prob_stack()
         self._log_viewer.refresh()
@@ -516,7 +545,7 @@ class CellposeWidget(QWidget):
     def _on_s01b_finished(self) -> None:
         self._s01b_run_btn.setEnabled(True)
         self._s01b_progress.setVisible(False)
-        self._s01b_status_label.setText("Done \u2014 Cellpose outputs written.")
+        self._s01b_status_label.setText("Done — Cellpose outputs written.")
         self._worker_s01b = None
         self._load_s01b_results()
         self._log_viewer.refresh()
@@ -531,13 +560,13 @@ class CellposeWidget(QWidget):
     # ── s01a Load results ────────────────────────────────────────────────
 
     def _load_s01a_prob_stack(self) -> None:
-        output_dir = self._s01a_output_edit.text().strip()
-        if not output_dir:
+        pos = self._s01a_pos_spin.value()
+        output_dir = self._s01a_output_dir(pos)
+        if output_dir is None:
             return
-        prob_files = sorted(Path(output_dir).glob("*_prob.tif"))
+        prob_files = sorted(output_dir.glob("*_prob.tif"))
         if not prob_files:
             return
-        # Load first prob file as a preview
         prob = tifffile.imread(str(prob_files[0]))
         self.viewer.add_image(prob, name="nucleus_cellprob (t0)", colormap="inferno")
         self._s01a_status_label.setText(
@@ -545,11 +574,12 @@ class CellposeWidget(QWidget):
         )
 
     def _on_s01a_load_results(self) -> None:
-        output_dir = self._s01a_output_edit.text().strip()
-        if not output_dir:
-            self._s01a_status_label.setText("Set output directory first.")
+        pos = self._s01a_pos_spin.value()
+        output_dir = self._s01a_output_dir(pos)
+        if output_dir is None:
+            self._s01a_status_label.setText("No project open.")
             return
-        prob_files = sorted(Path(output_dir).glob("*_prob.tif"))
+        prob_files = sorted(output_dir.glob("*_prob.tif"))
         if not prob_files:
             self._s01a_status_label.setText("No *_prob.tif files found in output directory.")
             return
@@ -561,12 +591,10 @@ class CellposeWidget(QWidget):
     # ── s01b Load results ────────────────────────────────────────────────
 
     def _load_s01b_results(self) -> None:
-        root_dir = self._s01b_root_edit.text().strip()
-        if not root_dir:
+        root_dir = self._s01b_root_dir()
+        if root_dir is None:
             return
         pos = self._s01b_pos_spin.value()
-        from cellflow.core.paths import stage_dir
-
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
         prob_file = cell_dir / "cell_prob.tif"
         if not prob_file.exists():
@@ -576,13 +604,11 @@ class CellposeWidget(QWidget):
         self._s01b_status_label.setText(f"Loaded cell_prob.tif  shape={prob.shape}")
 
     def _on_s01b_load_results(self) -> None:
-        root_dir = self._s01b_root_edit.text().strip()
-        if not root_dir:
-            self._s01b_status_label.setText("Set root directory first.")
+        root_dir = self._s01b_root_dir()
+        if root_dir is None:
+            self._s01b_status_label.setText("No project open.")
             return
         pos = self._s01b_pos_spin.value()
-        from cellflow.core.paths import stage_dir
-
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
         prob_file = cell_dir / "cell_prob.tif"
         dp_file = cell_dir / "cell_dp.tif"

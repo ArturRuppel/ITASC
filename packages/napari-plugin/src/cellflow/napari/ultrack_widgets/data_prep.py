@@ -13,6 +13,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -32,10 +33,30 @@ class DataPrepWidget(QWidget):
     def __init__(self, viewer: "napari.Viewer") -> None:
         super().__init__()
         self.viewer = viewer
+        self._state = get_state(viewer)
         self._worker = None
 
+        # ── Outer scroll area ────────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        inner = QWidget()
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop)
+        inner.setLayout(layout)
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+        self.setLayout(outer)
+
+        # ── Project info ─────────────────────────────────────────────────
+        self._project_label = QLabel("")
+        self._project_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._project_label.setWordWrap(True)
+        layout.addWidget(self._project_label)
 
         # ── NDTiff path ──────────────────────────────────────────────────
         layout.addWidget(QLabel("NDTiff directory"))
@@ -45,17 +66,6 @@ class DataPrepWidget(QWidget):
         row.addWidget(self._ndtiff_edit)
         btn = QPushButton("Browse…")
         btn.clicked.connect(self._browse_ndtiff)
-        row.addWidget(btn)
-        layout.addLayout(row)
-
-        # ── Output root directory ────────────────────────────────────────
-        layout.addWidget(QLabel("Output root directory"))
-        row = QHBoxLayout()
-        self._root_edit = QLineEdit()
-        self._root_edit.setPlaceholderText("/path/to/output_root")
-        row.addWidget(self._root_edit)
-        btn = QPushButton("Browse…")
-        btn.clicked.connect(self._browse_root)
         row.addWidget(btn)
         layout.addLayout(row)
 
@@ -104,10 +114,39 @@ class DataPrepWidget(QWidget):
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
 
-        self._log_viewer = StageLogViewer(get_state(viewer))
+        self._log_viewer = StageLogViewer(self._state)
         layout.addWidget(self._log_viewer)
 
-        self.setLayout(layout)
+        # Connect project change signal
+        self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+
+        # Populate from any already-open project
+        self._sync_project_dir()
+
+    # ── Project sync ─────────────────────────────────────────────────────
+
+    def _sync_project_dir(self) -> None:
+        """Auto-fill NDTiff dir from schema.input_dir and update project info label."""
+        project_dir = self._state.project_dir
+        schema = self._state.pipeline_schema
+
+        if project_dir is None:
+            self._project_label.setText(
+                "No project open — create or open one via the Project panel."
+            )
+            return
+
+        self._project_label.setText(
+            f"Output root: {project_dir}"
+        )
+
+        # Auto-fill NDTiff if schema has input_dir and field is empty
+        if (
+            schema is not None
+            and schema.input_dir
+            and not self._ndtiff_edit.text().strip()
+        ):
+            self._ndtiff_edit.setText(schema.input_dir)
 
     # ── Browsing ─────────────────────────────────────────────────────────
 
@@ -115,11 +154,6 @@ class DataPrepWidget(QWidget):
         d = QFileDialog.getExistingDirectory(self, "Select NDTiff directory")
         if d:
             self._ndtiff_edit.setText(d)
-
-    def _browse_root(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Select output root directory")
-        if d:
-            self._root_edit.setText(d)
 
     def _on_tp_toggle(self, checked: bool) -> None:
         self._tp_edit.setEnabled(not checked)
@@ -129,11 +163,20 @@ class DataPrepWidget(QWidget):
     def _parse_int_list(self, text: str) -> list[int]:
         return [int(x.strip()) for x in text.split(",") if x.strip()]
 
+    def _get_root_dir(self) -> str | None:
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            return None
+        return str(project_dir)
+
     def _build_config(self) -> DatasetConfig:
+        root_dir = self._get_root_dir()
+        if root_dir is None:
+            raise ValueError("No project open. Create or open a project first.")
         tp = None if self._tp_all_check.isChecked() else self._parse_int_list(self._tp_edit.text())
         return DatasetConfig(
             ndtiff_path=self._ndtiff_edit.text().strip(),
-            root_dir=self._root_edit.text().strip(),
+            root_dir=root_dir,
             positions=self._parse_int_list(self._positions_edit.text()),
             timepoints=tp,
             xy_downsample=self._xy_spin.value(),
@@ -148,8 +191,8 @@ class DataPrepWidget(QWidget):
             self._status_label.setText(f"Config error: {e}")
             return
 
-        if not config.ndtiff_path or not config.root_dir:
-            self._status_label.setText("Please set both NDTiff and output directories.")
+        if not config.ndtiff_path:
+            self._status_label.setText("Please set the NDTiff directory.")
             return
         if not config.positions:
             self._status_label.setText("Please specify at least one position.")

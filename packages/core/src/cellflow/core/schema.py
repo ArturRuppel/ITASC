@@ -36,6 +36,8 @@ class PipelineSchema(BaseModel):
     stages: List[str] = Field(default_factory=list)
     interfaces: Dict[str, InterfaceSpec] = Field(default_factory=dict)
     metadata: PipelineMetadata = Field(default_factory=PipelineMetadata)
+    input_dir: Optional[str] = None
+    """Absolute path to the raw acquisition data directory (e.g. NDTiff dataset root)."""
 
     @classmethod
     def load(cls, path: Path | str) -> "PipelineSchema":

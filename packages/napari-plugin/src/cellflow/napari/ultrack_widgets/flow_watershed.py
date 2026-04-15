@@ -17,7 +17,6 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -433,6 +432,7 @@ class FlowGuidedSegmentationWidget(QWidget):
     def __init__(self, viewer: "napari.Viewer") -> None:
         super().__init__()
         self.viewer = viewer
+        self._state = get_state(viewer)
         self._seg_worker = None
         self._pp_worker = None
         self._all_worker = None
@@ -455,22 +455,18 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         lay = self._inner_layout
 
-        # ── Shared inputs ────────────────────────────────────────────────
-        lay.addWidget(QLabel("<b>Root project directory</b>"))
-        row = QHBoxLayout()
-        self._root_edit = QLineEdit()
-        self._root_edit.setPlaceholderText("/path/to/project")
-        row.addWidget(self._root_edit)
-        btn = QPushButton("Browse…")
-        btn.clicked.connect(self._browse_root)
-        row.addWidget(btn)
-        lay.addLayout(row)
+        # ── Project info (derived from state) ────────────────────────────
+        self._project_label = QLabel("No project open.")
+        self._project_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._project_label.setWordWrap(True)
+        lay.addWidget(self._project_label)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Position"))
         self._pos_spin = QSpinBox()
         self._pos_spin.setRange(0, 1000)
         self._pos_spin.setValue(0)
+        self._pos_spin.valueChanged.connect(self._sync_project_dir)
         row.addWidget(self._pos_spin)
         row.addStretch()
         lay.addLayout(row)
@@ -510,18 +506,33 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._all_status = QLabel("")
         lay.addWidget(self._all_status)
 
-        self._log_viewer = StageLogViewer(get_state(viewer))
+        self._log_viewer = StageLogViewer(self._state)
         lay.addWidget(self._log_viewer)
 
-    def _browse_root(self) -> None:
-        d = QFileDialog.getExistingDirectory(
-            self, "Select root project directory (parent of pos00, pos01, etc.)"
+        # Connect project-change signal
+        self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+        self._sync_project_dir()
+
+    # ── Project-derived path helpers ─────────────────────────────────────
+
+    def _get_root_dir(self) -> str | None:
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            return None
+        return str(project_dir)
+
+    def _sync_project_dir(self) -> None:
+        """Update project info label when project or position changes."""
+        root = self._get_root_dir()
+        if root is None:
+            self._project_label.setText(
+                "No project open — create or open one via the Project panel."
+            )
+            return
+        pos = self._pos_spin.value()
+        self._project_label.setText(
+            f"Root: {root}  |  Position: pos{pos:02d}"
         )
-        if d:
-            d_path = Path(d)
-            if d_path.name.startswith("pos") and d_path.name[3:].isdigit():
-                d = str(d_path.parent)
-            self._root_edit.setText(d)
 
     def _build_segmentation_section(self) -> QGroupBox:
         """Build the Segmentation section."""
@@ -756,9 +767,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _seg_on_preview(self) -> None:
         """Preview single frame segmentation."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._seg_status.setText("Set root directory first.")
+            self._seg_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -831,9 +842,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _seg_on_run(self) -> None:
         """Run segmentation in background."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._seg_status.setText("Set root directory first.")
+            self._seg_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -862,9 +873,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _seg_on_run_terminal(self) -> None:
         """Launch segmentation in terminal."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._seg_status.setText("Set root directory first.")
+            self._seg_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -946,9 +957,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _seg_on_load_results(self) -> None:
         """Load segmentation results from disk."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._seg_status.setText("Set root directory first.")
+            self._seg_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -978,9 +989,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _pp_on_preview(self) -> None:
         """Preview post-processing on a single frame."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._pp_status.setText("Set root directory first.")
+            self._pp_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -1052,9 +1063,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _pp_on_run(self) -> None:
         """Run post-processing in background."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._pp_status.setText("Set root directory first.")
+            self._pp_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -1083,9 +1094,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _pp_on_run_terminal(self) -> None:
         """Launch post-processing in terminal."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._pp_status.setText("Set root directory first.")
+            self._pp_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -1167,9 +1178,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _pp_on_load_results(self) -> None:
         """Load post-processing results from disk."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._pp_status.setText("Set root directory first.")
+            self._pp_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -1199,9 +1210,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _all_on_run(self) -> None:
         """Run full pipeline in background."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._all_status.setText("Set root directory first.")
+            self._all_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())
@@ -1230,9 +1241,9 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _all_on_run_terminal(self) -> None:
         """Launch full pipeline in terminal."""
-        root_dir = self._root_edit.text().strip()
+        root_dir = self._get_root_dir()
         if not root_dir:
-            self._all_status.setText("Set root directory first.")
+            self._all_status.setText("No project open. Create or open a project first.")
             return
 
         pos = int(self._pos_spin.value())

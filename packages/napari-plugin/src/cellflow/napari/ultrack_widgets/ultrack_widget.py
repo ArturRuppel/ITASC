@@ -20,7 +20,6 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -72,6 +71,8 @@ class UltrackAnalysisWidget(QWidget):
         super().__init__()
         self.viewer = viewer
 
+        self._state = get_state(viewer)
+
         # Background workers
         self._cp_ct_worker = None
         self._tr_worker = None
@@ -113,25 +114,20 @@ class UltrackAnalysisWidget(QWidget):
 
         lay = self._inner_layout
 
-        # ── Shared paths ─────────────────────────────────────────────────
-        lay.addWidget(QLabel("<b>Input directory</b> (Cellpose prob maps)"))
-        row = QHBoxLayout()
-        self._input_edit = QLineEdit()
-        self._input_edit.setPlaceholderText("/path/to/1a_cellpose_nucleus")
-        row.addWidget(self._input_edit)
-        b = QPushButton("Browse\u2026")
-        b.clicked.connect(self._browse_input)
-        row.addWidget(b)
-        lay.addLayout(row)
+        # ── Project info (derived from state) ────────────────────────────
+        self._project_label = QLabel("No project open.")
+        self._project_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._project_label.setWordWrap(True)
+        lay.addWidget(self._project_label)
 
-        lay.addWidget(QLabel("<b>Output directory</b> (all stage outputs)"))
         row = QHBoxLayout()
-        self._output_edit = QLineEdit()
-        self._output_edit.setPlaceholderText("/path/to/experiment_output")
-        row.addWidget(self._output_edit)
-        b = QPushButton("Browse\u2026")
-        b.clicked.connect(self._browse_output)
-        row.addWidget(b)
+        row.addWidget(QLabel("Position"))
+        self._pos_spin = QSpinBox()
+        self._pos_spin.setRange(0, 1000)
+        self._pos_spin.setValue(0)
+        self._pos_spin.valueChanged.connect(self._sync_project_dir)
+        row.addWidget(self._pos_spin)
+        row.addStretch()
         lay.addLayout(row)
 
         # ── Save / Load all parameters ───────────────────────────────────
@@ -168,29 +164,42 @@ class UltrackAnalysisWidget(QWidget):
         self._all_status = QLabel("")
         lay.addWidget(self._all_status)
 
-        self._log_viewer = StageLogViewer(get_state(viewer))
+        self._log_viewer = StageLogViewer(self._state)
         lay.addWidget(self._log_viewer)
+
+        # Connect project-change signal
+        self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+        self._sync_project_dir()
 
     # ══════════════════════════════════════════════════════════════════════
     # Shared path helpers
     # ══════════════════════════════════════════════════════════════════════
 
-    def _browse_input(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Select Cellpose output directory")
-        if d:
-            self._input_edit.setText(d)
-
-    def _browse_output(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Select output base directory")
-        if d:
-            self._output_edit.setText(d)
+    def _sync_project_dir(self) -> None:
+        """Update project info label when project or position changes."""
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            self._project_label.setText(
+                "No project open — create or open one via the Project panel."
+            )
+            return
+        pos = self._pos_spin.value()
+        from cellflow.core.paths import stage_dir
+        inp = stage_dir(project_dir, pos, "cellpose_nucleus")
+        out = stage_dir(project_dir, pos, "tracking")
+        self._project_label.setText(
+            f"Input (Cellpose):  {inp}\nOutput (Tracking): {out}"
+        )
 
     def _get_paths(self) -> tuple[str, str] | None:
-        """Return (input_dir, output_dir) or set status and return None."""
-        inp = self._input_edit.text().strip()
-        out = self._output_edit.text().strip()
-        if not inp or not out:
+        """Return (input_dir, output_dir) derived from project state, or None."""
+        project_dir = self._state.project_dir
+        if project_dir is None:
             return None
+        pos = self._pos_spin.value()
+        from cellflow.core.paths import stage_dir
+        inp = str(stage_dir(project_dir, pos, "cellpose_nucleus"))
+        out = str(stage_dir(project_dir, pos, "tracking"))
         return inp, out
 
     # ══════════════════════════════════════════════════════════════════════
@@ -353,7 +362,7 @@ class UltrackAnalysisWidget(QWidget):
         """Load dP and prob maps for a single timepoint."""
         paths = self._get_paths()
         if paths is None:
-            self._cp_ct_status.setText("Set input and output directories first.")
+            self._cp_ct_status.setText("No project open. Create or open a project first.")
             return
         inp, _ = paths
 
@@ -551,7 +560,7 @@ class UltrackAnalysisWidget(QWidget):
         """Run cellpose contours stage with threshold sweep and averaging."""
         paths = self._get_paths()
         if paths is None:
-            self._cp_ct_status.setText("Set input and output directories first.")
+            self._cp_ct_status.setText("No project open. Create or open a project first.")
             return
         inp, out = paths
         overwrite = self._cp_ct_overwrite_chk.isChecked()
@@ -578,7 +587,7 @@ class UltrackAnalysisWidget(QWidget):
         """Launch cellpose contours in terminal."""
         paths = self._get_paths()
         if paths is None:
-            self._cp_ct_status.setText("Set input and output directories first.")
+            self._cp_ct_status.setText("No project open. Create or open a project first.")
             return
         inp, out = paths
         cfg = self._cp_ct_build_config()
@@ -1082,7 +1091,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_run(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_status.setText("Set input and output directories first.")
+            self._tr_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         fg_path = str(Path(out) / "foreground.tif")
@@ -1109,7 +1118,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_run_terminal(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_status.setText("Set input and output directories first.")
+            self._tr_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         fg_path = str(Path(out) / "foreground.tif")
@@ -1134,7 +1143,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_run_seg_terminal(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_seg_status.setText("Set input and output directories first.")
+            self._tr_seg_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         fg_path = str(Path(out) / "foreground.tif")
@@ -1159,7 +1168,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_run_lnk_terminal(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_lnk_status.setText("Set input and output directories first.")
+            self._tr_lnk_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = out
@@ -1180,7 +1189,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_run_slv_terminal(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_slv_status.setText("Set input and output directories first.")
+            self._tr_slv_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = out
@@ -1237,7 +1246,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_run_segmentation(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_seg_status.setText("Set input and output directories first.")
+            self._tr_seg_status.setText("No project open. Create or open a project first.")
             return
         inp, out = paths
         fg_path = str(Path(out) / "foreground.tif")
@@ -1295,7 +1304,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_run_linking(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_lnk_status.setText("Set input and output directories first.")
+            self._tr_lnk_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = out
@@ -1351,7 +1360,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_run_solve(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_slv_status.setText("Set input and output directories first.")
+            self._tr_slv_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = out
@@ -1409,7 +1418,7 @@ class UltrackAnalysisWidget(QWidget):
         """Load tracks + tracked_labels into the napari viewer."""
         paths = self._get_paths()
         if paths is None:
-            self._tr_status.setText("Set input and output directories first.")
+            self._tr_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = out
@@ -1443,7 +1452,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_on_export_ctc(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._tr_status.setText("Set input and output directories first.")
+            self._tr_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = out
@@ -1463,7 +1472,7 @@ class UltrackAnalysisWidget(QWidget):
         """Load all segmentation candidate nodes from the database."""
         paths = self._get_paths()
         if paths is None:
-            self._db_status.setText("Set input and output directories first.")
+            self._db_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = Path(out)
@@ -1546,7 +1555,7 @@ class UltrackAnalysisWidget(QWidget):
         """Load all candidate links as vectors."""
         paths = self._get_paths()
         if paths is None:
-            self._db_status.setText("Set input and output directories first.")
+            self._db_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = Path(out)
@@ -1635,7 +1644,7 @@ class UltrackAnalysisWidget(QWidget):
         """Load division events (parent nodes with ≥2 selected children)."""
         paths = self._get_paths()
         if paths is None:
-            self._db_status.setText("Set input and output directories first.")
+            self._db_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = Path(out)
@@ -1750,7 +1759,7 @@ class UltrackAnalysisWidget(QWidget):
         """Load tracked segmentation labels (tracked_labels.tif) as a Labels layer."""
         paths = self._get_paths()
         if paths is None:
-            self._db_status.setText("Set input and output directories first.")
+            self._db_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = Path(out)
@@ -1776,7 +1785,7 @@ class UltrackAnalysisWidget(QWidget):
         """Query database for summary statistics."""
         paths = self._get_paths()
         if paths is None:
-            self._db_status.setText("Set input and output directories first.")
+            self._db_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
         wd = Path(out)
@@ -1844,7 +1853,7 @@ class UltrackAnalysisWidget(QWidget):
     def _on_run_all(self) -> None:
         paths = self._get_paths()
         if paths is None:
-            self._all_status.setText("Set input and output directories first.")
+            self._all_status.setText("No project open. Create or open a project first.")
             return
         inp, out = paths
         out_p = Path(out)
@@ -1945,8 +1954,6 @@ class UltrackAnalysisWidget(QWidget):
         if not path:
             return
         data = {
-            "input_path": self._input_edit.text(),
-            "output_path": self._output_edit.text(),
             "cp_contours": self._cp_ct_build_config().model_dump(),
             "tracking": self._tr_build_config().model_dump(),
         }
@@ -1959,10 +1966,6 @@ class UltrackAnalysisWidget(QWidget):
         if not path:
             return
         data = json.loads(Path(path).read_text())
-        if "input_path" in data:
-            self._input_edit.setText(data["input_path"])
-        if "output_path" in data:
-            self._output_edit.setText(data["output_path"])
         if "cp_contours" in data:
             self._cp_ct_apply_config(CellposeContoursConfig(**data["cp_contours"]))
         if "tracking" in data:
