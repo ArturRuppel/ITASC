@@ -65,41 +65,45 @@ class CellFlowWidget(QWidget):
 
         _plugin_layout.addWidget(self._project_panel.dataset_widget)
 
-        # ========== Pipeline stage tabs ==========
+        # ========== Pipeline stage tabs (in dataflow order) ==========
         from .ultrack_widgets.data_prep import DataPrepWidget
         from .ultrack_widgets.cellpose import CellposeWidget
-        from .ultrack_widgets.flow_watershed import FlowGuidedSegmentationWidget as FlowWatershedWidget
         from .ultrack_widgets.ultrack_widget import UltrackAnalysisWidget
+        from .correction_widget import CorrectionWidget
+        from .tracking_widget import TrackingTab
+        from .ultrack_widgets.flow_watershed import FlowGuidedSegmentationWidget
+        from .edge_analysis_widget import EdgeAnalysisWidget
+        from .forces_widget import ForcesWidget
 
+        # 0_input
         self._data_prep_tab = DataPrepWidget(self.viewer)
         self.tab_widget.addTab(self._data_prep_tab, "Data Prep")
 
+        # 1_cellpose/nucleus + 1_cellpose/cell
         self._cellpose_tab = CellposeWidget(self.viewer)
         self.tab_widget.addTab(self._cellpose_tab, "Cellpose")
 
-        self._flow_watershed_tab = FlowWatershedWidget(self.viewer)
-        self.tab_widget.addTab(self._flow_watershed_tab, "Flow Watershed")
-
+        # 2_ultrack (contours intermediate + tracking)
         self._ultrack_tab = UltrackAnalysisWidget(self.viewer)
         self.tab_widget.addTab(self._ultrack_tab, "Ultrack")
 
-        # ========== Tracking tab ==========
-        from .tracking_widget import TrackingTab
-        self._tracking_tab = TrackingTab(self.viewer)
-        self.tab_widget.addTab(self._tracking_tab, "Tracking")
-
-        # ========== Correction tab ==========
-        from .correction_widget import CorrectionWidget
+        # 3_correction (manual correction loop)
         self._correction_widget = CorrectionWidget(self.viewer)
         self.tab_widget.addTab(self._correction_widget, "Correction")
 
-        # ========== Edge Analysis tab ==========
-        from .edge_analysis_widget import EdgeAnalysisWidget
+        # LapTrack retracking — part of the correction loop, no stage dir
+        self._tracking_tab = TrackingTab(self.viewer)
+        self.tab_widget.addTab(self._tracking_tab, "Tracking")
+
+        # 4_cell_segmentation
+        self._cell_seg_tab = FlowGuidedSegmentationWidget(self.viewer)
+        self.tab_widget.addTab(self._cell_seg_tab, "Cell Seg")
+
+        # 5_analysis
         self._edge_analysis_widget = EdgeAnalysisWidget(self.viewer)
         self.tab_widget.addTab(self._edge_analysis_widget, "Edge Analysis")
 
-        # ========== ForSys tab ==========
-        from .forces_widget import ForcesWidget
+        # ForSys (downstream, no pipeline dir yet)
         self._forces_widget = ForcesWidget(self.viewer)
         self.tab_widget.addTab(self._forces_widget, "ForSys")
 
@@ -110,12 +114,10 @@ class CellFlowWidget(QWidget):
     # Pipeline tab status badges
     # ------------------------------------------------------------------
 
-    _TAB_STAGE_KEYS: dict = {
-        "Data Prep":      ["raw_import"],
-        "Cellpose":       ["cellpose_nucleus", "cellpose_cell"],
-        "Flow Watershed": ["flow_watershed", "contours"],
-        "Ultrack":        ["tracking"],
-    }
+    @property
+    def _TAB_STAGE_KEYS(self) -> dict:
+        from ._plugin import TAB_STAGE_KEYS
+        return TAB_STAGE_KEYS
     _STATUS_BADGE = {
         "complete": " ✓",
         "running":  " ↻",

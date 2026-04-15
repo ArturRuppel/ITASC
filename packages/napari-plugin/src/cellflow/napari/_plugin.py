@@ -21,35 +21,37 @@ STAGE_ORDER: list[str] = [
     "raw_import",
     "cellpose_nucleus",
     "cellpose_cell",
-    "flow_watershed",
     "contours",
     "tracking",
-    "project2d",
-    "cell_labels",
+    "correction",
+    "cell_segmentation",
     "graph_extraction",
     "topology_analysis",
 ]
 
 # Human-readable labels for the UI (tab titles, dialog checkboxes).
 STAGE_DISPLAY_NAMES: Dict[str, str] = {
-    "raw_import":        "Raw Import (s00)",
-    "cellpose_nucleus":  "Cellpose Nucleus (s01a)",
-    "cellpose_cell":     "Cellpose Cell (s01b)",
-    "flow_watershed":    "Flow Watershed (s02)",
-    "contours":          "Contours (s02c)",
-    "tracking":          "Tracking (s03)",
-    "project2d":         "Project 2D (s04)",
-    "cell_labels":       "Cell Labels (s05)",
+    "raw_import":        "Input Export",
+    "cellpose_nucleus":  "Cellpose Nuclei (3D)",
+    "cellpose_cell":     "Cellpose Cells (2D)",
+    "contours":          "Contours",
+    "tracking":          "Ultrack",
+    "correction":        "Correction",
+    "cell_segmentation": "Cell Segmentation",
     "graph_extraction":  "Graph Extraction",
     "topology_analysis": "Topology Analysis",
 }
 
 # Which manifest key(s) drive the badge for each top-level pipeline tab.
+# "Tracking" (LapTrack retracking) and "ForSys" have no manifest keys —
+# they are part of the correction loop / downstream analysis.
 TAB_STAGE_KEYS: Dict[str, list[str]] = {
-    "Data Prep":      ["raw_import"],
-    "Cellpose":       ["cellpose_nucleus", "cellpose_cell"],
-    "Flow Watershed": ["flow_watershed", "contours"],
-    "Ultrack":        ["tracking"],
+    "Data Prep":    ["raw_import"],
+    "Cellpose":     ["cellpose_nucleus", "cellpose_cell"],
+    "Ultrack":      ["contours", "tracking"],
+    "Correction":   ["correction"],
+    "Cell Seg":     ["cell_segmentation"],
+    "Edge Analysis": ["graph_extraction", "topology_analysis"],
 }
 
 # Module-level dict: populated at import time; refreshed via refresh().

@@ -21,6 +21,13 @@ import napari
 
 from .registry import get_state
 
+# Optional dependency check
+try:
+    import laptrack as _laptrack  # noqa: F401
+    _LAPTRACK_AVAILABLE = True
+except ImportError:
+    _LAPTRACK_AVAILABLE = False
+
 
 # ── helpers ────────────────────────────────────────────────────────────
 
@@ -132,6 +139,12 @@ class TrackingTab(QWidget):
         # ── Run button ──
         self._run_btn = QPushButton("Run Tracking")
         self._run_btn.clicked.connect(self._on_run)
+        if not _LAPTRACK_AVAILABLE:
+            self._run_btn.setEnabled(False)
+            self._run_btn.setToolTip(
+                "LapTrack is not installed.\n"
+                "Install with: pip install cellflow-napari[correction]"
+            )
         root.addWidget(self._run_btn)
 
         self._progress = QProgressBar()
@@ -259,6 +272,12 @@ class TrackingTab(QWidget):
     # ── Run ────────────────────────────────────────────────────────────
 
     def _on_run(self):
+        if not _LAPTRACK_AVAILABLE:
+            self._log_append(
+                "ERROR: LapTrack is not installed. "
+                "Run: pip install cellflow-napari[correction]"
+            )
+            return
         if self._worker is not None and self._worker.is_running:
             self._log_append("Tracking already running.")
             return

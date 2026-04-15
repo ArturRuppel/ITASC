@@ -27,16 +27,21 @@ from qtpy.QtWidgets import (
 
 from napari.qt.threading import thread_worker
 
-from cellflow.cellpose.config import CellposeConfig
 from cellflow.core.paths import stage_dir
-from cellflow.napari.runners.terminal import launch_in_terminal
-from cellflow.cellpose.stages.nucleus_3d import (
-    discover_input_files,
-    run as run_s01a,
-)
-from cellflow.cellpose.stages.cell_2d import run as run_s01b
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
+
+try:
+    from cellflow.cellpose.config import CellposeConfig
+    from cellflow.napari.runners.terminal import launch_in_terminal
+    from cellflow.cellpose.stages.nucleus_3d import (
+        discover_input_files,
+        run as run_s01a,
+    )
+    from cellflow.cellpose.stages.cell_2d import run as run_s01b
+    _CELLPOSE_PIPELINE_AVAILABLE = True
+except ImportError:
+    _CELLPOSE_PIPELINE_AVAILABLE = False
 
 
 class CellposeWidget(QWidget):
@@ -48,6 +53,17 @@ class CellposeWidget(QWidget):
         self._state = get_state(viewer)
         self._worker_s01a = None
         self._worker_s01b = None
+
+        if not _CELLPOSE_PIPELINE_AVAILABLE:
+            layout = QVBoxLayout(self)
+            msg = QLabel(
+                "Cellpose pipeline package is not installed.\n"
+                "Install with: pip install cellflow-napari[pipeline]"
+            )
+            msg.setWordWrap(True)
+            layout.addWidget(msg)
+            layout.addStretch()
+            return
 
         # ── Outer scroll area ────────────────────────────────────────────
         scroll = QScrollArea()
@@ -128,7 +144,7 @@ class CellposeWidget(QWidget):
         # ── Paths info (derived from project) ───────────────────────────
         layout.addWidget(QLabel("<b>Paths</b> (derived from project)"))
         self._s01a_paths_label = QLabel("No project open.")
-        self._s01a_paths_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._s01a_paths_label.setStyleSheet("color: white; font-size: 8pt;")
         self._s01a_paths_label.setWordWrap(True)
         layout.addWidget(self._s01a_paths_label)
 
@@ -258,7 +274,7 @@ class CellposeWidget(QWidget):
         # ── Paths info (derived from project) ───────────────────────────
         layout.addWidget(QLabel("<b>Paths</b> (derived from project)"))
         self._s01b_paths_label = QLabel("No project open.")
-        self._s01b_paths_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._s01b_paths_label.setStyleSheet("color: white; font-size: 8pt;")
         self._s01b_paths_label.setWordWrap(True)
         layout.addWidget(self._s01b_paths_label)
 

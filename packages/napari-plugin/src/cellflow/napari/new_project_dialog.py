@@ -1,9 +1,9 @@
 """New Project wizard dialog.
 
-Lets the user pick separate data-input and project-output directories, choose
-which pipeline stages to include.  On acceptance it writes
-``pipeline_schema.json``, creates the directory skeleton,
-writes a ``PIPELINE_LAYOUT.txt`` description, and updates the viewer state.
+Lets the user pick separate data-input and project-output directories.
+On acceptance it writes ``pipeline_schema.json``, creates the full
+directory skeleton for pos00, writes a ``PIPELINE_LAYOUT.txt`` description,
+and updates the viewer state.
 
 Pixel size and time interval are intentionally *not* collected here — they
 are pulled from the raw acquisition metadata during the Data Prep stage.
@@ -16,7 +16,6 @@ from typing import List, Optional
 
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -25,14 +24,13 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from cellflow.core.paths import STAGE_DIRS, schema_path
 from cellflow.core.schema import PipelineSchema
-from ._plugin import STAGE_DISPLAY_NAMES, STAGE_ORDER, STAGES
+from ._plugin import STAGE_DISPLAY_NAMES, STAGE_ORDER
 
 
 class NewProjectDialog(QDialog):
@@ -57,7 +55,6 @@ class NewProjectDialog(QDialog):
 
         self._input_path: Optional[Path] = None
         self._output_path: Optional[Path] = None
-        self._checkboxes: dict[str, QCheckBox] = {}
 
         self._build_ui()
 
@@ -78,7 +75,7 @@ class NewProjectDialog(QDialog):
             "Where the raw acquisition data lives (e.g. the NDTiff dataset root).\n"
             "Pixel size and time interval will be read from here automatically."
         )
-        input_note.setStyleSheet("color: gray; font-size: 8pt;")
+        input_note.setStyleSheet("color: white; font-size: 8pt;")
         input_note.setWordWrap(True)
         input_layout.addWidget(input_note)
 
@@ -103,7 +100,7 @@ class NewProjectDialog(QDialog):
             "Where processed data will be written. "
             "The pipeline_schema.json and pos## folders are created here."
         )
-        output_note.setStyleSheet("color: gray; font-size: 8pt;")
+        output_note.setStyleSheet("color: white; font-size: 8pt;")
         output_note.setWordWrap(True)
         output_layout.addWidget(output_note)
 
@@ -118,40 +115,6 @@ class NewProjectDialog(QDialog):
         output_row.addWidget(output_btn)
         output_layout.addLayout(output_row)
         layout.addWidget(output_group)
-
-        # ── Stage selection ───────────────────────────────────────────
-        stage_group = QGroupBox("Pipeline Stages (select stages to enable)")
-        stage_outer = QVBoxLayout()
-        stage_group.setLayout(stage_outer)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMaximumHeight(200)
-
-        container = QWidget()
-        cb_layout = QVBoxLayout(container)
-        cb_layout.setSpacing(3)
-
-        installed = set(STAGES.keys())
-        ordered = [s for s in STAGE_ORDER if s in installed]
-        ordered += sorted(installed - set(STAGE_ORDER))
-
-        for name in ordered:
-            display = STAGE_DISPLAY_NAMES.get(name, name)
-            cb = QCheckBox(display)
-            cb.setChecked(True)
-            cb.setObjectName(name)
-            self._checkboxes[name] = cb
-            cb_layout.addWidget(cb)
-
-        if not ordered:
-            cb_layout.addWidget(QLabel("No stages installed."))
-
-        cb_layout.addStretch()
-        scroll.setWidget(container)
-        stage_outer.addWidget(scroll)
-        layout.addWidget(stage_group)
 
         # ── Buttons ───────────────────────────────────────────────────
         self._status_label = QLabel("")
@@ -187,15 +150,8 @@ class NewProjectDialog(QDialog):
             self._status_label.setText("Please choose a project output directory.")
             return
 
-        selected_stages = [
-            name for name, cb in self._checkboxes.items() if cb.isChecked()
-        ]
-        if not selected_stages:
-            self._status_label.setText("Please select at least one stage.")
-            return
-
         try:
-            self._create_project(self._output_path, self._input_path, selected_stages)
+            self._create_project(self._output_path, self._input_path)
         except Exception as exc:
             self._status_label.setText(f"Error: {exc}")
             return
@@ -210,144 +166,199 @@ class NewProjectDialog(QDialog):
         self,
         output_root: Path,
         input_dir: Optional[Path],
-        stages: List[str],
     ) -> None:
-        """Write schema, create directory skeleton, write layout doc, update state."""
+        """Write schema, create full directory skeleton, write layout doc, update state."""
         schema = PipelineSchema(
-            stages=stages,
+            stages=list(STAGE_ORDER),
             input_dir=str(input_dir) if input_dir is not None else None,
         )
 
         output_root.mkdir(parents=True, exist_ok=True)
         schema.save(schema_path(output_root))
 
-        # Create a single pos00 skeleton so users can see the structure
-        _create_pos_skeleton(output_root, pos=0, stages=stages)
+        # Create a single pos00 skeleton so users can see the full structure
+        _create_pos_skeleton(output_root, pos=0)
 
         # Write human-readable layout description
-        _write_pipeline_layout(output_root, input_dir, stages)
+        _write_pipeline_layout(output_root, input_dir)
 
         # Update shared state
         self._state.set_project_dir(output_root)
 
 
-def _create_pos_skeleton(root: Path, pos: int, stages: List[str]) -> None:
-    """Create the directory skeleton for one position."""
-    from cellflow.core.paths import pos_dir, stage_dir
+def _create_pos_skeleton(root: Path, pos: int) -> None:
+    """Create the full directory skeleton for one position."""
+    from cellflow.core.paths import manifest_path, log_path, pos_dir, stage_dir
     pos_dir(root, pos).mkdir(parents=True, exist_ok=True)
-    for stage_name in stages:
-        if stage_name in STAGE_DIRS:
-            stage_dir(root, pos, stage_name).mkdir(parents=True, exist_ok=True)
+    for stage_name in STAGE_DIRS:
+        stage_dir(root, pos, stage_name).mkdir(parents=True, exist_ok=True)
+    # raw_import has nucleus/ and cell/ sub-directories
+    base = stage_dir(root, pos, "raw_import")
+    (base / "nucleus").mkdir(parents=True, exist_ok=True)
+    (base / "cell").mkdir(parents=True, exist_ok=True)
+    # Touch placeholder files at the pos root so the layout is visible on disk
+    mf = manifest_path(root, pos)
+    if not mf.exists():
+        mf.write_text("{}\n")
+    lf = log_path(root, pos)
+    if not lf.exists():
+        lf.touch()
 
 
 # ------------------------------------------------------------------
 # PIPELINE_LAYOUT.txt generation
 # ------------------------------------------------------------------
 
-_STAGE_DESCRIPTIONS: dict[str, tuple[str, str, str]] = {
-    # stage_key: (folder_name, description, expected_files_and_shapes)
-    "raw_import": (
-        "0_raw/",
-        "Raw TIFF exports from NDTiff acquisition",
-        "t###_nucleus.tif per timepoint — shape (Z, Y, X), dtype uint16",
+# Canonical per-directory descriptions in pipeline order.
+# Each entry: (folder, detail_lines).  Directories shared by multiple stages
+# (2_ultrack/, 5_analysis/) list all their outputs together.
+_DIR_DESCRIPTIONS: List[tuple[str, List[str]]] = [
+    (
+        "0_input/",
+        [
+            "Raw TIFF exports from the NDTiff acquisition  [step 0]",
+            "  nucleus/",
+            "    nucleus_3d_t###.tif     (Z, H, W)    uint16  — one file per timepoint",
+            "    nucleus_zavg.tif        (T, H, W)    uint16",
+            "  cell/",
+            "    cell_zavg.tif           (T, H, W)    uint16",
+        ],
     ),
-    "cellpose_nucleus": (
-        "1a_cellpose_nucleus/",
-        "Cellpose 3-D nucleus segmentation outputs",
-        "t###_prob.tif, t###_dp.tif per timepoint\n"
-        "  prob shape: (Z, Y, X), dtype float32\n"
-        "  dp shape: (2, Z, Y, X) or (Z, Y, X, 2), dtype float32",
+    (
+        "1_cellpose/nucleus/",
+        [
+            "Cellpose 3-D nucleus segmentation outputs  [step 1a]",
+            "  nucleus_3d_t###_dp.tif   (3, Z, H, W) float32 — one file per timepoint",
+            "  nucleus_3d_t###_prob.tif (Z, H, W)    float32 — one file per timepoint",
+        ],
     ),
-    "cellpose_cell": (
-        "1b_cellpose_cell/",
-        "Cellpose 2-D cell segmentation outputs",
-        "cell_prob.tif, cell_dp.tif — shape (T, Y, X), dtype float32",
+    (
+        "1_cellpose/cell/",
+        [
+            "Cellpose 2-D cell segmentation outputs  [step 1b]",
+            "  cell_dp.tif              (T, 2, H, W) float32",
+            "  cell_prob.tif            (T, H, W)    float32",
+        ],
     ),
-    "flow_watershed": (
-        "2_flow_watershed/",
-        "Flow-guided watershed cell labels",
-        "cell_labels.tif, cell_labels_raw.tif — shape (T, Y, X), dtype int32",
+    (
+        "2_ultrack/",
+        [
+            "Cellpose-derived foreground and contour maps  [step 2a]",
+            "  foreground.tif           (T, H, W)    float32",
+            "  contours.tif             (T, H, W)    float32",
+            "",
+            "Ultrack tracking outputs  [step 2b]",
+            "  data.db                  Ultrack SQLite database",
+            "  tracks.csv",
+            "  tracked_labels.tif       (T, Z, H, W) uint32",
+            "  nuclear_labels_2d.tif    (T, H, W)    uint32  — max-proj of tracked_labels",
+        ],
     ),
-    "contours": (
-        "2b_contours/",
-        "Cellpose-derived foreground and contour maps",
-        "foreground.tif, contours.tif — shape (T, Y, X), dtype float32",
+    (
+        "3_correction/",
+        [
+            "Manual correction + optional LapTrack retracking loop  [step 3]",
+            "  nuclear_labels_corrected.tif  (T, H, W) int32",
+        ],
     ),
-    "tracking": (
-        "3_tracking/",
-        "Ultrack cell tracking outputs",
-        "tracked_labels.tif — shape (T, Y, X), dtype uint32\n"
-        "  tracks.csv, data.db",
+    (
+        "4_cell_segmentation/",
+        [
+            "Nucleus-anchored cell boundary segmentation  [step 4]",
+            "  cell_labels_raw.tif      (T, H, W)    int32",
+            "  cell_labels.tif          (T, H, W)    int32",
+        ],
     ),
-    "graph_extraction": (
-        "4_analysis/",
-        "Graph extraction and topology analysis",
-        "tracked_labels.tif (copied from 3_tracking/)",
+    (
+        "5_analysis/",
+        [
+            "Graph extraction and topology analysis  [step 5]",
+            "  graph.h5",
+            "  topology.npz",
+        ],
     ),
-    "topology_analysis": (
-        "4_analysis/",
-        "Graph extraction and topology analysis",
-        "tracked_labels.tif (copied from 3_tracking/)",
-    ),
+]
+
+# Stage key → output folder (for the mapping table at the bottom of the TXT)
+_STAGE_FOLDER: dict[str, str] = {
+    "raw_import":        "0_input/",
+    "cellpose_nucleus":  "1_cellpose/nucleus/",
+    "cellpose_cell":     "1_cellpose/cell/",
+    "contours":          "2_ultrack/",
+    "tracking":          "2_ultrack/",
+    "correction":        "3_correction/",
+    "cell_segmentation": "4_cell_segmentation/",
+    "graph_extraction":  "5_analysis/",
+    "topology_analysis": "5_analysis/",
 }
 
 
 def _write_pipeline_layout(
     output_root: Path,
     input_dir: Optional[Path],
-    stages: List[str],
 ) -> None:
     """Write PIPELINE_LAYOUT.txt at the project output root."""
     lines: List[str] = [
         "CellFlow Pipeline Directory Layout",
         "=" * 60,
         "",
-        f"Created: {date.today().isoformat()}",
-        f"Project output root: {output_root}",
+        f"Created:        {date.today().isoformat()}",
+        f"Project root:   {output_root}",
     ]
     if input_dir is not None:
         lines.append(f"Raw data input: {input_dir}")
     lines += [
         "",
-        "Top-level files:",
-        "  pipeline_schema.json  — Pipeline configuration and enabled stages",
-        "  PIPELINE_LAYOUT.txt   — This file",
-        "",
-        "For each position (pos00, pos01, ...):",
-        "  pos##/",
-        "  ├── pipeline_manifest.json  — Stage run status and timestamps",
-        "  ├── pipeline.log            — Stage execution log (JSON-lines)",
+        "<project_root>/",
+        "├── project.json",
+        "├── pipeline_schema.json",
+        "├── PIPELINE_LAYOUT.txt            ← this file",
+        "│",
+        "└── pos##/                         (pos00, pos01, ...)",
+        "    ├── pipeline_manifest.json     — stage run status and timestamps",
+        "    ├── pipeline.log               — execution log (JSON-lines)",
+        "    │",
     ]
 
-    seen_dirs: set[str] = set()
-    for stage_name in stages:
-        if stage_name not in _STAGE_DESCRIPTIONS:
-            continue
-        folder, desc, files = _STAGE_DESCRIPTIONS[stage_name]
-        if folder in seen_dirs:
-            continue
-        seen_dirs.add(folder)
-        lines.append(f"  ├── {folder}")
-        lines.append(f"  │     {desc}")
-        for file_line in files.splitlines():
-            lines.append(f"  │     {file_line}")
+    for i, (folder, detail_lines) in enumerate(_DIR_DESCRIPTIONS):
+        is_last = i == len(_DIR_DESCRIPTIONS) - 1
+        connector = "└──" if is_last else "├──"
+        bar      = "   " if is_last else "│  "
+        lines.append(f"    {connector} {folder}")
+        for dl in detail_lines:
+            lines.append(f"    {bar}   {dl}")
+        if not is_last:
+            lines.append(f"    {bar}")
 
     lines += [
         "",
-        "Stage pipeline order:",
+        "Stage → directory mapping:",
+        "",
     ]
-    for stage_name in stages:
+    seen: set[str] = set()
+    for stage_name in STAGE_ORDER:
+        folder = _STAGE_FOLDER.get(stage_name)
+        if folder is None:
+            continue
         display = STAGE_DISPLAY_NAMES.get(stage_name, stage_name)
-        folder = _STAGE_DESCRIPTIONS.get(stage_name, (stage_name + "/", "", ""))[0]
-        lines.append(f"  {display:30s} → {folder}")
+        key = f"{stage_name}:{folder}"
+        if key not in seen:
+            seen.add(key)
+            lines.append(f"  {display:30s} → pos##/{folder}")
 
     lines += [
         "",
         "Notes:",
-        "  - Pixel size (µm) and time interval are read from the raw acquisition",
-        "    metadata during the Data Prep stage; they are not stored here.",
-        "  - Re-running a stage with 'Overwrite' will replace existing outputs.",
-        "  - The manifest tracks the status of each stage run.",
+        "  - nuclear_labels_2d.tif is produced by the Ultrack stage as a",
+        "    max-projection of tracked_labels.tif along Z; it is the input",
+        "    to the correction step.",
+        "  - nuclear_labels_corrected.tif is the final output of the correction",
+        "    loop (manual edits + optional LapTrack retracking); it is the",
+        "    input to cell segmentation.",
+        "  - Pixel size (µm) and time interval are read from acquisition",
+        "    metadata during the Data Prep stage.",
+        "  - Re-running a stage with 'Overwrite' replaces existing outputs.",
+        "  - The manifest tracks the status and timestamps of each stage run.",
     ]
 
     txt = "\n".join(lines) + "\n"

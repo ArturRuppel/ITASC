@@ -2,7 +2,7 @@
 
 Three sections:
 
-  Tissue    — active working tissue (load/save/capture/push/clear per field)
+  Tissue    — collapsible; pipeline file tracker (presence, shape/dtype, load)
   Metadata  — pixel size, time interval, condition
   Dataset   — catalog of saved tissues with summary table
 """
@@ -16,15 +16,19 @@ import numpy as np
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -33,18 +37,52 @@ from .registry import CatalogEntry, DatasetCatalog, TissueData, ViewerState
 
 logger = logging.getLogger(__name__)
 
+# Pipeline files to track, grouped by display stage.
+# Each entry: (path_relative_to_pos_dir, display_name, loadable)
+#   loadable = "image" | "labels" | None  (None → no Load button)
+_TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
+    ("Input Export", [
+        ("0_input/nucleus/nucleus_zavg.tif", "Nucleus avg",        "image"),
+        ("0_input/cell/cell_zavg.tif",       "Cell avg",           "image"),
+    ]),
+    ("Cellpose Nuclei", [
+        ("1_cellpose/nucleus",               "Output directory",   None),
+    ]),
+    ("Cellpose Cells", [
+        ("1_cellpose/cell/cell_dp.tif",      "Cell DP",            None),
+        ("1_cellpose/cell/cell_prob.tif",    "Cell prob",          "image"),
+    ]),
+    ("Ultrack", [
+        ("2_ultrack/foreground.tif",         "Foreground",         "image"),
+        ("2_ultrack/contours.tif",           "Contours",           "image"),
+        ("2_ultrack/data.db",                "Ultrack DB",         None),
+        ("2_ultrack/tracks.csv",             "Tracks CSV",         None),
+        ("2_ultrack/tracked_labels.tif",     "Tracked labels",     None),
+        ("2_ultrack/nuclear_labels_2d.tif",  "Nuclear labels 2D",  "labels"),
+    ]),
+    ("Correction", [
+        ("3_correction/nuclear_labels_corrected.tif", "Corrected labels", "labels"),
+    ]),
+    ("Cell Segmentation", [
+        ("4_cell_segmentation/cell_labels_raw.tif", "Cell labels raw", "labels"),
+        ("4_cell_segmentation/cell_labels.tif",     "Cell labels",     "labels"),
+    ]),
+    ("Analysis", [
+        ("5_analysis/graph.h5",     "Graph",    None),
+        ("5_analysis/topology.npz", "Topology", None),
+    ]),
+]
+
 
 class ProjectPanel(QWidget):
-    """Panel fixed above the tab widget: tissue ops, metadata, dataset table."""
+    """Panel fixed above the tab widget: pipeline file tracker, metadata, dataset table."""
 
     def __init__(self, viewer, state: ViewerState):
         super().__init__()
         self.viewer = viewer
         self._state = state
-        self._tracked_layer_objects = {}  # layer object → tissue field attr name
         self._build_ui()
         self._connect_signals()
-        self._refresh_tissue()
         self._refresh_catalog()
         self._sync_from_state()
         self._refresh_pipeline_status()
@@ -122,60 +160,69 @@ class ProjectPanel(QWidget):
         pipeline_group.setLayout(pg_layout)
         root.addWidget(pipeline_group)
 
-        # ── Tissue section ────────────────────────────────────────────
-        tissue_group = QGroupBox("Tissue")
-        tg_layout = QVBoxLayout()
-        tg_layout.setContentsMargins(6, 4, 6, 4)
-        tg_layout.setSpacing(3)
-
-        # Row 0: file path + Load / Save / Add to dataset
-        path_row = QHBoxLayout()
-        path_row.setSpacing(4)
-        self._tissue_path_label = QLabel("[unsaved]")
-        self._tissue_path_label.setStyleSheet("font-size: 9pt;")
-        self._tissue_path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        path_row.addWidget(self._tissue_path_label)
-        self._tissue_load_btn = QPushButton("Load tissue…")
-        self._tissue_load_btn.setToolTip("Load image, labels and analysis from an .h5 file")
-        path_row.addWidget(self._tissue_load_btn)
-        self._tissue_save_btn = QPushButton("Save tissue…")
-        self._tissue_save_btn.setToolTip("Save current tissue to an .h5 file")
-        path_row.addWidget(self._tissue_save_btn)
-        self._add_to_dataset_btn = QPushButton("Add to dataset…")
-        self._add_to_dataset_btn.setEnabled(False)
-        self._add_to_dataset_btn.setToolTip(
-            "Tissue must be saved first.\n"
-            "Adds the saved .h5 to the catalog and clears the working tissue."
+        # ── Tissue section (collapsible) ──────────────────────────────
+        self._tissue_toggle = QToolButton()
+        self._tissue_toggle.setText("Tissue")
+        self._tissue_toggle.setArrowType(Qt.DownArrow)
+        self._tissue_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._tissue_toggle.setCheckable(True)
+        self._tissue_toggle.setChecked(True)
+        self._tissue_toggle.setStyleSheet(
+            "QToolButton { font-weight: bold; font-size: 10pt; border: none; padding: 2px; }"
         )
-        path_row.addWidget(self._add_to_dataset_btn)
-        tg_layout.addLayout(path_row)
+        root.addWidget(self._tissue_toggle)
 
-        # Row 1: Image field
-        self._image_row = _FieldRow("Image:", self)
-        tg_layout.addLayout(self._image_row)
+        self._tissue_body = QWidget()
+        tg_layout = QVBoxLayout(self._tissue_body)
+        tg_layout.setContentsMargins(6, 0, 6, 4)
+        tg_layout.setSpacing(3)
+        root.addWidget(self._tissue_body)
 
-        # Row 1b: Secondary image field (optional — for two-channel segmentation)
-        self._image2_row = _FieldRow("Image 2 (opt.):", self)
-        tg_layout.addLayout(self._image2_row)
+        # ── Position selector + refresh ───────────────────────────────
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(4)
+        pos_row.addWidget(QLabel("Position:"))
+        self._pipeline_pos_spin = QSpinBox()
+        self._pipeline_pos_spin.setRange(0, 99)
+        self._pipeline_pos_spin.setValue(0)
+        self._pipeline_pos_spin.setFixedWidth(54)
+        self._pipeline_pos_spin.setToolTip("Position index for pipeline file status")
+        pos_row.addWidget(self._pipeline_pos_spin)
+        pos_row.addStretch()
+        self._refresh_files_btn = QPushButton("↺ Refresh")
+        self._refresh_files_btn.setFixedWidth(76)
+        self._refresh_files_btn.setToolTip("Refresh pipeline file status")
+        pos_row.addWidget(self._refresh_files_btn)
+        tg_layout.addLayout(pos_row)
 
-        # Row 2a: Nuclear Segmentation (labels) field
-        self._nuclear_labels_row = _FieldRow("Nuclear Seg:", self)
-        tg_layout.addLayout(self._nuclear_labels_row)
+        # ── Pipeline file status rows (scrollable) ────────────────────
+        files_container = QWidget()
+        files_vlayout = QVBoxLayout(files_container)
+        files_vlayout.setContentsMargins(0, 0, 0, 0)
+        files_vlayout.setSpacing(0)
 
-        # Row 2b: Cell Segmentation (labels) field
-        self._labels_row = _FieldRow("Cell Seg:", self)
-        tg_layout.addLayout(self._labels_row)
+        self._pipeline_file_rows: list = []
 
-        # Row 3: Edge Analysis field (series; no capture button — comes from pipeline)
-        self._analysis_row = _FieldRow("Edge Analysis:", self, has_capture=False)
-        tg_layout.addLayout(self._analysis_row)
+        for group_name, entries in _TRACKED_FILE_GROUPS:
+            grp_lbl = QLabel(group_name)
+            grp_lbl.setStyleSheet(
+                "font-size: 8pt; font-weight: bold; padding: 2px 4px 1px 4px; "
+                "background: palette(alternateBase); color: palette(text);"
+            )
+            files_vlayout.addWidget(grp_lbl)
+            for rel_path, display_name, loadable in entries:
+                row = _PipelineFileRow(rel_path, display_name, loadable)
+                self._pipeline_file_rows.append(row)
+                files_vlayout.addWidget(row)
 
-        # Row 4: ForSys/pressure inference field (no capture — comes from pipeline)
-        self._forsys_row = _FieldRow("ForSys:", self, has_capture=False)
-        tg_layout.addLayout(self._forsys_row)
+        files_vlayout.addStretch()
 
-        tissue_group.setLayout(tg_layout)
-        root.addWidget(tissue_group)
+        files_scroll = QScrollArea()
+        files_scroll.setWidget(files_container)
+        files_scroll.setWidgetResizable(True)
+        files_scroll.setFixedHeight(210)
+        files_scroll.setFrameShape(QFrame.NoFrame)
+        tg_layout.addWidget(files_scroll)
 
         # ── Metadata section ──────────────────────────────────────────
         meta_row = QHBoxLayout()
@@ -281,42 +328,11 @@ class ProjectPanel(QWidget):
         self._pipeline_timer.timeout.connect(self._refresh_pipeline_status)
         self._pipeline_timer.start()
 
-        # Tissue buttons
-        self._tissue_load_btn.clicked.connect(self._on_load_tissue)
-        self._tissue_save_btn.clicked.connect(self._on_save_tissue)
-        self._add_to_dataset_btn.clicked.connect(self._on_add_to_dataset)
-
-        # Ctrl+S shortcut: save to current path (no dialog) or open dialog if unsaved.
-        # Use napari's key-binding system so it overrides any conflicting napari shortcut.
-        self.viewer.bind_key("Control-S", lambda _: self._on_save_tissue_quick(), overwrite=True)
-
-        # Image field
-        self._image_row.capture_btn.clicked.connect(self._on_capture_image)
-        self._image_row.to_layer_btn.clicked.connect(self._on_image_to_layer)
-        self._image_row.clear_btn.clicked.connect(self._on_clear_image)
-
-        # Image 2 field
-        self._image2_row.capture_btn.clicked.connect(self._on_capture_image2)
-        self._image2_row.to_layer_btn.clicked.connect(self._on_image2_to_layer)
-        self._image2_row.clear_btn.clicked.connect(self._on_clear_image2)
-
-        # Nuclear Labels field
-        self._nuclear_labels_row.capture_btn.clicked.connect(self._on_capture_nuclear_labels)
-        self._nuclear_labels_row.to_layer_btn.clicked.connect(self._on_nuclear_labels_to_layer)
-        self._nuclear_labels_row.clear_btn.clicked.connect(self._on_clear_nuclear_labels)
-
-        # Labels field
-        self._labels_row.capture_btn.clicked.connect(self._on_capture_labels)
-        self._labels_row.to_layer_btn.clicked.connect(self._on_labels_to_layer)
-        self._labels_row.clear_btn.clicked.connect(self._on_clear_labels)
-
-        # Edge Analysis field (no capture — generated by pipeline)
-        self._analysis_row.to_layer_btn.clicked.connect(self._on_analysis_to_layer)
-        self._analysis_row.clear_btn.clicked.connect(self._on_clear_analysis)
-
-        # ForSys field (no capture — generated by pipeline)
-        self._forsys_row.to_layer_btn.clicked.connect(self._on_forsys_to_layer)
-        self._forsys_row.clear_btn.clicked.connect(self._on_clear_forsys)
+        # Tissue toggle + pipeline file controls
+        self._tissue_toggle.toggled.connect(self._on_tissue_toggle)
+        self._pipeline_pos_spin.valueChanged.connect(self._refresh_pipeline_files)
+        self._refresh_files_btn.clicked.connect(self._refresh_pipeline_files)
+        self._state.pipeline_schema_changed.connect(self._refresh_pipeline_files)
 
         # Metadata
         self._px_edit.editingFinished.connect(self._on_metadata_edited)
@@ -331,7 +347,6 @@ class ProjectPanel(QWidget):
         self._dashboard_btn.clicked.connect(self._on_open_dashboard)
 
         # State signals
-        self._state.tissue_changed.connect(self._refresh_tissue)
         self._state.catalog_changed.connect(self._refresh_catalog)
         self._state.metadata_changed.connect(self._sync_from_state)
         # legacy compat
@@ -381,7 +396,7 @@ class ProjectPanel(QWidget):
                 pass
 
         if label_path is None:
-            # Conventional fallback: <root>/pos00/3_tracking/tracked_labels.tif
+            # Conventional fallback: <root>/pos00/2_ultrack/tracked_labels.tif
             candidate = stage_dir(project_dir, 0, "tracking") / "tracked_labels.tif"
             if candidate.exists():
                 label_path = candidate
@@ -505,83 +520,75 @@ class ProjectPanel(QWidget):
         else:
             self._resume_banner.setVisible(False)
 
+        # Keep the pipeline file list in sync with the manifest timer
+        self._refresh_pipeline_files()
+
+    # ------------------------------------------------------------------
+    # Tissue toggle + pipeline file status
+    # ------------------------------------------------------------------
+
+    def _on_tissue_toggle(self, checked: bool) -> None:
+        self._tissue_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self._tissue_body.setVisible(checked)
+        if checked:
+            self._refresh_pipeline_files()
+
+    def _refresh_pipeline_files(self) -> None:
+        """Check on-disk presence and metadata for every tracked pipeline file."""
+        if not self._tissue_body.isVisible():
+            return
+
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            for row in self._pipeline_file_rows:
+                row.set_no_project()
+            return
+
+        pos = self._pipeline_pos_spin.value()
+        pos_path = project_dir / f"pos{pos:02d}"
+
+        for row in self._pipeline_file_rows:
+            full_path = pos_path / row._rel_path
+            if full_path.exists():
+                info = _file_info(full_path)
+                row.set_present(info)
+                row._full_path = full_path
+                if row._load_btn is not None:
+                    try:
+                        row._load_btn.clicked.disconnect()
+                    except Exception:
+                        pass
+                    loadable = row._loadable
+                    p = full_path
+                    row._load_btn.clicked.connect(
+                        lambda _, p=p, lt=loadable: self._load_pipeline_file(p, lt)
+                    )
+            else:
+                row.set_missing()
+
+    def _load_pipeline_file(self, path: Path, layer_type: str) -> None:
+        """Load a pipeline TIFF file into the napari viewer."""
+        try:
+            import tifffile
+            data = tifffile.imread(str(path))
+        except Exception as exc:
+            logger.error("Failed to load %s: %s", path, exc)
+            return
+        name = path.name
+        if layer_type == "labels":
+            if name in self.viewer.layers:
+                self.viewer.layers[name].data = data
+            else:
+                self.viewer.add_labels(data, name=name)
+        else:
+            if name in self.viewer.layers:
+                self.viewer.layers[name].data = data
+            else:
+                self.viewer.add_image(data, name=name)
+
     # ------------------------------------------------------------------
     # State → UI
     # ------------------------------------------------------------------
-
-    def _refresh_tissue(self):
-        tissue = self._state.tissue
-        # path label
-        if tissue.path:
-            self._tissue_path_label.setText(Path(tissue.path).name)
-            self._tissue_path_label.setToolTip(tissue.path)
-        else:
-            self._tissue_path_label.setText("[unsaved]")
-            self._tissue_path_label.setToolTip("")
-
-        # image row
-        if tissue.image is not None:
-            arr = tissue.image
-            shape_str = " × ".join(str(d) for d in arr.shape)
-            self._image_row.set_status(shape_str, tissue.image_layer or "")
-        else:
-            self._image_row.set_status("not loaded")
-        self._image_row.to_layer_btn.setEnabled(tissue.image is not None)
-        self._image_row.clear_btn.setEnabled(tissue.image is not None)
-
-        # image2 row
-        if tissue.image2 is not None:
-            arr = tissue.image2
-            shape_str = " × ".join(str(d) for d in arr.shape)
-            self._image2_row.set_status(shape_str, tissue.image2_layer or "")
-        else:
-            self._image2_row.set_status("not loaded")
-        self._image2_row.to_layer_btn.setEnabled(tissue.image2 is not None)
-        self._image2_row.clear_btn.setEnabled(tissue.image2 is not None)
-
-        # nuclear labels row
-        if tissue.nuclear_labels is not None:
-            arr = tissue.nuclear_labels
-            shape_str = " × ".join(str(d) for d in arr.shape)
-            self._nuclear_labels_row.set_status(shape_str, tissue.nuclear_labels_layer or "")
-        else:
-            self._nuclear_labels_row.set_status("not loaded")
-        self._nuclear_labels_row.to_layer_btn.setEnabled(tissue.nuclear_labels is not None)
-        self._nuclear_labels_row.clear_btn.setEnabled(tissue.nuclear_labels is not None)
-
-        # labels row
-        if tissue.labels is not None:
-            arr = tissue.labels
-            shape_str = " × ".join(str(d) for d in arr.shape)
-            self._labels_row.set_status(shape_str, tissue.labels_layer or "")
-        else:
-            self._labels_row.set_status("not loaded")
-        self._labels_row.to_layer_btn.setEnabled(tissue.labels is not None)
-        self._labels_row.clear_btn.setEnabled(tissue.labels is not None)
-
-        self._rebuild_layer_tracking()
-
-        # edge analysis row
-        if tissue.series is not None:
-            s = tissue.series
-            n_t1 = len(s.t1_events)
-            n_traj = len(s.edge_trajectories)
-            self._analysis_row.set_status(f"{n_t1} T1s  {n_traj} traj.")
-        else:
-            self._analysis_row.set_status("not loaded")
-        self._analysis_row.to_layer_btn.setEnabled(tissue.series is not None)
-        self._analysis_row.clear_btn.setEnabled(tissue.series is not None)
-
-        # forsys row
-        if tissue.forsys is not None:
-            self._forsys_row.set_status("loaded")
-        else:
-            self._forsys_row.set_status("not loaded")
-        self._forsys_row.to_layer_btn.setEnabled(tissue.forsys is not None)
-        self._forsys_row.clear_btn.setEnabled(tissue.forsys is not None)
-
-        # "Add to dataset" requires a saved path
-        self._add_to_dataset_btn.setEnabled(bool(tissue.path))
 
     def _refresh_catalog(self):
         catalog = self._state.catalog
@@ -630,42 +637,6 @@ class ProjectPanel(QWidget):
 
         self._catalog_table.blockSignals(False)
 
-    def _rebuild_layer_tracking(self):
-        """Reconnect name-change watchers for all tissue-linked layers."""
-        # Disconnect old watchers
-        for layer in list(self._tracked_layer_objects):
-            try:
-                layer.events.name.disconnect(self._on_layer_renamed)
-            except Exception:
-                pass
-        self._tracked_layer_objects = {}
-
-        tissue = self._state.tissue
-        field_map = {
-            "image_layer":  tissue.image_layer,
-            "image2_layer": tissue.image2_layer,
-            "labels_layer": tissue.labels_layer,
-            "forsys_layer": tissue.forsys_layer,
-        }
-        for field, layer_name in field_map.items():
-            if layer_name and layer_name in self.viewer.layers:
-                layer = self.viewer.layers[layer_name]
-                self._tracked_layer_objects[layer] = field
-                try:
-                    layer.events.name.connect(self._on_layer_renamed)
-                except Exception:
-                    pass
-
-    def _on_layer_renamed(self, event):
-        """Update tissue layer name field when a tracked napari layer is renamed."""
-        layer = event.source
-        new_name = layer.name
-        field = self._tracked_layer_objects.get(layer)
-        if field is None:
-            return
-        setattr(self._state.tissue, field, new_name)
-        self._state.tissue_changed.emit()
-
     def _sync_from_state(self):
         for w in (self._px_edit, self._dt_edit, self._condition_edit):
             w.blockSignals(True)
@@ -690,269 +661,6 @@ class ProjectPanel(QWidget):
         self._state.pixel_size = px
         self._state.time_interval = dt_s
         self._state.condition = condition
-
-    # ------------------------------------------------------------------
-    # Tissue file operations
-    # ------------------------------------------------------------------
-
-    def _on_load_tissue(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load tissue", "",
-            "CellFlow tissue (*.h5);;All files (*)",
-        )
-        if not path:
-            return
-        from cellflow.utils.io import load_tissue
-        try:
-            tissue = load_tissue(path)
-        except Exception as exc:
-            logger.error("Failed to load tissue: %s", exc)
-            self._status_label.setText(f"Error: {exc}")
-            return
-
-        # Set layer name before emitting so the correction widget can find it immediately
-        if tissue.labels is not None:
-            tissue.labels_layer = f"{Path(path).stem}_labels"
-        if tissue.nuclear_labels is not None:
-            tissue.nuclear_labels_layer = f"{Path(path).stem}_nuclear_labels"
-
-        self._state._tissue = tissue
-        self._state.tissue_changed.emit()
-
-        # Push metadata from the loaded tissue (H5 metadata group takes priority over series)
-        if self._state.pixel_size is None and tissue.pixel_size is not None:
-            self._state.pixel_size = tissue.pixel_size
-        if self._state.time_interval is None and tissue.time_interval is not None:
-            self._state.time_interval = tissue.time_interval
-        if not self._state.condition and tissue.condition:
-            self._state.condition = tissue.condition
-
-        # Load labels into viewer
-        if tissue.labels is not None:
-            self._load_labels_into_viewer(tissue.labels, Path(path).stem)
-
-        # Load nuclear labels into viewer
-        if tissue.nuclear_labels is not None:
-            nuc_layer_name = f"{Path(path).stem}_nuclear_labels"
-            if nuc_layer_name in self.viewer.layers:
-                self.viewer.layers[nuc_layer_name].data = tissue.nuclear_labels
-            else:
-                self.viewer.add_labels(tissue.nuclear_labels, name=nuc_layer_name)
-
-    def _on_save_tissue_quick(self):
-        """Ctrl+S: save to current file without dialog, or open dialog if unsaved."""
-        tissue = self._state.tissue
-        if tissue.path:
-            self._save_to_path(tissue.path)
-        else:
-            self._on_save_tissue()
-
-    def _save_to_path(self, path: str):
-        """Write the current tissue to *path* (no dialog)."""
-        tissue = self._state.tissue
-        tissue.pixel_size = self._state.pixel_size
-        tissue.time_interval = self._state.time_interval
-        tissue.condition = self._state.condition
-
-        from cellflow.utils.io import save_tissue
-        try:
-            save_tissue(path, tissue)
-        except Exception as exc:
-            logger.error("Failed to save tissue: %s", exc)
-            self._status_label.setText(f"Save error: {exc}")
-            return
-
-        self._state._tissue.path = path
-        self._state.tissue_changed.emit()
-        self._status_label.setText(f"Saved: {Path(path).name}")
-
-    def _on_save_tissue(self):
-        tissue = self._state.tissue
-        default = tissue.path or "tissue.h5"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save tissue", default,
-            "CellFlow tissue (*.h5);;All files (*)",
-        )
-        if not path:
-            return
-        if not path.endswith(".h5"):
-            path += ".h5"
-        self._save_to_path(path)
-
-    def _on_add_to_dataset(self):
-        tissue = self._state.tissue
-        if not tissue.path:
-            self._status_label.setText("Save the tissue first.")
-            return
-
-        from cellflow.utils.io import read_tissue_summary
-        try:
-            summary = read_tissue_summary(tissue.path)
-        except Exception as exc:
-            logger.warning("Could not read summary from %s: %s", tissue.path, exc)
-            summary = {}
-
-        catalog = self._state.catalog
-        # Resolve to relative path if we have a catalog file
-        h5_path = tissue.path
-        if catalog.path:
-            h5_path = _make_entry_path(h5_path, catalog.path)
-
-        entry = CatalogEntry(
-            path=h5_path,
-            display_name=Path(tissue.path).stem,
-            condition=summary.pop("condition", "") or self._state.condition,
-            summary=summary,
-        )
-        self._state.add_to_catalog(entry)
-        self._state.clear_tissue()
-        self._status_label.setText(f"Added {Path(tissue.path).name} to dataset.")
-
-    # ------------------------------------------------------------------
-    # Tissue field buttons
-    # ------------------------------------------------------------------
-
-    def _on_capture_image(self):
-        import napari.layers
-        active = self.viewer.layers.selection.active
-        candidates = (
-            [active] + [l for l in reversed(self.viewer.layers) if l is not active]
-            if active is not None else list(reversed(self.viewer.layers))
-        )
-        for layer in candidates:
-            if isinstance(layer, napari.layers.Image):
-                self._state.set_tissue_image(np.asarray(layer.data), layer.name)
-                self._status_label.setText(f"Captured image from '{layer.name}'.")
-                return
-        self._status_label.setText("No Image layer found.")
-
-    def _on_image_to_layer(self):
-        tissue = self._state.tissue
-        if tissue.image is None:
-            return
-        name = tissue.image_layer or "tissue_image"
-        if name in self.viewer.layers:
-            self.viewer.layers[name].data = tissue.image
-        else:
-            self.viewer.add_image(tissue.image, name=name)
-
-    def _on_clear_image(self):
-        self._state._tissue.image = None
-        self._state._tissue.image_layer = None
-        self._state.tissue_changed.emit()
-
-    def _on_capture_image2(self):
-        import napari.layers
-        # Capture the topmost Image layer that is NOT the primary image
-        primary_name = self._state.tissue.image_layer
-        for layer in reversed(self.viewer.layers):
-            if isinstance(layer, napari.layers.Image) and layer.name != primary_name:
-                self._state.set_tissue_image2(np.asarray(layer.data), layer.name)
-                self._status_label.setText(f"Captured secondary image from '{layer.name}'.")
-                return
-        self._status_label.setText("No secondary Image layer found.")
-
-    def _on_image2_to_layer(self):
-        tissue = self._state.tissue
-        if tissue.image2 is None:
-            return
-        name = tissue.image2_layer or "tissue_image2"
-        if name in self.viewer.layers:
-            self.viewer.layers[name].data = tissue.image2
-        else:
-            self.viewer.add_image(tissue.image2, name=name)
-
-    def _on_clear_image2(self):
-        self._state._tissue.image2 = None
-        self._state._tissue.image2_layer = None
-        self._state.tissue_changed.emit()
-
-    def _on_capture_nuclear_labels(self):
-        import napari.layers
-        active = self.viewer.layers.selection.active
-        if active is not None and isinstance(active, napari.layers.Labels):
-            self._state.set_tissue_nuclear_labels(np.asarray(active.data), active.name)
-            self._status_label.setText(f"Captured nuclear labels from '{active.name}'.")
-            return
-        for layer in reversed(self.viewer.layers):
-            if isinstance(layer, napari.layers.Labels) and "nuclear" in layer.name.lower():
-                self._state.set_tissue_nuclear_labels(np.asarray(layer.data), layer.name)
-                self._status_label.setText(f"Captured nuclear labels from '{layer.name}'.")
-                return
-        self._status_label.setText("No nuclear Labels layer found.")
-
-    def _on_nuclear_labels_to_layer(self):
-        tissue = self._state.tissue
-        if tissue.nuclear_labels is None:
-            return
-        name = tissue.nuclear_labels_layer or "Nuclear Labels"
-        if name in self.viewer.layers:
-            self.viewer.layers[name].data = tissue.nuclear_labels
-        else:
-            self.viewer.add_labels(tissue.nuclear_labels, name=name)
-
-    def _on_clear_nuclear_labels(self):
-        self._state._tissue.nuclear_labels = None
-        self._state._tissue.nuclear_labels_layer = None
-        self._state.tissue_changed.emit()
-
-    def _on_capture_labels(self):
-        import napari.layers
-        active = self.viewer.layers.selection.active
-        if active is not None and isinstance(active, napari.layers.Labels):
-            self._state.set_tissue_labels(np.asarray(active.data), active.name)
-            self._status_label.setText(f"Captured labels from '{active.name}'.")
-            return
-        for layer in reversed(self.viewer.layers):
-            if isinstance(layer, napari.layers.Labels):
-                self._state.set_tissue_labels(np.asarray(layer.data), layer.name)
-                self._status_label.setText(f"Captured labels from '{layer.name}'.")
-                return
-        self._status_label.setText("No Labels layer found.")
-
-    def _on_labels_to_layer(self):
-        tissue = self._state.tissue
-        if tissue.labels is None:
-            return
-        name = tissue.labels_layer or "tissue_labels"
-        if name in self.viewer.layers:
-            self.viewer.layers[name].data = tissue.labels
-        else:
-            self.viewer.add_labels(tissue.labels, name=name)
-
-    def _on_clear_labels(self):
-        self._state._tissue.labels = None
-        self._state._tissue.labels_layer = None
-        self._state.tissue_changed.emit()
-
-    def _on_analysis_to_layer(self):
-        # Push analysis visualization — delegate to analysis widget via series on state
-        tissue = self._state.tissue
-        if tissue.series is None:
-            return
-        # Re-emit tissue_changed; the analysis widget picks it up to redraw layers
-        self._state.tissue_changed.emit()
-        self._status_label.setText("Analysis pushed to viewer layers.")
-
-    def _on_clear_analysis(self):
-        self._state.set_tissue_series(None)
-        self._status_label.setText("Analysis cleared.")
-
-    def _on_forsys_to_layer(self):
-        tissue = self._state.tissue
-        if tissue.forsys is None:
-            return
-        name = tissue.forsys_layer or "tissue_forsys"
-        if name in self.viewer.layers:
-            self.viewer.layers[name].data = tissue.forsys
-        else:
-            self.viewer.add_image(tissue.forsys, name=name)
-
-    def _on_clear_forsys(self):
-        self._state._tissue.forsys = None
-        self._state._tissue.forsys_layer = None
-        self._state.tissue_changed.emit()
-        self._status_label.setText("ForSys cleared.")
 
     # ------------------------------------------------------------------
     # Dataset catalog operations
@@ -1138,53 +846,6 @@ class ProjectPanel(QWidget):
 # Helpers
 # ------------------------------------------------------------------
 
-class _FieldRow(QHBoxLayout):
-    """One data-field row: label | status | [Load] | [To layer] | [Clear]"""
-
-    def __init__(self, label_text: str, parent_widget: QWidget, has_capture: bool = True):
-        super().__init__()
-        self.setSpacing(4)
-
-        lbl = QLabel(label_text)
-        lbl.setFixedWidth(95)
-        self.addWidget(lbl)
-
-        self._status = QLabel("not loaded")
-        self._status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._status.setStyleSheet("font-size: 9pt;")
-        self.addWidget(self._status)
-
-        if has_capture:
-            self.capture_btn = QPushButton("Load")
-            self.capture_btn.setFixedWidth(54)
-            self.capture_btn.setToolTip("Pull from active napari layer into internal storage")
-            self.addWidget(self.capture_btn)
-        else:
-            # placeholder so callers can always reference capture_btn
-            self.capture_btn = QPushButton()
-            self.capture_btn.setVisible(False)
-
-        self.to_layer_btn = QPushButton("To layer")
-        self.to_layer_btn.setFixedWidth(64)
-        self.to_layer_btn.setEnabled(False)
-        self.to_layer_btn.setToolTip("Push internal data to a napari layer")
-        self.addWidget(self.to_layer_btn)
-
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.setFixedWidth(50)
-        self.clear_btn.setEnabled(False)
-        self.clear_btn.setToolTip("Remove from internal storage (napari layer unaffected)")
-        self.addWidget(self.clear_btn)
-
-    def set_status(self, text: str, layer_name: str = "") -> None:
-        if layer_name:
-            self._status.setText(layer_name)
-            self._status.setToolTip(text)
-        else:
-            self._status.setText(text)
-            self._status.setToolTip("")
-
-
 def _parse_float(text: str) -> Optional[float]:
     try:
         return float(text.strip())
@@ -1200,3 +861,113 @@ def _make_entry_path(h5_path: str, catalog_path: Optional[str]) -> str:
         return str(Path(h5_path).relative_to(Path(catalog_path).parent))
     except ValueError:
         return h5_path
+
+
+class _PipelineFileRow(QWidget):
+    """One pipeline file status row: icon | name | info | [load btn]"""
+
+    def __init__(self, rel_path: str, display_name: str, loadable: "str | None"):
+        super().__init__()
+        self._rel_path = rel_path
+        self._loadable = loadable
+        self._full_path: "Path | None" = None
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 1, 4, 1)
+        lay.setSpacing(4)
+
+        self._icon_lbl = QLabel("○")
+        self._icon_lbl.setFixedWidth(14)
+        self._icon_lbl.setAlignment(Qt.AlignCenter)
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        lay.addWidget(self._icon_lbl)
+
+        name_lbl = QLabel(display_name)
+        name_lbl.setFixedWidth(140)
+        name_lbl.setStyleSheet("font-size: 8pt;")
+        name_lbl.setToolTip(rel_path)
+        lay.addWidget(name_lbl)
+
+        self._info_lbl = QLabel("—")
+        self._info_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: palette(mid);")
+        lay.addWidget(self._info_lbl)
+
+        if loadable is not None:
+            self._load_btn = QPushButton("↑")
+            self._load_btn.setFixedWidth(24)
+            self._load_btn.setFixedHeight(18)
+            self._load_btn.setToolTip("Load into napari viewer")
+            self._load_btn.setEnabled(False)
+            lay.addWidget(self._load_btn)
+        else:
+            self._load_btn = None
+
+    def set_present(self, info_text: str) -> None:
+        self._icon_lbl.setText("✓")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; font-weight: bold; color: #4CAF50;")
+        self._info_lbl.setText(info_text)
+        self._info_lbl.setStyleSheet("font-size: 8pt;")
+        if self._load_btn:
+            self._load_btn.setEnabled(True)
+
+    def set_missing(self) -> None:
+        self._icon_lbl.setText("✗")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
+        self._info_lbl.setText("missing")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: palette(mid);")
+        self._full_path = None
+        if self._load_btn:
+            self._load_btn.setEnabled(False)
+
+    def set_no_project(self) -> None:
+        self._icon_lbl.setText("○")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        self._info_lbl.setText("—")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: palette(mid);")
+        self._full_path = None
+        if self._load_btn:
+            self._load_btn.setEnabled(False)
+
+
+def _file_info(path: Path) -> str:
+    """Return a concise shape/dtype or size string for a pipeline output file."""
+    if path.is_dir():
+        n = sum(1 for _ in path.glob("*.tif"))
+        return f"{n} .tif file(s)"
+    suffix = path.suffix.lower()
+    if suffix in (".tif", ".tiff"):
+        try:
+            import tifffile
+            with tifffile.TiffFile(str(path)) as tf:
+                s = tf.series[0] if tf.series else None
+                if s is not None:
+                    shape_str = "×".join(str(d) for d in s.shape)
+                    return f"{shape_str} {s.dtype}"
+        except Exception:
+            pass
+        return "?"
+    if suffix == ".db":
+        kb = path.stat().st_size // 1024
+        return f"{kb} KB"
+    if suffix == ".csv":
+        try:
+            with open(path) as f:
+                n = max(0, sum(1 for _ in f) - 1)
+            return f"{n} rows"
+        except Exception:
+            return "?"
+    if suffix in (".h5", ".hdf5"):
+        kb = path.stat().st_size // 1024
+        return f"{kb} KB"
+    if suffix == ".npz":
+        try:
+            data = np.load(str(path), allow_pickle=False)
+            keys = list(data.keys())
+            data.close()
+            return ", ".join(keys) if keys else "empty"
+        except Exception:
+            pass
+        return "?"
+    kb = path.stat().st_size // 1024
+    return f"{kb} KB"

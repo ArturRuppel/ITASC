@@ -30,6 +30,13 @@ import napari
 
 from .registry import get_state
 
+# Optional dependency check
+try:
+    import cellpose as _cellpose  # noqa: F401
+    _CELLPOSE_AVAILABLE = True
+except ImportError:
+    _CELLPOSE_AVAILABLE = False
+
 
 # ── helpers ────────────────────────────────────────────────────────────
 
@@ -160,6 +167,15 @@ class SegmentationTab(QWidget):
         self._seg_stack_btn = QPushButton("Segment Stack")
         self._seg_frame_btn.clicked.connect(self._on_segment_frame)
         self._seg_stack_btn.clicked.connect(self._on_segment_stack)
+        if not _CELLPOSE_AVAILABLE:
+            _cp_tip = (
+                "Cellpose is not installed.\n"
+                "Install with: pip install cellflow-napari[pipeline]"
+            )
+            self._seg_frame_btn.setEnabled(False)
+            self._seg_frame_btn.setToolTip(_cp_tip)
+            self._seg_stack_btn.setEnabled(False)
+            self._seg_stack_btn.setToolTip(_cp_tip)
         seg_btns.addWidget(self._seg_frame_btn)
         seg_btns.addWidget(self._seg_stack_btn)
         root.addLayout(seg_btns)
@@ -320,7 +336,7 @@ class SegmentationTab(QWidget):
             "Requires nuclear labels to be tracked first (IDs consistent across frames)."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: palette(mid); font-size: 8pt;")
+        hint.setStyleSheet("color: white; font-size: 8pt;")
         lay.addWidget(hint)
 
         form = QFormLayout()
@@ -617,6 +633,12 @@ class SegmentationTab(QWidget):
     # ── Segment Frame ──────────────────────────────────────────────────
 
     def _on_segment_frame(self):
+        if not _CELLPOSE_AVAILABLE:
+            self._log_append(
+                "ERROR: Cellpose is not installed. "
+                "Run: pip install cellflow-napari[pipeline]"
+            )
+            return
         if self._is_running:
             self._log_append("Already processing.")
             return
@@ -716,6 +738,12 @@ class SegmentationTab(QWidget):
     # ── Segment Stack ──────────────────────────────────────────────────
 
     def _on_segment_stack(self):
+        if not _CELLPOSE_AVAILABLE:
+            self._log_append(
+                "ERROR: Cellpose is not installed. "
+                "Run: pip install cellflow-napari[pipeline]"
+            )
+            return
         if self._is_running:
             self._log_append("Already processing.")
             return

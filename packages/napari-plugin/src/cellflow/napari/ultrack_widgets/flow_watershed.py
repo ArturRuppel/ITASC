@@ -1,4 +1,10 @@
-"""Flow-guided watershed cell segmentation widget."""
+"""Nucleus-anchored cell segmentation widget (step 4 — 4_cell_segmentation).
+
+Reads corrected 2D nuclear labels from the correction stage
+(3_correction/nuclear_labels_corrected.tif) and Cellpose 2D flow/probability
+maps from the cellpose cell stage (1_cellpose/cell/) to grow cell bodies
+around each nucleus using a flow-guided expansion algorithm.
+"""
 
 from __future__ import annotations
 
@@ -38,7 +44,7 @@ def cellpose_cell_dir(root_dir, pos):
 
 
 def cell_segmentation_dir(root_dir, pos):
-    return stage_dir(root_dir, pos, "flow_watershed")
+    return stage_dir(root_dir, pos, "cell_segmentation")
 
 
 class FlowWatershedConfig:
@@ -87,13 +93,13 @@ class FlowWatershedConfig:
 
 
 def _load_nuclear_labels(root_dir: Path | str, pos: int) -> np.ndarray | None:
-    """Load tracked nuclear labels (2D projection) from the tracking stage output."""
+    """Load corrected 2D nuclear labels from the correction stage output."""
     try:
-        tracking_labels_path = (
-            stage_dir(root_dir, pos, "tracking") / "tracked_labels_proj2d_corrected.tif"
+        correction_labels_path = (
+            stage_dir(root_dir, pos, "correction") / "nuclear_labels_corrected.tif"
         )
-        if tracking_labels_path.exists():
-            return tifffile.imread(str(tracking_labels_path)).astype(np.int32)
+        if correction_labels_path.exists():
+            return tifffile.imread(str(correction_labels_path)).astype(np.int32)
     except Exception:
         pass
     return None
@@ -457,7 +463,7 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         # ── Project info (derived from state) ────────────────────────────
         self._project_label = QLabel("No project open.")
-        self._project_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._project_label.setStyleSheet("color: white; font-size: 8pt;")
         self._project_label.setWordWrap(True)
         lay.addWidget(self._project_label)
 

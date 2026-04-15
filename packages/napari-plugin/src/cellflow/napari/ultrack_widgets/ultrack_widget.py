@@ -116,7 +116,7 @@ class UltrackAnalysisWidget(QWidget):
 
         # ── Project info (derived from state) ────────────────────────────
         self._project_label = QLabel("No project open.")
-        self._project_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._project_label.setStyleSheet("color: white; font-size: 8pt;")
         self._project_label.setWordWrap(True)
         lay.addWidget(self._project_label)
 

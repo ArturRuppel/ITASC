@@ -10,14 +10,21 @@ from pathlib import Path
 # Authoritative stage-name → output-directory mapping.
 # Stage packages must NOT hard-code these strings.
 STAGE_DIRS: dict[str, str] = {
-    "raw_import": "0_raw",
-    "cellpose_nucleus": "1a_cellpose_nucleus",
-    "cellpose_cell": "1b_cellpose_cell",
-    "flow_watershed": "2_flow_watershed",
-    "contours": "2b_contours",
-    "tracking": "3_tracking",
-    "graph_extraction": "4_analysis",
-    "topology_analysis": "4_analysis",
+    # Step 0 — project config lives at the root; no stage directory.
+    "raw_import":        "0_input",
+    # Step 1 — Cellpose: two sub-folders inside a shared 1_cellpose/ parent.
+    "cellpose_nucleus":  "1_cellpose/nucleus",
+    "cellpose_cell":     "1_cellpose/cell",
+    # Steps 2+3 — Contours (intermediate) and Ultrack share one directory.
+    "contours":          "2_ultrack",
+    "tracking":          "2_ultrack",
+    # Step 4 — Correction produces a single file in its own folder.
+    "correction":        "3_correction",
+    # Step 5 — Nucleus-anchored cell segmentation.
+    "cell_segmentation": "4_cell_segmentation",
+    # Step 6 — Edge analysis.
+    "graph_extraction":  "5_analysis",
+    "topology_analysis": "5_analysis",
 }
 
 

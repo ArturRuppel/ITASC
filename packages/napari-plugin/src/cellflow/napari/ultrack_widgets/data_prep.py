@@ -54,7 +54,7 @@ class DataPrepWidget(QWidget):
 
         # ── Project info ─────────────────────────────────────────────────
         self._project_label = QLabel("")
-        self._project_label.setStyleSheet("color: gray; font-size: 8pt;")
+        self._project_label.setStyleSheet("color: white; font-size: 8pt;")
         self._project_label.setWordWrap(True)
         layout.addWidget(self._project_label)
 
