@@ -37,7 +37,11 @@ class TestBuildFromLabels:
     def test_graph_edges_match_junctions(self, label_stack):
         series = build_from_labels(label_stack)
         for frame in series.frames.values():
-            assert frame.graph.number_of_edges() == len(frame.junctions)
+            # Border junctions (cell_id=0 in the pair) are stored in frame.junctions
+            # for tagging purposes but do NOT appear as graph edges (background is
+            # not a cell node). Only count cell-cell junctions for this comparison.
+            cell_cell_junctions = sum(1 for pair in frame.junctions if 0 not in pair)
+            assert frame.graph.number_of_edges() == cell_cell_junctions
 
     def test_single_frame(self, label_frame):
         series = build_from_labels(label_frame[np.newaxis, ...])

@@ -875,7 +875,7 @@ def _tissue_to_arrays(series: TissueGraphTimeSeries) -> dict:
             si_all.append(c.shape_index)
             nn_all.append(c.num_neighbors)
             tid_all.append(c.track_id if c.track_id is not None else -1)
-            pres_all.append(c.pressure if c.pressure is not None else np.nan)
+            pres_all.append(c.pressure)  # keep None; converted to nan only when writing
             bord_all.append(c.is_border)
             verts_all.append(c.vertices if c.vertices is not None else np.empty((0, 2), dtype=np.float64))
 
@@ -888,7 +888,10 @@ def _tissue_to_arrays(series: TissueGraphTimeSeries) -> dict:
     a['cells_shape_indices'] = np.array(si_all, dtype=np.float64) if tc else np.empty(0, dtype=np.float64)
     a['cells_num_neighbors'] = np.array(nn_all, dtype=np.int64) if tc else np.empty(0, dtype=np.int64)
     a['cells_track_ids'] = np.array(tid_all, dtype=np.int64) if tc else np.empty(0, dtype=np.int64)
-    a['cells_pressures'] = np.array(pres_all, dtype=np.float64) if tc else np.empty(0, dtype=np.float64)
+    if tc and any(p is not None for p in pres_all):
+        a['cells_pressures'] = np.array(
+            [p if p is not None else np.nan for p in pres_all], dtype=np.float64
+        )
     a['cells_is_border'] = np.array(bord_all, dtype=bool) if tc else np.empty(0, dtype=bool)
     vf, vo = _serialize_ragged(verts_all) if verts_all else (np.empty((0, 2), dtype=np.float64), np.zeros(1, dtype=np.int64))
     a['cells_verts_flat'] = vf
@@ -1067,7 +1070,7 @@ def _arrays_to_tissue(a: dict) -> TissueGraphTimeSeries:
     cells_si = a['cells_shape_indices']
     cells_nn = a['cells_num_neighbors']
     cells_track = a['cells_track_ids']
-    cells_pres = a['cells_pressures']
+    cells_pres = a.get('cells_pressures')  # omitted when all pressures are None
     cells_border = a['cells_is_border']
     verts_list = _deserialize_ragged(a['cells_verts_flat'], a['cells_verts_offsets'])
 
@@ -1094,8 +1097,10 @@ def _arrays_to_tissue(a: dict) -> TissueGraphTimeSeries:
         for k in range(c_s, c_e):
             cid = int(cells_ids[k])
             verts = verts_list[k] if len(verts_list[k]) > 0 else None
-            pres = float(cells_pres[k])
-            pres = None if np.isnan(pres) else pres
+            pres = (
+                None if cells_pres is None
+                else (None if np.isnan(cells_pres[k]) else float(cells_pres[k]))
+            )
             tid_val = int(cells_track[k])
             cells[cid] = CellData(
                 cell_id=cid,
