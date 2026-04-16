@@ -724,12 +724,18 @@ class UltrackAnalysisWidget(QWidget):
         sl.addLayout(row)
 
         # Workers for segmentation
+        # Arrays are converted to a file-backed zarr store when n_workers > 1,
+        # so spawned processes read by path rather than unpickling the full stack.
         row = QHBoxLayout()
         row.addWidget(QLabel("Workers"))
         self._tr_seg_workers = QSpinBox()
         self._tr_seg_workers.setRange(1, 64)
         self._tr_seg_workers.setValue(1)
-        self._tr_seg_workers.setToolTip("Number of parallel workers for the segmentation stage")
+        self._tr_seg_workers.setToolTip(
+            "Number of parallel workers for the segmentation stage.\n"
+            "Stacks are written to a temporary zarr store so workers share\n"
+            "data by path rather than pickling large arrays."
+        )
         row.addWidget(self._tr_seg_workers)
         sl.addLayout(row)
 
@@ -1036,6 +1042,7 @@ class UltrackAnalysisWidget(QWidget):
             anisotropy_penalization=self._tr_aniso.value(),
             n_workers=self._tr_seg_workers.value(),
             max_distance=self._tr_max_dist.value(),
+            link_n_workers=self._tr_lnk_workers.value(),
             max_neighbors=self._tr_max_nb.value(),
             distance_weight=self._tr_dist_w.value(),
             appear_weight=self._tr_appear.value(),
@@ -1061,6 +1068,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_aniso.setValue(cfg.anisotropy_penalization)
         self._tr_seg_workers.setValue(cfg.n_workers)
         self._tr_max_dist.setValue(cfg.max_distance)
+        self._tr_lnk_workers.setValue(cfg.link_n_workers)
         self._tr_max_nb.setValue(cfg.max_neighbors)
         self._tr_dist_w.setValue(cfg.distance_weight)
         self._tr_appear.setValue(cfg.appear_weight)

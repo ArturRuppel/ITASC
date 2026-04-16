@@ -50,7 +50,7 @@ def _build_ultrack_config(
             "max_distance": cfg.max_distance,
             "max_neighbors": cfg.max_neighbors,
             "distance_weight": cfg.distance_weight,
-            "n_workers": cfg.n_workers,
+            "n_workers": cfg.link_n_workers,
         },
         tracking={
             "appear_weight": cfg.appear_weight,
@@ -122,6 +122,27 @@ def get_labels_layer(working_dir: str | Path) -> np.ndarray:
 
 # ── Independent stage runners ─────────────────────────────────────────────────
 
+def _to_zarr(arr: np.ndarray, store_path: Path) -> "zarr.Array":
+    """Write a (T, …) numpy array to a time-chunked zarr DirectoryStore.
+
+    Each timepoint is its own chunk so spawned worker processes can open the
+    store by path and read only their slice — no large-array pickling across
+    the spawn boundary.
+    """
+    import zarr
+
+    chunks = (1,) + arr.shape[1:]
+    z = zarr.open(
+        str(store_path),
+        mode="w",
+        shape=arr.shape,
+        dtype=arr.dtype,
+        chunks=chunks,
+    )
+    z[:] = arr
+    return z
+
+
 def run_segmentation(
     foreground_path: str | Path,
     contours_path: str | Path,
@@ -160,7 +181,23 @@ def run_segmentation(
         yield (1, total, "Skipping DB clear (overwrite=False)…")
 
     yield (2, total, "Running segmentation (add nodes)…")
-    segment(foreground, contours, ultrack_cfg)
+
+    zarr_tmp: Path | None = None
+    try:
+        if cfg.n_workers > 1:
+            # ultrack uses a spawn-based pool: worker processes cannot share
+            # in-memory numpy arrays (they would be pickled in full for each
+            # worker).  Converting to a file-backed zarr store lets each
+            # spawned process open the store by path and read only its own
+            # timepoint slice — no large-array serialisation.
+            zarr_tmp = Path(tempfile.mkdtemp(prefix="cellflow_zarr_"))
+            foreground = _to_zarr(foreground, zarr_tmp / "foreground.zarr")
+            contours = _to_zarr(contours, zarr_tmp / "contours.zarr")
+
+        segment(foreground, contours, ultrack_cfg)
+    finally:
+        if zarr_tmp is not None:
+            shutil.rmtree(zarr_tmp, ignore_errors=True)
 
     yield (total, total, "Segmentation done.")
 

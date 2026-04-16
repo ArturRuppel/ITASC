@@ -36,13 +36,13 @@ from cellflow.core.protocol import StageProgress, ValidationResult
 
 
 def discover_dp_files(input_dir: str | Path) -> list[Path]:
-    """Return sorted list of ``t*_dp.tif`` files in *input_dir*."""
-    return sorted(Path(input_dir).glob("t*_dp.tif"))
+    """Return sorted list of ``*_dp.tif`` files in *input_dir*."""
+    return sorted(Path(input_dir).glob("*_dp.tif"))
 
 
 def discover_prob_files(input_dir: str | Path) -> list[Path]:
-    """Return sorted list of ``t*_prob.tif`` files in *input_dir*."""
-    return sorted(Path(input_dir).glob("t*_prob.tif"))
+    """Return sorted list of ``*_prob.tif`` files in *input_dir*."""
+    return sorted(Path(input_dir).glob("*_prob.tif"))
 
 
 # ── Core computation ────────────────────────────────────────────────────────
@@ -57,8 +57,8 @@ def compute_labels_single(
 
     Parameters
     ----------
-    dp_path : path to t*_dp.tif (flow field)
-    prob_path : path to t*_prob.tif (cell probability map)
+    dp_path : path to *_dp.tif (flow field)
+    prob_path : path to *_prob.tif (cell probability map)
     cfg : CellposeContoursConfig
 
     Returns

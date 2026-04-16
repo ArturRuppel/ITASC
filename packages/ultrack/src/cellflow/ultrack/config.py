@@ -14,12 +14,13 @@ class TrackingConfig(BaseModel):
     threshold: float = 0.5
     ws_hierarchy: str = "area"  # "area", "dynamics", or "volume"
     anisotropy_penalization: float = 0.0
-    n_workers: int = 1
+    n_workers: int = 1  # parallel workers for segmentation; >1 uses a zarr temp store
 
     # Linking
     max_distance: float = 15.0
     max_neighbors: int = 5
     distance_weight: float = 0.0
+    link_n_workers: int = 1
 
     # Solver / ILP
     appear_weight: float = -0.001
