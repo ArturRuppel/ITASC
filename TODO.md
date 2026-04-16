@@ -10,8 +10,6 @@ parameter handling should be homogenized, including naming and placement of the 
 
 finishing a step should default to loading the visualization
 
-post processing widget needs an additional feature: trim borders
-
 flow watershed widget has a bunch of parameters which are not used anymore
 
 foreground.tif should be added to the PIPELINE_LAYOUT.md and also to the Project status widget etc.

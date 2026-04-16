@@ -88,6 +88,9 @@ class CellposeContoursConfig(BaseModel):
     """Parameters for cellpose-native contour generation (contours)."""
 
     cellprob_threshold: float = 0.0
+    cellprob_min: float = 0.0
+    cellprob_max: float = 0.0
+    cellprob_step: float = 0.5
     do_3D: bool = True
     smooth_sigma: float = 0.5
     device: str = "cuda"

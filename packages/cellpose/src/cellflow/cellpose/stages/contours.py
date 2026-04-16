@@ -221,6 +221,12 @@ def run(
         yield (0, 0, f"Mismatch: {len(dp_files)} dp files vs {len(prob_files)} prob files")
         return
 
+    # Build threshold sweep from config sweep fields
+    if cfg.cellprob_step > 0 and cfg.cellprob_min != cfg.cellprob_max:
+        thresholds = list(np.arange(cfg.cellprob_min, cfg.cellprob_max + cfg.cellprob_step / 2, cfg.cellprob_step))
+    else:
+        thresholds = [cfg.cellprob_threshold]
+
     total = len(dp_files)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -230,9 +236,17 @@ def run(
     for i, (dp_path, prob_path) in enumerate(zip(dp_files, prob_files)):
         t_str = dp_path.name.split("_")[0]  # e.g., "t000"
         try:
-            _, fg, ct = compute_single(dp_path, prob_path, cfg)
-            fg_frames.append(fg)
-            ct_frames.append(ct)
+            dp = tifffile.imread(str(dp_path)).astype(np.float32)
+            prob = tifffile.imread(str(prob_path)).astype(np.float32)
+            fg_list = []
+            ct_list = []
+            for thresh in thresholds:
+                cfg.cellprob_threshold = thresh
+                _, fg, ct = compute_single_from_arrays(dp, prob, cfg)
+                fg_list.append(fg)
+                ct_list.append(ct)
+            fg_frames.append(np.mean(fg_list, axis=0).astype(np.float32))
+            ct_frames.append(np.mean(ct_list, axis=0).astype(np.float32))
         except Exception as e:
             print(f"  {t_str}: error: {e}", flush=True)
             spatial = tifffile.imread(str(prob_path)).shape
