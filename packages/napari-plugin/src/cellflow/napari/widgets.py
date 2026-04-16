@@ -167,5 +167,15 @@ class CollapsibleSection(QWidget):
         h = self._inner.sizeHint().height()
         if h > 10:
             self._scroll_area.setMinimumHeight(h)
+            self._notify_ancestor()
         else:
             QTimer.singleShot(50, self._reset_natural_height)
+
+    def _notify_ancestor(self) -> None:
+        """Walk up the widget tree and resize the nearest CollapsibleSection ancestor."""
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, CollapsibleSection) and parent.is_expanded:
+                QTimer.singleShot(0, parent._reset_natural_height)
+                return
+            parent = parent.parent()

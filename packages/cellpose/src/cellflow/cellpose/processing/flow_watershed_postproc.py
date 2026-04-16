@@ -1,7 +1,12 @@
 """Post-processing for flow-watershed cell segmentation.
 
-Includes: morphological smoothing, boundary smoothing, and hole-filling
-based on cellpose probability.
+Individual operations (open, close, fill_holes, smooth_boundary,
+mask_to_tissue_foreground) are exposed as standalone functions.
+``run_postprocess_pipeline`` executes them in user-specified order,
+allowing arbitrary combinations and repetitions.
+
+Legacy API (``postprocess_flow_watershed``, ``morphological_smoothing``,
+``boundary_smoothing``) is preserved for backward compatibility.
 """
 
 from __future__ import annotations
@@ -12,60 +17,395 @@ from skimage.measure import find_contours
 from scipy.interpolate import UnivariateSpline
 
 
+# ── Default pipeline ──────────────────────────────────────────────────────────
+
+DEFAULT_POSTPROCESS_STEPS: list[dict] = [
+    {"type": "open",            "radius":     1   },
+    {"type": "close",           "radius":     1   },
+    {"type": "smooth_boundary", "smoothness": 0.5 },
+]
+
+
+# ── Contour helpers ───────────────────────────────────────────────────────────
+
 def _resample_contour(contour: np.ndarray, num_points: int = 100) -> np.ndarray:
     """Resample a contour to a fixed number of points."""
     if len(contour) < 2:
         return contour
-    # Parameterize by arc length
     diffs = np.diff(contour, axis=0)
     dists = np.sqrt((diffs**2).sum(axis=1))
     cumsum = np.concatenate([[0], np.cumsum(dists)])
-    # Resample
     new_s = np.linspace(0, cumsum[-1], num_points)
-    resampled = np.column_stack([
+    return np.column_stack([
         np.interp(new_s, cumsum, contour[:, 0]),
         np.interp(new_s, cumsum, contour[:, 1]),
     ])
-    return resampled
 
 
 def _smooth_contour_spline(contour: np.ndarray, smoothness: float = 0.5) -> np.ndarray:
-    """Smooth a contour using B-spline interpolation.
+    """Smooth a contour using B-spline interpolation."""
+    if len(contour) < 4:
+        return contour
+    contour_closed = np.vstack([contour, contour[0:1]])
+    t = np.arange(len(contour_closed))
+    try:
+        s_val = smoothness * len(contour) ** 2
+        spl_row = UnivariateSpline(t, contour_closed[:, 0], s=s_val, k=min(3, len(contour_closed) - 1))
+        spl_col = UnivariateSpline(t, contour_closed[:, 1], s=s_val, k=min(3, len(contour_closed) - 1))
+        t_smooth = np.linspace(0, len(contour) - 1, len(contour) * 2)
+        return np.column_stack([spl_row(t_smooth), spl_col(t_smooth)])
+    except Exception:
+        return contour
+
+
+# ── Individual operations ─────────────────────────────────────────────────────
+
+def open_labels(labels: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Morphological opening per cell — removes small noise / thin protrusions.
 
     Parameters
     ----------
-    contour : np.ndarray
-        (N, 2) array of (row, col) points
+    labels : np.ndarray
+        Label image (H, W).
+    radius : int
+        Number of erosion + dilation iterations (0 = no-op).
+    """
+    if radius <= 0:
+        return labels
+    result = np.zeros_like(labels)
+    for label_id in np.unique(labels):
+        if label_id == 0:
+            continue
+        mask = ndimage.binary_opening(labels == label_id, iterations=radius)
+        result[mask] = label_id
+    return result
+
+
+def close_labels(labels: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Morphological closing per cell — fills small gaps near borders.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Label image (H, W).
+    radius : int
+        Number of dilation + erosion iterations (0 = no-op).
+    """
+    if radius <= 0:
+        return labels
+    result = np.zeros_like(labels)
+    for label_id in np.unique(labels):
+        if label_id == 0:
+            continue
+        mask = ndimage.binary_closing(labels == label_id, iterations=radius)
+        result[mask] = label_id
+    return result
+
+
+def fill_label_holes(labels: np.ndarray, radius: int = 5) -> np.ndarray:
+    """Fill enclosed background gaps between cells up to *radius* pixels wide.
+
+    Background regions that touch the image border ("open" background) are left
+    intact — only fully enclosed gaps are filled.  Each enclosed gap pixel is
+    assigned to whichever neighbouring cell is closest (nearest-neighbour
+    expansion), matching the behaviour of the interactive Fix Borders tool.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Label image (H, W).
+    radius : int
+        Maximum distance (px) cells are allowed to expand into enclosed gaps.
+        Use a large value (e.g. 999) to fill all enclosed gaps regardless of
+        size.
+    """
+    from skimage.measure import label as cc_label
+    from skimage.segmentation import expand_labels
+
+    if radius <= 0:
+        return labels
+
+    bg = labels == 0
+    if not np.any(bg):
+        return labels
+
+    # Find connected background components
+    bg_labeled = cc_label(bg, connectivity=2)
+
+    # Mark any component that touches the image border as "open"
+    open_ids: set = set()
+    for edge in (bg_labeled[0, :], bg_labeled[-1, :],
+                 bg_labeled[:, 0], bg_labeled[:, -1]):
+        open_ids.update(np.unique(edge))
+    open_ids.discard(0)
+
+    open_bg  = bg & np.isin(bg_labeled, list(open_ids))
+    enclosed = bg & ~open_bg
+
+    if not np.any(enclosed):
+        return labels
+
+    # Place a sentinel label on open-background pixels so expand_labels treats
+    # them as occupied and won't overwrite them.
+    SENTINEL = int(labels.max()) + 1
+    work = labels.copy()
+    work[open_bg] = SENTINEL
+
+    expanded = expand_labels(work, distance=radius)
+
+    # Remove sentinel and any expansion into open background
+    expanded[open_bg]              = 0
+    expanded[expanded == SENTINEL] = 0
+
+    return expanded.astype(labels.dtype)
+
+
+def smooth_label_boundaries(labels: np.ndarray, smoothness: float = 0.5) -> np.ndarray:
+    """Smooth cell boundaries using spline-based contour fitting.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Label image (H, W).
     smoothness : float
-        Smoothing factor (0-1). Higher = smoother.
+        User-facing smoothing factor 0–1.  Scaled by 0.01 before being passed
+        to the spline fitter so that the effective range (0–0.01) stays subtle.
+    """
+    if smoothness <= 0:
+        return labels
+    return boundary_smoothing(labels, smoothness=smoothness * 0.01)
+
+
+def compute_tissue_foreground_mask(
+    tissue_image: np.ndarray,
+    sigma: float = 2.0,
+    threshold: float = 0.1,
+) -> np.ndarray:
+    """Compute a binary foreground mask from a tissue intensity image.
+
+    Gaussian-smooths *tissue_image*, normalises it to [0, 1], and thresholds
+    at *threshold*.  Returns a boolean array with ``True`` for foreground pixels.
+
+    Parameters
+    ----------
+    tissue_image : np.ndarray
+        Raw intensity image (H, W) — typically the z-projected membrane channel.
+    sigma : float
+        Gaussian smoothing radius in pixels (default 2.0; 0 = no smoothing).
+    threshold : float
+        Foreground cutoff in the [0, 1] range after normalisation to the image
+        maximum (default 0.1).
+    """
+    img = tissue_image.astype(np.float32)
+    if sigma > 0:
+        img = ndimage.gaussian_filter(img, sigma=sigma)
+    img_max = img.max()
+    if img_max > 0:
+        img = img / img_max
+    return img > threshold
+
+
+def mask_to_tissue_foreground(
+    labels: np.ndarray,
+    tissue_image: np.ndarray,
+    sigma: float = 2.0,
+    threshold: float = 0.1,
+) -> np.ndarray:
+    """Zero out labels outside the tissue foreground.
+
+    Delegates mask computation to :func:`compute_tissue_foreground_mask`.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Label image (H, W).
+    tissue_image : np.ndarray
+        Raw intensity image (H, W) — typically the z-projected membrane channel.
+    sigma : float
+        Gaussian smoothing radius in pixels before thresholding (default 2.0).
+    threshold : float
+        Foreground cutoff in [0, 1] after normalisation (default 0.1).
+    """
+    foreground = compute_tissue_foreground_mask(tissue_image, sigma=sigma, threshold=threshold)
+    result = labels.copy()
+    result[~foreground] = 0
+    return result
+
+
+# ── Binary mask operations ────────────────────────────────────────────────────
+
+def open_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Morphological opening on a binary mask — removes small islands / protrusions.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Boolean or uint8 binary mask (H, W).
+    radius : int
+        Number of erosion + dilation iterations (0 = no-op).
+    """
+    if radius <= 0:
+        return mask.astype(bool)
+    return ndimage.binary_opening(mask, iterations=radius)
+
+
+def close_mask(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Morphological closing on a binary mask — fills small holes and gaps.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Boolean or uint8 binary mask (H, W).
+    radius : int
+        Number of dilation + erosion iterations (0 = no-op).
+    """
+    if radius <= 0:
+        return mask.astype(bool)
+    return ndimage.binary_closing(mask, iterations=radius)
+
+
+def fill_mask_holes(mask: np.ndarray) -> np.ndarray:
+    """Fill all enclosed background holes in a binary mask.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Boolean or uint8 binary mask (H, W).
+    """
+    return ndimage.binary_fill_holes(mask)
+
+
+def smooth_mask_boundary(mask: np.ndarray, sigma: float = 2.0) -> np.ndarray:
+    """Smooth binary mask boundary via Gaussian blur + rethreshold at 0.5.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Boolean or uint8 binary mask (H, W).
+    sigma : float
+        Gaussian blur radius in pixels (0 = no-op).
+    """
+    if sigma <= 0:
+        return mask.astype(bool)
+    blurred = ndimage.gaussian_filter(mask.astype(np.float32), sigma=sigma)
+    return blurred > 0.5
+
+
+def run_mask_postprocess_pipeline(mask: np.ndarray, steps: list[dict]) -> np.ndarray:
+    """Execute binary mask postprocessing steps in the given order.
+
+    Each step is a dict with a ``"type"`` key and optional parameters:
+
+    ==================  ================  ====================================
+    type                extra keys        description
+    ==================  ================  ====================================
+    ``open``            ``radius`` (int)  binary opening (remove islands)
+    ``close``           ``radius`` (int)  binary closing (fill gaps)
+    ``fill_holes``      —                 fill all enclosed background holes
+    ``smooth_boundary`` ``sigma`` (float) Gaussian blur + rethreshold at 0.5
+    ==================  ================  ====================================
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Binary input mask (H, W) — bool or uint8.
+    steps : list[dict]
+        Ordered list of step dicts.
 
     Returns
     -------
     np.ndarray
-        Smoothed contour
+        Processed mask (H, W), dtype uint8 (0/1).
     """
-    if len(contour) < 4:
-        return contour
+    result = mask.astype(bool)
+    for step in steps:
+        t = step.get("type")
+        if t == "open":
+            result = open_mask(result, step.get("radius", 1))
+        elif t == "close":
+            result = close_mask(result, step.get("radius", 1))
+        elif t == "fill_holes":
+            result = fill_mask_holes(result)
+        elif t == "smooth_boundary":
+            result = smooth_mask_boundary(result, step.get("sigma", 2.0))
+        # unknown types silently skipped
+    return result.astype(np.uint8)
 
-    # Close the contour for smoothness
-    contour_closed = np.vstack([contour, contour[0:1]])
 
-    # Parameterize by index
-    t = np.arange(len(contour_closed))
+# ── Pipeline runner ───────────────────────────────────────────────────────────
 
-    try:
-        # Fit splines with smoothing
-        s_val = smoothness * len(contour) ** 2
-        spl_row = UnivariateSpline(t, contour_closed[:, 0], s=s_val, k=min(3, len(contour_closed) - 1))
-        spl_col = UnivariateSpline(t, contour_closed[:, 1], s=s_val, k=min(3, len(contour_closed) - 1))
+def run_postprocess_pipeline(
+    labels: np.ndarray,
+    steps: list[dict],
+    tissue_image: np.ndarray | None = None,
+    foreground_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Execute postprocessing steps in the given order.
 
-        # Evaluate on denser grid
-        t_smooth = np.linspace(0, len(contour) - 1, len(contour) * 2)
-        smoothed = np.column_stack([spl_row(t_smooth), spl_col(t_smooth)])
-        return smoothed
-    except Exception:
-        return contour
+    Each step is a dict with a ``"type"`` key and optional parameters:
 
+    ==================  =================  ===================================
+    type                extra keys         description
+    ==================  =================  ===================================
+    ``open``            ``radius`` (int)   morphological opening per cell
+    ``close``           ``radius`` (int)   morphological closing per cell
+    ``fill_holes``      ``radius`` (int)   expand cells into enclosed bg gaps
+    ``smooth_boundary`` ``smoothness``     spline-based boundary smoothing
+    ``tissue_mask``     ``sigma`` (float)  legacy — mask labels to tissue fg
+    ==================  =================  ===================================
+
+    ``tissue_mask`` steps are silently skipped when *tissue_image* is None.
+    Unknown step types (including the old ``trim_low_prob``) are silently
+    skipped.
+
+    After all steps, *foreground_mask* (if provided) is applied as a final
+    binary spatial mask — pixels where the mask is False/0 are zeroed out.
+    This is the preferred way to apply tissue masking; ``tissue_mask`` steps
+    are kept only for backward compatibility with old configs.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Label image (H, W).
+    steps : list[dict]
+        Ordered list of step dicts.
+    tissue_image : np.ndarray, optional
+        Raw intensity frame (H, W) used by legacy ``tissue_mask`` steps.
+    foreground_mask : np.ndarray, optional
+        Binary mask (H, W) — True/1 for foreground, False/0 for background.
+        Applied after all pipeline steps.
+
+    Returns
+    -------
+    np.ndarray
+        Processed labels (H, W), dtype int32.
+    """
+    result = labels.copy()
+    for step in steps:
+        t = step.get("type")
+        if t == "open":
+            result = open_labels(result, step.get("radius", 1))
+        elif t == "close":
+            result = close_labels(result, step.get("radius", 1))
+        elif t == "fill_holes":
+            result = fill_label_holes(result, step.get("radius", 5))
+        elif t == "smooth_boundary":
+            result = smooth_label_boundaries(result, step.get("smoothness", 0.5))
+        elif t == "tissue_mask":
+            # Legacy step — kept for backward compatibility with old configs.
+            if tissue_image is not None:
+                result = mask_to_tissue_foreground(
+                    result, tissue_image,
+                    sigma=step.get("sigma", 2.0),
+                    threshold=step.get("threshold", 0.1),
+                )
+        # unknown step types are silently skipped
+    if foreground_mask is not None:
+        result[~foreground_mask.astype(bool)] = 0
+    return result.astype(np.int32)
+
+
+# ── Legacy public API (backward compatibility) ────────────────────────────────
 
 def morphological_smoothing(
     labels: np.ndarray,
@@ -74,38 +414,19 @@ def morphological_smoothing(
 ) -> np.ndarray:
     """Apply opening then closing to each cell label.
 
-    Parameters
-    ----------
-    labels : np.ndarray
-        Label image (H, W)
-    opening_radius : int
-        Radius for binary_opening (removes small noise)
-    closing_radius : int
-        Radius for binary_closing (fills small holes)
-
-    Returns
-    -------
-    np.ndarray
-        Smoothed labels
+    .. deprecated::
+        Use :func:`open_labels` / :func:`close_labels` directly.
     """
     result = np.zeros_like(labels)
-
     for label_id in np.unique(labels):
         if label_id == 0:
             continue
-
         mask = labels == label_id
-
-        # Opening: remove small noise spikes
         if opening_radius > 0:
             mask = ndimage.binary_opening(mask, iterations=opening_radius)
-
-        # Closing: fill small holes
         if closing_radius > 0:
             mask = ndimage.binary_closing(mask, iterations=closing_radius)
-
         result[mask] = label_id
-
     return result
 
 
@@ -113,44 +434,20 @@ def boundary_smoothing(
     labels: np.ndarray,
     smoothness: float = 0.5,
 ) -> np.ndarray:
-    """Smooth cell boundaries using contour smoothing.
-
-    Parameters
-    ----------
-    labels : np.ndarray
-        Label image (H, W)
-    smoothness : float
-        Smoothing factor (0-1). Higher = smoother.
-
-    Returns
-    -------
-    np.ndarray
-        Labels with smoothed boundaries
-    """
+    """Smooth cell boundaries using contour smoothing."""
     H, W = labels.shape
     result = np.zeros_like(labels)
-
     for label_id in np.unique(labels):
         if label_id == 0:
             continue
-
         mask = (labels == label_id).astype(np.uint8)
-
-        # Find contours
         contours = find_contours(mask, level=0.5)
-
         if not contours:
             result[mask.astype(bool)] = label_id
             continue
-
-        # Use largest contour (external boundary)
         contour = contours[0]
-
-        # Smooth the contour
         if len(contour) > 3:
             smoothed_contour = _smooth_contour_spline(contour, smoothness=smoothness)
-
-            # Re-render the smoothed contour back to a mask
             from skimage.draw import polygon
             try:
                 rows = np.clip(smoothed_contour[:, 0].astype(int), 0, H - 1)
@@ -158,111 +455,28 @@ def boundary_smoothing(
                 rr, cc = polygon(rows, cols, shape=(H, W))
                 result[rr, cc] = label_id
             except Exception:
-                # Fallback to original mask if rendering fails
                 result[mask.astype(bool)] = label_id
         else:
             result[mask.astype(bool)] = label_id
-
-    return result
-
-
-def trim_low_probability_boundaries(
-    labels: np.ndarray,
-    cellpose_prob: np.ndarray,
-    prob_threshold: float = 0.5,
-) -> np.ndarray:
-    """Remove boundary pixels with low cellpose probability.
-
-    For each cell, finds boundary pixels that touch background and removes them
-    if their cellpose probability is below the threshold.
-
-    Parameters
-    ----------
-    labels : np.ndarray
-        Label image (H, W)
-    cellpose_prob : np.ndarray
-        Cellpose probability map (H, W), values in [0, 1]
-    prob_threshold : float
-        Probability threshold (0-1). Pixels below this at boundaries are removed.
-
-    Returns
-    -------
-    np.ndarray
-        Labels with low-probability boundary pixels removed
-    """
-    result = labels.copy()
-    background = labels == 0
-
-    for label_id in np.unique(labels):
-        if label_id == 0:
-            continue
-
-        cell_mask = labels == label_id
-
-        # Dilate to find boundary pixels (dilated - original)
-        dilated = ndimage.binary_dilation(cell_mask)
-        boundary = dilated & ~cell_mask & background
-
-        if not boundary.any():
-            continue
-
-        # Find current boundary pixels of the cell
-        eroded = ndimage.binary_erosion(cell_mask)
-        current_boundary = cell_mask & ~eroded
-
-        # Check cellpose probability at boundary
-        boundary_points = np.argwhere(current_boundary)
-        for point in boundary_points:
-            if cellpose_prob[point[0], point[1]] < prob_threshold:
-                # Remove this boundary pixel
-                result[point[0], point[1]] = 0
-
     return result
 
 
 def postprocess_flow_watershed(
     labels: np.ndarray,
-    cellpose_prob: np.ndarray | None = None,
     opening_radius: int = 1,
     closing_radius: int = 1,
     boundary_smoothness: float = 0.5,
-    fill_holes_threshold: float = 0.5,
 ) -> np.ndarray:
-    """Complete post-processing pipeline for flow-watershed segmentation.
+    """Complete post-processing pipeline — delegates to ``run_postprocess_pipeline``.
 
-    Parameters
-    ----------
-    labels : np.ndarray
-        Raw flow-watershed labels (H, W)
-    cellpose_prob : np.ndarray, optional
-        Cellpose probability map (H, W) for boundary trimming
-    opening_radius : int
-        Morphological opening radius (removes noise)
-    closing_radius : int
-        Morphological closing radius (fills holes)
-    boundary_smoothness : float
-        Boundary smoothing factor (0-1)
-    fill_holes_threshold : float
-        Cellpose probability threshold for removing low-confidence boundary pixels
-
-    Returns
-    -------
-    np.ndarray
-        Post-processed labels
+    .. deprecated::
+        Build a ``steps`` list and call :func:`run_postprocess_pipeline` directly.
     """
-    result = labels.copy()
-
-    # 1. Morphological smoothing (opening then closing per cell to fill holes)
-    if opening_radius > 0 or closing_radius > 0:
-        result = morphological_smoothing(result, opening_radius, closing_radius)
-
-    # 2. Boundary smoothing (contour-based smoothing)
+    steps: list[dict] = []
+    if opening_radius > 0:
+        steps.append({"type": "open",            "radius":     opening_radius})
+    if closing_radius > 0:
+        steps.append({"type": "close",           "radius":     closing_radius})
     if boundary_smoothness > 0:
-        result = boundary_smoothing(result, smoothness=boundary_smoothness)
-
-    # 3. Trim low-probability boundaries
-    # Remove boundary pixels where cellpose prob is below threshold
-    if cellpose_prob is not None and fill_holes_threshold > 0:
-        result = trim_low_probability_boundaries(result, cellpose_prob, fill_holes_threshold)
-
-    return result.astype(np.int32)
+        steps.append({"type": "smooth_boundary", "smoothness": boundary_smoothness})
+    return run_postprocess_pipeline(labels, steps)

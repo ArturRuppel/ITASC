@@ -106,7 +106,7 @@ class CellFlowWidget(QWidget):
         # 4_cell_segmentation
         self._cell_seg_tab = FlowGuidedSegmentationWidget(self.viewer)
         self._cell_seg_section = CollapsibleSection(
-            "Cell Seg", self._cell_seg_tab, expanded=False
+            "Flow Watershed", self._cell_seg_tab, expanded=False
         )
         _plugin_layout.addWidget(self._cell_seg_section)
 
@@ -158,7 +158,7 @@ class CellFlowWidget(QWidget):
             "Ultrack":            self._ultrack_section,
             "Correction":         self._correction_section,
             "Tracking":           self._tracking_section,
-            "Cell Seg":           self._cell_seg_section,
+            "Flow Watershed":      self._cell_seg_section,
             "Edge Analysis":      self._edge_analysis_section,
             "ForSys":             self._forces_section,
         }

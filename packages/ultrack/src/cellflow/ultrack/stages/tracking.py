@@ -194,7 +194,13 @@ def run_segmentation(
             foreground = _to_zarr(foreground, zarr_tmp / "foreground.zarr")
             contours = _to_zarr(contours, zarr_tmp / "contours.zarr")
 
-        segment(foreground, contours, ultrack_cfg)
+        try:
+            segment(foreground, contours, ultrack_cfg, overwrite=overwrite)
+        except ValueError as exc:
+            if not overwrite and "Duplicated nodes" in str(exc):
+                yield (total, total, "Segmentation already in DB, skipping.")
+                return
+            raise
     finally:
         if zarr_tmp is not None:
             shutil.rmtree(zarr_tmp, ignore_errors=True)
@@ -242,8 +248,9 @@ def run_solve(
     from ultrack.core.solve.processing import solve
     from ultrack.core.solve.sqltracking import SQLTracking
     from ultrack.core.export.tracks_layer import to_tracks_layer
+    from cellflow.ultrack.stages.project2d import export_nuclear_labels_2d
 
-    total = 5
+    total = 6
     wd = Path(working_dir)
     ultrack_cfg = _build_ultrack_config(cfg, wd)
 
@@ -262,6 +269,9 @@ def run_solve(
 
     yield (3, total, "Exporting tracked labels…")
     export_tracked_labels(wd, cfg, wd / "tracked_labels.tif")
+
+    yield (4, total, "Projecting tracked labels to 2D…")
+    export_nuclear_labels_2d(wd / "tracked_labels.tif", wd / "nuclear_labels_2d.tif")
 
     yield (total, total, "Solve done.")
 
@@ -410,16 +420,18 @@ class _TrackingStageClass:
                 cfg=cfg,
             ):
                 yield StageProgress(*progress)
-            # Checkpoint: copy tracked_labels.tif to 4_analysis/ so CellFlow
-            # analysis stages can use it without knowing the tracking stage path.
-            src = wd / "tracked_labels.tif"
-            if src.exists():
-                analysis_dir = pos_dir / STAGE_DIRS.get("graph_extraction", "4_analysis")
-                analysis_dir.mkdir(parents=True, exist_ok=True)
-                dst = analysis_dir / "tracked_labels.tif"
-                if not dst.exists():
-                    shutil.copy2(str(src), str(dst))
-                    log.info(f"Checkpoint: copied tracked_labels.tif → {dst}")
+            # Checkpoint: copy tracked_labels.tif and nuclear_labels_2d.tif to
+            # 4_analysis/ so CellFlow analysis stages can use them without knowing
+            # the tracking stage path.
+            for fname in ("tracked_labels.tif", "nuclear_labels_2d.tif"):
+                src = wd / fname
+                if src.exists():
+                    analysis_dir = pos_dir / STAGE_DIRS.get("graph_extraction", "4_analysis")
+                    analysis_dir.mkdir(parents=True, exist_ok=True)
+                    dst = analysis_dir / fname
+                    if not dst.exists():
+                        shutil.copy2(str(src), str(dst))
+                        log.info(f"Checkpoint: copied {fname} → {dst}")
 
     def validate_inputs(self, schema, root_dir, pos) -> ValidationResult:
         from cellflow.core.validation import validate_inputs

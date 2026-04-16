@@ -5,7 +5,7 @@ to guide and scale expansion velocity. Produces cell segmentation stack.
 
 Inputs (per position)
 ---------------------
-  2_ultrack/tracked_labels_proj2d_corrected.tif  (T, H, W)    uint32  — nuclear labels (2D projection)
+  3_correction/nuclear_labels_corrected.tif  (T, H, W)    uint32  — nuclear labels (2D projection)
   1b_cellpose_cell/cell_dp.tif                   (T, 2, H, W) float32 — flow field
   1b_cellpose_cell/cell_prob.tif                 (T, H, W)    float32 — cellpose probability
 
@@ -34,8 +34,8 @@ from cellflow.core.protocol import StageProgress, ValidationResult
 
 
 def load_tracked_labels(root_dir: str | Path, pos: int) -> np.ndarray | None:
-    """Load tracked nuclear labels (2D projection) from 3_tracking."""
-    tracking_path = stage_dir(root_dir, pos, "tracking") / "tracked_labels_proj2d_corrected.tif"
+    """Load tracked nuclear labels (2D projection) from 3_correction."""
+    tracking_path = stage_dir(root_dir, pos, "correction") / "nuclear_labels_corrected.tif"
     if not tracking_path.exists():
         print(f"[error] Tracked labels not found: {tracking_path}", file=sys.stderr)
         return None
@@ -44,54 +44,52 @@ def load_tracked_labels(root_dir: str | Path, pos: int) -> np.ndarray | None:
 
 def apply_postprocessing(
     raw_labels_stack: np.ndarray,
-    cellpose_prob_stack: np.ndarray | None = None,
-    opening_radius: int = 1,
-    closing_radius: int = 1,
-    boundary_smoothness: float = 0.5,
-    fill_holes_threshold: float = 0.5,
+    postprocess_steps: list | None = None,
+    tissue_image_stack: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Apply post-processing to flow-watershed labels.
+    """Apply post-processing pipeline to a full label stack.
 
     Parameters
     ----------
     raw_labels_stack : np.ndarray
-        Raw labels from flow_guided_watershed (T, H, W)
-    cellpose_prob_stack : np.ndarray, optional
-        Cellpose probability stack (T, H, W)
-    opening_radius : int
-        Morphological opening radius
-    closing_radius : int
-        Morphological closing radius
-    boundary_smoothness : float
-        Boundary smoothing factor (0-1)
-    fill_holes_threshold : float
-        Cellpose probability threshold for hole-filling (0-1)
+        Raw labels from flow_guided_watershed (T, H, W).
+    postprocess_steps : list[dict], optional
+        Ordered list of step dicts — see ``run_postprocess_pipeline``.
+        Defaults to ``DEFAULT_POSTPROCESS_STEPS``.
+    tissue_image_stack : np.ndarray, optional
+        Raw membrane channel z-projection (T, H, W) used by ``tissue_mask``
+        steps.
 
     Returns
     -------
     np.ndarray
-        Post-processed labels (T, H, W)
+        Post-processed labels (T, H, W).
     """
-    from cellflow.cellpose.processing.flow_watershed_postproc import postprocess_flow_watershed
+    from cellflow.cellpose.processing.flow_watershed_postproc import (
+        run_postprocess_pipeline,
+        DEFAULT_POSTPROCESS_STEPS,
+    )
 
+    steps = postprocess_steps if postprocess_steps is not None else DEFAULT_POSTPROCESS_STEPS
     T = raw_labels_stack.shape[0]
     processed_stack = []
 
     for t in range(T):
         raw_t = raw_labels_stack[t]
-        prob_t = cellpose_prob_stack[t] if cellpose_prob_stack is not None else None
-
-        processed = postprocess_flow_watershed(
-            raw_t,
-            cellpose_prob=prob_t,
-            opening_radius=opening_radius,
-            closing_radius=closing_radius,
-            boundary_smoothness=boundary_smoothness,
-            fill_holes_threshold=fill_holes_threshold,
-        )
+        tissue_t = tissue_image_stack[t] if tissue_image_stack is not None else None
+        processed = run_postprocess_pipeline(raw_t, steps, tissue_image=tissue_t)
         processed_stack.append(processed)
 
     return np.stack(processed_stack, axis=0).astype(np.int32)
+
+
+def load_cell_zavg(root_dir: str | Path, pos: int) -> np.ndarray | None:
+    """Load the raw cell z-average image from 0_input/cell/cell_zavg.tif."""
+    path = stage_dir(root_dir, pos, "raw_import") / "cell" / "cell_zavg.tif"
+    if not path.exists():
+        print(f"  [warning] cell_zavg not found: {path} — tissue_mask steps will be skipped", flush=True)
+        return None
+    return tifffile.imread(str(path)).astype(np.float32)
 
 
 def load_cellpose_data(root_dir: str | Path, pos: int) -> tuple[np.ndarray | None, np.ndarray | None]:
@@ -130,10 +128,7 @@ def run(
     flow_smoothing_sigma: float = 0.0,
     max_iterations: int = 50,
     uniform_growth_rate: float = 0.2,
-    opening_radius: int = 1,
-    closing_radius: int = 1,
-    boundary_smoothness: float = 0.5,
-    fill_holes_threshold: float = 0.5,
+    postprocess_steps: list | None = None,
     overwrite: bool = False,
     mode: str = "full",
 ) -> Generator[tuple[int, int, str], None, None]:
@@ -157,20 +152,17 @@ def run(
         Maximum iterations for watershed expansion (default 50).
     uniform_growth_rate : float
         Baseline expansion probability (default 0.2).
-    opening_radius : int
-        Morphological opening radius for noise removal (default 1).
-    closing_radius : int
-        Morphological closing radius for hole filling (default 1).
-    boundary_smoothness : float
-        Boundary smoothing factor 0-1 (default 0.5).
-    fill_holes_threshold : float
-        Cellpose probability threshold for hole-filling (default 0.5).
+    postprocess_steps : list[dict], optional
+        Ordered postprocessing pipeline.  Defaults to ``DEFAULT_POSTPROCESS_STEPS``.
     overwrite : bool
         Overwrite existing outputs.
     mode : str
         Execution mode: "full" (segmentation + postprocessing), "seg-only" (segmentation only),
         or "postprocess-only" (postprocessing on existing raw labels). Default: "full".
     """
+    from cellflow.cellpose.processing.flow_watershed_postproc import DEFAULT_POSTPROCESS_STEPS
+    if postprocess_steps is None:
+        postprocess_steps = DEFAULT_POSTPROCESS_STEPS
     root_dir = Path(root_dir)
 
     # Load inputs
@@ -184,6 +176,8 @@ def run(
     if flow is None:
         print(f"pos{pos:02d}: Could not load cellpose data — skipping.", flush=True)
         return
+
+    tissue = load_cell_zavg(root_dir, pos)
 
     # Verify input shapes and normalize to (T, H, W, 2) and (T, H, W)
     if nuclear_labels.ndim != 3:
@@ -237,8 +231,19 @@ def run(
             )
             prob = None
 
+    # Normalize tissue image to (T, H, W)
+    if tissue is not None:
+        if tissue.ndim == 2:
+            tissue = np.repeat(tissue[np.newaxis, ...], T, axis=0)
+        elif tissue.ndim == 3 and tissue.shape[0] != T:
+            print(
+                f"  [warning] tissue_image T={tissue.shape[0]} != nuclear_labels T={T} — tissue_mask steps will be skipped",
+                flush=True,
+            )
+            tissue = None
+
     # Setup output
-    out_dir = stage_dir(root_dir, pos, "flow_watershed")
+    out_dir = stage_dir(root_dir, pos, "cell_segmentation")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     out_path = out_dir / "cell_labels.tif"
@@ -261,11 +266,8 @@ def run(
 
         stack = apply_postprocessing(
             raw_stack,
-            cellpose_prob_stack=prob,
-            opening_radius=opening_radius,
-            closing_radius=closing_radius,
-            boundary_smoothness=boundary_smoothness,
-            fill_holes_threshold=fill_holes_threshold,
+            postprocess_steps=postprocess_steps,
+            tissue_image_stack=tissue,
         )
         tifffile.imwrite(
             str(out_path),
@@ -298,10 +300,7 @@ def run(
     print(f"  max_iterations={max_iterations}", flush=True)
     print(f"  uniform_growth_rate={uniform_growth_rate}", flush=True)
     if mode == "full":
-        print(f"  opening_radius={opening_radius}", flush=True)
-        print(f"  closing_radius={closing_radius}", flush=True)
-        print(f"  boundary_smoothness={boundary_smoothness}", flush=True)
-        print(f"  fill_holes_threshold={fill_holes_threshold}", flush=True)
+        print(f"  postprocess_steps={postprocess_steps}", flush=True)
 
     # Save run parameters
     run_params_path = out_dir / "run_params.json"
@@ -317,10 +316,7 @@ def run(
                         "flow_smoothing_sigma": flow_smoothing_sigma,
                         "max_iterations": max_iterations,
                         "uniform_growth_rate": uniform_growth_rate,
-                        "opening_radius": opening_radius,
-                        "closing_radius": closing_radius,
-                        "boundary_smoothness": boundary_smoothness,
-                        "fill_holes_threshold": fill_holes_threshold,
+                        "postprocess_steps": postprocess_steps,
                     },
                 },
                 indent=2,
@@ -379,11 +375,8 @@ def run(
     print(f"pos{pos:02d}: Applying post-processing…", flush=True)
     stack = apply_postprocessing(
         raw_stack,
-        cellpose_prob_stack=prob,
-        opening_radius=opening_radius,
-        closing_radius=closing_radius,
-        boundary_smoothness=boundary_smoothness,
-        fill_holes_threshold=fill_holes_threshold,
+        postprocess_steps=postprocess_steps,
+        tissue_image_stack=tissue,
     )
 
     # Save final stack
@@ -433,19 +426,31 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    from cellflow.cellpose.processing.flow_watershed_postproc import DEFAULT_POSTPROCESS_STEPS
+
     cfg_dict: dict = {
         "flow_scale": 1.0,
         "cellpose_prob_threshold": 0.0,
         "flow_smoothing_sigma": 0.0,
         "max_iterations": 50,
         "uniform_growth_rate": 0.2,
-        "opening_radius": 1,
-        "closing_radius": 1,
-        "boundary_smoothness": 0.5,
-        "fill_holes_threshold": 0.5,
+        "postprocess_steps": list(DEFAULT_POSTPROCESS_STEPS),
     }
     if args.config:
-        cfg_dict.update(json.loads(Path(args.config).read_text()))
+        loaded = json.loads(Path(args.config).read_text())
+        # Migrate old flat keys to postprocess_steps if needed
+        if "postprocess_steps" not in loaded:
+            steps: list[dict] = []
+            opening = loaded.pop("opening_radius",      1)
+            closing = loaded.pop("closing_radius",      1)
+            smooth  = loaded.pop("boundary_smoothness", 0.5)
+            loaded.pop("fill_holes_threshold", None)  # removed — tissue_mask replaces this
+            if opening > 0: steps.append({"type": "open",            "radius":     opening})
+            if closing > 0: steps.append({"type": "close",           "radius":     closing})
+            if smooth  > 0: steps.append({"type": "smooth_boundary", "smoothness": smooth})
+            if steps:
+                loaded["postprocess_steps"] = steps
+        cfg_dict.update(loaded)
 
     for done, total, label in run(
         args.root_dir,
@@ -455,10 +460,7 @@ if __name__ == "__main__":
         flow_smoothing_sigma=cfg_dict.get("flow_smoothing_sigma", 0.0),
         max_iterations=cfg_dict.get("max_iterations", 50),
         uniform_growth_rate=cfg_dict.get("uniform_growth_rate", 0.2),
-        opening_radius=cfg_dict.get("opening_radius", 1),
-        closing_radius=cfg_dict.get("closing_radius", 1),
-        boundary_smoothness=cfg_dict.get("boundary_smoothness", 0.5),
-        fill_holes_threshold=cfg_dict.get("fill_holes_threshold", 0.5),
+        postprocess_steps=cfg_dict.get("postprocess_steps"),
         overwrite=args.overwrite,
         mode=args.mode,
     ):
@@ -491,10 +493,7 @@ class _FlowWatershedStageClass:
                 flow_smoothing_sigma=cfg.flow_smoothing_sigma,
                 max_iterations=cfg.max_iterations,
                 uniform_growth_rate=cfg.uniform_growth_rate,
-                opening_radius=cfg.opening_radius,
-                closing_radius=cfg.closing_radius,
-                boundary_smoothness=cfg.boundary_smoothness,
-                fill_holes_threshold=cfg.fill_holes_threshold,
+                postprocess_steps=cfg.postprocess_steps,
                 overwrite=overwrite,
                 mode=mode,
             ):
@@ -503,7 +502,7 @@ class _FlowWatershedStageClass:
     def validate_inputs(self, schema, root_dir, pos) -> ValidationResult:
         from cellflow.core.validation import validate_inputs
 
-        tracking_labels = stage_dir(root_dir, pos, "tracking") / "tracked_labels_proj2d_corrected.tif"
+        tracking_labels = stage_dir(root_dir, pos, "correction") / "nuclear_labels_corrected.tif"
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
         return validate_inputs([
             tracking_labels,
@@ -511,7 +510,7 @@ class _FlowWatershedStageClass:
         ])
 
     def is_complete(self, root_dir, pos) -> bool:
-        d = stage_dir(root_dir, pos, "flow_watershed")
+        d = stage_dir(root_dir, pos, "cell_segmentation")
         return (d / "cell_labels.tif").exists()
 
 

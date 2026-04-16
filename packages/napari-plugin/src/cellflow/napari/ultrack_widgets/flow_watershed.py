@@ -18,13 +18,17 @@ import tifffile
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -46,6 +50,13 @@ def cell_segmentation_dir(root_dir, pos):
     return stage_dir(root_dir, pos, "cell_segmentation")
 
 
+_DEFAULT_POSTPROCESS_STEPS: list[dict] = [
+    {"type": "open",            "radius":      1   },
+    {"type": "close",           "radius":      1   },
+    {"type": "smooth_boundary", "smoothness":  0.5 },
+]
+
+
 class FlowWatershedConfig:
     """Configuration for flow watershed segmentation."""
 
@@ -56,38 +67,61 @@ class FlowWatershedConfig:
         flow_smoothing_sigma: float = 0.0,
         max_iterations: int = 50,
         uniform_growth_rate: float = 0.2,
-        opening_radius: int = 1,
-        closing_radius: int = 1,
-        boundary_smoothness: float = 0.5,
-        fill_holes_threshold: float = 0.5,
+        postprocess_steps: list | None = None,
+        foreground_mask_sigma: float = 2.0,
+        foreground_mask_threshold: float = 0.1,
+        foreground_mask_postprocess_steps: list | None = None,
     ):
         self.flow_scale = flow_scale
         self.cellpose_prob_threshold = cellpose_prob_threshold
         self.flow_smoothing_sigma = flow_smoothing_sigma
         self.max_iterations = max_iterations
         self.uniform_growth_rate = uniform_growth_rate
-        self.opening_radius = opening_radius
-        self.closing_radius = closing_radius
-        self.boundary_smoothness = boundary_smoothness
-        self.fill_holes_threshold = fill_holes_threshold
+        self.postprocess_steps = postprocess_steps if postprocess_steps is not None \
+            else [dict(s) for s in _DEFAULT_POSTPROCESS_STEPS]
+        self.foreground_mask_sigma = foreground_mask_sigma
+        self.foreground_mask_threshold = foreground_mask_threshold
+        self.foreground_mask_postprocess_steps = foreground_mask_postprocess_steps \
+            if foreground_mask_postprocess_steps is not None else []
 
     def model_dump(self) -> dict:
         return {
-            "flow_scale": self.flow_scale,
-            "cellpose_prob_threshold": self.cellpose_prob_threshold,
-            "flow_smoothing_sigma": self.flow_smoothing_sigma,
-            "max_iterations": self.max_iterations,
-            "uniform_growth_rate": self.uniform_growth_rate,
-            "opening_radius": self.opening_radius,
-            "closing_radius": self.closing_radius,
-            "boundary_smoothness": self.boundary_smoothness,
-            "fill_holes_threshold": self.fill_holes_threshold,
+            "flow_scale":                          self.flow_scale,
+            "cellpose_prob_threshold":             self.cellpose_prob_threshold,
+            "flow_smoothing_sigma":                self.flow_smoothing_sigma,
+            "max_iterations":                      self.max_iterations,
+            "uniform_growth_rate":                 self.uniform_growth_rate,
+            "postprocess_steps":                   self.postprocess_steps,
+            "foreground_mask_sigma":               self.foreground_mask_sigma,
+            "foreground_mask_threshold":           self.foreground_mask_threshold,
+            "foreground_mask_postprocess_steps":   self.foreground_mask_postprocess_steps,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> FlowWatershedConfig:
-        # Drop 'method' if present in loaded config for backwards compatibility
-        data.pop("method", None)
+    def from_dict(cls, data: dict) -> "FlowWatershedConfig":
+        data = dict(data)
+        data.pop("method", None)  # old field — ignore
+
+        # Migrate legacy flat postprocess params to pipeline steps
+        if "postprocess_steps" not in data:
+            steps: list[dict] = []
+            opening = data.pop("opening_radius",      1)
+            closing = data.pop("closing_radius",      1)
+            smooth  = data.pop("boundary_smoothness", 0.5)
+            data.pop("fill_holes_threshold", None)
+            if opening > 0: steps.append({"type": "open",            "radius":     opening})
+            if closing > 0: steps.append({"type": "close",           "radius":     closing})
+            if smooth  > 0: steps.append({"type": "smooth_boundary", "smoothness": smooth})
+            data["postprocess_steps"] = steps or [dict(s) for s in _DEFAULT_POSTPROCESS_STEPS]
+        else:
+            # Remove legacy keys if they somehow appear alongside new key
+            for k in ("opening_radius", "closing_radius", "boundary_smoothness", "fill_holes_threshold"):
+                data.pop(k, None)
+            # Strip legacy tissue_mask steps — masking is now the Foreground Mask widget
+            data["postprocess_steps"] = [
+                s for s in data["postprocess_steps"] if s.get("type") != "tissue_mask"
+            ]
+
         return cls(**data)
 
 
@@ -136,6 +170,72 @@ def _load_cellpose_data(root_dir: Path | str, pos: int, t: int) -> tuple[np.ndar
         return flow, prob
     except Exception:
         return None, None
+
+
+def _load_tissue_image(root_dir: Path | str, pos: int) -> np.ndarray | None:
+    """Load cell_zavg.tif from 0_input/cell/ for tissue masking."""
+    try:
+        path = stage_dir(root_dir, pos, "raw_import") / "cell" / "cell_zavg.tif"
+        if path.exists():
+            return tifffile.imread(str(path)).astype(np.float32)
+    except Exception:
+        pass
+    return None
+
+
+def _load_foreground_mask(root_dir: Path | str, pos: int) -> np.ndarray | None:
+    """Load cell_foreground.tif from 4_cell_segmentation/ if it exists."""
+    try:
+        path = cell_segmentation_dir(root_dir, pos) / "cell_foreground.tif"
+        if path.exists():
+            return tifffile.imread(str(path)).astype(np.uint8)
+    except Exception:
+        pass
+    return None
+
+
+def run_foreground_mask_only(
+    root_dir: str | Path,
+    pos: int,
+    sigma: float = 2.0,
+    threshold: float = 0.1,
+    postprocess_steps: list[dict] | None = None,
+) -> Generator:
+    """
+    Compute and save the foreground mask stack to cell_foreground.tif.
+    Applies optional binary mask postprocessing steps after thresholding.
+    Yields (done, total, label) tuples for progress reporting.
+    Returns path to saved mask file.
+    """
+    from cellflow.cellpose.processing.flow_watershed_postproc import (
+        compute_tissue_foreground_mask,
+        run_mask_postprocess_pipeline,
+    )
+
+    root_dir = Path(root_dir)
+    tissue_full = _load_tissue_image(root_dir, pos)
+    if tissue_full is None:
+        print("Could not load tissue image (cell_zavg.tif)")
+        return None
+
+    T = tissue_full.shape[0] if tissue_full.ndim == 3 else 1
+    steps = postprocess_steps or []
+    masks = []
+
+    for t in range(T):
+        tissue_t = tissue_full[t] if tissue_full.ndim == 3 else tissue_full
+        mask = compute_tissue_foreground_mask(tissue_t, sigma=sigma, threshold=threshold)
+        if steps:
+            mask = run_mask_postprocess_pipeline(mask, steps)
+        masks.append(mask.astype(np.uint8))
+        yield (t + 1, T, f"t{t:03d}")
+
+    stack = np.stack(masks, axis=0).astype(np.uint8)
+    out_dir = cell_segmentation_dir(root_dir, pos)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "cell_foreground.tif"
+    tifffile.imwrite(str(out_path), stack, compression="zlib", metadata={"axes": "TYX"})
+    return str(out_path)
 
 
 def run_segmentation_only(
@@ -231,13 +331,12 @@ def run_postprocessing_only(
     Yields (done, total, label) tuples for progress reporting.
     Returns path to saved final labels file.
     """
-    from cellflow.cellpose.processing.flow_watershed_postproc import postprocess_flow_watershed
+    from cellflow.cellpose.processing.flow_watershed_postproc import run_postprocess_pipeline
 
     root_dir = Path(root_dir)
     out_dir = cell_segmentation_dir(root_dir, pos)
     raw_path = out_dir / "cell_labels_raw.tif"
 
-    # Load raw labels
     if not raw_path.exists():
         print(f"Could not find raw labels at {raw_path}")
         return None
@@ -250,55 +349,27 @@ def run_postprocessing_only(
     T = raw_labels.shape[0]
     processed_stack = []
 
-    # Load cellpose probability for trimming
-    prob_full = None
-    try:
-        cell_dir = cellpose_cell_dir(root_dir, pos)
-        prob_path = cell_dir / "cell_prob.tif"
-        if prob_path.exists():
-            prob_full = tifffile.imread(str(prob_path)).astype(np.float32)
-    except Exception:
-        pass
+    tissue_full = _load_tissue_image(root_dir, pos)
+    foreground_full = _load_foreground_mask(root_dir, pos)
+    steps = config.postprocess_steps
 
-    # Process each timepoint
     for t in range(T):
         try:
             raw_t = raw_labels[t]
-
-            # Get prob for this timepoint
-            if prob_full is not None and prob_full.ndim == 3 and prob_full.shape[0] == T:
-                prob_t = prob_full[t]
-            else:
-                prob_t = prob_full
-
-            # Apply postprocessing
-            processed = postprocess_flow_watershed(
-                raw_t,
-                cellpose_prob=prob_t,
-                opening_radius=config.opening_radius,
-                closing_radius=config.closing_radius,
-                boundary_smoothness=config.boundary_smoothness,
-                fill_holes_threshold=config.fill_holes_threshold,
-            )
-
+            tissue_t = tissue_full[t] if (tissue_full is not None and tissue_full.ndim == 3 and tissue_full.shape[0] == T) else tissue_full
+            foreground_t = foreground_full[t] if (foreground_full is not None and foreground_full.ndim == 3 and foreground_full.shape[0] == T) else foreground_full
+            processed = run_postprocess_pipeline(raw_t, steps, tissue_image=tissue_t, foreground_mask=foreground_t)
             processed_stack.append(processed)
-
         except Exception as e:
             print(f"Error at t{t:03d}: {e}")
             processed_stack.append(np.zeros_like(raw_labels[t], dtype=np.int32))
 
         yield (t + 1, T, f"t{t:03d}")
 
-    # Save final labels
     stack = np.stack(processed_stack, axis=0).astype(np.int32)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "cell_labels.tif"
-    tifffile.imwrite(
-        str(out_path),
-        stack,
-        compression="zlib",
-        metadata={"axes": "TYX"},
-    )
+    tifffile.imwrite(str(out_path), stack, compression="zlib", metadata={"axes": "TYX"})
     return str(out_path)
 
 
@@ -313,7 +384,7 @@ def run_full_pipeline(
     Returns path to saved final labels file.
     """
     from cellflow.cellpose.processing.flow_watershed import flow_guided_watershed
-    from cellflow.cellpose.processing.flow_watershed_postproc import postprocess_flow_watershed
+    from cellflow.cellpose.processing.flow_watershed_postproc import run_postprocess_pipeline
 
     root_dir = Path(root_dir)
 
@@ -336,6 +407,9 @@ def run_full_pipeline(
         print(f"Could not load cellpose flow")
         return None
 
+    tissue_full = _load_tissue_image(root_dir, pos)
+    foreground_full = _load_foreground_mask(root_dir, pos)
+
     # Process each timepoint
     for t in range(T):
         try:
@@ -352,6 +426,9 @@ def run_full_pipeline(
             else:
                 prob_t = prob_full
 
+            tissue_t = tissue_full[t] if (tissue_full is not None and tissue_full.ndim == 3 and tissue_full.shape[0] == T) else tissue_full
+            foreground_t = foreground_full[t] if (foreground_full is not None and foreground_full.ndim == 3 and foreground_full.shape[0] == T) else foreground_full
+
             # Run segmentation
             cell_labels = flow_guided_watershed(
                 nuc_t,
@@ -365,13 +442,11 @@ def run_full_pipeline(
             )
 
             # Apply post-processing
-            cell_labels = postprocess_flow_watershed(
+            cell_labels = run_postprocess_pipeline(
                 cell_labels,
-                cellpose_prob=prob_t,
-                opening_radius=config.opening_radius,
-                closing_radius=config.closing_radius,
-                boundary_smoothness=config.boundary_smoothness,
-                fill_holes_threshold=config.fill_holes_threshold,
+                config.postprocess_steps,
+                tissue_image=tissue_t,
+                foreground_mask=foreground_t,
             )
 
             cell_labels_stack.append(cell_labels)
@@ -398,7 +473,7 @@ def run_full_pipeline(
             try:
                 nuc_t = nuclear_labels[t]
                 flow_t = flow_full[t] if flow_full.ndim == 4 else flow_full
-                prob_t = prob_full[t] if prob_full is not None and prob_full.ndim == 3 else prob_full
+                prob_t = prob_full[t] if (prob_full is not None and prob_full.ndim == 3) else prob_full
 
                 cell_labels_raw = flow_guided_watershed(
                     nuc_t,
@@ -431,6 +506,321 @@ def run_full_pipeline(
     return str(final_path)
 
 
+# ── Step type registry ───────────────────────────────────────────────────────
+
+_STEP_TYPES = ["open", "close", "fill_holes", "smooth_boundary"]
+_STEP_LABELS = {
+    "open":            "Open (remove protrusions)",
+    "close":           "Close (fill gaps)",
+    "fill_holes":      "Fill holes",
+    "smooth_boundary": "Smooth boundary",
+}
+
+
+class _PostprocessStepRow(QWidget):
+    """One row in the postprocess pipeline list."""
+
+    def __init__(self, step: dict, parent=None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 1, 2, 1)
+        layout.setSpacing(4)
+
+        # ── Type selector ──────────────────────────────────────────────
+        self._type_combo = QComboBox()
+        self._type_combo.setFixedWidth(170)
+        for t in _STEP_TYPES:
+            self._type_combo.addItem(_STEP_LABELS[t], t)
+        layout.addWidget(self._type_combo)
+
+        # ── Parameter widgets (shown/hidden per type) ──────────────────
+        # Layout order: [label] [int_spin] [float_spin]
+        # open/close/fill_holes : label="radius:"     int_spin  —
+        # smooth_boundary       : label="smoothness:" —         float
+
+        self._param_label = QLabel()
+        self._param_label.setFixedWidth(72)
+        layout.addWidget(self._param_label)
+
+        self._int_spin = QSpinBox()
+        self._int_spin.setRange(0, 20)
+        self._int_spin.setFixedWidth(46)
+        layout.addWidget(self._int_spin)
+
+        self._float_spin = QDoubleSpinBox()
+        self._float_spin.setRange(0.0, 1.0)
+        self._float_spin.setSingleStep(0.05)
+        self._float_spin.setDecimals(2)
+        self._float_spin.setFixedWidth(54)
+        layout.addWidget(self._float_spin)
+
+        # ── Reorder / remove buttons ───────────────────────────────────
+        self._up_btn   = QPushButton("↑")
+        self._down_btn = QPushButton("↓")
+        self._del_btn  = QPushButton("×")
+        for btn in (self._up_btn, self._down_btn, self._del_btn):
+            btn.setFixedWidth(22)
+            btn.setFixedHeight(22)
+            layout.addWidget(btn)
+
+        layout.addStretch()
+
+        # Wire type change → update param visibility
+        self._type_combo.currentIndexChanged.connect(self._on_type_changed)
+
+        # Apply initial state from step dict
+        self._load_step(step)
+
+    # ── helpers ───────────────────────────────────────────────────────
+
+    def _on_type_changed(self) -> None:
+        self._refresh_param_widgets()
+
+    def _refresh_param_widgets(self) -> None:
+        t = self._type_combo.currentData()
+        if t in ("open", "close", "fill_holes"):
+            self._param_label.setText("radius:")
+            self._int_spin.setVisible(True)
+            self._float_spin.setVisible(False)
+        elif t == "smooth_boundary":
+            self._param_label.setText("smoothness:")
+            self._float_spin.setRange(0.0, 1.0)
+            self._float_spin.setSingleStep(0.05)
+            self._int_spin.setVisible(False)
+            self._float_spin.setVisible(True)
+        else:
+            self._param_label.setText("")
+            self._int_spin.setVisible(False)
+            self._float_spin.setVisible(False)
+
+    def _load_step(self, step: dict) -> None:
+        t = step.get("type", "open")
+        idx = self._type_combo.findData(t)
+        if idx >= 0:
+            self._type_combo.setCurrentIndex(idx)
+        self._refresh_param_widgets()
+        if t in ("open", "close"):
+            self._int_spin.setValue(step.get("radius", 1))
+        elif t == "fill_holes":
+            self._int_spin.setValue(step.get("radius", 5))
+        elif t == "smooth_boundary":
+            self._float_spin.setValue(step.get("smoothness", 0.5))
+
+    # ── Public API ────────────────────────────────────────────────────
+
+    def get_step(self) -> dict:
+        t = self._type_combo.currentData()
+        if t == "open":
+            return {"type": "open",            "radius":     self._int_spin.value()}
+        if t == "close":
+            return {"type": "close",           "radius":     self._int_spin.value()}
+        if t == "fill_holes":
+            return {"type": "fill_holes",      "radius":     self._int_spin.value()}
+        if t == "smooth_boundary":
+            return {"type": "smooth_boundary", "smoothness": self._float_spin.value()}
+        return {"type": t}
+
+
+_MASK_STEP_TYPES = ["open", "close", "fill_holes", "smooth_boundary"]
+_MASK_STEP_LABELS = {
+    "open":            "Open (remove islands)",
+    "close":           "Close (fill gaps)",
+    "fill_holes":      "Fill holes",
+    "smooth_boundary": "Smooth boundary (Gaussian)",
+}
+
+
+class _MaskPostprocessStepRow(QWidget):
+    """One row in the foreground-mask postprocess pipeline."""
+
+    def __init__(self, step: dict, parent=None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 1, 2, 1)
+        layout.setSpacing(4)
+
+        self._type_combo = QComboBox()
+        self._type_combo.setFixedWidth(180)
+        for t in _MASK_STEP_TYPES:
+            self._type_combo.addItem(_MASK_STEP_LABELS[t], t)
+        layout.addWidget(self._type_combo)
+
+        # open / close: label + int_spin
+        # fill_holes:   no params
+        # smooth_boundary: label + float_spin (sigma 0-20)
+        self._param_label = QLabel()
+        self._param_label.setFixedWidth(52)
+        layout.addWidget(self._param_label)
+
+        self._int_spin = QSpinBox()
+        self._int_spin.setRange(0, 50)
+        self._int_spin.setFixedWidth(46)
+        layout.addWidget(self._int_spin)
+
+        self._float_spin = QDoubleSpinBox()
+        self._float_spin.setRange(0.0, 20.0)
+        self._float_spin.setSingleStep(0.5)
+        self._float_spin.setDecimals(1)
+        self._float_spin.setFixedWidth(54)
+        layout.addWidget(self._float_spin)
+
+        self._up_btn   = QPushButton("↑")
+        self._down_btn = QPushButton("↓")
+        self._del_btn  = QPushButton("×")
+        for btn in (self._up_btn, self._down_btn, self._del_btn):
+            btn.setFixedWidth(22)
+            btn.setFixedHeight(22)
+            layout.addWidget(btn)
+
+        layout.addStretch()
+
+        self._type_combo.currentIndexChanged.connect(self._refresh_param_widgets)
+        self._load_step(step)
+
+    def _refresh_param_widgets(self) -> None:
+        t = self._type_combo.currentData()
+        if t in ("open", "close"):
+            self._param_label.setText("radius:")
+            self._int_spin.setVisible(True)
+            self._float_spin.setVisible(False)
+        elif t == "fill_holes":
+            self._param_label.setText("")
+            self._int_spin.setVisible(False)
+            self._float_spin.setVisible(False)
+        elif t == "smooth_boundary":
+            self._param_label.setText("σ:")
+            self._int_spin.setVisible(False)
+            self._float_spin.setVisible(True)
+        else:
+            self._param_label.setText("")
+            self._int_spin.setVisible(False)
+            self._float_spin.setVisible(False)
+
+    def _load_step(self, step: dict) -> None:
+        t = step.get("type", "open")
+        idx = self._type_combo.findData(t)
+        if idx >= 0:
+            self._type_combo.setCurrentIndex(idx)
+        self._refresh_param_widgets()
+        if t in ("open", "close"):
+            self._int_spin.setValue(step.get("radius", 1))
+        elif t == "smooth_boundary":
+            self._float_spin.setValue(step.get("sigma", 2.0))
+
+    def get_step(self) -> dict:
+        t = self._type_combo.currentData()
+        if t == "open":
+            return {"type": "open",  "radius": self._int_spin.value()}
+        if t == "close":
+            return {"type": "close", "radius": self._int_spin.value()}
+        if t == "fill_holes":
+            return {"type": "fill_holes"}
+        if t == "smooth_boundary":
+            return {"type": "smooth_boundary", "sigma": self._float_spin.value()}
+        return {"type": t}
+
+
+class _PostprocessPipelineWidget(QWidget):
+    """Scrollable, editable ordered list of postprocessing steps.
+
+    Pass *row_class* to use a different step-row widget (e.g.
+    ``_MaskPostprocessStepRow`` for binary-mask pipelines).
+    """
+
+    def __init__(self, row_class=None, parent=None) -> None:
+        super().__init__(parent)
+        self._row_class = row_class if row_class is not None else _PostprocessStepRow
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        # ── Scroll area for step rows ──────────────────────────────────
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+
+        self._container = QWidget()
+        self._list_layout = QVBoxLayout(self._container)
+        self._list_layout.setContentsMargins(0, 0, 0, 0)
+        self._list_layout.setSpacing(1)
+        self._list_layout.addStretch()   # sentinel: always stays at the bottom
+        self._scroll.setWidget(self._container)
+        outer.addWidget(self._scroll)
+
+        # ── "Add Step" button ──────────────────────────────────────────
+        add_btn = QPushButton("+ Add Step")
+        add_btn.clicked.connect(lambda: self.add_step({"type": "open", "radius": 1}))
+        outer.addWidget(add_btn)
+
+        self._rows: list = []
+
+    # ── step management ────────────────────────────────────────────────
+
+    def add_step(self, step: dict) -> None:
+        row = self._row_class(step)
+        row._up_btn.clicked.connect(lambda: self._move_up(row))
+        row._down_btn.clicked.connect(lambda: self._move_down(row))
+        row._del_btn.clicked.connect(lambda: self._remove_row(row))
+        # Insert before the trailing stretch (always at count - 1)
+        self._list_layout.insertWidget(self._list_layout.count() - 1, row)
+        self._rows.append(row)
+        self._update_nav_buttons()
+        self._adjust_scroll_height()
+
+    def _remove_row(self, row: _PostprocessStepRow) -> None:
+        self._rows.remove(row)
+        self._list_layout.removeWidget(row)
+        row.deleteLater()
+        self._update_nav_buttons()
+        self._adjust_scroll_height()
+
+    def _move_up(self, row: _PostprocessStepRow) -> None:
+        idx = self._rows.index(row)
+        if idx > 0:
+            self._rows[idx - 1], self._rows[idx] = self._rows[idx], self._rows[idx - 1]
+            self._rebuild_list_layout()
+
+    def _move_down(self, row: _PostprocessStepRow) -> None:
+        idx = self._rows.index(row)
+        if idx < len(self._rows) - 1:
+            self._rows[idx], self._rows[idx + 1] = self._rows[idx + 1], self._rows[idx]
+            self._rebuild_list_layout()
+
+    def _rebuild_list_layout(self) -> None:
+        for row in self._rows:
+            self._list_layout.removeWidget(row)
+        for row in self._rows:
+            self._list_layout.insertWidget(self._list_layout.count() - 1, row)
+        self._update_nav_buttons()
+
+    def _update_nav_buttons(self) -> None:
+        for i, row in enumerate(self._rows):
+            row._up_btn.setEnabled(i > 0)
+            row._down_btn.setEnabled(i < len(self._rows) - 1)
+
+    def _adjust_scroll_height(self) -> None:
+        row_h = 30  # approximate height per row
+        min_h = max(row_h, len(self._rows) * row_h)
+        max_h = min(200, max(row_h, len(self._rows) * row_h))
+        self._scroll.setMinimumHeight(min_h)
+        self._scroll.setMaximumHeight(max_h)
+
+    # ── Public API ────────────────────────────────────────────────────
+
+    def get_steps(self) -> list[dict]:
+        return [row.get_step() for row in self._rows]
+
+    def set_steps(self, steps: list[dict]) -> None:
+        for row in list(self._rows):
+            self._list_layout.removeWidget(row)
+            row.deleteLater()
+        self._rows.clear()
+        for step in steps:
+            self.add_step(step)
+
+
 class FlowGuidedSegmentationWidget(QWidget):
     """Widget for flow-guided watershed cell segmentation with independent segmentation and postprocessing stages."""
 
@@ -441,6 +831,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_worker = None
         self._pp_worker = None
         self._all_worker = None
+        self._fm_worker = None
 
         self._inner_layout = QVBoxLayout(self)
         self._inner_layout.setContentsMargins(0, 0, 0, 0)
@@ -476,6 +867,7 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         # ── Build stage sections ─────────────────────────────────────────
         lay.addWidget(self._build_segmentation_section())
+        lay.addWidget(self._build_foreground_mask_section())
         lay.addWidget(self._build_postprocessing_section())
 
         # ── Run Full Pipeline ────────────────────────────────────────────
@@ -631,12 +1023,87 @@ class FlowGuidedSegmentationWidget(QWidget):
         grp.setLayout(lay)
         return grp
 
-    def _build_postprocessing_section(self) -> QGroupBox:
-        """Build the Post-processing section."""
-        grp = QGroupBox("Post-processing")
+    def _build_foreground_mask_section(self) -> QGroupBox:
+        """Build the Foreground Mask section."""
+        grp = QGroupBox("Foreground Mask")
         lay = QVBoxLayout()
 
         # Preview frame
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Preview frame"))
+        self._fm_frame_spin = QSpinBox()
+        self._fm_frame_spin.setRange(0, 1000)
+        self._fm_frame_spin.setValue(0)
+        row.addWidget(self._fm_frame_spin)
+        lay.addLayout(row)
+
+        # ── Thresholding parameters ────────────────────────────────────
+        lay.addWidget(QLabel("Thresholding:"))
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Blur (σ)"))
+        self._fm_sigma_spin = QDoubleSpinBox()
+        self._fm_sigma_spin.setRange(0.0, 20.0)
+        self._fm_sigma_spin.setSingleStep(0.5)
+        self._fm_sigma_spin.setDecimals(1)
+        self._fm_sigma_spin.setValue(2.0)
+        row.addWidget(self._fm_sigma_spin)
+        row.addStretch()
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Threshold"))
+        self._fm_threshold_spin = QDoubleSpinBox()
+        self._fm_threshold_spin.setRange(0.0, 1.0)
+        self._fm_threshold_spin.setSingleStep(0.01)
+        self._fm_threshold_spin.setDecimals(2)
+        self._fm_threshold_spin.setValue(0.1)
+        row.addWidget(self._fm_threshold_spin)
+        row.addStretch()
+        lay.addLayout(row)
+
+        # ── Mask postprocessing pipeline ───────────────────────────────
+        lay.addWidget(QLabel("Mask refinement steps (top → bottom):"))
+        self._fm_pipeline = _PostprocessPipelineWidget(row_class=_MaskPostprocessStepRow)
+        lay.addWidget(self._fm_pipeline)
+
+        # ── Preview button ─────────────────────────────────────────────
+        self._fm_preview_btn = QPushButton("Preview")
+        self._fm_preview_btn.clicked.connect(self._fm_on_preview)
+        lay.addWidget(self._fm_preview_btn)
+
+        # ── Run / Cancel buttons ───────────────────────────────────────
+        row = QHBoxLayout()
+        self._fm_run_btn = QPushButton("Run Foreground Mask")
+        self._fm_run_btn.clicked.connect(self._fm_on_run)
+        row.addWidget(self._fm_run_btn)
+        self._fm_cancel_btn = QPushButton("Cancel")
+        self._fm_cancel_btn.setEnabled(False)
+        self._fm_cancel_btn.clicked.connect(self._fm_on_cancel)
+        row.addWidget(self._fm_cancel_btn)
+        lay.addLayout(row)
+
+        # ── Load results ───────────────────────────────────────────────
+        self._fm_load_btn = QPushButton("Load Results")
+        self._fm_load_btn.clicked.connect(self._fm_on_load_results)
+        lay.addWidget(self._fm_load_btn)
+
+        # ── Progress ───────────────────────────────────────────────────
+        self._fm_progress = QProgressBar()
+        self._fm_progress.setVisible(False)
+        lay.addWidget(self._fm_progress)
+        self._fm_status = QLabel("")
+        lay.addWidget(self._fm_status)
+
+        grp.setLayout(lay)
+        return grp
+
+    def _build_postprocessing_section(self) -> QGroupBox:
+        """Build the Post-processing section with a dynamic step-list pipeline."""
+        grp = QGroupBox("Post-processing")
+        lay = QVBoxLayout()
+
+        # ── Preview frame ──────────────────────────────────────────────
         row = QHBoxLayout()
         row.addWidget(QLabel("Preview frame"))
         self._pp_frame_spin = QSpinBox()
@@ -645,57 +1112,23 @@ class FlowGuidedSegmentationWidget(QWidget):
         row.addWidget(self._pp_frame_spin)
         lay.addLayout(row)
 
-        # Parameters
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Opening radius"))
-        self._pp_opening_spin = QSpinBox()
-        self._pp_opening_spin.setRange(0, 10)
-        self._pp_opening_spin.setValue(1)
-        row.addWidget(self._pp_opening_spin)
-        row.addStretch()
-        lay.addLayout(row)
+        # ── Pipeline step list ─────────────────────────────────────────
+        lay.addWidget(QLabel("Pipeline steps (executed top → bottom):"))
+        self._pp_pipeline = _PostprocessPipelineWidget()
+        for step in _DEFAULT_POSTPROCESS_STEPS:
+            self._pp_pipeline.add_step(dict(step))
+        lay.addWidget(self._pp_pipeline)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Closing radius"))
-        self._pp_closing_spin = QSpinBox()
-        self._pp_closing_spin.setRange(0, 10)
-        self._pp_closing_spin.setValue(1)
-        row.addWidget(self._pp_closing_spin)
-        row.addStretch()
-        lay.addLayout(row)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Boundary smoothness"))
-        self._pp_boundary_spin = QDoubleSpinBox()
-        self._pp_boundary_spin.setRange(0.0, 1.0)
-        self._pp_boundary_spin.setSingleStep(0.05)
-        self._pp_boundary_spin.setDecimals(2)
-        self._pp_boundary_spin.setValue(0.5)
-        row.addWidget(self._pp_boundary_spin)
-        row.addStretch()
-        lay.addLayout(row)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Fill holes threshold"))
-        self._pp_prob_trim_spin = QDoubleSpinBox()
-        self._pp_prob_trim_spin.setRange(0.0, 1.0)
-        self._pp_prob_trim_spin.setSingleStep(0.05)
-        self._pp_prob_trim_spin.setDecimals(2)
-        self._pp_prob_trim_spin.setValue(0.5)
-        row.addWidget(self._pp_prob_trim_spin)
-        row.addStretch()
-        lay.addLayout(row)
-
-        # Preview button
+        # ── Preview button ─────────────────────────────────────────────
         self._pp_preview_btn = QPushButton("Preview")
         self._pp_preview_btn.clicked.connect(self._pp_on_preview)
         lay.addWidget(self._pp_preview_btn)
 
-        # Overwrite
+        # ── Overwrite ──────────────────────────────────────────────────
         self._pp_overwrite_chk = QCheckBox("Overwrite existing files")
         lay.addWidget(self._pp_overwrite_chk)
 
-        # Buttons
+        # ── Run buttons ────────────────────────────────────────────────
         row = QHBoxLayout()
         self._pp_run_btn = QPushButton("Run Post-processing")
         self._pp_run_btn.clicked.connect(self._pp_on_run)
@@ -709,12 +1142,12 @@ class FlowGuidedSegmentationWidget(QWidget):
         row.addWidget(self._pp_cancel_btn)
         lay.addLayout(row)
 
-        # Load results
+        # ── Load results ───────────────────────────────────────────────
         self._pp_load_btn = QPushButton("Load Results")
         self._pp_load_btn.clicked.connect(self._pp_on_load_results)
         lay.addWidget(self._pp_load_btn)
 
-        # Progress
+        # ── Progress ───────────────────────────────────────────────────
         self._pp_progress = QProgressBar()
         self._pp_progress.setVisible(False)
         lay.addWidget(self._pp_progress)
@@ -736,10 +1169,10 @@ class FlowGuidedSegmentationWidget(QWidget):
             flow_smoothing_sigma=self._seg_smoothing_spin.value(),
             max_iterations=self._seg_max_iter_spin.value(),
             uniform_growth_rate=self._seg_uniform_growth_spin.value(),
-            opening_radius=self._pp_opening_spin.value(),
-            closing_radius=self._pp_closing_spin.value(),
-            boundary_smoothness=self._pp_boundary_spin.value(),
-            fill_holes_threshold=self._pp_prob_trim_spin.value(),
+            postprocess_steps=self._pp_pipeline.get_steps(),
+            foreground_mask_sigma=self._fm_sigma_spin.value(),
+            foreground_mask_threshold=self._fm_threshold_spin.value(),
+            foreground_mask_postprocess_steps=self._fm_pipeline.get_steps(),
         )
 
     def _apply_config(self, cfg: FlowWatershedConfig) -> None:
@@ -749,10 +1182,10 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_smoothing_spin.setValue(cfg.flow_smoothing_sigma)
         self._seg_max_iter_spin.setValue(cfg.max_iterations)
         self._seg_uniform_growth_spin.setValue(cfg.uniform_growth_rate)
-        self._pp_opening_spin.setValue(cfg.opening_radius)
-        self._pp_closing_spin.setValue(cfg.closing_radius)
-        self._pp_boundary_spin.setValue(cfg.boundary_smoothness)
-        self._pp_prob_trim_spin.setValue(cfg.fill_holes_threshold)
+        self._pp_pipeline.set_steps(cfg.postprocess_steps)
+        self._fm_sigma_spin.setValue(cfg.foreground_mask_sigma)
+        self._fm_threshold_spin.setValue(cfg.foreground_mask_threshold)
+        self._fm_pipeline.set_steps(cfg.foreground_mask_postprocess_steps)
 
     # ════════════════════════════════════════════════════════════════════
     # Segmentation section callbacks
@@ -994,7 +1427,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._pp_status.setText(f"Processing frame {frame}…")
 
         try:
-            from cellflow.cellpose.processing.flow_watershed_postproc import postprocess_flow_watershed
+            from cellflow.cellpose.processing.flow_watershed_postproc import run_postprocess_pipeline
 
             out_dir = cell_segmentation_dir(root_dir, pos)
             raw_path = out_dir / "cell_labels_raw.tif"
@@ -1003,7 +1436,6 @@ class FlowGuidedSegmentationWidget(QWidget):
                 self._pp_status.setText("Raw segmentation not found. Run segmentation first.")
                 return
 
-            # Load raw labels
             raw_labels = tifffile.imread(str(raw_path)).astype(np.int32)
             if frame >= raw_labels.shape[0]:
                 self._pp_status.setText(f"Frame {frame} out of range (max {raw_labels.shape[0]-1})")
@@ -1011,29 +1443,10 @@ class FlowGuidedSegmentationWidget(QWidget):
 
             raw_t = raw_labels[frame]
 
-            # Load cellpose probability for trimming
-            prob_t = None
-            try:
-                cell_dir = cellpose_cell_dir(root_dir, pos)
-                prob_path = cell_dir / "cell_prob.tif"
-                if prob_path.exists():
-                    prob_full = tifffile.imread(str(prob_path)).astype(np.float32)
-                    if prob_full.ndim == 3:
-                        prob_t = prob_full[frame]
-                    else:
-                        prob_t = prob_full
-            except Exception:
-                pass
+            tissue_full = _load_tissue_image(root_dir, pos)
+            tissue_t = tissue_full[frame] if (tissue_full is not None and tissue_full.ndim == 3) else tissue_full
 
-            # Apply postprocessing
-            pp_t = postprocess_flow_watershed(
-                raw_t,
-                cellpose_prob=prob_t,
-                opening_radius=cfg.opening_radius,
-                closing_radius=cfg.closing_radius,
-                boundary_smoothness=cfg.boundary_smoothness,
-                fill_holes_threshold=cfg.fill_holes_threshold,
-            )
+            pp_t = run_postprocess_pipeline(raw_t, cfg.postprocess_steps, tissue_image=tissue_t)
 
             # Display in napari
             while len(self.viewer.layers) > 0:
@@ -1196,6 +1609,177 @@ class FlowGuidedSegmentationWidget(QWidget):
         self.viewer.add_labels(cell_stack, name="cells")
 
         self._pp_status.setText(f"Loaded final segmentation, shape={cell_stack.shape}")
+
+    # ════════════════════════════════════════════════════════════════════
+    # Foreground Mask section callbacks
+    # ════════════════════════════════════════════════════════════════════
+
+    def _fm_on_preview(self) -> None:
+        """Preview foreground mask — computes all frames and adds as (T,H,W) stacks
+        to avoid dimensionality conflicts with previously loaded 3D layers."""
+        root_dir = self._get_root_dir()
+        if not root_dir:
+            self._fm_status.setText("No project open. Create or open a project first.")
+            return
+
+        pos = int(self._pos_spin.value())
+        frame = int(self._fm_frame_spin.value())
+        sigma = self._fm_sigma_spin.value()
+        threshold = self._fm_threshold_spin.value()
+        pp_steps = self._fm_pipeline.get_steps()
+
+        try:
+            from cellflow.cellpose.processing.flow_watershed_postproc import (
+                compute_tissue_foreground_mask,
+                run_mask_postprocess_pipeline,
+            )
+            tissue_full = _load_tissue_image(root_dir, pos)
+            if tissue_full is None:
+                self._fm_status.setText("Could not load tissue image (cell_zavg.tif).")
+                return
+
+            # Normalise to (T, H, W) regardless of source shape
+            if tissue_full.ndim == 2:
+                tissue_stack = tissue_full[np.newaxis]
+            else:
+                tissue_stack = tissue_full
+
+            T = tissue_stack.shape[0]
+            frame = min(frame, T - 1)
+
+            # Compute mask for every frame (fast: gaussian + threshold only)
+            masks = []
+            for t in range(T):
+                m = compute_tissue_foreground_mask(tissue_stack[t], sigma=sigma, threshold=threshold)
+                if pp_steps:
+                    m = run_mask_postprocess_pipeline(m, pp_steps)
+                masks.append(m.astype(np.uint8))
+            mask_stack = np.stack(masks, axis=0)  # (T, H, W)
+
+            # Replace layers — both are now (T, H, W) so dims are always consistent
+            while len(self.viewer.layers) > 0:
+                self.viewer.layers.pop()
+
+            self.viewer.add_image(tissue_stack, name="Tissue Image (cell_zavg)", colormap="gray")
+            self.viewer.add_labels(mask_stack, name="Foreground Mask")
+
+            # Jump time slider to the requested preview frame
+            if self.viewer.dims.ndim >= 1:
+                self.viewer.dims.set_point(0, frame)
+
+            fg_pct = 100.0 * mask_stack[frame].sum() / mask_stack[frame].size
+            self._fm_status.setText(
+                f"Preview ({T} frames): frame {frame} — {fg_pct:.1f}% foreground."
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._fm_status.setText(f"Preview error: {e}")
+
+    def _fm_on_run(self) -> None:
+        """Compute foreground mask for the full stack in background."""
+        root_dir = self._get_root_dir()
+        if not root_dir:
+            self._fm_status.setText("No project open. Create or open a project first.")
+            return
+
+        pos = int(self._pos_spin.value())
+        sigma = self._fm_sigma_spin.value()
+        threshold = self._fm_threshold_spin.value()
+        pp_steps = self._fm_pipeline.get_steps()
+
+        self._fm_run_btn.setEnabled(False)
+        self._fm_cancel_btn.setEnabled(True)
+        self._fm_progress.setVisible(True)
+        self._fm_progress.setValue(0)
+        self._fm_status.setText("Computing foreground mask…")
+
+        @thread_worker(
+            connect={
+                "yielded": self._fm_on_progress,
+                "finished": self._fm_on_finished,
+                "errored": self._fm_on_error,
+            }
+        )
+        def _work():
+            for update in run_foreground_mask_only(root_dir, pos, sigma, threshold, pp_steps):
+                yield update
+
+        self._fm_worker = _work()
+        self._fm_worker.aborted.connect(self._fm_on_cancelled)
+
+    def _fm_on_progress(self, update: tuple) -> None:
+        done, total, label = update
+        self._fm_progress.setMaximum(max(total, 1))
+        self._fm_progress.setValue(done)
+        pct = int(100 * done / total) if total > 0 else 0
+        self._fm_status.setText(f"Foreground mask: {done}/{total} frames ({pct}%)")
+
+    def _fm_on_finished(self) -> None:
+        self._fm_run_btn.setEnabled(True)
+        self._fm_cancel_btn.setEnabled(False)
+        self._fm_progress.setVisible(False)
+
+        if self._fm_worker and hasattr(self._fm_worker, 'result'):
+            result = self._fm_worker.result
+            if result is not None:
+                out_path = Path(result)
+                mask_stack = tifffile.imread(str(out_path)).astype(np.uint8)
+                layer_name = "Foreground Mask"
+                if layer_name in self.viewer.layers:
+                    self.viewer.layers[layer_name].data = mask_stack
+                else:
+                    self.viewer.add_labels(mask_stack, name=layer_name)
+                self._fm_status.setText(f"Done. Saved to {out_path.name}")
+            else:
+                self._fm_status.setText("Processing failed.")
+        else:
+            self._fm_status.setText("Done.")
+
+        self._fm_worker = None
+        self._log_viewer.refresh()
+
+    def _fm_on_error(self, exc: Exception) -> None:
+        self._fm_run_btn.setEnabled(True)
+        self._fm_cancel_btn.setEnabled(False)
+        self._fm_progress.setVisible(False)
+        self._fm_status.setText(f"Error: {exc}")
+        self._fm_worker = None
+        self._log_viewer.refresh()
+
+    def _fm_on_cancelled(self) -> None:
+        self._fm_run_btn.setEnabled(True)
+        self._fm_cancel_btn.setEnabled(False)
+        self._fm_progress.setVisible(False)
+        self._fm_status.setText("Cancelled.")
+        self._fm_worker = None
+
+    def _fm_on_cancel(self) -> None:
+        if self._fm_worker:
+            self._fm_worker.quit()
+
+    def _fm_on_load_results(self) -> None:
+        """Load saved foreground mask from disk."""
+        root_dir = self._get_root_dir()
+        if not root_dir:
+            self._fm_status.setText("No project open. Create or open a project first.")
+            return
+
+        pos = int(self._pos_spin.value())
+        out_dir = cell_segmentation_dir(root_dir, pos)
+        mask_path = out_dir / "cell_foreground.tif"
+
+        if not mask_path.exists():
+            self._fm_status.setText("No cell_foreground.tif found.")
+            return
+
+        mask_stack = tifffile.imread(str(mask_path)).astype(np.uint8)
+        layer_name = "Foreground Mask"
+        if layer_name in self.viewer.layers:
+            self.viewer.layers[layer_name].data = mask_stack
+        else:
+            self.viewer.add_labels(mask_stack, name=layer_name)
+        self._fm_status.setText(f"Loaded foreground mask, shape={mask_stack.shape}")
 
     # ════════════════════════════════════════════════════════════════════
     # Full pipeline callbacks

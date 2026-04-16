@@ -10,5 +10,22 @@ parameter handling should be homogenized, including naming and placement of the 
 
 remove flow threshold from contours widget, both the ui and the parameter itself - it's useless in 3D for mask creation
 
-some widgets, like ultrack or cellpose, are minimal on the first layer, they just contain the subwidget. when expanindg the subwidget, the container is then very small and needs to be expanded manually. it would be nice if the expansion of the collapsed subwidget resized the container widget automatically to fit the whole thing
+overwrite off by default everywhere
 
+export ctc button can go
+
+finishing a step should default to loading the visualization
+
+run in terminal of post processing widget is buggy
+
+post processing widget needs an additional feature: trim borders
+
+flow watershed widget has a bunch of parameters which are not used anymore
+
+progress update for postprocessing in terminal is messed up. it shows nothing until it's done and then all the progress all at once
+
+run and preview in foreground creation subwidget of postprocessing widget are basically interchangeable. remove the preview button
+
+foreground.tif should be added to the PIPELINE_LAYOUT.md and also to the Project status widget etc.
+
+Correction Widget doesn't need a target anymore. it should just have a load function which loads by default the nuclear segmentation from the expected path or an alternative "load from layer" button to load from the active layer. The Ultrack widget should work the same way and share the same data field as the correction widget. In fact, they should probably just be one widget and have these two subcomponents

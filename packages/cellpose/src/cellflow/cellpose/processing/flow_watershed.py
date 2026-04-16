@@ -1,132 +1,97 @@
-"""Flow-guided watershed cell segmentation using iterative expansion."""
+"""Flow-guided watershed cell segmentation using Numba-accelerated per-pixel expansion."""
 
 from __future__ import annotations
 
+import math
+
+import numba
 import numpy as np
 from scipy import ndimage
 
 
-def flow_guided_watershed_iterative(
-    nuclear_labels: np.ndarray,
-    flow_field: np.ndarray,
-    cellpose_prob: np.ndarray | None = None,
-    flow_scale: float = 1.0,
-    cellpose_prob_threshold: float = 0.0,
-    flow_smoothing_sigma: float = 0.0,
-    max_iterations: int = 50,
-    uniform_growth_rate: float = 0.2,
-) -> np.ndarray:
+def _compute_centroids(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return centroid_y, centroid_x arrays indexed by label id (0 = background)."""
+    max_label = int(labels.max())
+    centroid_y = np.zeros(max_label + 1, dtype=np.float32)
+    centroid_x = np.zeros(max_label + 1, dtype=np.float32)
+    for lid in range(1, max_label + 1):
+        pts = np.argwhere(labels == lid)
+        if len(pts):
+            centroid_y[lid] = pts[:, 0].mean()
+            centroid_x[lid] = pts[:, 1].mean()
+    return centroid_y, centroid_x
+
+
+@numba.njit(parallel=True, cache=True)
+def _watershed_step(
+    result: np.ndarray,       # (H, W) int32 — read-only snapshot of current labels
+    next_result: np.ndarray,  # (H, W) int32 — write output here (pre-zeroed)
+    flow: np.ndarray,         # (H, W, 2) float32 — flow field pointing toward cell centers
+    centroid_y: np.ndarray,   # (max_label+1,) float32
+    centroid_x: np.ndarray,   # (max_label+1,) float32
+    prob_mask: np.ndarray,    # (H, W) bool — restrict expansion to foreground
+    flow_scale: float,
+    uniform_growth_rate: float,
+) -> int:
+    """Single expansion step.
+
+    For each unassigned foreground pixel, checks all 8-connected labeled neighbours.
+    Assigns the pixel to the neighbour whose centroid-to-pixel direction best aligns
+    with the (negated) flow field — i.e. the cell most likely to own this pixel.
+
+    Flow alignment decides *which* label wins; every foreground pixel adjacent to
+    any label is always assigned (no expansion threshold). Returns number of newly
+    assigned pixels.
     """
-    Flow-guided watershed using iterative expansion approach.
+    H, W = result.shape
+    changed = 0
 
-    Expands boundaries from nuclear seeds with velocity modulated by flow field.
-    Flow points toward cell centers, so expansion is allowed where -flow points outward.
-
-    Parameters
-    ----------
-    nuclear_labels : np.ndarray
-        Integer label map of segmented nuclei (shape: H, W).
-    flow_field : np.ndarray
-        2D vector field from cellpose pointing toward cell centers (shape: H, W, 2).
-    cellpose_prob : np.ndarray, optional
-        Confidence map from cellpose (shape: H, W).
-    flow_scale : float
-        Scaling factor for flow influence on expansion probability (0.0-3.0).
-    cellpose_prob_threshold : float
-        Mask out regions with probability below this value.
-    flow_smoothing_sigma : float
-        Gaussian smoothing of flow field.
-    max_iterations : int
-        Maximum number of expansion iterations (default 50).
-    uniform_growth_rate : float
-        Baseline expansion probability when flow is neutral/inward (0.0-1.0, default 0.2).
-
-    Returns
-    -------
-    np.ndarray
-        Integer label map with expanded cell boundaries.
-    """
-    H, W = nuclear_labels.shape
-
-    # Smooth flow field if requested
-    if flow_smoothing_sigma > 0:
-        from scipy.ndimage import gaussian_filter
-        flow_field = np.stack([
-            gaussian_filter(flow_field[..., 0], sigma=flow_smoothing_sigma),
-            gaussian_filter(flow_field[..., 1], sigma=flow_smoothing_sigma),
-        ], axis=-1)
-
-    # Compute nuclear centroids
-    centroids = {}
-    for label_id in np.unique(nuclear_labels):
-        if label_id > 0:
-            points = np.argwhere(nuclear_labels == label_id)
-            if len(points) > 0:
-                centroids[label_id] = points.mean(axis=0)
-
-    # Apply probability mask if provided
-    prob_mask = None
-    if cellpose_prob is not None:
-        prob_mask = cellpose_prob >= cellpose_prob_threshold
-
-    # Start with nuclei
-    result = nuclear_labels.copy().astype(np.int32)
-
-    # Iterative expansion using morphological dilation with flow-guided direction
-    for iteration in range(max_iterations):
-        unassigned = result == 0
-
-        if not unassigned.any():
-            break
-
-        # Dilate each label by one pixel where flow allows expansion
-        for label_id in np.unique(result[result > 0]):
-            if label_id not in centroids:
+    for i in numba.prange(H):
+        for j in range(W):
+            cur = result[i, j]
+            if cur != 0:
+                next_result[i, j] = cur
+                continue
+            if not prob_mask[i, j]:
                 continue
 
-            labeled = result == label_id
-            dilated = ndimage.binary_dilation(labeled)
-            boundary_candidates = dilated & unassigned
+            best_label = 0
+            best_score = -2.0  # below minimum possible score; any adjacent label qualifies
 
-            if not boundary_candidates.any():
-                continue
+            for di in range(-1, 2):
+                for dj in range(-1, 2):
+                    if di == 0 and dj == 0:
+                        continue
+                    ni = i + di
+                    nj = j + dj
+                    if ni < 0 or ni >= H or nj < 0 or nj >= W:
+                        continue
+                    L = result[ni, nj]
+                    if L <= 0:
+                        continue
 
-            # For boundary candidates, compute expansion direction (radial outward from center)
-            center = centroids[label_id]
-            boundary_points = np.argwhere(boundary_candidates)
+                    # Radial direction from centroid of L to current pixel (i, j)
+                    ry = float(i) - centroid_y[L]
+                    rx = float(j) - centroid_x[L]
+                    norm = math.sqrt(ry * ry + rx * rx)
+                    if norm > 1e-6:
+                        ry /= norm
+                        rx /= norm
 
-            # Compute radial direction from center to each boundary pixel (y, x)
-            radial_dirs = boundary_points - center  # Shape: (N, 2)
-            radial_norms = np.linalg.norm(radial_dirs, axis=1, keepdims=True)
-            # Avoid division by zero
-            radial_dirs = np.where(radial_norms > 1e-6, radial_dirs / radial_norms, 0)
+                    # Flow points toward cell center → negate for outward direction
+                    align = ry * (-flow[i, j, 0]) + rx * (-flow[i, j, 1])
+                    boost = min(max(align * flow_scale, 0.0), 1.0)
+                    score = uniform_growth_rate + (1.0 - uniform_growth_rate) * boost
 
-            # Negative flow (points outward since flow points inward to center)
-            neg_flow = -flow_field[boundary_points[:, 0], boundary_points[:, 1]]
+                    if score > best_score:
+                        best_score = score
+                        best_label = L
 
-            # Dot product: radial_dir · (-flow)
-            # Positive = flow points outward (good direction to expand)
-            flow_alignment = np.sum(radial_dirs * neg_flow, axis=1)
+            if best_label > 0:
+                next_result[i, j] = best_label
+                changed += 1
 
-            # Blend uniform growth with flow-guided expansion
-            # uniform_growth_rate: baseline probability (e.g., 0.2)
-            # When flow_alignment is positive, boost the probability
-            flow_boost = np.clip(flow_alignment * flow_scale, 0, 1)
-            expand_prob = uniform_growth_rate + (1.0 - uniform_growth_rate) * flow_boost
-
-            # Apply probability mask
-            if prob_mask is not None:
-                expand_prob = np.where(prob_mask[boundary_points[:, 0], boundary_points[:, 1]],
-                                      expand_prob, 0.0)
-
-            # Stochastic expansion: expand where random < expand_prob
-            expand_mask = np.random.rand(len(boundary_points)) < expand_prob
-            expand_coords = boundary_points[expand_mask]
-
-            if len(expand_coords) > 0:
-                result[expand_coords[:, 0], expand_coords[:, 1]] = label_id
-
-    return result
+    return changed
 
 
 def flow_guided_watershed(
@@ -136,52 +101,74 @@ def flow_guided_watershed(
     flow_scale: float = 1.0,
     cellpose_prob_threshold: float = 0.0,
     flow_smoothing_sigma: float = 0.0,
-    method: str = "iterative",
     max_iterations: int = 50,
     uniform_growth_rate: float = 0.2,
 ) -> np.ndarray:
-    """
-    Flow-guided watershed segmentation using individual cell growth and merging.
+    """Flow-guided watershed segmentation — deterministic Numba implementation.
 
-    Expands each nucleus independently with flow-modulated velocity, then merges
-    overlapping regions intelligently to handle cell boundary noise.
+    Expands nuclear seeds outward one pixel-shell per iteration. Each unassigned
+    foreground pixel is assigned to whichever adjacent labeled cell's centroid
+    direction best aligns with the (negated) cellpose flow field at that pixel.
+    Flow alignment decides *which* cell wins at contested boundaries; every
+    foreground pixel adjacent to any label is always claimed (no flow threshold).
 
     Parameters
     ----------
     nuclear_labels : np.ndarray
-        Integer label map of segmented nuclei (shape: H, W).
+        Integer label map of segmented nuclei (H, W).
     flow_field : np.ndarray
-        2D vector field from cellpose (shape: H, W, 2).
+        2D vector field from cellpose pointing toward cell centers (H, W, 2).
     cellpose_prob : np.ndarray, optional
-        Confidence map from cellpose (shape: H, W).
+        Cellpose probability / logit map (H, W). Used to mask expansion:
+        pixels below ``cellpose_prob_threshold`` are never assigned.
     flow_scale : float
-        Scaling factor for flow influence on expansion probability (0.0-3.0).
+        Multiplier on flow alignment score — higher values make cell boundaries
+        follow the flow more sharply (default 1.0).
     cellpose_prob_threshold : float
-        Threshold for cellpose probability mask.
+        Pixels with ``cellpose_prob < threshold`` are excluded from expansion.
+        Set to a very negative value to disable masking (default 0.0).
     flow_smoothing_sigma : float
-        Gaussian smoothing of flow field.
-    method : str
-        "iterative" (default and only method - uses individual cell growth and merging).
+        Gaussian smoothing applied to the flow field before expansion (default 0.0).
     max_iterations : int
-        Maximum iterations per cell (default: 50).
+        Maximum expansion iterations. Convergence is checked each step;
+        expansion stops early if no new pixels are assigned (default 50).
     uniform_growth_rate : float
-        Baseline expansion probability for uniform growth (0.0-1.0, default: 0.2).
+        Baseline score when flow alignment is zero. Acts as tie-breaker weight
+        between competing labels; does not gate expansion (default 0.2).
 
     Returns
     -------
     np.ndarray
-        Integer label map with expanded cell boundaries.
+        Integer label map with expanded cell boundaries, dtype int32.
     """
-    if method != "iterative":
-        raise ValueError(f"Only 'iterative' method is supported. Got: {method}")
+    if flow_smoothing_sigma > 0:
+        flow_field = np.stack([
+            ndimage.gaussian_filter(flow_field[..., 0], sigma=flow_smoothing_sigma),
+            ndimage.gaussian_filter(flow_field[..., 1], sigma=flow_smoothing_sigma),
+        ], axis=-1).astype(np.float32)
 
-    return flow_guided_watershed_iterative(
-        nuclear_labels,
-        flow_field,
-        cellpose_prob,
-        flow_scale,
-        cellpose_prob_threshold,
-        flow_smoothing_sigma,
-        max_iterations,
-        uniform_growth_rate,
-    )
+    prob_mask: np.ndarray
+    if cellpose_prob is not None:
+        prob_mask = (cellpose_prob >= cellpose_prob_threshold)
+    else:
+        prob_mask = np.ones(nuclear_labels.shape[:2], dtype=np.bool_)
+
+    # Seeds are always in the mask regardless of probability
+    prob_mask = prob_mask | (nuclear_labels > 0)
+
+    result = nuclear_labels.copy().astype(np.int32)
+    next_result = np.zeros_like(result)
+    centroid_y, centroid_x = _compute_centroids(result)
+
+    for _ in range(max_iterations):
+        next_result[:] = 0
+        changed = _watershed_step(
+            result, next_result, flow_field.astype(np.float32),
+            centroid_y, centroid_x, prob_mask.astype(np.bool_),
+            float(flow_scale), float(uniform_growth_rate),
+        )
+        result, next_result = next_result, result
+        if changed == 0:
+            break
+
+    return result
