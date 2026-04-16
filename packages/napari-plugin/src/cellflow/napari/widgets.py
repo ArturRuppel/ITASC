@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QFrame, QToolButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QFrame, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 
 class CollapsibleSection(QWidget):
@@ -66,6 +66,12 @@ class CollapsibleSection(QWidget):
         self._content_frame.setVisible(expanded)
         layout.addWidget(self._content_frame)
 
+        # Expanding policy when open so the section claims available vertical space
+        # (and its internal scroll areas can grow); Preferred when closed so it
+        # stays at toggle-button height.
+        v_policy = QSizePolicy.Expanding if expanded else QSizePolicy.Preferred
+        self.setSizePolicy(QSizePolicy.Preferred, v_policy)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -96,3 +102,5 @@ class CollapsibleSection(QWidget):
     def _on_toggled(self, checked: bool) -> None:
         self._toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
         self._content_frame.setVisible(checked)
+        v_policy = QSizePolicy.Expanding if checked else QSizePolicy.Preferred
+        self.setSizePolicy(QSizePolicy.Preferred, v_policy)

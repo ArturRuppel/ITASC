@@ -128,6 +128,7 @@ def run(
 
     if not overwrite and dp_path.exists() and prob_path.exists():
         print(f"pos{pos:02d}: all outputs exist — skipping.", flush=True)
+        yield (T, T, f"pos{pos:02d} skipped")
         return
 
     run_params_path = out_dir / "run_params.json"
@@ -156,6 +157,9 @@ def run(
     prob_list: list[np.ndarray] = []
 
     for t in range(T):
+        label = f"t{t:03d}"
+        yield (t, T, label)
+
         # Reorder to (H, W, 2): cytoplasm (488nm) first, nucleus (405nm) second
         img = np.stack([stack_488[t], stack_405[t]], axis=-1).astype(np.float32)  # (H, W, 2)
 
@@ -181,6 +185,7 @@ def run(
         dp_list.append(flows[1].astype(np.float32))
         prob_list.append(flows[2].astype(np.float32))
         print("  done", flush=True)
+        yield (t + 1, T, label)
 
     print("Assembling stacks ...", flush=True)
     stack_dp = np.stack(dp_list, axis=0)  # (T, 2, H, W)
@@ -202,6 +207,7 @@ def run(
     print(f"  → {dp_path.name}  {stack_dp.shape}  {stack_dp.dtype}", flush=True)
     print(f"  → {prob_path.name}  {stack_prob.shape}  {stack_prob.dtype}", flush=True)
     print("Done.", flush=True)
+    yield (T, T, "done")
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
