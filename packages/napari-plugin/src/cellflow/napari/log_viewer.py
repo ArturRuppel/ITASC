@@ -109,7 +109,7 @@ class StageLogViewer(QWidget):
         self._text_edit = QTextEdit()
         self._text_edit.setReadOnly(True)
         self._text_edit.setMinimumHeight(120)
-        self._text_edit.setMaximumHeight(220)
+        self._text_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._text_edit.setFont(
             __import__("qtpy.QtGui", fromlist=["QFont"]).QFont("Monospace", 8)
         )

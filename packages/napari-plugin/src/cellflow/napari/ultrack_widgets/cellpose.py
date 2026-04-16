@@ -18,7 +18,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -67,21 +66,9 @@ class CellposeWidget(QWidget):
             layout.addStretch()
             return
 
-        # ── Outer scroll area ────────────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        inner = QWidget()
-        inner_layout = QVBoxLayout()
+        inner_layout = QVBoxLayout(self)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
         inner_layout.setAlignment(Qt.AlignTop)
-        inner.setLayout(inner_layout)
-        scroll.setWidget(inner)
-
-        outer = QVBoxLayout()
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-        self.setLayout(outer)
 
         # Two collapsible sub-sections for s01a and s01b
         self._s01a_widget = self._create_s01a_widget()
@@ -588,7 +575,8 @@ class CellposeWidget(QWidget):
         done, total, label = update
         self._s01b_progress.setMaximum(max(total, 1))
         self._s01b_progress.setValue(done)
-        self._s01b_status_label.setText(f"Processing t{label:03d} [{done}/{total}]")
+        label_str = f"{label:03d}" if isinstance(label, int) else label
+        self._s01b_status_label.setText(f"Processing t{label_str} [{done}/{total}]")
 
     def _on_s01b_finished(self) -> None:
         self._s01b_run_btn.setEnabled(True)

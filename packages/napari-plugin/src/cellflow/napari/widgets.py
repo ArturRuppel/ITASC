@@ -1,8 +1,49 @@
 """Shared reusable Qt widgets for the CellFlow napari plugin."""
 from __future__ import annotations
 
-from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QFrame, QSizePolicy, QToolButton, QVBoxLayout, QWidget
+from qtpy.QtCore import Qt, QTimer
+from qtpy.QtWidgets import (
+    QFrame,
+    QScrollArea,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class _ResizeHandle(QWidget):
+    """Draggable bar at the bottom of an expanded CollapsibleSection."""
+
+    def __init__(self, scroll_area: QScrollArea, parent=None) -> None:
+        super().__init__(parent)
+        self._scroll = scroll_area
+        self._start_y: int | None = None
+        self._start_h: int | None = None
+        self.setFixedHeight(6)
+        self.setCursor(Qt.SizeVerCursor)
+        self.setStyleSheet(
+            "background: #505050; border-radius: 3px; margin: 0 8px;"
+        )
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._start_y = event.globalPos().y()
+            self._start_h = self._scroll.height()
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._start_y is not None:
+            delta = event.globalPos().y() - self._start_y
+            new_h = max(40, self._start_h + delta)
+            self._scroll.setMinimumHeight(new_h)
+            self._scroll.setMaximumHeight(new_h)  # pin height
+            event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._start_y = None
+        self._start_h = None
+        event.accept()
 
 
 class CollapsibleSection(QWidget):
@@ -10,7 +51,7 @@ class CollapsibleSection(QWidget):
 
     The header is a :class:`QToolButton` with a right/down arrow. Clicking it
     expands or collapses ``inner``. When expanded, the content is surrounded
-    by a white border frame.
+    by a white border frame and wrapped in a scroll area with a resize handle.
 
     Parameters
     ----------
@@ -61,16 +102,28 @@ class CollapsibleSection(QWidget):
         )
         frame_layout = QVBoxLayout(self._content_frame)
         frame_layout.setContentsMargins(4, 4, 4, 4)
-        frame_layout.setSpacing(0)
-        frame_layout.addWidget(inner)
+        frame_layout.setSpacing(2)
+
+        # Scroll area wrapping inner widget
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setWidget(inner)
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll_area.setFrameShape(QFrame.NoFrame)
+        frame_layout.addWidget(self._scroll_area)
+
+        # Resize handle at bottom of frame
+        self._resize_handle = _ResizeHandle(self._scroll_area)
+        frame_layout.addWidget(self._resize_handle)
+
         self._content_frame.setVisible(expanded)
         layout.addWidget(self._content_frame)
 
-        # Expanding policy when open so the section claims available vertical space
-        # (and its internal scroll areas can grow); Preferred when closed so it
-        # stays at toggle-button height.
-        v_policy = QSizePolicy.Expanding if expanded else QSizePolicy.Preferred
-        self.setSizePolicy(QSizePolicy.Preferred, v_policy)
+        # Always Preferred policy — height is driven by scroll area's minimumHeight
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+        if expanded:
+            QTimer.singleShot(0, self._reset_natural_height)
 
     # ------------------------------------------------------------------
     # Public API
@@ -102,5 +155,17 @@ class CollapsibleSection(QWidget):
     def _on_toggled(self, checked: bool) -> None:
         self._toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
         self._content_frame.setVisible(checked)
-        v_policy = QSizePolicy.Expanding if checked else QSizePolicy.Preferred
-        self.setSizePolicy(QSizePolicy.Preferred, v_policy)
+        if checked:
+            # Reset to natural height (unpin any previous drag)
+            self._scroll_area.setMaximumHeight(16777215)
+            QTimer.singleShot(0, self._reset_natural_height)
+        else:
+            self._scroll_area.setMinimumHeight(0)
+            self._scroll_area.setMaximumHeight(16777215)
+
+    def _reset_natural_height(self) -> None:
+        h = self._inner.sizeHint().height()
+        if h > 10:
+            self._scroll_area.setMinimumHeight(h)
+        else:
+            QTimer.singleShot(50, self._reset_natural_height)

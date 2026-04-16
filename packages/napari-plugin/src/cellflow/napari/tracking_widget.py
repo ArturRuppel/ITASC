@@ -14,7 +14,7 @@ from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout,
     QSpinBox, QDoubleSpinBox, QComboBox,
     QPushButton, QLabel, QToolButton,
-    QTextEdit, QProgressBar, QScrollArea,
+    QTextEdit, QProgressBar, QScrollArea, QSizePolicy,
 )
 from napari.qt.threading import thread_worker
 import napari
@@ -158,7 +158,8 @@ class TrackingTab(QWidget):
 
         self._log = QTextEdit()
         self._log.setReadOnly(True)
-        self._log.setFixedHeight(140)
+        self._log.setMinimumHeight(100)
+        self._log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._log.setPlaceholderText("Tracking log…")
         root.addWidget(self._log)
 

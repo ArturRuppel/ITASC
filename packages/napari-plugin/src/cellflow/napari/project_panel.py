@@ -2,8 +2,8 @@
 
 Three sections:
 
-  Tissue    — collapsible; pipeline file tracker (presence, shape/dtype, load)
-  Metadata  — pixel size, time interval, condition
+  Metadata  — pixel size, time interval, condition (always visible)
+  Project   — collapsible; project open/new, import, pipeline file tracker
   Dataset   — catalog of saved tissues with summary table
 """
 from __future__ import annotations
@@ -119,9 +119,14 @@ class ProjectPanel(QWidget):
         meta_row.addWidget(self._condition_edit)
         root.addLayout(meta_row)
 
-        # ── Project Initialization section ────────────────────────────
-        pipeline_inner = QWidget()
-        pg_layout = QVBoxLayout(pipeline_inner)
+        # ── Project section (merged: project init + data state) ───────
+        self._project_inner = QWidget()
+        self._project_inner.setStyleSheet(
+            "QLabel { color: white; } "
+            "QPushButton { color: white; } "
+            "QSpinBox { color: white; }"
+        )
+        pg_layout = QVBoxLayout(self._project_inner)
         pg_layout.setContentsMargins(4, 2, 0, 4)
         pg_layout.setSpacing(3)
 
@@ -141,66 +146,7 @@ class ProjectPanel(QWidget):
         proj_btn_row.addWidget(self._project_dir_label)
         pg_layout.addLayout(proj_btn_row)
 
-        # Row: import button + status
-        import_row = QHBoxLayout()
-        import_row.setSpacing(4)
-        self._import_pipeline_btn = QPushButton("Import from pipeline…")
-        self._import_pipeline_btn.setToolTip(
-            "Load the tracked labels from the pipeline output for pos 0\n"
-            "and auto-fill pixel size / time interval from the schema."
-        )
-        self._import_pipeline_btn.setEnabled(False)
-        self._import_status_label = QLabel("")
-        self._import_status_label.setStyleSheet("font-size: 9pt;")
-        self._import_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        import_row.addWidget(self._import_pipeline_btn)
-        import_row.addWidget(self._import_status_label)
-        pg_layout.addLayout(import_row)
-
-        # Stage status table: Name | Status | Last Run
-        self._pipeline_table = QTableWidget(0, 3)
-        self._pipeline_table.setHorizontalHeaderLabels(["Stage", "Status", "Last Run"])
-        hh = self._pipeline_table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self._pipeline_table.setMaximumHeight(110)
-        self._pipeline_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._pipeline_table.setSelectionMode(QTableWidget.NoSelection)
-        pg_layout.addWidget(self._pipeline_table)
-
-        # Resume banner — shown when manifest has failed/running stages
-        self._resume_banner = QLabel("")
-        self._resume_banner.setWordWrap(True)
-        self._resume_banner.setStyleSheet(
-            "QLabel { color: #cc8800; font-size: 9pt; padding: 3px; "
-            "border: 1px solid #cc8800; border-radius: 3px; }"
-        )
-        self._resume_banner.setVisible(False)
-        pg_layout.addWidget(self._resume_banner)
-
-        self._project_init_section = CollapsibleSection(
-            "Project Initialization", pipeline_inner, expanded=False
-        )
-        root.addWidget(self._project_init_section)
-
-        # ── Data State section (collapsible) ─────────────────────────
-        self._tissue_body = QWidget()
-        self._tissue_body.setStyleSheet(
-            "QLabel { color: white; } "
-            "QPushButton { color: white; } "
-            "QSpinBox { color: white; }"
-        )
-        tg_layout = QVBoxLayout(self._tissue_body)
-        tg_layout.setContentsMargins(4, 2, 0, 4)
-        tg_layout.setSpacing(3)
-
-        self._data_state_section = CollapsibleSection(
-            "Data State", self._tissue_body, expanded=False
-        )
-        root.addWidget(self._data_state_section)
-
-        # ── Position selector + refresh ───────────────────────────────
+        # Row: position selector + refresh
         pos_row = QHBoxLayout()
         pos_row.setSpacing(4)
         pos_row.addWidget(QLabel("Position:"))
@@ -215,7 +161,7 @@ class ProjectPanel(QWidget):
         self._refresh_files_btn.setFixedWidth(76)
         self._refresh_files_btn.setToolTip("Refresh pipeline file status")
         pos_row.addWidget(self._refresh_files_btn)
-        tg_layout.addLayout(pos_row)
+        pg_layout.addLayout(pos_row)
 
         # ── Pipeline file status rows (scrollable) ────────────────────
         files_container = QWidget()
@@ -242,9 +188,19 @@ class ProjectPanel(QWidget):
         files_scroll = QScrollArea()
         files_scroll.setWidget(files_container)
         files_scroll.setWidgetResizable(True)
-        files_scroll.setFixedHeight(210)
+        files_scroll.setMinimumHeight(100)
         files_scroll.setFrameShape(QFrame.NoFrame)
-        tg_layout.addWidget(files_scroll)
+        pg_layout.addWidget(files_scroll)
+
+        self._project_section = CollapsibleSection(
+            "Project", self._project_inner, expanded=False
+        )
+        # Visually distinct from processing stage widgets: blue-tinted header
+        self._project_section._toggle.setStyleSheet(
+            "QToolButton { font-weight: bold; font-size: 10pt; border: none; "
+            "padding: 2px; color: #7db8e8; }"
+        )
+        root.addWidget(self._project_section)
 
         # ── Dataset section ───────────────────────────────────────────
         ds_inner = QWidget()
@@ -285,7 +241,7 @@ class ProjectPanel(QWidget):
         hh.setSectionResizeMode(4, QHeaderView.Stretch)
         self._catalog_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._catalog_table.setSelectionMode(QTableWidget.SingleSelection)
-        self._catalog_table.setMaximumHeight(130)
+        self._catalog_table.setMinimumHeight(60)
         ds_layout.addWidget(self._catalog_table)
 
         # Action buttons
@@ -317,9 +273,7 @@ class ProjectPanel(QWidget):
         # Pipeline project buttons
         self._new_project_btn.clicked.connect(self._on_new_project)
         self._open_project_btn.clicked.connect(self._on_open_project)
-        self._import_pipeline_btn.clicked.connect(self._on_import_from_pipeline)
         self._state.pipeline_schema_changed.connect(self._refresh_pipeline_status)
-        self._state.pipeline_schema_changed.connect(self._update_import_btn_state)
 
         # Auto-refresh pipeline status every 3 s when a project is open
         self._pipeline_timer = QTimer(self)
@@ -327,8 +281,8 @@ class ProjectPanel(QWidget):
         self._pipeline_timer.timeout.connect(self._refresh_pipeline_status)
         self._pipeline_timer.start()
 
-        # Data State toggle + pipeline file controls
-        self._data_state_section._toggle.toggled.connect(self._on_data_state_toggled)
+        # Project section toggle + pipeline file controls
+        self._project_section._toggle.toggled.connect(self._on_project_section_toggled)
         self._pipeline_pos_spin.valueChanged.connect(self._refresh_pipeline_files)
         self._refresh_files_btn.clicked.connect(self._refresh_pipeline_files)
         self._state.pipeline_schema_changed.connect(self._refresh_pipeline_files)
@@ -367,172 +321,28 @@ class ProjectPanel(QWidget):
         if d:
             self._state.set_project_dir(d)
 
-    def _update_import_btn_state(self) -> None:
-        """Enable the import button only when a project with a schema is open."""
-        schema = self._state.pipeline_schema
-        self._import_pipeline_btn.setEnabled(schema is not None)
-
-    def _on_import_from_pipeline(self) -> None:
-        """Load tracked labels from the pipeline output and populate state."""
-        schema = self._state.pipeline_schema
-        project_dir = self._state.project_dir
-        if schema is None or project_dir is None:
-            self._import_status_label.setText("No project open.")
-            return
-
-        # Resolve the tracked-labels path for pos 0.
-        # Try the schema interface first; fall back to the conventional path.
-        from cellflow.core.paths import stage_dir
-        label_path = None
-        iface = schema.interfaces.get("tracking.output.tracked_labels")
-        if iface and iface.path_template:
-            try:
-                rel = iface.path_template.format(pos=0, stem="tracked_labels")
-                candidate = project_dir / rel
-                if candidate.exists():
-                    label_path = candidate
-            except Exception:
-                pass
-
-        if label_path is None:
-            # Conventional fallback: <root>/pos00/2_ultrack/tracked_labels.tif
-            candidate = stage_dir(project_dir, 0, "tracking") / "tracked_labels.tif"
-            if candidate.exists():
-                label_path = candidate
-
-        if label_path is None:
-            self._import_status_label.setText("tracked_labels.tif not found for pos 0.")
-            return
-
-        # Validate TIFF header before loading
-        try:
-            import tifffile
-            with tifffile.TiffFile(str(label_path)) as tf:
-                page = tf.pages[0]
-                shape = (len(tf.pages),) + page.shape if len(tf.pages) > 1 else page.shape
-        except Exception as exc:
-            self._import_status_label.setText(f"Invalid TIFF: {exc}")
-            return
-
-        # Load the label array
-        try:
-            import tifffile
-            labels = tifffile.imread(str(label_path))
-        except Exception as exc:
-            self._import_status_label.setText(f"Load error: {exc}")
-            return
-
-        # Push into state
-        self._state.set_tissue_labels(labels, layer_name=label_path.name)
-        self.viewer.add_labels(labels, name=label_path.name)
-
-        # Auto-fill metadata from schema
-        meta = schema.metadata
-        if meta.pixel_size_um is not None:
-            self._state.pixel_size = meta.pixel_size_um
-        if meta.time_interval_s is not None:
-            self._state.time_interval = meta.time_interval_s
-
-        self._import_status_label.setText(
-            f"Loaded {label_path.name} ({labels.shape})"
-        )
-
     def _refresh_pipeline_status(self) -> None:
-        """Read manifest for pos 0 and update the pipeline status table."""
+        """Update the project path label and refresh pipeline file status."""
         project_dir = self._state.project_dir
-        schema = self._state.pipeline_schema
-
         if project_dir is None:
             self._project_dir_label.setText("[no project]")
-            self._pipeline_table.setRowCount(0)
-            return
-
-        # Show a short path (last 2 components) to avoid widget expanding horizontally.
-        short = "/".join(project_dir.parts[-2:]) if len(project_dir.parts) >= 2 else str(project_dir)
-        self._project_dir_label.setText(short)
-        self._project_dir_label.setToolTip(str(project_dir))
-
-        # Determine which stages to show (from schema, or all installed)
-        if schema is not None:
-            stage_names = list(schema.stages)
         else:
-            from ._plugin import STAGE_ORDER, STAGES
-            installed = set(STAGES.keys())
-            stage_names = [s for s in STAGE_ORDER if s in installed]
-            stage_names += sorted(installed - set(STAGE_ORDER))
-
-        if not stage_names:
-            self._pipeline_table.setRowCount(0)
-            return
-
-        # Load manifest for pos 0
-        from cellflow.core.paths import manifest_path
-        from cellflow.core.manifest import PipelineManifest
-        mpath = manifest_path(project_dir, 0)
-        manifest = PipelineManifest.load(mpath)
-
-        from ._plugin import STAGE_DISPLAY_NAMES
-        _STATUS_BADGE = {
-            "complete": "✓",
-            "running":  "↻",
-            "failed":   "✗",
-            "stale":    "⚠",
-            "pending":  "–",
-        }
-        _STATUS_COLOR = {
-            "complete": "#4CAF50",
-            "running":  "#2196F3",
-            "failed":   "#F44336",
-            "stale":    "#FF9800",
-            "pending":  "#9E9E9E",
-        }
-
-        self._pipeline_table.setRowCount(len(stage_names))
-        incomplete_stages = []
-        for row, name in enumerate(stage_names):
-            record = manifest.stages.get(name)
-            status = record.status if record else "pending"
-            badge = _STATUS_BADGE.get(status, "–")
-            color = _STATUS_COLOR.get(status, "#9E9E9E")
-            last_run = (record.finished_at or "").replace("T", " ")[:16] if record else ""
-
-            display = STAGE_DISPLAY_NAMES.get(name, name)
-            self._pipeline_table.setItem(row, 0, QTableWidgetItem(display))
-            badge_item = QTableWidgetItem(badge)
-            badge_item.setTextAlignment(Qt.AlignCenter)
-            badge_item.setForeground(__import__("qtpy.QtGui", fromlist=["QColor"]).QColor(color))
-            self._pipeline_table.setItem(row, 1, badge_item)
-            self._pipeline_table.setItem(row, 2, QTableWidgetItem(last_run))
-
-            if status in ("failed", "running"):
-                incomplete_stages.append((display, status))
-
-        # Show resume banner when there are failed or interrupted stages
-        if incomplete_stages:
-            parts = ", ".join(
-                f"{n} ({s})" for n, s in incomplete_stages
-            )
-            self._resume_banner.setText(
-                f"⚠ Incomplete stages detected — open the relevant tab to resume:\n{parts}"
-            )
-            self._resume_banner.setVisible(True)
-        else:
-            self._resume_banner.setVisible(False)
-
-        # Keep the pipeline file list in sync with the manifest timer
+            short = "/".join(project_dir.parts[-2:]) if len(project_dir.parts) >= 2 else str(project_dir)
+            self._project_dir_label.setText(short)
+            self._project_dir_label.setToolTip(str(project_dir))
         self._refresh_pipeline_files()
 
     # ------------------------------------------------------------------
     # Tissue toggle + pipeline file status
     # ------------------------------------------------------------------
 
-    def _on_data_state_toggled(self, checked: bool) -> None:
+    def _on_project_section_toggled(self, checked: bool) -> None:
         if checked:
             self._refresh_pipeline_files()
 
     def _refresh_pipeline_files(self) -> None:
         """Check on-disk presence and metadata for every tracked pipeline file."""
-        if not self._tissue_body.isVisible():
+        if not self._project_inner.isVisible():
             return
 
         project_dir = self._state.project_dir

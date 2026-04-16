@@ -25,7 +25,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -443,21 +442,9 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._pp_worker = None
         self._all_worker = None
 
-        # ── Outer scroll area ────────────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        inner = QWidget()
-        self._inner_layout = QVBoxLayout()
+        self._inner_layout = QVBoxLayout(self)
+        self._inner_layout.setContentsMargins(0, 0, 0, 0)
         self._inner_layout.setAlignment(Qt.AlignTop)
-        inner.setLayout(self._inner_layout)
-        scroll.setWidget(inner)
-
-        outer = QVBoxLayout()
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-        self.setLayout(outer)
 
         lay = self._inner_layout
 

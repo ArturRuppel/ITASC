@@ -21,7 +21,6 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QRadioButton,
     QButtonGroup,
-    QScrollArea,
 )
 from qtpy.QtCore import Qt
 
@@ -55,19 +54,9 @@ class ForcesWidget(QWidget):
     # UI construction
     # ------------------------------------------------------------------
     def _build_ui(self):
-        outer = QVBoxLayout()
-        outer.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(outer)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
-
-        container = QWidget()
-        layout = QVBoxLayout()
-        container.setLayout(layout)
-        scroll.setWidget(container)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignTop)
 
         # --- ForSys availability banner ---
         if not forsys_available():

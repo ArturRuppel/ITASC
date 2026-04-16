@@ -14,7 +14,6 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -38,21 +37,9 @@ class DataPrepWidget(QWidget):
         self._state = get_state(viewer)
         self._worker = None
 
-        # ── Outer scroll area ────────────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        inner = QWidget()
-        layout = QVBoxLayout()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignTop)
-        inner.setLayout(layout)
-        scroll.setWidget(inner)
-
-        outer = QVBoxLayout()
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-        self.setLayout(outer)
 
         # ── Project info ─────────────────────────────────────────────────
         self._project_label = QLabel("")

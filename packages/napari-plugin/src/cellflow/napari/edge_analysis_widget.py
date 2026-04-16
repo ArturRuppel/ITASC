@@ -26,7 +26,6 @@ from qtpy.QtWidgets import (
     QListWidget,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -104,19 +103,9 @@ class EdgeAnalysisWidget(QWidget):
     # UI construction
     # ------------------------------------------------------------------
     def _build_ui(self):
-        outer = QVBoxLayout()
-        outer.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(outer)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
-
-        container = QWidget()
-        layout = QVBoxLayout()
-        container.setLayout(layout)
-        scroll.setWidget(container)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignTop)
 
         # --- Analyse Tissue (graph extraction + T1 + edge tracking) ---
         self.stage2_toggle = QToolButton()

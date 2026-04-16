@@ -22,7 +22,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
@@ -97,21 +96,9 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_timer.setInterval(400)  # compute_masks is heavier
         self._cp_ct_timer.timeout.connect(self._cp_ct_update_preview)
 
-        # ── Outer scroll area ────────────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        inner = QWidget()
-        self._inner_layout = QVBoxLayout()
+        self._inner_layout = QVBoxLayout(self)
+        self._inner_layout.setContentsMargins(0, 0, 0, 0)
         self._inner_layout.setAlignment(Qt.AlignTop)
-        inner.setLayout(self._inner_layout)
-        scroll.setWidget(inner)
-
-        outer = QVBoxLayout()
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-        self.setLayout(outer)
 
         lay = self._inner_layout
 
