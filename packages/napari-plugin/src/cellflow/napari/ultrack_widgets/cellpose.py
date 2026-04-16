@@ -81,8 +81,9 @@ class CellposeWidget(QWidget):
         self._log_viewer = StageLogViewer(self._state)
         inner_layout.addWidget(self._log_viewer)
 
-        # Connect project-change signal to auto-fill paths
+        # Connect project-change and position-change signals
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+        self._state.position_changed.connect(self._sync_project_dir)
         self._sync_project_dir()
 
     # ── Project-derived path helpers ─────────────────────────────────────
@@ -106,10 +107,9 @@ class CellposeWidget(QWidget):
         return self._get_project_dir()
 
     def _sync_project_dir(self) -> None:
-        """Refresh path-info labels when the project changes."""
+        """Refresh path-info labels when the project or position changes."""
         root = self._get_project_dir()
-        pos_a = self._s01a_pos_spin.value()
-        pos_b = self._s01b_pos_spin.value()
+        pos = self._state.current_position
 
         if root is None:
             msg = "No project open — create or open one via the Project panel."
@@ -117,8 +117,8 @@ class CellposeWidget(QWidget):
             self._s01b_paths_label.setText(msg)
             return
 
-        inp = self._s01a_input_dir(pos_a)
-        out = self._s01a_output_dir(pos_a)
+        inp = self._s01a_input_dir(pos)
+        out = self._s01a_output_dir(pos)
         self._s01a_paths_label.setText(f"Input:  {inp}\nOutput: {out}")
 
         rb = self._s01b_root_dir()
@@ -136,16 +136,6 @@ class CellposeWidget(QWidget):
         self._s01a_paths_label.setStyleSheet("color: white; font-size: 8pt;")
         self._s01a_paths_label.setWordWrap(True)
         layout.addWidget(self._s01a_paths_label)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Position"))
-        self._s01a_pos_spin = QSpinBox()
-        self._s01a_pos_spin.setRange(0, 1000)
-        self._s01a_pos_spin.setValue(0)
-        self._s01a_pos_spin.valueChanged.connect(self._sync_project_dir)
-        row.addWidget(self._s01a_pos_spin)
-        row.addStretch()
-        layout.addLayout(row)
 
         # ── Model parameters ─────────────────────────────────────────────
         model_group = QGroupBox("Model parameters")
@@ -267,16 +257,6 @@ class CellposeWidget(QWidget):
         self._s01b_paths_label.setStyleSheet("color: white; font-size: 8pt;")
         self._s01b_paths_label.setWordWrap(True)
         layout.addWidget(self._s01b_paths_label)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Position"))
-        self._s01b_pos_spin = QSpinBox()
-        self._s01b_pos_spin.setRange(0, 1000)
-        self._s01b_pos_spin.setValue(0)
-        self._s01b_pos_spin.valueChanged.connect(self._sync_project_dir)
-        row.addWidget(self._s01b_pos_spin)
-        row.addStretch()
-        layout.addLayout(row)
 
         # ── Model parameters ─────────────────────────────────────────────
         model_group = QGroupBox("Model parameters")
@@ -433,7 +413,7 @@ class CellposeWidget(QWidget):
     # ── s01a Run inline ──────────────────────────────────────────────────
 
     def _on_s01a_run(self) -> None:
-        pos = self._s01a_pos_spin.value()
+        pos = self._state.current_position
         input_dir = self._s01a_input_dir(pos)
         output_dir = self._s01a_output_dir(pos)
         if input_dir is None or output_dir is None:
@@ -470,7 +450,7 @@ class CellposeWidget(QWidget):
         if root_dir is None:
             self._s01b_status_label.setText("No project open. Create or open a project first.")
             return
-        pos = self._s01b_pos_spin.value()
+        pos = self._state.current_position
         cfg = self._build_s01b_config()
         overwrite = self._s01b_overwrite_check.isChecked()
         self._s01b_run_btn.setEnabled(False)
@@ -498,7 +478,7 @@ class CellposeWidget(QWidget):
     # ── s01a Run in terminal ─────────────────────────────────────────────
 
     def _on_s01a_run_terminal(self) -> None:
-        pos = self._s01a_pos_spin.value()
+        pos = self._state.current_position
         input_dir = self._s01a_input_dir(pos)
         output_dir = self._s01a_output_dir(pos)
         if input_dir is None or output_dir is None:
@@ -528,7 +508,7 @@ class CellposeWidget(QWidget):
         if root_dir is None:
             self._s01b_status_label.setText("No project open. Create or open a project first.")
             return
-        pos = self._s01b_pos_spin.value()
+        pos = self._state.current_position
         cfg = self._build_s01b_config()
         cfg_path = Path(tempfile.mktemp(suffix="_cp_config.json"))
         cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
@@ -602,7 +582,7 @@ class CellposeWidget(QWidget):
     # ── s01a Load results ────────────────────────────────────────────────
 
     def _load_s01a_prob_stack(self) -> None:
-        pos = self._s01a_pos_spin.value()
+        pos = self._state.current_position
         output_dir = self._s01a_output_dir(pos)
         if output_dir is None:
             return
@@ -616,7 +596,7 @@ class CellposeWidget(QWidget):
         )
 
     def _on_s01a_load_results(self) -> None:
-        pos = self._s01a_pos_spin.value()
+        pos = self._state.current_position
         output_dir = self._s01a_output_dir(pos)
         if output_dir is None:
             self._s01a_status_label.setText("No project open.")
@@ -636,7 +616,7 @@ class CellposeWidget(QWidget):
         root_dir = self._s01b_root_dir()
         if root_dir is None:
             return
-        pos = self._s01b_pos_spin.value()
+        pos = self._state.current_position
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
         prob_file = cell_dir / "cell_prob.tif"
         if not prob_file.exists():
@@ -650,7 +630,7 @@ class CellposeWidget(QWidget):
         if root_dir is None:
             self._s01b_status_label.setText("No project open.")
             return
-        pos = self._s01b_pos_spin.value()
+        pos = self._state.current_position
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
         prob_file = cell_dir / "cell_prob.tif"
         dp_file = cell_dir / "cell_dp.tif"

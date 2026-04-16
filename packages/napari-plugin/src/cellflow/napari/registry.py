@@ -114,6 +114,7 @@ class ViewerState(QObject):
     metadata_changed         = Signal()
     nuclear_labels_changed   = Signal()
     pipeline_schema_changed  = Signal()   # emitted when project_dir / schema changes
+    position_changed         = Signal()   # emitted when current_position changes
 
     # legacy — kept for forces_widget and project_panel; remove in Phase 6
     dataset_changed  = Signal()
@@ -132,6 +133,7 @@ class ViewerState(QObject):
         # -- pipeline project fields -------------------------------------------
         self._project_dir: Optional[Path] = None
         self._pipeline_schema: "Optional[PipelineSchema]" = None
+        self._current_position: int = 0
 
         # --- legacy backing store (dataset still used by forces_widget) ---
         self._dataset: Optional[TissueGraphDataset] = None
@@ -275,6 +277,18 @@ class ViewerState(QObject):
     def pipeline_schema(self, value: "Optional[PipelineSchema]") -> None:
         self._pipeline_schema = value
         self.pipeline_schema_changed.emit()
+
+    # -- current position --------------------------------------------------
+
+    @property
+    def current_position(self) -> int:
+        return self._current_position
+
+    @current_position.setter
+    def current_position(self, value: int) -> None:
+        if self._current_position != value:
+            self._current_position = value
+            self.position_changed.emit()
 
     # -- legacy: dataset ---------------------------------------------------
 

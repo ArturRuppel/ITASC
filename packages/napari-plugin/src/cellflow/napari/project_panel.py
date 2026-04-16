@@ -117,6 +117,13 @@ class ProjectPanel(QWidget):
         self._condition_edit.setPlaceholderText("e.g. WT")
         self._condition_edit.setToolTip("Experimental condition label")
         meta_row.addWidget(self._condition_edit)
+        meta_row.addWidget(QLabel("Pos:"))
+        self._pipeline_pos_spin = QSpinBox()
+        self._pipeline_pos_spin.setRange(0, 999)
+        self._pipeline_pos_spin.setValue(0)
+        self._pipeline_pos_spin.setFixedWidth(54)
+        self._pipeline_pos_spin.setToolTip("Current pipeline position (shared across all widgets)")
+        meta_row.addWidget(self._pipeline_pos_spin)
         root.addLayout(meta_row)
 
         # ── Project section (merged: project init + data state) ───────
@@ -146,22 +153,15 @@ class ProjectPanel(QWidget):
         proj_btn_row.addWidget(self._project_dir_label)
         pg_layout.addLayout(proj_btn_row)
 
-        # Row: position selector + refresh
-        pos_row = QHBoxLayout()
-        pos_row.setSpacing(4)
-        pos_row.addWidget(QLabel("Position:"))
-        self._pipeline_pos_spin = QSpinBox()
-        self._pipeline_pos_spin.setRange(0, 99)
-        self._pipeline_pos_spin.setValue(0)
-        self._pipeline_pos_spin.setFixedWidth(54)
-        self._pipeline_pos_spin.setToolTip("Position index for pipeline file status")
-        pos_row.addWidget(self._pipeline_pos_spin)
-        pos_row.addStretch()
+        # Row: refresh button
+        refresh_row = QHBoxLayout()
+        refresh_row.setSpacing(4)
+        refresh_row.addStretch()
         self._refresh_files_btn = QPushButton("↺ Refresh")
         self._refresh_files_btn.setFixedWidth(76)
         self._refresh_files_btn.setToolTip("Refresh pipeline file status")
-        pos_row.addWidget(self._refresh_files_btn)
-        pg_layout.addLayout(pos_row)
+        refresh_row.addWidget(self._refresh_files_btn)
+        pg_layout.addLayout(refresh_row)
 
         # ── Pipeline file status rows (scrollable) ────────────────────
         files_container = QWidget()
@@ -283,9 +283,10 @@ class ProjectPanel(QWidget):
 
         # Project section toggle + pipeline file controls
         self._project_section._toggle.toggled.connect(self._on_project_section_toggled)
-        self._pipeline_pos_spin.valueChanged.connect(self._refresh_pipeline_files)
+        self._pipeline_pos_spin.valueChanged.connect(self._on_pos_spin_changed)
         self._refresh_files_btn.clicked.connect(self._refresh_pipeline_files)
         self._state.pipeline_schema_changed.connect(self._refresh_pipeline_files)
+        self._state.position_changed.connect(self._on_state_position_changed)
 
         # Metadata
         self._px_edit.editingFinished.connect(self._on_metadata_edited)
@@ -320,6 +321,15 @@ class ProjectPanel(QWidget):
         )
         if d:
             self._state.set_project_dir(d)
+
+    def _on_pos_spin_changed(self, value: int) -> None:
+        self._state.current_position = value
+        self._refresh_pipeline_files()
+
+    def _on_state_position_changed(self) -> None:
+        pos = self._state.current_position
+        if self._pipeline_pos_spin.value() != pos:
+            self._pipeline_pos_spin.setValue(pos)
 
     def _refresh_pipeline_status(self) -> None:
         """Update the project path label and refresh pipeline file status."""

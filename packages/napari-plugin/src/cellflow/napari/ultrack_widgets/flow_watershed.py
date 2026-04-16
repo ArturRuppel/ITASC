@@ -861,16 +861,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._project_label.setWordWrap(True)
         lay.addWidget(self._project_label)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Position"))
-        self._pos_spin = QSpinBox()
-        self._pos_spin.setRange(0, 1000)
-        self._pos_spin.setValue(0)
-        self._pos_spin.valueChanged.connect(self._sync_project_dir)
-        row.addWidget(self._pos_spin)
-        row.addStretch()
-        lay.addLayout(row)
-
         # ── Save / Load all parameters ───────────────────────────────────
         row = QHBoxLayout()
         save_btn = QPushButton("Save All Parameters…")
@@ -910,8 +900,9 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._log_viewer = StageLogViewer(self._state)
         lay.addWidget(self._log_viewer)
 
-        # Connect project-change signal
+        # Connect project-change and position-change signals
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+        self._state.position_changed.connect(self._sync_project_dir)
         self._sync_project_dir()
 
     # ── Project-derived path helpers ─────────────────────────────────────
@@ -930,7 +921,7 @@ class FlowGuidedSegmentationWidget(QWidget):
                 "No project open — create or open one via the Project panel."
             )
             return
-        pos = self._pos_spin.value()
+        pos = self._state.current_position
         self._project_label.setText(
             f"Root: {root}  |  Position: pos{pos:02d}"
         )
@@ -1202,7 +1193,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._seg_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         frame = int(self._seg_frame_spin.value())
         cfg = self._build_config()
 
@@ -1287,7 +1278,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._seg_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         cfg = self._build_config()
 
         self._seg_run_btn.setEnabled(False)
@@ -1318,7 +1309,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._seg_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         cfg = self._build_config()
         overwrite_flag = "--overwrite" if self._seg_overwrite_chk.isChecked() else ""
 
@@ -1402,7 +1393,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._seg_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         out_dir = cell_segmentation_dir(root_dir, pos)
         raw_path = out_dir / "cell_labels_raw.tif"
 
@@ -1434,7 +1425,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._pp_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         frame = int(self._pp_frame_spin.value())
         cfg = self._build_config()
 
@@ -1488,7 +1479,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._pp_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         cfg = self._build_config()
 
         self._pp_run_btn.setEnabled(False)
@@ -1519,7 +1510,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._pp_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         cfg = self._build_config()
         overwrite_flag = "--overwrite" if self._pp_overwrite_chk.isChecked() else ""
 
@@ -1603,7 +1594,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._pp_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         out_dir = cell_segmentation_dir(root_dir, pos)
         final_path = out_dir / "cell_labels.tif"
 
@@ -1635,7 +1626,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._fm_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         sigma = self._fm_sigma_spin.value()
         threshold = self._fm_threshold_spin.value()
         pp_steps = self._fm_pipeline.get_steps()
@@ -1717,7 +1708,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._fm_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         out_dir = cell_segmentation_dir(root_dir, pos)
         mask_path = out_dir / "cell_foreground.tif"
 
@@ -1744,7 +1735,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._all_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         cfg = self._build_config()
 
         self._all_run_btn.setEnabled(False)
@@ -1775,7 +1766,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._all_status.setText("No project open. Create or open a project first.")
             return
 
-        pos = int(self._pos_spin.value())
+        pos = int(self._state.current_position)
         cfg = self._build_config()
         overwrite_flag = "--overwrite" if self._seg_overwrite_chk.isChecked() else ""
 

@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import tifffile
 from matplotlib.cm import get_cmap
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -58,13 +58,10 @@ from cellflow.ultrack.stages.tracking import (
 
 
 class UltrackAnalysisWidget(QWidget):
-    """Single scrollable panel for Cellpose Contours and Tracking stages.
+    """Single scrollable panel for Cellpose Contours and Tracking stages."""
 
-    All paths are derived from two shared inputs at the top:
-    - **Input directory** — contains ``t*_prob.tif`` and ``t*_dp.tif`` Cellpose output files.
-    - **Output directory** — base folder; outputs are written directly:
-      ``foreground.tif``, ``contours.tif``, ``tracks.csv``, ``tracked_labels.tif``, ``data.db``.
-    """
+    # Emitted after tracked_labels is loaded into the viewer.
+    labels_loaded = Signal(object)  # napari Labels layer
 
     def __init__(self, viewer: "napari.Viewer") -> None:
         super().__init__()
@@ -107,16 +104,6 @@ class UltrackAnalysisWidget(QWidget):
         self._project_label.setWordWrap(True)
         lay.addWidget(self._project_label)
 
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Position"))
-        self._pos_spin = QSpinBox()
-        self._pos_spin.setRange(0, 1000)
-        self._pos_spin.setValue(0)
-        self._pos_spin.valueChanged.connect(self._sync_project_dir)
-        row.addWidget(self._pos_spin)
-        row.addStretch()
-        lay.addLayout(row)
-
         # ── Save / Load all parameters ───────────────────────────────────
         row = QHBoxLayout()
         b = QPushButton("Save All Parameters\u2026")
@@ -154,8 +141,9 @@ class UltrackAnalysisWidget(QWidget):
         self._log_viewer = StageLogViewer(self._state)
         lay.addWidget(self._log_viewer)
 
-        # Connect project-change signal
+        # Connect project-change and position-change signals
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+        self._state.position_changed.connect(self._sync_project_dir)
         self._sync_project_dir()
 
     # ══════════════════════════════════════════════════════════════════════
@@ -170,7 +158,7 @@ class UltrackAnalysisWidget(QWidget):
                 "No project open — create or open one via the Project panel."
             )
             return
-        pos = self._pos_spin.value()
+        pos = self._state.current_position
         from cellflow.core.paths import stage_dir
         inp = stage_dir(project_dir, pos, "cellpose_nucleus")
         out = stage_dir(project_dir, pos, "tracking")
@@ -183,7 +171,7 @@ class UltrackAnalysisWidget(QWidget):
         project_dir = self._state.project_dir
         if project_dir is None:
             return None
-        pos = self._pos_spin.value()
+        pos = self._state.current_position
         from cellflow.core.paths import stage_dir
         inp = str(stage_dir(project_dir, pos, "cellpose_nucleus"))
         out = str(stage_dir(project_dir, pos, "tracking"))
@@ -1343,8 +1331,14 @@ class UltrackAnalysisWidget(QWidget):
 
         try:
             labels = get_labels_layer(wd)
-            self.viewer.add_labels(labels, name="tracked labels")
+            layer_name = "tracked labels"
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].data = labels
+                lbl_layer = self.viewer.layers[layer_name]
+            else:
+                lbl_layer = self.viewer.add_labels(labels, name=layer_name)
             msgs.append(f"labels {labels.shape}")
+            self.labels_loaded.emit(lbl_layer)
         except FileNotFoundError:
             msgs.append("tracked_labels.tif not found")
         except Exception as e:
