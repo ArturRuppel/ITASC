@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from qtpy.QtCore import Qt
@@ -25,6 +26,7 @@ from cellflow.cellpose.config import DatasetConfig
 from cellflow.cellpose.stages.raw_import import run as run_s00
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
+from cellflow.napari.widgets import CollapsibleSection
 
 
 class DataPrepWidget(QWidget):
@@ -58,8 +60,14 @@ class DataPrepWidget(QWidget):
         self._project_label.setWordWrap(True)
         layout.addWidget(self._project_label)
 
-        # ── NDTiff path ──────────────────────────────────────────────────
-        layout.addWidget(QLabel("NDTiff directory"))
+        # ── Parameters accordion section ─────────────────────────────────
+        params_inner = QWidget()
+        params_layout = QVBoxLayout(params_inner)
+        params_layout.setContentsMargins(4, 4, 4, 4)
+        params_layout.setSpacing(4)
+
+        # NDTiff path
+        params_layout.addWidget(QLabel("NDTiff directory"))
         row = QHBoxLayout()
         self._ndtiff_edit = QLineEdit()
         self._ndtiff_edit.setPlaceholderText("/path/to/ndtiff_dataset")
@@ -67,18 +75,18 @@ class DataPrepWidget(QWidget):
         btn = QPushButton("Browse…")
         btn.clicked.connect(self._browse_ndtiff)
         row.addWidget(btn)
-        layout.addLayout(row)
+        params_layout.addLayout(row)
 
-        # ── Positions ────────────────────────────────────────────────────
-        layout.addWidget(QLabel("Positions (comma-separated, e.g. 0,1,2)"))
+        # Positions
+        params_layout.addWidget(QLabel("Positions (comma-separated, e.g. 0,1,2)"))
         self._positions_edit = QLineEdit("0")
-        layout.addWidget(self._positions_edit)
+        params_layout.addWidget(self._positions_edit)
 
-        # ── Timepoints ───────────────────────────────────────────────────
+        # Timepoints
         self._tp_all_check = QCheckBox("All timepoints")
         self._tp_all_check.setChecked(True)
         self._tp_all_check.toggled.connect(self._on_tp_toggle)
-        layout.addWidget(self._tp_all_check)
+        params_layout.addWidget(self._tp_all_check)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Timepoints (comma-separated)"))
@@ -86,20 +94,23 @@ class DataPrepWidget(QWidget):
         self._tp_edit.setPlaceholderText("0,1,2,3,4")
         self._tp_edit.setEnabled(False)
         row.addWidget(self._tp_edit)
-        layout.addLayout(row)
+        params_layout.addLayout(row)
 
-        # ── XY downsample ────────────────────────────────────────────────
+        # XY downsample
         row = QHBoxLayout()
         row.addWidget(QLabel("XY downsample factor"))
         self._xy_spin = QSpinBox()
         self._xy_spin.setRange(1, 16)
         self._xy_spin.setValue(3)
         row.addWidget(self._xy_spin)
-        layout.addLayout(row)
+        params_layout.addLayout(row)
 
-        # ── Overwrite ────────────────────────────────────────────────────
+        # Overwrite
         self._overwrite_check = QCheckBox("Overwrite existing files")
-        layout.addWidget(self._overwrite_check)
+        params_layout.addWidget(self._overwrite_check)
+
+        self._params_section = CollapsibleSection("Parameters", params_inner, expanded=True)
+        layout.addWidget(self._params_section)
 
         # ── Run button ───────────────────────────────────────────────────
         self._run_btn = QPushButton("Export Raw Data")
@@ -234,6 +245,27 @@ class DataPrepWidget(QWidget):
         self._status_label.setText(f"Done — exported {self._n_positions} position(s).")
         self._worker = None
         self._log_viewer.refresh()
+        self._try_load_metadata()
+
+    def _try_load_metadata(self) -> None:
+        """Read pixel size / time interval from run_params.json (pos 0) and push to state."""
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            return
+        from cellflow.core.paths import stage_dir
+        params_path = stage_dir(project_dir, 0, "raw_import") / "run_params.json"
+        if not params_path.exists():
+            return
+        try:
+            data = json.loads(params_path.read_text(encoding="utf-8"))
+            px = data.get("pixel_size_um")
+            dt_s = data.get("time_interval_s")
+            if px is not None and self._state.pixel_size is None:
+                self._state.pixel_size = float(px)
+            if dt_s is not None and self._state.time_interval is None:
+                self._state.time_interval = float(dt_s)
+        except Exception:
+            pass
 
     def _on_error(self, exc: Exception) -> None:
         self._run_btn.setEnabled(True)

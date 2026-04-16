@@ -4,8 +4,8 @@ Runs Cellpose 2D segmentation on Z-projected cell stack (two-channel zavg).
 
 Inputs (per position)
 ---------------------
-  0_raw/cell_zavg_405.tif       (T, H, W)  uint16  — nuclear marker (405 nm)
-  0_raw/cell_zavg_488.tif       (T, H, W)  uint16  — membrane marker (488 nm)
+  0_input/nucleus/nucleus_zavg.tif  (T, H, W)  uint16  — nuclear marker (405 nm)
+  0_input/cell/cell_zavg.tif        (T, H, W)  uint16  — membrane marker (488 nm)
 
 Outputs (per position)
 ----------------------
@@ -34,12 +34,12 @@ def _raw_dir(root_dir, pos):
     return stage_dir(root_dir, pos, "raw_import")
 
 
-def cell_zavg_path(root_dir, pos, channel=None):
-    if channel == 405:
-        return _raw_dir(root_dir, pos) / "cell_zavg_405.tif"
-    if channel == 488:
-        return _raw_dir(root_dir, pos) / "cell_zavg_488.tif"
-    return _raw_dir(root_dir, pos) / "cell_zavg.tif"
+def nucleus_zavg_path(root_dir, pos):
+    return _raw_dir(root_dir, pos) / "nucleus" / "nucleus_zavg.tif"
+
+
+def cell_zavg_path(root_dir, pos):
+    return _raw_dir(root_dir, pos) / "cell" / "cell_zavg.tif"
 
 
 def cellpose_cell_dir(root_dir, pos):
@@ -87,18 +87,18 @@ def run(
     root_dir = Path(root_dir)
 
     # Load input channels
-    path_405 = cell_zavg_path(root_dir, pos, 405)
-    path_488 = cell_zavg_path(root_dir, pos, 488)
+    path_nuc = nucleus_zavg_path(root_dir, pos)   # 405 nm nuclear marker
+    path_cell = cell_zavg_path(root_dir, pos)      # 488 nm membrane marker
 
-    if not path_405.exists():
-        print(f"[error] Input not found: {path_405}", file=sys.stderr)
+    if not path_nuc.exists():
+        print(f"[error] Input not found: {path_nuc}", file=sys.stderr)
         return
-    if not path_488.exists():
-        print(f"[error] Input not found: {path_488}", file=sys.stderr)
+    if not path_cell.exists():
+        print(f"[error] Input not found: {path_cell}", file=sys.stderr)
         return
 
-    stack_405 = tifffile.imread(str(path_405))  # (T, H, W) uint16
-    stack_488 = tifffile.imread(str(path_488))  # (T, H, W) uint16
+    stack_405 = tifffile.imread(str(path_nuc))    # (T, H, W) uint16
+    stack_488 = tifffile.imread(str(path_cell))   # (T, H, W) uint16
 
     if stack_405.ndim != 3 or stack_488.ndim != 3:
         print(
@@ -270,8 +270,8 @@ class _CellposeCellStageClass:
         from cellflow.core.validation import validate_inputs
 
         return validate_inputs([
-            cell_zavg_path(root_dir, pos, 405),
-            cell_zavg_path(root_dir, pos, 488),
+            nucleus_zavg_path(root_dir, pos),
+            cell_zavg_path(root_dir, pos),
         ])
 
     def is_complete(self, root_dir, pos) -> bool:

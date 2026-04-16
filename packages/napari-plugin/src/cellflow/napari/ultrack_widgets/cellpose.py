@@ -53,6 +53,7 @@ class CellposeWidget(QWidget):
         self._state = get_state(viewer)
         self._worker_s01a = None
         self._worker_s01b = None
+        self._s01b_run_terminal_btn = None
 
         if not _CELLPOSE_PIPELINE_AVAILABLE:
             layout = QVBoxLayout(self)
@@ -85,8 +86,8 @@ class CellposeWidget(QWidget):
         self._tabs = QTabWidget()
         self._s01a_widget = self._create_s01a_widget()
         self._s01b_widget = self._create_s01b_widget()
-        self._tabs.addTab(self._s01a_widget, "s01a — 3D Nucleus")
-        self._tabs.addTab(self._s01b_widget, "s01b — 2D Cell")
+        self._tabs.addTab(self._s01a_widget, "3D Nucleus")
+        self._tabs.addTab(self._s01b_widget, "2D Cell")
         inner_layout.addWidget(self._tabs)
 
         self._log_viewer = StageLogViewer(self._state)
@@ -352,6 +353,9 @@ class CellposeWidget(QWidget):
         self._s01b_run_btn = QPushButton("Run Cellpose")
         self._s01b_run_btn.clicked.connect(self._on_s01b_run)
         row.addWidget(self._s01b_run_btn)
+        self._s01b_run_terminal_btn = QPushButton("Run in Terminal")
+        self._s01b_run_terminal_btn.clicked.connect(self._on_s01b_run_terminal)
+        row.addWidget(self._s01b_run_terminal_btn)
         layout.addLayout(row)
 
         # ── Overwrite + Load results ─────────────────────────────────────
@@ -480,6 +484,8 @@ class CellposeWidget(QWidget):
         cfg = self._build_s01b_config()
         overwrite = self._s01b_overwrite_check.isChecked()
         self._s01b_run_btn.setEnabled(False)
+        if self._s01b_run_terminal_btn:
+            self._s01b_run_terminal_btn.setEnabled(False)
         self._s01b_progress.setVisible(True)
         self._s01b_progress.setValue(0)
         self._s01b_status_label.setText("Starting…")
@@ -525,6 +531,31 @@ class CellposeWidget(QWidget):
         except Exception as e:
             self._s01a_status_label.setText(f"Terminal launch error: {e}")
 
+    # ── s01b Run in terminal ─────────────────────────────────────────────
+
+    def _on_s01b_run_terminal(self) -> None:
+        root_dir = self._s01b_root_dir()
+        if root_dir is None:
+            self._s01b_status_label.setText("No project open. Create or open a project first.")
+            return
+        pos = self._s01b_pos_spin.value()
+        cfg = self._build_s01b_config()
+        cfg_path = Path(tempfile.mktemp(suffix="_cp_config.json"))
+        cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
+        overwrite_flag = "--overwrite" if self._s01b_overwrite_check.isChecked() else ""
+        cmd = (
+            f"python -m cellflow.cellpose.stages.cell_2d"
+            f" --root-dir \"{root_dir}\""
+            f" --pos {pos}"
+            f" --config \"{cfg_path}\""
+            f" {overwrite_flag}"
+        ).strip()
+        try:
+            launch_in_terminal(cmd)
+            self._s01b_status_label.setText("Launched Cellpose cell stage in terminal.")
+        except Exception as e:
+            self._s01b_status_label.setText(f"Terminal launch error: {e}")
+
     # ── s01a Progress / finished / error callbacks ────────────────────────
 
     def _on_s01a_progress(self, update: tuple) -> None:
@@ -560,6 +591,8 @@ class CellposeWidget(QWidget):
 
     def _on_s01b_finished(self) -> None:
         self._s01b_run_btn.setEnabled(True)
+        if self._s01b_run_terminal_btn:
+            self._s01b_run_terminal_btn.setEnabled(True)
         self._s01b_progress.setVisible(False)
         self._s01b_status_label.setText("Done — Cellpose outputs written.")
         self._worker_s01b = None
@@ -568,6 +601,8 @@ class CellposeWidget(QWidget):
 
     def _on_s01b_error(self, exc: Exception) -> None:
         self._s01b_run_btn.setEnabled(True)
+        if self._s01b_run_terminal_btn:
+            self._s01b_run_terminal_btn.setEnabled(True)
         self._s01b_progress.setVisible(False)
         self._s01b_status_label.setText(f"Error: {exc}")
         self._worker_s01b = None

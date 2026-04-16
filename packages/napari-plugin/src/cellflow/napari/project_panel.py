@@ -42,8 +42,9 @@ logger = logging.getLogger(__name__)
 #   loadable = "image" | "labels" | None  (None → no Load button)
 _TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
     ("Input Export", [
-        ("0_input/nucleus/nucleus_zavg.tif", "Nucleus avg",        "image"),
-        ("0_input/cell/cell_zavg.tif",       "Cell avg",           "image"),
+        ("0_input/nucleus",                  "Nucleus 3D (frames)", None),
+        ("0_input/nucleus/nucleus_zavg.tif", "Nucleus avg",         "image"),
+        ("0_input/cell/cell_zavg.tif",       "Cell avg",            "image"),
     ]),
     ("Cellpose Nuclei", [
         ("1_cellpose/nucleus",               "Output directory",   None),
@@ -160,19 +161,25 @@ class ProjectPanel(QWidget):
         pipeline_group.setLayout(pg_layout)
         root.addWidget(pipeline_group)
 
-        # ── Tissue section (collapsible) ──────────────────────────────
+        # ── Data State section (collapsible) ─────────────────────────
         self._tissue_toggle = QToolButton()
-        self._tissue_toggle.setText("Tissue")
+        self._tissue_toggle.setText("Data State")
         self._tissue_toggle.setArrowType(Qt.DownArrow)
         self._tissue_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self._tissue_toggle.setCheckable(True)
         self._tissue_toggle.setChecked(True)
         self._tissue_toggle.setStyleSheet(
-            "QToolButton { font-weight: bold; font-size: 10pt; border: none; padding: 2px; }"
+            "QToolButton { font-weight: bold; font-size: 10pt; border: none; "
+            "padding: 2px; color: white; }"
         )
         root.addWidget(self._tissue_toggle)
 
         self._tissue_body = QWidget()
+        self._tissue_body.setStyleSheet(
+            "QLabel { color: white; } "
+            "QPushButton { color: white; } "
+            "QSpinBox { color: white; }"
+        )
         tg_layout = QVBoxLayout(self._tissue_body)
         tg_layout.setContentsMargins(6, 0, 6, 4)
         tg_layout.setSpacing(3)
@@ -207,7 +214,7 @@ class ProjectPanel(QWidget):
             grp_lbl = QLabel(group_name)
             grp_lbl.setStyleSheet(
                 "font-size: 8pt; font-weight: bold; padding: 2px 4px 1px 4px; "
-                "background: palette(alternateBase); color: palette(text);"
+                "background: palette(alternateBase); color: white;"
             )
             files_vlayout.addWidget(grp_lbl)
             for rel_path, display_name, loadable in entries:
@@ -882,15 +889,15 @@ class _PipelineFileRow(QWidget):
         self._icon_lbl.setStyleSheet("font-size: 9pt; color: palette(mid);")
         lay.addWidget(self._icon_lbl)
 
-        name_lbl = QLabel(display_name)
-        name_lbl.setFixedWidth(140)
-        name_lbl.setStyleSheet("font-size: 8pt;")
-        name_lbl.setToolTip(rel_path)
+        name_lbl = QLabel(rel_path)
+        name_lbl.setFixedWidth(200)
+        name_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        name_lbl.setToolTip(display_name)
         lay.addWidget(name_lbl)
 
         self._info_lbl = QLabel("—")
         self._info_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._info_lbl.setStyleSheet("font-size: 8pt; color: palette(mid);")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: white;")
         lay.addWidget(self._info_lbl)
 
         if loadable is not None:
@@ -907,7 +914,7 @@ class _PipelineFileRow(QWidget):
         self._icon_lbl.setText("✓")
         self._icon_lbl.setStyleSheet("font-size: 9pt; font-weight: bold; color: #4CAF50;")
         self._info_lbl.setText(info_text)
-        self._info_lbl.setStyleSheet("font-size: 8pt;")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: white;")
         if self._load_btn:
             self._load_btn.setEnabled(True)
 
@@ -915,16 +922,16 @@ class _PipelineFileRow(QWidget):
         self._icon_lbl.setText("✗")
         self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
         self._info_lbl.setText("missing")
-        self._info_lbl.setStyleSheet("font-size: 8pt; color: palette(mid);")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: #9E9E9E;")
         self._full_path = None
         if self._load_btn:
             self._load_btn.setEnabled(False)
 
     def set_no_project(self) -> None:
         self._icon_lbl.setText("○")
-        self._icon_lbl.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
         self._info_lbl.setText("—")
-        self._info_lbl.setStyleSheet("font-size: 8pt; color: palette(mid);")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: #9E9E9E;")
         self._full_path = None
         if self._load_btn:
             self._load_btn.setEnabled(False)
@@ -933,8 +940,32 @@ class _PipelineFileRow(QWidget):
 def _file_info(path: Path) -> str:
     """Return a concise shape/dtype or size string for a pipeline output file."""
     if path.is_dir():
-        n = sum(1 for _ in path.glob("*.tif"))
-        return f"{n} .tif file(s)"
+        tif_files = sorted(path.glob("*.tif"))
+        n = len(tif_files)
+        if n == 0:
+            return "0 .tif files"
+        first = tif_files[0]
+        name_str = first.name if n == 1 else f"{first.name} … (+{n - 1})"
+        # Validate names: detect expected pattern from directory name
+        dir_name = path.name  # e.g. "nucleus" inside 1_cellpose
+        # For cellpose nucleus output: files should be nucleus_3d_t*_dp.tif / *_prob.tif
+        import fnmatch
+        parent_name = path.parent.name if path.parent else ""
+        if parent_name == "1_cellpose" and dir_name == "nucleus":
+            expected = [f for f in tif_files
+                        if fnmatch.fnmatch(f.name, "nucleus_3d_t*_dp.tif")
+                        or fnmatch.fnmatch(f.name, "nucleus_3d_t*_prob.tif")]
+            if len(expected) < n:
+                name_str += " ⚠"
+        # Shape of first file
+        try:
+            import tifffile
+            with tifffile.TiffFile(str(first)) as tf:
+                s = tf.series[0] if tf.series else None
+                shape_str = "×".join(str(d) for d in s.shape) if s else "?"
+        except Exception:
+            shape_str = "?"
+        return f"{n} files: {name_str} ({shape_str})"
     suffix = path.suffix.lower()
     if suffix in (".tif", ".tiff"):
         try:

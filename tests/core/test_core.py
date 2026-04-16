@@ -178,8 +178,8 @@ class TestPaths:
         assert pos_dir("/exp", 12) == Path("/exp/pos12")
 
     def test_stage_dir_known(self):
-        assert stage_dir("/exp", 0, "tracking") == Path("/exp/pos00/3_tracking")
-        assert stage_dir("/exp", 0, "raw_import") == Path("/exp/pos00/0_raw")
+        assert stage_dir("/exp", 0, "tracking") == Path("/exp/pos00/2_ultrack")
+        assert stage_dir("/exp", 0, "raw_import") == Path("/exp/pos00/0_input")
 
     def test_stage_dir_unknown_falls_back_to_name(self):
         assert stage_dir("/exp", 0, "my_custom_stage") == Path(
