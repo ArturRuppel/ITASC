@@ -10,13 +10,9 @@ parameter handling should be homogenized, including naming and placement of the 
 
 finishing a step should default to loading the visualization
 
-run in terminal of post processing widget is buggy
-
 post processing widget needs an additional feature: trim borders
 
 flow watershed widget has a bunch of parameters which are not used anymore
-
-progress update for postprocessing in terminal is messed up. it shows nothing until it's done and then all the progress all at once
 
 foreground.tif should be added to the PIPELINE_LAYOUT.md and also to the Project status widget etc.
 

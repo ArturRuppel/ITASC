@@ -264,11 +264,17 @@ def run(
             yield (T, T, "skipped")
             return
 
-        stack = apply_postprocessing(
-            raw_stack,
-            postprocess_steps=postprocess_steps,
-            tissue_image_stack=tissue,
-        )
+        from cellflow.cellpose.processing.flow_watershed_postproc import run_postprocess_pipeline
+        processed_stack = []
+        for t in range(T):
+            raw_t = raw_stack[t]
+            tissue_t = tissue[t] if tissue is not None else None
+            processed = run_postprocess_pipeline(raw_t, postprocess_steps, tissue_image=tissue_t)
+            processed_stack.append(processed)
+            print(f"  [{t + 1}/{T}] t{t:03d}", flush=True)
+            yield (t + 1, T, f"t{t:03d}")
+
+        stack = np.stack(processed_stack, axis=0).astype(np.int32)
         tifffile.imwrite(
             str(out_path),
             stack,
@@ -276,8 +282,6 @@ def run(
             metadata={"axes": "TYX"},
         )
         print(f"pos{pos:02d}: Saved {stack.shape} to {out_path.name}", flush=True)
-        for t in range(T):
-            yield (t + 1, T, f"t{t:03d}")
         print(f"pos{pos:02d}: Done.", flush=True)
         return
 

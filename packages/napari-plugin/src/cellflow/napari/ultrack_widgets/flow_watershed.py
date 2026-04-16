@@ -9,6 +9,7 @@ around each nucleus using a flow-guided expansion algorithm.
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 from typing import Generator
@@ -1326,7 +1327,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
 
         cmd = (
-            f"python -m cellflow.cellpose.stages.flow_watershed"
+            f"\"{sys.executable}\" -m cellflow.cellpose.stages.flow_watershed"
             f" --root-dir \"{root_dir}\""
             f" --pos {pos}"
             f" --config \"{cfg_path}\""
@@ -1527,7 +1528,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
 
         cmd = (
-            f"python -m cellflow.cellpose.stages.flow_watershed"
+            f"\"{sys.executable}\" -m cellflow.cellpose.stages.flow_watershed"
             f" --root-dir \"{root_dir}\""
             f" --pos {pos}"
             f" --config \"{cfg_path}\""
@@ -1783,7 +1784,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
 
         cmd = (
-            f"python -m cellflow.cellpose.stages.flow_watershed"
+            f"\"{sys.executable}\" -m cellflow.cellpose.stages.flow_watershed"
             f" --root-dir \"{root_dir}\""
             f" --pos {pos}"
             f" --config \"{cfg_path}\""
