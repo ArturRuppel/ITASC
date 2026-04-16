@@ -271,6 +271,8 @@ def run_segmentation_only(
         print(f"Could not load cellpose flow")
         return None
 
+    foreground_full = _load_foreground_mask(root_dir, pos)
+
     # Process each timepoint
     for t in range(T):
         try:
@@ -287,6 +289,8 @@ def run_segmentation_only(
             else:
                 prob_t = prob_full
 
+            foreground_t = foreground_full[t] if (foreground_full is not None and foreground_full.ndim == 3 and foreground_full.shape[0] == T) else foreground_full
+
             # Run segmentation (no postprocessing)
             cell_labels = flow_guided_watershed(
                 nuc_t,
@@ -298,6 +302,10 @@ def run_segmentation_only(
                 max_iterations=config.max_iterations,
                 uniform_growth_rate=config.uniform_growth_rate,
             )
+
+            # Cut off cells that expanded outside the tissue foreground
+            if foreground_t is not None:
+                cell_labels[~foreground_t.astype(bool)] = 0
 
             cell_labels_stack.append(cell_labels)
 
@@ -441,6 +449,10 @@ def run_full_pipeline(
                 uniform_growth_rate=config.uniform_growth_rate,
             )
 
+            # Cut off cells that expanded outside the tissue foreground
+            if foreground_t is not None:
+                cell_labels[~foreground_t.astype(bool)] = 0
+
             # Apply post-processing
             cell_labels = run_postprocess_pipeline(
                 cell_labels,
@@ -474,6 +486,7 @@ def run_full_pipeline(
                 nuc_t = nuclear_labels[t]
                 flow_t = flow_full[t] if flow_full.ndim == 4 else flow_full
                 prob_t = prob_full[t] if (prob_full is not None and prob_full.ndim == 3) else prob_full
+                fg_t = foreground_full[t] if (foreground_full is not None and foreground_full.ndim == 3 and foreground_full.shape[0] == T) else foreground_full
 
                 cell_labels_raw = flow_guided_watershed(
                     nuc_t,
@@ -485,6 +498,8 @@ def run_full_pipeline(
                     max_iterations=config.max_iterations,
                     uniform_growth_rate=config.uniform_growth_rate,
                 )
+                if fg_t is not None:
+                    cell_labels_raw[~fg_t.astype(bool)] = 0
                 cell_labels_raw_stack.append(cell_labels_raw)
             except Exception:
                 cell_labels_raw_stack.append(np.zeros_like(nuclear_labels[t], dtype=np.int32))
@@ -866,13 +881,13 @@ class FlowGuidedSegmentationWidget(QWidget):
         lay.addLayout(row)
 
         # ── Build stage sections ─────────────────────────────────────────
-        lay.addWidget(self._build_segmentation_section())
         lay.addWidget(self._build_foreground_mask_section())
+        lay.addWidget(self._build_segmentation_section())
         lay.addWidget(self._build_postprocessing_section())
 
         # ── Run Full Pipeline ────────────────────────────────────────────
         row = QHBoxLayout()
-        self._all_run_btn = QPushButton("Run Full Pipeline (Segmentation → Post-processing)")
+        self._all_run_btn = QPushButton("Run Full Pipeline (Foreground Mask → Segmentation → Post-processing)")
         self._all_run_btn.clicked.connect(self._all_on_run)
         row.addWidget(self._all_run_btn)
         self._all_term_btn = QPushButton("Run in Terminal")
@@ -1221,14 +1236,15 @@ class FlowGuidedSegmentationWidget(QWidget):
                 return
 
             nuc_t = nuclear_labels[frame]
+            T = nuclear_labels.shape[0]
 
             # Get flow/prob for this frame
-            if flow_full.ndim == 4 and flow_full.shape[0] == nuclear_labels.shape[0]:
+            if flow_full.ndim == 4 and flow_full.shape[0] == T:
                 flow_t = flow_full[frame]
             else:
                 flow_t = flow_full
 
-            if prob_full is not None and prob_full.ndim == 3 and prob_full.shape[0] == nuclear_labels.shape[0]:
+            if prob_full is not None and prob_full.ndim == 3 and prob_full.shape[0] == T:
                 prob_t = prob_full[frame]
             else:
                 prob_t = prob_full
@@ -1245,6 +1261,12 @@ class FlowGuidedSegmentationWidget(QWidget):
                 uniform_growth_rate=cfg.uniform_growth_rate,
             )
 
+            # Cut off cells that expanded outside the tissue foreground
+            foreground_full = _load_foreground_mask(root_dir_path, pos)
+            foreground_t = foreground_full[frame] if (foreground_full is not None and foreground_full.ndim == 3 and foreground_full.shape[0] == T) else foreground_full
+            if foreground_t is not None:
+                cell_labels[~foreground_t.astype(bool)] = 0
+
             # Display in napari
             flow_mag = np.sqrt(flow_t[..., 0]**2 + flow_t[..., 1]**2)
 
@@ -1255,10 +1277,13 @@ class FlowGuidedSegmentationWidget(QWidget):
             self.viewer.add_image(nuc_t, name="Nuclear Labels")
             self.viewer.add_image(prob_t, name="Cellpose Probability")
             self.viewer.add_image(flow_mag, name="Cellpose Flow Magnitude")
+            if foreground_t is not None:
+                self.viewer.add_labels(foreground_t.astype(np.uint8), name="Foreground Mask")
             self.viewer.add_labels(cell_labels, name="Cell Segmentation (raw)")
 
             n_cells = len(np.unique(cell_labels)) - 1
-            self._seg_status.setText(f"Preview complete. {n_cells} cells found.")
+            fg_note = " (foreground mask applied)" if foreground_t is not None else " (no foreground mask)"
+            self._seg_status.setText(f"Preview complete. {n_cells} cells found{fg_note}.")
 
         except Exception as e:
             print(f"Preview error: {e}")

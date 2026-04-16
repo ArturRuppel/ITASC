@@ -29,3 +29,5 @@ run and preview in foreground creation subwidget of postprocessing widget are ba
 foreground.tif should be added to the PIPELINE_LAYOUT.md and also to the Project status widget etc.
 
 Correction Widget doesn't need a target anymore. it should just have a load function which loads by default the nuclear segmentation from the expected path or an alternative "load from layer" button to load from the active layer. The Ultrack widget should work the same way and share the same data field as the correction widget. In fact, they should probably just be one widget and have these two subcomponents
+
+cell segmentation algorithm flow watershed produces artifacts and weird straight lines. previous stochastic process didn't have this problem... but it was much slower, made less sense and was probabilistic so going back is not really an option. investigate and find solution
