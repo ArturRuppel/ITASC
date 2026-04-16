@@ -43,7 +43,6 @@ from cellflow.cellpose.stages.contours import (
     run as run_s02c,
 )
 from cellflow.ultrack.stages.tracking import (
-    export_ctc,
     get_labels_layer,
     get_tracks_layer,
     run as run_s03,
@@ -207,21 +206,6 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_tp_idx.setValue(0)
         self._cp_ct_tp_idx.setToolTip("Index of the timepoint to use for live preview")
         row.addWidget(self._cp_ct_tp_idx)
-        lay.addLayout(row)
-
-        # Flow threshold
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Flow threshold"))
-        self._cp_ct_flow_thresh = QDoubleSpinBox()
-        self._cp_ct_flow_thresh.setMinimum(-999999.0)
-        self._cp_ct_flow_thresh.setMaximum(999999.0)
-        self._cp_ct_flow_thresh.setSingleStep(0.1)
-        self._cp_ct_flow_thresh.setDecimals(1)
-        self._cp_ct_flow_thresh.setValue(0.4)
-        self._cp_ct_flow_thresh.setToolTip(
-            "Cellpose flow consistency threshold. Lower = more strict (fewer cells). Default: 0.4"
-        )
-        row.addWidget(self._cp_ct_flow_thresh)
         lay.addLayout(row)
 
         # Cell probability threshold sweep range
@@ -670,7 +654,6 @@ class UltrackAnalysisWidget(QWidget):
         # Overwrite checkbox for segmentation
         row = QHBoxLayout()
         self._tr_overwrite_seg_chk = QCheckBox("Overwrite")
-        self._tr_overwrite_seg_chk.setChecked(True)
         self._tr_overwrite_seg_chk.setToolTip("Re-run segmentation even if candidates already exist in the database")
         row.addWidget(self._tr_overwrite_seg_chk)
         sl.addLayout(row)
@@ -769,7 +752,6 @@ class UltrackAnalysisWidget(QWidget):
         # Overwrite checkbox for linking
         row = QHBoxLayout()
         self._tr_overwrite_lnk_chk = QCheckBox("Overwrite")
-        self._tr_overwrite_lnk_chk.setChecked(True)
         self._tr_overwrite_lnk_chk.setToolTip("Re-run linking even if the link graph already exists in the database")
         row.addWidget(self._tr_overwrite_lnk_chk)
         ll.addLayout(row)
@@ -841,7 +823,6 @@ class UltrackAnalysisWidget(QWidget):
         # Overwrite checkbox for solve
         row = QHBoxLayout()
         self._tr_overwrite_slv_chk = QCheckBox("Overwrite")
-        self._tr_overwrite_slv_chk.setChecked(True)
         self._tr_overwrite_slv_chk.setToolTip("Re-run the ILP solver even if a solution already exists in the database")
         row.addWidget(self._tr_overwrite_slv_chk)
         sv.addLayout(row)
@@ -964,10 +945,6 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_load_btn = QPushButton("Load Results into Viewer")
         self._tr_load_btn.clicked.connect(self._tr_on_load_results)
         lay.addWidget(self._tr_load_btn)
-
-        self._tr_export_ctc_btn = QPushButton("Export CTC\u2026")
-        self._tr_export_ctc_btn.clicked.connect(self._tr_on_export_ctc)
-        lay.addWidget(self._tr_export_ctc_btn)
 
         self._tr_progress = QProgressBar()
         self._tr_progress.setVisible(False)
@@ -1444,23 +1421,6 @@ class UltrackAnalysisWidget(QWidget):
 
     def _tr_on_load_results(self) -> None:
         self._tr_load_results()
-
-    def _tr_on_export_ctc(self) -> None:
-        paths = self._get_paths()
-        if paths is None:
-            self._tr_status.setText("No project open. Create or open a project first.")
-            return
-        _, out = paths
-        wd = out
-        output_dir = QFileDialog.getExistingDirectory(self, "Select CTC output directory")
-        if not output_dir:
-            return
-        cfg = self._tr_build_config()
-        try:
-            export_ctc(wd, output_dir, cfg)
-            self._tr_status.setText(f"CTC export written to {output_dir}")
-        except Exception as e:
-            self._tr_status.setText(f"CTC export error: {e}")
 
     # ── Database inspection methods ───────────────────────────────────────
 

@@ -8,12 +8,6 @@ for resizing the widgets one has to drag an invisible bar. make it visible someh
 
 parameter handling should be homogenized, including naming and placement of the buttons. big task. analyze and plan first.
 
-remove flow threshold from contours widget, both the ui and the parameter itself - it's useless in 3D for mask creation
-
-overwrite off by default everywhere
-
-export ctc button can go
-
 finishing a step should default to loading the visualization
 
 run in terminal of post processing widget is buggy
