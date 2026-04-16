@@ -79,7 +79,7 @@ class StageLogViewer(QWidget):
         self._toggle_btn = QPushButton("▶ Pipeline Log")
         self._toggle_btn.setStyleSheet(
             "QPushButton { text-align: left; border: none; "
-            "font-weight: bold; color: palette(text); }"
+            "font-weight: bold; color: white; }"
             "QPushButton:hover { color: palette(highlight); }"
         )
         self._toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -93,7 +93,7 @@ class StageLogViewer(QWidget):
         header_row.addWidget(self._refresh_btn)
 
         self._log_path_label = QLabel("")
-        self._log_path_label.setStyleSheet("font-size: 8pt; color: palette(mid);")
+        self._log_path_label.setStyleSheet("font-size: 8pt; color: rgba(255,255,255,120);")
         self._log_path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         header_row.addWidget(self._log_path_label)
 

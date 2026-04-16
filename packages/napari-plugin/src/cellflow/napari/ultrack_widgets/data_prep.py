@@ -94,6 +94,7 @@ class DataPrepWidget(QWidget):
 
         # Overwrite
         self._overwrite_check = QCheckBox("Overwrite existing files")
+        self._overwrite_check.setStyleSheet("color: white;")
         params_layout.addWidget(self._overwrite_check)
 
         self._params_section = CollapsibleSection("Parameters", params_inner, expanded=True)

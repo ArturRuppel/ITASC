@@ -276,6 +276,7 @@ class UltrackAnalysisWidget(QWidget):
         lay.addLayout(row)
 
         self._cp_ct_overwrite_chk = QCheckBox("Overwrite existing files")
+        self._cp_ct_overwrite_chk.setStyleSheet("color: white;")
         lay.addWidget(self._cp_ct_overwrite_chk)
 
         row = QHBoxLayout()
@@ -654,6 +655,7 @@ class UltrackAnalysisWidget(QWidget):
         # Overwrite checkbox for segmentation
         row = QHBoxLayout()
         self._tr_overwrite_seg_chk = QCheckBox("Overwrite")
+        self._tr_overwrite_seg_chk.setStyleSheet("color: white;")
         self._tr_overwrite_seg_chk.setToolTip("Re-run segmentation even if candidates already exist in the database")
         row.addWidget(self._tr_overwrite_seg_chk)
         sl.addLayout(row)
@@ -752,6 +754,7 @@ class UltrackAnalysisWidget(QWidget):
         # Overwrite checkbox for linking
         row = QHBoxLayout()
         self._tr_overwrite_lnk_chk = QCheckBox("Overwrite")
+        self._tr_overwrite_lnk_chk.setStyleSheet("color: white;")
         self._tr_overwrite_lnk_chk.setToolTip("Re-run linking even if the link graph already exists in the database")
         row.addWidget(self._tr_overwrite_lnk_chk)
         ll.addLayout(row)
@@ -823,6 +826,7 @@ class UltrackAnalysisWidget(QWidget):
         # Overwrite checkbox for solve
         row = QHBoxLayout()
         self._tr_overwrite_slv_chk = QCheckBox("Overwrite")
+        self._tr_overwrite_slv_chk.setStyleSheet("color: white;")
         self._tr_overwrite_slv_chk.setToolTip("Re-run the ILP solver even if a solution already exists in the database")
         row.addWidget(self._tr_overwrite_slv_chk)
         sv.addLayout(row)

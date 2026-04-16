@@ -227,6 +227,7 @@ class CellposeWidget(QWidget):
 
         # ── Overwrite + Load results ─────────────────────────────────────
         self._s01a_overwrite_check = QCheckBox("Overwrite existing files")
+        self._s01a_overwrite_check.setStyleSheet("color: white;")
         layout.addWidget(self._s01a_overwrite_check)
 
         self._s01a_load_results_btn = QPushButton("Load Results")
@@ -348,6 +349,7 @@ class CellposeWidget(QWidget):
 
         # ── Overwrite + Load results ─────────────────────────────────────
         self._s01b_overwrite_check = QCheckBox("Overwrite existing files")
+        self._s01b_overwrite_check.setStyleSheet("color: white;")
         layout.addWidget(self._s01b_overwrite_check)
 
         self._s01b_load_results_btn = QPushButton("Load Results")

@@ -1007,6 +1007,7 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         # Overwrite
         self._seg_overwrite_chk = QCheckBox("Overwrite existing files")
+        self._seg_overwrite_chk.setStyleSheet("color: white;")
         lay.addWidget(self._seg_overwrite_chk)
 
         # Buttons
@@ -1043,15 +1044,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         grp = QGroupBox("Foreground Mask")
         lay = QVBoxLayout()
 
-        # Preview frame
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Preview frame"))
-        self._fm_frame_spin = QSpinBox()
-        self._fm_frame_spin.setRange(0, 1000)
-        self._fm_frame_spin.setValue(0)
-        row.addWidget(self._fm_frame_spin)
-        lay.addLayout(row)
-
         # ── Thresholding parameters ────────────────────────────────────
         lay.addWidget(QLabel("Thresholding:"))
 
@@ -1081,11 +1073,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         lay.addWidget(QLabel("Mask refinement steps (top → bottom):"))
         self._fm_pipeline = _PostprocessPipelineWidget(row_class=_MaskPostprocessStepRow)
         lay.addWidget(self._fm_pipeline)
-
-        # ── Preview button ─────────────────────────────────────────────
-        self._fm_preview_btn = QPushButton("Preview")
-        self._fm_preview_btn.clicked.connect(self._fm_on_preview)
-        lay.addWidget(self._fm_preview_btn)
 
         # ── Run / Cancel buttons ───────────────────────────────────────
         row = QHBoxLayout()
@@ -1141,6 +1128,7 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         # ── Overwrite ──────────────────────────────────────────────────
         self._pp_overwrite_chk = QCheckBox("Overwrite existing files")
+        self._pp_overwrite_chk.setStyleSheet("color: white;")
         lay.addWidget(self._pp_overwrite_chk)
 
         # ── Run buttons ────────────────────────────────────────────────
@@ -1638,68 +1626,6 @@ class FlowGuidedSegmentationWidget(QWidget):
     # ════════════════════════════════════════════════════════════════════
     # Foreground Mask section callbacks
     # ════════════════════════════════════════════════════════════════════
-
-    def _fm_on_preview(self) -> None:
-        """Preview foreground mask — computes all frames and adds as (T,H,W) stacks
-        to avoid dimensionality conflicts with previously loaded 3D layers."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._fm_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._pos_spin.value())
-        frame = int(self._fm_frame_spin.value())
-        sigma = self._fm_sigma_spin.value()
-        threshold = self._fm_threshold_spin.value()
-        pp_steps = self._fm_pipeline.get_steps()
-
-        try:
-            from cellflow.cellpose.processing.flow_watershed_postproc import (
-                compute_tissue_foreground_mask,
-                run_mask_postprocess_pipeline,
-            )
-            tissue_full = _load_tissue_image(root_dir, pos)
-            if tissue_full is None:
-                self._fm_status.setText("Could not load tissue image (cell_zavg.tif).")
-                return
-
-            # Normalise to (T, H, W) regardless of source shape
-            if tissue_full.ndim == 2:
-                tissue_stack = tissue_full[np.newaxis]
-            else:
-                tissue_stack = tissue_full
-
-            T = tissue_stack.shape[0]
-            frame = min(frame, T - 1)
-
-            # Compute mask for every frame (fast: gaussian + threshold only)
-            masks = []
-            for t in range(T):
-                m = compute_tissue_foreground_mask(tissue_stack[t], sigma=sigma, threshold=threshold)
-                if pp_steps:
-                    m = run_mask_postprocess_pipeline(m, pp_steps)
-                masks.append(m.astype(np.uint8))
-            mask_stack = np.stack(masks, axis=0)  # (T, H, W)
-
-            # Replace layers — both are now (T, H, W) so dims are always consistent
-            while len(self.viewer.layers) > 0:
-                self.viewer.layers.pop()
-
-            self.viewer.add_image(tissue_stack, name="Tissue Image (cell_zavg)", colormap="gray")
-            self.viewer.add_labels(mask_stack, name="Foreground Mask")
-
-            # Jump time slider to the requested preview frame
-            if self.viewer.dims.ndim >= 1:
-                self.viewer.dims.set_point(0, frame)
-
-            fg_pct = 100.0 * mask_stack[frame].sum() / mask_stack[frame].size
-            self._fm_status.setText(
-                f"Preview ({T} frames): frame {frame} — {fg_pct:.1f}% foreground."
-            )
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self._fm_status.setText(f"Preview error: {e}")
 
     def _fm_on_run(self) -> None:
         """Compute foreground mask for the full stack in background."""

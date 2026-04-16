@@ -1,4 +1,4 @@
-Prepare Input Data widget: should have a "pull metadata" button to get px and dt from ndtiff. should discover the available positions and allow to export them all. should always export all timepoints. should overwrite pix size and dt when exporting with metadata. when downsampled, pixelsize needs to be calculated accordingly. text next to "overwrite existing files" is too dark, should be white.
+Prepare Input Data widget: should have a "pull metadata" button to get px and dt from ndtiff. should discover the available positions and allow to export them all. should always export all timepoints. should overwrite pix size and dt when exporting with metadata. when downsampled, pixelsize needs to be calculated accordingly.
 
 Write a quick user guide to get the user oriented quickly. think about how and where to display it.
 
@@ -17,8 +17,6 @@ post processing widget needs an additional feature: trim borders
 flow watershed widget has a bunch of parameters which are not used anymore
 
 progress update for postprocessing in terminal is messed up. it shows nothing until it's done and then all the progress all at once
-
-run and preview in foreground creation subwidget of postprocessing widget are basically interchangeable. remove the preview button
 
 foreground.tif should be added to the PIPELINE_LAYOUT.md and also to the Project status widget etc.
 
