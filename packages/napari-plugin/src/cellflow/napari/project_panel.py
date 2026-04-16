@@ -17,7 +17,6 @@ from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QFileDialog,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -28,12 +27,12 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from .registry import CatalogEntry, DatasetCatalog, TissueData, ViewerState
+from .widgets import CollapsibleSection
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +97,32 @@ class ProjectPanel(QWidget):
         root.setSpacing(4)
         self.setLayout(root)
 
-        # ── Pipeline Project section ──────────────────────────────────
-        pipeline_group = QGroupBox("Pipeline Project")
-        pg_layout = QVBoxLayout()
-        pg_layout.setContentsMargins(6, 4, 6, 4)
+        # ── Metadata row (always visible at top) ──────────────────────
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(4)
+        meta_row.addWidget(QLabel("px (µm):"))
+        self._px_edit = QLineEdit()
+        self._px_edit.setFixedWidth(52)
+        self._px_edit.setPlaceholderText("—")
+        self._px_edit.setToolTip("Pixel size in µm/px")
+        meta_row.addWidget(self._px_edit)
+        meta_row.addWidget(QLabel("dt (min):"))
+        self._dt_edit = QLineEdit()
+        self._dt_edit.setFixedWidth(52)
+        self._dt_edit.setPlaceholderText("—")
+        self._dt_edit.setToolTip("Time interval between frames in minutes")
+        meta_row.addWidget(self._dt_edit)
+        meta_row.addWidget(QLabel("Condition:"))
+        self._condition_edit = QLineEdit()
+        self._condition_edit.setPlaceholderText("e.g. WT")
+        self._condition_edit.setToolTip("Experimental condition label")
+        meta_row.addWidget(self._condition_edit)
+        root.addLayout(meta_row)
+
+        # ── Project Initialization section ────────────────────────────
+        pipeline_inner = QWidget()
+        pg_layout = QVBoxLayout(pipeline_inner)
+        pg_layout.setContentsMargins(4, 2, 0, 4)
         pg_layout.setSpacing(3)
 
         # Row: buttons + project path label
@@ -158,22 +179,12 @@ class ProjectPanel(QWidget):
         self._resume_banner.setVisible(False)
         pg_layout.addWidget(self._resume_banner)
 
-        pipeline_group.setLayout(pg_layout)
-        root.addWidget(pipeline_group)
+        self._project_init_section = CollapsibleSection(
+            "Project Initialization", pipeline_inner, expanded=False
+        )
+        root.addWidget(self._project_init_section)
 
         # ── Data State section (collapsible) ─────────────────────────
-        self._tissue_toggle = QToolButton()
-        self._tissue_toggle.setText("Data State")
-        self._tissue_toggle.setArrowType(Qt.DownArrow)
-        self._tissue_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self._tissue_toggle.setCheckable(True)
-        self._tissue_toggle.setChecked(True)
-        self._tissue_toggle.setStyleSheet(
-            "QToolButton { font-weight: bold; font-size: 10pt; border: none; "
-            "padding: 2px; color: white; }"
-        )
-        root.addWidget(self._tissue_toggle)
-
         self._tissue_body = QWidget()
         self._tissue_body.setStyleSheet(
             "QLabel { color: white; } "
@@ -181,9 +192,13 @@ class ProjectPanel(QWidget):
             "QSpinBox { color: white; }"
         )
         tg_layout = QVBoxLayout(self._tissue_body)
-        tg_layout.setContentsMargins(6, 0, 6, 4)
+        tg_layout.setContentsMargins(4, 2, 0, 4)
         tg_layout.setSpacing(3)
-        root.addWidget(self._tissue_body)
+
+        self._data_state_section = CollapsibleSection(
+            "Data State", self._tissue_body, expanded=False
+        )
+        root.addWidget(self._data_state_section)
 
         # ── Position selector + refresh ───────────────────────────────
         pos_row = QHBoxLayout()
@@ -231,31 +246,9 @@ class ProjectPanel(QWidget):
         files_scroll.setFrameShape(QFrame.NoFrame)
         tg_layout.addWidget(files_scroll)
 
-        # ── Metadata section ──────────────────────────────────────────
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(4)
-        meta_row.addWidget(QLabel("px (µm):"))
-        self._px_edit = QLineEdit()
-        self._px_edit.setFixedWidth(52)
-        self._px_edit.setPlaceholderText("—")
-        self._px_edit.setToolTip("Pixel size in µm/px")
-        meta_row.addWidget(self._px_edit)
-        meta_row.addWidget(QLabel("dt (min):"))
-        self._dt_edit = QLineEdit()
-        self._dt_edit.setFixedWidth(52)
-        self._dt_edit.setPlaceholderText("—")
-        self._dt_edit.setToolTip("Time interval between frames in minutes")
-        meta_row.addWidget(self._dt_edit)
-        meta_row.addWidget(QLabel("Condition:"))
-        self._condition_edit = QLineEdit()
-        self._condition_edit.setPlaceholderText("e.g. WT")
-        self._condition_edit.setToolTip("Experimental condition label")
-        meta_row.addWidget(self._condition_edit)
-        root.addLayout(meta_row)
-
         # ── Dataset section ───────────────────────────────────────────
-        ds_group = QGroupBox("Dataset")
-        ds_layout = QVBoxLayout()
+        ds_inner = QWidget()
+        ds_layout = QVBoxLayout(ds_inner)
         ds_layout.setContentsMargins(6, 4, 6, 4)
         ds_layout.setSpacing(3)
 
@@ -317,9 +310,8 @@ class ProjectPanel(QWidget):
         self._status_label.setStyleSheet("font-size: 8pt;")
         ds_layout.addWidget(self._status_label)
 
-        ds_group.setLayout(ds_layout)
-        # Exposed so the parent widget can place the dataset panel below the tab widget.
-        self.dataset_widget = ds_group
+        # Wrap in collapsible section — placed at the bottom of the plugin by analysis_widget.py
+        self.dataset_widget = CollapsibleSection("Dataset", ds_inner, expanded=False)
 
     def _connect_signals(self):
         # Pipeline project buttons
@@ -335,8 +327,8 @@ class ProjectPanel(QWidget):
         self._pipeline_timer.timeout.connect(self._refresh_pipeline_status)
         self._pipeline_timer.start()
 
-        # Tissue toggle + pipeline file controls
-        self._tissue_toggle.toggled.connect(self._on_tissue_toggle)
+        # Data State toggle + pipeline file controls
+        self._data_state_section._toggle.toggled.connect(self._on_data_state_toggled)
         self._pipeline_pos_spin.valueChanged.connect(self._refresh_pipeline_files)
         self._refresh_files_btn.clicked.connect(self._refresh_pipeline_files)
         self._state.pipeline_schema_changed.connect(self._refresh_pipeline_files)
@@ -534,9 +526,7 @@ class ProjectPanel(QWidget):
     # Tissue toggle + pipeline file status
     # ------------------------------------------------------------------
 
-    def _on_tissue_toggle(self, checked: bool) -> None:
-        self._tissue_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
-        self._tissue_body.setVisible(checked)
+    def _on_data_state_toggled(self, checked: bool) -> None:
         if checked:
             self._refresh_pipeline_files()
 

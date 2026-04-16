@@ -46,7 +46,7 @@ STAGE_DISPLAY_NAMES: Dict[str, str] = {
 # "Tracking" (LapTrack retracking) and "ForSys" have no manifest keys —
 # they are part of the correction loop / downstream analysis.
 TAB_STAGE_KEYS: Dict[str, list[str]] = {
-    "Data Prep":    ["raw_import"],
+    "Prepare Input Data": ["raw_import"],
     "Cellpose":     ["cellpose_nucleus", "cellpose_cell"],
     "Ultrack":      ["contours", "tracking"],
     "Correction":   ["correction"],

@@ -1,21 +1,18 @@
 """Napari dock widget for cellflow.
 
-Top-level QTabWidget that assembles all pipeline and analysis tabs.
-Edge Analysis logic lives in EdgeAnalysisWidget; other tabs are
-imported from their own modules.
+All pipeline stages are rendered as a vertical accordion of CollapsibleSections.
 """
 import logging
-from typing import Optional
 
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QScrollArea,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .registry import get_state
+from .widgets import CollapsibleSection
 
 logger = logging.getLogger(__name__)
 
@@ -60,52 +57,78 @@ class CellFlowWidget(QWidget):
         self._project_panel = ProjectPanel(self.viewer, self._state)
         _plugin_layout.addWidget(self._project_panel)
 
-        self.tab_widget = QTabWidget()
-        _plugin_layout.addWidget(self.tab_widget)
-
-        _plugin_layout.addWidget(self._project_panel.dataset_widget)
-
-        # ========== Pipeline stage tabs (in dataflow order) ==========
+        # ========== Accordion sections (migrated from tabs) ==========
         from .ultrack_widgets.data_prep import DataPrepWidget
         from .ultrack_widgets.cellpose import CellposeWidget
         from .ultrack_widgets.ultrack_widget import UltrackAnalysisWidget
+
+        # 0_input — accordion section, not a tab
+        self._data_prep_widget = DataPrepWidget(self.viewer)
+        self._data_prep_section = CollapsibleSection(
+            "Prepare Input Data", self._data_prep_widget, expanded=False
+        )
+        _plugin_layout.addWidget(self._data_prep_section)
+
+        # 1_cellpose — accordion section with two sub-sections (3D Nucleus / 2D Cell)
+        self._cellpose_tab = CellposeWidget(self.viewer)
+        self._cellpose_section = CollapsibleSection(
+            "Cellpose", self._cellpose_tab, expanded=False
+        )
+        _plugin_layout.addWidget(self._cellpose_section)
+
+        # 2_ultrack — accordion section with two sub-sections (Contours / Tracking)
+        self._ultrack_tab = UltrackAnalysisWidget(self.viewer)
+        self._ultrack_section = CollapsibleSection(
+            "Ultrack", self._ultrack_tab, expanded=False
+        )
+        _plugin_layout.addWidget(self._ultrack_section)
+
         from .correction_widget import CorrectionWidget
         from .tracking_widget import TrackingTab
         from .ultrack_widgets.flow_watershed import FlowGuidedSegmentationWidget
         from .edge_analysis_widget import EdgeAnalysisWidget
         from .forces_widget import ForcesWidget
 
-        # 0_input
-        self._data_prep_tab = DataPrepWidget(self.viewer)
-        self.tab_widget.addTab(self._data_prep_tab, "Data Prep")
-
-        # 1_cellpose/nucleus + 1_cellpose/cell
-        self._cellpose_tab = CellposeWidget(self.viewer)
-        self.tab_widget.addTab(self._cellpose_tab, "Cellpose")
-
-        # 2_ultrack (contours intermediate + tracking)
-        self._ultrack_tab = UltrackAnalysisWidget(self.viewer)
-        self.tab_widget.addTab(self._ultrack_tab, "Ultrack")
-
         # 3_correction (manual correction loop)
         self._correction_widget = CorrectionWidget(self.viewer)
-        self.tab_widget.addTab(self._correction_widget, "Correction")
+        self._correction_section = CollapsibleSection(
+            "Correction", self._correction_widget, expanded=False
+        )
+        _plugin_layout.addWidget(self._correction_section)
 
         # LapTrack retracking — part of the correction loop, no stage dir
         self._tracking_tab = TrackingTab(self.viewer)
-        self.tab_widget.addTab(self._tracking_tab, "Tracking")
+        self._tracking_section = CollapsibleSection(
+            "Tracking", self._tracking_tab, expanded=False
+        )
+        _plugin_layout.addWidget(self._tracking_section)
 
         # 4_cell_segmentation
         self._cell_seg_tab = FlowGuidedSegmentationWidget(self.viewer)
-        self.tab_widget.addTab(self._cell_seg_tab, "Cell Seg")
+        self._cell_seg_section = CollapsibleSection(
+            "Cell Seg", self._cell_seg_tab, expanded=False
+        )
+        _plugin_layout.addWidget(self._cell_seg_section)
 
         # 5_analysis
         self._edge_analysis_widget = EdgeAnalysisWidget(self.viewer)
-        self.tab_widget.addTab(self._edge_analysis_widget, "Edge Analysis")
+        self._edge_analysis_section = CollapsibleSection(
+            "Edge Analysis", self._edge_analysis_widget, expanded=False
+        )
+        _plugin_layout.addWidget(self._edge_analysis_section)
 
         # ForSys (downstream, no pipeline dir yet)
         self._forces_widget = ForcesWidget(self.viewer)
-        self.tab_widget.addTab(self._forces_widget, "ForSys")
+        self._forces_section = CollapsibleSection(
+            "ForSys", self._forces_widget, expanded=False
+        )
+        _plugin_layout.addWidget(self._forces_section)
+
+        # Dataset collapsible section sits at the very bottom.
+        _plugin_layout.addWidget(self._project_panel.dataset_widget)
+
+        # Stretch absorbs leftover space so sections pack to the top and never expand.
+        _plugin_layout.addStretch(1)
 
     def _connect_signals(self):
         self._state.pipeline_schema_changed.connect(self._refresh_tab_badges)
@@ -126,14 +149,27 @@ class CellFlowWidget(QWidget):
         "pending":  "",
     }
 
+    # All sections: maps base title → CollapsibleSection
+    @property
+    def _accordion_sections(self) -> "dict[str, CollapsibleSection]":
+        return {
+            "Prepare Input Data": self._data_prep_section,
+            "Cellpose":           self._cellpose_section,
+            "Ultrack":            self._ultrack_section,
+            "Correction":         self._correction_section,
+            "Tracking":           self._tracking_section,
+            "Cell Seg":           self._cell_seg_section,
+            "Edge Analysis":      self._edge_analysis_section,
+            "ForSys":             self._forces_section,
+        }
+
     def _refresh_tab_badges(self) -> None:
+        stage_keys = self._TAB_STAGE_KEYS
         project_dir = self._state.project_dir
+
         if project_dir is None:
-            for i in range(self.tab_widget.count()):
-                text = self.tab_widget.tabText(i)
-                for badge in self._STATUS_BADGE.values():
-                    if badge and text.endswith(badge):
-                        self.tab_widget.setTabText(i, text[: -len(badge)])
+            for base_title, section in self._accordion_sections.items():
+                section.set_title(base_title)
             return
 
         try:
@@ -143,27 +179,15 @@ class CellFlowWidget(QWidget):
         except Exception:
             return
 
-        for i in range(self.tab_widget.count()):
-            raw_title = self.tab_widget.tabText(i)
-            base_title = raw_title
-            for badge in self._STATUS_BADGE.values():
-                if badge and base_title.endswith(badge):
-                    base_title = base_title[: -len(badge)]
-                    break
+        priority = ["failed", "running", "stale", "pending", "complete"]
 
-            keys = self._TAB_STAGE_KEYS.get(base_title)
+        for base_title, section in self._accordion_sections.items():
+            keys = stage_keys.get(base_title)
             if keys is None:
                 continue
-
             statuses = [
-                manifest.stages[k].status
-                if k in manifest.stages else "pending"
+                manifest.stages[k].status if k in manifest.stages else "pending"
                 for k in keys
             ]
-            priority = ["failed", "running", "stale", "pending", "complete"]
-            agg = next(
-                (s for s in priority if s in statuses),
-                "pending",
-            )
-            badge = self._STATUS_BADGE.get(agg, "")
-            self.tab_widget.setTabText(i, base_title + badge)
+            agg = next((s for s in priority if s in statuses), "pending")
+            section.set_title(base_title + self._STATUS_BADGE.get(agg, ""))

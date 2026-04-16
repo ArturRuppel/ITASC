@@ -20,10 +20,11 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from cellflow.napari.widgets import CollapsibleSection
 
 from napari.qt.threading import thread_worker
 
@@ -82,13 +83,13 @@ class CellposeWidget(QWidget):
         outer.addWidget(scroll)
         self.setLayout(outer)
 
-        # Create tab widget for s01a and s01b
-        self._tabs = QTabWidget()
+        # Two collapsible sub-sections for s01a and s01b
         self._s01a_widget = self._create_s01a_widget()
         self._s01b_widget = self._create_s01b_widget()
-        self._tabs.addTab(self._s01a_widget, "3D Nucleus")
-        self._tabs.addTab(self._s01b_widget, "2D Cell")
-        inner_layout.addWidget(self._tabs)
+        self._s01a_section = CollapsibleSection("3D Nucleus", self._s01a_widget, expanded=False)
+        self._s01b_section = CollapsibleSection("2D Cell", self._s01b_widget, expanded=False)
+        inner_layout.addWidget(self._s01a_section)
+        inner_layout.addWidget(self._s01b_section)
 
         self._log_viewer = StageLogViewer(self._state)
         inner_layout.addWidget(self._log_viewer)

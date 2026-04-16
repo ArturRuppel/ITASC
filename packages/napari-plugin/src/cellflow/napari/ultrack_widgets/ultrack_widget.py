@@ -36,6 +36,7 @@ from cellflow.ultrack.config import TrackingConfig
 from cellflow.napari.runners.terminal import launch_in_terminal
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
+from cellflow.napari.widgets import CollapsibleSection
 from cellflow.cellpose.stages.contours import (
     compute_single_from_arrays as compute_cp_contours_single,
     discover_dp_files,
@@ -206,9 +207,9 @@ class UltrackAnalysisWidget(QWidget):
     # CELLPOSE CONTOURS section (s02c)
     # ══════════════════════════════════════════════════════════════════════
 
-    def _build_cp_contours_section(self) -> QGroupBox:
+    def _build_cp_contours_section(self) -> CollapsibleSection:
         """Build the Cellpose-native contours section (s02c)."""
-        grp = QGroupBox("Contours (Cellpose)")
+        content = QWidget()
         lay = QVBoxLayout()
 
         # Preview timepoint
@@ -329,8 +330,8 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_status = QLabel("")
         lay.addWidget(self._cp_ct_status)
 
-        grp.setLayout(lay)
-        return grp
+        content.setLayout(lay)
+        return CollapsibleSection("Contours (Cellpose)", content, expanded=False)
 
     # ── Cellpose Contours helpers ────────────────────────────────────────
 
@@ -671,8 +672,8 @@ class UltrackAnalysisWidget(QWidget):
     # TRACKING section
     # ══════════════════════════════════════════════════════════════════════
 
-    def _build_tracking_section(self) -> QGroupBox:
-        grp = QGroupBox("Tracking")
+    def _build_tracking_section(self) -> CollapsibleSection:
+        content = QWidget()
         lay = QVBoxLayout()
 
         # ── SEGMENTATION sub-section ─────────────────────────────────────
@@ -1033,8 +1034,8 @@ class UltrackAnalysisWidget(QWidget):
         # Store dataframe for colour mapping
         self._db_candidates_df = None
 
-        grp.setLayout(lay)
-        return grp
+        content.setLayout(lay)
+        return CollapsibleSection("Tracking", content, expanded=False)
 
     # ── Tracking helpers ──────────────────────────────────────────────────
 
