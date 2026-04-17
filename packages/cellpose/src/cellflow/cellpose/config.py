@@ -94,3 +94,14 @@ class CellposeContoursConfig(BaseModel):
     do_3D: bool = True
     smooth_sigma: float = 0.5
     device: str = "cuda"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_cellprob(cls, values):
+        """Seed min/max from cellprob_threshold when loading pre-sweep configs."""
+        if isinstance(values, dict):
+            if "cellprob_min" not in values and "cellprob_max" not in values:
+                threshold = values.get("cellprob_threshold", 0.0)
+                values["cellprob_min"] = threshold
+                values["cellprob_max"] = threshold
+        return values

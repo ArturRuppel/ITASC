@@ -92,6 +92,8 @@ class CorrectionWidget(QWidget):
         self._drag_callbacks: list = []
         self._bound_keys: list = []
 
+        self._in_deactivate: bool = False
+
         # saved napari state (populated on activate, cleared on deactivate)
         self._saved_viewer_drag_cbs: list = []
         self._saved_layer_mode: str = "pan_zoom"
@@ -337,6 +339,15 @@ class CorrectionWidget(QWidget):
         self._set_status(f"Active on '{layer.name}'")
 
     def _deactivate(self):
+        if self._in_deactivate:
+            return
+        self._in_deactivate = True
+        try:
+            self._deactivate_impl()
+        finally:
+            self._in_deactivate = False
+
+    def _deactivate_impl(self):
         log.debug("deactivate: layer='%s'", self._layer.name if self._layer else None)
         if self._layer is not None:
             self._remove_callbacks()
@@ -374,8 +385,13 @@ class CorrectionWidget(QWidget):
                     self.viewer.mouse_drag_callbacks.append(cb)
 
         # Sync corrected labels to internal state before releasing the layer
-        # (skip if the layer was deleted — data is gone)
-        if self._layer is not None and self._layer.name in self.viewer.layers:
+        # (skip if the layer was deleted — data is gone, or if the wrong layer was loaded)
+        expected = self._state.tissue.nuclear_labels_layer
+        if (
+            self._layer is not None
+            and self._layer.name in self.viewer.layers
+            and (expected is None or self._layer.name == expected)
+        ):
             try:
                 self._state.set_tissue_nuclear_labels(np.asarray(self._layer.data), self._layer.name)
             except Exception:

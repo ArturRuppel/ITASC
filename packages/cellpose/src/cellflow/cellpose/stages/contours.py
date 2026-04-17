@@ -227,6 +227,10 @@ def run(
     else:
         thresholds = [cfg.cellprob_threshold]
 
+    if not thresholds:
+        yield (0, 0, "Error: no cellprob thresholds generated (check cellprob_min/max/step)")
+        return
+
     total = len(dp_files)
     out.mkdir(parents=True, exist_ok=True)
 

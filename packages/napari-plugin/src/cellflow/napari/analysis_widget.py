@@ -90,6 +90,7 @@ class CellFlowWidget(QWidget):
 
         # 3_correction — LapTrack re-tracking + manual correction, shared layer
         self._tracking_correction_widget = TrackingCorrectionWidget(self.viewer)
+        self._ultrack_tab.labels_loaded.connect(self._tracking_correction_widget._set_data_layer)
         self._correction_section = CollapsibleSection(
             "Correction", self._tracking_correction_widget, expanded=False
         )

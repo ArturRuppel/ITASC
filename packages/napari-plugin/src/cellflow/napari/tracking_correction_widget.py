@@ -77,6 +77,7 @@ class TrackingCorrectionWidget(QWidget):
 
         # Auto-sync when state's nuclear labels change
         self._state.nuclear_labels_changed.connect(self._on_nuclear_labels_changed)
+        self._state.position_changed.connect(self._on_position_changed)
 
     # ── load handlers ─────────────────────────────────────────────────────
 
@@ -144,7 +145,7 @@ class TrackingCorrectionWidget(QWidget):
                 arr = tifffile.imread(str(path)).astype(np.int32)
             except Exception as exc:
                 self._data_status.setText(f"Could not read {path.name}: {exc}")
-                return None
+                continue
             self._load_nuclear_zavg(project_dir, pos)
             if layer_name in self.viewer.layers:
                 self.viewer.layers[layer_name].data = arr
@@ -227,3 +228,11 @@ class TrackingCorrectionWidget(QWidget):
             layer = self.viewer.layers[name]
             if isinstance(layer, napari.layers.Labels):
                 self._set_data_layer(layer)
+
+    def _on_position_changed(self) -> None:
+        """Clear loaded layer when the active position changes to prevent cross-position corruption."""
+        if self._data_layer is not None and self._data_layer.name in self.viewer.layers:
+            self.viewer.layers.remove(self._data_layer.name)
+        self._data_layer = None
+        self._save_btn.setEnabled(False)
+        self._data_status.setText("No layer loaded — position changed, click Load")
