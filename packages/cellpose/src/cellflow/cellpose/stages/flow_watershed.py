@@ -128,6 +128,7 @@ def run(
     flow_smoothing_sigma: float = 0.0,
     max_iterations: int = 50,
     uniform_growth_rate: float = 0.2,
+    flow_mag_scale: float = 3.0,
     postprocess_steps: list | None = None,
     overwrite: bool = False,
     mode: str = "full",
@@ -152,6 +153,9 @@ def run(
         Maximum iterations for watershed expansion (default 50).
     uniform_growth_rate : float
         Baseline expansion probability (default 0.2).
+    flow_mag_scale : float
+        Steepness of the flow-magnitude gate that blends flow-alignment and
+        distance-based scoring (default 3.0).
     postprocess_steps : list[dict], optional
         Ordered postprocessing pipeline.  Defaults to ``DEFAULT_POSTPROCESS_STEPS``.
     overwrite : bool
@@ -303,6 +307,7 @@ def run(
     print(f"  flow_smoothing_sigma={flow_smoothing_sigma}", flush=True)
     print(f"  max_iterations={max_iterations}", flush=True)
     print(f"  uniform_growth_rate={uniform_growth_rate}", flush=True)
+    print(f"  flow_mag_scale={flow_mag_scale}", flush=True)
     if mode == "full":
         print(f"  postprocess_steps={postprocess_steps}", flush=True)
 
@@ -320,6 +325,7 @@ def run(
                         "flow_smoothing_sigma": flow_smoothing_sigma,
                         "max_iterations": max_iterations,
                         "uniform_growth_rate": uniform_growth_rate,
+                        "flow_mag_scale": flow_mag_scale,
                         "postprocess_steps": postprocess_steps,
                     },
                 },
@@ -347,6 +353,7 @@ def run(
                 flow_smoothing_sigma=flow_smoothing_sigma,
                 max_iterations=max_iterations,
                 uniform_growth_rate=uniform_growth_rate,
+                flow_mag_scale=flow_mag_scale,
             )
 
             cell_labels_stack.append(cell_labels)
@@ -464,6 +471,7 @@ if __name__ == "__main__":
         flow_smoothing_sigma=cfg_dict.get("flow_smoothing_sigma", 0.0),
         max_iterations=cfg_dict.get("max_iterations", 50),
         uniform_growth_rate=cfg_dict.get("uniform_growth_rate", 0.2),
+        flow_mag_scale=cfg_dict.get("flow_mag_scale", 3.0),
         postprocess_steps=cfg_dict.get("postprocess_steps"),
         overwrite=args.overwrite,
         mode=args.mode,
@@ -497,6 +505,7 @@ class _FlowWatershedStageClass:
                 flow_smoothing_sigma=cfg.flow_smoothing_sigma,
                 max_iterations=cfg.max_iterations,
                 uniform_growth_rate=cfg.uniform_growth_rate,
+                flow_mag_scale=cfg.flow_mag_scale,
                 postprocess_steps=cfg.postprocess_steps,
                 overwrite=overwrite,
                 mode=mode,

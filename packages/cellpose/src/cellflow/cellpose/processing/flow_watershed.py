@@ -32,12 +32,18 @@ def _watershed_step(
     prob_mask: np.ndarray,    # (H, W) bool — restrict expansion to foreground
     flow_scale: float,
     uniform_growth_rate: float,
+    flow_mag_scale: float,
 ) -> int:
     """Single expansion step.
 
     For each unassigned foreground pixel, checks all 8-connected labeled neighbours.
     Assigns the pixel to the neighbour whose centroid-to-pixel direction best aligns
     with the (negated) flow field — i.e. the cell most likely to own this pixel.
+
+    The score blends flow-alignment and centroid-distance signals weighted by local
+    flow magnitude: strong flow → flow alignment dominates; near-zero flow →
+    distance to centroid dominates (Voronoi fallback), eliminating loop-order
+    artifacts in low-flow regions.
 
     Flow alignment decides *which* label wins; every foreground pixel adjacent to
     any label is always assigned (no expansion threshold). Returns number of newly
@@ -54,6 +60,10 @@ def _watershed_step(
                 continue
             if not prob_mask[i, j]:
                 continue
+
+            # Flow magnitude gate — computed once per pixel, not per neighbour
+            flow_mag = math.sqrt(flow[i, j, 0] * flow[i, j, 0] + flow[i, j, 1] * flow[i, j, 1])
+            flow_weight = math.tanh(flow_mag * flow_mag_scale)
 
             best_label = 0
             best_score = -2.0  # below minimum possible score; any adjacent label qualifies
@@ -73,15 +83,20 @@ def _watershed_step(
                     # Radial direction from centroid of L to current pixel (i, j)
                     ry = float(i) - centroid_y[L]
                     rx = float(j) - centroid_x[L]
-                    norm = math.sqrt(ry * ry + rx * rx)
-                    if norm > 1e-6:
-                        ry /= norm
-                        rx /= norm
+                    dist = math.sqrt(ry * ry + rx * rx)
+                    if dist > 1e-6:
+                        ry /= dist
+                        rx /= dist
 
-                    # Flow points toward cell center → negate for outward direction
+                    # Flow alignment score
                     align = ry * (-flow[i, j, 0]) + rx * (-flow[i, j, 1])
                     boost = min(max(align * flow_scale, 0.0), 1.0)
-                    score = uniform_growth_rate + (1.0 - uniform_growth_rate) * boost
+                    flow_score = uniform_growth_rate + (1.0 - uniform_growth_rate) * boost
+
+                    # Distance score — closer centroid is better
+                    dist_score = 1.0 / (dist + 1.0)
+
+                    score = flow_weight * flow_score + (1.0 - flow_weight) * dist_score
 
                     if score > best_score:
                         best_score = score
@@ -103,6 +118,7 @@ def flow_guided_watershed(
     flow_smoothing_sigma: float = 0.0,
     max_iterations: int = 50,
     uniform_growth_rate: float = 0.2,
+    flow_mag_scale: float = 3.0,
 ) -> np.ndarray:
     """Flow-guided watershed segmentation — deterministic Numba implementation.
 
@@ -135,6 +151,11 @@ def flow_guided_watershed(
     uniform_growth_rate : float
         Baseline score when flow alignment is zero. Acts as tie-breaker weight
         between competing labels; does not gate expansion (default 0.2).
+    flow_mag_scale : float
+        Controls the transition between flow-guided and distance-based scoring.
+        ``flow_weight = tanh(flow_magnitude * flow_mag_scale)``: high flow →
+        flow alignment dominates; near-zero flow → nearest centroid wins
+        (Voronoi fallback). Higher values make the transition sharper (default 3.0).
 
     Returns
     -------
@@ -165,7 +186,7 @@ def flow_guided_watershed(
         changed = _watershed_step(
             result, next_result, flow_field.astype(np.float32),
             centroid_y, centroid_x, prob_mask.astype(np.bool_),
-            float(flow_scale), float(uniform_growth_rate),
+            float(flow_scale), float(uniform_growth_rate), float(flow_mag_scale),
         )
         result, next_result = next_result, result
         if changed == 0:

@@ -68,6 +68,7 @@ class FlowWatershedConfig:
         flow_smoothing_sigma: float = 0.0,
         max_iterations: int = 50,
         uniform_growth_rate: float = 0.2,
+        flow_mag_scale: float = 3.0,
         postprocess_steps: list | None = None,
         foreground_mask_sigma: float = 2.0,
         foreground_mask_threshold: float = 0.1,
@@ -78,6 +79,7 @@ class FlowWatershedConfig:
         self.flow_smoothing_sigma = flow_smoothing_sigma
         self.max_iterations = max_iterations
         self.uniform_growth_rate = uniform_growth_rate
+        self.flow_mag_scale = flow_mag_scale
         self.postprocess_steps = postprocess_steps if postprocess_steps is not None \
             else [dict(s) for s in _DEFAULT_POSTPROCESS_STEPS]
         self.foreground_mask_sigma = foreground_mask_sigma
@@ -92,6 +94,7 @@ class FlowWatershedConfig:
             "flow_smoothing_sigma":                self.flow_smoothing_sigma,
             "max_iterations":                      self.max_iterations,
             "uniform_growth_rate":                 self.uniform_growth_rate,
+            "flow_mag_scale":                      self.flow_mag_scale,
             "postprocess_steps":                   self.postprocess_steps,
             "foreground_mask_sigma":               self.foreground_mask_sigma,
             "foreground_mask_threshold":           self.foreground_mask_threshold,
@@ -302,6 +305,7 @@ def run_segmentation_only(
                 flow_smoothing_sigma=config.flow_smoothing_sigma,
                 max_iterations=config.max_iterations,
                 uniform_growth_rate=config.uniform_growth_rate,
+                flow_mag_scale=config.flow_mag_scale,
             )
 
             # Cut off cells that expanded outside the tissue foreground
@@ -448,6 +452,7 @@ def run_full_pipeline(
                 flow_smoothing_sigma=config.flow_smoothing_sigma,
                 max_iterations=config.max_iterations,
                 uniform_growth_rate=config.uniform_growth_rate,
+                flow_mag_scale=config.flow_mag_scale,
             )
 
             # Cut off cells that expanded outside the tissue foreground
@@ -992,6 +997,17 @@ class FlowGuidedSegmentationWidget(QWidget):
         row.addStretch()
         lay.addLayout(row)
 
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Flow magnitude scale"))
+        self._seg_flow_mag_scale_spin = QDoubleSpinBox()
+        self._seg_flow_mag_scale_spin.setRange(0.0, 20.0)
+        self._seg_flow_mag_scale_spin.setSingleStep(0.5)
+        self._seg_flow_mag_scale_spin.setDecimals(1)
+        self._seg_flow_mag_scale_spin.setValue(3.0)
+        row.addWidget(self._seg_flow_mag_scale_spin)
+        row.addStretch()
+        lay.addLayout(row)
+
         # Preview button
         self._seg_preview_btn = QPushButton("Preview")
         self._seg_preview_btn.clicked.connect(self._seg_on_preview)
@@ -1164,6 +1180,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             flow_smoothing_sigma=self._seg_smoothing_spin.value(),
             max_iterations=self._seg_max_iter_spin.value(),
             uniform_growth_rate=self._seg_uniform_growth_spin.value(),
+            flow_mag_scale=self._seg_flow_mag_scale_spin.value(),
             postprocess_steps=self._pp_pipeline.get_steps(),
             foreground_mask_sigma=self._fm_sigma_spin.value(),
             foreground_mask_threshold=self._fm_threshold_spin.value(),
@@ -1177,6 +1194,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_smoothing_spin.setValue(cfg.flow_smoothing_sigma)
         self._seg_max_iter_spin.setValue(cfg.max_iterations)
         self._seg_uniform_growth_spin.setValue(cfg.uniform_growth_rate)
+        self._seg_flow_mag_scale_spin.setValue(cfg.flow_mag_scale)
         self._pp_pipeline.set_steps(cfg.postprocess_steps)
         self._fm_sigma_spin.setValue(cfg.foreground_mask_sigma)
         self._fm_threshold_spin.setValue(cfg.foreground_mask_threshold)
