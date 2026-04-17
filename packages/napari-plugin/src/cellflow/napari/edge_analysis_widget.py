@@ -109,7 +109,7 @@ class EdgeAnalysisWidget(QWidget):
 
         # --- Analyse Tissue (graph extraction + T1 + edge tracking) ---
         self.stage2_toggle = QToolButton()
-        self.stage2_toggle.setText("Analyse Tissue")
+        self.stage2_toggle.setText("Run Analysis")
         self.stage2_toggle.setArrowType(Qt.RightArrow)
         self.stage2_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.stage2_toggle.setCheckable(True)
@@ -265,7 +265,7 @@ class EdgeAnalysisWidget(QWidget):
         self.stage2_params.setVisible(False)
         layout.addWidget(self.stage2_params)
 
-        self.stage2_btn = QPushButton("Analyse Tissue")
+        self.stage2_btn = QPushButton("Run Analysis")
         self.stage2_btn.setStyleSheet(
             "QPushButton { font-weight: bold; padding: 6px; }"
         )

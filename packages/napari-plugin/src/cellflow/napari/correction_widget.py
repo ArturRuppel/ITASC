@@ -130,7 +130,7 @@ class CorrectionWidget(QWidget):
         # status
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status.setStyleSheet("color: palette(text); font-style: italic;")
+        self._status.setStyleSheet("color: palette(mid); font-style: italic;")
         root.addWidget(self._status)
 
         # correction shortcuts reference (CellFlow custom — not napari native)
@@ -167,7 +167,7 @@ class CorrectionWidget(QWidget):
         inspect_lay.addLayout(inspect_row)
         self._inspect_frames_label = QLabel("")
         self._inspect_frames_label.setWordWrap(True)
-        self._inspect_frames_label.setStyleSheet("font-size: 9pt; color: palette(text);")
+        self._inspect_frames_label.setStyleSheet("font-size: 9pt; color: palette(mid);")
         inspect_lay.addWidget(self._inspect_frames_label)
         root.addWidget(inspect_box)
 
@@ -188,7 +188,7 @@ class CorrectionWidget(QWidget):
             "Free edges (open border) are not grown."
         )
         fix_desc.setWordWrap(True)
-        fix_desc.setStyleSheet("font-size: 9pt; color: palette(text);")
+        fix_desc.setStyleSheet("font-size: 9pt; color: palette(mid);")
         fix_lay.addWidget(fix_desc)
 
         fix_btns = QHBoxLayout()
@@ -210,7 +210,7 @@ class CorrectionWidget(QWidget):
             "Run after draw/redraw operations that may leave orphaned pixels."
         )
         clean_desc.setWordWrap(True)
-        clean_desc.setStyleSheet("font-size: 9pt; color: palette(text);")
+        clean_desc.setStyleSheet("font-size: 9pt; color: palette(mid);")
         clean_lay.addWidget(clean_desc)
         clean_btns = QHBoxLayout()
         self._clean_frame_btn = QPushButton("Clean (this frame)")
@@ -229,7 +229,7 @@ class CorrectionWidget(QWidget):
             "Remove cells smaller than minimum size and reassign to neighbors."
         )
         tiny_desc.setWordWrap(True)
-        tiny_desc.setStyleSheet("font-size: 9pt; color: palette(text);")
+        tiny_desc.setStyleSheet("font-size: 9pt; color: palette(mid);")
         tiny_lay.addWidget(tiny_desc)
 
         # Min size parameter
@@ -265,7 +265,7 @@ class CorrectionWidget(QWidget):
         )
         attrib.setOpenExternalLinks(True)
         attrib.setWordWrap(True)
-        attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
+        attrib.setStyleSheet("color: palette(mid); font-size: 9pt;")
         root.addWidget(attrib)
 
     # ── activation ────────────────────────────────────────────────────────
@@ -406,7 +406,7 @@ class CorrectionWidget(QWidget):
 
     def _set_status(self, msg: str, error: bool = False):
         self._status.setText(msg)
-        colour = "red" if error else "palette(text)"
+        colour = "red" if error else "palette(mid)"
         self._status.setStyleSheet(f"color: {colour}; font-style: italic;")
 
     def set_data_layer(self, layer: "napari.layers.Labels") -> None:

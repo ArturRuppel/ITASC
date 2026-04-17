@@ -152,7 +152,7 @@ class ForcesWidget(QWidget):
         layout.addWidget(param_group)
 
         # --- Run button ---
-        self.infer_btn = QPushButton("Infer Forces")
+        self.infer_btn = QPushButton("Run Force Inference")
         self.infer_btn.setStyleSheet(
             "QPushButton { font-weight: bold; padding: 6px; }"
         )
@@ -205,7 +205,7 @@ class ForcesWidget(QWidget):
         )
         attrib.setOpenExternalLinks(True)
         attrib.setWordWrap(True)
-        attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
+        attrib.setStyleSheet("color: palette(mid); font-size: 9pt;")
         layout.addWidget(attrib)
 
     # ------------------------------------------------------------------

@@ -101,7 +101,7 @@ class DataPrepWidget(QWidget):
         layout.addWidget(self._params_section)
 
         # ── Run button ───────────────────────────────────────────────────
-        self._run_btn = QPushButton("Export Raw Data")
+        self._run_btn = QPushButton("Run Export")
         self._run_btn.clicked.connect(self._on_run)
         layout.addWidget(self._run_btn)
 

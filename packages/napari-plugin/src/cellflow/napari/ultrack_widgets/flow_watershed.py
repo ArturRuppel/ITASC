@@ -878,7 +878,7 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         # ── Run Full Pipeline ────────────────────────────────────────────
         row = QHBoxLayout()
-        self._all_run_btn = QPushButton("Run Full Pipeline (Foreground Mask → Segmentation → Post-processing)")
+        self._all_run_btn = QPushButton("Run Full Pipeline")
         self._all_run_btn.clicked.connect(self._all_on_run)
         row.addWidget(self._all_run_btn)
         self._all_term_btn = QPushButton("Run in Terminal")
@@ -952,7 +952,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         lay.addLayout(row)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Cellpose prob threshold"))
+        row.addWidget(QLabel("Cellprob threshold:"))
         self._seg_prob_threshold_spin = QDoubleSpinBox()
         self._seg_prob_threshold_spin.setRange(-100.0, 100.0)
         self._seg_prob_threshold_spin.setSingleStep(1.0)

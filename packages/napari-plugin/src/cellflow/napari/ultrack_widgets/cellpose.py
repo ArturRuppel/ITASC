@@ -150,7 +150,7 @@ class CellposeWidget(QWidget):
         mg_layout.addLayout(row)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Diameter (px, 0=auto)"))
+        row.addWidget(QLabel("Diameter (px):"))
         self._s01a_diameter_spin = QDoubleSpinBox()
         self._s01a_diameter_spin.setRange(0.0, 500.0)
         self._s01a_diameter_spin.setSingleStep(1.0)
@@ -272,7 +272,7 @@ class CellposeWidget(QWidget):
         mg_layout.addLayout(row)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Diameter (px, 0=auto)"))
+        row.addWidget(QLabel("Diameter (px):"))
         self._s01b_diameter_spin = QDoubleSpinBox()
         self._s01b_diameter_spin.setRange(0.0, 500.0)
         self._s01b_diameter_spin.setSingleStep(1.0)

@@ -33,7 +33,7 @@ except ImportError:
 
 def _sep(title):
     lbl = QLabel(f"<b>{title}</b>")
-    lbl.setStyleSheet("color: palette(text); margin-top: 4px;")
+    lbl.setStyleSheet("color: palette(mid); margin-top: 4px;")
     return lbl
 
 
@@ -160,7 +160,7 @@ class TrackingTab(QWidget):
         )
         attrib.setOpenExternalLinks(True)
         attrib.setWordWrap(True)
-        attrib.setStyleSheet("color: palette(text); font-size: 9pt;")
+        attrib.setStyleSheet("color: palette(mid); font-size: 9pt;")
         root.addWidget(attrib)
 
     def _build_track_params(self):

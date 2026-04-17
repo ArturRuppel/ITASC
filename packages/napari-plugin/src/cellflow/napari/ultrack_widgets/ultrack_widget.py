@@ -268,7 +268,7 @@ class UltrackAnalysisWidget(QWidget):
         lay.addWidget(self._cp_ct_overwrite_chk)
 
         row = QHBoxLayout()
-        self._cp_ct_run_btn = QPushButton("Run Contours (Cellpose)")
+        self._cp_ct_run_btn = QPushButton("Run Contours")
         self._cp_ct_run_btn.clicked.connect(self._cp_ct_on_run)
         row.addWidget(self._cp_ct_run_btn)
         self._cp_ct_term_btn = QPushButton("Run in Terminal")
@@ -828,7 +828,7 @@ class UltrackAnalysisWidget(QWidget):
 
         # Buttons for solve
         row = QHBoxLayout()
-        self._tr_slv_run_btn = QPushButton("Run Solve")
+        self._tr_slv_run_btn = QPushButton("Run Solver")
         self._tr_slv_run_btn.clicked.connect(self._tr_on_run_solve)
         row.addWidget(self._tr_slv_run_btn)
         self._tr_slv_term_btn = QPushButton("Run in Terminal")
@@ -851,7 +851,7 @@ class UltrackAnalysisWidget(QWidget):
 
         # ── Full pipeline buttons ────────────────────────────────────────
         row = QHBoxLayout()
-        self._tr_run_btn = QPushButton("Run Full Tracking Pipeline")
+        self._tr_run_btn = QPushButton("Run Full Pipeline")
         self._tr_run_btn.clicked.connect(self._tr_on_run)
         row.addWidget(self._tr_run_btn)
         self._tr_term_btn = QPushButton("Run in Terminal")
@@ -863,7 +863,7 @@ class UltrackAnalysisWidget(QWidget):
         row.addWidget(self._tr_cancel_btn)
         lay.addLayout(row)
 
-        self._tr_load_btn = QPushButton("Load Results into Viewer")
+        self._tr_load_btn = QPushButton("Load Results")
         self._tr_load_btn.clicked.connect(self._tr_on_load_results)
         lay.addWidget(self._tr_load_btn)
 

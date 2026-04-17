@@ -59,7 +59,7 @@ class TrackingCorrectionWidget(QWidget):
         lay.addLayout(load_row)
 
         self._data_status = QLabel("No layer loaded")
-        self._data_status.setStyleSheet("font-style: italic; color: palette(text);")
+        self._data_status.setStyleSheet("font-style: italic; color: palette(mid);")
         lay.addWidget(self._data_status)
 
         # Save row
