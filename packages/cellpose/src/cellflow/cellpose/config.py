@@ -45,6 +45,7 @@ class FlowWatershedConfig(BaseModel):
     flow_smoothing_sigma: float = 0.0
     max_iterations: int = 50
     uniform_growth_rate: float = 0.2
+    flow_mag_scale: float = 3.0
     postprocess_steps: list = Field(
         default_factory=lambda: [
             {"type": "open",            "radius":     1  },
@@ -94,6 +95,7 @@ class CellposeContoursConfig(BaseModel):
     do_3D: bool = True
     smooth_sigma: float = 0.5
     device: str = "cuda"
+    save_masks: bool = False
 
     @model_validator(mode="before")
     @classmethod

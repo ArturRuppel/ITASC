@@ -236,6 +236,8 @@ def run(
 
     fg_frames: list[np.ndarray] = []
     ct_frames: list[np.ndarray] = []
+    # maps threshold → list of per-timepoint label arrays (only populated when save_masks)
+    masks_per_thresh: dict[float, list[np.ndarray]] = {t: [] for t in thresholds} if cfg.save_masks else {}
 
     for i, (dp_path, prob_path) in enumerate(zip(dp_files, prob_files)):
         t_str = dp_path.name.split("_")[0]  # e.g., "t000"
@@ -246,9 +248,11 @@ def run(
             ct_list = []
             for thresh in thresholds:
                 cfg.cellprob_threshold = thresh
-                _, fg, ct = compute_single_from_arrays(dp, prob, cfg)
+                labels, fg, ct = compute_single_from_arrays(dp, prob, cfg)
                 fg_list.append(fg)
                 ct_list.append(ct)
+                if cfg.save_masks:
+                    masks_per_thresh[thresh].append(labels)
             fg_frames.append(np.mean(fg_list, axis=0).astype(np.float32))
             ct_frames.append(np.mean(ct_list, axis=0).astype(np.float32))
         except Exception as e:
@@ -256,6 +260,9 @@ def run(
             spatial = tifffile.imread(str(prob_path)).shape
             fg_frames.append(np.zeros(spatial, dtype=np.float32))
             ct_frames.append(np.zeros(spatial, dtype=np.float32))
+            if cfg.save_masks:
+                for thresh in thresholds:
+                    masks_per_thresh[thresh].append(np.zeros(spatial, dtype=np.uint32))
 
         yield (i + 1, total, t_str)
 
@@ -264,6 +271,19 @@ def run(
 
     tifffile.imwrite(str(fg_path), fg_stack, compression="zlib")
     tifffile.imwrite(str(ct_path), ct_stack, compression="zlib")
+
+    if cfg.save_masks:
+        masks_3d_dir = out / "masks" / "3d"
+        masks_2d_dir = out / "masks" / "2d"
+        masks_3d_dir.mkdir(parents=True, exist_ok=True)
+        masks_2d_dir.mkdir(parents=True, exist_ok=True)
+        for thresh, frames in masks_per_thresh.items():
+            thresh_str = f"{thresh:.2f}".replace("-", "m").replace(".", "p")
+            stack_3d = np.stack(frames, axis=0)  # (T, Z, Y, X) or (T, Y, X)
+            tifffile.imwrite(str(masks_3d_dir / f"thresh_{thresh_str}_masks.tif"), stack_3d, compression="zlib")
+            # Max-projection over Z for 4-D stacks, pass through for 3-D
+            proj_2d = stack_3d.max(axis=1) if stack_3d.ndim == 4 else stack_3d
+            tifffile.imwrite(str(masks_2d_dir / f"thresh_{thresh_str}_masks.tif"), proj_2d, compression="zlib")
 
     yield (total, total, "Done")
 

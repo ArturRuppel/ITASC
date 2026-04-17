@@ -263,6 +263,12 @@ class UltrackAnalysisWidget(QWidget):
         row.addWidget(self._cp_ct_preview_btn)
         lay.addLayout(row)
 
+        self._cp_ct_save_masks_chk = QCheckBox("Save masks to subfolder (3D + 2D projection)")
+        self._cp_ct_save_masks_chk.setToolTip(
+            "Save per-threshold label masks under masks/3d/ and masks/2d/ (max Z-projection) in the output directory"
+        )
+        lay.addWidget(self._cp_ct_save_masks_chk)
+
         self._cp_ct_overwrite_chk = QCheckBox("Overwrite existing files")
         self._cp_ct_overwrite_chk.setStyleSheet("color: white;")
         lay.addWidget(self._cp_ct_overwrite_chk)
@@ -308,6 +314,7 @@ class UltrackAnalysisWidget(QWidget):
             do_3D=self._cp_ct_3d_chk.isChecked(),
             smooth_sigma=self._cp_ct_smooth_sigma.value(),
             device=self._cp_ct_device.currentText(),
+            save_masks=self._cp_ct_save_masks_chk.isChecked(),
         )
 
     def _cp_ct_apply_config(self, cfg: CellposeContoursConfig) -> None:
@@ -318,6 +325,7 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_3d_chk.setChecked(cfg.do_3D)
         self._cp_ct_smooth_sigma.setValue(cfg.smooth_sigma)
         self._cp_ct_device.setCurrentText(cfg.device)
+        self._cp_ct_save_masks_chk.setChecked(cfg.save_masks)
 
     def _cp_ct_schedule(self) -> None:
         """Schedule a debounced preview update if data is cached."""
