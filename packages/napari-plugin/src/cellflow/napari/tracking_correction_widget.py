@@ -90,11 +90,15 @@ class TrackingCorrectionWidget(QWidget):
             if not isinstance(layer, napari.layers.Labels):
                 self._data_status.setText(f"'{name}' is not a Labels layer")
                 return
+            if self._state.project_dir is not None:
+                self._load_nuclear_zavg(self._state.project_dir, self._state.current_position)
             self._set_data_layer(layer)
             return
 
         if arr is not None:
             layer_name = name or "Nuclear Labels"
+            if self._state.project_dir is not None:
+                self._load_nuclear_zavg(self._state.project_dir, self._state.current_position)
             if layer_name in self.viewer.layers:
                 self.viewer.layers[layer_name].data = arr
                 layer = self.viewer.layers[layer_name]
@@ -141,6 +145,7 @@ class TrackingCorrectionWidget(QWidget):
             except Exception as exc:
                 self._data_status.setText(f"Could not read {path.name}: {exc}")
                 return None
+            self._load_nuclear_zavg(project_dir, pos)
             if layer_name in self.viewer.layers:
                 self.viewer.layers[layer_name].data = arr
                 layer = self.viewer.layers[layer_name]
@@ -151,6 +156,22 @@ class TrackingCorrectionWidget(QWidget):
             return arr
 
         return None
+
+    def _load_nuclear_zavg(self, project_dir, pos: int) -> None:
+        """Load nucleus_zavg.tif as an Image layer (background reference for correction)."""
+        from cellflow.core.paths import stage_dir
+        img_path = stage_dir(project_dir, pos, "raw_import") / "nucleus" / "nucleus_zavg.tif"
+        if not img_path.exists():
+            return
+        layer_name = "Nucleus avg"
+        try:
+            img = tifffile.imread(str(img_path))
+        except Exception:
+            return
+        if layer_name in self.viewer.layers:
+            self.viewer.layers[layer_name].data = img
+        else:
+            self.viewer.add_image(img, name=layer_name, colormap="gray")
 
     def _on_save(self) -> None:
         """Save the current layer to 3_correction/nuclear_labels_corrected.tif."""
