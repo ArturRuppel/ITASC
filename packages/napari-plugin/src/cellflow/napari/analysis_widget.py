@@ -83,25 +83,17 @@ class CellFlowWidget(QWidget):
         )
         _plugin_layout.addWidget(self._ultrack_section)
 
-        from .correction_widget import CorrectionWidget
-        from .tracking_widget import TrackingTab
+        from .tracking_correction_widget import TrackingCorrectionWidget
         from .ultrack_widgets.flow_watershed import FlowGuidedSegmentationWidget
         from .edge_analysis_widget import EdgeAnalysisWidget
         from .forces_widget import ForcesWidget
 
-        # 3_correction (manual correction loop)
-        self._correction_widget = CorrectionWidget(self.viewer)
+        # 3_correction — LapTrack re-tracking + manual correction, shared layer
+        self._tracking_correction_widget = TrackingCorrectionWidget(self.viewer)
         self._correction_section = CollapsibleSection(
-            "Correction", self._correction_widget, expanded=False
+            "Correction", self._tracking_correction_widget, expanded=False
         )
         _plugin_layout.addWidget(self._correction_section)
-
-        # LapTrack retracking — part of the correction loop, no stage dir
-        self._tracking_tab = TrackingTab(self.viewer)
-        self._tracking_section = CollapsibleSection(
-            "Tracking", self._tracking_tab, expanded=False
-        )
-        _plugin_layout.addWidget(self._tracking_section)
 
         # 4_cell_segmentation
         self._cell_seg_tab = FlowGuidedSegmentationWidget(self.viewer)
@@ -157,7 +149,6 @@ class CellFlowWidget(QWidget):
             "Cellpose":           self._cellpose_section,
             "Ultrack":            self._ultrack_section,
             "Correction":         self._correction_section,
-            "Tracking":           self._tracking_section,
             "Flow Watershed":      self._cell_seg_section,
             "Edge Analysis":      self._edge_analysis_section,
             "ForSys":             self._forces_section,

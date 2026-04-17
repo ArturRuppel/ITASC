@@ -26,7 +26,7 @@ import os
 import numpy as np
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QGroupBox, QSpinBox, QComboBox,
+    QLabel, QPushButton, QGroupBox, QSpinBox,
 )
 from qtpy.QtCore import Qt
 import napari
@@ -77,8 +77,8 @@ class CorrectionWidget(QWidget):
         self.viewer = viewer
         self._state = get_state(viewer)
 
-        self._layer: napari.layers.Labels = None
-        self._is_nuclear: bool = False         # whether we're correcting nuclear labels vs cell labels
+        self._layer: napari.layers.Labels = None       # active during correction
+        self._preset_layer: napari.layers.Labels = None  # pre-set via set_data_layer
 
         # selection / operation state
         self._selected_label: int = 0          # currently highlighted cell
@@ -103,23 +103,6 @@ class CorrectionWidget(QWidget):
     def _setup_ui(self):
         root = QVBoxLayout(self)
         root.setSpacing(6)
-
-        # target selector
-        target_row = QHBoxLayout()
-        target_row.setSpacing(4)
-        target_row.addWidget(QLabel("Target:"))
-        self._target_combo = QComboBox()
-        self._target_combo.addItems(["Cell Labels", "Nuclear Labels"])
-        self._target_combo.setToolTip(
-            "Choose which labels layer to correct.\n"
-            "Cell Labels: cell segmentation\n"
-            "Nuclear Labels: nuclear segmentation"
-        )
-        target_row.addWidget(self._target_combo)
-        target_row.addStretch()
-        target_widget = QWidget()
-        target_widget.setLayout(target_row)
-        root.addWidget(target_widget)
 
         # activate toggle
         self._activate_btn = QPushButton("Activate")
@@ -289,23 +272,15 @@ class CorrectionWidget(QWidget):
 
     def _toggle_active(self, checked: bool):
         if checked:
-            is_nuclear = self._target_combo.currentText() == "Nuclear Labels"
-            if is_nuclear:
-                name = self._state.tissue.nuclear_labels_layer
-                no_layer_msg = "No nuclear labels in state. Run Nuclear Segmentation or capture first."
-            else:
-                name = self._state.tissue.labels_layer
-                no_layer_msg = "Layer not found"
-            if not name or name not in self.viewer.layers:
+            layer = self._preset_layer
+            if layer is None or layer.name not in self.viewer.layers:
                 self._activate_btn.setChecked(False)
-                self._set_status(no_layer_msg, error=True)
+                self._set_status("Load a layer first", error=True)
                 return
-            layer = self.viewer.layers[name]
             if not isinstance(layer, napari.layers.Labels):
                 self._activate_btn.setChecked(False)
                 self._set_status("Not a Labels layer", error=True)
                 return
-            self._is_nuclear = is_nuclear
             self._activate(layer)
         else:
             self._deactivate()
@@ -322,8 +297,12 @@ class CorrectionWidget(QWidget):
         self._swap_first_t = -1
 
         # ── suspend conflicting napari callbacks ──────────────────────────
-        self._saved_viewer_drag_cbs = list(self.viewer.mouse_drag_callbacks)
-        self.viewer.mouse_drag_callbacks.clear()
+        # viewer.mouse_drag_callbacks was removed in napari 0.5+; guard for compat
+        if hasattr(self.viewer, 'mouse_drag_callbacks'):
+            self._saved_viewer_drag_cbs = list(self.viewer.mouse_drag_callbacks)
+            self.viewer.mouse_drag_callbacks.clear()
+        else:
+            self._saved_viewer_drag_cbs = []
 
         self._saved_layer_mode = layer.mode
         layer.mode = "pan_zoom"
@@ -355,7 +334,6 @@ class CorrectionWidget(QWidget):
         self._activate_btn.setText("Deactivate")
         self._outline_btn.setEnabled(True)
         self._goto_btn.setEnabled(True)
-        self._target_combo.setEnabled(False)
         self._set_status(f"Active on '{layer.name}'")
 
     def _deactivate(self):
@@ -390,18 +368,16 @@ class CorrectionWidget(QWidget):
                 pass
 
             # ── restore viewer callbacks ──────────────────────────────────
-            self.viewer.mouse_drag_callbacks.clear()
-            for cb in self._saved_viewer_drag_cbs:
-                self.viewer.mouse_drag_callbacks.append(cb)
+            if hasattr(self.viewer, 'mouse_drag_callbacks'):
+                self.viewer.mouse_drag_callbacks.clear()
+                for cb in self._saved_viewer_drag_cbs:
+                    self.viewer.mouse_drag_callbacks.append(cb)
 
         # Sync corrected labels to internal state before releasing the layer
         # (skip if the layer was deleted — data is gone)
         if self._layer is not None and self._layer.name in self.viewer.layers:
             try:
-                if self._is_nuclear:
-                    self._state.set_tissue_nuclear_labels(np.asarray(self._layer.data), self._layer.name)
-                else:
-                    self._state.set_tissue_labels(np.asarray(self._layer.data), self._layer.name)
+                self._state.set_tissue_nuclear_labels(np.asarray(self._layer.data), self._layer.name)
             except Exception:
                 pass
 
@@ -414,16 +390,17 @@ class CorrectionWidget(QWidget):
         self._swap_first_pos = None
         self._swap_first_t = -1
         self._saved_viewer_drag_cbs = []
-        self._is_nuclear = False
         self._activate_btn.setText("Activate")
         self._activate_btn.setChecked(False)
         self._outline_btn.setChecked(False)
         self._outline_btn.setEnabled(False)
         self._goto_btn.setEnabled(False)
-        self._target_combo.setEnabled(True)
         self._goto_cell_id.setValue(0)
         self._inspect_frames_label.setText("")
-        self._set_status("Inactive")
+        if self._preset_layer is not None:
+            self._set_status(f"Ready: '{self._preset_layer.name}'")
+        else:
+            self._set_status("Inactive")
         self._cleanup_draw_layer()
         self._cleanup_highlight_layer()
 
@@ -431,6 +408,16 @@ class CorrectionWidget(QWidget):
         self._status.setText(msg)
         colour = "red" if error else "palette(text)"
         self._status.setStyleSheet(f"color: {colour}; font-style: italic;")
+
+    def set_data_layer(self, layer: "napari.layers.Labels") -> None:
+        """Set the labels layer to correct. Called by the parent widget after loading."""
+        if self._activate_btn.isChecked():
+            self._deactivate()
+        self._preset_layer = layer
+        if layer is not None:
+            self._set_status(f"Ready: '{layer.name}'")
+        else:
+            self._set_status("Inactive")
 
     # ── draw layer ────────────────────────────────────────────────────────
 
@@ -546,6 +533,8 @@ class CorrectionWidget(QWidget):
         removed_name = getattr(removed, "name", None)
         if removed is self._layer or removed_name in (_DRAW_LAYER, _HIGHLIGHT_LAYER):
             log.debug("_on_layer_removed: '%s' removed, deactivating", removed_name)
+            if removed is self._preset_layer:
+                self._preset_layer = None
             self._deactivate()
 
     def _reset_tool_mode(self):

@@ -53,6 +53,8 @@ TAB_STAGE_KEYS: Dict[str, list[str]] = {
     "Flow Watershed": ["cell_segmentation"],
     "Edge Analysis": ["graph_extraction", "topology_analysis"],
 }
+# Note: "Tracking" (LapTrack) is now a sub-component of "Correction" and
+# has no separate manifest stage key.
 
 # Module-level dict: populated at import time; refreshed via refresh().
 STAGES: Dict[str, Any] = {}
