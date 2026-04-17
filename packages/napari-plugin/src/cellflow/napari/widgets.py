@@ -193,6 +193,18 @@ class CollapsibleSection(QWidget):
         else:
             self._scroll_area.setMinimumHeight(0)
             self._scroll_area.setMaximumHeight(16777215)
+            QTimer.singleShot(0, self._notify_collapse)
+
+    def _notify_collapse(self) -> None:
+        """Propagate shrink upward after collapsing."""
+        self.updateGeometry()
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, CollapsibleSection) and parent.is_expanded:
+                QTimer.singleShot(0, parent._reset_natural_height)
+                return
+            parent.updateGeometry()
+            parent = parent.parent()
 
     def _reset_natural_height(self) -> None:
         h = self._inner.sizeHint().height()

@@ -1,6 +1,6 @@
-Prepare Input Data widget: should have a "pull metadata" button to get px and dt from ndtiff. should discover the available positions and allow to export them all. should always export all timepoints. should overwrite pix size and dt when exporting with metadata. when downsampled, pixelsize needs to be calculated accordingly. export all positions at once should be possible. should also have a run in terminal button, like the other widgets. trying to run a position that doesn't exist should yield an error and not produce an empty folder. metadata of ndtiff files, including positions and so on should be discovered anyways. see ndtiff reader napari plugin for reference
+Run in Terminal should launch kitty and not gnome terminal
 
-Contours Preview is veeeery slow. why? investigate please.
+Prepare Input Data widget: should have a "pull metadata" button to get px and dt from ndtiff. should discover the available positions and allow to export them all. should always export all timepoints. should overwrite pix size and dt when exporting with metadata. when downsampled, pixelsize needs to be calculated accordingly. export all positions at once should be possible. should also have a run in terminal button, like the other widgets. trying to run a position that doesn't exist should yield an error and not produce an empty folder. metadata of ndtiff files, including positions and so on should be discovered anyways. see ndtiff reader napari plugin for reference
 
 Write a quick user guide to get the user oriented quickly. think about how and where to display it.
 
