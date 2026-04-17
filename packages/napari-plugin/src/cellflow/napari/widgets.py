@@ -1,7 +1,8 @@
 """Shared reusable Qt widgets for the CellFlow napari plugin."""
 from __future__ import annotations
 
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import Qt, QPoint, QTimer
+from qtpy.QtGui import QColor, QPainter
 from qtpy.QtWidgets import (
     QFrame,
     QScrollArea,
@@ -15,16 +16,46 @@ from qtpy.QtWidgets import (
 class _ResizeHandle(QWidget):
     """Draggable bar at the bottom of an expanded CollapsibleSection."""
 
+    _STYLE_NORMAL = (
+        "background: #606060; border-radius: 3px; margin: 0 8px;"
+    )
+    _STYLE_HOVER = (
+        "background: #909090; border-radius: 3px; margin: 0 8px;"
+    )
+
     def __init__(self, scroll_area: QScrollArea, parent=None) -> None:
         super().__init__(parent)
         self._scroll = scroll_area
         self._start_y: int | None = None
         self._start_h: int | None = None
-        self.setFixedHeight(6)
+        self.setFixedHeight(8)
         self.setCursor(Qt.SizeVerCursor)
-        self.setStyleSheet(
-            "background: #505050; border-radius: 3px; margin: 0 8px;"
-        )
+        self.setMouseTracking(True)
+        self.setStyleSheet(self._STYLE_NORMAL)
+        self.setToolTip("Drag to resize")
+
+    def enterEvent(self, event) -> None:
+        self.setStyleSheet(self._STYLE_HOVER)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.setStyleSheet(self._STYLE_NORMAL)
+        super().leaveEvent(event)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        dot_color = QColor("#c0c0c0")
+        painter.setBrush(dot_color)
+        painter.setPen(Qt.NoPen)
+        cx = self.width() // 2
+        cy = self.height() // 2
+        dot_r = 2
+        spacing = 6
+        for dx in (-spacing, 0, spacing):
+            painter.drawEllipse(QPoint(cx + dx, cy), dot_r, dot_r)
+        painter.end()
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
