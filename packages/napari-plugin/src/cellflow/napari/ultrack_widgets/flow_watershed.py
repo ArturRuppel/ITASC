@@ -954,16 +954,6 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         # Parameters
         row = QHBoxLayout()
-        row.addWidget(QLabel("Flow scale (blend factor)"))
-        self._seg_flow_scale_spin = QDoubleSpinBox()
-        self._seg_flow_scale_spin.setRange(0.0, 3.0)
-        self._seg_flow_scale_spin.setSingleStep(0.1)
-        self._seg_flow_scale_spin.setDecimals(2)
-        self._seg_flow_scale_spin.setValue(1.0)
-        row.addWidget(self._seg_flow_scale_spin)
-        lay.addLayout(row)
-
-        row = QHBoxLayout()
         row.addWidget(QLabel("Cellprob threshold:"))
         self._seg_prob_threshold_spin = QDoubleSpinBox()
         self._seg_prob_threshold_spin.setRange(-100.0, 100.0)
@@ -971,16 +961,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_prob_threshold_spin.setDecimals(1)
         self._seg_prob_threshold_spin.setValue(0.0)
         row.addWidget(self._seg_prob_threshold_spin)
-        lay.addLayout(row)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Flow smoothing (σ)"))
-        self._seg_smoothing_spin = QDoubleSpinBox()
-        self._seg_smoothing_spin.setRange(0.0, 5.0)
-        self._seg_smoothing_spin.setSingleStep(0.1)
-        self._seg_smoothing_spin.setDecimals(2)
-        self._seg_smoothing_spin.setValue(0.0)
-        row.addWidget(self._seg_smoothing_spin)
         lay.addLayout(row)
 
         row = QHBoxLayout()
@@ -1182,9 +1162,7 @@ class FlowGuidedSegmentationWidget(QWidget):
     def _build_config(self) -> FlowWatershedConfig:
         """Build config from current UI state."""
         return FlowWatershedConfig(
-            flow_scale=self._seg_flow_scale_spin.value(),
             cellpose_prob_threshold=self._seg_prob_threshold_spin.value(),
-            flow_smoothing_sigma=self._seg_smoothing_spin.value(),
             max_iterations=self._seg_max_iter_spin.value(),
             uniform_growth_rate=self._seg_uniform_growth_spin.value(),
             flow_mag_scale=self._seg_flow_mag_scale_spin.value(),
@@ -1196,9 +1174,7 @@ class FlowGuidedSegmentationWidget(QWidget):
 
     def _apply_config(self, cfg: FlowWatershedConfig) -> None:
         """Apply config to UI."""
-        self._seg_flow_scale_spin.setValue(cfg.flow_scale)
         self._seg_prob_threshold_spin.setValue(cfg.cellpose_prob_threshold)
-        self._seg_smoothing_spin.setValue(cfg.flow_smoothing_sigma)
         self._seg_max_iter_spin.setValue(cfg.max_iterations)
         self._seg_uniform_growth_spin.setValue(cfg.uniform_growth_rate)
         self._seg_flow_mag_scale_spin.setValue(cfg.flow_mag_scale)
