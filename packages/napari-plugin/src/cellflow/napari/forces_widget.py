@@ -30,6 +30,7 @@ from .visualization import (
     build_tension_colored_junctions,
     build_pressure_colored_cells,
 )
+from .widgets import viewer_layer_visibility
 
 logger = logging.getLogger(__name__)
 
@@ -465,16 +466,18 @@ class ForcesWidget(QWidget):
         series = ds.tissues[tid]
 
         # --- Tensions ---
+        vis_tension = viewer_layer_visibility(self.viewer, _TENSION_LAYER)
         self._remove_layer(_TENSION_LAYER)
         if self.show_tensions_cb.isChecked():
             lines, colors = build_tension_colored_junctions(series)
             if lines:
                 self.viewer.add_shapes(
                     lines, shape_type="path", edge_color=colors,
-                    edge_width=3, name=_TENSION_LAYER,
+                    edge_width=3, name=_TENSION_LAYER, visible=vis_tension,
                 )
 
         # --- Pressures ---
+        vis_pressure = viewer_layer_visibility(self.viewer, _PRESSURE_LAYER)
         self._remove_layer(_PRESSURE_LAYER)
         if self.show_pressures_cb.isChecked():
             polys, pcolors = build_pressure_colored_cells(series)
@@ -482,6 +485,7 @@ class ForcesWidget(QWidget):
                 layer = self.viewer.add_shapes(
                     polys, shape_type="polygon", face_color=pcolors,
                     edge_width=0, name=_PRESSURE_LAYER, opacity=0.4,
+                    visible=vis_pressure,
                 )
                 # Move below tension layer so junctions are visible
                 try:

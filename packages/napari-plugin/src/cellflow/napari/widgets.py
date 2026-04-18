@@ -13,6 +13,13 @@ from qtpy.QtWidgets import (
 )
 
 
+def viewer_layer_visibility(viewer, name: str) -> bool:
+    """Return the current visibility of a named layer, or True if absent."""
+    if name in viewer.layers:
+        return viewer.layers[name].visible
+    return True
+
+
 class _ResizeHandle(QWidget):
     """Draggable bar at the bottom of an expanded CollapsibleSection."""
 

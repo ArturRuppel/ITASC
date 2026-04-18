@@ -638,8 +638,17 @@ class EdgeAnalysisWidget(QWidget):
     def _add_inspect_layers(
         self, series: TissueGraphTimeSeries, skip_junctions: bool = False,
     ):
+        vis_j = self._inspect_junction_layer.visible if (self._inspect_junction_layer and self._inspect_junction_layer in self.viewer.layers) else True
+        vis_c = self._inspect_centroid_layer.visible if (self._inspect_centroid_layer and self._inspect_centroid_layer in self.viewer.layers) else True
+        vis_t = self._inspect_t1_layer.visible if (self._inspect_t1_layer and self._inspect_t1_layer in self.viewer.layers) else True
         self._remove_inspect_layers()
         j, c, t = self._make_layers(series, prefix="", skip_junctions=skip_junctions)
+        if j is not None:
+            j.visible = vis_j
+        if c is not None:
+            c.visible = vis_c
+        if t is not None:
+            t.visible = vis_t
         self._inspect_junction_layer = j
         self._inspect_centroid_layer = c
         self._inspect_t1_layer = t
@@ -688,6 +697,7 @@ class EdgeAnalysisWidget(QWidget):
         self, series: TissueGraphTimeSeries, stage_layer: bool = False,
     ):
         self._tagging_series = series
+        vis_traj = self._tagging_shapes_layer.visible if (self._tagging_shapes_layer and self._tagging_shapes_layer in self.viewer.layers) else True
         self._remove_tagging_layer()
         self.tagging_group.setVisible(True)
 
@@ -707,6 +717,7 @@ class EdgeAnalysisWidget(QWidget):
             edge_width=2,
             features=features,
             name="[Pipeline] Trajectories",
+            visible=vis_traj,
         )
         self._tagging_shapes_layer = layer
         self._cached_selection = []
@@ -721,6 +732,7 @@ class EdgeAnalysisWidget(QWidget):
     def _add_tag_text_layer(
         self, series: TissueGraphTimeSeries, stage_layer: bool = False,
     ):
+        vis_tags = self._tagging_text_layer.visible if (self._tagging_text_layer and self._tagging_text_layer in self.viewer.layers) else True
         self._remove_tag_text_layer()
         if not self._show_tag_labels:
             return
@@ -743,6 +755,7 @@ class EdgeAnalysisWidget(QWidget):
                 "size": 10,
             },
             name="[Pipeline] Tag Labels",
+            visible=vis_tags,
         )
         text_layer.mode = "select"
 
