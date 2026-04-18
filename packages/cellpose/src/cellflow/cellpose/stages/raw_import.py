@@ -26,6 +26,45 @@ from cellflow.core.paths import stage_dir
 from cellflow.core.protocol import StageProgress, ValidationResult
 
 
+def discover_metadata(ndtiff_path: str) -> dict:
+    """Open an NDTiff dataset and return its metadata without exporting anything.
+
+    Returns a dict with keys:
+      - ``positions``: sorted list of available position indices
+      - ``pixel_size_um``: raw pixel size in µm (before any downsampling), or None
+      - ``time_interval_s``: time interval in seconds, or None
+    Safe to call from a background thread.
+    """
+    from ndtiff import Dataset
+
+    ds = Dataset(ndtiff_path)
+    axes = ds.axes
+    positions = sorted(axes.get("position", axes.get("p", [0])))
+
+    pixel_size_um: Optional[float] = None
+    time_interval_s: Optional[float] = None
+    try:
+        summary = getattr(ds, "summary_metadata", None) or {}
+        px = summary.get("PixelSizeUm")
+        if px is not None and float(px) > 0:
+            pixel_size_um = float(px)
+        interval_ms = summary.get("Interval_ms")
+        if interval_ms is None:
+            interval_ms = summary.get("CustomIntervals_ms")
+            if isinstance(interval_ms, list) and interval_ms:
+                interval_ms = interval_ms[0]
+        if interval_ms is not None:
+            time_interval_s = float(interval_ms) / 1000.0
+    except Exception:
+        pass
+
+    return {
+        "positions": positions,
+        "pixel_size_um": pixel_size_um,
+        "time_interval_s": time_interval_s,
+    }
+
+
 def raw_dir(root_dir, pos):
     return stage_dir(root_dir, pos, "raw_import")
 
@@ -195,10 +234,15 @@ def run(
     ds = Dataset(config.ndtiff_path)
 
     axes = ds.axes
+    available_positions = sorted(axes.get("position", axes.get("p", [0])))
+    if pos not in available_positions:
+        raise ValueError(
+            f"Position {pos} not found in dataset (available: {available_positions})"
+        )
+
     all_times = sorted(axes.get("time", [0]))
     z_indices = sorted(axes.get("z", [0]))
-
-    time_list = config.timepoints if config.timepoints is not None else all_times
+    time_list = all_times
 
     # Extract pixel size and time interval from dataset summary metadata
     pixel_size_um: Optional[float] = None
@@ -233,7 +277,7 @@ def run(
         "ndtiff_path": config.ndtiff_path,
     }
     if pixel_size_um is not None:
-        run_params["pixel_size_um"] = pixel_size_um
+        run_params["pixel_size_um"] = pixel_size_um * config.xy_downsample
     if time_interval_s is not None:
         run_params["time_interval_s"] = time_interval_s
     (out_dir / "run_params.json").write_text(
@@ -272,3 +316,41 @@ class _RawImportStageClass:
 
 
 RawImportStage = _RawImportStageClass()
+
+
+# ── CLI entrypoint ───────────────────────────────────────────────────────────
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Export raw NDTiff data to per-timepoint TIFFs.")
+    parser.add_argument("--ndtiff-path", required=True, help="Path to NDTiff dataset directory")
+    parser.add_argument("--root-dir", required=True, help="Project root directory")
+    parser.add_argument("--pos", type=int, action="append", required=True, dest="positions",
+                        metavar="N", help="Position index to export (repeatable)")
+    parser.add_argument("--xy-downsample", type=int, default=3, metavar="N",
+                        help="XY block-average downsample factor (default: 3)")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
+    args = parser.parse_args()
+
+    config = DatasetConfig(
+        ndtiff_path=args.ndtiff_path,
+        root_dir=args.root_dir,
+        positions=args.positions,
+        xy_downsample=args.xy_downsample,
+    )
+
+    n_pos = len(args.positions)
+    for p_idx, pos in enumerate(args.positions):
+        print(f"[{p_idx + 1}/{n_pos}] pos{pos:02d}")
+        try:
+            for done, total, label in run(config, pos, overwrite=args.overwrite):
+                print(f"  [{done}/{total}] {label}", end="\r", flush=True)
+            print()
+        except Exception as exc:
+            print(f"\nError exporting pos{pos:02d}: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+    print("Done.")

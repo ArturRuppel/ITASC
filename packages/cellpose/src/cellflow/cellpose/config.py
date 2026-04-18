@@ -12,7 +12,6 @@ class DatasetConfig(BaseModel):
     ndtiff_path: str
     root_dir: str
     positions: list[int]
-    timepoints: Optional[list[int]] = None
     xy_downsample: int = 3
 
 

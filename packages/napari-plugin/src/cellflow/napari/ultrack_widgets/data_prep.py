@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -22,9 +23,10 @@ from qtpy.QtWidgets import (
 from napari.qt.threading import thread_worker
 
 from cellflow.cellpose.config import DatasetConfig
-from cellflow.cellpose.stages.raw_import import run as run_s00
+from cellflow.cellpose.stages.raw_import import discover_metadata, run as run_s00
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
+from cellflow.napari.runners.terminal import launch_in_terminal
 from cellflow.napari.widgets import CollapsibleSection
 
 
@@ -38,6 +40,7 @@ class DataPrepWidget(QWidget):
         self.viewer = viewer
         self._state = get_state(viewer)
         self._worker = None
+        self._meta_worker = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -61,29 +64,29 @@ class DataPrepWidget(QWidget):
         self._ndtiff_edit = QLineEdit()
         self._ndtiff_edit.setPlaceholderText("/path/to/ndtiff_dataset")
         row.addWidget(self._ndtiff_edit)
-        btn = QPushButton("Browse…")
-        btn.clicked.connect(self._browse_ndtiff)
-        row.addWidget(btn)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse_ndtiff)
+        row.addWidget(browse_btn)
+        pull_btn = QPushButton("Pull Metadata")
+        pull_btn.clicked.connect(self._pull_metadata)
+        row.addWidget(pull_btn)
         params_layout.addLayout(row)
+
+        # Metadata display
+        meta_row = QHBoxLayout()
+        self._px_label = QLabel("Pixel size: —")
+        self._px_label.setStyleSheet("color: grey; font-size: 8pt;")
+        meta_row.addWidget(self._px_label)
+        self._dt_label = QLabel("Interval: —")
+        self._dt_label.setStyleSheet("color: grey; font-size: 8pt;")
+        meta_row.addWidget(self._dt_label)
+        meta_row.addStretch()
+        params_layout.addLayout(meta_row)
 
         # Positions
         params_layout.addWidget(QLabel("Positions (comma-separated, e.g. 0,1,2)"))
         self._positions_edit = QLineEdit("0")
         params_layout.addWidget(self._positions_edit)
-
-        # Timepoints
-        self._tp_all_check = QCheckBox("All timepoints")
-        self._tp_all_check.setChecked(True)
-        self._tp_all_check.toggled.connect(self._on_tp_toggle)
-        params_layout.addWidget(self._tp_all_check)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Timepoints (comma-separated)"))
-        self._tp_edit = QLineEdit()
-        self._tp_edit.setPlaceholderText("0,1,2,3,4")
-        self._tp_edit.setEnabled(False)
-        row.addWidget(self._tp_edit)
-        params_layout.addLayout(row)
 
         # XY downsample
         row = QHBoxLayout()
@@ -102,10 +105,15 @@ class DataPrepWidget(QWidget):
         self._overwrite_check.setStyleSheet("color: white;")
         layout.addWidget(self._overwrite_check)
 
-        # ── Run button ───────────────────────────────────────────────────
+        # ── Run buttons ──────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
         self._run_btn = QPushButton("Run Export")
         self._run_btn.clicked.connect(self._on_run)
-        layout.addWidget(self._run_btn)
+        btn_row.addWidget(self._run_btn)
+        self._term_btn = QPushButton("Run in Terminal")
+        self._term_btn.clicked.connect(self._on_run_in_terminal)
+        btn_row.addWidget(self._term_btn)
+        layout.addLayout(btn_row)
 
         # ── Progress ─────────────────────────────────────────────────────
         self._progress = QProgressBar()
@@ -121,13 +129,20 @@ class DataPrepWidget(QWidget):
             self._log_viewer = StageLogViewer(self._state)
             layout.addWidget(self._log_viewer)
 
+        # ── Debounce timer for auto-pull on path change ───────────────────
+        self._debounce_timer = QTimer(self)
+        self._debounce_timer.setSingleShot(True)
+        self._debounce_timer.setInterval(300)
+        self._debounce_timer.timeout.connect(self._pull_metadata)
+        self._ndtiff_edit.textChanged.connect(self._debounce_timer.start)
+
         # Connect project change signal
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
 
         # Populate from any already-open project
         self._sync_project_dir()
 
-    # ── Project sync ─────────────────────────────────────────────────────
+    # ── Project sync ─────────────────────────────────────────────────────────
 
     def _sync_project_dir(self) -> None:
         """Auto-fill NDTiff dir from schema.input_dir and update project info label."""
@@ -140,9 +155,7 @@ class DataPrepWidget(QWidget):
             )
             return
 
-        self._project_label.setText(
-            f"Output root: {project_dir}"
-        )
+        self._project_label.setText(f"Output root: {project_dir}")
 
         # Auto-fill NDTiff if schema has input_dir and field is empty
         if (
@@ -152,17 +165,69 @@ class DataPrepWidget(QWidget):
         ):
             self._ndtiff_edit.setText(schema.input_dir)
 
-    # ── Browsing ─────────────────────────────────────────────────────────
+    # ── Browsing ─────────────────────────────────────────────────────────────
 
     def _browse_ndtiff(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Select NDTiff directory")
         if d:
             self._ndtiff_edit.setText(d)
 
-    def _on_tp_toggle(self, checked: bool) -> None:
-        self._tp_edit.setEnabled(not checked)
+    # ── Metadata pull ─────────────────────────────────────────────────────────
 
-    # ── Parsing ──────────────────────────────────────────────────────────
+    def _pull_metadata(self) -> None:
+        """Discover metadata from the NDTiff dataset in a background thread."""
+        path = self._ndtiff_edit.text().strip()
+        if not path:
+            return
+
+        # Cancel any in-flight worker
+        if self._meta_worker is not None:
+            try:
+                self._meta_worker.quit()
+            except Exception:
+                pass
+            self._meta_worker = None
+
+        self._status_label.setText("Reading metadata…")
+
+        @thread_worker(
+            connect={
+                "returned": self._on_metadata,
+                "errored": self._on_metadata_error,
+            }
+        )
+        def _work():
+            return discover_metadata(path)
+
+        self._meta_worker = _work()
+
+    def _on_metadata(self, result: dict) -> None:
+        self._meta_worker = None
+        positions = result.get("positions", [])
+        px = result.get("pixel_size_um")
+        dt = result.get("time_interval_s")
+
+        self._positions_edit.setText(",".join(str(p) for p in positions))
+
+        if px is not None:
+            self._px_label.setText(f"Pixel size: {px:.4g} µm")
+        else:
+            self._px_label.setText("Pixel size: —")
+
+        if dt is not None:
+            self._dt_label.setText(f"Interval: {dt:.4g} s")
+        else:
+            self._dt_label.setText("Interval: —")
+
+        self._status_label.setText(
+            f"Metadata: {len(positions)} position(s) found."
+        )
+
+    def _on_metadata_error(self, exc: Exception) -> None:
+        self._meta_worker = None
+        self._status_label.setText(f"Metadata error: {exc}")
+
+    # ── Parsing ──────────────────────────────────────────────────────────────
 
     def _parse_int_list(self, text: str) -> list[int]:
         return [int(x.strip()) for x in text.split(",") if x.strip()]
@@ -177,16 +242,14 @@ class DataPrepWidget(QWidget):
         root_dir = self._get_root_dir()
         if root_dir is None:
             raise ValueError("No project open. Create or open a project first.")
-        tp = None if self._tp_all_check.isChecked() else self._parse_int_list(self._tp_edit.text())
         return DatasetConfig(
             ndtiff_path=self._ndtiff_edit.text().strip(),
             root_dir=root_dir,
             positions=self._parse_int_list(self._positions_edit.text()),
-            timepoints=tp,
             xy_downsample=self._xy_spin.value(),
         )
 
-    # ── Run ──────────────────────────────────────────────────────────────
+    # ── Run ──────────────────────────────────────────────────────────────────
 
     def _on_run(self) -> None:
         try:
@@ -203,6 +266,7 @@ class DataPrepWidget(QWidget):
             return
 
         self._run_btn.setEnabled(False)
+        self._term_btn.setEnabled(False)
         self._progress.setVisible(True)
         self._progress.setValue(0)
         self._status_label.setText("Starting…")
@@ -235,6 +299,7 @@ class DataPrepWidget(QWidget):
 
     def _on_finished(self) -> None:
         self._run_btn.setEnabled(True)
+        self._term_btn.setEnabled(True)
         self._progress.setVisible(False)
         self._status_label.setText(f"Done — exported {self._n_positions} position(s).")
         self._worker = None
@@ -254,12 +319,57 @@ class DataPrepWidget(QWidget):
             data = json.loads(params_path.read_text(encoding="utf-8"))
             px = data.get("pixel_size_um")
             dt_s = data.get("time_interval_s")
-            if px is not None and self._state.pixel_size is None:
+            if px is not None:
                 self._state.pixel_size = float(px)
-            if dt_s is not None and self._state.time_interval is None:
+            if dt_s is not None:
                 self._state.time_interval = float(dt_s)
         except Exception:
             pass
+
+    # ── Run in Terminal ───────────────────────────────────────────────────────
+
+    def _on_run_in_terminal(self) -> None:
+        try:
+            config = self._build_config()
+        except Exception as e:
+            self._status_label.setText(f"Config error: {e}")
+            return
+
+        if not config.ndtiff_path:
+            self._status_label.setText("Please set the NDTiff directory.")
+            return
+        if not config.positions:
+            self._status_label.setText("Please specify at least one position.")
+            return
+
+        overwrite = self._overwrite_check.isChecked()
+        parts = []
+        for pos in config.positions:
+            cmd = (
+                f"python -m cellflow.cellpose.stages.raw_import"
+                f" --ndtiff-path {shlex.quote(config.ndtiff_path)}"
+                f" --root-dir {shlex.quote(config.root_dir)}"
+                f" --pos {pos}"
+                f" --xy-downsample {config.xy_downsample}"
+            )
+            if overwrite:
+                cmd += " --overwrite"
+            parts.append(cmd)
+
+        full_cmd = " && ".join(parts)
+        try:
+            launch_in_terminal(full_cmd)
+            self._status_label.setText("Launched export in terminal.")
+        except Exception as e:
+            self._status_label.setText(f"Terminal error: {e}")
+
+    def _on_error(self, exc: Exception) -> None:
+        self._run_btn.setEnabled(True)
+        self._term_btn.setEnabled(True)
+        self._progress.setVisible(False)
+        self._status_label.setText(f"Error: {exc}")
+        self._worker = None
+        self._log_viewer.refresh()
 
     def get_params(self) -> dict:
         return {
@@ -278,10 +388,3 @@ class DataPrepWidget(QWidget):
             self._xy_spin.setValue(int(data["xy_downsample"]))
         if "overwrite" in data:
             self._overwrite_check.setChecked(bool(data["overwrite"]))
-
-    def _on_error(self, exc: Exception) -> None:
-        self._run_btn.setEnabled(True)
-        self._progress.setVisible(False)
-        self._status_label.setText(f"Error: {exc}")
-        self._worker = None
-        self._log_viewer.refresh()
