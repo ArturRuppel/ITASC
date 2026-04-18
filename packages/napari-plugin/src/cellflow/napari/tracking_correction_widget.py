@@ -86,6 +86,7 @@ class TrackingCorrectionWidget(QWidget):
         name = self._state.tissue.nuclear_labels_layer
         arr = self._state.tissue.nuclear_labels
 
+        # If the layer is already in the viewer (current position), reuse it.
         if name and name in self.viewer.layers:
             layer = self.viewer.layers[name]
             if not isinstance(layer, napari.layers.Labels):
@@ -96,21 +97,22 @@ class TrackingCorrectionWidget(QWidget):
             self._set_data_layer(layer)
             return
 
+        # When a project is open, always load from disk so the current position
+        # is used. The state array may belong to a different position.
+        if self._state.project_dir is not None:
+            disk_arr = self._try_load_from_disk()
+            if disk_arr is not None:
+                return
+
+        # No project open — fall back to whatever is in state.
         if arr is not None:
             layer_name = name or "Nuclear Labels"
-            if self._state.project_dir is not None:
-                self._load_nuclear_zavg(self._state.project_dir, self._state.current_position)
             if layer_name in self.viewer.layers:
                 self.viewer.layers[layer_name].data = arr
                 layer = self.viewer.layers[layer_name]
             else:
                 layer = self.viewer.add_labels(arr, name=layer_name)
             self._set_data_layer(layer)
-            return
-
-        # Try loading from disk if a project is open
-        disk_arr = self._try_load_from_disk()
-        if disk_arr is not None:
             return
 
         self._data_status.setText(

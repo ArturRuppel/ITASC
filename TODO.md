@@ -1,5 +1,3 @@
-load corrected nuclear labels always loads position 0 it seems
-
 segmentation xwith flow watershed has unused parameters exposed to the ui
 
 when loading something into the napari viewer that is there already, check it's visibility state and copy that state on the new layer
