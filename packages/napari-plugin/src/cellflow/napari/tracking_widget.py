@@ -14,9 +14,10 @@ from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout,
     QSpinBox, QDoubleSpinBox, QComboBox,
     QPushButton, QLabel, QToolButton,
-    QTextEdit, QProgressBar, QScrollArea, QSizePolicy,
+    QProgressBar, QScrollArea,
 )
 from napari.qt.threading import thread_worker
+from napari.utils.notifications import show_info, show_error as _show_error
 import napari
 
 from .registry import get_state
@@ -140,13 +141,6 @@ class TrackingTab(QWidget):
         self._cancel_btn.setVisible(False)
         self._cancel_btn.clicked.connect(self._on_cancel)
         root.addWidget(self._cancel_btn)
-
-        self._log = QTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setMinimumHeight(100)
-        self._log.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._log.setPlaceholderText("Tracking log…")
-        root.addWidget(self._log)
 
         root.addStretch()
 
@@ -278,7 +272,6 @@ class TrackingTab(QWidget):
 
         track_params = self._collect_track_params()
 
-        self._log.clear()
         self._run_btn.setEnabled(False)
         self._progress.setVisible(True)
         self._cancel_btn.setVisible(True)
@@ -414,7 +407,9 @@ class TrackingTab(QWidget):
         self._cancel_btn.setVisible(False)
         self._log_append("Cancelled.")
 
-    def _log_append(self, msg):
-        self._log.append(str(msg))
-        sb = self._log.verticalScrollBar()
-        sb.setValue(sb.maximum())
+    def _log_append(self, msg: str) -> None:
+        msg = str(msg)
+        if msg.startswith("ERROR"):
+            _show_error(msg)
+        else:
+            show_info(msg)

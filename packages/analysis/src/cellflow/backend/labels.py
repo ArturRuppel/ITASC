@@ -1042,63 +1042,6 @@ def swap_labels(seg: np.ndarray, pos_a: tuple, pos_b: tuple) -> bool:
     return True
 
 
-def fix_cell_borders(seg: np.ndarray, radius: int = 2) -> bool:
-    """Fill narrow gaps between cells up to *radius* pixels wide.
-
-    Only background regions that are fully enclosed by cells are filled.
-    Free edges (background connected to the image boundary) are left as-is,
-    so cells do not grow into open space at the tissue margin.
-
-    Modifies *seg* in-place.  Returns True if any pixel was changed.
-    """
-    if radius <= 0:
-        return False
-
-    bg = seg == 0
-    if not np.any(bg):
-        return False
-
-    # ── identify open (border-touching) vs enclosed background regions ───
-    bg_labeled = cc_label(bg, connectivity=2)
-
-    open_ids: set = set()
-    for edge in (
-        bg_labeled[0, :], bg_labeled[-1, :],
-        bg_labeled[:, 0], bg_labeled[:, -1],
-    ):
-        open_ids.update(np.unique(edge))
-    open_ids.discard(0)
-
-    open_bg  = bg & np.isin(bg_labeled, list(open_ids))
-    enclosed = bg & ~open_bg
-
-    if not np.any(enclosed):
-        log.debug("fix_cell_borders: no enclosed background found — nothing to do")
-        return False
-
-    # ── expand cells, but block expansion into open background ───────────
-    # Use a SENTINEL label for open-BG pixels so expand_labels treats them
-    # as an existing "cell" and won't overwrite them.  Because enclosed gaps
-    # are surrounded by real cells (by definition), the real cell labels will
-    # always win the nearest-neighbour race for enclosed pixels.
-    SENTINEL = int(seg.max()) + 1
-    seg_work = seg.copy()
-    seg_work[open_bg] = SENTINEL
-
-    expanded = expand_labels(seg_work, distance=radius)
-
-    # Restore open background (remove SENTINEL and any accidental expansion)
-    expanded[open_bg] = 0
-    expanded[expanded == SENTINEL] = 0
-
-    changed = bool(np.any(expanded != seg))
-    if changed:
-        n_filled = int(np.sum(expanded != seg))
-        seg[:] = expanded
-        log.debug("fix_cell_borders: radius=%d  pixels filled=%d", radius, n_filled)
-    return changed
-
-
 def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
     """Remove isolated pixel groups too small to be valid cells, and fill tiny
     orphaned background holes left by draw/redraw operations.
@@ -1170,34 +1113,3 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
     return cleared
 
 
-def remove_tiny_cells(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
-    """Remove cells (complete objects) smaller than *min_size* pixels.
-
-    For each cell label, if its total pixel count is below *min_size*, reassign
-    all its pixels to the nearest neighbouring cell using ``expand_labels``.
-
-    This complements ``clean_stranded_pixels``: while that function removes
-    isolated components within a cell and fills background holes, this function
-    removes entire cells that are too small to be valid biological entities.
-
-    Modifies *seg* in-place. Returns the total number of pixels reassigned.
-    """
-    removed = 0
-    for cell_id in np.unique(seg):
-        if cell_id == 0:
-            continue
-        mask = seg == cell_id
-        n_px = int(np.sum(mask))
-        if n_px < min_size:
-            # First, erase the tiny cell to background (0) so expand_labels
-            # will expand from neighbouring cells, not the cell being removed
-            seg[mask] = 0
-            # Reassign to nearest neighbouring cell
-            filled = expand_labels(seg, distance=n_px + 2)
-            seg[mask] = filled[mask]
-            removed += n_px
-            log.debug(
-                "remove_tiny_cells: removed cell %d (%d pixels < min_size=%d)",
-                cell_id, n_px, min_size,
-            )
-    return removed

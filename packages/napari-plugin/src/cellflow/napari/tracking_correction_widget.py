@@ -15,7 +15,6 @@ from qtpy.QtWidgets import (
 from napari.utils.notifications import show_info, show_error
 
 from .registry import get_state
-from .widgets import CollapsibleSection
 from .tracking_widget import TrackingTab
 from .correction_widget import CorrectionWidget
 
@@ -71,9 +70,9 @@ class TrackingCorrectionWidget(QWidget):
         self._save_btn.clicked.connect(self._on_save)
         lay.addWidget(self._save_btn)
 
-        # Sub-sections
-        lay.addWidget(CollapsibleSection("Tracking", self._tracking, expanded=False))
-        lay.addWidget(CollapsibleSection("Correction", self._correction, expanded=False))
+        # Sub-sections: correction first, then re-tracking
+        lay.addWidget(self._correction)
+        lay.addWidget(self._tracking)
 
         # Auto-sync when state's nuclear labels change
         self._state.nuclear_labels_changed.connect(self._on_nuclear_labels_changed)
