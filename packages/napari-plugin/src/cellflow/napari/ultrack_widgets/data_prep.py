@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -31,7 +31,9 @@ from cellflow.napari.widgets import CollapsibleSection
 class DataPrepWidget(QWidget):
     """Widget for exporting raw NDTiff data to per-timepoint TIFFs."""
 
-    def __init__(self, viewer: "napari.Viewer") -> None:
+    run_started = Signal()
+
+    def __init__(self, viewer: "napari.Viewer", *, log_viewer=None) -> None:
         super().__init__()
         self.viewer = viewer
         self._state = get_state(viewer)
@@ -92,13 +94,13 @@ class DataPrepWidget(QWidget):
         row.addWidget(self._xy_spin)
         params_layout.addLayout(row)
 
-        # Overwrite
-        self._overwrite_check = QCheckBox("Overwrite existing files")
-        self._overwrite_check.setStyleSheet("color: white;")
-        params_layout.addWidget(self._overwrite_check)
-
         self._params_section = CollapsibleSection("Parameters", params_inner, expanded=True)
         layout.addWidget(self._params_section)
+
+        # ── Overwrite ────────────────────────────────────────────────────
+        self._overwrite_check = QCheckBox("Overwrite existing files")
+        self._overwrite_check.setStyleSheet("color: white;")
+        layout.addWidget(self._overwrite_check)
 
         # ── Run button ───────────────────────────────────────────────────
         self._run_btn = QPushButton("Run Export")
@@ -113,8 +115,11 @@ class DataPrepWidget(QWidget):
         self._status_label = QLabel("")
         layout.addWidget(self._status_label)
 
-        self._log_viewer = StageLogViewer(self._state)
-        layout.addWidget(self._log_viewer)
+        if log_viewer is not None:
+            self._log_viewer = log_viewer
+        else:
+            self._log_viewer = StageLogViewer(self._state)
+            layout.addWidget(self._log_viewer)
 
         # Connect project change signal
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
@@ -219,6 +224,7 @@ class DataPrepWidget(QWidget):
                 for done, total, label in run_s00(config, pos, overwrite=overwrite):
                     yield (pos, done, total, label)
 
+        self.run_started.emit()
         self._worker = _work()
 
     def _on_progress(self, update: tuple) -> None:
@@ -254,6 +260,24 @@ class DataPrepWidget(QWidget):
                 self._state.time_interval = float(dt_s)
         except Exception:
             pass
+
+    def get_params(self) -> dict:
+        return {
+            "ndtiff_path": self._ndtiff_edit.text().strip(),
+            "positions": self._positions_edit.text().strip(),
+            "xy_downsample": self._xy_spin.value(),
+            "overwrite": self._overwrite_check.isChecked(),
+        }
+
+    def set_params(self, data: dict) -> None:
+        if data.get("ndtiff_path"):
+            self._ndtiff_edit.setText(str(data["ndtiff_path"]))
+        if "positions" in data:
+            self._positions_edit.setText(str(data["positions"]))
+        if "xy_downsample" in data:
+            self._xy_spin.setValue(int(data["xy_downsample"]))
+        if "overwrite" in data:
+            self._overwrite_check.setChecked(bool(data["overwrite"]))
 
     def _on_error(self, exc: Exception) -> None:
         self._run_btn.setEnabled(True)

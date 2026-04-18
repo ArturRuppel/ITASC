@@ -7,12 +7,11 @@ import tempfile
 from pathlib import Path
 
 import tifffile
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -47,7 +46,9 @@ except ImportError:
 class CellposeWidget(QWidget):
     """Widget for running Cellpose segmentation (s01a nucleus + s01b cell)."""
 
-    def __init__(self, viewer: "napari.Viewer") -> None:
+    run_started = Signal()
+
+    def __init__(self, viewer: "napari.Viewer", *, log_viewer=None) -> None:
         super().__init__()
         self.viewer = viewer
         self._state = get_state(viewer)
@@ -78,8 +79,11 @@ class CellposeWidget(QWidget):
         inner_layout.addWidget(self._s01a_section)
         inner_layout.addWidget(self._s01b_section)
 
-        self._log_viewer = StageLogViewer(self._state)
-        inner_layout.addWidget(self._log_viewer)
+        if log_viewer is not None:
+            self._log_viewer = log_viewer
+        else:
+            self._log_viewer = StageLogViewer(self._state)
+            inner_layout.addWidget(self._log_viewer)
 
         # Connect project-change and position-change signals
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
@@ -205,6 +209,11 @@ class CellposeWidget(QWidget):
         preproc_group.setLayout(pp_layout)
         layout.addWidget(preproc_group)
 
+        # ── Overwrite ────────────────────────────────────────────────────
+        self._s01a_overwrite_check = QCheckBox("Overwrite existing files")
+        self._s01a_overwrite_check.setStyleSheet("color: white;")
+        layout.addWidget(self._s01a_overwrite_check)
+
         # ── Run buttons ──────────────────────────────────────────────────
         row = QHBoxLayout()
         self._s01a_run_btn = QPushButton("Run Cellpose")
@@ -215,24 +224,9 @@ class CellposeWidget(QWidget):
         row.addWidget(self._s01a_run_terminal_btn)
         layout.addLayout(row)
 
-        # ── Overwrite + Load results ─────────────────────────────────────
-        self._s01a_overwrite_check = QCheckBox("Overwrite existing files")
-        self._s01a_overwrite_check.setStyleSheet("color: white;")
-        layout.addWidget(self._s01a_overwrite_check)
-
         self._s01a_load_results_btn = QPushButton("Load Results")
         self._s01a_load_results_btn.clicked.connect(self._on_s01a_load_results)
         layout.addWidget(self._s01a_load_results_btn)
-
-        # ── Save / Load parameters ───────────────────────────────────────
-        row = QHBoxLayout()
-        save_btn = QPushButton("Save Parameters…")
-        save_btn.clicked.connect(self._on_s01a_save_params)
-        row.addWidget(save_btn)
-        load_btn = QPushButton("Load Parameters…")
-        load_btn.clicked.connect(self._on_s01a_load_params)
-        row.addWidget(load_btn)
-        layout.addLayout(row)
 
         # ── Progress ─────────────────────────────────────────────────────
         self._s01a_progress = QProgressBar()
@@ -317,6 +311,11 @@ class CellposeWidget(QWidget):
         preproc_group.setLayout(pp_layout)
         layout.addWidget(preproc_group)
 
+        # ── Overwrite ────────────────────────────────────────────────────
+        self._s01b_overwrite_check = QCheckBox("Overwrite existing files")
+        self._s01b_overwrite_check.setStyleSheet("color: white;")
+        layout.addWidget(self._s01b_overwrite_check)
+
         # ── Run buttons ──────────────────────────────────────────────────
         row = QHBoxLayout()
         self._s01b_run_btn = QPushButton("Run Cellpose")
@@ -327,24 +326,9 @@ class CellposeWidget(QWidget):
         row.addWidget(self._s01b_run_terminal_btn)
         layout.addLayout(row)
 
-        # ── Overwrite + Load results ─────────────────────────────────────
-        self._s01b_overwrite_check = QCheckBox("Overwrite existing files")
-        self._s01b_overwrite_check.setStyleSheet("color: white;")
-        layout.addWidget(self._s01b_overwrite_check)
-
         self._s01b_load_results_btn = QPushButton("Load Results")
         self._s01b_load_results_btn.clicked.connect(self._on_s01b_load_results)
         layout.addWidget(self._s01b_load_results_btn)
-
-        # ── Save / Load parameters ───────────────────────────────────────
-        row = QHBoxLayout()
-        save_btn = QPushButton("Save Parameters…")
-        save_btn.clicked.connect(self._on_s01b_save_params)
-        row.addWidget(save_btn)
-        load_btn = QPushButton("Load Parameters…")
-        load_btn.clicked.connect(self._on_s01b_load_params)
-        row.addWidget(load_btn)
-        layout.addLayout(row)
 
         # ── Progress ─────────────────────────────────────────────────────
         self._s01b_progress = QProgressBar()
@@ -441,6 +425,7 @@ class CellposeWidget(QWidget):
             for update in run_s01a(input_dir_str, output_dir_str, cfg, overwrite=overwrite):
                 yield update
 
+        self.run_started.emit()
         self._worker_s01a = _work()
 
     # ── s01b Run inline ──────────────────────────────────────────────────
@@ -473,6 +458,7 @@ class CellposeWidget(QWidget):
             for update in run_s01b(root_dir_str, pos, cfg, overwrite=overwrite):
                 yield update
 
+        self.run_started.emit()
         self._worker_s01b = _work()
 
     # ── s01a Run in terminal ─────────────────────────────────────────────
@@ -648,48 +634,36 @@ class CellposeWidget(QWidget):
         else:
             self._s01b_status_label.setText("No cellpose outputs found.")
 
-    # ── s01a Save / Load parameters ──────────────────────────────────────
+    # ── get_params / set_params ──────────────────────────────────────────
 
-    def _on_s01a_save_params(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save s01a parameters", "", "JSON files (*.json)"
-        )
-        if not path:
+    def get_params(self) -> dict:
+        result = {"cellpose_nucleus": {}, "cellpose_cell": {}}
+        if not _CELLPOSE_PIPELINE_AVAILABLE:
+            return result
+        cfg_a = self._build_s01a_config()
+        result["cellpose_nucleus"] = {
+            **cfg_a.model_dump(),
+            "overwrite": self._s01a_overwrite_check.isChecked(),
+        }
+        cfg_b = self._build_s01b_config()
+        result["cellpose_cell"] = {
+            **cfg_b.model_dump(),
+            "overwrite": self._s01b_overwrite_check.isChecked(),
+        }
+        return result
+
+    def set_params(self, data: dict) -> None:
+        if not _CELLPOSE_PIPELINE_AVAILABLE:
             return
-        cfg = self._build_s01a_config()
-        Path(path).write_text(json.dumps(cfg.model_dump(), indent=2))
-        self._s01a_status_label.setText(f"Parameters saved to {Path(path).name}")
-
-    def _on_s01a_load_params(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load s01a parameters", "", "JSON files (*.json)"
-        )
-        if not path:
-            return
-        data = json.loads(Path(path).read_text())
-        cfg = CellposeConfig(**data)
-        self._apply_s01a_config(cfg)
-        self._s01a_status_label.setText(f"Parameters loaded from {Path(path).name}")
-
-    # ── s01b Save / Load parameters ──────────────────────────────────────
-
-    def _on_s01b_save_params(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save s01b parameters", "", "JSON files (*.json)"
-        )
-        if not path:
-            return
-        cfg = self._build_s01b_config()
-        Path(path).write_text(json.dumps(cfg.model_dump(), indent=2))
-        self._s01b_status_label.setText(f"Parameters saved to {Path(path).name}")
-
-    def _on_s01b_load_params(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load s01b parameters", "", "JSON files (*.json)"
-        )
-        if not path:
-            return
-        data = json.loads(Path(path).read_text())
-        cfg = CellposeConfig(**data)
-        self._apply_s01b_config(cfg)
-        self._s01b_status_label.setText(f"Parameters loaded from {Path(path).name}")
+        if "cellpose_nucleus" in data:
+            d = data["cellpose_nucleus"]
+            cfg = CellposeConfig(**{k: v for k, v in d.items() if k != "overwrite"})
+            self._apply_s01a_config(cfg)
+            if "overwrite" in d:
+                self._s01a_overwrite_check.setChecked(bool(d["overwrite"]))
+        if "cellpose_cell" in data:
+            d = data["cellpose_cell"]
+            cfg = CellposeConfig(**{k: v for k, v in d.items() if k != "overwrite"})
+            self._apply_s01b_config(cfg)
+            if "overwrite" in d:
+                self._s01b_overwrite_check.setChecked(bool(d["overwrite"]))

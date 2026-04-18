@@ -16,14 +16,12 @@ from typing import Generator
 
 import numpy as np
 import tifffile
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -41,6 +39,7 @@ from cellflow.core.paths import stage_dir
 from cellflow.napari.runners.terminal import launch_in_terminal
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
+from cellflow.napari.widgets import CollapsibleSection
 
 
 def cellpose_cell_dir(root_dir, pos):
@@ -246,6 +245,7 @@ def run_segmentation_only(
     root_dir: str | Path,
     pos: int,
     config: FlowWatershedConfig,
+    overwrite: bool = True,
 ) -> Generator:
     """
     Run flow watershed segmentation only (no postprocessing) for a full stack.
@@ -255,6 +255,11 @@ def run_segmentation_only(
     from cellflow.cellpose.processing.flow_watershed import flow_guided_watershed
 
     root_dir = Path(root_dir)
+    out_dir = cell_segmentation_dir(root_dir, pos)
+    out_path = out_dir / "cell_labels_raw.tif"
+    if out_path.exists() and not overwrite:
+        print(f"Output exists, skipping (overwrite=False): {out_path}")
+        return str(out_path)
 
     # Load nuclear labels
     nuclear_labels = _load_nuclear_labels(root_dir, pos)
@@ -338,6 +343,7 @@ def run_postprocessing_only(
     root_dir: str | Path,
     pos: int,
     config: FlowWatershedConfig,
+    overwrite: bool = True,
 ) -> Generator:
     """
     Run postprocessing on existing raw labels.
@@ -349,6 +355,11 @@ def run_postprocessing_only(
     root_dir = Path(root_dir)
     out_dir = cell_segmentation_dir(root_dir, pos)
     raw_path = out_dir / "cell_labels_raw.tif"
+    out_path = out_dir / "cell_labels.tif"
+
+    if out_path.exists() and not overwrite:
+        print(f"Output exists, skipping (overwrite=False): {out_path}")
+        return str(out_path)
 
     if not raw_path.exists():
         print(f"Could not find raw labels at {raw_path}")
@@ -503,6 +514,7 @@ def run_full_pipeline(
                     flow_smoothing_sigma=config.flow_smoothing_sigma,
                     max_iterations=config.max_iterations,
                     uniform_growth_rate=config.uniform_growth_rate,
+                    flow_mag_scale=config.flow_mag_scale,
                 )
                 if fg_t is not None:
                     cell_labels_raw[~fg_t.astype(bool)] = 0
@@ -845,7 +857,9 @@ class _PostprocessPipelineWidget(QWidget):
 class FlowGuidedSegmentationWidget(QWidget):
     """Widget for flow-guided watershed cell segmentation with independent segmentation and postprocessing stages."""
 
-    def __init__(self, viewer: "napari.Viewer") -> None:
+    run_started = Signal()
+
+    def __init__(self, viewer: "napari.Viewer", *, log_viewer=None) -> None:
         super().__init__()
         self.viewer = viewer
         self._state = get_state(viewer)
@@ -865,16 +879,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._project_label.setStyleSheet("color: white; font-size: 8pt;")
         self._project_label.setWordWrap(True)
         lay.addWidget(self._project_label)
-
-        # ── Save / Load all parameters ───────────────────────────────────
-        row = QHBoxLayout()
-        save_btn = QPushButton("Save All Parameters…")
-        save_btn.clicked.connect(self._on_save_all_params)
-        row.addWidget(save_btn)
-        load_btn = QPushButton("Load All Parameters…")
-        load_btn.clicked.connect(self._on_load_all_params)
-        row.addWidget(load_btn)
-        lay.addLayout(row)
 
         # ── Build stage sections ─────────────────────────────────────────
         lay.addWidget(self._build_foreground_mask_section())
@@ -902,8 +906,11 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._all_status = QLabel("")
         lay.addWidget(self._all_status)
 
-        self._log_viewer = StageLogViewer(self._state)
-        lay.addWidget(self._log_viewer)
+        if log_viewer is not None:
+            self._log_viewer = log_viewer
+        else:
+            self._log_viewer = StageLogViewer(self._state)
+            lay.addWidget(self._log_viewer)
 
         # Connect project-change and position-change signals
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
@@ -931,9 +938,9 @@ class FlowGuidedSegmentationWidget(QWidget):
             f"Root: {root}  |  Position: pos{pos:02d}"
         )
 
-    def _build_segmentation_section(self) -> QGroupBox:
+    def _build_segmentation_section(self) -> CollapsibleSection:
         """Build the Segmentation section."""
-        grp = QGroupBox("Segmentation")
+        content = QWidget()
         lay = QVBoxLayout()
 
         # Preview frame
@@ -1044,12 +1051,12 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_status = QLabel("")
         lay.addWidget(self._seg_status)
 
-        grp.setLayout(lay)
-        return grp
+        content.setLayout(lay)
+        return CollapsibleSection("Segmentation", content, expanded=False)
 
-    def _build_foreground_mask_section(self) -> QGroupBox:
+    def _build_foreground_mask_section(self) -> CollapsibleSection:
         """Build the Foreground Mask section."""
-        grp = QGroupBox("Foreground Mask")
+        content = QWidget()
         lay = QVBoxLayout()
 
         # ── Thresholding parameters ────────────────────────────────────
@@ -1105,12 +1112,12 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._fm_status = QLabel("")
         lay.addWidget(self._fm_status)
 
-        grp.setLayout(lay)
-        return grp
+        content.setLayout(lay)
+        return CollapsibleSection("Foreground Mask", content, expanded=False)
 
-    def _build_postprocessing_section(self) -> QGroupBox:
+    def _build_postprocessing_section(self) -> CollapsibleSection:
         """Build the Post-processing section with a dynamic step-list pipeline."""
-        grp = QGroupBox("Post-processing")
+        content = QWidget()
         lay = QVBoxLayout()
 
         # ── Preview frame ──────────────────────────────────────────────
@@ -1165,8 +1172,8 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._pp_status = QLabel("")
         lay.addWidget(self._pp_status)
 
-        grp.setLayout(lay)
-        return grp
+        content.setLayout(lay)
+        return CollapsibleSection("Post-processing", content, expanded=False)
 
     # ════════════════════════════════════════════════════════════════════
     # Config helpers
@@ -1257,6 +1264,7 @@ class FlowGuidedSegmentationWidget(QWidget):
                 flow_smoothing_sigma=cfg.flow_smoothing_sigma,
                 max_iterations=cfg.max_iterations,
                 uniform_growth_rate=cfg.uniform_growth_rate,
+                flow_mag_scale=cfg.flow_mag_scale,
             )
 
             # Cut off cells that expanded outside the tissue foreground
@@ -1306,6 +1314,8 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_progress.setValue(0)
         self._seg_status.setText("Running segmentation…")
 
+        overwrite = self._seg_overwrite_chk.isChecked()
+
         @thread_worker(
             connect={
                 "yielded": self._seg_on_progress,
@@ -1314,9 +1324,10 @@ class FlowGuidedSegmentationWidget(QWidget):
             }
         )
         def _work():
-            for update in run_segmentation_only(root_dir, pos, cfg):
+            for update in run_segmentation_only(root_dir, pos, cfg, overwrite=overwrite):
                 yield update
 
+        self.run_started.emit()
         self._seg_worker = _work()
         self._seg_worker.aborted.connect(self._seg_on_cancelled)
 
@@ -1507,6 +1518,8 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._pp_progress.setValue(0)
         self._pp_status.setText("Running post-processing…")
 
+        overwrite = self._pp_overwrite_chk.isChecked()
+
         @thread_worker(
             connect={
                 "yielded": self._pp_on_progress,
@@ -1515,9 +1528,10 @@ class FlowGuidedSegmentationWidget(QWidget):
             }
         )
         def _work():
-            for update in run_postprocessing_only(root_dir, pos, cfg):
+            for update in run_postprocessing_only(root_dir, pos, cfg, overwrite=overwrite):
                 yield update
 
+        self.run_started.emit()
         self._pp_worker = _work()
         self._pp_worker.aborted.connect(self._pp_on_cancelled)
 
@@ -1666,6 +1680,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             for update in run_foreground_mask_only(root_dir, pos, sigma, threshold, pp_steps):
                 yield update
 
+        self.run_started.emit()
         self._fm_worker = _work()
         self._fm_worker.aborted.connect(self._fm_on_cancelled)
 
@@ -1774,6 +1789,7 @@ class FlowGuidedSegmentationWidget(QWidget):
             for update in run_full_pipeline(root_dir, pos, cfg):
                 yield update
 
+        self.run_started.emit()
         self._all_worker = _work()
         self._all_worker.aborted.connect(self._all_on_cancelled)
 
@@ -1861,26 +1877,19 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._all_worker.quit()
 
     # ════════════════════════════════════════════════════════════════════
-    # Save / Load all parameters
+    # get_params / set_params
     # ════════════════════════════════════════════════════════════════════
 
-    def _on_save_all_params(self) -> None:
-        """Save all configuration parameters to JSON file."""
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save parameters", "", "JSON files (*.json)"
-        )
-        if not path:
-            return
-        cfg = self._build_config()
-        Path(path).write_text(json.dumps(cfg.model_dump(), indent=2))
+    def get_params(self) -> dict:
+        d = self._build_config().model_dump()
+        d["seg_overwrite"] = self._seg_overwrite_chk.isChecked()
+        d["pp_overwrite"] = self._pp_overwrite_chk.isChecked()
+        return d
 
-    def _on_load_all_params(self) -> None:
-        """Load all configuration parameters from JSON file."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load parameters", "", "JSON files (*.json)"
-        )
-        if not path:
-            return
-        data = json.loads(Path(path).read_text())
-        cfg = FlowWatershedConfig.from_dict(data)
-        self._apply_config(cfg)
+    def set_params(self, data: dict) -> None:
+        cfg_data = {k: v for k, v in data.items() if k not in ("seg_overwrite", "pp_overwrite")}
+        self._apply_config(FlowWatershedConfig.from_dict(cfg_data))
+        if "seg_overwrite" in data:
+            self._seg_overwrite_chk.setChecked(bool(data["seg_overwrite"]))
+        if "pp_overwrite" in data:
+            self._pp_overwrite_chk.setChecked(bool(data["pp_overwrite"]))

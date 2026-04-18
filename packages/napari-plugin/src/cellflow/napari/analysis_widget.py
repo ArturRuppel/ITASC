@@ -2,19 +2,28 @@
 
 All pipeline stages are rendered as a vertical accordion of CollapsibleSections.
 """
+import json
 import logging
+from pathlib import Path
 
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from .log_viewer import StageLogViewer
 from .registry import get_state
 from .widgets import CollapsibleSection
 
 logger = logging.getLogger(__name__)
+
+_CONFIG_FILENAME = "cellflow_config.json"
+_CONFIG_VERSION = 1
 
 
 class CellFlowWidget(QWidget):
@@ -22,6 +31,7 @@ class CellFlowWidget(QWidget):
         super().__init__()
         self.viewer = napari_viewer
         self._state = get_state(napari_viewer)
+        self._last_loaded_project_dir = None  # track which project's config was loaded
 
         # Poll manifest every 5 s to update pipeline tab status badges.
         self._badge_timer = QTimer(self)
@@ -57,27 +67,44 @@ class CellFlowWidget(QWidget):
         self._project_panel = ProjectPanel(self.viewer, self._state)
         _plugin_layout.addWidget(self._project_panel)
 
-        # ========== Accordion sections (migrated from tabs) ==========
+        # ── Config save/load row ─────────────────────────────────────────
+        config_row = QHBoxLayout()
+        config_row.setContentsMargins(6, 2, 6, 2)
+        self._save_cfg_btn = QPushButton("Save Config")
+        self._save_cfg_btn.clicked.connect(self._save_config)
+        config_row.addWidget(self._save_cfg_btn)
+        self._load_cfg_btn = QPushButton("Load Config")
+        self._load_cfg_btn.clicked.connect(self._load_config)
+        config_row.addWidget(self._load_cfg_btn)
+        self._save_cfg_as_btn = QPushButton("Save Config As\u2026")
+        self._save_cfg_as_btn.clicked.connect(self._save_config_as)
+        config_row.addWidget(self._save_cfg_as_btn)
+        self._load_cfg_from_btn = QPushButton("Load Config From\u2026")
+        self._load_cfg_from_btn.clicked.connect(self._load_config_from)
+        config_row.addWidget(self._load_cfg_from_btn)
+        _plugin_layout.addLayout(config_row)
+
+        # ── Shared log viewer (passed to all subwidgets) ─────────────────
+        self._log_viewer = StageLogViewer(self._state, expanded=True)
+
+        # ========== Accordion sections ==========
         from .ultrack_widgets.data_prep import DataPrepWidget
         from .ultrack_widgets.cellpose import CellposeWidget
         from .ultrack_widgets.ultrack_widget import UltrackAnalysisWidget
 
-        # 0_input — accordion section, not a tab
-        self._data_prep_widget = DataPrepWidget(self.viewer)
+        self._data_prep_widget = DataPrepWidget(self.viewer, log_viewer=self._log_viewer)
         self._data_prep_section = CollapsibleSection(
             "Prepare Input Data", self._data_prep_widget, expanded=False
         )
         _plugin_layout.addWidget(self._data_prep_section)
 
-        # 1_cellpose — accordion section with two sub-sections (3D Nucleus / 2D Cell)
-        self._cellpose_tab = CellposeWidget(self.viewer)
+        self._cellpose_tab = CellposeWidget(self.viewer, log_viewer=self._log_viewer)
         self._cellpose_section = CollapsibleSection(
             "Cellpose", self._cellpose_tab, expanded=False
         )
         _plugin_layout.addWidget(self._cellpose_section)
 
-        # 2_ultrack — accordion section with two sub-sections (Contours / Tracking)
-        self._ultrack_tab = UltrackAnalysisWidget(self.viewer)
+        self._ultrack_tab = UltrackAnalysisWidget(self.viewer, log_viewer=self._log_viewer)
         self._ultrack_section = CollapsibleSection(
             "Ultrack", self._ultrack_tab, expanded=False
         )
@@ -88,7 +115,6 @@ class CellFlowWidget(QWidget):
         from .edge_analysis_widget import EdgeAnalysisWidget
         from .forces_widget import ForcesWidget
 
-        # 3_correction — LapTrack re-tracking + manual correction, shared layer
         self._tracking_correction_widget = TrackingCorrectionWidget(self.viewer)
         self._ultrack_tab.labels_loaded.connect(self._tracking_correction_widget._set_data_layer)
         self._correction_section = CollapsibleSection(
@@ -96,35 +122,145 @@ class CellFlowWidget(QWidget):
         )
         _plugin_layout.addWidget(self._correction_section)
 
-        # 4_cell_segmentation
-        self._cell_seg_tab = FlowGuidedSegmentationWidget(self.viewer)
+        self._cell_seg_tab = FlowGuidedSegmentationWidget(self.viewer, log_viewer=self._log_viewer)
         self._cell_seg_section = CollapsibleSection(
             "Flow Watershed", self._cell_seg_tab, expanded=False
         )
         _plugin_layout.addWidget(self._cell_seg_section)
 
-        # 5_analysis
         self._edge_analysis_widget = EdgeAnalysisWidget(self.viewer)
         self._edge_analysis_section = CollapsibleSection(
             "Edge Analysis", self._edge_analysis_widget, expanded=False
         )
         _plugin_layout.addWidget(self._edge_analysis_section)
 
-        # ForSys (downstream, no pipeline dir yet)
         self._forces_widget = ForcesWidget(self.viewer)
         self._forces_section = CollapsibleSection(
             "ForSys", self._forces_widget, expanded=False
         )
         _plugin_layout.addWidget(self._forces_section)
 
-        # Dataset collapsible section sits at the very bottom.
+        # Dataset collapsible section
         _plugin_layout.addWidget(self._project_panel.dataset_widget)
 
-        # Stretch absorbs leftover space so sections pack to the top and never expand.
+        # ── Shared log at the bottom ──────────────────────────────────────
+        _plugin_layout.addWidget(self._log_viewer)
+
         _plugin_layout.addStretch(1)
 
     def _connect_signals(self):
         self._state.pipeline_schema_changed.connect(self._refresh_tab_badges)
+        self._state.pipeline_schema_changed.connect(self._load_config_if_exists)
+
+        # Auto-save config whenever any pipeline widget starts a run
+        self._data_prep_widget.run_started.connect(self._autosave_config)
+        self._cellpose_tab.run_started.connect(self._autosave_config)
+        self._ultrack_tab.run_started.connect(self._autosave_config)
+        self._cell_seg_tab.run_started.connect(self._autosave_config)
+
+    # ------------------------------------------------------------------
+    # Config save / load
+    # ------------------------------------------------------------------
+
+    def _config_path(self) -> Path | None:
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            return None
+        return Path(project_dir) / _CONFIG_FILENAME
+
+    def _collect_config(self) -> dict:
+        cfg = {"version": _CONFIG_VERSION}
+        cfg["data_prep"] = self._data_prep_widget.get_params()
+        cfg.update(self._cellpose_tab.get_params())  # cellpose_nucleus + cellpose_cell
+        cfg["ultrack"] = self._ultrack_tab.get_params()
+        cfg["flow_watershed"] = self._cell_seg_tab.get_params()
+        return cfg
+
+    def _apply_config(self, data: dict) -> None:
+        if "data_prep" in data:
+            self._data_prep_widget.set_params(data["data_prep"])
+        self._cellpose_tab.set_params({
+            k: data[k] for k in ("cellpose_nucleus", "cellpose_cell") if k in data
+        })
+        if "ultrack" in data:
+            self._ultrack_tab.set_params(data["ultrack"])
+        if "flow_watershed" in data:
+            self._cell_seg_tab.set_params(data["flow_watershed"])
+
+    def _write_config(self, path: Path) -> None:
+        cfg = self._collect_config()
+        path.write_text(json.dumps(cfg, indent=2))
+        logger.info("Config saved: %s", path)
+
+    def _read_config(self, path: Path) -> None:
+        data = json.loads(path.read_text())
+        self._apply_config(data)
+        logger.info("Config loaded: %s", path)
+
+    def _save_config(self) -> None:
+        path = self._config_path()
+        if path is None:
+            return
+        try:
+            self._write_config(path)
+        except Exception as e:
+            logger.warning("Config save failed: %s", e)
+
+    def _load_config(self) -> None:
+        path = self._config_path()
+        if path is None or not path.exists():
+            return
+        try:
+            self._read_config(path)
+        except Exception as e:
+            logger.warning("Config load failed: %s", e)
+
+    def _save_config_as(self) -> None:
+        default = str(self._config_path() or "")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Config As", default, "JSON files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            self._write_config(Path(path))
+        except Exception as e:
+            logger.warning("Config save failed: %s", e)
+
+    def _load_config_from(self) -> None:
+        default = str(self._config_path() or "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Config From", default, "JSON files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            self._read_config(Path(path))
+        except Exception as e:
+            logger.warning("Config load failed: %s", e)
+
+    def _autosave_config(self) -> None:
+        path = self._config_path()
+        if path is None:
+            return
+        try:
+            self._write_config(path)
+        except Exception as e:
+            logger.warning("Config auto-save failed: %s", e)
+
+    def _load_config_if_exists(self) -> None:
+        project_dir = self._state.project_dir
+        if project_dir is None or project_dir == self._last_loaded_project_dir:
+            return
+        path = Path(project_dir) / _CONFIG_FILENAME
+        if not path.exists():
+            self._last_loaded_project_dir = project_dir
+            return
+        try:
+            self._read_config(path)
+            self._last_loaded_project_dir = project_dir
+        except Exception as e:
+            logger.warning("Auto-load config failed: %s", e)
 
     # ------------------------------------------------------------------
     # Pipeline tab status badges
@@ -142,7 +278,6 @@ class CellFlowWidget(QWidget):
         "pending":  "",
     }
 
-    # All sections: maps base title → CollapsibleSection
     @property
     def _accordion_sections(self) -> "dict[str, CollapsibleSection]":
         return {

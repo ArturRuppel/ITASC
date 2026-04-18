@@ -50,6 +50,7 @@ class StageLogViewer(QWidget):
         state: ViewerState,
         parent: Optional[QWidget] = None,
         max_lines: int = _MAX_LINES,
+        expanded: bool = False,
     ) -> None:
         super().__init__(parent)
         self._state = state
@@ -60,6 +61,8 @@ class StageLogViewer(QWidget):
         self._build_ui()
         self._connect_signals()
         self._on_project_changed()
+        if expanded:
+            self._toggle()
 
     # ------------------------------------------------------------------
     # UI

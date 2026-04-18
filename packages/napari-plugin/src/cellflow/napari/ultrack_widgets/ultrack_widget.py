@@ -16,7 +16,6 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -62,8 +61,9 @@ class UltrackAnalysisWidget(QWidget):
 
     # Emitted after tracked_labels is loaded into the viewer.
     labels_loaded = Signal(object)  # napari Labels layer
+    run_started = Signal()
 
-    def __init__(self, viewer: "napari.Viewer") -> None:
+    def __init__(self, viewer: "napari.Viewer", *, log_viewer=None) -> None:
         super().__init__()
         self.viewer = viewer
 
@@ -104,19 +104,11 @@ class UltrackAnalysisWidget(QWidget):
         self._project_label.setWordWrap(True)
         lay.addWidget(self._project_label)
 
-        # ── Save / Load all parameters ───────────────────────────────────
-        row = QHBoxLayout()
-        b = QPushButton("Save All Parameters\u2026")
-        b.clicked.connect(self._on_save_all_params)
-        row.addWidget(b)
-        b = QPushButton("Load All Parameters\u2026")
-        b.clicked.connect(self._on_load_all_params)
-        row.addWidget(b)
-        lay.addLayout(row)
-
         # ── Build stage sections ─────────────────────────────────────────
         lay.addWidget(self._build_cp_contours_section())
-        lay.addWidget(self._build_tracking_section())
+        lay.addWidget(self._build_seg_hypotheses_section())
+        lay.addWidget(self._build_linking_section())
+        lay.addWidget(self._build_solver_section())
 
         # ── Run All ──────────────────────────────────────────────────────
         row = QHBoxLayout()
@@ -138,8 +130,11 @@ class UltrackAnalysisWidget(QWidget):
         self._all_status = QLabel("")
         lay.addWidget(self._all_status)
 
-        self._log_viewer = StageLogViewer(self._state)
-        lay.addWidget(self._log_viewer)
+        if log_viewer is not None:
+            self._log_viewer = log_viewer
+        else:
+            self._log_viewer = StageLogViewer(self._state)
+            lay.addWidget(self._log_viewer)
 
         # Connect project-change and position-change signals
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
@@ -478,6 +473,7 @@ class UltrackAnalysisWidget(QWidget):
             for u in self._cp_ct_run_sweep_and_average(inp, out, overwrite):
                 yield u
 
+        self.run_started.emit()
         self._cp_ct_worker = _work()
         self._cp_ct_worker.aborted.connect(self._cp_ct_on_cancelled)
 
@@ -566,24 +562,19 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_load_stack()
 
     # ══════════════════════════════════════════════════════════════════════
-    # TRACKING section
+    # SEGMENTATION HYPOTHESES section
     # ══════════════════════════════════════════════════════════════════════
 
-    def _build_tracking_section(self) -> CollapsibleSection:
+    def _build_seg_hypotheses_section(self) -> CollapsibleSection:
         content = QWidget()
         lay = QVBoxLayout()
 
-        # ── SEGMENTATION sub-section ─────────────────────────────────────
-        seg = QGroupBox("Segmentation hypotheses")
-        sl = QVBoxLayout()
-
-        # Overwrite checkbox for segmentation
         row = QHBoxLayout()
         self._tr_overwrite_seg_chk = QCheckBox("Overwrite")
         self._tr_overwrite_seg_chk.setStyleSheet("color: white;")
         self._tr_overwrite_seg_chk.setToolTip("Re-run segmentation even if candidates already exist in the database")
         row.addWidget(self._tr_overwrite_seg_chk)
-        sl.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Min area"))
@@ -598,7 +589,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_max_area.setValue(1_000_000)
         self._tr_max_area.setToolTip("Maximum area (pixels) for a segmentation hypothesis; larger regions are discarded")
         row.addWidget(self._tr_max_area)
-        sl.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Min frontier"))
@@ -616,7 +607,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_seg_thresh.setValue(0.5)
         self._tr_seg_thresh.setToolTip("Foreground probability threshold for extracting segmentation candidates")
         row.addWidget(self._tr_seg_thresh)
-        sl.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("WS hierarchy"))
@@ -631,9 +622,8 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_aniso.setDecimals(1)
         self._tr_aniso.setToolTip("Penalty for inter-frame links to compensate for anisotropic voxel spacing; 0 = no penalty")
         row.addWidget(self._tr_aniso)
-        sl.addLayout(row)
+        lay.addLayout(row)
 
-        # Workers for segmentation
         # Arrays are converted to a file-backed zarr store when n_workers > 1,
         # so spawned processes read by path rather than unpickling the full stack.
         row = QHBoxLayout()
@@ -647,9 +637,8 @@ class UltrackAnalysisWidget(QWidget):
             "data by path rather than pickling large arrays."
         )
         row.addWidget(self._tr_seg_workers)
-        sl.addLayout(row)
+        lay.addLayout(row)
 
-        # Buttons for segmentation
         row = QHBoxLayout()
         self._tr_seg_run_btn = QPushButton("Run Segmentation")
         self._tr_seg_run_btn.clicked.connect(self._tr_on_run_segmentation)
@@ -661,28 +650,31 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_seg_cancel_btn.setEnabled(False)
         self._tr_seg_cancel_btn.clicked.connect(self._tr_on_seg_cancel)
         row.addWidget(self._tr_seg_cancel_btn)
-        sl.addLayout(row)
+        lay.addLayout(row)
 
         self._tr_seg_progress = QProgressBar()
         self._tr_seg_progress.setVisible(False)
-        sl.addWidget(self._tr_seg_progress)
+        lay.addWidget(self._tr_seg_progress)
         self._tr_seg_status = QLabel("")
-        sl.addWidget(self._tr_seg_status)
+        lay.addWidget(self._tr_seg_status)
 
-        seg.setLayout(sl)
-        lay.addWidget(seg)
+        content.setLayout(lay)
+        return CollapsibleSection("Segmentation hypotheses", content, expanded=False)
 
-        # ── LINKING sub-section ──────────────────────────────────────────
-        lnk = QGroupBox("Linking")
-        ll = QVBoxLayout()
+    # ══════════════════════════════════════════════════════════════════════
+    # LINKING section
+    # ══════════════════════════════════════════════════════════════════════
 
-        # Overwrite checkbox for linking
+    def _build_linking_section(self) -> CollapsibleSection:
+        content = QWidget()
+        lay = QVBoxLayout()
+
         row = QHBoxLayout()
         self._tr_overwrite_lnk_chk = QCheckBox("Overwrite")
         self._tr_overwrite_lnk_chk.setStyleSheet("color: white;")
         self._tr_overwrite_lnk_chk.setToolTip("Re-run linking even if the link graph already exists in the database")
         row.addWidget(self._tr_overwrite_lnk_chk)
-        ll.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Max distance"))
@@ -699,7 +691,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_max_nb.setValue(5)
         self._tr_max_nb.setToolTip("Maximum number of candidate links considered per segment per frame")
         row.addWidget(self._tr_max_nb)
-        ll.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Distance weight"))
@@ -709,9 +701,8 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_dist_w.setDecimals(2)
         self._tr_dist_w.setToolTip("Weight of the distance term in the link-cost function; 0 = pure overlap-based linking")
         row.addWidget(self._tr_dist_w)
-        ll.addLayout(row)
+        lay.addLayout(row)
 
-        # Workers for linking
         row = QHBoxLayout()
         row.addWidget(QLabel("Workers"))
         self._tr_lnk_workers = QSpinBox()
@@ -719,9 +710,8 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_lnk_workers.setValue(1)
         self._tr_lnk_workers.setToolTip("Number of parallel workers for the linking stage")
         row.addWidget(self._tr_lnk_workers)
-        ll.addLayout(row)
+        lay.addLayout(row)
 
-        # Buttons for linking
         row = QHBoxLayout()
         self._tr_lnk_run_btn = QPushButton("Run Linking")
         self._tr_lnk_run_btn.clicked.connect(self._tr_on_run_linking)
@@ -733,28 +723,31 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_lnk_cancel_btn.setEnabled(False)
         self._tr_lnk_cancel_btn.clicked.connect(self._tr_on_lnk_cancel)
         row.addWidget(self._tr_lnk_cancel_btn)
-        ll.addLayout(row)
+        lay.addLayout(row)
 
         self._tr_lnk_progress = QProgressBar()
         self._tr_lnk_progress.setVisible(False)
-        ll.addWidget(self._tr_lnk_progress)
+        lay.addWidget(self._tr_lnk_progress)
         self._tr_lnk_status = QLabel("")
-        ll.addWidget(self._tr_lnk_status)
+        lay.addWidget(self._tr_lnk_status)
 
-        lnk.setLayout(ll)
-        lay.addWidget(lnk)
+        content.setLayout(lay)
+        return CollapsibleSection("Linking", content, expanded=False)
 
-        # ── SOLVER (ILP) sub-section ─────────────────────────────────────
-        slv = QGroupBox("Solver (ILP)")
-        sv = QVBoxLayout()
+    # ══════════════════════════════════════════════════════════════════════
+    # TRACKING (solver) section
+    # ══════════════════════════════════════════════════════════════════════
 
-        # Overwrite checkbox for solve
+    def _build_solver_section(self) -> CollapsibleSection:
+        content = QWidget()
+        lay = QVBoxLayout()
+
         row = QHBoxLayout()
         self._tr_overwrite_slv_chk = QCheckBox("Overwrite")
         self._tr_overwrite_slv_chk.setStyleSheet("color: white;")
         self._tr_overwrite_slv_chk.setToolTip("Re-run the ILP solver even if a solution already exists in the database")
         row.addWidget(self._tr_overwrite_slv_chk)
-        sv.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Appear"))
@@ -773,7 +766,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_disappear.setValue(-0.001)
         self._tr_disappear.setToolTip("ILP cost for a track ending mid-sequence; more negative = fewer track ends")
         row.addWidget(self._tr_disappear)
-        sv.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Division"))
@@ -789,7 +782,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_link_func.addItems(["power", "identity"])
         self._tr_link_func.setToolTip("Transform link scores: \"power\" raises to the exponent; \"identity\" uses scores directly")
         row.addWidget(self._tr_link_func)
-        sv.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Power"))
@@ -807,7 +800,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_bias.setDecimals(3)
         self._tr_bias.setToolTip("Constant added to all link scores; negative bias discourages linking overall")
         row.addWidget(self._tr_bias)
-        sv.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Gap"))
@@ -824,7 +817,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_time_limit.setValue(36_000)
         self._tr_time_limit.setToolTip("Maximum wall-clock time (seconds) the ILP solver may run")
         row.addWidget(self._tr_time_limit)
-        sv.addLayout(row)
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Window size (0=all)"))
@@ -832,9 +825,8 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_window.setRange(0, 10_000)
         self._tr_window.setToolTip("Temporal window size for the ILP; 0 = solve the entire sequence at once")
         row.addWidget(self._tr_window)
-        sv.addLayout(row)
+        lay.addLayout(row)
 
-        # Buttons for solve
         row = QHBoxLayout()
         self._tr_slv_run_btn = QPushButton("Run Solver")
         self._tr_slv_run_btn.clicked.connect(self._tr_on_run_solve)
@@ -846,16 +838,13 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_slv_cancel_btn.setEnabled(False)
         self._tr_slv_cancel_btn.clicked.connect(self._tr_on_slv_cancel)
         row.addWidget(self._tr_slv_cancel_btn)
-        sv.addLayout(row)
+        lay.addLayout(row)
 
         self._tr_slv_progress = QProgressBar()
         self._tr_slv_progress.setVisible(False)
-        sv.addWidget(self._tr_slv_progress)
+        lay.addWidget(self._tr_slv_progress)
         self._tr_slv_status = QLabel("")
-        sv.addWidget(self._tr_slv_status)
-
-        slv.setLayout(sv)
-        lay.addWidget(slv)
+        lay.addWidget(self._tr_slv_status)
 
         # ── Full pipeline buttons ────────────────────────────────────────
         row = QHBoxLayout()
@@ -1014,6 +1003,7 @@ class UltrackAnalysisWidget(QWidget):
             for u in run_s03(fg_path, ct_path, wd, cfg):
                 yield u
 
+        self.run_started.emit()
         self._tr_worker = _work()
         self._tr_worker.aborted.connect(self._tr_on_cancelled)
 
@@ -1169,6 +1159,7 @@ class UltrackAnalysisWidget(QWidget):
             for u in run_segmentation(fg_path, ct_path, wd, cfg, overwrite=cfg.overwrite_segmentation):
                 yield u
 
+        self.run_started.emit()
         self._seg_worker = _work()
         self._seg_worker.aborted.connect(self._tr_seg_on_cancelled)
 
@@ -1225,6 +1216,7 @@ class UltrackAnalysisWidget(QWidget):
             for u in run_linking(wd, cfg, overwrite=cfg.overwrite_linking):
                 yield u
 
+        self.run_started.emit()
         self._lnk_worker = _work()
         self._lnk_worker.aborted.connect(self._tr_lnk_on_cancelled)
 
@@ -1281,6 +1273,7 @@ class UltrackAnalysisWidget(QWidget):
             for u in run_solve(wd, cfg, overwrite=cfg.overwrite_solve):
                 yield u
 
+        self.run_started.emit()
         self._slv_worker = _work()
         self._slv_worker.aborted.connect(self._tr_slv_on_cancelled)
 
@@ -1797,6 +1790,7 @@ class UltrackAnalysisWidget(QWidget):
                            f"[Tracking] {label}")
                 yield (100, 100, "Run All complete.")
 
+        self.run_started.emit()
         self._all_worker = _work()
         self._all_worker.aborted.connect(self._on_all_cancelled)
 
@@ -1835,29 +1829,24 @@ class UltrackAnalysisWidget(QWidget):
         self._log_viewer.refresh()
 
     # ══════════════════════════════════════════════════════════════════════
-    # Save / Load all parameters
+    # get_params / set_params
     # ══════════════════════════════════════════════════════════════════════
 
-    def _on_save_all_params(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save all parameters", "", "JSON files (*.json)"
-        )
-        if not path:
-            return
-        data = {
-            "cp_contours": self._cp_ct_build_config().model_dump(),
+    def get_params(self) -> dict:
+        return {
+            "cp_contours": {
+                **self._cp_ct_build_config().model_dump(),
+                "overwrite": self._cp_ct_overwrite_chk.isChecked(),
+            },
             "tracking": self._tr_build_config().model_dump(),
         }
-        Path(path).write_text(json.dumps(data, indent=2))
 
-    def _on_load_all_params(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load all parameters", "", "JSON files (*.json)"
-        )
-        if not path:
-            return
-        data = json.loads(Path(path).read_text())
+    def set_params(self, data: dict) -> None:
         if "cp_contours" in data:
-            self._cp_ct_apply_config(CellposeContoursConfig(**data["cp_contours"]))
+            d = data["cp_contours"]
+            cfg = CellposeContoursConfig(**{k: v for k, v in d.items() if k != "overwrite"})
+            self._cp_ct_apply_config(cfg)
+            if "overwrite" in d:
+                self._cp_ct_overwrite_chk.setChecked(bool(d["overwrite"]))
         if "tracking" in data:
             self._tr_apply_config(TrackingConfig(**data["tracking"]))
