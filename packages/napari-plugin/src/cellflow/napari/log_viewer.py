@@ -117,8 +117,7 @@ class StageLogViewer(QWidget):
             __import__("qtpy.QtGui", fromlist=["QFont"]).QFont("Monospace", 8)
         )
         self._text_edit.setStyleSheet(
-            "QTextEdit { background: palette(base); border: 1px solid palette(mid); "
-            "border-radius: 3px; }"
+            "QTextEdit { border: 1px solid rgba(255,255,255,40); border-radius: 3px; }"
         )
         log_layout.addWidget(self._text_edit)
         self._log_area.setLayout(log_layout)

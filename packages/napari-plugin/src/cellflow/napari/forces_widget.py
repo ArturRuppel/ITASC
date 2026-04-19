@@ -422,6 +422,21 @@ class ForcesWidget(QWidget):
         self.status_label.setText("Cancelled.")
 
     # ------------------------------------------------------------------
+    # Config persistence
+    # ------------------------------------------------------------------
+    def get_params(self) -> dict:
+        return {
+            "endpoint_cluster_tol": self.tol_spin.value(),
+            "allow_negatives":      self.allow_neg_cb.isChecked(),
+        }
+
+    def set_params(self, data: dict) -> None:
+        if "endpoint_cluster_tol" in data:
+            self.tol_spin.setValue(float(data["endpoint_cluster_tol"]))
+        if "allow_negatives" in data:
+            self.allow_neg_cb.setChecked(bool(data["allow_negatives"]))
+
+    # ------------------------------------------------------------------
     # Results summary
     # ------------------------------------------------------------------
     def _update_results_label(self):

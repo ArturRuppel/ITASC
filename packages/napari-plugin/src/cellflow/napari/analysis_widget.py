@@ -23,7 +23,7 @@ from .widgets import CollapsibleSection
 logger = logging.getLogger(__name__)
 
 _CONFIG_FILENAME = "cellflow_config.json"
-_CONFIG_VERSION = 1
+_CONFIG_VERSION = 2
 
 
 class CellFlowWidget(QWidget):
@@ -177,6 +177,9 @@ class CellFlowWidget(QWidget):
         cfg.update(self._cellpose_tab.get_params())  # cellpose_nucleus + cellpose_cell
         cfg["ultrack"] = self._ultrack_tab.get_params()
         cfg["flow_watershed"] = self._cell_seg_tab.get_params()
+        cfg["edge_analysis"] = self._edge_analysis_widget.get_params()
+        cfg["forces"] = self._forces_widget.get_params()
+        cfg["correction"] = self._tracking_correction_widget.get_params()
         return cfg
 
     def _apply_config(self, data: dict) -> None:
@@ -189,6 +192,12 @@ class CellFlowWidget(QWidget):
             self._ultrack_tab.set_params(data["ultrack"])
         if "flow_watershed" in data:
             self._cell_seg_tab.set_params(data["flow_watershed"])
+        if "edge_analysis" in data:
+            self._edge_analysis_widget.set_params(data["edge_analysis"])
+        if "forces" in data:
+            self._forces_widget.set_params(data["forces"])
+        if "correction" in data:
+            self._tracking_correction_widget.set_params(data["correction"])
 
     def _write_config(self, path: Path) -> None:
         cfg = self._collect_config()

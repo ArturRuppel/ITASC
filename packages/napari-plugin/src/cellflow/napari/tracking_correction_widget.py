@@ -94,6 +94,12 @@ class TrackingCorrectionWidget(QWidget):
 
     # ── load handlers ─────────────────────────────────────────────────────
 
+    def get_params(self) -> dict:
+        return self._tracking.get_params()
+
+    def set_params(self, data: dict) -> None:
+        self._tracking.set_params(data)
+
     def _on_load(self) -> None:
         """Load the nuclear labels layer from viewer state."""
         name = self._state.tissue.nuclear_labels_layer

@@ -283,9 +283,12 @@ class DataPrepWidget(QWidget):
             }
         )
         def _work():
+            from cellflow.core.logging import StageLogger
+            from cellflow.core.paths import log_path
             for pos in positions:
-                for done, total, label in run_s00(config, pos, overwrite=overwrite):
-                    yield (pos, done, total, label)
+                with StageLogger(log_path(config.root_dir, pos), "raw_import"):
+                    for done, total, label in run_s00(config, pos, overwrite=overwrite):
+                        yield (pos, done, total, label)
 
         self.run_started.emit()
         self._worker = _work()

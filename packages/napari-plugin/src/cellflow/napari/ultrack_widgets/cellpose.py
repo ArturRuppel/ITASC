@@ -418,6 +418,7 @@ class CellposeWidget(QWidget):
 
         input_dir_str = str(input_dir)
         output_dir_str = str(output_dir)
+        log_file = output_dir.parent.parent / "pipeline.log"
 
         @thread_worker(
             connect={
@@ -427,8 +428,10 @@ class CellposeWidget(QWidget):
             }
         )
         def _work():
-            for update in run_s01a(input_dir_str, output_dir_str, cfg, overwrite=overwrite):
-                yield update
+            from cellflow.core.logging import StageLogger
+            with StageLogger(log_file, "cellpose_nucleus"):
+                for update in run_s01a(input_dir_str, output_dir_str, cfg, overwrite=overwrite):
+                    yield update
 
         self.run_started.emit()
         self._worker_s01a = _work()
@@ -460,8 +463,11 @@ class CellposeWidget(QWidget):
             }
         )
         def _work():
-            for update in run_s01b(root_dir_str, pos, cfg, overwrite=overwrite):
-                yield update
+            from cellflow.core.logging import StageLogger
+            from cellflow.core.paths import log_path
+            with StageLogger(log_path(root_dir_str, pos), "cellpose_cell"):
+                for update in run_s01b(root_dir_str, pos, cfg, overwrite=overwrite):
+                    yield update
 
         self.run_started.emit()
         self._worker_s01b = _work()

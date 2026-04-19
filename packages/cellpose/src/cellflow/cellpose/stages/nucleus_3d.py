@@ -192,10 +192,10 @@ class _CellposeNucleusStageClass:
 
     def run(self, input_dir, output_dir, cfg: CellposeConfig = None, overwrite: bool = False):
         from cellflow.core.logging import StageLogger
-        from cellflow.core.paths import log_path
 
         cfg = cfg or self.config
-        log = StageLogger(log_path(output_dir, 0), self.name)
+        pos_dir = Path(output_dir).parent.parent
+        log = StageLogger(pos_dir / "pipeline.log", self.name)
         with log:
             for progress in run(input_dir=input_dir, output_dir=output_dir, cfg=cfg, overwrite=overwrite):
                 yield StageProgress(*progress)

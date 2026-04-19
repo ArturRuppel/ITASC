@@ -146,7 +146,7 @@ class CorrectionWidget(QWidget):
             ("Ctrl+Right-click (cell selected)",      "Swap with clicked cell"),
             ("Ctrl+Right-click → Right-click",        "Swap (two-step, no selection)"),
             ("Ctrl-z",                              "Undo"),
-            ("Ctrl+Left / Ctrl+Right",              "Previous / next cell in frame (also runs Go)"),
+            ("Shift+Left / Shift+Right",             "Previous / next cell across all frames (also runs Go)"),
             ("Shift+Right-drag",                    "Split by drawn line"),
             ("Shift+Left-drag",                     "Draw cell path (extends selected cell or creates new)"),
         ]:
@@ -520,22 +520,25 @@ class CorrectionWidget(QWidget):
         self._update_highlight(t, lab)
 
     def _step_cell(self, direction: int) -> None:
-        """Select the previous (direction=-1) or next (direction=+1) cell in the current frame."""
+        """Select the previous (direction=-1) or next (direction=+1) cell across all frames."""
         if self._layer is None:
             return
-        step = self.viewer.dims.current_step
-        t = int(step[0]) if self._layer.data.ndim >= 3 and len(step) >= 1 else 0
-        if t >= self._layer.data.shape[0]:
-            return
-        ids = sorted(set(np.unique(self._layer.data[t])) - {0})
+        data = self._layer.data
+        ids = sorted(set(int(v) for v in np.unique(data)) - {0})
         if not ids:
-            self._set_status("No cells in this frame")
+            self._set_status("No cells in any frame")
             return
         cur = self._selected_label
         if direction > 0:
             nxt = next((i for i in ids if i > cur), ids[0])
         else:
             nxt = next((i for i in reversed(ids) if i < cur), ids[-1])
+        # Jump to the first frame where the cell appears
+        frames = [i for i in range(data.shape[0]) if np.any(data[i] == nxt)]
+        if frames:
+            step = list(self.viewer.dims.current_step)
+            step[0] = frames[0]
+            self.viewer.dims.current_step = tuple(step)
         self._goto_cell_id.setValue(nxt)
         self._goto_cell()
 
@@ -571,8 +574,8 @@ class CorrectionWidget(QWidget):
 
         for key, fn in [
             ("Delete", key_delete),
-            ("Control-Left", key_prev_cell),
-            ("Control-Right", key_next_cell),
+            ("Shift-Left", key_prev_cell),
+            ("Shift-Right", key_next_cell),
         ]:
             layer.bind_key(key, fn, overwrite=True)
             self._bound_keys.append(key)

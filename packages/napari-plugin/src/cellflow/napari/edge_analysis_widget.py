@@ -1032,6 +1032,48 @@ class EdgeAnalysisWidget(QWidget):
             self.tag_list_widget.addItem(f"{tag} ({len(tagged_pairs)})")
 
     # ------------------------------------------------------------------
+    # Config persistence
+    # ------------------------------------------------------------------
+    def get_params(self) -> dict:
+        return {
+            "dilation_radius":      self.dilation_radius_spin.value(),
+            "min_overlap":          self.min_overlap_spin.value(),
+            "min_edge_length":      self.min_edge_length_spin.value(),
+            "filter_isolated":      self.filter_isolated_cb.isChecked(),
+            "min_border_edge_length": self.min_border_edge_spin.value(),
+            "min_bg_hole_size":     self.min_bg_hole_spin.value(),
+            "min_junction_length":  self.min_junction_length_spin.value(),
+            "max_t1_distance":      self.max_t1_distance_spin.value(),
+            "min_traj_frames":      self.min_traj_frames_spin.value(),
+            "min_completeness":     self.min_completeness_spin.value(),
+            "max_gap":              self.max_gap_spin.value(),
+        }
+
+    def set_params(self, data: dict) -> None:
+        if "dilation_radius" in data:
+            self.dilation_radius_spin.setValue(int(data["dilation_radius"]))
+        if "min_overlap" in data:
+            self.min_overlap_spin.setValue(int(data["min_overlap"]))
+        if "min_edge_length" in data:
+            self.min_edge_length_spin.setValue(float(data["min_edge_length"]))
+        if "filter_isolated" in data:
+            self.filter_isolated_cb.setChecked(bool(data["filter_isolated"]))
+        if "min_border_edge_length" in data:
+            self.min_border_edge_spin.setValue(float(data["min_border_edge_length"]))
+        if "min_bg_hole_size" in data:
+            self.min_bg_hole_spin.setValue(int(data["min_bg_hole_size"]))
+        if "min_junction_length" in data:
+            self.min_junction_length_spin.setValue(float(data["min_junction_length"]))
+        if "max_t1_distance" in data:
+            self.max_t1_distance_spin.setValue(float(data["max_t1_distance"]))
+        if "min_traj_frames" in data:
+            self.min_traj_frames_spin.setValue(int(data["min_traj_frames"]))
+        if "min_completeness" in data:
+            self.min_completeness_spin.setValue(float(data["min_completeness"]))
+        if "max_gap" in data:
+            self.max_gap_spin.setValue(int(data["max_gap"]))
+
+    # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
     def cleanup(self):

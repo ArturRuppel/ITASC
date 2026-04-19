@@ -233,6 +233,35 @@ class TrackingTab(QWidget):
 
     # ── Parameter collection ───────────────────────────────────────────
 
+    def get_params(self) -> dict:
+        return self._collect_track_params()
+
+    def set_params(self, data: dict) -> None:
+        if "metric" in data:
+            idx = self._p_metric.findText(data["metric"])
+            if idx >= 0:
+                self._p_metric.setCurrentIndex(idx)
+        if "gap_closing_metric" in data:
+            idx = self._p_gap_metric.findText(data["gap_closing_metric"])
+            if idx >= 0:
+                self._p_gap_metric.setCurrentIndex(idx)
+        if "max_link_dist" in data:
+            self._p_link.setValue(int(data["max_link_dist"]))
+        if "max_gap_dist" in data:
+            self._p_gap.setValue(int(data["max_gap_dist"]))
+        if "gap_closing_max_frame_count" in data:
+            self._p_gapf.setValue(int(data["gap_closing_max_frame_count"]))
+        if "track_start_cost" in data:
+            self._p_start_cost.setValue(data["track_start_cost"] or 0.0)
+        if "track_end_cost" in data:
+            self._p_end_cost.setValue(data["track_end_cost"] or 0.0)
+        if "alternative_cost_factor" in data:
+            self._p_alt_factor.setValue(float(data["alternative_cost_factor"]))
+        if "alternative_cost_percentile" in data:
+            self._p_alt_pct.setValue(int(data["alternative_cost_percentile"]))
+        if "iou_weight" in data:
+            self._p_iou_weight.setValue(float(data["iou_weight"]))
+
     def _collect_track_params(self):
         start = self._p_start_cost.value()
         end   = self._p_end_cost.value()
