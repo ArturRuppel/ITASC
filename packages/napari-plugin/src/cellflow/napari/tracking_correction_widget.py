@@ -205,13 +205,13 @@ class TrackingCorrectionWidget(QWidget):
                 if nuc_layer_name in self.viewer.layers:
                     layer = self.viewer.layers[nuc_layer_name]
                     layer.data = nuc_img
-                    layer.colormap = "bop_orange"
+                    layer.colormap = "bop orange"
                     layer.blending = "additive"
                 else:
                     layer = self.viewer.add_image(
                         nuc_img,
                         name=nuc_layer_name,
-                        colormap="bop_orange",
+                        colormap="bop orange",
                         blending="additive",
                     )
             except Exception:
