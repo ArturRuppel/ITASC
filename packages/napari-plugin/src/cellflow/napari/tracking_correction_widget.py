@@ -17,6 +17,7 @@ from napari.utils.notifications import show_info, show_error
 from .registry import get_state
 from .tracking_widget import TrackingTab
 from .correction_widget import CorrectionWidget
+from .widgets import PipelineFilesWidget
 
 
 class TrackingCorrectionWidget(QWidget):
@@ -61,6 +62,17 @@ class TrackingCorrectionWidget(QWidget):
         self._data_status.setStyleSheet("font-style: italic; color: palette(mid);")
         lay.addWidget(self._data_status)
 
+        # File status rows for relevant correction-stage files
+        self._files_widget = PipelineFilesWidget([
+            ("Input", [
+                ("2_ultrack/nuclear_labels_2d.tif",           "Nuclear labels 2D"),
+            ]),
+            ("Output", [
+                ("3_correction/nuclear_labels_corrected.tif", "Corrected labels"),
+            ]),
+        ])
+        lay.addWidget(self._files_widget)
+
         # Save row
         self._save_btn = QPushButton("Save corrected labels")
         self._save_btn.setToolTip(
@@ -77,6 +89,8 @@ class TrackingCorrectionWidget(QWidget):
         # Auto-sync when state's nuclear labels change
         self._state.nuclear_labels_changed.connect(self._on_nuclear_labels_changed)
         self._state.position_changed.connect(self._on_position_changed)
+        self._state.pipeline_schema_changed.connect(self._refresh_files)
+        self._refresh_files()
 
     # ── load handlers ─────────────────────────────────────────────────────
 
@@ -160,20 +174,62 @@ class TrackingCorrectionWidget(QWidget):
         return None
 
     def _load_nuclear_zavg(self, project_dir, pos: int) -> None:
-        """Load nucleus_zavg.tif as an Image layer (background reference for correction)."""
+        """Load cell_zavg and nucleus_zavg as background reference layers.
+
+        Layer order (bottom to top): cell_zavg → nucleus_zavg → labels.
+        Nucleus is shown with additive blending and bop_orange LUT.
+        """
         from cellflow.core.paths import stage_dir
-        img_path = stage_dir(project_dir, pos, "raw_import") / "nucleus" / "nucleus_zavg.tif"
-        if not img_path.exists():
-            return
-        layer_name = "Nucleus avg"
-        try:
-            img = tifffile.imread(str(img_path))
-        except Exception:
-            return
-        if layer_name in self.viewer.layers:
-            self.viewer.layers[layer_name].data = img
-        else:
-            self.viewer.add_image(img, name=layer_name, colormap="gray")
+        raw_dir = stage_dir(project_dir, pos, "raw_import")
+
+        cell_path = raw_dir / "cell" / "cell_zavg.tif"
+        nuc_path = raw_dir / "nucleus" / "nucleus_zavg.tif"
+
+        # --- cell_zavg (bottom) ---
+        cell_layer_name = "Cell avg"
+        if cell_path.exists():
+            try:
+                cell_img = tifffile.imread(str(cell_path))
+                if cell_layer_name in self.viewer.layers:
+                    self.viewer.layers[cell_layer_name].data = cell_img
+                else:
+                    self.viewer.add_image(cell_img, name=cell_layer_name, colormap="gray")
+            except Exception:
+                pass
+
+        # --- nucleus_zavg (middle) ---
+        nuc_layer_name = "Nucleus avg"
+        if nuc_path.exists():
+            try:
+                nuc_img = tifffile.imread(str(nuc_path))
+                if nuc_layer_name in self.viewer.layers:
+                    layer = self.viewer.layers[nuc_layer_name]
+                    layer.data = nuc_img
+                    layer.colormap = "bop_orange"
+                    layer.blending = "additive"
+                else:
+                    layer = self.viewer.add_image(
+                        nuc_img,
+                        name=nuc_layer_name,
+                        colormap="bop_orange",
+                        blending="additive",
+                    )
+            except Exception:
+                pass
+
+        # Reorder so cell_zavg is at index 0 (bottom), nucleus above it,
+        # then the labels layer stays on top.
+        def _layer_index(name):
+            try:
+                return self.viewer.layers.index(self.viewer.layers[name])
+            except KeyError:
+                return None
+
+        desired_bottom = [cell_layer_name, nuc_layer_name]
+        for target_idx, name in enumerate(desired_bottom):
+            idx = _layer_index(name)
+            if idx is not None and idx != target_idx:
+                self.viewer.layers.move(idx, target_idx)
 
     def _on_save(self) -> None:
         """Save the current layer to 3_correction/nuclear_labels_corrected.tif."""
@@ -202,6 +258,7 @@ class TrackingCorrectionWidget(QWidget):
         self._data_status.setText(
             f"Saved: {out_path.name}  {arr.shape}"
         )
+        self._refresh_files()
 
     def _on_load_from_layer(self) -> None:
         """Use the currently active layer."""
@@ -237,3 +294,14 @@ class TrackingCorrectionWidget(QWidget):
         self._data_layer = None
         self._save_btn.setEnabled(False)
         self._data_status.setText("No layer loaded — position changed, click Load")
+        self._refresh_files()
+
+    def _refresh_files(self) -> None:
+        """Refresh file-status rows for the current project/position."""
+        from pathlib import Path
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            self._files_widget.refresh(None)
+            return
+        pos = self._state.current_position
+        self._files_widget.refresh(Path(project_dir) / f"pos{pos:02d}")

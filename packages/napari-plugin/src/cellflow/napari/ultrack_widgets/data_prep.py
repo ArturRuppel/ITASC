@@ -27,7 +27,7 @@ from cellflow.cellpose.stages.raw_import import discover_metadata, run as run_s0
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
 from cellflow.napari.runners.terminal import launch_in_terminal
-from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 
 
 class DataPrepWidget(QWidget):
@@ -46,11 +46,14 @@ class DataPrepWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignTop)
 
-        # ── Project info ─────────────────────────────────────────────────
-        self._project_label = QLabel("")
-        self._project_label.setStyleSheet("color: white; font-size: 8pt;")
-        self._project_label.setWordWrap(True)
-        layout.addWidget(self._project_label)
+        # ── Project file status (output files for current position) ──────
+        self._files_widget = PipelineFilesWidget([
+            ("Output", [
+                ("0_input/cell/cell_zavg.tif",      "Cell avg"),
+                ("0_input/nucleus/nucleus_zavg.tif", "Nucleus avg"),
+            ]),
+        ])
+        layout.addWidget(self._files_widget)
 
         # ── Parameters accordion section ─────────────────────────────────
         params_inner = QWidget()
@@ -136,8 +139,9 @@ class DataPrepWidget(QWidget):
         self._debounce_timer.timeout.connect(self._pull_metadata)
         self._ndtiff_edit.textChanged.connect(self._debounce_timer.start)
 
-        # Connect project change signal
+        # Connect project/position change signals
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+        self._state.position_changed.connect(self._sync_project_dir)
 
         # Populate from any already-open project
         self._sync_project_dir()
@@ -145,17 +149,17 @@ class DataPrepWidget(QWidget):
     # ── Project sync ─────────────────────────────────────────────────────────
 
     def _sync_project_dir(self) -> None:
-        """Auto-fill NDTiff dir from schema.input_dir and update project info label."""
+        """Auto-fill NDTiff dir from schema.input_dir and refresh file-status rows."""
         project_dir = self._state.project_dir
         schema = self._state.pipeline_schema
 
         if project_dir is None:
-            self._project_label.setText(
-                "No project open — create or open one via the Project panel."
-            )
+            self._files_widget.refresh(None)
             return
 
-        self._project_label.setText(f"Output root: {project_dir}")
+        from pathlib import Path
+        pos = self._state.current_position
+        self._files_widget.refresh(Path(project_dir) / f"pos{pos:02d}")
 
         # Auto-fill NDTiff if schema has input_dir and field is empty
         if (

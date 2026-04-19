@@ -39,7 +39,7 @@ from cellflow.core.paths import stage_dir
 from cellflow.napari.runners.terminal import launch_in_terminal
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
-from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 
 
 def cellpose_cell_dir(root_dir, pos):
@@ -874,11 +874,17 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         lay = self._inner_layout
 
-        # ── Project info (derived from state) ────────────────────────────
-        self._project_label = QLabel("No project open.")
-        self._project_label.setStyleSheet("color: white; font-size: 8pt;")
-        self._project_label.setWordWrap(True)
-        lay.addWidget(self._project_label)
+        # ── Project file status (inputs/outputs for current position) ────
+        self._files_widget = PipelineFilesWidget([
+            ("Input", [
+                ("3_correction/nuclear_labels_corrected.tif", "Corrected labels"),
+            ]),
+            ("Output", [
+                ("4_cell_segmentation/cell_labels_raw.tif", "Cell labels raw"),
+                ("4_cell_segmentation/cell_labels.tif",     "Cell labels"),
+            ]),
+        ])
+        lay.addWidget(self._files_widget)
 
         # ── Build stage sections ─────────────────────────────────────────
         lay.addWidget(self._build_foreground_mask_section())
@@ -926,17 +932,13 @@ class FlowGuidedSegmentationWidget(QWidget):
         return str(project_dir)
 
     def _sync_project_dir(self) -> None:
-        """Update project info label when project or position changes."""
+        """Refresh file-status rows when project or position changes."""
         root = self._get_root_dir()
         if root is None:
-            self._project_label.setText(
-                "No project open — create or open one via the Project panel."
-            )
+            self._files_widget.refresh(None)
             return
         pos = self._state.current_position
-        self._project_label.setText(
-            f"Root: {root}  |  Position: pos{pos:02d}"
-        )
+        self._files_widget.refresh(Path(root) / f"pos{pos:02d}")
 
     def _build_segmentation_section(self) -> CollapsibleSection:
         """Build the Segmentation section."""

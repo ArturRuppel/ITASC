@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 
 from napari.qt.threading import thread_worker
 
@@ -111,22 +111,18 @@ class CellposeWidget(QWidget):
         return self._get_project_dir()
 
     def _sync_project_dir(self) -> None:
-        """Refresh path-info labels when the project or position changes."""
+        """Refresh file-status rows when the project or position changes."""
         root = self._get_project_dir()
         pos = self._state.current_position
 
         if root is None:
-            msg = "No project open — create or open one via the Project panel."
-            self._s01a_paths_label.setText(msg)
-            self._s01b_paths_label.setText(msg)
+            self._s01a_files_widget.refresh(None)
+            self._s01b_files_widget.refresh(None)
             return
 
-        inp = self._s01a_input_dir(pos)
-        out = self._s01a_output_dir(pos)
-        self._s01a_paths_label.setText(f"Input:  {inp}\nOutput: {out}")
-
-        rb = self._s01b_root_dir()
-        self._s01b_paths_label.setText(f"Root: {rb}")
+        pos_dir = Path(root) / f"pos{pos:02d}"
+        self._s01a_files_widget.refresh(pos_dir)
+        self._s01b_files_widget.refresh(pos_dir)
 
     def _create_s01a_widget(self) -> QWidget:
         """Create the s01a (3D nucleus) panel."""
@@ -134,12 +130,16 @@ class CellposeWidget(QWidget):
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop)
 
-        # ── Paths info (derived from project) ───────────────────────────
-        layout.addWidget(QLabel("<b>Paths</b> (derived from project)"))
-        self._s01a_paths_label = QLabel("No project open.")
-        self._s01a_paths_label.setStyleSheet("color: white; font-size: 8pt;")
-        self._s01a_paths_label.setWordWrap(True)
-        layout.addWidget(self._s01a_paths_label)
+        # ── File status (derived from project) ──────────────────────────
+        self._s01a_files_widget = PipelineFilesWidget([
+            ("Input", [
+                ("0_input/nucleus",    "Nucleus 3D"),
+            ]),
+            ("Output", [
+                ("1_cellpose/nucleus", "Cellpose nucleus"),
+            ]),
+        ])
+        layout.addWidget(self._s01a_files_widget)
 
         # ── Model parameters ─────────────────────────────────────────────
         model_group = QGroupBox("Model parameters")
@@ -245,12 +245,17 @@ class CellposeWidget(QWidget):
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop)
 
-        # ── Paths info (derived from project) ───────────────────────────
-        layout.addWidget(QLabel("<b>Paths</b> (derived from project)"))
-        self._s01b_paths_label = QLabel("No project open.")
-        self._s01b_paths_label.setStyleSheet("color: white; font-size: 8pt;")
-        self._s01b_paths_label.setWordWrap(True)
-        layout.addWidget(self._s01b_paths_label)
+        # ── File status (derived from project) ──────────────────────────
+        self._s01b_files_widget = PipelineFilesWidget([
+            ("Input", [
+                ("0_input/cell/cell_zavg.tif",  "Cell avg"),
+            ]),
+            ("Output", [
+                ("1_cellpose/cell/cell_dp.tif",   "Cell DP"),
+                ("1_cellpose/cell/cell_prob.tif",  "Cell prob"),
+            ]),
+        ])
+        layout.addWidget(self._s01b_files_widget)
 
         # ── Model parameters ─────────────────────────────────────────────
         model_group = QGroupBox("Model parameters")

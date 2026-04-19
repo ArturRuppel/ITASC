@@ -1,10 +1,15 @@
 """Shared reusable Qt widgets for the CellFlow napari plugin."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from qtpy.QtCore import Qt, QPoint, QTimer
 from qtpy.QtGui import QColor, QPainter
 from qtpy.QtWidgets import (
     QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QToolButton,
@@ -229,3 +234,189 @@ class CollapsibleSection(QWidget):
                 QTimer.singleShot(0, parent._reset_natural_height)
                 return
             parent = parent.parent()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline file status rows — shared by ProjectPanel and pipeline-stage widgets
+# ---------------------------------------------------------------------------
+
+class _PipelineFileRow(QWidget):
+    """One pipeline file status row: icon | rel-path | info | [load btn]"""
+
+    def __init__(self, rel_path: str, display_name: str, loadable: "str | None"):
+        super().__init__()
+        self._rel_path = rel_path
+        self._loadable = loadable
+        self._full_path: "Path | None" = None
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 1, 4, 1)
+        lay.setSpacing(4)
+
+        self._icon_lbl = QLabel("○")
+        self._icon_lbl.setFixedWidth(14)
+        self._icon_lbl.setAlignment(Qt.AlignCenter)
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        lay.addWidget(self._icon_lbl)
+
+        name_lbl = QLabel(rel_path)
+        name_lbl.setFixedWidth(200)
+        name_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        name_lbl.setToolTip(display_name)
+        lay.addWidget(name_lbl)
+
+        self._info_lbl = QLabel("—")
+        self._info_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        lay.addWidget(self._info_lbl)
+
+        if loadable is not None:
+            self._load_btn = QPushButton("↑")
+            self._load_btn.setFixedWidth(24)
+            self._load_btn.setFixedHeight(18)
+            self._load_btn.setToolTip("Load into napari viewer")
+            self._load_btn.setEnabled(False)
+            lay.addWidget(self._load_btn)
+        else:
+            self._load_btn = None
+
+    def set_present(self, info_text: str) -> None:
+        self._icon_lbl.setText("✓")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; font-weight: bold; color: #4CAF50;")
+        self._info_lbl.setText(info_text)
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        if self._load_btn:
+            self._load_btn.setEnabled(True)
+
+    def set_missing(self) -> None:
+        self._icon_lbl.setText("✗")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
+        self._info_lbl.setText("missing")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: #9E9E9E;")
+        self._full_path = None
+        if self._load_btn:
+            self._load_btn.setEnabled(False)
+
+    def set_no_project(self) -> None:
+        self._icon_lbl.setText("○")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
+        self._info_lbl.setText("—")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: #9E9E9E;")
+        self._full_path = None
+        if self._load_btn:
+            self._load_btn.setEnabled(False)
+
+
+def _file_info(path: Path) -> str:
+    """Return a concise shape/dtype or size string for a pipeline output file."""
+    if path.is_dir():
+        tif_files = sorted(path.glob("*.tif"))
+        n = len(tif_files)
+        if n == 0:
+            return "0 .tif files"
+        first = tif_files[0]
+        name_str = first.name if n == 1 else f"{first.name} … (+{n - 1})"
+        import fnmatch
+        parent_name = path.parent.name if path.parent else ""
+        if parent_name == "1_cellpose" and path.name == "nucleus":
+            expected = [f for f in tif_files
+                        if fnmatch.fnmatch(f.name, "nucleus_3d_t*_dp.tif")
+                        or fnmatch.fnmatch(f.name, "nucleus_3d_t*_prob.tif")]
+            if len(expected) < n:
+                name_str += " ⚠"
+        try:
+            import tifffile
+            with tifffile.TiffFile(str(first)) as tf:
+                s = tf.series[0] if tf.series else None
+                shape_str = "×".join(str(d) for d in s.shape) if s else "?"
+        except Exception:
+            shape_str = "?"
+        return f"{n} files: {name_str} ({shape_str})"
+    suffix = path.suffix.lower()
+    if suffix in (".tif", ".tiff"):
+        try:
+            import tifffile
+            with tifffile.TiffFile(str(path)) as tf:
+                s = tf.series[0] if tf.series else None
+                if s is not None:
+                    shape_str = "×".join(str(d) for d in s.shape)
+                    return f"{shape_str} {s.dtype}"
+        except Exception:
+            pass
+        return "?"
+    if suffix == ".db":
+        kb = path.stat().st_size // 1024
+        return f"{kb} KB"
+    if suffix == ".csv":
+        try:
+            with open(path) as f:
+                n = max(0, sum(1 for _ in f) - 1)
+            return f"{n} rows"
+        except Exception:
+            return "?"
+    if suffix in (".h5", ".hdf5"):
+        kb = path.stat().st_size // 1024
+        return f"{kb} KB"
+    if suffix == ".npz":
+        try:
+            import numpy as np
+            data = np.load(str(path), allow_pickle=False)
+            keys = list(data.keys())
+            data.close()
+            return ", ".join(keys) if keys else "empty"
+        except Exception:
+            pass
+        return "?"
+    return f"{path.stat().st_size // 1024} KB"
+
+
+class PipelineFilesWidget(QWidget):
+    """Compact file-status display for pipeline-stage widgets.
+
+    Accepts grouped entries so inputs and outputs can be labelled separately.
+    Call ``refresh(pos_dir)`` whenever the project or position changes.
+
+    Parameters
+    ----------
+    groups:
+        List of ``(group_label, [(rel_path, display_name), ...])`` pairs.
+        Use a single group with an empty label for an unlabelled list.
+    """
+
+    def __init__(
+        self,
+        groups: "list[tuple[str, list[tuple[str, str]]]]",
+        parent: "QWidget | None" = None,
+    ) -> None:
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self._rows: list[_PipelineFileRow] = []
+
+        for group_label, entries in groups:
+            if group_label:
+                hdr = QLabel(group_label)
+                hdr.setStyleSheet(
+                    "font-size: 7pt; font-weight: bold; padding: 1px 4px;"
+                    " background: palette(alternateBase); color: #aaaaaa;"
+                )
+                lay.addWidget(hdr)
+            for rel_path, display_name in entries:
+                row = _PipelineFileRow(rel_path, display_name, loadable=None)
+                self._rows.append(row)
+                lay.addWidget(row)
+
+    def refresh(self, pos_dir: "Path | None") -> None:
+        """Update all rows to reflect current on-disk state."""
+        if pos_dir is None:
+            for row in self._rows:
+                row.set_no_project()
+            return
+        for row in self._rows:
+            full_path = pos_dir / row._rel_path
+            if full_path.exists():
+                row._full_path = full_path
+                row.set_present(_file_info(full_path))
+            else:
+                row.set_missing()

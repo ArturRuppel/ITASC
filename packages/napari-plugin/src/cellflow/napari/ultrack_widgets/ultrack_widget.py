@@ -34,7 +34,7 @@ from cellflow.ultrack.config import TrackingConfig
 from cellflow.napari.runners.terminal import launch_in_terminal
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
-from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.cellpose.stages.contours import (
     compute_single_from_arrays as compute_cp_contours_single,
     discover_dp_files,
@@ -98,11 +98,18 @@ class UltrackAnalysisWidget(QWidget):
 
         lay = self._inner_layout
 
-        # ── Project info (derived from state) ────────────────────────────
-        self._project_label = QLabel("No project open.")
-        self._project_label.setStyleSheet("color: white; font-size: 8pt;")
-        self._project_label.setWordWrap(True)
-        lay.addWidget(self._project_label)
+        # ── Project file status (inputs/outputs for current position) ────
+        self._files_widget = PipelineFilesWidget([
+            ("Input", [
+                ("1_cellpose/nucleus",              "Cellpose nucleus"),
+            ]),
+            ("Output", [
+                ("2_ultrack/foreground.tif",        "Foreground"),
+                ("2_ultrack/contours.tif",          "Contours"),
+                ("2_ultrack/nuclear_labels_2d.tif", "Nuclear labels 2D"),
+            ]),
+        ])
+        lay.addWidget(self._files_widget)
 
         # ── Build stage sections ─────────────────────────────────────────
         lay.addWidget(self._build_cp_contours_section())
@@ -146,20 +153,14 @@ class UltrackAnalysisWidget(QWidget):
     # ══════════════════════════════════════════════════════════════════════
 
     def _sync_project_dir(self) -> None:
-        """Update project info label when project or position changes."""
+        """Refresh file-status rows when project or position changes."""
         project_dir = self._state.project_dir
         if project_dir is None:
-            self._project_label.setText(
-                "No project open — create or open one via the Project panel."
-            )
+            self._files_widget.refresh(None)
             return
+        from pathlib import Path
         pos = self._state.current_position
-        from cellflow.core.paths import stage_dir
-        inp = stage_dir(project_dir, pos, "cellpose_nucleus")
-        out = stage_dir(project_dir, pos, "tracking")
-        self._project_label.setText(
-            f"Input (Cellpose):  {inp}\nOutput (Tracking): {out}"
-        )
+        self._files_widget.refresh(Path(project_dir) / f"pos{pos:02d}")
 
     def _get_paths(self) -> tuple[str, str] | None:
         """Return (input_dir, output_dir) derived from project state, or None."""
