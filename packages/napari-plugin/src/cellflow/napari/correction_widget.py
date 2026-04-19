@@ -240,8 +240,9 @@ class CorrectionWidget(QWidget):
         # Update highlight when the user scrubs through time
         self.viewer.dims.events.current_step.connect(self._on_dims_change)
 
-        # Refresh highlight after undo (Ctrl+Z) or any external data change
+        # Refresh highlight after undo (Ctrl+Z), any external data change, or brush painting
         layer.events.data.connect(self._on_layer_data_changed)
+        layer.events.paint.connect(self._on_layer_data_changed)
 
         # Auto-deactivate if the active layer is removed from the viewer
         self.viewer.layers.events.removed.connect(self._on_layer_removed)
@@ -281,6 +282,11 @@ class CorrectionWidget(QWidget):
 
             try:
                 self._layer.events.data.disconnect(self._on_layer_data_changed)
+            except Exception:
+                pass
+
+            try:
+                self._layer.events.paint.disconnect(self._on_layer_data_changed)
             except Exception:
                 pass
 
@@ -683,7 +689,7 @@ class CorrectionWidget(QWidget):
                             before = seg2d.copy()
                             ok = merge_cells(
                                 seg2d, pos, pos,
-                                label_a=self._selected_label, label_b=lab,
+                                label_a=lab, label_b=self._selected_label,
                             )
                             log.debug("merge result: ok=%s", ok)
                             self._set_status(
