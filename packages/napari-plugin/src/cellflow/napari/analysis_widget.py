@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import Qt, QSize, QTimer
 from qtpy.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -147,6 +147,9 @@ class CellFlowWidget(QWidget):
         _plugin_layout.addWidget(self._log_viewer)
 
         _plugin_layout.addStretch(1)
+
+    def sizeHint(self) -> QSize:
+        return QSize(550, super().sizeHint().height())
 
     def _connect_signals(self):
         self._state.pipeline_schema_changed.connect(self._refresh_tab_badges)
