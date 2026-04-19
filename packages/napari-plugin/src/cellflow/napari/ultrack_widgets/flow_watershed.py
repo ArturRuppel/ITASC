@@ -1071,6 +1071,11 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._fm_pipeline = _PostprocessPipelineWidget(row_class=_MaskPostprocessStepRow)
         lay.addWidget(self._fm_pipeline)
 
+        # ── Preview button ─────────────────────────────────────────────
+        self._fm_preview_btn = QPushButton("Preview")
+        self._fm_preview_btn.clicked.connect(self._fm_on_preview)
+        lay.addWidget(self._fm_preview_btn)
+
         # ── Run / Cancel buttons ───────────────────────────────────────
         row = QHBoxLayout()
         self._fm_run_btn = QPushButton("Run Foreground Mask")
@@ -1082,9 +1087,9 @@ class FlowGuidedSegmentationWidget(QWidget):
         row.addWidget(self._fm_cancel_btn)
         lay.addLayout(row)
 
-        # ── Load results ───────────────────────────────────────────────
-        self._fm_load_btn = QPushButton("Load Results")
-        self._fm_load_btn.clicked.connect(self._fm_on_load_results)
+        # ── Load input data ────────────────────────────────────────────
+        self._fm_load_btn = QPushButton("Load Input Data")
+        self._fm_load_btn.clicked.connect(self._fm_on_load_input_data)
         lay.addWidget(self._fm_load_btn)
 
         # ── Progress ───────────────────────────────────────────────────
@@ -1302,8 +1307,11 @@ class FlowGuidedSegmentationWidget(QWidget):
             }
         )
         def _work():
-            for update in run_segmentation_only(root_dir, pos, cfg, overwrite=overwrite):
-                yield update
+            from cellflow.core.logging import StageLogger
+            from cellflow.core.paths import log_path
+            with StageLogger(log_path(root_dir, pos), "cell_segmentation"):
+                for update in run_segmentation_only(root_dir, pos, cfg, overwrite=overwrite):
+                    yield update
 
         self.run_started.emit()
         self._seg_worker = _work()
@@ -1506,8 +1514,11 @@ class FlowGuidedSegmentationWidget(QWidget):
             }
         )
         def _work():
-            for update in run_postprocessing_only(root_dir, pos, cfg, overwrite=overwrite):
-                yield update
+            from cellflow.core.logging import StageLogger
+            from cellflow.core.paths import log_path
+            with StageLogger(log_path(root_dir, pos), "cell_segmentation_postprocess"):
+                for update in run_postprocessing_only(root_dir, pos, cfg, overwrite=overwrite):
+                    yield update
 
         self.run_started.emit()
         self._pp_worker = _work()
@@ -1629,6 +1640,51 @@ class FlowGuidedSegmentationWidget(QWidget):
     # Foreground Mask section callbacks
     # ════════════════════════════════════════════════════════════════════
 
+    def _fm_on_preview(self) -> None:
+        """Compute and display the foreground mask for the current viewer frame."""
+        from cellflow.cellpose.processing.flow_watershed_postproc import (
+            compute_tissue_foreground_mask,
+            run_mask_postprocess_pipeline,
+        )
+
+        root_dir = self._get_root_dir()
+        if not root_dir:
+            self._fm_status.setText("No project open. Create or open a project first.")
+            return
+
+        pos = int(self._state.current_position)
+        root_dir_path = Path(root_dir)
+
+        tissue_full = _load_tissue_image(root_dir_path, pos)
+        if tissue_full is None:
+            self._fm_status.setText("cell_zavg.tif not found.")
+            return
+
+        frame = int(self.viewer.dims.current_step[0]) if self.viewer.dims.ndim >= 1 else 0
+        T = tissue_full.shape[0] if tissue_full.ndim == 3 else 1
+        frame = min(frame, T - 1)
+        tissue_t = tissue_full[frame] if tissue_full.ndim == 3 else tissue_full
+
+        try:
+            sigma = self._fm_sigma_spin.value()
+            threshold = self._fm_threshold_spin.value()
+            pp_steps = self._fm_pipeline.get_steps()
+
+            mask = compute_tissue_foreground_mask(tissue_t, sigma=sigma, threshold=threshold)
+            if pp_steps:
+                mask = run_mask_postprocess_pipeline(mask, pp_steps)
+            mask = mask.astype(np.uint8)
+
+            layer_name = "Foreground Mask Preview"
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].data = mask
+            else:
+                self.viewer.add_labels(mask, name=layer_name)
+
+            self._fm_status.setText(f"Preview frame {frame}: {mask.sum()} foreground pixels.")
+        except Exception as e:
+            self._fm_status.setText(f"Preview error: {e}")
+
     def _fm_on_run(self) -> None:
         """Compute foreground mask for the full stack in background."""
         root_dir = self._get_root_dir()
@@ -1655,8 +1711,11 @@ class FlowGuidedSegmentationWidget(QWidget):
             }
         )
         def _work():
-            for update in run_foreground_mask_only(root_dir, pos, sigma, threshold, pp_steps):
-                yield update
+            from cellflow.core.logging import StageLogger
+            from cellflow.core.paths import log_path
+            with StageLogger(log_path(root_dir, pos), "foreground_mask"):
+                for update in run_foreground_mask_only(root_dir, pos, sigma, threshold, pp_steps):
+                    yield update
 
         self.run_started.emit()
         self._fm_worker = _work()
@@ -1712,6 +1771,42 @@ class FlowGuidedSegmentationWidget(QWidget):
         if self._fm_worker:
             self._fm_worker.quit()
 
+    def _fm_on_load_input_data(self) -> None:
+        """Load cell_zavg as background and existing foreground mask if present."""
+        root_dir = self._get_root_dir()
+        if not root_dir:
+            self._fm_status.setText("No project open. Create or open a project first.")
+            return
+
+        pos = int(self._state.current_position)
+        root_dir_path = Path(root_dir)
+
+        # --- cell_zavg ---
+        cell_path = stage_dir(root_dir_path, pos, "raw_import") / "cell" / "cell_zavg.tif"
+        if cell_path.exists():
+            cell_img = tifffile.imread(str(cell_path))
+            layer_name = "Cell avg"
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].data = cell_img
+            else:
+                self.viewer.add_image(cell_img, name=layer_name, colormap="gray")
+        else:
+            self._fm_status.setText("cell_zavg.tif not found.")
+            return
+
+        # --- existing foreground mask (optional) ---
+        mask_path = cell_segmentation_dir(root_dir_path, pos) / "cell_foreground.tif"
+        if mask_path.exists():
+            mask_stack = tifffile.imread(str(mask_path)).astype(np.uint8)
+            mask_name = "Foreground Mask"
+            if mask_name in self.viewer.layers:
+                self.viewer.layers[mask_name].data = mask_stack
+            else:
+                self.viewer.add_labels(mask_stack, name=mask_name)
+            self._fm_status.setText(f"Loaded cell_zavg + foreground mask, shape={mask_stack.shape}")
+        else:
+            self._fm_status.setText("Loaded cell_zavg (no foreground mask yet).")
+
     def _fm_on_load_results(self) -> None:
         """Load saved foreground mask from disk."""
         root_dir = self._get_root_dir()
@@ -1764,8 +1859,11 @@ class FlowGuidedSegmentationWidget(QWidget):
             }
         )
         def _work():
-            for update in run_full_pipeline(root_dir, pos, cfg):
-                yield update
+            from cellflow.core.logging import StageLogger
+            from cellflow.core.paths import log_path
+            with StageLogger(log_path(root_dir, pos), "cell_segmentation"):
+                for update in run_full_pipeline(root_dir, pos, cfg):
+                    yield update
 
         self.run_started.emit()
         self._all_worker = _work()
