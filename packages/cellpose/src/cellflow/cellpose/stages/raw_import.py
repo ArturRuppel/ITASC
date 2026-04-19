@@ -58,6 +58,18 @@ def discover_metadata(ndtiff_path: str) -> dict:
     except Exception:
         pass
 
+    # Fall back to per-image metadata if summary didn't have pixel size
+    if pixel_size_um is None:
+        try:
+            coords_list = ds.get_image_coordinates_list()
+            if coords_list:
+                img_meta = ds.read_metadata(**coords_list[0])
+                px = img_meta.get("PixelSizeUm")
+                if px is not None and float(px) > 0:
+                    pixel_size_um = float(px)
+        except Exception:
+            pass
+
     return {
         "positions": positions,
         "pixel_size_um": pixel_size_um,
@@ -261,6 +273,18 @@ def run(
             time_interval_s = float(interval_ms) / 1000.0
     except Exception:
         pass
+
+    # Fall back to per-image metadata if summary didn't have pixel size
+    if pixel_size_um is None:
+        try:
+            coords_list = ds.get_image_coordinates_list()
+            if coords_list:
+                img_meta = ds.read_metadata(**coords_list[0])
+                px = img_meta.get("PixelSizeUm")
+                if px is not None and float(px) > 0:
+                    pixel_size_um = float(px)
+        except Exception:
+            pass
 
     yield from _export_nucleus(ds, config, pos, time_list, z_indices, overwrite)
     yield from _export_cell(ds, config, pos, time_list, z_indices, overwrite)

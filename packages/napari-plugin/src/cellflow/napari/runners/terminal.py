@@ -10,13 +10,13 @@ def launch_in_terminal(command: str) -> None:
     """Open a new OS terminal and run *command* inside it.
 
     The terminal stays open after the command finishes so the user can read
-    the output.  Supported platforms: Linux (gnome-terminal), macOS (Terminal),
+    the output.  Supported platforms: Linux (kitty), macOS (Terminal),
     Windows (cmd).
     """
     system = platform.system()
     if system == "Linux":
         subprocess.Popen(
-            ["gnome-terminal", "--", "bash", "-c", f"{command}; exec bash"]
+            ["kitty", "--", "bash", "-c", f"{command}; exec bash"]
         )
     elif system == "Darwin":
         # Escape single quotes inside the command string for AppleScript

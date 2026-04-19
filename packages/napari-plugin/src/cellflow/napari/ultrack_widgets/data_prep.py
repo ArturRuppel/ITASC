@@ -27,7 +27,7 @@ from cellflow.cellpose.stages.raw_import import discover_metadata, run as run_s0
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
 from cellflow.napari.runners.terminal import launch_in_terminal
-from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+from cellflow.napari.widgets import PipelineFilesWidget
 
 
 class DataPrepWidget(QWidget):
@@ -55,14 +55,10 @@ class DataPrepWidget(QWidget):
         ])
         layout.addWidget(self._files_widget)
 
-        # ── Parameters accordion section ─────────────────────────────────
-        params_inner = QWidget()
-        params_layout = QVBoxLayout(params_inner)
-        params_layout.setContentsMargins(4, 4, 4, 4)
-        params_layout.setSpacing(4)
+        layout.setSpacing(4)
 
         # NDTiff path
-        params_layout.addWidget(QLabel("NDTiff directory"))
+        layout.addWidget(QLabel("NDTiff directory"))
         row = QHBoxLayout()
         self._ndtiff_edit = QLineEdit()
         self._ndtiff_edit.setPlaceholderText("/path/to/ndtiff_dataset")
@@ -73,7 +69,7 @@ class DataPrepWidget(QWidget):
         pull_btn = QPushButton("Pull Metadata")
         pull_btn.clicked.connect(self._pull_metadata)
         row.addWidget(pull_btn)
-        params_layout.addLayout(row)
+        layout.addLayout(row)
 
         # Metadata display
         meta_row = QHBoxLayout()
@@ -84,24 +80,21 @@ class DataPrepWidget(QWidget):
         self._dt_label.setStyleSheet("color: grey; font-size: 8pt;")
         meta_row.addWidget(self._dt_label)
         meta_row.addStretch()
-        params_layout.addLayout(meta_row)
+        layout.addLayout(meta_row)
 
         # Positions
-        params_layout.addWidget(QLabel("Positions (comma-separated, e.g. 0,1,2)"))
+        layout.addWidget(QLabel("Positions (comma-separated, e.g. 0,1,2)"))
         self._positions_edit = QLineEdit("0")
-        params_layout.addWidget(self._positions_edit)
+        layout.addWidget(self._positions_edit)
 
         # XY downsample
         row = QHBoxLayout()
         row.addWidget(QLabel("XY downsample factor"))
         self._xy_spin = QSpinBox()
         self._xy_spin.setRange(1, 16)
-        self._xy_spin.setValue(3)
+        self._xy_spin.setValue(2)
         row.addWidget(self._xy_spin)
-        params_layout.addLayout(row)
-
-        self._params_section = CollapsibleSection("Parameters", params_inner, expanded=True)
-        layout.addWidget(self._params_section)
+        layout.addLayout(row)
 
         # ── Overwrite ────────────────────────────────────────────────────
         self._overwrite_check = QCheckBox("Overwrite existing files")
@@ -215,11 +208,13 @@ class DataPrepWidget(QWidget):
 
         if px is not None:
             self._px_label.setText(f"Pixel size: {px:.4g} µm")
+            self._state.pixel_size = float(px)
         else:
             self._px_label.setText("Pixel size: —")
 
         if dt is not None:
             self._dt_label.setText(f"Interval: {dt:.4g} s")
+            self._state.time_interval = float(dt)
         else:
             self._dt_label.setText("Interval: —")
 

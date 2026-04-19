@@ -26,6 +26,14 @@ def _require_ultrack():
         ) from exc
 
 
+def _select_solver() -> str:
+    try:
+        import gurobipy  # noqa: F401
+        return "GUROBI"
+    except ImportError:
+        return "CBC"
+
+
 def _build_ultrack_config(
     cfg: TrackingConfig,
     working_dir: str | Path,
@@ -53,6 +61,7 @@ def _build_ultrack_config(
             "n_workers": cfg.link_n_workers,
         },
         tracking={
+            "solver_name": _select_solver(),
             "appear_weight": cfg.appear_weight,
             "disappear_weight": cfg.disappear_weight,
             "division_weight": cfg.division_weight,
