@@ -139,12 +139,14 @@ class CorrectionWidget(QWidget):
         lbl_lay = QVBoxLayout(lbl_ref)
         for key, desc in [
             ("Left-click",                          "Select / highlight cell"),
+            ("Middle-click",                        "Erase clicked cell"),
             ("Delete",                              "Erase selected cell"),
             ("Ctrl+Left-click (cell selected)",     "Merge with clicked cell"),
             ("Ctrl+Left-click × 2 (same cell)",     "Split (watershed, 2 seeds)"),
             ("Ctrl+Right-click (cell selected)",      "Swap with clicked cell"),
             ("Ctrl+Right-click → Right-click",        "Swap (two-step, no selection)"),
             ("Ctrl-z",                              "Undo"),
+            ("Ctrl+Left / Ctrl+Right",              "Previous / next cell in frame (also runs Go)"),
             ("Shift+Right-drag",                    "Split by drawn line"),
             ("Shift+Left-drag",                     "Draw cell path (extends selected cell or creates new)"),
         ]:
@@ -517,6 +519,26 @@ class CorrectionWidget(QWidget):
         t = int(step[0]) if len(step) >= 1 else 0
         self._update_highlight(t, lab)
 
+    def _step_cell(self, direction: int) -> None:
+        """Select the previous (direction=-1) or next (direction=+1) cell in the current frame."""
+        if self._layer is None:
+            return
+        step = self.viewer.dims.current_step
+        t = int(step[0]) if self._layer.data.ndim >= 3 and len(step) >= 1 else 0
+        if t >= self._layer.data.shape[0]:
+            return
+        ids = sorted(set(np.unique(self._layer.data[t])) - {0})
+        if not ids:
+            self._set_status("No cells in this frame")
+            return
+        cur = self._selected_label
+        if direction > 0:
+            nxt = next((i for i in ids if i > cur), ids[0])
+        else:
+            nxt = next((i for i in reversed(ids) if i < cur), ids[-1])
+        self._goto_cell_id.setValue(nxt)
+        self._goto_cell()
+
     # ── callback registration ─────────────────────────────────────────────
 
     def _register_callbacks(self):
@@ -541,8 +563,16 @@ class CorrectionWidget(QWidget):
             except Exception as exc:
                 show_error(f"delete error: {exc}")
 
+        def key_prev_cell(_layer):
+            self._step_cell(-1)
+
+        def key_next_cell(_layer):
+            self._step_cell(1)
+
         for key, fn in [
             ("Delete", key_delete),
+            ("Control-Left", key_prev_cell),
+            ("Control-Right", key_next_cell),
         ]:
             layer.bind_key(key, fn, overwrite=True)
             self._bound_keys.append(key)
@@ -566,6 +596,21 @@ class CorrectionWidget(QWidget):
                     event.type, btn, mods, event.position, pos, t,
                     self._selected_label, self._ctrl_click_first_label, self._swap_first_pos,
                 )
+
+                # ── Middle-click: erase clicked cell ─────────────────────
+                if btn == 3 and not mods:
+                    lab = _label_at(seg2d, pos)
+                    log.debug("middle-click erase: label_at_click=%s", lab)
+                    if lab == 0:
+                        return
+                    before = seg2d.copy()
+                    if erase_cell(seg2d, label=lab):
+                        _record_history(_layer, t, before)
+                        _layer.refresh()
+                        if lab == self._selected_label:
+                            self._update_highlight(t, 0)
+                        self._set_status(f"Erased — Active on '{_layer.name}'")
+                    return
 
                 # ── Ctrl+Right-click: swap ────────────────────────────────
                 if btn == 2 and mods == {"Control"}:
