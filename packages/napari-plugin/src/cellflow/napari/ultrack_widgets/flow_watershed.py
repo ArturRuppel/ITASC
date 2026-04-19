@@ -19,15 +19,11 @@ import tifffile
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDoubleSpinBox,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
-    QScrollArea,
-    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -539,323 +535,8 @@ def run_full_pipeline(
     return str(final_path)
 
 
-# ── Step type registry ───────────────────────────────────────────────────────
-
-_STEP_TYPES = ["open", "close", "fill_holes", "smooth_boundary"]
-_STEP_LABELS = {
-    "open":            "Open (remove protrusions)",
-    "close":           "Close (fill gaps)",
-    "fill_holes":      "Fill holes",
-    "smooth_boundary": "Smooth boundary",
-}
-
-
-class _PostprocessStepRow(QWidget):
-    """One row in the postprocess pipeline list."""
-
-    def __init__(self, step: dict, parent=None) -> None:
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 1, 2, 1)
-        layout.setSpacing(4)
-
-        # ── Type selector ──────────────────────────────────────────────
-        self._type_combo = QComboBox()
-        self._type_combo.setFixedWidth(170)
-        for t in _STEP_TYPES:
-            self._type_combo.addItem(_STEP_LABELS[t], t)
-        layout.addWidget(self._type_combo)
-
-        # ── Parameter widgets (shown/hidden per type) ──────────────────
-        # Layout order: [label] [int_spin] [float_spin]
-        # open/close/fill_holes : label="radius:"     int_spin  —
-        # smooth_boundary       : label="smoothness:" —         float
-
-        self._param_label = QLabel()
-        self._param_label.setFixedWidth(72)
-        layout.addWidget(self._param_label)
-
-        self._int_spin = QSpinBox()
-        self._int_spin.setRange(0, 20)
-        self._int_spin.setFixedWidth(46)
-        layout.addWidget(self._int_spin)
-
-        self._float_spin = QDoubleSpinBox()
-        self._float_spin.setRange(0.0, 1.0)
-        self._float_spin.setSingleStep(0.05)
-        self._float_spin.setDecimals(2)
-        self._float_spin.setFixedWidth(54)
-        layout.addWidget(self._float_spin)
-
-        # ── Reorder / remove buttons ───────────────────────────────────
-        self._up_btn   = QPushButton("↑")
-        self._down_btn = QPushButton("↓")
-        self._del_btn  = QPushButton("×")
-        for btn in (self._up_btn, self._down_btn, self._del_btn):
-            btn.setFixedWidth(22)
-            btn.setFixedHeight(22)
-            layout.addWidget(btn)
-
-        layout.addStretch()
-
-        # Wire type change → update param visibility
-        self._type_combo.currentIndexChanged.connect(self._on_type_changed)
-
-        # Apply initial state from step dict
-        self._load_step(step)
-
-    # ── helpers ───────────────────────────────────────────────────────
-
-    def _on_type_changed(self) -> None:
-        self._refresh_param_widgets()
-
-    def _refresh_param_widgets(self) -> None:
-        t = self._type_combo.currentData()
-        if t in ("open", "close", "fill_holes"):
-            self._param_label.setText("radius:")
-            self._int_spin.setVisible(True)
-            self._float_spin.setVisible(False)
-        elif t == "smooth_boundary":
-            self._param_label.setText("smoothness:")
-            self._float_spin.setRange(0.0, 1.0)
-            self._float_spin.setSingleStep(0.05)
-            self._int_spin.setVisible(False)
-            self._float_spin.setVisible(True)
-        else:
-            self._param_label.setText("")
-            self._int_spin.setVisible(False)
-            self._float_spin.setVisible(False)
-
-    def _load_step(self, step: dict) -> None:
-        t = step.get("type", "open")
-        idx = self._type_combo.findData(t)
-        if idx >= 0:
-            self._type_combo.setCurrentIndex(idx)
-        self._refresh_param_widgets()
-        if t in ("open", "close"):
-            self._int_spin.setValue(step.get("radius", 1))
-        elif t == "fill_holes":
-            self._int_spin.setValue(step.get("radius", 5))
-        elif t == "smooth_boundary":
-            self._float_spin.setValue(step.get("smoothness", 0.5))
-
-    # ── Public API ────────────────────────────────────────────────────
-
-    def get_step(self) -> dict:
-        t = self._type_combo.currentData()
-        if t == "open":
-            return {"type": "open",            "radius":     self._int_spin.value()}
-        if t == "close":
-            return {"type": "close",           "radius":     self._int_spin.value()}
-        if t == "fill_holes":
-            return {"type": "fill_holes",      "radius":     self._int_spin.value()}
-        if t == "smooth_boundary":
-            return {"type": "smooth_boundary", "smoothness": self._float_spin.value()}
-        return {"type": t}
-
-
-_MASK_STEP_TYPES = ["open", "close", "fill_holes", "smooth_boundary"]
-_MASK_STEP_LABELS = {
-    "open":            "Open (remove islands)",
-    "close":           "Close (fill gaps)",
-    "fill_holes":      "Fill holes",
-    "smooth_boundary": "Smooth boundary (Gaussian)",
-}
-
-
-class _MaskPostprocessStepRow(QWidget):
-    """One row in the foreground-mask postprocess pipeline."""
-
-    def __init__(self, step: dict, parent=None) -> None:
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 1, 2, 1)
-        layout.setSpacing(4)
-
-        self._type_combo = QComboBox()
-        self._type_combo.setFixedWidth(180)
-        for t in _MASK_STEP_TYPES:
-            self._type_combo.addItem(_MASK_STEP_LABELS[t], t)
-        layout.addWidget(self._type_combo)
-
-        # open / close: label + int_spin
-        # fill_holes:   no params
-        # smooth_boundary: label + float_spin (sigma 0-20)
-        self._param_label = QLabel()
-        self._param_label.setFixedWidth(52)
-        layout.addWidget(self._param_label)
-
-        self._int_spin = QSpinBox()
-        self._int_spin.setRange(0, 50)
-        self._int_spin.setFixedWidth(46)
-        layout.addWidget(self._int_spin)
-
-        self._float_spin = QDoubleSpinBox()
-        self._float_spin.setRange(0.0, 20.0)
-        self._float_spin.setSingleStep(0.5)
-        self._float_spin.setDecimals(1)
-        self._float_spin.setFixedWidth(54)
-        layout.addWidget(self._float_spin)
-
-        self._up_btn   = QPushButton("↑")
-        self._down_btn = QPushButton("↓")
-        self._del_btn  = QPushButton("×")
-        for btn in (self._up_btn, self._down_btn, self._del_btn):
-            btn.setFixedWidth(22)
-            btn.setFixedHeight(22)
-            layout.addWidget(btn)
-
-        layout.addStretch()
-
-        self._type_combo.currentIndexChanged.connect(self._refresh_param_widgets)
-        self._load_step(step)
-
-    def _refresh_param_widgets(self) -> None:
-        t = self._type_combo.currentData()
-        if t in ("open", "close"):
-            self._param_label.setText("radius:")
-            self._int_spin.setVisible(True)
-            self._float_spin.setVisible(False)
-        elif t == "fill_holes":
-            self._param_label.setText("")
-            self._int_spin.setVisible(False)
-            self._float_spin.setVisible(False)
-        elif t == "smooth_boundary":
-            self._param_label.setText("σ:")
-            self._int_spin.setVisible(False)
-            self._float_spin.setVisible(True)
-        else:
-            self._param_label.setText("")
-            self._int_spin.setVisible(False)
-            self._float_spin.setVisible(False)
-
-    def _load_step(self, step: dict) -> None:
-        t = step.get("type", "open")
-        idx = self._type_combo.findData(t)
-        if idx >= 0:
-            self._type_combo.setCurrentIndex(idx)
-        self._refresh_param_widgets()
-        if t in ("open", "close"):
-            self._int_spin.setValue(step.get("radius", 1))
-        elif t == "smooth_boundary":
-            self._float_spin.setValue(step.get("sigma", 2.0))
-
-    def get_step(self) -> dict:
-        t = self._type_combo.currentData()
-        if t == "open":
-            return {"type": "open",  "radius": self._int_spin.value()}
-        if t == "close":
-            return {"type": "close", "radius": self._int_spin.value()}
-        if t == "fill_holes":
-            return {"type": "fill_holes"}
-        if t == "smooth_boundary":
-            return {"type": "smooth_boundary", "sigma": self._float_spin.value()}
-        return {"type": t}
-
-
-class _PostprocessPipelineWidget(QWidget):
-    """Scrollable, editable ordered list of postprocessing steps.
-
-    Pass *row_class* to use a different step-row widget (e.g.
-    ``_MaskPostprocessStepRow`` for binary-mask pipelines).
-    """
-
-    def __init__(self, row_class=None, parent=None) -> None:
-        super().__init__(parent)
-        self._row_class = row_class if row_class is not None else _PostprocessStepRow
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(2)
-
-        # ── Scroll area for step rows ──────────────────────────────────
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setFrameShape(QFrame.NoFrame)
-        self._scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-
-        self._container = QWidget()
-        self._list_layout = QVBoxLayout(self._container)
-        self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(1)
-        self._list_layout.addStretch()   # sentinel: always stays at the bottom
-        self._scroll.setWidget(self._container)
-        outer.addWidget(self._scroll)
-
-        # ── "Add Step" button ──────────────────────────────────────────
-        add_btn = QPushButton("+ Add Step")
-        add_btn.clicked.connect(lambda: self.add_step({"type": "open", "radius": 1}))
-        outer.addWidget(add_btn)
-
-        self._rows: list = []
-
-    # ── step management ────────────────────────────────────────────────
-
-    def add_step(self, step: dict) -> None:
-        row = self._row_class(step)
-        row._up_btn.clicked.connect(lambda: self._move_up(row))
-        row._down_btn.clicked.connect(lambda: self._move_down(row))
-        row._del_btn.clicked.connect(lambda: self._remove_row(row))
-        # Insert before the trailing stretch (always at count - 1)
-        self._list_layout.insertWidget(self._list_layout.count() - 1, row)
-        self._rows.append(row)
-        self._update_nav_buttons()
-        self._adjust_scroll_height()
-
-    def _remove_row(self, row: _PostprocessStepRow) -> None:
-        self._rows.remove(row)
-        self._list_layout.removeWidget(row)
-        row.deleteLater()
-        self._update_nav_buttons()
-        self._adjust_scroll_height()
-
-    def _move_up(self, row: _PostprocessStepRow) -> None:
-        idx = self._rows.index(row)
-        if idx > 0:
-            self._rows[idx - 1], self._rows[idx] = self._rows[idx], self._rows[idx - 1]
-            self._rebuild_list_layout()
-
-    def _move_down(self, row: _PostprocessStepRow) -> None:
-        idx = self._rows.index(row)
-        if idx < len(self._rows) - 1:
-            self._rows[idx], self._rows[idx + 1] = self._rows[idx + 1], self._rows[idx]
-            self._rebuild_list_layout()
-
-    def _rebuild_list_layout(self) -> None:
-        for row in self._rows:
-            self._list_layout.removeWidget(row)
-        for row in self._rows:
-            self._list_layout.insertWidget(self._list_layout.count() - 1, row)
-        self._update_nav_buttons()
-
-    def _update_nav_buttons(self) -> None:
-        for i, row in enumerate(self._rows):
-            row._up_btn.setEnabled(i > 0)
-            row._down_btn.setEnabled(i < len(self._rows) - 1)
-
-    def _adjust_scroll_height(self) -> None:
-        row_h = 30  # approximate height per row
-        min_h = max(row_h, len(self._rows) * row_h)
-        max_h = min(200, max(row_h, len(self._rows) * row_h))
-        self._scroll.setMinimumHeight(min_h)
-        self._scroll.setMaximumHeight(max_h)
-
-    # ── Public API ────────────────────────────────────────────────────
-
-    def get_steps(self) -> list[dict]:
-        return [row.get_step() for row in self._rows]
-
-    def set_steps(self, steps: list[dict]) -> None:
-        for row in list(self._rows):
-            self._list_layout.removeWidget(row)
-            row.deleteLater()
-        self._rows.clear()
-        for step in steps:
-            self.add_step(step)
-
-
 class FlowGuidedSegmentationWidget(QWidget):
-    """Widget for flow-guided watershed cell segmentation with independent segmentation and postprocessing stages."""
+    """Widget for flow-guided watershed cell segmentation."""
 
     run_started = Signal()
 
@@ -864,9 +545,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self.viewer = viewer
         self._state = get_state(viewer)
         self._seg_worker = None
-        self._pp_worker = None
-        self._all_worker = None
-        self._fm_worker = None
 
         self._inner_layout = QVBoxLayout(self)
         self._inner_layout.setContentsMargins(0, 0, 0, 0)
@@ -874,10 +552,10 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         lay = self._inner_layout
 
-        # ── Project file status (inputs/outputs for current position) ────
         self._files_widget = PipelineFilesWidget([
             ("Input", [
                 ("3_correction/nuclear_labels_corrected.tif", "Corrected labels"),
+                ("4_cell_segmentation/cell_foreground.tif",   "Foreground mask"),
             ]),
             ("Output", [
                 ("4_cell_segmentation/cell_labels_raw.tif", "Cell labels raw"),
@@ -886,31 +564,22 @@ class FlowGuidedSegmentationWidget(QWidget):
         ])
         lay.addWidget(self._files_widget)
 
-        # ── Build stage sections ─────────────────────────────────────────
-        lay.addWidget(self._build_foreground_mask_section())
+        # ── Load Foreground ──────────────────────────────────────────────
+        self._load_fg_btn = QPushButton("Load Foreground from Active Layer")
+        self._load_fg_btn.clicked.connect(self._on_load_foreground)
+        lay.addWidget(self._load_fg_btn)
+        self._load_fg_status = QLabel("")
+        lay.addWidget(self._load_fg_status)
+
+        # ── Segmentation section ─────────────────────────────────────────
         lay.addWidget(self._build_segmentation_section())
-        lay.addWidget(self._build_postprocessing_section())
 
-        # ── Run Full Pipeline ────────────────────────────────────────────
-        row = QHBoxLayout()
-        self._all_run_btn = QPushButton("Run Full Pipeline")
-        self._all_run_btn.clicked.connect(self._all_on_run)
-        row.addWidget(self._all_run_btn)
-        self._all_term_btn = QPushButton("Run in Terminal")
-        self._all_term_btn.clicked.connect(self._all_on_run_terminal)
-        row.addWidget(self._all_term_btn)
-        self._all_cancel_btn = QPushButton("Cancel")
-        self._all_cancel_btn.setEnabled(False)
-        self._all_cancel_btn.clicked.connect(self._all_on_cancel)
-        row.addWidget(self._all_cancel_btn)
-        lay.addLayout(row)
-
-        self._all_progress = QProgressBar()
-        self._all_progress.setVisible(False)
-        lay.addWidget(self._all_progress)
-
-        self._all_status = QLabel("")
-        lay.addWidget(self._all_status)
+        # ── Save Corrected Cell Labels ───────────────────────────────────
+        self._save_labels_btn = QPushButton("Save Corrected Cell Labels")
+        self._save_labels_btn.clicked.connect(self._on_save_corrected_labels)
+        lay.addWidget(self._save_labels_btn)
+        self._save_labels_status = QLabel("")
+        lay.addWidget(self._save_labels_status)
 
         if log_viewer is not None:
             self._log_viewer = log_viewer
@@ -918,7 +587,6 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._log_viewer = StageLogViewer(self._state)
             lay.addWidget(self._log_viewer)
 
-        # Connect project-change and position-change signals
         self._state.pipeline_schema_changed.connect(self._sync_project_dir)
         self._state.position_changed.connect(self._sync_project_dir)
         self._sync_project_dir()
@@ -932,7 +600,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         return str(project_dir)
 
     def _sync_project_dir(self) -> None:
-        """Refresh file-status rows when project or position changes."""
         root = self._get_root_dir()
         if root is None:
             self._files_widget.refresh(None)
@@ -940,12 +607,10 @@ class FlowGuidedSegmentationWidget(QWidget):
         pos = self._state.current_position
         self._files_widget.refresh(Path(root) / f"pos{pos:02d}")
 
-    def _build_segmentation_section(self) -> CollapsibleSection:
-        """Build the Segmentation section."""
+    def _build_segmentation_section(self) -> "CollapsibleSection":
         content = QWidget()
         lay = QVBoxLayout()
 
-        # Preview frame
         row = QHBoxLayout()
         row.addWidget(QLabel("Preview frame"))
         self._seg_frame_spin = QSpinBox()
@@ -954,7 +619,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         row.addWidget(self._seg_frame_spin)
         lay.addLayout(row)
 
-        # Parameters
         row = QHBoxLayout()
         row.addWidget(QLabel("Cellprob threshold:"))
         self._seg_prob_threshold_spin = QDoubleSpinBox()
@@ -997,17 +661,14 @@ class FlowGuidedSegmentationWidget(QWidget):
         row.addStretch()
         lay.addLayout(row)
 
-        # Preview button
         self._seg_preview_btn = QPushButton("Preview")
         self._seg_preview_btn.clicked.connect(self._seg_on_preview)
         lay.addWidget(self._seg_preview_btn)
 
-        # Overwrite
         self._seg_overwrite_chk = QCheckBox("Overwrite existing files")
         self._seg_overwrite_chk.setStyleSheet("color: white;")
         lay.addWidget(self._seg_overwrite_chk)
 
-        # Buttons
         row = QHBoxLayout()
         self._seg_run_btn = QPushButton("Run Segmentation")
         self._seg_run_btn.clicked.connect(self._seg_on_run)
@@ -1021,12 +682,10 @@ class FlowGuidedSegmentationWidget(QWidget):
         row.addWidget(self._seg_cancel_btn)
         lay.addLayout(row)
 
-        # Load results
         self._seg_load_btn = QPushButton("Load Results")
         self._seg_load_btn.clicked.connect(self._seg_on_load_results)
         lay.addWidget(self._seg_load_btn)
 
-        # Progress
         self._seg_progress = QProgressBar()
         self._seg_progress.setVisible(False)
         lay.addWidget(self._seg_progress)
@@ -1036,166 +695,89 @@ class FlowGuidedSegmentationWidget(QWidget):
         content.setLayout(lay)
         return CollapsibleSection("Segmentation", content, expanded=False)
 
-    def _build_foreground_mask_section(self) -> CollapsibleSection:
-        """Build the Foreground Mask section."""
-        content = QWidget()
-        lay = QVBoxLayout()
-
-        # ── Thresholding parameters ────────────────────────────────────
-        lay.addWidget(QLabel("Thresholding:"))
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Blur (σ)"))
-        self._fm_sigma_spin = QDoubleSpinBox()
-        self._fm_sigma_spin.setRange(0.0, 20.0)
-        self._fm_sigma_spin.setSingleStep(0.5)
-        self._fm_sigma_spin.setDecimals(1)
-        self._fm_sigma_spin.setValue(2.0)
-        row.addWidget(self._fm_sigma_spin)
-        row.addStretch()
-        lay.addLayout(row)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Threshold"))
-        self._fm_threshold_spin = QDoubleSpinBox()
-        self._fm_threshold_spin.setRange(0.0, 1.0)
-        self._fm_threshold_spin.setSingleStep(0.01)
-        self._fm_threshold_spin.setDecimals(2)
-        self._fm_threshold_spin.setValue(0.1)
-        row.addWidget(self._fm_threshold_spin)
-        row.addStretch()
-        lay.addLayout(row)
-
-        # ── Mask postprocessing pipeline ───────────────────────────────
-        lay.addWidget(QLabel("Mask refinement steps (top → bottom):"))
-        self._fm_pipeline = _PostprocessPipelineWidget(row_class=_MaskPostprocessStepRow)
-        lay.addWidget(self._fm_pipeline)
-
-        # ── Preview button ─────────────────────────────────────────────
-        self._fm_preview_btn = QPushButton("Preview")
-        self._fm_preview_btn.clicked.connect(self._fm_on_preview)
-        lay.addWidget(self._fm_preview_btn)
-
-        # ── Run / Cancel buttons ───────────────────────────────────────
-        row = QHBoxLayout()
-        self._fm_run_btn = QPushButton("Run Foreground Mask")
-        self._fm_run_btn.clicked.connect(self._fm_on_run)
-        row.addWidget(self._fm_run_btn)
-        self._fm_cancel_btn = QPushButton("Cancel")
-        self._fm_cancel_btn.setEnabled(False)
-        self._fm_cancel_btn.clicked.connect(self._fm_on_cancel)
-        row.addWidget(self._fm_cancel_btn)
-        lay.addLayout(row)
-
-        # ── Load input data ────────────────────────────────────────────
-        self._fm_load_btn = QPushButton("Load Input Data")
-        self._fm_load_btn.clicked.connect(self._fm_on_load_input_data)
-        lay.addWidget(self._fm_load_btn)
-
-        # ── Progress ───────────────────────────────────────────────────
-        self._fm_progress = QProgressBar()
-        self._fm_progress.setVisible(False)
-        lay.addWidget(self._fm_progress)
-        self._fm_status = QLabel("")
-        lay.addWidget(self._fm_status)
-
-        content.setLayout(lay)
-        return CollapsibleSection("Foreground Mask", content, expanded=False)
-
-    def _build_postprocessing_section(self) -> CollapsibleSection:
-        """Build the Post-processing section with a dynamic step-list pipeline."""
-        content = QWidget()
-        lay = QVBoxLayout()
-
-        # ── Preview frame ──────────────────────────────────────────────
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Preview frame"))
-        self._pp_frame_spin = QSpinBox()
-        self._pp_frame_spin.setRange(0, 1000)
-        self._pp_frame_spin.setValue(0)
-        row.addWidget(self._pp_frame_spin)
-        lay.addLayout(row)
-
-        # ── Pipeline step list ─────────────────────────────────────────
-        lay.addWidget(QLabel("Pipeline steps (executed top → bottom):"))
-        self._pp_pipeline = _PostprocessPipelineWidget()
-        for step in _DEFAULT_POSTPROCESS_STEPS:
-            self._pp_pipeline.add_step(dict(step))
-        lay.addWidget(self._pp_pipeline)
-
-        # ── Preview button ─────────────────────────────────────────────
-        self._pp_preview_btn = QPushButton("Preview")
-        self._pp_preview_btn.clicked.connect(self._pp_on_preview)
-        lay.addWidget(self._pp_preview_btn)
-
-        # ── Overwrite ──────────────────────────────────────────────────
-        self._pp_overwrite_chk = QCheckBox("Overwrite existing files")
-        self._pp_overwrite_chk.setStyleSheet("color: white;")
-        lay.addWidget(self._pp_overwrite_chk)
-
-        # ── Run buttons ────────────────────────────────────────────────
-        row = QHBoxLayout()
-        self._pp_run_btn = QPushButton("Run Post-processing")
-        self._pp_run_btn.clicked.connect(self._pp_on_run)
-        row.addWidget(self._pp_run_btn)
-        self._pp_term_btn = QPushButton("Run in Terminal")
-        self._pp_term_btn.clicked.connect(self._pp_on_run_terminal)
-        row.addWidget(self._pp_term_btn)
-        self._pp_cancel_btn = QPushButton("Cancel")
-        self._pp_cancel_btn.setEnabled(False)
-        self._pp_cancel_btn.clicked.connect(self._pp_on_cancel)
-        row.addWidget(self._pp_cancel_btn)
-        lay.addLayout(row)
-
-        # ── Load results ───────────────────────────────────────────────
-        self._pp_load_btn = QPushButton("Load Results")
-        self._pp_load_btn.clicked.connect(self._pp_on_load_results)
-        lay.addWidget(self._pp_load_btn)
-
-        # ── Progress ───────────────────────────────────────────────────
-        self._pp_progress = QProgressBar()
-        self._pp_progress.setVisible(False)
-        lay.addWidget(self._pp_progress)
-        self._pp_status = QLabel("")
-        lay.addWidget(self._pp_status)
-
-        content.setLayout(lay)
-        return CollapsibleSection("Post-processing", content, expanded=False)
-
     # ════════════════════════════════════════════════════════════════════
     # Config helpers
     # ════════════════════════════════════════════════════════════════════
 
     def _build_config(self) -> FlowWatershedConfig:
-        """Build config from current UI state."""
         return FlowWatershedConfig(
             cellpose_prob_threshold=self._seg_prob_threshold_spin.value(),
             max_iterations=self._seg_max_iter_spin.value(),
             uniform_growth_rate=self._seg_uniform_growth_spin.value(),
             flow_mag_scale=self._seg_flow_mag_scale_spin.value(),
-            postprocess_steps=self._pp_pipeline.get_steps(),
-            foreground_mask_sigma=self._fm_sigma_spin.value(),
-            foreground_mask_threshold=self._fm_threshold_spin.value(),
-            foreground_mask_postprocess_steps=self._fm_pipeline.get_steps(),
         )
 
     def _apply_config(self, cfg: FlowWatershedConfig) -> None:
-        """Apply config to UI."""
         self._seg_prob_threshold_spin.setValue(cfg.cellpose_prob_threshold)
         self._seg_max_iter_spin.setValue(cfg.max_iterations)
         self._seg_uniform_growth_spin.setValue(cfg.uniform_growth_rate)
         self._seg_flow_mag_scale_spin.setValue(cfg.flow_mag_scale)
-        self._pp_pipeline.set_steps(cfg.postprocess_steps)
-        self._fm_sigma_spin.setValue(cfg.foreground_mask_sigma)
-        self._fm_threshold_spin.setValue(cfg.foreground_mask_threshold)
-        self._fm_pipeline.set_steps(cfg.foreground_mask_postprocess_steps)
 
     # ════════════════════════════════════════════════════════════════════
-    # Segmentation section callbacks
+    # Load Foreground callback
+    # ════════════════════════════════════════════════════════════════════
+
+    def _on_load_foreground(self) -> None:
+        root_dir = self._get_root_dir()
+        if not root_dir:
+            self._load_fg_status.setText("No project open.")
+            return
+
+        active = self.viewer.layers.selection.active
+        if active is None or not hasattr(active, "data"):
+            self._load_fg_status.setText("No active layer selected.")
+            return
+
+        pos = int(self._state.current_position)
+        data = np.asarray(active.data).astype(np.uint8)
+
+        out_dir = cell_segmentation_dir(root_dir, pos)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "cell_foreground.tif"
+
+        try:
+            axes = "TYX" if data.ndim == 3 else "YX"
+            tifffile.imwrite(str(out_path), data, compression="zlib", metadata={"axes": axes})
+            self._load_fg_status.setText(f"Saved foreground mask to {out_path.name}")
+            self._sync_project_dir()
+        except Exception as e:
+            self._load_fg_status.setText(f"Error: {e}")
+
+    # ════════════════════════════════════════════════════════════════════
+    # Save Corrected Cell Labels callback
+    # ════════════════════════════════════════════════════════════════════
+
+    def _on_save_corrected_labels(self) -> None:
+        root_dir = self._get_root_dir()
+        if not root_dir:
+            self._save_labels_status.setText("No project open.")
+            return
+
+        active = self.viewer.layers.selection.active
+        if active is None or not hasattr(active, "data"):
+            self._save_labels_status.setText("No active layer selected.")
+            return
+
+        pos = int(self._state.current_position)
+        data = np.asarray(active.data).astype(np.int32)
+
+        out_dir = cell_segmentation_dir(root_dir, pos)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / "cell_labels.tif"
+
+        try:
+            axes = "TYX" if data.ndim == 3 else "YX"
+            tifffile.imwrite(str(out_path), data, compression="zlib", metadata={"axes": axes})
+            self._save_labels_status.setText(f"Saved cell labels to {out_path.name}")
+            self._sync_project_dir()
+        except Exception as e:
+            self._save_labels_status.setText(f"Error: {e}")
+
+    # ════════════════════════════════════════════════════════════════════
+    # Segmentation callbacks
     # ════════════════════════════════════════════════════════════════════
 
     def _seg_on_preview(self) -> None:
-        """Preview single frame segmentation."""
         root_dir = self._get_root_dir()
         if not root_dir:
             self._seg_status.setText("No project open. Create or open a project first.")
@@ -1211,13 +793,11 @@ class FlowGuidedSegmentationWidget(QWidget):
             from cellflow.cellpose.processing.flow_watershed import flow_guided_watershed
             root_dir_path = Path(root_dir)
 
-            # Load nuclear labels
             nuclear_labels = _load_nuclear_labels(root_dir_path, pos)
             if nuclear_labels is None:
                 self._seg_status.setText("Could not load nuclear labels.")
                 return
 
-            # Load cellpose data
             flow_full, prob_full = _load_cellpose_data(root_dir_path, pos, frame)
             if flow_full is None:
                 self._seg_status.setText("Could not load cellpose flow.")
@@ -1226,18 +806,9 @@ class FlowGuidedSegmentationWidget(QWidget):
             nuc_t = nuclear_labels[frame]
             T = nuclear_labels.shape[0]
 
-            # Get flow/prob for this frame
-            if flow_full.ndim == 4 and flow_full.shape[0] == T:
-                flow_t = flow_full[frame]
-            else:
-                flow_t = flow_full
+            flow_t = flow_full[frame] if (flow_full.ndim == 4 and flow_full.shape[0] == T) else flow_full
+            prob_t = prob_full[frame] if (prob_full is not None and prob_full.ndim == 3 and prob_full.shape[0] == T) else prob_full
 
-            if prob_full is not None and prob_full.ndim == 3 and prob_full.shape[0] == T:
-                prob_t = prob_full[frame]
-            else:
-                prob_t = prob_full
-
-            # Run segmentation
             cell_labels = flow_guided_watershed(
                 nuc_t,
                 flow_t,
@@ -1250,16 +821,13 @@ class FlowGuidedSegmentationWidget(QWidget):
                 flow_mag_scale=cfg.flow_mag_scale,
             )
 
-            # Cut off cells that expanded outside the tissue foreground
             foreground_full = _load_foreground_mask(root_dir_path, pos)
             foreground_t = foreground_full[frame] if (foreground_full is not None and foreground_full.ndim == 3 and foreground_full.shape[0] == T) else foreground_full
             if foreground_t is not None:
                 cell_labels[~foreground_t.astype(bool)] = 0
 
-            # Display in napari
             flow_mag = np.sqrt(flow_t[..., 0]**2 + flow_t[..., 1]**2)
 
-            # Clear existing layers
             while len(self.viewer.layers) > 0:
                 self.viewer.layers.pop()
 
@@ -1275,13 +843,11 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._seg_status.setText(f"Preview complete. {n_cells} cells found{fg_note}.")
 
         except Exception as e:
-            print(f"Preview error: {e}")
             import traceback
             traceback.print_exc()
             self._seg_status.setText(f"Preview error: {e}")
 
     def _seg_on_run(self) -> None:
-        """Run segmentation in background."""
         root_dir = self._get_root_dir()
         if not root_dir:
             self._seg_status.setText("No project open. Create or open a project first.")
@@ -1289,6 +855,7 @@ class FlowGuidedSegmentationWidget(QWidget):
 
         pos = int(self._state.current_position)
         cfg = self._build_config()
+        overwrite = self._seg_overwrite_chk.isChecked()
 
         self._seg_run_btn.setEnabled(False)
         self._seg_term_btn.setEnabled(False)
@@ -1296,8 +863,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_progress.setVisible(True)
         self._seg_progress.setValue(0)
         self._seg_status.setText("Running segmentation…")
-
-        overwrite = self._seg_overwrite_chk.isChecked()
 
         @thread_worker(
             connect={
@@ -1318,7 +883,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_worker.aborted.connect(self._seg_on_cancelled)
 
     def _seg_on_run_terminal(self) -> None:
-        """Launch segmentation in terminal."""
         root_dir = self._get_root_dir()
         if not root_dir:
             self._seg_status.setText("No project open. Create or open a project first.")
@@ -1328,7 +892,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         cfg = self._build_config()
         overwrite_flag = "--overwrite" if self._seg_overwrite_chk.isChecked() else ""
 
-        # Save config to temp file
         cfg_path = Path(tempfile.mktemp(suffix="_fw_config.json"))
         cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
 
@@ -1348,7 +911,6 @@ class FlowGuidedSegmentationWidget(QWidget):
             self._seg_status.setText(f"Terminal launch error: {e}")
 
     def _seg_on_progress(self, update: tuple) -> None:
-        """Handle progress updates from segmentation worker."""
         done, total, label = update
         self._seg_progress.setMaximum(max(total, 1))
         self._seg_progress.setValue(done)
@@ -1356,7 +918,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_status.setText(f"Segmentation: {done}/{total} frames ({pct}%)")
 
     def _seg_on_finished(self) -> None:
-        """Callback after segmentation completes."""
         self._seg_run_btn.setEnabled(True)
         self._seg_term_btn.setEnabled(True)
         self._seg_cancel_btn.setEnabled(False)
@@ -1378,7 +939,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._log_viewer.refresh()
 
     def _seg_on_error(self, exc: Exception) -> None:
-        """Callback on segmentation error."""
         self._seg_run_btn.setEnabled(True)
         self._seg_term_btn.setEnabled(True)
         self._seg_cancel_btn.setEnabled(False)
@@ -1388,7 +948,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._log_viewer.refresh()
 
     def _seg_on_cancelled(self) -> None:
-        """Callback when segmentation is cancelled."""
         self._seg_run_btn.setEnabled(True)
         self._seg_term_btn.setEnabled(True)
         self._seg_cancel_btn.setEnabled(False)
@@ -1397,12 +956,10 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_worker = None
 
     def _seg_on_cancel(self) -> None:
-        """Cancel segmentation worker."""
         if self._seg_worker:
             self._seg_worker.quit()
 
     def _seg_on_load_results(self) -> None:
-        """Load segmentation results from disk."""
         root_dir = self._get_root_dir()
         if not root_dir:
             self._seg_status.setText("No project open. Create or open a project first.")
@@ -1419,7 +976,6 @@ class FlowGuidedSegmentationWidget(QWidget):
         cell_stack = tifffile.imread(str(raw_path)).astype(np.uint32)
         nuc_labels = _load_nuclear_labels(root_dir, pos)
 
-        # Clear and reload
         while len(self.viewer.layers) > 0:
             self.viewer.layers.pop()
 
@@ -1430,542 +986,14 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_status.setText(f"Loaded raw segmentation, shape={cell_stack.shape}")
 
     # ════════════════════════════════════════════════════════════════════
-    # Post-processing section callbacks
-    # ════════════════════════════════════════════════════════════════════
-
-    def _pp_on_preview(self) -> None:
-        """Preview post-processing on a single frame."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._pp_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        frame = int(self._pp_frame_spin.value())
-        cfg = self._build_config()
-
-        self._pp_status.setText(f"Processing frame {frame}…")
-
-        try:
-            from cellflow.cellpose.processing.flow_watershed_postproc import run_postprocess_pipeline
-
-            out_dir = cell_segmentation_dir(root_dir, pos)
-            raw_path = out_dir / "cell_labels_raw.tif"
-
-            if not raw_path.exists():
-                self._pp_status.setText("Raw segmentation not found. Run segmentation first.")
-                return
-
-            raw_labels = tifffile.imread(str(raw_path)).astype(np.int32)
-            if frame >= raw_labels.shape[0]:
-                self._pp_status.setText(f"Frame {frame} out of range (max {raw_labels.shape[0]-1})")
-                return
-
-            raw_t = raw_labels[frame]
-
-            tissue_full = _load_tissue_image(root_dir, pos)
-            tissue_t = tissue_full[frame] if (tissue_full is not None and tissue_full.ndim == 3) else tissue_full
-
-            pp_t = run_postprocess_pipeline(raw_t, cfg.postprocess_steps, tissue_image=tissue_t)
-
-            # Display in napari
-            while len(self.viewer.layers) > 0:
-                self.viewer.layers.pop()
-
-            self.viewer.add_labels(raw_t, name="Raw Segmentation", opacity=0.5)
-            self.viewer.add_labels(pp_t, name="Post-processed")
-
-            n_cells_raw = len(np.unique(raw_t)) - 1
-            n_cells_pp = len(np.unique(pp_t)) - 1
-            self._pp_status.setText(
-                f"Preview complete. Raw: {n_cells_raw} cells, Post-processed: {n_cells_pp} cells."
-            )
-
-        except Exception as e:
-            print(f"Preview error: {e}")
-            import traceback
-            traceback.print_exc()
-            self._pp_status.setText(f"Preview error: {e}")
-
-    def _pp_on_run(self) -> None:
-        """Run post-processing in background."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._pp_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        cfg = self._build_config()
-
-        self._pp_run_btn.setEnabled(False)
-        self._pp_term_btn.setEnabled(False)
-        self._pp_cancel_btn.setEnabled(True)
-        self._pp_progress.setVisible(True)
-        self._pp_progress.setValue(0)
-        self._pp_status.setText("Running post-processing…")
-
-        overwrite = self._pp_overwrite_chk.isChecked()
-
-        @thread_worker(
-            connect={
-                "yielded": self._pp_on_progress,
-                "finished": self._pp_on_finished,
-                "errored": self._pp_on_error,
-            }
-        )
-        def _work():
-            from cellflow.core.logging import StageLogger
-            from cellflow.core.paths import log_path
-            with StageLogger(log_path(root_dir, pos), "cell_segmentation_postprocess"):
-                for update in run_postprocessing_only(root_dir, pos, cfg, overwrite=overwrite):
-                    yield update
-
-        self.run_started.emit()
-        self._pp_worker = _work()
-        self._pp_worker.aborted.connect(self._pp_on_cancelled)
-
-    def _pp_on_run_terminal(self) -> None:
-        """Launch post-processing in terminal."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._pp_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        cfg = self._build_config()
-        overwrite_flag = "--overwrite" if self._pp_overwrite_chk.isChecked() else ""
-
-        # Save config to temp file
-        cfg_path = Path(tempfile.mktemp(suffix="_fw_config.json"))
-        cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
-
-        cmd = (
-            f"\"{sys.executable}\" -m cellflow.cellpose.stages.flow_watershed"
-            f" --root-dir \"{root_dir}\""
-            f" --pos {pos}"
-            f" --config \"{cfg_path}\""
-            f" --mode postprocess-only"
-            f" {overwrite_flag}"
-        ).strip()
-
-        try:
-            launch_in_terminal(cmd)
-            self._pp_status.setText("Launched post-processing in terminal.")
-        except Exception as e:
-            self._pp_status.setText(f"Terminal launch error: {e}")
-
-    def _pp_on_progress(self, update: tuple) -> None:
-        """Handle progress updates from post-processing worker."""
-        done, total, label = update
-        self._pp_progress.setMaximum(max(total, 1))
-        self._pp_progress.setValue(done)
-        pct = int(100 * done / total) if total > 0 else 0
-        self._pp_status.setText(f"Post-processing: {done}/{total} frames ({pct}%)")
-
-    def _pp_on_finished(self) -> None:
-        """Callback after post-processing completes."""
-        self._pp_run_btn.setEnabled(True)
-        self._pp_term_btn.setEnabled(True)
-        self._pp_cancel_btn.setEnabled(False)
-        self._pp_progress.setVisible(False)
-
-        if self._pp_worker and hasattr(self._pp_worker, 'result'):
-            result = self._pp_worker.result
-            if result is not None:
-                out_path = Path(result)
-                cell_stack = tifffile.imread(str(out_path)).astype(np.uint32)
-                self.viewer.add_labels(cell_stack, name="cells")
-                self._pp_status.setText(f"Done. Saved to {out_path.name}")
-            else:
-                self._pp_status.setText("Processing failed.")
-        else:
-            self._pp_status.setText("Done — Post-processing complete.")
-
-        self._pp_worker = None
-        self._log_viewer.refresh()
-
-    def _pp_on_error(self, exc: Exception) -> None:
-        """Callback on post-processing error."""
-        self._pp_run_btn.setEnabled(True)
-        self._pp_term_btn.setEnabled(True)
-        self._pp_cancel_btn.setEnabled(False)
-        self._pp_progress.setVisible(False)
-        self._pp_status.setText(f"Error: {exc}")
-        self._pp_worker = None
-        self._log_viewer.refresh()
-
-    def _pp_on_cancelled(self) -> None:
-        """Callback when post-processing is cancelled."""
-        self._pp_run_btn.setEnabled(True)
-        self._pp_term_btn.setEnabled(True)
-        self._pp_cancel_btn.setEnabled(False)
-        self._pp_progress.setVisible(False)
-        self._pp_status.setText("Cancelled.")
-        self._pp_worker = None
-
-    def _pp_on_cancel(self) -> None:
-        """Cancel post-processing worker."""
-        if self._pp_worker:
-            self._pp_worker.quit()
-
-    def _pp_on_load_results(self) -> None:
-        """Load post-processing results from disk."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._pp_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        out_dir = cell_segmentation_dir(root_dir, pos)
-        final_path = out_dir / "cell_labels.tif"
-
-        if not final_path.exists():
-            self._pp_status.setText("No cell_labels.tif found.")
-            return
-
-        cell_stack = tifffile.imread(str(final_path)).astype(np.uint32)
-        nuc_labels = _load_nuclear_labels(root_dir, pos)
-
-        # Clear and reload
-        while len(self.viewer.layers) > 0:
-            self.viewer.layers.pop()
-
-        if nuc_labels is not None:
-            self.viewer.add_labels(nuc_labels.astype(np.uint32), name="nuclei", opacity=0.3)
-        self.viewer.add_labels(cell_stack, name="cells")
-
-        self._pp_status.setText(f"Loaded final segmentation, shape={cell_stack.shape}")
-
-    # ════════════════════════════════════════════════════════════════════
-    # Foreground Mask section callbacks
-    # ════════════════════════════════════════════════════════════════════
-
-    def _fm_on_preview(self) -> None:
-        """Compute and display the foreground mask for the current viewer frame."""
-        from cellflow.cellpose.processing.flow_watershed_postproc import (
-            compute_tissue_foreground_mask,
-            run_mask_postprocess_pipeline,
-        )
-
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._fm_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        root_dir_path = Path(root_dir)
-
-        tissue_full = _load_tissue_image(root_dir_path, pos)
-        if tissue_full is None:
-            self._fm_status.setText("cell_zavg.tif not found.")
-            return
-
-        frame = int(self.viewer.dims.current_step[0]) if self.viewer.dims.ndim >= 1 else 0
-        T = tissue_full.shape[0] if tissue_full.ndim == 3 else 1
-        frame = min(frame, T - 1)
-        tissue_t = tissue_full[frame] if tissue_full.ndim == 3 else tissue_full
-
-        try:
-            sigma = self._fm_sigma_spin.value()
-            threshold = self._fm_threshold_spin.value()
-            pp_steps = self._fm_pipeline.get_steps()
-
-            mask = compute_tissue_foreground_mask(tissue_t, sigma=sigma, threshold=threshold)
-            if pp_steps:
-                mask = run_mask_postprocess_pipeline(mask, pp_steps)
-            mask = mask.astype(np.uint8)
-
-            layer_name = "Foreground Mask Preview"
-            if layer_name in self.viewer.layers:
-                self.viewer.layers[layer_name].data = mask
-            else:
-                self.viewer.add_labels(mask, name=layer_name)
-
-            self._fm_status.setText(f"Preview frame {frame}: {mask.sum()} foreground pixels.")
-        except Exception as e:
-            self._fm_status.setText(f"Preview error: {e}")
-
-    def _fm_on_run(self) -> None:
-        """Compute foreground mask for the full stack in background."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._fm_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        sigma = self._fm_sigma_spin.value()
-        threshold = self._fm_threshold_spin.value()
-        pp_steps = self._fm_pipeline.get_steps()
-
-        self._fm_run_btn.setEnabled(False)
-        self._fm_cancel_btn.setEnabled(True)
-        self._fm_progress.setVisible(True)
-        self._fm_progress.setValue(0)
-        self._fm_status.setText("Computing foreground mask…")
-
-        @thread_worker(
-            connect={
-                "yielded": self._fm_on_progress,
-                "finished": self._fm_on_finished,
-                "errored": self._fm_on_error,
-            }
-        )
-        def _work():
-            from cellflow.core.logging import StageLogger
-            from cellflow.core.paths import log_path
-            with StageLogger(log_path(root_dir, pos), "foreground_mask"):
-                for update in run_foreground_mask_only(root_dir, pos, sigma, threshold, pp_steps):
-                    yield update
-
-        self.run_started.emit()
-        self._fm_worker = _work()
-        self._fm_worker.aborted.connect(self._fm_on_cancelled)
-
-    def _fm_on_progress(self, update: tuple) -> None:
-        done, total, label = update
-        self._fm_progress.setMaximum(max(total, 1))
-        self._fm_progress.setValue(done)
-        pct = int(100 * done / total) if total > 0 else 0
-        self._fm_status.setText(f"Foreground mask: {done}/{total} frames ({pct}%)")
-
-    def _fm_on_finished(self) -> None:
-        self._fm_run_btn.setEnabled(True)
-        self._fm_cancel_btn.setEnabled(False)
-        self._fm_progress.setVisible(False)
-
-        if self._fm_worker and hasattr(self._fm_worker, 'result'):
-            result = self._fm_worker.result
-            if result is not None:
-                out_path = Path(result)
-                mask_stack = tifffile.imread(str(out_path)).astype(np.uint8)
-                layer_name = "Foreground Mask"
-                if layer_name in self.viewer.layers:
-                    self.viewer.layers[layer_name].data = mask_stack
-                else:
-                    self.viewer.add_labels(mask_stack, name=layer_name)
-                self._fm_status.setText(f"Done. Saved to {out_path.name}")
-            else:
-                self._fm_status.setText("Processing failed.")
-        else:
-            self._fm_status.setText("Done.")
-
-        self._fm_worker = None
-        self._log_viewer.refresh()
-
-    def _fm_on_error(self, exc: Exception) -> None:
-        self._fm_run_btn.setEnabled(True)
-        self._fm_cancel_btn.setEnabled(False)
-        self._fm_progress.setVisible(False)
-        self._fm_status.setText(f"Error: {exc}")
-        self._fm_worker = None
-        self._log_viewer.refresh()
-
-    def _fm_on_cancelled(self) -> None:
-        self._fm_run_btn.setEnabled(True)
-        self._fm_cancel_btn.setEnabled(False)
-        self._fm_progress.setVisible(False)
-        self._fm_status.setText("Cancelled.")
-        self._fm_worker = None
-
-    def _fm_on_cancel(self) -> None:
-        if self._fm_worker:
-            self._fm_worker.quit()
-
-    def _fm_on_load_input_data(self) -> None:
-        """Load cell_zavg as background and existing foreground mask if present."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._fm_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        root_dir_path = Path(root_dir)
-
-        # --- cell_zavg ---
-        cell_path = stage_dir(root_dir_path, pos, "raw_import") / "cell" / "cell_zavg.tif"
-        if cell_path.exists():
-            cell_img = tifffile.imread(str(cell_path))
-            layer_name = "Cell avg"
-            if layer_name in self.viewer.layers:
-                self.viewer.layers[layer_name].data = cell_img
-            else:
-                self.viewer.add_image(cell_img, name=layer_name, colormap="gray")
-        else:
-            self._fm_status.setText("cell_zavg.tif not found.")
-            return
-
-        # --- existing foreground mask (optional) ---
-        mask_path = cell_segmentation_dir(root_dir_path, pos) / "cell_foreground.tif"
-        if mask_path.exists():
-            mask_stack = tifffile.imread(str(mask_path)).astype(np.uint8)
-            mask_name = "Foreground Mask"
-            if mask_name in self.viewer.layers:
-                self.viewer.layers[mask_name].data = mask_stack
-            else:
-                self.viewer.add_labels(mask_stack, name=mask_name)
-            self._fm_status.setText(f"Loaded cell_zavg + foreground mask, shape={mask_stack.shape}")
-        else:
-            self._fm_status.setText("Loaded cell_zavg (no foreground mask yet).")
-
-    def _fm_on_load_results(self) -> None:
-        """Load saved foreground mask from disk."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._fm_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        out_dir = cell_segmentation_dir(root_dir, pos)
-        mask_path = out_dir / "cell_foreground.tif"
-
-        if not mask_path.exists():
-            self._fm_status.setText("No cell_foreground.tif found.")
-            return
-
-        mask_stack = tifffile.imread(str(mask_path)).astype(np.uint8)
-        layer_name = "Foreground Mask"
-        if layer_name in self.viewer.layers:
-            self.viewer.layers[layer_name].data = mask_stack
-        else:
-            self.viewer.add_labels(mask_stack, name=layer_name)
-        self._fm_status.setText(f"Loaded foreground mask, shape={mask_stack.shape}")
-
-    # ════════════════════════════════════════════════════════════════════
-    # Full pipeline callbacks
-    # ════════════════════════════════════════════════════════════════════
-
-    def _all_on_run(self) -> None:
-        """Run full pipeline in background."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._all_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        cfg = self._build_config()
-
-        self._all_run_btn.setEnabled(False)
-        self._all_term_btn.setEnabled(False)
-        self._all_cancel_btn.setEnabled(True)
-        self._all_progress.setVisible(True)
-        self._all_progress.setValue(0)
-        self._all_status.setText("Running full pipeline…")
-
-        @thread_worker(
-            connect={
-                "yielded": self._all_on_progress,
-                "finished": self._all_on_finished,
-                "errored": self._all_on_error,
-            }
-        )
-        def _work():
-            from cellflow.core.logging import StageLogger
-            from cellflow.core.paths import log_path
-            with StageLogger(log_path(root_dir, pos), "cell_segmentation"):
-                for update in run_full_pipeline(root_dir, pos, cfg):
-                    yield update
-
-        self.run_started.emit()
-        self._all_worker = _work()
-        self._all_worker.aborted.connect(self._all_on_cancelled)
-
-    def _all_on_run_terminal(self) -> None:
-        """Launch full pipeline in terminal."""
-        root_dir = self._get_root_dir()
-        if not root_dir:
-            self._all_status.setText("No project open. Create or open a project first.")
-            return
-
-        pos = int(self._state.current_position)
-        cfg = self._build_config()
-        overwrite_flag = "--overwrite" if self._seg_overwrite_chk.isChecked() else ""
-
-        # Save config to temp file
-        cfg_path = Path(tempfile.mktemp(suffix="_fw_config.json"))
-        cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
-
-        cmd = (
-            f"\"{sys.executable}\" -m cellflow.cellpose.stages.flow_watershed"
-            f" --root-dir \"{root_dir}\""
-            f" --pos {pos}"
-            f" --config \"{cfg_path}\""
-            f" {overwrite_flag}"
-        ).strip()
-
-        try:
-            launch_in_terminal(cmd)
-            self._all_status.setText("Launched full pipeline in terminal.")
-        except Exception as e:
-            self._all_status.setText(f"Terminal launch error: {e}")
-
-    def _all_on_progress(self, update: tuple) -> None:
-        """Handle progress updates from full pipeline worker."""
-        done, total, label = update
-        self._all_progress.setMaximum(max(total, 1))
-        self._all_progress.setValue(done)
-        pct = int(100 * done / total) if total > 0 else 0
-        self._all_status.setText(f"Pipeline: {done}/{total} frames ({pct}%)")
-
-    def _all_on_finished(self) -> None:
-        """Callback after full pipeline completes."""
-        self._all_run_btn.setEnabled(True)
-        self._all_term_btn.setEnabled(True)
-        self._all_cancel_btn.setEnabled(False)
-        self._all_progress.setVisible(False)
-
-        if self._all_worker and hasattr(self._all_worker, 'result'):
-            result = self._all_worker.result
-            if result is not None:
-                out_path = Path(result)
-                cell_stack = tifffile.imread(str(out_path)).astype(np.uint32)
-                self.viewer.add_labels(cell_stack, name="cells")
-                self._all_status.setText(f"Done. Saved to {out_path.name}")
-            else:
-                self._all_status.setText("Processing failed.")
-        else:
-            self._all_status.setText("Done — Full pipeline complete.")
-
-        self._all_worker = None
-        self._log_viewer.refresh()
-
-    def _all_on_error(self, exc: Exception) -> None:
-        """Callback on full pipeline error."""
-        self._all_run_btn.setEnabled(True)
-        self._all_term_btn.setEnabled(True)
-        self._all_cancel_btn.setEnabled(False)
-        self._all_progress.setVisible(False)
-        self._all_status.setText(f"Error: {exc}")
-        self._all_worker = None
-        self._log_viewer.refresh()
-
-    def _all_on_cancelled(self) -> None:
-        """Callback when full pipeline is cancelled."""
-        self._all_run_btn.setEnabled(True)
-        self._all_term_btn.setEnabled(True)
-        self._all_cancel_btn.setEnabled(False)
-        self._all_progress.setVisible(False)
-        self._all_status.setText("Cancelled.")
-        self._all_worker = None
-
-    def _all_on_cancel(self) -> None:
-        """Cancel full pipeline worker."""
-        if self._all_worker:
-            self._all_worker.quit()
-
-    # ════════════════════════════════════════════════════════════════════
     # get_params / set_params
     # ════════════════════════════════════════════════════════════════════
 
     def get_params(self) -> dict:
-        d = self._build_config().model_dump()
-        d["seg_overwrite"] = self._seg_overwrite_chk.isChecked()
-        d["pp_overwrite"] = self._pp_overwrite_chk.isChecked()
-        return d
+        return self._build_config().model_dump()
 
     def set_params(self, data: dict) -> None:
         cfg_data = {k: v for k, v in data.items() if k not in ("seg_overwrite", "pp_overwrite")}
         self._apply_config(FlowWatershedConfig.from_dict(cfg_data))
         if "seg_overwrite" in data:
             self._seg_overwrite_chk.setChecked(bool(data["seg_overwrite"]))
-        if "pp_overwrite" in data:
-            self._pp_overwrite_chk.setChecked(bool(data["pp_overwrite"]))
