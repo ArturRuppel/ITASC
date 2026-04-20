@@ -24,6 +24,7 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -88,6 +89,25 @@ class CellSegmentationConfig:
         valid = {k for k in cls.__init__.__code__.co_varnames if k != "self"}
         data = {k: v for k, v in data.items() if k in valid}
         return cls(**data)
+
+
+class WatershedConfig:
+    """Configuration for nucleus-seeded watershed cell segmentation."""
+
+    def __init__(self, cellpose_prob_threshold: float = 0.0, compactness: float = 0.0):
+        self.cellpose_prob_threshold = cellpose_prob_threshold
+        self.compactness = compactness
+
+    def model_dump(self) -> dict:
+        return {
+            "cellpose_prob_threshold": self.cellpose_prob_threshold,
+            "compactness": self.compactness,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "WatershedConfig":
+        valid = {"cellpose_prob_threshold", "compactness"}
+        return cls(**{k: v for k, v in data.items() if k in valid})
 
 
 # ── Module-level data helpers ─────────────────────────────────────────────────
@@ -202,6 +222,63 @@ def run_segmentation(
     return str(out_path)
 
 
+def run_watershed_segmentation(
+    root_dir: str | Path,
+    pos: int,
+    config: WatershedConfig,
+    overwrite: bool = True,
+) -> Generator:
+    """Run nucleus-seeded watershed cell segmentation for a full stack."""
+    from cellflow.cellpose.processing.gravity_flow import prob_watershed_segmentation
+
+    root_dir = Path(root_dir)
+    out_dir = cell_segmentation_dir(root_dir, pos)
+    out_path = out_dir / "cell_labels.tif"
+    if out_path.exists() and not overwrite:
+        return str(out_path)
+
+    nuclear_labels = _load_nuclear_labels(root_dir, pos)
+    if nuclear_labels is None or nuclear_labels.ndim != 3:
+        print("Could not load nuclear labels (T, H, W)")
+        return None
+
+    T = nuclear_labels.shape[0]
+
+    try:
+        cell_dir = cellpose_cell_dir(root_dir, pos)
+        prob_path = cell_dir / "cell_prob.tif"
+        if not prob_path.exists():
+            print("cell_prob.tif not found")
+            return None
+        prob_stack = tifffile.imread(str(prob_path)).astype(np.float32)
+        if prob_stack.ndim == 2:
+            prob_stack = prob_stack[np.newaxis]
+    except Exception as e:
+        print(f"Error loading prob stack: {e}")
+        return None
+
+    cell_labels_stack = []
+    for t in range(T):
+        try:
+            nuc_t = nuclear_labels[t]
+            prob_t = prob_stack[t] if prob_stack.shape[0] > 1 else prob_stack[0]
+            cell_labels = prob_watershed_segmentation(
+                nuc_t, prob_t,
+                cellpose_prob_threshold=config.cellpose_prob_threshold,
+                compactness=config.compactness,
+            )
+            cell_labels_stack.append(cell_labels)
+        except Exception as e:
+            print(f"Error at t{t:03d}: {e}")
+            cell_labels_stack.append(np.zeros_like(nuclear_labels[t], dtype=np.int32))
+        yield (t + 1, T, f"t{t:03d}")
+
+    stack = np.stack(cell_labels_stack, axis=0).astype(np.int32)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(str(out_path), stack, compression="zlib", metadata={"axes": "TYX"})
+    return str(out_path)
+
+
 # ── Widget ────────────────────────────────────────────────────────────────────
 
 class CellSegmentationWidget(QWidget):
@@ -232,20 +309,11 @@ class CellSegmentationWidget(QWidget):
         ])
         lay.addWidget(self._files_widget)
 
-        # ── Common: cellprob threshold ─────────────────────────────────────
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Cellprob threshold:"))
-        self._seg_prob_threshold_spin = QDoubleSpinBox()
-        self._seg_prob_threshold_spin.setRange(-100.0, 100.0)
-        self._seg_prob_threshold_spin.setSingleStep(1.0)
-        self._seg_prob_threshold_spin.setDecimals(1)
-        self._seg_prob_threshold_spin.setValue(0.0)
-        row.addWidget(self._seg_prob_threshold_spin)
-        lay.addLayout(row)
-
-        # ── Parameters ────────────────────────────────────────────────────
-        self._params_group = self._build_params_group()
-        lay.addWidget(self._params_group)
+        # ── Method tabs ────────────────────────────────────────────────────
+        self._method_tabs = QTabWidget()
+        self._method_tabs.addTab(self._build_gravity_tab(), "Gravity Flow")
+        self._method_tabs.addTab(self._build_watershed_tab(), "Watershed")
+        lay.addWidget(self._method_tabs)
 
         # ── Preview ────────────────────────────────────────────────────────
         row = QHBoxLayout()
@@ -305,11 +373,23 @@ class CellSegmentationWidget(QWidget):
         self._state.position_changed.connect(self._sync_project_dir)
         self._sync_project_dir()
 
-    # ── Param group builder ───────────────────────────────────────────────
+    # ── Tab builders ──────────────────────────────────────────────────────
 
-    def _build_params_group(self) -> QGroupBox:
-        group = QGroupBox("Parameters")
-        lay = QVBoxLayout()
+    def _build_gravity_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(4, 4, 4, 4)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Cellprob threshold"))
+        self._seg_prob_threshold_spin = QDoubleSpinBox()
+        self._seg_prob_threshold_spin.setRange(-100.0, 100.0)
+        self._seg_prob_threshold_spin.setSingleStep(1.0)
+        self._seg_prob_threshold_spin.setDecimals(1)
+        self._seg_prob_threshold_spin.setValue(0.0)
+        row.addWidget(self._seg_prob_threshold_spin)
+        row.addStretch()
+        lay.addLayout(row)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Flow step scale"))
@@ -365,8 +445,38 @@ class CellSegmentationWidget(QWidget):
         row.addStretch()
         lay.addLayout(row)
 
-        group.setLayout(lay)
-        return group
+        lay.addStretch()
+        return tab
+
+    def _build_watershed_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setContentsMargins(4, 4, 4, 4)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Cellprob threshold"))
+        self._ws_prob_threshold_spin = QDoubleSpinBox()
+        self._ws_prob_threshold_spin.setRange(-100.0, 100.0)
+        self._ws_prob_threshold_spin.setSingleStep(1.0)
+        self._ws_prob_threshold_spin.setDecimals(1)
+        self._ws_prob_threshold_spin.setValue(0.0)
+        row.addWidget(self._ws_prob_threshold_spin)
+        row.addStretch()
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Compactness"))
+        self._ws_compactness_spin = QDoubleSpinBox()
+        self._ws_compactness_spin.setRange(0.0, 10.0)
+        self._ws_compactness_spin.setSingleStep(0.01)
+        self._ws_compactness_spin.setDecimals(3)
+        self._ws_compactness_spin.setValue(0.0)
+        row.addWidget(self._ws_compactness_spin)
+        row.addStretch()
+        lay.addLayout(row)
+
+        lay.addStretch()
+        return tab
 
     # ── Path helpers ──────────────────────────────────────────────────────
 
@@ -386,7 +496,10 @@ class CellSegmentationWidget(QWidget):
 
     # ── Config helpers ────────────────────────────────────────────────────
 
-    def _build_config(self) -> CellSegmentationConfig:
+    def _active_method(self) -> str:
+        return "watershed" if self._method_tabs.currentIndex() == 1 else "gravity_flow"
+
+    def _build_gravity_config(self) -> CellSegmentationConfig:
         return CellSegmentationConfig(
             cellpose_prob_threshold=self._seg_prob_threshold_spin.value(),
             flow_step_scale=self._euler_flow_step_spin.value(),
@@ -396,13 +509,23 @@ class CellSegmentationWidget(QWidget):
             gravity_falloff=self._euler_gravity_falloff_spin.value(),
         )
 
-    def _apply_config(self, cfg: CellSegmentationConfig) -> None:
+    def _apply_gravity_config(self, cfg: CellSegmentationConfig) -> None:
         self._seg_prob_threshold_spin.setValue(cfg.cellpose_prob_threshold)
         self._euler_flow_step_spin.setValue(cfg.flow_step_scale)
         self._euler_max_steps_spin.setValue(cfg.euler_max_steps)
         self._euler_capture_radius_spin.setValue(cfg.capture_radius)
         self._euler_flow_weight_spin.setValue(cfg.flow_weight)
         self._euler_gravity_falloff_spin.setValue(cfg.gravity_falloff)
+
+    def _build_watershed_config(self) -> WatershedConfig:
+        return WatershedConfig(
+            cellpose_prob_threshold=self._ws_prob_threshold_spin.value(),
+            compactness=self._ws_compactness_spin.value(),
+        )
+
+    def _apply_watershed_config(self, cfg: WatershedConfig) -> None:
+        self._ws_prob_threshold_spin.setValue(cfg.cellpose_prob_threshold)
+        self._ws_compactness_spin.setValue(cfg.compactness)
 
     # ── Save Corrected Cell Labels ─────────────────────────────────────────
 
@@ -442,7 +565,7 @@ class CellSegmentationWidget(QWidget):
 
         pos = int(self._state.current_position)
         frame = int(self._seg_frame_spin.value())
-        cfg = self._build_config()
+        method = self._active_method()
 
         self._seg_status.setText(f"Processing frame {frame}…")
 
@@ -454,27 +577,38 @@ class CellSegmentationWidget(QWidget):
                 self._seg_status.setText("Could not load nuclear labels.")
                 return
 
-            flow_full, prob_full = _load_cellpose_data(root_dir_path, pos, frame)
-            if flow_full is None:
-                self._seg_status.setText("Could not load cellpose flow.")
-                return
-
             nuc_t = nuclear_labels[frame]
-            flow_t = flow_full
-            prob_t = prob_full
 
-            from cellflow.cellpose.processing.gravity_flow import gravity_flow_segmentation
-            cell_labels = gravity_flow_segmentation(
-                nuc_t,
-                flow_t,
-                cellpose_prob=prob_t,
-                flow_step_scale=cfg.flow_step_scale,
-                cellpose_prob_threshold=cfg.cellpose_prob_threshold,
-                max_iterations=cfg.euler_max_steps,
-                capture_radius=cfg.capture_radius,
-                flow_weight=cfg.flow_weight,
-                gravity_falloff=cfg.gravity_falloff,
-            )
+            if method == "gravity_flow":
+                cfg = self._build_gravity_config()
+                flow_t, prob_t = _load_cellpose_data(root_dir_path, pos, frame)
+                if flow_t is None:
+                    self._seg_status.setText("Could not load cellpose flow.")
+                    return
+                from cellflow.cellpose.processing.gravity_flow import gravity_flow_segmentation
+                cell_labels = gravity_flow_segmentation(
+                    nuc_t,
+                    flow_t,
+                    cellpose_prob=prob_t,
+                    flow_step_scale=cfg.flow_step_scale,
+                    cellpose_prob_threshold=cfg.cellpose_prob_threshold,
+                    max_iterations=cfg.euler_max_steps,
+                    capture_radius=cfg.capture_radius,
+                    flow_weight=cfg.flow_weight,
+                    gravity_falloff=cfg.gravity_falloff,
+                )
+            else:
+                cfg = self._build_watershed_config()
+                _, prob_t = _load_cellpose_data(root_dir_path, pos, frame)
+                if prob_t is None:
+                    self._seg_status.setText("Could not load cellpose probability map.")
+                    return
+                from cellflow.cellpose.processing.gravity_flow import prob_watershed_segmentation
+                cell_labels = prob_watershed_segmentation(
+                    nuc_t, prob_t,
+                    cellpose_prob_threshold=cfg.cellpose_prob_threshold,
+                    compactness=cfg.compactness,
+                )
 
             # --- Load background images ---
             raw_dir = stage_dir(root_dir_path, pos, "raw_import")
@@ -550,7 +684,7 @@ class CellSegmentationWidget(QWidget):
             return
 
         pos = int(self._state.current_position)
-        cfg = self._build_config()
+        method = self._active_method()
         overwrite = self._seg_overwrite_chk.isChecked()
 
         self._seg_run_btn.setEnabled(False)
@@ -560,19 +694,38 @@ class CellSegmentationWidget(QWidget):
         self._seg_progress.setValue(0)
         self._seg_status.setText("Running segmentation…")
 
-        @thread_worker(
-            connect={
-                "yielded": self._seg_on_progress,
-                "finished": self._seg_on_finished,
-                "errored": self._seg_on_error,
-            }
-        )
-        def _work():
-            from cellflow.core.logging import StageLogger
-            from cellflow.core.paths import log_path
-            with StageLogger(log_path(root_dir, pos), "cell_segmentation"):
-                for update in run_segmentation(root_dir, pos, cfg, overwrite=overwrite):
-                    yield update
+        if method == "gravity_flow":
+            cfg = self._build_gravity_config()
+
+            @thread_worker(
+                connect={
+                    "yielded": self._seg_on_progress,
+                    "finished": self._seg_on_finished,
+                    "errored": self._seg_on_error,
+                }
+            )
+            def _work():
+                from cellflow.core.logging import StageLogger
+                from cellflow.core.paths import log_path
+                with StageLogger(log_path(root_dir, pos), "cell_segmentation"):
+                    for update in run_segmentation(root_dir, pos, cfg, overwrite=overwrite):
+                        yield update
+        else:
+            cfg = self._build_watershed_config()
+
+            @thread_worker(
+                connect={
+                    "yielded": self._seg_on_progress,
+                    "finished": self._seg_on_finished,
+                    "errored": self._seg_on_error,
+                }
+            )
+            def _work():
+                from cellflow.core.logging import StageLogger
+                from cellflow.core.paths import log_path
+                with StageLogger(log_path(root_dir, pos), "cell_segmentation"):
+                    for update in run_watershed_segmentation(root_dir, pos, cfg, overwrite=overwrite):
+                        yield update
 
         self.run_started.emit()
         self._seg_worker = _work()
@@ -584,8 +737,13 @@ class CellSegmentationWidget(QWidget):
             self._seg_status.setText("No project open. Create or open a project first.")
             return
 
+        method = self._active_method()
+        if method == "watershed":
+            self._seg_status.setText("Terminal run not available for Watershed — use 'Run Segmentation'.")
+            return
+
         pos = int(self._state.current_position)
-        cfg = self._build_config()
+        cfg = self._build_gravity_config()
         overwrite_flag = "--overwrite" if self._seg_overwrite_chk.isChecked() else ""
 
         stage_cfg = {
@@ -594,7 +752,7 @@ class CellSegmentationWidget(QWidget):
             "flow_smoothing_sigma":    cfg.flow_smoothing_sigma,
             "max_iterations":          cfg.euler_max_steps,
             "capture_radius":          cfg.capture_radius,
-            "flow_weight":          cfg.flow_weight,
+            "flow_weight":             cfg.flow_weight,
             "gravity_falloff":         cfg.gravity_falloff,
         }
         cfg_path = Path(tempfile.mktemp(suffix="_euler_cfg.json"))
@@ -729,13 +887,31 @@ class CellSegmentationWidget(QWidget):
     # ── get_params / set_params ────────────────────────────────────────────
 
     def get_params(self) -> dict:
-        cfg = self._build_config()
-        result = cfg.model_dump()
-        result["seg_overwrite"] = self._seg_overwrite_chk.isChecked()
-        return result
+        return {
+            "method": self._active_method(),
+            "gravity_flow": self._build_gravity_config().model_dump(),
+            "watershed": self._build_watershed_config().model_dump(),
+            "seg_overwrite": self._seg_overwrite_chk.isChecked(),
+        }
 
     def set_params(self, data: dict) -> None:
-        cfg_data = {k: v for k, v in data.items() if k not in ("seg_overwrite", "pp_overwrite")}
-        self._apply_config(CellSegmentationConfig.from_dict(cfg_data))
+        method = data.get("method")
+
+        # Support old flat format (pre-tab) — map directly into gravity_flow config
+        if "gravity_flow" not in data and "watershed" not in data:
+            cfg_data = {k: v for k, v in data.items() if k not in ("seg_overwrite", "pp_overwrite", "method")}
+            if cfg_data:
+                self._apply_gravity_config(CellSegmentationConfig.from_dict(cfg_data))
+        else:
+            if "gravity_flow" in data:
+                self._apply_gravity_config(CellSegmentationConfig.from_dict(data["gravity_flow"]))
+            if "watershed" in data:
+                self._apply_watershed_config(WatershedConfig.from_dict(data["watershed"]))
+
+        if method == "watershed":
+            self._method_tabs.setCurrentIndex(1)
+        elif method == "gravity_flow":
+            self._method_tabs.setCurrentIndex(0)
+
         if "seg_overwrite" in data:
             self._seg_overwrite_chk.setChecked(bool(data["seg_overwrite"]))

@@ -383,3 +383,50 @@ def gravity_flow_segmentation(
     result = _fill_foreground(result, prob_mask)
 
     return result
+
+
+def prob_watershed_segmentation(
+    nuclear_labels: np.ndarray,
+    cellpose_prob: np.ndarray,
+    cellpose_prob_threshold: float = 0.0,
+    compactness: float = 0.0,
+) -> np.ndarray:
+    """Nucleus-seeded watershed on the cellpose probability map.
+
+    Uses the cellpose cell-probability as the basin depth and the nuclear
+    label map as seeds.  Each basin is guaranteed to contain exactly one
+    nucleus; the watershed boundary falls on the ridge between adjacent
+    probability basins.
+
+    compactness adds a distance-from-seed penalty so that in flat regions
+    (no clear probability ridge) the boundary falls at the equal-distance
+    midpoint between nuclei rather than arbitrarily.  Typical values: 0–0.1.
+
+    Parameters
+    ----------
+    nuclear_labels : np.ndarray
+        Integer label map of segmented nuclei (H, W).
+    cellpose_prob : np.ndarray
+        Cellpose probability / logit map (H, W).  Higher = more cell-like.
+    cellpose_prob_threshold : float
+        Pixels below this value are excluded from expansion (default 0.0).
+    compactness : float
+        Compact-watershed penalty weight (default 0.0 = pure probability).
+
+    Returns
+    -------
+    np.ndarray
+        Integer label map with expanded cell boundaries, dtype int32.
+    """
+    from skimage.segmentation import watershed
+
+    prob_mask = (cellpose_prob >= cellpose_prob_threshold) | (nuclear_labels > 0)
+
+    result = watershed(
+        -cellpose_prob,
+        markers=nuclear_labels.astype(np.int32),
+        mask=prob_mask,
+        compactness=compactness,
+    )
+
+    return result.astype(np.int32)
