@@ -35,7 +35,7 @@ from cellflow.core.paths import stage_dir
 from cellflow.napari.runners.terminal import launch_in_terminal
 from cellflow.napari.log_viewer import StageLogViewer
 from cellflow.napari.registry import get_state
-from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+from cellflow.napari.widgets import PipelineFilesWidget
 
 
 def cellpose_cell_dir(root_dir, pos):
@@ -571,46 +571,7 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._load_fg_status = QLabel("")
         lay.addWidget(self._load_fg_status)
 
-        # ── Segmentation section ─────────────────────────────────────────
-        lay.addWidget(self._build_segmentation_section())
-
-        # ── Save Corrected Cell Labels ───────────────────────────────────
-        self._save_labels_btn = QPushButton("Save Corrected Cell Labels")
-        self._save_labels_btn.clicked.connect(self._on_save_corrected_labels)
-        lay.addWidget(self._save_labels_btn)
-        self._save_labels_status = QLabel("")
-        lay.addWidget(self._save_labels_status)
-
-        if log_viewer is not None:
-            self._log_viewer = log_viewer
-        else:
-            self._log_viewer = StageLogViewer(self._state)
-            lay.addWidget(self._log_viewer)
-
-        self._state.pipeline_schema_changed.connect(self._sync_project_dir)
-        self._state.position_changed.connect(self._sync_project_dir)
-        self._sync_project_dir()
-
-    # ── Project-derived path helpers ─────────────────────────────────────
-
-    def _get_root_dir(self) -> str | None:
-        project_dir = self._state.project_dir
-        if project_dir is None:
-            return None
-        return str(project_dir)
-
-    def _sync_project_dir(self) -> None:
-        root = self._get_root_dir()
-        if root is None:
-            self._files_widget.refresh(None)
-            return
-        pos = self._state.current_position
-        self._files_widget.refresh(Path(root) / f"pos{pos:02d}")
-
-    def _build_segmentation_section(self) -> "CollapsibleSection":
-        content = QWidget()
-        lay = QVBoxLayout()
-
+        # ── Segmentation controls ────────────────────────────────────────
         row = QHBoxLayout()
         row.addWidget(QLabel("Preview frame"))
         self._seg_frame_spin = QSpinBox()
@@ -692,8 +653,38 @@ class FlowGuidedSegmentationWidget(QWidget):
         self._seg_status = QLabel("")
         lay.addWidget(self._seg_status)
 
-        content.setLayout(lay)
-        return CollapsibleSection("Segmentation", content, expanded=False)
+        # ── Save Corrected Cell Labels ───────────────────────────────────
+        self._save_labels_btn = QPushButton("Save Corrected Cell Labels")
+        self._save_labels_btn.clicked.connect(self._on_save_corrected_labels)
+        lay.addWidget(self._save_labels_btn)
+        self._save_labels_status = QLabel("")
+        lay.addWidget(self._save_labels_status)
+
+        if log_viewer is not None:
+            self._log_viewer = log_viewer
+        else:
+            self._log_viewer = StageLogViewer(self._state)
+            lay.addWidget(self._log_viewer)
+
+        self._state.pipeline_schema_changed.connect(self._sync_project_dir)
+        self._state.position_changed.connect(self._sync_project_dir)
+        self._sync_project_dir()
+
+    # ── Project-derived path helpers ─────────────────────────────────────
+
+    def _get_root_dir(self) -> str | None:
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            return None
+        return str(project_dir)
+
+    def _sync_project_dir(self) -> None:
+        root = self._get_root_dir()
+        if root is None:
+            self._files_widget.refresh(None)
+            return
+        pos = self._state.current_position
+        self._files_widget.refresh(Path(root) / f"pos{pos:02d}")
 
     # ════════════════════════════════════════════════════════════════════
     # Config helpers
