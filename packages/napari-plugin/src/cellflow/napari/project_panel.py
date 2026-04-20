@@ -64,6 +64,7 @@ _TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
         ("3_correction/nuclear_labels_corrected.tif", "Corrected labels", "labels"),
     ]),
     ("Cell Segmentation", [
+        ("4_cell_segmentation/cell_foreground.tif",  "Foreground mask", "labels"),
         ("4_cell_segmentation/cell_labels_raw.tif", "Cell labels raw", "labels"),
         ("4_cell_segmentation/cell_labels.tif",     "Cell labels",     "labels"),
     ]),
@@ -137,21 +138,17 @@ class ProjectPanel(QWidget):
         pg_layout.setContentsMargins(4, 2, 0, 4)
         pg_layout.setSpacing(3)
 
-        # Row: buttons + project path label
-        proj_btn_row = QHBoxLayout()
-        proj_btn_row.setSpacing(4)
+        # Project buttons — parented here but placed in CellFlowWidget's top row
         self._new_project_btn = QPushButton("New Project…")
         self._new_project_btn.setToolTip("Create a new pipeline project directory")
         self._open_project_btn = QPushButton("Open Project…")
         self._open_project_btn.setToolTip("Open an existing pipeline project directory")
+        # Project path label stays in the collapsible section
         self._project_dir_label = QLabel("[no project]")
         self._project_dir_label.setStyleSheet("font-size: 9pt;")
         self._project_dir_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._project_dir_label.setMinimumWidth(0)
-        proj_btn_row.addWidget(self._new_project_btn)
-        proj_btn_row.addWidget(self._open_project_btn)
-        proj_btn_row.addWidget(self._project_dir_label)
-        pg_layout.addLayout(proj_btn_row)
+        pg_layout.addWidget(self._project_dir_label)
 
         # Row: refresh button
         refresh_row = QHBoxLayout()
@@ -193,7 +190,7 @@ class ProjectPanel(QWidget):
         pg_layout.addWidget(files_scroll)
 
         self._project_section = CollapsibleSection(
-            "Project", self._project_inner, expanded=False
+            "Data Overview", self._project_inner, expanded=False
         )
         # Visually distinct from processing stage widgets: blue-tinted header
         self._project_section._toggle.setStyleSheet(

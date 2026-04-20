@@ -6,6 +6,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import tifffile
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
@@ -53,7 +54,9 @@ class CellposeWidget(QWidget):
         self.viewer = viewer
         self._state = get_state(viewer)
         self._worker_s01a = None
+        self._worker_s01a_preview = None
         self._worker_s01b = None
+        self._worker_s01b_preview = None
         self._s01b_run_terminal_btn = None
 
         if not _CELLPOSE_PIPELINE_AVAILABLE:
@@ -224,9 +227,24 @@ class CellposeWidget(QWidget):
         row.addWidget(self._s01a_run_terminal_btn)
         layout.addLayout(row)
 
+        # ── Frame selector + action buttons ─────────────────────────────
+        frame_row = QHBoxLayout()
+        frame_row.addWidget(QLabel("Frame:"))
+        self._s01a_frame_spin = QSpinBox()
+        self._s01a_frame_spin.setRange(0, 9999)
+        self._s01a_frame_spin.setValue(0)
+        frame_row.addWidget(self._s01a_frame_spin)
+        frame_row.addStretch()
+        layout.addLayout(frame_row)
+
+        action_row = QHBoxLayout()
+        self._s01a_preview_btn = QPushButton("Preview")
+        self._s01a_preview_btn.clicked.connect(self._on_s01a_preview)
+        action_row.addWidget(self._s01a_preview_btn)
         self._s01a_load_results_btn = QPushButton("Load Results")
         self._s01a_load_results_btn.clicked.connect(self._on_s01a_load_results)
-        layout.addWidget(self._s01a_load_results_btn)
+        action_row.addWidget(self._s01a_load_results_btn)
+        layout.addLayout(action_row)
 
         # ── Progress ─────────────────────────────────────────────────────
         self._s01a_progress = QProgressBar()
@@ -331,9 +349,24 @@ class CellposeWidget(QWidget):
         row.addWidget(self._s01b_run_terminal_btn)
         layout.addLayout(row)
 
+        # ── Frame selector + action buttons ─────────────────────────────
+        frame_row = QHBoxLayout()
+        frame_row.addWidget(QLabel("Frame:"))
+        self._s01b_frame_spin = QSpinBox()
+        self._s01b_frame_spin.setRange(0, 9999)
+        self._s01b_frame_spin.setValue(0)
+        frame_row.addWidget(self._s01b_frame_spin)
+        frame_row.addStretch()
+        layout.addLayout(frame_row)
+
+        action_row = QHBoxLayout()
+        self._s01b_preview_btn = QPushButton("Preview")
+        self._s01b_preview_btn.clicked.connect(self._on_s01b_preview)
+        action_row.addWidget(self._s01b_preview_btn)
         self._s01b_load_results_btn = QPushButton("Load Results")
         self._s01b_load_results_btn.clicked.connect(self._on_s01b_load_results)
-        layout.addWidget(self._s01b_load_results_btn)
+        action_row.addWidget(self._s01b_load_results_btn)
+        layout.addLayout(action_row)
 
         # ── Progress ─────────────────────────────────────────────────────
         self._s01b_progress = QProgressBar()
@@ -594,18 +627,46 @@ class CellposeWidget(QWidget):
 
     def _on_s01a_load_results(self) -> None:
         pos = self._state.current_position
+        input_dir = self._s01a_input_dir(pos)
         output_dir = self._s01a_output_dir(pos)
-        if output_dir is None:
+        if input_dir is None:
             self._s01a_status_label.setText("No project open.")
             return
-        prob_files = sorted(output_dir.glob("*_prob.tif"))
-        if not prob_files:
-            self._s01a_status_label.setText("No *_prob.tif files found in output directory.")
-            return
-        for pf in prob_files:
-            prob = tifffile.imread(str(pf))
-            self.viewer.add_image(prob, name=pf.stem, colormap="inferno")
-        self._s01a_status_label.setText(f"Loaded {len(prob_files)} probability map(s).")
+
+        loaded = []
+
+        nuc_input_dir = input_dir / "nucleus"
+        if nuc_input_dir.is_dir():
+            input_files = sorted(nuc_input_dir.glob("nucleus_3d_t*.tif"))
+            if input_files:
+                frames = [tifffile.imread(str(f)) for f in input_files]
+                data = np.stack(frames, axis=0) if len(frames) > 1 else frames[0]
+                self.viewer.add_image(data, name=f"nucleus_input_pos{pos:02d}", colormap="gray")
+                loaded.append("input")
+
+        if output_dir is not None and output_dir.is_dir():
+            prob_files = sorted(output_dir.glob("*_prob.tif"))
+            if prob_files:
+                frames = [tifffile.imread(str(f)) for f in prob_files]
+                prob = np.stack(frames, axis=0) if len(frames) > 1 else frames[0]
+                self.viewer.add_image(prob, name=f"nucleus_prob_pos{pos:02d}", colormap="inferno")
+                loaded.append("prob")
+
+            dp_files = sorted(output_dir.glob("*_dp.tif"))
+            if dp_files:
+                frames = [tifffile.imread(str(f)) for f in dp_files]
+                dp = np.stack(frames, axis=0) if len(frames) > 1 else frames[0]
+                # dp: (T, 3, Z, Y, X) stacked or (3, Z, Y, X) single — split vector components
+                comp_axis = 1 if dp.ndim == 5 else 0
+                for c in range(dp.shape[comp_axis]):
+                    comp = dp[:, c] if comp_axis == 1 else dp[c]
+                    self.viewer.add_image(comp, name=f"nucleus_dp_{c}_pos{pos:02d}", colormap="RdBu")
+                loaded.append("dp")
+
+        if loaded:
+            self._s01a_status_label.setText(f"Loaded: {', '.join(loaded)}")
+        else:
+            self._s01a_status_label.setText("No files found.")
 
     # ── s01b Load results ────────────────────────────────────────────────
 
@@ -623,27 +684,230 @@ class CellposeWidget(QWidget):
         self._s01b_status_label.setText(f"Loaded cell_prob.tif  shape={prob.shape}")
 
     def _on_s01b_load_results(self) -> None:
+        from cellflow.cellpose.stages.cell_2d import nucleus_zavg_path, cell_zavg_path
+
         root_dir = self._s01b_root_dir()
         if root_dir is None:
             self._s01b_status_label.setText("No project open.")
             return
         pos = self._state.current_position
+
+        loaded = []
+
+        path_nuc = nucleus_zavg_path(root_dir, pos)
+        path_cell = cell_zavg_path(root_dir, pos)
+        if path_nuc.exists():
+            self.viewer.add_image(
+                tifffile.imread(str(path_nuc)),
+                name=f"nucleus_input_pos{pos:02d}",
+                colormap="gray",
+            )
+            loaded.append("nucleus input")
+        if path_cell.exists():
+            self.viewer.add_image(
+                tifffile.imread(str(path_cell)),
+                name=f"cell_input_pos{pos:02d}",
+                colormap="gray",
+            )
+            loaded.append("cell input")
+
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
         prob_file = cell_dir / "cell_prob.tif"
         dp_file = cell_dir / "cell_dp.tif"
-
         if prob_file.exists():
-            prob = tifffile.imread(str(prob_file))
-            self.viewer.add_image(prob, name=f"cell_prob_pos{pos:02d}", colormap="inferno")
-
+            self.viewer.add_image(
+                tifffile.imread(str(prob_file)),
+                name=f"cell_prob_pos{pos:02d}",
+                colormap="inferno",
+            )
+            loaded.append("cell prob")
         if dp_file.exists():
-            dp = tifffile.imread(str(dp_file))
-            self.viewer.add_image(dp, name=f"cell_dp_pos{pos:02d}", colormap="viridis")
+            dp = tifffile.imread(str(dp_file))  # (T, 2, H, W)
+            for c in range(dp.shape[1]):
+                self.viewer.add_image(dp[:, c], name=f"cell_dp_{c}_pos{pos:02d}", colormap="RdBu")
+            loaded.append("cell dp")
 
-        if prob_file.exists() or dp_file.exists():
-            self._s01b_status_label.setText(f"Loaded cellpose outputs for pos{pos:02d}")
+        if loaded:
+            self._s01b_status_label.setText(f"Loaded: {', '.join(loaded)}")
         else:
-            self._s01b_status_label.setText("No cellpose outputs found.")
+            self._s01b_status_label.setText("No files found.")
+
+    # ── s01b Preview ─────────────────────────────────────────────────────
+
+    def _on_s01b_preview(self) -> None:
+        from cellflow.cellpose.stages.cell_2d import nucleus_zavg_path, cell_zavg_path
+
+        root_dir = self._s01b_root_dir()
+        if root_dir is None:
+            self._s01b_status_label.setText("No project open. Create or open a project first.")
+            return
+
+        pos = self._state.current_position
+        t = self._s01b_frame_spin.value()
+
+        path_nuc = nucleus_zavg_path(root_dir, pos)
+        path_cell = cell_zavg_path(root_dir, pos)
+        if not path_nuc.exists() or not path_cell.exists():
+            self._s01b_status_label.setText("Input files not found.")
+            return
+
+        cfg = self._build_s01b_config()
+        self._s01b_preview_btn.setEnabled(False)
+        self._s01b_status_label.setText(f"Running preview for t={t}…")
+
+        @thread_worker(
+            connect={
+                "returned": self._on_s01b_preview_returned,
+                "errored": self._on_s01b_preview_error,
+            }
+        )
+        def _work():
+            import numpy as np
+            from cellflow.cellpose.stages.cell_2d import _load_model
+
+            stack_405 = tifffile.imread(str(path_nuc))   # (T, H, W)
+            stack_488 = tifffile.imread(str(path_cell))  # (T, H, W)
+
+            frame_405 = stack_405[t].astype(np.float32)
+            frame_488 = stack_488[t].astype(np.float32)
+
+            img = np.stack([frame_488, frame_405], axis=-1)  # (H, W, 2)
+
+            gamma = cfg.gamma
+            if gamma is not None and gamma != 1.0:
+                for c in range(img.shape[2]):
+                    ch = img[:, :, c]
+                    ch_min, ch_max = ch.min(), ch.max()
+                    if ch_max > ch_min:
+                        ch_norm = (ch - ch_min) / (ch_max - ch_min)
+                        img[:, :, c] = (ch_norm ** gamma) * (ch_max - ch_min) + ch_min
+
+            model = _load_model(cfg.model, cfg.use_gpu)
+            _, flows, _ = model.eval(
+                img,
+                diameter=cfg.diameter if cfg.diameter > 0 else None,
+                min_size=cfg.min_size,
+            )
+            dp = flows[1].astype(np.float32)    # (2, H, W)
+            prob = flows[2].astype(np.float32)  # (H, W)
+            return t, dp, prob
+
+        self._worker_s01b_preview = _work()
+
+    def _on_s01b_preview_returned(self, result: tuple) -> None:
+        self._s01b_preview_btn.setEnabled(True)
+        self._worker_s01b_preview = None
+        t, dp, prob = result
+
+        prob_name = "Preview: cell_prob"
+        if prob_name in self.viewer.layers:
+            self.viewer.layers[prob_name].data = prob
+        else:
+            self.viewer.add_image(prob, name=prob_name, colormap="inferno")
+
+        # dp: (2, H, W) — split into one layer per vector component
+        for c in range(dp.shape[0]):
+            name = f"Preview: cell_dp_{c}"
+            if name in self.viewer.layers:
+                self.viewer.layers[name].data = dp[c]
+            else:
+                self.viewer.add_image(dp[c], name=name, colormap="RdBu")
+
+        self._s01b_status_label.setText(
+            f"Preview done  t={t}  prob={prob.shape}  dp={dp.shape}"
+        )
+
+    def _on_s01b_preview_error(self, exc: Exception) -> None:
+        self._s01b_preview_btn.setEnabled(True)
+        self._worker_s01b_preview = None
+        self._s01b_status_label.setText(f"Preview error: {exc}")
+
+    # ── s01a Preview ─────────────────────────────────────────────────────
+
+    def _on_s01a_preview(self) -> None:
+        pos = self._state.current_position
+        input_dir = self._s01a_input_dir(pos)
+        if input_dir is None:
+            self._s01a_status_label.setText("No project open. Create or open a project first.")
+            return
+
+        tif_files = sorted(input_dir.glob("*.tif"))
+        if not tif_files:
+            self._s01a_status_label.setText("No input files found.")
+            return
+
+        t = self._s01a_frame_spin.value()
+        if t >= len(tif_files):
+            self._s01a_status_label.setText(f"Frame {t} out of range (0–{len(tif_files) - 1}).")
+            return
+
+        in_path = tif_files[t]
+        cfg = self._build_s01a_config()
+        self._s01a_preview_btn.setEnabled(False)
+        self._s01a_status_label.setText(f"Running 3D preview for frame {t}…")
+
+        @thread_worker(
+            connect={
+                "returned": self._on_s01a_preview_returned,
+                "errored": self._on_s01a_preview_error,
+            }
+        )
+        def _work():
+            from cellflow.cellpose.stages.nucleus_3d import _load_model
+
+            img = tifffile.imread(str(in_path)).astype(np.float32)
+            gamma = cfg.gamma
+            if gamma is not None and gamma != 1.0:
+                img_min, img_max = img.min(), img.max()
+                if img_max > img_min:
+                    img = (
+                        ((img - img_min) / (img_max - img_min)) ** gamma
+                        * (img_max - img_min)
+                        + img_min
+                    )
+
+            model = _load_model(cfg.model, cfg.use_gpu)
+            _, flows, _ = model.eval(
+                img,
+                do_3D=True,
+                z_axis=0,
+                diameter=cfg.diameter if cfg.diameter > 0 else None,
+                anisotropy=cfg.anisotropy,
+                min_size=cfg.min_size,
+            )
+            dp = flows[1].astype(np.float32)    # (3, Z, Y, X)
+            prob = flows[2].astype(np.float32)  # (Z, Y, X)
+            return t, dp, prob
+
+        self._worker_s01a_preview = _work()
+
+    def _on_s01a_preview_returned(self, result: tuple) -> None:
+        self._s01a_preview_btn.setEnabled(True)
+        self._worker_s01a_preview = None
+        t, dp, prob = result
+
+        prob_name = "Preview: nucleus_prob"
+        if prob_name in self.viewer.layers:
+            self.viewer.layers[prob_name].data = prob
+        else:
+            self.viewer.add_image(prob, name=prob_name, colormap="inferno")
+
+        # dp: (3, Z, Y, X) — split into one layer per vector component
+        for c in range(dp.shape[0]):
+            name = f"Preview: nucleus_dp_{c}"
+            if name in self.viewer.layers:
+                self.viewer.layers[name].data = dp[c]
+            else:
+                self.viewer.add_image(dp[c], name=name, colormap="RdBu")
+
+        self._s01a_status_label.setText(
+            f"Preview done  t={t}  prob={prob.shape}  dp={dp.shape}"
+        )
+
+    def _on_s01a_preview_error(self, exc: Exception) -> None:
+        self._s01a_preview_btn.setEnabled(True)
+        self._worker_s01a_preview = None
+        self._s01a_status_label.setText(f"Preview error: {exc}")
 
     # ── get_params / set_params ──────────────────────────────────────────
 

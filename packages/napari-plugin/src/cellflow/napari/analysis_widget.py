@@ -65,24 +65,33 @@ class CellFlowWidget(QWidget):
         # ── Project panel (fixed strip above all tabs) ────────────────────
         from .project_panel import ProjectPanel
         self._project_panel = ProjectPanel(self.viewer, self._state)
-        _plugin_layout.addWidget(self._project_panel)
 
-        # ── Config save/load row ─────────────────────────────────────────
-        config_row = QHBoxLayout()
-        config_row.setContentsMargins(6, 2, 6, 2)
+        # ── Top button rows: New/Open Project | Save/Load Config ─────────
+        top_btn_row1 = QHBoxLayout()
+        top_btn_row1.setContentsMargins(6, 2, 6, 0)
+        top_btn_row1.setSpacing(4)
+        top_btn_row1.addWidget(self._project_panel._new_project_btn)
+        top_btn_row1.addWidget(self._project_panel._open_project_btn)
+        _plugin_layout.addLayout(top_btn_row1)
+
+        top_btn_row2 = QHBoxLayout()
+        top_btn_row2.setContentsMargins(6, 4, 6, 2)
+        top_btn_row2.setSpacing(4)
         self._save_cfg_btn = QPushButton("Save Config")
         self._save_cfg_btn.clicked.connect(self._save_config)
-        config_row.addWidget(self._save_cfg_btn)
+        top_btn_row2.addWidget(self._save_cfg_btn)
         self._load_cfg_btn = QPushButton("Load Config")
         self._load_cfg_btn.clicked.connect(self._load_config)
-        config_row.addWidget(self._load_cfg_btn)
+        top_btn_row2.addWidget(self._load_cfg_btn)
         self._save_cfg_as_btn = QPushButton("Save Config As\u2026")
         self._save_cfg_as_btn.clicked.connect(self._save_config_as)
-        config_row.addWidget(self._save_cfg_as_btn)
+        top_btn_row2.addWidget(self._save_cfg_as_btn)
         self._load_cfg_from_btn = QPushButton("Load Config From\u2026")
         self._load_cfg_from_btn.clicked.connect(self._load_config_from)
-        config_row.addWidget(self._load_cfg_from_btn)
-        _plugin_layout.addLayout(config_row)
+        top_btn_row2.addWidget(self._load_cfg_from_btn)
+        _plugin_layout.addLayout(top_btn_row2)
+
+        _plugin_layout.addWidget(self._project_panel)
 
         # ── Shared log viewer (passed to all subwidgets) ─────────────────
         self._log_viewer = StageLogViewer(self._state, expanded=True)
