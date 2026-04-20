@@ -783,13 +783,22 @@ class CellposeWidget(QWidget):
                         img[:, :, c] = (ch_norm ** gamma) * (ch_max - ch_min) + ch_min
 
             model = _load_model(cfg.model, cfg.use_gpu)
-            _, flows, _ = model.eval(
-                img,
-                diameter=cfg.diameter if cfg.diameter > 0 else None,
-                min_size=cfg.min_size,
-            )
-            dp = flows[1].astype(np.float32)    # (2, H, W)
-            prob = flows[2].astype(np.float32)  # (H, W)
+            try:
+                _, flows, _ = model.eval(
+                    img,
+                    diameter=cfg.diameter if cfg.diameter > 0 else None,
+                    min_size=cfg.min_size,
+                )
+                dp = flows[1].astype(np.float32)    # (2, H, W)
+                prob = flows[2].astype(np.float32)  # (H, W)
+            finally:
+                del model
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except ImportError:
+                    pass
             return t, dp, prob
 
         self._worker_s01b_preview = _work()
@@ -867,16 +876,25 @@ class CellposeWidget(QWidget):
                     )
 
             model = _load_model(cfg.model, cfg.use_gpu)
-            _, flows, _ = model.eval(
-                img,
-                do_3D=True,
-                z_axis=0,
-                diameter=cfg.diameter if cfg.diameter > 0 else None,
-                anisotropy=cfg.anisotropy,
-                min_size=cfg.min_size,
-            )
-            dp = flows[1].astype(np.float32)    # (3, Z, Y, X)
-            prob = flows[2].astype(np.float32)  # (Z, Y, X)
+            try:
+                _, flows, _ = model.eval(
+                    img,
+                    do_3D=True,
+                    z_axis=0,
+                    diameter=cfg.diameter if cfg.diameter > 0 else None,
+                    anisotropy=cfg.anisotropy,
+                    min_size=cfg.min_size,
+                )
+                dp = flows[1].astype(np.float32)    # (3, Z, Y, X)
+                prob = flows[2].astype(np.float32)  # (Z, Y, X)
+            finally:
+                del model
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except ImportError:
+                    pass
             return t, dp, prob
 
         self._worker_s01a_preview = _work()

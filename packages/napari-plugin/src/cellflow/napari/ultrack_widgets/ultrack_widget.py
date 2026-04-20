@@ -117,6 +117,10 @@ class UltrackAnalysisWidget(QWidget):
         lay.addWidget(self._build_linking_section())
         lay.addWidget(self._build_solver_section())
 
+        # Store dataframe for colour mapping
+        self._db_candidates_df = None
+        lay.addWidget(self._build_inspect_db_section())
+
         # ── Run All ──────────────────────────────────────────────────────
         row = QHBoxLayout()
         self._run_all_btn = QPushButton(
@@ -871,7 +875,10 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_status = QLabel("")
         lay.addWidget(self._tr_status)
 
-        # ── Inspect DB section ───────────────────────────────────────────
+        content.setLayout(lay)
+        return CollapsibleSection("Tracking", content, expanded=False)
+
+    def _build_inspect_db_section(self) -> QGroupBox:
         db_grp = QGroupBox("Inspect Database")
         db_lay = QVBoxLayout()
 
@@ -918,13 +925,7 @@ class UltrackAnalysisWidget(QWidget):
         db_lay.addWidget(self._db_status)
 
         db_grp.setLayout(db_lay)
-        lay.addWidget(db_grp)
-
-        # Store dataframe for colour mapping
-        self._db_candidates_df = None
-
-        content.setLayout(lay)
-        return CollapsibleSection("Tracking", content, expanded=False)
+        return db_grp
 
     # ── Tracking helpers ──────────────────────────────────────────────────
 

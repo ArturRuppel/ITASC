@@ -64,9 +64,7 @@ _TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
         ("3_correction/nuclear_labels_corrected.tif", "Corrected labels", "labels"),
     ]),
     ("Cell Segmentation", [
-        ("4_cell_segmentation/cell_foreground.tif",  "Foreground mask", "labels"),
-        ("4_cell_segmentation/cell_labels_raw.tif", "Cell labels raw", "labels"),
-        ("4_cell_segmentation/cell_labels.tif",     "Cell labels",     "labels"),
+        ("4_cell_segmentation/cell_labels.tif", "Cell labels", "labels"),
     ]),
     ("Analysis", [
         ("5_analysis/graph.h5",     "Graph",    None),

@@ -11,6 +11,7 @@ import napari.layers
 import tifffile
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QButtonGroup, QRadioButton,
 )
 from napari.utils.notifications import show_info, show_error
 
@@ -42,6 +43,19 @@ class TrackingCorrectionWidget(QWidget):
         lay.setContentsMargins(4, 4, 4, 4)
         lay.setSpacing(6)
 
+        # ── Mode selection ────────────────────────────────────────────────
+        mode_row = QHBoxLayout()
+        self._mode_group = QButtonGroup(self)
+        self._nuclei_radio = QRadioButton("Correct Nuclei")
+        self._cells_radio  = QRadioButton("Correct Cells")
+        self._nuclei_radio.setChecked(True)
+        self._mode_group.addButton(self._nuclei_radio)
+        self._mode_group.addButton(self._cells_radio)
+        mode_row.addWidget(self._nuclei_radio)
+        mode_row.addWidget(self._cells_radio)
+        lay.addLayout(mode_row)
+        self._nuclei_radio.toggled.connect(self._on_mode_changed)
+
         # Load row
         load_row = QHBoxLayout()
         self._load_btn = QPushButton("Load nuclear segmentation")
@@ -62,7 +76,7 @@ class TrackingCorrectionWidget(QWidget):
         self._data_status.setStyleSheet("font-style: italic; color: palette(mid);")
         lay.addWidget(self._data_status)
 
-        # File status rows for relevant correction-stage files
+        # File status rows — refreshed based on mode
         self._files_widget = PipelineFilesWidget([
             ("Input", [
                 ("2_ultrack/nuclear_labels_2d.tif",           "Nuclear labels 2D"),
@@ -75,14 +89,11 @@ class TrackingCorrectionWidget(QWidget):
 
         # Save row
         self._save_btn = QPushButton("Save corrected labels")
-        self._save_btn.setToolTip(
-            "Save the current layer to 3_correction/nuclear_labels_corrected.tif"
-        )
         self._save_btn.setEnabled(False)
         self._save_btn.clicked.connect(self._on_save)
         lay.addWidget(self._save_btn)
 
-        # Sub-sections: correction first, then re-tracking
+        # Sub-sections: correction first, then re-tracking (hidden in Cells mode)
         lay.addWidget(self._correction)
         lay.addWidget(self._tracking)
 
@@ -90,6 +101,39 @@ class TrackingCorrectionWidget(QWidget):
         self._state.nuclear_labels_changed.connect(self._on_nuclear_labels_changed)
         self._state.position_changed.connect(self._on_position_changed)
         self._state.pipeline_schema_changed.connect(self._refresh_files)
+        self._refresh_files()
+
+    # ── mode helpers ──────────────────────────────────────────────────────
+
+    @property
+    def _correcting_cells(self) -> bool:
+        return self._cells_radio.isChecked()
+
+    def _on_mode_changed(self) -> None:
+        """Update UI when switching between Nuclei / Cells mode."""
+        if self._correcting_cells:
+            self._load_btn.setText("Load cell segmentation")
+            self._load_btn.setToolTip(
+                "Load cell labels from 4_cell_segmentation/cell_labels.tif.\n"
+                "Also loads nuclear labels as a read-only reference layer."
+            )
+            self._save_btn.setText("Save corrected cell labels")
+            self._tracking.setVisible(False)
+        else:
+            self._load_btn.setText("Load nuclear segmentation")
+            self._load_btn.setToolTip(
+                "Load the nuclear labels layer currently registered in state.\n"
+                "Run Cellpose / Ultrack first to populate it."
+            )
+            self._save_btn.setText("Save corrected labels")
+            self._tracking.setVisible(True)
+        # Clear the current layer when switching mode
+        if self._data_layer is not None:
+            self._data_layer = None
+            self._save_btn.setEnabled(False)
+            self._data_status.setText("No layer loaded")
+            if self._correction._activate_btn.isChecked():
+                self._correction._deactivate()
         self._refresh_files()
 
     # ── load handlers ─────────────────────────────────────────────────────
@@ -101,7 +145,14 @@ class TrackingCorrectionWidget(QWidget):
         self._tracking.set_params(data)
 
     def _on_load(self) -> None:
-        """Load the nuclear labels layer from viewer state."""
+        """Load the appropriate labels layer based on current mode."""
+        if self._correcting_cells:
+            self._load_cell_labels()
+        else:
+            self._load_nuclear_labels()
+
+    def _load_nuclear_labels(self) -> None:
+        """Load nuclear labels from viewer state or disk."""
         name = self._state.tissue.nuclear_labels_layer
         arr = self._state.tissue.nuclear_labels
 
@@ -137,6 +188,56 @@ class TrackingCorrectionWidget(QWidget):
         self._data_status.setText(
             "No nuclear labels in state — run Cellpose or Ultrack first"
         )
+
+    def _load_cell_labels(self) -> None:
+        """Load cell labels from disk and nuclear labels as reference."""
+        project_dir = self._state.project_dir
+        if project_dir is None:
+            self._data_status.setText("No project open — cannot load cell labels.")
+            return
+
+        from cellflow.core.paths import stage_dir
+        pos = self._state.current_position
+
+        cell_path = stage_dir(project_dir, pos, "cell_segmentation") / "cell_labels.tif"
+        if not cell_path.exists():
+            self._data_status.setText(
+                "No cell labels found — run Cell Segmentation first."
+            )
+            return
+
+        try:
+            arr = tifffile.imread(str(cell_path)).astype(np.int32)
+        except Exception as exc:
+            self._data_status.setText(f"Could not read cell_labels.tif: {exc}")
+            return
+
+        # Load background images
+        self._load_nuclear_zavg(project_dir, pos)
+
+        # Also load nuclear labels as a read-only reference
+        nuc_path = stage_dir(project_dir, pos, "correction") / "nuclear_labels_corrected.tif"
+        if nuc_path.exists():
+            try:
+                nuc_arr = tifffile.imread(str(nuc_path)).astype(np.int32)
+                nuc_layer_name = "Nuclear Labels (ref)"
+                if nuc_layer_name in self.viewer.layers:
+                    self.viewer.layers[nuc_layer_name].data = nuc_arr
+                else:
+                    nuc_layer = self.viewer.add_labels(nuc_arr, name=nuc_layer_name)
+                    nuc_layer.opacity = 0.4
+            except Exception:
+                pass
+
+        # Load cell labels as the editable layer
+        layer_name = "Cell Labels"
+        if layer_name in self.viewer.layers:
+            self.viewer.layers[layer_name].data = arr.astype(np.uint32)
+            layer = self.viewer.layers[layer_name]
+        else:
+            layer = self.viewer.add_labels(arr.astype(np.uint32), name=layer_name)
+
+        self._set_data_layer(layer)
 
     def _try_load_from_disk(self) -> "np.ndarray | None":
         """Load nuclear labels from disk for the current project position.
@@ -238,9 +339,9 @@ class TrackingCorrectionWidget(QWidget):
                 self.viewer.layers.move(idx, target_idx)
 
     def _on_save(self) -> None:
-        """Save the current layer to 3_correction/nuclear_labels_corrected.tif."""
+        """Save the current layer to the appropriate output path."""
         if self._data_layer is None:
-            show_error("No layer loaded — load a nuclear labels layer first.")
+            show_error("No layer loaded — load a layer first.")
             return
 
         project_dir = self._state.project_dir
@@ -250,7 +351,12 @@ class TrackingCorrectionWidget(QWidget):
 
         from cellflow.core.paths import stage_dir
         pos = self._state.current_position
-        out_path = stage_dir(project_dir, pos, "correction") / "nuclear_labels_corrected.tif"
+
+        if self._correcting_cells:
+            out_path = stage_dir(project_dir, pos, "cell_segmentation") / "cell_labels.tif"
+        else:
+            out_path = stage_dir(project_dir, pos, "correction") / "nuclear_labels_corrected.tif"
+
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -261,9 +367,7 @@ class TrackingCorrectionWidget(QWidget):
             return
 
         show_info(f"Saved corrected labels → {out_path.name}")
-        self._data_status.setText(
-            f"Saved: {out_path.name}  {arr.shape}"
-        )
+        self._data_status.setText(f"Saved: {out_path.name}  {arr.shape}")
         self._refresh_files()
 
     def _on_load_from_layer(self) -> None:
@@ -305,6 +409,18 @@ class TrackingCorrectionWidget(QWidget):
     def _refresh_files(self) -> None:
         """Refresh file-status rows for the current project/position."""
         from pathlib import Path
+        if self._correcting_cells:
+            spec = [
+                ("Input",  [("3_correction/nuclear_labels_corrected.tif", "Corrected nuclear labels")]),
+                ("Output", [("4_cell_segmentation/cell_labels.tif",       "Cell labels")]),
+            ]
+        else:
+            spec = [
+                ("Input",  [("2_ultrack/nuclear_labels_2d.tif",           "Nuclear labels 2D")]),
+                ("Output", [("3_correction/nuclear_labels_corrected.tif", "Corrected labels")]),
+            ]
+        self._files_widget.update_spec(spec)
+
         project_dir = self._state.project_dir
         if project_dir is None:
             self._files_widget.refresh(None)

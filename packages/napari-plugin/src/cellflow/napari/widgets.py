@@ -407,6 +407,31 @@ class PipelineFilesWidget(QWidget):
                 self._rows.append(row)
                 lay.addWidget(row)
 
+    def update_spec(self, groups: "list[tuple[str, list[tuple[str, str]]]]") -> None:
+        """Replace the displayed file groups and rebuild the row list."""
+        lay = self.layout()
+        # Remove all existing widgets from the layout
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._rows.clear()
+        # Rebuild
+        for group_label, entries in groups:
+            if group_label:
+                from qtpy.QtWidgets import QLabel
+                hdr = QLabel(group_label)
+                hdr.setStyleSheet(
+                    "font-size: 7pt; font-weight: bold; padding: 1px 4px;"
+                    " background: palette(alternateBase); color: #aaaaaa;"
+                )
+                lay.addWidget(hdr)
+            for rel_path, display_name in entries:
+                row = _PipelineFileRow(rel_path, display_name, loadable=None)
+                self._rows.append(row)
+                lay.addWidget(row)
+
     def refresh(self, pos_dir: "Path | None") -> None:
         """Update all rows to reflect current on-disk state."""
         if pos_dir is None:

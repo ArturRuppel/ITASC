@@ -50,7 +50,7 @@ TAB_STAGE_KEYS: Dict[str, list[str]] = {
     "Cellpose":     ["cellpose_nucleus", "cellpose_cell"],
     "Ultrack":      ["contours", "tracking"],
     "Correction":   ["correction"],
-    "Flow Watershed": ["cell_segmentation"],
+    "Cell Segmentation": ["cell_segmentation"],
     "Edge Analysis": ["graph_extraction", "topology_analysis"],
 }
 # Note: "Tracking" (LapTrack) is now a sub-component of "Correction" and

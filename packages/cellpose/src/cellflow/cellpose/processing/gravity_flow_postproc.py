@@ -1,11 +1,11 @@
-"""Post-processing for flow-watershed cell segmentation.
+"""Post-processing for gravity-flow cell segmentation.
 
 Individual operations (open, close, fill_holes, smooth_boundary,
 mask_to_tissue_foreground) are exposed as standalone functions.
 ``run_postprocess_pipeline`` executes them in user-specified order,
 allowing arbitrary combinations and repetitions.
 
-Legacy API (``postprocess_flow_watershed``, ``morphological_smoothing``,
+Legacy API (``postprocess_gravity_flow``, ``morphological_smoothing``,
 ``boundary_smoothing``) is preserved for backward compatibility.
 """
 
@@ -461,7 +461,7 @@ def boundary_smoothing(
     return result
 
 
-def postprocess_flow_watershed(
+def postprocess_gravity_flow(
     labels: np.ndarray,
     opening_radius: int = 1,
     closing_radius: int = 1,

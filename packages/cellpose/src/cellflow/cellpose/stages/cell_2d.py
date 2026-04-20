@@ -156,36 +156,45 @@ def run(
     dp_list: list[np.ndarray] = []
     prob_list: list[np.ndarray] = []
 
-    for t in range(T):
-        label = f"t{t:03d}"
-        yield (t, T, label)
+    try:
+        for t in range(T):
+            label = f"t{t:03d}"
+            yield (t, T, label)
 
-        # Reorder to (H, W, 2): cytoplasm (488nm) first, nucleus (405nm) second
-        img = np.stack([stack_488[t], stack_405[t]], axis=-1).astype(np.float32)  # (H, W, 2)
+            # Reorder to (H, W, 2): cytoplasm (488nm) first, nucleus (405nm) second
+            img = np.stack([stack_488[t], stack_405[t]], axis=-1).astype(np.float32)  # (H, W, 2)
 
-        # Optional gamma correction
-        gamma = cfg.gamma
-        if gamma is not None and gamma != 1.0:
-            for c in range(img.shape[2]):
-                ch = img[:, :, c]
-                ch_min, ch_max = ch.min(), ch.max()
-                if ch_max > ch_min:
-                    ch_norm = (ch - ch_min) / (ch_max - ch_min)
-                    img[:, :, c] = (ch_norm ** gamma) * (ch_max - ch_min) + ch_min
+            # Optional gamma correction
+            gamma = cfg.gamma
+            if gamma is not None and gamma != 1.0:
+                for c in range(img.shape[2]):
+                    ch = img[:, :, c]
+                    ch_min, ch_max = ch.min(), ch.max()
+                    if ch_max > ch_min:
+                        ch_norm = (ch - ch_min) / (ch_max - ch_min)
+                        img[:, :, c] = (ch_norm ** gamma) * (ch_max - ch_min) + ch_min
 
-        print(f"  [{t+1:3d}/{T}]  t{t:03d} ...", end="", flush=True)
+            print(f"  [{t+1:3d}/{T}]  t{t:03d} ...", end="", flush=True)
 
-        _, flows, _ = model.eval(
-            img,
-            diameter=cfg.diameter if cfg.diameter > 0 else None,
-            min_size=cfg.min_size,
-        )
-        # flows[1]: dP  (2, H, W) float32
-        # flows[2]: cellprob  (H, W) float32
-        dp_list.append(flows[1].astype(np.float32))
-        prob_list.append(flows[2].astype(np.float32))
-        print("  done", flush=True)
-        yield (t + 1, T, label)
+            _, flows, _ = model.eval(
+                img,
+                diameter=cfg.diameter if cfg.diameter > 0 else None,
+                min_size=cfg.min_size,
+            )
+            # flows[1]: dP  (2, H, W) float32
+            # flows[2]: cellprob  (H, W) float32
+            dp_list.append(flows[1].astype(np.float32))
+            prob_list.append(flows[2].astype(np.float32))
+            print("  done", flush=True)
+            yield (t + 1, T, label)
+    finally:
+        del model
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
     print("Assembling stacks ...", flush=True)
     stack_dp = np.stack(dp_list, axis=0)  # (T, 2, H, W)

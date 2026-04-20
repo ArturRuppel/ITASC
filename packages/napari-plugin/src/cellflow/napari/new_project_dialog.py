@@ -265,7 +265,6 @@ _DIR_DESCRIPTIONS: List[tuple[str, List[str]]] = [
         "4_cell_segmentation/",
         [
             "Nucleus-anchored cell boundary segmentation  [step 4]",
-            "  cell_labels_raw.tif      (T, H, W)    int32",
             "  cell_labels.tif          (T, H, W)    int32",
         ],
     ),

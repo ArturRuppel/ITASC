@@ -23,7 +23,7 @@ ndtiff = ["ndtiff"]
 raw_import        = "cellflow.cellpose.stages.raw_import:RawImportStage"
 cellpose_nucleus  = "cellflow.cellpose.stages.nucleus_3d:CellposeNucleusStage"
 cellpose_cell     = "cellflow.cellpose.stages.cell_2d:CellposeCellStage"
-flow_watershed    = "cellflow.cellpose.stages.flow_watershed:FlowWatershedStage"
+cell_segmentation = "cellflow.cellpose.stages.cell_segmentation:CellSegmentationStage"
 contours          = "cellflow.cellpose.stages.contours:ContoursStage"
 
 [tool.hatch.build.targets.wheel]

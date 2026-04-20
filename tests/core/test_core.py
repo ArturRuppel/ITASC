@@ -210,7 +210,7 @@ class TestPaths:
             "raw_import",
             "cellpose_nucleus",
             "cellpose_cell",
-            "flow_watershed",
+            "cell_segmentation",
             "contours",
             "tracking",
             "graph_extraction",

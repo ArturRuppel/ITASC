@@ -81,68 +81,77 @@ def run(
         return
 
     model = None  # lazy load once
+    try:
+        for done, in_path in enumerate(tif_files, start=1):
+            dp_path   = output_dir / f"{in_path.stem}_dp.tif"
+            prob_path = output_dir / f"{in_path.stem}_prob.tif"
 
-    for done, in_path in enumerate(tif_files, start=1):
-        dp_path   = output_dir / f"{in_path.stem}_dp.tif"
-        prob_path = output_dir / f"{in_path.stem}_prob.tif"
+            label = in_path.name
+            yield (done - 1, total, label)
 
-        label = in_path.name
-        yield (done - 1, total, label)
+            if not overwrite and dp_path.exists() and prob_path.exists():
+                print(f"  {label}: outputs exist — skipping.", flush=True)
+                yield (done, total, label)
+                continue
 
-        if not overwrite and dp_path.exists() and prob_path.exists():
-            print(f"  {label}: outputs exist — skipping.", flush=True)
+            img = tifffile.imread(str(in_path))
+            if img.ndim != 3:
+                print(f"[error] {label}: expected (Z,Y,X), got {img.shape}", file=sys.stderr)
+                yield (done, total, label)
+                continue
+
+            print(f"  {label}  shape={img.shape}  dtype={img.dtype}", flush=True)
+
+            # Optional gamma correction
+            gamma = cfg.gamma
+            if gamma is not None and gamma != 1.0:
+                print(f"  gamma={gamma}", flush=True)
+                img = img.astype(np.float32)
+                img_min, img_max = img.min(), img.max()
+                if img_max > img_min:
+                    img = (
+                        ((img - img_min) / (img_max - img_min)) ** gamma
+                        * (img_max - img_min)
+                        + img_min
+                    )
+
+            if model is None:
+                model = _load_model(cfg.model, cfg.use_gpu)
+
+            print(
+                f"  diameter={cfg.diameter}  anisotropy={cfg.anisotropy}"
+                f"  min_size={cfg.min_size}",
+                flush=True,
+            )
+
+            _, flows, _ = model.eval(
+                img,
+                do_3D=True,
+                z_axis=0,
+                diameter=cfg.diameter if cfg.diameter > 0 else None,
+                anisotropy=cfg.anisotropy,
+                min_size=cfg.min_size,
+            )
+
+            dP       = flows[1].astype(np.float32)  # (3, Z, Y, X)
+            cellprob = flows[2].astype(np.float32)  # (Z, Y, X)
+
+            tifffile.imwrite(str(dp_path),   dP,       compression="zlib", metadata={"axes": "CZYX"})
+            tifffile.imwrite(str(prob_path), cellprob, compression="zlib", metadata={"axes": "ZYX"})
+
+            print(f"  → {dp_path.name}  {dP.shape}", flush=True)
+            print(f"  → {prob_path.name}  {cellprob.shape}", flush=True)
+
             yield (done, total, label)
-            continue
-
-        img = tifffile.imread(str(in_path))
-        if img.ndim != 3:
-            print(f"[error] {label}: expected (Z,Y,X), got {img.shape}", file=sys.stderr)
-            yield (done, total, label)
-            continue
-
-        print(f"  {label}  shape={img.shape}  dtype={img.dtype}", flush=True)
-
-        # Optional gamma correction
-        gamma = cfg.gamma
-        if gamma is not None and gamma != 1.0:
-            print(f"  gamma={gamma}", flush=True)
-            img = img.astype(np.float32)
-            img_min, img_max = img.min(), img.max()
-            if img_max > img_min:
-                img = (
-                    ((img - img_min) / (img_max - img_min)) ** gamma
-                    * (img_max - img_min)
-                    + img_min
-                )
-
-        if model is None:
-            model = _load_model(cfg.model, cfg.use_gpu)
-
-        print(
-            f"  diameter={cfg.diameter}  anisotropy={cfg.anisotropy}"
-            f"  min_size={cfg.min_size}",
-            flush=True,
-        )
-
-        _, flows, _ = model.eval(
-            img,
-            do_3D=True,
-            z_axis=0,
-            diameter=cfg.diameter if cfg.diameter > 0 else None,
-            anisotropy=cfg.anisotropy,
-            min_size=cfg.min_size,
-        )
-
-        dP       = flows[1].astype(np.float32)  # (3, Z, Y, X)
-        cellprob = flows[2].astype(np.float32)  # (Z, Y, X)
-
-        tifffile.imwrite(str(dp_path),   dP,       compression="zlib", metadata={"axes": "CZYX"})
-        tifffile.imwrite(str(prob_path), cellprob, compression="zlib", metadata={"axes": "ZYX"})
-
-        print(f"  → {dp_path.name}  {dP.shape}", flush=True)
-        print(f"  → {prob_path.name}  {cellprob.shape}", flush=True)
-
-        yield (done, total, label)
+    finally:
+        if model is not None:
+            del model
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
 
     print("Done.", flush=True)
 
