@@ -178,6 +178,7 @@ def run(
 
             _, flows, _ = model.eval(
                 img,
+                channels=[1, 2],
                 diameter=cfg.diameter if cfg.diameter > 0 else None,
                 min_size=cfg.min_size,
             )

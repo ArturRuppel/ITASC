@@ -151,7 +151,7 @@ class CellposeWidget(QWidget):
         row = QHBoxLayout()
         row.addWidget(QLabel("Model"))
         self._s01a_model_combo = QComboBox()
-        self._s01a_model_combo.addItems(["nuclei", "cyto", "cyto2", "cyto3"])
+        self._s01a_model_combo.addItems(["nuclei", "cpsam", "cyto3", "cyto2", "cyto"])
         self._s01a_model_combo.setEditable(True)
         row.addWidget(self._s01a_model_combo)
         mg_layout.addLayout(row)
@@ -282,9 +282,9 @@ class CellposeWidget(QWidget):
         row = QHBoxLayout()
         row.addWidget(QLabel("Model"))
         self._s01b_model_combo = QComboBox()
-        self._s01b_model_combo.addItems(["cyto3", "cyto2", "cyto", "nuclei"])
+        self._s01b_model_combo.addItems(["cpsam", "cyto3", "cyto2", "cyto", "nuclei"])
         self._s01b_model_combo.setEditable(True)
-        self._s01b_model_combo.setCurrentText("cyto3")
+        self._s01b_model_combo.setCurrentText("cpsam")
         row.addWidget(self._s01b_model_combo)
         mg_layout.addLayout(row)
 
@@ -757,19 +757,18 @@ class CellposeWidget(QWidget):
 
         @thread_worker(
             connect={
+                "yielded":  self._on_s01b_preview_status,
                 "returned": self._on_s01b_preview_returned,
-                "errored": self._on_s01b_preview_error,
+                "errored":  self._on_s01b_preview_error,
             }
         )
         def _work():
             import numpy as np
             from cellflow.cellpose.stages.cell_2d import _load_model
 
-            stack_405 = tifffile.imread(str(path_nuc))   # (T, H, W)
-            stack_488 = tifffile.imread(str(path_cell))  # (T, H, W)
-
-            frame_405 = stack_405[t].astype(np.float32)
-            frame_488 = stack_488[t].astype(np.float32)
+            yield f"Loading frame {t}…"
+            frame_405 = tifffile.imread(str(path_nuc), key=t).astype(np.float32)
+            frame_488 = tifffile.imread(str(path_cell), key=t).astype(np.float32)
 
             img = np.stack([frame_488, frame_405], axis=-1)  # (H, W, 2)
 
@@ -782,10 +781,13 @@ class CellposeWidget(QWidget):
                         ch_norm = (ch - ch_min) / (ch_max - ch_min)
                         img[:, :, c] = (ch_norm ** gamma) * (ch_max - ch_min) + ch_min
 
+            yield f"Loading model '{cfg.model}'…"
             model = _load_model(cfg.model, cfg.use_gpu)
             try:
+                yield "Running inference…"
                 _, flows, _ = model.eval(
                     img,
+                    channels=[1, 2],
                     diameter=cfg.diameter if cfg.diameter > 0 else None,
                     min_size=cfg.min_size,
                 )
@@ -802,6 +804,9 @@ class CellposeWidget(QWidget):
             return t, dp, prob
 
         self._worker_s01b_preview = _work()
+
+    def _on_s01b_preview_status(self, msg: str) -> None:
+        self._s01b_status_label.setText(msg)
 
     def _on_s01b_preview_returned(self, result: tuple) -> None:
         self._s01b_preview_btn.setEnabled(True)
@@ -857,13 +862,15 @@ class CellposeWidget(QWidget):
 
         @thread_worker(
             connect={
+                "yielded":  self._on_s01a_preview_status,
                 "returned": self._on_s01a_preview_returned,
-                "errored": self._on_s01a_preview_error,
+                "errored":  self._on_s01a_preview_error,
             }
         )
         def _work():
             from cellflow.cellpose.stages.nucleus_3d import _load_model
 
+            yield f"Loading frame {t}…"
             img = tifffile.imread(str(in_path)).astype(np.float32)
             gamma = cfg.gamma
             if gamma is not None and gamma != 1.0:
@@ -875,8 +882,10 @@ class CellposeWidget(QWidget):
                         + img_min
                     )
 
+            yield f"Loading model '{cfg.model}'…"
             model = _load_model(cfg.model, cfg.use_gpu)
             try:
+                yield "Running 3D inference…"
                 _, flows, _ = model.eval(
                     img,
                     do_3D=True,
@@ -921,6 +930,9 @@ class CellposeWidget(QWidget):
         self._s01a_status_label.setText(
             f"Preview done  t={t}  prob={prob.shape}  dp={dp.shape}"
         )
+
+    def _on_s01a_preview_status(self, msg: str) -> None:
+        self._s01a_status_label.setText(msg)
 
     def _on_s01a_preview_error(self, exc: Exception) -> None:
         self._s01a_preview_btn.setEnabled(True)

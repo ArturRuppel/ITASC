@@ -17,6 +17,7 @@ import tifffile
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
@@ -94,19 +95,29 @@ class CellSegmentationConfig:
 class WatershedConfig:
     """Configuration for nucleus-seeded watershed cell segmentation."""
 
-    def __init__(self, cellpose_prob_threshold: float = 0.0, compactness: float = 0.0):
+    def __init__(
+        self,
+        cellpose_prob_threshold: float = 0.0,
+        compactness: float = 0.0,
+        prob_smoothing_sigma: float = 0.0,
+        basin: str = "prob",
+    ):
         self.cellpose_prob_threshold = cellpose_prob_threshold
         self.compactness = compactness
+        self.prob_smoothing_sigma = prob_smoothing_sigma
+        self.basin = basin
 
     def model_dump(self) -> dict:
         return {
             "cellpose_prob_threshold": self.cellpose_prob_threshold,
             "compactness": self.compactness,
+            "prob_smoothing_sigma": self.prob_smoothing_sigma,
+            "basin": self.basin,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "WatershedConfig":
-        valid = {"cellpose_prob_threshold", "compactness"}
+        valid = {"cellpose_prob_threshold", "compactness", "prob_smoothing_sigma", "basin"}
         return cls(**{k: v for k, v in data.items() if k in valid})
 
 
@@ -257,15 +268,34 @@ def run_watershed_segmentation(
         print(f"Error loading prob stack: {e}")
         return None
 
+    flow_stack = None
+    if config.basin == "flow_mag":
+        try:
+            flow_path = cellpose_cell_dir(root_dir, pos) / "cell_dp.tif"
+            if not flow_path.exists():
+                print("cell_dp.tif not found — required for flow_mag basin")
+                return None
+            fs = tifffile.imread(str(flow_path)).astype(np.float32)
+            flow_stack = np.transpose(fs, (0, 2, 3, 1)) if fs.ndim == 4 else np.transpose(fs, (1, 2, 0))[np.newaxis]
+        except Exception as e:
+            print(f"Error loading flow stack: {e}")
+            return None
+
     cell_labels_stack = []
     for t in range(T):
         try:
             nuc_t = nuclear_labels[t]
             prob_t = prob_stack[t] if prob_stack.shape[0] > 1 else prob_stack[0]
+            flow_t = None
+            if flow_stack is not None:
+                flow_t = flow_stack[t] if flow_stack.shape[0] > 1 else flow_stack[0]
             cell_labels = prob_watershed_segmentation(
                 nuc_t, prob_t,
                 cellpose_prob_threshold=config.cellpose_prob_threshold,
                 compactness=config.compactness,
+                prob_smoothing_sigma=config.prob_smoothing_sigma,
+                flow_field=flow_t,
+                basin=config.basin,
             )
             cell_labels_stack.append(cell_labels)
         except Exception as e:
@@ -454,6 +484,14 @@ class CellSegmentationWidget(QWidget):
         lay.setContentsMargins(4, 4, 4, 4)
 
         row = QHBoxLayout()
+        row.addWidget(QLabel("Basin image"))
+        self._ws_basin_combo = QComboBox()
+        self._ws_basin_combo.addItems(["Probability", "Flow magnitude"])
+        row.addWidget(self._ws_basin_combo)
+        row.addStretch()
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
         row.addWidget(QLabel("Cellprob threshold"))
         self._ws_prob_threshold_spin = QDoubleSpinBox()
         self._ws_prob_threshold_spin.setRange(-100.0, 100.0)
@@ -472,6 +510,17 @@ class CellSegmentationWidget(QWidget):
         self._ws_compactness_spin.setDecimals(3)
         self._ws_compactness_spin.setValue(0.0)
         row.addWidget(self._ws_compactness_spin)
+        row.addStretch()
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Prob smoothing sigma"))
+        self._ws_prob_smoothing_spin = QDoubleSpinBox()
+        self._ws_prob_smoothing_spin.setRange(0.0, 10.0)
+        self._ws_prob_smoothing_spin.setSingleStep(0.5)
+        self._ws_prob_smoothing_spin.setDecimals(1)
+        self._ws_prob_smoothing_spin.setValue(0.0)
+        row.addWidget(self._ws_prob_smoothing_spin)
         row.addStretch()
         lay.addLayout(row)
 
@@ -521,11 +570,15 @@ class CellSegmentationWidget(QWidget):
         return WatershedConfig(
             cellpose_prob_threshold=self._ws_prob_threshold_spin.value(),
             compactness=self._ws_compactness_spin.value(),
+            prob_smoothing_sigma=self._ws_prob_smoothing_spin.value(),
+            basin="flow_mag" if self._ws_basin_combo.currentIndex() == 1 else "prob",
         )
 
     def _apply_watershed_config(self, cfg: WatershedConfig) -> None:
         self._ws_prob_threshold_spin.setValue(cfg.cellpose_prob_threshold)
         self._ws_compactness_spin.setValue(cfg.compactness)
+        self._ws_prob_smoothing_spin.setValue(cfg.prob_smoothing_sigma)
+        self._ws_basin_combo.setCurrentIndex(1 if cfg.basin == "flow_mag" else 0)
 
     # ── Save Corrected Cell Labels ─────────────────────────────────────────
 
@@ -599,15 +652,21 @@ class CellSegmentationWidget(QWidget):
                 )
             else:
                 cfg = self._build_watershed_config()
-                _, prob_t = _load_cellpose_data(root_dir_path, pos, frame)
+                flow_t, prob_t = _load_cellpose_data(root_dir_path, pos, frame)
                 if prob_t is None:
                     self._seg_status.setText("Could not load cellpose probability map.")
+                    return
+                if cfg.basin == "flow_mag" and flow_t is None:
+                    self._seg_status.setText("Could not load cellpose flow (needed for flow_mag basin).")
                     return
                 from cellflow.cellpose.processing.gravity_flow import prob_watershed_segmentation
                 cell_labels = prob_watershed_segmentation(
                     nuc_t, prob_t,
                     cellpose_prob_threshold=cfg.cellpose_prob_threshold,
                     compactness=cfg.compactness,
+                    prob_smoothing_sigma=cfg.prob_smoothing_sigma,
+                    flow_field=flow_t,
+                    basin=cfg.basin,
                 )
 
             # --- Load background images ---

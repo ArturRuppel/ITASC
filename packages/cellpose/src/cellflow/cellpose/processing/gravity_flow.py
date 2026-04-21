@@ -390,17 +390,20 @@ def prob_watershed_segmentation(
     cellpose_prob: np.ndarray,
     cellpose_prob_threshold: float = 0.0,
     compactness: float = 0.0,
+    prob_smoothing_sigma: float = 0.0,
+    flow_field: np.ndarray | None = None,
+    basin: str = "prob",
 ) -> np.ndarray:
-    """Nucleus-seeded watershed on the cellpose probability map.
-
-    Uses the cellpose cell-probability as the basin depth and the nuclear
-    label map as seeds.  Each basin is guaranteed to contain exactly one
-    nucleus; the watershed boundary falls on the ridge between adjacent
-    probability basins.
+    """Nucleus-seeded watershed using either the cellpose probability map or
+    the cellpose flow magnitude as the flooding basin.
 
     compactness adds a distance-from-seed penalty so that in flat regions
-    (no clear probability ridge) the boundary falls at the equal-distance
-    midpoint between nuclei rather than arbitrarily.  Typical values: 0–0.1.
+    the boundary falls at the equal-distance midpoint between nuclei.
+    Typical values: 0–0.1.
+
+    prob_smoothing_sigma applies a Gaussian blur to the basin image before
+    running the watershed, producing cleaner cell boundaries.
+    Typical values: 0–3.
 
     Parameters
     ----------
@@ -408,10 +411,19 @@ def prob_watershed_segmentation(
         Integer label map of segmented nuclei (H, W).
     cellpose_prob : np.ndarray
         Cellpose probability / logit map (H, W).  Higher = more cell-like.
+        Always required (used for the mask even when basin="flow_mag").
     cellpose_prob_threshold : float
-        Pixels below this value are excluded from expansion (default 0.0).
+        Pixels with prob below this value are excluded from expansion (default 0.0).
     compactness : float
-        Compact-watershed penalty weight (default 0.0 = pure probability).
+        Compact-watershed penalty weight (default 0.0 = pure basin image).
+    prob_smoothing_sigma : float
+        Gaussian blur sigma applied to the basin image before watershed
+        (default 0.0 = no smoothing).
+    flow_field : np.ndarray or None
+        Cellpose flow field (H, W, 2).  Required when basin="flow_mag".
+    basin : str
+        Which image to use as the watershed basin: "prob" (default) or
+        "flow_mag" (magnitude of the cellpose flow field).
 
     Returns
     -------
@@ -420,10 +432,20 @@ def prob_watershed_segmentation(
     """
     from skimage.segmentation import watershed
 
+    if basin == "flow_mag":
+        if flow_field is None:
+            raise ValueError("flow_field must be provided when basin='flow_mag'")
+        basin_image = np.sqrt(flow_field[..., 0] ** 2 + flow_field[..., 1] ** 2).astype(np.float32)
+    else:
+        basin_image = cellpose_prob.copy()
+
+    if prob_smoothing_sigma > 0.0:
+        basin_image = ndimage.gaussian_filter(basin_image, sigma=prob_smoothing_sigma)
+
     prob_mask = (cellpose_prob >= cellpose_prob_threshold) | (nuclear_labels > 0)
 
     result = watershed(
-        -cellpose_prob,
+        -basin_image,
         markers=nuclear_labels.astype(np.int32),
         mask=prob_mask,
         compactness=compactness,

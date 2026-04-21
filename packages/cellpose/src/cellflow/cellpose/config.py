@@ -18,7 +18,7 @@ class DatasetConfig(BaseModel):
 class CellposeConfig(BaseModel):
     """Parameters for Cellpose segmentation (nucleus_3d / cell_2d)."""
 
-    model: str = "nuclei"
+    model: str = "cpsam"
     diameter: float = 17.0
     anisotropy: float = 1.0
     min_size: int = 500

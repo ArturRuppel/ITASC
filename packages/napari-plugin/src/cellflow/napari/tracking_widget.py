@@ -142,6 +142,11 @@ class TrackingTab(QWidget):
         self._cancel_btn.clicked.connect(self._on_cancel)
         root.addWidget(self._cancel_btn)
 
+        self._status_label = QLabel("")
+        self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        root.addWidget(self._status_label)
+
         root.addStretch()
 
         # attribution
@@ -438,7 +443,8 @@ class TrackingTab(QWidget):
 
     def _log_append(self, msg: str) -> None:
         msg = str(msg)
+        self._status_label.setText(msg)
         if msg.startswith("ERROR"):
             _show_error(msg)
-        else:
+        elif msg == "Tracking complete!":
             show_info(msg)
