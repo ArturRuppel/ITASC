@@ -1,18 +1,21 @@
-"""s01b — Cellpose 2D cell segmentation.
+"""s01b — Cellpose 2D cell segmentation (per-z-slice).
 
-Runs Cellpose 2D segmentation on Z-projected cell stack (two-channel zavg).
+Runs Cellpose on each z-slice individually, storing full per-slice outputs and
+z-averaged outputs for use by downstream stages.
 
 Inputs (per position)
 ---------------------
-  0_input/nucleus/nucleus_zavg.tif  (T, H, W)  uint16  — nuclear marker (405 nm)
-  0_input/cell/cell_zavg.tif        (T, H, W)  uint16  — membrane marker (488 nm)
+  0_input/cell/cell_3d_t{t:03d}.tif     (Z, H, W) uint16 — cell z-stack (488 nm)
+  0_input/nucleus/nucleus_3d_t{t:03d}.tif (Z, H, W) uint16 — nucleus z-stack (405 nm)
 
 Outputs (per position)
 ----------------------
-  1b_cellpose_cell/
+  1_cellpose/cell/
     run_params.json
-    cell_dp.tif                  (T, 2, H, W)  float32  — flow fields
-    cell_prob.tif                (T, H, W)     float32  — probability map
+    cell_dp.tif       (T, Z, 2, H, W) float32 — per-z-slice flow fields
+    cell_prob.tif     (T, Z, H, W)    float32 — per-z-slice probability maps
+    cell_dp_zavg.tif  (T, 2, H, W)    float32 — z-averaged flow fields
+    cell_prob_zavg.tif (T, H, W)      float32 — z-averaged probability maps
 """
 
 from __future__ import annotations
@@ -26,24 +29,34 @@ import numpy as np
 import tifffile
 
 from cellflow.cellpose.config import CellposeConfig
+from cellflow.cellpose.stages.raw_import import (
+    cell_3d_path,
+    nucleus_3d_path,
+    cell_zavg_path,
+    nucleus_zavg_path,
+)
 from cellflow.core.paths import stage_dir
 from cellflow.core.protocol import StageProgress, ValidationResult
 
 
-def _raw_dir(root_dir, pos):
-    return stage_dir(root_dir, pos, "raw_import")
-
-
-def nucleus_zavg_path(root_dir, pos):
-    return _raw_dir(root_dir, pos) / "nucleus" / "nucleus_zavg.tif"
-
-
-def cell_zavg_path(root_dir, pos):
-    return _raw_dir(root_dir, pos) / "cell" / "cell_zavg.tif"
-
-
 def cellpose_cell_dir(root_dir, pos):
     return stage_dir(root_dir, pos, "cellpose_cell")
+
+
+def cell_dp_path(root_dir, pos):
+    return cellpose_cell_dir(root_dir, pos) / "cell_dp.tif"
+
+
+def cell_prob_path(root_dir, pos):
+    return cellpose_cell_dir(root_dir, pos) / "cell_prob.tif"
+
+
+def cell_dp_zavg_path(root_dir, pos):
+    return cellpose_cell_dir(root_dir, pos) / "cell_dp_zavg.tif"
+
+
+def cell_prob_zavg_path(root_dir, pos):
+    return cellpose_cell_dir(root_dir, pos) / "cell_prob_zavg.tif"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -71,6 +84,16 @@ def _load_model(model_type: str, use_gpu: bool):
     return model
 
 
+def _apply_gamma(img: np.ndarray, gamma: float) -> None:
+    """Gamma-correct (H, W, C) img in-place."""
+    for c in range(img.shape[2]):
+        ch = img[:, :, c]
+        ch_min, ch_max = ch.min(), ch.max()
+        if ch_max > ch_min:
+            ch_norm = (ch - ch_min) / (ch_max - ch_min)
+            img[:, :, c] = (ch_norm ** gamma) * (ch_max - ch_min) + ch_min
+
+
 # ── Core run function ─────────────────────────────────────────────────────────
 
 
@@ -80,42 +103,28 @@ def run(
     cfg: CellposeConfig,
     overwrite: bool = False,
 ) -> Generator[tuple[int, int, str], None, None]:
-    """Run Cellpose 2D segmentation on cell zavg stack for one position.
+    """Run Cellpose 2D segmentation per-z-slice for one position.
 
     Yields ``(done, total, label)`` progress tuples.
     """
     root_dir = Path(root_dir)
 
-    # Load input channels
-    path_nuc = nucleus_zavg_path(root_dir, pos)   # 405 nm nuclear marker
-    path_cell = cell_zavg_path(root_dir, pos)      # 488 nm membrane marker
+    # Discover available timepoints by scanning nucleus_3d files
+    t = 0
+    time_indices = []
+    while nucleus_3d_path(root_dir, pos, t).exists():
+        time_indices.append(t)
+        t += 1
 
-    if not path_nuc.exists():
-        print(f"[error] Input not found: {path_nuc}", file=sys.stderr)
-        return
-    if not path_cell.exists():
-        print(f"[error] Input not found: {path_cell}", file=sys.stderr)
-        return
-
-    stack_405 = tifffile.imread(str(path_nuc))    # (T, H, W) uint16
-    stack_488 = tifffile.imread(str(path_cell))   # (T, H, W) uint16
-
-    if stack_405.ndim != 3 or stack_488.ndim != 3:
-        print(
-            f"[error] Expected (T, H, W), got {stack_405.shape} and {stack_488.shape}",
-            file=sys.stderr,
-        )
-        return
-    if stack_405.shape != stack_488.shape:
-        print(
-            f"[error] Channel shapes must match: {stack_405.shape} vs {stack_488.shape}",
-            file=sys.stderr,
-        )
+    if not time_indices:
+        print(f"[error] No nucleus_3d_t*.tif files found for pos{pos:02d}", file=sys.stderr)
         return
 
-    T, H, W = stack_405.shape
-    print(f"pos{pos:02d}  input shape={stack_405.shape}  dtype={stack_405.dtype}", flush=True)
-    print(f"  T={T}  H={H}  W={W}", flush=True)
+    T = len(time_indices)
+    t0_nuc = tifffile.imread(str(nucleus_3d_path(root_dir, pos, 0)))
+    Z = t0_nuc.shape[0]
+    H, W = t0_nuc.shape[1], t0_nuc.shape[2]
+    print(f"pos{pos:02d}  T={T}  Z={Z}  H={H}  W={W}", flush=True)
     if cfg.gamma is not None:
         print(f"  gamma={cfg.gamma}", flush=True)
 
@@ -123,10 +132,12 @@ def run(
     out_dir = cellpose_cell_dir(root_dir, pos)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    dp_path = out_dir / "cell_dp.tif"
-    prob_path = out_dir / "cell_prob.tif"
+    dp_path = cell_dp_path(root_dir, pos)
+    prob_path = cell_prob_path(root_dir, pos)
+    dp_zavg_path = cell_dp_zavg_path(root_dir, pos)
+    prob_zavg_path = cell_prob_zavg_path(root_dir, pos)
 
-    if not overwrite and dp_path.exists() and prob_path.exists():
+    if not overwrite and dp_path.exists() and prob_path.exists() and dp_zavg_path.exists() and prob_zavg_path.exists():
         print(f"pos{pos:02d}: all outputs exist — skipping.", flush=True)
         yield (T, T, f"pos{pos:02d} skipped")
         return
@@ -153,40 +164,51 @@ def run(
         flush=True,
     )
 
-    dp_list: list[np.ndarray] = []
-    prob_list: list[np.ndarray] = []
+    # t_dp_list[t][z] → dp  (2, H, W)
+    t_dp_list:   list[list[np.ndarray]] = []
+    t_prob_list: list[list[np.ndarray]] = []
 
     try:
-        for t in range(T):
-            label = f"t{t:03d}"
-            yield (t, T, label)
+        for ti, t in enumerate(time_indices):
+            yield (ti, T, f"t{t:03d}")
 
-            # Reorder to (H, W, 2): cytoplasm (488nm) first, nucleus (405nm) second
-            img = np.stack([stack_488[t], stack_405[t]], axis=-1).astype(np.float32)  # (H, W, 2)
+            # Load z-stacks for this timepoint
+            cell_path = cell_3d_path(root_dir, pos, t)
+            nuc_path_t = nucleus_3d_path(root_dir, pos, t)
 
-            # Optional gamma correction
-            gamma = cfg.gamma
-            if gamma is not None and gamma != 1.0:
-                for c in range(img.shape[2]):
-                    ch = img[:, :, c]
-                    ch_min, ch_max = ch.min(), ch.max()
-                    if ch_max > ch_min:
-                        ch_norm = (ch - ch_min) / (ch_max - ch_min)
-                        img[:, :, c] = (ch_norm ** gamma) * (ch_max - ch_min) + ch_min
+            if not cell_path.exists():
+                print(f"[error] Missing: {cell_path}", file=sys.stderr)
+                return
+            if not nuc_path_t.exists():
+                print(f"[error] Missing: {nuc_path_t}", file=sys.stderr)
+                return
 
-            print(f"  [{t+1:3d}/{T}]  t{t:03d} ...", end="", flush=True)
+            cell_z = tifffile.imread(str(cell_path)).astype(np.float32)   # (Z, H, W)
+            nuc_z  = tifffile.imread(str(nuc_path_t)).astype(np.float32)  # (Z, H, W)
 
-            _, flows, _ = model.eval(
-                img,
-                diameter=cfg.diameter if cfg.diameter > 0 else None,
-                min_size=cfg.min_size,
-            )
-            # flows[1]: dP  (2, H, W) float32
-            # flows[2]: cellprob  (H, W) float32
-            dp_list.append(flows[1].astype(np.float32))
-            prob_list.append(flows[2].astype(np.float32))
+            print(f"  [{ti+1:3d}/{T}]  t{t:03d}  Z={cell_z.shape[0]} ...", flush=True)
+
+            z_dp_list:   list[np.ndarray] = []
+            z_prob_list: list[np.ndarray] = []
+
+            for z in range(cell_z.shape[0]):
+                img = np.stack([cell_z[z], nuc_z[z]], axis=-1)  # (H, W, 2)
+
+                if cfg.gamma is not None and cfg.gamma != 1.0:
+                    _apply_gamma(img, cfg.gamma)
+
+                _, flows, _ = model.eval(
+                    img,
+                    diameter=cfg.diameter if cfg.diameter > 0 else None,
+                    min_size=cfg.min_size,
+                )
+                z_dp_list.append(flows[1].astype(np.float32))    # (2, H, W)
+                z_prob_list.append(flows[2].astype(np.float32))  # (H, W)
+
+            t_dp_list.append(z_dp_list)
+            t_prob_list.append(z_prob_list)
             print("  done", flush=True)
-            yield (t + 1, T, label)
+            yield (ti + 1, T, f"t{t:03d}")
     finally:
         del model
         try:
@@ -196,25 +218,45 @@ def run(
         except ImportError:
             pass
 
-    print("Assembling stacks ...", flush=True)
-    stack_dp = np.stack(dp_list, axis=0)  # (T, 2, H, W)
-    stack_prob = np.stack(prob_list, axis=0)  # (T, H, W)
+    print("Assembling stacks …", flush=True)
+
+    # (T, Z, 2, H, W) and (T, Z, H, W)
+    stack_dp   = np.stack([np.stack(z_list, axis=0) for z_list in t_dp_list],   axis=0)
+    stack_prob = np.stack([np.stack(z_list, axis=0) for z_list in t_prob_list], axis=0)
+
+    # Z-averaged: (T, 2, H, W) and (T, H, W)
+    stack_dp_zavg   = stack_dp.mean(axis=1).astype(np.float32)
+    stack_prob_zavg = stack_prob.mean(axis=1).astype(np.float32)
 
     tifffile.imwrite(
         str(dp_path),
         stack_dp,
         compression="zlib",
-        metadata={"axes": "TCYX"},
+        metadata={"axes": "TZCYX"},
     )
     tifffile.imwrite(
         str(prob_path),
         stack_prob,
         compression="zlib",
+        metadata={"axes": "TZYX"},
+    )
+    tifffile.imwrite(
+        str(dp_zavg_path),
+        stack_dp_zavg,
+        compression="zlib",
+        metadata={"axes": "TCYX"},
+    )
+    tifffile.imwrite(
+        str(prob_zavg_path),
+        stack_prob_zavg,
+        compression="zlib",
         metadata={"axes": "TYX"},
     )
 
-    print(f"  → {dp_path.name}  {stack_dp.shape}  {stack_dp.dtype}", flush=True)
-    print(f"  → {prob_path.name}  {stack_prob.shape}  {stack_prob.dtype}", flush=True)
+    print(f"  → {dp_path.name}      {stack_dp.shape}       {stack_dp.dtype}", flush=True)
+    print(f"  → {prob_path.name}    {stack_prob.shape}     {stack_prob.dtype}", flush=True)
+    print(f"  → {dp_zavg_path.name} {stack_dp_zavg.shape}  {stack_dp_zavg.dtype}", flush=True)
+    print(f"  → {prob_zavg_path.name} {stack_prob_zavg.shape} {stack_prob_zavg.dtype}", flush=True)
     print("Done.", flush=True)
     yield (T, T, "done")
 
@@ -226,7 +268,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="s01b — Cellpose 2D cell segmentation",
+        description="s01b — Cellpose 2D cell segmentation (per-z-slice)",
     )
     parser.add_argument(
         "--root-dir",
@@ -285,13 +327,17 @@ class _CellposeCellStageClass:
         from cellflow.core.validation import validate_inputs
 
         return validate_inputs([
-            nucleus_zavg_path(root_dir, pos),
-            cell_zavg_path(root_dir, pos),
+            nucleus_3d_path(root_dir, pos, 0),
+            cell_3d_path(root_dir, pos, 0),
         ])
 
     def is_complete(self, root_dir, pos) -> bool:
-        d = cellpose_cell_dir(root_dir, pos)
-        return (d / "cell_dp.tif").exists() and (d / "cell_prob.tif").exists()
+        return (
+            cell_dp_path(root_dir, pos).exists()
+            and cell_prob_path(root_dir, pos).exists()
+            and cell_dp_zavg_path(root_dir, pos).exists()
+            and cell_prob_zavg_path(root_dir, pos).exists()
+        )
 
 
 CellposeCellStage = _CellposeCellStageClass()

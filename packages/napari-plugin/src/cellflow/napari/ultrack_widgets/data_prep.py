@@ -49,7 +49,9 @@ class DataPrepWidget(QWidget):
         # ── Project file status (output files for current position) ──────
         self._files_widget = PipelineFilesWidget([
             ("Output", [
-                ("0_input/cell/cell_zavg.tif",      "Cell avg"),
+                ("0_input/cell",                     "Cell 3D (frames)"),
+                ("0_input/cell/cell_zavg.tif",       "Cell avg"),
+                ("0_input/nucleus",                  "Nucleus 3D (frames)"),
                 ("0_input/nucleus/nucleus_zavg.tif", "Nucleus avg"),
             ]),
         ])

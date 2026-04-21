@@ -266,11 +266,13 @@ class CellposeWidget(QWidget):
         # ── File status (derived from project) ──────────────────────────
         self._s01b_files_widget = PipelineFilesWidget([
             ("Input", [
-                ("0_input/cell/cell_zavg.tif",  "Cell avg"),
+                ("0_input/cell/cell_3d_t000.tif",  "Cell z-stack t0"),
             ]),
             ("Output", [
-                ("1_cellpose/cell/cell_dp.tif",   "Cell DP"),
-                ("1_cellpose/cell/cell_prob.tif",  "Cell prob"),
+                ("1_cellpose/cell/cell_dp.tif",          "Cell DP (z-slices)"),
+                ("1_cellpose/cell/cell_prob.tif",         "Cell prob (z-slices)"),
+                ("1_cellpose/cell/cell_dp_zavg.tif",     "Cell DP avg"),
+                ("1_cellpose/cell/cell_prob_zavg.tif",   "Cell prob avg"),
             ]),
         ])
         layout.addWidget(self._s01b_files_widget)
@@ -685,15 +687,18 @@ class CellposeWidget(QWidget):
             return
         pos = self._state.current_position
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
-        prob_file = cell_dir / "cell_prob.tif"
+        # Prefer z-averaged prob for quick status load
+        prob_file = cell_dir / "cell_prob_zavg.tif"
+        if not prob_file.exists():
+            prob_file = cell_dir / "cell_prob.tif"
         if not prob_file.exists():
             return
         prob = tifffile.imread(str(prob_file))
         self.viewer.add_image(prob, name=f"cell_prob_pos{pos:02d}", colormap="inferno")
-        self._s01b_status_label.setText(f"Loaded cell_prob.tif  shape={prob.shape}")
+        self._s01b_status_label.setText(f"Loaded {prob_file.name}  shape={prob.shape}")
 
     def _on_s01b_load_results(self) -> None:
-        from cellflow.cellpose.stages.cell_2d import nucleus_zavg_path, cell_zavg_path
+        from cellflow.cellpose.stages.raw_import import nucleus_zavg_path, cell_zavg_path
 
         root_dir = self._s01b_root_dir()
         if root_dir is None:
@@ -721,20 +726,39 @@ class CellposeWidget(QWidget):
             loaded.append("cell input")
 
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
-        prob_file = cell_dir / "cell_prob.tif"
-        dp_file = cell_dir / "cell_dp.tif"
-        if prob_file.exists():
+
+        # Per-z-slice outputs (T, Z, H, W) and (T, Z, 2, H, W)
+        prob_zslices = cell_dir / "cell_prob.tif"
+        dp_zslices   = cell_dir / "cell_dp.tif"
+        if prob_zslices.exists():
             self.viewer.add_image(
-                tifffile.imread(str(prob_file)),
-                name=f"cell_prob_pos{pos:02d}",
+                tifffile.imread(str(prob_zslices)),
+                name=f"cell_prob_zslices_pos{pos:02d}",
                 colormap="inferno",
             )
-            loaded.append("cell prob")
-        if dp_file.exists():
-            dp = tifffile.imread(str(dp_file))  # (T, 2, H, W)
+            loaded.append("cell prob (z-slices)")
+        if dp_zslices.exists():
+            dp = tifffile.imread(str(dp_zslices))  # (T, Z, 2, H, W)
+            for c in range(dp.shape[2]):
+                self.viewer.add_image(dp[:, :, c], name=f"cell_dp_{c}_zslices_pos{pos:02d}", colormap="RdBu")
+            loaded.append("cell dp (z-slices)")
+
+        # Z-averaged outputs
+        prob_zavg = cell_dir / "cell_prob_zavg.tif"
+        dp_zavg   = cell_dir / "cell_dp_zavg.tif"
+        if prob_zavg.exists():
+            self.viewer.add_image(
+                tifffile.imread(str(prob_zavg)),
+                name=f"cell_prob_zavg_pos{pos:02d}",
+                colormap="inferno",
+                visible=False,
+            )
+            loaded.append("cell prob avg")
+        if dp_zavg.exists():
+            dp = tifffile.imread(str(dp_zavg))  # (T, 2, H, W)
             for c in range(dp.shape[1]):
-                self.viewer.add_image(dp[:, c], name=f"cell_dp_{c}_pos{pos:02d}", colormap="RdBu")
-            loaded.append("cell dp")
+                self.viewer.add_image(dp[:, c], name=f"cell_dp_{c}_zavg_pos{pos:02d}", colormap="RdBu", visible=False)
+            loaded.append("cell dp avg")
 
         if loaded:
             self._s01b_status_label.setText(f"Loaded: {', '.join(loaded)}")
@@ -744,7 +768,7 @@ class CellposeWidget(QWidget):
     # ── s01b Preview ─────────────────────────────────────────────────────
 
     def _on_s01b_preview(self) -> None:
-        from cellflow.cellpose.stages.cell_2d import nucleus_zavg_path, cell_zavg_path
+        from cellflow.cellpose.stages.raw_import import cell_3d_path, nucleus_3d_path
 
         root_dir = self._s01b_root_dir()
         if root_dir is None:
@@ -754,15 +778,17 @@ class CellposeWidget(QWidget):
         pos = self._state.current_position
         t = self._s01b_frame_spin.value()
 
-        path_nuc = nucleus_zavg_path(root_dir, pos)
-        path_cell = cell_zavg_path(root_dir, pos)
-        if not path_nuc.exists() or not path_cell.exists():
-            self._s01b_status_label.setText("Input files not found.")
+        path_cell = cell_3d_path(root_dir, pos, t)
+        path_nuc  = nucleus_3d_path(root_dir, pos, t)
+        if not path_cell.exists() or not path_nuc.exists():
+            self._s01b_status_label.setText(
+                f"Input z-stacks not found for t={t}. Run data prep first."
+            )
             return
 
         cfg = self._build_s01b_config()
         self._s01b_preview_btn.setEnabled(False)
-        self._s01b_status_label.setText(f"Running preview for t={t}…")
+        self._s01b_status_label.setText(f"Running per-z-slice preview for t={t}…")
 
         @thread_worker(
             connect={
@@ -773,34 +799,30 @@ class CellposeWidget(QWidget):
         )
         def _work():
             import numpy as np
-            from cellflow.cellpose.stages.cell_2d import _load_model
+            from cellflow.cellpose.stages.cell_2d import _load_model, _apply_gamma
 
-            yield f"Loading frame {t}…"
-            frame_405 = tifffile.imread(str(path_nuc), key=t).astype(np.float32)
-            frame_488 = tifffile.imread(str(path_cell), key=t).astype(np.float32)
-
-            img = np.stack([frame_488, frame_405], axis=-1)  # (H, W, 2)
-
-            gamma = cfg.gamma
-            if gamma is not None and gamma != 1.0:
-                for c in range(img.shape[2]):
-                    ch = img[:, :, c]
-                    ch_min, ch_max = ch.min(), ch.max()
-                    if ch_max > ch_min:
-                        ch_norm = (ch - ch_min) / (ch_max - ch_min)
-                        img[:, :, c] = (ch_norm ** gamma) * (ch_max - ch_min) + ch_min
+            yield f"Loading z-stacks for t={t}…"
+            cell_z = tifffile.imread(str(path_cell)).astype(np.float32)  # (Z, H, W)
+            nuc_z  = tifffile.imread(str(path_nuc)).astype(np.float32)   # (Z, H, W)
+            Z = cell_z.shape[0]
 
             yield f"Loading model '{cfg.model}'…"
             model = _load_model(cfg.model, cfg.use_gpu)
+            z_dp_list:   list[np.ndarray] = []
+            z_prob_list: list[np.ndarray] = []
             try:
-                yield "Running inference…"
-                _, flows, _ = model.eval(
-                    img,
-                    diameter=cfg.diameter if cfg.diameter > 0 else None,
-                    min_size=cfg.min_size,
-                )
-                dp = flows[1].astype(np.float32)    # (2, H, W)
-                prob = flows[2].astype(np.float32)  # (H, W)
+                for z in range(Z):
+                    yield f"Running inference z={z}/{Z}…"
+                    img = np.stack([cell_z[z], nuc_z[z]], axis=-1)  # (H, W, 2)
+                    if cfg.gamma is not None and cfg.gamma != 1.0:
+                        _apply_gamma(img, cfg.gamma)
+                    _, flows, _ = model.eval(
+                        img,
+                        diameter=cfg.diameter if cfg.diameter > 0 else None,
+                        min_size=cfg.min_size,
+                    )
+                    z_dp_list.append(flows[1].astype(np.float32))    # (2, H, W)
+                    z_prob_list.append(flows[2].astype(np.float32))  # (H, W)
             finally:
                 del model
                 try:
@@ -809,6 +831,9 @@ class CellposeWidget(QWidget):
                         torch.cuda.empty_cache()
                 except ImportError:
                     pass
+
+            dp   = np.stack(z_dp_list,   axis=0)  # (Z, 2, H, W)
+            prob = np.stack(z_prob_list, axis=0)  # (Z, H, W)
             return t, dp, prob
 
         self._worker_s01b_preview = _work()
@@ -817,26 +842,47 @@ class CellposeWidget(QWidget):
         self._s01b_status_label.setText(msg)
 
     def _on_s01b_preview_returned(self, result: tuple) -> None:
+        import numpy as np
+
         self._s01b_preview_btn.setEnabled(True)
         self._worker_s01b_preview = None
         t, dp, prob = result
+        # dp: (Z, 2, H, W)  prob: (Z, H, W)
 
-        prob_name = "Preview: cell_prob"
-        if prob_name in self.viewer.layers:
-            self.viewer.layers[prob_name].data = prob
+        # Per-z-slice prob (Z, H, W) — browsable stack
+        name = "Preview: cell_prob (z-slices)"
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = prob
         else:
-            self.viewer.add_image(prob, name=prob_name, colormap="inferno")
+            self.viewer.add_image(prob, name=name, colormap="inferno")
 
-        # dp: (2, H, W) — split into one layer per vector component
-        for c in range(dp.shape[0]):
-            name = f"Preview: cell_dp_{c}"
+        # Per-z-slice dp components (Z, H, W)
+        for c in range(dp.shape[1]):
+            name = f"Preview: cell_dp_{c} (z-slices)"
             if name in self.viewer.layers:
-                self.viewer.layers[name].data = dp[c]
+                self.viewer.layers[name].data = dp[:, c]
             else:
-                self.viewer.add_image(dp[c], name=name, colormap="RdBu")
+                self.viewer.add_image(dp[:, c], name=name, colormap="RdBu", visible=False)
 
+        # Z-averaged prob and dp
+        prob_avg = prob.mean(axis=0)
+        name = "Preview: cell_prob (z-avg)"
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = prob_avg
+        else:
+            self.viewer.add_image(prob_avg, name=name, colormap="inferno", visible=False)
+
+        dp_avg = dp.mean(axis=0)  # (2, H, W)
+        for c in range(dp_avg.shape[0]):
+            name = f"Preview: cell_dp_{c} (z-avg)"
+            if name in self.viewer.layers:
+                self.viewer.layers[name].data = dp_avg[c]
+            else:
+                self.viewer.add_image(dp_avg[c], name=name, colormap="RdBu", visible=False)
+
+        Z = dp.shape[0]
         self._s01b_status_label.setText(
-            f"Preview done  t={t}  prob={prob.shape}  dp={dp.shape}"
+            f"Preview done  t={t}  Z={Z}  prob={prob.shape}  dp={dp.shape}"
         )
 
     def _on_s01b_preview_error(self, exc: Exception) -> None:

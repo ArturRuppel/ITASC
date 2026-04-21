@@ -97,6 +97,10 @@ def nucleus_zavg_path(root_dir, pos):
     return nucleus_subdir(root_dir, pos) / "nucleus_zavg.tif"
 
 
+def cell_3d_path(root_dir, pos, t):
+    return cell_subdir(root_dir, pos) / f"cell_3d_t{t:03d}.tif"
+
+
 def cell_zavg_path(root_dir, pos):
     return cell_subdir(root_dir, pos) / "cell_zavg.tif"
 
@@ -199,33 +203,48 @@ def _export_cell(
     z_indices: list[int],
     overwrite: bool,
 ) -> Generator[tuple[int, int, str], None, None]:
-    """Export 488-channel Z-mean → (T, H, W) stack at cell/cell_zavg.tif."""
-    out_path = cell_zavg_path(config.root_dir, pos)
-    if out_path.exists() and not overwrite:
-        return
-
+    """Export 488-channel Z-stacks: one TIFF per timepoint + Z-mean stack."""
     cell_dir = cell_subdir(config.root_dir, pos)
     cell_dir.mkdir(parents=True, exist_ok=True)
-
     xy_factor = config.xy_downsample
-    h_out = math.ceil(ds.image_height / xy_factor)
-    w_out = math.ceil(ds.image_width / xy_factor)
     n_t = len(time_list)
 
-    stack = np.zeros((n_t, h_out, w_out), dtype=np.uint16)
+    zavg_out = cell_zavg_path(config.root_dir, pos)
+    need_zavg = overwrite or not zavg_out.exists()
+    z_means: list[np.ndarray] = [] if need_zavg else []
 
-    for ti, t in enumerate(time_list):
+    for i, t in enumerate(time_list):
+        out_path = cell_3d_path(config.root_dir, pos, t)
+        skip_3d = out_path.exists() and not overwrite
+
+        if skip_3d and not need_zavg:
+            yield (i + 1, n_t, "cell")
+            continue
+
         volume = _read_z_stack(ds, pos, t, _CH_488, z_indices)
-        projected = volume.mean(axis=0).astype(np.uint16)
-        stack[ti] = _xy_avg(projected, xy_factor)
-        yield (ti + 1, n_t, "cell")
+        volume = _xy_avg(volume, xy_factor)
 
-    tifffile.imwrite(
-        str(out_path),
-        stack,
-        compression="zlib",
-        metadata={"axes": "TYX"},
-    )
+        if not skip_3d:
+            tifffile.imwrite(
+                str(out_path),
+                volume,
+                compression="zlib",
+                metadata={"axes": "ZYX"},
+            )
+
+        if need_zavg:
+            z_means.append(volume.mean(axis=0).astype(np.uint16))
+
+        yield (i + 1, n_t, "cell")
+
+    if need_zavg and z_means:
+        zavg = np.stack(z_means, axis=0)  # (T, H, W) uint16
+        tifffile.imwrite(
+            str(zavg_out),
+            zavg,
+            compression="zlib",
+            metadata={"axes": "TYX"},
+        )
 
 
 # ── Public API ───────────────────────────────────────────────────────────────

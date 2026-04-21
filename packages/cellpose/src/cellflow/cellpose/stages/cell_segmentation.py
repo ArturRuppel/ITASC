@@ -43,7 +43,10 @@ def load_tracked_labels(root_dir: str | Path, pos: int) -> np.ndarray | None:
 
 
 def load_cellpose_data(root_dir: str | Path, pos: int) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """Load cellpose flow and probability from s1b.
+    """Load z-averaged cellpose flow and probability.
+
+    Prefers cell_dp_zavg.tif / cell_prob_zavg.tif (per-z-slice pipeline).
+    Falls back to cell_dp.tif / cell_prob.tif for older outputs.
 
     Returns raw arrays with shapes as stored on disk:
     - flow: (T, 2, H, W) or (2, H, W)
@@ -51,21 +54,24 @@ def load_cellpose_data(root_dir: str | Path, pos: int) -> tuple[np.ndarray | Non
     """
     cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
 
-    # Load flow field
-    flow_path = cell_dir / "cell_dp.tif"
+    # Prefer zavg outputs (per-z-slice pipeline), fall back to legacy names
+    flow_path = cell_dir / "cell_dp_zavg.tif"
     if not flow_path.exists():
-        print(f"[error] Flow field not found: {flow_path}", file=sys.stderr)
+        flow_path = cell_dir / "cell_dp.tif"
+    if not flow_path.exists():
+        print(f"[error] Flow field not found in {cell_dir}", file=sys.stderr)
         return None, None
 
     flow = tifffile.imread(str(flow_path)).astype(np.float32)
-    print(f"  flow shape={flow.shape}", flush=True)
+    print(f"  flow shape={flow.shape}  ({flow_path.name})", flush=True)
 
-    # Load probability field
-    prob_path = cell_dir / "cell_prob.tif"
+    prob_path = cell_dir / "cell_prob_zavg.tif"
+    if not prob_path.exists():
+        prob_path = cell_dir / "cell_prob.tif"
     prob = None
     if prob_path.exists():
         prob = tifffile.imread(str(prob_path)).astype(np.float32)
-        print(f"  prob shape={prob.shape}", flush=True)
+        print(f"  prob shape={prob.shape}  ({prob_path.name})", flush=True)
 
     return flow, prob
 

@@ -43,14 +43,17 @@ _TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
     ("Input Export", [
         ("0_input/nucleus",                  "Nucleus 3D (frames)", None),
         ("0_input/nucleus/nucleus_zavg.tif", "Nucleus avg",         "image"),
+        ("0_input/cell",                     "Cell 3D (frames)",    None),
         ("0_input/cell/cell_zavg.tif",       "Cell avg",            "image"),
     ]),
     ("Cellpose Nuclei", [
         ("1_cellpose/nucleus",               "Output directory",   None),
     ]),
     ("Cellpose Cells", [
-        ("1_cellpose/cell/cell_dp.tif",      "Cell DP",            None),
-        ("1_cellpose/cell/cell_prob.tif",    "Cell prob",          "image"),
+        ("1_cellpose/cell/cell_dp.tif",          "Cell DP (z-slices)", None),
+        ("1_cellpose/cell/cell_prob.tif",         "Cell prob (z-slices)", "image"),
+        ("1_cellpose/cell/cell_dp_zavg.tif",     "Cell DP avg",        None),
+        ("1_cellpose/cell/cell_prob_zavg.tif",   "Cell prob avg",      "image"),
     ]),
     ("Ultrack", [
         ("2_ultrack/foreground.tif",         "Foreground",         "image"),
