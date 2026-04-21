@@ -19,7 +19,7 @@ class CellposeConfig(BaseModel):
     """Parameters for Cellpose segmentation (nucleus_3d / cell_2d)."""
 
     model: str = "cpsam"
-    diameter: float = 17.0
+    diameter: float = 0.0
     anisotropy: float = 1.0
     min_size: int = 500
     use_gpu: bool = True

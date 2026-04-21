@@ -289,12 +289,21 @@ class CellposeWidget(QWidget):
         mg_layout.addLayout(row)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Diameter (px):"))
+        diam_label = QLabel("Diameter (px):")
+        diam_label.setToolTip(
+            "Expected cell diameter in pixels. 0 = no rescaling (recommended for cpsam).\n\n"
+            "With cpsam, any non-zero value rescales the image by 30/diameter before\n"
+            "inference. cpsam is scale-invariant and works best on the raw image — leave\n"
+            "this at 0. The diameter field is a Cellpose 2/3 legacy parameter."
+        )
+        row.addWidget(diam_label)
         self._s01b_diameter_spin = QDoubleSpinBox()
         self._s01b_diameter_spin.setRange(0.0, 500.0)
         self._s01b_diameter_spin.setSingleStep(1.0)
         self._s01b_diameter_spin.setDecimals(1)
-        self._s01b_diameter_spin.setValue(30.0)
+        self._s01b_diameter_spin.setValue(0.0)
+        self._s01b_diameter_spin.setSpecialValueText("Auto")
+        self._s01b_diameter_spin.setToolTip(diam_label.toolTip())
         row.addWidget(self._s01b_diameter_spin)
         mg_layout.addLayout(row)
 
@@ -787,7 +796,6 @@ class CellposeWidget(QWidget):
                 yield "Running inference…"
                 _, flows, _ = model.eval(
                     img,
-                    channels=[1, 2],
                     diameter=cfg.diameter if cfg.diameter > 0 else None,
                     min_size=cfg.min_size,
                 )
