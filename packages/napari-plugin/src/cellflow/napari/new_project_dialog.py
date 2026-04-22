@@ -1,9 +1,8 @@
 """New Project wizard dialog.
 
 Lets the user pick separate data-input and project-output directories.
-On acceptance it writes ``pipeline_schema.json``, creates the full
-directory skeleton for pos00, writes a ``PIPELINE_LAYOUT.txt`` description,
-and updates the viewer state.
+On acceptance it writes ``pipeline_schema.json``, writes a
+``PIPELINE_LAYOUT.txt`` description, and updates the viewer state.
 
 Pixel size and time interval are intentionally *not* collected here — they
 are pulled from the raw acquisition metadata during the Data Prep stage.
@@ -28,7 +27,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.core.paths import STAGE_DIRS, schema_path
+from cellflow.core.paths import schema_path
 from cellflow.core.schema import PipelineSchema
 from ._plugin import STAGE_DISPLAY_NAMES, STAGE_ORDER
 
@@ -98,7 +97,7 @@ class NewProjectDialog(QDialog):
 
         output_note = QLabel(
             "Where processed data will be written. "
-            "The pipeline_schema.json and pos## folders are created here."
+            "The pipeline_schema.json is created here; pos## folders appear when stages run."
         )
         output_note.setStyleSheet("color: white; font-size: 8pt;")
         output_note.setWordWrap(True)
@@ -176,34 +175,11 @@ class NewProjectDialog(QDialog):
         output_root.mkdir(parents=True, exist_ok=True)
         schema.save(schema_path(output_root))
 
-        # Create a single pos00 skeleton so users can see the full structure
-        _create_pos_skeleton(output_root, pos=0)
-
         # Write human-readable layout description
         _write_pipeline_layout(output_root, input_dir)
 
         # Update shared state
         self._state.set_project_dir(output_root)
-
-
-def _create_pos_skeleton(root: Path, pos: int) -> None:
-    """Create the full directory skeleton for one position."""
-    from cellflow.core.paths import manifest_path, log_path, pos_dir, stage_dir
-    pos_dir(root, pos).mkdir(parents=True, exist_ok=True)
-    for stage_name in STAGE_DIRS:
-        stage_dir(root, pos, stage_name).mkdir(parents=True, exist_ok=True)
-    # raw_import has nucleus/ and cell/ sub-directories
-    base = stage_dir(root, pos, "raw_import")
-    (base / "nucleus").mkdir(parents=True, exist_ok=True)
-    (base / "cell").mkdir(parents=True, exist_ok=True)
-    # Touch placeholder files at the pos root so the layout is visible on disk
-    mf = manifest_path(root, pos)
-    if not mf.exists():
-        mf.write_text("{}\n")
-    lf = log_path(root, pos)
-    if not lf.exists():
-        lf.touch()
-
 
 # ------------------------------------------------------------------
 # PIPELINE_LAYOUT.txt generation
@@ -216,12 +192,10 @@ _DIR_DESCRIPTIONS: List[tuple[str, List[str]]] = [
     (
         "0_input/",
         [
-            "Raw TIFF exports from the NDTiff acquisition  [step 0]",
-            "  nucleus/",
-            "    nucleus_3d_t###.tif     (Z, H, W)    uint16  — one file per timepoint",
-            "    nucleus_zavg.tif        (T, H, W)    uint16",
-            "  cell/",
-            "    cell_zavg.tif           (T, H, W)    uint16",
+            "Raw TIFF exports from the NDTiff acquisition with z-shift correction  [step 0]",
+            "  nucleus_4d.tif           (T, Z, H, W) uint16",
+            "  cell_4d.tif              (T, Z, H, W) uint16",
+            "  z_shift.csv              time,z_shift_slices,fit_mse,...",
         ],
     ),
     (

@@ -1,24 +1,25 @@
 """
-s00 — Raw data export from NDTiff to per-timepoint TIFFs.
+s00 — Raw data export from NDTiff with z-shift correction.
 
 Outputs (per position)
 ----------------------
-  0_input/nucleus/
-    nucleus_3d_t<TTT>.tif       (Z, H, W)       uint16  — one per timepoint
-    nucleus_zavg.tif            (T, H, W)       uint16  — Z-mean of nucleus channel
-  0_input/cell/
-    cell_zavg.tif               (T, H, W)       uint16  — Z-mean of membrane channel (488)
+  0_input/nucleus_4d.tif        (T, Z, H, W)    uint16  — z-corrected nucleus stack
+  0_input/cell_4d.tif           (T, Z, H, W)    uint16  — z-corrected 488 stack
+  0_input/z_shift.csv           CSV             per-timepoint z-shift estimate
 """
 
 from __future__ import annotations
 
+import csv
 import json
-import math
 from pathlib import Path
 from typing import Any, Generator, Optional
 
 import numpy as np
 import tifffile
+from scipy.interpolate import interp1d
+from scipy.ndimage import shift as nd_shift
+from scipy.optimize import minimize_scalar
 from skimage.transform import downscale_local_mean
 
 from cellflow.cellpose.config import DatasetConfig
@@ -81,28 +82,32 @@ def raw_dir(root_dir, pos):
     return stage_dir(root_dir, pos, "raw_import")
 
 
-def nucleus_subdir(root_dir, pos):
-    return raw_dir(root_dir, pos) / "nucleus"
-
-
-def cell_subdir(root_dir, pos):
-    return raw_dir(root_dir, pos) / "cell"
-
-
 def nucleus_3d_path(root_dir, pos, t):
-    return nucleus_subdir(root_dir, pos) / f"nucleus_3d_t{t:03d}.tif"
+    return raw_dir(root_dir, pos) / f"nucleus_3d_t{t:03d}.tif"
 
 
 def nucleus_zavg_path(root_dir, pos):
-    return nucleus_subdir(root_dir, pos) / "nucleus_zavg.tif"
+    return raw_dir(root_dir, pos) / "nucleus_zavg.tif"
 
 
 def cell_3d_path(root_dir, pos, t):
-    return cell_subdir(root_dir, pos) / f"cell_3d_t{t:03d}.tif"
+    return raw_dir(root_dir, pos) / f"cell_3d_t{t:03d}.tif"
 
 
 def cell_zavg_path(root_dir, pos):
-    return cell_subdir(root_dir, pos) / "cell_zavg.tif"
+    return raw_dir(root_dir, pos) / "cell_zavg.tif"
+
+
+def nucleus_4d_path(root_dir, pos):
+    return raw_dir(root_dir, pos) / "nucleus_4d.tif"
+
+
+def cell_4d_path(root_dir, pos):
+    return raw_dir(root_dir, pos) / "cell_4d.tif"
+
+
+def z_shift_csv_path(root_dir, pos):
+    return raw_dir(root_dir, pos) / "z_shift.csv"
 
 # Channel indices (0-based) in the NDTiff dataset
 # Dataset ChNames: ['CSUTRANS', 'CSU405 ', 'CSU488', 'CSU561']
@@ -137,6 +142,105 @@ def _xy_avg(arr: np.ndarray, factor: int) -> np.ndarray:
     return downsampled.astype(np.uint16)
 
 
+def _mean_profile(volume: np.ndarray) -> np.ndarray:
+    """Return the mean intensity profile over x/y for each z-slice."""
+    return volume.astype(np.float32).mean(axis=(1, 2))
+
+
+def _smooth_profile(profile: np.ndarray, sigma: float = 1.0) -> np.ndarray:
+    """Lightly smooth a 1D profile to reduce slice-to-slice noise."""
+    if profile.size < 3 or sigma <= 0:
+        return profile.astype(np.float64)
+    from scipy.ndimage import gaussian_filter1d
+
+    return gaussian_filter1d(profile.astype(np.float64), sigma=sigma, mode="nearest")
+
+
+def _affine_fit_mse(reference: np.ndarray, target: np.ndarray) -> tuple[float, float, float]:
+    """Fit ``target ≈ a * reference + b`` and return ``(mse, a, b)``."""
+    mask = np.isfinite(reference) & np.isfinite(target)
+    if mask.sum() < 2:
+        return float("inf"), 1.0, 0.0
+
+    ref = reference[mask].astype(np.float64)
+    tgt = target[mask].astype(np.float64)
+    design = np.column_stack([ref, np.ones_like(ref)])
+    coeffs, _, _, _ = np.linalg.lstsq(design, tgt, rcond=None)
+    a, b = float(coeffs[0]), float(coeffs[1])
+    resid = tgt - (a * ref + b)
+    mse = float(np.mean(resid ** 2))
+    return mse, a, b
+
+
+def _shift_profile(profile: np.ndarray, shift_slices: float) -> np.ndarray:
+    """Linearly shift a 1D profile along z by ``shift_slices``."""
+    z = np.arange(profile.size, dtype=np.float64)
+    interpolator = interp1d(
+        z,
+        profile.astype(np.float64),
+        kind="linear",
+        bounds_error=False,
+        fill_value=np.nan,
+        assume_sorted=True,
+    )
+    return interpolator(z - shift_slices)
+
+
+def _estimate_z_shift(
+    reference_profile: np.ndarray,
+    target_profile: np.ndarray,
+    max_shift_slices: float,
+) -> tuple[float, float, float, float]:
+    """Estimate the z-shift that best aligns ``target_profile`` to the reference."""
+    ref = _smooth_profile(reference_profile)
+    tgt = _smooth_profile(target_profile)
+
+    def objective(shift_slices: float) -> float:
+        shifted_ref = _shift_profile(ref, shift_slices)
+        mse, _, _ = _affine_fit_mse(shifted_ref, tgt)
+        return mse
+
+    result = minimize_scalar(
+        objective,
+        bounds=(-max_shift_slices, max_shift_slices),
+        method="bounded",
+        options={"xatol": 0.05},
+    )
+    shift_slices = float(result.x)
+    shifted_ref = _shift_profile(ref, shift_slices)
+    mse, scale, offset = _affine_fit_mse(shifted_ref, tgt)
+    return shift_slices, scale, offset, mse
+
+
+def _shift_volume(volume: np.ndarray, shift_slices: float) -> np.ndarray:
+    """Apply a linear z-shift to a (Z, H, W) volume."""
+    if abs(shift_slices) < 1e-9:
+        return volume
+    shifted = nd_shift(
+        volume.astype(np.float32),
+        shift=(shift_slices, 0.0, 0.0),
+        order=1,
+        mode="constant",
+        cval=0.0,
+        prefilter=False,
+    )
+    return np.clip(np.rint(shifted), 0, np.iinfo(np.uint16).max).astype(np.uint16)
+
+
+def _read_corrected_volume(
+    ds: Any,
+    position: int,
+    time: int,
+    channel: int,
+    z_indices: list[int],
+    xy_factor: int,
+    z_shift_slices: float,
+) -> np.ndarray:
+    volume = _read_z_stack(ds, position, time, channel, z_indices)
+    volume = _xy_avg(volume, xy_factor)
+    return _shift_volume(volume, -z_shift_slices)
+
+
 # ── Export: nucleus ──────────────────────────────────────────────────────────
 
 
@@ -146,49 +250,33 @@ def _export_nucleus(
     pos: int,
     time_list: list[int],
     z_indices: list[int],
+    z_shifts: dict[int, float],
     overwrite: bool,
 ) -> Generator[tuple[int, int, str], None, None]:
-    """Export 405-channel Z-stacks: one TIFF per timepoint + Z-mean stack."""
-    nuc_dir = nucleus_subdir(config.root_dir, pos)
-    nuc_dir.mkdir(parents=True, exist_ok=True)
+    """Export the z-corrected 405-channel stack as a single 4D TIFF."""
     xy_factor = config.xy_downsample
     total = len(time_list)
+    first = _read_corrected_volume(
+        ds, pos, time_list[0], _CH_405, z_indices, xy_factor, z_shifts[time_list[0]]
+    )
+    stack = np.empty((total,) + first.shape, dtype=np.uint16)
+    stack[0] = first
+    yield (1, total, "nucleus")
 
-    zavg_out = nucleus_zavg_path(config.root_dir, pos)
-    need_zavg = overwrite or not zavg_out.exists()
-    z_means: list[np.ndarray] = [] if need_zavg else []
-
-    for i, t in enumerate(time_list):
-        out_path = nucleus_3d_path(config.root_dir, pos, t)
-        skip_3d = out_path.exists() and not overwrite
-
-        if skip_3d and not need_zavg:
-            yield (i + 1, total, "nucleus")
-            continue
-
-        volume = _read_z_stack(ds, pos, t, _CH_405, z_indices)
-        volume = _xy_avg(volume, xy_factor)
-
-        if not skip_3d:
-            tifffile.imwrite(
-                str(out_path),
-                volume,
-                compression="zlib",
-                metadata={"axes": "ZYX"},
-            )
-
-        if need_zavg:
-            z_means.append(volume.mean(axis=0).astype(np.uint16))
-
+    for i, t in enumerate(time_list[1:], start=1):
+        volume = _read_corrected_volume(
+            ds, pos, t, _CH_405, z_indices, xy_factor, z_shifts[t]
+        )
+        stack[i] = volume
         yield (i + 1, total, "nucleus")
 
-    if need_zavg and z_means:
-        zavg = np.stack(z_means, axis=0)  # (T, H, W) uint16
+    out_path = nucleus_4d_path(config.root_dir, pos)
+    if overwrite or not out_path.exists():
         tifffile.imwrite(
-            str(zavg_out),
-            zavg,
+            str(out_path),
+            stack,
             compression="zlib",
-            metadata={"axes": "TYX"},
+            metadata={"axes": "TZYX"},
         )
 
 
@@ -201,49 +289,33 @@ def _export_cell(
     pos: int,
     time_list: list[int],
     z_indices: list[int],
+    z_shifts: dict[int, float],
     overwrite: bool,
 ) -> Generator[tuple[int, int, str], None, None]:
-    """Export 488-channel Z-stacks: one TIFF per timepoint + Z-mean stack."""
-    cell_dir = cell_subdir(config.root_dir, pos)
-    cell_dir.mkdir(parents=True, exist_ok=True)
+    """Export the z-corrected 488-channel stack as a single 4D TIFF."""
     xy_factor = config.xy_downsample
     n_t = len(time_list)
+    first = _read_corrected_volume(
+        ds, pos, time_list[0], _CH_488, z_indices, xy_factor, z_shifts[time_list[0]]
+    )
+    stack = np.empty((n_t,) + first.shape, dtype=np.uint16)
+    stack[0] = first
+    yield (1, n_t, "cell")
 
-    zavg_out = cell_zavg_path(config.root_dir, pos)
-    need_zavg = overwrite or not zavg_out.exists()
-    z_means: list[np.ndarray] = [] if need_zavg else []
-
-    for i, t in enumerate(time_list):
-        out_path = cell_3d_path(config.root_dir, pos, t)
-        skip_3d = out_path.exists() and not overwrite
-
-        if skip_3d and not need_zavg:
-            yield (i + 1, n_t, "cell")
-            continue
-
-        volume = _read_z_stack(ds, pos, t, _CH_488, z_indices)
-        volume = _xy_avg(volume, xy_factor)
-
-        if not skip_3d:
-            tifffile.imwrite(
-                str(out_path),
-                volume,
-                compression="zlib",
-                metadata={"axes": "ZYX"},
-            )
-
-        if need_zavg:
-            z_means.append(volume.mean(axis=0).astype(np.uint16))
-
+    for i, t in enumerate(time_list[1:], start=1):
+        volume = _read_corrected_volume(
+            ds, pos, t, _CH_488, z_indices, xy_factor, z_shifts[t]
+        )
+        stack[i] = volume
         yield (i + 1, n_t, "cell")
 
-    if need_zavg and z_means:
-        zavg = np.stack(z_means, axis=0)  # (T, H, W) uint16
+    out_path = cell_4d_path(config.root_dir, pos)
+    if overwrite or not out_path.exists():
         tifffile.imwrite(
-            str(zavg_out),
-            zavg,
+            str(out_path),
+            stack,
             compression="zlib",
-            metadata={"axes": "TYX"},
+            metadata={"axes": "TZYX"},
         )
 
 
@@ -274,6 +346,9 @@ def run(
     all_times = sorted(axes.get("time", [0]))
     z_indices = sorted(axes.get("z", [0]))
     time_list = all_times
+    if not time_list:
+        raise ValueError("No timepoints found in dataset.")
+    max_shift_slices = max(1.0, min(8.0, (len(z_indices) - 1) / 2.0))
 
     # Extract pixel size and time interval from dataset summary metadata
     pixel_size_um: Optional[float] = None
@@ -305,12 +380,73 @@ def run(
         except Exception:
             pass
 
-    yield from _export_nucleus(ds, config, pos, time_list, z_indices, overwrite)
-    yield from _export_cell(ds, config, pos, time_list, z_indices, overwrite)
-
-    # Write run_params.json
     out_dir = raw_dir(config.root_dir, pos)
     out_dir.mkdir(parents=True, exist_ok=True)
+    nuc_out = nucleus_4d_path(config.root_dir, pos)
+    cell_out = cell_4d_path(config.root_dir, pos)
+    shift_out = z_shift_csv_path(config.root_dir, pos)
+    run_params_out = out_dir / "run_params.json"
+    if (
+        not overwrite
+        and nuc_out.exists()
+        and cell_out.exists()
+        and shift_out.exists()
+        and run_params_out.exists()
+    ):
+        yield (len(time_list), len(time_list), "done")
+        return
+
+    # First pass: estimate the z-shift from the 488 channel only.
+    reference_profile: Optional[np.ndarray] = None
+    shift_rows: list[dict[str, float]] = []
+    z_shifts: dict[int, float] = {}
+    for i, t in enumerate(time_list):
+        volume_488 = _xy_avg(
+            _read_z_stack(ds, pos, t, _CH_488, z_indices), config.xy_downsample
+        )
+        profile = _mean_profile(volume_488)
+        if reference_profile is None:
+            z_shift_slices = 0.0
+            scale = 1.0
+            offset = 0.0
+            mse = 0.0
+            reference_profile = profile
+        else:
+            z_shift_slices, scale, offset, mse = _estimate_z_shift(
+                reference_profile,
+                profile,
+                max_shift_slices=max_shift_slices,
+            )
+        z_shifts[t] = z_shift_slices
+        shift_rows.append(
+            {
+                "time": float(t),
+                "z_shift_slices": z_shift_slices,
+                "intensity_scale": scale,
+                "intensity_offset": offset,
+                "fit_mse": mse,
+            }
+        )
+        yield (i + 1, len(time_list), "z-shift")
+
+    with shift_out.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "time",
+                "z_shift_slices",
+                "intensity_scale",
+                "intensity_offset",
+                "fit_mse",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(shift_rows)
+
+    yield from _export_nucleus(ds, config, pos, time_list, z_indices, z_shifts, overwrite)
+    yield from _export_cell(ds, config, pos, time_list, z_indices, z_shifts, overwrite)
+
+    # Write run_params.json
     run_params = {
         "stage": "raw",
         "pos": pos,
@@ -318,12 +454,15 @@ def run(
         "timepoints": time_list,
         "z_indices": z_indices,
         "ndtiff_path": config.ndtiff_path,
+        "z_shift_csv": str(shift_out),
+        "nucleus_output": str(nuc_out),
+        "cell_output": str(cell_out),
     }
     if pixel_size_um is not None:
         run_params["pixel_size_um"] = pixel_size_um * config.xy_downsample
     if time_interval_s is not None:
         run_params["time_interval_s"] = time_interval_s
-    (out_dir / "run_params.json").write_text(
+    run_params_out.write_text(
         json.dumps(run_params, indent=2), encoding="utf-8"
     )
 
@@ -353,8 +492,9 @@ class _RawImportStageClass:
 
     def is_complete(self, root_dir, pos) -> bool:
         return (
-            nucleus_zavg_path(root_dir, pos).exists()
-            and cell_zavg_path(root_dir, pos).exists()
+            nucleus_4d_path(root_dir, pos).exists()
+            and cell_4d_path(root_dir, pos).exists()
+            and z_shift_csv_path(root_dir, pos).exists()
         )
 
 
@@ -368,7 +508,7 @@ if __name__ == "__main__":
     import argparse
     import sys
 
-    parser = argparse.ArgumentParser(description="Export raw NDTiff data to per-timepoint TIFFs.")
+    parser = argparse.ArgumentParser(description="Export raw NDTiff data with z-shift correction.")
     parser.add_argument("--ndtiff-path", required=True, help="Path to NDTiff dataset directory")
     parser.add_argument("--root-dir", required=True, help="Project root directory")
     parser.add_argument("--pos", type=int, action="append", required=True, dest="positions",
@@ -390,7 +530,7 @@ if __name__ == "__main__":
         print(f"[{p_idx + 1}/{n_pos}] pos{pos:02d}")
         try:
             for done, total, label in run(config, pos, overwrite=args.overwrite):
-                print(f"  [{done}/{total}] {label}", end="\r", flush=True)
+                print(f"  [{done}/{total}] {label:<10}", end="\r", flush=True)
             print()
         except Exception as exc:
             print(f"\nError exporting pos{pos:02d}: {exc}", file=sys.stderr)

@@ -41,10 +41,9 @@ logger = logging.getLogger(__name__)
 #   loadable = "image" | "labels" | None  (None → no Load button)
 _TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
     ("Input Export", [
-        ("0_input/nucleus",                  "Nucleus 3D (frames)", None),
-        ("0_input/nucleus/nucleus_zavg.tif", "Nucleus avg",         "image"),
-        ("0_input/cell",                     "Cell 3D (frames)",    None),
-        ("0_input/cell/cell_zavg.tif",       "Cell avg",            "image"),
+        ("0_input/nucleus_4d.tif", "Nucleus 4D stack", "image"),
+        ("0_input/cell_4d.tif",    "Cell 4D stack",    "image"),
+        ("0_input/z_shift.csv",    "Z shift CSV",      None),
     ]),
     ("Cellpose Nuclei", [
         ("1_cellpose/nucleus",               "Output directory",   None),
@@ -676,5 +675,3 @@ def _make_entry_path(h5_path: str, catalog_path: Optional[str]) -> str:
         return str(Path(h5_path).relative_to(Path(catalog_path).parent))
     except ValueError:
         return h5_path
-
-

@@ -1,4 +1,4 @@
-"""Data Preparation tab — s00 raw NDTiff export."""
+"""Data Preparation tab — s00 raw NDTiff export with z-shift correction."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from cellflow.napari.widgets import PipelineFilesWidget
 
 
 class DataPrepWidget(QWidget):
-    """Widget for exporting raw NDTiff data to per-timepoint TIFFs."""
+    """Widget for exporting z-corrected raw NDTiff data."""
 
     run_started = Signal()
 
@@ -49,10 +49,9 @@ class DataPrepWidget(QWidget):
         # ── Project file status (output files for current position) ──────
         self._files_widget = PipelineFilesWidget([
             ("Output", [
-                ("0_input/cell",                     "Cell 3D (frames)"),
-                ("0_input/cell/cell_zavg.tif",       "Cell avg"),
-                ("0_input/nucleus",                  "Nucleus 3D (frames)"),
-                ("0_input/nucleus/nucleus_zavg.tif", "Nucleus avg"),
+                ("0_input/cell_4d.tif",    "Cell 4D stack"),
+                ("0_input/nucleus_4d.tif", "Nucleus 4D stack"),
+                ("0_input/z_shift.csv",    "Z shift CSV"),
             ]),
         ])
         layout.addWidget(self._files_widget)
