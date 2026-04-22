@@ -68,10 +68,10 @@ class TestPipelineSchema:
 
     def test_round_trip(self, tmp_path):
         s = PipelineSchema(
-            stages=["raw_import", "tracking"],
+            stages=["raw_import", "nucleus_ultrack"],
             interfaces={
-                "tracking.output.tracked_labels": InterfaceSpec(
-                    path_template="pos{pos:02d}/3_tracking/tracked_labels.tif",
+                "nucleus_ultrack.output.tracked_labels": InterfaceSpec(
+                    path_template="pos{pos:02d}/2_nucleus_ultrack/tracked_labels.tif",
                     shape="THW",
                     dtype="uint32",
                 )
@@ -80,8 +80,8 @@ class TestPipelineSchema:
         p = tmp_path / "pipeline_schema.json"
         s.save(p)
         loaded = PipelineSchema.load(p)
-        assert loaded.stages == ["raw_import", "tracking"]
-        spec = loaded.interfaces["tracking.output.tracked_labels"]
+        assert loaded.stages == ["raw_import", "nucleus_ultrack"]
+        spec = loaded.interfaces["nucleus_ultrack.output.tracked_labels"]
         assert spec.shape == "THW"
         assert spec.dtype == "uint32"
 
@@ -110,30 +110,30 @@ class TestPipelineManifest:
 
     def test_mark_running(self):
         m = PipelineManifest()
-        m.mark_running("cellpose_nucleus")
-        assert m.stages["cellpose_nucleus"].status == "running"
+        m.mark_running("cellpose_cluster")
+        assert m.stages["cellpose_cluster"].status == "running"
 
     def test_mark_complete(self):
         m = PipelineManifest()
-        m.mark_complete("cellpose_nucleus", config_hash="abc123")
-        rec = m.stages["cellpose_nucleus"]
+        m.mark_complete("cellpose_cluster", config_hash="abc123")
+        rec = m.stages["cellpose_cluster"]
         assert rec.status == "complete"
         assert rec.config_hash == "abc123"
         assert rec.finished_at is not None
 
     def test_mark_failed(self):
         m = PipelineManifest()
-        m.mark_running("tracking")
-        m.mark_failed("tracking", error="OOM")
-        assert m.stages["tracking"].status == "failed"
-        assert m.stages["tracking"].error == "OOM"
+        m.mark_running("nucleus_ultrack")
+        m.mark_failed("nucleus_ultrack", error="OOM")
+        assert m.stages["nucleus_ultrack"].status == "failed"
+        assert m.stages["nucleus_ultrack"].error == "OOM"
 
     def test_mark_stale(self):
         m = PipelineManifest()
-        m.mark_complete("tracking", config_hash="xyz")
-        m.mark_stale("tracking")
-        assert m.stages["tracking"].status == "stale"
-        assert m.stages["tracking"].config_hash == "xyz"
+        m.mark_complete("nucleus_ultrack", config_hash="xyz")
+        m.mark_stale("nucleus_ultrack")
+        assert m.stages["nucleus_ultrack"].status == "stale"
+        assert m.stages["nucleus_ultrack"].config_hash == "xyz"
 
     def test_is_complete(self):
         m = PipelineManifest()
@@ -178,7 +178,10 @@ class TestPaths:
         assert pos_dir("/exp", 12) == Path("/exp/pos12")
 
     def test_stage_dir_known(self):
-        assert stage_dir("/exp", 0, "tracking") == Path("/exp/pos00/2_ultrack")
+        assert stage_dir("/exp", 0, "nucleus_ultrack") == Path(
+            "/exp/pos00/2_nucleus_ultrack"
+        )
+        assert stage_dir("/exp", 0, "cell_ultrack") == Path("/exp/pos00/4_cell_ultrack")
         assert stage_dir("/exp", 0, "raw_import") == Path("/exp/pos00/0_input")
 
     def test_stage_dir_unknown_falls_back_to_name(self):
@@ -196,25 +199,23 @@ class TestPaths:
         assert log_path("/exp", 3) == Path("/exp/pos03/pipeline.log")
 
     def test_resolve_interface_path(self):
-        template = "pos{pos:02d}/3_tracking/tracked_labels.tif"
+        template = "pos{pos:02d}/2_nucleus_ultrack/tracked_labels.tif"
         p = resolve_interface_path("/exp", 5, template)
-        assert p == Path("/exp/pos05/3_tracking/tracked_labels.tif")
+        assert p == Path("/exp/pos05/2_nucleus_ultrack/tracked_labels.tif")
 
     def test_resolve_interface_path_with_stem(self):
-        template = "pos{pos:02d}/1a_cellpose_nucleus/{stem}_dp.tif"
+        template = "pos{pos:02d}/1_cellpose/{stem}_dp.tif"
         p = resolve_interface_path("/exp", 2, template, stem="frame_001")
-        assert p == Path("/exp/pos02/1a_cellpose_nucleus/frame_001_dp.tif")
+        assert p == Path("/exp/pos02/1_cellpose/frame_001_dp.tif")
 
     def test_stage_dirs_covers_all_expected_stages(self):
         expected = {
             "raw_import",
-            "cellpose_nucleus",
-            "cellpose_cell",
-            "cell_segmentation",
-            "contours",
-            "tracking",
-            "graph_extraction",
-            "topology_analysis",
+            "cellpose_cluster",
+            "nucleus_ultrack",
+            "correction",
+            "cell_ultrack",
+            "analysis",
         }
         assert expected <= set(STAGE_DIRS.keys())
 
@@ -350,7 +351,7 @@ class TestStageLogger:
     def test_also_writes_stage_log(self, tmp_path):
         pipeline_log = tmp_path / "pipeline.log"
         stage_log = tmp_path / "stage.log"
-        with StageLogger(pipeline_log, "cellpose_nucleus", stage_log=stage_log):
+        with StageLogger(pipeline_log, "cellpose_cluster", stage_log=stage_log):
             pass
         assert pipeline_log.exists()
         assert stage_log.exists()
@@ -358,7 +359,7 @@ class TestStageLogger:
 
     def test_error_logged_on_exception(self, tmp_path):
         log = tmp_path / "pipeline.log"
-        sl = StageLogger(log, "tracking")
+        sl = StageLogger(log, "nucleus_ultrack")
         with pytest.raises(ValueError):
             with sl:
                 raise ValueError("bad input")
@@ -374,7 +375,7 @@ class TestStageLogger:
 
     def test_stage_logger_context_manager(self, tmp_path):
         log = tmp_path / "pipeline.log"
-        with stage_logger(log, "graph_extraction") as sl:
+        with stage_logger(log, "analysis") as sl:
             sl.info("hello")
         assert log.exists()
 

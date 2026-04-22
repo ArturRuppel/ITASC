@@ -11,21 +11,27 @@ from pathlib import Path
 # Stage packages must NOT hard-code these strings.
 STAGE_DIRS: dict[str, str] = {
     # Step 0 — project config lives at the root; no stage directory.
-    "raw_import":        "0_input",
-    # Step 1 — Cellpose: two sub-folders inside a shared 1_cellpose/ parent.
-    "cellpose_nucleus":  "1_cellpose/nucleus",
-    "cellpose_cell":     "1_cellpose/cell",
-    # Steps 2+3 — Contours (intermediate) and Ultrack share one directory.
-    "contours":          "2_ultrack",
-    "tracking":          "2_ultrack",
-    # Step 4 — Correction produces a single file in its own folder.
-    "correction":        "3_correction",
-    # Step 5 — Nucleus-anchored cell segmentation (gravity flow).
-    "cell_segmentation": "4_cell_segmentation",
-    # Step 5b — Seeded watershed hypothesis sweep.
-    "seeded_watershed":  "4_seeded_watershed",
-    # Step 6 — Edge analysis.
-    "graph_extraction":  "5_analysis",
+    "raw_import": "0_input",
+    # Step 1 — cluster-side Cellpose outputs.
+    "cellpose_cluster": "1_cellpose",
+    # Step 2 — nucleus Ultrack outputs.
+    "nucleus_ultrack": "2_nucleus_ultrack",
+    # Step 3 — manual correction outputs.
+    "correction": "3_correction",
+    # Step 4 — cell Ultrack outputs.
+    "cell_ultrack": "4_cell_ultrack",
+    # Step 5 — analysis outputs.
+    "analysis": "5_analysis",
+
+    # Temporary compatibility aliases for code paths that still resolve the
+    # legacy stage names during the refactor migration.
+    "cellpose_nucleus": "1_cellpose",
+    "cellpose_cell": "1_cellpose",
+    "contours": "2_nucleus_ultrack",
+    "tracking": "2_nucleus_ultrack",
+    "cell_segmentation": "4_cell_ultrack",
+    "seeded_watershed": "4_cell_ultrack",
+    "graph_extraction": "5_analysis",
     "topology_analysis": "5_analysis",
 }
 

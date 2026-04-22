@@ -187,7 +187,7 @@ class NewProjectDialog(QDialog):
 
 # Canonical per-directory descriptions in pipeline order.
 # Each entry: (folder, detail_lines).  Directories shared by multiple stages
-# (2_ultrack/, 5_analysis/) list all their outputs together.
+# (1_cellpose/, 5_analysis/) list all their outputs together.
 _DIR_DESCRIPTIONS: List[tuple[str, List[str]]] = [
     (
         "0_input/",
@@ -195,57 +195,60 @@ _DIR_DESCRIPTIONS: List[tuple[str, List[str]]] = [
             "Raw TIFF exports from the NDTiff acquisition with z-shift correction  [step 0]",
             "  nucleus_4d.tif           (T, Z, H, W) uint16",
             "  cell_4d.tif              (T, Z, H, W) uint16",
+            "  nucleus_zavg.tif         (T, H, W)       uint16",
+            "  cell_zavg.tif            (T, H, W)       uint16",
             "  z_shift.csv              time,z_shift_slices,fit_mse,...",
         ],
     ),
     (
-        "1_cellpose/nucleus/",
+        "1_cellpose/",
         [
-            "Cellpose 3-D nucleus segmentation outputs  [step 1a]",
-            "  nucleus_3d_t###_dp.tif   (3, Z, H, W) float32 — one file per timepoint",
-            "  nucleus_3d_t###_prob.tif (Z, H, W)    float32 — one file per timepoint",
+            "Cluster Cellpose outputs  [step 1]",
+            "  nucleus_dp.tif          (T, 3, Z, H, W) float32",
+            "  nucleus_prob.tif        (T, Z, H, W)    float32",
+            "  nucleus_dp_zavg.tif     (T, 3, H, W)    float32",
+            "  nucleus_prob_zavg.tif   (T, H, W)       float32",
+            "  cell_dp.tif             (T, Z, 2, H, W) float32",
+            "  cell_prob.tif           (T, Z, H, W)    float32",
+            "  cell_dp_zavg.tif        (T, 2, H, W)    float32",
+            "  cell_prob_zavg.tif      (T, H, W)       float32",
         ],
     ),
     (
-        "1_cellpose/cell/",
+        "2_nucleus_ultrack/",
         [
-            "Cellpose 2-D cell segmentation outputs  [step 1b]",
-            "  cell_dp.tif              (T, 2, H, W) float32",
-            "  cell_prob.tif            (T, H, W)    float32",
-        ],
-    ),
-    (
-        "2_ultrack/",
-        [
-            "Cellpose-derived foreground and contour maps  [step 2a]",
-            "  foreground.tif           (T, H, W)    float32",
-            "  contours.tif             (T, H, W)    float32",
-            "",
-            "Ultrack tracking outputs  [step 2b]",
+            "Nucleus Ultrack outputs  [step 2]",
             "  data.db                  Ultrack SQLite database",
             "  tracks.csv",
             "  tracked_labels.tif       (T, Z, H, W) uint32",
             "  nuclear_labels_2d.tif    (T, H, W)    uint32  — max-proj of tracked_labels",
+            "  hypotheses_manifest.json",
+            "  labelmaps/labelmap_*.tif",
         ],
     ),
     (
         "3_correction/",
         [
-            "Manual correction + optional LapTrack retracking loop  [step 3]",
+            "Manual nucleus correction  [step 3]",
             "  nuclear_labels_corrected.tif  (T, H, W) int32",
         ],
     ),
     (
-        "4_cell_segmentation/",
+        "4_cell_ultrack/",
         [
-            "Nucleus-anchored cell boundary segmentation  [step 4]",
-            "  cell_labels.tif          (T, H, W)    int32",
+            "Cell Ultrack outputs  [step 4]",
+            "  data.db                  Ultrack SQLite database",
+            "  tracks.csv",
+            "  tracked_labels.tif       (T, Z, H, W) uint32",
+            "  cell_labels_2d.tif      (T, H, W)    uint32  — max-proj of tracked_labels",
+            "  hypotheses_manifest.json",
+            "  labelmaps/labelmap_*.tif",
         ],
     ),
     (
         "5_analysis/",
         [
-            "Graph extraction and topology analysis  [step 5]",
+            "Analysis outputs  [step 5]",
             "  graph.h5",
             "  topology.npz",
         ],
@@ -254,15 +257,12 @@ _DIR_DESCRIPTIONS: List[tuple[str, List[str]]] = [
 
 # Stage key → output folder (for the mapping table at the bottom of the TXT)
 _STAGE_FOLDER: dict[str, str] = {
-    "raw_import":        "0_input/",
-    "cellpose_nucleus":  "1_cellpose/nucleus/",
-    "cellpose_cell":     "1_cellpose/cell/",
-    "contours":          "2_ultrack/",
-    "tracking":          "2_ultrack/",
-    "correction":        "3_correction/",
-    "cell_segmentation": "4_cell_segmentation/",
-    "graph_extraction":  "5_analysis/",
-    "topology_analysis": "5_analysis/",
+    "raw_import": "0_input/",
+    "cellpose_cluster": "1_cellpose/",
+    "nucleus_ultrack": "2_nucleus_ultrack/",
+    "correction": "3_correction/",
+    "cell_ultrack": "4_cell_ultrack/",
+    "analysis": "5_analysis/",
 }
 
 
@@ -322,12 +322,11 @@ def _write_pipeline_layout(
     lines += [
         "",
         "Notes:",
-        "  - nuclear_labels_2d.tif is produced by the Ultrack stage as a",
+        "  - nuclear_labels_2d.tif is produced by the nucleus Ultrack stage as a",
         "    max-projection of tracked_labels.tif along Z; it is the input",
         "    to the correction step.",
         "  - nuclear_labels_corrected.tif is the final output of the correction",
-        "    loop (manual edits + optional LapTrack retracking); it is the",
-        "    input to cell segmentation.",
+        "    step; it is the input to cell Ultrack.",
         "  - Pixel size (µm) and time interval are read from acquisition",
         "    metadata during the Data Prep stage.",
         "  - Re-running a stage with 'Overwrite' replaces existing outputs.",

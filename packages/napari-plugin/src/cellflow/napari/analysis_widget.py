@@ -1,6 +1,6 @@
 """Napari dock widget for cellflow.
 
-All pipeline stages are rendered as a vertical accordion of CollapsibleSections.
+The workflow is rendered as a vertical accordion of the canonical six stages.
 """
 import json
 import logging
@@ -109,13 +109,13 @@ class CellFlowWidget(QWidget):
 
         self._cellpose_tab = CellposeWidget(self.viewer, log_viewer=self._log_viewer)
         self._cellpose_section = CollapsibleSection(
-            "Cellpose", self._cellpose_tab, expanded=False
+            "Cluster Cellpose", self._cellpose_tab, expanded=False
         )
         _plugin_layout.addWidget(self._cellpose_section)
 
         self._ultrack_tab = UltrackAnalysisWidget(self.viewer, log_viewer=self._log_viewer)
         self._ultrack_section = CollapsibleSection(
-            "Ultrack", self._ultrack_tab, expanded=False
+            "Nucleus Ultrack", self._ultrack_tab, expanded=False
         )
         _plugin_layout.addWidget(self._ultrack_section)
 
@@ -133,28 +133,31 @@ class CellFlowWidget(QWidget):
         _plugin_layout.addWidget(self._correction_section)
 
         self._cell_seg_tab = CellSegmentationWidget(self.viewer, log_viewer=self._log_viewer)
-        self._cell_seg_section = CollapsibleSection(
-            "Cell Segmentation", self._cell_seg_tab, expanded=False
-        )
-        _plugin_layout.addWidget(self._cell_seg_section)
-
         self._seeded_ws_tab = SeededWatershedWidget(self.viewer, log_viewer=self._log_viewer)
-        self._seeded_ws_section = CollapsibleSection(
-            "Seeded Watershed", self._seeded_ws_tab, expanded=False
-        )
-        _plugin_layout.addWidget(self._seeded_ws_section)
-
         self._edge_analysis_widget = EdgeAnalysisWidget(self.viewer)
-        self._edge_analysis_section = CollapsibleSection(
-            "Edge Analysis", self._edge_analysis_widget, expanded=False
-        )
-        _plugin_layout.addWidget(self._edge_analysis_section)
-
         self._forces_widget = ForcesWidget(self.viewer)
-        self._forces_section = CollapsibleSection(
-            "ForSys", self._forces_widget, expanded=False
+
+        cell_ultrack_content = QWidget()
+        cell_ultrack_layout = QVBoxLayout(cell_ultrack_content)
+        cell_ultrack_layout.setContentsMargins(0, 0, 0, 0)
+        cell_ultrack_layout.setSpacing(6)
+        cell_ultrack_layout.addWidget(self._cell_seg_tab)
+        cell_ultrack_layout.addWidget(self._seeded_ws_tab)
+        self._cell_ultrack_section = CollapsibleSection(
+            "Cell Ultrack", cell_ultrack_content, expanded=False
         )
-        _plugin_layout.addWidget(self._forces_section)
+        _plugin_layout.addWidget(self._cell_ultrack_section)
+
+        analysis_content = QWidget()
+        analysis_layout = QVBoxLayout(analysis_content)
+        analysis_layout.setContentsMargins(0, 0, 0, 0)
+        analysis_layout.setSpacing(6)
+        analysis_layout.addWidget(self._edge_analysis_widget)
+        analysis_layout.addWidget(self._forces_widget)
+        self._analysis_section = CollapsibleSection(
+            "Analysis", analysis_content, expanded=False
+        )
+        _plugin_layout.addWidget(self._analysis_section)
 
         # Dataset collapsible section
         _plugin_layout.addWidget(self._project_panel.dataset_widget)
@@ -191,32 +194,61 @@ class CellFlowWidget(QWidget):
     def _collect_config(self) -> dict:
         cfg = {"version": _CONFIG_VERSION}
         cfg["data_prep"] = self._data_prep_widget.get_params()
-        cfg.update(self._cellpose_tab.get_params())  # cellpose_nucleus + cellpose_cell
-        cfg["ultrack"] = self._ultrack_tab.get_params()
-        cfg["cell_segmentation"] = self._cell_seg_tab.get_params()
-        cfg["seeded_watershed"] = self._seeded_ws_tab.get_params()
-        cfg["edge_analysis"] = self._edge_analysis_widget.get_params()
-        cfg["forces"] = self._forces_widget.get_params()
+        cfg["cellpose_cluster"] = self._cellpose_tab.get_params()
+        cfg["nucleus_ultrack"] = self._ultrack_tab.get_params()
         cfg["correction"] = self._tracking_correction_widget.get_params()
+        cfg["cell_ultrack"] = {
+            "cell_segmentation": self._cell_seg_tab.get_params(),
+            "seeded_watershed": self._seeded_ws_tab.get_params(),
+        }
+        cfg["analysis"] = {
+            "edge_analysis": self._edge_analysis_widget.get_params(),
+            "forces": self._forces_widget.get_params(),
+        }
         return cfg
 
     def _apply_config(self, data: dict) -> None:
         if "data_prep" in data:
             self._data_prep_widget.set_params(data["data_prep"])
-        self._cellpose_tab.set_params({
-            k: data[k] for k in ("cellpose_nucleus", "cellpose_cell") if k in data
-        })
-        if "ultrack" in data:
+        if "cellpose_cluster" in data:
+            self._cellpose_tab.set_params(data["cellpose_cluster"])
+        else:
+            self._cellpose_tab.set_params({
+                k: data[k] for k in ("cellpose_nucleus", "cellpose_cell") if k in data
+            })
+        if "nucleus_ultrack" in data:
+            self._ultrack_tab.set_params(data["nucleus_ultrack"])
+        elif "ultrack" in data:
             self._ultrack_tab.set_params(data["ultrack"])
-        seg_data = data.get("cell_segmentation") or data.get("flow_watershed")
-        if seg_data:
-            self._cell_seg_tab.set_params(seg_data)
-        if "seeded_watershed" in data:
-            self._seeded_ws_tab.set_params(data["seeded_watershed"])
-        if "edge_analysis" in data:
-            self._edge_analysis_widget.set_params(data["edge_analysis"])
-        if "forces" in data:
-            self._forces_widget.set_params(data["forces"])
+        cell_ultrack = data.get("cell_ultrack")
+        if cell_ultrack:
+            self._cell_seg_tab.set_params(
+                cell_ultrack.get("cell_segmentation")
+                or cell_ultrack.get("segmentation")
+                or {}
+            )
+            self._seeded_ws_tab.set_params(
+                cell_ultrack.get("seeded_watershed")
+                or cell_ultrack.get("watershed")
+                or {}
+            )
+        else:
+            seg_data = data.get("cell_segmentation") or data.get("flow_watershed")
+            if seg_data:
+                self._cell_seg_tab.set_params(seg_data)
+            if "seeded_watershed" in data:
+                self._seeded_ws_tab.set_params(data["seeded_watershed"])
+        analysis = data.get("analysis")
+        if analysis:
+            if "edge_analysis" in analysis:
+                self._edge_analysis_widget.set_params(analysis["edge_analysis"])
+            if "forces" in analysis:
+                self._forces_widget.set_params(analysis["forces"])
+        else:
+            if "edge_analysis" in data:
+                self._edge_analysis_widget.set_params(data["edge_analysis"])
+            if "forces" in data:
+                self._forces_widget.set_params(data["forces"])
         if "correction" in data:
             self._tracking_correction_widget.set_params(data["correction"])
 
@@ -315,13 +347,11 @@ class CellFlowWidget(QWidget):
     def _accordion_sections(self) -> "dict[str, CollapsibleSection]":
         return {
             "Prepare Input Data": self._data_prep_section,
-            "Cellpose":           self._cellpose_section,
-            "Ultrack":            self._ultrack_section,
+            "Cluster Cellpose":   self._cellpose_section,
+            "Nucleus Ultrack":    self._ultrack_section,
             "Correction":         self._correction_section,
-            "Cell Segmentation":  self._cell_seg_section,
-            "Seeded Watershed":   self._seeded_ws_section,
-            "Edge Analysis":      self._edge_analysis_section,
-            "ForSys":             self._forces_section,
+            "Cell Ultrack":       self._cell_ultrack_section,
+            "Analysis":           self._analysis_section,
         }
 
     def _refresh_tab_badges(self) -> None:

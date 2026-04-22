@@ -1,4 +1,4 @@
-"""Nucleus-anchored cell segmentation widget (step 4 — 4_cell_segmentation).
+"""Cell Ultrack widget (step 4 — 4_cell_ultrack).
 
 Uses Euler integration along a blend of the Cellpose flow field and an N-body
 gravitational field computed from nuclear centroids (Gravity-Flow algorithm).
@@ -44,7 +44,7 @@ def cellpose_cell_dir(root_dir, pos):
 
 
 def cell_segmentation_dir(root_dir, pos):
-    return stage_dir(root_dir, pos, "cell_segmentation")
+    return stage_dir(root_dir, pos, "cell_ultrack")
 
 
 class CellSegmentationConfig:
@@ -183,7 +183,7 @@ def run_segmentation(
 
     root_dir = Path(root_dir)
     out_dir = cell_segmentation_dir(root_dir, pos)
-    out_path = out_dir / "cell_labels.tif"
+    out_path = out_dir / "cell_labels_2d.tif"
     if out_path.exists() and not overwrite:
         return str(out_path)
 
@@ -259,7 +259,7 @@ def run_watershed_segmentation(
 
     root_dir = Path(root_dir)
     out_dir = cell_segmentation_dir(root_dir, pos)
-    out_path = out_dir / "cell_labels.tif"
+    out_path = out_dir / "cell_labels_2d.tif"
     if out_path.exists() and not overwrite:
         return str(out_path)
 
@@ -354,7 +354,7 @@ class CellSegmentationWidget(QWidget):
                 ("3_correction/nuclear_labels_corrected.tif", "Corrected labels"),
             ]),
             ("Output", [
-                ("4_cell_segmentation/cell_labels.tif", "Cell labels"),
+                ("4_cell_ultrack/cell_labels_2d.tif", "Cell labels 2D"),
             ]),
         ])
         lay.addWidget(self._files_widget)
@@ -384,7 +384,7 @@ class CellSegmentationWidget(QWidget):
         lay.addWidget(self._seg_overwrite_chk)
 
         row = QHBoxLayout()
-        self._seg_run_btn = QPushButton("Run Segmentation")
+        self._seg_run_btn = QPushButton("Run Cell Ultrack")
         self._seg_run_btn.clicked.connect(self._seg_on_run)
         row.addWidget(self._seg_run_btn)
         self._seg_term_btn = QPushButton("Run in Terminal")
@@ -618,7 +618,7 @@ class CellSegmentationWidget(QWidget):
 
         out_dir = cell_segmentation_dir(root_dir, pos)
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / "cell_labels.tif"
+        out_path = out_dir / "cell_labels_2d.tif"
 
         try:
             axes = "TYX" if data.ndim == 3 else "YX"
@@ -691,12 +691,12 @@ class CellSegmentationWidget(QWidget):
 
             # --- Load background images ---
             raw_dir = stage_dir(root_dir_path, pos, "raw_import")
-            cell_img_path = raw_dir / "cell" / "cell_zavg.tif"
-            nuc_img_path  = raw_dir / "nucleus" / "nucleus_zavg.tif"
+            cell_img_path = raw_dir / "cell_zavg.tif"
+            nuc_img_path  = raw_dir / "nucleus_zavg.tif"
 
             cell_layer_name   = "Cell avg"
             nuc_layer_name    = "Nucleus avg"
-            labels_layer_name = "Preview: Cell Segmentation"
+            labels_layer_name = "Preview: Cell Ultrack"
 
             if cell_img_path.exists():
                 cell_img = tifffile.imread(str(cell_img_path))
@@ -786,7 +786,7 @@ class CellSegmentationWidget(QWidget):
             def _work():
                 from cellflow.core.logging import StageLogger
                 from cellflow.core.paths import log_path
-                with StageLogger(log_path(root_dir, pos), "cell_segmentation"):
+                with StageLogger(log_path(root_dir, pos), "cell_ultrack"):
                     for update in run_segmentation(root_dir, pos, cfg, overwrite=overwrite):
                         yield update
         else:
@@ -802,7 +802,7 @@ class CellSegmentationWidget(QWidget):
             def _work():
                 from cellflow.core.logging import StageLogger
                 from cellflow.core.paths import log_path
-                with StageLogger(log_path(root_dir, pos), "cell_segmentation"):
+                with StageLogger(log_path(root_dir, pos), "cell_ultrack"):
                     for update in run_watershed_segmentation(root_dir, pos, cfg, overwrite=overwrite):
                         yield update
 
@@ -818,7 +818,7 @@ class CellSegmentationWidget(QWidget):
 
         method = self._active_method()
         if method == "watershed":
-            self._seg_status.setText("Terminal run not available for Watershed — use 'Run Segmentation'.")
+            self._seg_status.setText("Terminal run not available for Watershed — use 'Run Cell Ultrack'.")
             return
 
         pos = int(self._state.current_position)
@@ -900,7 +900,7 @@ class CellSegmentationWidget(QWidget):
 
         pos = int(self._state.current_position)
         out_dir = cell_segmentation_dir(root_dir, pos)
-        labels_path = out_dir / "cell_labels.tif"
+        labels_path = out_dir / "cell_labels_2d.tif"
 
         if not labels_path.exists():
             self._seg_status.setText("No cell labels found.")
@@ -909,8 +909,8 @@ class CellSegmentationWidget(QWidget):
         cell_stack = tifffile.imread(str(labels_path)).astype(np.uint32)
 
         raw_dir = stage_dir(root_dir, pos, "raw_import")
-        cell_img_path = raw_dir / "cell" / "cell_zavg.tif"
-        nuc_img_path  = raw_dir / "nucleus" / "nucleus_zavg.tif"
+        cell_img_path = raw_dir / "cell_zavg.tif"
+        nuc_img_path  = raw_dir / "nucleus_zavg.tif"
 
         cell_layer_name   = "Cell avg"
         nuc_layer_name    = "Nucleus avg"
@@ -961,7 +961,7 @@ class CellSegmentationWidget(QWidget):
             if idx is not None and idx != target_idx:
                 self.viewer.layers.move(idx, target_idx)
 
-        self._seg_status.setText(f"Loaded cell_labels.tif  shape={cell_stack.shape}")
+        self._seg_status.setText(f"Loaded cell_labels_2d.tif  shape={cell_stack.shape}")
 
     # ── get_params / set_params ────────────────────────────────────────────
 

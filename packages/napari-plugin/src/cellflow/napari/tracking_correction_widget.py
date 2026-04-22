@@ -61,7 +61,7 @@ class TrackingCorrectionWidget(QWidget):
         self._load_btn = QPushButton("Load nuclear segmentation")
         self._load_btn.setToolTip(
             "Load the nuclear labels layer currently registered in state.\n"
-            "Run Cellpose / Ultrack first to populate it."
+            "Run Cluster Cellpose / Nucleus Ultrack first to populate it."
         )
         self._load_btn.clicked.connect(self._on_load)
         load_row.addWidget(self._load_btn)
@@ -79,7 +79,7 @@ class TrackingCorrectionWidget(QWidget):
         # File status rows — refreshed based on mode
         self._files_widget = PipelineFilesWidget([
             ("Input", [
-                ("2_ultrack/nuclear_labels_2d.tif",           "Nuclear labels 2D"),
+                ("2_nucleus_ultrack/nuclear_labels_2d.tif",   "Nuclear labels 2D"),
             ]),
             ("Output", [
                 ("3_correction/nuclear_labels_corrected.tif", "Corrected labels"),
@@ -114,7 +114,7 @@ class TrackingCorrectionWidget(QWidget):
         if self._correcting_cells:
             self._load_btn.setText("Load cell segmentation")
             self._load_btn.setToolTip(
-                "Load cell labels from 4_cell_segmentation/cell_labels.tif.\n"
+                "Load cell labels from 4_cell_ultrack/cell_labels_2d.tif.\n"
                 "Also loads nuclear labels as a read-only reference layer."
             )
             self._save_btn.setText("Save corrected cell labels")
@@ -123,7 +123,7 @@ class TrackingCorrectionWidget(QWidget):
             self._load_btn.setText("Load nuclear segmentation")
             self._load_btn.setToolTip(
                 "Load the nuclear labels layer currently registered in state.\n"
-                "Run Cellpose / Ultrack first to populate it."
+                "Run Cluster Cellpose / Nucleus Ultrack first to populate it."
             )
             self._save_btn.setText("Save corrected labels")
             self._tracking.setVisible(True)
@@ -199,17 +199,17 @@ class TrackingCorrectionWidget(QWidget):
         from cellflow.core.paths import stage_dir
         pos = self._state.current_position
 
-        cell_path = stage_dir(project_dir, pos, "cell_segmentation") / "cell_labels.tif"
+        cell_path = stage_dir(project_dir, pos, "cell_ultrack") / "cell_labels_2d.tif"
         if not cell_path.exists():
             self._data_status.setText(
-                "No cell labels found — run Cell Segmentation first."
+                "No cell labels found — run Cell Ultrack first."
             )
             return
 
         try:
             arr = tifffile.imread(str(cell_path)).astype(np.int32)
         except Exception as exc:
-            self._data_status.setText(f"Could not read cell_labels.tif: {exc}")
+            self._data_status.setText(f"Could not read cell_labels_2d.tif: {exc}")
             return
 
         # Load background images
@@ -242,7 +242,7 @@ class TrackingCorrectionWidget(QWidget):
     def _try_load_from_disk(self) -> "np.ndarray | None":
         """Load nuclear labels from disk for the current project position.
 
-        Input is 2_ultrack/nuclear_labels_2d.tif (the flattened Ultrack output).
+        Input is 2_nucleus_ultrack/nuclear_labels_2d.tif (the flattened Ultrack output).
         If a prior correction session already saved nuclear_labels_corrected.tif,
         that is loaded instead so work can be resumed.
         """
@@ -257,7 +257,7 @@ class TrackingCorrectionWidget(QWidget):
         candidates = [
             (stage_dir(project_dir, pos, "correction") / "nuclear_labels_corrected.tif",
              "Nuclear Labels (corrected)"),
-            (stage_dir(project_dir, pos, "tracking") / "nuclear_labels_2d.tif",
+            (stage_dir(project_dir, pos, "nucleus_ultrack") / "nuclear_labels_2d.tif",
              "Nuclear Labels"),
         ]
         for path, layer_name in candidates:
@@ -289,8 +289,8 @@ class TrackingCorrectionWidget(QWidget):
         from cellflow.core.paths import stage_dir
         raw_dir = stage_dir(project_dir, pos, "raw_import")
 
-        cell_path = raw_dir / "cell" / "cell_zavg.tif"
-        nuc_path = raw_dir / "nucleus" / "nucleus_zavg.tif"
+        cell_path = raw_dir / "cell_zavg.tif"
+        nuc_path = raw_dir / "nucleus_zavg.tif"
 
         # --- cell_zavg (bottom) ---
         cell_layer_name = "Cell avg"
@@ -353,7 +353,7 @@ class TrackingCorrectionWidget(QWidget):
         pos = self._state.current_position
 
         if self._correcting_cells:
-            out_path = stage_dir(project_dir, pos, "cell_segmentation") / "cell_labels.tif"
+            out_path = stage_dir(project_dir, pos, "cell_ultrack") / "cell_labels_2d.tif"
         else:
             out_path = stage_dir(project_dir, pos, "correction") / "nuclear_labels_corrected.tif"
 
@@ -412,11 +412,11 @@ class TrackingCorrectionWidget(QWidget):
         if self._correcting_cells:
             spec = [
                 ("Input",  [("3_correction/nuclear_labels_corrected.tif", "Corrected nuclear labels")]),
-                ("Output", [("4_cell_segmentation/cell_labels.tif",       "Cell labels")]),
+                ("Output", [("4_cell_ultrack/cell_labels_2d.tif",        "Cell labels 2D")]),
             ]
         else:
             spec = [
-                ("Input",  [("2_ultrack/nuclear_labels_2d.tif",           "Nuclear labels 2D")]),
+                ("Input",  [("2_nucleus_ultrack/nuclear_labels_2d.tif",   "Nuclear labels 2D")]),
                 ("Output", [("3_correction/nuclear_labels_corrected.tif", "Corrected labels")]),
             ]
         self._files_widget.update_spec(spec)

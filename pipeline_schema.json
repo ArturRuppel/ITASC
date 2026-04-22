@@ -3,13 +3,11 @@
   "created": "2026-04-15",
   "stages": [
     "raw_import",
-    "cellpose_nucleus",
-    "cellpose_cell",
-    "cell_segmentation",
-    "contours",
-    "tracking",
-    "project2d",
-    "cell_labels"
+    "cellpose_cluster",
+    "nucleus_ultrack",
+    "correction",
+    "cell_ultrack",
+    "analysis"
   ],
   "interfaces": {},
   "metadata": {

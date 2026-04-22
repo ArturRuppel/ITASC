@@ -43,30 +43,36 @@ _TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
     ("Input Export", [
         ("0_input/nucleus_4d.tif", "Nucleus 4D stack", "image"),
         ("0_input/cell_4d.tif",    "Cell 4D stack",    "image"),
+        ("0_input/nucleus_zavg.tif", "Nucleus z-avg",   "image"),
+        ("0_input/cell_zavg.tif",    "Cell z-avg",      "image"),
         ("0_input/z_shift.csv",    "Z shift CSV",      None),
     ]),
-    ("Cellpose Nuclei", [
-        ("1_cellpose/nucleus",               "Output directory",   None),
+    ("Cluster Cellpose", [
+        ("1_cellpose/nucleus_dp.tif",       "Nucleus DP",         None),
+        ("1_cellpose/nucleus_prob.tif",     "Nucleus prob",       "image"),
+        ("1_cellpose/nucleus_dp_zavg.tif",  "Nucleus DP avg",     None),
+        ("1_cellpose/nucleus_prob_zavg.tif","Nucleus prob avg",   "image"),
+        ("1_cellpose/cell_dp.tif",          "Cell DP (z-slices)", None),
+        ("1_cellpose/cell_prob.tif",        "Cell prob (z-slices)", "image"),
+        ("1_cellpose/cell_dp_zavg.tif",     "Cell DP avg",        None),
+        ("1_cellpose/cell_prob_zavg.tif",   "Cell prob avg",      "image"),
     ]),
-    ("Cellpose Cells", [
-        ("1_cellpose/cell/cell_dp.tif",          "Cell DP (z-slices)", None),
-        ("1_cellpose/cell/cell_prob.tif",         "Cell prob (z-slices)", "image"),
-        ("1_cellpose/cell/cell_dp_zavg.tif",     "Cell DP avg",        None),
-        ("1_cellpose/cell/cell_prob_zavg.tif",   "Cell prob avg",      "image"),
-    ]),
-    ("Ultrack", [
-        ("2_ultrack/foreground.tif",         "Foreground",         "image"),
-        ("2_ultrack/contours.tif",           "Contours",           "image"),
-        ("2_ultrack/data.db",                "Ultrack DB",         None),
-        ("2_ultrack/tracks.csv",             "Tracks CSV",         None),
-        ("2_ultrack/tracked_labels.tif",     "Tracked labels",     None),
-        ("2_ultrack/nuclear_labels_2d.tif",  "Nuclear labels 2D",  "labels"),
+    ("Nucleus Ultrack", [
+        ("2_nucleus_ultrack/data.db",               "Ultrack DB",         None),
+        ("2_nucleus_ultrack/tracks.csv",            "Tracks CSV",         None),
+        ("2_nucleus_ultrack/tracked_labels.tif",    "Tracked labels",     None),
+        ("2_nucleus_ultrack/nuclear_labels_2d.tif", "Nuclear labels 2D",  "labels"),
+        ("2_nucleus_ultrack/hypotheses_manifest.json", "Hypotheses manifest", None),
     ]),
     ("Correction", [
         ("3_correction/nuclear_labels_corrected.tif", "Corrected labels", "labels"),
     ]),
-    ("Cell Segmentation", [
-        ("4_cell_segmentation/cell_labels.tif", "Cell labels", "labels"),
+    ("Cell Ultrack", [
+        ("4_cell_ultrack/data.db",             "Ultrack DB",         None),
+        ("4_cell_ultrack/tracks.csv",          "Tracks CSV",         None),
+        ("4_cell_ultrack/tracked_labels.tif",  "Tracked labels",     None),
+        ("4_cell_ultrack/cell_labels_2d.tif",  "Cell labels 2D",     "labels"),
+        ("4_cell_ultrack/hypotheses_manifest.json", "Hypotheses manifest", None),
     ]),
     ("Analysis", [
         ("5_analysis/graph.h5",     "Graph",    None),

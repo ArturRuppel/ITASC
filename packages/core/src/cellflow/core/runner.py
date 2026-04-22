@@ -13,7 +13,7 @@ Typical usage inside a napari widget::
     def _worker():
         yield from run_in_thread(
             stage.run,
-            stage_name="cellpose_nucleus",
+            stage_name="nucleus_ultrack",
             manifest=manifest,
             manifest_path=paths.manifest_path(root, pos),
             config=stage.config,

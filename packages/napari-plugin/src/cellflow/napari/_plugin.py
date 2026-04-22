@@ -5,7 +5,7 @@ Usage::
     from cellflow.napari._plugin import STAGES, refresh
 
     # All installed cellflow stages, keyed by entry-point name:
-    stage = STAGES["cellpose_nucleus"]
+    stage = STAGES["nucleus_ultrack"]
 
     # Re-scan after a new package is installed at runtime:
     refresh()
@@ -19,27 +19,21 @@ from typing import Any, Dict
 # Stages not listed here are appended alphabetically after these.
 STAGE_ORDER: list[str] = [
     "raw_import",
-    "cellpose_nucleus",
-    "cellpose_cell",
-    "contours",
-    "tracking",
+    "cellpose_cluster",
+    "nucleus_ultrack",
     "correction",
-    "cell_segmentation",
-    "graph_extraction",
-    "topology_analysis",
+    "cell_ultrack",
+    "analysis",
 ]
 
 # Human-readable labels for the UI (tab titles, dialog checkboxes).
 STAGE_DISPLAY_NAMES: Dict[str, str] = {
-    "raw_import":        "Input Export",
-    "cellpose_nucleus":  "Cellpose Nuclei (3D)",
-    "cellpose_cell":     "Cellpose Cells (2D)",
-    "contours":          "Contours",
-    "tracking":          "Ultrack",
-    "correction":        "Correction",
-    "cell_segmentation": "Cell Segmentation",
-    "graph_extraction":  "Graph Extraction",
-    "topology_analysis": "Topology Analysis",
+    "raw_import": "Input Export",
+    "cellpose_cluster": "Cluster Cellpose",
+    "nucleus_ultrack": "Nucleus Ultrack",
+    "correction": "Correction",
+    "cell_ultrack": "Cell Ultrack",
+    "analysis": "Analysis",
 }
 
 # Which manifest key(s) drive the badge for each top-level pipeline tab.
@@ -47,15 +41,13 @@ STAGE_DISPLAY_NAMES: Dict[str, str] = {
 # they are part of the correction loop / downstream analysis.
 TAB_STAGE_KEYS: Dict[str, list[str]] = {
     "Prepare Input Data": ["raw_import"],
-    "Cellpose":     ["cellpose_nucleus", "cellpose_cell"],
-    "Ultrack":      ["contours", "tracking"],
-    "Correction":   ["correction"],
-    "Cell Segmentation": ["cell_segmentation"],
-    "Seeded Watershed":  ["seeded_watershed"],
-    "Edge Analysis": ["graph_extraction", "topology_analysis"],
+    "Cluster Cellpose": ["cellpose_cluster"],
+    "Nucleus Ultrack": ["nucleus_ultrack"],
+    "Correction": ["correction"],
+    "Cell Ultrack": ["cell_ultrack"],
+    "Analysis": ["analysis"],
 }
-# Note: "Tracking" (LapTrack) is now a sub-component of "Correction" and
-# has no separate manifest stage key.
+# Legacy stage names remain internal compatibility aliases only.
 
 # Module-level dict: populated at import time; refreshed via refresh().
 STAGES: Dict[str, Any] = {}

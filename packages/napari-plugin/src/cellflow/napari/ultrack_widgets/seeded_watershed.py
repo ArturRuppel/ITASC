@@ -34,7 +34,7 @@ from cellflow.napari.widgets import PipelineFilesWidget
 
 
 def _seeded_ws_dir(root_dir, pos):
-    return stage_dir(root_dir, pos, "seeded_watershed")
+    return stage_dir(root_dir, pos, "cell_ultrack")
 
 
 def _correction_dir(root_dir, pos):
@@ -62,12 +62,12 @@ class SeededWatershedWidget(QWidget):
         self._files_widget = PipelineFilesWidget([
             ("Input", [
                 ("3_correction/nuclear_labels_corrected.tif", "Nucleus labels"),
-                ("1_cellpose/cell/cell_prob_zavg.tif", "Cell probability"),
+                ("1_cellpose/cell_prob_zavg.tif", "Cell probability"),
             ]),
             ("Output", [
-                ("4_seeded_watershed/foreground.tif", "Foreground map"),
-                ("4_seeded_watershed/contours.tif", "Contours map"),
-                ("4_seeded_watershed/hypotheses/", "Hypothesis label stacks"),
+                ("4_cell_ultrack/foreground.tif", "Foreground map"),
+                ("4_cell_ultrack/contours.tif", "Contours map"),
+                ("4_cell_ultrack/hypotheses/", "Hypothesis label stacks"),
             ]),
         ])
         lay.addWidget(self._files_widget)
@@ -154,7 +154,7 @@ class SeededWatershedWidget(QWidget):
 
         # ── Run buttons ────────────────────────────────────────────────────
         row = QHBoxLayout()
-        self._run_btn = QPushButton("Run Sweep")
+        self._run_btn = QPushButton("Run Cell Ultrack Sweep")
         self._run_btn.clicked.connect(self._on_run)
         row.addWidget(self._run_btn)
         self._term_btn = QPushButton("Run in Terminal")
@@ -288,7 +288,7 @@ class SeededWatershedWidget(QWidget):
             nuc_path = _correction_dir(root, pos) / "nuclear_labels_corrected.tif"
             out_dir = _seeded_ws_dir(root, pos)
 
-            with StageLogger(log_path(root, pos), "seeded_watershed"):
+            with StageLogger(log_path(root, pos), "cell_ultrack"):
                 for update in run(input_dir, nuc_path, out_dir, cfg, overwrite=overwrite):
                     yield update
 

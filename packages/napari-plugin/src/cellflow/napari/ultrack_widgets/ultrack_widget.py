@@ -1,4 +1,4 @@
-"""Unified scrollable analysis widget: Cellpose Contours → Tracking."""
+"""Nucleus Ultrack widget driven by cluster Cellpose outputs."""
 
 from __future__ import annotations
 
@@ -51,13 +51,11 @@ from cellflow.ultrack.stages.tracking import (
 )
 
 
-# All stage outputs live directly inside the user-chosen output directory —
-# no sub-folders.  foreground.tif, contours.tif, tracks.csv,
-# tracked_labels.tif and the Ultrack DB all land in the same flat dir.
+# Nucleus Ultrack outputs live in the stage directory.
 
 
 class UltrackAnalysisWidget(QWidget):
-    """Single scrollable panel for Cellpose Contours and Tracking stages."""
+    """Single scrollable panel for the nucleus Ultrack stage."""
 
     # Emitted after tracked_labels is loaded into the viewer.
     labels_loaded = Signal(object)  # napari Labels layer
@@ -101,12 +99,13 @@ class UltrackAnalysisWidget(QWidget):
         # ── Project file status (inputs/outputs for current position) ────
         self._files_widget = PipelineFilesWidget([
             ("Input", [
-                ("1_cellpose/nucleus",              "Cellpose nucleus"),
+                ("1_cellpose/nucleus_dp.tif",       "Cellpose nucleus DP"),
+                ("1_cellpose/nucleus_prob.tif",     "Cellpose nucleus prob"),
             ]),
             ("Output", [
-                ("2_ultrack/foreground.tif",        "Foreground"),
-                ("2_ultrack/contours.tif",          "Contours"),
-                ("2_ultrack/nuclear_labels_2d.tif", "Nuclear labels 2D"),
+                ("2_nucleus_ultrack/tracked_labels.tif",     "Tracked labels"),
+                ("2_nucleus_ultrack/nuclear_labels_2d.tif",  "Nuclear labels 2D"),
+                ("2_nucleus_ultrack/hypotheses_manifest.json", "Hypotheses manifest"),
             ]),
         ])
         lay.addWidget(self._files_widget)
@@ -124,7 +123,7 @@ class UltrackAnalysisWidget(QWidget):
         # ── Run All ──────────────────────────────────────────────────────
         row = QHBoxLayout()
         self._run_all_btn = QPushButton(
-            "Run All  (Cellpose Contours \u2192 Tracking)"
+            "Run All  (Nucleus Ultrack)"
         )
         self._run_all_btn.clicked.connect(self._on_run_all)
         row.addWidget(self._run_all_btn)
@@ -173,8 +172,8 @@ class UltrackAnalysisWidget(QWidget):
             return None
         pos = self._state.current_position
         from cellflow.core.paths import stage_dir
-        inp = str(stage_dir(project_dir, pos, "cellpose_nucleus"))
-        out = str(stage_dir(project_dir, pos, "tracking"))
+        inp = str(stage_dir(project_dir, pos, "cellpose_cluster"))
+        out = str(stage_dir(project_dir, pos, "nucleus_ultrack"))
         return inp, out
 
     # ══════════════════════════════════════════════════════════════════════
@@ -297,7 +296,7 @@ class UltrackAnalysisWidget(QWidget):
         lay.addWidget(self._cp_ct_status)
 
         content.setLayout(lay)
-        return CollapsibleSection("Contours (Cellpose)", content, expanded=False)
+        return CollapsibleSection("Cluster Cellpose", content, expanded=False)
 
     # ── Cellpose Contours helpers ────────────────────────────────────────
 
@@ -1772,24 +1771,24 @@ class UltrackAnalysisWidget(QWidget):
             "errored": self._on_all_error,
         })
         def _work():
-            # Cellpose Contours
-            if not cp_ct_ow and (out_path / "foreground.tif").exists() and (out_path / "contours.tif").exists():
-                yield (0, 100, "[Cellpose Contours] Skipping \u2014 output exists (overwrite unchecked)")
+            # Cluster Cellpose
+            if not cp_ct_ow and (out_path / "tracked_labels.tif").exists():
+                yield (0, 100, "[Cluster Cellpose] Skipping \u2014 output exists (overwrite unchecked)")
             else:
-                yield (0, 100, "[Cellpose Contours] Starting\u2026")
+                yield (0, 100, "[Cluster Cellpose] Starting\u2026")
                 for done, total, label in run_s02c(inp, out, cp_ct_cfg, overwrite=cp_ct_ow):
                     yield (int(done / max(total, 1) * 50), 100,
-                           f"[Cellpose Contours] {label} [{done}/{total}]")
+                           f"[Cluster Cellpose] {label} [{done}/{total}]")
 
             # Tracking
             if tr_skip:
-                yield (50, 100, "[Tracking] Skipping \u2014 output exists (overwrite=none)")
+                yield (50, 100, "[Nucleus Ultrack] Skipping \u2014 output exists (overwrite=none)")
                 yield (100, 100, "Run All complete.")
             else:
-                yield (50, 100, "[Tracking] Starting\u2026")
+                yield (50, 100, "[Nucleus Ultrack] Starting\u2026")
                 for step, total_steps, label in run_s03(fg_path, ct_path, out, tr_cfg):
                     yield (50 + int(step / max(total_steps, 1) * 50), 100,
-                           f"[Tracking] {label}")
+                           f"[Nucleus Ultrack] {label}")
                 yield (100, 100, "Run All complete.")
 
         self.run_started.emit()
@@ -1840,7 +1839,7 @@ class UltrackAnalysisWidget(QWidget):
                 **self._cp_ct_build_config().model_dump(),
                 "overwrite": self._cp_ct_overwrite_chk.isChecked(),
             },
-            "tracking": self._tr_build_config().model_dump(),
+            "nucleus_ultrack": self._tr_build_config().model_dump(),
         }
 
     def set_params(self, data: dict) -> None:
@@ -1850,5 +1849,7 @@ class UltrackAnalysisWidget(QWidget):
             self._cp_ct_apply_config(cfg)
             if "overwrite" in d:
                 self._cp_ct_overwrite_chk.setChecked(bool(d["overwrite"]))
+        if "nucleus_ultrack" in data:
+            self._tr_apply_config(TrackingConfig(**data["nucleus_ultrack"]))
         if "tracking" in data:
             self._tr_apply_config(TrackingConfig(**data["tracking"]))

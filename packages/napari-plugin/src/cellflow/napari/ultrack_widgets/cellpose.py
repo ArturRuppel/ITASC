@@ -1,4 +1,4 @@
-"""Cellpose segmentation panels (s01a + s01b)."""
+"""Cluster Cellpose panels for nucleus and cell inputs."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ except ImportError:
 
 
 class CellposeWidget(QWidget):
-    """Widget for running Cellpose segmentation (s01a nucleus + s01b cell)."""
+    """Widget for the cluster-side Cellpose step."""
 
     run_started = Signal()
 
@@ -77,8 +77,8 @@ class CellposeWidget(QWidget):
         # Two collapsible sub-sections for s01a and s01b
         self._s01a_widget = self._create_s01a_widget()
         self._s01b_widget = self._create_s01b_widget()
-        self._s01a_section = CollapsibleSection("3D Nucleus", self._s01a_widget, expanded=False)
-        self._s01b_section = CollapsibleSection("2D Cell", self._s01b_widget, expanded=False)
+        self._s01a_section = CollapsibleSection("Cluster Cellpose", self._s01a_widget, expanded=False)
+        self._s01b_section = CollapsibleSection("Cluster Cellpose", self._s01b_widget, expanded=False)
         inner_layout.addWidget(self._s01a_section)
         inner_layout.addWidget(self._s01b_section)
 
@@ -108,7 +108,7 @@ class CellposeWidget(QWidget):
         root = self._get_project_dir()
         if root is None:
             return None
-        return stage_dir(root, pos, "cellpose_nucleus")
+        return stage_dir(root, pos, "cellpose_cluster")
 
     def _s01b_root_dir(self) -> Path | None:
         return self._get_project_dir()
@@ -128,7 +128,7 @@ class CellposeWidget(QWidget):
         self._s01b_files_widget.refresh(pos_dir)
 
     def _create_s01a_widget(self) -> QWidget:
-        """Create the s01a (3D nucleus) panel."""
+        """Create the s01a (nucleus) panel."""
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop)
@@ -136,10 +136,14 @@ class CellposeWidget(QWidget):
         # ── File status (derived from project) ──────────────────────────
         self._s01a_files_widget = PipelineFilesWidget([
             ("Input", [
-                ("0_input/nucleus",    "Nucleus 3D"),
+                ("0_input/nucleus_4d.tif", "Nucleus 4D stack"),
+                ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
             ]),
             ("Output", [
-                ("1_cellpose/nucleus", "Cellpose nucleus"),
+                ("1_cellpose/nucleus_dp.tif",   "Nucleus DP"),
+                ("1_cellpose/nucleus_prob.tif", "Nucleus prob"),
+                ("1_cellpose/nucleus_dp_zavg.tif",   "Nucleus DP z-avg"),
+                ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
             ]),
         ])
         layout.addWidget(self._s01a_files_widget)
@@ -258,7 +262,7 @@ class CellposeWidget(QWidget):
         return widget
 
     def _create_s01b_widget(self) -> QWidget:
-        """Create the s01b (2D cell) panel."""
+        """Create the s01b (cell) panel."""
         widget = QWidget()
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop)
@@ -266,13 +270,13 @@ class CellposeWidget(QWidget):
         # ── File status (derived from project) ──────────────────────────
         self._s01b_files_widget = PipelineFilesWidget([
             ("Input", [
-                ("0_input/cell/cell_3d_t000.tif",  "Cell z-stack t0"),
+                ("0_input/cell_4d.tif",  "Cell 4D stack"),
             ]),
             ("Output", [
-                ("1_cellpose/cell/cell_dp.tif",          "Cell DP (z-slices)"),
-                ("1_cellpose/cell/cell_prob.tif",         "Cell prob (z-slices)"),
-                ("1_cellpose/cell/cell_dp_zavg.tif",     "Cell DP avg"),
-                ("1_cellpose/cell/cell_prob_zavg.tif",   "Cell prob avg"),
+                ("1_cellpose/cell_dp.tif",          "Cell DP (z-slices)"),
+                ("1_cellpose/cell_prob.tif",        "Cell prob (z-slices)"),
+                ("1_cellpose/cell_dp_zavg.tif",     "Cell DP avg"),
+                ("1_cellpose/cell_prob_zavg.tif",   "Cell prob avg"),
             ]),
         ])
         layout.addWidget(self._s01b_files_widget)
@@ -627,13 +631,13 @@ class CellposeWidget(QWidget):
         output_dir = self._s01a_output_dir(pos)
         if output_dir is None:
             return
-        prob_files = sorted(output_dir.glob("*_prob.tif"))
-        if not prob_files:
+        prob_file = output_dir / "nucleus_prob.tif"
+        if not prob_file.exists():
             return
-        prob = tifffile.imread(str(prob_files[0]))
-        self.viewer.add_image(prob, name="nucleus_cellprob (t0)", colormap="inferno")
+        prob = tifffile.imread(str(prob_file))
+        self.viewer.add_image(prob, name="nucleus_cellprob", colormap="inferno")
         self._s01a_status_label.setText(
-            f"Loaded {prob_files[0].name}  shape={prob.shape}"
+            f"Loaded {prob_file.name}  shape={prob.shape}"
         )
 
     def _on_s01a_load_results(self) -> None:
@@ -646,32 +650,25 @@ class CellposeWidget(QWidget):
 
         loaded = []
 
-        nuc_input_dir = input_dir / "nucleus"
-        if nuc_input_dir.is_dir():
-            input_files = sorted(nuc_input_dir.glob("nucleus_3d_t*.tif"))
-            if input_files:
-                frames = [tifffile.imread(str(f)) for f in input_files]
-                data = np.stack(frames, axis=0) if len(frames) > 1 else frames[0]
-                self.viewer.add_image(data, name=f"nucleus_input_pos{pos:02d}", colormap="gray")
-                loaded.append("input")
+        nuc_input_file = input_dir / "nucleus_4d.tif"
+        if nuc_input_file.exists():
+            data = tifffile.imread(str(nuc_input_file))
+            self.viewer.add_image(data, name=f"nucleus_input_pos{pos:02d}", colormap="gray")
+            loaded.append("input")
 
         if output_dir is not None and output_dir.is_dir():
-            prob_files = sorted(output_dir.glob("*_prob.tif"))
-            if prob_files:
-                frames = [tifffile.imread(str(f)) for f in prob_files]
-                prob = np.stack(frames, axis=0) if len(frames) > 1 else frames[0]
+            prob_file = output_dir / "nucleus_prob.tif"
+            if prob_file.exists():
+                prob = tifffile.imread(str(prob_file))
                 self.viewer.add_image(prob, name=f"nucleus_prob_pos{pos:02d}", colormap="inferno")
                 loaded.append("prob")
 
-            dp_files = sorted(output_dir.glob("*_dp.tif"))
-            if dp_files:
-                frames = [tifffile.imread(str(f)) for f in dp_files]
-                dp = np.stack(frames, axis=0) if len(frames) > 1 else frames[0]
-                # dp: (T, 3, Z, Y, X) stacked or (3, Z, Y, X) single — split vector components
-                comp_axis = 1 if dp.ndim == 5 else 0
-                for c in range(dp.shape[comp_axis]):
-                    comp = dp[:, c] if comp_axis == 1 else dp[c]
-                    self.viewer.add_image(comp, name=f"nucleus_dp_{c}_pos{pos:02d}", colormap="RdBu")
+            dp_file = output_dir / "nucleus_dp.tif"
+            if dp_file.exists():
+                dp = tifffile.imread(str(dp_file))
+                # dp: (T, 3, Z, Y, X) — split vector components
+                for c in range(dp.shape[1]):
+                    self.viewer.add_image(dp[:, c], name=f"nucleus_dp_{c}_pos{pos:02d}", colormap="RdBu")
                 loaded.append("dp")
 
         if loaded:
@@ -899,20 +896,14 @@ class CellposeWidget(QWidget):
             self._s01a_status_label.setText("No project open. Create or open a project first.")
             return
 
-        tif_files = sorted(input_dir.glob("*.tif"))
-        if not tif_files:
-            self._s01a_status_label.setText("No input files found.")
-            return
-
         t = self._s01a_frame_spin.value()
-        if t >= len(tif_files):
-            self._s01a_status_label.setText(f"Frame {t} out of range (0–{len(tif_files) - 1}).")
+        in_path = input_dir / "nucleus_4d.tif"
+        if not in_path.exists():
+            self._s01a_status_label.setText("No nucleus_4d.tif input found.")
             return
-
-        in_path = tif_files[t]
         cfg = self._build_s01a_config()
         self._s01a_preview_btn.setEnabled(False)
-        self._s01a_status_label.setText(f"Running 3D preview for frame {t}…")
+        self._s01a_status_label.setText(f"Running nucleus preview for frame {t}…")
 
         @thread_worker(
             connect={
@@ -925,7 +916,12 @@ class CellposeWidget(QWidget):
             from cellflow.cellpose.stages.nucleus_3d import _load_model
 
             yield f"Loading frame {t}…"
-            img = tifffile.imread(str(in_path)).astype(np.float32)
+            stack = tifffile.imread(str(in_path)).astype(np.float32)
+            if stack.ndim != 4:
+                raise ValueError(f"Expected nucleus_4d.tif with shape (T, Z, Y, X), got {stack.shape}")
+            if t >= stack.shape[0]:
+                raise IndexError(f"Frame {t} out of range (0–{stack.shape[0] - 1})")
+            img = stack[t]
             gamma = cfg.gamma
             if gamma is not None and gamma != 1.0:
                 img_min, img_max = img.min(), img.max()
@@ -939,7 +935,7 @@ class CellposeWidget(QWidget):
             yield f"Loading model '{cfg.model}'…"
             model = _load_model(cfg.model, cfg.use_gpu)
             try:
-                yield "Running 3D inference…"
+                yield "Running nucleus inference…"
                 _, flows, _ = model.eval(
                     img,
                     do_3D=True,
@@ -996,16 +992,16 @@ class CellposeWidget(QWidget):
     # ── get_params / set_params ──────────────────────────────────────────
 
     def get_params(self) -> dict:
-        result = {"cellpose_nucleus": {}, "cellpose_cell": {}}
+        result = {"cellpose_cluster": {}}
         if not _CELLPOSE_PIPELINE_AVAILABLE:
             return result
         cfg_a = self._build_s01a_config()
-        result["cellpose_nucleus"] = {
+        result["cellpose_cluster"]["nucleus"] = {
             **cfg_a.model_dump(),
             "overwrite": self._s01a_overwrite_check.isChecked(),
         }
         cfg_b = self._build_s01b_config()
-        result["cellpose_cell"] = {
+        result["cellpose_cluster"]["cell"] = {
             **cfg_b.model_dump(),
             "overwrite": self._s01b_overwrite_check.isChecked(),
         }
@@ -1013,6 +1009,21 @@ class CellposeWidget(QWidget):
 
     def set_params(self, data: dict) -> None:
         if not _CELLPOSE_PIPELINE_AVAILABLE:
+            return
+        cluster = data.get("cellpose_cluster")
+        if cluster:
+            if "nucleus" in cluster:
+                d = cluster["nucleus"]
+                cfg = CellposeConfig(**{k: v for k, v in d.items() if k != "overwrite"})
+                self._apply_s01a_config(cfg)
+                if "overwrite" in d:
+                    self._s01a_overwrite_check.setChecked(bool(d["overwrite"]))
+            if "cell" in cluster:
+                d = cluster["cell"]
+                cfg = CellposeConfig(**{k: v for k, v in d.items() if k != "overwrite"})
+                self._apply_s01b_config(cfg)
+                if "overwrite" in d:
+                    self._s01b_overwrite_check.setChecked(bool(d["overwrite"]))
             return
         if "cellpose_nucleus" in data:
             d = data["cellpose_nucleus"]
