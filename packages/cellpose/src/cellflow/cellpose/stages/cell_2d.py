@@ -1,20 +1,20 @@
 """s01b — Cellpose 2D cell segmentation (per-z-slice).
 
 Runs Cellpose on each z-slice individually, storing full per-slice outputs and
-z-averaged outputs for use by downstream stages.
+z-averaged outputs directly in ``1_cellpose/`` for use by downstream stages.
 
 Inputs (per position)
 ---------------------
-  0_input/cell/cell_3d_t{t:03d}.tif     (Z, H, W) uint16 — cell z-stack (488 nm)
-  0_input/nucleus/nucleus_3d_t{t:03d}.tif (Z, H, W) uint16 — nucleus z-stack (405 nm)
+  0_input/cell_4d.tif                  (T, Z, H, W) uint16 — cell 4D stack (488 nm)
+  0_input/nucleus_4d.tif               (T, Z, H, W) uint16 — nucleus 4D stack (405 nm)
 
 Outputs (per position)
 ----------------------
-  1_cellpose/cell/
+  1_cellpose/
     run_params.json
-    cell_dp.tif       (T, Z, 2, H, W) float32 — per-z-slice flow fields
-    cell_prob.tif     (T, Z, H, W)    float32 — per-z-slice probability maps
-    cell_dp_zavg.tif  (T, 2, H, W)    float32 — z-averaged flow fields
+    cell_dp.tif        (T, Z, 2, H, W) float32 — per-z-slice flow fields
+    cell_prob.tif      (T, Z, H, W)    float32 — per-z-slice probability maps
+    cell_dp_zavg.tif   (T, 2, H, W)    float32 — z-averaged flow fields
     cell_prob_zavg.tif (T, H, W)      float32 — z-averaged probability maps
 """
 
@@ -30,10 +30,8 @@ import tifffile
 
 from cellflow.cellpose.config import CellposeConfig
 from cellflow.cellpose.stages.raw_import import (
-    cell_3d_path,
-    nucleus_3d_path,
-    cell_zavg_path,
-    nucleus_zavg_path,
+    cell_4d_path,
+    nucleus_4d_path,
 )
 from cellflow.core.paths import stage_dir
 from cellflow.core.protocol import StageProgress, ValidationResult
@@ -109,21 +107,31 @@ def run(
     """
     root_dir = Path(root_dir)
 
-    # Discover available timepoints by scanning nucleus_3d files
-    t = 0
-    time_indices = []
-    while nucleus_3d_path(root_dir, pos, t).exists():
-        time_indices.append(t)
-        t += 1
+    cell_stack_path = cell_4d_path(root_dir, pos)
+    nuc_stack_path = nucleus_4d_path(root_dir, pos)
 
-    if not time_indices:
-        print(f"[error] No nucleus_3d_t*.tif files found for pos{pos:02d}", file=sys.stderr)
+    if not cell_stack_path.exists() or not nuc_stack_path.exists():
+        print(f"[error] Missing cell_4d.tif or nucleus_4d.tif for pos{pos:02d}", file=sys.stderr)
         return
 
-    T = len(time_indices)
-    t0_nuc = tifffile.imread(str(nucleus_3d_path(root_dir, pos, 0)))
-    Z = t0_nuc.shape[0]
-    H, W = t0_nuc.shape[1], t0_nuc.shape[2]
+    cell_stack = tifffile.imread(str(cell_stack_path)).astype(np.float32)
+    nuc_stack = tifffile.imread(str(nuc_stack_path)).astype(np.float32)
+    if cell_stack.ndim != 4 or nuc_stack.ndim != 4:
+        print(
+            f"[error] Expected 4D stacks (T,Z,H,W), got cell={cell_stack.shape} nucleus={nuc_stack.shape}",
+            file=sys.stderr,
+        )
+        return
+    if cell_stack.shape[0] != nuc_stack.shape[0]:
+        print(
+            f"[error] Timepoint mismatch: cell={cell_stack.shape[0]} nucleus={nuc_stack.shape[0]}",
+            file=sys.stderr,
+        )
+        return
+
+    T = cell_stack.shape[0]
+    Z = cell_stack.shape[1]
+    H, W = cell_stack.shape[2], cell_stack.shape[3]
     print(f"pos{pos:02d}  T={T}  Z={Z}  H={H}  W={W}", flush=True)
     if cfg.gamma is not None:
         print(f"  gamma={cfg.gamma}", flush=True)
@@ -169,24 +177,13 @@ def run(
     t_prob_list: list[list[np.ndarray]] = []
 
     try:
-        for ti, t in enumerate(time_indices):
-            yield (ti, T, f"t{t:03d}")
+        for t in range(T):
+            yield (t, T, f"t{t:03d}")
 
-            # Load z-stacks for this timepoint
-            cell_path = cell_3d_path(root_dir, pos, t)
-            nuc_path_t = nucleus_3d_path(root_dir, pos, t)
+            cell_z = cell_stack[t]  # (Z, H, W)
+            nuc_z = nuc_stack[t]    # (Z, H, W)
 
-            if not cell_path.exists():
-                print(f"[error] Missing: {cell_path}", file=sys.stderr)
-                return
-            if not nuc_path_t.exists():
-                print(f"[error] Missing: {nuc_path_t}", file=sys.stderr)
-                return
-
-            cell_z = tifffile.imread(str(cell_path)).astype(np.float32)   # (Z, H, W)
-            nuc_z  = tifffile.imread(str(nuc_path_t)).astype(np.float32)  # (Z, H, W)
-
-            print(f"  [{ti+1:3d}/{T}]  t{t:03d}  Z={cell_z.shape[0]} ...", flush=True)
+            print(f"  [{t+1:3d}/{T}]  t{t:03d}  Z={cell_z.shape[0]} ...", flush=True)
 
             z_dp_list:   list[np.ndarray] = []
             z_prob_list: list[np.ndarray] = []
@@ -208,7 +205,7 @@ def run(
             t_dp_list.append(z_dp_list)
             t_prob_list.append(z_prob_list)
             print("  done", flush=True)
-            yield (ti + 1, T, f"t{t:03d}")
+            yield (t + 1, T, f"t{t:03d}")
     finally:
         del model
         try:
@@ -309,7 +306,7 @@ if __name__ == "__main__":
 
 class _CellposeCellStageClass:
     name = "cellpose_cell"
-    display_name = "Cellpose Cell (2D)"
+    display_name = "Cellpose Cell"
 
     def __init__(self):
         self.config = CellposeConfig()
@@ -327,8 +324,8 @@ class _CellposeCellStageClass:
         from cellflow.core.validation import validate_inputs
 
         return validate_inputs([
-            nucleus_3d_path(root_dir, pos, 0),
-            cell_3d_path(root_dir, pos, 0),
+            nucleus_4d_path(root_dir, pos),
+            cell_4d_path(root_dir, pos),
         ])
 
     def is_complete(self, root_dir, pos) -> bool:

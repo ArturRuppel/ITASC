@@ -36,13 +36,21 @@ from cellflow.core.protocol import StageProgress, ValidationResult
 
 
 def discover_dp_files(input_dir: str | Path) -> list[Path]:
-    """Return sorted list of ``*_dp.tif`` files in *input_dir*."""
-    return sorted(Path(input_dir).glob("*_dp.tif"))
+    """Return the Cellpose cell flow stack in *input_dir*."""
+    input_dir = Path(input_dir)
+    path = input_dir / "cell_dp.tif"
+    if path.exists():
+        return [path]
+    return []
 
 
 def discover_prob_files(input_dir: str | Path) -> list[Path]:
-    """Return sorted list of ``*_prob.tif`` files in *input_dir*."""
-    return sorted(Path(input_dir).glob("*_prob.tif"))
+    """Return the Cellpose cell probability stack in *input_dir*."""
+    input_dir = Path(input_dir)
+    path = input_dir / "cell_prob.tif"
+    if path.exists():
+        return [path]
+    return []
 
 
 # ── Core computation ────────────────────────────────────────────────────────
@@ -194,7 +202,7 @@ def run(
     cfg: CellposeContoursConfig,
     overwrite: bool = False,
 ) -> Generator[tuple[int, int, str], None, None]:
-    """Process all timepoints and write foreground.tif and contours.tif.
+    """Process the Cellpose cell stack and write foreground.tif and contours.tif.
 
     Yields ``(done, total, status_label)`` for progress reporting.
     If both output files already exist and *overwrite* is False, skips immediately.
@@ -209,12 +217,12 @@ def run(
         yield (0, 1, "foreground.tif and contours.tif already exist, skipping")
         return
 
-    # Discover files
+    # Discover the stacked Cellpose outputs.
     dp_files = discover_dp_files(inp)
     prob_files = discover_prob_files(inp)
 
     if not dp_files or not prob_files:
-        yield (0, 0, "No t*_dp.tif or t*_prob.tif files found")
+        yield (0, 0, "No cell_dp.tif or cell_prob.tif files found")
         return
 
     if len(dp_files) != len(prob_files):
@@ -231,7 +239,17 @@ def run(
         yield (0, 0, "Error: no cellprob thresholds generated (check cellprob_min/max/step)")
         return
 
-    total = len(dp_files)
+    dp_stack = tifffile.imread(str(dp_files[0])).astype(np.float32)
+    prob_stack = tifffile.imread(str(prob_files[0])).astype(np.float32)
+    if dp_stack.ndim == 4:
+        dp_stack = dp_stack[np.newaxis]
+    if prob_stack.ndim == 3:
+        prob_stack = prob_stack[np.newaxis]
+    if dp_stack.shape[0] != prob_stack.shape[0]:
+        yield (0, 0, f"Timepoint mismatch: dp={dp_stack.shape[0]} prob={prob_stack.shape[0]}")
+        return
+
+    total = dp_stack.shape[0]
     out.mkdir(parents=True, exist_ok=True)
 
     fg_frames: list[np.ndarray] = []
@@ -239,11 +257,11 @@ def run(
     # maps threshold → list of per-timepoint label arrays (only populated when save_masks)
     masks_per_thresh: dict[float, list[np.ndarray]] = {t: [] for t in thresholds} if cfg.save_masks else {}
 
-    for i, (dp_path, prob_path) in enumerate(zip(dp_files, prob_files)):
-        t_str = dp_path.name.split("_")[0]  # e.g., "t000"
+    for i in range(total):
+        t_str = f"t{i:03d}"
         try:
-            dp = tifffile.imread(str(dp_path)).astype(np.float32)
-            prob = tifffile.imread(str(prob_path)).astype(np.float32)
+            dp = dp_stack[i]
+            prob = prob_stack[i]
             fg_list = []
             ct_list = []
             for thresh in thresholds:
@@ -257,7 +275,7 @@ def run(
             ct_frames.append(np.mean(ct_list, axis=0).astype(np.float32))
         except Exception as e:
             print(f"  {t_str}: error: {e}", flush=True)
-            spatial = tifffile.imread(str(prob_path)).shape
+            spatial = prob_stack[i].shape
             fg_frames.append(np.zeros(spatial, dtype=np.float32))
             ct_frames.append(np.zeros(spatial, dtype=np.float32))
             if cfg.save_masks:
@@ -300,7 +318,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--input-dir",
         required=True,
-        help="Directory containing t*_dp.tif and t*_prob.tif files",
+        help="Directory containing cell_dp.tif and cell_prob.tif files",
     )
     parser.add_argument(
         "--output-dir",
@@ -353,10 +371,10 @@ class _ContoursStageClass:
     def validate_inputs(self, schema, root_dir, pos) -> ValidationResult:
         from cellflow.core.validation import validate_inputs
 
-        nuc_dir = stage_dir(root_dir, pos, "cellpose_nucleus")
-        dp_files = list(nuc_dir.glob("*_dp.tif")) if nuc_dir.exists() else []
+        cell_dir = stage_dir(root_dir, pos, "cellpose_nucleus")
+        dp_files = [cell_dir / "cell_dp.tif"] if (cell_dir / "cell_dp.tif").exists() else []
         if not dp_files:
-            return ValidationResult(ok=False, errors=[f"No *_dp.tif files in {nuc_dir}"])
+            return ValidationResult(ok=False, errors=[f"No cell_dp.tif in {cell_dir}"])
         return ValidationResult(ok=True, errors=[])
 
     def is_complete(self, root_dir, pos) -> bool:

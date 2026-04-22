@@ -1,14 +1,14 @@
 """s01a — Cellpose 3D nucleus segmentation.
 
-Scans an input directory for ``*.tif`` volumes (Z, Y, X) and runs Cellpose in
-3-D mode, writing flow (``*_dp.tif``) and probability (``*_prob.tif``) outputs
-to the output directory.
+Reads the raw 4D nucleus stack ``nucleus_4d.tif`` from ``0_input`` and runs
+Cellpose in 3-D mode once per timepoint. The per-timepoint flow and probability
+outputs are stacked back into 4D TIFFs written directly under ``1_cellpose/``.
 
 Usage
 -----
     python -m ultrack_wrapper.stages.s01a_cellpose_nucleus \\
-        --input-dir /path/to/raw_nucleus \\
-        --output-dir /path/to/1a_cellpose_nucleus \\
+        --input-dir /path/to/0_input \\
+        --output-dir /path/to/1_cellpose \\
         --config /tmp/cp_config.json \\
         [--overwrite]
 """
@@ -53,8 +53,16 @@ def _load_model(model_type: str, use_gpu: bool):
 
 
 def discover_input_files(input_dir: str | Path) -> list[Path]:
-    """Return sorted list of *.tif files in *input_dir*."""
-    return sorted(Path(input_dir).glob("*.tif"))
+    """Return the nucleus stack input file(s) for *input_dir*.
+
+    The new layout expects a single ``nucleus_4d.tif`` file. A narrow glob
+    fallback is kept for older projects that still store per-timepoint inputs.
+    """
+    input_dir = Path(input_dir)
+    nucleus_stack = input_dir / "nucleus_4d.tif"
+    if nucleus_stack.exists():
+        return [nucleus_stack]
+    return sorted(input_dir.glob("nucleus_3d_t*.tif"))
 
 
 # ── Core run function ─────────────────────────────────────────────────────────
@@ -66,7 +74,7 @@ def run(
     cfg: CellposeConfig,
     overwrite: bool = False,
 ) -> Generator[tuple[int, int, str], None, None]:
-    """Run Cellpose 3-D segmentation on all TIFFs in *input_dir*.
+    """Run Cellpose 3-D segmentation on the nucleus 4D stack in *input_dir*.
 
     Yields ``(done, total, label)`` progress tuples.
     """
@@ -77,14 +85,15 @@ def run(
     tif_files = discover_input_files(input_dir)
     total = len(tif_files)
     if total == 0:
-        print(f"[warning] No .tif files found in {input_dir}", file=sys.stderr)
+        print(f"[warning] No nucleus_4d.tif files found in {input_dir}", file=sys.stderr)
         return
 
     model = None  # lazy load once
     try:
         for done, in_path in enumerate(tif_files, start=1):
-            dp_path   = output_dir / f"{in_path.stem}_dp.tif"
-            prob_path = output_dir / f"{in_path.stem}_prob.tif"
+            prefix = in_path.stem.replace("_4d", "")
+            dp_path = output_dir / f"{prefix}_dp.tif"
+            prob_path = output_dir / f"{prefix}_prob.tif"
 
             label = in_path.name
             yield (done - 1, total, label)
@@ -95,25 +104,20 @@ def run(
                 continue
 
             img = tifffile.imread(str(in_path))
-            if img.ndim != 3:
-                print(f"[error] {label}: expected (Z,Y,X), got {img.shape}", file=sys.stderr)
+            if img.ndim != 4:
+                print(f"[error] {label}: expected (T,Z,Y,X), got {img.shape}", file=sys.stderr)
                 yield (done, total, label)
                 continue
 
             print(f"  {label}  shape={img.shape}  dtype={img.dtype}", flush=True)
 
-            # Optional gamma correction
+            # Optional gamma correction is applied per timepoint volume.
             gamma = cfg.gamma
             if gamma is not None and gamma != 1.0:
                 print(f"  gamma={gamma}", flush=True)
                 img = img.astype(np.float32)
-                img_min, img_max = img.min(), img.max()
-                if img_max > img_min:
-                    img = (
-                        ((img - img_min) / (img_max - img_min)) ** gamma
-                        * (img_max - img_min)
-                        + img_min
-                    )
+            else:
+                img = img.astype(np.float32)
 
             if model is None:
                 model = _load_model(cfg.model, cfg.use_gpu)
@@ -124,20 +128,34 @@ def run(
                 flush=True,
             )
 
-            _, flows, _ = model.eval(
-                img,
-                do_3D=True,
-                z_axis=0,
-                diameter=cfg.diameter if cfg.diameter > 0 else None,
-                anisotropy=cfg.anisotropy,
-                min_size=cfg.min_size,
-            )
+            dp_frames: list[np.ndarray] = []
+            prob_frames: list[np.ndarray] = []
+            for frame in img:
+                if gamma is not None and gamma != 1.0:
+                    frame = frame.copy()
+                    frame_min, frame_max = frame.min(), frame.max()
+                    if frame_max > frame_min:
+                        frame = (
+                            ((frame - frame_min) / (frame_max - frame_min)) ** gamma
+                            * (frame_max - frame_min)
+                            + frame_min
+                        )
+                _, flows, _ = model.eval(
+                    frame,
+                    do_3D=True,
+                    z_axis=0,
+                    diameter=cfg.diameter if cfg.diameter > 0 else None,
+                    anisotropy=cfg.anisotropy,
+                    min_size=cfg.min_size,
+                )
+                dp_frames.append(flows[1].astype(np.float32))  # (3, Z, Y, X)
+                prob_frames.append(flows[2].astype(np.float32))  # (Z, Y, X)
 
-            dP       = flows[1].astype(np.float32)  # (3, Z, Y, X)
-            cellprob = flows[2].astype(np.float32)  # (Z, Y, X)
+            dP = np.stack(dp_frames, axis=0)
+            cellprob = np.stack(prob_frames, axis=0)
 
-            tifffile.imwrite(str(dp_path),   dP,       compression="zlib", metadata={"axes": "CZYX"})
-            tifffile.imwrite(str(prob_path), cellprob, compression="zlib", metadata={"axes": "ZYX"})
+            tifffile.imwrite(str(dp_path), dP, compression="zlib", metadata={"axes": "TZCYX"})
+            tifffile.imwrite(str(prob_path), cellprob, compression="zlib", metadata={"axes": "TZYX"})
 
             print(f"  → {dp_path.name}  {dP.shape}", flush=True)
             print(f"  → {prob_path.name}  {cellprob.shape}", flush=True)
@@ -162,12 +180,12 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="s01a — Cellpose 3-D nucleus segmentation",
+        description="s01a — Cellpose nucleus segmentation",
     )
     parser.add_argument("--input-dir",  required=True,
-                        help="Directory containing raw nucleus TIFFs (Z, Y, X)")
+                        help="Directory containing nucleus_4d.tif (T, Z, Y, X)")
     parser.add_argument("--output-dir", required=True,
-                        help="Directory to write _dp.tif / _prob.tif outputs")
+                        help="Directory to write nucleus_dp.tif / nucleus_prob.tif outputs")
     parser.add_argument(
         "--config",
         default=None,
@@ -194,7 +212,7 @@ if __name__ == "__main__":
 
 class _CellposeNucleusStageClass:
     name = "cellpose_nucleus"
-    display_name = "Cellpose Nucleus (3D)"
+    display_name = "Cellpose Nucleus"
 
     def __init__(self):
         self.config = CellposeConfig()
@@ -212,12 +230,16 @@ class _CellposeNucleusStageClass:
     def validate_inputs(self, schema, root_dir, pos) -> ValidationResult:
         from cellflow.core.validation import validate_inputs
 
-        input_dir = stage_dir(root_dir, pos, "raw_import")
+        input_dir = stage_dir(root_dir, pos, "raw_import") / "nucleus_4d.tif"
         return validate_inputs([input_dir])
 
     def is_complete(self, root_dir, pos) -> bool:
         out = stage_dir(root_dir, pos, "cellpose_nucleus")
-        return out.exists() and any(out.glob("*_dp.tif"))
+        return (
+            out.exists()
+            and (out / "nucleus_dp.tif").exists()
+            and (out / "nucleus_prob.tif").exists()
+        )
 
 
 CellposeNucleusStage = _CellposeNucleusStageClass()

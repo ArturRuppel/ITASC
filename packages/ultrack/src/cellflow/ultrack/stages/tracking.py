@@ -5,12 +5,17 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Sequence
 
 import numpy as np
 import tifffile
 
 from cellflow.ultrack.config import TrackingConfig
+from cellflow.ultrack.ingestion import (
+    labels_batch_to_foreground_contours,
+    load_hypothesis_labelmaps,
+    write_hypothesis_labelmaps,
+)
 from cellflow.core.paths import stage_dir
 from cellflow.core.protocol import StageProgress, ValidationResult
 
@@ -217,6 +222,84 @@ def run_segmentation(
     yield (total, total, "Segmentation done.")
 
 
+def run_hypothesis_ingestion(
+    labelmaps: Sequence[np.ndarray],
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    *,
+    overwrite: bool = True,
+    stage_name: str = "tracking",
+    source: str | None = None,
+    smooth_sigma: float = 0.5,
+) -> Generator[tuple[int, int, str], None, None]:
+    """Ingest explicit label hypotheses into Ultrack.
+
+    The hypotheses are persisted under ``labelmaps/`` together with a manifest
+    so later workflow stages can inspect or replay the exact inputs that were
+    used for segmentation.
+    """
+    total = 5
+    wd = Path(working_dir)
+    wd.mkdir(parents=True, exist_ok=True)
+    ultrack_cfg = _build_ultrack_config(cfg, wd)
+
+    from ultrack.core.database import clear_all_data
+    from ultrack.core.segmentation.processing import segment
+
+    if overwrite:
+        yield (0, total, "Clearing existing segmentation from DB…")
+        clear_all_data(ultrack_cfg.data_config.database_path)
+    else:
+        yield (0, total, "Skipping DB clear (overwrite=False)…")
+
+    yield (1, total, "Writing hypothesis manifest…")
+    write_hypothesis_labelmaps(wd, labelmaps, stage_name=stage_name, source=source)
+
+    yield (2, total, "Deriving segmentation inputs…")
+    foreground, contours = labels_batch_to_foreground_contours(labelmaps, smooth_sigma=smooth_sigma)
+
+    zarr_tmp: Path | None = None
+    try:
+        if cfg.n_workers > 1:
+            zarr_tmp = Path(tempfile.mkdtemp(prefix="cellflow_zarr_"))
+            foreground = _to_zarr(foreground, zarr_tmp / "foreground.zarr")
+            contours = _to_zarr(contours, zarr_tmp / "contours.zarr")
+
+        yield (3, total, "Running segmentation (add nodes)…")
+        try:
+            segment(foreground, contours, ultrack_cfg, overwrite=overwrite)
+        except ValueError as exc:
+            if not overwrite and "Duplicated nodes" in str(exc):
+                yield (total, total, "Segmentation already in DB, skipping.")
+                return
+            raise
+    finally:
+        if zarr_tmp is not None:
+            shutil.rmtree(zarr_tmp, ignore_errors=True)
+
+    yield (total, total, "Segmentation done.")
+
+
+def run_nucleus_ultrack(
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    *,
+    overwrite: bool = True,
+) -> Generator[tuple[int, int, str], None, None]:
+    """Run nucleus Ultrack from persisted label hypotheses."""
+    wd = Path(working_dir)
+    labelmaps, manifest = load_hypothesis_labelmaps(wd)
+    source = manifest.get("source") if isinstance(manifest, dict) else None
+    yield from run_hypothesis_ingestion(
+        labelmaps,
+        wd,
+        cfg,
+        overwrite=overwrite,
+        stage_name="nucleus_ultrack",
+        source=source if isinstance(source, str) else None,
+    )
+
+
 def run_linking(
     working_dir: str | Path,
     cfg: TrackingConfig,
@@ -405,55 +488,43 @@ if __name__ == "__main__":
 
 
 class _TrackingStageClass:
-    name = "tracking"
-    display_name = "Ultrack Tracking"
+    name = "nucleus_ultrack"
+    display_name = "Nucleus Ultrack"
 
     def __init__(self):
         self.config = TrackingConfig()
 
-    def run(self, foreground_path, contours_path, working_dir, cfg: TrackingConfig = None):
+    def run(self, working_dir, cfg: TrackingConfig = None, overwrite: bool = True):
         from cellflow.core.logging import StageLogger
-        from cellflow.core.paths import STAGE_DIRS
 
         cfg = cfg or self.config
         wd = Path(working_dir)
-        # Write pipeline.log to the position directory (parent of 3_tracking/)
-        pos_dir = wd.parent
-        log_file = pos_dir / "pipeline.log"
+        log_file = wd.parent / "pipeline.log"
         log = StageLogger(log_file, self.name)
         with log:
-            for progress in run(
-                foreground_path=foreground_path,
-                contours_path=contours_path,
-                working_dir=working_dir,
-                cfg=cfg,
-            ):
+            for progress in run_nucleus_ultrack(working_dir=working_dir, cfg=cfg, overwrite=overwrite):
                 yield StageProgress(*progress)
-            # Checkpoint: copy tracked_labels.tif and nuclear_labels_2d.tif to
-            # 4_analysis/ so CellFlow analysis stages can use them without knowing
-            # the tracking stage path.
-            for fname in ("tracked_labels.tif", "nuclear_labels_2d.tif"):
-                src = wd / fname
-                if src.exists():
-                    analysis_dir = pos_dir / STAGE_DIRS.get("graph_extraction", "4_analysis")
-                    analysis_dir.mkdir(parents=True, exist_ok=True)
-                    dst = analysis_dir / fname
-                    if not dst.exists():
-                        shutil.copy2(str(src), str(dst))
-                        log.info(f"Checkpoint: copied {fname} → {dst}")
+            # Keep the stage-local outputs authoritative; later stages read them
+            # directly from 2_nucleus_ultrack/.
 
     def validate_inputs(self, schema, root_dir, pos) -> ValidationResult:
         from cellflow.core.validation import validate_inputs
 
-        contours_dir = stage_dir(root_dir, pos, "contours")
-        return validate_inputs([
-            contours_dir / "foreground.tif",
-            contours_dir / "contours.tif",
-        ])
+        stage_path = stage_dir(root_dir, pos, "nucleus_ultrack")
+        manifest = stage_path / "hypotheses_manifest.json"
+        labelmap_dir = stage_path / "labelmaps"
+        labelmaps = sorted(labelmap_dir.glob("labelmap_*.tif")) if labelmap_dir.exists() else []
+        if not manifest.exists() and not labelmaps:
+            return ValidationResult(
+                ok=False,
+                errors=[f"No hypotheses_manifest.json or labelmaps/labelmap_*.tif in {stage_path}"],
+            )
+        return validate_inputs([manifest] if manifest.exists() else labelmaps)
 
     def is_complete(self, root_dir, pos) -> bool:
-        d = stage_dir(root_dir, pos, "tracking")
+        d = stage_dir(root_dir, pos, "nucleus_ultrack")
         return (d / "tracked_labels.tif").exists()
 
 
-TrackingStage = _TrackingStageClass()
+NucleusUltrackStage = _TrackingStageClass()
+TrackingStage = NucleusUltrackStage

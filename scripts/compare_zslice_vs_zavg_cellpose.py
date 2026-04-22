@@ -70,9 +70,9 @@ def load_cell_zstack(ds: Dataset, pos: int, t: int, z_indices: list[int]) -> np.
 
 
 def load_nucleus_zstack(t: int) -> np.ndarray:
-    """Load nucleus_3d_t{t:03d}.tif → (Z, H, W) uint16 (already xy-downsampled)."""
-    path = f"{DATA_ROOT}/0_input/nucleus/nucleus_3d_t{t:03d}.tif"
-    return tifffile.imread(path)  # (Z, H, W)
+    """Load nucleus_4d.tif and return frame *t* as a (Z, H, W) array."""
+    path = f"{DATA_ROOT}/0_input/nucleus_4d.tif"
+    return tifffile.imread(path)[t]  # (Z, H, W)
 
 
 def run_cellpose_slice(model, cell_slice: np.ndarray, nuc_slice: np.ndarray, label: str):

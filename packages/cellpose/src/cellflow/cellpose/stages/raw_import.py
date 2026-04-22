@@ -19,7 +19,7 @@ import numpy as np
 import tifffile
 from scipy.interpolate import interp1d
 from scipy.ndimage import shift as nd_shift
-from scipy.optimize import minimize_scalar
+from scipy.optimize import least_squares
 from skimage.transform import downscale_local_mean
 
 from cellflow.cellpose.config import DatasetConfig
@@ -156,6 +156,111 @@ def _smooth_profile(profile: np.ndarray, sigma: float = 1.0) -> np.ndarray:
     return gaussian_filter1d(profile.astype(np.float64), sigma=sigma, mode="nearest")
 
 
+def _fill_profile_nans(profile: np.ndarray) -> np.ndarray:
+    """Fill NaNs in a 1D profile by linear interpolation."""
+    y = profile.astype(np.float64)
+    mask = np.isfinite(y)
+    if mask.all():
+        return y
+    if not mask.any():
+        return np.zeros_like(y, dtype=np.float64)
+    x = np.arange(y.size, dtype=np.float64)
+    y[~mask] = np.interp(x[~mask], x[mask], y[mask])
+    return y
+
+
+def _double_sigmoid_profile(
+    z: np.ndarray,
+    offset: float,
+    amplitude: float,
+    center: float,
+    span: float,
+    left_width: float,
+    right_width: float,
+    slope: float,
+) -> np.ndarray:
+    """Return a smooth double-sigmoid bump centered at ``center``."""
+    left_edge = center - 0.5 * span
+    right_edge = center + 0.5 * span
+    left = 1.0 / (1.0 + np.exp(-(z - left_edge) / left_width))
+    right = 1.0 / (1.0 + np.exp(-(z - right_edge) / right_width))
+    return offset + slope * (z - center) + amplitude * (left - right)
+
+
+def _fit_double_sigmoid_profile(profile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Fit a double-sigmoid curve to a 1D intensity profile.
+
+    Returns the fitted profile and the fitted parameter vector:
+    ``(offset, amplitude, center, span, left_width, right_width, slope)``.
+    """
+    y = _fill_profile_nans(_smooth_profile(profile))
+    z = np.arange(y.size, dtype=np.float64)
+
+    y_min = float(np.min(y))
+    y_max = float(np.max(y))
+    y_range = max(y_max - y_min, 1.0)
+
+    half_level = y_min + 0.5 * y_range
+    support = np.flatnonzero(y >= half_level)
+    if support.size >= 2:
+        center0 = float(0.5 * (support[0] + support[-1]))
+        span0 = float(max(2.0, support[-1] - support[0] + 1))
+    else:
+        weights = np.clip(y - y_min, 0.0, None)
+        if weights.sum() > 0:
+            center0 = float(np.average(z, weights=weights))
+        else:
+            center0 = float(0.5 * (y.size - 1))
+        span0 = float(max(2.0, min(y.size - 1.0, y.size / 3.0)))
+
+    width0 = float(max(0.5, min(span0 / 3.0, y.size / 4.0)))
+    p0 = np.array(
+        [y_min, y_range, center0, span0, width0, width0, 0.0],
+        dtype=np.float64,
+    )
+
+    lower = np.array(
+        [
+            y_min - 2.0 * y_range,
+            0.0,
+            0.0,
+            0.5,
+            0.1,
+            0.1,
+            -y_range,
+        ],
+        dtype=np.float64,
+    )
+    upper = np.array(
+        [
+            y_max + 2.0 * y_range,
+            20.0 * y_range,
+            float(y.size - 1),
+            float(max(1.0, y.size - 1)),
+            float(max(1.0, y.size)),
+            float(max(1.0, y.size)),
+            y_range,
+        ],
+        dtype=np.float64,
+    )
+
+    def residuals(params: np.ndarray) -> np.ndarray:
+        return _double_sigmoid_profile(z, *params) - y
+
+    result = least_squares(
+        residuals,
+        p0,
+        bounds=(lower, upper),
+        loss="soft_l1",
+        f_scale=max(1.0, 0.1 * y_range),
+        max_nfev=2000,
+    )
+
+    params = result.x if result.success else p0
+    fitted = _double_sigmoid_profile(z, *params)
+    return fitted, params
+
+
 def _affine_fit_mse(reference: np.ndarray, target: np.ndarray) -> tuple[float, float, float]:
     """Fit ``target ≈ a * reference + b`` and return ``(mse, a, b)``."""
     mask = np.isfinite(reference) & np.isfinite(target)
@@ -191,24 +296,16 @@ def _estimate_z_shift(
     target_profile: np.ndarray,
     max_shift_slices: float,
 ) -> tuple[float, float, float, float]:
-    """Estimate the z-shift that best aligns ``target_profile`` to the reference."""
-    ref = _smooth_profile(reference_profile)
-    tgt = _smooth_profile(target_profile)
+    """Estimate the z-shift from fitted double-sigmoid profile centers."""
+    ref_fit, ref_params = _fit_double_sigmoid_profile(reference_profile)
+    tgt_fit, tgt_params = _fit_double_sigmoid_profile(target_profile)
 
-    def objective(shift_slices: float) -> float:
-        shifted_ref = _shift_profile(ref, shift_slices)
-        mse, _, _ = _affine_fit_mse(shifted_ref, tgt)
-        return mse
+    ref_center = float(ref_params[2])
+    tgt_center = float(tgt_params[2])
+    shift_slices = float(np.clip(tgt_center - ref_center, -max_shift_slices, max_shift_slices))
 
-    result = minimize_scalar(
-        objective,
-        bounds=(-max_shift_slices, max_shift_slices),
-        method="bounded",
-        options={"xatol": 0.05},
-    )
-    shift_slices = float(result.x)
-    shifted_ref = _shift_profile(ref, shift_slices)
-    mse, scale, offset = _affine_fit_mse(shifted_ref, tgt)
+    shifted_ref = _shift_profile(ref_fit, shift_slices)
+    mse, scale, offset = _affine_fit_mse(shifted_ref, tgt_fit)
     return shift_slices, scale, offset, mse
 
 
@@ -396,7 +493,7 @@ def run(
         yield (len(time_list), len(time_list), "done")
         return
 
-    # First pass: estimate the z-shift from the 488 channel only.
+    # First pass: estimate the z-shift from the 488 channel.
     reference_profile: Optional[np.ndarray] = None
     shift_rows: list[dict[str, float]] = []
     z_shifts: dict[int, float] = {}

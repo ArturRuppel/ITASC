@@ -302,8 +302,8 @@ def blend_fields(flow_y, flow_x, grav_y, grav_x, alpha: float):
 def load_frame(frame: int):
     print(f"Loading frame {frame} from {DATA_ROOT}…")
     nuc_stack  = tifffile.imread(f"{DATA_ROOT}/3_correction/nuclear_labels_corrected.tif")
-    dp_stack   = tifffile.imread(f"{DATA_ROOT}/1_cellpose/cell/cell_dp.tif")
-    prob_stack = tifffile.imread(f"{DATA_ROOT}/1_cellpose/cell/cell_prob.tif")
+    dp_stack   = tifffile.imread(f"{DATA_ROOT}/1_cellpose/cell_dp.tif")
+    prob_stack = tifffile.imread(f"{DATA_ROOT}/1_cellpose/cell_prob.tif")
 
     print(f"  nuclear_labels_corrected: {nuc_stack.shape} {nuc_stack.dtype}")
     print(f"  cell_dp:  {dp_stack.shape}  range [{dp_stack.min():.2f}, {dp_stack.max():.2f}]")
