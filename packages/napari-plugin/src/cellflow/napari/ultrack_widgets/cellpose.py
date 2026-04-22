@@ -53,34 +53,12 @@ class CellposeWidget(QWidget):
         super().__init__()
         self.viewer = viewer
         self._state = get_state(viewer)
-        self._worker_s01a = None
-        self._worker_s01a_preview = None
-        self._worker_s01b = None
-        self._worker_s01b_preview = None
-        self._s01b_run_terminal_btn = None
-
-        if not _CELLPOSE_PIPELINE_AVAILABLE:
-            layout = QVBoxLayout(self)
-            msg = QLabel(
-                "Cellpose pipeline package is not installed.\n"
-                "Install with: pip install cellflow-napari[pipeline]"
-            )
-            msg.setWordWrap(True)
-            layout.addWidget(msg)
-            layout.addStretch()
-            return
-
         inner_layout = QVBoxLayout(self)
         inner_layout.setContentsMargins(0, 0, 0, 0)
         inner_layout.setAlignment(Qt.AlignTop)
 
-        # Two collapsible sub-sections for s01a and s01b
-        self._s01a_widget = self._create_s01a_widget()
-        self._s01b_widget = self._create_s01b_widget()
-        self._s01a_section = CollapsibleSection("Cluster Cellpose", self._s01a_widget, expanded=False)
-        self._s01b_section = CollapsibleSection("Cluster Cellpose", self._s01b_widget, expanded=False)
-        inner_layout.addWidget(self._s01a_section)
-        inner_layout.addWidget(self._s01b_section)
+        self._cluster_info_widget = self._create_cluster_info_widget()
+        inner_layout.addWidget(self._cluster_info_widget)
 
         if log_viewer is not None:
             self._log_viewer = log_viewer
@@ -112,6 +90,42 @@ class CellposeWidget(QWidget):
 
     def _s01b_root_dir(self) -> Path | None:
         return self._get_project_dir()
+
+    def _create_cluster_info_widget(self) -> QWidget:
+        """Create the informational cluster-side Cellpose panel."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setAlignment(Qt.AlignTop)
+
+        description = QLabel(
+            "Cellpose runs externally on the cluster. This panel only documents "
+            "the expected input and output files for each position."
+        )
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self._s01a_files_widget = PipelineFilesWidget([
+            ("Inputs", [
+                ("0_input/nucleus_4d.tif", "Nucleus 4D stack"),
+                ("0_input/cell_4d.tif", "Cell 4D stack"),
+                ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
+                ("0_input/cell_zavg.tif", "Cell z-avg"),
+            ]),
+            ("Outputs", [
+                ("1_cellpose/nucleus_dp.tif", "Nucleus DP"),
+                ("1_cellpose/nucleus_prob.tif", "Nucleus prob"),
+                ("1_cellpose/nucleus_dp_zavg.tif", "Nucleus DP z-avg"),
+                ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
+                ("1_cellpose/cell_dp.tif", "Cell DP"),
+                ("1_cellpose/cell_prob.tif", "Cell prob"),
+                ("1_cellpose/cell_dp_zavg.tif", "Cell DP z-avg"),
+                ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
+            ]),
+        ])
+        layout.addWidget(self._s01a_files_widget)
+        self._s01b_files_widget = self._s01a_files_widget
+        return widget
 
     def _sync_project_dir(self) -> None:
         """Refresh file-status rows when the project or position changes."""
@@ -992,48 +1006,7 @@ class CellposeWidget(QWidget):
     # ── get_params / set_params ──────────────────────────────────────────
 
     def get_params(self) -> dict:
-        result = {"cellpose_cluster": {}}
-        if not _CELLPOSE_PIPELINE_AVAILABLE:
-            return result
-        cfg_a = self._build_s01a_config()
-        result["cellpose_cluster"]["nucleus"] = {
-            **cfg_a.model_dump(),
-            "overwrite": self._s01a_overwrite_check.isChecked(),
-        }
-        cfg_b = self._build_s01b_config()
-        result["cellpose_cluster"]["cell"] = {
-            **cfg_b.model_dump(),
-            "overwrite": self._s01b_overwrite_check.isChecked(),
-        }
-        return result
+        return {"cellpose_cluster": {}}
 
     def set_params(self, data: dict) -> None:
-        if not _CELLPOSE_PIPELINE_AVAILABLE:
-            return
-        cluster = data.get("cellpose_cluster")
-        if cluster:
-            if "nucleus" in cluster:
-                d = cluster["nucleus"]
-                cfg = CellposeConfig(**{k: v for k, v in d.items() if k != "overwrite"})
-                self._apply_s01a_config(cfg)
-                if "overwrite" in d:
-                    self._s01a_overwrite_check.setChecked(bool(d["overwrite"]))
-            if "cell" in cluster:
-                d = cluster["cell"]
-                cfg = CellposeConfig(**{k: v for k, v in d.items() if k != "overwrite"})
-                self._apply_s01b_config(cfg)
-                if "overwrite" in d:
-                    self._s01b_overwrite_check.setChecked(bool(d["overwrite"]))
-            return
-        if "cellpose_nucleus" in data:
-            d = data["cellpose_nucleus"]
-            cfg = CellposeConfig(**{k: v for k, v in d.items() if k != "overwrite"})
-            self._apply_s01a_config(cfg)
-            if "overwrite" in d:
-                self._s01a_overwrite_check.setChecked(bool(d["overwrite"]))
-        if "cellpose_cell" in data:
-            d = data["cellpose_cell"]
-            cfg = CellposeConfig(**{k: v for k, v in d.items() if k != "overwrite"})
-            self._apply_s01b_config(cfg)
-            if "overwrite" in d:
-                self._s01b_overwrite_check.setChecked(bool(d["overwrite"]))
+        return

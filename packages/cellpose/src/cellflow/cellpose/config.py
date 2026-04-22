@@ -16,7 +16,7 @@ class DatasetConfig(BaseModel):
 
 
 class CellposeConfig(BaseModel):
-    """Parameters for Cellpose segmentation (nucleus_3d / cell_2d)."""
+    """Parameters recorded for the cluster-side Cellpose generation step."""
 
     model: str = "cpsam"
     diameter: float = 0.0

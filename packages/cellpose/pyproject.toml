@@ -21,10 +21,7 @@ ndtiff = ["ndtiff"]
 
 [project.entry-points."cellflow.stages"]
 raw_import        = "cellflow.cellpose.stages.raw_import:RawImportStage"
-cellpose_nucleus  = "cellflow.cellpose.stages.nucleus_3d:CellposeNucleusStage"
-cellpose_cell     = "cellflow.cellpose.stages.cell_2d:CellposeCellStage"
-cell_segmentation = "cellflow.cellpose.stages.cell_segmentation:CellSegmentationStage"
-contours          = "cellflow.cellpose.stages.contours:ContoursStage"
+cellpose_cluster  = "cellflow.cellpose.stages.cellpose_cluster:CellposeClusterStage"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cellflow"]
