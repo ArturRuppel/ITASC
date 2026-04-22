@@ -79,3 +79,30 @@ class CellposeContoursConfig(BaseModel):
                 values["cellprob_min"] = threshold
                 values["cellprob_max"] = threshold
         return values
+
+
+class SeededWatershedConfig(BaseModel):
+    """Parameters for nucleus-seeded watershed hypothesis sweep."""
+
+    weight_source: str = "prob"
+
+    cellprob_threshold: float = 0.0
+    cellprob_min: float = 0.0
+    cellprob_max: float = 0.0
+    cellprob_step: float = 0.5
+
+    compactness: float = 0.0
+    compactness_min: float = 0.0
+    compactness_max: float = 0.0
+    compactness_step: float = 0.01
+
+    smooth_sigma: float = 1.0
+    smooth_min: float = 1.0
+    smooth_max: float = 1.0
+    smooth_step: float = 0.5
+
+    smooth_contour_sigma: float = 0.5
+
+    save_masks: bool = False
+    save_all_hypotheses: bool = True
+    n_workers: int = 1

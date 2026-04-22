@@ -121,6 +121,7 @@ class CellFlowWidget(QWidget):
 
         from .tracking_correction_widget import TrackingCorrectionWidget
         from .ultrack_widgets.cell_segmentation import CellSegmentationWidget
+        from .ultrack_widgets.seeded_watershed import SeededWatershedWidget
         from .edge_analysis_widget import EdgeAnalysisWidget
         from .forces_widget import ForcesWidget
 
@@ -136,6 +137,12 @@ class CellFlowWidget(QWidget):
             "Cell Segmentation", self._cell_seg_tab, expanded=False
         )
         _plugin_layout.addWidget(self._cell_seg_section)
+
+        self._seeded_ws_tab = SeededWatershedWidget(self.viewer, log_viewer=self._log_viewer)
+        self._seeded_ws_section = CollapsibleSection(
+            "Seeded Watershed", self._seeded_ws_tab, expanded=False
+        )
+        _plugin_layout.addWidget(self._seeded_ws_section)
 
         self._edge_analysis_widget = EdgeAnalysisWidget(self.viewer)
         self._edge_analysis_section = CollapsibleSection(
@@ -169,6 +176,7 @@ class CellFlowWidget(QWidget):
         self._cellpose_tab.run_started.connect(self._autosave_config)
         self._ultrack_tab.run_started.connect(self._autosave_config)
         self._cell_seg_tab.run_started.connect(self._autosave_config)
+        self._seeded_ws_tab.run_started.connect(self._autosave_config)
 
     # ------------------------------------------------------------------
     # Config save / load
@@ -186,6 +194,7 @@ class CellFlowWidget(QWidget):
         cfg.update(self._cellpose_tab.get_params())  # cellpose_nucleus + cellpose_cell
         cfg["ultrack"] = self._ultrack_tab.get_params()
         cfg["cell_segmentation"] = self._cell_seg_tab.get_params()
+        cfg["seeded_watershed"] = self._seeded_ws_tab.get_params()
         cfg["edge_analysis"] = self._edge_analysis_widget.get_params()
         cfg["forces"] = self._forces_widget.get_params()
         cfg["correction"] = self._tracking_correction_widget.get_params()
@@ -202,6 +211,8 @@ class CellFlowWidget(QWidget):
         seg_data = data.get("cell_segmentation") or data.get("flow_watershed")
         if seg_data:
             self._cell_seg_tab.set_params(seg_data)
+        if "seeded_watershed" in data:
+            self._seeded_ws_tab.set_params(data["seeded_watershed"])
         if "edge_analysis" in data:
             self._edge_analysis_widget.set_params(data["edge_analysis"])
         if "forces" in data:
@@ -307,7 +318,8 @@ class CellFlowWidget(QWidget):
             "Cellpose":           self._cellpose_section,
             "Ultrack":            self._ultrack_section,
             "Correction":         self._correction_section,
-            "Cell Segmentation":   self._cell_seg_section,
+            "Cell Segmentation":  self._cell_seg_section,
+            "Seeded Watershed":   self._seeded_ws_section,
             "Edge Analysis":      self._edge_analysis_section,
             "ForSys":             self._forces_section,
         }

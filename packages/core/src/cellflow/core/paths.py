@@ -20,8 +20,10 @@ STAGE_DIRS: dict[str, str] = {
     "tracking":          "2_ultrack",
     # Step 4 — Correction produces a single file in its own folder.
     "correction":        "3_correction",
-    # Step 5 — Nucleus-anchored cell segmentation.
+    # Step 5 — Nucleus-anchored cell segmentation (gravity flow).
     "cell_segmentation": "4_cell_segmentation",
+    # Step 5b — Seeded watershed hypothesis sweep.
+    "seeded_watershed":  "4_seeded_watershed",
     # Step 6 — Edge analysis.
     "graph_extraction":  "5_analysis",
     "topology_analysis": "5_analysis",
