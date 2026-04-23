@@ -276,13 +276,33 @@ class _PipelineFileRow(QWidget):
 
 
 def _file_info(path: "Path") -> str:
-    """Return a concise shape/dtype or size string for a pipeline output file."""
+    """Return a concise shape/dtype string for a pipeline output file."""
     if path.is_dir():
         return "Directory"
     suffix = path.suffix.lower()
     if suffix in (".tif", ".tiff"):
+        try:
+            import tifffile
+            with tifffile.TiffFile(path) as tif:
+                shape = tif.series[0].shape if tif.series else None
+            if shape:
+                return "×".join(str(d) for d in shape)
+        except Exception:
+            pass
         return "TIFF"
     if suffix in (".h5", ".hdf5"):
+        try:
+            import h5py
+            shapes = []
+            def _collect(name, obj):
+                if isinstance(obj, h5py.Dataset):
+                    shapes.append(f"{name}: " + "×".join(str(d) for d in obj.shape))
+            with h5py.File(path, "r") as f:
+                f.visititems(_collect)
+            if shapes:
+                return "; ".join(shapes[:2]) + ("…" if len(shapes) > 2 else "")
+        except Exception:
+            pass
         kb = path.stat().st_size // 1024
         return f"{kb} KB"
     return f"{path.stat().st_size // 1024} KB"

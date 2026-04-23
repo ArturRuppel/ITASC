@@ -1,351 +1,88 @@
 """Main widget for the CellFlow napari plugin."""
 from __future__ import annotations
 
-import napari
-from qtpy.QtWidgets import (
-    QVBoxLayout,
-    QWidget,
-    QScrollArea,
-    QLabel,
-    QPushButton,
-    QFileDialog,
-    QHBoxLayout,
-    QLineEdit,
-    QFrame,
-    QSizePolicy,
-    QCheckBox,
-    QProgressBar,
-    QSpinBox,
-)
-from qtpy.QtCore import Qt, QTimer
+import json
 from pathlib import Path
 
-from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+import napari
+from qtpy.QtCore import Qt, Signal
+from qtpy.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
-# Define tracked files for v2
-_TRACKED_FILE_GROUPS = [
-    ("Input Data", [
-        ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
-        ("0_input/cell_zavg.tif", "Cell z-avg"),
-    ]),
-    ("Cellpose", [
-        ("1_cellpose/nucleus_prob.tif", "Nucleus probability"),
-        ("1_cellpose/cell_prob.tif", "Cell probability"),
-    ]),
-    ("Nucleus Workflow", [
-        ("2_nucleus/hypotheses.h5", "Hypotheses HDF5"),
-        ("2_nucleus/tracked_labels.h5", "Tracked labels"),
-    ]),
-    ("Cell Workflow", [
-        ("3_cell/hypotheses.h5", "Hypotheses HDF5"),
-        ("3_cell/tracked_labels.h5", "Tracked labels"),
-    ]),
-]
-
-
-class DataPanel(QWidget):
-    """Widget for managing project paths, metadata, and configuration."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(4)
-
-        # ── Metadata row ──────────────────────
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(4)
-        meta_row.addWidget(QLabel("px (µm):"))
-        self.px_edit = QLineEdit()
-        self.px_edit.setFixedWidth(45)
-        meta_row.addWidget(self.px_edit)
-
-        meta_row.addWidget(QLabel("dt (min):"))
-        self.dt_edit = QLineEdit()
-        self.dt_edit.setFixedWidth(45)
-        meta_row.addWidget(self.dt_edit)
-
-        meta_row.addWidget(QLabel("Cond:"))
-        self.cond_edit = QLineEdit()
-        meta_row.addWidget(self.cond_edit)
-
-        meta_row.addWidget(QLabel("Pos:"))
-        from qtpy.QtWidgets import QSpinBox
-        self.pos_spin = QSpinBox()
-        self.pos_spin.setRange(0, 99)
-        self.pos_spin.setFixedWidth(45)
-        meta_row.addWidget(self.pos_spin)
-        layout.addLayout(meta_row)
-
-        # ── Project buttons ───────────────────
-        project_row = QHBoxLayout()
-        self.new_btn = QPushButton("New Project...")
-        self.open_btn = QPushButton("Open Project...")
-        project_row.addWidget(self.new_btn)
-        project_row.addWidget(self.open_btn)
-        layout.addLayout(project_row)
-
-        # ── Config buttons ────────────────────
-        layout.addWidget(QLabel("<b>Configuration</b>"))
-        config_row = QHBoxLayout()
-        self.save_btn = QPushButton("Save")
-        self.save_as_btn = QPushButton("Save As...")
-        self.load_btn = QPushButton("Load")
-        self.load_from_btn = QPushButton("Load From...")
-        
-        # Make them compact
-        for btn in (self.save_btn, self.save_as_btn, self.load_btn, self.load_from_btn):
-            btn.setStyleSheet("font-size: 8pt; padding: 2px;")
-            
-        config_row.addWidget(self.save_btn)
-        config_row.addWidget(self.save_as_btn)
-        config_row.addWidget(self.load_btn)
-        config_row.addWidget(self.load_from_btn)
-        layout.addLayout(config_row)
-
-        self.path_label = QLabel("[no project]")
-        self.path_label.setStyleSheet("font-size: 8pt; color: #aaaaaa;")
-        self.path_label.setWordWrap(True)
-        layout.addWidget(self.path_label)
-
-        # ── File Tracker (Scrollable) ─────────
-        tracker_header = QHBoxLayout()
-        tracker_header.addWidget(QLabel("<b>File Status</b>"))
-        self.refresh_btn = QPushButton("↺")
-        self.refresh_btn.setFixedWidth(24)
-        self.refresh_btn.setToolTip("Refresh file status")
-        tracker_header.addWidget(self.refresh_btn)
-        layout.addLayout(tracker_header)
-
-        self.file_tracker = PipelineFilesWidget(_TRACKED_FILE_GROUPS)
-        
-        scroll = QScrollArea()
-        scroll.setWidget(self.file_tracker)
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumHeight(150)
-        scroll.setFrameShape(QFrame.NoFrame)
-        layout.addWidget(scroll)
-
-        # Connect signals
-        self.open_btn.clicked.connect(self._on_open_project)
-        self.refresh_btn.clicked.connect(self._refresh_files)
-        self.pos_spin.valueChanged.connect(self._refresh_files)
-
-    def _on_open_project(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Open Project Directory")
-        if path:
-            self.path_label.setText(path)
-            self.path_label.setToolTip(path)
-            self._refresh_files()
-
-    def _refresh_files(self) -> None:
-        path = self.path_label.text()
-        if path and path != "[no project]":
-            pos = self.pos_spin.value()
-            pos_dir = Path(path) / f"pos{pos:02d}"
-            self.file_tracker.refresh(pos_dir)
-        else:
-            self.file_tracker.refresh(None)
-
-
-class DataPrepWidget(QWidget):
-    """Widget for exporting and preparing raw data."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(4)
-
-        # NDTiff path
-        layout.addWidget(QLabel("NDTiff Directory:"))
-        row = QHBoxLayout()
-        self.ndtiff_edit = QLineEdit()
-        self.ndtiff_edit.setPlaceholderText("/path/to/ndtiff_dataset")
-        row.addWidget(self.ndtiff_edit)
-        self.browse_btn = QPushButton("Browse...")
-        row.addWidget(self.browse_btn)
-        self.pull_btn = QPushButton("Pull Metadata")
-        row.addWidget(self.pull_btn)
-        layout.addLayout(row)
-
-        # Metadata display (placeholders)
-        meta_row = QHBoxLayout()
-        self.px_label = QLabel("Pixel size: —")
-        self.px_label.setStyleSheet("color: grey; font-size: 8pt;")
-        meta_row.addWidget(self.px_label)
-        self.dt_label = QLabel("Interval: —")
-        self.dt_label.setStyleSheet("color: grey; font-size: 8pt;")
-        meta_row.addWidget(self.dt_label)
-        meta_row.addStretch()
-        layout.addLayout(meta_row)
-
-        # Positions
-        layout.addWidget(QLabel("Positions (e.g. 0,1,2):"))
-        self.pos_edit = QLineEdit("0")
-        layout.addWidget(self.pos_edit)
-
-        # XY downsample
-        ds_row = QHBoxLayout()
-        ds_row.addWidget(QLabel("XY Downsample:"))
-        self.ds_spin = QSpinBox()
-        self.ds_spin.setRange(1, 16)
-        self.ds_spin.setValue(2)
-        ds_row.addWidget(self.ds_spin)
-        layout.addLayout(ds_row)
-
-        # Overwrite
-        self.overwrite_check = QCheckBox("Overwrite existing files")
-        layout.addWidget(self.overwrite_check)
-
-        # Run buttons
-        btn_row = QHBoxLayout()
-        self.run_btn = QPushButton("Run Export")
-        self.term_btn = QPushButton("Run in Terminal")
-        btn_row.addWidget(self.run_btn)
-        btn_row.addWidget(self.term_btn)
-        layout.addLayout(btn_row)
-
-        # Progress & Status
-        self.progress = QProgressBar()
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
-
-        self.status_label = QLabel("")
-        self.status_label.setStyleSheet("font-size: 8pt;")
-        layout.addWidget(self.status_label)
-
-        # ── Project file status ──────────────────────────────────────────
-        self.files_tracker = PipelineFilesWidget([
-            ("Output", [
-                ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
-                ("0_input/cell_zavg.tif", "Cell z-avg"),
-                ("0_input/z_shift.csv", "Z shift CSV"),
-            ]),
-        ])
-        layout.addWidget(self.files_tracker)
-
-
-class CellposeWidget(QWidget):
-    """Informational panel for external Cellpose output."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Cellpose artifacts expected in 1_cellpose/"))
-        layout.addWidget(QLabel("Status: Not Found"))
-        layout.addWidget(QPushButton("Refresh status"))
-
-
-class NucleusWorkflowWidget(QWidget):
-    """Nucleus hypothesis generation and tracking."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-
-        # 3A. Hypothesis Generation
-        layout.addWidget(QLabel("<b>A. Hypothesis Generation</b>"))
-        layout.addWidget(QLabel("Min/Max Area:"))
-        layout.addWidget(QLineEdit("100, 1000"))
-        layout.addWidget(QLabel("Threshold Sweep:"))
-        layout.addWidget(QLineEdit("0.1, 0.5, 0.9"))
-        layout.addWidget(QPushButton("Generate Nucleus Hypotheses"))
-
-        layout.addSpacing(10)
-
-        # 3B. Seeding
-        layout.addWidget(QLabel("<b>B. Seeding</b>"))
-        layout.addWidget(QPushButton("Pick Initial Seed"))
-
-        layout.addSpacing(10)
-
-        # 3C. Correction
-        layout.addWidget(QLabel("<b>C. Manual Correction</b>"))
-        layout.addWidget(QPushButton("Open Correction Tool"))
-
-        layout.addSpacing(10)
-
-        # 3D. Search
-        layout.addWidget(QLabel("<b>D. Automated Search</b>"))
-        layout.addWidget(QLabel("IoU Threshold:"))
-        layout.addWidget(QLineEdit("0.5"))
-        layout.addWidget(QPushButton("Propagate Labels"))
-
-
-class CellWorkflowWidget(QWidget):
-    """Cell hypothesis generation and tracking."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-
-        # 4A. Seeded Hypothesis Generation
-        layout.addWidget(QLabel("<b>A. Seeded Hypothesis Generation</b>"))
-        layout.addWidget(QLabel("Seeded Watershed Sigma:"))
-        layout.addWidget(QLineEdit("2.0"))
-        layout.addWidget(QPushButton("Generate Cell Hypotheses (Seeded)"))
-
-        layout.addSpacing(10)
-
-        # 4B. Search & Selection
-        layout.addWidget(QLabel("<b>B. Search & Selection</b>"))
-        layout.addWidget(QLabel("IoU Threshold:"))
-        layout.addWidget(QLineEdit("0.5"))
-        layout.addWidget(QPushButton("Propagate Cell Labels"))
-
-
-class AnalysisWidget(QWidget):
-    """Final analysis and export."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.addWidget(QPushButton("Calculate Topology"))
-        layout.addWidget(QPushButton("Calculate Mechanics"))
-        layout.addWidget(QPushButton("Export Statistics"))
+from cellflow.napari.analysis_widget import AnalysisWidget
+from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
+from cellflow.napari.cellpose_widget import CellposeWidget
+from cellflow.napari.data_panel_widget import ProjectStatusPanel
+from cellflow.napari.data_prep_widget import DataPrepWidget
+from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
+from cellflow.napari.widgets import CollapsibleSection
 
 
 class CellFlowMainWidget(QWidget):
     """The unified workflow-based UI for CellFlow."""
 
+    refresh_requested = Signal(object)  # emits pos_dir: Path | None
+
     def __init__(self, napari_viewer: napari.Viewer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = napari_viewer
 
-        self.setLayout(QVBoxLayout())
-        self.layout().setContentsMargins(0, 0, 0, 0)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
+
+        # ── Project Info (Top Level) ──────────────────────────────────
+        self._setup_project_ui(main_layout)
 
         # Main scroll area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll_widget = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_widget)
-        self.scroll_layout.setContentsMargins(5, 5, 5, 5)
+        self.scroll_layout.setContentsMargins(2, 2, 2, 2)
         self.scroll_layout.setAlignment(Qt.AlignTop)
         self.scroll.setWidget(self.scroll_widget)
 
-        self.layout().addWidget(self.scroll)
+        main_layout.addWidget(self.scroll)
 
         # Add sections
-        self.data_panel = DataPanel()
+        self.data_panel = ProjectStatusPanel()
         self.data_section = CollapsibleSection(
-            "1. Data Panel", self.data_panel, expanded=True
+            "1. Project Status", self.data_panel, expanded=True
         )
+        
+        self._data_prep_widget = DataPrepWidget(self.viewer, self)
         self.prep_section = CollapsibleSection(
-            "2. Data Preparation", DataPrepWidget(), expanded=False
+            "2. Data Preparation", self._data_prep_widget, expanded=False
         )
+        
+        self._cellpose_widget = CellposeWidget(self.viewer)
         self.cellpose_section = CollapsibleSection(
-            "3. Cellpose Output", CellposeWidget(), expanded=False
+            "3. Cellpose Output", self._cellpose_widget, expanded=False
         )
+        
+        self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
         self.nucleus_section = CollapsibleSection(
-            "4. Nucleus Workflow", NucleusWorkflowWidget(), expanded=False
+            "4. Nucleus Workflow", self.nucleus_workflow_widget, expanded=False
         )
+        
+        self.cell_workflow_widget = CellWorkflowWidget()
         self.cell_section = CollapsibleSection(
-            "5. Cell Workflow", CellWorkflowWidget(), expanded=False
+            "5. Cell Workflow", self.cell_workflow_widget, expanded=False
         )
+        
+        self.analysis_widget = AnalysisWidget()
         self.analysis_section = CollapsibleSection(
-            "6. Analysis", AnalysisWidget(), expanded=False
+            "6. Analysis", self.analysis_widget, expanded=False
         )
 
         self.scroll_layout.addWidget(self.data_section)
@@ -357,3 +94,195 @@ class CellFlowMainWidget(QWidget):
 
         # Add stretch at the end
         self.scroll_layout.addStretch()
+
+        # Connect signals
+        self.project_btn.clicked.connect(lambda: self._on_set_project_directory())
+        self.save_btn.clicked.connect(lambda: self._on_save_config())
+        self.save_as_btn.clicked.connect(lambda: self._on_save_config_as())
+        self.load_btn.clicked.connect(lambda: self._on_load_config())
+        self.load_from_btn.clicked.connect(lambda: self._on_load_config_from())
+        
+        self.refresh_btn.clicked.connect(lambda: self._refresh_all())
+        self.pos_spin.valueChanged.connect(lambda: self._refresh_all())
+
+    def _setup_project_ui(self, layout: QVBoxLayout) -> None:
+        """Create the top-level project metadata and buttons."""
+        proj_widget = QWidget()
+        proj_lay = QVBoxLayout(proj_widget)
+        proj_lay.setContentsMargins(0, 0, 0, 0)
+        proj_lay.setSpacing(4)
+
+        # Row 1: Metadata
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(4)
+        
+        meta_row.addWidget(QLabel("px:"))
+        self.px_edit = QLineEdit()
+        self.px_edit.setFixedWidth(40)
+        meta_row.addWidget(self.px_edit)
+
+        meta_row.addWidget(QLabel("dt:"))
+        self.dt_edit = QLineEdit()
+        self.dt_edit.setFixedWidth(40)
+        meta_row.addWidget(self.dt_edit)
+
+        meta_row.addWidget(QLabel("C:"))
+        self.cond_edit = QLineEdit()
+        meta_row.addWidget(self.cond_edit)
+
+        meta_row.addWidget(QLabel("P:"))
+        self.pos_spin = QSpinBox()
+        self.pos_spin.setRange(0, 99)
+        self.pos_spin.setFixedWidth(40)
+        meta_row.addWidget(self.pos_spin)
+        
+        self.refresh_btn = QPushButton("↺")
+        self.refresh_btn.setFixedWidth(24)
+        self.refresh_btn.setToolTip("Refresh all status")
+        meta_row.addWidget(self.refresh_btn)
+        
+        proj_lay.addLayout(meta_row)
+
+        # Row 2: Project Actions
+        project_row = QHBoxLayout()
+        project_row.setSpacing(4)
+        self.project_btn = QPushButton("Project Directory...")
+        self.project_btn.setStyleSheet("font-size: 8pt; padding: 2px;")
+        project_row.addWidget(self.project_btn)
+        proj_lay.addLayout(project_row)
+
+        # Row 3: Config Actions
+        config_row = QHBoxLayout()
+        config_row.setSpacing(4)
+        self.save_btn = QPushButton("Save Config")
+        self.save_as_btn = QPushButton("Save Config As...")
+        self.load_btn = QPushButton("Load Config")
+        self.load_from_btn = QPushButton("Load Config From...")
+        
+        for btn in (self.save_btn, self.save_as_btn, self.load_btn, self.load_from_btn):
+            btn.setStyleSheet("font-size: 8pt; padding: 2px;")
+            config_row.addWidget(btn)
+        proj_lay.addLayout(config_row)
+
+        # Row 4: Path Label
+        self.path_label = QLabel("[no project]")
+        self.path_label.setStyleSheet("font-size: 8pt; color: #aaaaaa;")
+        self.path_label.setWordWrap(True)
+        proj_lay.addWidget(self.path_label)
+
+        layout.addWidget(proj_widget)
+
+    def _on_set_project_directory(self) -> None:
+        """Set the project directory and load config if present."""
+        path = QFileDialog.getExistingDirectory(self, "Select Project Directory")
+        if path:
+            p = Path(path)
+            self.path_label.setText(str(p))
+            self.path_label.setToolTip(str(p))
+            
+            # Look for config file
+            config_path = p / "cellflow_config.json"
+            if config_path.exists():
+                self._load_config(str(config_path))
+            
+            self._refresh_all()
+
+    def get_state(self) -> dict:
+        """Return the current UI state as a dictionary."""
+        return {
+            "metadata": {
+                "pixel_size_um": self.px_edit.text(),
+                "time_interval_s": self.dt_edit.text(),
+                "condition": self.cond_edit.text(),
+                "position": self.pos_spin.value(),
+            },
+            "data_prep": self._data_prep_widget.get_state(),
+            "nucleus": self.nucleus_workflow_widget.get_state(),
+            "cell": self.cell_workflow_widget.get_state(),
+        }
+
+    def set_state(self, state: dict) -> None:
+        """Update the UI state from a dictionary."""
+        if "metadata" in state:
+            m = state["metadata"]
+            if "pixel_size_um" in m: self.px_edit.setText(str(m["pixel_size_um"]))
+            if "time_interval_s" in m: self.dt_edit.setText(str(m["time_interval_s"]))
+            if "condition" in m: self.cond_edit.setText(str(m["condition"]))
+            if "position" in m: self.pos_spin.setValue(int(m["position"]))
+
+        if "data_prep" in state:
+            self._data_prep_widget.set_state(state["data_prep"])
+        
+        if "nucleus" in state:
+            self.nucleus_workflow_widget.set_state(state["nucleus"])
+        
+        if "cell" in state:
+            self.cell_workflow_widget.set_state(state["cell"])
+
+    def _on_save_config(self) -> None:
+        """Save current configuration to project directory."""
+        path_text = self.path_label.text()
+        if not path_text or path_text == "[no project]":
+            return
+        
+        config_path = Path(path_text) / "cellflow_config.json"
+        self._save_config(str(config_path))
+
+    def _on_save_config_as(self) -> None:
+        """Save current configuration to a specific file."""
+        path = QFileDialog.getSaveFileName(self, "Save Config As", filter="JSON (*.json)")[0]
+        if path:
+            self._save_config(path)
+
+    def _on_load_config(self) -> None:
+        """Load configuration from project directory."""
+        path_text = self.path_label.text()
+        if not path_text or path_text == "[no project]":
+            return
+        
+        config_path = Path(path_text) / "cellflow_config.json"
+        if config_path.exists():
+            self._load_config(str(config_path))
+        else:
+            print(f"Config not found: {config_path}")
+
+    def _on_load_config_from(self) -> None:
+        """Load configuration from a specific file."""
+        path = QFileDialog.getOpenFileName(self, "Load Config From", filter="JSON (*.json)")[0]
+        if path:
+            self._load_config(path)
+
+    def _save_config(self, path: str) -> None:
+        """Save state to a JSON file."""
+        state = self.get_state()
+        try:
+            with open(path, "w") as f:
+                json.dump(state, f, indent=4)
+            print(f"Config saved to {path}")
+        except Exception as e:
+            print(f"Error saving config: {e}")
+
+    def _load_config(self, path: str) -> None:
+        """Load state from a JSON file."""
+        try:
+            with open(path, "r") as f:
+                state = json.load(f)
+            self.set_state(state)
+            print(f"Config loaded from {path}")
+        except Exception as e:
+            print(f"Error loading config: {e}")
+
+    def _refresh_all(self) -> None:
+        """Refresh file status in all child widgets."""
+        path_text = self.path_label.text()
+        if path_text and path_text != "[no project]":
+            pos = self.pos_spin.value()
+            pos_dir = Path(path_text) / f"pos{pos:02d}"
+        else:
+            pos_dir = None
+
+        self.data_panel.refresh(pos_dir)
+        self._data_prep_widget.refresh(pos_dir)
+        self._cellpose_widget.refresh(pos_dir)
+        # Emit signal for other widgets
+        self.refresh_requested.emit(pos_dir)
