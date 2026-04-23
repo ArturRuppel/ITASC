@@ -560,3 +560,16 @@ class SeededTrackerWidget(QWidget):
             self._status.setText(f"Load failed: {exc}")
 
     def _on_reset(self) -> None:
+        self._consensus_stack = None
+        self._tracked_stack = None
+        self._track_rows = []
+        self._current_t = -1
+        self._seed_source = "consensus"
+        self._tracked_layer = None
+        self._h5_path = None
+        try:
+            if "tracked_labels" in self.viewer.layers:
+                self.viewer.layers.remove(self.viewer.layers["tracked_labels"])
+        except Exception:
+            pass
+        self._status.setText("Tracker reset.")
