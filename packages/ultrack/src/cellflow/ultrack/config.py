@@ -21,6 +21,9 @@ class TrackingConfig(BaseModel):
     max_neighbors: int = 5
     distance_weight: float = 0.0
     link_n_workers: int = 1
+    linking_mode: str = "default"  # "default" or "iou"
+    iou_weight: float = 1.0
+    min_link_iou: float = 0.1
 
     # Solver / ILP
     appear_weight: float = -0.001

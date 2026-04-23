@@ -325,6 +325,16 @@ def run_linking(
 
     Yields ``(step, total_steps, status_label)``.
     """
+    if cfg.linking_mode == "iou":
+        from cellflow.ultrack.linking import run_iou_linking
+
+        yield from run_iou_linking(working_dir, cfg, overwrite=overwrite)
+        return
+    if cfg.linking_mode != "default":
+        raise ValueError(
+            f"Unknown linking_mode={cfg.linking_mode!r}; expected 'default' or 'iou'."
+        )
+
     total = 3
     wd = Path(working_dir)
     ultrack_cfg = _build_ultrack_config(cfg, wd)

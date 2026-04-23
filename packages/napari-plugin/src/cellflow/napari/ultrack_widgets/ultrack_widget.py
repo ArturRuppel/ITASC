@@ -759,6 +759,35 @@ class UltrackAnalysisWidget(QWidget):
         lay.addLayout(row)
 
         row = QHBoxLayout()
+        row.addWidget(QLabel("Linking mode"))
+        self._tr_linking_mode = QComboBox()
+        self._tr_linking_mode.addItems(["default", "iou"])
+        self._tr_linking_mode.setToolTip(
+            "Default = Ultrack's built-in centroid-based linker.\n"
+            "IoU = custom IoU-weighted linker with explicit overlap scoring."
+        )
+        row.addWidget(self._tr_linking_mode)
+        row.addWidget(QLabel("IoU weight"))
+        self._tr_iou_weight = QDoubleSpinBox()
+        self._tr_iou_weight.setRange(0.0, 1.0)
+        self._tr_iou_weight.setSingleStep(0.1)
+        self._tr_iou_weight.setDecimals(2)
+        self._tr_iou_weight.setValue(1.0)
+        self._tr_iou_weight.setToolTip(
+            "Blend used by the custom IoU linker: 0 = distance-only, 1 = IoU-only."
+        )
+        row.addWidget(self._tr_iou_weight)
+        row.addWidget(QLabel("Min IoU"))
+        self._tr_min_link_iou = QDoubleSpinBox()
+        self._tr_min_link_iou.setRange(0.0, 1.0)
+        self._tr_min_link_iou.setSingleStep(0.05)
+        self._tr_min_link_iou.setDecimals(2)
+        self._tr_min_link_iou.setValue(0.1)
+        self._tr_min_link_iou.setToolTip("Reject candidate links below this IoU before scoring.")
+        row.addWidget(self._tr_min_link_iou)
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
         row.addWidget(QLabel("Max distance"))
         self._tr_max_dist = QDoubleSpinBox()
         self._tr_max_dist.setRange(0.1, 500.0)
@@ -1019,6 +1048,9 @@ class UltrackAnalysisWidget(QWidget):
             link_n_workers=self._tr_lnk_workers.value(),
             max_neighbors=self._tr_max_nb.value(),
             distance_weight=self._tr_dist_w.value(),
+            linking_mode=self._tr_linking_mode.currentText(),
+            iou_weight=self._tr_iou_weight.value(),
+            min_link_iou=self._tr_min_link_iou.value(),
             appear_weight=self._tr_appear.value(),
             disappear_weight=self._tr_disappear.value(),
             division_weight=self._tr_division.value(),
@@ -1045,6 +1077,9 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_lnk_workers.setValue(cfg.link_n_workers)
         self._tr_max_nb.setValue(cfg.max_neighbors)
         self._tr_dist_w.setValue(cfg.distance_weight)
+        self._tr_linking_mode.setCurrentText(cfg.linking_mode)
+        self._tr_iou_weight.setValue(cfg.iou_weight)
+        self._tr_min_link_iou.setValue(cfg.min_link_iou)
         self._tr_appear.setValue(cfg.appear_weight)
         self._tr_disappear.setValue(cfg.disappear_weight)
         self._tr_division.setValue(cfg.division_weight)
