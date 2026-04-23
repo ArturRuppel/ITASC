@@ -1,0 +1,330 @@
+"""Shared reusable Qt widgets for the CellFlow napari plugin."""
+from __future__ import annotations
+
+from qtpy.QtCore import Qt, QPoint, QTimer
+from qtpy.QtGui import QColor, QPainter
+from qtpy.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class _ResizeHandle(QWidget):
+    """Draggable bar at the bottom of an expanded CollapsibleSection."""
+
+    _STYLE_NORMAL = (
+        "background: #606060; border-radius: 3px; margin: 0 8px;"
+    )
+    _STYLE_HOVER = (
+        "background: #909090; border-radius: 3px; margin: 0 8px;"
+    )
+
+    def __init__(self, scroll_area: QScrollArea, parent=None) -> None:
+        super().__init__(parent)
+        self._scroll = scroll_area
+        self._start_y: int | None = None
+        self._start_h: int | None = None
+        self.setFixedHeight(8)
+        self.setCursor(Qt.SizeVerCursor)
+        self.setMouseTracking(True)
+        self.setStyleSheet(self._STYLE_NORMAL)
+        self.setToolTip("Drag to resize")
+
+    def enterEvent(self, event) -> None:
+        self.setStyleSheet(self._STYLE_HOVER)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.setStyleSheet(self._STYLE_NORMAL)
+        super().leaveEvent(event)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        dot_color = QColor("#c0c0c0")
+        painter.setBrush(dot_color)
+        painter.setPen(Qt.NoPen)
+        cx = self.width() // 2
+        cy = self.height() // 2
+        dot_r = 2
+        spacing = 6
+        for dx in (-spacing, 0, spacing):
+            painter.drawEllipse(QPoint(cx + dx, cy), dot_r, dot_r)
+        painter.end()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._start_y = event.globalPos().y()
+            self._start_h = self._scroll.height()
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._start_y is not None:
+            delta = event.globalPos().y() - self._start_y
+            new_h = max(40, self._start_h + delta)
+            self._scroll.setMinimumHeight(new_h)
+            self._scroll.setMaximumHeight(new_h)  # pin height
+            event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._start_y = None
+        self._start_h = None
+        event.accept()
+
+
+class CollapsibleSection(QWidget):
+    """A labelled section with a toggle button that shows/hides its inner widget."""
+
+    def __init__(
+        self,
+        title: str,
+        inner: QWidget,
+        expanded: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._inner = inner
+        self._base_title = title
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(0)
+
+        # Header toggle button
+        self._toggle = QToolButton()
+        self._toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._toggle.setCheckable(True)
+        self._toggle.setChecked(expanded)
+        self._toggle.setText(title)
+        self._toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self._toggle.setStyleSheet(
+            "QToolButton { font-weight: bold; font-size: 10pt; border: none; "
+            "padding: 2px; color: white; }"
+        )
+        self._toggle.toggled.connect(self._on_toggled)
+        layout.addWidget(self._toggle)
+
+        # White-bordered frame that wraps inner content when expanded
+        self._content_frame = QFrame()
+        self._content_frame.setObjectName("collapsible_content")
+        self._content_frame.setFrameShape(QFrame.NoFrame)
+        self._content_frame.setStyleSheet(
+            "QFrame#collapsible_content { border: 1px solid #666666; "
+            "border-radius: 4px; margin: 0px 2px 2px 2px; }"
+        )
+        frame_layout = QVBoxLayout(self._content_frame)
+        frame_layout.setContentsMargins(4, 4, 4, 4)
+        frame_layout.setSpacing(2)
+
+        # Scroll area wrapping inner widget
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setWidget(inner)
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll_area.setFrameShape(QFrame.NoFrame)
+        frame_layout.addWidget(self._scroll_area)
+
+        # Resize handle at bottom of frame
+        self._resize_handle = _ResizeHandle(self._scroll_area)
+        frame_layout.addWidget(self._resize_handle)
+
+        self._content_frame.setVisible(expanded)
+        layout.addWidget(self._content_frame)
+
+        # Always Preferred policy — height is driven by scroll area's minimumHeight
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+        if expanded:
+            QTimer.singleShot(0, self._reset_natural_height)
+
+    def set_title(self, title: str) -> None:
+        """Update the header text."""
+        self._base_title = title
+        self._toggle.setText(title)
+
+    @property
+    def title(self) -> str:
+        return self._base_title
+
+    @property
+    def is_expanded(self) -> bool:
+        return self._toggle.isChecked()
+
+    def expand(self) -> None:
+        self._toggle.setChecked(True)
+
+    def collapse(self) -> None:
+        self._toggle.setChecked(False)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self._toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self._content_frame.setVisible(checked)
+        if checked:
+            self._scroll_area.setMaximumHeight(16777215)
+            QTimer.singleShot(0, self._reset_natural_height)
+        else:
+            self._scroll_area.setMinimumHeight(0)
+            self._scroll_area.setMaximumHeight(16777215)
+            QTimer.singleShot(0, self._notify_collapse)
+
+    def _notify_collapse(self) -> None:
+        """Propagate shrink upward after collapsing."""
+        self.updateGeometry()
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, CollapsibleSection) and parent.is_expanded:
+                QTimer.singleShot(0, parent._reset_natural_height)
+                return
+            parent.updateGeometry()
+            parent = parent.parent()
+
+    def _reset_natural_height(self) -> None:
+        h = self._inner.sizeHint().height()
+        if h > 10:
+            self._scroll_area.setMinimumHeight(h)
+            self._notify_ancestor()
+        else:
+            QTimer.singleShot(50, self._reset_natural_height)
+
+    def _notify_ancestor(self) -> None:
+        """Walk up the widget tree and resize the nearest CollapsibleSection ancestor."""
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, CollapsibleSection) and parent.is_expanded:
+                QTimer.singleShot(0, parent._reset_natural_height)
+                return
+            parent = parent.parent()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline file status rows
+# ---------------------------------------------------------------------------
+
+class _PipelineFileRow(QWidget):
+    """One pipeline file status row: icon | rel-path | info | [load btn]"""
+
+    def __init__(self, rel_path: str, display_name: str, loadable: str | None = None):
+        super().__init__()
+        self._rel_path = rel_path
+        self._loadable = loadable
+        self._full_path: "Path | None" = None
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 1, 4, 1)
+        lay.setSpacing(4)
+
+        self._icon_lbl = QLabel("○")
+        self._icon_lbl.setFixedWidth(14)
+        self._icon_lbl.setAlignment(Qt.AlignCenter)
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        lay.addWidget(self._icon_lbl)
+
+        name_lbl = QLabel(rel_path)
+        name_lbl.setFixedWidth(200)
+        name_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        name_lbl.setToolTip(display_name)
+        lay.addWidget(name_lbl)
+
+        self._info_lbl = QLabel("—")
+        self._info_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        lay.addWidget(self._info_lbl)
+
+        if loadable is not None:
+            self._load_btn = QPushButton("↑")
+            self._load_btn.setFixedWidth(24)
+            self._load_btn.setFixedHeight(18)
+            self._load_btn.setToolTip("Load into napari viewer")
+            self._load_btn.setEnabled(False)
+            lay.addWidget(self._load_btn)
+        else:
+            self._load_btn = None
+
+    def set_present(self, info_text: str) -> None:
+        self._icon_lbl.setText("✓")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; font-weight: bold; color: #4CAF50;")
+        self._info_lbl.setText(info_text)
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        if self._load_btn:
+            self._load_btn.setEnabled(True)
+
+    def set_missing(self) -> None:
+        self._icon_lbl.setText("✗")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
+        self._info_lbl.setText("missing")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: #9E9E9E;")
+        self._full_path = None
+        if self._load_btn:
+            self._load_btn.setEnabled(False)
+
+    def set_no_project(self) -> None:
+        self._icon_lbl.setText("○")
+        self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
+        self._info_lbl.setText("—")
+        self._info_lbl.setStyleSheet("font-size: 8pt; color: #9E9E9E;")
+        self._full_path = None
+        if self._load_btn:
+            self._load_btn.setEnabled(False)
+
+
+def _file_info(path: "Path") -> str:
+    """Return a concise shape/dtype or size string for a pipeline output file."""
+    if path.is_dir():
+        return "Directory"
+    suffix = path.suffix.lower()
+    if suffix in (".tif", ".tiff"):
+        return "TIFF"
+    if suffix in (".h5", ".hdf5"):
+        kb = path.stat().st_size // 1024
+        return f"{kb} KB"
+    return f"{path.stat().st_size // 1024} KB"
+
+
+class PipelineFilesWidget(QWidget):
+    """Compact file-status display for pipeline-stage widgets."""
+
+    def __init__(
+        self,
+        groups: list[tuple[str, list[tuple[str, str]]]],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self._rows: list[_PipelineFileRow] = []
+
+        for group_label, entries in groups:
+            if group_label:
+                hdr = QLabel(group_label)
+                hdr.setStyleSheet(
+                    "font-size: 7pt; font-weight: bold; padding: 1px 4px;"
+                    " background: palette(alternateBase); color: #aaaaaa;"
+                )
+                lay.addWidget(hdr)
+            for rel_path, display_name in entries:
+                row = _PipelineFileRow(rel_path, display_name, loadable=None)
+                self._rows.append(row)
+                lay.addWidget(row)
+
+    def refresh(self, pos_dir: "Path" | None) -> None:
+        """Update all rows to reflect current on-disk state."""
+        if pos_dir is None:
+            for row in self._rows:
+                row.set_no_project()
+            return
+        for row in self._rows:
+            full_path = pos_dir / row._rel_path
+            if full_path.exists():
+                row._full_path = full_path
+                row.set_present(_file_info(full_path))
+            else:
+                row.set_missing()
