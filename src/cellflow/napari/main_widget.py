@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
 from cellflow.napari.analysis_widget import AnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.cellpose_widget import CellposeWidget
+from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.data_prep_widget import DataPrepWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
@@ -57,29 +58,34 @@ class CellFlowMainWidget(QWidget):
         # Add sections
         self.data_panel = ProjectStatusPanel()
         self.data_section = CollapsibleSection(
-            "1. Project Status", self.data_panel, expanded=True
+            "Project Status", self.data_panel, expanded=True, title_color="#ADD8E6"
         )
-        
+
         self._data_prep_widget = DataPrepWidget(self.viewer, self)
         self.prep_section = CollapsibleSection(
-            "2. Data Preparation", self._data_prep_widget, expanded=False
+            "1. Data Preparation", self._data_prep_widget, expanded=False
         )
-        
+
         self._cellpose_widget = CellposeWidget(self.viewer)
         self.cellpose_section = CollapsibleSection(
-            "3. Cellpose Output", self._cellpose_widget, expanded=False
+            "2. Cellpose", self._cellpose_widget, expanded=False
         )
-        
+
         self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
         self.nucleus_section = CollapsibleSection(
-            "4. Nucleus Workflow", self.nucleus_workflow_widget, expanded=False
+            "3. Nucleus Workflow", self.nucleus_workflow_widget, expanded=False
         )
-        
+
         self.cell_workflow_widget = CellWorkflowWidget()
         self.cell_section = CollapsibleSection(
-            "5. Cell Workflow", self.cell_workflow_widget, expanded=False
+            "4. Cell Workflow", self.cell_workflow_widget, expanded=False
         )
-        
+
+        self.correction_widget = CorrectionWidget(self.viewer)
+        self.correction_section = CollapsibleSection(
+            "5. Correction", self.correction_widget, expanded=False
+        )
+
         self.analysis_widget = AnalysisWidget()
         self.analysis_section = CollapsibleSection(
             "6. Analysis", self.analysis_widget, expanded=False
@@ -90,6 +96,7 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
+        self.scroll_layout.addWidget(self.correction_section)
         self.scroll_layout.addWidget(self.analysis_section)
 
         # Add stretch at the end
@@ -284,5 +291,6 @@ class CellFlowMainWidget(QWidget):
         self.data_panel.refresh(pos_dir)
         self._data_prep_widget.refresh(pos_dir)
         self._cellpose_widget.refresh(pos_dir)
+        self.nucleus_workflow_widget.refresh(pos_dir)
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)
