@@ -100,8 +100,8 @@ class SeededTrackerWidget(QWidget):
         self._bootstrap_btn = QPushButton("Bootstrap seed")
         self._bootstrap_btn.clicked.connect(self._on_bootstrap)
         row.addWidget(self._bootstrap_btn)
-        self._accept_btn = QPushButton("Accept as frame 0")
-        self._accept_btn.setToolTip("Use the currently active labels layer as the seed (frame 0).")
+        self._accept_btn = QPushButton("Accept as current frame")
+        self._accept_btn.setToolTip("Use the currently active labels layer as the tracked labels for the current timepoint.")
         self._accept_btn.clicked.connect(self._on_accept_current)
         row.addWidget(self._accept_btn)
         self._next_btn = QPushButton("Show best next")
@@ -349,48 +349,59 @@ class SeededTrackerWidget(QWidget):
             self._status.setText("hypotheses.h5 not found. Run sweep first.")
             return
 
+        # Determine current t from viewer
+        t = 0
+        if len(self.viewer.dims.current_step) > 0:
+            t = self.viewer.dims.current_step[0]
+
         self.run_started.emit()
         try:
-            from cellflow.ultrack.hypotheses import load_medoid_stack
-            medoid_yxt = load_medoid_stack(h5_path)
-            consensus_stack = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)
-            n_frames = consensus_stack.shape[0]
-            frame_shape = consensus_stack.shape[1:]
+            # Initialize stack and load consensus if not already done
+            if self._tracked_stack is None:
+                from cellflow.ultrack.hypotheses import load_medoid_stack
+                medoid_yxt = load_medoid_stack(h5_path)
+                self._consensus_stack = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)
+                self._tracked_stack = np.zeros_like(self._consensus_stack, dtype=np.uint32)
+                self._h5_path = h5_path
+                self._track_rows = []
+
+            n_frames = self._tracked_stack.shape[0]
+            frame_shape = self._tracked_stack.shape[1:]
+
+            if t < 0 or t >= n_frames:
+                self._status.setText(f"Time {t} out of range (0-{n_frames-1})")
+                return
 
             seed = np.asarray(active_layer.data, dtype=np.uint32)
             if seed.ndim == 3:
-                # If it's a stack, take the current timepoint from the viewer
-                t = self.viewer.dims.current_step[0]
+                # If the active layer is a stack, take the current timepoint
                 seed = seed[t]
 
             if seed.shape != frame_shape:
-                self._status.setText(f"Seed shape {seed.shape} != frame shape {frame_shape}")
+                self._status.setText(f"Layer shape {seed.shape} != project shape {frame_shape}")
                 return
 
-            tracked_stack = np.zeros((n_frames,) + frame_shape, dtype=np.uint32)
+            # Relabel to ensure track IDs are clean
             tracked_seed, mapping = _relabel_sequential(seed)
-            tracked_stack[0] = tracked_seed
+            self._tracked_stack[t] = tracked_seed
 
-            self._consensus_stack = consensus_stack
-            self._tracked_stack = tracked_stack
-            self._current_t = 0
-            self._seed_source = f"layer:{active_layer.name}"
-            self._h5_path = h5_path
-            self._track_rows = []
+            # Clear future and current track rows for this and subsequent timepoints to maintain consistency
+            self._track_rows = [row for row in self._track_rows if row["time"] < t]
 
             for src_label, track_id in mapping.items():
                 self._track_rows.append({
                     "track_id": track_id,
-                    "time": 0,
+                    "time": t,
                     "source_track_id": track_id,
                     "source_label_id": src_label,
                     "candidate_label_id": src_label,
                     "iou": 1.0,
                 })
 
+            self._current_t = t
             self._write_outputs()
             self._set_layer_data()
-            self._status.setText(f"Accepted {active_layer.name} as frame 0.")
+            self._status.setText(f"Accepted {active_layer.name} as frame {t}.")
 
         except Exception as exc:
             self._status.setText(f"Accept failed: {exc}")
