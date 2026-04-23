@@ -124,13 +124,18 @@ def _to_5d(data: np.ndarray, n_z: int = 1, n_p: int = 1) -> np.ndarray:
         res = data[:, np.newaxis, np.newaxis, ...]
     elif data.ndim == 4:  # (t, z, y, x) -> (t, z, 1, y, x)
         res = data[:, :, np.newaxis, ...]
-    else:
+    elif data.ndim == 5:
         res = data
+    else:
+        # Pad with leading singletons until at least 5D
+        res = data
+        while res.ndim < 5:
+            res = res[np.newaxis, ...]
 
     # 2. Broadcast singleton z/p axes to target counts if they are 1
     t, cur_z, cur_p, y, x = res.shape
-    target_z = n_z if cur_z == 1 else cur_z
-    target_p = n_p if cur_p == 1 else cur_p
+    target_z = max(cur_z, n_z) if cur_z == 1 else cur_z
+    target_p = max(cur_p, n_p) if cur_p == 1 else cur_p
     
     if target_z != cur_z or target_p != cur_p:
         return np.broadcast_to(res, (t, target_z, target_p, y, x))
@@ -792,7 +797,7 @@ class UltrackAnalysisWidget(QWidget):
             _update_layer(
                 self.viewer,
                 "Preview: Nucleus prob",
-                _to_5d(np.asarray(prob_2d, dtype=np.float32)),
+                _to_5d(np.asarray(prob_2d, dtype=np.float32), n_z=self._n_z, n_p=self._n_p),
                 kind="image",
                 colormap="gray",
                 blending="additive",
@@ -800,7 +805,7 @@ class UltrackAnalysisWidget(QWidget):
             _update_layer(
                 self.viewer,
                 "Preview: Nucleus flow mag",
-                _to_5d(np.asarray(flow_2d, dtype=np.float32)),
+                _to_5d(np.asarray(flow_2d, dtype=np.float32), n_z=self._n_z, n_p=self._n_p),
                 kind="image",
                 colormap="magma",
                 blending="additive",
@@ -809,7 +814,7 @@ class UltrackAnalysisWidget(QWidget):
             labels_layer = _update_layer(
                 self.viewer,
                 "Preview: Nucleus hypotheses",
-                _to_5d(labels),
+                _to_5d(labels, n_z=self._n_z, n_p=self._n_p),
                 kind="labels",
             )
             self.labels_loaded.emit(labels_layer)
