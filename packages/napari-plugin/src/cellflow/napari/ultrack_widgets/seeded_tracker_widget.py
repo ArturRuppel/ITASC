@@ -40,6 +40,20 @@ def _nucleus_ultrack_dir(root_dir, pos):
     return stage_dir(root_dir, pos, "nucleus_ultrack")
 
 
+def _to_5d(data: np.ndarray) -> np.ndarray:
+    """Promote 2D/3D/4D data to 5D (t, z, p, y, x) for consistent napari alignment."""
+    data = np.asarray(data)
+    if data.ndim == 2:  # (y, x) -> (1, 1, 1, y, x)
+        return data[np.newaxis, np.newaxis, np.newaxis, ...]
+    if data.ndim == 3:  # (t, y, x) -> (t, 1, 1, y, x)
+        return data[:, np.newaxis, np.newaxis, ...]
+    if data.ndim == 4:  # (t, z, y, x) -> (t, z, 1, y, x)
+        return data[:, :, np.newaxis, ...]
+    if data.ndim == 5:
+        return data
+    return data
+
+
 class SeededTrackerWidget(QWidget):
     """Compact bootstrap-and-advance tracker UI."""
 
@@ -156,7 +170,7 @@ class SeededTrackerWidget(QWidget):
         nuc_path = raw_dir / "nucleus_zavg.tif"
 
         if cell_path.exists():
-            cell_img = tifffile.imread(str(cell_path))
+            cell_img = _to_5d(tifffile.imread(str(cell_path)))
             layer_name = "Cell avg"
             if layer_name in self.viewer.layers:
                 self.viewer.layers[layer_name].data = cell_img
@@ -164,7 +178,7 @@ class SeededTrackerWidget(QWidget):
                 self.viewer.add_image(cell_img, name=layer_name, colormap="gray")
 
         if nuc_path.exists():
-            nuc_img = tifffile.imread(str(nuc_path))
+            nuc_img = _to_5d(tifffile.imread(str(nuc_path)))
             layer_name = "Nucleus avg"
             if layer_name in self.viewer.layers:
                 layer = self.viewer.layers[layer_name]
@@ -196,8 +210,9 @@ class SeededTrackerWidget(QWidget):
         if h5_path.exists():
             from cellflow.ultrack.hypotheses import load_medoid_stack
             medoid_yxt = load_medoid_stack(h5_path)  # (Y, X, T)
-            consensus_stack = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)  # (T, Y, X)
-            seed = consensus_stack[0]
+            # Consensus from H5 is (T, Y, X) -> (T, 1, 1, Y, X)
+            consensus_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32))
+            seed = consensus_stack[0, 0, 0]
             seed_source = "medoid_stack:h5"
             self._h5_path = h5_path
         else:
@@ -205,20 +220,14 @@ class SeededTrackerWidget(QWidget):
             labelmaps, consensus_stack, seed, seed_source = build_seeded_tracker_inputs(out_dir)
             if not labelmaps:
                 raise FileNotFoundError(f"No hypothesis labelmaps found in {out_dir}")
+            consensus_stack = _to_5d(consensus_stack)
             seed = _frame_to_2d(seed)
 
-        if consensus_stack.ndim == 2:
-            n_frames = 1
-            frame_shape = seed.shape
-        else:
-            n_frames = int(consensus_stack.shape[0])
-            frame_shape = _frame_to_2d(consensus_stack[0]).shape
+        n_frames = consensus_stack.shape[0]
+        frame_shape = consensus_stack.shape[3:] # (Y, X)
 
-        if seed.shape != frame_shape:
-            raise ValueError(f"Seed shape {seed.shape} does not match frame shape {frame_shape}")
-
-        tracked_stack = np.zeros((n_frames,) + frame_shape, dtype=np.uint32)
-        tracked_stack[0] = _relabel_sequential(seed)[0]
+        tracked_stack = np.zeros(consensus_stack.shape, dtype=np.uint32)
+        tracked_stack[0, 0, 0] = _relabel_sequential(seed)[0]
 
         self._consensus_stack = consensus_stack
         self._tracked_stack = tracked_stack
@@ -259,18 +268,32 @@ class SeededTrackerWidget(QWidget):
     def _current_frame(self) -> np.ndarray:
         if self._tracked_stack is None:
             raise RuntimeError("Bootstrap the tracker first.")
+        
+        data = self._tracked_stack
         if self._tracked_layer is not None and self._tracked_layer in self.viewer.layers:
             data = np.asarray(self._tracked_layer.data, dtype=np.uint32)
-            if data.ndim >= 3 and self._current_t < data.shape[0]:
-                return np.asarray(data[self._current_t], dtype=np.uint32)
-        return np.asarray(self._tracked_stack[self._current_t], dtype=np.uint32)
+        
+        # We always work with 2D slices for matching logic currently
+        # data is (T, Z, P, Y, X)
+        z = 0
+        p = 0
+        if len(self.viewer.dims.current_step) >= 3:
+            z = self.viewer.dims.current_step[1]
+            p = self.viewer.dims.current_step[2]
+
+        return np.asarray(data[self._current_t, z, p], dtype=np.uint32)
 
     def _candidate_frame(self, frame_index: int) -> np.ndarray:
         if self._consensus_stack is None:
             raise RuntimeError("Bootstrap the tracker first.")
-        if self._consensus_stack.ndim == 2:
-            return _frame_to_2d(self._consensus_stack)
-        return _frame_to_2d(self._consensus_stack[frame_index])
+        
+        z = 0
+        p = 0
+        if len(self.viewer.dims.current_step) >= 3:
+            z = self.viewer.dims.current_step[1]
+            p = self.viewer.dims.current_step[2]
+            
+        return np.asarray(self._consensus_stack[frame_index, z, p], dtype=np.uint32)
 
     def _set_layer_data(self) -> None:
         if self._tracked_stack is None:
@@ -282,6 +305,11 @@ class SeededTrackerWidget(QWidget):
             self._tracked_layer = self.viewer.layers[layer_name]
         else:
             self._tracked_layer = self.viewer.add_labels(data, name=layer_name)
+        
+        try:
+            self.viewer.dims.axis_labels = ("t", "z", "param", "y", "x")
+        except Exception:
+            pass
 
     def _write_outputs(self) -> dict[str, object] | None:
         out_dir = self._output_dir()
@@ -349,9 +377,15 @@ class SeededTrackerWidget(QWidget):
             self._status.setText("hypotheses.h5 not found. Run sweep first.")
             return
 
-        # Determine current t from viewer
+        # Determine current t, z, p from viewer
         t = 0
-        if len(self.viewer.dims.current_step) > 0:
+        z = 0
+        p = 0
+        if len(self.viewer.dims.current_step) >= 3:
+            t = self.viewer.dims.current_step[0]
+            z = self.viewer.dims.current_step[1]
+            p = self.viewer.dims.current_step[2]
+        elif len(self.viewer.dims.current_step) > 0:
             t = self.viewer.dims.current_step[0]
 
         self.run_started.emit()
@@ -360,21 +394,25 @@ class SeededTrackerWidget(QWidget):
             if self._tracked_stack is None:
                 from cellflow.ultrack.hypotheses import load_medoid_stack
                 medoid_yxt = load_medoid_stack(h5_path)
-                self._consensus_stack = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)
+                self._consensus_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32))
                 self._tracked_stack = np.zeros_like(self._consensus_stack, dtype=np.uint32)
                 self._h5_path = h5_path
                 self._track_rows = []
 
             n_frames = self._tracked_stack.shape[0]
-            frame_shape = self._tracked_stack.shape[1:]
+            frame_shape = self._tracked_stack.shape[3:] # (Y, X)
 
             if t < 0 or t >= n_frames:
                 self._status.setText(f"Time {t} out of range (0-{n_frames-1})")
                 return
 
             seed = np.asarray(active_layer.data, dtype=np.uint32)
-            if seed.ndim == 3:
-                # If the active layer is a stack, take the current timepoint
+            # Active layer might be 2D, 3D (T, Y, X), 4D (T, Z, Y, X) or 5D (T, Z, P, Y, X)
+            if seed.ndim == 5:
+                seed = seed[t, z, p]
+            elif seed.ndim == 4:
+                seed = seed[t, z]
+            elif seed.ndim == 3:
                 seed = seed[t]
 
             if seed.shape != frame_shape:
@@ -383,7 +421,7 @@ class SeededTrackerWidget(QWidget):
 
             # Relabel to ensure track IDs are clean
             tracked_seed, mapping = _relabel_sequential(seed)
-            self._tracked_stack[t] = tracked_seed
+            self._tracked_stack[t, z, p] = tracked_seed
 
             # Clear future and current track rows for this and subsequent timepoints to maintain consistency
             self._track_rows = [row for row in self._track_rows if row["time"] < t]
@@ -415,7 +453,7 @@ class SeededTrackerWidget(QWidget):
             self._status.setText("Bootstrap the tracker first.")
             return
 
-        # Synchronize current time with viewer's current step to allow re-tracking from any frame
+        # Synchronize current time with viewer's current step
         if len(self.viewer.dims.current_step) > 0:
             t = self.viewer.dims.current_step[0]
             if 0 <= t < self._tracked_stack.shape[0]:
@@ -431,8 +469,15 @@ class SeededTrackerWidget(QWidget):
         current = self._current_frame()
         next_index = self._current_t + 1
 
-        # Truncate track rows for this and future frames to keep CSV consistent when re-tracking
+        # Truncate track rows for this and future frames
         self._track_rows = [row for row in self._track_rows if row["time"] < next_index]
+
+        # Use the viewer's current Z, P for the next frame too
+        z = 0
+        p = 0
+        if len(self.viewer.dims.current_step) >= 3:
+            z = self.viewer.dims.current_step[1]
+            p = self.viewer.dims.current_step[2]
 
         if self._h5_path is not None and self._h5_path.exists():
             self._status.setText(f"Matching frame {next_index} via H5 candidates…")
@@ -447,7 +492,7 @@ class SeededTrackerWidget(QWidget):
             candidate = self._candidate_frame(next_index)
             next_frame, rows = _match_frame(current, _relabel_sequential(candidate)[0])
 
-        self._tracked_stack[next_index] = next_frame
+        self._tracked_stack[next_index, z, p] = next_frame
         for row in rows:
             row["time"] = next_index
             self._track_rows.append(row)
@@ -499,7 +544,7 @@ class SeededTrackerWidget(QWidget):
 
         try:
             stack, rows, state = load_tracked_from_h5(h5_path)
-            self._tracked_stack = stack
+            self._tracked_stack = _to_5d(stack)
             self._track_rows = rows
             self._current_t = state.get("current_time", 0)
             self._seed_source = state.get("seed_source", "unknown")
@@ -507,7 +552,7 @@ class SeededTrackerWidget(QWidget):
 
             from cellflow.ultrack.hypotheses import load_medoid_stack
             medoid_yxt = load_medoid_stack(h5_path)
-            self._consensus_stack = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)
+            self._consensus_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32))
 
             self._set_layer_data()
             self._status.setText(f"Loaded tracked results from {h5_path.name}.")
@@ -515,17 +560,3 @@ class SeededTrackerWidget(QWidget):
             self._status.setText(f"Load failed: {exc}")
 
     def _on_reset(self) -> None:
-        self._consensus_stack = None
-        self._tracked_stack = None
-        self._track_rows = []
-        self._current_t = -1
-        self._next_track_id = 1
-        self._seed_source = "consensus"
-        self._tracked_layer = None
-        self._h5_path = None
-        try:
-            if "tracked_labels" in self.viewer.layers:
-                self.viewer.layers.remove(self.viewer.layers["tracked_labels"])
-        except Exception:
-            pass
-        self._status.setText("Tracker reset.")

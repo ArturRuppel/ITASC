@@ -114,6 +114,20 @@ def _normalize_01(arr: np.ndarray) -> np.ndarray:
     return scaled.astype(np.float32)
 
 
+def _to_5d(data: np.ndarray) -> np.ndarray:
+    """Promote 2D/3D/4D data to 5D (t, z, p, y, x) for consistent napari alignment."""
+    data = np.asarray(data)
+    if data.ndim == 2:  # (y, x) -> (1, 1, 1, y, x)
+        return data[np.newaxis, np.newaxis, np.newaxis, ...]
+    if data.ndim == 3:  # (t, y, x) -> (t, 1, 1, y, x)
+        return data[:, np.newaxis, np.newaxis, ...]
+    if data.ndim == 4:  # (t, z, y, x) -> (t, z, 1, y, x)
+        return data[:, :, np.newaxis, ...]
+    if data.ndim == 5:
+        return data
+    return data
+
+
 def _update_layer(viewer, name: str, data: np.ndarray, *, kind: str = "image", **kwargs):
     data = np.asarray(data).copy()
     if name in viewer.layers:
@@ -767,7 +781,7 @@ class UltrackAnalysisWidget(QWidget):
             _update_layer(
                 self.viewer,
                 "Preview: Nucleus prob",
-                np.asarray(prob_2d, dtype=np.float32),
+                _to_5d(np.asarray(prob_2d, dtype=np.float32)),
                 kind="image",
                 colormap="gray",
                 blending="additive",
@@ -775,7 +789,7 @@ class UltrackAnalysisWidget(QWidget):
             _update_layer(
                 self.viewer,
                 "Preview: Nucleus flow mag",
-                np.asarray(flow_2d, dtype=np.float32),
+                _to_5d(np.asarray(flow_2d, dtype=np.float32)),
                 kind="image",
                 colormap="magma",
                 blending="additive",
@@ -784,7 +798,7 @@ class UltrackAnalysisWidget(QWidget):
             labels_layer = _update_layer(
                 self.viewer,
                 "Preview: Nucleus hypotheses",
-                labels,
+                _to_5d(labels),
                 kind="labels",
             )
             self.labels_loaded.emit(labels_layer)
@@ -931,7 +945,7 @@ class UltrackAnalysisWidget(QWidget):
             from cellflow.ultrack.hypotheses import load_medoid_stack
 
             medoid_yxt = load_medoid_stack(path)  # (Y, X, T)
-            medoid_tyx = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)  # (T, Y, X)
+            medoid_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32))  # (T, 1, 1, Y, X)
         except Exception as exc:
             self._status.setText(f"Medoid load error: {exc}")
             return
@@ -939,12 +953,16 @@ class UltrackAnalysisWidget(QWidget):
         layer_name = "Medoids: Nucleus hypotheses"
         if layer_name in self.viewer.layers:
             self.viewer.layers.remove(layer_name)
-        layer = self.viewer.add_labels(medoid_tyx, name=layer_name)
+        layer = self.viewer.add_labels(medoid_stack, name=layer_name)
+        try:
+            self.viewer.dims.axis_labels = ("t", "z", "param", "y", "x")
+        except Exception:
+            pass
         layer.refresh()
         self.labels_loaded.emit(layer)
 
-        n_t = medoid_tyx.shape[0]
-        self._status.setText(f"Loaded medoid stack: {n_t} frames, shape={medoid_tyx.shape}")
+        n_t = medoid_stack.shape[0]
+        self._status.setText(f"Loaded medoid stack: {n_t} frames, shape={medoid_stack.shape}")
 
     def _on_show_slice(self) -> None:
         pass  # navigation is handled by napari's own sliders
@@ -980,7 +998,11 @@ class UltrackAnalysisWidget(QWidget):
         promote_name = "Nuclear labels (from HDF5)"
         if promote_name in self.viewer.layers:
             self.viewer.layers.remove(promote_name)
-        layer = self.viewer.add_labels(labels, name=promote_name)
+        layer = self.viewer.add_labels(_to_5d(labels), name=promote_name)
+        try:
+            self.viewer.dims.axis_labels = ("t", "z", "param", "y", "x")
+        except Exception:
+            pass
         layer.refresh()
         self.labels_loaded.emit(layer)
 
