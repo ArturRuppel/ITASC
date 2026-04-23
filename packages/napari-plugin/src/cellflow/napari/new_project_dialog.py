@@ -215,11 +215,8 @@ _DIR_DESCRIPTIONS: List[tuple[str, List[str]]] = [
     (
         "2_nucleus_ultrack/",
         [
-            "Nucleus Ultrack outputs  [step 2]",
-            "  data.db                  Ultrack SQLite database",
-            "  tracks.csv",
-            "  tracked_labels.tif       (T, Z, H, W) uint32",
-            "  nuclear_labels_2d.tif    (T, H, W)    uint32  — max-proj of tracked_labels",
+            "Nucleus Hypotheses outputs  [step 2]",
+            "  hypotheses.h5",
             "  hypotheses_manifest.json",
             "  labelmaps/labelmap_*.tif",
         ],
@@ -320,9 +317,9 @@ def _write_pipeline_layout(
     lines += [
         "",
         "Notes:",
-        "  - nuclear_labels_2d.tif is produced by the nucleus Ultrack stage as a",
-        "    max-projection of tracked_labels.tif along Z; it is the input",
-        "    to the correction step.",
+        "  - nuclear_labels_2d.tif is produced by the nucleus hypothesis/tracking",
+        "    stage as a max-projection of tracked_labels.tif along Z; it is the",
+        "    input to the correction step.",
         "  - nuclear_labels_corrected.tif is the final output of the correction",
         "    step; it is the input to cell Ultrack.",
         "  - Pixel size (µm) and time interval are read from acquisition",

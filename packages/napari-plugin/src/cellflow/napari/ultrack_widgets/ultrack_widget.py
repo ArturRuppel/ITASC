@@ -50,6 +50,7 @@ from cellflow.ultrack.stages.tracking import (
     run_linking,
     run_solve,
 )
+from cellflow.napari.ultrack_widgets.seeded_tracker_widget import SeededTrackerWidget
 
 
 # Nucleus Ultrack outputs live in the stage directory.
@@ -115,6 +116,9 @@ class UltrackAnalysisWidget(QWidget):
         # ── Build stage sections ─────────────────────────────────────────
         lay.addWidget(self._build_cp_contours_section())
         lay.addWidget(self._build_seg_hypotheses_section())
+        self._seeded_tracker_tab = SeededTrackerWidget(self.viewer, log_viewer=log_viewer)
+        self._seeded_tracker_tab.run_started.connect(self.run_started.emit)
+        lay.addWidget(self._seeded_tracker_tab)
         lay.addWidget(self._build_linking_section())
         lay.addWidget(self._build_solver_section())
 
@@ -785,7 +789,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_iou_weight.setDecimals(2)
         self._tr_iou_weight.setValue(1.0)
         self._tr_iou_weight.setToolTip(
-            "Blend used by the custom IoU linker: 0 = distance-only, 1 = IoU-only."
+            "Blend used by the custom IoU linker: 0 = distance-only, 1 = centroid-aligned IoU-only."
         )
         row.addWidget(self._tr_iou_weight)
         row.addWidget(QLabel("Min IoU"))

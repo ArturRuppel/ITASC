@@ -30,7 +30,7 @@ STAGE_ORDER: list[str] = [
 STAGE_DISPLAY_NAMES: Dict[str, str] = {
     "raw_import": "Input Export",
     "cellpose_cluster": "Cellpose Cluster",
-    "nucleus_ultrack": "Nucleus Ultrack",
+    "nucleus_ultrack": "Nucleus Hypotheses",
     "correction": "Correction",
     "cell_ultrack": "Cell Ultrack",
     "analysis": "Analysis",
@@ -42,7 +42,7 @@ STAGE_DISPLAY_NAMES: Dict[str, str] = {
 TAB_STAGE_KEYS: Dict[str, list[str]] = {
     "Prepare Input Data": ["raw_import"],
     "Cellpose Cluster": ["cellpose_cluster"],
-    "Nucleus Ultrack": ["nucleus_ultrack"],
+    "Nucleus Hypotheses": ["nucleus_ultrack"],
     "Correction": ["correction"],
     "Cell Ultrack": ["cell_ultrack"],
     "Analysis": ["analysis"],

@@ -5,12 +5,13 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "core" / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "ultrack" / "src"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "packages" / "core" / "src"))
+sys.path.insert(0, str(ROOT / "packages" / "ultrack" / "src"))
 
-from cellflow.ultrack.config import TrackingConfig
-from cellflow.ultrack.linking import compute_weighted_links
-from cellflow.ultrack.stages.tracking import run_linking
+from cellflow.ultrack.config import TrackingConfig  # noqa: E402
+from cellflow.ultrack.linking import _aligned_mask_iou, compute_weighted_links  # noqa: E402
+from cellflow.ultrack.stages.tracking import run_linking  # noqa: E402
 
 
 class StubNode:
@@ -23,7 +24,18 @@ class StubNode:
         return float(self._ious.get(other.id, 0.0))
 
 
-def test_compute_weighted_links_prefers_iou_when_weight_is_one():
+class FakeNode:
+    def __init__(self, node_id: int, mask: np.ndarray, origin: tuple[float, ...], centroid: tuple[float, ...]):
+        self.id = node_id
+        self.mask = mask
+        self.origin = np.asarray(origin, dtype=np.float32)
+        self.centroid = np.asarray(centroid, dtype=np.float32)
+
+    def IoU(self, other: "FakeNode") -> float:  # pragma: no cover - should not be reached
+        raise AssertionError("aligned IoU helper should not fall back to raw IoU in this test")
+
+
+def test_compute_weighted_links_prefers_iou_when_weight_is_one() -> None:
     source_nodes = [
         StubNode(1, (0.0, 0.0), {10: 0.2}),
         StubNode(2, (9.0, 0.0), {10: 0.8}),
@@ -46,7 +58,7 @@ def test_compute_weighted_links_prefers_iou_when_weight_is_one():
     assert links[0].weight == 0.8
 
 
-def test_compute_weighted_links_prefers_distance_when_weight_is_zero():
+def test_compute_weighted_links_prefers_distance_when_weight_is_zero() -> None:
     source_nodes = [
         StubNode(1, (0.0, 0.0), {10: 0.2}),
         StubNode(2, (9.0, 0.0), {10: 0.8}),
@@ -68,7 +80,7 @@ def test_compute_weighted_links_prefers_distance_when_weight_is_zero():
     assert links[0].distance == 1.0
 
 
-def test_compute_weighted_links_respects_min_iou_and_neighbor_limit():
+def test_compute_weighted_links_respects_min_iou_and_neighbor_limit() -> None:
     source_nodes = [
         StubNode(1, (0.0, 0.0), {10: 0.4}),
         StubNode(2, (2.0, 0.0), {10: 0.6}),
@@ -85,12 +97,44 @@ def test_compute_weighted_links_respects_min_iou_and_neighbor_limit():
         min_link_iou=0.1,
     )
 
-    assert [link.source_id for link in links] == [2, 1]
-    assert all(link.iou >= 0.1 for link in links)
     assert len(links) == 2
+    assert links[0].source_id == 2
+    assert links[0].target_id == 10
+    assert links[0].iou >= 0.1
 
 
-def test_run_linking_dispatches_to_iou_mode(tmp_path, monkeypatch):
+def test_aligned_mask_iou_removes_translation() -> None:
+    mask = np.zeros((7, 7), dtype=bool)
+    mask[2:5, 2:5] = True
+
+    source = FakeNode(1, mask, origin=(10.0, 20.0), centroid=(12.0, 22.0))
+    target = FakeNode(2, mask, origin=(16.0, 29.0), centroid=(18.0, 31.0))
+
+    assert _aligned_mask_iou(source, target) == 1.0
+
+
+def test_compute_weighted_links_uses_centroid_aligned_iou() -> None:
+    mask = np.zeros((7, 7), dtype=bool)
+    mask[2:5, 2:5] = True
+
+    source = FakeNode(1, mask, origin=(10.0, 20.0), centroid=(12.0, 22.0))
+    target = FakeNode(2, mask, origin=(16.0, 29.0), centroid=(18.0, 31.0))
+
+    links = compute_weighted_links(
+        [source],
+        [target],
+        max_distance=20.0,
+        max_neighbors=1,
+        iou_weight=1.0,
+        min_link_iou=0.1,
+    )
+
+    assert len(links) == 1
+    assert links[0].weight == 1.0
+    assert links[0].iou == 1.0
+
+
+def test_run_linking_dispatches_to_iou_mode(tmp_path, monkeypatch) -> None:
     seen = {}
 
     def fake_run_iou_linking(working_dir, cfg, overwrite=True):

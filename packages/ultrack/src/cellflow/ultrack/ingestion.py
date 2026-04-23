@@ -10,6 +10,8 @@ import numpy as np
 import tifffile
 from scipy.ndimage import gaussian_filter
 
+from cellflow.ultrack.hypotheses import iter_hypothesis_records
+
 
 def _contours_from_2d_labels(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Convert a 2D label frame into foreground and contour maps."""
@@ -198,7 +200,12 @@ def write_hypothesis_labelmaps(
     for index, labels in enumerate(labelmaps):
         labels = np.asarray(labels, dtype=np.uint32)
         rel_path = Path("labelmaps") / f"labelmap_{index:03d}.tif"
-        tifffile.imwrite(str(out / rel_path), labels, compression="zlib")
+        tifffile.imwrite(
+            str(out / rel_path),
+            labels,
+            compression="zlib",
+            photometric="minisblack",
+        )
         entries.append(
             {
                 "index": index,
@@ -219,6 +226,36 @@ def load_hypothesis_labelmaps(
 ) -> tuple[list[np.ndarray], dict[str, object]]:
     """Load label hypotheses and their manifest from a stage directory."""
     inp = Path(input_dir)
+    h5_path = inp / "hypotheses.h5"
+    if h5_path.exists():
+        labelmaps: list[np.ndarray] = []
+        manifest: dict[str, object] = {
+            "version": 2,
+            "stage": "nucleus_hypotheses",
+            "source": "hypotheses.h5",
+            "labelmap_count": 0,
+            "labelmaps": [],
+            "format": "hdf5",
+            "path": h5_path.name,
+        }
+        entries: list[dict[str, object]] = []
+        for record in iter_hypothesis_records(h5_path):
+            labelmaps.append(np.asarray(record.labels, dtype=np.uint32))
+            entries.append(
+                {
+                    "t": record.t,
+                    "z": record.z,
+                    "p": record.p,
+                    "path": f"hypotheses/t{record.t:03d}/z{record.z:03d}/p{record.p:03d}/labels",
+                    "shape": list(np.asarray(record.labels).shape),
+                    "dtype": str(np.asarray(record.labels).dtype),
+                    "params": record.params.to_dict(),
+                }
+            )
+        manifest["labelmap_count"] = len(labelmaps)
+        manifest["labelmaps"] = entries
+        return labelmaps, manifest
+
     manifest_path = inp / "hypotheses_manifest.json"
     labelmaps: list[np.ndarray] = []
 

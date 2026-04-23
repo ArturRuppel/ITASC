@@ -99,7 +99,7 @@ class CellFlowWidget(QWidget):
         # ========== Accordion sections ==========
         from .ultrack_widgets.data_prep import DataPrepWidget
         from .ultrack_widgets.cellpose import CellposeWidget
-        from .ultrack_widgets.ultrack_widget import UltrackAnalysisWidget
+        from .ultrack_widgets.nucleus_hypotheses_widget import UltrackAnalysisWidget
 
         self._data_prep_widget = DataPrepWidget(self.viewer, log_viewer=self._log_viewer)
         self._data_prep_section = CollapsibleSection(
@@ -115,7 +115,7 @@ class CellFlowWidget(QWidget):
 
         self._ultrack_tab = UltrackAnalysisWidget(self.viewer, log_viewer=self._log_viewer)
         self._ultrack_section = CollapsibleSection(
-            "Nucleus Ultrack", self._ultrack_tab, expanded=False
+            "Nucleus Hypotheses", self._ultrack_tab, expanded=False
         )
         _plugin_layout.addWidget(self._ultrack_section)
 
@@ -195,7 +195,7 @@ class CellFlowWidget(QWidget):
         cfg = {"version": _CONFIG_VERSION}
         cfg["data_prep"] = self._data_prep_widget.get_params()
         cfg["cellpose_cluster"] = self._cellpose_tab.get_params()
-        cfg["nucleus_ultrack"] = self._ultrack_tab.get_params()
+        cfg["nucleus_hypotheses"] = self._ultrack_tab.get_params()
         cfg["correction"] = self._tracking_correction_widget.get_params()
         cfg["cell_ultrack"] = {
             "cell_segmentation": self._cell_seg_tab.get_params(),
@@ -216,7 +216,9 @@ class CellFlowWidget(QWidget):
             self._cellpose_tab.set_params({
                 k: data[k] for k in ("cellpose_nucleus", "cellpose_cell") if k in data
             })
-        if "nucleus_ultrack" in data:
+        if "nucleus_hypotheses" in data:
+            self._ultrack_tab.set_params(data["nucleus_hypotheses"])
+        elif "nucleus_ultrack" in data:
             self._ultrack_tab.set_params(data["nucleus_ultrack"])
         elif "ultrack" in data:
             self._ultrack_tab.set_params(data["ultrack"])
@@ -348,7 +350,7 @@ class CellFlowWidget(QWidget):
         return {
             "Prepare Input Data": self._data_prep_section,
             "Cellpose Cluster": self._cellpose_section,
-            "Nucleus Ultrack":    self._ultrack_section,
+            "Nucleus Hypotheses": self._ultrack_section,
             "Correction":         self._correction_section,
             "Cell Ultrack":       self._cell_ultrack_section,
             "Analysis":           self._analysis_section,

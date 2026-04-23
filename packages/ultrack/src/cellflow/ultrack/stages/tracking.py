@@ -10,6 +10,14 @@ from typing import Generator, Sequence
 import numpy as np
 import tifffile
 
+from cellflow.ultrack.hypotheses import (
+    NucleusHypothesisSweepSpec,
+    build_parameter_sets,
+    compute_medoid_stack,
+    iter_hypothesis_records_from_stacks,
+    write_hypothesis_sweep_h5,
+    write_medoid_stack,
+)
 from cellflow.ultrack.config import TrackingConfig
 from cellflow.ultrack.ingestion import (
     labels_batch_to_foreground_contours,
@@ -333,6 +341,91 @@ def run_nucleus_ultrack(
     )
 
 
+def run_nucleus_hypothesis_sweep(
+    root_dir: str | Path,
+    pos: int,
+    spec: NucleusHypothesisSweepSpec,
+    *,
+    seed_labels: np.ndarray | None = None,
+    overwrite: bool = True,
+) -> Generator[tuple[int, int, str], None, None]:
+    """Run the nucleus hypothesis sweep and persist it to ``hypotheses.h5``."""
+    root = Path(root_dir)
+    input_dir = stage_dir(root, pos, "cellpose_cluster")
+    output_dir = stage_dir(root, pos, "nucleus_ultrack")
+    output_path = output_dir / "hypotheses.h5"
+
+    dp_path = input_dir / "nucleus_dp_4d.tif"
+    if not dp_path.exists():
+        dp_path = input_dir / "nucleus_dp.tif"
+    prob_path = input_dir / "nucleus_prob_4d.tif"
+    if not prob_path.exists():
+        prob_path = input_dir / "nucleus_prob.tif"
+
+    if not dp_path.exists() or not prob_path.exists():
+        yield (0, 0, f"Missing nucleus DP/prob inputs in {input_dir}")
+        return
+
+    params = build_parameter_sets(spec)
+    if not params:
+        yield (0, 0, "No sweep parameters were generated")
+        return
+
+    try:
+        dp_stack = tifffile.imread(str(dp_path)).astype(np.float32)
+        raw_prob = tifffile.imread(str(prob_path)).astype(np.float32)
+        # Convert logits → probabilities to match the widget's preview path.
+        # Use clip to avoid float32 overflow in exp for extreme logit values.
+        prob_stack = 1.0 / (1.0 + np.exp(-np.clip(raw_prob, -88.0, 88.0)))
+
+        if seed_labels is None and spec.seed_source != "Peak local max":
+            corrected = stage_dir(root, pos, "correction") / "nuclear_labels_corrected.tif"
+            if corrected.exists():
+                seed_labels = tifffile.imread(str(corrected)).astype(np.int32)
+            else:
+                flat = stage_dir(root, pos, "nucleus_ultrack") / "nuclear_labels_2d.tif"
+                if flat.exists():
+                    seed_labels = tifffile.imread(str(flat)).astype(np.int32)
+
+        if seed_labels is None and spec.seed_source != "Peak local max":
+            yield (0, 0, "No seed labels available for hypothesis sweep")
+            return
+        if output_path.exists() and not overwrite:
+            yield (0, 0, f"{output_path.name} already exists, skipping")
+            return
+
+        records = list(iter_hypothesis_records_from_stacks(prob_stack, dp_stack, seed_labels, spec))
+        total = len(records)
+        if total == 0:
+            yield (0, 0, "Hypothesis sweep produced no records")
+            return
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        n_t_val = max((record.t for record in records), default=-1) + 1
+        write_hypothesis_sweep_h5(
+            output_path,
+            records,
+            overwrite=True,
+            stage="nucleus_hypotheses",
+            source="watershed_sweep",
+            n_t=n_t_val,
+            n_z=max((record.z for record in records), default=-1) + 1,
+            n_p=len(params),
+        )
+
+        medoid_stack = compute_medoid_stack(records, n_t_val)
+        import h5py as _h5py
+        with _h5py.File(output_path, "a") as _h5:
+            write_medoid_stack(_h5, medoid_stack)
+
+        for i, record in enumerate(records, start=1):
+            yield (i, total, f"t={record.t} z={record.z} p={record.p} basin={record.params.basin}")
+
+        yield (total, total, f"Saved {total} hypothesis labelmaps to {output_path.name}")
+    except Exception as exc:
+        yield (0, 0, f"Sweep error: {exc}")
+
+
 def run_linking(
     working_dir: str | Path,
     cfg: TrackingConfig,
@@ -376,39 +469,13 @@ def run_solve(
     cfg: TrackingConfig,
     overwrite: bool = True,
 ) -> Generator[tuple[int, int, str], None, None]:
-    """Run only the solve (ILP) step and export results.
+    """Run the seeded tracker and export results.
 
     Yields ``(step, total_steps, status_label)``.
     """
-    from ultrack.core.solve.processing import solve
-    from ultrack.core.solve.sqltracking import SQLTracking
-    from ultrack.core.export.tracks_layer import to_tracks_layer
-    from cellflow.ultrack.stages.project2d import export_nuclear_labels_2d
+    from cellflow.ultrack.stages.seeded_tracker import run_seeded_tracker
 
-    total = 6
-    wd = Path(working_dir)
-    ultrack_cfg = _build_ultrack_config(cfg, wd)
-
-    if overwrite:
-        yield (0, total, "Clearing existing solution from DB…")
-        SQLTracking.clear_solution_from_database(ultrack_cfg.data_config.database_path)
-    else:
-        yield (0, total, "Skipping DB clear (overwrite=False)…")
-
-    yield (1, total, "Running ILP solve…")
-    solve(ultrack_cfg)
-
-    yield (2, total, "Exporting tracks CSV…")
-    tracks_df, _ = to_tracks_layer(ultrack_cfg)
-    tracks_df.to_csv(str(wd / "tracks.csv"), index=True)
-
-    yield (3, total, "Exporting tracked labels…")
-    export_tracked_labels(wd, cfg, wd / "tracked_labels.tif")
-
-    yield (4, total, "Projecting tracked labels to 2D…")
-    export_nuclear_labels_2d(wd / "tracked_labels.tif", wd / "nuclear_labels_2d.tif")
-
-    yield (total, total, "Solve done.")
+    yield from run_seeded_tracker(working_dir, cfg, overwrite=overwrite)
 
 
 def run(
@@ -486,7 +553,7 @@ if __name__ == "__main__":
         description="s03 — run Ultrack tracking pipeline from the command line",
     )
     parser.add_argument("--stage", default="all",
-                        choices=["all", "segmentation", "linking", "solve"],
+                        choices=["all", "segmentation", "linking", "solve", "seeded_tracker"],
                         help="Which stage to run (default: all)")
     parser.add_argument("--foreground", default=None, help="Path to foreground.tif stack")
     parser.add_argument("--contours", default=None, help="Path to contours.tif stack")
@@ -518,6 +585,10 @@ if __name__ == "__main__":
         gen = run_linking(args.working_dir, cfg, overwrite=cfg.overwrite_linking)
     elif args.stage == "solve":
         gen = run_solve(args.working_dir, cfg, overwrite=cfg.overwrite_solve)
+    elif args.stage == "seeded_tracker":
+        from cellflow.ultrack.stages.seeded_tracker import run_seeded_tracker
+
+        gen = run_seeded_tracker(args.working_dir, cfg, overwrite=cfg.overwrite_solve)
     else:
         parser.error(f"Unknown stage: {args.stage}")
 
@@ -555,13 +626,16 @@ class _TrackingStageClass:
 
         stage_path = stage_dir(root_dir, pos, "nucleus_ultrack")
         manifest = stage_path / "hypotheses_manifest.json"
+        h5_path = stage_path / "hypotheses.h5"
         labelmap_dir = stage_path / "labelmaps"
         labelmaps = sorted(labelmap_dir.glob("labelmap_*.tif")) if labelmap_dir.exists() else []
-        if not manifest.exists() and not labelmaps:
+        if not manifest.exists() and not h5_path.exists() and not labelmaps:
             return ValidationResult(
                 ok=False,
-                errors=[f"No hypotheses_manifest.json or labelmaps/labelmap_*.tif in {stage_path}"],
+                errors=[f"No hypotheses_manifest.json, hypotheses.h5, or labelmaps/labelmap_*.tif in {stage_path}"],
             )
+        if h5_path.exists():
+            return validate_inputs([h5_path])
         return validate_inputs([manifest] if manifest.exists() else labelmaps)
 
     def is_complete(self, root_dir, pos) -> bool:

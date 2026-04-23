@@ -35,6 +35,107 @@ class WeightedLink:
     distance: float
 
 
+def _node_mask(node) -> np.ndarray | None:
+    """Return the node mask as a boolean array when available."""
+    mask = getattr(node, "mask", None)
+    if mask is None:
+        return None
+    mask = np.asarray(mask, dtype=bool)
+    return mask if mask.ndim > 0 else None
+
+
+def _centroid_tail(centroid: np.ndarray, ndim: int) -> np.ndarray:
+    """Return the spatial tail of a centroid vector."""
+    centroid = np.asarray(centroid, dtype=np.float32).reshape(-1)
+    if centroid.size < ndim:
+        raise ValueError("centroid has fewer dimensions than the mask")
+    return centroid[-ndim:]
+
+
+def _node_origin(node, ndim: int) -> np.ndarray | None:
+    """Return the crop origin for a node when it is exposed by the object."""
+    for attr in ("origin", "offset", "bbox_start", "bbox_min", "start"):
+        value = getattr(node, attr, None)
+        if value is None:
+            continue
+        arr = np.asarray(value, dtype=np.float32).reshape(-1)
+        if arr.size >= ndim:
+            return arr[-ndim:]
+
+    bbox = getattr(node, "bbox", None)
+    if bbox is None:
+        return None
+
+    if isinstance(bbox, tuple) and bbox and all(hasattr(item, "start") for item in bbox):
+        starts = [0.0 if item.start is None else float(item.start) for item in bbox]
+        arr = np.asarray(starts, dtype=np.float32).reshape(-1)
+        if arr.size >= ndim:
+            return arr[-ndim:]
+
+    arr = np.asarray(bbox, dtype=np.float32).reshape(-1)
+    if arr.size >= ndim:
+        return arr[-ndim:]
+    return None
+
+
+def _aligned_mask_iou(source: _LinkNode, target: _LinkNode) -> float:
+    """Compute IoU after translating the target centroid onto the source centroid.
+
+    This keeps the overlap term focused on shape agreement instead of folding in
+    pure translation, which is already captured by the centroid-distance term.
+    """
+    source_mask = _node_mask(source)
+    target_mask = _node_mask(target)
+    if source_mask is None or target_mask is None:
+        return float(source.IoU(target))
+    if source_mask.ndim != target_mask.ndim or source_mask.ndim == 0:
+        return float(source.IoU(target))
+
+    if not source_mask.any() or not target_mask.any():
+        return 0.0
+
+    ndim = int(source_mask.ndim)
+    source_origin = _node_origin(source, ndim)
+    target_origin = _node_origin(target, ndim)
+    if source_origin is None or target_origin is None:
+        return float(source.IoU(target))
+
+    source_coords = np.argwhere(source_mask).astype(np.float32)
+    target_coords = np.argwhere(target_mask).astype(np.float32)
+    source_coords = source_coords + source_origin
+    target_coords = target_coords + target_origin
+
+    # Translate the target mask so its centroid matches the source centroid.
+    centroid_shift = _centroid_tail(source.centroid, ndim) - _centroid_tail(target.centroid, ndim)
+    target_coords = target_coords + centroid_shift
+
+    all_coords = np.vstack([source_coords, target_coords])
+    mins = np.floor(all_coords.min(axis=0)).astype(int) - 1
+    maxs = np.ceil(all_coords.max(axis=0)).astype(int) + 1
+    shape = tuple((maxs - mins + 1).tolist())
+    if any(dim <= 0 for dim in shape):
+        return 0.0
+
+    def _rasterize(coords: np.ndarray) -> np.ndarray:
+        canvas = np.zeros(shape, dtype=bool)
+        idx = np.rint(coords - mins).astype(int)
+        valid = np.ones(len(idx), dtype=bool)
+        for axis, size in enumerate(shape):
+            valid &= (idx[:, axis] >= 0) & (idx[:, axis] < size)
+        idx = idx[valid]
+        if idx.size:
+            canvas[tuple(idx.T)] = True
+        return canvas
+
+    source_canvas = _rasterize(source_coords)
+    target_canvas = _rasterize(target_coords)
+    union = np.logical_or(source_canvas, target_canvas).sum()
+    if union == 0:
+        return 0.0
+    inter = np.logical_and(source_canvas, target_canvas).sum()
+    return float(inter / union)
+
+
 def _blend_link_score(iou: float, distance: float, max_distance: float, iou_weight: float) -> float:
     """Blend spatial proximity and IoU into a single link score.
 
@@ -136,7 +237,7 @@ def compute_weighted_links(
         neighborhood: list[tuple[float, float, float, int, int]] = []
         for source_idx, distance in candidates:
             source = source_nodes[source_idx]
-            iou = float(source.IoU(target))
+            iou = _aligned_mask_iou(source, target)
             if iou < float(min_link_iou):
                 continue
             weight = _blend_link_score(iou, distance, max_distance, iou_weight)
@@ -239,7 +340,7 @@ def run_iou_linking(
                 neighborhood: list[tuple[float, float, float, int, int]] = []
                 for source_idx, distance in candidates:
                     source = source_nodes[source_idx]
-                    iou = float(source.IoU(target))
+                    iou = _aligned_mask_iou(source, target)
                     if iou < float(cfg.min_link_iou):
                         continue
                     weight = _blend_link_score(iou, distance, float(cfg.max_distance), float(cfg.iou_weight))

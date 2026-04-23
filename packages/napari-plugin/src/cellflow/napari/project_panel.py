@@ -55,12 +55,10 @@ _TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
         ("1_cellpose/cell_dp_zavg.tif",     "Cell DP avg",        None),
         ("1_cellpose/cell_prob_zavg.tif",   "Cell prob avg",      "image"),
     ]),
-    ("Nucleus Ultrack", [
-        ("2_nucleus_ultrack/data.db",               "Ultrack DB",         None),
-        ("2_nucleus_ultrack/tracks.csv",            "Tracks CSV",         None),
-        ("2_nucleus_ultrack/tracked_labels.tif",    "Tracked labels",     None),
-        ("2_nucleus_ultrack/nuclear_labels_2d.tif", "Nuclear labels 2D",  "labels"),
+    ("Nucleus Hypotheses", [
+        ("2_nucleus_ultrack/hypotheses.h5", "Hypotheses HDF5", None),
         ("2_nucleus_ultrack/hypotheses_manifest.json", "Hypotheses manifest", None),
+        ("2_nucleus_ultrack/labelmaps/labelmap_*.tif", "Hypothesis labelmaps", "labels"),
     ]),
     ("Correction", [
         ("3_correction/nuclear_labels_corrected.tif", "Corrected labels", "labels"),
