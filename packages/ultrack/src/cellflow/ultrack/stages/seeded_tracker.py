@@ -89,6 +89,145 @@ def _label_masks(labels: np.ndarray) -> dict[int, np.ndarray]:
     return masks
 
 
+def _label_stats(labels: np.ndarray) -> dict[int, tuple[np.ndarray, int]]:
+    """Return {label_id: (centroid_yx, pixel_area)} for non-zero labels."""
+    from skimage.measure import regionprops
+    props = regionprops(labels.astype(np.int32, copy=False))
+    return {p.label: (np.array(p.centroid, dtype=np.float64), int(p.area)) for p in props}
+
+
+def _load_h5_candidates_for_time(
+    h5_path: "Path | str",
+    t: int,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Load all (z, p, labels_2d) hypothesis frames for time t from the H5 file."""
+    import h5py
+
+    results: list[tuple[int, int, np.ndarray]] = []
+    with h5py.File(Path(h5_path), "r") as h5:
+        if "hypotheses" not in h5:
+            return results
+        root = h5["hypotheses"]
+        t_name = f"t{t:03d}"
+        if t_name not in root:
+            return results
+        t_grp = root[t_name]
+        for z_name in sorted(t_grp.keys()):
+            if not z_name.startswith("z"):
+                continue
+            z_idx = int(z_name[1:])
+            z_grp = t_grp[z_name]
+            for p_name in sorted(z_grp.keys()):
+                if not p_name.startswith("p"):
+                    continue
+                p_idx = int(p_name[1:])
+                labels = np.asarray(z_grp[p_name]["labels"][:], dtype=np.uint32)
+                results.append((z_idx, p_idx, _frame_to_2d(labels)))
+    return results
+
+
+def match_frame_from_h5(
+    current: np.ndarray,
+    h5_path: "Path | str",
+    next_t: int,
+    *,
+    max_distance: float = 50.0,
+    max_size_deviation: float = 0.5,
+    n_workers: int | None = None,
+) -> tuple[np.ndarray, list[dict[str, object]]]:
+    """Match current labels to the best H5 hypothesis candidates for next_t.
+
+    For each label in *current*, all (z, p) candidate labels at *next_t* are
+    filtered by centroid-to-centroid distance and fractional size deviation.
+    IoU is computed against surviving candidates; the highest-scoring one wins.
+    Per-label scoring is parallelized across threads.  Final assignment is
+    greedy (sorted by track id) to avoid duplicate use of the same candidate.
+
+    Parameters
+    ----------
+    current:
+        Tracked label image at the current timepoint (2-D, uint32).
+    h5_path:
+        Path to ``hypotheses.h5``.
+    next_t:
+        Timepoint index to load from the H5 file.
+    max_distance:
+        Maximum centroid-to-centroid distance in pixels for a candidate to
+        be considered.
+    max_size_deviation:
+        Maximum fractional area difference (``|area_cand - area_cur| /
+        area_cur``) for a candidate to be considered.
+    n_workers:
+        Thread-pool size.  Defaults to ``min(32, cpu_count)``.
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    current = np.asarray(current, dtype=np.uint32)
+    current_masks = _label_masks(current)
+    if not current_masks:
+        return np.zeros_like(current), []
+
+    current_stats_map = _label_stats(current)
+    candidate_frames = _load_h5_candidates_for_time(h5_path, next_t)
+    if not candidate_frames:
+        return np.zeros_like(current), []
+
+    candidate_stats_list = [_label_stats(lbl2d) for (_, _, lbl2d) in candidate_frames]
+
+    if n_workers is None:
+        n_workers = min(32, os.cpu_count() or 1)
+
+    def _find_best(current_id: int):
+        cur_mask = current_masks[current_id]
+        cur_centroid, cur_area = current_stats_map[current_id]
+        best_score = 0.0
+        best = None
+        for frame_idx, ((z, p, cand_labels), cand_stats) in enumerate(
+            zip(candidate_frames, candidate_stats_list)
+        ):
+            for cand_id, (cand_centroid, cand_area) in cand_stats.items():
+                if np.linalg.norm(cur_centroid - cand_centroid) > max_distance:
+                    continue
+                if cur_area > 0 and abs(cand_area - cur_area) / cur_area > max_size_deviation:
+                    continue
+                cand_mask = cand_labels == cand_id
+                score = _iou(cur_mask, cand_mask)
+                if score > best_score:
+                    best_score = score
+                    best = (frame_idx, score, z, p, cand_id, cand_mask)
+        return current_id, best
+
+    per_label_best: dict[int, tuple] = {}
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = {executor.submit(_find_best, cid): cid for cid in sorted(current_masks)}
+        for future in as_completed(futures):
+            cid, result = future.result()
+            if result is not None:
+                per_label_best[cid] = result
+
+    # Greedy assignment in track-id order; (frame_idx, cand_id) is unique per candidate
+    assigned: set[tuple[int, int]] = set()
+    next_frame = np.zeros_like(current, dtype=np.uint32)
+    rows: list[dict[str, object]] = []
+
+    for current_id in sorted(per_label_best):
+        frame_idx, score, _z, _p, cand_id, cand_mask = per_label_best[current_id]
+        key = (frame_idx, cand_id)
+        if key in assigned:
+            continue
+        assigned.add(key)
+        next_frame[cand_mask] = current_id
+        rows.append({
+            "track_id": current_id,
+            "source_track_id": current_id,
+            "candidate_label_id": cand_id,
+            "iou": float(score),
+        })
+
+    return next_frame, rows
+
+
 def _foreground_iou(a: np.ndarray, b: np.ndarray) -> float:
     """Compute IoU on the foreground support of two full label images."""
     return _iou(np.asarray(a) > 0, np.asarray(b) > 0)

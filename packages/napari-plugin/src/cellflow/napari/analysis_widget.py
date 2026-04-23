@@ -100,6 +100,7 @@ class CellFlowWidget(QWidget):
         from .ultrack_widgets.data_prep import DataPrepWidget
         from .ultrack_widgets.cellpose import CellposeWidget
         from .ultrack_widgets.nucleus_hypotheses_widget import UltrackAnalysisWidget
+        from .ultrack_widgets.seeded_tracker_widget import SeededTrackerWidget
 
         self._data_prep_widget = DataPrepWidget(self.viewer, log_viewer=self._log_viewer)
         self._data_prep_section = CollapsibleSection(
@@ -118,6 +119,12 @@ class CellFlowWidget(QWidget):
             "Nucleus Hypotheses", self._ultrack_tab, expanded=False
         )
         _plugin_layout.addWidget(self._ultrack_section)
+
+        self._seeded_tracker_tab = SeededTrackerWidget(self.viewer, log_viewer=self._log_viewer)
+        self._seeded_tracker_section = CollapsibleSection(
+            "Seeded Tracking", self._seeded_tracker_tab, expanded=False
+        )
+        _plugin_layout.addWidget(self._seeded_tracker_section)
 
         from .tracking_correction_widget import TrackingCorrectionWidget
         from .ultrack_widgets.cell_segmentation import CellSegmentationWidget
@@ -178,6 +185,7 @@ class CellFlowWidget(QWidget):
         self._data_prep_widget.run_started.connect(self._autosave_config)
         self._cellpose_tab.run_started.connect(self._autosave_config)
         self._ultrack_tab.run_started.connect(self._autosave_config)
+        self._seeded_tracker_tab.run_started.connect(self._autosave_config)
         self._cell_seg_tab.run_started.connect(self._autosave_config)
         self._seeded_ws_tab.run_started.connect(self._autosave_config)
 
@@ -349,8 +357,9 @@ class CellFlowWidget(QWidget):
     def _accordion_sections(self) -> "dict[str, CollapsibleSection]":
         return {
             "Prepare Input Data": self._data_prep_section,
-            "Cellpose Cluster": self._cellpose_section,
+            "Cellpose Cluster":   self._cellpose_section,
             "Nucleus Hypotheses": self._ultrack_section,
+            "Seeded Tracking":    self._seeded_tracker_section,
             "Correction":         self._correction_section,
             "Cell Ultrack":       self._cell_ultrack_section,
             "Analysis":           self._analysis_section,

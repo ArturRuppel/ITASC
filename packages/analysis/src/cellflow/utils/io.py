@@ -90,6 +90,43 @@ def _set_opt_attr(group, name: str, value) -> None:
         group.attrs[name] = value
 
 
+def _compute_label_stats(
+    frame: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (ids, sizes, centroids) for all non-zero labels in a 2-D frame.
+
+    Returns
+    -------
+    ids : int64 array, shape (N,)
+    sizes : int64 array, shape (N,)  — pixel count per label
+    centroids : float64 array, shape (N, 2) — (row, col) centroid per label
+    """
+    from skimage.measure import regionprops
+
+    props = regionprops(frame.astype(np.int32, copy=False))
+    if not props:
+        return (
+            np.empty(0, dtype=np.int64),
+            np.empty(0, dtype=np.int64),
+            np.empty((0, 2), dtype=np.float64),
+        )
+    ids = np.array([p.label for p in props], dtype=np.int64)
+    sizes = np.array([p.area for p in props], dtype=np.int64)
+    centroids = np.array([p.centroid for p in props], dtype=np.float64)
+    return ids, sizes, centroids
+
+
+def _save_label_metadata(f: h5py.File, key: str, arr: np.ndarray) -> None:
+    """Write per-frame label stats (ids, sizes, centroids) under ``/key``."""
+    grp = f.create_group(key)
+    for t in range(arr.shape[0]):
+        ids, sizes, centroids = _compute_label_stats(arr[t])
+        fg = grp.create_group(str(t))
+        fg.create_dataset("ids", data=ids)
+        fg.create_dataset("sizes", data=sizes)
+        fg.create_dataset("centroids", data=centroids)
+
+
 def _get_opt_attr(group, name: str, default=None):
     return group.attrs[name] if name in group.attrs else default
 
@@ -489,6 +526,7 @@ def save_project(
             chunks = (1, min(512, arr.shape[1]), min(512, arr.shape[2]))
             f.create_dataset("labels", data=arr, chunks=chunks,
                              compression="gzip", compression_opts=4)
+            _save_label_metadata(f, "label_metadata", arr)
 
         # Nuclear Labels
         if nuclear_labels is not None:
@@ -498,6 +536,7 @@ def save_project(
             chunks = (1, min(512, arr.shape[1]), min(512, arr.shape[2]))
             f.create_dataset("nuclear_labels", data=arr, chunks=chunks,
                              compression="gzip", compression_opts=4)
+            _save_label_metadata(f, "nuclear_label_metadata", arr)
 
         # Analysis
         if dataset is not None:

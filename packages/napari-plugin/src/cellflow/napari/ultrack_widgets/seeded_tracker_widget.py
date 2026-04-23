@@ -10,6 +10,7 @@ import numpy as np
 import tifffile
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -25,6 +26,7 @@ from cellflow.ultrack.stages.seeded_tracker import (
     _match_frame,
     _relabel_sequential,
     build_seeded_tracker_inputs,
+    match_frame_from_h5,
 )
 
 
@@ -53,6 +55,7 @@ class SeededTrackerWidget(QWidget):
         self._current_t: int = -1
         self._seed_source: str = "consensus"
         self._tracked_layer = None
+        self._h5_path: Path | None = None
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
@@ -63,8 +66,7 @@ class SeededTrackerWidget(QWidget):
             ("Input", [
                 ("0_input/cell_zavg.tif", "Cell z-avg"),
                 ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
-                ("2_nucleus_ultrack/hypotheses_manifest.json", "Hypotheses manifest"),
-                ("2_nucleus_ultrack/labelmaps/labelmap_*.tif", "Hypothesis labelmaps"),
+                ("2_nucleus_ultrack/hypotheses.h5", "Hypotheses HDF5"),
             ]),
             ("Output", [
                 ("2_nucleus_ultrack/tracked_labels.tif", "Tracked labels"),
@@ -73,6 +75,21 @@ class SeededTrackerWidget(QWidget):
             ]),
         ])
         lay.addWidget(self._files_widget)
+
+        param_row = QHBoxLayout()
+        param_row.addWidget(QLabel("Max distance (px):"))
+        self._max_dist_spin = QDoubleSpinBox()
+        self._max_dist_spin.setRange(1.0, 9999.0)
+        self._max_dist_spin.setValue(50.0)
+        self._max_dist_spin.setSingleStep(5.0)
+        param_row.addWidget(self._max_dist_spin)
+        param_row.addWidget(QLabel("Max size dev:"))
+        self._max_size_dev_spin = QDoubleSpinBox()
+        self._max_size_dev_spin.setRange(0.0, 10.0)
+        self._max_size_dev_spin.setValue(0.5)
+        self._max_size_dev_spin.setSingleStep(0.05)
+        param_row.addWidget(self._max_size_dev_spin)
+        lay.addLayout(param_row)
 
         row = QHBoxLayout()
         self._load_btn = QPushButton("Load backgrounds")
@@ -159,11 +176,22 @@ class SeededTrackerWidget(QWidget):
             raise RuntimeError("Could not determine output directory.")
 
         self._load_backgrounds()
-        labelmaps, consensus_stack, seed, seed_source = build_seeded_tracker_inputs(out_dir)
-        if not labelmaps:
-            raise FileNotFoundError(f"No hypothesis labelmaps found in {out_dir}")
 
-        seed = _frame_to_2d(seed)
+        h5_path = out_dir / "hypotheses.h5"
+        if h5_path.exists():
+            from cellflow.ultrack.hypotheses import load_medoid_stack
+            medoid_yxt = load_medoid_stack(h5_path)  # (Y, X, T)
+            consensus_stack = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)  # (T, Y, X)
+            seed = consensus_stack[0]
+            seed_source = "medoid_stack:h5"
+            self._h5_path = h5_path
+        else:
+            self._h5_path = None
+            labelmaps, consensus_stack, seed, seed_source = build_seeded_tracker_inputs(out_dir)
+            if not labelmaps:
+                raise FileNotFoundError(f"No hypothesis labelmaps found in {out_dir}")
+            seed = _frame_to_2d(seed)
+
         if consensus_stack.ndim == 2:
             n_frames = 1
             frame_shape = seed.shape
@@ -291,6 +319,13 @@ class SeededTrackerWidget(QWidget):
         if self._tracked_stack is None or self._consensus_stack is None:
             self._status.setText("Bootstrap the tracker first.")
             return
+
+        # Synchronize current time with viewer's current step to allow re-tracking from any frame
+        if len(self.viewer.dims.current_step) > 0:
+            t = self.viewer.dims.current_step[0]
+            if 0 <= t < self._tracked_stack.shape[0]:
+                self._current_t = t
+
         if self._current_t >= self._tracked_stack.shape[0] - 1:
             self._status.setText("No next frame available.")
             return
@@ -300,8 +335,22 @@ class SeededTrackerWidget(QWidget):
 
         current = self._current_frame()
         next_index = self._current_t + 1
-        candidate = self._candidate_frame(next_index)
-        next_frame, rows = _match_frame(current, _relabel_sequential(candidate)[0])
+
+        # Truncate track rows for this and future frames to keep CSV consistent when re-tracking
+        self._track_rows = [row for row in self._track_rows if row["time"] < next_index]
+
+        if self._h5_path is not None and self._h5_path.exists():
+            self._status.setText(f"Matching frame {next_index} via H5 candidates…")
+            next_frame, rows = match_frame_from_h5(
+                current,
+                self._h5_path,
+                next_index,
+                max_distance=self._max_dist_spin.value(),
+                max_size_deviation=self._max_size_dev_spin.value(),
+            )
+        else:
+            candidate = self._candidate_frame(next_index)
+            next_frame, rows = _match_frame(current, _relabel_sequential(candidate)[0])
 
         self._tracked_stack[next_index] = next_frame
         for row in rows:
@@ -310,7 +359,12 @@ class SeededTrackerWidget(QWidget):
         self._current_t = next_index
         self._write_outputs()
         self._set_layer_data()
-        self._status.setText(f"Advanced to frame {self._current_t}.")
+
+        # Advance viewer to the next frame
+        if len(self.viewer.dims.current_step) > 0:
+            self.viewer.dims.set_current_step(0, next_index)
+
+        self._status.setText(f"Advanced to frame {self._current_t} ({len(rows)} labels matched).")
 
     def _on_reset(self) -> None:
         self._consensus_stack = None
@@ -320,6 +374,7 @@ class SeededTrackerWidget(QWidget):
         self._next_track_id = 1
         self._seed_source = "consensus"
         self._tracked_layer = None
+        self._h5_path = None
         try:
             if "tracked_labels" in self.viewer.layers:
                 self.viewer.layers.remove(self.viewer.layers["tracked_labels"])

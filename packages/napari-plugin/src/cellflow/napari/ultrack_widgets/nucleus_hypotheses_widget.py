@@ -326,6 +326,13 @@ class UltrackAnalysisWidget(QWidget):
         self._load_hdf5_btn.clicked.connect(self._on_load_hdf5)
         lay.addWidget(self._load_hdf5_btn)
 
+        self._load_medoids_btn = QPushButton("Load Medoids")
+        self._load_medoids_btn.setToolTip(
+            "Load the medoid label stack from hypotheses.h5 and display it as a labels layer."
+        )
+        self._load_medoids_btn.clicked.connect(self._on_load_medoids)
+        lay.addWidget(self._load_medoids_btn)
+
         # Parameter browser (visible after loading)
         self._param_combo = QComboBox()
         self._param_combo.setToolTip("Select a parameter set to display.")
@@ -910,6 +917,34 @@ class UltrackAnalysisWidget(QWidget):
             f"Loaded {path.name} — {len(params)} param sets, "
             f"{n_t} frames, {n_z} z-slices. Use napari sliders to inspect."
         )
+
+    def _on_load_medoids(self) -> None:
+        path = self._hdf5_path()
+        if path is None:
+            self._status.setText("No project open.")
+            return
+        if not path.exists():
+            self._status.setText("No hypotheses.h5 found. Run the sweep first.")
+            return
+
+        try:
+            from cellflow.ultrack.hypotheses import load_medoid_stack
+
+            medoid_yxt = load_medoid_stack(path)  # (Y, X, T)
+            medoid_tyx = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)  # (T, Y, X)
+        except Exception as exc:
+            self._status.setText(f"Medoid load error: {exc}")
+            return
+
+        layer_name = "Medoids: Nucleus hypotheses"
+        if layer_name in self.viewer.layers:
+            self.viewer.layers.remove(layer_name)
+        layer = self.viewer.add_labels(medoid_tyx, name=layer_name)
+        layer.refresh()
+        self.labels_loaded.emit(layer)
+
+        n_t = medoid_tyx.shape[0]
+        self._status.setText(f"Loaded medoid stack: {n_t} frames, shape={medoid_tyx.shape}")
 
     def _on_show_slice(self) -> None:
         pass  # navigation is handled by napari's own sliders
