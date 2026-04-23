@@ -136,13 +136,15 @@ def _load_nuclear_labels(root_dir: Path | str, pos: int) -> np.ndarray | None:
 def _load_cellpose_data(root_dir: Path | str, pos: int, t: int) -> tuple[np.ndarray | None, np.ndarray | None]:
     """Load z-averaged cellpose flow and prob for a single timepoint.
 
-    Prefers *_zavg.tif outputs; falls back to legacy cell_dp/prob.tif.
+    Prefers *_zavg.tif outputs; then *_4d.tif; then legacy cell_dp/prob.tif.
     Returns flow (H, W, 2) and prob (H, W).
     """
     try:
         cell_dir = cellpose_cell_dir(root_dir, pos)
 
         flow_path = cell_dir / "cell_dp_zavg.tif"
+        if not flow_path.exists():
+            flow_path = cell_dir / "cell_dp_4d.tif"
         if not flow_path.exists():
             flow_path = cell_dir / "cell_dp.tif"
         flow = None
@@ -157,6 +159,8 @@ def _load_cellpose_data(root_dir: Path | str, pos: int, t: int) -> tuple[np.ndar
                 flow = None
 
         prob_path = cell_dir / "cell_prob_zavg.tif"
+        if not prob_path.exists():
+            prob_path = cell_dir / "cell_prob_4d.tif"
         if not prob_path.exists():
             prob_path = cell_dir / "cell_prob.tif"
         prob = None
@@ -198,6 +202,8 @@ def run_segmentation(
         cell_dir = cellpose_cell_dir(root_dir, pos)
         flow_path = cell_dir / "cell_dp_zavg.tif"
         if not flow_path.exists():
+            flow_path = cell_dir / "cell_dp_4d.tif"
+        if not flow_path.exists():
             flow_path = cell_dir / "cell_dp.tif"
         flow_stack = tifffile.imread(str(flow_path)).astype(np.float32)
         if flow_stack.ndim == 4:
@@ -206,6 +212,8 @@ def run_segmentation(
             flow_stack = np.transpose(flow_stack, (1, 2, 0))[np.newaxis]
 
         prob_path = cell_dir / "cell_prob_zavg.tif"
+        if not prob_path.exists():
+            prob_path = cell_dir / "cell_prob_4d.tif"
         if not prob_path.exists():
             prob_path = cell_dir / "cell_prob.tif"
         prob_stack = tifffile.imread(str(prob_path)).astype(np.float32) if prob_path.exists() else None
@@ -274,9 +282,11 @@ def run_watershed_segmentation(
         cell_dir = cellpose_cell_dir(root_dir, pos)
         prob_path = cell_dir / "cell_prob_zavg.tif"
         if not prob_path.exists():
+            prob_path = cell_dir / "cell_prob_4d.tif"
+        if not prob_path.exists():
             prob_path = cell_dir / "cell_prob.tif"
         if not prob_path.exists():
-            print("cell_prob_zavg.tif / cell_prob.tif not found")
+            print("cell_prob_zavg.tif / cell_prob_4d.tif / cell_prob.tif not found")
             return None
         prob_stack = tifffile.imread(str(prob_path)).astype(np.float32)
         if prob_stack.ndim == 2:
@@ -291,9 +301,11 @@ def run_watershed_segmentation(
             cell_dir = cellpose_cell_dir(root_dir, pos)
             flow_path = cell_dir / "cell_dp_zavg.tif"
             if not flow_path.exists():
+                flow_path = cell_dir / "cell_dp_4d.tif"
+            if not flow_path.exists():
                 flow_path = cell_dir / "cell_dp.tif"
             if not flow_path.exists():
-                print("cell_dp_zavg.tif / cell_dp.tif not found — required for flow_mag basin")
+                print("cell_dp_zavg.tif / cell_dp_4d.tif / cell_dp.tif not found — required for flow_mag basin")
                 return None
             fs = tifffile.imread(str(flow_path)).astype(np.float32)
             flow_stack = np.transpose(fs, (0, 2, 3, 1)) if fs.ndim == 4 else np.transpose(fs, (1, 2, 0))[np.newaxis]

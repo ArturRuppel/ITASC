@@ -29,7 +29,7 @@ STAGE_ORDER: list[str] = [
 # Human-readable labels for the UI (tab titles, dialog checkboxes).
 STAGE_DISPLAY_NAMES: Dict[str, str] = {
     "raw_import": "Input Export",
-    "cellpose_cluster": "Cluster Cellpose",
+    "cellpose_cluster": "Cellpose Cluster",
     "nucleus_ultrack": "Nucleus Ultrack",
     "correction": "Correction",
     "cell_ultrack": "Cell Ultrack",
@@ -41,7 +41,7 @@ STAGE_DISPLAY_NAMES: Dict[str, str] = {
 # they are part of the correction loop / downstream analysis.
 TAB_STAGE_KEYS: Dict[str, list[str]] = {
     "Prepare Input Data": ["raw_import"],
-    "Cluster Cellpose": ["cellpose_cluster"],
+    "Cellpose Cluster": ["cellpose_cluster"],
     "Nucleus Ultrack": ["nucleus_ultrack"],
     "Correction": ["correction"],
     "Cell Ultrack": ["cell_ultrack"],

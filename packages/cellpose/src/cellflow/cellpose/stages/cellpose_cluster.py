@@ -17,20 +17,22 @@ _INPUT_FILES = [
 ]
 
 _OUTPUT_FILES = [
-    "1_cellpose/nucleus_dp.tif",
-    "1_cellpose/nucleus_prob.tif",
-    "1_cellpose/nucleus_dp_zavg.tif",
-    "1_cellpose/nucleus_prob_zavg.tif",
-    "1_cellpose/cell_dp.tif",
-    "1_cellpose/cell_prob.tif",
+    "1_cellpose/nucleus_dp_4d.tif",
+    "1_cellpose/nucleus_prob_4d.tif",
+    "1_cellpose/cell_dp_4d.tif",
+    "1_cellpose/cell_prob_4d.tif",
     "1_cellpose/cell_dp_zavg.tif",
     "1_cellpose/cell_prob_zavg.tif",
 ]
 
 
+def _exists_any(dir_path: Path, *names: str) -> bool:
+    return any((dir_path / name).exists() for name in names)
+
+
 class _CellposeClusterStageClass:
     name = "cellpose_cluster"
-    display_name = "Cluster Cellpose"
+    display_name = "Cellpose Cluster"
 
     def __init__(self):
         self.config = CellposeConfig()
@@ -47,25 +49,32 @@ class _CellposeClusterStageClass:
 
         raw_dir = stage_dir(root_dir, pos, "raw_import")
         pos_dir = stage_dir(root_dir, pos, "cellpose_cluster")
-        required = [raw_dir / rel for rel in _INPUT_FILES]
-        required.extend(pos_dir / rel for rel in [
-            "nucleus_dp.tif",
-            "nucleus_prob.tif",
-            "nucleus_dp_zavg.tif",
-            "nucleus_prob_zavg.tif",
-            "cell_dp.tif",
-            "cell_prob.tif",
-            "cell_dp_zavg.tif",
-            "cell_prob_zavg.tif",
-        ])
-        return validate_inputs(required)
+        base_result = validate_inputs([raw_dir / rel for rel in _INPUT_FILES])
+        errors = list(base_result.errors)
+        if not _exists_any(pos_dir, "nucleus_dp_4d.tif", "nucleus_dp.tif"):
+            errors.append(f"Required file not found: {pos_dir / 'nucleus_dp_4d.tif'}")
+        if not _exists_any(pos_dir, "nucleus_prob_4d.tif", "nucleus_prob.tif"):
+            errors.append(f"Required file not found: {pos_dir / 'nucleus_prob_4d.tif'}")
+        if not _exists_any(pos_dir, "cell_dp_4d.tif", "cell_dp.tif"):
+            errors.append(f"Required file not found: {pos_dir / 'cell_dp_4d.tif'}")
+        if not _exists_any(pos_dir, "cell_prob_4d.tif", "cell_prob.tif"):
+            errors.append(f"Required file not found: {pos_dir / 'cell_prob_4d.tif'}")
+        if not (pos_dir / "cell_dp_zavg.tif").exists():
+            errors.append(f"Required file not found: {pos_dir / 'cell_dp_zavg.tif'}")
+        if not (pos_dir / "cell_prob_zavg.tif").exists():
+            errors.append(f"Required file not found: {pos_dir / 'cell_prob_zavg.tif'}")
+        return ValidationResult(ok=not errors, errors=errors)
 
     def is_complete(self, root_dir, pos) -> bool:
         d = stage_dir(root_dir, pos, "cellpose_cluster")
-        return all((d / rel).exists() for rel in [
-            path.removeprefix("1_cellpose/")
-            for path in _OUTPUT_FILES
-        ])
+        return (
+            _exists_any(d, "nucleus_dp_4d.tif", "nucleus_dp.tif")
+            and _exists_any(d, "nucleus_prob_4d.tif", "nucleus_prob.tif")
+            and _exists_any(d, "cell_dp_4d.tif", "cell_dp.tif")
+            and _exists_any(d, "cell_prob_4d.tif", "cell_prob.tif")
+            and (d / "cell_dp_zavg.tif").exists()
+            and (d / "cell_prob_zavg.tif").exists()
+        )
 
 
 CellposeClusterStage = _CellposeClusterStageClass()

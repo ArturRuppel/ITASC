@@ -11,14 +11,12 @@ import tifffile
 from scipy.ndimage import gaussian_filter
 
 
-def _contours_from_labels(labels: np.ndarray, smooth_sigma: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
-    """Convert a label array into foreground and contour maps.
-
-    The maps mirror the current Ultrack contour conventions so callers can
-    ingest direct label hypotheses without first materializing stage-local
-    foreground/contours files.
-    """
+def _contours_from_2d_labels(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Convert a 2D label frame into foreground and contour maps."""
     labels = np.asarray(labels)
+    if labels.ndim != 2:
+        raise ValueError(f"Expected a 2D label frame, got shape {labels.shape}")
+
     fg = (labels > 0).astype(np.float32)
 
     ct = np.zeros_like(labels, dtype=np.float32)
@@ -31,13 +29,70 @@ def _contours_from_labels(labels: np.ndarray, smooth_sigma: float = 0.5) -> tupl
         ct[tuple(sl_a)] = np.maximum(ct[tuple(sl_a)], diff)
         ct[tuple(sl_b)] = np.maximum(ct[tuple(sl_b)], diff)
 
-    if smooth_sigma > 0:
-        ct = gaussian_filter(ct, sigma=smooth_sigma)
-        ct_max = float(ct.max())
-        if ct_max > 0:
-            ct /= ct_max
+    return fg, ct
 
-    return fg.astype(np.float32), ct.astype(np.float32)
+
+def _smooth_contours(contours: np.ndarray, smooth_sigma: float) -> np.ndarray:
+    """Smooth a contour map without mixing across the leading axes."""
+    if smooth_sigma <= 0:
+        return contours.astype(np.float32)
+
+    contours = np.asarray(contours, dtype=np.float32)
+    if contours.ndim == 2:
+        smoothed = gaussian_filter(contours, sigma=smooth_sigma)
+        max_value = float(smoothed.max())
+        if max_value > 0:
+            smoothed /= max_value
+        return smoothed.astype(np.float32)
+
+    sigma = (0.0,) * (contours.ndim - 2) + (smooth_sigma, smooth_sigma)
+    smoothed = gaussian_filter(contours, sigma=sigma)
+    max_per_frame = smoothed.max(axis=tuple(range(smoothed.ndim - 2, smoothed.ndim)), keepdims=True)
+    smoothed = np.divide(smoothed, max_per_frame, out=np.zeros_like(smoothed), where=max_per_frame > 0)
+    return smoothed.astype(np.float32)
+
+
+def _contours_from_labels(labels: np.ndarray, smooth_sigma: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
+    """Convert a label stack into foreground and contour maps.
+
+    The maps mirror the current Ultrack contour conventions so callers can
+    ingest direct label hypotheses without first materializing stage-local
+    foreground/contours files.
+    """
+    labels = np.asarray(labels)
+
+    if labels.ndim == 2:
+        fg, ct = _contours_from_2d_labels(labels)
+        return fg.astype(np.float32), _smooth_contours(ct, smooth_sigma)
+
+    if labels.ndim == 3:
+        fg_frames: list[np.ndarray] = []
+        ct_frames: list[np.ndarray] = []
+        for frame in labels:
+            fg, ct = _contours_from_2d_labels(frame)
+            fg_frames.append(fg)
+            ct_frames.append(ct)
+        fg_stack = np.stack(fg_frames, axis=0).astype(np.float32)
+        ct_stack = _smooth_contours(np.stack(ct_frames, axis=0), smooth_sigma)
+        return fg_stack, ct_stack
+
+    if labels.ndim == 4:
+        fg_frames = []
+        ct_frames = []
+        for frame in labels:
+            fg_slices: list[np.ndarray] = []
+            ct_slices: list[np.ndarray] = []
+            for z_slice in frame:
+                fg, ct = _contours_from_2d_labels(z_slice)
+                fg_slices.append(fg)
+                ct_slices.append(ct)
+            fg_frames.append(np.mean(fg_slices, axis=0).astype(np.float32))
+            ct_frames.append(np.mean(ct_slices, axis=0).astype(np.float32))
+        fg_stack = np.stack(fg_frames, axis=0).astype(np.float32)
+        ct_stack = _smooth_contours(np.stack(ct_frames, axis=0), smooth_sigma)
+        return fg_stack, ct_stack
+
+    raise ValueError(f"Expected a 2D, 3D, or 4D label stack, got shape {labels.shape}")
 
 
 def labels_batch_to_foreground_contours(
@@ -59,6 +114,45 @@ def labels_batch_to_foreground_contours(
         np.mean(fg_maps, axis=0).astype(np.float32),
         np.mean(ct_maps, axis=0).astype(np.float32),
     )
+
+
+def write_foreground_contours(
+    output_dir: str | Path,
+    foreground: np.ndarray,
+    contours: np.ndarray,
+) -> tuple[Path, Path]:
+    """Persist Ultrack foreground and contour maps to TIFF files."""
+    out = Path(output_dir)
+    fg_path = out / "foreground.tif"
+    ct_path = out / "contours.tif"
+    tifffile.imwrite(str(fg_path), np.asarray(foreground, dtype=np.float32), compression="zlib")
+    tifffile.imwrite(str(ct_path), np.asarray(contours, dtype=np.float32), compression="zlib")
+    return fg_path, ct_path
+
+
+def prepare_hypothesis_labelmaps_for_ingestion(
+    labelmaps: Sequence[np.ndarray],
+) -> list[np.ndarray]:
+    """Normalize persisted labelmaps to the shapes expected by Ultrack ingestion.
+
+    ``(T, Z, Y, X)`` inputs are preserved so the contour helper can average
+    over z while keeping the resulting foreground/contours 2D. ``(Y, X)``
+    inputs are promoted to ``(1, Y, X)`` so Ultrack sees a single-timepoint 2D
+    stack. ``(T, Y, X)`` inputs are preserved as-is.
+    """
+    prepared: list[np.ndarray] = []
+    for labels in labelmaps:
+        labels = np.asarray(labels, dtype=np.uint32)
+        if labels.ndim in (3, 4):
+            prepared.append(labels)
+        elif labels.ndim == 2:
+            prepared.append(labels[np.newaxis, ...])
+        else:
+            raise ValueError(
+                f"Expected a 2D, 3D, or 4D labelmap for Ultrack ingestion, got shape {labels.shape}"
+            )
+
+    return prepared
 
 
 def write_hypothesis_labelmaps(

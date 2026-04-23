@@ -64,7 +64,10 @@ class CellposeContoursConfig(BaseModel):
     cellprob_min: float = 0.0
     cellprob_max: float = 0.0
     cellprob_step: float = 0.5
+    flow_threshold: float = 0.4
+    niter: int = 0
     do_3D: bool = True
+    stitch_threshold: float = 0.25
     smooth_sigma: float = 0.5
     device: str = "cuda"
     save_masks: bool = False
@@ -79,6 +82,10 @@ class CellposeContoursConfig(BaseModel):
                 values["cellprob_min"] = threshold
                 values["cellprob_max"] = threshold
         return values
+
+
+# Backwards-compatible alias for the new segmentation-hypotheses terminology.
+SegmentationHypothesesConfig = CellposeContoursConfig
 
 
 class SeededWatershedConfig(BaseModel):

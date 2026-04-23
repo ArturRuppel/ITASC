@@ -5,10 +5,13 @@ import sys
 import types
 
 import numpy as np
+import tifffile
 
 from cellflow.ultrack.ingestion import (
     labels_batch_to_foreground_contours,
     load_hypothesis_labelmaps,
+    prepare_hypothesis_labelmaps_for_ingestion,
+    write_foreground_contours,
     write_hypothesis_labelmaps,
 )
 from cellflow.ultrack.config import TrackingConfig
@@ -101,6 +104,56 @@ def test_labels_batch_to_foreground_contours_rejects_empty_batch():
         raise AssertionError("expected ValueError for empty batch")
 
 
+def test_write_foreground_contours_persists_maps(tmp_path):
+    foreground = np.array([[0.0, 1.0], [0.5, 0.0]], dtype=np.float32)
+    contours = np.array([[0.0, 0.2], [1.0, 0.0]], dtype=np.float32)
+
+    fg_path, ct_path = write_foreground_contours(tmp_path, foreground, contours)
+
+    assert fg_path.exists()
+    assert ct_path.exists()
+    assert np.array_equal(foreground, tifffile.imread(str(fg_path)))
+    assert np.array_equal(contours, tifffile.imread(str(ct_path)))
+
+
+def test_prepare_hypothesis_labelmaps_for_ingestion_preserves_4d_stacks():
+    labels_4d = np.array(
+        [
+            [
+                [[0, 1], [1, 1]],
+                [[0, 2], [2, 2]],
+            ],
+            [
+                [[3, 3], [0, 0]],
+                [[4, 4], [4, 0]],
+            ],
+        ],
+        dtype=np.uint32,
+    )
+
+    prepared = prepare_hypothesis_labelmaps_for_ingestion([labels_4d])
+
+    assert len(prepared) == 1
+    assert prepared[0].shape == labels_4d.shape
+    assert np.array_equal(prepared[0], labels_4d)
+
+
+def test_prepare_hypothesis_labelmaps_for_ingestion_promotes_2d_to_single_timepoint():
+    labels_2d = np.array(
+        [
+            [0, 1],
+            [2, 2],
+        ],
+        dtype=np.uint32,
+    )
+
+    prepared = prepare_hypothesis_labelmaps_for_ingestion([labels_2d])
+
+    assert len(prepared) == 1
+    assert prepared[0].shape == (1, 2, 2)
+    assert np.array_equal(prepared[0][0], labels_2d)
+
+
 def test_run_nucleus_ultrack_uses_persisted_labelmaps(tmp_path, monkeypatch):
     labelmaps = [
         np.array([[0, 1], [2, 2]], dtype=np.uint32),
@@ -155,7 +208,142 @@ def test_run_nucleus_ultrack_uses_persisted_labelmaps(tmp_path, monkeypatch):
 
     assert captured["cleared"] is True
     assert captured["overwrite"] is True
-    assert captured["foreground"].shape == labelmaps[0].shape
-    assert captured["contours"].shape == labelmaps[0].shape
+    assert captured["foreground"].shape == (1, *labelmaps[0].shape)
+    assert captured["contours"].shape == (1, *labelmaps[0].shape)
     assert progress[-1][2] == "Segmentation done."
     assert (tmp_path / "hypotheses_manifest.json").exists()
+    assert (tmp_path / "foreground.tif").exists()
+    assert (tmp_path / "contours.tif").exists()
+
+
+def test_run_nucleus_ultrack_promotes_2d_labelmaps_before_ingestion(tmp_path, monkeypatch):
+    labelmap = np.array([[0, 1], [2, 2]], dtype=np.uint32)
+    write_hypothesis_labelmaps(
+        tmp_path,
+        [labelmap],
+        stage_name="nucleus_ultrack",
+        source="test-source",
+    )
+
+    captured = {}
+
+    def fake_clear_all_data(_database_path):
+        captured["cleared"] = True
+
+    def fake_segment(foreground, contours, _cfg, overwrite=False):
+        captured["foreground"] = np.asarray(foreground)
+        captured["contours"] = np.asarray(contours)
+        captured["overwrite"] = overwrite
+
+    fake_ultrack = types.ModuleType("ultrack")
+    fake_ultrack.__path__ = []
+    fake_core = types.ModuleType("ultrack.core")
+    fake_core.__path__ = []
+    fake_seg_pkg = types.ModuleType("ultrack.core.segmentation")
+    fake_seg_pkg.__path__ = []
+    fake_db = types.ModuleType("ultrack.core.database")
+    fake_db.clear_all_data = fake_clear_all_data
+    fake_seg = types.ModuleType("ultrack.core.segmentation.processing")
+    fake_seg.segment = fake_segment
+
+    monkeypatch.setitem(sys.modules, "ultrack", fake_ultrack)
+    monkeypatch.setitem(sys.modules, "ultrack.core", fake_core)
+    monkeypatch.setitem(sys.modules, "ultrack.core.database", fake_db)
+    monkeypatch.setitem(sys.modules, "ultrack.core.segmentation", fake_seg_pkg)
+    monkeypatch.setitem(sys.modules, "ultrack.core.segmentation.processing", fake_seg)
+    fake_config = types.ModuleType("ultrack.config")
+    fake_config.__package__ = "ultrack"
+    monkeypatch.setitem(sys.modules, "ultrack.config", fake_config)
+
+    class FakeMainConfig:
+        def __init__(self, **kwargs):
+            self.data_config = types.SimpleNamespace(database_path=tmp_path / "data.db")
+            self.kwargs = kwargs
+
+    fake_config.MainConfig = FakeMainConfig
+
+    cfg = TrackingConfig(n_workers=1)
+    progress = list(run_nucleus_ultrack(tmp_path, cfg, overwrite=True))
+
+    assert captured["cleared"] is True
+    assert captured["overwrite"] is True
+    assert captured["foreground"].shape == (1, 2, 2)
+    assert captured["contours"].shape == (1, 2, 2)
+    assert progress[-1][2] == "Segmentation done."
+    assert (tmp_path / "foreground.tif").exists()
+    assert (tmp_path / "contours.tif").exists()
+
+
+def test_run_nucleus_ultrack_averages_over_z_for_contours(tmp_path, monkeypatch):
+    labelmap = np.array(
+        [
+            [
+                [[0, 1], [1, 0]],
+                [[2, 2], [0, 0]],
+            ]
+        ],
+        dtype=np.uint32,
+    )
+    write_hypothesis_labelmaps(
+        tmp_path,
+        [labelmap],
+        stage_name="nucleus_ultrack",
+        source="test-source",
+    )
+
+    captured = {}
+
+    def fake_clear_all_data(_database_path):
+        captured["cleared"] = True
+
+    def fake_segment(foreground, contours, _cfg, overwrite=False):
+        captured["foreground"] = np.asarray(foreground)
+        captured["contours"] = np.asarray(contours)
+        captured["overwrite"] = overwrite
+
+    fake_ultrack = types.ModuleType("ultrack")
+    fake_ultrack.__path__ = []
+    fake_core = types.ModuleType("ultrack.core")
+    fake_core.__path__ = []
+    fake_seg_pkg = types.ModuleType("ultrack.core.segmentation")
+    fake_seg_pkg.__path__ = []
+    fake_db = types.ModuleType("ultrack.core.database")
+    fake_db.clear_all_data = fake_clear_all_data
+    fake_seg = types.ModuleType("ultrack.core.segmentation.processing")
+    fake_seg.segment = fake_segment
+
+    monkeypatch.setitem(sys.modules, "ultrack", fake_ultrack)
+    monkeypatch.setitem(sys.modules, "ultrack.core", fake_core)
+    monkeypatch.setitem(sys.modules, "ultrack.core.database", fake_db)
+    monkeypatch.setitem(sys.modules, "ultrack.core.segmentation", fake_seg_pkg)
+    monkeypatch.setitem(sys.modules, "ultrack.core.segmentation.processing", fake_seg)
+    fake_config = types.ModuleType("ultrack.config")
+    fake_config.__package__ = "ultrack"
+    monkeypatch.setitem(sys.modules, "ultrack.config", fake_config)
+
+    class FakeMainConfig:
+        def __init__(self, **kwargs):
+            self.data_config = types.SimpleNamespace(database_path=tmp_path / "data.db")
+            self.kwargs = kwargs
+
+    fake_config.MainConfig = FakeMainConfig
+
+    cfg = TrackingConfig(n_workers=1)
+    progress = list(run_nucleus_ultrack(tmp_path, cfg, overwrite=True))
+
+    assert captured["cleared"] is True
+    assert captured["overwrite"] is True
+    assert captured["foreground"].shape == (1, 2, 2)
+    assert captured["contours"].shape == (1, 2, 2)
+    assert progress[-1][2] == "Segmentation done."
+    assert np.array_equal(captured["foreground"][0], np.array([[0.5, 1.0], [0.5, 0.0]], dtype=np.float32))
+    assert (tmp_path / "foreground.tif").exists()
+    assert (tmp_path / "contours.tif").exists()
+    assert np.array_equal(
+        prepare_hypothesis_labelmaps_for_ingestion([labelmap])[0],
+        labelmap,
+    )
+    assert np.array_equal(
+        load_hypothesis_labelmaps(tmp_path)[0][0],
+        labelmap,
+    )

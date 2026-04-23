@@ -12,8 +12,8 @@ Outputs (per position)
 ----------------------
   1_cellpose/
     run_params.json
-    cell_dp.tif        (T, Z, 2, H, W) float32 — per-z-slice flow fields
-    cell_prob.tif      (T, Z, H, W)    float32 — per-z-slice probability maps
+    cell_dp_4d.tif     (T, Z, 2, H, W) float32 — per-z-slice flow fields
+    cell_prob_4d.tif   (T, Z, H, W)    float32 — per-z-slice probability maps
     cell_dp_zavg.tif   (T, 2, H, W)    float32 — z-averaged flow fields
     cell_prob_zavg.tif (T, H, W)      float32 — z-averaged probability maps
 """
@@ -42,11 +42,11 @@ def cellpose_cell_dir(root_dir, pos):
 
 
 def cell_dp_path(root_dir, pos):
-    return cellpose_cell_dir(root_dir, pos) / "cell_dp.tif"
+    return cellpose_cell_dir(root_dir, pos) / "cell_dp_4d.tif"
 
 
 def cell_prob_path(root_dir, pos):
-    return cellpose_cell_dir(root_dir, pos) / "cell_prob.tif"
+    return cellpose_cell_dir(root_dir, pos) / "cell_prob_4d.tif"
 
 
 def cell_dp_zavg_path(root_dir, pos):
@@ -155,7 +155,7 @@ def run(
         run_params_path.write_text(
             json.dumps(
                 {
-                    "stage": "cellpose_cell",
+                    "stage": "cellpose_cluster",
                     "pos": pos,
                     "params": cfg.model_dump(),
                 },

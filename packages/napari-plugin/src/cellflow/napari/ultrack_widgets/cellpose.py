@@ -1,4 +1,4 @@
-"""Cluster Cellpose panels for nucleus and cell inputs."""
+"""Segmentation hypotheses panels for nucleus and cell inputs."""
 
 from __future__ import annotations
 
@@ -91,6 +91,14 @@ class CellposeWidget(QWidget):
     def _s01b_root_dir(self) -> Path | None:
         return self._get_project_dir()
 
+    @staticmethod
+    def _first_existing(dir_path: Path, *names: str) -> Path | None:
+        for name in names:
+            path = dir_path / name
+            if path.exists():
+                return path
+        return None
+
     def _create_cluster_info_widget(self) -> QWidget:
         """Create the informational cluster-side Cellpose panel."""
         widget = QWidget()
@@ -113,12 +121,10 @@ class CellposeWidget(QWidget):
                 ("0_input/cell_zavg.tif", "Cell z-avg"),
             ]),
             ("Outputs", [
-                ("1_cellpose/nucleus_dp.tif", "Nucleus DP"),
-                ("1_cellpose/nucleus_prob.tif", "Nucleus prob"),
-                ("1_cellpose/nucleus_dp_zavg.tif", "Nucleus DP z-avg"),
-                ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
-                ("1_cellpose/cell_dp.tif", "Cell DP"),
-                ("1_cellpose/cell_prob.tif", "Cell prob"),
+                ("1_cellpose/nucleus_dp_4d.tif", "Nucleus DP 4D"),
+                ("1_cellpose/nucleus_prob_4d.tif", "Nucleus prob 4D"),
+                ("1_cellpose/cell_dp_4d.tif", "Cell DP 4D"),
+                ("1_cellpose/cell_prob_4d.tif", "Cell prob 4D"),
                 ("1_cellpose/cell_dp_zavg.tif", "Cell DP z-avg"),
                 ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
             ]),
@@ -154,10 +160,8 @@ class CellposeWidget(QWidget):
                 ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
             ]),
             ("Output", [
-                ("1_cellpose/nucleus_dp.tif",   "Nucleus DP"),
-                ("1_cellpose/nucleus_prob.tif", "Nucleus prob"),
-                ("1_cellpose/nucleus_dp_zavg.tif",   "Nucleus DP z-avg"),
-                ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
+                ("1_cellpose/nucleus_dp_4d.tif",   "Nucleus DP 4D"),
+                ("1_cellpose/nucleus_prob_4d.tif", "Nucleus prob 4D"),
             ]),
         ])
         layout.addWidget(self._s01a_files_widget)
@@ -287,8 +291,8 @@ class CellposeWidget(QWidget):
                 ("0_input/cell_4d.tif",  "Cell 4D stack"),
             ]),
             ("Output", [
-                ("1_cellpose/cell_dp.tif",          "Cell DP (z-slices)"),
-                ("1_cellpose/cell_prob.tif",        "Cell prob (z-slices)"),
+                ("1_cellpose/cell_dp_4d.tif",       "Cell DP 4D"),
+                ("1_cellpose/cell_prob_4d.tif",     "Cell prob 4D"),
                 ("1_cellpose/cell_dp_zavg.tif",     "Cell DP avg"),
                 ("1_cellpose/cell_prob_zavg.tif",   "Cell prob avg"),
             ]),
@@ -491,7 +495,7 @@ class CellposeWidget(QWidget):
         )
         def _work():
             from cellflow.core.logging import StageLogger
-            with StageLogger(log_file, "cellpose_nucleus"):
+            with StageLogger(log_file, "cellpose_cluster"):
                 for update in run_s01a(input_dir_str, output_dir_str, cfg, overwrite=overwrite):
                     yield update
 
@@ -527,7 +531,7 @@ class CellposeWidget(QWidget):
         def _work():
             from cellflow.core.logging import StageLogger
             from cellflow.core.paths import log_path
-            with StageLogger(log_path(root_dir_str, pos), "cellpose_cell"):
+            with StageLogger(log_path(root_dir_str, pos), "cellpose_cluster"):
                 for update in run_s01b(root_dir_str, pos, cfg, overwrite=overwrite):
                     yield update
 
@@ -645,8 +649,8 @@ class CellposeWidget(QWidget):
         output_dir = self._s01a_output_dir(pos)
         if output_dir is None:
             return
-        prob_file = output_dir / "nucleus_prob.tif"
-        if not prob_file.exists():
+        prob_file = self._first_existing(output_dir, "nucleus_prob_4d.tif", "nucleus_prob.tif")
+        if prob_file is None:
             return
         prob = tifffile.imread(str(prob_file))
         self.viewer.add_image(prob, name="nucleus_cellprob", colormap="inferno")
@@ -671,16 +675,17 @@ class CellposeWidget(QWidget):
             loaded.append("input")
 
         if output_dir is not None and output_dir.is_dir():
-            prob_file = output_dir / "nucleus_prob.tif"
-            if prob_file.exists():
+            prob_file = self._first_existing(output_dir, "nucleus_prob_4d.tif", "nucleus_prob.tif")
+            if prob_file is not None:
                 prob = tifffile.imread(str(prob_file))
                 self.viewer.add_image(prob, name=f"nucleus_prob_pos{pos:02d}", colormap="inferno")
                 loaded.append("prob")
 
-            dp_file = output_dir / "nucleus_dp.tif"
-            if dp_file.exists():
+            dp_file = self._first_existing(output_dir, "nucleus_dp_4d.tif", "nucleus_dp.tif")
+            if dp_file is not None:
                 dp = tifffile.imread(str(dp_file))
-                # dp: (T, 3, Z, Y, X) — split vector components
+                # dp: (T, C, Z, Y, X), where C can be 3 in full-3D mode
+                # or 2 in slice-wise mode.
                 for c in range(dp.shape[1]):
                     self.viewer.add_image(dp[:, c], name=f"nucleus_dp_{c}_pos{pos:02d}", colormap="RdBu")
                 loaded.append("dp")
@@ -697,12 +702,10 @@ class CellposeWidget(QWidget):
         if root_dir is None:
             return
         pos = self._state.current_position
-        cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
+        cell_dir = stage_dir(root_dir, pos, "cellpose_cluster")
         # Prefer z-averaged prob for quick status load
-        prob_file = cell_dir / "cell_prob_zavg.tif"
-        if not prob_file.exists():
-            prob_file = cell_dir / "cell_prob.tif"
-        if not prob_file.exists():
+        prob_file = self._first_existing(cell_dir, "cell_prob_zavg.tif", "cell_prob_4d.tif", "cell_prob.tif")
+        if prob_file is None:
             return
         prob = tifffile.imread(str(prob_file))
         self.viewer.add_image(prob, name=f"cell_prob_pos{pos:02d}", colormap="inferno")
@@ -736,19 +739,19 @@ class CellposeWidget(QWidget):
             )
             loaded.append("cell input")
 
-        cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
+        cell_dir = stage_dir(root_dir, pos, "cellpose_cluster")
 
         # Per-z-slice outputs (T, Z, H, W) and (T, Z, 2, H, W)
-        prob_zslices = cell_dir / "cell_prob.tif"
-        dp_zslices   = cell_dir / "cell_dp.tif"
-        if prob_zslices.exists():
+        prob_zslices = self._first_existing(cell_dir, "cell_prob_4d.tif", "cell_prob.tif")
+        dp_zslices = self._first_existing(cell_dir, "cell_dp_4d.tif", "cell_dp.tif")
+        if prob_zslices is not None:
             self.viewer.add_image(
                 tifffile.imread(str(prob_zslices)),
                 name=f"cell_prob_zslices_pos{pos:02d}",
                 colormap="inferno",
             )
             loaded.append("cell prob (z-slices)")
-        if dp_zslices.exists():
+        if dp_zslices is not None:
             dp = tifffile.imread(str(dp_zslices))  # (T, Z, 2, H, W)
             for c in range(dp.shape[2]):
                 self.viewer.add_image(dp[:, :, c], name=f"cell_dp_{c}_zslices_pos{pos:02d}", colormap="RdBu")

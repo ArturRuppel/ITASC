@@ -1,4 +1,4 @@
-"""Nucleus Ultrack widget driven by cluster Cellpose outputs."""
+"""Nucleus Ultrack widget driven by persisted labelmaps."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import tifffile
 from matplotlib.cm import get_cmap
 from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -22,6 +23,7 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
+    QRadioButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -37,15 +39,14 @@ from cellflow.napari.registry import get_state
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.cellpose.stages.contours import (
     compute_single_from_arrays as compute_cp_contours_single,
-    discover_dp_files,
-    discover_prob_files,
+    discover_nucleus_dp_files,
+    discover_nucleus_prob_files,
     run as run_s02c,
 )
 from cellflow.ultrack.stages.tracking import (
     get_labels_layer,
     get_tracks_layer,
-    run as run_s03,
-    run_segmentation,
+    run_nucleus_ultrack,
     run_linking,
     run_solve,
 )
@@ -99,13 +100,14 @@ class UltrackAnalysisWidget(QWidget):
         # ── Project file status (inputs/outputs for current position) ────
         self._files_widget = PipelineFilesWidget([
             ("Input", [
-                ("1_cellpose/nucleus_dp.tif",       "Cellpose nucleus DP"),
-                ("1_cellpose/nucleus_prob.tif",     "Cellpose nucleus prob"),
+                ("2_nucleus_ultrack/hypotheses_manifest.json", "Hypotheses manifest"),
+                ("2_nucleus_ultrack/labelmaps/labelmap_*.tif", "Hypothesis labelmaps"),
             ]),
             ("Output", [
+                ("2_nucleus_ultrack/data.db",               "Ultrack DB"),
+                ("2_nucleus_ultrack/tracks.csv",            "Tracks CSV"),
                 ("2_nucleus_ultrack/tracked_labels.tif",     "Tracked labels"),
                 ("2_nucleus_ultrack/nuclear_labels_2d.tif",  "Nuclear labels 2D"),
-                ("2_nucleus_ultrack/hypotheses_manifest.json", "Hypotheses manifest"),
             ]),
         ])
         lay.addWidget(self._files_widget)
@@ -181,7 +183,7 @@ class UltrackAnalysisWidget(QWidget):
     # ══════════════════════════════════════════════════════════════════════
 
     def _build_cp_contours_section(self) -> CollapsibleSection:
-        """Build the Cellpose-native contours section (s02c)."""
+        """Build the Segmentation Hypotheses section (nucleus Cellpose sweep)."""
         content = QWidget()
         lay = QVBoxLayout()
 
@@ -226,11 +228,59 @@ class UltrackAnalysisWidget(QWidget):
         row.addWidget(self._cp_ct_cellprob_step)
         lay.addLayout(row)
 
-        # 3D mode checkbox
-        self._cp_ct_3d_chk = QCheckBox("Use 3D")
-        self._cp_ct_3d_chk.setChecked(True)
-        self._cp_ct_3d_chk.setToolTip("Use 3D flow-based segmentation (requires 3D dP files)")
-        lay.addWidget(self._cp_ct_3d_chk)
+        # Masking mode selector
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Mask mode"))
+        self._cp_ct_mode_group = QButtonGroup(self)
+        self._cp_ct_full3d_radio = QRadioButton("Full 3D")
+        self._cp_ct_stitch_radio = QRadioButton("2D masks + stitch")
+        self._cp_ct_full3d_radio.setChecked(True)
+        self._cp_ct_mode_group.addButton(self._cp_ct_full3d_radio)
+        self._cp_ct_mode_group.addButton(self._cp_ct_stitch_radio)
+        self._cp_ct_full3d_radio.toggled.connect(self._cp_ct_on_mode_changed)
+        self._cp_ct_stitch_radio.toggled.connect(self._cp_ct_on_mode_changed)
+        mode_row.addWidget(self._cp_ct_full3d_radio)
+        mode_row.addWidget(self._cp_ct_stitch_radio)
+        lay.addLayout(mode_row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Stitch threshold"))
+        self._cp_ct_stitch_threshold = QDoubleSpinBox()
+        self._cp_ct_stitch_threshold.setRange(0.0, 1.0)
+        self._cp_ct_stitch_threshold.setSingleStep(0.05)
+        self._cp_ct_stitch_threshold.setDecimals(2)
+        self._cp_ct_stitch_threshold.setValue(0.25)
+        self._cp_ct_stitch_threshold.setToolTip(
+            "IoU threshold used when stitching 2D masks into a 3D volume"
+        )
+        row.addWidget(self._cp_ct_stitch_threshold)
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Flow threshold"))
+        self._cp_ct_flow_threshold = QDoubleSpinBox()
+        self._cp_ct_flow_threshold.setRange(0.0, 1.0)
+        self._cp_ct_flow_threshold.setSingleStep(0.05)
+        self._cp_ct_flow_threshold.setDecimals(2)
+        self._cp_ct_flow_threshold.setValue(0.4)
+        self._cp_ct_flow_threshold.setToolTip(
+            "Cellpose flow error threshold passed to compute_masks; lower values are stricter"
+        )
+        row.addWidget(self._cp_ct_flow_threshold)
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Niter"))
+        self._cp_ct_niter = QSpinBox()
+        self._cp_ct_niter.setRange(0, 100000)
+        self._cp_ct_niter.setSingleStep(100)
+        self._cp_ct_niter.setValue(0)
+        self._cp_ct_niter.setToolTip(
+            "Iterations for Cellpose dynamics; 0 uses the default derived from diameter"
+        )
+        row.addWidget(self._cp_ct_niter)
+        lay.addLayout(row)
+        self._cp_ct_on_mode_changed()
 
         # Device selection
         row = QHBoxLayout()
@@ -262,9 +312,11 @@ class UltrackAnalysisWidget(QWidget):
         row.addWidget(self._cp_ct_preview_btn)
         lay.addLayout(row)
 
-        self._cp_ct_save_masks_chk = QCheckBox("Save masks to subfolder (3D + 2D projection)")
+        self._cp_ct_save_masks_chk = QCheckBox("Write labelmaps/labelmap_*.tif")
+        self._cp_ct_save_masks_chk.setChecked(True)
+        self._cp_ct_save_masks_chk.setEnabled(False)
         self._cp_ct_save_masks_chk.setToolTip(
-            "Save per-threshold label masks under masks/3d/ and masks/2d/ (max Z-projection) in the output directory"
+            "The hypothesis sweep always writes one labelmap stack per threshold under labelmaps/"
         )
         lay.addWidget(self._cp_ct_save_masks_chk)
 
@@ -273,7 +325,7 @@ class UltrackAnalysisWidget(QWidget):
         lay.addWidget(self._cp_ct_overwrite_chk)
 
         row = QHBoxLayout()
-        self._cp_ct_run_btn = QPushButton("Run Contours")
+        self._cp_ct_run_btn = QPushButton("Run Hypotheses")
         self._cp_ct_run_btn.clicked.connect(self._cp_ct_on_run)
         row.addWidget(self._cp_ct_run_btn)
         self._cp_ct_term_btn = QPushButton("Run in Terminal")
@@ -296,7 +348,7 @@ class UltrackAnalysisWidget(QWidget):
         lay.addWidget(self._cp_ct_status)
 
         content.setLayout(lay)
-        return CollapsibleSection("Cluster Cellpose", content, expanded=False)
+        return CollapsibleSection("Segmentation Hypotheses", content, expanded=False)
 
     # ── Cellpose Contours helpers ────────────────────────────────────────
 
@@ -310,10 +362,13 @@ class UltrackAnalysisWidget(QWidget):
             cellprob_min=min_thresh,
             cellprob_max=max_thresh,
             cellprob_step=step,
-            do_3D=self._cp_ct_3d_chk.isChecked(),
+            flow_threshold=self._cp_ct_flow_threshold.value(),
+            niter=self._cp_ct_niter.value(),
+            do_3D=self._cp_ct_full3d_radio.isChecked(),
+            stitch_threshold=self._cp_ct_stitch_threshold.value(),
             smooth_sigma=self._cp_ct_smooth_sigma.value(),
             device=self._cp_ct_device.currentText(),
-            save_masks=self._cp_ct_save_masks_chk.isChecked(),
+            save_masks=True,
         )
 
     def _cp_ct_apply_config(self, cfg: CellposeContoursConfig) -> None:
@@ -321,10 +376,18 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_cellprob_min.setValue(cfg.cellprob_min)
         self._cp_ct_cellprob_max.setValue(cfg.cellprob_max)
         self._cp_ct_cellprob_step.setValue(cfg.cellprob_step)
-        self._cp_ct_3d_chk.setChecked(cfg.do_3D)
+        self._cp_ct_flow_threshold.setValue(cfg.flow_threshold)
+        self._cp_ct_niter.setValue(cfg.niter)
+        self._cp_ct_full3d_radio.setChecked(cfg.do_3D)
+        self._cp_ct_stitch_radio.setChecked(not cfg.do_3D)
+        self._cp_ct_stitch_threshold.setValue(cfg.stitch_threshold)
         self._cp_ct_smooth_sigma.setValue(cfg.smooth_sigma)
         self._cp_ct_device.setCurrentText(cfg.device)
-        self._cp_ct_save_masks_chk.setChecked(cfg.save_masks)
+        self._cp_ct_save_masks_chk.setChecked(True)
+
+    def _cp_ct_on_mode_changed(self) -> None:
+        """Enable stitch controls only when running in stitched 2D mode."""
+        self._cp_ct_stitch_threshold.setEnabled(self._cp_ct_stitch_radio.isChecked())
 
     def _cp_ct_schedule(self) -> None:
         """Schedule a debounced preview update if data is cached."""
@@ -339,28 +402,42 @@ class UltrackAnalysisWidget(QWidget):
             return
         inp, _ = paths
 
-        dp_files = discover_dp_files(inp)
-        prob_files = discover_prob_files(inp)
+        dp_files = discover_nucleus_dp_files(inp)
+        prob_files = discover_nucleus_prob_files(inp)
         tp_idx = self._cp_ct_tp_idx.value()
 
         if not dp_files or not prob_files:
-            self._cp_ct_status.setText("No t*_dp.tif or t*_prob.tif files found.")
+            self._cp_ct_status.setText("No nucleus_dp_4d.tif or nucleus_prob_4d.tif files found.")
             return
 
         if len(dp_files) != len(prob_files):
             self._cp_ct_status.setText(f"Mismatch: {len(dp_files)} dp vs {len(prob_files)} prob files.")
             return
 
-        if tp_idx >= len(dp_files):
-            self._cp_ct_status.setText(f"Only {len(dp_files)} timepoints available.")
+        # Load the stack and select the requested timepoint.
+        self._cp_ct_status.setText(f"Loading {dp_files[0].name}\u2026")
+        dp_stack = tifffile.imread(str(dp_files[0])).astype(np.float32)
+        prob_stack = tifffile.imread(str(prob_files[0])).astype(np.float32)
+
+        if dp_stack.ndim >= 4 and tp_idx >= dp_stack.shape[0]:
+            self._cp_ct_status.setText(f"Only {dp_stack.shape[0]} timepoints available.")
+            return
+        if prob_stack.ndim >= 3 and tp_idx >= prob_stack.shape[0]:
+            self._cp_ct_status.setText(f"Only {prob_stack.shape[0]} timepoints available.")
             return
 
-        # Load single timepoint
-        self._cp_ct_status.setText(f"Loading {dp_files[tp_idx].name}\u2026")
-        self._cp_ct_dp = tifffile.imread(str(dp_files[tp_idx])).astype(np.float32)
-        self._cp_ct_prob = tifffile.imread(str(prob_files[tp_idx])).astype(np.float32)
+        if dp_stack.ndim >= 4 and dp_stack.shape[0] > tp_idx:
+            self._cp_ct_dp = dp_stack[tp_idx]
+        else:
+            self._cp_ct_dp = dp_stack
+
+        if prob_stack.ndim >= 3 and prob_stack.shape[0] > tp_idx:
+            self._cp_ct_prob = prob_stack[tp_idx]
+        else:
+            self._cp_ct_prob = prob_stack
+
         self._cp_ct_update_preview()
-        self._cp_ct_status.setText(f"Preview: {dp_files[tp_idx].name}")
+        self._cp_ct_status.setText(f"Preview: {dp_files[0].name} t={tp_idx}")
 
     def _cp_ct_update_preview(self) -> None:
         """Update preview with current configuration, averaging multiple cellprob thresholds."""
@@ -454,7 +531,7 @@ class UltrackAnalysisWidget(QWidget):
         yield from run_s02c(inp, out, cfg, overwrite=overwrite)
 
     def _cp_ct_on_run(self) -> None:
-        """Run cellpose contours stage with threshold sweep and averaging."""
+        """Run the nucleus hypothesis sweep with threshold averaging."""
         paths = self._get_paths()
         if paths is None:
             self._cp_ct_status.setText("No project open. Create or open a project first.")
@@ -482,7 +559,7 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_worker.aborted.connect(self._cp_ct_on_cancelled)
 
     def _cp_ct_on_run_terminal(self) -> None:
-        """Launch cellpose contours in terminal."""
+        """Launch segmentation hypotheses generation in a terminal."""
         paths = self._get_paths()
         if paths is None:
             self._cp_ct_status.setText("No project open. Create or open a project first.")
@@ -501,7 +578,7 @@ class UltrackAnalysisWidget(QWidget):
         ).strip()
         try:
             launch_in_terminal(cmd)
-            self._cp_ct_status.setText("Launched cellpose contours in terminal.")
+            self._cp_ct_status.setText("Launched segmentation hypotheses in terminal.")
         except Exception as e:
             self._cp_ct_status.setText(f"Terminal error: {e}")
 
@@ -531,7 +608,7 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_cancel_btn.setEnabled(False)
         self._cp_ct_progress.setVisible(False)
         self._cp_ct_worker = None
-        self._cp_ct_status.setText("Done \u2014 foreground.tif and contours.tif written.")
+        self._cp_ct_status.setText("Done - hypothesis labelmaps written.")
         self._cp_ct_load_stack()
 
     def _cp_ct_on_error(self, exc: Exception) -> None:
@@ -543,23 +620,24 @@ class UltrackAnalysisWidget(QWidget):
         self._cp_ct_status.setText(f"Error: {exc}")
 
     def _cp_ct_load_stack(self) -> None:
-        """Load output files from disk."""
+        """Load saved hypothesis labelmaps from disk."""
         paths = self._get_paths()
         if paths is None:
             return
-        fg_path = Path(paths[1]) / "foreground.tif"
-        ct_path = Path(paths[1]) / "contours.tif"
-        if not fg_path.exists():
-            self._cp_ct_status.setText("foreground.tif not found.")
+        out_dir = Path(paths[1])
+
+        labelmap_paths = sorted((out_dir / "labelmaps").glob("labelmap_*.tif"))
+        if labelmap_paths:
+            labels = tifffile.imread(str(labelmap_paths[0]))
+            self.viewer.add_labels(labels, name="nucleus hypothesis 0")
+            self._cp_ct_status.setText(
+                f"Loaded hypothesis labelmap: {labelmap_paths[0].name} {labels.shape}"
+            )
             return
-        if not ct_path.exists():
-            self._cp_ct_status.setText("contours.tif not found.")
-            return
-        fg_stack = tifffile.imread(str(fg_path))
-        ct_stack = tifffile.imread(str(ct_path))
-        self.viewer.add_image(fg_stack, name="cp foreground", colormap="green")
-        self.viewer.add_image(ct_stack, name="cp contours", colormap="hot")
-        self._cp_ct_status.setText(f"Loaded foreground + contours: {fg_stack.shape}")
+
+        self._cp_ct_status.setText(
+            "No hypothesis labelmaps found in labelmaps/."
+        )
 
     def _cp_ct_on_load_results(self) -> None:
         """Load results button handler."""
@@ -644,7 +722,7 @@ class UltrackAnalysisWidget(QWidget):
         lay.addLayout(row)
 
         row = QHBoxLayout()
-        self._tr_seg_run_btn = QPushButton("Run Segmentation")
+        self._tr_seg_run_btn = QPushButton("Run Nucleus Ultrack")
         self._tr_seg_run_btn.clicked.connect(self._tr_on_run_segmentation)
         row.addWidget(self._tr_seg_run_btn)
         self._tr_seg_term_btn = QPushButton("Run in Terminal")
@@ -663,7 +741,7 @@ class UltrackAnalysisWidget(QWidget):
         lay.addWidget(self._tr_seg_status)
 
         content.setLayout(lay)
-        return CollapsibleSection("Segmentation hypotheses", content, expanded=False)
+        return CollapsibleSection("Nucleus Ultrack Ingestion", content, expanded=False)
 
     # ══════════════════════════════════════════════════════════════════════
     # LINKING section
@@ -852,7 +930,7 @@ class UltrackAnalysisWidget(QWidget):
 
         # ── Full pipeline buttons ────────────────────────────────────────
         row = QHBoxLayout()
-        self._tr_run_btn = QPushButton("Run Full Pipeline")
+        self._tr_run_btn = QPushButton("Run Nucleus Ultrack")
         self._tr_run_btn.clicked.connect(self._tr_on_run)
         row.addWidget(self._tr_run_btn)
         self._tr_term_btn = QPushButton("Run in Terminal")
@@ -986,14 +1064,11 @@ class UltrackAnalysisWidget(QWidget):
             self._tr_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
-        fg_path = str(Path(out) / "foreground.tif")
-        ct_path = str(Path(out) / "contours.tif")
-        wd = out
         cfg = self._tr_build_config()
         self._tr_run_btn.setEnabled(False)
         self._tr_cancel_btn.setEnabled(True)
         self._tr_progress.setVisible(True)
-        self._tr_status.setText("Starting\u2026")
+        self._tr_status.setText("Starting nucleus Ultrack\u2026")
 
         @thread_worker(connect={
             "yielded": self._tr_on_progress,
@@ -1001,7 +1076,11 @@ class UltrackAnalysisWidget(QWidget):
             "errored": self._tr_on_error,
         })
         def _work():
-            for u in run_s03(fg_path, ct_path, wd, cfg):
+            for u in run_nucleus_ultrack(out, cfg, overwrite=cfg.overwrite_segmentation):
+                yield u
+            for u in run_linking(out, cfg, overwrite=cfg.overwrite_linking):
+                yield u
+            for u in run_solve(out, cfg, overwrite=cfg.overwrite_solve):
                 yield u
 
         self.run_started.emit()
@@ -1014,22 +1093,37 @@ class UltrackAnalysisWidget(QWidget):
             self._tr_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
-        fg_path = str(Path(out) / "foreground.tif")
-        ct_path = str(Path(out) / "contours.tif")
         wd = out
         cfg = self._tr_build_config()
         cfg_path = Path(tempfile.mktemp(suffix="_tr_config.json"))
         cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
+        script_path = Path(tempfile.mktemp(suffix="_nucleus_ultrack.py"))
+        script_path.write_text(
+            "from pathlib import Path\n"
+            "import json\n"
+            "import multiprocessing\n"
+            "from cellflow.ultrack.config import TrackingConfig\n"
+            "from cellflow.ultrack.stages.tracking import run_nucleus_ultrack, run_linking, run_solve\n"
+            "\n"
+            "def main() -> None:\n"
+            f'    cfg = TrackingConfig(**json.loads(Path(r"{cfg_path}").read_text()))\n'
+            f'    for done, total, label in run_nucleus_ultrack(Path(r"{wd}"), cfg, overwrite={cfg.overwrite_segmentation}):\n'
+            '        print(f"[{done}/{total}] {label}", flush=True)\n'
+            f'    for done, total, label in run_linking(Path(r"{wd}"), cfg, overwrite={cfg.overwrite_linking}):\n'
+            '        print(f"[{done}/{total}] {label}", flush=True)\n'
+            f'    for done, total, label in run_solve(Path(r"{wd}"), cfg, overwrite={cfg.overwrite_solve}):\n'
+            '        print(f"[{done}/{total}] {label}", flush=True)\n'
+            "\n"
+            'if __name__ == "__main__":\n'
+            "    multiprocessing.freeze_support()\n"
+            "    main()\n"
+        )
         cmd = (
-            f"python -m cellflow.ultrack.stages.tracking"
-            f" --foreground \"{fg_path}\""
-            f" --contours \"{ct_path}\""
-            f" --working-dir \"{wd}\""
-            f" --config \"{cfg_path}\""
+            f"python \"{script_path}\""
         )
         try:
             launch_in_terminal(cmd)
-            self._tr_status.setText("Launched tracking in terminal.")
+            self._tr_status.setText("Launched nucleus Ultrack in terminal.")
         except Exception as e:
             self._tr_status.setText(f"Terminal error: {e}")
 
@@ -1039,22 +1133,30 @@ class UltrackAnalysisWidget(QWidget):
             self._tr_seg_status.setText("No project open. Create or open a project first.")
             return
         _, out = paths
-        fg_path = str(Path(out) / "foreground.tif")
-        ct_path = str(Path(out) / "contours.tif")
-        wd = out
         cfg = self._tr_build_config()
         cfg_path = Path(tempfile.mktemp(suffix="_tr_seg_config.json"))
         cfg_path.write_text(json.dumps(cfg.model_dump(), indent=2))
-        cmd = (
-            f"python -m cellflow.ultrack.stages.tracking --stage segmentation"
-            f" --foreground \"{fg_path}\""
-            f" --contours \"{ct_path}\""
-            f" --working-dir \"{wd}\""
-            f" --config \"{cfg_path}\""
+        script_path = Path(tempfile.mktemp(suffix="_nucleus_ingest.py"))
+        script_path.write_text(
+            "from pathlib import Path\n"
+            "import json\n"
+            "import multiprocessing\n"
+            "from cellflow.ultrack.config import TrackingConfig\n"
+            "from cellflow.ultrack.stages.tracking import run_nucleus_ultrack\n"
+            "\n"
+            "def main() -> None:\n"
+            f'    cfg = TrackingConfig(**json.loads(Path(r"{cfg_path}").read_text()))\n'
+            f'    for done, total, label in run_nucleus_ultrack(Path(r"{out}"), cfg, overwrite={cfg.overwrite_segmentation}):\n'
+            '        print(f"[{done}/{total}] {label}", flush=True)\n'
+            "\n"
+            'if __name__ == "__main__":\n'
+            "    multiprocessing.freeze_support()\n"
+            "    main()\n"
         )
+        cmd = f'python "{script_path}"'
         try:
             launch_in_terminal(cmd)
-            self._tr_seg_status.setText("Launched segmentation in terminal.")
+            self._tr_seg_status.setText("Launched nucleus Ultrack ingestion in terminal.")
         except Exception as e:
             self._tr_seg_status.setText(f"Terminal error: {e}")
 
@@ -1122,7 +1224,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_cancel_btn.setEnabled(False)
         self._tr_progress.setVisible(False)
         self._tr_worker = None
-        self._tr_status.setText("Tracking complete \u2014 loading results\u2026")
+        self._tr_status.setText("Nucleus Ultrack complete \u2014 loading results\u2026")
         self._tr_load_results()
         self._log_viewer.refresh()
 
@@ -1141,15 +1243,12 @@ class UltrackAnalysisWidget(QWidget):
         if paths is None:
             self._tr_seg_status.setText("No project open. Create or open a project first.")
             return
-        inp, out = paths
-        fg_path = str(Path(out) / "foreground.tif")
-        ct_path = str(Path(out) / "contours.tif")
-        wd = out
+        _, out = paths
         cfg = self._tr_build_config()
         self._tr_seg_run_btn.setEnabled(False)
         self._tr_seg_cancel_btn.setEnabled(True)
         self._tr_seg_progress.setVisible(True)
-        self._tr_seg_status.setText("Starting\u2026")
+        self._tr_seg_status.setText("Starting nucleus Ultrack ingestion\u2026")
 
         @thread_worker(connect={
             "yielded": self._tr_seg_on_progress,
@@ -1157,7 +1256,7 @@ class UltrackAnalysisWidget(QWidget):
             "errored": self._tr_seg_on_error,
         })
         def _work():
-            for u in run_segmentation(fg_path, ct_path, wd, cfg, overwrite=cfg.overwrite_segmentation):
+            for u in run_nucleus_ultrack(out, cfg, overwrite=cfg.overwrite_segmentation):
                 yield u
 
         self.run_started.emit()
@@ -1186,7 +1285,7 @@ class UltrackAnalysisWidget(QWidget):
         self._tr_seg_cancel_btn.setEnabled(False)
         self._tr_seg_progress.setVisible(False)
         self._seg_worker = None
-        self._tr_seg_status.setText("Segmentation complete.")
+        self._tr_seg_status.setText("Nucleus Ultrack ingestion complete.")
 
     def _tr_seg_on_error(self, exc: Exception) -> None:
         self._tr_seg_run_btn.setEnabled(True)
@@ -1742,11 +1841,7 @@ class UltrackAnalysisWidget(QWidget):
             return
         inp, out = paths
         out_p = Path(out)
-        fg_path = str(out_p / "foreground.tif")
-        ct_path = str(out_p / "contours.tif")
 
-        cp_ct_cfg = self._cp_ct_build_config()
-        cp_ct_ow = self._cp_ct_overwrite_chk.isChecked()
         tr_cfg = self._tr_build_config()
 
         # Tracking skip: skip when all overwrite flags are False and outputs already exist
@@ -1771,22 +1866,12 @@ class UltrackAnalysisWidget(QWidget):
             "errored": self._on_all_error,
         })
         def _work():
-            # Cluster Cellpose
-            if not cp_ct_ow and (out_path / "tracked_labels.tif").exists():
-                yield (0, 100, "[Cluster Cellpose] Skipping \u2014 output exists (overwrite unchecked)")
-            else:
-                yield (0, 100, "[Cluster Cellpose] Starting\u2026")
-                for done, total, label in run_s02c(inp, out, cp_ct_cfg, overwrite=cp_ct_ow):
-                    yield (int(done / max(total, 1) * 50), 100,
-                           f"[Cluster Cellpose] {label} [{done}/{total}]")
-
-            # Tracking
             if tr_skip:
                 yield (50, 100, "[Nucleus Ultrack] Skipping \u2014 output exists (overwrite=none)")
                 yield (100, 100, "Run All complete.")
             else:
                 yield (50, 100, "[Nucleus Ultrack] Starting\u2026")
-                for step, total_steps, label in run_s03(fg_path, ct_path, out, tr_cfg):
+                for step, total_steps, label in run_nucleus_ultrack(out, tr_cfg, overwrite=tr_cfg.overwrite_segmentation):
                     yield (50 + int(step / max(total_steps, 1) * 50), 100,
                            f"[Nucleus Ultrack] {label}")
                 yield (100, 100, "Run All complete.")

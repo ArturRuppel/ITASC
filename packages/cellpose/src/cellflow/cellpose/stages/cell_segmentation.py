@@ -6,8 +6,8 @@ N-body gravitational field (from nuclear centroids) and the Cellpose flow field.
 Inputs (per position)
 ---------------------
   3_correction/nuclear_labels_corrected.tif  (T, H, W)    uint32  — nuclear labels (2D projection)
-  1b_cellpose_cell/cell_dp.tif               (T, 2, H, W) float32 — flow field
-  1b_cellpose_cell/cell_prob.tif             (T, H, W)    float32 — cellpose probability
+  1_cellpose/cell_dp_4d.tif                  (T, Z, 2, H, W) float32 — flow field stack
+  1_cellpose/cell_prob_4d.tif                (T, Z, H, W)    float32 — cellpose probability stack
 
 Outputs (per position)
 ----------------------
@@ -57,6 +57,8 @@ def load_cellpose_data(root_dir: str | Path, pos: int) -> tuple[np.ndarray | Non
     # Prefer zavg outputs (per-z-slice pipeline), fall back to legacy names
     flow_path = cell_dir / "cell_dp_zavg.tif"
     if not flow_path.exists():
+        flow_path = cell_dir / "cell_dp_4d.tif"
+    if not flow_path.exists():
         flow_path = cell_dir / "cell_dp.tif"
     if not flow_path.exists():
         print(f"[error] Flow field not found in {cell_dir}", file=sys.stderr)
@@ -66,6 +68,8 @@ def load_cellpose_data(root_dir: str | Path, pos: int) -> tuple[np.ndarray | Non
     print(f"  flow shape={flow.shape}  ({flow_path.name})", flush=True)
 
     prob_path = cell_dir / "cell_prob_zavg.tif"
+    if not prob_path.exists():
+        prob_path = cell_dir / "cell_prob_4d.tif"
     if not prob_path.exists():
         prob_path = cell_dir / "cell_prob.tif"
     prob = None
@@ -342,10 +346,14 @@ class _CellSegmentationStageClass:
 
         tracking_labels = stage_dir(root_dir, pos, "correction") / "nuclear_labels_corrected.tif"
         cell_dir = stage_dir(root_dir, pos, "cellpose_cell")
-        return validate_inputs([
-            tracking_labels,
-            cell_dir / "cell_dp.tif",
-        ])
+        base_result = validate_inputs([tracking_labels])
+        errors = list(base_result.errors)
+        if not any(
+            (cell_dir / name).exists()
+            for name in ("cell_dp_zavg.tif", "cell_dp_4d.tif", "cell_dp.tif")
+        ):
+            errors.append(f"Required file not found: {cell_dir / 'cell_dp_zavg.tif'}")
+        return ValidationResult(ok=not errors, errors=errors)
 
     def is_complete(self, root_dir, pos) -> bool:
         d = stage_dir(root_dir, pos, "cell_segmentation")

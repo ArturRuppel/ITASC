@@ -61,7 +61,7 @@ class TrackingCorrectionWidget(QWidget):
         self._load_btn = QPushButton("Load nuclear segmentation")
         self._load_btn.setToolTip(
             "Load the nuclear labels layer currently registered in state.\n"
-            "Run Cluster Cellpose / Nucleus Ultrack first to populate it."
+            "Run Cellpose Cluster / Nucleus Ultrack first to populate it."
         )
         self._load_btn.clicked.connect(self._on_load)
         load_row.addWidget(self._load_btn)
@@ -123,7 +123,7 @@ class TrackingCorrectionWidget(QWidget):
             self._load_btn.setText("Load nuclear segmentation")
             self._load_btn.setToolTip(
                 "Load the nuclear labels layer currently registered in state.\n"
-                "Run Cluster Cellpose / Nucleus Ultrack first to populate it."
+                "Run Cellpose Cluster / Nucleus Ultrack first to populate it."
             )
             self._save_btn.setText("Save corrected labels")
             self._tracking.setVisible(True)

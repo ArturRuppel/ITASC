@@ -2,7 +2,7 @@
 
 Reads the raw 4D nucleus stack ``nucleus_4d.tif`` from ``0_input`` and runs
 Cellpose in 3-D mode once per timepoint. The per-timepoint flow and probability
-outputs are stacked back into 4D TIFFs written directly under ``1_cellpose/``.
+outputs are stacked into time-stacked TIFFs written directly under ``1_cellpose/``.
 
 Usage
 -----
@@ -92,8 +92,8 @@ def run(
     try:
         for done, in_path in enumerate(tif_files, start=1):
             prefix = in_path.stem.replace("_4d", "")
-            dp_path = output_dir / f"{prefix}_dp.tif"
-            prob_path = output_dir / f"{prefix}_prob.tif"
+            dp_path = output_dir / f"{prefix}_dp_4d.tif"
+            prob_path = output_dir / f"{prefix}_prob_4d.tif"
 
             label = in_path.name
             yield (done - 1, total, label)
@@ -185,7 +185,7 @@ if __name__ == "__main__":
     parser.add_argument("--input-dir",  required=True,
                         help="Directory containing nucleus_4d.tif (T, Z, Y, X)")
     parser.add_argument("--output-dir", required=True,
-                        help="Directory to write nucleus_dp.tif / nucleus_prob.tif outputs")
+                        help="Directory to write nucleus_dp_4d.tif / nucleus_prob_4d.tif outputs")
     parser.add_argument(
         "--config",
         default=None,
@@ -237,8 +237,14 @@ class _CellposeNucleusStageClass:
         out = stage_dir(root_dir, pos, "cellpose_nucleus")
         return (
             out.exists()
-            and (out / "nucleus_dp.tif").exists()
-            and (out / "nucleus_prob.tif").exists()
+            and (
+                (out / "nucleus_dp_4d.tif").exists()
+                or (out / "nucleus_dp.tif").exists()
+            )
+            and (
+                (out / "nucleus_prob_4d.tif").exists()
+                or (out / "nucleus_prob.tif").exists()
+            )
         )
 
 

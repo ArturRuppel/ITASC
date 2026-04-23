@@ -109,7 +109,7 @@ class CellFlowWidget(QWidget):
 
         self._cellpose_tab = CellposeWidget(self.viewer, log_viewer=self._log_viewer)
         self._cellpose_section = CollapsibleSection(
-            "Cluster Cellpose", self._cellpose_tab, expanded=False
+            "Cellpose Cluster", self._cellpose_tab, expanded=False
         )
         _plugin_layout.addWidget(self._cellpose_section)
 
@@ -347,7 +347,7 @@ class CellFlowWidget(QWidget):
     def _accordion_sections(self) -> "dict[str, CollapsibleSection]":
         return {
             "Prepare Input Data": self._data_prep_section,
-            "Cluster Cellpose":   self._cellpose_section,
+            "Cellpose Cluster": self._cellpose_section,
             "Nucleus Ultrack":    self._ultrack_section,
             "Correction":         self._correction_section,
             "Cell Ultrack":       self._cell_ultrack_section,

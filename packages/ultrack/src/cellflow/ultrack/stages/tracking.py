@@ -14,6 +14,8 @@ from cellflow.ultrack.config import TrackingConfig
 from cellflow.ultrack.ingestion import (
     labels_batch_to_foreground_contours,
     load_hypothesis_labelmaps,
+    prepare_hypothesis_labelmaps_for_ingestion,
+    write_foreground_contours,
     write_hypothesis_labelmaps,
 )
 from cellflow.core.paths import stage_dir
@@ -255,8 +257,22 @@ def run_hypothesis_ingestion(
     yield (1, total, "Writing hypothesis manifest…")
     write_hypothesis_labelmaps(wd, labelmaps, stage_name=stage_name, source=source)
 
-    yield (2, total, "Deriving segmentation inputs…")
-    foreground, contours = labels_batch_to_foreground_contours(labelmaps, smooth_sigma=smooth_sigma)
+    yield (2, total, "Preparing hypotheses for ingestion…")
+    ingestion_labelmaps = prepare_hypothesis_labelmaps_for_ingestion(labelmaps)
+
+    ingestion_shapes = {tuple(np.asarray(labels).shape) for labels in ingestion_labelmaps}
+    if len(ingestion_shapes) != 1:
+        raise ValueError(
+            "All labelmaps must have the same shape for Ultrack ingestion; "
+            f"got {sorted(ingestion_shapes)}"
+        )
+
+    yield (3, total, "Deriving segmentation inputs…")
+    foreground, contours = labels_batch_to_foreground_contours(
+        ingestion_labelmaps,
+        smooth_sigma=smooth_sigma,
+    )
+    write_foreground_contours(wd, foreground, contours)
 
     zarr_tmp: Path | None = None
     try:
@@ -265,7 +281,7 @@ def run_hypothesis_ingestion(
             foreground = _to_zarr(foreground, zarr_tmp / "foreground.zarr")
             contours = _to_zarr(contours, zarr_tmp / "contours.zarr")
 
-        yield (3, total, "Running segmentation (add nodes)…")
+        yield (4, total, "Running segmentation (add nodes)…")
         try:
             segment(foreground, contours, ultrack_cfg, overwrite=overwrite)
         except ValueError as exc:

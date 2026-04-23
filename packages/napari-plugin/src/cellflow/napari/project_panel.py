@@ -47,13 +47,11 @@ _TRACKED_FILE_GROUPS: list[tuple[str, list[tuple[str, str, "str | None"]]]] = [
         ("0_input/cell_zavg.tif",    "Cell z-avg",      "image"),
         ("0_input/z_shift.csv",    "Z shift CSV",      None),
     ]),
-    ("Cluster Cellpose", [
-        ("1_cellpose/nucleus_dp.tif",       "Nucleus DP",         None),
-        ("1_cellpose/nucleus_prob.tif",     "Nucleus prob",       "image"),
-        ("1_cellpose/nucleus_dp_zavg.tif",  "Nucleus DP avg",     None),
-        ("1_cellpose/nucleus_prob_zavg.tif","Nucleus prob avg",   "image"),
-        ("1_cellpose/cell_dp.tif",          "Cell DP (z-slices)", None),
-        ("1_cellpose/cell_prob.tif",        "Cell prob (z-slices)", "image"),
+    ("Cellpose Cluster", [
+        ("1_cellpose/nucleus_dp_4d.tif",    "Nucleus DP 4D",      None),
+        ("1_cellpose/nucleus_prob_4d.tif",  "Nucleus prob 4D",    "image"),
+        ("1_cellpose/cell_dp_4d.tif",       "Cell DP 4D",         None),
+        ("1_cellpose/cell_prob_4d.tif",     "Cell prob 4D",       "image"),
         ("1_cellpose/cell_dp_zavg.tif",     "Cell DP avg",        None),
         ("1_cellpose/cell_prob_zavg.tif",   "Cell prob avg",      "image"),
     ]),

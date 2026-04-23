@@ -203,13 +203,11 @@ _DIR_DESCRIPTIONS: List[tuple[str, List[str]]] = [
     (
         "1_cellpose/",
         [
-            "Cluster Cellpose outputs  [step 1]",
-            "  nucleus_dp.tif          (T, 3, Z, H, W) float32",
-            "  nucleus_prob.tif        (T, Z, H, W)    float32",
-            "  nucleus_dp_zavg.tif     (T, 3, H, W)    float32",
-            "  nucleus_prob_zavg.tif   (T, H, W)       float32",
-            "  cell_dp.tif             (T, Z, 2, H, W) float32",
-            "  cell_prob.tif           (T, Z, H, W)    float32",
+            "Cellpose Cluster outputs  [step 1]",
+            "  nucleus_dp_4d.tif       (T, C, Z, H, W) float32  [C=3 in full-3D mode, C=2 slice-wise]",
+            "  nucleus_prob_4d.tif     (T, Z, H, W)    float32",
+            "  cell_dp_4d.tif          (T, Z, 2, H, W) float32",
+            "  cell_prob_4d.tif        (T, Z, H, W)    float32",
             "  cell_dp_zavg.tif        (T, 2, H, W)    float32",
             "  cell_prob_zavg.tif      (T, H, W)       float32",
         ],

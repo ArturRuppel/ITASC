@@ -31,27 +31,54 @@ from cellflow.cellpose.stages.contours import discover_dp_files, discover_prob_f
 # ── Contour extraction ────────────────────────────────────────────────────────
 
 
-def _contours_from_labels(labels: np.ndarray, smooth_sigma: float) -> tuple[np.ndarray, np.ndarray]:
-    """Extract foreground + contour maps from a label array."""
-    fg = (labels > 0).astype(np.float32)
+def _contours_from_2d_labels(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Extract foreground + contour maps from a 2D label frame."""
+    if labels.ndim != 2:
+        raise ValueError(f"Expected a 2D label frame, got shape {labels.shape}")
 
+    fg = (labels > 0).astype(np.float32)
     ct = np.zeros_like(labels, dtype=np.float32)
-    for axis in range(labels.ndim):
-        sl_a = [slice(None)] * labels.ndim
-        sl_b = [slice(None)] * labels.ndim
+    for axis in range(2):
+        sl_a = [slice(None)] * 2
+        sl_b = [slice(None)] * 2
         sl_a[axis] = slice(None, -1)
         sl_b[axis] = slice(1, None)
         diff = (labels[tuple(sl_a)] != labels[tuple(sl_b)]).astype(np.float32)
         ct[tuple(sl_a)] = np.maximum(ct[tuple(sl_a)], diff)
         ct[tuple(sl_b)] = np.maximum(ct[tuple(sl_b)], diff)
+    return fg, ct
 
-    if smooth_sigma > 0:
-        ct = gaussian_filter(ct, sigma=smooth_sigma)
-        ct_max = float(ct.max())
-        if ct_max > 0:
-            ct /= ct_max
 
-    return fg, ct.astype(np.float32)
+def _smooth_contours(contours: np.ndarray, smooth_sigma: float) -> np.ndarray:
+    if smooth_sigma <= 0:
+        return contours.astype(np.float32)
+    smoothed = gaussian_filter(np.asarray(contours, dtype=np.float32), sigma=smooth_sigma)
+    ct_max = float(smoothed.max())
+    if ct_max > 0:
+        smoothed /= ct_max
+    return smoothed.astype(np.float32)
+
+
+def _contours_from_labels(labels: np.ndarray, smooth_sigma: float) -> tuple[np.ndarray, np.ndarray]:
+    """Extract foreground + contour maps from a label array."""
+    labels = np.asarray(labels)
+
+    if labels.ndim == 2:
+        fg, ct = _contours_from_2d_labels(labels)
+        return fg, _smooth_contours(ct, smooth_sigma)
+
+    if labels.ndim == 3:
+        fg_slices: list[np.ndarray] = []
+        ct_slices: list[np.ndarray] = []
+        for frame in labels:
+            fg, ct = _contours_from_2d_labels(frame)
+            fg_slices.append(fg)
+            ct_slices.append(ct)
+        fg = np.mean(fg_slices, axis=0).astype(np.float32)
+        ct = _smooth_contours(np.mean(ct_slices, axis=0), smooth_sigma)
+        return fg, ct
+
+    raise ValueError(f"Expected a 2D or 3D label array, got shape {labels.shape}")
 
 
 # ── Flow magnitude ────────────────────────────────────────────────────────────

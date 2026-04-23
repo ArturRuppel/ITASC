@@ -1,15 +1,12 @@
-"""s02c — Cellpose-native contours from flow fields and probability maps.
+"""s02c — nucleus hypothesis sweep from Cellpose flow fields and probabilities.
 
-Uses cellpose.dynamics.compute_masks to generate label maps from flow (dP) and
-probability maps, then ultrack.utils.labels_to_contours to derive foreground and
-contour maps.
-
-This is an alternative to s02/s02b that leverages cellpose's own segmentation
-logic rather than custom thresholding and watershed.
+Runs a parameter sweep over Cellpose mask thresholds using the nucleus 4D flow
+and probability stacks, then persists one label hypothesis stack per threshold
+under ``labelmaps/labelmap_*.tif`` for downstream hypothesis ingestion.
 
 Usage
 -----
-    python -m ultrack_wrapper.stages.s02c_cellpose_contours \\
+    python -m cellflow.cellpose.stages.contours \\
         --input-dir /path/to/cellpose_output \\
         --output-dir /path/to/output \\
         --config /tmp/cfg.json \\
@@ -38,16 +35,36 @@ from cellflow.core.protocol import StageProgress, ValidationResult
 def discover_dp_files(input_dir: str | Path) -> list[Path]:
     """Return the Cellpose cell flow stack in *input_dir*."""
     input_dir = Path(input_dir)
-    path = input_dir / "cell_dp.tif"
-    if path.exists():
-        return [path]
+    for name in ("cell_dp_4d.tif", "cell_dp.tif"):
+        path = input_dir / name
+        if path.exists():
+            return [path]
     return []
 
 
 def discover_prob_files(input_dir: str | Path) -> list[Path]:
     """Return the Cellpose cell probability stack in *input_dir*."""
     input_dir = Path(input_dir)
-    path = input_dir / "cell_prob.tif"
+    for name in ("cell_prob_4d.tif", "cell_prob.tif"):
+        path = input_dir / name
+        if path.exists():
+            return [path]
+    return []
+
+
+def discover_nucleus_dp_files(input_dir: str | Path) -> list[Path]:
+    """Return the nucleus flow stack in *input_dir*."""
+    input_dir = Path(input_dir)
+    path = input_dir / "nucleus_dp_4d.tif"
+    if path.exists():
+        return [path]
+    return []
+
+
+def discover_nucleus_prob_files(input_dir: str | Path) -> list[Path]:
+    """Return the nucleus probability stack in *input_dir*."""
+    input_dir = Path(input_dir)
+    path = input_dir / "nucleus_prob_4d.tif"
     if path.exists():
         return [path]
     return []
@@ -86,6 +103,8 @@ def compute_labels_single(
             dp,
             prob,
             cellprob_threshold=cfg.cellprob_threshold,
+            flow_threshold=cfg.flow_threshold,
+            niter=cfg.niter,
             do_3D=cfg.do_3D,
             device=device,
         )
@@ -94,6 +113,63 @@ def compute_labels_single(
         masks = np.zeros(prob.shape, dtype=np.uint16)
 
     return masks.astype(np.uint32)
+
+
+def _stitch_volume_masks(
+    dp: np.ndarray,
+    prob: np.ndarray,
+    cfg: CellposeContoursConfig,
+) -> np.ndarray:
+    """Run 2D Cellpose per slice and stitch the masks into a 3D volume."""
+    from cellpose.dynamics import compute_masks
+    from cellpose.utils import stitch3D
+    import torch
+
+    device = torch.device(cfg.device)
+
+    if dp.ndim == 3 and prob.ndim == 2:
+        masks = compute_masks(
+            dp,
+            prob,
+            cellprob_threshold=cfg.cellprob_threshold,
+            flow_threshold=cfg.flow_threshold,
+            niter=cfg.niter,
+            do_3D=False,
+            device=device,
+        )
+        return np.asarray(masks, dtype=np.uint32)
+
+    if dp.ndim != 4 or prob.ndim != 3:
+        raise ValueError(f"Expected 2D slices or a 3D stack, got dp={dp.shape} prob={prob.shape}")
+
+    if dp.shape[0] != prob.shape[0]:
+        raise ValueError(f"Slice mismatch: dp={dp.shape} prob={prob.shape}")
+
+    slice_masks: list[np.ndarray] = []
+    for z in range(prob.shape[0]):
+        # If the upstream stack is the current full-3D Cellpose format
+        # (3, Z, Y, X), use the XY components at each z-slice for stitching.
+        if dp.shape[1] in (2, 3):
+            dp_z = dp[z]
+        elif dp.shape[0] in (2, 3):
+            dp_z = dp[:2, z] if dp.shape[0] >= 2 else dp[z]
+        else:
+            raise ValueError(f"Unsupported dp shape for stitched masks: {dp.shape}")
+        mask = compute_masks(
+            dp_z,
+            prob[z],
+            cellprob_threshold=cfg.cellprob_threshold,
+            flow_threshold=cfg.flow_threshold,
+            niter=cfg.niter,
+            do_3D=False,
+            device=device,
+        )
+        slice_masks.append(np.asarray(mask, dtype=np.uint32))
+
+    masks = np.stack(slice_masks, axis=0)
+    if cfg.stitch_threshold > 0 and masks.shape[0] > 1:
+        masks = stitch3D(masks, stitch_threshold=cfg.stitch_threshold)
+    return np.asarray(masks, dtype=np.uint32)
 
 
 def compute_contours_from_labels(
@@ -156,7 +232,18 @@ def compute_single_from_arrays(
     prob: np.ndarray,
     cfg: CellposeContoursConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute labels, foreground, and contours from pre-loaded arrays.
+    """Compute labels, foreground, and contours from pre-loaded arrays."""
+    labels = compute_labels_from_arrays(dp, prob, cfg)
+    foreground, contours = compute_contours_from_labels(labels, smooth_sigma=cfg.smooth_sigma)
+    return labels, foreground, contours
+
+
+def compute_labels_from_arrays(
+    dp: np.ndarray,
+    prob: np.ndarray,
+    cfg: CellposeContoursConfig,
+) -> np.ndarray:
+    """Compute only label hypotheses from pre-loaded arrays.
 
     Parameters
     ----------
@@ -169,28 +256,29 @@ def compute_single_from_arrays(
     Returns
     -------
     labels : np.ndarray, uint32
-    foreground : np.ndarray, float32
-    contours : np.ndarray, float32
     """
-    from cellpose.dynamics import compute_masks
-    import torch
-
     try:
-        device = torch.device(cfg.device)
-        masks = compute_masks(
-            dp,
-            prob,
-            cellprob_threshold=cfg.cellprob_threshold,
-            do_3D=cfg.do_3D,
-            device=device,
-        )
+        if cfg.do_3D:
+            from cellpose.dynamics import compute_masks
+            import torch
+
+            device = torch.device(cfg.device)
+            masks = compute_masks(
+                dp,
+                prob,
+                cellprob_threshold=cfg.cellprob_threshold,
+                flow_threshold=cfg.flow_threshold,
+                niter=cfg.niter,
+                do_3D=True,
+                device=device,
+            )
+        else:
+            masks = _stitch_volume_masks(dp, prob, cfg)
     except Exception as e:
         print(f"[warn] compute_masks failed: {e}", flush=True)
         masks = np.zeros(prob.shape, dtype=np.uint16)
 
-    labels = masks.astype(np.uint32)
-    foreground, contours = compute_contours_from_labels(labels, smooth_sigma=cfg.smooth_sigma)
-    return labels, foreground, contours
+    return masks.astype(np.uint32)
 
 
 # ── Batch run ───────────────────────────────────────────────────────────────
@@ -202,27 +290,15 @@ def run(
     cfg: CellposeContoursConfig,
     overwrite: bool = False,
 ) -> Generator[tuple[int, int, str], None, None]:
-    """Process the Cellpose cell stack and write foreground.tif and contours.tif.
-
-    Yields ``(done, total, status_label)`` for progress reporting.
-    If both output files already exist and *overwrite* is False, skips immediately.
-    """
+    """Run the nucleus hypothesis sweep and write ``labelmaps/labelmap_*.tif``."""
     inp = Path(input_dir)
     out = Path(output_dir)
-    fg_path = out / "foreground.tif"
-    ct_path = out / "contours.tif"
 
-    # Early exit if outputs exist
-    if not overwrite and fg_path.exists() and ct_path.exists():
-        yield (0, 1, "foreground.tif and contours.tif already exist, skipping")
-        return
-
-    # Discover the stacked Cellpose outputs.
-    dp_files = discover_dp_files(inp)
-    prob_files = discover_prob_files(inp)
+    dp_files = discover_nucleus_dp_files(inp)
+    prob_files = discover_nucleus_prob_files(inp)
 
     if not dp_files or not prob_files:
-        yield (0, 0, "No cell_dp.tif or cell_prob.tif files found")
+        yield (0, 0, "No nucleus_dp_4d.tif or nucleus_prob_4d.tif files found")
         return
 
     if len(dp_files) != len(prob_files):
@@ -239,6 +315,15 @@ def run(
         yield (0, 0, "Error: no cellprob thresholds generated (check cellprob_min/max/step)")
         return
 
+    labelmap_dir = out / "labelmaps"
+    expected_outputs = [
+        labelmap_dir / f"labelmap_{index:03d}.tif"
+        for index, _ in enumerate(thresholds)
+    ]
+    if not overwrite and expected_outputs and all(path.exists() for path in expected_outputs):
+        yield (0, len(expected_outputs), "Hypothesis labelmaps already exist, skipping")
+        return
+
     dp_stack = tifffile.imread(str(dp_files[0])).astype(np.float32)
     prob_stack = tifffile.imread(str(prob_files[0])).astype(np.float32)
     if dp_stack.ndim == 4:
@@ -251,59 +336,40 @@ def run(
 
     total = dp_stack.shape[0]
     out.mkdir(parents=True, exist_ok=True)
+    labelmap_dir.mkdir(parents=True, exist_ok=True)
+    masks_per_thresh: dict[float, list[np.ndarray]] = {t: [] for t in thresholds}
 
-    fg_frames: list[np.ndarray] = []
-    ct_frames: list[np.ndarray] = []
-    # maps threshold → list of per-timepoint label arrays (only populated when save_masks)
-    masks_per_thresh: dict[float, list[np.ndarray]] = {t: [] for t in thresholds} if cfg.save_masks else {}
+    if overwrite:
+        for path in labelmap_dir.glob("labelmap_*.tif"):
+            path.unlink()
 
     for i in range(total):
         t_str = f"t{i:03d}"
         try:
             dp = dp_stack[i]
             prob = prob_stack[i]
-            fg_list = []
-            ct_list = []
             for thresh in thresholds:
                 cfg.cellprob_threshold = thresh
-                labels, fg, ct = compute_single_from_arrays(dp, prob, cfg)
-                fg_list.append(fg)
-                ct_list.append(ct)
-                if cfg.save_masks:
-                    masks_per_thresh[thresh].append(labels)
-            fg_frames.append(np.mean(fg_list, axis=0).astype(np.float32))
-            ct_frames.append(np.mean(ct_list, axis=0).astype(np.float32))
+                labels = compute_labels_from_arrays(dp, prob, cfg)
+                masks_per_thresh[thresh].append(labels)
         except Exception as e:
             print(f"  {t_str}: error: {e}", flush=True)
             spatial = prob_stack[i].shape
-            fg_frames.append(np.zeros(spatial, dtype=np.float32))
-            ct_frames.append(np.zeros(spatial, dtype=np.float32))
-            if cfg.save_masks:
-                for thresh in thresholds:
-                    masks_per_thresh[thresh].append(np.zeros(spatial, dtype=np.uint32))
+            for thresh in thresholds:
+                masks_per_thresh[thresh].append(np.zeros(spatial, dtype=np.uint32))
 
         yield (i + 1, total, t_str)
 
-    fg_stack = np.stack(fg_frames, axis=0)
-    ct_stack = np.stack(ct_frames, axis=0)
+    for index, thresh in enumerate(thresholds):
+        frames = masks_per_thresh[thresh]
+        stack_3d = np.stack(frames, axis=0)
+        tifffile.imwrite(
+            str(labelmap_dir / f"labelmap_{index:03d}.tif"),
+            stack_3d,
+            compression="zlib",
+        )
 
-    tifffile.imwrite(str(fg_path), fg_stack, compression="zlib")
-    tifffile.imwrite(str(ct_path), ct_stack, compression="zlib")
-
-    if cfg.save_masks:
-        masks_3d_dir = out / "masks" / "3d"
-        masks_2d_dir = out / "masks" / "2d"
-        masks_3d_dir.mkdir(parents=True, exist_ok=True)
-        masks_2d_dir.mkdir(parents=True, exist_ok=True)
-        for thresh, frames in masks_per_thresh.items():
-            thresh_str = f"{thresh:.2f}".replace("-", "m").replace(".", "p")
-            stack_3d = np.stack(frames, axis=0)  # (T, Z, Y, X) or (T, Y, X)
-            tifffile.imwrite(str(masks_3d_dir / f"thresh_{thresh_str}_masks.tif"), stack_3d, compression="zlib")
-            # Max-projection over Z for 4-D stacks, pass through for 3-D
-            proj_2d = stack_3d.max(axis=1) if stack_3d.ndim == 4 else stack_3d
-            tifffile.imwrite(str(masks_2d_dir / f"thresh_{thresh_str}_masks.tif"), proj_2d, compression="zlib")
-
-    yield (total, total, "Done")
+    yield (total, total, f"Saved {len(thresholds)} hypothesis labelmaps")
 
 
 # ── CLI entry point ─────────────────────────────────────────────────────────
@@ -313,17 +379,17 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="s02c — compute contours from Cellpose flow fields and probability maps",
+        description="s02c — run a nucleus hypothesis sweep from Cellpose flow fields and probability maps",
     )
     parser.add_argument(
         "--input-dir",
         required=True,
-        help="Directory containing cell_dp.tif and cell_prob.tif files",
+        help="Directory containing nucleus_dp_4d.tif and nucleus_prob_4d.tif",
     )
     parser.add_argument(
         "--output-dir",
         required=True,
-        help="Directory to write foreground.tif and contours.tif",
+        help="Directory to write labelmaps/labelmap_*.tif",
     )
     parser.add_argument(
         "--config",
@@ -372,9 +438,11 @@ class _ContoursStageClass:
         from cellflow.core.validation import validate_inputs
 
         cell_dir = stage_dir(root_dir, pos, "cellpose_nucleus")
-        dp_files = [cell_dir / "cell_dp.tif"] if (cell_dir / "cell_dp.tif").exists() else []
+        dp_files = [cell_dir / "cell_dp_4d.tif"] if (cell_dir / "cell_dp_4d.tif").exists() else []
         if not dp_files:
-            return ValidationResult(ok=False, errors=[f"No cell_dp.tif in {cell_dir}"])
+            dp_files = [cell_dir / "cell_dp.tif"] if (cell_dir / "cell_dp.tif").exists() else []
+        if not dp_files:
+            return ValidationResult(ok=False, errors=[f"No cell_dp_4d.tif in {cell_dir}"])
         return ValidationResult(ok=True, errors=[])
 
     def is_complete(self, root_dir, pos) -> bool:
