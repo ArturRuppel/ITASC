@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 _PREVIEW_LAYER = "Preview: Nucleus"
 _HYP_LAYER = "Hypothesis: Nucleus"
 _TRACKED_LAYER = "Tracked: Nucleus"
+_PROB_LAYER = "Probability: Nucleus"
 
 
 class NucleusWorkflowWidget(QWidget):
@@ -352,14 +353,26 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status(f"Missing: {prob_path}")
             return
 
-        try:
-            prob_stack = tifffile.imread(str(prob_path))  # (T, Z, Y, X) or (Z, Y, X)
-            prob_stack = np.asarray(prob_stack, dtype=np.float32)
-            if prob_stack.ndim == 3:
-                prob_stack = prob_stack[np.newaxis]
-        except Exception as e:
-            self._set_status(f"Could not read prob file: {e}")
-            return
+        # Ensure probability map is loaded in viewer
+        if _PROB_LAYER in self.viewer.layers:
+            prob_stack = np.asarray(self.viewer.layers[_PROB_LAYER].data)
+        else:
+            try:
+                prob_stack = tifffile.imread(str(prob_path))  # (T, Z, Y, X) or (Z, Y, X)
+                prob_stack = np.asarray(prob_stack, dtype=np.float32)
+                self.viewer.add_image(
+                    prob_stack,
+                    name=_PROB_LAYER,
+                    colormap="inferno",
+                    blending="additive",
+                    visible=True,
+                )
+            except Exception as e:
+                self._set_status(f"Could not read prob file: {e}")
+                return
+
+        if prob_stack.ndim == 3:
+            prob_stack = prob_stack[np.newaxis]
 
         t = self._current_t()
         z = self._current_z()
