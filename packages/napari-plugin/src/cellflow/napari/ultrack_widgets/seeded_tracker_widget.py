@@ -26,7 +26,9 @@ from cellflow.ultrack.stages.seeded_tracker import (
     _match_frame,
     _relabel_sequential,
     build_seeded_tracker_inputs,
+    load_tracked_from_h5,
     match_frame_from_h5,
+    save_tracked_to_h5,
 )
 
 
@@ -98,6 +100,10 @@ class SeededTrackerWidget(QWidget):
         self._bootstrap_btn = QPushButton("Bootstrap seed")
         self._bootstrap_btn.clicked.connect(self._on_bootstrap)
         row.addWidget(self._bootstrap_btn)
+        self._accept_btn = QPushButton("Accept as frame 0")
+        self._accept_btn.setToolTip("Use the currently active labels layer as the seed (frame 0).")
+        self._accept_btn.clicked.connect(self._on_accept_current)
+        row.addWidget(self._accept_btn)
         self._next_btn = QPushButton("Show best next")
         self._next_btn.clicked.connect(self._on_best_next)
         row.addWidget(self._next_btn)
@@ -105,6 +111,15 @@ class SeededTrackerWidget(QWidget):
         self._reset_btn.clicked.connect(self._on_reset)
         row.addWidget(self._reset_btn)
         lay.addLayout(row)
+
+        db_row = QHBoxLayout()
+        self._save_db_btn = QPushButton("Save to Database")
+        self._save_db_btn.clicked.connect(self._on_save_db)
+        db_row.addWidget(self._save_db_btn)
+        self._load_db_btn = QPushButton("Load from Database")
+        self._load_db_btn.clicked.connect(self._on_load_db)
+        db_row.addWidget(self._load_db_btn)
+        lay.addLayout(db_row)
 
         self._status = QLabel("No seed loaded.")
         lay.addWidget(self._status)
@@ -268,10 +283,10 @@ class SeededTrackerWidget(QWidget):
         else:
             self._tracked_layer = self.viewer.add_labels(data, name=layer_name)
 
-    def _write_outputs(self) -> None:
+    def _write_outputs(self) -> dict[str, object] | None:
         out_dir = self._output_dir()
         if out_dir is None or self._tracked_stack is None:
-            return
+            return None
 
         out_dir.mkdir(parents=True, exist_ok=True)
         tifffile.imwrite(
@@ -310,6 +325,75 @@ class SeededTrackerWidget(QWidget):
             json.dumps(state, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        return state
+
+    def _on_accept_current(self) -> None:
+        root = self._root_dir()
+        if root is None:
+            self._status.setText("No project open.")
+            return
+
+        active_layer = self.viewer.layers.selection.active
+        from napari.layers import Labels
+        if not isinstance(active_layer, Labels):
+            self._status.setText("Select a labels layer first.")
+            return
+
+        out_dir = self._output_dir()
+        if out_dir is None:
+            self._status.setText("Could not determine output directory.")
+            return
+
+        h5_path = out_dir / "hypotheses.h5"
+        if not h5_path.exists():
+            self._status.setText("hypotheses.h5 not found. Run sweep first.")
+            return
+
+        self.run_started.emit()
+        try:
+            from cellflow.ultrack.hypotheses import load_medoid_stack
+            medoid_yxt = load_medoid_stack(h5_path)
+            consensus_stack = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)
+            n_frames = consensus_stack.shape[0]
+            frame_shape = consensus_stack.shape[1:]
+
+            seed = np.asarray(active_layer.data, dtype=np.uint32)
+            if seed.ndim == 3:
+                # If it's a stack, take the current timepoint from the viewer
+                t = self.viewer.dims.current_step[0]
+                seed = seed[t]
+
+            if seed.shape != frame_shape:
+                self._status.setText(f"Seed shape {seed.shape} != frame shape {frame_shape}")
+                return
+
+            tracked_stack = np.zeros((n_frames,) + frame_shape, dtype=np.uint32)
+            tracked_seed, mapping = _relabel_sequential(seed)
+            tracked_stack[0] = tracked_seed
+
+            self._consensus_stack = consensus_stack
+            self._tracked_stack = tracked_stack
+            self._current_t = 0
+            self._seed_source = f"layer:{active_layer.name}"
+            self._h5_path = h5_path
+            self._track_rows = []
+
+            for src_label, track_id in mapping.items():
+                self._track_rows.append({
+                    "track_id": track_id,
+                    "time": 0,
+                    "source_track_id": track_id,
+                    "source_label_id": src_label,
+                    "candidate_label_id": src_label,
+                    "iou": 1.0,
+                })
+
+            self._write_outputs()
+            self._set_layer_data()
+            self._status.setText(f"Accepted {active_layer.name} as frame 0.")
+
+        except Exception as exc:
+            self._status.setText(f"Accept failed: {exc}")
 
     def _on_best_next(self) -> None:
         root = self._root_dir()
@@ -365,6 +449,59 @@ class SeededTrackerWidget(QWidget):
             self.viewer.dims.set_current_step(0, next_index)
 
         self._status.setText(f"Advanced to frame {self._current_t} ({len(rows)} labels matched).")
+
+    def _on_save_db(self) -> None:
+        out_dir = self._output_dir()
+        if out_dir is None:
+            self._status.setText("No project open.")
+            return
+
+        h5_path = out_dir / "hypotheses.h5"
+        if self._tracked_stack is None:
+            self._status.setText("Nothing to save.")
+            return
+
+        if self._tracked_layer is not None and self._tracked_layer in self.viewer.layers:
+            self._tracked_stack = np.asarray(self._tracked_layer.data, dtype=np.uint32)
+
+        state = self._write_outputs()
+        if state is None:
+            self._status.setText("Error writing outputs.")
+            return
+
+        try:
+            save_tracked_to_h5(h5_path, self._tracked_stack, self._track_rows, state)
+            self._status.setText(f"Saved to {h5_path.name}.")
+        except Exception as exc:
+            self._status.setText(f"Save failed: {exc}")
+
+    def _on_load_db(self) -> None:
+        out_dir = self._output_dir()
+        if out_dir is None:
+            self._status.setText("No project open.")
+            return
+
+        h5_path = out_dir / "hypotheses.h5"
+        if not h5_path.exists():
+            self._status.setText(f"{h5_path.name} not found.")
+            return
+
+        try:
+            stack, rows, state = load_tracked_from_h5(h5_path)
+            self._tracked_stack = stack
+            self._track_rows = rows
+            self._current_t = state.get("current_time", 0)
+            self._seed_source = state.get("seed_source", "unknown")
+            self._h5_path = h5_path
+
+            from cellflow.ultrack.hypotheses import load_medoid_stack
+            medoid_yxt = load_medoid_stack(h5_path)
+            self._consensus_stack = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)
+
+            self._set_layer_data()
+            self._status.setText(f"Loaded tracked results from {h5_path.name}.")
+        except Exception as exc:
+            self._status.setText(f"Load failed: {exc}")
 
     def _on_reset(self) -> None:
         self._consensus_stack = None

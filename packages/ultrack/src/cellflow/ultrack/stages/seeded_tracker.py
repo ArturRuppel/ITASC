@@ -126,6 +126,13 @@ def _load_h5_candidates_for_time(
     return results
 
 
+def _label_props(labels: np.ndarray) -> dict[int, object]:
+    """Return {label_id: regionprop} for non-zero labels."""
+    from skimage.measure import regionprops
+    props = regionprops(labels.astype(np.int32, copy=False))
+    return {p.label: p for p in props}
+
+
 def match_frame_from_h5(
     current: np.ndarray,
     h5_path: "Path | str",
@@ -137,83 +144,119 @@ def match_frame_from_h5(
 ) -> tuple[np.ndarray, list[dict[str, object]]]:
     """Match current labels to the best H5 hypothesis candidates for next_t.
 
-    For each label in *current*, all (z, p) candidate labels at *next_t* are
-    filtered by centroid-to-centroid distance and fractional size deviation.
-    IoU is computed against surviving candidates; the highest-scoring one wins.
-    Per-label scoring is parallelized across threads.  Final assignment is
-    greedy (sorted by track id) to avoid duplicate use of the same candidate.
-
-    Parameters
-    ----------
-    current:
-        Tracked label image at the current timepoint (2-D, uint32).
-    h5_path:
-        Path to ``hypotheses.h5``.
-    next_t:
-        Timepoint index to load from the H5 file.
-    max_distance:
-        Maximum centroid-to-centroid distance in pixels for a candidate to
-        be considered.
-    max_size_deviation:
-        Maximum fractional area difference (``|area_cand - area_cur| /
-        area_cur``) for a candidate to be considered.
-    n_workers:
-        Thread-pool size.  Defaults to ``min(32, cpu_count)``.
+    Optimized version using spatial indexing (KDTree) and cropped IoU.
     """
     import os
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from scipy.spatial import KDTree
 
     current = np.asarray(current, dtype=np.uint32)
-    current_masks = _label_masks(current)
-    if not current_masks:
+    current_props = _label_props(current)
+    if not current_props:
         return np.zeros_like(current), []
 
-    current_stats_map = _label_stats(current)
     candidate_frames = _load_h5_candidates_for_time(h5_path, next_t)
     if not candidate_frames:
         return np.zeros_like(current), []
 
-    candidate_stats_list = [_label_stats(lbl2d) for (_, _, lbl2d) in candidate_frames]
+    # Pre-calculate all candidate stats and build a global spatial index
+    all_candidates = []
+    all_centroids = []
+    for f_idx, (z, p, lbl2d) in enumerate(candidate_frames):
+        props = _label_props(lbl2d)
+        for cand_id, prop in props.items():
+            all_candidates.append({
+                "f_idx": f_idx,
+                "z": z,
+                "p": p,
+                "id": cand_id,
+                "centroid": np.array(prop.centroid),
+                "area": prop.area,
+                "bbox": prop.bbox,
+                "labels": lbl2d,
+            })
+            all_centroids.append(prop.centroid)
+
+    all_centroids = np.array(all_centroids)
+    tree = KDTree(all_centroids)
 
     if n_workers is None:
         n_workers = min(32, os.cpu_count() or 1)
 
     def _find_best(current_id: int):
-        cur_mask = current_masks[current_id]
-        cur_centroid, cur_area = current_stats_map[current_id]
+        cur_prop = current_props[current_id]
+        cur_centroid = np.array(cur_prop.centroid)
+        cur_area = cur_prop.area
+        cur_bbox = cur_prop.bbox
+        cur_mask = cur_prop.image
+
+        # 1. Spatial filter
+        indices = tree.query_ball_point(cur_centroid, max_distance)
+        if not indices:
+            return current_id, None
+
         best_score = 0.0
         best = None
-        for frame_idx, ((z, p, cand_labels), cand_stats) in enumerate(
-            zip(candidate_frames, candidate_stats_list)
-        ):
-            for cand_id, (cand_centroid, cand_area) in cand_stats.items():
-                if np.linalg.norm(cur_centroid - cand_centroid) > max_distance:
-                    continue
-                if cur_area > 0 and abs(cand_area - cur_area) / cur_area > max_size_deviation:
-                    continue
-                cand_mask = cand_labels == cand_id
-                score = _iou(cur_mask, cand_mask)
-                if score > best_score:
-                    best_score = score
-                    best = (frame_idx, score, z, p, cand_id, cand_mask)
+
+        for idx in indices:
+            cand = all_candidates[idx]
+
+            # 2. Size filter
+            if cur_area > 0 and abs(cand["area"] - cur_area) / cur_area > max_size_deviation:
+                continue
+
+            # 3. Cropped IoU
+            # Intersection of bounding boxes
+            cand_bbox = cand["bbox"]
+            minr = max(cur_bbox[0], cand_bbox[0])
+            minc = max(cur_bbox[1], cand_bbox[1])
+            maxr = min(cur_bbox[2], cand_bbox[2])
+            maxc = min(cur_bbox[3], cand_bbox[3])
+
+            if minr >= maxr or minc >= maxc:
+                continue
+
+            # Crop both labelmaps to the intersection of bboxes
+            # Note: cur_mask is already a crop of 'current' at cur_bbox
+            # We need to crop cur_mask further to the [minr:maxr, minc:maxc] region
+            # relative to cur_bbox[0], cur_bbox[1]
+            rel_minr, rel_minc = minr - cur_bbox[0], minc - cur_bbox[1]
+            rel_maxr, rel_maxc = maxr - cur_bbox[0], maxc - cur_bbox[1]
+            sub_cur_mask = cur_mask[rel_minr:rel_maxr, rel_minc:rel_maxc]
+
+            sub_cand_labels = cand["labels"][minr:maxr, minc:maxc]
+            sub_cand_mask = sub_cand_labels == cand["id"]
+
+            # Compute IoU on these small patches
+            inter = np.logical_and(sub_cur_mask, sub_cand_mask).sum()
+            if inter == 0:
+                continue
+
+            union = sub_cur_mask.sum() + sub_cand_mask.sum() - inter
+            score = float(inter / union) if union > 0 else 0.0
+
+            if score > best_score:
+                best_score = score
+                best = (cand["f_idx"], score, cand["z"], cand["p"], cand["id"], cand["labels"] == cand["id"])
+
         return current_id, best
 
     per_label_best: dict[int, tuple] = {}
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(_find_best, cid): cid for cid in sorted(current_masks)}
+        futures = {executor.submit(_find_best, cid): cid for cid in sorted(current_props)}
         for future in as_completed(futures):
             cid, result = future.result()
             if result is not None:
                 per_label_best[cid] = result
 
-    # Greedy assignment in track-id order; (frame_idx, cand_id) is unique per candidate
+    # Greedy assignment in track-id order
     assigned: set[tuple[int, int]] = set()
     next_frame = np.zeros_like(current, dtype=np.uint32)
     rows: list[dict[str, object]] = []
 
     for current_id in sorted(per_label_best):
-        frame_idx, score, _z, _p, cand_id, cand_mask = per_label_best[current_id]
-        key = (frame_idx, cand_id)
+        f_idx, score, _z, _p, cand_id, cand_mask = per_label_best[current_id]
+        key = (f_idx, cand_id)
         if key in assigned:
             continue
         assigned.add(key)
@@ -226,6 +269,55 @@ def match_frame_from_h5(
         })
 
     return next_frame, rows
+
+
+def save_tracked_to_h5(
+    h5_path: Path | str,
+    tracked_stack: np.ndarray,
+    track_rows: list[dict[str, object]],
+    state: dict[str, object],
+) -> None:
+    """Save the tracked labels stack and metadata to a 'tracked' group in HDF5."""
+    import h5py
+    import json
+
+    with h5py.File(Path(h5_path), "a") as h5:
+        if "tracked" in h5:
+            del h5["tracked"]
+        grp = h5.create_group("tracked")
+
+        # Save labels stack
+        labels = np.asarray(tracked_stack, dtype=np.uint32)
+        chunks = (1, min(512, labels.shape[1]), min(512, labels.shape[2]))
+        grp.create_dataset(
+            "labels",
+            data=labels,
+            chunks=chunks,
+            compression="gzip",
+            compression_opts=4,
+            shuffle=True,
+        )
+
+        # Save tracks and state as JSON attributes
+        grp.attrs["tracks_json"] = json.dumps(track_rows)
+        grp.attrs["state_json"] = json.dumps(state)
+
+
+def load_tracked_from_h5(
+    h5_path: Path | str,
+) -> tuple[np.ndarray, list[dict[str, object]], dict[str, object]]:
+    """Load tracked labels and metadata from the 'tracked' group in HDF5."""
+    import h5py
+    import json
+
+    with h5py.File(Path(h5_path), "r") as h5:
+        if "tracked" not in h5:
+            raise KeyError(f"No 'tracked' group found in {h5_path}")
+        grp = h5["tracked"]
+        tracked_stack = np.asarray(grp["labels"][:], dtype=np.uint32)
+        track_rows = json.loads(grp.attrs["tracks_json"])
+        state = json.loads(grp.attrs["state_json"])
+    return tracked_stack, track_rows, state
 
 
 def _foreground_iou(a: np.ndarray, b: np.ndarray) -> float:
