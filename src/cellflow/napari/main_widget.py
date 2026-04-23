@@ -13,6 +13,9 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QFrame,
     QSizePolicy,
+    QCheckBox,
+    QProgressBar,
+    QSpinBox,
 )
 from qtpy.QtCore import Qt, QTimer
 from pathlib import Path
@@ -145,6 +148,84 @@ class DataPanel(QWidget):
             self.file_tracker.refresh(None)
 
 
+class DataPrepWidget(QWidget):
+    """Widget for exporting and preparing raw data."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+
+        # NDTiff path
+        layout.addWidget(QLabel("NDTiff Directory:"))
+        row = QHBoxLayout()
+        self.ndtiff_edit = QLineEdit()
+        self.ndtiff_edit.setPlaceholderText("/path/to/ndtiff_dataset")
+        row.addWidget(self.ndtiff_edit)
+        self.browse_btn = QPushButton("Browse...")
+        row.addWidget(self.browse_btn)
+        self.pull_btn = QPushButton("Pull Metadata")
+        row.addWidget(self.pull_btn)
+        layout.addLayout(row)
+
+        # Metadata display (placeholders)
+        meta_row = QHBoxLayout()
+        self.px_label = QLabel("Pixel size: —")
+        self.px_label.setStyleSheet("color: grey; font-size: 8pt;")
+        meta_row.addWidget(self.px_label)
+        self.dt_label = QLabel("Interval: —")
+        self.dt_label.setStyleSheet("color: grey; font-size: 8pt;")
+        meta_row.addWidget(self.dt_label)
+        meta_row.addStretch()
+        layout.addLayout(meta_row)
+
+        # Positions
+        layout.addWidget(QLabel("Positions (e.g. 0,1,2):"))
+        self.pos_edit = QLineEdit("0")
+        layout.addWidget(self.pos_edit)
+
+        # XY downsample
+        ds_row = QHBoxLayout()
+        ds_row.addWidget(QLabel("XY Downsample:"))
+        self.ds_spin = QSpinBox()
+        self.ds_spin.setRange(1, 16)
+        self.ds_spin.setValue(2)
+        ds_row.addWidget(self.ds_spin)
+        layout.addLayout(ds_row)
+
+        # Overwrite
+        self.overwrite_check = QCheckBox("Overwrite existing files")
+        layout.addWidget(self.overwrite_check)
+
+        # Run buttons
+        btn_row = QHBoxLayout()
+        self.run_btn = QPushButton("Run Export")
+        self.term_btn = QPushButton("Run in Terminal")
+        btn_row.addWidget(self.run_btn)
+        btn_row.addWidget(self.term_btn)
+        layout.addLayout(btn_row)
+
+        # Progress & Status
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("font-size: 8pt;")
+        layout.addWidget(self.status_label)
+
+        # ── Project file status ──────────────────────────────────────────
+        self.files_tracker = PipelineFilesWidget([
+            ("Output", [
+                ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
+                ("0_input/cell_zavg.tif", "Cell z-avg"),
+                ("0_input/z_shift.csv", "Z shift CSV"),
+            ]),
+        ])
+        layout.addWidget(self.files_tracker)
+
+
 class CellposeWidget(QWidget):
     """Informational panel for external Cellpose output."""
 
@@ -251,20 +332,24 @@ class CellFlowMainWidget(QWidget):
         self.data_section = CollapsibleSection(
             "1. Data Panel", self.data_panel, expanded=True
         )
+        self.prep_section = CollapsibleSection(
+            "2. Data Preparation", DataPrepWidget(), expanded=False
+        )
         self.cellpose_section = CollapsibleSection(
-            "2. Cellpose Output", CellposeWidget(), expanded=False
+            "3. Cellpose Output", CellposeWidget(), expanded=False
         )
         self.nucleus_section = CollapsibleSection(
-            "3. Nucleus Workflow", NucleusWorkflowWidget(), expanded=False
+            "4. Nucleus Workflow", NucleusWorkflowWidget(), expanded=False
         )
         self.cell_section = CollapsibleSection(
-            "4. Cell Workflow", CellWorkflowWidget(), expanded=False
+            "5. Cell Workflow", CellWorkflowWidget(), expanded=False
         )
         self.analysis_section = CollapsibleSection(
-            "5. Analysis", AnalysisWidget(), expanded=False
+            "6. Analysis", AnalysisWidget(), expanded=False
         )
 
         self.scroll_layout.addWidget(self.data_section)
+        self.scroll_layout.addWidget(self.prep_section)
         self.scroll_layout.addWidget(self.cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
