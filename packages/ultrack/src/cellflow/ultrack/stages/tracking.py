@@ -18,6 +18,7 @@ from cellflow.ultrack.ingestion import (
     write_foreground_contours,
     write_hypothesis_labelmaps,
 )
+from cellflow.ultrack.pruning import prune_circularity_filtered_candidates
 from cellflow.core.paths import stage_dir
 from cellflow.core.protocol import StageProgress, ValidationResult
 
@@ -170,7 +171,7 @@ def run_segmentation(
 
     Yields ``(step, total_steps, status_label)``.
     """
-    total = 4
+    total = 5
     fg_path = Path(foreground_path)
     ct_path = Path(contours_path)
 
@@ -221,6 +222,14 @@ def run_segmentation(
         if zarr_tmp is not None:
             shutil.rmtree(zarr_tmp, ignore_errors=True)
 
+    yield (3, total, "Pruning low-circularity candidates…")
+    pruned = prune_circularity_filtered_candidates(wd, cfg, n_workers=cfg.n_workers)
+
+    if pruned:
+        yield (4, total, f"Pruned {pruned} candidates and cleared links.")
+    else:
+        yield (4, total, "No low-circularity candidates to prune.")
+
     yield (total, total, "Segmentation done.")
 
 
@@ -240,7 +249,7 @@ def run_hypothesis_ingestion(
     so later workflow stages can inspect or replay the exact inputs that were
     used for segmentation.
     """
-    total = 5
+    total = 6
     wd = Path(working_dir)
     wd.mkdir(parents=True, exist_ok=True)
     ultrack_cfg = _build_ultrack_config(cfg, wd)
@@ -292,6 +301,14 @@ def run_hypothesis_ingestion(
     finally:
         if zarr_tmp is not None:
             shutil.rmtree(zarr_tmp, ignore_errors=True)
+
+    yield (4, total, "Pruning low-circularity candidates…")
+    pruned = prune_circularity_filtered_candidates(wd, cfg, n_workers=cfg.n_workers)
+
+    if pruned:
+        yield (5, total, f"Pruned {pruned} candidates and cleared links.")
+    else:
+        yield (5, total, "No low-circularity candidates to prune.")
 
     yield (total, total, "Segmentation done.")
 

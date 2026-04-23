@@ -674,6 +674,17 @@ class UltrackAnalysisWidget(QWidget):
         lay.addLayout(row)
 
         row = QHBoxLayout()
+        row.addWidget(QLabel("Min circularity"))
+        self._tr_min_circularity = QDoubleSpinBox()
+        self._tr_min_circularity.setRange(0.0, 1.0)
+        self._tr_min_circularity.setSingleStep(0.05)
+        self._tr_min_circularity.setDecimals(2)
+        self._tr_min_circularity.setValue(0.0)
+        self._tr_min_circularity.setToolTip("Minimum circularity (4π·area/perimeter²) for a candidate; 0 disables the filter")
+        row.addWidget(self._tr_min_circularity)
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
         row.addWidget(QLabel("Min frontier"))
         self._tr_min_front = QDoubleSpinBox()
         self._tr_min_front.setRange(0.0, 1.0)
@@ -1039,6 +1050,7 @@ class UltrackAnalysisWidget(QWidget):
         return TrackingConfig(
             min_area=self._tr_min_area.value(),
             max_area=self._tr_max_area.value(),
+            min_circularity=self._tr_min_circularity.value(),
             min_frontier=self._tr_min_front.value(),
             threshold=self._tr_seg_thresh.value(),
             ws_hierarchy=self._tr_ws_combo.currentText(),
@@ -1068,6 +1080,7 @@ class UltrackAnalysisWidget(QWidget):
     def _tr_apply_config(self, cfg: TrackingConfig) -> None:
         self._tr_min_area.setValue(cfg.min_area)
         self._tr_max_area.setValue(cfg.max_area)
+        self._tr_min_circularity.setValue(cfg.min_circularity)
         self._tr_min_front.setValue(cfg.min_frontier)
         self._tr_seg_thresh.setValue(cfg.threshold)
         self._tr_ws_combo.setCurrentText(cfg.ws_hierarchy)

@@ -11,6 +11,7 @@ class TrackingConfig(BaseModel):
     min_area: int = 100
     max_area: int = 1000000
     min_frontier: float = 0.0
+    min_circularity: float = 0.0  # 0 = disabled; 4π·area/perimeter² in (0, 1]
     threshold: float = 0.5
     ws_hierarchy: str = "area"  # "area", "dynamics", or "volume"
     anisotropy_penalization: float = 0.0

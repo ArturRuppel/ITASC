@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import tifffile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "core" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packages" / "ultrack" / "src"))
 
 from cellflow.ultrack.ingestion import (
     labels_batch_to_foreground_contours,
@@ -202,6 +206,10 @@ def test_run_nucleus_ultrack_uses_persisted_labelmaps(tmp_path, monkeypatch):
             self.kwargs = kwargs
 
     fake_config.MainConfig = FakeMainConfig
+    monkeypatch.setattr(
+        "cellflow.ultrack.stages.tracking.prune_circularity_filtered_candidates",
+        lambda working_dir, cfg, **kw: 0,
+    )
 
     cfg = TrackingConfig(n_workers=1)
     progress = list(run_nucleus_ultrack(tmp_path, cfg, overwrite=True))
@@ -261,6 +269,10 @@ def test_run_nucleus_ultrack_promotes_2d_labelmaps_before_ingestion(tmp_path, mo
             self.kwargs = kwargs
 
     fake_config.MainConfig = FakeMainConfig
+    monkeypatch.setattr(
+        "cellflow.ultrack.stages.tracking.prune_circularity_filtered_candidates",
+        lambda working_dir, cfg, **kw: 0,
+    )
 
     cfg = TrackingConfig(n_workers=1)
     progress = list(run_nucleus_ultrack(tmp_path, cfg, overwrite=True))
@@ -327,6 +339,10 @@ def test_run_nucleus_ultrack_averages_over_z_for_contours(tmp_path, monkeypatch)
             self.kwargs = kwargs
 
     fake_config.MainConfig = FakeMainConfig
+    monkeypatch.setattr(
+        "cellflow.ultrack.stages.tracking.prune_circularity_filtered_candidates",
+        lambda working_dir, cfg, **kw: 0,
+    )
 
     cfg = TrackingConfig(n_workers=1)
     progress = list(run_nucleus_ultrack(tmp_path, cfg, overwrite=True))
