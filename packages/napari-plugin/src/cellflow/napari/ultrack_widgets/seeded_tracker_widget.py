@@ -40,18 +40,27 @@ def _nucleus_ultrack_dir(root_dir, pos):
     return stage_dir(root_dir, pos, "nucleus_ultrack")
 
 
-def _to_5d(data: np.ndarray) -> np.ndarray:
-    """Promote 2D/3D/4D data to 5D (t, z, p, y, x) for consistent napari alignment."""
+def _to_5d(data: np.ndarray, n_z: int = 1, n_p: int = 1) -> np.ndarray:
+    """Promote data to 5D (t, z, p, y, x) and broadcast z/p to n_z/n_p."""
     data = np.asarray(data)
+    # 1. Promote to 5D with singleton axes
     if data.ndim == 2:  # (y, x) -> (1, 1, 1, y, x)
-        return data[np.newaxis, np.newaxis, np.newaxis, ...]
-    if data.ndim == 3:  # (t, y, x) -> (t, 1, 1, y, x)
-        return data[:, np.newaxis, np.newaxis, ...]
-    if data.ndim == 4:  # (t, z, y, x) -> (t, z, 1, y, x)
-        return data[:, :, np.newaxis, ...]
-    if data.ndim == 5:
-        return data
-    return data
+        res = data[np.newaxis, np.newaxis, np.newaxis, ...]
+    elif data.ndim == 3:  # (t, y, x) -> (t, 1, 1, y, x)
+        res = data[:, np.newaxis, np.newaxis, ...]
+    elif data.ndim == 4:  # (t, z, y, x) -> (t, z, 1, y, x)
+        res = data[:, :, np.newaxis, ...]
+    else:
+        res = data
+
+    # 2. Broadcast singleton z/p axes to target counts if they are 1
+    t, cur_z, cur_p, y, x = res.shape
+    target_z = n_z if cur_z == 1 else cur_z
+    target_p = n_p if cur_p == 1 else cur_p
+    
+    if target_z != cur_z or target_p != cur_p:
+        return np.broadcast_to(res, (t, target_z, target_p, y, x))
+    return res
 
 
 class SeededTrackerWidget(QWidget):
@@ -72,6 +81,8 @@ class SeededTrackerWidget(QWidget):
         self._seed_source: str = "consensus"
         self._tracked_layer = None
         self._h5_path: Path | None = None
+        self._n_z: int = 1
+        self._n_p: int = 1
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
@@ -170,7 +181,7 @@ class SeededTrackerWidget(QWidget):
         nuc_path = raw_dir / "nucleus_zavg.tif"
 
         if cell_path.exists():
-            cell_img = _to_5d(tifffile.imread(str(cell_path)))
+            cell_img = _to_5d(tifffile.imread(str(cell_path)), n_z=self._n_z, n_p=self._n_p)
             layer_name = "Cell avg"
             if layer_name in self.viewer.layers:
                 self.viewer.layers[layer_name].data = cell_img
@@ -178,7 +189,7 @@ class SeededTrackerWidget(QWidget):
                 self.viewer.add_image(cell_img, name=layer_name, colormap="gray")
 
         if nuc_path.exists():
-            nuc_img = _to_5d(tifffile.imread(str(nuc_path)))
+            nuc_img = _to_5d(tifffile.imread(str(nuc_path)), n_z=self._n_z, n_p=self._n_p)
             layer_name = "Nucleus avg"
             if layer_name in self.viewer.layers:
                 layer = self.viewer.layers[layer_name]
@@ -210,9 +221,17 @@ class SeededTrackerWidget(QWidget):
         if h5_path.exists():
             from cellflow.ultrack.hypotheses import load_medoid_stack
             medoid_yxt = load_medoid_stack(h5_path)  # (Y, X, T)
-            # Consensus from H5 is (T, Y, X) -> (T, 1, 1, Y, X)
-            consensus_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32))
-            seed = consensus_stack[0, 0, 0]
+            # Consensus from H5 is (T, Y, X)
+            medoid_tyx = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)
+            
+            # Determine n_z, n_p from hypotheses.h5 metadata if possible
+            import h5py
+            with h5py.File(h5_path, "r") as h5:
+                self._n_z = int(h5.attrs.get("n_z", 1))
+                self._n_p = int(h5.attrs.get("n_p", 1))
+
+            consensus_stack = _to_5d(medoid_tyx, n_z=self._n_z, n_p=self._n_p)
+            seed = medoid_tyx[0]
             seed_source = "medoid_stack:h5"
             self._h5_path = h5_path
         else:
@@ -220,8 +239,15 @@ class SeededTrackerWidget(QWidget):
             labelmaps, consensus_stack, seed, seed_source = build_seeded_tracker_inputs(out_dir)
             if not labelmaps:
                 raise FileNotFoundError(f"No hypothesis labelmaps found in {out_dir}")
-            consensus_stack = _to_5d(consensus_stack)
+            
+            # consensus_stack from legacy is likely (T, Y, X) or (T, Z, Y, X)
+            self._n_z = consensus_stack.shape[1] if consensus_stack.ndim >= 4 else 1
+            self._n_p = 1
+            consensus_stack = _to_5d(consensus_stack, n_z=self._n_z, n_p=self._n_p)
             seed = _frame_to_2d(seed)
+
+        # Refresh backgrounds now that we know n_z and n_p
+        self._load_backgrounds()
 
         n_frames = consensus_stack.shape[0]
         frame_shape = consensus_stack.shape[3:] # (Y, X)
@@ -394,10 +420,18 @@ class SeededTrackerWidget(QWidget):
             if self._tracked_stack is None:
                 from cellflow.ultrack.hypotheses import load_medoid_stack
                 medoid_yxt = load_medoid_stack(h5_path)
-                self._consensus_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32))
+                medoid_tyx = np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32)
+
+                import h5py
+                with h5py.File(h5_path, "r") as h5:
+                    self._n_z = int(h5.attrs.get("n_z", 1))
+                    self._n_p = int(h5.attrs.get("n_p", 1))
+
+                self._consensus_stack = _to_5d(medoid_tyx, n_z=self._n_z, n_p=self._n_p)
                 self._tracked_stack = np.zeros_like(self._consensus_stack, dtype=np.uint32)
                 self._h5_path = h5_path
                 self._track_rows = []
+                self._load_backgrounds()
 
             n_frames = self._tracked_stack.shape[0]
             frame_shape = self._tracked_stack.shape[3:] # (Y, X)
@@ -545,6 +579,9 @@ class SeededTrackerWidget(QWidget):
         try:
             stack, rows, state = load_tracked_from_h5(h5_path)
             self._tracked_stack = _to_5d(stack)
+            self._n_z = self._tracked_stack.shape[1]
+            self._n_p = self._tracked_stack.shape[2]
+            
             self._track_rows = rows
             self._current_t = state.get("current_time", 0)
             self._seed_source = state.get("seed_source", "unknown")
@@ -552,8 +589,9 @@ class SeededTrackerWidget(QWidget):
 
             from cellflow.ultrack.hypotheses import load_medoid_stack
             medoid_yxt = load_medoid_stack(h5_path)
-            self._consensus_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32))
+            self._consensus_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32), n_z=self._n_z, n_p=self._n_p)
 
+            self._load_backgrounds()
             self._set_layer_data()
             self._status.setText(f"Loaded tracked results from {h5_path.name}.")
         except Exception as exc:
@@ -567,6 +605,8 @@ class SeededTrackerWidget(QWidget):
         self._seed_source = "consensus"
         self._tracked_layer = None
         self._h5_path = None
+        self._n_z = 1
+        self._n_p = 1
         try:
             if "tracked_labels" in self.viewer.layers:
                 self.viewer.layers.remove(self.viewer.layers["tracked_labels"])

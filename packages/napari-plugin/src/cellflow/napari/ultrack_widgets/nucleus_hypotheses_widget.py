@@ -114,18 +114,27 @@ def _normalize_01(arr: np.ndarray) -> np.ndarray:
     return scaled.astype(np.float32)
 
 
-def _to_5d(data: np.ndarray) -> np.ndarray:
-    """Promote 2D/3D/4D data to 5D (t, z, p, y, x) for consistent napari alignment."""
+def _to_5d(data: np.ndarray, n_z: int = 1, n_p: int = 1) -> np.ndarray:
+    """Promote data to 5D (t, z, p, y, x) and broadcast z/p to n_z/n_p."""
     data = np.asarray(data)
+    # 1. Promote to 5D with singleton axes
     if data.ndim == 2:  # (y, x) -> (1, 1, 1, y, x)
-        return data[np.newaxis, np.newaxis, np.newaxis, ...]
-    if data.ndim == 3:  # (t, y, x) -> (t, 1, 1, y, x)
-        return data[:, np.newaxis, np.newaxis, ...]
-    if data.ndim == 4:  # (t, z, y, x) -> (t, z, 1, y, x)
-        return data[:, :, np.newaxis, ...]
-    if data.ndim == 5:
-        return data
-    return data
+        res = data[np.newaxis, np.newaxis, np.newaxis, ...]
+    elif data.ndim == 3:  # (t, y, x) -> (t, 1, 1, y, x)
+        res = data[:, np.newaxis, np.newaxis, ...]
+    elif data.ndim == 4:  # (t, z, y, x) -> (t, z, 1, y, x)
+        res = data[:, :, np.newaxis, ...]
+    else:
+        res = data
+
+    # 2. Broadcast singleton z/p axes to target counts if they are 1
+    t, cur_z, cur_p, y, x = res.shape
+    target_z = n_z if cur_z == 1 else cur_z
+    target_p = n_p if cur_p == 1 else cur_p
+    
+    if target_z != cur_z or target_p != cur_p:
+        return np.broadcast_to(res, (t, target_z, target_p, y, x))
+    return res
 
 
 def _update_layer(viewer, name: str, data: np.ndarray, *, kind: str = "image", **kwargs):
@@ -162,6 +171,8 @@ class UltrackAnalysisWidget(QWidget):
         self._seed_stack: np.ndarray | None = None
         self._n_frames: int = 1
         self._z_count: int = 1
+        self._n_z: int = 1
+        self._n_p: int = 1
         self._preview_cache_key: tuple[str | None, int] | None = None
         self._worker = None
 
@@ -888,6 +899,8 @@ class UltrackAnalysisWidget(QWidget):
                     ))
                 n_t = len(t_keys)
                 n_z = len(z_keys) if z_keys else 1
+                self._n_z = n_z
+                self._n_p = len(params)
         except Exception as exc:
             self._status.setText(f"Load error: {exc}")
             return
@@ -945,7 +958,7 @@ class UltrackAnalysisWidget(QWidget):
             from cellflow.ultrack.hypotheses import load_medoid_stack
 
             medoid_yxt = load_medoid_stack(path)  # (Y, X, T)
-            medoid_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32))  # (T, 1, 1, Y, X)
+            medoid_stack = _to_5d(np.moveaxis(medoid_yxt, -1, 0).astype(np.uint32), n_z=self._n_z, n_p=self._n_p)
         except Exception as exc:
             self._status.setText(f"Medoid load error: {exc}")
             return
@@ -998,7 +1011,7 @@ class UltrackAnalysisWidget(QWidget):
         promote_name = "Nuclear labels (from HDF5)"
         if promote_name in self.viewer.layers:
             self.viewer.layers.remove(promote_name)
-        layer = self.viewer.add_labels(_to_5d(labels), name=promote_name)
+        layer = self.viewer.add_labels(_to_5d(labels, n_z=self._n_z, n_p=self._n_p), name=promote_name)
         try:
             self.viewer.dims.axis_labels = ("t", "z", "param", "y", "x")
         except Exception:
