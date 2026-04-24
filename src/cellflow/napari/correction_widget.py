@@ -1,8 +1,13 @@
-"""Global label correction widget for CellFlow v2."""
+"""Label correction widget for CellFlow v2."""
 from __future__ import annotations
 
 import logging
+import os
+
 import napari
+import napari.layers
+import numpy as np
+from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QGroupBox,
@@ -13,76 +18,735 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from skimage.measure import find_contours
 
-logger = logging.getLogger(__name__)
+from cellflow.correction.labels import (
+    _label_at,
+    draw_cell_path,
+    erase_cell,
+    merge_cells,
+    split_across,
+    split_draw,
+    swap_labels,
+)
+
+log = logging.getLogger("cellflow.correction")
+if os.environ.get("CELLFLOW_DEBUG"):
+    log.setLevel(logging.DEBUG)
+    if not log.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("[cellflow.correction] %(levelname)s %(message)s"))
+        log.addHandler(_h)
+
+_DRAW_LAYER      = "CorrectionDraw"
+_HIGHLIGHT_LAYER = "CellHighlight"
+
+
+def _record_history(layer, t: int, before: np.ndarray) -> None:
+    """Push changed pixels in frame *t* onto napari's undo stack."""
+    after = layer.data[t]
+    changed = np.where(before != after)
+    if not changed[0].size:
+        return
+    indices = (np.full(changed[0].size, t, dtype=layer.data.dtype), *changed)
+    layer._save_history((indices, before[changed], after[changed]))
 
 
 class CorrectionWidget(QWidget):
-    """Global label correction tool with cell inspection."""
+    """Dock widget for interactive label correction."""
 
     def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = viewer
+
+        self._layer: napari.layers.Labels | None = None
+
+        self._selected_label: int = 0
+        self._selected_pos = None
+        self._ctrl_click_first = None
+        self._ctrl_click_first_label: int = 0
+        self._ctrl_click_first_t: int = -1
+        self._swap_first_pos = None
+        self._swap_first_t: int = -1
+
+        self._drag_callbacks: list = []
+        self._bound_keys: list = []
+
+        self._in_deactivate: bool = False
+
+        self._saved_viewer_drag_cbs: list = []
+        self._saved_layer_mode: str = "pan_zoom"
+
         self._setup_ui()
 
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(6)
+    # ── UI ────────────────────────────────────────────────────────────────────
 
-        # ── Activation ────────────────────────────────────────────────────
-        self.activate_btn = QPushButton("Activate Correction")
-        self.activate_btn.setCheckable(True)
-        self.activate_btn.setToolTip("Enable interactive mouse callbacks for merging/splitting.")
-        self.activate_btn.setStyleSheet("""
-            QPushButton:checked {
-                background-color: #4CAF50;
-                color: white;
-                font-weight: bold;
-            }
-        """)
-        layout.addWidget(self.activate_btn)
+    def _setup_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(2, 2, 2, 2)
+        root.setSpacing(6)
 
-        self.status_lbl = QLabel("Inactive")
-        self.status_lbl.setAlignment(Qt.AlignCenter)
-        self.status_lbl.setStyleSheet("color: #888; font-style: italic;")
-        layout.addWidget(self.status_lbl)
+        self._activate_btn = QPushButton("Activate on selected layer")
+        self._activate_btn.setCheckable(True)
+        self._activate_btn.setToolTip(
+            "Enable interactive mouse callbacks for merging/splitting."
+        )
+        self._activate_btn.setStyleSheet(
+            "QPushButton:checked { background-color: #4CAF50; color: white; font-weight: bold; }"
+        )
+        self._activate_btn.clicked.connect(self._toggle_active)
+        root.addWidget(self._activate_btn)
 
-        # ── Shortcuts Reference ───────────────────────────────────────────
-        ref_group = QGroupBox("Shortcuts")
+        self._outline_btn = QPushButton("Show outlines only")
+        self._outline_btn.setCheckable(True)
+        self._outline_btn.setEnabled(False)
+        self._outline_btn.clicked.connect(self._toggle_outline)
+        root.addWidget(self._outline_btn)
+
+        self._reset_mode_btn = QPushButton("⚠  Restore correction mode")
+        self._reset_mode_btn.setVisible(False)
+        self._reset_mode_btn.setStyleSheet(
+            "QPushButton { background-color: #7a3c00; color: white; font-weight: bold; }"
+            "QPushButton:hover { background-color: #a05000; }"
+        )
+        self._reset_mode_btn.clicked.connect(self._reset_tool_mode)
+        root.addWidget(self._reset_mode_btn)
+
+        self._status = QLabel("Inactive")
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setStyleSheet("color: palette(mid); font-style: italic;")
+        root.addWidget(self._status)
+
+        ref_group = QGroupBox("Correction shortcuts")
         ref_lay = QVBoxLayout(ref_group)
         ref_lay.setSpacing(2)
-        
-        shortcuts = [
-            ("Left-click", "Select cell"),
-            ("Ctrl+Left-click", "Merge / Split"),
-            ("Delete", "Erase selected"),
-            ("Shift+Drag (L)", "Draw path"),
-            ("Shift+Drag (R)", "Split line"),
-        ]
-        for key, desc in shortcuts:
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"<b>{key}</b>"))
-            row.addWidget(QLabel(desc))
-            ref_lay.addLayout(row)
-        layout.addWidget(ref_group)
+        for key, desc in [
+            ("Left-click",                         "Select / highlight cell"),
+            ("Middle-click",                       "Erase clicked cell"),
+            ("Delete",                             "Erase selected cell"),
+            ("Ctrl+Left-click (cell selected)",    "Merge with clicked cell"),
+            ("Ctrl+Left-click × 2 (same cell)",    "Split (watershed, 2 seeds)"),
+            ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell"),
+            ("Ctrl+Right-click → Right-click",     "Swap (two-step, no selection)"),
+            ("Ctrl-z",                             "Undo"),
+            ("Shift+Left / Shift+Right",           "Previous / next cell across all frames"),
+            ("Shift+Right-drag",                   "Split by drawn line"),
+            ("Shift+Left-drag",                    "Draw cell path (extends or creates)"),
+        ]:
+            ref_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
+        root.addWidget(ref_group)
 
-        # ── Cell Inspector ────────────────────────────────────────────────
-        inspect_group = QGroupBox("Cell Inspector")
+        inspect_group = QGroupBox("Inspect cell")
         inspect_lay = QVBoxLayout(inspect_group)
-        
-        row_id = QHBoxLayout()
-        row_id.addWidget(QLabel("Cell ID:"))
-        self.cell_id_spin = QSpinBox()
-        self.cell_id_spin.setRange(0, 999999)
-        row_id.addWidget(self.cell_id_spin)
-        self.go_btn = QPushButton("Go")
-        row_id.addWidget(self.go_btn)
-        inspect_lay.addLayout(row_id)
-        
-        self.lifetime_lbl = QLabel("Lifetime: ---")
-        self.lifetime_lbl.setStyleSheet("font-size: 9pt; color: #aaa;")
-        inspect_lay.addWidget(self.lifetime_lbl)
-        
-        layout.addWidget(inspect_group)
-        layout.addStretch()
+
+        id_row = QHBoxLayout()
+        id_row.addWidget(QLabel("Cell ID:"))
+        self._goto_cell_id = QSpinBox()
+        self._goto_cell_id.setRange(0, 999_999)
+        self._goto_cell_id.setValue(0)
+        self._goto_cell_id.setSpecialValueText("—")
+        id_row.addWidget(self._goto_cell_id)
+        self._goto_btn = QPushButton("Go")
+        self._goto_btn.setEnabled(False)
+        self._goto_btn.clicked.connect(self._goto_cell)
+        id_row.addWidget(self._goto_btn)
+        inspect_lay.addLayout(id_row)
+
+        self._inspect_frames_label = QLabel("")
+        self._inspect_frames_label.setWordWrap(True)
+        self._inspect_frames_label.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        inspect_lay.addWidget(self._inspect_frames_label)
+
+        root.addWidget(inspect_group)
+        root.addStretch()
+
+        attrib = QLabel(
+            "Correction tools adapted from "
+            '<a href="https://github.com/Image-Analysis-Hub/Epicure">Epicure</a>.'
+            "<br>If you use these tools, please cite:<br>"
+            '<a href="https://doi.org/10.64898/2026.03.27.714683">'
+            "doi:10.64898/2026.03.27.714683</a>"
+        )
+        attrib.setOpenExternalLinks(True)
+        attrib.setWordWrap(True)
+        attrib.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        root.addWidget(attrib)
+
+    # ── activation ────────────────────────────────────────────────────────────
+
+    def _toggle_active(self, checked: bool) -> None:
+        if checked:
+            layer = self.viewer.layers.selection.active
+            if layer is None:
+                self._activate_btn.setChecked(False)
+                self._set_status("Select a Labels layer first", error=True)
+                return
+            if not isinstance(layer, napari.layers.Labels):
+                self._activate_btn.setChecked(False)
+                self._set_status("Not a Labels layer", error=True)
+                return
+            self._activate(layer)
+        else:
+            self._deactivate()
+
+    def _activate(self, layer: napari.layers.Labels) -> None:
+        log.debug("activate: layer='%s' shape=%s", layer.name, layer.data.shape)
+        self._layer = layer
+        self._selected_label = 0
+        self._selected_pos = None
+        self._ctrl_click_first = None
+        self._ctrl_click_first_label = 0
+        self._ctrl_click_first_t = -1
+        self._swap_first_pos = None
+        self._swap_first_t = -1
+
+        if hasattr(self.viewer, "mouse_drag_callbacks"):
+            self._saved_viewer_drag_cbs = list(self.viewer.mouse_drag_callbacks)
+            self.viewer.mouse_drag_callbacks.clear()
+        else:
+            self._saved_viewer_drag_cbs = []
+
+        self._saved_layer_mode = layer.mode
+        layer.mode = "pan_zoom"
+
+        self.viewer.layers.selection.active = layer
+        self._get_draw_layer()
+        self._get_highlight_layer()
+
+        self.viewer.dims.events.current_step.connect(self._on_dims_change)
+        layer.events.data.connect(self._on_layer_data_changed)
+        layer.events.paint.connect(self._on_layer_data_changed)
+        self.viewer.layers.events.removed.connect(self._on_layer_removed)
+        layer.events.mode.connect(self._on_layer_mode_change)
+
+        self._register_callbacks()
+        self._activate_btn.setText("Deactivate")
+        self._outline_btn.setEnabled(True)
+        self._goto_btn.setEnabled(True)
+        self._set_status(f"Active on '{layer.name}'")
+
+    def _deactivate(self) -> None:
+        if self._in_deactivate:
+            return
+        self._in_deactivate = True
+        try:
+            self._deactivate_impl()
+        finally:
+            self._in_deactivate = False
+
+    def _deactivate_impl(self) -> None:
+        log.debug("deactivate: layer='%s'", self._layer.name if self._layer else None)
+        if self._layer is not None:
+            self._remove_callbacks()
+
+            for disconnect in [
+                lambda: self.viewer.dims.events.current_step.disconnect(self._on_dims_change),
+                lambda: self.viewer.layers.events.removed.disconnect(self._on_layer_removed),
+                lambda: self._layer.events.data.disconnect(self._on_layer_data_changed),
+                lambda: self._layer.events.paint.disconnect(self._on_layer_data_changed),
+                lambda: self._layer.events.mode.disconnect(self._on_layer_mode_change),
+            ]:
+                try:
+                    disconnect()
+                except Exception:
+                    pass
+
+            try:
+                self._layer.mode = self._saved_layer_mode
+            except Exception:
+                pass
+
+            if hasattr(self.viewer, "mouse_drag_callbacks"):
+                self.viewer.mouse_drag_callbacks.clear()
+                for cb in self._saved_viewer_drag_cbs:
+                    self.viewer.mouse_drag_callbacks.append(cb)
+
+        self._layer = None
+        self._selected_label = 0
+        self._selected_pos = None
+        self._ctrl_click_first = None
+        self._ctrl_click_first_label = 0
+        self._ctrl_click_first_t = -1
+        self._swap_first_pos = None
+        self._swap_first_t = -1
+        self._saved_viewer_drag_cbs = []
+
+        self._activate_btn.setText("Activate on selected layer")
+        self._activate_btn.setChecked(False)
+        self._outline_btn.setChecked(False)
+        self._outline_btn.setEnabled(False)
+        self._goto_btn.setEnabled(False)
+        self._goto_cell_id.setValue(0)
+        self._inspect_frames_label.setText("")
+        self._set_status("Inactive")
+        self._cleanup_draw_layer()
+        self._cleanup_highlight_layer()
+
+    def _set_status(self, msg: str, error: bool = False) -> None:
+        self._status.setText(msg)
+        colour = "red" if error else "palette(mid)"
+        self._status.setStyleSheet(f"color: {colour}; font-style: italic;")
+
+    # ── draw layer ────────────────────────────────────────────────────────────
+
+    def _get_draw_layer(self):
+        if _DRAW_LAYER in self.viewer.layers:
+            return self.viewer.layers[_DRAW_LAYER]
+        dl = self.viewer.add_shapes(
+            name=_DRAW_LAYER,
+            ndim=2,
+            edge_color="yellow",
+            edge_width=1,
+            face_color="transparent",
+        )
+        dl.visible = False
+        if self._layer is not None:
+            self.viewer.layers.selection.active = self._layer
+        return dl
+
+    def _cleanup_draw_layer(self) -> None:
+        if _DRAW_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[_DRAW_LAYER])
+
+    # ── highlight layer ───────────────────────────────────────────────────────
+
+    def _get_highlight_layer(self):
+        if _HIGHLIGHT_LAYER in self.viewer.layers:
+            return self.viewer.layers[_HIGHLIGHT_LAYER]
+        hl = self.viewer.add_shapes(
+            name=_HIGHLIGHT_LAYER,
+            ndim=2,
+            edge_color="cyan",
+            edge_width=2,
+            face_color="transparent",
+        )
+        hl.visible = False
+        if self._layer is not None:
+            self.viewer.layers.selection.active = self._layer
+        return hl
+
+    def _update_highlight(self, t: int, lab: int) -> None:
+        """Redraw the cyan boundary for *lab* at time *t*. Pass 0 to clear."""
+        self._selected_label = lab
+        hl = self._get_highlight_layer()
+        if lab == 0 or self._layer is None:
+            hl.data = []
+            hl.visible = False
+            return
+        seg2d = self._layer.data[t]
+        if not np.any(seg2d == lab):
+            hl.data = []
+            hl.visible = False
+            return
+        mask = (seg2d == lab).astype(np.uint8)
+        contours = find_contours(mask, level=0.5)
+        if not contours:
+            hl.data = []
+            hl.visible = False
+            return
+        contour = max(contours, key=len)
+        hl.data = [contour]
+        hl.shape_type = ["polygon"]
+        hl.visible = True
+        self.viewer.layers.selection.active = self._layer
+
+    def _cleanup_highlight_layer(self) -> None:
+        if _HIGHLIGHT_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[_HIGHLIGHT_LAYER])
+
+    def _on_dims_change(self, event=None) -> None:
+        if not (self._selected_label and self._layer is not None):
+            return
+        step = self.viewer.dims.current_step
+        if self._layer.data.ndim < 3 or len(step) < self._layer.data.ndim:
+            return
+        t = int(step[0])
+        if t >= self._layer.data.shape[0]:
+            return
+        self._update_highlight(t, self._selected_label)
+
+    def _on_layer_data_changed(self, event=None) -> None:
+        if not (self._selected_label and self._layer is not None):
+            return
+        step = self.viewer.dims.current_step
+        if self._layer.data.ndim < 3 or len(step) < self._layer.data.ndim:
+            return
+        t = int(step[0])
+        if t >= self._layer.data.shape[0]:
+            return
+        self._update_highlight(t, self._selected_label)
+
+    def _on_layer_mode_change(self, event=None) -> None:
+        if self._layer is None:
+            return
+        mode = getattr(event, "value", None) or self._layer.mode
+        log.debug("_on_layer_mode_change: mode=%s", mode)
+        if mode != "pan_zoom":
+            self._reset_mode_btn.setVisible(True)
+            self._set_status("Tool mode changed — corrections disabled", error=True)
+        else:
+            self._reset_mode_btn.setVisible(False)
+            if self._layer is not None:
+                self._set_status(f"Active on '{self._layer.name}'")
+
+    def _on_layer_removed(self, event=None) -> None:
+        removed = getattr(event, "value", None)
+        removed_name = getattr(removed, "name", None)
+        if removed is self._layer or removed_name in (_DRAW_LAYER, _HIGHLIGHT_LAYER):
+            log.debug("_on_layer_removed: '%s' removed, deactivating", removed_name)
+            self._deactivate()
+
+    def _reset_tool_mode(self) -> None:
+        if self._layer is not None:
+            self._layer.mode = "pan_zoom"
+
+    # ── inspect cell ──────────────────────────────────────────────────────────
+
+    def _goto_cell(self) -> None:
+        lab = self._goto_cell_id.value()
+        if lab == 0:
+            step = self.viewer.dims.current_step
+            t = int(step[0]) if (self._layer is not None and self._layer.data.ndim >= 3 and len(step) >= 1) else 0
+            self._update_highlight(t, 0)
+            self._inspect_frames_label.setText("")
+            return
+        if self._layer is None:
+            return
+        data = self._layer.data
+        frames = [i for i in range(data.shape[0]) if np.any(data[i] == lab)]
+        if not frames:
+            self._inspect_frames_label.setText(f"Cell {lab} not found in any frame.")
+            step = self.viewer.dims.current_step
+            t = int(step[0]) if len(step) >= 1 else 0
+            self._update_highlight(t, 0)
+            return
+        _MAX = 20
+        if len(frames) <= _MAX:
+            frames_str = ", ".join(str(f) for f in frames)
+        else:
+            shown = ", ".join(str(f) for f in frames[:_MAX])
+            frames_str = f"{shown}, … ({len(frames)} frames total)"
+        self._inspect_frames_label.setText(f"Frames: {frames_str}")
+        step = self.viewer.dims.current_step
+        t = int(step[0]) if len(step) >= 1 else 0
+        self._update_highlight(t, lab)
+
+    def _step_cell(self, direction: int) -> None:
+        if self._layer is None:
+            return
+        data = self._layer.data
+        ids = sorted(set(int(v) for v in np.unique(data)) - {0})
+        if not ids:
+            self._set_status("No cells in any frame")
+            return
+        cur = self._selected_label
+        if direction > 0:
+            nxt = next((i for i in ids if i > cur), ids[0])
+        else:
+            nxt = next((i for i in reversed(ids) if i < cur), ids[-1])
+        frames = [i for i in range(data.shape[0]) if np.any(data[i] == nxt)]
+        if frames:
+            step = list(self.viewer.dims.current_step)
+            step[0] = frames[0]
+            self.viewer.dims.current_step = tuple(step)
+        self._goto_cell_id.setValue(nxt)
+        self._goto_cell()
+
+    # ── callback registration ─────────────────────────────────────────────────
+
+    def _register_callbacks(self) -> None:
+        layer = self._layer
+
+        def key_delete(_layer):
+            try:
+                if self._selected_label == 0:
+                    self._set_status("No cell selected — left-click a cell first")
+                    return
+                t = int(self.viewer.dims.current_step[0])
+                seg2d = _layer.data[t]
+                before = seg2d.copy()
+                if erase_cell(seg2d, label=self._selected_label):
+                    _record_history(_layer, t, before)
+                    _layer.refresh()
+                    self._update_highlight(t, 0)
+                    self._set_status(f"Erased — Active on '{_layer.name}'")
+            except Exception as exc:
+                show_error(f"delete error: {exc}")
+
+        def key_prev_cell(_layer):
+            self._step_cell(-1)
+
+        def key_next_cell(_layer):
+            self._step_cell(1)
+
+        for key, fn in [
+            ("Delete", key_delete),
+            ("Shift-Left", key_prev_cell),
+            ("Shift-Right", key_next_cell),
+        ]:
+            layer.bind_key(key, fn, overwrite=True)
+            self._bound_keys.append(key)
+
+        def on_drag(_layer, event):
+            try:
+                if event.type != "mouse_press":
+                    return
+
+                t   = int(self.viewer.dims.current_step[0])
+                btn = event.button
+                mods = {m.name for m in event.modifiers}
+
+                seg2d = _layer.data[t]
+                pos   = _layer.world_to_data(event.position)
+                log.debug(
+                    "on_drag: btn=%s mods=%s t=%d selected=%s",
+                    btn, mods, t, self._selected_label,
+                )
+
+                # Middle-click: erase clicked cell
+                if btn == 3 and not mods:
+                    lab = _label_at(seg2d, pos)
+                    if lab == 0:
+                        return
+                    before = seg2d.copy()
+                    if erase_cell(seg2d, label=lab):
+                        _record_history(_layer, t, before)
+                        _layer.refresh()
+                        if lab == self._selected_label:
+                            self._update_highlight(t, 0)
+                        self._set_status(f"Erased — Active on '{_layer.name}'")
+                    return
+
+                # Ctrl+Right-click: swap
+                if btn == 2 and mods == {"Control"}:
+                    lab = _label_at(seg2d, pos)
+                    if lab == 0:
+                        self._set_status("Swap — click on a cell (not background)")
+                        return
+                    if (
+                        self._selected_label != 0
+                        and self._selected_pos is not None
+                        and lab != self._selected_label
+                    ):
+                        before = seg2d.copy()
+                        ok = swap_labels(seg2d, self._selected_pos, pos)
+                        if ok:
+                            _record_history(_layer, t, before)
+                            _layer.refresh()
+                            self._selected_label = 0
+                            self._selected_pos = None
+                            self._update_highlight(t, 0)
+                            self._set_status(f"Swapped — Active on '{_layer.name}'")
+                        else:
+                            self._set_status("Swap failed — click on two different cells")
+                    else:
+                        self._swap_first_pos = pos
+                        self._swap_first_t = t
+                        self._set_status(f"Swap — label {lab} selected, right-click second cell")
+                    return
+
+                # Plain Right-click: complete two-step swap
+                if btn == 2 and not mods:
+                    if self._swap_first_pos is not None:
+                        if t != self._swap_first_t:
+                            self._swap_first_pos = None
+                            self._swap_first_t = -1
+                            self._set_status("Frame changed — swap cancelled")
+                        else:
+                            before = seg2d.copy()
+                            ok = swap_labels(seg2d, self._swap_first_pos, pos)
+                            if ok:
+                                _record_history(_layer, t, before)
+                                _layer.refresh()
+                                self._swap_first_pos = None
+                                self._swap_first_t = -1
+                                self._set_status(f"Swapped — Active on '{_layer.name}'")
+                            else:
+                                self._set_status("Swap failed — click on two different cells")
+                                self._swap_first_pos = None
+                                self._swap_first_t = -1
+                    return
+
+                # Ctrl+Left-click: merge or split
+                if btn == 1 and mods == {"Control"}:
+                    lab = _label_at(seg2d, pos)
+                    if lab == 0:
+                        self._set_status("Click on a cell, not background")
+                        return
+
+                    if self._ctrl_click_first is not None:
+                        if t != self._ctrl_click_first_t:
+                            self._ctrl_click_first = pos
+                            self._ctrl_click_first_label = lab
+                            self._ctrl_click_first_t = t
+                            self._update_highlight(t, lab)
+                            self._set_status(f"Frame changed — restarted: label {lab} selected")
+                        elif lab == self._ctrl_click_first_label:
+                            before = seg2d.copy()
+                            ok = split_across(
+                                seg2d, self._image_frame(t),
+                                self._ctrl_click_first, pos,
+                            )
+                            self._set_status(
+                                f"Split — Active on '{_layer.name}'"
+                                if ok else "Split failed — seeds too close or result too small"
+                            )
+                            if ok:
+                                _record_history(_layer, t, before)
+                            _layer.refresh()
+                            self._ctrl_click_first = None
+                            self._ctrl_click_first_label = 0
+                            self._ctrl_click_first_t = -1
+                            self._update_highlight(t, _label_at(seg2d, pos))
+                        else:
+                            self._ctrl_click_first = None
+                            self._ctrl_click_first_label = 0
+                            self._ctrl_click_first_t = -1
+
+                    if self._ctrl_click_first is None:
+                        if (
+                            self._selected_label != 0
+                            and lab != self._selected_label
+                            and np.any(seg2d == self._selected_label)
+                        ):
+                            before = seg2d.copy()
+                            ok = merge_cells(
+                                seg2d, pos, pos,
+                                label_a=lab, label_b=self._selected_label,
+                            )
+                            self._set_status(
+                                f"Merged — Active on '{_layer.name}'"
+                                if ok else "Merge failed — labels not touching"
+                            )
+                            if ok:
+                                _record_history(_layer, t, before)
+                            _layer.refresh()
+                            self._selected_label = 0
+                            self._selected_pos = None
+                            self._update_highlight(t, _label_at(seg2d, pos))
+                        else:
+                            self._ctrl_click_first = pos
+                            self._ctrl_click_first_label = lab
+                            self._ctrl_click_first_t = t
+                            self._update_highlight(t, lab)
+                            self._set_status(
+                                f"Label {lab} — Ctrl+click same cell again for second split seed"
+                            )
+                    return
+
+                # Plain Left-click: select / highlight cell
+                if btn == 1 and not mods:
+                    self._ctrl_click_first = None
+                    self._ctrl_click_first_label = 0
+                    self._ctrl_click_first_t = -1
+                    self._swap_first_pos = None
+                    self._swap_first_t = -1
+                    lab = _label_at(seg2d, pos)
+                    self._selected_pos = pos if lab != 0 else None
+                    self._update_highlight(t, lab)
+                    if lab:
+                        self._set_status(f"Selected label {lab} — Active on '{_layer.name}'")
+                    else:
+                        self._set_status(f"Active on '{_layer.name}'")
+                    return
+
+                # Shift+Right-drag: split by drawn line
+                if mods == {"Shift"} and btn == 2:
+                    dl = self._get_draw_layer()
+                    dl.data = []
+                    dl.visible = True
+                    pos_list = [_layer.world_to_data(event.position)]
+                    yield
+                    while event.type == "mouse_move":
+                        pos_list.append(_layer.world_to_data(event.position))
+                        if len(pos_list) % 3 == 0:
+                            dl.data = [np.array([[p[-2], p[-1]] for p in pos_list])]
+                            dl.shape_type = ["path"]
+                        yield
+                    pos_list.append(_layer.world_to_data(event.position))
+                    dl.data = []
+                    dl.visible = False
+                    self.viewer.layers.selection.active = _layer
+                    curlabel = self._selected_label if self._selected_label else None
+                    before = seg2d.copy()
+                    ok = split_draw(seg2d, pos_list, curlabel=curlabel)
+                    self._set_status(
+                        f"Split — Active on '{_layer.name}'"
+                        if ok else "Split draw failed — line did not divide the cell"
+                    )
+                    if ok:
+                        _record_history(_layer, t, before)
+                    _layer.refresh()
+                    self._update_highlight(t, self._selected_label)
+                    return
+
+                # Shift+Left-drag: draw cell path
+                if mods == {"Shift"} and btn == 1:
+                    dl = self._get_draw_layer()
+                    dl.data = []
+                    dl.visible = True
+                    pos_list = [_layer.world_to_data(event.position)]
+                    yield
+                    while event.type == "mouse_move":
+                        pos_list.append(_layer.world_to_data(event.position))
+                        if len(pos_list) % 3 == 0:
+                            dl.data = [np.array([[p[-2], p[-1]] for p in pos_list])]
+                            dl.shape_type = ["path"]
+                        yield
+                    pos_list.append(_layer.world_to_data(event.position))
+                    dl.data = []
+                    dl.visible = False
+                    self.viewer.layers.selection.active = _layer
+                    curlabel = self._selected_label if self._selected_label else None
+                    before = seg2d.copy()
+                    ok = draw_cell_path(seg2d, pos_list, curlabel=curlabel)
+                    self._set_status(
+                        f"Drew cell path — Active on '{_layer.name}'"
+                        if ok else "Draw failed — stroke too short"
+                    )
+                    if ok:
+                        _record_history(_layer, t, before)
+                    _layer.refresh()
+                    self._update_highlight(t, self._selected_label)
+                    return
+
+            except Exception as exc:
+                import traceback
+                show_error(f"Correction error: {exc}\n{traceback.format_exc()}")
+
+        layer.mouse_drag_callbacks.append(on_drag)
+        self._drag_callbacks.append(on_drag)
+
+    def _remove_callbacks(self) -> None:
+        layer = self._layer
+        for fn in self._drag_callbacks:
+            try:
+                layer.mouse_drag_callbacks.remove(fn)
+            except ValueError:
+                pass
+        self._drag_callbacks.clear()
+        for key in self._bound_keys:
+            try:
+                layer.bind_key(key, None)
+            except Exception:
+                pass
+        self._bound_keys.clear()
+
+    def _toggle_outline(self, checked: bool) -> None:
+        if self._layer is None:
+            self._outline_btn.setChecked(False)
+            return
+        self._layer.contour = 2 if checked else 0
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _image_frame(self, t: int) -> np.ndarray | None:
+        """Return the intensity image at frame *t* from the first Image layer found."""
+        for lyr in self.viewer.layers:
+            if isinstance(lyr, napari.layers.Image):
+                d = lyr.data
+                if d.ndim == 3:
+                    return d[t]
+                if d.ndim == 2:
+                    return d
+        return None

@@ -134,6 +134,28 @@ def write_hypothesis_record(h5: h5py.File, record: HypothesisRecord) -> None:
     p_grp.attrs["label_dtype"] = str(labels.dtype)
 
 
+def _read_append_state(path: Path) -> tuple[int, set[str]]:
+    """Return (next_p, existing_param_jsons) from an existing HDF5 file."""
+    with h5py.File(path, "r") as h5:
+        if _ROOT_GROUP not in h5:
+            return 0, set()
+        root = h5[_ROOT_GROUP]
+        t_keys = [k for k in root.keys() if k.startswith("t")]
+        if not t_keys:
+            return 0, set()
+        first_t = root[t_keys[0]]
+        p_keys = [k for k in first_t.keys() if k.startswith("p")]
+        if not p_keys:
+            return 0, set()
+        p_indices = [int(k[1:]) for k in p_keys]
+        existing_jsons = {
+            first_t[pk].attrs["parameter_json"]
+            for pk in p_keys
+            if "parameter_json" in first_t[pk].attrs
+        }
+        return max(p_indices) + 1, existing_jsons
+
+
 def write_hypothesis_sweep_h5(
     output_path: str | Path,
     records: Iterable[HypothesisRecord],
@@ -142,14 +164,33 @@ def write_hypothesis_sweep_h5(
     n_t: int | None = None,
     n_p: int | None = None,
 ) -> Path:
-    """Write a full hypothesis sweep to a single HDF5 file."""
+    """Write a full hypothesis sweep to a single HDF5 file.
+
+    When overwrite=False and the file exists, records whose parameter set is
+    already present are skipped; new parameter sets are appended after the
+    highest existing p index.
+    """
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    mode = "w" if overwrite or not path.exists() else "a"
+    appending = not overwrite and path.exists()
+    if appending:
+        next_p, existing_jsons = _read_append_state(path)
+    else:
+        next_p, existing_jsons = 0, set()
+    # Maps param_json -> assigned p index for param sets added in this call.
+    new_param_p: dict[str, int] = {}
+    mode = "w" if not appending else "a"
     with h5py.File(path, mode) as h5:
         _write_root_metadata(h5, n_t=n_t, n_p=n_p)
         for record in records:
-            write_hypothesis_record(h5, record)
+            param_json = json.dumps(record.params.to_dict(), sort_keys=True)
+            if param_json in existing_jsons:
+                continue
+            if param_json not in new_param_p:
+                new_param_p[param_json] = next_p
+                next_p += 1
+            shifted = HypothesisRecord(t=record.t, p=new_param_p[param_json], labels=record.labels, params=record.params)
+            write_hypothesis_record(h5, shifted)
     return path
 
 
@@ -158,6 +199,31 @@ def read_hypothesis_labels(path: str | Path, t: int, p: int) -> np.ndarray:
     with h5py.File(Path(path), "r") as h5:
         _check_schema(h5, Path(path))
         return np.asarray(h5[f"{_ROOT_GROUP}/t{t:03d}/p{p:03d}/labels"], dtype=_LABEL_DTYPE)
+
+
+def read_full_hypothesis_stack(path: str | Path, p: int) -> np.ndarray:
+    """Read the (T, Z, Y, X) label volume for one parameter choice p across all timepoints."""
+    with h5py.File(Path(path), "r") as h5:
+        _check_schema(h5, Path(path))
+        root = h5[_ROOT_GROUP]
+        t_keys = sorted(k for k in root.keys() if k.startswith("t"))
+        if not t_keys:
+            return np.empty((0, 0, 0, 0), dtype=_LABEL_DTYPE)
+
+        # Get shape from first available t for parameter p
+        first_t = root[t_keys[0]]
+        p_name = f"p{p:03d}"
+        if p_name not in first_t:
+            raise ValueError(f"Parameter index {p_name} not found in {path}")
+
+        ds = first_t[p_name]["labels"]
+        z, y, x = ds.shape
+        n_t = len(t_keys)
+
+        stack = np.empty((n_t, z, y, x), dtype=_LABEL_DTYPE)
+        for i, t_key in enumerate(t_keys):
+            stack[i] = root[f"{t_key}/{p_name}/labels"][:]
+        return stack
 
 
 def list_hypotheses(path: str | Path) -> tuple[int, dict[int, dict]]:
@@ -180,6 +246,45 @@ def list_hypotheses(path: str | Path) -> tuple[int, dict[int, dict]]:
             p_idx = int(p_name[1:])
             params_by_p[p_idx] = dict(first_t[p_name].attrs)
         return n_p, params_by_p
+
+
+def zero_hypothesis_slice(path: str | Path, z: int, p: int) -> None:
+    """Zero out z-plane z across all timepoints for parameter p, keeping array shape intact."""
+    with h5py.File(Path(path), "r+") as h5:
+        _check_schema(h5, Path(path))
+        root = h5[_ROOT_GROUP]
+        p_name = f"p{p:03d}"
+        for t_key in sorted(k for k in root.keys() if k.startswith("t")):
+            ds_key = f"{_ROOT_GROUP}/{t_key}/{p_name}/labels"
+            if ds_key not in h5:
+                continue
+            data = h5[ds_key][:]
+            if z >= data.shape[0]:
+                continue
+            data[z] = 0
+            p_grp = root[t_key][p_name]
+            del p_grp["labels"]
+            p_grp.create_dataset("labels", data=data, compression="gzip", compression_opts=4, shuffle=True)
+
+
+def delete_hypothesis_parameter(path: str | Path, p: int) -> None:
+    """Remove every t-group's entry for parameter p from the hypothesis database."""
+    with h5py.File(Path(path), "r+") as h5:
+        _check_schema(h5, Path(path))
+        root = h5[_ROOT_GROUP]
+        p_name = f"p{p:03d}"
+        for t_key in sorted(k for k in root.keys() if k.startswith("t")):
+            t_grp = root[t_key]
+            if p_name in t_grp:
+                del t_grp[p_name]
+            if len(t_grp) == 0:
+                del root[t_key]
+        remaining_t = [k for k in root.keys() if k.startswith("t")]
+        if remaining_t:
+            n_p = len([k for k in root[remaining_t[0]].keys() if k.startswith("p")])
+        else:
+            n_p = 0
+        h5.attrs["n_p"] = n_p
 
 
 def iter_hypothesis_records(path: str | Path) -> Iterator[HypothesisRecord]:

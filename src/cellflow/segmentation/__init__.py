@@ -93,7 +93,7 @@ def compute_hypothesis_labels(
         raise ValueError(f"Expected 2D probability slice, got shape {prob.shape}")
 
     if params.basin == "prob":
-        basin = prob
+        basin = 1.0 / (1.0 + np.exp(-prob))  # logits → probabilities
     elif params.basin == "flow_mag":
         if dp is None:
             raise ValueError("flow_mag basin requested but no DP array provided")

@@ -89,6 +89,7 @@ class CollapsibleSection(QWidget):
         inner: QWidget,
         expanded: bool = False,
         parent: QWidget | None = None,
+        title_color: str = "white",
     ) -> None:
         super().__init__(parent)
         self._inner = inner
@@ -106,8 +107,8 @@ class CollapsibleSection(QWidget):
         self._toggle.setText(title)
         self._toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         self._toggle.setStyleSheet(
-            "QToolButton { font-weight: bold; font-size: 10pt; border: none; "
-            "padding: 2px; color: white; }"
+            f"QToolButton {{ font-weight: bold; font-size: 10pt; border: none; "
+            f"padding: 2px; color: {title_color}; }}"
         )
         self._toggle.toggled.connect(self._on_toggled)
         layout.addWidget(self._toggle)

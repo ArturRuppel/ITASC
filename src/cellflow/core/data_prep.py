@@ -284,23 +284,28 @@ def run(config: DatasetConfig, pos: int, overwrite: bool = False) -> Generator[t
         writer.writerows(shift_rows)
 
     # Export nucleus volumes
-    nuc_stack = np.empty((len(all_times), ds.image_height // config.xy_downsample, ds.image_width // config.xy_downsample), dtype=np.uint16)
-    with tifffile.TiffWriter(str(nuc_3dt_out), bigtiff=True) as tif_3dt:
-        for i, t in enumerate(all_times):
-            vol = _read_corrected_volume(ds, pos, t, _CH_405, z_indices, config.xy_downsample, z_shifts[t])
-            tif_3dt.write(vol, compression="zlib")
-            nuc_stack[i] = vol.mean(axis=0).astype(np.uint16)
-            yield (i + 1, len(all_times), "nucleus")
+    h = ds.image_height // config.xy_downsample
+    w = ds.image_width // config.xy_downsample
+    nz = len(z_indices)
+    nuc_4d = np.empty((len(all_times), nz, h, w), dtype=np.uint16)
+    nuc_stack = np.empty((len(all_times), h, w), dtype=np.uint16)
+    for i, t in enumerate(all_times):
+        vol = _read_corrected_volume(ds, pos, t, _CH_405, z_indices, config.xy_downsample, z_shifts[t])
+        nuc_4d[i] = vol
+        nuc_stack[i] = vol.mean(axis=0).astype(np.uint16)
+        yield (i + 1, len(all_times), "nucleus")
+    tifffile.imwrite(str(nuc_3dt_out), nuc_4d, compression="zlib", metadata={"axes": "TZYX"})
     tifffile.imwrite(str(nuc_out), nuc_stack, compression="zlib", metadata={"axes": "TYX"})
 
     # Export cell volumes
-    cell_stack = np.empty((len(all_times), ds.image_height // config.xy_downsample, ds.image_width // config.xy_downsample), dtype=np.uint16)
-    with tifffile.TiffWriter(str(cell_3dt_out), bigtiff=True) as tif_3dt:
-        for i, t in enumerate(all_times):
-            vol = _read_corrected_volume(ds, pos, t, _CH_488, z_indices, config.xy_downsample, z_shifts[t])
-            tif_3dt.write(vol, compression="zlib")
-            cell_stack[i] = vol.mean(axis=0).astype(np.uint16)
-            yield (i + 1, len(all_times), "cell")
+    cell_4d = np.empty((len(all_times), nz, h, w), dtype=np.uint16)
+    cell_stack = np.empty((len(all_times), h, w), dtype=np.uint16)
+    for i, t in enumerate(all_times):
+        vol = _read_corrected_volume(ds, pos, t, _CH_488, z_indices, config.xy_downsample, z_shifts[t])
+        cell_4d[i] = vol
+        cell_stack[i] = vol.mean(axis=0).astype(np.uint16)
+        yield (i + 1, len(all_times), "cell")
+    tifffile.imwrite(str(cell_3dt_out), cell_4d, compression="zlib", metadata={"axes": "TZYX"})
     tifffile.imwrite(str(cell_out), cell_stack, compression="zlib", metadata={"axes": "TYX"})
 
     # Metadata

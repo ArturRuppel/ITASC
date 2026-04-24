@@ -28,10 +28,13 @@ from qtpy.QtWidgets import (
 from cellflow.database.hypotheses import (
     NucleusHypothesisSweepSpec,
     HypothesisRecord,
+    delete_hypothesis_parameter,
     iter_hypothesis_records_from_stacks,
     list_hypotheses,
+    read_full_hypothesis_stack,
     read_hypothesis_labels,
     write_hypothesis_sweep_h5,
+    zero_hypothesis_slice,
 )
 from cellflow.database.tracked import (
     read_tracked_frame,
@@ -82,13 +85,16 @@ class NucleusWorkflowWidget(QWidget):
         self.seed_source_combo = QComboBox()
         self.seed_source_combo.addItems(["Peak local max", "Active Layer", "Disk (Corrected)"])
         row_seeds.addWidget(self.seed_source_combo)
-
-        row_seeds.addWidget(QLabel("Seed Dist:"))
-        self.seed_dist_spin = QSpinBox()
-        self.seed_dist_spin.setRange(1, 500)
-        self.seed_dist_spin.setValue(5)
-        row_seeds.addWidget(self.seed_dist_spin)
         shared_lay.addLayout(row_seeds)
+
+        row_min_size = QHBoxLayout()
+        row_min_size.addWidget(QLabel("Min Cell Size (px):"))
+        self.min_size_spin = QSpinBox()
+        self.min_size_spin.setRange(0, 100000)
+        self.min_size_spin.setValue(0)
+        self.min_size_spin.setToolTip("Remove connected regions smaller than this many pixels (0 = keep all)")
+        row_min_size.addWidget(self.min_size_spin)
+        shared_lay.addLayout(row_min_size)
 
         self.overwrite_check = QCheckBox("Overwrite existing in DB")
         self.overwrite_check.setChecked(False)
@@ -117,6 +123,7 @@ class NucleusWorkflowWidget(QWidget):
         self.single_thr = _add_single_param("Threshold (%)", 0.0, 100.0, 30.0, 1.0)
         self.single_cmp = _add_single_param("Compactness", 0.0, 1.0, 0.0, 0.01, 2)
         self.single_sigma = _add_single_param("Smooth Sigma", 0.0, 10.0, 0.5, 0.1, 1)
+        self.single_seed_dist = _add_single_param("Seed Dist", 1, 500, 5, 1, 0)
 
         btn_row = QHBoxLayout()
         self.preview_btn = QPushButton("Preview")
@@ -142,7 +149,10 @@ class NucleusWorkflowWidget(QWidget):
             max_s = QDoubleSpinBox() if decimals > 0 else QSpinBox()
             step_s = QDoubleSpinBox() if decimals > 0 else QSpinBox()
             for s in (min_s, max_s, step_s):
-                s.setRange(0, 100 if "Threshold" in label else 10)
+                if "Seed Dist" in label:
+                    s.setRange(1, 500)
+                else:
+                    s.setRange(0, 100 if "Threshold" in label else 10)
                 if decimals > 0:
                     s.setDecimals(decimals)
             min_s.setValue(d_min)
@@ -160,6 +170,7 @@ class NucleusWorkflowWidget(QWidget):
         self.sweep_thr = _add_sweep_row("Threshold (%)", 10, 50, 10)
         self.sweep_cmp = _add_sweep_row("Compactness", 0, 0.1, 0.05, 2)
         self.sweep_sigma = _add_sweep_row("Smooth Sigma", 0, 1.0, 0.5, 1)
+        self.sweep_seed_dist = _add_sweep_row("Seed Dist", 5, 20, 5, 0)
 
         sweep_btn_row = QHBoxLayout()
         self.run_sweep_btn = QPushButton("Run Batch Sweep")
@@ -173,7 +184,7 @@ class NucleusWorkflowWidget(QWidget):
         layout.addWidget(gen_group)
 
         # ── 2. Database Browser ──────────────────────────────────────────
-        db_group = QGroupBox("2. Seeding & Browser")
+        db_group = QGroupBox("2. Database Browser")
         db_lay = QVBoxLayout(db_group)
 
         row_h = QHBoxLayout()
@@ -185,8 +196,30 @@ class NucleusWorkflowWidget(QWidget):
         row_h.addWidget(self.hyp_meta_lbl)
         db_lay.addLayout(row_h)
 
+        db_btn_row = QHBoxLayout()
+        self.load_stack_btn = QPushButton("Load")
+        self.load_stack_btn.setToolTip("Load full (T, Z, Y, X) stack for selected parameter into napari")
         self.set_seed_btn = QPushButton("Set as Tracking Seed")
-        db_lay.addWidget(self.set_seed_btn)
+        db_btn_row.addWidget(self.load_stack_btn)
+        db_btn_row.addWidget(self.set_seed_btn)
+        db_lay.addLayout(db_btn_row)
+
+        db_del_row = QHBoxLayout()
+        self.del_slice_btn = QPushButton("Delete Current Slice")
+        self.del_slice_btn.setToolTip(
+            "Zero out the current (t, z) plane for the selected parameter set"
+        )
+        self.del_stack_btn = QPushButton("Remove Stack")
+        self.del_stack_btn.setToolTip(
+            "Delete all timepoints for the selected parameter set from the DB"
+        )
+        self.del_stack_btn.setStyleSheet(
+            "QPushButton { color: #cc3333; }"
+            "QPushButton:hover { background-color: #4a1111; color: white; }"
+        )
+        db_del_row.addWidget(self.del_slice_btn)
+        db_del_row.addWidget(self.del_stack_btn)
+        db_lay.addLayout(db_del_row)
         layout.addWidget(db_group)
 
         # ── 3. Automated Search ──────────────────────────────────────────
@@ -244,7 +277,10 @@ class NucleusWorkflowWidget(QWidget):
         self.run_sweep_btn.clicked.connect(self._on_run_sweep)
         self.run_terminal_btn.clicked.connect(self._on_run_terminal)
         self.hyp_spin.valueChanged.connect(self._on_hyp_changed)
+        self.load_stack_btn.clicked.connect(self._on_load_stack)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
+        self.del_slice_btn.clicked.connect(self._on_delete_slice)
+        self.del_stack_btn.clicked.connect(self._on_remove_stack)
         self.prop_next_btn.clicked.connect(self._on_propagate_next)
         self.prop_all_btn.clicked.connect(self._on_propagate_all)
         self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
@@ -333,7 +369,8 @@ class NucleusWorkflowWidget(QWidget):
             compactness=self.single_cmp.value(),
             smooth_sigma=self.single_sigma.value(),
             seed_source=src,
-            seed_distance=self.seed_dist_spin.value(),
+            seed_distance=self.single_seed_dist.value(),
+            min_size=self.min_size_spin.value(),
         )
 
     def _set_status(self, msg: str) -> None:
@@ -420,6 +457,7 @@ class NucleusWorkflowWidget(QWidget):
             smooth_sigma=params.smooth_sigma,
             seed_source=params.seed_source,
             seed_distance=params.seed_distance,
+            min_size=params.min_size,
         )
         output_path = self._pos_dir / "2_nucleus" / "hypotheses.h5"
         pos_dir = self._pos_dir
@@ -479,6 +517,30 @@ class NucleusWorkflowWidget(QWidget):
         except Exception as e:
             self._set_status(f"Could not load hypothesis p={p}: {e}")
 
+    def _on_load_stack(self) -> None:
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_status("No hypothesis DB found.")
+            return
+
+        p = self.hyp_spin.value()
+        self._set_status(f"Loading p={p} stack…")
+
+        @thread_worker(connect={"returned": self._on_load_stack_done, "errored": self._on_worker_error})
+        def _worker():
+            return p, read_full_hypothesis_stack(hyp_path, p)
+
+        _worker()
+
+    def _on_load_stack_done(self, result: tuple[int, np.ndarray]) -> None:
+        p, stack = result
+        name = f"Hypothesis Stack: p{p:03d}"
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = stack
+        else:
+            self.viewer.add_labels(stack, name=name)
+        self._set_status(f"Loaded p={p} stack {stack.shape} into napari.")
+
     def _on_set_seed(self) -> None:
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
@@ -495,6 +557,67 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status(f"Hypothesis p={p} set as tracking seed at t={t}.")
         except Exception as e:
             self._set_status(f"Error setting seed: {e}")
+
+    def _on_delete_slice(self) -> None:
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_status("No hypothesis DB found.")
+            return
+        p = self.hyp_spin.value()
+        z = self._current_z()
+        try:
+            zero_hypothesis_slice(hyp_path, z, p)
+        except Exception as e:
+            self._set_status(f"Delete slice failed: {e}")
+            return
+        self._set_status(f"Zeroed z={z} across all frames, p={p}.")
+        # Update the full (T, Z, Y, X) stack layer in-place if it's loaded
+        stack_name = f"Hypothesis Stack: p{p:03d}"
+        if stack_name in self.viewer.layers:
+            self.viewer.layers[stack_name].data[:, z] = 0
+            self.viewer.layers[stack_name].refresh()
+        # Update the per-frame 3D hypothesis layer if present
+        if _HYP_LAYER in self.viewer.layers:
+            try:
+                t = self._current_t()
+                labels = read_hypothesis_labels(hyp_path, t, p)
+                self.viewer.layers[_HYP_LAYER].data = labels
+            except Exception:
+                pass
+
+    def _on_remove_stack(self) -> None:
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_status("No hypothesis DB found.")
+            return
+        p = self.hyp_spin.value()
+        try:
+            delete_hypothesis_parameter(hyp_path, p)
+        except Exception as e:
+            self._set_status(f"Remove stack failed: {e}")
+            return
+        # Remove both possible napari layers for this parameter
+        for layer_name in (f"Hypothesis Stack: p{p:03d}", _HYP_LAYER):
+            if layer_name in self.viewer.layers:
+                self.viewer.layers.remove(self.viewer.layers[layer_name])
+        # Update spinbox and meta label
+        try:
+            n_p, params_by_p = list_hypotheses(hyp_path)
+        except Exception:
+            n_p = 0
+            params_by_p = {}
+        self.hyp_spin.blockSignals(True)
+        if n_p > 0:
+            self.hyp_spin.setRange(0, n_p - 1)
+            new_p = min(self.hyp_spin.value(), n_p - 1)
+            self.hyp_spin.setValue(new_p)
+            self._update_hyp_meta_label(params_by_p, new_p)
+            self._set_status(f"Removed p={p}. DB now has {n_p} parameter set(s).")
+        else:
+            self.hyp_spin.setRange(0, 0)
+            self.hyp_meta_lbl.setText("(empty)")
+            self._set_status("Removed p={p}. Hypothesis DB is now empty.")
+        self.hyp_spin.blockSignals(False)
 
     def _on_propagate_next(self) -> None:
         hyp_path = self._hyp_path()
@@ -618,7 +741,11 @@ class NucleusWorkflowWidget(QWidget):
             smooth_max=self.sweep_sigma[1].value(),
             smooth_step=self.sweep_sigma[2].value(),
             seed_source=src,
-            seed_distance=self.seed_dist_spin.value(),
+            seed_distance=self.sweep_seed_dist[0].value(),
+            seed_distance_min=self.sweep_seed_dist[0].value(),
+            seed_distance_max=self.sweep_seed_dist[1].value(),
+            seed_distance_step=self.sweep_seed_dist[2].value(),
+            min_size=self.min_size_spin.value(),
         )
         overwrite = self.overwrite_check.isChecked()
         output_path = self._pos_dir / "2_nucleus" / "hypotheses.h5"
@@ -661,7 +788,11 @@ class NucleusWorkflowWidget(QWidget):
             f"    smooth_sigma={self.sweep_sigma[0].value()},\n"
             f"    smooth_min={self.sweep_sigma[0].value()}, smooth_max={self.sweep_sigma[1].value()},\n"
             f"    smooth_step={self.sweep_sigma[2].value()},\n"
-            f"    seed_source={src!r}, seed_distance={self.seed_dist_spin.value()},\n"
+            f"    seed_source={src!r},\n"
+            f"    seed_distance={self.sweep_seed_dist[0].value()},\n"
+            f"    seed_distance_min={self.sweep_seed_dist[0].value()}, seed_distance_max={self.sweep_seed_dist[1].value()},\n"
+            f"    seed_distance_step={self.sweep_seed_dist[2].value()},\n"
+            f"    min_size={self.min_size_spin.value()},\n"
             ")\n"
             f"records = iter_hypothesis_records_from_stacks(prob, None, None, spec)\n"
             f"write_hypothesis_sweep_h5({str(output_path)!r}, records)\n"
@@ -691,12 +822,13 @@ class NucleusWorkflowWidget(QWidget):
         """Return the current UI state as a dictionary."""
         return {
             "seed_source": self.seed_source_combo.currentText(),
-            "seed_dist": self.seed_dist_spin.value(),
             "overwrite": self.overwrite_check.isChecked(),
+            "min_size": self.min_size_spin.value(),
             "single": {
                 "threshold": self.single_thr.value(),
                 "compactness": self.single_cmp.value(),
                 "sigma": self.single_sigma.value(),
+                "seed_dist": self.single_seed_dist.value(),
             },
             "sweep": {
                 "thr_min": self.sweep_thr[0].value(),
@@ -708,6 +840,9 @@ class NucleusWorkflowWidget(QWidget):
                 "sigma_min": self.sweep_sigma[0].value(),
                 "sigma_max": self.sweep_sigma[1].value(),
                 "sigma_step": self.sweep_sigma[2].value(),
+                "seed_dist_min": self.sweep_seed_dist[0].value(),
+                "seed_dist_max": self.sweep_seed_dist[1].value(),
+                "seed_dist_step": self.sweep_seed_dist[2].value(),
             },
             "search": {
                 "iou_threshold": self.iou_spin.value(),
@@ -719,16 +854,17 @@ class NucleusWorkflowWidget(QWidget):
         """Update the UI state from a dictionary."""
         if "seed_source" in state:
             self.seed_source_combo.setCurrentText(state["seed_source"])
-        if "seed_dist" in state:
-            self.seed_dist_spin.setValue(state["seed_dist"])
         if "overwrite" in state:
             self.overwrite_check.setChecked(state["overwrite"])
+        if "min_size" in state:
+            self.min_size_spin.setValue(state["min_size"])
 
         if "single" in state:
             s = state["single"]
             if "threshold" in s: self.single_thr.setValue(s["threshold"])
             if "compactness" in s: self.single_cmp.setValue(s["compactness"])
             if "sigma" in s: self.single_sigma.setValue(s["sigma"])
+            if "seed_dist" in s: self.single_seed_dist.setValue(s["seed_dist"])
 
         if "sweep" in state:
             sw = state["sweep"]
@@ -741,6 +877,9 @@ class NucleusWorkflowWidget(QWidget):
             if "sigma_min" in sw: self.sweep_sigma[0].setValue(sw["sigma_min"])
             if "sigma_max" in sw: self.sweep_sigma[1].setValue(sw["sigma_max"])
             if "sigma_step" in sw: self.sweep_sigma[2].setValue(sw["sigma_step"])
+            if "seed_dist_min" in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
+            if "seed_dist_max" in sw: self.sweep_seed_dist[1].setValue(sw["seed_dist_max"])
+            if "seed_dist_step" in sw: self.sweep_seed_dist[2].setValue(sw["seed_dist_step"])
 
         if "search" in state:
             se = state["search"]
