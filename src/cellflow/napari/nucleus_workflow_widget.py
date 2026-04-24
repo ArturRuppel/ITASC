@@ -364,6 +364,20 @@ class NucleusWorkflowWidget(QWidget):
         row_vel.addWidget(self.vel_sigma_spin)
         search_lay.addLayout(row_vel)
 
+        row_eps = QHBoxLayout()
+        row_eps.addWidget(QLabel("Cluster ε (px):"))
+        self.cluster_eps_spin = QDoubleSpinBox()
+        self.cluster_eps_spin.setRange(1, 100)
+        self.cluster_eps_spin.setValue(10.0)
+        self.cluster_eps_spin.setSingleStep(1.0)
+        self.cluster_eps_spin.setToolTip(
+            "Radius (px) for grouping candidate centroids from different (p, z) "
+            "combinations into one position cluster. Should be smaller than the "
+            "minimum inter-nucleus distance."
+        )
+        row_eps.addWidget(self.cluster_eps_spin)
+        search_lay.addLayout(row_eps)
+
         prop_row = QHBoxLayout()
         self.prop_next_btn = QPushButton("Propagate Next")
         self.prop_all_btn = QPushButton("Propagate All")
@@ -902,6 +916,7 @@ class NucleusWorkflowWidget(QWidget):
                 iou_threshold=self.iou_spin.value(),
                 max_dist_px=self.dist_spin.value(),
                 velocity_sigma_px=self.vel_sigma_spin.value(),
+                cluster_eps_px=self.cluster_eps_spin.value(),
             )
         except Exception as e:
             self._set_status(f"Propagation failed: {e}")
@@ -960,6 +975,7 @@ class NucleusWorkflowWidget(QWidget):
                 winner = propagate_one_frame(
                     hyp_path, tracked_path, t, iou_thr, max_dist,
                     velocity_sigma_px=vel_sigma,
+                    cluster_eps_px=self.cluster_eps_spin.value(),
                 )
                 if winner is None:
                     yield (t, None)
@@ -1291,6 +1307,7 @@ class NucleusWorkflowWidget(QWidget):
                 "iou_threshold": self.iou_spin.value(),
                 "max_dist_um": self.dist_spin.value(),
                 "velocity_sigma_px": self.vel_sigma_spin.value(),
+                "cluster_eps_px": self.cluster_eps_spin.value(),
             },
         }
 
@@ -1346,3 +1363,4 @@ class NucleusWorkflowWidget(QWidget):
             if "iou_threshold" in se: self.iou_spin.setValue(se["iou_threshold"])
             if "max_dist_um" in se: self.dist_spin.setValue(se["max_dist_um"])
             if "velocity_sigma_px" in se: self.vel_sigma_spin.setValue(se["velocity_sigma_px"])
+            if "cluster_eps_px" in se: self.cluster_eps_spin.setValue(se["cluster_eps_px"])

@@ -16,7 +16,7 @@ class CellposeFlowHypothesisParams:
     cellprob_threshold: float = 0.0
     flow_threshold: float = 0.0   # 0 = disabled; >0 removes masks with high flow error
     min_size: int = 15
-    niter: int = 0                 # 0 = auto (diameter-based); match Cellpose default
+    niter: int = 200
 
     def to_dict(self) -> dict[str, object]:
         return {"method": "cellpose_flow", **asdict(self)}
@@ -191,7 +191,7 @@ def compute_cellpose_flow_hypothesis(
     out = np.zeros_like(prob_3d, dtype=_LABEL_DTYPE)
     cp_min_size = params.min_size if params.min_size > 0 else -1
     for z in range(n_z):
-        masks, *_ = compute_masks(
+        result = compute_masks(
             dp_3d[z],
             prob_3d[z],
             cellprob_threshold=params.cellprob_threshold,
@@ -201,5 +201,7 @@ def compute_cellpose_flow_hypothesis(
             do_3D=False,
             device=device,
         )
+        # Cellpose ≥3.x returns just the mask array; older versions return (mask, p, tr).
+        masks = result[0] if isinstance(result, tuple) else result
         out[z] = np.asarray(masks, dtype=_LABEL_DTYPE)
     return out
