@@ -14,7 +14,12 @@ from typing import Iterable, Iterator
 import h5py
 import numpy as np
 
-from cellflow.segmentation import NucleusHypothesisParams, compute_hypothesis_labels
+from cellflow.segmentation import (
+    CellposeFlowHypothesisParams,
+    NucleusHypothesisParams,
+    compute_cellpose_flow_hypothesis,
+    compute_hypothesis_labels,
+)
 
 _LABEL_DTYPE = np.uint32
 _ROOT_GROUP = "hypotheses"
@@ -57,7 +62,7 @@ class HypothesisRecord:
     t: int
     p: int
     labels: np.ndarray  # shape (Z, Y, X), dtype uint32
-    params: NucleusHypothesisParams
+    params: NucleusHypothesisParams | CellposeFlowHypothesisParams
 
 
 def _values(current: float, minimum: float, maximum: float, step: float) -> list[float]:
@@ -306,17 +311,50 @@ def iter_hypothesis_records(path: str | Path) -> Iterator[HypothesisRecord]:
                 p_idx = int(p_name[1:])
                 p_grp = t_grp[p_name]
                 labels = np.asarray(p_grp["labels"][:], dtype=_LABEL_DTYPE)
-                params = NucleusHypothesisParams(
-                    basin=str(p_grp.attrs.get("basin", "prob")),
-                    threshold_pct=float(p_grp.attrs["threshold_pct"]),
-                    compactness=float(p_grp.attrs["compactness"]),
-                    smooth_sigma=float(p_grp.attrs["smooth_sigma"]),
-                    seed_source=str(p_grp.attrs.get("seed_source", "auto")),
-                    seed_distance=int(p_grp.attrs.get("seed_distance", 5)),
-                    min_size=int(p_grp.attrs.get("min_size", 0)),
-                    z_slice=int(p_grp.attrs.get("z_slice", 0)),
-                )
+                method = str(p_grp.attrs.get("method", "watershed"))
+                if method == "cellpose_flow":
+                    params: NucleusHypothesisParams | CellposeFlowHypothesisParams = CellposeFlowHypothesisParams(
+                        cellprob_threshold=float(p_grp.attrs.get("cellprob_threshold", 0.0)),
+                        flow_threshold=float(p_grp.attrs.get("flow_threshold", 0.4)),
+                        min_size=int(p_grp.attrs.get("min_size", 15)),
+                        niter=int(p_grp.attrs.get("niter", 200)),
+                    )
+                else:
+                    params = NucleusHypothesisParams(
+                        basin=str(p_grp.attrs.get("basin", "prob")),
+                        threshold_pct=float(p_grp.attrs.get("threshold_pct", 30.0)),
+                        compactness=float(p_grp.attrs.get("compactness", 0.0)),
+                        smooth_sigma=float(p_grp.attrs.get("smooth_sigma", 0.5)),
+                        seed_source=str(p_grp.attrs.get("seed_source", "auto")),
+                        seed_distance=int(p_grp.attrs.get("seed_distance", 5)),
+                        min_size=int(p_grp.attrs.get("min_size", 0)),
+                        z_slice=int(p_grp.attrs.get("z_slice", 0)),
+                    )
                 yield HypothesisRecord(t=t_idx, p=p_idx, labels=labels, params=params)
+
+
+def iter_cellpose_flow_records_from_stacks(
+    prob_stack: np.ndarray,
+    dp_stack: np.ndarray,
+    params: CellposeFlowHypothesisParams,
+) -> Iterator[HypothesisRecord]:
+    """Yield one HypothesisRecord per timepoint using Cellpose native flow segmentation.
+
+    prob_stack: (T, Z, Y, X) logits
+    dp_stack:   (T, Z, 2, Y, X) flow fields
+    Each z-slice is segmented independently. p is set to 0; write_hypothesis_sweep_h5
+    assigns the actual index during deduplication.
+    """
+    prob_stack = np.asarray(prob_stack)
+    dp_stack = np.asarray(dp_stack)
+    if prob_stack.ndim == 3:
+        prob_stack = prob_stack[np.newaxis]
+    if dp_stack.ndim == 4:
+        dp_stack = dp_stack[np.newaxis]
+    n_t = prob_stack.shape[0]
+    for t in range(n_t):
+        labels_3d = compute_cellpose_flow_hypothesis(prob_stack[t], dp_stack[t], params)
+        yield HypothesisRecord(t=t, p=0, labels=labels_3d, params=params)
 
 
 def iter_hypothesis_records_from_stacks(

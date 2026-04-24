@@ -10,6 +10,19 @@ _LABEL_DTYPE = np.uint32
 
 
 @dataclass(frozen=True, slots=True)
+class CellposeFlowHypothesisParams:
+    """Parameters for native Cellpose flow-based mask generation (no sweep)."""
+
+    cellprob_threshold: float = 0.0
+    flow_threshold: float = 0.0   # 0 = disabled; >0 removes masks with high flow error
+    min_size: int = 15
+    niter: int = 0                 # 0 = auto (diameter-based); match Cellpose default
+
+    def to_dict(self) -> dict[str, object]:
+        return {"method": "cellpose_flow", **asdict(self)}
+
+
+@dataclass(frozen=True, slots=True)
 class NucleusHypothesisParams:
     """One parameter set for nucleus hypothesis generation."""
 
@@ -137,3 +150,56 @@ def compute_hypothesis_labels(
         watershed_line=False,
     )
     return _remove_small_labels(np.asarray(labels, dtype=_LABEL_DTYPE), params.min_size)
+
+
+def compute_cellpose_flow_hypothesis(
+    prob_3d: np.ndarray,
+    dp_3d: np.ndarray,
+    params: CellposeFlowHypothesisParams,
+) -> np.ndarray:
+    """Run Cellpose native mask generation independently per z-slice.
+
+    prob_3d: (Z, Y, X) logits from Cellpose (flows[2])
+    dp_3d:   (Z, 2, Y, X) flow fields from Cellpose (flows[1])
+    Returns: (Z, Y, X) uint32
+    """
+    try:
+        import torch
+        from cellpose.dynamics import compute_masks
+    except ImportError as exc:
+        raise ImportError(
+            "cellpose and torch must be installed to use flow-based hypothesis generation"
+        ) from exc
+
+    prob_3d = np.asarray(prob_3d, dtype=np.float32)
+    dp_3d = np.asarray(dp_3d, dtype=np.float32)
+    if prob_3d.ndim != 3:
+        raise ValueError(f"Expected (Z, Y, X) prob, got {prob_3d.shape}")
+    if dp_3d.ndim != 4 or dp_3d.shape[1] != 2:
+        raise ValueError(f"Expected (Z, 2, Y, X) dp, got {dp_3d.shape}")
+
+    n_foreground = int(np.sum(prob_3d > params.cellprob_threshold))
+    if n_foreground == 0:
+        raise RuntimeError(
+            f"No foreground pixels found: all prob values <= cellprob_threshold={params.cellprob_threshold}. "
+            f"Prob range: [{float(prob_3d.min()):.2f}, {float(prob_3d.max()):.2f}]. "
+            "Try lowering cellprob_threshold."
+        )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    n_z = prob_3d.shape[0]
+    out = np.zeros_like(prob_3d, dtype=_LABEL_DTYPE)
+    cp_min_size = params.min_size if params.min_size > 0 else -1
+    for z in range(n_z):
+        masks, *_ = compute_masks(
+            dp_3d[z],
+            prob_3d[z],
+            cellprob_threshold=params.cellprob_threshold,
+            flow_threshold=params.flow_threshold,
+            min_size=cp_min_size,
+            niter=params.niter,
+            do_3D=False,
+            device=device,
+        )
+        out[z] = np.asarray(masks, dtype=_LABEL_DTYPE)
+    return out

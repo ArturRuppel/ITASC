@@ -31,6 +31,7 @@ from cellflow.database.hypotheses import (
     HypothesisRecord,
     build_parameter_sets,
     delete_hypothesis_parameter,
+    iter_cellpose_flow_records_from_stacks,
     iter_hypothesis_records_from_stacks,
     list_hypotheses,
     read_full_hypothesis_stack,
@@ -45,7 +46,7 @@ from cellflow.database.tracked import (
     tracked_n_frames,
     write_tracked_frame,
 )
-from cellflow.segmentation import NucleusHypothesisParams, compute_hypothesis_labels
+from cellflow.segmentation import CellposeFlowHypothesisParams, NucleusHypothesisParams, compute_hypothesis_labels
 from cellflow.tracking import propagate_one_frame
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,54 @@ class NucleusWorkflowWidget(QWidget):
         sweep_lay.addLayout(sweep_btn_row)
 
         self.gen_tabs.addTab(sweep_tab, "Batch (Sweep)")
+
+        # Tab 3: Cellpose Native
+        cp_tab = QWidget()
+        cp_lay = QVBoxLayout(cp_tab)
+
+        cp_note = QLabel(
+            "Requires nucleus_dp_3dt.tif alongside nucleus_prob_3dt.tif. "
+            "Flow Threshold 0 = keep all masks; increase to filter low-quality masks."
+        )
+        cp_note.setWordWrap(True)
+        cp_note.setStyleSheet("font-size: 8pt; color: #aaaaaa;")
+        cp_lay.addWidget(cp_note)
+
+        def _add_cp_param(label, min_val, max_val, default, step, decimals):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            spin = QDoubleSpinBox() if decimals > 0 else QSpinBox()
+            spin.setRange(min_val, max_val)
+            spin.setValue(default)
+            if decimals > 0:
+                spin.setDecimals(decimals)
+                spin.setSingleStep(step)
+            else:
+                spin.setSingleStep(int(step))
+            row.addWidget(spin)
+            cp_lay.addLayout(row)
+            return spin
+
+        row_cp_z = QHBoxLayout()
+        row_cp_z.addWidget(QLabel("Z Slice:"))
+        self.cp_z_spin = QSpinBox()
+        self.cp_z_spin.setRange(0, 99)
+        self.cp_z_spin.setValue(0)
+        row_cp_z.addWidget(self.cp_z_spin)
+        cp_lay.addLayout(row_cp_z)
+
+        self.cp_cellprob_spin = _add_cp_param("Cell Prob Threshold", -10.0, 10.0, 0.0, 0.5, 1)
+        self.cp_flow_spin = _add_cp_param("Flow Threshold", 0.0, 1.0, 0.0, 0.05, 2)
+        self.cp_niter_spin = _add_cp_param("Niter (0=auto)", 0, 1000, 0, 50, 0)
+
+        cp_btn_row = QHBoxLayout()
+        self.cp_preview_btn = QPushButton("Preview")
+        self.cp_save_btn = QPushButton("Save to DB")
+        cp_btn_row.addWidget(self.cp_preview_btn)
+        cp_btn_row.addWidget(self.cp_save_btn)
+        cp_lay.addLayout(cp_btn_row)
+
+        self.gen_tabs.addTab(cp_tab, "Cellpose Native")
         gen_lay.addWidget(self.gen_tabs)
         layout.addWidget(gen_group)
 
@@ -361,6 +410,8 @@ class NucleusWorkflowWidget(QWidget):
         self.db_refresh_btn.clicked.connect(lambda: self.refresh(self._pos_dir))
         self.del_slice_btn.clicked.connect(self._on_delete_slice)
         self.del_stack_btn.clicked.connect(self._on_remove_stack)
+        self.cp_preview_btn.clicked.connect(self._on_preview_cellpose_native)
+        self.cp_save_btn.clicked.connect(self._on_save_cellpose_native_db)
         self.prop_next_btn.clicked.connect(self._on_propagate_next)
         self.prop_all_btn.clicked.connect(self._on_propagate_all)
         self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
@@ -411,6 +462,11 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             return None
         return self._pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif"
+
+    def _dp_path(self) -> Path | None:
+        if self._pos_dir is None:
+            return None
+        return self._pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif"
 
     def _cell_zavg_path(self) -> Path | None:
         if self._pos_dir is None:
@@ -623,6 +679,93 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_save_db_done(self, pos_dir: Path) -> None:
         self._set_status("Saved to hypotheses.h5.")
+        self.refresh(pos_dir)
+
+    def _on_preview_cellpose_native(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        prob_path = self._prob_path()
+        dp_path = self._dp_path()
+        if prob_path is None or not prob_path.exists():
+            self._set_status(f"Missing: {prob_path}")
+            return
+        if dp_path is None or not dp_path.exists():
+            self._set_status(f"Missing: {dp_path}")
+            return
+
+        t = self._current_t()
+        z = self.cp_z_spin.value()
+        params = CellposeFlowHypothesisParams(
+            cellprob_threshold=self.cp_cellprob_spin.value(),
+            flow_threshold=self.cp_flow_spin.value(),
+            min_size=self.min_size_spin.value(),
+            niter=int(self.cp_niter_spin.value()),
+        )
+
+        @thread_worker(connect={"returned": self._on_preview_cellpose_native_done, "errored": self._on_worker_error})
+        def _worker():
+            from cellflow.segmentation import compute_cellpose_flow_hypothesis
+            prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+            dp_stack = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)
+            if prob_stack.ndim == 3:
+                prob_stack = prob_stack[np.newaxis]
+            if dp_stack.ndim == 4:
+                dp_stack = dp_stack[np.newaxis]
+            z_clamped = min(z, prob_stack.shape[1] - 1)
+            t_clamped = min(t, prob_stack.shape[0] - 1)
+            prob_slice = prob_stack[t_clamped, z_clamped:z_clamped + 1]  # (1, Y, X)
+            dp_slice = dp_stack[t_clamped, z_clamped:z_clamped + 1]      # (1, 2, Y, X)
+            p_min = float(prob_slice.min())
+            p_max = float(prob_slice.max())
+            info = f"prob=[{p_min:.2f}, {p_max:.2f}] dp_shape={dp_slice.shape}"
+            labels_3d = compute_cellpose_flow_hypothesis(prob_slice, dp_slice, params)
+            return labels_3d[0], t_clamped, z_clamped, info  # (Y, X), t, z, info
+
+        self._set_status(f"Previewing Cellpose native t={t}, z={z}…")
+        _worker()
+
+    def _on_preview_cellpose_native_done(self, result: tuple) -> None:
+        labels_2d, t, z, info = result
+        self._update_layer(_PREVIEW_LAYER, labels_2d)
+        self._set_status(f"Cellpose native t={t}, z={z}: {int(labels_2d.max())} cells. {info}")
+
+    def _on_save_cellpose_native_db(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        prob_path = self._prob_path()
+        dp_path = self._dp_path()
+        if prob_path is None or not prob_path.exists():
+            self._set_status(f"Missing: {prob_path}")
+            return
+        if dp_path is None or not dp_path.exists():
+            self._set_status(f"Missing: {dp_path}")
+            return
+
+        params = CellposeFlowHypothesisParams(
+            cellprob_threshold=self.cp_cellprob_spin.value(),
+            flow_threshold=self.cp_flow_spin.value(),
+            min_size=self.min_size_spin.value(),
+            niter=int(self.cp_niter_spin.value()),
+        )
+        overwrite = self.overwrite_check.isChecked()
+        output_path = self._pos_dir / "2_nucleus" / "hypotheses.h5"
+        pos_dir = self._pos_dir
+
+        @thread_worker(connect={"returned": self._on_save_cellpose_native_done, "errored": self._on_worker_error})
+        def _worker():
+            prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+            dp_stack = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)
+            records = iter_cellpose_flow_records_from_stacks(prob_stack, dp_stack, params)
+            write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite, n_t=None, n_p=1)
+            return pos_dir
+
+        self._set_status("Running Cellpose native segmentation…")
+        _worker()
+
+    def _on_save_cellpose_native_done(self, pos_dir: Path) -> None:
+        self._set_status("Cellpose native hypothesis saved to hypotheses.h5.")
         self.refresh(pos_dir)
 
     def _on_db_activate_toggled(self, active: bool) -> None:
