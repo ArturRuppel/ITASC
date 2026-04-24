@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import center_of_mass
+from scipy.spatial import KDTree
 
 from cellflow.database.hypotheses import read_hypothesis_labels, list_hypotheses
 from cellflow.database.tracked import read_tracked_frame, write_tracked_frame
@@ -86,6 +87,20 @@ def find_best_hypothesis(
         overlap = _overlap_matrix(current_labels, cand)
         cand_data.append((c_areas, c_centroids, overlap))
 
+    # Build a flat index of all candidate centroids for KDTree radius query.
+    # This avoids checking max_dist_px via np.linalg.norm in a Python loop.
+    all_keys: list[tuple[int, int]] = []  # (entry_idx, cand_id)
+    all_cand_centroids: list[np.ndarray] = []
+    for entry_idx, (_, c_centroids, _) in enumerate(cand_data):
+        for cand_id, cand_centroid in c_centroids.items():
+            all_keys.append((entry_idx, cand_id))
+            all_cand_centroids.append(cand_centroid)
+
+    if not all_keys:
+        return None, None
+
+    cand_tree = KDTree(np.array(all_cand_centroids))
+
     assigned: set[tuple[int, int]] = set()  # (entry_idx, cand_label_id)
     next_frame = np.zeros_like(current_labels)
     matched_entry_indices: list[int] = []
@@ -97,23 +112,23 @@ def find_best_hypothesis(
         best_score = 0.0
         best_key: tuple[int, int] | None = None
 
-        for entry_idx, (c_areas, c_centroids, overlap) in enumerate(cand_data):
-            for cand_id, cand_centroid in c_centroids.items():
-                key = (entry_idx, cand_id)
-                if key in assigned:
-                    continue
-                if float(np.linalg.norm(cur_centroid - cand_centroid)) > max_dist_px:
-                    continue
-                if current_id >= overlap.shape[0] or cand_id >= overlap.shape[1]:
-                    continue
+        for idx in cand_tree.query_ball_point(cur_centroid, max_dist_px):
+            entry_idx, cand_id = all_keys[idx]
+            key = (entry_idx, cand_id)
+            if key in assigned:
+                continue
 
-                inter = int(overlap[current_id, cand_id])
-                union = cur_area + int(c_areas[cand_id]) - inter
-                score = inter / union if union > 0 else 0.0
+            c_areas, _, overlap = cand_data[entry_idx]
+            if current_id >= overlap.shape[0] or cand_id >= overlap.shape[1]:
+                continue
 
-                if score >= iou_threshold and score > best_score:
-                    best_score = score
-                    best_key = key
+            inter = int(overlap[current_id, cand_id])
+            union = cur_area + int(c_areas[cand_id]) - inter
+            score = inter / union if union > 0 else 0.0
+
+            if score >= iou_threshold and score > best_score:
+                best_score = score
+                best_key = key
 
         if best_key is not None:
             assigned.add(best_key)
