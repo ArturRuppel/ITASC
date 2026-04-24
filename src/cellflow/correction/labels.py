@@ -12,6 +12,7 @@ import os
 import numpy as np
 from scipy.ndimage import binary_dilation, binary_closing, label as nd_label
 from scipy.ndimage import distance_transform_edt
+from skimage.draw import polygon as draw_polygon
 from skimage.morphology import disk
 from skimage.segmentation import watershed, expand_labels
 
@@ -303,56 +304,28 @@ def draw_cell_path(
         return False
 
     local_pts = [(float(p[-2]), float(p[-1])) for p in positions]
-    interp = _interpolate(local_pts)
-    line_mask = _draw_line(seg.shape, interp).astype(bool)
 
-    if not np.any(line_mask):
+    rows = np.array([p[0] for p in local_pts])
+    cols = np.array([p[1] for p in local_pts])
+    rr, cc = draw_polygon(rows, cols, seg.shape)
+    log.debug("draw_cell_path: polygon fill pixels=%d", len(rr))
+
+    if len(rr) < MIN_CELL_SIZE:
         return False
-
-    r0, c0 = interp[0]
-    r1, c1 = interp[-1]
-    n_close = max(abs(r1 - r0), abs(c1 - c0), 1)
-    closed_mask = line_mask.copy()
-    for t in np.linspace(0, 1, n_close + 1):
-        r = int(round(r0 + t * (r1 - r0)))
-        c = int(round(c0 + t * (c1 - c0)))
-        if 0 <= r < seg.shape[0] and 0 <= c < seg.shape[1]:
-            closed_mask[r, c] = True
-
-    closed_mask_thick = binary_dilation(closed_mask)
-    traversable = ~closed_mask_thick
-    _struct4 = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.int32)
-    labeled_regions, n_comp = nd_label(traversable, structure=_struct4)
-
-    border_ids: set = set()
-    for edge in (labeled_regions[0, :], labeled_regions[-1, :],
-                 labeled_regions[:, 0], labeled_regions[:, -1]):
-        border_ids.update(np.unique(edge))
-    border_ids.discard(0)
-
-    inside_ids = [i for i in range(1, n_comp + 1) if i not in border_ids]
-    log.debug("draw_cell_path: n_comp=%d inside_ids=%s", n_comp, inside_ids)
-
-    if inside_ids:
-        inside_mask = np.isin(labeled_regions, inside_ids)
-        extending = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
-        fill_mask = inside_mask if extending else (inside_mask & (seg == 0))
-        n_px = int(np.sum(fill_mask))
-        if n_px >= MIN_CELL_SIZE:
-            label = curlabel if (curlabel and curlabel != 0) else _free_label(seg)
-            seg[fill_mask] = label
-            return True
 
     extending = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
-    if extending:
-        stroke_mask = line_mask & ((seg == 0) | (seg == curlabel))
-    else:
-        stroke_mask = line_mask & (seg == 0)
-    n_px = int(np.sum(stroke_mask))
+    label = curlabel if extending else _free_label(seg)
+
+    fill_mask = np.zeros(seg.shape, dtype=bool)
+    fill_mask[rr, cc] = True
+    if not extending:
+        fill_mask &= (seg == 0)
+
+    n_px = int(np.sum(fill_mask))
     if n_px < MIN_CELL_SIZE:
         return False
-    label = curlabel if (curlabel and curlabel != 0) else _free_label(seg)
-    seg[stroke_mask] = label
+
+    seg[fill_mask] = label
     return True
 
 
