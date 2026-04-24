@@ -1,7 +1,7 @@
 """Greedy IoU propagator for nucleus tracking.
 
-Finds the hypothesis parameter set whose 3D label volume best overlaps
-the current tracked frame, then writes it as the next tracked frame.
+Finds the hypothesis parameter set whose 2D label image best overlaps
+the current tracked frame, then writes the 2D projection as the next tracked frame.
 """
 from __future__ import annotations
 
@@ -13,13 +13,18 @@ from cellflow.database.hypotheses import read_hypothesis_labels, list_hypotheses
 from cellflow.database.tracked import read_tracked_frame, write_tracked_frame
 
 
+def _to_2d(labels: np.ndarray) -> np.ndarray:
+    """Reduce labels to (Y, X) by max-projecting over Z if needed."""
+    if labels.ndim == 3:
+        return labels.max(axis=0)
+    return labels
+
+
 def _centroids_2d(labels: np.ndarray) -> np.ndarray:
     """Return (N, 2) float32 centroid array from a 2D or max-Z-projected label image."""
     from skimage.measure import regionprops
 
-    if labels.ndim == 3:
-        labels = labels.max(axis=0)  # max-Z projection → (Y, X)
-
+    labels = _to_2d(labels)
     props = regionprops(labels.astype(np.int32))
     if not props:
         return np.empty((0, 2), dtype=np.float32)
@@ -36,10 +41,10 @@ def _mean_min_dist(src: np.ndarray, dst: np.ndarray) -> float:
     return float(np.sqrt(sq.min(axis=1)).mean())
 
 
-def _binary_iou_3d(a: np.ndarray, b: np.ndarray) -> float:
-    """Binary mask IoU over 3D volumes."""
-    a_mask = a > 0
-    b_mask = b > 0
+def _binary_iou(a: np.ndarray, b: np.ndarray) -> float:
+    """Binary mask IoU — both inputs are projected to 2D before comparison."""
+    a_mask = _to_2d(a) > 0
+    b_mask = _to_2d(b) > 0
     intersection = int((a_mask & b_mask).sum())
     union = int((a_mask | b_mask).sum())
     if union == 0:
@@ -58,9 +63,9 @@ def find_best_hypothesis(
     Parameters
     ----------
     current_labels:
-        (Z, Y, X) uint32 tracked label volume for the current frame.
+        (Y, X) or (Z, Y, X) uint32 tracked label image for the current frame.
     candidates:
-        List of (Z, Y, X) uint32 hypothesis label volumes for the next frame.
+        List of (Y, X) or (Z, Y, X) uint32 hypothesis label volumes for the next frame.
     iou_threshold:
         Minimum binary 3D IoU to accept a candidate.
     max_dist_px:
@@ -80,7 +85,7 @@ def find_best_hypothesis(
         if _mean_min_dist(current_centroids, cand_centroids) > max_dist_px:
             continue
 
-        iou = _binary_iou_3d(current_labels, cand)
+        iou = _binary_iou(current_labels, cand)
         if iou >= iou_threshold and iou > best_iou:
             best_iou = iou
             best_idx = idx
@@ -123,5 +128,5 @@ def propagate_one_frame(
     if winner is None:
         return None
 
-    write_tracked_frame(tracked_h5, t_next, candidates[winner])
+    write_tracked_frame(tracked_h5, t_next, _to_2d(candidates[winner]))
     return winner

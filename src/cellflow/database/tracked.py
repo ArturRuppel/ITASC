@@ -1,6 +1,6 @@
 """HDF5 storage for tracked nucleus label volumes.
 
-Schema: t{t:03d}/labels  — shape (Z, Y, X), dtype uint32.
+Schema: t{t:03d}/labels  — shape (Y, X), dtype uint32.
 """
 from __future__ import annotations
 
@@ -30,9 +30,28 @@ def write_tracked_frame(path: str | Path, t: int, labels: np.ndarray) -> None:
 
 
 def read_tracked_frame(path: str | Path, t: int) -> np.ndarray:
-    """Read a single tracked frame, returned as (Z, Y, X) uint32 array."""
+    """Read a single tracked frame, returned as (Y, X) uint32 array."""
     with h5py.File(Path(path), "r") as h5:
         return np.asarray(h5[f"t{t:03d}/labels"], dtype=_LABEL_DTYPE)
+
+
+def read_full_tracked_stack(path: str | Path) -> np.ndarray:
+    """Read all tracked frames as a (T, Y, X) uint32 array.
+
+    Legacy frames stored as (Z, Y, X) are max-projected to (Y, X).
+    """
+    path = Path(path)
+    with h5py.File(path, "r") as h5:
+        t_keys = sorted(k for k in h5.keys() if k.startswith("t"))
+        if not t_keys:
+            return np.empty((0, 0, 0), dtype=_LABEL_DTYPE)
+        frames = []
+        for k in t_keys:
+            frame = np.asarray(h5[f"{k}/labels"], dtype=_LABEL_DTYPE)
+            if frame.ndim == 3:
+                frame = frame.max(axis=0)  # legacy (Z, Y, X) → (Y, X)
+            frames.append(frame)
+        return np.stack(frames, axis=0)
 
 
 def tracked_n_frames(path: str | Path) -> int:

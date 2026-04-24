@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -38,6 +39,7 @@ from cellflow.database.hypotheses import (
     zero_hypothesis_slice,
 )
 from cellflow.database.tracked import (
+    read_full_tracked_stack,
     read_tracked_frame,
     tracked_frame_exists,
     tracked_n_frames,
@@ -52,6 +54,8 @@ _PREVIEW_LAYER = "Preview: Nucleus"
 _HYP_LAYER = "Hypothesis: Nucleus"
 _TRACKED_LAYER = "Tracked: Nucleus"
 _PROB_LAYER = "Probability: Nucleus"
+_CELL_ZAVG_LAYER = "Cell z-avg"
+_NUC_ZAVG_LAYER = "Nucleus z-avg"
 
 
 class NucleusWorkflowWidget(QWidget):
@@ -199,6 +203,14 @@ class NucleusWorkflowWidget(QWidget):
         row_h.addWidget(self.hyp_spin)
         self.hyp_meta_lbl = QLabel("p000: ---")
         row_h.addWidget(self.hyp_meta_lbl)
+        row_h.addStretch()
+        self.db_refresh_btn = QPushButton()
+        self.db_refresh_btn.setToolTip("Refresh database browser")
+        self.db_refresh_btn.setIcon(
+            self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
+        )
+        self.db_refresh_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        row_h.addWidget(self.db_refresh_btn)
         db_lay.addLayout(row_h)
 
         db_btn_row = QHBoxLayout()
@@ -256,6 +268,12 @@ class NucleusWorkflowWidget(QWidget):
         prop_row.addWidget(self.prop_all_btn)
         prop_row.addWidget(self.stop_btn)
         search_lay.addLayout(prop_row)
+
+        self.load_tracked_btn = QPushButton("Load Tracked Labels")
+        self.load_tracked_btn.setToolTip(
+            "Load full tracked label stack with cell/nucleus z-avg into napari"
+        )
+        search_lay.addWidget(self.load_tracked_btn)
         layout.addWidget(search_group)
 
         # ── 4. Manual Correction Integration ──────────────────────────────
@@ -285,11 +303,13 @@ class NucleusWorkflowWidget(QWidget):
         self.hyp_spin.valueChanged.connect(self._on_hyp_changed)
         self.load_stack_btn.clicked.connect(self._on_load_stack)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
+        self.db_refresh_btn.clicked.connect(lambda: self.refresh(self._pos_dir))
         self.del_slice_btn.clicked.connect(self._on_delete_slice)
         self.del_stack_btn.clicked.connect(self._on_remove_stack)
         self.prop_next_btn.clicked.connect(self._on_propagate_next)
         self.prop_all_btn.clicked.connect(self._on_propagate_all)
         self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
+        self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.jump_corr_btn.clicked.connect(self._on_jump_correction)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -314,15 +334,6 @@ class NucleusWorkflowWidget(QWidget):
             except Exception as e:
                 logger.warning("Could not read hypotheses.h5: %s", e)
 
-        tracked_path = pos_dir / "2_nucleus" / "tracked_labels.h5"
-        if tracked_path.exists():
-            try:
-                t = self._current_t()
-                if tracked_frame_exists(tracked_path, t):
-                    labels = read_tracked_frame(tracked_path, t)
-                    self._update_layer(_TRACKED_LAYER, labels)
-            except Exception as e:
-                logger.warning("Could not load tracked frame: %s", e)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -350,6 +361,38 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             return None
         return self._pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif"
+
+    def _cell_zavg_path(self) -> Path | None:
+        if self._pos_dir is None:
+            return None
+        return self._pos_dir / "0_input" / "cell_zavg.tif"
+
+    def _nucleus_zavg_path(self) -> Path | None:
+        if self._pos_dir is None:
+            return None
+        return self._pos_dir / "0_input" / "nucleus_zavg.tif"
+
+    def _get_nz(self) -> int:
+        """Return the Z dimension from any loaded 4D napari layer or the hypothesis DB."""
+        for layer in self.viewer.layers:
+            if hasattr(layer, "data") and layer.data.ndim == 4:
+                return layer.data.shape[1]
+        hyp_path = self._hyp_path()
+        if hyp_path and hyp_path.exists():
+            try:
+                return read_hypothesis_labels(hyp_path, 0, 0).shape[0]
+            except Exception:
+                pass
+        return 1
+
+    def _update_tracked_display(self, labels: np.ndarray) -> None:
+        """Display a 2D (Y, X) tracked frame, broadcast across Z for napari."""
+        nz = self._get_nz()
+        if labels.ndim == 2:
+            display = np.broadcast_to(labels[np.newaxis], (nz,) + labels.shape).copy()
+        else:
+            display = labels
+        self._update_layer(_TRACKED_LAYER, display)
 
     def _update_layer(self, name: str, data: np.ndarray) -> None:
         """Add or replace a Labels layer in the viewer."""
@@ -495,17 +538,15 @@ class NucleusWorkflowWidget(QWidget):
 
         t = self._current_t()
         data = np.asarray(preview_layer.data)
-
-        # The preview is 2D (Y, X); wrap into a 1-z 3D volume for tracked storage.
-        if data.ndim == 2:
-            volume = data[np.newaxis]  # (1, Y, X)
-        else:
-            volume = data
+        if data.ndim == 3:
+            z = self._current_z()
+            data = data[min(z, data.shape[0] - 1)]
+        # data is now (Y, X)
 
         tracked_path = self._tracked_path()
         try:
-            write_tracked_frame(tracked_path, t, volume)
-            self._update_layer(_TRACKED_LAYER, volume)
+            write_tracked_frame(tracked_path, t, data)
+            self._update_tracked_display(data)
             self._set_status(f"Preview saved as tracked t={t}.")
         except Exception as e:
             self._set_status(f"Error writing tracked frame: {e}")
@@ -514,14 +555,11 @@ class NucleusWorkflowWidget(QWidget):
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
             return
-        t = self._current_t()
         try:
-            labels = read_hypothesis_labels(hyp_path, t, p)
-            self._update_layer(_HYP_LAYER, labels)
             _, params_by_p = list_hypotheses(hyp_path)
             self._update_hyp_meta_label(params_by_p, p)
         except Exception as e:
-            self._set_status(f"Could not load hypothesis p={p}: {e}")
+            self._set_status(f"Could not read hypothesis metadata p={p}: {e}")
 
     def _on_load_stack(self) -> None:
         hyp_path = self._hyp_path()
@@ -530,21 +568,56 @@ class NucleusWorkflowWidget(QWidget):
             return
 
         p = self.hyp_spin.value()
+        cell_zavg_path = self._cell_zavg_path()
+        nuc_zavg_path = self._nucleus_zavg_path()
         self._set_status(f"Loading p={p} stack…")
 
         @thread_worker(connect={"returned": self._on_load_stack_done, "errored": self._on_worker_error})
         def _worker():
-            return p, read_full_hypothesis_stack(hyp_path, p)
+            stack = read_full_hypothesis_stack(hyp_path, p)
+            cell_zavg = (
+                np.asarray(tifffile.imread(str(cell_zavg_path)), dtype=np.float32)
+                if cell_zavg_path and cell_zavg_path.exists()
+                else None
+            )
+            nuc_zavg = (
+                np.asarray(tifffile.imread(str(nuc_zavg_path)), dtype=np.float32)
+                if nuc_zavg_path and nuc_zavg_path.exists()
+                else None
+            )
+            return p, stack, cell_zavg, nuc_zavg
 
         _worker()
 
-    def _on_load_stack_done(self, result: tuple[int, np.ndarray]) -> None:
-        p, stack = result
+    def _broadcast_zavg(self, zavg: np.ndarray, nt: int, nz: int) -> np.ndarray:
+        """Broadcast a Z-less image to (T, Z, Y, X) given nt and nz."""
+        if zavg.ndim == 2:  # (Y, X) → (T, Z, Y, X)
+            return np.broadcast_to(zavg[np.newaxis, np.newaxis], (nt, nz) + zavg.shape).copy()
+        elif zavg.ndim == 3:  # (T, Y, X) → (T, Z, Y, X)
+            return np.broadcast_to(zavg[:, np.newaxis], (zavg.shape[0], nz) + zavg.shape[1:]).copy()
+        return zavg
+
+    def _on_load_stack_done(self, result: tuple) -> None:
+        p, stack, cell_zavg, nuc_zavg = result
         name = f"Hypothesis Stack: p{p:03d}"
         if name in self.viewer.layers:
             self.viewer.layers[name].data = stack
         else:
             self.viewer.add_labels(stack, name=name)
+
+        nt, nz = stack.shape[0], stack.shape[1]
+        for zavg_data, layer_name, cmap in (
+            (cell_zavg, _CELL_ZAVG_LAYER, "gray"),
+            (nuc_zavg, _NUC_ZAVG_LAYER, "bop orange"),
+        ):
+            if zavg_data is None:
+                continue
+            broadcast = self._broadcast_zavg(zavg_data, nt, nz)
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].data = broadcast
+            else:
+                self.viewer.add_image(broadcast, name=layer_name, colormap=cmap, blending="additive")
+
         self._set_status(f"Loaded p={p} stack {stack.shape} into napari.")
 
     def _on_set_seed(self) -> None:
@@ -555,12 +628,14 @@ class NucleusWorkflowWidget(QWidget):
 
         p = self.hyp_spin.value()
         t = self._current_t()
+        z = self._current_z()
         try:
-            volume = read_hypothesis_labels(hyp_path, t, p)
+            volume = read_hypothesis_labels(hyp_path, t, p)  # (Z, Y, X)
+            slice_2d = volume[min(z, volume.shape[0] - 1)]   # (Y, X)
             tracked_path = self._tracked_path()
-            write_tracked_frame(tracked_path, t, volume)
-            self._update_layer(_TRACKED_LAYER, volume)
-            self._set_status(f"Hypothesis p={p} set as tracking seed at t={t}.")
+            write_tracked_frame(tracked_path, t, slice_2d)
+            self._update_tracked_display(slice_2d)
+            self._set_status(f"Hypothesis p={p}, z={z} set as tracking seed at t={t}.")
         except Exception as e:
             self._set_status(f"Error setting seed: {e}")
 
@@ -656,7 +731,7 @@ class NucleusWorkflowWidget(QWidget):
 
         try:
             labels = read_tracked_frame(tracked_path, t + 1)
-            self._update_layer(_TRACKED_LAYER, labels)
+            self._update_tracked_display(labels)
             # Advance viewer to next timepoint
             step = list(self.viewer.dims.current_step)
             step[0] = t + 1
@@ -712,7 +787,7 @@ class NucleusWorkflowWidget(QWidget):
             try:
                 tracked_path = self._tracked_path()
                 labels = read_tracked_frame(tracked_path, t + 1)
-                self._update_layer(_TRACKED_LAYER, labels)
+                self._update_tracked_display(labels)
                 step = list(self.viewer.dims.current_step)
                 step[0] = t + 1
                 self.viewer.dims.current_step = tuple(step)
@@ -721,6 +796,58 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_prop_done(self) -> None:
         self._set_status("Propagation complete.")
+
+    def _on_load_tracked(self) -> None:
+        tracked_path = self._tracked_path()
+        if tracked_path is None or not tracked_path.exists():
+            self._set_status("No tracked labels file found.")
+            return
+
+        nz = self._get_nz()
+        cell_zavg_path = self._cell_zavg_path()
+        nuc_zavg_path = self._nucleus_zavg_path()
+        self._set_status("Loading tracked labels…")
+
+        @thread_worker(connect={"returned": self._on_load_tracked_done, "errored": self._on_worker_error})
+        def _worker():
+            stack = read_full_tracked_stack(tracked_path)  # (T, Y, X)
+            cell_zavg = (
+                np.asarray(tifffile.imread(str(cell_zavg_path)), dtype=np.float32)
+                if cell_zavg_path and cell_zavg_path.exists()
+                else None
+            )
+            nuc_zavg = (
+                np.asarray(tifffile.imread(str(nuc_zavg_path)), dtype=np.float32)
+                if nuc_zavg_path and nuc_zavg_path.exists()
+                else None
+            )
+            return stack, nz, cell_zavg, nuc_zavg
+
+        _worker()
+
+    def _on_load_tracked_done(self, result: tuple) -> None:
+        stack, nz, cell_zavg, nuc_zavg = result  # stack is (T, Y, X)
+        # Broadcast tracked stack to (T, Z, Y, X)
+        nt = stack.shape[0]
+        broadcast = np.broadcast_to(stack[:, np.newaxis], (nt, nz) + stack.shape[1:]).copy()
+        if _TRACKED_LAYER in self.viewer.layers:
+            self.viewer.layers[_TRACKED_LAYER].data = broadcast
+        else:
+            self.viewer.add_labels(broadcast, name=_TRACKED_LAYER)
+
+        for zavg_data, layer_name, cmap in (
+            (cell_zavg, _CELL_ZAVG_LAYER, "gray"),
+            (nuc_zavg, _NUC_ZAVG_LAYER, "bop orange"),
+        ):
+            if zavg_data is None:
+                continue
+            broadcast_zavg = self._broadcast_zavg(zavg_data, nt, nz)
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].data = broadcast_zavg
+            else:
+                self.viewer.add_image(broadcast_zavg, name=layer_name, colormap=cmap, blending="additive")
+
+        self._set_status(f"Loaded tracked stack {stack.shape} into napari.")
 
     def _on_run_sweep(self) -> None:
         if self._pos_dir is None:
