@@ -355,7 +355,7 @@ class NucleusWorkflowWidget(QWidget):
     def _tracked_path(self) -> Path | None:
         if self._pos_dir is None:
             return None
-        return self._pos_dir / "2_nucleus" / "tracked_labels.h5"
+        return self._pos_dir / "2_nucleus" / "tracked_labels.tif"
 
     def _prob_path(self) -> Path | None:
         if self._pos_dir is None:
@@ -385,13 +385,31 @@ class NucleusWorkflowWidget(QWidget):
                 pass
         return 1
 
-    def _update_tracked_display(self, labels: np.ndarray) -> None:
-        """Display a 2D (Y, X) tracked frame, broadcast across Z for napari."""
-        nz = self._get_nz()
-        if labels.ndim == 2:
-            display = np.broadcast_to(labels[np.newaxis], (nz,) + labels.shape).copy()
-        else:
-            display = labels
+    def _update_tracked_display(
+        self,
+        labels: np.ndarray,
+        t: int | None = None,
+        tracked_path: Path | None = None,
+    ) -> None:
+        """Update the tracked labels layer with a single (Y, X) frame at timepoint t.
+
+        If the layer already holds a (T, Y, X) stack and t is within bounds, updates
+        that frame in-place. If t is out of bounds (new frame extends the stack), reloads
+        the full stack from tracked_path. Falls back to a single-frame (1, Y, X) layer
+        if no path is available.
+        """
+        if _TRACKED_LAYER in self.viewer.layers and t is not None:
+            layer = self.viewer.layers[_TRACKED_LAYER]
+            if layer.data.ndim == 3:
+                if t < layer.data.shape[0]:
+                    layer.data[t] = labels
+                    layer.refresh()
+                    return
+                if tracked_path is not None and tracked_path.exists():
+                    layer.data = read_full_tracked_stack(tracked_path)
+                    layer.refresh()
+                    return
+        display = labels[np.newaxis].copy() if labels.ndim == 2 else labels
         self._update_layer(_TRACKED_LAYER, display)
 
     def _update_layer(self, name: str, data: np.ndarray) -> None:
@@ -546,7 +564,7 @@ class NucleusWorkflowWidget(QWidget):
         tracked_path = self._tracked_path()
         try:
             write_tracked_frame(tracked_path, t, data)
-            self._update_tracked_display(data)
+            self._update_tracked_display(data, t=t)
             self._set_status(f"Preview saved as tracked t={t}.")
         except Exception as e:
             self._set_status(f"Error writing tracked frame: {e}")
@@ -634,7 +652,7 @@ class NucleusWorkflowWidget(QWidget):
             slice_2d = volume[min(z, volume.shape[0] - 1)]   # (Y, X)
             tracked_path = self._tracked_path()
             write_tracked_frame(tracked_path, t, slice_2d)
-            self._update_tracked_display(slice_2d)
+            self._update_tracked_display(slice_2d, t=t)
             self._set_status(f"Hypothesis p={p}, z={z} set as tracking seed at t={t}.")
         except Exception as e:
             self._set_status(f"Error setting seed: {e}")
@@ -731,7 +749,7 @@ class NucleusWorkflowWidget(QWidget):
 
         try:
             labels = read_tracked_frame(tracked_path, t + 1)
-            self._update_tracked_display(labels)
+            self._update_tracked_display(labels, t=t + 1, tracked_path=tracked_path)
             # Advance viewer to next timepoint
             step = list(self.viewer.dims.current_step)
             step[0] = t + 1
@@ -787,7 +805,7 @@ class NucleusWorkflowWidget(QWidget):
             try:
                 tracked_path = self._tracked_path()
                 labels = read_tracked_frame(tracked_path, t + 1)
-                self._update_tracked_display(labels)
+                self._update_tracked_display(labels, t=t + 1, tracked_path=tracked_path)
                 step = list(self.viewer.dims.current_step)
                 step[0] = t + 1
                 self.viewer.dims.current_step = tuple(step)
@@ -803,7 +821,6 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status("No tracked labels file found.")
             return
 
-        nz = self._get_nz()
         cell_zavg_path = self._cell_zavg_path()
         nuc_zavg_path = self._nucleus_zavg_path()
         self._set_status("Loading tracked labels…")
@@ -821,19 +838,17 @@ class NucleusWorkflowWidget(QWidget):
                 if nuc_zavg_path and nuc_zavg_path.exists()
                 else None
             )
-            return stack, nz, cell_zavg, nuc_zavg
+            return stack, cell_zavg, nuc_zavg
 
         _worker()
 
     def _on_load_tracked_done(self, result: tuple) -> None:
-        stack, nz, cell_zavg, nuc_zavg = result  # stack is (T, Y, X)
-        # Broadcast tracked stack to (T, Z, Y, X)
+        stack, cell_zavg, nuc_zavg = result  # stack is (T, Y, X)
         nt = stack.shape[0]
-        broadcast = np.broadcast_to(stack[:, np.newaxis], (nt, nz) + stack.shape[1:]).copy()
         if _TRACKED_LAYER in self.viewer.layers:
-            self.viewer.layers[_TRACKED_LAYER].data = broadcast
+            self.viewer.layers[_TRACKED_LAYER].data = stack
         else:
-            self.viewer.add_labels(broadcast, name=_TRACKED_LAYER)
+            self.viewer.add_labels(stack, name=_TRACKED_LAYER)
 
         for zavg_data, layer_name, cmap in (
             (cell_zavg, _CELL_ZAVG_LAYER, "gray"),
@@ -841,7 +856,11 @@ class NucleusWorkflowWidget(QWidget):
         ):
             if zavg_data is None:
                 continue
-            broadcast_zavg = self._broadcast_zavg(zavg_data, nt, nz)
+            # zavg is (Y, X) or (T, Y, X) — broadcast to (T, Y, X) to match the 2D tracked stack
+            if zavg_data.ndim == 2:
+                broadcast_zavg = np.broadcast_to(zavg_data[np.newaxis], (nt,) + zavg_data.shape).copy()
+            else:
+                broadcast_zavg = zavg_data
             if layer_name in self.viewer.layers:
                 self.viewer.layers[layer_name].data = broadcast_zavg
             else:

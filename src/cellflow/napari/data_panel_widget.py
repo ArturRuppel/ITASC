@@ -34,11 +34,11 @@ _TRACKED_FILE_GROUPS = [
     ]),
     ("Nucleus Workflow", [
         ("2_nucleus/hypotheses.h5", "Hypotheses HDF5"),
-        ("2_nucleus/tracked_labels.h5", "Tracked labels"),
+        ("2_nucleus/tracked_labels.tif", "Tracked labels"),
     ]),
     ("Cell Workflow", [
         ("3_cell/hypotheses.h5", "Hypotheses HDF5"),
-        ("3_cell/tracked_labels.h5", "Tracked labels"),
+        ("3_cell/tracked_labels.tif", "Tracked labels"),
     ]),
 ]
 

@@ -1,4 +1,4 @@
-"""HDF5 I/O for CellFlow hypothesis pools and tracked label volumes."""
+"""I/O for CellFlow hypothesis pools (HDF5) and tracked label volumes (TIFF)."""
 from cellflow.database.hypotheses import (
     HypothesisRecord,
     NucleusHypothesisSweepSpec,

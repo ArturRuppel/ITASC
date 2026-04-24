@@ -1,7 +1,8 @@
-"""Greedy IoU propagator for nucleus tracking.
+"""Greedy per-label IoU propagator for nucleus tracking.
 
-Finds the hypothesis parameter set whose 2D label image best overlaps
-the current tracked frame, then writes the 2D projection as the next tracked frame.
+For each nucleus in the current tracked frame, finds the best matching
+candidate nucleus across all (hypothesis, z-slice) combinations for the
+next timepoint, then writes a relabeled next frame that preserves track IDs.
 """
 from __future__ import annotations
 
@@ -13,43 +14,24 @@ from cellflow.database.hypotheses import read_hypothesis_labels, list_hypotheses
 from cellflow.database.tracked import read_tracked_frame, write_tracked_frame
 
 
-def _to_2d(labels: np.ndarray) -> np.ndarray:
-    """Reduce labels to (Y, X) by max-projecting over Z if needed."""
-    if labels.ndim == 3:
-        return labels.max(axis=0)
-    return labels
+def _label_masks(labels: np.ndarray) -> dict[int, np.ndarray]:
+    masks: dict[int, np.ndarray] = {}
+    for label_id in np.unique(labels):
+        if label_id == 0:
+            continue
+        masks[int(label_id)] = labels == label_id
+    return masks
 
 
-def _centroids_2d(labels: np.ndarray) -> np.ndarray:
-    """Return (N, 2) float32 centroid array from a 2D or max-Z-projected label image."""
-    from skimage.measure import regionprops
-
-    labels = _to_2d(labels)
-    props = regionprops(labels.astype(np.int32))
-    if not props:
-        return np.empty((0, 2), dtype=np.float32)
-    return np.array([p.centroid for p in props], dtype=np.float32)
+def _centroid(mask: np.ndarray) -> np.ndarray:
+    coords = np.argwhere(mask)
+    return coords.mean(axis=0) if len(coords) else np.zeros(2)
 
 
-def _mean_min_dist(src: np.ndarray, dst: np.ndarray) -> float:
-    """Mean of each src centroid's minimum distance to any dst centroid."""
-    if src.size == 0 or dst.size == 0:
-        return float("inf")
-    # (N_src, N_dst) pairwise squared distances
-    diff = src[:, np.newaxis, :] - dst[np.newaxis, :, :]  # (N_src, N_dst, 2)
-    sq = (diff * diff).sum(axis=-1)  # (N_src, N_dst)
-    return float(np.sqrt(sq.min(axis=1)).mean())
-
-
-def _binary_iou(a: np.ndarray, b: np.ndarray) -> float:
-    """Binary mask IoU — both inputs are projected to 2D before comparison."""
-    a_mask = _to_2d(a) > 0
-    b_mask = _to_2d(b) > 0
-    intersection = int((a_mask & b_mask).sum())
-    union = int((a_mask | b_mask).sum())
-    if union == 0:
-        return 0.0
-    return intersection / union
+def _iou(a: np.ndarray, b: np.ndarray) -> float:
+    inter = int((a & b).sum())
+    union = int((a | b).sum())
+    return inter / union if union > 0 else 0.0
 
 
 def find_best_hypothesis(
@@ -57,40 +39,80 @@ def find_best_hypothesis(
     candidates: list[np.ndarray],
     iou_threshold: float = 0.3,
     max_dist_px: float = 50.0,
-) -> int | None:
-    """Return the index of the best candidate, or None if none qualifies.
+) -> tuple[np.ndarray, int] | tuple[None, None]:
+    """Return (relabeled_next_frame, winning_p_index) or (None, None).
+
+    For each nucleus in current_labels, greedily assigns it to the best
+    matching nucleus across all candidate slices, preserving track IDs.
 
     Parameters
     ----------
     current_labels:
-        (Y, X) or (Z, Y, X) uint32 tracked label image for the current frame.
+        (Y, X) uint32 tracked label image for the current frame.
     candidates:
-        List of (Y, X) or (Z, Y, X) uint32 hypothesis label volumes for the next frame.
+        List of (Y, X) uint32 label images — one per (p, z) combination.
     iou_threshold:
-        Minimum binary 3D IoU to accept a candidate.
+        Minimum per-label IoU to accept a match.
     max_dist_px:
-        Candidates whose mean centroid displacement exceeds this (in pixels)
-        are skipped before the IoU computation.
+        Candidate nuclei whose centroid is farther than this are skipped.
     """
     if not candidates:
-        return None
+        return None, None
 
-    current_centroids = _centroids_2d(current_labels)
+    current_masks = _label_masks(current_labels)
+    if not current_masks:
+        return None, None
 
-    best_idx: int | None = None
-    best_iou: float = -1.0
+    # Pre-build candidate mask dicts: cand_masks[entry_idx] = {label_id: mask}
+    cand_masks_per_entry: list[dict[int, np.ndarray]] = [
+        _label_masks(c) for c in candidates
+    ]
+    # Pre-compute centroids for all candidate labels
+    cand_centroids: list[dict[int, np.ndarray]] = [
+        {lid: _centroid(mask) for lid, mask in entry.items()}
+        for entry in cand_masks_per_entry
+    ]
 
-    for idx, cand in enumerate(candidates):
-        cand_centroids = _centroids_2d(cand)
-        if _mean_min_dist(current_centroids, cand_centroids) > max_dist_px:
-            continue
+    assigned: set[tuple[int, int]] = set()  # (entry_idx, cand_label_id)
+    next_frame = np.zeros_like(current_labels)
+    matched_entry_indices: list[int] = []
 
-        iou = _binary_iou(current_labels, cand)
-        if iou >= iou_threshold and iou > best_iou:
-            best_iou = iou
-            best_idx = idx
+    for current_id in sorted(current_masks):
+        cur_mask = current_masks[current_id]
+        cur_centroid = _centroid(cur_mask)
 
-    return best_idx
+        best_score = 0.0
+        best_key: tuple[int, int] | None = None
+        best_cand_mask: np.ndarray | None = None
+
+        for entry_idx, entry in enumerate(cand_masks_per_entry):
+            for cand_id, cand_mask in entry.items():
+                key = (entry_idx, cand_id)
+                if key in assigned:
+                    continue
+
+                dist = float(np.linalg.norm(cur_centroid - cand_centroids[entry_idx][cand_id]))
+                if dist > max_dist_px:
+                    continue
+
+                score = _iou(cur_mask, cand_mask)
+                if score >= iou_threshold and score > best_score:
+                    best_score = score
+                    best_key = key
+                    best_cand_mask = cand_mask
+
+        if best_key is not None and best_cand_mask is not None:
+            assigned.add(best_key)
+            next_frame[best_cand_mask] = current_id
+            matched_entry_indices.append(best_key[0])
+
+    if not matched_entry_indices:
+        return None, None
+
+    # Return the entry index that won the most matches
+    from collections import Counter
+    winning_entry = Counter(matched_entry_indices).most_common(1)[0][0]
+    return next_frame, winning_entry
 
 
 def propagate_one_frame(
@@ -102,31 +124,43 @@ def propagate_one_frame(
 ) -> int | None:
     """Propagate tracking from t_current to t_current + 1.
 
-    Reads the current tracked frame, loads all hypothesis candidates for the
-    next timepoint, finds the best match, writes it as the next tracked frame.
+    Searches all (p, z) combinations in the hypothesis database for t_next,
+    matches each tracked nucleus to its best candidate by per-label IoU,
+    and writes a relabeled next frame that preserves track IDs.
 
-    Returns the winning p index, or None if no suitable hypothesis was found.
+    Returns the winning p index, or None if no matches were found.
     """
     hypotheses_h5 = Path(hypotheses_h5)
     tracked_h5 = Path(tracked_h5)
 
-    current_labels = read_tracked_frame(tracked_h5, t_current)
+    current_labels = read_tracked_frame(tracked_h5, t_current)  # (Y, X)
 
     n_p, _ = list_hypotheses(hypotheses_h5)
     if n_p == 0:
         return None
 
     t_next = t_current + 1
-    candidates: list[np.ndarray] = []
+
+    # Build flat list of (p, z, slice_2d) for every (hypothesis, z-plane)
+    entries: list[tuple[int, int, np.ndarray]] = []
     for p in range(n_p):
         try:
-            candidates.append(read_hypothesis_labels(hypotheses_h5, t_next, p))
+            volume = read_hypothesis_labels(hypotheses_h5, t_next, p)  # (Z, Y, X)
         except KeyError:
             return None  # t_next not in hypothesis database
+        for z in range(volume.shape[0]):
+            entries.append((p, z, volume[z]))
 
-    winner = find_best_hypothesis(current_labels, candidates, iou_threshold, max_dist_px)
-    if winner is None:
+    if not entries:
         return None
 
-    write_tracked_frame(tracked_h5, t_next, _to_2d(candidates[winner]))
-    return winner
+    candidates = [e[2] for e in entries]
+    next_frame, winner_idx = find_best_hypothesis(
+        current_labels, candidates, iou_threshold, max_dist_px
+    )
+    if next_frame is None or winner_idx is None:
+        return None
+
+    p_win, _z_win, _slice = entries[winner_idx]
+    write_tracked_frame(tracked_h5, t_next, next_frame)
+    return p_win
