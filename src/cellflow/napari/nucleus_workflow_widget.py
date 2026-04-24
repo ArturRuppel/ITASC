@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
 from cellflow.database.hypotheses import (
     NucleusHypothesisSweepSpec,
     HypothesisRecord,
+    build_parameter_sets,
     delete_hypothesis_parameter,
     iter_hypothesis_records_from_stacks,
     list_hypotheses,
@@ -61,6 +62,7 @@ class NucleusWorkflowWidget(QWidget):
         self.viewer = viewer
         self._pos_dir: Path | None = None
         self._stop_flag: bool = False
+        self._sweep_worker = None
         self._setup_ui()
         self._connect_signals()
 
@@ -175,8 +177,11 @@ class NucleusWorkflowWidget(QWidget):
         sweep_btn_row = QHBoxLayout()
         self.run_sweep_btn = QPushButton("Run Batch Sweep")
         self.run_terminal_btn = QPushButton("Run in Terminal")
+        self.cancel_sweep_btn = QPushButton("Cancel")
+        self.cancel_sweep_btn.setEnabled(False)
         sweep_btn_row.addWidget(self.run_sweep_btn)
         sweep_btn_row.addWidget(self.run_terminal_btn)
+        sweep_btn_row.addWidget(self.cancel_sweep_btn)
         sweep_lay.addLayout(sweep_btn_row)
 
         self.gen_tabs.addTab(sweep_tab, "Batch (Sweep)")
@@ -276,6 +281,7 @@ class NucleusWorkflowWidget(QWidget):
         self.use_as_tracked_btn.clicked.connect(self._on_use_as_tracked)
         self.run_sweep_btn.clicked.connect(self._on_run_sweep)
         self.run_terminal_btn.clicked.connect(self._on_run_terminal)
+        self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
         self.hyp_spin.valueChanged.connect(self._on_hyp_changed)
         self.load_stack_btn.clicked.connect(self._on_load_stack)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
@@ -751,18 +757,86 @@ class NucleusWorkflowWidget(QWidget):
         output_path = self._pos_dir / "2_nucleus" / "hypotheses.h5"
         pos_dir = self._pos_dir
 
-        @thread_worker(connect={"returned": self._on_save_db_done, "errored": self._on_worker_error})
+        def _on_sweep_done(result):
+            self._sweep_worker = None
+            self._set_sweep_buttons_running(False)
+            self._on_save_db_done(result)
+
+        def _on_sweep_aborted():
+            self._sweep_worker = None
+            self._set_sweep_buttons_running(False)
+            self._set_status("Sweep cancelled.")
+
+        def _on_sweep_error(exc):
+            self._sweep_worker = None
+            self._set_sweep_buttons_running(False)
+            self._on_worker_error(exc)
+
+        @thread_worker(connect={
+            "yielded": self._set_status,
+            "returned": _on_sweep_done,
+            "aborted": _on_sweep_aborted,
+            "errored": _on_sweep_error,
+        })
         def _worker():
+            import json as _json
             prob_stack = tifffile.imread(str(prob_path))
             prob_stack = np.asarray(prob_stack, dtype=np.float32)
-            records = iter_hypothesis_records_from_stacks(prob_stack, None, None, spec)
-            write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite)
+
+            params_list = build_parameter_sets(spec)
+            if not overwrite and output_path.exists():
+                try:
+                    _, existing = list_hypotheses(output_path)
+                    existing_jsons = {
+                        attrs["parameter_json"]
+                        for attrs in existing.values()
+                        if "parameter_json" in attrs
+                    }
+                    params_list = [
+                        p for p in params_list
+                        if _json.dumps(p.to_dict(), sort_keys=True) not in existing_jsons
+                    ]
+                except Exception:
+                    pass  # unreadable/empty file — proceed with full sweep
+
+            n_full = len(build_parameter_sets(spec))
+            n_skip = n_full - len(params_list)
+
+            if not params_list:
+                yield f"Sweep: all {n_full} parameter set(s) already present, nothing to do."
+                return pos_dir
+
+            if n_skip:
+                yield f"Sweep: skipping {n_skip} existing, computing {len(params_list)} new…"
+
+            n_t = prob_stack.shape[0] if prob_stack.ndim == 4 else 1
+            total = n_t * len(params_list)
+            collected: list[HypothesisRecord] = []
+            for done, record in enumerate(
+                iter_hypothesis_records_from_stacks(prob_stack, None, None, spec, params_list=params_list), 1
+            ):
+                collected.append(record)
+                yield f"Sweep {done}/{total}…"
+            write_hypothesis_sweep_h5(output_path, iter(collected), overwrite=overwrite)
             return pos_dir
 
         self._set_status("Running sweep…")
-        _worker()
+        self._set_sweep_buttons_running(True)
+        self._sweep_worker = _worker()
+
+    def _set_sweep_buttons_running(self, running: bool) -> None:
+        self.run_sweep_btn.setEnabled(not running)
+        self.run_terminal_btn.setEnabled(not running)
+        self.cancel_sweep_btn.setEnabled(running)
+
+    def _on_cancel_sweep(self) -> None:
+        if self._sweep_worker is not None:
+            self._sweep_worker.quit()
 
     def _on_run_terminal(self) -> None:
+        import sys
+        import tempfile
+
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
@@ -772,12 +846,15 @@ class NucleusWorkflowWidget(QWidget):
         seed_source = self.seed_source_combo.currentText()
         src = "auto" if seed_source == "Peak local max" else "layer"
 
+        overwrite_flag = self.overwrite_check.isChecked()
         python_code = (
             "from cellflow.database.hypotheses import (\n"
             "    NucleusHypothesisSweepSpec, iter_hypothesis_records_from_stacks,\n"
-            "    write_hypothesis_sweep_h5)\n"
-            "import tifffile, numpy as np\n"
+            "    build_parameter_sets, list_hypotheses, write_hypothesis_sweep_h5)\n"
+            "import json, pathlib, tifffile, numpy as np\n"
             f"prob = tifffile.imread({str(prob_path)!r}).astype('float32')\n"
+            f"output_path = pathlib.Path({str(output_path)!r})\n"
+            f"overwrite = {overwrite_flag!r}\n"
             f"spec = NucleusHypothesisSweepSpec(\n"
             f"    threshold={self.sweep_thr[0].value()},\n"
             f"    threshold_min={self.sweep_thr[0].value()}, threshold_max={self.sweep_thr[1].value()},\n"
@@ -794,11 +871,39 @@ class NucleusWorkflowWidget(QWidget):
             f"    seed_distance_step={self.sweep_seed_dist[2].value()},\n"
             f"    min_size={self.min_size_spin.value()},\n"
             ")\n"
-            f"records = iter_hypothesis_records_from_stacks(prob, None, None, spec)\n"
-            f"write_hypothesis_sweep_h5({str(output_path)!r}, records)\n"
-            "print('Done.')"
+            "params_list = build_parameter_sets(spec)\n"
+            "if not overwrite and output_path.exists():\n"
+            "    try:\n"
+            "        _, existing = list_hypotheses(output_path)\n"
+            "        existing_jsons = {attrs['parameter_json'] for attrs in existing.values() if 'parameter_json' in attrs}\n"
+            "        params_list = [p for p in params_list if json.dumps(p.to_dict(), sort_keys=True) not in existing_jsons]\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "n_full = len(build_parameter_sets(spec))\n"
+            "n_skip = n_full - len(params_list)\n"
+            "if not params_list:\n"
+            "    print(f'Sweep: all {n_full} parameter set(s) already present, nothing to do.')\n"
+            "else:\n"
+            "    if n_skip:\n"
+            "        print(f'Sweep: skipping {n_skip} existing, computing {len(params_list)} new…', flush=True)\n"
+            "    n_t = prob.shape[0] if prob.ndim == 4 else 1\n"
+            "    total = n_t * len(params_list)\n"
+            "    records = []\n"
+            "    for done, rec in enumerate(iter_hypothesis_records_from_stacks(prob, None, None, spec, params_list=params_list), 1):\n"
+            "        records.append(rec)\n"
+            "        print(f'Sweep {done}/{total}…', flush=True)\n"
+            "    write_hypothesis_sweep_h5(str(output_path), iter(records), overwrite=overwrite)\n"
+            "    print('Done.')\n"
         )
-        cmd = f"python -c {shlex.quote(python_code)}"
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", prefix="cellflow_sweep_", delete=False
+        ) as tmp:
+            tmp.write(python_code)
+            tmp_path = tmp.name
+
+        python_exe = sys.executable
+        cmd = f"{shlex.quote(python_exe)} {shlex.quote(tmp_path)}"
         try:
             from cellflow.napari.utils import launch_in_terminal
             launch_in_terminal(cmd)

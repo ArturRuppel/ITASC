@@ -316,11 +316,15 @@ def iter_hypothesis_records_from_stacks(
     dp_stack: np.ndarray | None,
     seed_stack: np.ndarray | None,
     spec: NucleusHypothesisSweepSpec,
+    params_list: list | None = None,
 ) -> Iterator[HypothesisRecord]:
     """Compute and yield HypothesisRecords from in-memory stacks.
 
     prob_stack shape: (T, Z, Y, X) or (Z, Y, X) for single-frame.
     Yields one record per (t, p) with labels shape (Z, Y, X).
+
+    Pass params_list to skip building it from spec (e.g. to compute only a
+    filtered subset without running build_parameter_sets again).
     """
     prob_stack = np.asarray(prob_stack)
     if prob_stack.ndim == 3:
@@ -334,7 +338,8 @@ def iter_hypothesis_records_from_stacks(
     dp_stack = None if dp_stack is None else np.asarray(dp_stack)
     seed_stack = None if seed_stack is None else np.asarray(seed_stack)
 
-    params_list = build_parameter_sets(spec)
+    if params_list is None:
+        params_list = build_parameter_sets(spec)
     if not params_list:
         return
 
