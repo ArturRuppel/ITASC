@@ -67,6 +67,7 @@ class NucleusWorkflowWidget(QWidget):
         self._pos_dir: Path | None = None
         self._stop_flag: bool = False
         self._sweep_worker = None
+        self._current_db_p: int | None = None
         self._setup_ui()
         self._connect_signals()
 
@@ -126,6 +127,14 @@ class NucleusWorkflowWidget(QWidget):
             single_lay.addLayout(row)
             return spin
 
+        row_z = QHBoxLayout()
+        row_z.addWidget(QLabel("Z Slice:"))
+        self.z_slice_spin = QSpinBox()
+        self.z_slice_spin.setRange(0, 99)
+        self.z_slice_spin.setValue(0)
+        row_z.addWidget(self.z_slice_spin)
+        single_lay.addLayout(row_z)
+
         self.single_thr = _add_single_param("Threshold (%)", 0.0, 100.0, 30.0, 1.0)
         self.single_cmp = _add_single_param("Compactness", 0.0, 1.0, 0.0, 0.01, 2)
         self.single_sigma = _add_single_param("Smooth Sigma", 0.0, 10.0, 0.5, 0.1, 1)
@@ -137,10 +146,6 @@ class NucleusWorkflowWidget(QWidget):
         btn_row.addWidget(self.preview_btn)
         btn_row.addWidget(self.save_db_btn)
         single_lay.addLayout(btn_row)
-
-        self.use_as_tracked_btn = QPushButton("Use as Tracked")
-        self.use_as_tracked_btn.setToolTip("Copy preview to tracked labels for current frame")
-        single_lay.addWidget(self.use_as_tracked_btn)
 
         self.gen_tabs.addTab(single_tab, "Tuning (Single)")
 
@@ -173,6 +178,7 @@ class NucleusWorkflowWidget(QWidget):
             sweep_lay.addLayout(row)
             return min_s, max_s, step_s
 
+        self.sweep_z_slice = _add_sweep_row("Z Slice", 0, 5, 1, 0)
         self.sweep_thr = _add_sweep_row("Threshold (%)", 10, 50, 10)
         self.sweep_cmp = _add_sweep_row("Compactness", 0, 0.1, 0.05, 2)
         self.sweep_sigma = _add_sweep_row("Smooth Sigma", 0, 1.0, 0.5, 1)
@@ -196,28 +202,58 @@ class NucleusWorkflowWidget(QWidget):
         db_group = QGroupBox("2. Database Browser")
         db_lay = QVBoxLayout(db_group)
 
-        row_h = QHBoxLayout()
-        row_h.addWidget(QLabel("Hypothesis:"))
-        self.hyp_spin = QSpinBox()
-        self.hyp_spin.setRange(0, 0)
-        row_h.addWidget(self.hyp_spin)
-        self.hyp_meta_lbl = QLabel("p000: ---")
-        row_h.addWidget(self.hyp_meta_lbl)
-        row_h.addStretch()
+        hdr_row = QHBoxLayout()
+        self.db_match_lbl = QLabel("Match: —")
+        hdr_row.addWidget(self.db_match_lbl)
+        hdr_row.addStretch()
         self.db_refresh_btn = QPushButton()
         self.db_refresh_btn.setToolTip("Refresh database browser")
         self.db_refresh_btn.setIcon(
             self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
         )
         self.db_refresh_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        row_h.addWidget(self.db_refresh_btn)
-        db_lay.addLayout(row_h)
+        hdr_row.addWidget(self.db_refresh_btn)
+        db_lay.addLayout(hdr_row)
+
+        def _db_row(label, widget):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            row.addWidget(widget)
+            db_lay.addLayout(row)
+
+        self.db_z_spin = QSpinBox()
+        self.db_z_spin.setRange(0, 99)
+        self.db_z_spin.setValue(0)
+        _db_row("Z Slice:", self.db_z_spin)
+
+        self.db_thr_spin = QDoubleSpinBox()
+        self.db_thr_spin.setRange(0.0, 100.0)
+        self.db_thr_spin.setValue(30.0)
+        self.db_thr_spin.setDecimals(1)
+        self.db_thr_spin.setSingleStep(1.0)
+        _db_row("Threshold (%):", self.db_thr_spin)
+
+        self.db_cmp_spin = QDoubleSpinBox()
+        self.db_cmp_spin.setRange(0.0, 1.0)
+        self.db_cmp_spin.setValue(0.0)
+        self.db_cmp_spin.setDecimals(2)
+        self.db_cmp_spin.setSingleStep(0.01)
+        _db_row("Compactness:", self.db_cmp_spin)
+
+        self.db_sigma_spin = QDoubleSpinBox()
+        self.db_sigma_spin.setRange(0.0, 10.0)
+        self.db_sigma_spin.setValue(0.5)
+        self.db_sigma_spin.setDecimals(1)
+        self.db_sigma_spin.setSingleStep(0.1)
+        _db_row("Smooth Sigma:", self.db_sigma_spin)
+
+        self.db_seed_dist_spin = QSpinBox()
+        self.db_seed_dist_spin.setRange(1, 500)
+        self.db_seed_dist_spin.setValue(5)
+        _db_row("Seed Dist:", self.db_seed_dist_spin)
 
         db_btn_row = QHBoxLayout()
-        self.load_stack_btn = QPushButton("Load")
-        self.load_stack_btn.setToolTip("Load full (T, Z, Y, X) stack for selected parameter into napari")
         self.set_seed_btn = QPushButton("Set as Tracking Seed")
-        db_btn_row.addWidget(self.load_stack_btn)
         db_btn_row.addWidget(self.set_seed_btn)
         db_lay.addLayout(db_btn_row)
 
@@ -296,12 +332,11 @@ class NucleusWorkflowWidget(QWidget):
     def _connect_signals(self) -> None:
         self.preview_btn.clicked.connect(self._on_preview)
         self.save_db_btn.clicked.connect(self._on_save_db)
-        self.use_as_tracked_btn.clicked.connect(self._on_use_as_tracked)
         self.run_sweep_btn.clicked.connect(self._on_run_sweep)
         self.run_terminal_btn.clicked.connect(self._on_run_terminal)
         self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
-        self.hyp_spin.valueChanged.connect(self._on_hyp_changed)
-        self.load_stack_btn.clicked.connect(self._on_load_stack)
+        for _db_spin in (self.db_z_spin, self.db_thr_spin, self.db_cmp_spin, self.db_sigma_spin, self.db_seed_dist_spin):
+            _db_spin.valueChanged.connect(self._on_db_params_changed)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
         self.db_refresh_btn.clicked.connect(lambda: self.refresh(self._pos_dir))
         self.del_slice_btn.clicked.connect(self._on_delete_slice)
@@ -326,11 +361,10 @@ class NucleusWorkflowWidget(QWidget):
             try:
                 n_p, params_by_p = list_hypotheses(hyp_path)
                 if n_p > 0:
-                    self.hyp_spin.blockSignals(True)
-                    self.hyp_spin.setRange(0, n_p - 1)
-                    self.hyp_spin.blockSignals(False)
-                    self._update_hyp_meta_label(params_by_p, self.hyp_spin.value())
                     self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s).")
+                    self._populate_db_spinboxes(params_by_p.get(0, {}))
+                else:
+                    self.status_lbl.setText("Hypothesis DB: empty.")
             except Exception as e:
                 logger.warning("Could not read hypotheses.h5: %s", e)
 
@@ -342,10 +376,6 @@ class NucleusWorkflowWidget(QWidget):
     def _current_t(self) -> int:
         step = self.viewer.dims.current_step
         return int(step[0]) if len(step) >= 1 else 0
-
-    def _current_z(self) -> int:
-        step = self.viewer.dims.current_step
-        return int(step[1]) if len(step) >= 2 else 0
 
     def _hyp_path(self) -> Path | None:
         if self._pos_dir is None:
@@ -419,13 +449,39 @@ class NucleusWorkflowWidget(QWidget):
         else:
             self.viewer.add_labels(data, name=name)
 
-    def _update_hyp_meta_label(self, params_by_p: dict, p: int) -> None:
-        info = params_by_p.get(p, {})
-        thr = info.get("threshold_pct", "?")
-        cmp = info.get("compactness", "?")
-        sig = info.get("smooth_sigma", "?")
-        sd = info.get("seed_distance", "?")
-        self.hyp_meta_lbl.setText(f"p{p:03d}: thr={thr} cmp={cmp} σ={sig} d={sd}")
+    def _populate_db_spinboxes(self, info: dict) -> None:
+        """Set DB browser spinboxes from a parameter attribute dict, then trigger one update."""
+        spins = [self.db_z_spin, self.db_thr_spin, self.db_cmp_spin, self.db_sigma_spin, self.db_seed_dist_spin]
+        for s in spins:
+            s.blockSignals(True)
+        self.db_z_spin.setValue(int(info.get("z_slice", 0)))
+        self.db_thr_spin.setValue(float(info.get("threshold_pct", 30.0)))
+        self.db_cmp_spin.setValue(float(info.get("compactness", 0.0)))
+        self.db_sigma_spin.setValue(float(info.get("smooth_sigma", 0.5)))
+        self.db_seed_dist_spin.setValue(int(info.get("seed_distance", 5)))
+        for s in spins:
+            s.blockSignals(False)
+        self._on_db_params_changed()
+
+    def _find_matching_p(self, hyp_path: Path) -> int | None:
+        """Return the p-index whose stored parameters match the DB browser spinboxes, or None."""
+        try:
+            _, params_by_p = list_hypotheses(hyp_path)
+        except Exception:
+            return None
+        z = self.db_z_spin.value()
+        thr = self.db_thr_spin.value()
+        cmp_val = self.db_cmp_spin.value()
+        sigma = self.db_sigma_spin.value()
+        seed_dist = self.db_seed_dist_spin.value()
+        for p, info in params_by_p.items():
+            if (int(info.get("z_slice", -1)) == z
+                    and abs(float(info.get("threshold_pct", -1)) - thr) < 1e-4
+                    and abs(float(info.get("compactness", -1)) - cmp_val) < 1e-6
+                    and abs(float(info.get("smooth_sigma", -1)) - sigma) < 1e-6
+                    and int(info.get("seed_distance", -1)) == seed_dist):
+                return p
+        return None
 
     def _single_params(self) -> NucleusHypothesisParams:
         seed_source = self.seed_source_combo.currentText()
@@ -438,6 +494,7 @@ class NucleusWorkflowWidget(QWidget):
             seed_source=src,
             seed_distance=self.single_seed_dist.value(),
             min_size=self.min_size_spin.value(),
+            z_slice=self.z_slice_spin.value(),
         )
 
     def _set_status(self, msg: str) -> None:
@@ -457,31 +514,31 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status(f"Missing: {prob_path}")
             return
 
-        # Ensure probability map is loaded in viewer
-        if _PROB_LAYER in self.viewer.layers:
-            prob_stack = np.asarray(self.viewer.layers[_PROB_LAYER].data)
-        else:
-            try:
-                prob_stack = tifffile.imread(str(prob_path))  # (T, Z, Y, X) or (Z, Y, X)
-                prob_stack = np.asarray(prob_stack, dtype=np.float32)
-                self.viewer.add_image(
-                    prob_stack,
-                    name=_PROB_LAYER,
-                    colormap="inferno",
-                    blending="additive",
-                    visible=True,
-                )
-            except Exception as e:
-                self._set_status(f"Could not read prob file: {e}")
-                return
+        try:
+            prob_stack = tifffile.imread(str(prob_path))  # (T, Z, Y, X) or (Z, Y, X)
+            prob_stack = np.asarray(prob_stack, dtype=np.float32)
+        except Exception as e:
+            self._set_status(f"Could not read prob file: {e}")
+            return
 
         if prob_stack.ndim == 3:
             prob_stack = prob_stack[np.newaxis]
 
+        z = self.z_slice_spin.value()
+        if z >= prob_stack.shape[1]:
+            self._set_status(f"z={z} out of range (stack has {prob_stack.shape[1]} slices)")
+            return
+
+        # Load the 2DT movie at the selected z-slice into the viewer
+        prob_2dt = prob_stack[:, z]  # (T, Y, X)
+        if _PROB_LAYER in self.viewer.layers:
+            self.viewer.layers[_PROB_LAYER].data = prob_2dt
+        else:
+            self.viewer.add_image(prob_2dt, name=_PROB_LAYER, colormap="inferno", blending="additive")
+
         t = self._current_t()
-        z = self._current_z()
-        if t >= prob_stack.shape[0] or z >= prob_stack.shape[1]:
-            self._set_status(f"t={t} or z={z} out of range for prob stack {prob_stack.shape}")
+        if t >= prob_stack.shape[0]:
+            self._set_status(f"t={t} out of range for prob stack {prob_stack.shape}")
             return
 
         prob_2d = prob_stack[t, z]
@@ -495,11 +552,15 @@ class NucleusWorkflowWidget(QWidget):
                 if layer_data.ndim == 2:
                     markers = layer_data.astype(np.int32)
                 elif layer_data.ndim >= 3:
-                    markers = layer_data[z].astype(np.int32) if layer_data.shape[0] > z else layer_data[-1].astype(np.int32)
+                    markers = layer_data[0].astype(np.int32)
 
         params = self._single_params()
         try:
-            result_2d = compute_hypothesis_labels(prob_2d, None, markers, params)
+            prob_t = prob_stack[t]  # (Z, Y, X)
+            basin_3d = 1.0 / (1.0 + np.exp(-prob_t))
+            global_lo = float(np.min(basin_3d))
+            global_hi = float(np.max(basin_3d))
+            result_2d = compute_hypothesis_labels(prob_2d, None, markers, params, global_lo=global_lo, global_hi=global_hi)
         except Exception as e:
             self._set_status(f"Segmentation failed: {e}")
             return
@@ -544,99 +605,43 @@ class NucleusWorkflowWidget(QWidget):
         self._set_status("Saved to hypotheses.h5.")
         self.refresh(pos_dir)
 
-    def _on_use_as_tracked(self) -> None:
-        if self._pos_dir is None:
-            self._set_status("No project open.")
+    def _on_db_params_changed(self) -> None:
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self.db_match_lbl.setText("Match: —")
             return
-
-        preview_layer = self.viewer.layers.get(_PREVIEW_LAYER)
-        if preview_layer is None:
-            self._set_status("No preview layer found. Run Preview first.")
+        p = self._find_matching_p(hyp_path)
+        if p is None:
+            self.db_match_lbl.setText("Match: —")
+            self._current_db_p = None
             return
+        self.db_match_lbl.setText(f"Match: p{p:03d}")
+        if p != self._current_db_p:
+            self._current_db_p = p
+            self._load_db_stack(p)
 
-        t = self._current_t()
-        data = np.asarray(preview_layer.data)
-        if data.ndim == 3:
-            z = self._current_z()
-            data = data[min(z, data.shape[0] - 1)]
-        # data is now (Y, X)
-
-        tracked_path = self._tracked_path()
-        try:
-            write_tracked_frame(tracked_path, t, data)
-            self._update_tracked_display(data, t=t)
-            self._set_status(f"Preview saved as tracked t={t}.")
-        except Exception as e:
-            self._set_status(f"Error writing tracked frame: {e}")
-
-    def _on_hyp_changed(self, p: int) -> None:
+    def _load_db_stack(self, p: int) -> None:
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
             return
-        try:
-            _, params_by_p = list_hypotheses(hyp_path)
-            self._update_hyp_meta_label(params_by_p, p)
-        except Exception as e:
-            self._set_status(f"Could not read hypothesis metadata p={p}: {e}")
-
-    def _on_load_stack(self) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_status("No hypothesis DB found.")
-            return
-
-        p = self.hyp_spin.value()
-        cell_zavg_path = self._cell_zavg_path()
-        nuc_zavg_path = self._nucleus_zavg_path()
-        self._set_status(f"Loading p={p} stack…")
+        self._set_status(f"Loading p={p}…")
 
         @thread_worker(connect={"returned": self._on_load_stack_done, "errored": self._on_worker_error})
         def _worker():
-            stack = read_full_hypothesis_stack(hyp_path, p)
-            cell_zavg = (
-                np.asarray(tifffile.imread(str(cell_zavg_path)), dtype=np.float32)
-                if cell_zavg_path and cell_zavg_path.exists()
-                else None
-            )
-            nuc_zavg = (
-                np.asarray(tifffile.imread(str(nuc_zavg_path)), dtype=np.float32)
-                if nuc_zavg_path and nuc_zavg_path.exists()
-                else None
-            )
-            return p, stack, cell_zavg, nuc_zavg
+            return p, read_full_hypothesis_stack(hyp_path, p)
 
         _worker()
 
-    def _broadcast_zavg(self, zavg: np.ndarray, nt: int, nz: int) -> np.ndarray:
-        """Broadcast a Z-less image to (T, Z, Y, X) given nt and nz."""
-        if zavg.ndim == 2:  # (Y, X) → (T, Z, Y, X)
-            return np.broadcast_to(zavg[np.newaxis, np.newaxis], (nt, nz) + zavg.shape).copy()
-        elif zavg.ndim == 3:  # (T, Y, X) → (T, Z, Y, X)
-            return np.broadcast_to(zavg[:, np.newaxis], (zavg.shape[0], nz) + zavg.shape[1:]).copy()
-        return zavg
-
     def _on_load_stack_done(self, result: tuple) -> None:
-        p, stack, cell_zavg, nuc_zavg = result
-        name = f"Hypothesis Stack: p{p:03d}"
-        if name in self.viewer.layers:
-            self.viewer.layers[name].data = stack
+        p, stack = result
+        # Each entry is stored as (1, Y, X) — extract the z-plane → (T, Y, X)
+        if stack.ndim == 4:
+            stack = stack[:, 0]
+        if _HYP_LAYER in self.viewer.layers:
+            self.viewer.layers[_HYP_LAYER].data = stack
         else:
-            self.viewer.add_labels(stack, name=name)
-
-        nt, nz = stack.shape[0], stack.shape[1]
-        for zavg_data, layer_name, cmap in (
-            (cell_zavg, _CELL_ZAVG_LAYER, "gray"),
-            (nuc_zavg, _NUC_ZAVG_LAYER, "bop orange"),
-        ):
-            if zavg_data is None:
-                continue
-            broadcast = self._broadcast_zavg(zavg_data, nt, nz)
-            if layer_name in self.viewer.layers:
-                self.viewer.layers[layer_name].data = broadcast
-            else:
-                self.viewer.add_image(broadcast, name=layer_name, colormap=cmap, blending="additive")
-
-        self._set_status(f"Loaded p={p} stack {stack.shape} into napari.")
+            self.viewer.add_labels(stack, name=_HYP_LAYER)
+        self._set_status(f"Loaded p={p} → {stack.shape} into napari.")
 
     def _on_set_seed(self) -> None:
         hyp_path = self._hyp_path()
@@ -644,16 +649,18 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status("No hypothesis DB found.")
             return
 
-        p = self.hyp_spin.value()
+        p = self._find_matching_p(hyp_path)
+        if p is None:
+            self._set_status("No matching hypothesis for current parameters.")
+            return
         t = self._current_t()
-        z = self._current_z()
         try:
-            volume = read_hypothesis_labels(hyp_path, t, p)  # (Z, Y, X)
-            slice_2d = volume[min(z, volume.shape[0] - 1)]   # (Y, X)
+            volume = read_hypothesis_labels(hyp_path, t, p)  # (1, Y, X)
+            slice_2d = volume[0]  # (Y, X)
             tracked_path = self._tracked_path()
             write_tracked_frame(tracked_path, t, slice_2d)
             self._update_tracked_display(slice_2d, t=t)
-            self._set_status(f"Hypothesis p={p}, z={z} set as tracking seed at t={t}.")
+            self._set_status(f"Hypothesis p={p} set as tracking seed at t={t}.")
         except Exception as e:
             self._set_status(f"Error setting seed: {e}")
 
@@ -662,61 +669,40 @@ class NucleusWorkflowWidget(QWidget):
         if hyp_path is None or not hyp_path.exists():
             self._set_status("No hypothesis DB found.")
             return
-        p = self.hyp_spin.value()
-        z = self._current_z()
+        p = self._find_matching_p(hyp_path)
+        if p is None:
+            self._set_status("No matching hypothesis for current parameters.")
+            return
         try:
-            zero_hypothesis_slice(hyp_path, z, p)
+            zero_hypothesis_slice(hyp_path, 0, p)
         except Exception as e:
             self._set_status(f"Delete slice failed: {e}")
             return
-        self._set_status(f"Zeroed z={z} across all frames, p={p}.")
-        # Update the full (T, Z, Y, X) stack layer in-place if it's loaded
-        stack_name = f"Hypothesis Stack: p{p:03d}"
-        if stack_name in self.viewer.layers:
-            self.viewer.layers[stack_name].data[:, z] = 0
-            self.viewer.layers[stack_name].refresh()
-        # Update the per-frame 3D hypothesis layer if present
+        self._set_status(f"Zeroed labels across all frames, p={p}.")
         if _HYP_LAYER in self.viewer.layers:
-            try:
-                t = self._current_t()
-                labels = read_hypothesis_labels(hyp_path, t, p)
-                self.viewer.layers[_HYP_LAYER].data = labels
-            except Exception:
-                pass
+            self.viewer.layers[_HYP_LAYER].data[:] = 0
+            self.viewer.layers[_HYP_LAYER].refresh()
 
     def _on_remove_stack(self) -> None:
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
             self._set_status("No hypothesis DB found.")
             return
-        p = self.hyp_spin.value()
+        p = self._find_matching_p(hyp_path)
+        if p is None:
+            self._set_status("No matching hypothesis for current parameters.")
+            return
         try:
             delete_hypothesis_parameter(hyp_path, p)
         except Exception as e:
             self._set_status(f"Remove stack failed: {e}")
             return
-        # Remove both possible napari layers for this parameter
-        for layer_name in (f"Hypothesis Stack: p{p:03d}", _HYP_LAYER):
-            if layer_name in self.viewer.layers:
-                self.viewer.layers.remove(self.viewer.layers[layer_name])
-        # Update spinbox and meta label
-        try:
-            n_p, params_by_p = list_hypotheses(hyp_path)
-        except Exception:
-            n_p = 0
-            params_by_p = {}
-        self.hyp_spin.blockSignals(True)
-        if n_p > 0:
-            self.hyp_spin.setRange(0, n_p - 1)
-            new_p = min(self.hyp_spin.value(), n_p - 1)
-            self.hyp_spin.setValue(new_p)
-            self._update_hyp_meta_label(params_by_p, new_p)
-            self._set_status(f"Removed p={p}. DB now has {n_p} parameter set(s).")
-        else:
-            self.hyp_spin.setRange(0, 0)
-            self.hyp_meta_lbl.setText("(empty)")
-            self._set_status("Removed p={p}. Hypothesis DB is now empty.")
-        self.hyp_spin.blockSignals(False)
+        if _HYP_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[_HYP_LAYER])
+        self._current_db_p = None
+        self.db_match_lbl.setText("Match: —")
+        self._set_status(f"Removed p={p}.")
+        self.refresh(self._pos_dir)
 
     def _on_propagate_next(self) -> None:
         hyp_path = self._hyp_path()
@@ -910,6 +896,10 @@ class NucleusWorkflowWidget(QWidget):
             seed_distance_max=self.sweep_seed_dist[1].value(),
             seed_distance_step=self.sweep_seed_dist[2].value(),
             min_size=self.min_size_spin.value(),
+            z_slice=self.sweep_z_slice[0].value(),
+            z_slice_min=self.sweep_z_slice[0].value(),
+            z_slice_max=self.sweep_z_slice[1].value(),
+            z_slice_step=self.sweep_z_slice[2].value(),
         )
         overwrite = self.overwrite_check.isChecked()
         output_path = self._pos_dir / "2_nucleus" / "hypotheses.h5"
@@ -1028,6 +1018,9 @@ class NucleusWorkflowWidget(QWidget):
             f"    seed_distance_min={self.sweep_seed_dist[0].value()}, seed_distance_max={self.sweep_seed_dist[1].value()},\n"
             f"    seed_distance_step={self.sweep_seed_dist[2].value()},\n"
             f"    min_size={self.min_size_spin.value()},\n"
+            f"    z_slice={self.sweep_z_slice[0].value()},\n"
+            f"    z_slice_min={self.sweep_z_slice[0].value()}, z_slice_max={self.sweep_z_slice[1].value()},\n"
+            f"    z_slice_step={self.sweep_z_slice[2].value()},\n"
             ")\n"
             "params_list = build_parameter_sets(spec)\n"
             "if not overwrite and output_path.exists():\n"
@@ -1087,6 +1080,7 @@ class NucleusWorkflowWidget(QWidget):
             "seed_source": self.seed_source_combo.currentText(),
             "overwrite": self.overwrite_check.isChecked(),
             "min_size": self.min_size_spin.value(),
+            "z_slice": self.z_slice_spin.value(),
             "single": {
                 "threshold": self.single_thr.value(),
                 "compactness": self.single_cmp.value(),
@@ -1106,6 +1100,16 @@ class NucleusWorkflowWidget(QWidget):
                 "seed_dist_min": self.sweep_seed_dist[0].value(),
                 "seed_dist_max": self.sweep_seed_dist[1].value(),
                 "seed_dist_step": self.sweep_seed_dist[2].value(),
+                "z_slice_min": self.sweep_z_slice[0].value(),
+                "z_slice_max": self.sweep_z_slice[1].value(),
+                "z_slice_step": self.sweep_z_slice[2].value(),
+            },
+            "db_browser": {
+                "z_slice": self.db_z_spin.value(),
+                "threshold": self.db_thr_spin.value(),
+                "compactness": self.db_cmp_spin.value(),
+                "sigma": self.db_sigma_spin.value(),
+                "seed_dist": self.db_seed_dist_spin.value(),
             },
             "search": {
                 "iou_threshold": self.iou_spin.value(),
@@ -1121,6 +1125,8 @@ class NucleusWorkflowWidget(QWidget):
             self.overwrite_check.setChecked(state["overwrite"])
         if "min_size" in state:
             self.min_size_spin.setValue(state["min_size"])
+        if "z_slice" in state:
+            self.z_slice_spin.setValue(state["z_slice"])
 
         if "single" in state:
             s = state["single"]
@@ -1143,6 +1149,20 @@ class NucleusWorkflowWidget(QWidget):
             if "seed_dist_min" in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
             if "seed_dist_max" in sw: self.sweep_seed_dist[1].setValue(sw["seed_dist_max"])
             if "seed_dist_step" in sw: self.sweep_seed_dist[2].setValue(sw["seed_dist_step"])
+            if "z_slice_min" in sw: self.sweep_z_slice[0].setValue(sw["z_slice_min"])
+            if "z_slice_max" in sw: self.sweep_z_slice[1].setValue(sw["z_slice_max"])
+            if "z_slice_step" in sw: self.sweep_z_slice[2].setValue(sw["z_slice_step"])
+
+        if "db_browser" in state:
+            db = state["db_browser"]
+            # Map state keys to the HDF5 attribute names used by _populate_db_spinboxes
+            self._populate_db_spinboxes({
+                "z_slice": db.get("z_slice", 0),
+                "threshold_pct": db.get("threshold", 30.0),
+                "compactness": db.get("compactness", 0.0),
+                "smooth_sigma": db.get("sigma", 0.5),
+                "seed_distance": db.get("seed_dist", 5),
+            })
 
         if "search" in state:
             se = state["search"]

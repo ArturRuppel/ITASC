@@ -20,19 +20,22 @@ class NucleusHypothesisParams:
     seed_source: str = "auto"
     seed_distance: int = 5
     min_size: int = 0
+    z_slice: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
-def _normalize_01(arr: np.ndarray) -> np.ndarray:
+def _normalize_01(arr: np.ndarray, lo: float | None = None, hi: float | None = None) -> np.ndarray:
     arr = np.asarray(arr, dtype=np.float32)
-    lo = float(np.min(arr))
-    hi = float(np.max(arr))
+    if lo is None:
+        lo = float(np.min(arr))
+    if hi is None:
+        hi = float(np.max(arr))
     if hi <= lo:
         return np.zeros_like(arr, dtype=np.float32)
     scaled = (arr - lo) / (hi - lo)
-    scaled = np.minimum(scaled, np.nextafter(np.float32(1.0), np.float32(0.0)))
+    scaled = np.clip(scaled, 0.0, np.nextafter(np.float32(1.0), np.float32(0.0)))
     return scaled.astype(np.float32)
 
 
@@ -84,8 +87,15 @@ def compute_hypothesis_labels(
     dp: np.ndarray | None,
     markers: np.ndarray | None,
     params: NucleusHypothesisParams,
+    *,
+    global_lo: float | None = None,
+    global_hi: float | None = None,
 ) -> np.ndarray:
-    """Compute a single nucleus hypothesis label image for one 2D slice."""
+    """Compute a single nucleus hypothesis label image for one 2D slice.
+
+    global_lo/global_hi: min/max of the basin computed over the full 3D volume,
+    so threshold_pct is a fraction of the whole-frame dynamic range, not per-slice.
+    """
     from skimage.segmentation import watershed
 
     prob = np.asarray(prob, dtype=np.float32)
@@ -103,10 +113,9 @@ def compute_hypothesis_labels(
     else:
         raise ValueError(f"Unknown basin={params.basin!r}; expected 'prob' or 'flow_mag'")
 
-    basin = _normalize_01(basin)
+    basin = _normalize_01(basin, lo=global_lo, hi=global_hi)
     if params.smooth_sigma > 0:
         basin = gaussian_filter(basin, sigma=float(params.smooth_sigma))
-        basin = _normalize_01(basin)
 
     if markers is None:
         markers = _peak_local_max_markers(basin, params.seed_distance)

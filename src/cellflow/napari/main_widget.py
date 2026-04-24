@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import napari
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt, QSize, Signal
 from qtpy.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -111,6 +111,10 @@ class CellFlowMainWidget(QWidget):
         
         self.refresh_btn.clicked.connect(lambda: self._refresh_all())
         self.pos_spin.valueChanged.connect(lambda: self._refresh_all())
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        return QSize(int(hint.width() * 1.5), hint.height())
 
     def _setup_project_ui(self, layout: QVBoxLayout) -> None:
         """Create the top-level project metadata and buttons."""

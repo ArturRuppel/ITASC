@@ -44,6 +44,10 @@ class NucleusHypothesisSweepSpec:
     seed_distance_max: int = 5
     seed_distance_step: int = 1
     min_size: int = 0
+    z_slice: int = 0
+    z_slice_min: int = 0
+    z_slice_max: int = 0
+    z_slice_step: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,21 +79,24 @@ def build_parameter_sets(spec: NucleusHypothesisSweepSpec) -> list[NucleusHypoth
     compactness_vals = _values(spec.compactness, spec.compactness_min, spec.compactness_max, spec.compactness_step)
     smooth_vals = _values(spec.smooth_sigma, spec.smooth_min, spec.smooth_max, spec.smooth_step)
     seed_dist_vals = _int_values(spec.seed_distance, spec.seed_distance_min, spec.seed_distance_max, spec.seed_distance_step)
+    z_slice_vals = _int_values(spec.z_slice, spec.z_slice_min, spec.z_slice_max, spec.z_slice_step)
 
     params: list[NucleusHypothesisParams] = []
-    for threshold_pct in threshold_vals:
-        for compactness in compactness_vals:
-            for smooth_sigma in smooth_vals:
-                for seed_distance in seed_dist_vals:
-                    params.append(NucleusHypothesisParams(
-                        basin="prob",
-                        threshold_pct=float(threshold_pct),
-                        compactness=float(compactness),
-                        smooth_sigma=float(smooth_sigma),
-                        seed_source=spec.seed_source,
-                        seed_distance=int(seed_distance),
-                        min_size=int(spec.min_size),
-                    ))
+    for z_slice in z_slice_vals:
+        for threshold_pct in threshold_vals:
+            for compactness in compactness_vals:
+                for smooth_sigma in smooth_vals:
+                    for seed_distance in seed_dist_vals:
+                        params.append(NucleusHypothesisParams(
+                            basin="prob",
+                            threshold_pct=float(threshold_pct),
+                            compactness=float(compactness),
+                            smooth_sigma=float(smooth_sigma),
+                            seed_source=spec.seed_source,
+                            seed_distance=int(seed_distance),
+                            min_size=int(spec.min_size),
+                            z_slice=int(z_slice),
+                        ))
     return params
 
 
@@ -307,6 +314,7 @@ def iter_hypothesis_records(path: str | Path) -> Iterator[HypothesisRecord]:
                     seed_source=str(p_grp.attrs.get("seed_source", "auto")),
                     seed_distance=int(p_grp.attrs.get("seed_distance", 5)),
                     min_size=int(p_grp.attrs.get("min_size", 0)),
+                    z_slice=int(p_grp.attrs.get("z_slice", 0)),
                 )
                 yield HypothesisRecord(t=t_idx, p=p_idx, labels=labels, params=params)
 
@@ -348,14 +356,19 @@ def iter_hypothesis_records_from_stacks(
         dp_t = dp_stack[t] if dp_stack is not None else None
         seed_t = seed_stack[t] if seed_stack is not None else None
 
-        for p_idx, params in enumerate(params_list):
-            z_slices: list[np.ndarray] = []
-            for z in range(n_z):
-                prob_2d = prob_t[z]
-                dp_2d = dp_t[z] if dp_t is not None else None
-                seed_2d = seed_t[z] if seed_t is not None else None
-                labels_2d = compute_hypothesis_labels(prob_2d, dp_2d, seed_2d, params)
-                z_slices.append(labels_2d)
+        # Global normalization reference from all z-slices so threshold_pct is
+        # consistent across slices rather than relative to each slice's own range.
+        basin_3d = 1.0 / (1.0 + np.exp(-prob_t.astype(np.float32)))
+        global_lo = float(np.min(basin_3d))
+        global_hi = float(np.max(basin_3d))
 
-            labels_3d = np.stack(z_slices, axis=0)  # (Z, Y, X)
+        for p_idx, params in enumerate(params_list):
+            z = min(params.z_slice, n_z - 1)
+            prob_2d = prob_t[z]
+            dp_2d = dp_t[z] if dp_t is not None else None
+            seed_2d = seed_t[z] if seed_t is not None else None
+            g_lo = global_lo if params.basin == "prob" else None
+            g_hi = global_hi if params.basin == "prob" else None
+            labels_2d = compute_hypothesis_labels(prob_2d, dp_2d, seed_2d, params, global_lo=g_lo, global_hi=g_hi)
+            labels_3d = labels_2d[np.newaxis]  # (1, Y, X)
             yield HypothesisRecord(t=t, p=p_idx, labels=labels_3d, params=params)
