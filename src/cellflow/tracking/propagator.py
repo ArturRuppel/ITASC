@@ -31,23 +31,30 @@ def _label_stats(labels: np.ndarray) -> tuple[np.ndarray, dict[int, np.ndarray]]
     coms = center_of_mass(np.ones_like(labels), labels, ids.tolist())
     if len(ids) == 1:
         coms = [coms]
-    centroids = {int(lid): np.array(com) for lid, com in zip(ids, coms)}
+    centroids = {int(lid): np.array(com).ravel() for lid, com in zip(ids, coms)}
     return areas, centroids
 
 
-def _overlap_matrix(current_labels: np.ndarray, cand_labels: np.ndarray) -> np.ndarray:
-    """Return intersection count matrix[cur_id, cand_id] in one bincount pass."""
-    max_cur = int(current_labels.max())
-    max_cand = int(cand_labels.max())
-    if max_cur == 0 or max_cand == 0:
-        return np.zeros((max_cur + 1, max_cand + 1), dtype=np.int64)
-    stride = max_cand + 1
-    combined = (
-        current_labels.ravel().astype(np.int64) * stride
-        + cand_labels.ravel().astype(np.int64)
-    )
-    counts = np.bincount(combined, minlength=(max_cur + 1) * stride)
-    return counts.reshape(max_cur + 1, stride)
+def _label_rel_pixels(
+    labels: np.ndarray, centroids: dict[int, np.ndarray]
+) -> dict[int, frozenset[tuple[int, int]]]:
+    """Return per-label pixel coordinate sets relative to each label's centroid.
+
+    Precomputing centroid-relative coords once lets us compute centroid-
+    corrected IoU between any two labels as a plain set intersection, with no
+    per-pair array shifting.
+    """
+    ys, xs = np.nonzero(labels)
+    vals = labels[ys, xs]
+    result = {}
+    for lid, centroid in centroids.items():
+        mask = vals == lid
+        cy, cx = np.round(centroid).astype(int)
+        result[lid] = frozenset(zip(
+            (ys[mask] - cy).tolist(),
+            (xs[mask] - cx).tolist(),
+        ))
+    return result
 
 
 def find_best_hypothesis(
@@ -55,6 +62,8 @@ def find_best_hypothesis(
     candidates: list[np.ndarray],
     iou_threshold: float = 0.3,
     max_dist_px: float = 50.0,
+    predicted_centroids: dict[int, np.ndarray] | None = None,
+    velocity_sigma_px: float = 25.0,
 ) -> tuple[np.ndarray, int] | tuple[None, None]:
     """Return (relabeled_next_frame, winning_p_index) or (None, None).
 
@@ -68,9 +77,15 @@ def find_best_hypothesis(
     candidates:
         List of (Y, X) uint32 label images — one per (p, z) combination.
     iou_threshold:
-        Minimum per-label IoU to accept a match.
+        Minimum centroid-corrected IoU to accept a match (hard gate).
     max_dist_px:
         Candidate nuclei whose centroid is farther than this are skipped.
+    predicted_centroids:
+        Optional dict mapping nucleus ID → predicted centroid for the next
+        frame (derived from velocity history). When provided, a Gaussian
+        velocity score exp(-d²/(2σ²)) weights the composite score.
+    velocity_sigma_px:
+        Standard deviation (pixels) for the velocity Gaussian.
     """
     if not candidates:
         return None, None
@@ -80,15 +95,16 @@ def find_best_hypothesis(
     if not cur_ids:
         return None, None
 
-    # Pre-compute per-candidate stats and overlap matrices (all vectorized)
-    cand_data: list[tuple[np.ndarray, dict[int, np.ndarray], np.ndarray]] = []
+    cur_rel_pixels = _label_rel_pixels(current_labels, cur_centroids)
+
+    # Pre-compute per-candidate stats and centroid-relative pixel sets.
+    cand_data: list[tuple[np.ndarray, dict[int, np.ndarray], dict[int, frozenset]]] = []
     for cand in candidates:
         c_areas, c_centroids = _label_stats(cand)
-        overlap = _overlap_matrix(current_labels, cand)
-        cand_data.append((c_areas, c_centroids, overlap))
+        c_rel_pixels = _label_rel_pixels(cand, c_centroids)
+        cand_data.append((c_areas, c_centroids, c_rel_pixels))
 
     # Build a flat index of all candidate centroids for KDTree radius query.
-    # This avoids checking max_dist_px via np.linalg.norm in a Python loop.
     all_keys: list[tuple[int, int]] = []  # (entry_idx, cand_id)
     all_cand_centroids: list[np.ndarray] = []
     for entry_idx, (_, c_centroids, _) in enumerate(cand_data):
@@ -100,6 +116,7 @@ def find_best_hypothesis(
         return None, None
 
     cand_tree = KDTree(np.array(all_cand_centroids))
+    two_sigma_sq = 2.0 * velocity_sigma_px ** 2
 
     assigned: set[tuple[int, int]] = set()  # (entry_idx, cand_label_id)
     next_frame = np.zeros_like(current_labels)
@@ -108,6 +125,8 @@ def find_best_hypothesis(
     for current_id in cur_ids:
         cur_centroid = cur_centroids[current_id]
         cur_area = int(cur_areas[current_id])
+        cur_rel = cur_rel_pixels[current_id]
+        pred_centroid = predicted_centroids.get(current_id) if predicted_centroids else None
 
         best_score = 0.0
         best_key: tuple[int, int] | None = None
@@ -118,16 +137,28 @@ def find_best_hypothesis(
             if key in assigned:
                 continue
 
-            c_areas, _, overlap = cand_data[entry_idx]
-            if current_id >= overlap.shape[0] or cand_id >= overlap.shape[1]:
+            c_areas, c_centroids, c_rel_pixels = cand_data[entry_idx]
+            cand_area = int(c_areas[cand_id])
+
+            inter = len(cur_rel & c_rel_pixels[cand_id])
+            union = cur_area + cand_area - inter
+            iou_cc = inter / union if union > 0 else 0.0
+
+            if iou_cc < iou_threshold:
                 continue
 
-            inter = int(overlap[current_id, cand_id])
-            union = cur_area + int(c_areas[cand_id]) - inter
-            score = inter / union if union > 0 else 0.0
+            area_ratio = min(cur_area, cand_area) / max(cur_area, cand_area)
 
-            if score >= iou_threshold and score > best_score:
-                best_score = score
+            if pred_centroid is not None:
+                d2 = float(np.sum((pred_centroid - c_centroids[cand_id]) ** 2))
+                vel_score = np.exp(-d2 / two_sigma_sq)
+            else:
+                vel_score = 1.0
+
+            composite = iou_cc * area_ratio * vel_score
+
+            if composite > best_score:
+                best_score = composite
                 best_key = key
 
         if best_key is not None:
@@ -149,12 +180,14 @@ def propagate_one_frame(
     t_current: int,
     iou_threshold: float = 0.3,
     max_dist_px: float = 50.0,
+    velocity_sigma_px: float = 25.0,
 ) -> int | None:
     """Propagate tracking from t_current to t_current + 1.
 
     Searches all (p, z) combinations in the hypothesis database for t_next,
     matches each tracked nucleus to its best candidate by per-label IoU,
-    and writes a relabeled next frame that preserves track IDs.
+    area ratio, and velocity consistency, then writes a relabeled next frame
+    that preserves track IDs.
 
     Returns the winning p index, or None if no matches were found.
     """
@@ -168,6 +201,21 @@ def propagate_one_frame(
         return None
 
     t_next = t_current + 1
+
+    # Derive per-nucleus velocity from the previous frame if available.
+    predicted_centroids: dict[int, np.ndarray] | None = None
+    if t_current >= 1:
+        try:
+            prev_labels = read_tracked_frame(tracked_h5, t_current - 1)
+            _, prev_centroids = _label_stats(prev_labels)
+            _, cur_centroids = _label_stats(current_labels)
+            predicted_centroids = {
+                lid: cur_centroids[lid] + (cur_centroids[lid] - prev_centroids[lid])
+                for lid in cur_centroids
+                if lid in prev_centroids
+            }
+        except KeyError:
+            pass  # no previous frame — velocity scoring disabled for this step
 
     # Build flat list of (p, z, slice_2d) for every (hypothesis, z-plane)
     entries: list[tuple[int, int, np.ndarray]] = []
@@ -184,7 +232,9 @@ def propagate_one_frame(
 
     candidates = [e[2] for e in entries]
     next_frame, winner_idx = find_best_hypothesis(
-        current_labels, candidates, iou_threshold, max_dist_px
+        current_labels, candidates, iou_threshold, max_dist_px,
+        predicted_centroids=predicted_centroids,
+        velocity_sigma_px=velocity_sigma_px,
     )
     if next_frame is None or winner_idx is None:
         return None

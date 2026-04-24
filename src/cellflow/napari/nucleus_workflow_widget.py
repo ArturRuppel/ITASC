@@ -302,6 +302,19 @@ class NucleusWorkflowWidget(QWidget):
         row_dist.addWidget(self.dist_spin)
         search_lay.addLayout(row_dist)
 
+        row_vel = QHBoxLayout()
+        row_vel.addWidget(QLabel("Velocity σ (px):"))
+        self.vel_sigma_spin = QDoubleSpinBox()
+        self.vel_sigma_spin.setRange(1, 500)
+        self.vel_sigma_spin.setValue(25.0)
+        self.vel_sigma_spin.setSingleStep(5.0)
+        self.vel_sigma_spin.setToolTip(
+            "Gaussian sigma for velocity consistency scoring. "
+            "Larger values = more permissive, disabled on first frame."
+        )
+        row_vel.addWidget(self.vel_sigma_spin)
+        search_lay.addLayout(row_vel)
+
         prop_row = QHBoxLayout()
         self.prop_next_btn = QPushButton("Propagate Next")
         self.prop_all_btn = QPushButton("Propagate All")
@@ -745,6 +758,7 @@ class NucleusWorkflowWidget(QWidget):
                 hyp_path, tracked_path, t,
                 iou_threshold=self.iou_spin.value(),
                 max_dist_px=self.dist_spin.value(),
+                velocity_sigma_px=self.vel_sigma_spin.value(),
             )
         except Exception as e:
             self._set_status(f"Propagation failed: {e}")
@@ -785,6 +799,7 @@ class NucleusWorkflowWidget(QWidget):
         t_start = self._current_t()
         iou_thr = self.iou_spin.value()
         max_dist = self.dist_spin.value()
+        vel_sigma = self.vel_sigma_spin.value()
         self._stop_flag = False
 
         # Flush any in-memory edits to disk before the worker thread reads them.
@@ -799,7 +814,10 @@ class NucleusWorkflowWidget(QWidget):
             while not self._stop_flag:
                 if not tracked_frame_exists(tracked_path, t):
                     break
-                winner = propagate_one_frame(hyp_path, tracked_path, t, iou_thr, max_dist)
+                winner = propagate_one_frame(
+                    hyp_path, tracked_path, t, iou_thr, max_dist,
+                    velocity_sigma_px=vel_sigma,
+                )
                 if winner is None:
                     yield (t, None)
                     break
@@ -1129,6 +1147,7 @@ class NucleusWorkflowWidget(QWidget):
             "search": {
                 "iou_threshold": self.iou_spin.value(),
                 "max_dist_um": self.dist_spin.value(),
+                "velocity_sigma_px": self.vel_sigma_spin.value(),
             },
         }
 
@@ -1183,3 +1202,4 @@ class NucleusWorkflowWidget(QWidget):
             se = state["search"]
             if "iou_threshold" in se: self.iou_spin.setValue(se["iou_threshold"])
             if "max_dist_um" in se: self.dist_spin.setValue(se["max_dist_um"])
+            if "velocity_sigma_px" in se: self.vel_sigma_spin.setValue(se["velocity_sigma_px"])
