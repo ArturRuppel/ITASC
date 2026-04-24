@@ -206,6 +206,12 @@ class NucleusWorkflowWidget(QWidget):
         self.db_match_lbl = QLabel("Match: —")
         hdr_row.addWidget(self.db_match_lbl)
         hdr_row.addStretch()
+        self.db_activate_btn = QPushButton("Activate")
+        self.db_activate_btn.setCheckable(True)
+        self.db_activate_btn.setChecked(False)
+        self.db_activate_btn.setToolTip("Activate database browser — enables live data loading")
+        self.db_activate_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        hdr_row.addWidget(self.db_activate_btn)
         self.db_refresh_btn = QPushButton()
         self.db_refresh_btn.setToolTip("Refresh database browser")
         self.db_refresh_btn.setIcon(
@@ -338,6 +344,7 @@ class NucleusWorkflowWidget(QWidget):
         for _db_spin in (self.db_z_spin, self.db_thr_spin, self.db_cmp_spin, self.db_sigma_spin, self.db_seed_dist_spin):
             _db_spin.valueChanged.connect(self._on_db_params_changed)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
+        self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self.refresh(self._pos_dir))
         self.del_slice_btn.clicked.connect(self._on_delete_slice)
         self.del_stack_btn.clicked.connect(self._on_remove_stack)
@@ -605,7 +612,15 @@ class NucleusWorkflowWidget(QWidget):
         self._set_status("Saved to hypotheses.h5.")
         self.refresh(pos_dir)
 
+    def _on_db_activate_toggled(self, active: bool) -> None:
+        self.db_activate_btn.setText("Deactivate" if active else "Activate")
+        if active:
+            self._current_db_p = None  # force reload on activation
+            self._on_db_params_changed()
+
     def _on_db_params_changed(self) -> None:
+        if not self.db_activate_btn.isChecked():
+            return
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
             self.db_match_lbl.setText("Match: —")
