@@ -6,32 +6,47 @@ next timepoint, then writes a relabeled next frame that preserves track IDs.
 """
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
+from scipy.ndimage import center_of_mass
 
 from cellflow.database.hypotheses import read_hypothesis_labels, list_hypotheses
 from cellflow.database.tracked import read_tracked_frame, write_tracked_frame
 
 
-def _label_masks(labels: np.ndarray) -> dict[int, np.ndarray]:
-    masks: dict[int, np.ndarray] = {}
-    for label_id in np.unique(labels):
-        if label_id == 0:
-            continue
-        masks[int(label_id)] = labels == label_id
-    return masks
+def _label_stats(labels: np.ndarray) -> tuple[np.ndarray, dict[int, np.ndarray]]:
+    """Return (areas, centroids) without building per-label boolean masks.
+
+    areas[label_id] = pixel count (via bincount, one pass).
+    centroids: scipy batches all labels in a single labeled_comprehension pass.
+    """
+    ids = np.unique(labels)
+    ids = ids[ids != 0]
+    if len(ids) == 0:
+        return np.zeros(1, dtype=np.int64), {}
+    areas = np.bincount(labels.ravel())
+    coms = center_of_mass(np.ones_like(labels), labels, ids.tolist())
+    if len(ids) == 1:
+        coms = [coms]
+    centroids = {int(lid): np.array(com) for lid, com in zip(ids, coms)}
+    return areas, centroids
 
 
-def _centroid(mask: np.ndarray) -> np.ndarray:
-    coords = np.argwhere(mask)
-    return coords.mean(axis=0) if len(coords) else np.zeros(2)
-
-
-def _iou(a: np.ndarray, b: np.ndarray) -> float:
-    inter = int((a & b).sum())
-    union = int((a | b).sum())
-    return inter / union if union > 0 else 0.0
+def _overlap_matrix(current_labels: np.ndarray, cand_labels: np.ndarray) -> np.ndarray:
+    """Return intersection count matrix[cur_id, cand_id] in one bincount pass."""
+    max_cur = int(current_labels.max())
+    max_cand = int(cand_labels.max())
+    if max_cur == 0 or max_cand == 0:
+        return np.zeros((max_cur + 1, max_cand + 1), dtype=np.int64)
+    stride = max_cand + 1
+    combined = (
+        current_labels.ravel().astype(np.int64) * stride
+        + cand_labels.ravel().astype(np.int64)
+    )
+    counts = np.bincount(combined, minlength=(max_cur + 1) * stride)
+    return counts.reshape(max_cur + 1, stride)
 
 
 def find_best_hypothesis(
@@ -59,58 +74,56 @@ def find_best_hypothesis(
     if not candidates:
         return None, None
 
-    current_masks = _label_masks(current_labels)
-    if not current_masks:
+    cur_areas, cur_centroids = _label_stats(current_labels)
+    cur_ids = sorted(cur_centroids.keys())
+    if not cur_ids:
         return None, None
 
-    # Pre-build candidate mask dicts: cand_masks[entry_idx] = {label_id: mask}
-    cand_masks_per_entry: list[dict[int, np.ndarray]] = [
-        _label_masks(c) for c in candidates
-    ]
-    # Pre-compute centroids for all candidate labels
-    cand_centroids: list[dict[int, np.ndarray]] = [
-        {lid: _centroid(mask) for lid, mask in entry.items()}
-        for entry in cand_masks_per_entry
-    ]
+    # Pre-compute per-candidate stats and overlap matrices (all vectorized)
+    cand_data: list[tuple[np.ndarray, dict[int, np.ndarray], np.ndarray]] = []
+    for cand in candidates:
+        c_areas, c_centroids = _label_stats(cand)
+        overlap = _overlap_matrix(current_labels, cand)
+        cand_data.append((c_areas, c_centroids, overlap))
 
     assigned: set[tuple[int, int]] = set()  # (entry_idx, cand_label_id)
     next_frame = np.zeros_like(current_labels)
     matched_entry_indices: list[int] = []
 
-    for current_id in sorted(current_masks):
-        cur_mask = current_masks[current_id]
-        cur_centroid = _centroid(cur_mask)
+    for current_id in cur_ids:
+        cur_centroid = cur_centroids[current_id]
+        cur_area = int(cur_areas[current_id])
 
         best_score = 0.0
         best_key: tuple[int, int] | None = None
-        best_cand_mask: np.ndarray | None = None
 
-        for entry_idx, entry in enumerate(cand_masks_per_entry):
-            for cand_id, cand_mask in entry.items():
+        for entry_idx, (c_areas, c_centroids, overlap) in enumerate(cand_data):
+            for cand_id, cand_centroid in c_centroids.items():
                 key = (entry_idx, cand_id)
                 if key in assigned:
                     continue
-
-                dist = float(np.linalg.norm(cur_centroid - cand_centroids[entry_idx][cand_id]))
-                if dist > max_dist_px:
+                if float(np.linalg.norm(cur_centroid - cand_centroid)) > max_dist_px:
+                    continue
+                if current_id >= overlap.shape[0] or cand_id >= overlap.shape[1]:
                     continue
 
-                score = _iou(cur_mask, cand_mask)
+                inter = int(overlap[current_id, cand_id])
+                union = cur_area + int(c_areas[cand_id]) - inter
+                score = inter / union if union > 0 else 0.0
+
                 if score >= iou_threshold and score > best_score:
                     best_score = score
                     best_key = key
-                    best_cand_mask = cand_mask
 
-        if best_key is not None and best_cand_mask is not None:
+        if best_key is not None:
             assigned.add(best_key)
-            next_frame[best_cand_mask] = current_id
-            matched_entry_indices.append(best_key[0])
+            entry_idx, cand_id = best_key
+            next_frame[candidates[entry_idx] == cand_id] = current_id
+            matched_entry_indices.append(entry_idx)
 
     if not matched_entry_indices:
         return None, None
 
-    # Return the entry index that won the most matches
-    from collections import Counter
     winning_entry = Counter(matched_entry_indices).most_common(1)[0][0]
     return next_frame, winning_entry
 

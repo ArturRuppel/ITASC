@@ -402,12 +402,12 @@ class NucleusWorkflowWidget(QWidget):
             layer = self.viewer.layers[_TRACKED_LAYER]
             if layer.data.ndim == 3:
                 if t < layer.data.shape[0]:
-                    layer.data[t] = labels
-                    layer.refresh()
+                    new_data = layer.data.copy()
+                    new_data[t] = labels
+                    layer.data = new_data
                     return
                 if tracked_path is not None and tracked_path.exists():
                     layer.data = read_full_tracked_stack(tracked_path)
-                    layer.refresh()
                     return
         display = labels[np.newaxis].copy() if labels.ndim == 2 else labels
         self._update_layer(_TRACKED_LAYER, display)
@@ -733,6 +733,12 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status(f"No tracked frame at t={t}. Set a seed first.")
             return
 
+        # Flush any in-memory edits to disk so propagation reads the current state.
+        if _TRACKED_LAYER in self.viewer.layers:
+            layer = self.viewer.layers[_TRACKED_LAYER]
+            if layer.data.ndim == 3 and t < layer.data.shape[0]:
+                write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
+
         try:
             winner = propagate_one_frame(
                 hyp_path, tracked_path, t,
@@ -779,6 +785,12 @@ class NucleusWorkflowWidget(QWidget):
         iou_thr = self.iou_spin.value()
         max_dist = self.dist_spin.value()
         self._stop_flag = False
+
+        # Flush any in-memory edits to disk before the worker thread reads them.
+        if _TRACKED_LAYER in self.viewer.layers:
+            layer = self.viewer.layers[_TRACKED_LAYER]
+            if layer.data.ndim == 3 and t_start < layer.data.shape[0]:
+                write_tracked_frame(tracked_path, t_start, np.asarray(layer.data[t_start]))
 
         @thread_worker(connect={"yielded": self._on_prop_progress, "finished": self._on_prop_done, "errored": self._on_worker_error})
         def _worker():
