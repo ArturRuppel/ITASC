@@ -48,8 +48,15 @@ from cellflow.database.tracked import (
     tracked_n_frames,
     write_tracked_frame,
 )
+from cellflow.database.validation import (
+    invalidate_frame,
+    is_validated,
+    read_validated_frames,
+    validate_frame,
+)
 from cellflow.segmentation import CellposeFlowHypothesisParams, NucleusHypothesisParams, compute_hypothesis_labels
 from cellflow.tracking import propagate_one_frame
+from cellflow.tracking.retracker import retrack_frame
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +403,25 @@ class NucleusWorkflowWidget(QWidget):
         self.jump_corr_btn = QPushButton("Correct Current Frame")
         self.jump_corr_btn.setStyleSheet("font-weight: bold; min-height: 28px;")
         corr_lay.addWidget(self.jump_corr_btn)
+
+        # Retrack row
+        retrack_row = QHBoxLayout()
+        self.retrack_btn = QPushButton("Retrack Frame")
+        self.retrack_btn.setToolTip(
+            "Remap cell IDs in the current frame to match the nearest preceding "
+            "validated frame (or t-1 if none exists).  Validated frames are "
+            "protected and cannot be retracted."
+        )
+        retrack_row.addWidget(self.retrack_btn)
+        self.validate_btn = QPushButton("Validate Frame")
+        self.validate_btn.setCheckable(True)
+        self.validate_btn.setToolTip(
+            "Mark the current frame as a trusted ID anchor.  Validated frames "
+            "are skipped by Retrack and used as reference when retracking neighbours."
+        )
+        retrack_row.addWidget(self.validate_btn)
+        corr_lay.addLayout(retrack_row)
+
         layout.addWidget(corr_group)
 
         # Status label (added at bottom for feedback)
@@ -427,6 +453,9 @@ class NucleusWorkflowWidget(QWidget):
         self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.jump_corr_btn.clicked.connect(self._on_jump_correction)
+        self.retrack_btn.clicked.connect(self._on_retrack_frame)
+        self.validate_btn.toggled.connect(self._on_validate_toggled)
+        self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public refresh (called by main_widget on project change)
@@ -438,6 +467,7 @@ class NucleusWorkflowWidget(QWidget):
             return
 
         self._refresh_db_tree()
+        self._refresh_validate_btn()
 
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1279,6 +1309,97 @@ class NucleusWorkflowWidget(QWidget):
         except Exception:
             QApplication.clipboard().setText(cmd)
             self._set_status("Copied command to clipboard (terminal launch unavailable).")
+
+    def _on_dims_step_changed(self, event=None) -> None:
+        """Refresh the Validate button state when the viewed frame changes."""
+        self._refresh_validate_btn()
+
+    def _refresh_validate_btn(self) -> None:
+        """Sync the Validate button checked state to disk without emitting signals."""
+        if self._pos_dir is None:
+            self.validate_btn.setChecked(False)
+            return
+        t = self._current_t()
+        validated = is_validated(self._pos_dir, t)
+        self.validate_btn.blockSignals(True)
+        self.validate_btn.setChecked(validated)
+        self.validate_btn.blockSignals(False)
+
+    def _on_validate_toggled(self, checked: bool) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        t = self._current_t()
+        if checked:
+            validate_frame(self._pos_dir, t)
+            self._set_status(f"Frame t={t} marked as validated.")
+        else:
+            invalidate_frame(self._pos_dir, t)
+            self._set_status(f"Frame t={t} validation removed.")
+
+    def _on_retrack_frame(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        tracked_path = self._tracked_path()
+        if tracked_path is None or not tracked_path.exists():
+            self._set_status("No tracked labels file found.")
+            return
+
+        t = self._current_t()
+
+        if is_validated(self._pos_dir, t):
+            self._set_status(f"Frame t={t} is validated — unvalidate it first to retrack.")
+            return
+
+        if not tracked_frame_exists(tracked_path, t):
+            self._set_status(f"No tracked frame at t={t}.")
+            return
+
+        # Find the nearest preceding validated frame; fall back to t-1.
+        validated = sorted(
+            [v for v in read_validated_frames(self._pos_dir) if v < t],
+            reverse=True,
+        )
+        t_ref = validated[0] if validated else (t - 1)
+
+        if t_ref < 0:
+            self._set_status("No reference frame available (t=0 has no predecessor).")
+            return
+
+        if not tracked_frame_exists(tracked_path, t_ref):
+            self._set_status(f"Reference frame t={t_ref} does not exist yet.")
+            return
+
+        # Flush in-memory edits for both frames before reading from disk.
+        if _TRACKED_LAYER in self.viewer.layers:
+            layer = self.viewer.layers[_TRACKED_LAYER]
+            if layer.data.ndim == 3:
+                for flush_t in (t, t_ref):
+                    if flush_t < layer.data.shape[0]:
+                        write_tracked_frame(tracked_path, flush_t, np.asarray(layer.data[flush_t]))
+
+        try:
+            ref_labels = read_tracked_frame(tracked_path, t_ref)
+            tgt_labels = read_tracked_frame(tracked_path, t)
+        except Exception as e:
+            self._set_status(f"Could not read frames: {e}")
+            return
+
+        remapped = retrack_frame(ref_labels, tgt_labels, max_dist_px=self.dist_spin.value())
+
+        tgt_ids = set(int(i) for i in np.unique(tgt_labels) if i != 0)
+        new_ids = set(int(i) for i in np.unique(remapped) if i != 0)
+        ref_ids = set(int(i) for i in np.unique(ref_labels) if i != 0)
+        n_matched = len(new_ids & ref_ids)
+        n_new = len(new_ids - ref_ids)
+
+        write_tracked_frame(tracked_path, t, remapped)
+        self._update_tracked_display(remapped, t=t, tracked_path=tracked_path)
+        self._set_status(
+            f"Retracked t={t} using t={t_ref} as reference: "
+            f"{n_matched} matched, {n_new} new ID(s) assigned."
+        )
 
     def _on_jump_correction(self) -> None:
         self._set_status("Manual correction widget not yet connected.")
