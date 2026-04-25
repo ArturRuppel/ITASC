@@ -21,8 +21,6 @@ from qtpy.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QTabWidget,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -37,7 +35,6 @@ from cellflow.database.hypotheses import (
     read_full_hypothesis_stack,
     read_hypothesis_labels,
     write_hypothesis_sweep_h5,
-    zero_hypothesis_slice,
 )
 from cellflow.database.tracked import (
     read_full_tracked_stack,
@@ -77,6 +74,9 @@ class NucleusWorkflowWidget(QWidget):
         self._build_worker = None
         self._sweep_worker = None
         self._current_db_p: int | None = None
+        self._db_param_map: dict[tuple[int, float], int] = {}
+        self._db_seed_dist_vals: list[int] = []
+        self._db_fg_thr_vals: list[float] = []
         self._setup_ui()
         self._connect_signals()
 
@@ -256,22 +256,26 @@ class NucleusWorkflowWidget(QWidget):
         hdr_row.addWidget(self.db_refresh_btn)
         db_lay.addLayout(hdr_row)
 
-        self.db_tree = QTreeWidget()
-        self.db_tree.setHeaderHidden(True)
-        self.db_tree.setColumnCount(1)
-        self.db_tree.setIndentation(14)
-        self.db_tree.setMinimumHeight(120)
-        self.db_tree.setToolTip("Click a parameter set to load it")
-        db_lay.addWidget(self.db_tree)
+        param_row = QHBoxLayout()
+        param_row.addWidget(QLabel("Seed Dist:"))
+        self.db_seed_dist_spin = QSpinBox()
+        self.db_seed_dist_spin.setRange(1, 500)
+        self.db_seed_dist_spin.setValue(10)
+        self.db_seed_dist_spin.setEnabled(False)
+        param_row.addWidget(self.db_seed_dist_spin)
+        param_row.addWidget(QLabel("FG Threshold:"))
+        self.db_fg_thr_spin = QDoubleSpinBox()
+        self.db_fg_thr_spin.setRange(0.01, 0.99)
+        self.db_fg_thr_spin.setValue(0.5)
+        self.db_fg_thr_spin.setDecimals(2)
+        self.db_fg_thr_spin.setSingleStep(0.05)
+        self.db_fg_thr_spin.setEnabled(False)
+        param_row.addWidget(self.db_fg_thr_spin)
+        db_lay.addLayout(param_row)
 
-        z_row = QHBoxLayout()
-        z_row.addWidget(QLabel("Display Z:"))
-        self.db_z_spin = QSpinBox()
-        self.db_z_spin.setRange(0, 99)
-        self.db_z_spin.setValue(0)
-        z_row.addWidget(self.db_z_spin)
-        z_row.addStretch()
-        db_lay.addLayout(z_row)
+        self.db_info_lbl = QLabel("—")
+        self.db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        db_lay.addWidget(self.db_info_lbl)
 
         db_btn_row = QHBoxLayout()
         self.set_seed_btn = QPushButton("Set as Tracking Seed")
@@ -279,13 +283,11 @@ class NucleusWorkflowWidget(QWidget):
         db_lay.addLayout(db_btn_row)
 
         db_del_row = QHBoxLayout()
-        self.del_slice_btn = QPushButton("Delete Current Slice")
         self.del_stack_btn = QPushButton("Remove Stack")
         self.del_stack_btn.setStyleSheet(
             "QPushButton { color: #cc3333; }"
             "QPushButton:hover { background-color: #4a1111; color: white; }"
         )
-        db_del_row.addWidget(self.del_slice_btn)
         db_del_row.addWidget(self.del_stack_btn)
         db_lay.addLayout(db_del_row)
         layout.addWidget(db_group)
@@ -400,12 +402,11 @@ class NucleusWorkflowWidget(QWidget):
         self.run_sweep_btn.clicked.connect(self._on_run_sweep)
         self.run_terminal_btn.clicked.connect(self._on_run_terminal)
         self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
-        self.db_tree.currentItemChanged.connect(self._on_tree_item_selected)
-        self.db_z_spin.valueChanged.connect(self._on_db_z_changed)
+        self.db_seed_dist_spin.valueChanged.connect(self._on_db_param_changed)
+        self.db_fg_thr_spin.valueChanged.connect(self._on_db_param_changed)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
-        self.db_refresh_btn.clicked.connect(lambda: self.refresh(self._pos_dir))
-        self.del_slice_btn.clicked.connect(self._on_delete_slice)
+        self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
         self.del_stack_btn.clicked.connect(self._on_remove_stack)
         self.prop_next_btn.clicked.connect(self._on_propagate_next)
         self.prop_all_btn.clicked.connect(self._on_propagate_all)
@@ -427,7 +428,7 @@ class NucleusWorkflowWidget(QWidget):
         self.output_files.refresh(pos_dir)
         if pos_dir is None:
             return
-        self._refresh_db_tree()
+        self._refresh_db_browser()
         self._refresh_validate_btn()
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -504,8 +505,15 @@ class NucleusWorkflowWidget(QWidget):
         else:
             self.viewer.add_labels(data, name=name)
 
-    def _refresh_db_tree(self) -> None:
-        self.db_tree.clear()
+    def _refresh_db_browser(self) -> None:
+        self._db_param_map = {}
+        self._db_seed_dist_vals = []
+        self._db_fg_thr_vals = []
+        self._current_db_p = None
+        self.db_seed_dist_spin.setEnabled(False)
+        self.db_fg_thr_spin.setEnabled(False)
+        self.db_info_lbl.setText("—")
+
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
             self.status_lbl.setText("Hypothesis DB: not found.")
@@ -517,63 +525,45 @@ class NucleusWorkflowWidget(QWidget):
             self.status_lbl.setText(f"Hypothesis DB: read error — {e}")
             return
 
-        contour_entries   = [(p, info) for p, info in sorted(params_by_p.items())
-                             if str(info.get("method", "")) == "contour_watershed"]
-        watershed_entries = [(p, info) for p, info in sorted(params_by_p.items())
-                             if str(info.get("method", "watershed")) == "watershed"]
-        cellpose_entries  = [(p, info) for p, info in sorted(params_by_p.items())
-                             if str(info.get("method", "")) == "cellpose_flow"]
+        contour_entries = {
+            p: info for p, info in params_by_p.items()
+            if str(info.get("method", "")) == "contour_watershed"
+        }
+        if not contour_entries:
+            self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s) (no contour_watershed).")
+            return
 
-        _SKIP_ATTRS = {"parameter_index", "parameter_json", "label_shape", "label_dtype"}
+        seed_dist_set: set[int] = set()
+        fg_thr_set: set[float] = set()
+        for p_idx, info in contour_entries.items():
+            d = int(info.get("seed_distance", 10))
+            fg = round(float(info.get("foreground_threshold", 0.5)), 4)
+            seed_dist_set.add(d)
+            fg_thr_set.add(fg)
+            self._db_param_map[(d, fg)] = p_idx
 
-        def _add_group(group_label: str, entries: list) -> None:
-            if not entries:
-                return
-            group_item = QTreeWidgetItem([f"{group_label}  ({len(entries)})"])
-            group_item.setData(0, Qt.ItemDataRole.UserRole, None)
-            group_item.setFlags(group_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            font = group_item.font(0)
-            font.setBold(True)
-            group_item.setFont(0, font)
-            self.db_tree.addTopLevelItem(group_item)
-            for p_idx, info in entries:
-                method = str(info.get("method", "watershed"))
-                if method == "contour_watershed":
-                    summary = (
-                        f"p{p_idx:03d}  "
-                        f"dist={int(info.get('seed_distance', 0))}  "
-                        f"dist={int(info.get('seed_distance', 0))}"
-                    )
-                elif method == "cellpose_flow":
-                    summary = (
-                        f"p{p_idx:03d}  "
-                        f"prob={float(info.get('cellprob_threshold', 0)):.2f}  "
-                        f"flow={float(info.get('flow_threshold', 0)):.2f}"
-                    )
-                else:
-                    summary = (
-                        f"p{p_idx:03d}  "
-                        f"z={int(info.get('z_slice', 0))}  "
-                        f"thr={float(info.get('threshold_pct', 0)):.0f}%  "
-                        f"σ={float(info.get('smooth_sigma', 0)):.2f}  "
-                        f"dist={int(info.get('seed_distance', 0))}"
-                    )
-                p_item = QTreeWidgetItem([summary])
-                p_item.setData(0, Qt.ItemDataRole.UserRole, p_idx)
-                for k, v in sorted(info.items()):
-                    if k in _SKIP_ATTRS:
-                        continue
-                    child = QTreeWidgetItem([f"  {k}:  {v}"])
-                    child.setData(0, Qt.ItemDataRole.UserRole, None)
-                    child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                    p_item.addChild(child)
-                group_item.addChild(p_item)
-            group_item.setExpanded(True)
+        self._db_seed_dist_vals = sorted(seed_dist_set)
+        self._db_fg_thr_vals = sorted(fg_thr_set)
 
-        _add_group("Contour Watershed", contour_entries)
-        _add_group("Watershed (legacy)", watershed_entries)
-        _add_group("Cellpose Native (legacy)", cellpose_entries)
+        self.db_seed_dist_spin.blockSignals(True)
+        self.db_seed_dist_spin.setMinimum(self._db_seed_dist_vals[0])
+        self.db_seed_dist_spin.setMaximum(self._db_seed_dist_vals[-1])
+        step_d = (self._db_seed_dist_vals[1] - self._db_seed_dist_vals[0]) if len(self._db_seed_dist_vals) > 1 else 1
+        self.db_seed_dist_spin.setSingleStep(step_d)
+        self.db_seed_dist_spin.setValue(self._db_seed_dist_vals[0])
+        self.db_seed_dist_spin.setEnabled(True)
+        self.db_seed_dist_spin.blockSignals(False)
 
+        self.db_fg_thr_spin.blockSignals(True)
+        self.db_fg_thr_spin.setMinimum(self._db_fg_thr_vals[0])
+        self.db_fg_thr_spin.setMaximum(self._db_fg_thr_vals[-1])
+        step_fg = round(self._db_fg_thr_vals[1] - self._db_fg_thr_vals[0], 4) if len(self._db_fg_thr_vals) > 1 else 0.05
+        self.db_fg_thr_spin.setSingleStep(step_fg)
+        self.db_fg_thr_spin.setValue(self._db_fg_thr_vals[0])
+        self.db_fg_thr_spin.setEnabled(True)
+        self.db_fg_thr_spin.blockSignals(False)
+
+        self._update_db_info_lbl()
         self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s).")
 
     def _set_status(self, msg: str) -> None:
@@ -743,10 +733,10 @@ class NucleusWorkflowWidget(QWidget):
                 seed_distance_min=params.seed_distance,
                 seed_distance_max=params.seed_distance,
                 seed_distance_step=1,
-                smooth_sigma=params.smooth_sigma,
-                smooth_sigma_min=params.smooth_sigma,
-                smooth_sigma_max=params.smooth_sigma,
-                smooth_sigma_step=1.0,
+                foreground_threshold=params.foreground_threshold,
+                foreground_threshold_min=params.foreground_threshold,
+                foreground_threshold_max=params.foreground_threshold,
+                foreground_threshold_step=0.05,
                 min_size=params.min_size,
             )
             records = iter_contour_watershed_records(contour, foreground, spec)
@@ -827,18 +817,7 @@ class NucleusWorkflowWidget(QWidget):
             total = n_t * len(params_list)
             collected: list[HypothesisRecord] = []
             for done, record in enumerate(
-                iter_contour_watershed_records(contour, foreground,
-                                               ContourWatershedSweepSpec(
-                                                   seed_distance=spec.seed_distance,
-                                                   seed_distance_min=spec.seed_distance_min,
-                                                   seed_distance_max=spec.seed_distance_max,
-                                                   seed_distance_step=spec.seed_distance_step,
-                                                   smooth_sigma=spec.smooth_sigma,
-                                                   smooth_sigma_min=spec.smooth_sigma_min,
-                                                   smooth_sigma_max=spec.smooth_sigma_max,
-                                                   smooth_sigma_step=spec.smooth_sigma_step,
-                                                   min_size=spec.min_size,
-                                               )), 1
+                iter_contour_watershed_records(contour, foreground, spec), 1
             ):
                 collected.append(record)
                 yield f"Sweep {done}/{total}…"
@@ -891,7 +870,8 @@ class NucleusWorkflowWidget(QWidget):
             f"    seed_distance_min={spec.seed_distance_min}, seed_distance_max={spec.seed_distance_max},\n"
             f"    seed_distance_step={spec.seed_distance_step},\n"
             f"    foreground_threshold={spec.foreground_threshold},\n"
-            f"    foreground_threshold_min={spec.foreground_threshold_min}, foreground_threshold_max={spec.foreground_threshold_max},\n"
+            f"    foreground_threshold_min={spec.foreground_threshold_min},\n"
+            f"    foreground_threshold_max={spec.foreground_threshold_max},\n"
             f"    foreground_threshold_step={spec.foreground_threshold_step},\n"
             f"    min_size={spec.min_size},\n"
             ")\n"
@@ -934,26 +914,26 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_db_activate_toggled(self, active: bool) -> None:
         self.db_activate_btn.setText("Deactivate" if active else "Activate")
-        if active:
-            self._current_db_p = None
-            self._on_tree_item_selected(self.db_tree.currentItem(), None)
 
-    def _on_tree_item_selected(self, current: QTreeWidgetItem | None, _previous) -> None:
-        if not self.db_activate_btn.isChecked():
-            return
-        if current is None:
-            return
-        p = current.data(0, Qt.ItemDataRole.UserRole)
-        if p is None:
-            return
-        if p != self._current_db_p:
-            self._current_db_p = p
-            self._load_db_stack(p)
+    def _lookup_db_p(self) -> int | None:
+        if not self._db_param_map:
+            return None
+        d = self.db_seed_dist_spin.value()
+        fg = round(self.db_fg_thr_spin.value(), 4)
+        if self._db_seed_dist_vals:
+            d = min(self._db_seed_dist_vals, key=lambda x: abs(x - d))
+        if self._db_fg_thr_vals:
+            fg = round(min(self._db_fg_thr_vals, key=lambda x: abs(x - fg)), 4)
+        return self._db_param_map.get((d, fg))
 
-    def _on_db_z_changed(self) -> None:
-        if not self.db_activate_btn.isChecked():
-            return
-        if self._current_db_p is not None:
+    def _update_db_info_lbl(self) -> None:
+        p = self._lookup_db_p()
+        self._current_db_p = p
+        self.db_info_lbl.setText(f"p={p:03d}" if p is not None else "—")
+
+    def _on_db_param_changed(self) -> None:
+        self._update_db_info_lbl()
+        if self.db_activate_btn.isChecked() and self._current_db_p is not None:
             self._load_db_stack(self._current_db_p)
 
     def _load_db_stack(self, p: int) -> None:
@@ -971,12 +951,13 @@ class NucleusWorkflowWidget(QWidget):
     def _on_load_stack_done(self, result: tuple) -> None:
         p, stack = result
         if stack.ndim == 4:
-            z = min(self.db_z_spin.value(), stack.shape[1] - 1)
-            stack = stack[:, z]
+            stack = stack[:, 0]  # contour_watershed stores (1, Y, X) per frame
         if _HYP_LAYER in self.viewer.layers:
             self.viewer.layers[_HYP_LAYER].data = stack
         else:
             self.viewer.add_labels(stack, name=_HYP_LAYER)
+        n_cells = int(stack.max()) if stack.size > 0 else 0
+        self.db_info_lbl.setText(f"p={p:03d}  |  {n_cells} cells")
         self._set_status(f"Loaded p={p} → {stack.shape} into napari.")
 
     def _on_set_seed(self) -> None:
@@ -990,35 +971,14 @@ class NucleusWorkflowWidget(QWidget):
             return
         t = self._current_t()
         try:
-            volume = read_hypothesis_labels(hyp_path, t, p)  # (Z, Y, X) or (1, Y, X)
-            z = min(self.db_z_spin.value(), volume.shape[0] - 1)
-            slice_2d = volume[z]
+            volume = read_hypothesis_labels(hyp_path, t, p)  # (1, Y, X) for contour_watershed
+            slice_2d = volume[0]
             tracked_path = self._tracked_path()
             write_tracked_frame(tracked_path, t, slice_2d)
             self._update_tracked_display(slice_2d, t=t)
             self._set_status(f"Hypothesis p={p} set as tracking seed at t={t}.")
         except Exception as e:
             self._set_status(f"Error setting seed: {e}")
-
-    def _on_delete_slice(self) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_status("No hypothesis DB found.")
-            return
-        p = self._current_db_p
-        if p is None:
-            self._set_status("No parameter set selected in the DB browser.")
-            return
-        z = self.db_z_spin.value()
-        try:
-            zero_hypothesis_slice(hyp_path, z, p)
-        except Exception as e:
-            self._set_status(f"Delete slice failed: {e}")
-            return
-        self._set_status(f"Zeroed z={z} across all frames, p={p}.")
-        if _HYP_LAYER in self.viewer.layers:
-            self.viewer.layers[_HYP_LAYER].data[:] = 0
-            self.viewer.layers[_HYP_LAYER].refresh()
 
     def _on_remove_stack(self) -> None:
         hyp_path = self._hyp_path()
@@ -1333,7 +1293,8 @@ class NucleusWorkflowWidget(QWidget):
                 "fg_thr_step":    self.sweep_fg_thr[2].value(),
             },
             "db_browser": {
-                "z_slice": self.db_z_spin.value(),
+                "seed_dist":    self.db_seed_dist_spin.value(),
+                "fg_threshold": self.db_fg_thr_spin.value(),
             },
             "search": {
                 "iou_threshold":    self.iou_spin.value(),
@@ -1369,7 +1330,8 @@ class NucleusWorkflowWidget(QWidget):
             if "fg_thr_step"    in sw: self.sweep_fg_thr[2].setValue(sw["fg_thr_step"])
         if "db_browser" in state:
             db = state["db_browser"]
-            if "z_slice" in db: self.db_z_spin.setValue(db["z_slice"])
+            if "seed_dist"    in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
+            if "fg_threshold" in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
         if "search" in state:
             se = state["search"]
             if "iou_threshold"     in se: self.iou_spin.setValue(se["iou_threshold"])
