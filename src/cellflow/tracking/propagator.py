@@ -1,8 +1,9 @@
-"""Greedy per-label IoU propagator for nucleus tracking.
+"""Global LAP-based propagator for nucleus tracking.
 
-For each nucleus in the current tracked frame, finds the best matching
-candidate nucleus across all (hypothesis, z-slice) combinations for the
-next timepoint, then writes a relabeled next frame that preserves track IDs.
+For each nucleus in the current tracked frame, builds a score matrix against
+all candidate nuclei across all (hypothesis, z-slice) combinations for the
+next timepoint, then solves the linear assignment problem globally to find the
+maximum-weight bipartite matching. Preserves track IDs in the written frame.
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import center_of_mass
+from scipy.optimize import linear_sum_assignment
 from scipy.spatial import KDTree
 
 from cellflow.database.hypotheses import read_hypothesis_labels, list_hypotheses
@@ -18,11 +20,7 @@ from cellflow.database.tracked import read_tracked_frame, write_tracked_frame
 
 
 def _label_stats(labels: np.ndarray) -> tuple[np.ndarray, dict[int, np.ndarray]]:
-    """Return (areas, centroids) without building per-label boolean masks.
-
-    areas[label_id] = pixel count (via bincount, one pass).
-    centroids: scipy batches all labels in a single labeled_comprehension pass.
-    """
+    """Return (areas, centroids) without building per-label boolean masks."""
     ids = np.unique(labels)
     ids = ids[ids != 0]
     if len(ids) == 0:
@@ -38,12 +36,7 @@ def _label_stats(labels: np.ndarray) -> tuple[np.ndarray, dict[int, np.ndarray]]
 def _label_rel_pixels(
     labels: np.ndarray, centroids: dict[int, np.ndarray]
 ) -> dict[int, frozenset[tuple[int, int]]]:
-    """Return per-label pixel coordinate sets relative to each label's centroid.
-
-    Precomputing centroid-relative coords once lets us compute centroid-
-    corrected IoU between any two labels as a plain set intersection, with no
-    per-pair array shifting.
-    """
+    """Return per-label pixel coordinate sets relative to each label's centroid."""
     ys, xs = np.nonzero(labels)
     vals = labels[ys, xs]
     result = {}
@@ -64,11 +57,16 @@ def find_best_hypothesis(
     max_dist_px: float = 50.0,
     predicted_centroids: dict[int, np.ndarray] | None = None,
     velocity_sigma_px: float = 25.0,
+    unmatched_score: float = 0.1,
+    iou_weight: float = 1.0,
+    area_weight: float = 1.0,
+    velocity_weight: float = 1.0,
 ) -> tuple[np.ndarray, int] | tuple[None, None]:
     """Return (relabeled_next_frame, winning_p_index) or (None, None).
 
-    For each nucleus in current_labels, greedily assigns it to the best
-    matching nucleus across all candidate slices, preserving track IDs.
+    Builds a score matrix S[i, j] over all current nuclei i and all candidate
+    nuclei j (across every (p, z) slice), then solves the linear assignment
+    problem to find the globally optimal matching.
 
     Parameters
     ----------
@@ -86,6 +84,16 @@ def find_best_hypothesis(
         velocity score exp(-d²/(2σ²)) weights the composite score.
     velocity_sigma_px:
         Standard deviation (pixels) for the velocity Gaussian.
+    unmatched_score:
+        Score assigned to the "null" option for each nucleus. A nucleus is
+        left untracked this frame if no candidate beats this threshold.
+    iou_weight:
+        Exponent applied to the centroid-corrected IoU term. 0 = ignored, 1 = linear, >1 = amplified.
+    area_weight:
+        Exponent applied to the area ratio term.
+    velocity_weight:
+        Exponent applied to the velocity Gaussian term. Has no effect when
+        no predicted centroids are available (vel_score is fixed at 1.0).
     """
     if not candidates:
         return None, None
@@ -118,25 +126,26 @@ def find_best_hypothesis(
     cand_tree = KDTree(np.array(all_cand_centroids))
     two_sigma_sq = 2.0 * velocity_sigma_px ** 2
 
-    assigned: set[tuple[int, int]] = set()  # (entry_idx, cand_label_id)
-    next_frame = np.zeros_like(current_labels)
-    matched_entry_indices: list[int] = []
+    N = len(cur_ids)
+    M = len(all_keys)
 
-    for current_id in cur_ids:
+    # Score matrix: rows = current nuclei, cols = candidates + N null columns.
+    # Null columns allow a nucleus to go unmatched at cost `unmatched_score`.
+    S = np.zeros((N, M + N), dtype=np.float64)
+    for i, current_id in enumerate(cur_ids):
+        S[i, M + i] = unmatched_score  # null / unmatched option
+
+    cur_id_to_row = {cid: i for i, cid in enumerate(cur_ids)}
+
+    for i, current_id in enumerate(cur_ids):
         cur_centroid = cur_centroids[current_id]
         cur_area = int(cur_areas[current_id])
         cur_rel = cur_rel_pixels[current_id]
         pred_centroid = predicted_centroids.get(current_id) if predicted_centroids else None
 
-        best_score = 0.0
-        best_key: tuple[int, int] | None = None
-
-        for idx in cand_tree.query_ball_point(cur_centroid, max_dist_px):
-            entry_idx, cand_id = all_keys[idx]
-            key = (entry_idx, cand_id)
-            if key in assigned:
-                continue
-
+        search_center = pred_centroid if pred_centroid is not None else cur_centroid
+        for j in cand_tree.query_ball_point(search_center, max_dist_px):
+            entry_idx, cand_id = all_keys[j]
             c_areas, c_centroids, c_rel_pixels = cand_data[entry_idx]
             cand_area = int(c_areas[cand_id])
 
@@ -155,17 +164,24 @@ def find_best_hypothesis(
             else:
                 vel_score = 1.0
 
-            composite = iou_cc * area_ratio * vel_score
+            S[i, j] = (iou_cc ** iou_weight) * (area_ratio ** area_weight) * (vel_score ** velocity_weight)
 
-            if composite > best_score:
-                best_score = composite
-                best_key = key
+    # Solve LAP: maximize total score (negate for minimization).
+    row_ind, col_ind = linear_sum_assignment(-S)
 
-        if best_key is not None:
-            assigned.add(best_key)
-            entry_idx, cand_id = best_key
-            next_frame[candidates[entry_idx] == cand_id] = current_id
-            matched_entry_indices.append(entry_idx)
+    next_frame = np.zeros_like(current_labels)
+    matched_entry_indices: list[int] = []
+
+    for i, j in zip(row_ind, col_ind):
+        if j >= M:
+            continue  # assigned to null — nucleus unmatched this frame
+        if S[i, j] <= 0.0:
+            continue  # no valid score was computed for this pair
+
+        current_id = cur_ids[i]
+        entry_idx, cand_id = all_keys[j]
+        next_frame[candidates[entry_idx] == cand_id] = current_id
+        matched_entry_indices.append(entry_idx)
 
     if not matched_entry_indices:
         return None, None
@@ -181,13 +197,15 @@ def propagate_one_frame(
     iou_threshold: float = 0.3,
     max_dist_px: float = 50.0,
     velocity_sigma_px: float = 25.0,
+    iou_weight: float = 1.0,
+    area_weight: float = 1.0,
+    velocity_weight: float = 1.0,
 ) -> int | None:
     """Propagate tracking from t_current to t_current + 1.
 
     Searches all (p, z) combinations in the hypothesis database for t_next,
-    matches each tracked nucleus to its best candidate by per-label IoU,
-    area ratio, and velocity consistency, then writes a relabeled next frame
-    that preserves track IDs.
+    matches each tracked nucleus to its best candidate via global linear
+    assignment, then writes a relabeled next frame that preserves track IDs.
 
     Returns the winning p index, or None if no matches were found.
     """
@@ -235,6 +253,9 @@ def propagate_one_frame(
         current_labels, candidates, iou_threshold, max_dist_px,
         predicted_centroids=predicted_centroids,
         velocity_sigma_px=velocity_sigma_px,
+        iou_weight=iou_weight,
+        area_weight=area_weight,
+        velocity_weight=velocity_weight,
     )
     if next_frame is None or winner_idx is None:
         return None

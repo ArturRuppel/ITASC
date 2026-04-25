@@ -345,6 +345,34 @@ class NucleusWorkflowWidget(QWidget):
         row_vel.addWidget(self.vel_sigma_spin)
         search_lay.addLayout(row_vel)
 
+        def _weight_spin(default):
+            w = QDoubleSpinBox()
+            w.setRange(0.0, 10.0)
+            w.setValue(default)
+            w.setSingleStep(0.5)
+            w.setDecimals(1)
+            return w
+
+        row_iou_w = QHBoxLayout()
+        row_iou_w.addWidget(QLabel("IoU Weight:"))
+        self.iou_weight_spin = _weight_spin(1.0)
+        self.iou_weight_spin.setToolTip("Exponent on IoU term. 0 = ignored, 1 = linear, >1 = amplified.")
+        row_iou_w.addWidget(self.iou_weight_spin)
+        search_lay.addLayout(row_iou_w)
+
+        row_area_w = QHBoxLayout()
+        row_area_w.addWidget(QLabel("Area Weight:"))
+        self.area_weight_spin = _weight_spin(1.0)
+        self.area_weight_spin.setToolTip("Exponent on area ratio term.")
+        row_area_w.addWidget(self.area_weight_spin)
+        search_lay.addLayout(row_area_w)
+
+        row_vel_w = QHBoxLayout()
+        row_vel_w.addWidget(QLabel("Velocity Weight:"))
+        self.vel_weight_spin = _weight_spin(1.0)
+        self.vel_weight_spin.setToolTip("Exponent on velocity Gaussian term. No effect on frame 0.")
+        row_vel_w.addWidget(self.vel_weight_spin)
+        search_lay.addLayout(row_vel_w)
 
         prop_row = QHBoxLayout()
         self.prop_next_btn = QPushButton("Propagate Next")
@@ -906,6 +934,9 @@ class NucleusWorkflowWidget(QWidget):
                 iou_threshold=self.iou_spin.value(),
                 max_dist_px=self.dist_spin.value(),
                 velocity_sigma_px=self.vel_sigma_spin.value(),
+                iou_weight=self.iou_weight_spin.value(),
+                area_weight=self.area_weight_spin.value(),
+                velocity_weight=self.vel_weight_spin.value(),
             )
         except Exception as e:
             self._set_status(f"Propagation failed: {e}")
@@ -947,6 +978,9 @@ class NucleusWorkflowWidget(QWidget):
         iou_thr = self.iou_spin.value()
         max_dist = self.dist_spin.value()
         vel_sigma = self.vel_sigma_spin.value()
+        iou_w = self.iou_weight_spin.value()
+        area_w = self.area_weight_spin.value()
+        vel_w = self.vel_weight_spin.value()
         self._stop_flag = False
 
         # Flush any in-memory edits to disk before the worker thread reads them.
@@ -964,6 +998,9 @@ class NucleusWorkflowWidget(QWidget):
                 winner = propagate_one_frame(
                     hyp_path, tracked_path, t, iou_thr, max_dist,
                     velocity_sigma_px=vel_sigma,
+                    iou_weight=iou_w,
+                    area_weight=area_w,
+                    velocity_weight=vel_w,
                 )
                 if winner is None:
                     yield (t, None)
@@ -1291,6 +1328,9 @@ class NucleusWorkflowWidget(QWidget):
                 "iou_threshold": self.iou_spin.value(),
                 "max_dist_um": self.dist_spin.value(),
                 "velocity_sigma_px": self.vel_sigma_spin.value(),
+                "iou_weight": self.iou_weight_spin.value(),
+                "area_weight": self.area_weight_spin.value(),
+                "velocity_weight": self.vel_weight_spin.value(),
             },
         }
 
@@ -1340,3 +1380,6 @@ class NucleusWorkflowWidget(QWidget):
             if "iou_threshold" in se: self.iou_spin.setValue(se["iou_threshold"])
             if "max_dist_um" in se: self.dist_spin.setValue(se["max_dist_um"])
             if "velocity_sigma_px" in se: self.vel_sigma_spin.setValue(se["velocity_sigma_px"])
+            if "iou_weight" in se: self.iou_weight_spin.setValue(se["iou_weight"])
+            if "area_weight" in se: self.area_weight_spin.setValue(se["area_weight"])
+            if "velocity_weight" in se: self.vel_weight_spin.setValue(se["velocity_weight"])
