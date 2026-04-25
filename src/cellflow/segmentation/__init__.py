@@ -10,6 +10,18 @@ _LABEL_DTYPE = np.uint32
 
 
 @dataclass(frozen=True, slots=True)
+class ContourWatershedParams:
+    """Parameters for contour-map watershed hypothesis generation."""
+
+    seed_distance: int = 10
+    foreground_threshold: float = 0.5
+    min_size: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        return {"method": "contour_watershed", **asdict(self)}
+
+
+@dataclass(frozen=True, slots=True)
 class CellposeFlowHypothesisParams:
     """Parameters for native Cellpose flow-based mask generation (no sweep)."""
 
@@ -205,3 +217,81 @@ def compute_cellpose_flow_hypothesis(
         masks = result[0] if isinstance(result, tuple) else result
         out[z] = np.asarray(masks, dtype=_LABEL_DTYPE)
     return out
+
+
+def build_consensus_boundary(
+    prob_3d: np.ndarray,
+    dp_3d: np.ndarray,
+    cellprob_thresholds: list[float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Average find_boundaries over (threshold × z-slice) to build a consensus boundary map.
+
+    prob_3d: (Z, Y, X) logits  dp_3d: (Z, 2, Y, X)
+    Returns: (boundary, foreground) both (Y, X) float32.
+      boundary   — mean boundary density in [0, 1]
+      foreground — sigmoid of z-averaged prob logits
+    """
+    try:
+        import torch
+        from cellpose.dynamics import compute_masks
+        from skimage.segmentation import find_boundaries
+    except ImportError as exc:
+        raise ImportError("cellpose, torch, and scikit-image required") from exc
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    n_z = prob_3d.shape[0]
+    accum = np.zeros(prob_3d.shape[1:], dtype=np.float32)
+    n_total = 0
+
+    for thresh in cellprob_thresholds:
+        for z in range(n_z):
+            result = compute_masks(
+                dp_3d[z], prob_3d[z],
+                cellprob_threshold=float(thresh),
+                flow_threshold=0.0,
+                niter=200,
+                do_3D=False,
+                device=device,
+            )
+            masks = result[0] if isinstance(result, tuple) else result
+            accum += find_boundaries(np.asarray(masks), mode="inner").astype(np.float32)
+            n_total += 1
+
+    boundary = accum / n_total if n_total > 0 else accum
+    foreground = 1.0 / (1.0 + np.exp(-prob_3d.mean(axis=0).astype(np.float32)))
+    return boundary, foreground
+
+
+def compute_contour_watershed(
+    boundary: np.ndarray,
+    foreground: np.ndarray,
+    params: ContourWatershedParams,
+) -> np.ndarray:
+    """Run unseeded watershed on a consensus boundary image.
+
+    boundary:   (Y, X) float32 — high at cell borders
+    foreground: (Y, X) float32 — high inside cells (e.g. sigmoid of prob)
+    Returns:    (Y, X) uint32 label image
+    """
+    from scipy.ndimage import label as nd_label
+    from skimage.feature import peak_local_max
+    from skimage.segmentation import watershed
+
+    boundary = np.asarray(boundary, dtype=np.float32)
+    foreground = np.asarray(foreground, dtype=np.float32)
+
+    fg_mask = foreground > params.foreground_threshold
+
+    coords = peak_local_max(
+        foreground,
+        min_distance=max(1, int(params.seed_distance)),
+        threshold_abs=params.foreground_threshold,
+        exclude_border=False,
+    )
+    marker_mask = np.zeros(foreground.shape, dtype=bool)
+    if coords.size:
+        marker_mask[coords[:, 0], coords[:, 1]] = True
+    markers, _ = nd_label(marker_mask)
+
+    labels = watershed(boundary, markers=markers, mask=fg_mask, watershed_line=False)
+    return _remove_small_labels(np.asarray(labels, dtype=_LABEL_DTYPE), params.min_size)

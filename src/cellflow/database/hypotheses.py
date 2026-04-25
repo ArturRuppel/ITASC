@@ -16,8 +16,10 @@ import numpy as np
 
 from cellflow.segmentation import (
     CellposeFlowHypothesisParams,
+    ContourWatershedParams,
     NucleusHypothesisParams,
     compute_cellpose_flow_hypothesis,
+    compute_contour_watershed,
     compute_hypothesis_labels,
 )
 
@@ -410,3 +412,47 @@ def iter_hypothesis_records_from_stacks(
             labels_2d = compute_hypothesis_labels(prob_2d, dp_2d, seed_2d, params, global_lo=g_lo, global_hi=g_hi)
             labels_3d = labels_2d[np.newaxis]  # (1, Y, X)
             yield HypothesisRecord(t=t, p=p_idx, labels=labels_3d, params=params)
+
+
+@dataclass(frozen=True, slots=True)
+class ContourWatershedSweepSpec:
+    """Parameter sweep spec for contour-map watershed hypothesis generation."""
+
+    seed_distance: int = 10
+    seed_distance_min: int = 10
+    seed_distance_max: int = 10
+    seed_distance_step: int = 2
+    foreground_threshold: float = 0.5
+    foreground_threshold_min: float = 0.5
+    foreground_threshold_max: float = 0.5
+    foreground_threshold_step: float = 0.05
+    min_size: int = 0
+
+
+def build_contour_watershed_parameter_sets(spec: ContourWatershedSweepSpec) -> list[ContourWatershedParams]:
+    """Return the deterministic list of ContourWatershedParams for this sweep spec."""
+    seed_dist_vals = _int_values(spec.seed_distance, spec.seed_distance_min, spec.seed_distance_max, spec.seed_distance_step)
+    fg_vals        = _values(spec.foreground_threshold, spec.foreground_threshold_min, spec.foreground_threshold_max, spec.foreground_threshold_step)
+    return [
+        ContourWatershedParams(seed_distance=int(d), foreground_threshold=float(fg), min_size=int(spec.min_size))
+        for d in seed_dist_vals
+        for fg in fg_vals
+    ]
+
+
+def iter_contour_watershed_records(
+    contour_stack: np.ndarray,
+    foreground_stack: np.ndarray,
+    spec: ContourWatershedSweepSpec,
+) -> Iterator[HypothesisRecord]:
+    """Yield HypothesisRecords from cached contour and foreground maps.
+
+    contour_stack:    (T, Y, X) float32 consensus boundary maps
+    foreground_stack: (T, Y, X) float32 foreground probability maps
+    """
+    params_list = build_contour_watershed_parameter_sets(spec)
+    n_t = contour_stack.shape[0]
+    for t in range(n_t):
+        for p_idx, params in enumerate(params_list):
+            labels_2d = compute_contour_watershed(contour_stack[t], foreground_stack[t], params)
+            yield HypothesisRecord(t=t, p=p_idx, labels=labels_2d[np.newaxis], params=params)
