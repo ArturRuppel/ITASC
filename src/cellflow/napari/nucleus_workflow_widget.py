@@ -22,6 +22,8 @@ from qtpy.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -252,15 +254,13 @@ class NucleusWorkflowWidget(QWidget):
         db_lay = QVBoxLayout(db_group)
 
         hdr_row = QHBoxLayout()
-        self.db_match_lbl = QLabel("Match: —")
-        hdr_row.addWidget(self.db_match_lbl)
-        hdr_row.addStretch()
         self.db_activate_btn = QPushButton("Activate")
         self.db_activate_btn.setCheckable(True)
         self.db_activate_btn.setChecked(False)
         self.db_activate_btn.setToolTip("Activate database browser — enables live data loading")
         self.db_activate_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hdr_row.addWidget(self.db_activate_btn)
+        hdr_row.addStretch()
         self.db_refresh_btn = QPushButton()
         self.db_refresh_btn.setToolTip("Refresh database browser")
         self.db_refresh_btn.setIcon(
@@ -270,42 +270,23 @@ class NucleusWorkflowWidget(QWidget):
         hdr_row.addWidget(self.db_refresh_btn)
         db_lay.addLayout(hdr_row)
 
-        def _db_row(label, widget):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(label))
-            row.addWidget(widget)
-            db_lay.addLayout(row)
+        self.db_tree = QTreeWidget()
+        self.db_tree.setHeaderHidden(True)
+        self.db_tree.setColumnCount(1)
+        self.db_tree.setIndentation(14)
+        self.db_tree.setMinimumHeight(120)
+        self.db_tree.setToolTip("Click a parameter set to load it")
+        db_lay.addWidget(self.db_tree)
 
+        z_row = QHBoxLayout()
+        z_row.addWidget(QLabel("Display Z:"))
         self.db_z_spin = QSpinBox()
         self.db_z_spin.setRange(0, 99)
         self.db_z_spin.setValue(0)
-        _db_row("Z Slice:", self.db_z_spin)
-
-        self.db_thr_spin = QDoubleSpinBox()
-        self.db_thr_spin.setRange(0.0, 100.0)
-        self.db_thr_spin.setValue(30.0)
-        self.db_thr_spin.setDecimals(1)
-        self.db_thr_spin.setSingleStep(1.0)
-        _db_row("Threshold (%):", self.db_thr_spin)
-
-        self.db_cmp_spin = QDoubleSpinBox()
-        self.db_cmp_spin.setRange(0.0, 1.0)
-        self.db_cmp_spin.setValue(0.0)
-        self.db_cmp_spin.setDecimals(2)
-        self.db_cmp_spin.setSingleStep(0.01)
-        _db_row("Compactness:", self.db_cmp_spin)
-
-        self.db_sigma_spin = QDoubleSpinBox()
-        self.db_sigma_spin.setRange(0.0, 10.0)
-        self.db_sigma_spin.setValue(0.5)
-        self.db_sigma_spin.setDecimals(1)
-        self.db_sigma_spin.setSingleStep(0.1)
-        _db_row("Smooth Sigma:", self.db_sigma_spin)
-
-        self.db_seed_dist_spin = QSpinBox()
-        self.db_seed_dist_spin.setRange(1, 500)
-        self.db_seed_dist_spin.setValue(5)
-        _db_row("Seed Dist:", self.db_seed_dist_spin)
+        self.db_z_spin.setToolTip("Z-slice to display (only affects multi-z results)")
+        z_row.addWidget(self.db_z_spin)
+        z_row.addStretch()
+        db_lay.addLayout(z_row)
 
         db_btn_row = QHBoxLayout()
         self.set_seed_btn = QPushButton("Set as Tracking Seed")
@@ -364,19 +345,6 @@ class NucleusWorkflowWidget(QWidget):
         row_vel.addWidget(self.vel_sigma_spin)
         search_lay.addLayout(row_vel)
 
-        row_eps = QHBoxLayout()
-        row_eps.addWidget(QLabel("Cluster ε (px):"))
-        self.cluster_eps_spin = QDoubleSpinBox()
-        self.cluster_eps_spin.setRange(1, 100)
-        self.cluster_eps_spin.setValue(10.0)
-        self.cluster_eps_spin.setSingleStep(1.0)
-        self.cluster_eps_spin.setToolTip(
-            "Radius (px) for grouping candidate centroids from different (p, z) "
-            "combinations into one position cluster. Should be smaller than the "
-            "minimum inter-nucleus distance."
-        )
-        row_eps.addWidget(self.cluster_eps_spin)
-        search_lay.addLayout(row_eps)
 
         prop_row = QHBoxLayout()
         self.prop_next_btn = QPushButton("Propagate Next")
@@ -417,8 +385,8 @@ class NucleusWorkflowWidget(QWidget):
         self.run_sweep_btn.clicked.connect(self._on_run_sweep)
         self.run_terminal_btn.clicked.connect(self._on_run_terminal)
         self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
-        for _db_spin in (self.db_z_spin, self.db_thr_spin, self.db_cmp_spin, self.db_sigma_spin, self.db_seed_dist_spin):
-            _db_spin.valueChanged.connect(self._on_db_params_changed)
+        self.db_tree.currentItemChanged.connect(self._on_tree_item_selected)
+        self.db_z_spin.valueChanged.connect(self._on_db_z_changed)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self.refresh(self._pos_dir))
@@ -441,17 +409,7 @@ class NucleusWorkflowWidget(QWidget):
         if pos_dir is None:
             return
 
-        hyp_path = pos_dir / "2_nucleus" / "hypotheses.h5"
-        if hyp_path.exists():
-            try:
-                n_p, params_by_p = list_hypotheses(hyp_path)
-                if n_p > 0:
-                    self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s).")
-                    self._populate_db_spinboxes(params_by_p.get(0, {}))
-                else:
-                    self.status_lbl.setText("Hypothesis DB: empty.")
-            except Exception as e:
-                logger.warning("Could not read hypotheses.h5: %s", e)
+        self._refresh_db_tree()
 
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -539,39 +497,70 @@ class NucleusWorkflowWidget(QWidget):
         else:
             self.viewer.add_labels(data, name=name)
 
-    def _populate_db_spinboxes(self, info: dict) -> None:
-        """Set DB browser spinboxes from a parameter attribute dict, then trigger one update."""
-        spins = [self.db_z_spin, self.db_thr_spin, self.db_cmp_spin, self.db_sigma_spin, self.db_seed_dist_spin]
-        for s in spins:
-            s.blockSignals(True)
-        self.db_z_spin.setValue(int(info.get("z_slice", 0)))
-        self.db_thr_spin.setValue(float(info.get("threshold_pct", 30.0)))
-        self.db_cmp_spin.setValue(float(info.get("compactness", 0.0)))
-        self.db_sigma_spin.setValue(float(info.get("smooth_sigma", 0.5)))
-        self.db_seed_dist_spin.setValue(int(info.get("seed_distance", 5)))
-        for s in spins:
-            s.blockSignals(False)
-        self._on_db_params_changed()
-
-    def _find_matching_p(self, hyp_path: Path) -> int | None:
-        """Return the p-index whose stored parameters match the DB browser spinboxes, or None."""
+    def _refresh_db_tree(self) -> None:
+        """Repopulate the hypothesis tree from the DB on disk."""
+        self.db_tree.clear()
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self.status_lbl.setText("Hypothesis DB: not found.")
+            return
         try:
-            _, params_by_p = list_hypotheses(hyp_path)
-        except Exception:
-            return None
-        z = self.db_z_spin.value()
-        thr = self.db_thr_spin.value()
-        cmp_val = self.db_cmp_spin.value()
-        sigma = self.db_sigma_spin.value()
-        seed_dist = self.db_seed_dist_spin.value()
-        for p, info in params_by_p.items():
-            if (int(info.get("z_slice", -1)) == z
-                    and abs(float(info.get("threshold_pct", -1)) - thr) < 1e-4
-                    and abs(float(info.get("compactness", -1)) - cmp_val) < 1e-6
-                    and abs(float(info.get("smooth_sigma", -1)) - sigma) < 1e-6
-                    and int(info.get("seed_distance", -1)) == seed_dist):
-                return p
-        return None
+            n_p, params_by_p = list_hypotheses(hyp_path)
+        except Exception as e:
+            logger.warning("Could not read hypotheses.h5: %s", e)
+            self.status_lbl.setText(f"Hypothesis DB: read error — {e}")
+            return
+
+        watershed_entries = [(p, info) for p, info in sorted(params_by_p.items())
+                             if str(info.get("method", "watershed")) != "cellpose_flow"]
+        cellpose_entries = [(p, info) for p, info in sorted(params_by_p.items())
+                            if str(info.get("method", "watershed")) == "cellpose_flow"]
+
+        _SKIP_ATTRS = {"parameter_index", "parameter_json", "label_shape", "label_dtype"}
+
+        def _add_group(group_label: str, entries: list) -> None:
+            if not entries:
+                return
+            group_item = QTreeWidgetItem([f"{group_label}  ({len(entries)})"])
+            group_item.setData(0, Qt.ItemDataRole.UserRole, None)
+            group_item.setFlags(group_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            font = group_item.font(0)
+            font.setBold(True)
+            group_item.setFont(0, font)
+            self.db_tree.addTopLevelItem(group_item)
+            for p_idx, info in entries:
+                method = str(info.get("method", "watershed"))
+                if method == "cellpose_flow":
+                    summary = (
+                        f"p{p_idx:03d}  "
+                        f"prob={float(info.get('cellprob_threshold', 0)):.2f}  "
+                        f"flow={float(info.get('flow_threshold', 0)):.2f}  "
+                        f"n={int(info.get('niter', 0))}"
+                    )
+                else:
+                    summary = (
+                        f"p{p_idx:03d}  "
+                        f"z={int(info.get('z_slice', 0))}  "
+                        f"thr={float(info.get('threshold_pct', 0)):.0f}%  "
+                        f"σ={float(info.get('smooth_sigma', 0)):.2f}  "
+                        f"dist={int(info.get('seed_distance', 0))}"
+                    )
+                p_item = QTreeWidgetItem([summary])
+                p_item.setData(0, Qt.ItemDataRole.UserRole, p_idx)
+                for k, v in sorted(info.items()):
+                    if k in _SKIP_ATTRS:
+                        continue
+                    child = QTreeWidgetItem([f"  {k}:  {v}"])
+                    child.setData(0, Qt.ItemDataRole.UserRole, None)
+                    child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                    p_item.addChild(child)
+                group_item.addChild(p_item)
+            group_item.setExpanded(True)
+
+        _add_group("Watershed", watershed_entries)
+        _add_group("Cellpose Native", cellpose_entries)
+
+        self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s).")
 
     def _single_params(self) -> NucleusHypothesisParams:
         seed_source = self.seed_source_combo.currentText()
@@ -785,25 +774,26 @@ class NucleusWorkflowWidget(QWidget):
     def _on_db_activate_toggled(self, active: bool) -> None:
         self.db_activate_btn.setText("Deactivate" if active else "Activate")
         if active:
-            self._current_db_p = None  # force reload on activation
-            self._on_db_params_changed()
+            self._current_db_p = None
+            self._on_tree_item_selected(self.db_tree.currentItem(), None)
 
-    def _on_db_params_changed(self) -> None:
+    def _on_tree_item_selected(self, current: QTreeWidgetItem | None, _previous) -> None:
         if not self.db_activate_btn.isChecked():
             return
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self.db_match_lbl.setText("Match: —")
+        if current is None:
             return
-        p = self._find_matching_p(hyp_path)
+        p = current.data(0, Qt.ItemDataRole.UserRole)
         if p is None:
-            self.db_match_lbl.setText("Match: —")
-            self._current_db_p = None
             return
-        self.db_match_lbl.setText(f"Match: p{p:03d}")
         if p != self._current_db_p:
             self._current_db_p = p
             self._load_db_stack(p)
+
+    def _on_db_z_changed(self) -> None:
+        if not self.db_activate_btn.isChecked():
+            return
+        if self._current_db_p is not None:
+            self._load_db_stack(self._current_db_p)
 
     def _load_db_stack(self, p: int) -> None:
         hyp_path = self._hyp_path()
@@ -819,9 +809,9 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_load_stack_done(self, result: tuple) -> None:
         p, stack = result
-        # Each entry is stored as (1, Y, X) — extract the z-plane → (T, Y, X)
         if stack.ndim == 4:
-            stack = stack[:, 0]
+            z = min(self.db_z_spin.value(), stack.shape[1] - 1)
+            stack = stack[:, z]
         if _HYP_LAYER in self.viewer.layers:
             self.viewer.layers[_HYP_LAYER].data = stack
         else:
@@ -833,15 +823,15 @@ class NucleusWorkflowWidget(QWidget):
         if hyp_path is None or not hyp_path.exists():
             self._set_status("No hypothesis DB found.")
             return
-
-        p = self._find_matching_p(hyp_path)
+        p = self._current_db_p
         if p is None:
-            self._set_status("No matching hypothesis for current parameters.")
+            self._set_status("No parameter set selected in the DB browser.")
             return
         t = self._current_t()
         try:
-            volume = read_hypothesis_labels(hyp_path, t, p)  # (1, Y, X)
-            slice_2d = volume[0]  # (Y, X)
+            volume = read_hypothesis_labels(hyp_path, t, p)  # (Z, Y, X)
+            z = min(self.db_z_spin.value(), volume.shape[0] - 1)
+            slice_2d = volume[z]  # (Y, X)
             tracked_path = self._tracked_path()
             write_tracked_frame(tracked_path, t, slice_2d)
             self._update_tracked_display(slice_2d, t=t)
@@ -854,16 +844,17 @@ class NucleusWorkflowWidget(QWidget):
         if hyp_path is None or not hyp_path.exists():
             self._set_status("No hypothesis DB found.")
             return
-        p = self._find_matching_p(hyp_path)
+        p = self._current_db_p
         if p is None:
-            self._set_status("No matching hypothesis for current parameters.")
+            self._set_status("No parameter set selected in the DB browser.")
             return
+        z = self.db_z_spin.value()
         try:
-            zero_hypothesis_slice(hyp_path, 0, p)
+            zero_hypothesis_slice(hyp_path, z, p)
         except Exception as e:
             self._set_status(f"Delete slice failed: {e}")
             return
-        self._set_status(f"Zeroed labels across all frames, p={p}.")
+        self._set_status(f"Zeroed z={z} across all frames, p={p}.")
         if _HYP_LAYER in self.viewer.layers:
             self.viewer.layers[_HYP_LAYER].data[:] = 0
             self.viewer.layers[_HYP_LAYER].refresh()
@@ -873,9 +864,9 @@ class NucleusWorkflowWidget(QWidget):
         if hyp_path is None or not hyp_path.exists():
             self._set_status("No hypothesis DB found.")
             return
-        p = self._find_matching_p(hyp_path)
+        p = self._current_db_p
         if p is None:
-            self._set_status("No matching hypothesis for current parameters.")
+            self._set_status("No parameter set selected in the DB browser.")
             return
         try:
             delete_hypothesis_parameter(hyp_path, p)
@@ -885,7 +876,6 @@ class NucleusWorkflowWidget(QWidget):
         if _HYP_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[_HYP_LAYER])
         self._current_db_p = None
-        self.db_match_lbl.setText("Match: —")
         self._set_status(f"Removed p={p}.")
         self.refresh(self._pos_dir)
 
@@ -916,7 +906,6 @@ class NucleusWorkflowWidget(QWidget):
                 iou_threshold=self.iou_spin.value(),
                 max_dist_px=self.dist_spin.value(),
                 velocity_sigma_px=self.vel_sigma_spin.value(),
-                cluster_eps_px=self.cluster_eps_spin.value(),
             )
         except Exception as e:
             self._set_status(f"Propagation failed: {e}")
@@ -975,7 +964,6 @@ class NucleusWorkflowWidget(QWidget):
                 winner = propagate_one_frame(
                     hyp_path, tracked_path, t, iou_thr, max_dist,
                     velocity_sigma_px=vel_sigma,
-                    cluster_eps_px=self.cluster_eps_spin.value(),
                 )
                 if winner is None:
                     yield (t, None)
@@ -1298,16 +1286,11 @@ class NucleusWorkflowWidget(QWidget):
             },
             "db_browser": {
                 "z_slice": self.db_z_spin.value(),
-                "threshold": self.db_thr_spin.value(),
-                "compactness": self.db_cmp_spin.value(),
-                "sigma": self.db_sigma_spin.value(),
-                "seed_dist": self.db_seed_dist_spin.value(),
             },
             "search": {
                 "iou_threshold": self.iou_spin.value(),
                 "max_dist_um": self.dist_spin.value(),
                 "velocity_sigma_px": self.vel_sigma_spin.value(),
-                "cluster_eps_px": self.cluster_eps_spin.value(),
             },
         }
 
@@ -1349,18 +1332,11 @@ class NucleusWorkflowWidget(QWidget):
 
         if "db_browser" in state:
             db = state["db_browser"]
-            # Map state keys to the HDF5 attribute names used by _populate_db_spinboxes
-            self._populate_db_spinboxes({
-                "z_slice": db.get("z_slice", 0),
-                "threshold_pct": db.get("threshold", 30.0),
-                "compactness": db.get("compactness", 0.0),
-                "smooth_sigma": db.get("sigma", 0.5),
-                "seed_distance": db.get("seed_dist", 5),
-            })
+            if "z_slice" in db:
+                self.db_z_spin.setValue(db["z_slice"])
 
         if "search" in state:
             se = state["search"]
             if "iou_threshold" in se: self.iou_spin.setValue(se["iou_threshold"])
             if "max_dist_um" in se: self.dist_spin.setValue(se["max_dist_um"])
             if "velocity_sigma_px" in se: self.vel_sigma_spin.setValue(se["velocity_sigma_px"])
-            if "cluster_eps_px" in se: self.cluster_eps_spin.setValue(se["cluster_eps_px"])
