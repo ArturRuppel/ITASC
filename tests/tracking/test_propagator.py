@@ -136,6 +136,43 @@ def test_velocity_predicted_centroid_extends_search():
     assert 1 in np.unique(next_frame)
 
 
+def test_dedup_prevents_collision():
+    """Two source nuclei must not both be assigned to the same physical location.
+
+    Nucleus 1 is faint (no good match). Nucleus 2 has a clear match. Two
+    hypothesis images both contain a candidate at nucleus 2's next position.
+    Without deduplication, nucleus 1 could steal the duplicate column and appear
+    at the same location as nucleus 2. With deduplication those two columns are
+    merged into one cluster, so only one nucleus can win it.
+    """
+    shape = (100, 200)
+    sz = 12
+
+    current = np.zeros(shape, dtype=np.uint32)
+    current[10:10 + sz, 10:10 + sz] = 1    # nucleus 1 (will have no good match)
+    current[10:10 + sz, 100:100 + sz] = 2  # nucleus 2
+
+    # Both hypothesis images carry a candidate at nucleus 2's next position only.
+    cand_a = np.zeros(shape, dtype=np.uint32)
+    cand_a[11:11 + sz, 101:101 + sz] = 1
+
+    cand_b = np.zeros(shape, dtype=np.uint32)
+    cand_b[12:12 + sz, 102:102 + sz] = 1  # slightly shifted duplicate
+
+    next_frame, _ = find_best_hypothesis(
+        current, [cand_a, cand_b],
+        iou_threshold=0.1,
+        max_dist_px=50.0,
+        dedup_radius_px=10.0,
+    )
+
+    assert next_frame is not None
+    tracked = {int(v) for v in np.unique(next_frame) if v != 0}
+    # Nucleus 2 should be matched; nucleus 1 must NOT appear at the same spot.
+    assert 2 in tracked
+    assert 1 not in tracked  # went to null, not colliding with nucleus 2
+
+
 def test_two_nuclei_no_cross_assignment():
     """Two nuclei each have one clearly matching candidate; neither should
     steal the other's match (validates the assignment constraint)."""
