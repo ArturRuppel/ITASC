@@ -16,6 +16,8 @@ class ContourWatershedParams:
     seed_distance: int = 10
     foreground_threshold: float = 0.5
     min_size: int = 0
+    noise_scale: float = 0.0
+    noise_blur_sigma: float = 0.0
 
     def to_dict(self) -> dict[str, object]:
         return {"method": "contour_watershed", **asdict(self)}
@@ -279,6 +281,13 @@ def compute_contour_watershed(
 
     boundary = np.asarray(boundary, dtype=np.float32)
     foreground = np.asarray(foreground, dtype=np.float32)
+
+    # Apply correlated noise perturbation
+    if params.noise_scale > 0:
+        noise = np.random.normal(0, params.noise_scale, foreground.shape)
+        if params.noise_blur_sigma > 0:
+            noise = gaussian_filter(noise, sigma=params.noise_blur_sigma)
+        foreground = np.clip(foreground + noise, 0, 1)
 
     fg_mask = foreground > params.foreground_threshold
 

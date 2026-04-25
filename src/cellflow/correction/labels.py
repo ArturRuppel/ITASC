@@ -387,4 +387,30 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
                 seg[comp_mask] = filled[comp_mask]
                 cleared += n_px
 
-    return cleared
+
+def apply_gamma(logits: np.ndarray, gamma: float) -> np.ndarray:
+    """
+    Applies gamma correction to logits by converting to probability space and back.
+    
+    Args:
+        logits: Input logit array.
+        gamma: Gamma correction factor.
+        
+    Returns:
+        Gamma-corrected logits.
+    """
+    if gamma == 1.0:
+        return logits
+    
+    # Sigmoid to get probabilities
+    probs = 1.0 / (1.0 + np.exp(-logits))
+    
+    # Apply gamma
+    probs_gamma = np.power(probs, gamma)
+    
+    # Avoid log(0) and log(inf)
+    probs_gamma = np.clip(probs_gamma, 1e-7, 1 - 1e-7)
+    
+    # Logit to get back to logit space
+    logits_gamma = np.log(probs_gamma / (1.0 - probs_gamma))
+    return logits_gamma

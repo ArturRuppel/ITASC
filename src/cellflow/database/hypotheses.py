@@ -427,16 +427,27 @@ class ContourWatershedSweepSpec:
     foreground_threshold_max: float = 0.5
     foreground_threshold_step: float = 0.05
     min_size: int = 0
+    noise_scale: float = 0.0
+    noise_scale_min: float = 0.0
+    noise_scale_max: float = 0.0
+    noise_scale_step: float = 0.05
 
 
 def build_contour_watershed_parameter_sets(spec: ContourWatershedSweepSpec) -> list[ContourWatershedParams]:
     """Return the deterministic list of ContourWatershedParams for this sweep spec."""
     seed_dist_vals = _int_values(spec.seed_distance, spec.seed_distance_min, spec.seed_distance_max, spec.seed_distance_step)
     fg_vals        = _values(spec.foreground_threshold, spec.foreground_threshold_min, spec.foreground_threshold_max, spec.foreground_threshold_step)
+    noise_vals     = _values(spec.noise_scale, spec.noise_scale_min, spec.noise_scale_max, spec.noise_scale_step)
     return [
-        ContourWatershedParams(seed_distance=int(d), foreground_threshold=float(fg), min_size=int(spec.min_size))
+        ContourWatershedParams(
+            seed_distance=int(d),
+            foreground_threshold=float(fg),
+            min_size=int(spec.min_size),
+            noise_scale=float(n),
+        )
         for d in seed_dist_vals
         for fg in fg_vals
+        for n in noise_vals
     ]
 
 

@@ -189,6 +189,26 @@ class NucleusWorkflowWidget(QWidget):
         fg_row.addWidget(self.single_fg_threshold)
         tuning_lay.addLayout(fg_row)
 
+        noise_row = QHBoxLayout()
+        noise_row.addWidget(QLabel("Noise Scale:"))
+        self.single_noise_scale = QDoubleSpinBox()
+        self.single_noise_scale.setRange(0.0, 1.0)
+        self.single_noise_scale.setValue(0.0)
+        self.single_noise_scale.setDecimals(2)
+        self.single_noise_scale.setSingleStep(0.01)
+        self.single_noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
+        noise_row.addWidget(self.single_noise_scale)
+
+        noise_row.addWidget(QLabel("Blur Sigma:"))
+        self.single_noise_blur = QDoubleSpinBox()
+        self.single_noise_blur.setRange(0.0, 10.0)
+        self.single_noise_blur.setValue(0.0)
+        self.single_noise_blur.setDecimals(1)
+        self.single_noise_blur.setSingleStep(0.5)
+        self.single_noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
+        noise_row.addWidget(self.single_noise_blur)
+        tuning_lay.addLayout(noise_row)
+
         tuning_btn_row = QHBoxLayout()
         self.preview_btn = QPushButton("Preview")
         self.save_db_btn = QPushButton("Save to DB")
@@ -221,6 +241,7 @@ class NucleusWorkflowWidget(QWidget):
 
         self.sweep_seed_dist  = _sweep_row("Seed Dist",            8,    14,   2,     decimals=0)
         self.sweep_fg_thr     = _sweep_row("Foreground Threshold", 0.4,  0.6,  0.05,  decimals=2)
+        self.sweep_noise      = _sweep_row("Noise Scale",          0.0,  0.1,  0.05,  decimals=2)
 
         sweep_btn_row = QHBoxLayout()
         self.run_sweep_btn    = QPushButton("Run Sweep")
@@ -347,6 +368,21 @@ class NucleusWorkflowWidget(QWidget):
         self.vel_weight_spin = _weight_spin(1.0)
         row_vel_w.addWidget(self.vel_weight_spin)
         search_lay.addLayout(row_vel_w)
+
+        row_pos_w = QHBoxLayout()
+        row_pos_w.addWidget(QLabel("Position Weight:"))
+        self.pos_weight_spin = _weight_spin(1.0)
+        row_pos_w.addWidget(self.pos_weight_spin)
+        search_lay.addLayout(row_pos_w)
+
+        row_unmatched = QHBoxLayout()
+        row_unmatched.addWidget(QLabel("Unmatched Score:"))
+        self.unmatched_spin = QDoubleSpinBox()
+        self.unmatched_spin.setRange(0.0, 1.0)
+        self.unmatched_spin.setValue(0.1)
+        self.unmatched_spin.setSingleStep(0.01)
+        row_unmatched.addWidget(self.unmatched_spin)
+        search_lay.addLayout(row_unmatched)
 
         prop_row = QHBoxLayout()
         self.prop_next_btn = QPushButton("Propagate Next")
@@ -575,6 +611,8 @@ class NucleusWorkflowWidget(QWidget):
             seed_distance=self.single_seed_dist.value(),
             foreground_threshold=self.single_fg_threshold.value(),
             min_size=self.min_size_spin.value(),
+            noise_scale=self.single_noise_scale.value(),
+            noise_blur_sigma=self.single_noise_blur.value(),
         )
 
     def _contour_sweep_spec(self) -> ContourWatershedSweepSpec:
@@ -587,6 +625,10 @@ class NucleusWorkflowWidget(QWidget):
             foreground_threshold_min=self.sweep_fg_thr[0].value(),
             foreground_threshold_max=self.sweep_fg_thr[1].value(),
             foreground_threshold_step=self.sweep_fg_thr[2].value(),
+            noise_scale=self.sweep_noise[0].value(),
+            noise_scale_min=self.sweep_noise[0].value(),
+            noise_scale_max=self.sweep_noise[1].value(),
+            noise_scale_step=self.sweep_noise[2].value(),
             min_size=self.min_size_spin.value(),
         )
 
@@ -1033,6 +1075,8 @@ class NucleusWorkflowWidget(QWidget):
                 iou_weight=self.iou_weight_spin.value(),
                 area_weight=self.area_weight_spin.value(),
                 velocity_weight=self.vel_weight_spin.value(),
+                pos_weight=self.pos_weight_spin.value(),
+                unmatched_score=self.unmatched_spin.value(),
             )
         except Exception as e:
             self._set_status(f"Propagation failed: {e}")
@@ -1076,6 +1120,8 @@ class NucleusWorkflowWidget(QWidget):
         iou_w     = self.iou_weight_spin.value()
         area_w    = self.area_weight_spin.value()
         vel_w     = self.vel_weight_spin.value()
+        pos_w     = self.pos_weight_spin.value()
+        unmatch_s = self.unmatched_spin.value()
         self._stop_flag = False
 
         if _TRACKED_LAYER in self.viewer.layers:
@@ -1095,6 +1141,8 @@ class NucleusWorkflowWidget(QWidget):
                     iou_weight=iou_w,
                     area_weight=area_w,
                     velocity_weight=vel_w,
+                    pos_weight=pos_w,
+                    unmatched_score=unmatch_s,
                 )
                 if winner is None:
                     yield (t, None)
@@ -1281,8 +1329,10 @@ class NucleusWorkflowWidget(QWidget):
                 "step": self.cp_step_spin.value(),
             },
             "tuning": {
-                "seed_dist":  self.single_seed_dist.value(),
-                "fg_threshold": self.single_fg_threshold.value(),
+                "seed_dist":      self.single_seed_dist.value(),
+                "fg_threshold":   self.single_fg_threshold.value(),
+                "noise_scale":    self.single_noise_scale.value(),
+                "noise_blur_sigma": self.single_noise_blur.value(),
             },
             "sweep": {
                 "seed_dist_min":  self.sweep_seed_dist[0].value(),
@@ -1291,6 +1341,9 @@ class NucleusWorkflowWidget(QWidget):
                 "fg_thr_min":     self.sweep_fg_thr[0].value(),
                 "fg_thr_max":     self.sweep_fg_thr[1].value(),
                 "fg_thr_step":    self.sweep_fg_thr[2].value(),
+                "noise_min":      self.sweep_noise[0].value(),
+                "noise_max":      self.sweep_noise[1].value(),
+                "noise_step":     self.sweep_noise[2].value(),
             },
             "db_browser": {
                 "seed_dist":    self.db_seed_dist_spin.value(),
@@ -1303,6 +1356,8 @@ class NucleusWorkflowWidget(QWidget):
                 "iou_weight":       self.iou_weight_spin.value(),
                 "area_weight":      self.area_weight_spin.value(),
                 "velocity_weight":  self.vel_weight_spin.value(),
+                "pos_weight":       self.pos_weight_spin.value(),
+                "unmatched_score":  self.unmatched_spin.value(),
             },
         }
 
@@ -1320,6 +1375,8 @@ class NucleusWorkflowWidget(QWidget):
             t = state["tuning"]
             if "seed_dist"    in t: self.single_seed_dist.setValue(t["seed_dist"])
             if "fg_threshold" in t: self.single_fg_threshold.setValue(t["fg_threshold"])
+            if "noise_scale"  in t: self.single_noise_scale.setValue(t["noise_scale"])
+            if "noise_blur_sigma" in t: self.single_noise_blur.setValue(t["noise_blur_sigma"])
         if "sweep" in state:
             sw = state["sweep"]
             if "seed_dist_min"  in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
@@ -1328,6 +1385,9 @@ class NucleusWorkflowWidget(QWidget):
             if "fg_thr_min"     in sw: self.sweep_fg_thr[0].setValue(sw["fg_thr_min"])
             if "fg_thr_max"     in sw: self.sweep_fg_thr[1].setValue(sw["fg_thr_max"])
             if "fg_thr_step"    in sw: self.sweep_fg_thr[2].setValue(sw["fg_thr_step"])
+            if "noise_min"      in sw: self.sweep_noise[0].setValue(sw["noise_min"])
+            if "noise_max"      in sw: self.sweep_noise[1].setValue(sw["noise_max"])
+            if "noise_step"     in sw: self.sweep_noise[2].setValue(sw["noise_step"])
         if "db_browser" in state:
             db = state["db_browser"]
             if "seed_dist"    in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
@@ -1340,3 +1400,5 @@ class NucleusWorkflowWidget(QWidget):
             if "iou_weight"        in se: self.iou_weight_spin.setValue(se["iou_weight"])
             if "area_weight"       in se: self.area_weight_spin.setValue(se["area_weight"])
             if "velocity_weight"   in se: self.vel_weight_spin.setValue(se["velocity_weight"])
+            if "pos_weight"        in se: self.pos_weight_spin.setValue(se["pos_weight"])
+            if "unmatched_score"   in se: self.unmatched_spin.setValue(se["unmatched_score"])
