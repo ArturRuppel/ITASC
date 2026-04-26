@@ -25,8 +25,10 @@ class ContourWatershedParams:
     seed_distance: int = 10
     foreground_threshold: float = 0.5
     min_size: int = 0
+    min_circularity: float = 0.0
     noise_scale: float = 0.0
     noise_blur_sigma: float = 0.0
+    run_index: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {"method": "contour_watershed", **asdict(self)}
@@ -56,6 +58,7 @@ class NucleusHypothesisParams:
     seed_source: str = "auto"
     seed_distance: int = 5
     min_size: int = 0
+    min_circularity: float = 0.0
     z_slice: int = 0
 
     def to_dict(self) -> dict[str, object]:
@@ -103,6 +106,35 @@ def _remove_small_labels(labels: np.ndarray, min_size: int) -> np.ndarray:
         return labels
     out = labels.copy()
     out[np.isin(labels, small)] = 0
+    return out
+
+
+def _remove_low_circularity_labels(labels: np.ndarray, min_circularity: float) -> np.ndarray:
+    """Remove labels whose 4π·area/perimeter² is below min_circularity (0 = keep all)."""
+    if min_circularity <= 0.0:
+        return labels
+    from skimage.measure import regionprops
+
+    # Work on a 2D projection if labels is 3D with a single Z
+    squeezed = labels.squeeze() if labels.ndim == 3 and labels.shape[0] == 1 else labels
+    if squeezed.ndim != 2:
+        return labels  # can't compute perimeter on >2D, skip
+
+    import math
+    remove = []
+    for prop in regionprops(squeezed.astype(np.int32)):
+        perimeter = prop.perimeter
+        if perimeter < 1e-6:
+            remove.append(prop.label)
+            continue
+        circularity = 4.0 * math.pi * prop.area / (perimeter ** 2)
+        if circularity < min_circularity:
+            remove.append(prop.label)
+
+    if not remove:
+        return labels
+    out = labels.copy()
+    out[np.isin(labels, remove)] = 0
     return out
 
 
@@ -172,7 +204,8 @@ def compute_hypothesis_labels(
         compactness=float(params.compactness),
         watershed_line=False,
     )
-    return _remove_small_labels(np.asarray(labels, dtype=_LABEL_DTYPE), params.min_size)
+    result = _remove_small_labels(np.asarray(labels, dtype=_LABEL_DTYPE), params.min_size)
+    return _remove_low_circularity_labels(result, params.min_circularity)
 
 
 def compute_cellpose_flow_hypothesis(
@@ -314,4 +347,5 @@ def compute_contour_watershed(
     markers, _ = nd_label(marker_mask)
 
     labels = watershed(boundary, markers=markers, mask=fg_mask, watershed_line=False)
-    return _remove_small_labels(np.asarray(labels, dtype=_LABEL_DTYPE), params.min_size)
+    result = _remove_small_labels(np.asarray(labels, dtype=_LABEL_DTYPE), params.min_size)
+    return _remove_low_circularity_labels(result, params.min_circularity)

@@ -52,6 +52,7 @@ class NucleusHypothesisSweepSpec:
     seed_distance_max: int = 5
     seed_distance_step: int = 1
     min_size: int = 0
+    min_circularity: float = 0.0
     z_slice: int = 0
     z_slice_min: int = 0
     z_slice_max: int = 0
@@ -103,6 +104,7 @@ def build_parameter_sets(spec: NucleusHypothesisSweepSpec) -> list[NucleusHypoth
                             seed_source=spec.seed_source,
                             seed_distance=int(seed_distance),
                             min_size=int(spec.min_size),
+                            min_circularity=float(spec.min_circularity),
                             z_slice=int(z_slice),
                         ))
     return params
@@ -331,6 +333,7 @@ def iter_hypothesis_records(path: str | Path) -> Iterator[HypothesisRecord]:
                         seed_source=str(p_grp.attrs.get("seed_source", "auto")),
                         seed_distance=int(p_grp.attrs.get("seed_distance", 5)),
                         min_size=int(p_grp.attrs.get("min_size", 0)),
+                        min_circularity=float(p_grp.attrs.get("min_circularity", 0.0)),
                         z_slice=int(p_grp.attrs.get("z_slice", 0)),
                     )
                 yield HypothesisRecord(t=t_idx, p=p_idx, labels=labels, params=params)
@@ -428,27 +431,33 @@ class ContourWatershedSweepSpec:
     foreground_threshold_max: float = 0.5
     foreground_threshold_step: float = 0.05
     min_size: int = 0
+    min_circularity: float = 0.0
     noise_scale: float = 0.0
-    noise_scale_min: float = 0.0
-    noise_scale_max: float = 0.0
-    noise_scale_step: float = 0.05
+    noise_blur_sigma: float = 0.0
+    n_runs: int = 1
 
 
 def build_contour_watershed_parameter_sets(spec: ContourWatershedSweepSpec) -> list[ContourWatershedParams]:
-    """Return the deterministic list of ContourWatershedParams for this sweep spec."""
+    """Return the deterministic list of ContourWatershedParams for this sweep spec.
+
+    With n_runs > 1 and noise_scale > 0, each run gets a unique run_index so
+    stochastic repetitions are stored as distinct hypotheses in the DB.
+    """
     seed_dist_vals = _int_values(spec.seed_distance, spec.seed_distance_min, spec.seed_distance_max, spec.seed_distance_step)
     fg_vals        = _values(spec.foreground_threshold, spec.foreground_threshold_min, spec.foreground_threshold_max, spec.foreground_threshold_step)
-    noise_vals     = _values(spec.noise_scale, spec.noise_scale_min, spec.noise_scale_max, spec.noise_scale_step)
     return [
         ContourWatershedParams(
             seed_distance=int(d),
             foreground_threshold=float(fg),
             min_size=int(spec.min_size),
-            noise_scale=float(n),
+            min_circularity=float(spec.min_circularity),
+            noise_scale=float(spec.noise_scale),
+            noise_blur_sigma=float(spec.noise_blur_sigma),
+            run_index=run_idx,
         )
+        for run_idx in range(max(1, spec.n_runs))
         for d in seed_dist_vals
         for fg in fg_vals
-        for n in noise_vals
     ]
 
 

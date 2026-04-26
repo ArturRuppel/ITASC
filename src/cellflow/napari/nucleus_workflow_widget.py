@@ -207,6 +207,16 @@ class NucleusWorkflowWidget(QWidget):
         self.min_size_spin.setValue(0)
         self.min_size_spin.setToolTip("Remove regions smaller than this many pixels (0 = keep all)")
         shared_row.addWidget(self.min_size_spin)
+        shared_row.addWidget(QLabel("Min Circularity:"))
+        self.min_circularity_spin = QDoubleSpinBox()
+        self.min_circularity_spin.setRange(0.0, 1.0)
+        self.min_circularity_spin.setValue(0.0)
+        self.min_circularity_spin.setDecimals(2)
+        self.min_circularity_spin.setSingleStep(0.05)
+        self.min_circularity_spin.setToolTip(
+            "Remove regions with circularity (4π·area/perimeter²) below this value (0 = keep all, 1 = perfect circle)"
+        )
+        shared_row.addWidget(self.min_circularity_spin)
         shared_row.addStretch()
         self.overwrite_check = QCheckBox("Overwrite existing")
         shared_row.addWidget(self.overwrite_check)
@@ -291,7 +301,38 @@ class NucleusWorkflowWidget(QWidget):
 
         self.sweep_seed_dist  = _sweep_row("Seed Dist",            8,    14,   2,     decimals=0)
         self.sweep_fg_thr     = _sweep_row("Foreground Threshold", 0.4,  0.6,  0.05,  decimals=2)
-        self.sweep_noise      = _sweep_row("Noise Scale",          0.0,  0.1,  0.05,  decimals=2)
+
+        sweep_noise_row = QHBoxLayout()
+        sweep_noise_row.addWidget(QLabel("Noise Scale:"))
+        self.sweep_noise_scale = QDoubleSpinBox()
+        self.sweep_noise_scale.setRange(0.0, 1.0)
+        self.sweep_noise_scale.setValue(0.0)
+        self.sweep_noise_scale.setDecimals(2)
+        self.sweep_noise_scale.setSingleStep(0.01)
+        self.sweep_noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
+        sweep_noise_row.addWidget(self.sweep_noise_scale)
+        sweep_noise_row.addWidget(QLabel("Blur Sigma:"))
+        self.sweep_noise_blur = QDoubleSpinBox()
+        self.sweep_noise_blur.setRange(0.0, 10.0)
+        self.sweep_noise_blur.setValue(0.0)
+        self.sweep_noise_blur.setDecimals(1)
+        self.sweep_noise_blur.setSingleStep(0.5)
+        self.sweep_noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
+        sweep_noise_row.addWidget(self.sweep_noise_blur)
+        sweep_lay.addLayout(sweep_noise_row)
+
+        sweep_runs_row = QHBoxLayout()
+        sweep_runs_row.addWidget(QLabel("Runs:"))
+        self.sweep_n_runs = QSpinBox()
+        self.sweep_n_runs.setRange(1, 100)
+        self.sweep_n_runs.setValue(1)
+        self.sweep_n_runs.setToolTip(
+            "How many times to run the sweep. With noise > 0 each run produces "
+            "different stochastic hypotheses stored as separate parameter sets."
+        )
+        sweep_runs_row.addWidget(self.sweep_n_runs)
+        sweep_runs_row.addStretch()
+        sweep_lay.addLayout(sweep_runs_row)
 
         sweep_btn_row = QHBoxLayout()
         self.run_sweep_btn    = QPushButton("Run Sweep")
@@ -669,6 +710,7 @@ class NucleusWorkflowWidget(QWidget):
             seed_distance=self.single_seed_dist.value(),
             foreground_threshold=self.single_fg_threshold.value(),
             min_size=self.min_size_spin.value(),
+            min_circularity=self.min_circularity_spin.value(),
             noise_scale=self.single_noise_scale.value(),
             noise_blur_sigma=self.single_noise_blur.value(),
         )
@@ -683,11 +725,11 @@ class NucleusWorkflowWidget(QWidget):
             foreground_threshold_min=self.sweep_fg_thr[0].value(),
             foreground_threshold_max=self.sweep_fg_thr[1].value(),
             foreground_threshold_step=self.sweep_fg_thr[2].value(),
-            noise_scale=self.sweep_noise[0].value(),
-            noise_scale_min=self.sweep_noise[0].value(),
-            noise_scale_max=self.sweep_noise[1].value(),
-            noise_scale_step=self.sweep_noise[2].value(),
+            noise_scale=self.sweep_noise_scale.value(),
+            noise_blur_sigma=self.sweep_noise_blur.value(),
+            n_runs=self.sweep_n_runs.value(),
             min_size=self.min_size_spin.value(),
+            min_circularity=self.min_circularity_spin.value(),
         )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -922,7 +964,10 @@ class NucleusWorkflowWidget(QWidget):
                 foreground_threshold_min=params.foreground_threshold,
                 foreground_threshold_max=params.foreground_threshold,
                 foreground_threshold_step=0.05,
+                noise_scale=params.noise_scale,
+                noise_blur_sigma=params.noise_blur_sigma,
                 min_size=params.min_size,
+                min_circularity=params.min_circularity,
             )
             records = iter_contour_watershed_records(contour, foreground, spec)
             write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite, n_t=None, n_p=1)
@@ -1069,9 +1114,10 @@ class NucleusWorkflowWidget(QWidget):
             f"    foreground_threshold_max={spec.foreground_threshold_max},\n"
             f"    foreground_threshold_step={spec.foreground_threshold_step},\n"
             f"    noise_scale={spec.noise_scale},\n"
-            f"    noise_scale_min={spec.noise_scale_min}, noise_scale_max={spec.noise_scale_max},\n"
-            f"    noise_scale_step={spec.noise_scale_step},\n"
+            f"    noise_blur_sigma={spec.noise_blur_sigma},\n"
+            f"    n_runs={spec.n_runs},\n"
             f"    min_size={spec.min_size},\n"
+            f"    min_circularity={spec.min_circularity},\n"
             ")\n"
             "params_list = build_contour_watershed_parameter_sets(spec)\n"
             "if not overwrite and output_path.exists():\n"
@@ -1477,8 +1523,9 @@ class NucleusWorkflowWidget(QWidget):
 
     def get_state(self) -> dict:
         return {
-            "overwrite":   self.overwrite_check.isChecked(),
-            "min_size":    self.min_size_spin.value(),
+            "overwrite":        self.overwrite_check.isChecked(),
+            "min_size":         self.min_size_spin.value(),
+            "min_circularity":  self.min_circularity_spin.value(),
             "cellprob": {
                 "min":       self.cp_min_spin.value(),
                 "max":       self.cp_max_spin.value(),
@@ -1500,9 +1547,9 @@ class NucleusWorkflowWidget(QWidget):
                 "fg_thr_min":     self.sweep_fg_thr[0].value(),
                 "fg_thr_max":     self.sweep_fg_thr[1].value(),
                 "fg_thr_step":    self.sweep_fg_thr[2].value(),
-                "noise_min":      self.sweep_noise[0].value(),
-                "noise_max":      self.sweep_noise[1].value(),
-                "noise_step":     self.sweep_noise[2].value(),
+                "noise_scale":    self.sweep_noise_scale.value(),
+                "noise_blur_sigma": self.sweep_noise_blur.value(),
+                "n_runs":         self.sweep_n_runs.value(),
             },
             "db_browser": {
                 "seed_dist":    self.db_seed_dist_spin.value(),
@@ -1525,6 +1572,8 @@ class NucleusWorkflowWidget(QWidget):
             self.overwrite_check.setChecked(state["overwrite"])
         if "min_size" in state:
             self.min_size_spin.setValue(state["min_size"])
+        if "min_circularity" in state:
+            self.min_circularity_spin.setValue(state["min_circularity"])
         if "cellprob" in state:
             cp = state["cellprob"]
             if "min"        in cp: self.cp_min_spin.setValue(cp["min"])
@@ -1541,15 +1590,15 @@ class NucleusWorkflowWidget(QWidget):
             if "noise_blur_sigma" in t: self.single_noise_blur.setValue(t["noise_blur_sigma"])
         if "sweep" in state:
             sw = state["sweep"]
-            if "seed_dist_min"  in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
-            if "seed_dist_max"  in sw: self.sweep_seed_dist[1].setValue(sw["seed_dist_max"])
-            if "seed_dist_step" in sw: self.sweep_seed_dist[2].setValue(sw["seed_dist_step"])
-            if "fg_thr_min"     in sw: self.sweep_fg_thr[0].setValue(sw["fg_thr_min"])
-            if "fg_thr_max"     in sw: self.sweep_fg_thr[1].setValue(sw["fg_thr_max"])
-            if "fg_thr_step"    in sw: self.sweep_fg_thr[2].setValue(sw["fg_thr_step"])
-            if "noise_min"      in sw: self.sweep_noise[0].setValue(sw["noise_min"])
-            if "noise_max"      in sw: self.sweep_noise[1].setValue(sw["noise_max"])
-            if "noise_step"     in sw: self.sweep_noise[2].setValue(sw["noise_step"])
+            if "seed_dist_min"    in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
+            if "seed_dist_max"    in sw: self.sweep_seed_dist[1].setValue(sw["seed_dist_max"])
+            if "seed_dist_step"   in sw: self.sweep_seed_dist[2].setValue(sw["seed_dist_step"])
+            if "fg_thr_min"       in sw: self.sweep_fg_thr[0].setValue(sw["fg_thr_min"])
+            if "fg_thr_max"       in sw: self.sweep_fg_thr[1].setValue(sw["fg_thr_max"])
+            if "fg_thr_step"      in sw: self.sweep_fg_thr[2].setValue(sw["fg_thr_step"])
+            if "noise_scale"      in sw: self.sweep_noise_scale.setValue(sw["noise_scale"])
+            if "noise_blur_sigma" in sw: self.sweep_noise_blur.setValue(sw["noise_blur_sigma"])
+            if "n_runs"           in sw: self.sweep_n_runs.setValue(sw["n_runs"])
         if "db_browser" in state:
             db = state["db_browser"]
             if "seed_dist"    in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
