@@ -360,6 +360,59 @@ def compute_masks_for_threshold(
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class SeededWatershedParams:
+    """Parameters for nucleus-seeded watershed cell hypothesis generation."""
+
+    basin: str = "prob"
+    foreground_threshold: float = 0.5
+    compactness: float = 0.0
+
+    def to_dict(self) -> dict[str, object]:
+        return {"method": "seeded_watershed", **asdict(self)}
+
+
+def compute_seeded_watershed(
+    prob_2d: np.ndarray,
+    dp_2d: np.ndarray | None,
+    seeds_2d: np.ndarray,
+    params: SeededWatershedParams,
+) -> np.ndarray:
+    """Seeded watershed using nucleus labels as markers for one 2D z-slice.
+
+    Foreground mask is always derived from sigmoid(prob_2d). Seeds whose
+    centroid falls outside the mask are silently dropped by the watershed.
+    """
+    from scipy.ndimage import binary_fill_holes
+    from skimage.segmentation import watershed
+
+    prob_2d = np.asarray(prob_2d, dtype=np.float32)
+    seeds_2d = np.asarray(seeds_2d, dtype=np.int32)
+
+    sigmoid_prob = 1.0 / (1.0 + np.exp(-prob_2d))
+    fg_mask = binary_fill_holes(sigmoid_prob > params.foreground_threshold)
+
+    if params.basin == "prob":
+        basin = sigmoid_prob
+    elif params.basin == "flow_mag":
+        if dp_2d is None:
+            raise ValueError("flow_mag basin requires a dp array")
+        basin = _flow_magnitude(dp_2d)
+        if basin.ndim != 2:
+            raise ValueError(f"Expected 2D flow magnitude slice, got shape {basin.shape}")
+    else:
+        raise ValueError(f"Unknown basin={params.basin!r}; expected 'prob' or 'flow_mag'")
+
+    labels = watershed(
+        -basin,
+        markers=seeds_2d,
+        mask=fg_mask,
+        compactness=float(params.compactness),
+        watershed_line=False,
+    )
+    return np.asarray(labels, dtype=_LABEL_DTYPE)
+
+
 def compute_contour_watershed(
     boundary: np.ndarray,
     foreground: np.ndarray,

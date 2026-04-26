@@ -18,10 +18,12 @@ from cellflow.segmentation import (
     CellposeFlowHypothesisParams,
     ContourWatershedParams,
     NucleusHypothesisParams,
+    SeededWatershedParams,
     build_consensus_boundary,
     compute_cellpose_flow_hypothesis,
     compute_contour_watershed,
     compute_hypothesis_labels,
+    compute_seeded_watershed,
 )
 
 _LABEL_DTYPE = np.uint32
@@ -66,7 +68,7 @@ class HypothesisRecord:
     t: int
     p: int
     labels: np.ndarray  # shape (Z, Y, X), dtype uint32
-    params: NucleusHypothesisParams | CellposeFlowHypothesisParams
+    params: NucleusHypothesisParams | CellposeFlowHypothesisParams | ContourWatershedParams | SeededWatershedParams
 
 
 def _values(current: float, minimum: float, maximum: float, step: float) -> list[float]:
@@ -317,7 +319,13 @@ def iter_hypothesis_records(path: str | Path) -> Iterator[HypothesisRecord]:
                 p_grp = t_grp[p_name]
                 labels = np.asarray(p_grp["labels"][:], dtype=_LABEL_DTYPE)
                 method = str(p_grp.attrs.get("method", "watershed"))
-                if method == "cellpose_flow":
+                if method == "seeded_watershed":
+                    params: NucleusHypothesisParams | CellposeFlowHypothesisParams | ContourWatershedParams | SeededWatershedParams = SeededWatershedParams(
+                        basin=str(p_grp.attrs.get("basin", "prob")),
+                        foreground_threshold=float(p_grp.attrs.get("foreground_threshold", 0.5)),
+                        compactness=float(p_grp.attrs.get("compactness", 0.0)),
+                    )
+                elif method == "cellpose_flow":
                     params: NucleusHypothesisParams | CellposeFlowHypothesisParams | ContourWatershedParams = CellposeFlowHypothesisParams(
                         cellprob_threshold=float(p_grp.attrs.get("cellprob_threshold", 0.0)),
                         flow_threshold=float(p_grp.attrs.get("flow_threshold", 0.4)),
@@ -426,6 +434,84 @@ def iter_hypothesis_records_from_stacks(
             labels_2d = compute_hypothesis_labels(prob_2d, dp_2d, seed_2d, params, global_lo=g_lo, global_hi=g_hi)
             labels_3d = labels_2d[np.newaxis]  # (1, Y, X)
             yield HypothesisRecord(t=t, p=p_idx, labels=labels_3d, params=params)
+
+
+@dataclass(frozen=True, slots=True)
+class SeededWatershedSweepSpec:
+    """Parameter sweep spec for nucleus-seeded watershed cell hypothesis generation."""
+
+    basin: str = "prob"
+    foreground_threshold: float = 0.5
+    foreground_threshold_min: float = 0.5
+    foreground_threshold_max: float = 0.5
+    foreground_threshold_step: float = 0.05
+    compactness: float = 0.0
+    compactness_min: float = 0.0
+    compactness_max: float = 0.0
+    compactness_step: float = 0.1
+
+
+def build_seeded_watershed_parameter_sets(spec: SeededWatershedSweepSpec) -> list[SeededWatershedParams]:
+    """Return the deterministic list of SeededWatershedParams for this sweep spec."""
+    fg_vals = _values(spec.foreground_threshold, spec.foreground_threshold_min, spec.foreground_threshold_max, spec.foreground_threshold_step)
+    compactness_vals = _values(spec.compactness, spec.compactness_min, spec.compactness_max, spec.compactness_step)
+    return [
+        SeededWatershedParams(basin=spec.basin, foreground_threshold=float(fg), compactness=float(c))
+        for fg in fg_vals
+        for c in compactness_vals
+    ]
+
+
+def _run_seeded_watershed_task(
+    args: tuple[int, int, "SeededWatershedParams", np.ndarray, np.ndarray | None, np.ndarray],
+) -> "HypothesisRecord":
+    t, p_idx, params, prob_t, dp_t, nuc_t = args
+    n_z = prob_t.shape[0]
+    slices = []
+    for z in range(n_z):
+        dp_2d = dp_t[z] if dp_t is not None else None
+        slices.append(compute_seeded_watershed(prob_t[z], dp_2d, nuc_t[z], params))
+    return HypothesisRecord(t=t, p=p_idx, labels=np.stack(slices, axis=0), params=params)
+
+
+def iter_seeded_watershed_records(
+    prob_stack: np.ndarray,
+    dp_stack: np.ndarray | None,
+    nucleus_stack: np.ndarray,
+    spec: SeededWatershedSweepSpec,
+    n_workers: int = 1,
+) -> Iterator[HypothesisRecord]:
+    """Yield one HypothesisRecord per (t, p) for seeded-watershed cell segmentation.
+
+    prob_stack:    (T, Z, Y, X) float32 probability logits
+    dp_stack:      (T, Z, 2, Y, X) float32 flow vectors; required when basin='flow_mag'
+    nucleus_stack: (T, Z, Y, X) int32 tracked nucleus labels used as watershed seeds
+    """
+    params_list = build_seeded_watershed_parameter_sets(spec)
+    if not params_list:
+        return
+
+    prob_stack = np.asarray(prob_stack, dtype=np.float32)
+    if prob_stack.ndim == 3:
+        prob_stack = prob_stack[np.newaxis]
+    nucleus_stack = np.asarray(nucleus_stack)
+    if nucleus_stack.ndim == 3:
+        nucleus_stack = nucleus_stack[np.newaxis]
+
+    n_t = prob_stack.shape[0]
+    tasks = [
+        (t, p_idx, params, prob_stack[t], dp_stack[t] if dp_stack is not None else None, nucleus_stack[t])
+        for t in range(n_t)
+        for p_idx, params in enumerate(params_list)
+    ]
+
+    if n_workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            yield from executor.map(_run_seeded_watershed_task, tasks)
+    else:
+        for a in tasks:
+            yield _run_seeded_watershed_task(a)
 
 
 @dataclass(frozen=True, slots=True)
