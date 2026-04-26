@@ -343,6 +343,23 @@ def swap_labels(seg: np.ndarray, pos_a: tuple, pos_b: tuple) -> bool:
     return True
 
 
+def relabel_cell(seg: np.ndarray, pos: tuple, new_label: int) -> bool:
+    """Assign *new_label* to the cell at *pos* in *seg* (in-place).
+
+    If *new_label* already exists in the frame, the two cells are swapped so
+    no label is lost.  Returns ``False`` when *pos* hits background, already
+    has *new_label*, or *new_label* is 0.
+    """
+    old_label = _label_at(seg, pos)
+    if old_label == 0 or new_label == 0 or old_label == new_label:
+        return False
+    conflict = seg == new_label
+    seg[seg == old_label] = new_label
+    if np.any(conflict):
+        seg[conflict] = old_label
+    return True
+
+
 def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
     """Remove isolated pixel groups too small to be valid cells."""
     from skimage.measure import label as _cc_label

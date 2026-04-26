@@ -25,6 +25,7 @@ from cellflow.correction.labels import (
     draw_cell_path,
     erase_cell,
     merge_cells,
+    relabel_cell,
     split_across,
     split_draw,
     swap_labels,
@@ -63,6 +64,7 @@ class CorrectionWidget(QWidget):
 
         self._selected_label: int = 0
         self._selected_pos = None
+        self._selected_t: int = -1
         self._ctrl_click_first = None
         self._ctrl_click_first_label: int = 0
         self._ctrl_click_first_t: int = -1
@@ -126,7 +128,8 @@ class CorrectionWidget(QWidget):
             ("Delete",                             "Erase selected cell"),
             ("Ctrl+Left-click (cell selected)",    "Merge with clicked cell"),
             ("Ctrl+Left-click × 2 (same cell)",    "Split (watershed, 2 seeds)"),
-            ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell"),
+            ("Right-click (cell selected)",         "Swap with clicked cell (same or other frame)"),
+            ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell (same frame)"),
             ("Ctrl+Right-click → Right-click",     "Swap (two-step, no selection)"),
             ("Ctrl-z",                             "Undo"),
             ("Shift+Left / Shift+Right",           "Previous / next cell across all frames"),
@@ -194,6 +197,7 @@ class CorrectionWidget(QWidget):
         self._layer = layer
         self._selected_label = 0
         self._selected_pos = None
+        self._selected_t = -1
         self._ctrl_click_first = None
         self._ctrl_click_first_label = 0
         self._ctrl_click_first_t = -1
@@ -264,6 +268,7 @@ class CorrectionWidget(QWidget):
         self._layer = None
         self._selected_label = 0
         self._selected_pos = None
+        self._selected_t = -1
         self._ctrl_click_first = None
         self._ctrl_click_first_label = 0
         self._ctrl_click_first_t = -1
@@ -535,6 +540,7 @@ class CorrectionWidget(QWidget):
                             _layer.refresh()
                             self._selected_label = 0
                             self._selected_pos = None
+                            self._selected_t = -1
                             self._update_highlight(t, 0)
                             self._set_status(f"Swapped — Active on '{_layer.name}'")
                         else:
@@ -545,7 +551,7 @@ class CorrectionWidget(QWidget):
                         self._set_status(f"Swap — label {lab} selected, right-click second cell")
                     return
 
-                # Plain Right-click: complete two-step swap
+                # Plain Right-click: complete two-step swap, or pass label across frames
                 if btn == 2 and not mods:
                     if self._swap_first_pos is not None:
                         if t != self._swap_first_t:
@@ -565,6 +571,24 @@ class CorrectionWidget(QWidget):
                                 self._set_status("Swap failed — click on two different cells")
                                 self._swap_first_pos = None
                                 self._swap_first_t = -1
+                    elif self._selected_label != 0 and self._selected_t != -1:
+                        before = seg2d.copy()
+                        if t != self._selected_t:
+                            # Pass selected label to a cell in a different frame
+                            ok = relabel_cell(seg2d, pos, self._selected_label)
+                            msg_ok  = f"Relabelled → {self._selected_label} — Active on '{_layer.name}'"
+                            msg_err = "Relabel failed — click on a different cell"
+                        else:
+                            # Swap selected cell with right-clicked cell in same frame
+                            ok = swap_labels(seg2d, self._selected_pos, pos)
+                            msg_ok  = f"Swapped — Active on '{_layer.name}'"
+                            msg_err = "Swap failed — click on a different cell"
+                        if ok:
+                            _record_history(_layer, t, before)
+                            _layer.refresh()
+                            self._set_status(msg_ok)
+                        else:
+                            self._set_status(msg_err)
                     return
 
                 # Ctrl+Left-click: merge or split
@@ -623,6 +647,7 @@ class CorrectionWidget(QWidget):
                             _layer.refresh()
                             self._selected_label = 0
                             self._selected_pos = None
+                            self._selected_t = -1
                             self._update_highlight(t, _label_at(seg2d, pos))
                         else:
                             self._ctrl_click_first = pos
@@ -643,6 +668,7 @@ class CorrectionWidget(QWidget):
                     self._swap_first_t = -1
                     lab = _label_at(seg2d, pos)
                     self._selected_pos = pos if lab != 0 else None
+                    self._selected_t = t if lab != 0 else -1
                     self._update_highlight(t, lab)
                     if lab:
                         self._set_status(f"Selected label {lab} — Active on '{_layer.name}'")
