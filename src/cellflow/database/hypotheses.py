@@ -18,6 +18,7 @@ from cellflow.segmentation import (
     CellposeFlowHypothesisParams,
     ContourWatershedParams,
     NucleusHypothesisParams,
+    build_consensus_boundary,
     compute_cellpose_flow_hypothesis,
     compute_contour_watershed,
     compute_hypothesis_labels,
@@ -456,7 +457,7 @@ def iter_contour_watershed_records(
     foreground_stack: np.ndarray,
     spec: ContourWatershedSweepSpec,
 ) -> Iterator[HypothesisRecord]:
-    """Yield HypothesisRecords from cached contour and foreground maps.
+    """Yield HypothesisRecords from cached contour and foreground maps (single gamma).
 
     contour_stack:    (T, Y, X) float32 consensus boundary maps
     foreground_stack: (T, Y, X) float32 foreground probability maps
@@ -466,4 +467,37 @@ def iter_contour_watershed_records(
     for t in range(n_t):
         for p_idx, params in enumerate(params_list):
             labels_2d = compute_contour_watershed(contour_stack[t], foreground_stack[t], params)
+            yield HypothesisRecord(t=t, p=p_idx, labels=labels_2d[np.newaxis], params=params)
+
+
+def iter_contour_watershed_records_from_raw(
+    prob_stack: np.ndarray,
+    dp_stack: np.ndarray,
+    cellprob_thresholds: list[float],
+    spec: ContourWatershedSweepSpec,
+    gamma: float = 1.0,
+) -> Iterator[HypothesisRecord]:
+    """Build contour maps from raw prob/dp and yield HypothesisRecords.
+
+    prob_stack: (T, Z, Y, X)  dp_stack: (T, Z, 2, Y, X)
+    Contour maps are built once per frame; gamma is passed through to build_consensus_boundary.
+    """
+    params_list = build_contour_watershed_parameter_sets(spec)
+    if not params_list:
+        return
+
+    prob_stack = np.asarray(prob_stack, dtype=np.float32)
+    dp_stack   = np.asarray(dp_stack,   dtype=np.float32)
+    if prob_stack.ndim == 3:
+        prob_stack = prob_stack[np.newaxis]
+    if dp_stack.ndim == 4:
+        dp_stack = dp_stack[np.newaxis]
+    n_t = prob_stack.shape[0]
+
+    for t in range(n_t):
+        boundary, foreground = build_consensus_boundary(
+            prob_stack[t], dp_stack[t], cellprob_thresholds, gamma=gamma
+        )
+        for p_idx, params in enumerate(params_list):
+            labels_2d = compute_contour_watershed(boundary, foreground, params)
             yield HypothesisRecord(t=t, p=p_idx, labels=labels_2d[np.newaxis], params=params)

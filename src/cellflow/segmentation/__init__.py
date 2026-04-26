@@ -9,6 +9,15 @@ from scipy.ndimage import gaussian_filter
 _LABEL_DTYPE = np.uint32
 
 
+def apply_gamma(logits: np.ndarray, gamma: float) -> np.ndarray:
+    """Gamma-correct Cellpose probability logits: sigmoid → power → logit."""
+    if gamma == 1.0:
+        return logits
+    probs = 1.0 / (1.0 + np.exp(-logits))
+    probs = np.clip(np.power(probs, gamma), 1e-7, 1 - 1e-7)
+    return np.log(probs / (1.0 - probs))
+
+
 @dataclass(frozen=True, slots=True)
 class ContourWatershedParams:
     """Parameters for contour-map watershed hypothesis generation."""
@@ -225,13 +234,14 @@ def build_consensus_boundary(
     prob_3d: np.ndarray,
     dp_3d: np.ndarray,
     cellprob_thresholds: list[float],
+    gamma: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Average find_boundaries over (threshold × z-slice) to build a consensus boundary map.
 
     prob_3d: (Z, Y, X) logits  dp_3d: (Z, 2, Y, X)
     Returns: (boundary, foreground) both (Y, X) float32.
       boundary   — mean boundary density in [0, 1]
-      foreground — sigmoid of z-averaged prob logits
+      foreground — sigmoid of z-averaged gamma-corrected prob logits
     """
     try:
         import torch
@@ -240,6 +250,7 @@ def build_consensus_boundary(
     except ImportError as exc:
         raise ImportError("cellpose, torch, and scikit-image required") from exc
 
+    prob_3d = apply_gamma(np.asarray(prob_3d, dtype=np.float32), gamma)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_z = prob_3d.shape[0]
     accum = np.zeros(prob_3d.shape[1:], dtype=np.float32)
