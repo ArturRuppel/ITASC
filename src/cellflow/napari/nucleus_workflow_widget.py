@@ -75,9 +75,10 @@ class NucleusWorkflowWidget(QWidget):
         self._build_worker = None
         self._sweep_worker = None
         self._current_db_p: int | None = None
-        self._db_param_map: dict[tuple[int, float], int] = {}
+        self._db_param_map: dict[tuple[int, float, int], int] = {}
         self._db_seed_dist_vals: list[int] = []
         self._db_fg_thr_vals: list[float] = []
+        self._db_run_vals: list[int] = []
         self._setup_ui()
         self._connect_signals()
 
@@ -383,6 +384,12 @@ class NucleusWorkflowWidget(QWidget):
         self.db_fg_thr_spin.setSingleStep(0.05)
         self.db_fg_thr_spin.setEnabled(False)
         param_row.addWidget(self.db_fg_thr_spin)
+        param_row.addWidget(QLabel("Run:"))
+        self.db_run_spin = QSpinBox()
+        self.db_run_spin.setRange(0, 99)
+        self.db_run_spin.setValue(0)
+        self.db_run_spin.setEnabled(False)
+        param_row.addWidget(self.db_run_spin)
         db_lay.addLayout(param_row)
 
         self.db_info_lbl = QLabel("—")
@@ -532,6 +539,7 @@ class NucleusWorkflowWidget(QWidget):
         self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
         self.db_seed_dist_spin.valueChanged.connect(self._on_db_param_changed)
         self.db_fg_thr_spin.valueChanged.connect(self._on_db_param_changed)
+        self.db_run_spin.valueChanged.connect(self._on_db_param_changed)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
@@ -637,9 +645,11 @@ class NucleusWorkflowWidget(QWidget):
         self._db_param_map = {}
         self._db_seed_dist_vals = []
         self._db_fg_thr_vals = []
+        self._db_run_vals = []
         self._current_db_p = None
         self.db_seed_dist_spin.setEnabled(False)
         self.db_fg_thr_spin.setEnabled(False)
+        self.db_run_spin.setEnabled(False)
         self.db_info_lbl.setText("—")
 
         hyp_path = self._hyp_path()
@@ -663,15 +673,19 @@ class NucleusWorkflowWidget(QWidget):
 
         seed_dist_set: set[int] = set()
         fg_thr_set: set[float] = set()
+        run_set: set[int] = set()
         for p_idx, info in contour_entries.items():
             d = int(info.get("seed_distance", 10))
             fg = round(float(info.get("foreground_threshold", 0.5)), 4)
+            run = int(info.get("run_index", 0))
             seed_dist_set.add(d)
             fg_thr_set.add(fg)
-            self._db_param_map[(d, fg)] = p_idx
+            run_set.add(run)
+            self._db_param_map[(d, fg, run)] = p_idx
 
         self._db_seed_dist_vals = sorted(seed_dist_set)
         self._db_fg_thr_vals = sorted(fg_thr_set)
+        self._db_run_vals = sorted(run_set)
 
         self.db_seed_dist_spin.blockSignals(True)
         self.db_seed_dist_spin.setMinimum(self._db_seed_dist_vals[0])
@@ -690,6 +704,14 @@ class NucleusWorkflowWidget(QWidget):
         self.db_fg_thr_spin.setValue(self._db_fg_thr_vals[0])
         self.db_fg_thr_spin.setEnabled(True)
         self.db_fg_thr_spin.blockSignals(False)
+
+        self.db_run_spin.blockSignals(True)
+        self.db_run_spin.setMinimum(self._db_run_vals[0])
+        self.db_run_spin.setMaximum(self._db_run_vals[-1])
+        self.db_run_spin.setSingleStep(1)
+        self.db_run_spin.setValue(self._db_run_vals[0])
+        self.db_run_spin.setEnabled(len(self._db_run_vals) > 1)
+        self.db_run_spin.blockSignals(False)
 
         self._update_db_info_lbl()
         self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s).")
@@ -1164,11 +1186,14 @@ class NucleusWorkflowWidget(QWidget):
             return None
         d = self.db_seed_dist_spin.value()
         fg = round(self.db_fg_thr_spin.value(), 4)
+        run = self.db_run_spin.value()
         if self._db_seed_dist_vals:
             d = min(self._db_seed_dist_vals, key=lambda x: abs(x - d))
         if self._db_fg_thr_vals:
             fg = round(min(self._db_fg_thr_vals, key=lambda x: abs(x - fg)), 4)
-        return self._db_param_map.get((d, fg))
+        if self._db_run_vals:
+            run = min(self._db_run_vals, key=lambda x: abs(x - run))
+        return self._db_param_map.get((d, fg, run))
 
     def _update_db_info_lbl(self) -> None:
         p = self._lookup_db_p()
@@ -1554,6 +1579,7 @@ class NucleusWorkflowWidget(QWidget):
             "db_browser": {
                 "seed_dist":    self.db_seed_dist_spin.value(),
                 "fg_threshold": self.db_fg_thr_spin.value(),
+                "run_index":    self.db_run_spin.value(),
             },
             "search": {
                 "iou_threshold":    self.iou_spin.value(),
@@ -1603,6 +1629,7 @@ class NucleusWorkflowWidget(QWidget):
             db = state["db_browser"]
             if "seed_dist"    in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
             if "fg_threshold" in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
+            if "run_index"    in db: self.db_run_spin.setValue(db["run_index"])
         if "search" in state:
             se = state["search"]
             if "iou_threshold"     in se: self.iou_spin.setValue(se["iou_threshold"])
