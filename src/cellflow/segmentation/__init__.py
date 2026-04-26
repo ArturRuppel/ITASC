@@ -1,6 +1,7 @@
 """Nucleus segmentation via watershed on Cellpose probability maps."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -138,6 +139,18 @@ def _remove_low_circularity_labels(labels: np.ndarray, min_circularity: float) -
     return out
 
 
+def _fill_and_close_labels(labels: np.ndarray) -> np.ndarray:
+    """Fill interior holes per label."""
+    from scipy.ndimage import binary_fill_holes
+
+    out = np.zeros_like(labels)
+    for label_id in np.unique(labels):
+        if label_id == 0:
+            continue
+        out[binary_fill_holes(labels == label_id)] = label_id
+    return out
+
+
 def _peak_local_max_markers(basin: np.ndarray, min_distance: int) -> np.ndarray:
     from scipy.ndimage import label as nd_label
     from skimage.feature import peak_local_max
@@ -194,8 +207,10 @@ def compute_hypothesis_labels(
                 f"Markers shape {markers.shape} does not match basin shape {basin.shape}"
             )
 
+    from scipy.ndimage import binary_fill_holes
+
     threshold = float(params.threshold_pct) / 100.0
-    mask = (basin >= threshold) | (markers > 0)
+    mask = binary_fill_holes((basin >= threshold) | (markers > 0))
 
     labels = watershed(
         -basin,
@@ -204,7 +219,8 @@ def compute_hypothesis_labels(
         compactness=float(params.compactness),
         watershed_line=False,
     )
-    result = _remove_small_labels(np.asarray(labels, dtype=_LABEL_DTYPE), params.min_size)
+    result = _fill_and_close_labels(np.asarray(labels, dtype=_LABEL_DTYPE))
+    result = _remove_small_labels(result, params.min_size)
     return _remove_low_circularity_labels(result, params.min_circularity)
 
 
@@ -268,10 +284,13 @@ def build_consensus_boundary(
     dp_3d: np.ndarray,
     cellprob_thresholds: list[float],
     gamma: float = 1.0,
+    *,
+    mask_callback: Callable[[np.ndarray, int], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Average find_boundaries over (threshold × z-slice) to build a consensus boundary map.
 
     prob_3d: (Z, Y, X) logits  dp_3d: (Z, 2, Y, X)
+    mask_callback: optional sink called as mask_callback(masks_zyx, thresh_idx) after each threshold.
     Returns: (boundary, foreground) both (Y, X) float32.
       boundary   — mean boundary density in [0, 1]
       foreground — sigmoid of z-averaged gamma-corrected prob logits
@@ -289,7 +308,8 @@ def build_consensus_boundary(
     accum = np.zeros(prob_3d.shape[1:], dtype=np.float32)
     n_total = 0
 
-    for thresh in cellprob_thresholds:
+    for i_thresh, thresh in enumerate(cellprob_thresholds):
+        z_masks: list[np.ndarray] = []
         for z in range(n_z):
             result = compute_masks(
                 dp_3d[z], prob_3d[z],
@@ -302,10 +322,42 @@ def build_consensus_boundary(
             masks = result[0] if isinstance(result, tuple) else result
             accum += find_boundaries(np.asarray(masks), mode="inner").astype(np.float32)
             n_total += 1
+            if mask_callback is not None:
+                z_masks.append(np.asarray(masks, dtype=np.uint32))
+        if mask_callback is not None:
+            mask_callback(np.stack(z_masks), i_thresh)
 
     boundary = accum / n_total if n_total > 0 else accum
     foreground = 1.0 / (1.0 + np.exp(-prob_3d.mean(axis=0).astype(np.float32)))
     return boundary, foreground
+
+
+def compute_masks_for_threshold(
+    dp_3d: np.ndarray, prob_3d: np.ndarray, threshold: float
+) -> np.ndarray:
+    """Run Cellpose mask generation for a specific threshold across all z-slices."""
+    try:
+        import torch
+        from cellpose.dynamics import compute_masks
+    except ImportError as exc:
+        raise ImportError("cellpose and torch required") from exc
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    n_z = prob_3d.shape[0]
+    out = np.zeros(prob_3d.shape, dtype=_LABEL_DTYPE)
+    for z in range(n_z):
+        result = compute_masks(
+            dp_3d[z],
+            prob_3d[z],
+            cellprob_threshold=float(threshold),
+            flow_threshold=0.0,
+            niter=200,
+            do_3D=False,
+            device=device,
+        )
+        masks = result[0] if isinstance(result, tuple) else result
+        out[z] = np.asarray(masks, dtype=_LABEL_DTYPE)
+    return out
 
 
 def compute_contour_watershed(
@@ -319,6 +371,7 @@ def compute_contour_watershed(
     foreground: (Y, X) float32 — high inside cells (e.g. sigmoid of prob)
     Returns:    (Y, X) uint32 label image
     """
+    from scipy.ndimage import binary_fill_holes
     from scipy.ndimage import label as nd_label
     from skimage.feature import peak_local_max
     from skimage.segmentation import watershed
@@ -333,7 +386,11 @@ def compute_contour_watershed(
             noise = gaussian_filter(noise, sigma=params.noise_blur_sigma)
         foreground = np.clip(foreground + noise, 0, 1)
 
-    fg_mask = foreground > params.foreground_threshold
+    from skimage.morphology import disk, opening
+
+    fg_mask = binary_fill_holes(foreground > params.foreground_threshold)
+    if params.noise_scale > 0:
+        fg_mask = opening(fg_mask, disk(2))
 
     coords = peak_local_max(
         foreground,
@@ -347,5 +404,6 @@ def compute_contour_watershed(
     markers, _ = nd_label(marker_mask)
 
     labels = watershed(boundary, markers=markers, mask=fg_mask, watershed_line=False)
-    result = _remove_small_labels(np.asarray(labels, dtype=_LABEL_DTYPE), params.min_size)
+    result = _fill_and_close_labels(np.asarray(labels, dtype=_LABEL_DTYPE))
+    result = _remove_small_labels(result, params.min_size)
     return _remove_low_circularity_labels(result, params.min_circularity)
