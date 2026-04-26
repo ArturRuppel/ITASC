@@ -111,30 +111,6 @@ def test_multiple_hypotheses_same_location_picks_best():
     assert winner == 0
 
 
-def test_velocity_predicted_centroid_extends_search():
-    """When predicted centroid is far from the current position, the search
-    radius is centered on the prediction so fast-moving nuclei are still found.
-
-    Nucleus moved 60px right between t-1 and t. Predicted t+1 centroid is
-    another 60px right. max_dist_px=40 would miss the candidate from the
-    current position but reaches it from the predicted position.
-    """
-    shape = (100, 200)
-    current = _make_square(shape, 20, 90, 15, 1)   # centroid ~(27, 97)
-    cand = _make_square(shape, 20, 150, 15, 1)      # centroid ~(27, 157)
-
-    predicted = {1: np.array([27.0, 157.0])}
-
-    next_frame, winner = find_best_hypothesis(
-        current, [cand],
-        iou_threshold=0.0,
-        max_dist_px=40.0,
-        predicted_centroids=predicted,
-    )
-
-    assert next_frame is not None
-    assert 1 in np.unique(next_frame)
-
 
 def test_distant_nucleus_not_matched_to_far_candidate():
     """A nucleus with no nearby candidates stays unmatched.

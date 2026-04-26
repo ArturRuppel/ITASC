@@ -56,9 +56,18 @@ def _record_history(layer, t: int, before: np.ndarray) -> None:
 class CorrectionWidget(QWidget):
     """Dock widget for interactive label correction."""
 
-    def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        viewer: napari.Viewer,
+        parent: QWidget | None = None,
+        *,
+        show_activate_btn: bool = True,
+        inspector_first: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        self._show_activate_btn = show_activate_btn
+        self._inspector_first = inspector_first
 
         self._layer: napari.layers.Labels | None = None
 
@@ -97,7 +106,8 @@ class CorrectionWidget(QWidget):
             "QPushButton:checked { background-color: #4CAF50; color: white; font-weight: bold; }"
         )
         self._activate_btn.clicked.connect(self._toggle_active)
-        root.addWidget(self._activate_btn)
+        if self._show_activate_btn:
+            root.addWidget(self._activate_btn)
 
         self._outline_btn = QPushButton("Show outlines only")
         self._outline_btn.setCheckable(True)
@@ -118,26 +128,6 @@ class CorrectionWidget(QWidget):
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status.setStyleSheet("color: palette(mid); font-style: italic;")
         root.addWidget(self._status)
-
-        ref_group = QGroupBox("Correction shortcuts")
-        ref_lay = QVBoxLayout(ref_group)
-        ref_lay.setSpacing(2)
-        for key, desc in [
-            ("Left-click",                         "Select / highlight cell"),
-            ("Middle-click",                       "Erase clicked cell"),
-            ("Delete",                             "Erase selected cell"),
-            ("Ctrl+Left-click (cell selected)",    "Merge with clicked cell"),
-            ("Ctrl+Left-click × 2 (same cell)",    "Split (watershed, 2 seeds)"),
-            ("Right-click (cell selected)",         "Swap with clicked cell (same or other frame)"),
-            ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell (same frame)"),
-            ("Ctrl+Right-click → Right-click",     "Swap (two-step, no selection)"),
-            ("Ctrl-z",                             "Undo"),
-            ("Shift+Left / Shift+Right",           "Previous / next cell across all frames"),
-            ("Shift+Right-drag",                   "Split by drawn line"),
-            ("Shift+Left-drag",                    "Draw cell path (extends or creates)"),
-        ]:
-            ref_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
-        root.addWidget(ref_group)
 
         inspect_group = QGroupBox("Inspect cell")
         inspect_lay = QVBoxLayout(inspect_group)
@@ -160,7 +150,32 @@ class CorrectionWidget(QWidget):
         self._inspect_frames_label.setStyleSheet("font-size: 9pt; color: palette(mid);")
         inspect_lay.addWidget(self._inspect_frames_label)
 
-        root.addWidget(inspect_group)
+        ref_group = QGroupBox("Correction shortcuts")
+        ref_lay = QVBoxLayout(ref_group)
+        ref_lay.setSpacing(2)
+        for key, desc in [
+            ("Left-click",                         "Select / highlight cell"),
+            ("Middle-click",                       "Erase clicked cell"),
+            ("Delete",                             "Erase selected cell"),
+            ("Ctrl+Left-click (cell selected)",    "Merge with clicked cell"),
+            ("Ctrl+Left-click × 2 (same cell)",    "Split (watershed, 2 seeds)"),
+            ("Right-click (cell selected)",         "Swap with clicked cell (same or other frame)"),
+            ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell (same frame)"),
+            ("Ctrl+Right-click → Right-click",     "Swap (two-step, no selection)"),
+            ("Ctrl-z",                             "Undo"),
+            ("Shift+Left / Shift+Right",           "Previous / next cell across all frames"),
+            ("Shift+Right-drag",                   "Split by drawn line"),
+            ("Shift+Left-drag",                    "Draw cell path (extends or creates)"),
+        ]:
+            ref_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
+
+        if self._inspector_first:
+            root.addWidget(inspect_group)
+            root.addWidget(ref_group)
+        else:
+            root.addWidget(ref_group)
+            root.addWidget(inspect_group)
+
         root.addStretch()
 
         attrib = QLabel(
@@ -286,6 +301,18 @@ class CorrectionWidget(QWidget):
         self._set_status("Inactive")
         self._cleanup_draw_layer()
         self._cleanup_highlight_layer()
+
+    def activate_layer(self, layer: napari.layers.Labels) -> None:
+        """Activate correction on a specific Labels layer (bypasses the UI button)."""
+        if self._layer is not None:
+            self._deactivate()
+        self._activate(layer)
+        if self._show_activate_btn:
+            self._activate_btn.setChecked(True)
+
+    def deactivate(self) -> None:
+        """Deactivate correction (public API)."""
+        self._deactivate()
 
     def _set_status(self, msg: str, error: bool = False) -> None:
         self._status.setText(msg)

@@ -113,9 +113,8 @@ def find_best_hypothesis(
         cur_area = int(cur_areas[cur_id])
         cur_ys, cur_xs = cur_pixels[cur_id]
         pred_centroid = (predicted_centroids or {}).get(cur_id)
-        ref_pos = pred_centroid if pred_centroid is not None else cur_centroid
 
-        nearby_ks = tree.query_ball_point(ref_pos, max_dist_px)
+        nearby_ks = tree.query_ball_point(cur_centroid, max_dist_px)
         if not nearby_ks:
             continue
 

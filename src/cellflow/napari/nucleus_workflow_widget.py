@@ -16,7 +16,6 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -51,6 +50,7 @@ from cellflow.database.validation import (
     read_validated_frames,
     validate_frame,
 )
+from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
 from cellflow.tracking import propagate_one_frame
@@ -208,8 +208,9 @@ class NucleusWorkflowWidget(QWidget):
         layout.addWidget(self.contour_section)
 
         # ── 2. Hypothesis Generation ──────────────────────────────────────
-        gen_group = QGroupBox("2. Hypothesis Generation")
-        gen_lay = QVBoxLayout(gen_group)
+        _gen_inner = QWidget()
+        gen_lay = QVBoxLayout(_gen_inner)
+        gen_lay.setContentsMargins(4, 4, 4, 4)
         gen_lay.setSpacing(6)
 
         shared_row = QHBoxLayout()
@@ -233,6 +234,26 @@ class NucleusWorkflowWidget(QWidget):
         self.overwrite_check = QCheckBox("Overwrite existing")
         shared_row.addWidget(self.overwrite_check)
         gen_lay.addLayout(shared_row)
+
+        noise_shared_row = QHBoxLayout()
+        noise_shared_row.addWidget(QLabel("Noise Scale:"))
+        self.noise_scale = QDoubleSpinBox()
+        self.noise_scale.setRange(0.0, 1.0)
+        self.noise_scale.setValue(0.0)
+        self.noise_scale.setDecimals(2)
+        self.noise_scale.setSingleStep(0.01)
+        self.noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
+        noise_shared_row.addWidget(self.noise_scale)
+        noise_shared_row.addWidget(QLabel("Blur Sigma:"))
+        self.noise_blur = QDoubleSpinBox()
+        self.noise_blur.setRange(0.0, 10.0)
+        self.noise_blur.setValue(0.0)
+        self.noise_blur.setDecimals(1)
+        self.noise_blur.setSingleStep(0.5)
+        self.noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
+        noise_shared_row.addWidget(self.noise_blur)
+        noise_shared_row.addStretch()
+        gen_lay.addLayout(noise_shared_row)
 
         self.gen_tabs = QTabWidget()
 
@@ -261,26 +282,6 @@ class NucleusWorkflowWidget(QWidget):
         fg_row.addWidget(self.single_fg_threshold)
         tuning_lay.addLayout(fg_row)
 
-        noise_row = QHBoxLayout()
-        noise_row.addWidget(QLabel("Noise Scale:"))
-        self.single_noise_scale = QDoubleSpinBox()
-        self.single_noise_scale.setRange(0.0, 1.0)
-        self.single_noise_scale.setValue(0.0)
-        self.single_noise_scale.setDecimals(2)
-        self.single_noise_scale.setSingleStep(0.01)
-        self.single_noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
-        noise_row.addWidget(self.single_noise_scale)
-
-        noise_row.addWidget(QLabel("Blur Sigma:"))
-        self.single_noise_blur = QDoubleSpinBox()
-        self.single_noise_blur.setRange(0.0, 10.0)
-        self.single_noise_blur.setValue(0.0)
-        self.single_noise_blur.setDecimals(1)
-        self.single_noise_blur.setSingleStep(0.5)
-        self.single_noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
-        noise_row.addWidget(self.single_noise_blur)
-        tuning_lay.addLayout(noise_row)
-
         tuning_btn_row = QHBoxLayout()
         self.preview_btn = QPushButton("Preview")
         self.save_db_btn = QPushButton("Save to DB")
@@ -302,36 +303,19 @@ class NucleusWorkflowWidget(QWidget):
                 s.setRange(1 if decimals == 0 else 0.0, 500 if decimals == 0 else 20.0)
                 if decimals > 0:
                     s.setDecimals(decimals)
+                s.setMaximumWidth(62)
             min_s.setValue(d_min)
             max_s.setValue(d_max)
             step_s.setValue(d_step)
             row.addWidget(QLabel("min")); row.addWidget(min_s)
             row.addWidget(QLabel("max")); row.addWidget(max_s)
             row.addWidget(QLabel("step")); row.addWidget(step_s)
+            row.addStretch()
             sweep_lay.addLayout(row)
             return min_s, max_s, step_s
 
         self.sweep_seed_dist  = _sweep_row("Seed Dist",            8,    14,   2,     decimals=0)
         self.sweep_fg_thr     = _sweep_row("Foreground Threshold", 0.4,  0.6,  0.05,  decimals=2)
-
-        sweep_noise_row = QHBoxLayout()
-        sweep_noise_row.addWidget(QLabel("Noise Scale:"))
-        self.sweep_noise_scale = QDoubleSpinBox()
-        self.sweep_noise_scale.setRange(0.0, 1.0)
-        self.sweep_noise_scale.setValue(0.0)
-        self.sweep_noise_scale.setDecimals(2)
-        self.sweep_noise_scale.setSingleStep(0.01)
-        self.sweep_noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
-        sweep_noise_row.addWidget(self.sweep_noise_scale)
-        sweep_noise_row.addWidget(QLabel("Blur Sigma:"))
-        self.sweep_noise_blur = QDoubleSpinBox()
-        self.sweep_noise_blur.setRange(0.0, 10.0)
-        self.sweep_noise_blur.setValue(0.0)
-        self.sweep_noise_blur.setDecimals(1)
-        self.sweep_noise_blur.setSingleStep(0.5)
-        self.sweep_noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
-        sweep_noise_row.addWidget(self.sweep_noise_blur)
-        sweep_lay.addLayout(sweep_noise_row)
 
         sweep_runs_row = QHBoxLayout()
         sweep_runs_row.addWidget(QLabel("Runs:"))
@@ -367,11 +351,15 @@ class NucleusWorkflowWidget(QWidget):
         self.gen_tabs.addTab(sweep_tab, "Sweep")
 
         gen_lay.addWidget(self.gen_tabs)
-        layout.addWidget(gen_group)
+        self.gen_section = CollapsibleSection(
+            "2. Hypothesis Generation", _gen_inner, expanded=False
+        )
+        layout.addWidget(self.gen_section)
 
         # ── 3. Database Browser ──────────────────────────────────────────
-        db_group = QGroupBox("3. Database Browser")
-        db_lay = QVBoxLayout(db_group)
+        _db_inner = QWidget()
+        db_lay = QVBoxLayout(_db_inner)
+        db_lay.setContentsMargins(4, 4, 4, 4)
 
         hdr_row = QHBoxLayout()
         self.db_activate_btn = QPushButton("Activate")
@@ -476,11 +464,15 @@ class NucleusWorkflowWidget(QWidget):
         )
         db_del_row.addWidget(self.del_stack_btn)
         db_lay.addLayout(db_del_row)
-        layout.addWidget(db_group)
+        self.db_section = CollapsibleSection(
+            "3. Database Browser", _db_inner, expanded=False
+        )
+        layout.addWidget(self.db_section)
 
         # ── 4. Automated Search ──────────────────────────────────────────
-        search_group = QGroupBox("4. Automated Search")
-        search_lay = QVBoxLayout(search_group)
+        _search_inner = QWidget()
+        search_lay = QVBoxLayout(_search_inner)
+        search_lay.setContentsMargins(4, 4, 4, 4)
 
         row_iou = QHBoxLayout()
         row_iou.addWidget(QLabel("IoU Threshold:"))
@@ -560,14 +552,16 @@ class NucleusWorkflowWidget(QWidget):
 
         self.load_tracked_btn = QPushButton("Load Tracked Labels")
         search_lay.addWidget(self.load_tracked_btn)
-        layout.addWidget(search_group)
+        self.search_section = CollapsibleSection(
+            "4. Automated Search", _search_inner, expanded=False
+        )
+        layout.addWidget(self.search_section)
 
         # ── 5. Manual Correction ──────────────────────────────────────────
-        corr_group = QGroupBox("5. Manual Correction")
-        corr_lay = QVBoxLayout(corr_group)
-        self.jump_corr_btn = QPushButton("Correct Current Frame")
-        self.jump_corr_btn.setStyleSheet("font-weight: bold; min-height: 28px;")
-        corr_lay.addWidget(self.jump_corr_btn)
+        _corr_inner = QWidget()
+        _corr_inner_lay = QVBoxLayout(_corr_inner)
+        _corr_inner_lay.setContentsMargins(0, 0, 0, 0)
+        _corr_inner_lay.setSpacing(4)
 
         retrack_row = QHBoxLayout()
         self.retrack_btn = QPushButton("Retrack Frame")
@@ -575,8 +569,19 @@ class NucleusWorkflowWidget(QWidget):
         self.validate_btn = QPushButton("Validate Frame")
         self.validate_btn.setCheckable(True)
         retrack_row.addWidget(self.validate_btn)
-        corr_lay.addLayout(retrack_row)
-        layout.addWidget(corr_group)
+        _corr_inner_lay.addLayout(retrack_row)
+
+        self.correction_widget = CorrectionWidget(
+            self.viewer,
+            show_activate_btn=False,
+            inspector_first=True,
+        )
+        _corr_inner_lay.addWidget(self.correction_widget)
+
+        self.correction_section = CollapsibleSection(
+            "5. Manual Correction", _corr_inner, expanded=False
+        )
+        layout.addWidget(self.correction_section)
 
         # ── Status label ──────────────────────────────────────────────────
         self.status_lbl = QLabel("")
@@ -620,7 +625,6 @@ class NucleusWorkflowWidget(QWidget):
         self.prop_all_btn.clicked.connect(self._on_propagate_all)
         self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
-        self.jump_corr_btn.clicked.connect(self._on_jump_correction)
         self.retrack_btn.clicked.connect(self._on_retrack_frame)
         self.validate_btn.toggled.connect(self._on_validate_toggled)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
@@ -635,6 +639,7 @@ class NucleusWorkflowWidget(QWidget):
         self.contour_files.refresh(pos_dir)
         self.output_files.refresh(pos_dir)
         if pos_dir is None:
+            self.correction_widget.deactivate()
             return
         self._refresh_db_browser()
         self._refresh_validate_btn()
@@ -898,8 +903,8 @@ class NucleusWorkflowWidget(QWidget):
             foreground_threshold=self.single_fg_threshold.value(),
             min_size=self.min_size_spin.value(),
             min_circularity=self.min_circularity_spin.value(),
-            noise_scale=self.single_noise_scale.value(),
-            noise_blur_sigma=self.single_noise_blur.value(),
+            noise_scale=self.noise_scale.value(),
+            noise_blur_sigma=self.noise_blur.value(),
         )
 
     def _contour_sweep_spec(self) -> ContourWatershedSweepSpec:
@@ -912,8 +917,8 @@ class NucleusWorkflowWidget(QWidget):
             foreground_threshold_min=self.sweep_fg_thr[0].value(),
             foreground_threshold_max=self.sweep_fg_thr[1].value(),
             foreground_threshold_step=self.sweep_fg_thr[2].value(),
-            noise_scale=self.sweep_noise_scale.value(),
-            noise_blur_sigma=self.sweep_noise_blur.value(),
+            noise_scale=self.noise_scale.value(),
+            noise_blur_sigma=self.noise_blur.value(),
             n_runs=self.sweep_n_runs.value(),
             min_size=self.min_size_spin.value(),
             min_circularity=self.min_circularity_spin.value(),
@@ -1363,6 +1368,8 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_db_activate_toggled(self, active: bool) -> None:
         self.db_activate_btn.setText("Deactivate" if active else "Activate")
+        if active and self._current_db_p is not None:
+            self._load_db_stack(self._current_db_p)
 
     def _lookup_db_p(self) -> int | None:
         method = self.db_method_combo.currentText()
@@ -1403,18 +1410,30 @@ class NucleusWorkflowWidget(QWidget):
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
             return
+        cell_zavg_path = self._cell_zavg_path()
+        nuc_zavg_path  = self._nucleus_zavg_path()
         self._set_status(f"Loading p={p}…")
 
         @thread_worker(connect={"returned": self._on_load_stack_done, "errored": self._on_worker_error})
         def _worker():
-            return p, read_full_hypothesis_stack(hyp_path, p)
+            stack = read_full_hypothesis_stack(hyp_path, p)
+            cell_zavg = (
+                np.asarray(tifffile.imread(str(cell_zavg_path)), dtype=np.float32)
+                if cell_zavg_path and cell_zavg_path.exists() else None
+            )
+            nuc_zavg = (
+                np.asarray(tifffile.imread(str(nuc_zavg_path)), dtype=np.float32)
+                if nuc_zavg_path and nuc_zavg_path.exists() else None
+            )
+            return p, stack, cell_zavg, nuc_zavg
 
         _worker()
 
     def _on_load_stack_done(self, result: tuple) -> None:
-        p, stack = result
+        p, stack, cell_zavg, nuc_zavg = result
         if stack.ndim == 4:
             stack = stack[:, 0]  # contour_watershed stores (1, Y, X) per frame
+        nt = stack.shape[0]
         if _HYP_LAYER in self.viewer.layers:
             self.viewer.layers[_HYP_LAYER].data = stack
         else:
@@ -1422,6 +1441,19 @@ class NucleusWorkflowWidget(QWidget):
         n_cells = int(stack.max()) if stack.size > 0 else 0
         self.db_info_lbl.setText(f"p={p:03d}  |  {n_cells} cells")
         self._set_status(f"Loaded p={p} → {stack.shape} into napari.")
+
+        for zavg_data, layer_name, cmap in (
+            (cell_zavg, _CELL_ZAVG_LAYER, "gray"),
+            (nuc_zavg,  _NUC_ZAVG_LAYER,  "bop orange"),
+        ):
+            if zavg_data is None:
+                continue
+            if zavg_data.ndim == 2:
+                zavg_data = np.broadcast_to(zavg_data[np.newaxis], (nt,) + zavg_data.shape).copy()
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].data = zavg_data
+            else:
+                self.viewer.add_image(zavg_data, name=layer_name, colormap=cmap, blending="additive")
 
     def _on_set_seed(self) -> None:
         hyp_path = self._hyp_path()
@@ -1641,6 +1673,9 @@ class NucleusWorkflowWidget(QWidget):
                 self.viewer.add_image(broadcast_zavg, name=layer_name, colormap=cmap, blending="additive")
 
         self._set_status(f"Loaded tracked stack {stack.shape} into napari.")
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        self.correction_widget.activate_layer(layer)
+        self.correction_section.expand()
 
     # ──────────────────────────────────────────────────────────────────────────
     # 5. Manual correction
@@ -1725,9 +1760,6 @@ class NucleusWorkflowWidget(QWidget):
             f"Retracked t={t} using t={t_ref}: {n_matched} matched, {n_new} new ID(s)."
         )
 
-    def _on_jump_correction(self) -> None:
-        self._set_status("Manual correction widget not yet connected.")
-
     # ──────────────────────────────────────────────────────────────────────────
     # Error handler
     # ──────────────────────────────────────────────────────────────────────────
@@ -1757,8 +1789,8 @@ class NucleusWorkflowWidget(QWidget):
             "tuning": {
                 "seed_dist":      self.single_seed_dist.value(),
                 "fg_threshold":   self.single_fg_threshold.value(),
-                "noise_scale":    self.single_noise_scale.value(),
-                "noise_blur_sigma": self.single_noise_blur.value(),
+                "noise_scale":    self.noise_scale.value(),
+                "noise_blur_sigma": self.noise_blur.value(),
             },
             "sweep": {
                 "seed_dist_min":  self.sweep_seed_dist[0].value(),
@@ -1767,8 +1799,8 @@ class NucleusWorkflowWidget(QWidget):
                 "fg_thr_min":     self.sweep_fg_thr[0].value(),
                 "fg_thr_max":     self.sweep_fg_thr[1].value(),
                 "fg_thr_step":    self.sweep_fg_thr[2].value(),
-                "noise_scale":    self.sweep_noise_scale.value(),
-                "noise_blur_sigma": self.sweep_noise_blur.value(),
+                "noise_scale":    self.noise_scale.value(),
+                "noise_blur_sigma": self.noise_blur.value(),
                 "n_runs":         self.sweep_n_runs.value(),
                 "n_workers":      self.sweep_n_workers.value(),
             },
@@ -1815,8 +1847,8 @@ class NucleusWorkflowWidget(QWidget):
             t = state["tuning"]
             if "seed_dist"    in t: self.single_seed_dist.setValue(t["seed_dist"])
             if "fg_threshold" in t: self.single_fg_threshold.setValue(t["fg_threshold"])
-            if "noise_scale"  in t: self.single_noise_scale.setValue(t["noise_scale"])
-            if "noise_blur_sigma" in t: self.single_noise_blur.setValue(t["noise_blur_sigma"])
+            if "noise_scale"  in t: self.noise_scale.setValue(t["noise_scale"])
+            if "noise_blur_sigma" in t: self.noise_blur.setValue(t["noise_blur_sigma"])
         if "sweep" in state:
             sw = state["sweep"]
             if "seed_dist_min"    in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
@@ -1825,8 +1857,8 @@ class NucleusWorkflowWidget(QWidget):
             if "fg_thr_min"       in sw: self.sweep_fg_thr[0].setValue(sw["fg_thr_min"])
             if "fg_thr_max"       in sw: self.sweep_fg_thr[1].setValue(sw["fg_thr_max"])
             if "fg_thr_step"      in sw: self.sweep_fg_thr[2].setValue(sw["fg_thr_step"])
-            if "noise_scale"      in sw: self.sweep_noise_scale.setValue(sw["noise_scale"])
-            if "noise_blur_sigma" in sw: self.sweep_noise_blur.setValue(sw["noise_blur_sigma"])
+            if "noise_scale"      in sw: self.noise_scale.setValue(sw["noise_scale"])
+            if "noise_blur_sigma" in sw: self.noise_blur.setValue(sw["noise_blur_sigma"])
             if "n_runs"           in sw: self.sweep_n_runs.setValue(sw["n_runs"])
             if "n_workers"        in sw: self.sweep_n_workers.setValue(sw["n_workers"])
         if "db_browser" in state:
