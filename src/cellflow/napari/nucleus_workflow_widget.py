@@ -511,6 +511,12 @@ class NucleusWorkflowWidget(QWidget):
         self.load_tracked_btn = QPushButton("Load Tracked Labels")
         load_tracked_row.addWidget(_compact_btn(self.load_tracked_btn))
         search_lay.addLayout(load_tracked_row)
+
+        reassign_row = QHBoxLayout()
+        self.reassign_ids_btn = QPushButton("Reassign IDs")
+        reassign_row.addWidget(_compact_btn(self.reassign_ids_btn))
+        search_lay.addLayout(reassign_row)
+
         self.search_section = CollapsibleSection(
             "4. Automated Search", _search_inner, expanded=False
         )
@@ -579,6 +585,7 @@ class NucleusWorkflowWidget(QWidget):
         self.prop_all_btn.clicked.connect(self._on_propagate_all)
         self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
+        self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
         self.retrack_btn.clicked.connect(self._on_retrack_frame)
         self.validate_btn.toggled.connect(self._on_validate_toggled)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
@@ -1532,6 +1539,36 @@ class NucleusWorkflowWidget(QWidget):
         layer = self.viewer.layers[_TRACKED_LAYER]
         self.correction_widget.activate_layer(layer)
         self.correction_section.expand()
+
+    def _on_reassign_ids(self) -> None:
+        tracked_path = self._tracked_path()
+        if tracked_path is None or not tracked_path.exists():
+            self._set_status("No tracked labels file found.")
+            return
+        self._set_status("Reassigning cell IDs to contiguous range…")
+
+        @thread_worker(connect={"returned": self._on_reassign_ids_done, "errored": self._on_worker_error})
+        def _worker():
+            stack = read_full_tracked_stack(tracked_path)
+            unique_ids = np.unique(stack)
+            unique_ids = unique_ids[unique_ids != 0]
+            if unique_ids.size == 0:
+                return stack, 0
+            # Build lookup table: old ID → new contiguous ID (1-based)
+            lut = np.zeros(int(unique_ids.max()) + 1, dtype=np.uint32)
+            for new_id, old_id in enumerate(unique_ids, start=1):
+                lut[old_id] = new_id
+            remapped = lut[stack]
+            tifffile.imwrite(str(tracked_path), remapped, compression="zlib")
+            return remapped, len(unique_ids)
+
+        _worker()
+
+    def _on_reassign_ids_done(self, result: tuple) -> None:
+        remapped, n_cells = result
+        if _TRACKED_LAYER in self.viewer.layers:
+            self.viewer.layers[_TRACKED_LAYER].data = remapped
+        self._set_status(f"Reassigned {n_cells} cell IDs to contiguous range 1–{n_cells}.")
 
     # ──────────────────────────────────────────────────────────────────────────
     # 5. Manual correction
