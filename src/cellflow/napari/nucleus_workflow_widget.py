@@ -469,7 +469,7 @@ class NucleusWorkflowWidget(QWidget):
 
         row_pos_w = QHBoxLayout()
         row_pos_w.addWidget(QLabel("Position Weight:"))
-        self.pos_weight_spin = _weight_spin(1.0)
+        self.pos_weight_spin = _weight_spin(0.0)
         row_pos_w.addWidget(self.pos_weight_spin)
         search_lay.addLayout(row_pos_w)
 

@@ -97,7 +97,8 @@ def find_best_hypothesis(
     iou_weight: float = 1.0,
     area_weight: float = 1.0,
     velocity_weight: float = 1.0,
-    pos_weight: float = 1.0,
+    pos_weight: float = 0.0,
+    dedup_radius_px: float = 0.0,
 ) -> tuple[np.ndarray, int] | tuple[None, None]:
     """Return (relabeled_next_frame, winning_p_index) or (None, None).
 
@@ -128,6 +129,8 @@ def find_best_hypothesis(
         Exponent applied to the velocity Gaussian term.
     pos_weight:
         Exponent applied to the positional Gaussian term.
+    dedup_radius_px:
+        If > 0, candidates within this radius are clustered into one logical cell.
     """
     if not candidates:
         return None, None
@@ -149,14 +152,27 @@ def find_best_hypothesis(
     if not flat_cands:
         return None, None
 
-    C = len(flat_cands)
+    # Optional deduplication clustering
+    if dedup_radius_px > 0:
+        raw_centroids = np.vstack([c[2] for c in flat_cands])
+        clusters = _cluster_candidates(raw_centroids, dedup_radius_px)
+        clustered_cands = []
+        for cluster in clusters:
+            # Pick representative from cluster (first one)
+            rep_idx = cluster[0]
+            entry_idx, cand_id, centroid, area, rel = flat_cands[rep_idx]
+            # Store original indices to resolve winning_p later
+            clustered_cands.append((cluster, entry_idx, cand_id, centroid, area, rel))
+    else:
+        # Each candidate is its own cluster of size 1
+        clustered_cands = [([i], *flat_cands[i]) for i in range(len(flat_cands))]
+
+    C = len(clustered_cands)
     two_sigma_sq = 2.0 * velocity_sigma_px ** 2
     N = len(cur_ids)
 
     # Score matrix: rows = source nuclei, cols = candidate cells + N nulls.
     S = np.full((N, C + N), unmatched_score, dtype=np.float64)
-    # The null columns (C to C+N-1) must have score=unmatched_score.
-    # The assignment logic handles S[i, C+i] = unmatched_score, others are 0.
     for i in range(N):
         S[i, 0:C] = 0.0 # Candidates init
         S[i, C+i] = unmatched_score # Null init
@@ -167,9 +183,10 @@ def find_best_hypothesis(
         cur_rel = cur_rel_pixels[current_id]
         pred_centroid = predicted_centroids.get(current_id) if predicted_centroids else None
         
-        for k, (entry_idx, cand_id, cand_centroid, cand_area, cand_rel) in enumerate(flat_cands):
-            # Distance filter
-            if np.sqrt(np.sum((cur_centroid - cand_centroid) ** 2)) > max_dist_px:
+        for k, (_indices, entry_idx, cand_id, cand_centroid, cand_area, cand_rel) in enumerate(clustered_cands):
+            # Distance filter (use predicted centroid if available)
+            ref_pos = pred_centroid if pred_centroid is not None else cur_centroid
+            if np.sqrt(np.sum((ref_pos - cand_centroid) ** 2)) > max_dist_px:
                 continue
 
             # Standard IoU
@@ -207,9 +224,13 @@ def find_best_hypothesis(
         if S[i, k] <= unmatched_score:
             continue
 
-        entry_idx, cand_id, *_ = flat_cands[k]
+        cluster_indices, entry_idx, cand_id, *_ = clustered_cands[k]
+        # Label next frame using the representative candidate
         next_frame[candidates[entry_idx] == cand_id] = cur_ids[i]
-        matched_entry_indices.append(entry_idx)
+        
+        # Collect all entry indices from the cluster for majority voting
+        for idx in cluster_indices:
+            matched_entry_indices.append(flat_cands[idx][0])
 
     if not matched_entry_indices:
         return None, None
@@ -228,7 +249,7 @@ def propagate_one_frame(
     iou_weight: float = 1.0,
     area_weight: float = 1.0,
     velocity_weight: float = 1.0,
-    pos_weight: float = 1.0,
+    pos_weight: float = 0.0,
     unmatched_score: float = 0.1,
 ) -> int | None:
     """Propagate tracking from t_current to t_current + 1.
@@ -244,7 +265,7 @@ def propagate_one_frame(
 
     current_labels = read_tracked_frame(tracked_h5, t_current)  # (Y, X)
 
-    n_p, _ = list_hypotheses(hypotheses_h5)
+    n_p, params_by_p = list_hypotheses(hypotheses_h5)
     if n_p == 0:
         return None
 
@@ -262,16 +283,18 @@ def propagate_one_frame(
                 for lid in cur_centroids
                 if lid in prev_centroids
             }
-        except KeyError:
-            pass  # no previous frame — velocity scoring disabled for this step
+        except Exception:
+            pass  # no previous frame or read error — velocity scoring disabled
 
     # Build flat list of (p, z, slice_2d) for every (hypothesis, z-plane)
     entries: list[tuple[int, int, np.ndarray]] = []
-    for p in range(n_p):
+    for p in params_by_p.keys():
         try:
             volume = read_hypothesis_labels(hypotheses_h5, t_next, p)  # (Z, Y, X)
-        except KeyError:
-            return None  # t_next not in hypothesis database
+        except (KeyError, ValueError):
+            # If t_next or p is missing, we skip this p. 
+            # If t_next is globally missing, entries will remain empty.
+            continue
         for z in range(volume.shape[0]):
             entries.append((p, z, volume[z]))
 

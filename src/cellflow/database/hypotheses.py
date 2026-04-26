@@ -318,11 +318,21 @@ def iter_hypothesis_records(path: str | Path) -> Iterator[HypothesisRecord]:
                 labels = np.asarray(p_grp["labels"][:], dtype=_LABEL_DTYPE)
                 method = str(p_grp.attrs.get("method", "watershed"))
                 if method == "cellpose_flow":
-                    params: NucleusHypothesisParams | CellposeFlowHypothesisParams = CellposeFlowHypothesisParams(
+                    params: NucleusHypothesisParams | CellposeFlowHypothesisParams | ContourWatershedParams = CellposeFlowHypothesisParams(
                         cellprob_threshold=float(p_grp.attrs.get("cellprob_threshold", 0.0)),
                         flow_threshold=float(p_grp.attrs.get("flow_threshold", 0.4)),
                         min_size=int(p_grp.attrs.get("min_size", 15)),
                         niter=int(p_grp.attrs.get("niter", 200)),
+                    )
+                elif method == "contour_watershed":
+                    params = ContourWatershedParams(
+                        seed_distance=int(p_grp.attrs.get("seed_distance", 10)),
+                        foreground_threshold=float(p_grp.attrs.get("foreground_threshold", 0.5)),
+                        min_size=int(p_grp.attrs.get("min_size", 0)),
+                        min_circularity=float(p_grp.attrs.get("min_circularity", 0.0)),
+                        noise_scale=float(p_grp.attrs.get("noise_scale", 0.0)),
+                        noise_blur_sigma=float(p_grp.attrs.get("noise_blur_sigma", 0.0)),
+                        run_index=int(p_grp.attrs.get("run_index", 0)),
                     )
                 else:
                     params = NucleusHypothesisParams(
