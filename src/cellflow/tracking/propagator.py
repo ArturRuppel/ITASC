@@ -14,7 +14,6 @@ from scipy.ndimage import center_of_mass
 from scipy.spatial import KDTree
 
 from cellflow.database.hypotheses import read_hypothesis_labels, list_hypotheses
-from cellflow.database.tracked import read_tracked_frame, write_tracked_frame
 
 
 def _label_stats(labels: np.ndarray) -> tuple[np.ndarray, dict[int, np.ndarray]]:
@@ -160,8 +159,9 @@ def find_best_hypothesis(
 
 def propagate_one_frame(
     hypotheses_h5: str | Path,
-    tracked_h5: str | Path,
-    t_current: int,
+    current_labels: np.ndarray,
+    t_next: int,
+    prev_labels: np.ndarray | None = None,
     iou_threshold: float = 0.3,
     max_dist_px: float = 50.0,
     velocity_sigma_px: float = 25.0,
@@ -170,32 +170,25 @@ def propagate_one_frame(
     velocity_weight: float = 1.0,
     pos_weight: float = 0.0,
     unmatched_score: float = 0.1,
-) -> int | None:
-    """Propagate tracking from t_current to t_current + 1.
+) -> tuple[np.ndarray, int] | tuple[None, None]:
+    """Propagate tracking to t_next using current_labels as the source frame.
 
     Searches all hypotheses in the hypothesis database for t_next, matches each
-    tracked nucleus to its best candidate via greedy per-nucleus scoring, then
-    writes a relabeled next frame that preserves track IDs.
+    tracked nucleus to its best candidate via greedy per-nucleus scoring.
 
-    Returns the winning p index (majority over matched nuclei), or None if no
-    matches were found.
+    Returns (relabeled_next_frame, winning_p) or (None, None) if no matches.
+    Does not read from or write to any tracked labels file.
     """
     hypotheses_h5 = Path(hypotheses_h5)
-    tracked_h5 = Path(tracked_h5)
-
-    current_labels = read_tracked_frame(tracked_h5, t_current)
 
     n_p, params_by_p = list_hypotheses(hypotheses_h5)
     if n_p == 0:
-        return None
+        return None, None
 
-    t_next = t_current + 1
-
-    # Derive per-nucleus velocity from the previous frame if available.
+    # Derive per-nucleus velocity from the previous frame if provided.
     predicted_centroids: dict[int, np.ndarray] | None = None
-    if t_current >= 1:
+    if prev_labels is not None:
         try:
-            prev_labels = read_tracked_frame(tracked_h5, t_current - 1)
             _, prev_centroids = _label_stats(prev_labels)
             _, cur_centroids = _label_stats(current_labels)
             predicted_centroids = {
@@ -216,7 +209,7 @@ def propagate_one_frame(
             entries.append((p, z, volume[z]))
 
     if not entries:
-        return None
+        return None, None
 
     candidates = [e[2] for e in entries]
     next_frame, winner_idx = find_best_hypothesis(
@@ -230,8 +223,7 @@ def propagate_one_frame(
         unmatched_score=unmatched_score,
     )
     if next_frame is None or winner_idx is None:
-        return None
+        return None, None
 
     p_win, _z_win, _slice = entries[winner_idx]
-    write_tracked_frame(tracked_h5, t_next, next_frame)
-    return p_win
+    return next_frame, p_win

@@ -40,8 +40,6 @@ from cellflow.database.hypotheses import (
 )
 from cellflow.database.tracked import (
     read_full_tracked_stack,
-    read_tracked_frame,
-    tracked_frame_exists,
     write_tracked_frame,
 )
 from cellflow.database.validation import (
@@ -507,6 +505,11 @@ class NucleusWorkflowWidget(QWidget):
         prop_row.addWidget(_compact_btn(self.stop_btn))
         search_lay.addLayout(prop_row)
 
+        save_tracked_row = QHBoxLayout()
+        self.save_tracked_btn = QPushButton("Save Tracked Labels")
+        save_tracked_row.addWidget(_compact_btn(self.save_tracked_btn))
+        search_lay.addLayout(save_tracked_row)
+
         load_tracked_row = QHBoxLayout()
         self.load_tracked_btn = QPushButton("Load Tracked Labels")
         load_tracked_row.addWidget(_compact_btn(self.load_tracked_btn))
@@ -584,6 +587,7 @@ class NucleusWorkflowWidget(QWidget):
         self.prop_next_btn.clicked.connect(self._on_propagate_next)
         self.prop_all_btn.clicked.connect(self._on_propagate_all)
         self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
+        self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
         self.retrack_btn.clicked.connect(self._on_retrack_frame)
@@ -657,7 +661,6 @@ class NucleusWorkflowWidget(QWidget):
         self,
         labels: np.ndarray,
         t: int | None = None,
-        tracked_path: Path | None = None,
     ) -> None:
         if _TRACKED_LAYER in self.viewer.layers and t is not None:
             layer = self.viewer.layers[_TRACKED_LAYER]
@@ -667,9 +670,12 @@ class NucleusWorkflowWidget(QWidget):
                     new_data[t] = labels
                     layer.data = new_data
                     return
-                if tracked_path is not None and tracked_path.exists():
-                    layer.data = read_full_tracked_stack(tracked_path)
-                    return
+                # Extend the in-memory stack rather than reloading from disk.
+                new_data = np.concatenate(
+                    [layer.data, labels[np.newaxis].astype(layer.data.dtype)], axis=0
+                )
+                layer.data = new_data
+                return
         display = labels[np.newaxis].copy() if labels.ndim == 2 else labels
         self._update_layer(_TRACKED_LAYER, display)
 
@@ -1363,28 +1369,30 @@ class NucleusWorkflowWidget(QWidget):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _on_propagate_next(self) -> None:
-        hyp_path     = self._hyp_path()
-        tracked_path = self._tracked_path()
+        hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
             self._set_status("No hypothesis DB found.")
             return
-        if tracked_path is None or not tracked_path.exists():
-            self._set_status("No tracked labels file. Set a tracking seed first.")
+
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded. Set a seed first.")
+            return
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3:
+            self._set_status("Tracked layer is not a 3D stack.")
             return
 
         t = self._current_t()
-        if not tracked_frame_exists(tracked_path, t):
+        if t >= layer.data.shape[0]:
             self._set_status(f"No tracked frame at t={t}. Set a seed first.")
             return
 
-        if _TRACKED_LAYER in self.viewer.layers:
-            layer = self.viewer.layers[_TRACKED_LAYER]
-            if layer.data.ndim == 3 and t < layer.data.shape[0]:
-                write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
+        current_labels = np.asarray(layer.data[t])
+        prev_labels = np.asarray(layer.data[t - 1]) if t > 0 else None
 
         try:
-            winner = propagate_one_frame(
-                hyp_path, tracked_path, t,
+            next_frame, winner = propagate_one_frame(
+                hyp_path, current_labels, t + 1, prev_labels,
                 iou_threshold=self.iou_spin.value(),
                 max_dist_px=self.dist_spin.value(),
                 velocity_sigma_px=self.vel_sigma_spin.value(),
@@ -1398,38 +1406,39 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status(f"Propagation failed: {e}")
             return
 
-        if winner is None:
+        if next_frame is None:
             self._set_status(f"No suitable hypothesis found for t={t + 1}.")
             return
 
-        try:
-            labels = read_tracked_frame(tracked_path, t + 1)
-            self._update_tracked_display(labels, t=t + 1, tracked_path=tracked_path)
-            step = list(self.viewer.dims.current_step)
-            step[0] = t + 1
-            self.viewer.dims.current_step = tuple(step)
-        except Exception as e:
-            self._set_status(f"Could not load t={t + 1}: {e}")
-            return
-
-        self._set_status(f"Propagated t={t}→{t + 1} using p={winner}.")
+        self._update_tracked_display(next_frame, t=t + 1)
+        step = list(self.viewer.dims.current_step)
+        step[0] = t + 1
+        self.viewer.dims.current_step = tuple(step)
+        self._set_status(f"Propagated t={t}→{t + 1} using p={winner}. Unsaved.")
 
     def _on_propagate_all(self) -> None:
-        hyp_path     = self._hyp_path()
-        tracked_path = self._tracked_path()
+        hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
             self._set_status("No hypothesis DB found.")
             return
-        if tracked_path is None or not tracked_path.exists():
-            self._set_status("No tracked labels file. Set a tracking seed first.")
+
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded. Set a seed first.")
+            return
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3:
+            self._set_status("Tracked layer is not a 3D stack.")
             return
 
-        n_p, _ = list_hypotheses(hyp_path)
-        if n_p == 0:
-            self._set_status("Hypothesis DB is empty.")
+        t_start = self._current_t()
+        if t_start >= layer.data.shape[0]:
+            self._set_status(f"No tracked frame at t={t_start}. Set a seed first.")
             return
 
-        t_start   = self._current_t()
+        # Snapshot starting frames from the viewer layer before entering the thread.
+        initial_labels = np.asarray(layer.data[t_start])
+        prev_labels    = np.asarray(layer.data[t_start - 1]) if t_start > 0 else None
+
         iou_thr   = self.iou_spin.value()
         max_dist  = self.dist_spin.value()
         vel_sigma = self.vel_sigma_spin.value()
@@ -1440,19 +1449,16 @@ class NucleusWorkflowWidget(QWidget):
         unmatch_s = self.unmatched_spin.value()
         self._stop_flag = False
 
-        if _TRACKED_LAYER in self.viewer.layers:
-            layer = self.viewer.layers[_TRACKED_LAYER]
-            if layer.data.ndim == 3 and t_start < layer.data.shape[0]:
-                write_tracked_frame(tracked_path, t_start, np.asarray(layer.data[t_start]))
-
         @thread_worker(connect={"yielded": self._on_prop_progress, "finished": self._on_prop_done, "errored": self._on_worker_error})
         def _worker():
+            current = initial_labels
+            prev    = prev_labels
             t = t_start
             while not self._stop_flag:
-                if not tracked_frame_exists(tracked_path, t):
-                    break
-                winner = propagate_one_frame(
-                    hyp_path, tracked_path, t, iou_thr, max_dist,
+                next_frame, winner = propagate_one_frame(
+                    hyp_path, current, t + 1, prev,
+                    iou_threshold=iou_thr,
+                    max_dist_px=max_dist,
                     velocity_sigma_px=vel_sigma,
                     iou_weight=iou_w,
                     area_weight=area_w,
@@ -1460,33 +1466,47 @@ class NucleusWorkflowWidget(QWidget):
                     pos_weight=pos_w,
                     unmatched_score=unmatch_s,
                 )
-                if winner is None:
-                    yield (t, None)
+                if next_frame is None:
+                    yield (t, None, None)
                     break
-                yield (t, winner)
+                yield (t, next_frame, winner)
+                prev    = current
+                current = next_frame
                 t += 1
 
         self._set_status("Propagating…")
         _worker()
 
-    def _on_prop_progress(self, result: tuple[int, int | None]) -> None:
-        t, winner = result
-        if winner is None:
+    def _on_prop_progress(self, result: tuple[int, np.ndarray | None, int | None]) -> None:
+        t, next_frame, winner = result
+        if next_frame is None:
             self._set_status(f"Propagation stopped at t={t}: no suitable hypothesis.")
         else:
-            self._set_status(f"Propagated t={t}→{t + 1} (p={winner})")
-            try:
-                tracked_path = self._tracked_path()
-                labels = read_tracked_frame(tracked_path, t + 1)
-                self._update_tracked_display(labels, t=t + 1, tracked_path=tracked_path)
-                step = list(self.viewer.dims.current_step)
-                step[0] = t + 1
-                self.viewer.dims.current_step = tuple(step)
-            except Exception:
-                pass
+            self._set_status(f"Propagated t={t}→{t + 1} (p={winner}). Unsaved.")
+            self._update_tracked_display(next_frame, t=t + 1)
+            step = list(self.viewer.dims.current_step)
+            step[0] = t + 1
+            self.viewer.dims.current_step = tuple(step)
 
     def _on_prop_done(self) -> None:
         self._set_status("Propagation complete.")
+
+    def _on_save_tracked(self) -> None:
+        tracked_path = self._tracked_path()
+        if tracked_path is None:
+            self._set_status("No project open.")
+            return
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer to save.")
+            return
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3:
+            self._set_status("Tracked layer is not a 3D stack.")
+            return
+        n = layer.data.shape[0]
+        for t in range(n):
+            write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
+        self._set_status(f"Saved {n} frame(s) to {tracked_path.name}.")
 
     def _on_load_tracked(self) -> None:
         tracked_path   = self._tracked_path()
@@ -1541,26 +1561,22 @@ class NucleusWorkflowWidget(QWidget):
         self.correction_section.expand()
 
     def _on_reassign_ids(self) -> None:
-        tracked_path = self._tracked_path()
-        if tracked_path is None or not tracked_path.exists():
-            self._set_status("No tracked labels file found.")
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded.")
             return
+        stack = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
         self._set_status("Reassigning cell IDs to contiguous range…")
 
         @thread_worker(connect={"returned": self._on_reassign_ids_done, "errored": self._on_worker_error})
         def _worker():
-            stack = read_full_tracked_stack(tracked_path)
             unique_ids = np.unique(stack)
             unique_ids = unique_ids[unique_ids != 0]
             if unique_ids.size == 0:
                 return stack, 0
-            # Build lookup table: old ID → new contiguous ID (1-based)
             lut = np.zeros(int(unique_ids.max()) + 1, dtype=np.uint32)
             for new_id, old_id in enumerate(unique_ids, start=1):
                 lut[old_id] = new_id
-            remapped = lut[stack]
-            tifffile.imwrite(str(tracked_path), remapped, compression="zlib")
-            return remapped, len(unique_ids)
+            return lut[stack], len(unique_ids)
 
         _worker()
 
@@ -1568,7 +1584,7 @@ class NucleusWorkflowWidget(QWidget):
         remapped, n_cells = result
         if _TRACKED_LAYER in self.viewer.layers:
             self.viewer.layers[_TRACKED_LAYER].data = remapped
-        self._set_status(f"Reassigned {n_cells} cell IDs to contiguous range 1–{n_cells}.")
+        self._set_status(f"Reassigned {n_cells} cell IDs to contiguous range 1–{n_cells}. Unsaved.")
 
     # ──────────────────────────────────────────────────────────────────────────
     # 5. Manual correction
@@ -1603,17 +1619,10 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
-        tracked_path = self._tracked_path()
-        if tracked_path is None or not tracked_path.exists():
-            self._set_status("No tracked labels file found.")
-            return
 
         t = self._current_t()
         if is_validated(self._pos_dir, t):
             self._set_status(f"Frame t={t} is validated — unvalidate it first to retrack.")
-            return
-        if not tracked_frame_exists(tracked_path, t):
-            self._set_status(f"No tracked frame at t={t}.")
             return
 
         validated = sorted(
@@ -1623,23 +1632,17 @@ class NucleusWorkflowWidget(QWidget):
         if t_ref < 0:
             self._set_status("No reference frame available (t=0 has no predecessor).")
             return
-        if not tracked_frame_exists(tracked_path, t_ref):
-            self._set_status(f"Reference frame t={t_ref} does not exist yet.")
+
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded.")
+            return
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3 or t >= layer.data.shape[0] or t_ref >= layer.data.shape[0]:
+            self._set_status(f"Frame t={t} or reference t={t_ref} not in tracked layer.")
             return
 
-        if _TRACKED_LAYER in self.viewer.layers:
-            layer = self.viewer.layers[_TRACKED_LAYER]
-            if layer.data.ndim == 3:
-                for flush_t in (t, t_ref):
-                    if flush_t < layer.data.shape[0]:
-                        write_tracked_frame(tracked_path, flush_t, np.asarray(layer.data[flush_t]))
-
-        try:
-            ref_labels = read_tracked_frame(tracked_path, t_ref)
-            tgt_labels = read_tracked_frame(tracked_path, t)
-        except Exception as e:
-            self._set_status(f"Could not read frames: {e}")
-            return
+        ref_labels = np.asarray(layer.data[t_ref])
+        tgt_labels = np.asarray(layer.data[t])
 
         remapped = retrack_frame(ref_labels, tgt_labels, max_dist_px=self.dist_spin.value())
         new_ids = set(int(i) for i in np.unique(remapped) if i != 0)
@@ -1647,10 +1650,9 @@ class NucleusWorkflowWidget(QWidget):
         n_matched = len(new_ids & ref_ids)
         n_new     = len(new_ids - ref_ids)
 
-        write_tracked_frame(tracked_path, t, remapped)
-        self._update_tracked_display(remapped, t=t, tracked_path=tracked_path)
+        self._update_tracked_display(remapped, t=t)
         self._set_status(
-            f"Retracked t={t} using t={t_ref}: {n_matched} matched, {n_new} new ID(s)."
+            f"Retracked t={t} using t={t_ref}: {n_matched} matched, {n_new} new ID(s). Unsaved."
         )
 
     # ──────────────────────────────────────────────────────────────────────────
