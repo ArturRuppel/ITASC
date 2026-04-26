@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
     QDoubleSpinBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -92,6 +93,18 @@ class NucleusWorkflowWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(8)
 
+        # ── Compact layout helpers ────────────────────────────────────────
+        SPIN_MAX_W = 70
+
+        def _compact(spin, w=SPIN_MAX_W):
+            spin.setMaximumWidth(w)
+            spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            return spin
+
+        def _compact_btn(btn):
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            return btn
+
         # ── Inputs ────────────────────────────────────────────────────────
         self.input_files = PipelineFilesWidget([
             ("Inputs", [
@@ -106,6 +119,7 @@ class NucleusWorkflowWidget(QWidget):
         contour_lay = QVBoxLayout(_contour_inner)
         contour_lay.setContentsMargins(4, 4, 4, 4)
         contour_lay.setSpacing(4)
+        contour_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         cp_params_lay = contour_lay
 
@@ -117,21 +131,22 @@ class NucleusWorkflowWidget(QWidget):
         self.cp_min_spin.setValue(-3.0)
         self.cp_min_spin.setDecimals(1)
         self.cp_min_spin.setSingleStep(1.0)
-        cp_row.addWidget(self.cp_min_spin)
+        cp_row.addWidget(_compact(self.cp_min_spin, 60))
         cp_row.addWidget(QLabel("max"))
         self.cp_max_spin = QDoubleSpinBox()
         self.cp_max_spin.setRange(-20.0, 20.0)
         self.cp_max_spin.setValue(0.0)
         self.cp_max_spin.setDecimals(1)
         self.cp_max_spin.setSingleStep(1.0)
-        cp_row.addWidget(self.cp_max_spin)
+        cp_row.addWidget(_compact(self.cp_max_spin, 60))
         cp_row.addWidget(QLabel("step"))
         self.cp_step_spin = QDoubleSpinBox()
         self.cp_step_spin.setRange(0.1, 10.0)
         self.cp_step_spin.setValue(1.0)
         self.cp_step_spin.setDecimals(1)
         self.cp_step_spin.setSingleStep(0.5)
-        cp_row.addWidget(self.cp_step_spin)
+        cp_row.addWidget(_compact(self.cp_step_spin, 60))
+        cp_row.addStretch(1)
         cp_params_lay.addLayout(cp_row)
 
         gamma_row = QHBoxLayout()
@@ -142,14 +157,14 @@ class NucleusWorkflowWidget(QWidget):
         self.cp_gamma_min_spin.setValue(1.0)
         self.cp_gamma_min_spin.setDecimals(2)
         self.cp_gamma_min_spin.setSingleStep(0.05)
-        gamma_row.addWidget(self.cp_gamma_min_spin)
+        gamma_row.addWidget(_compact(self.cp_gamma_min_spin, 60))
         gamma_row.addWidget(QLabel("max"))
         self.cp_gamma_max_spin = QDoubleSpinBox()
         self.cp_gamma_max_spin.setRange(0.05, 5.0)
         self.cp_gamma_max_spin.setValue(1.0)
         self.cp_gamma_max_spin.setDecimals(2)
         self.cp_gamma_max_spin.setSingleStep(0.05)
-        gamma_row.addWidget(self.cp_gamma_max_spin)
+        gamma_row.addWidget(_compact(self.cp_gamma_max_spin, 60))
         gamma_row.addWidget(QLabel("step"))
         self.cp_gamma_step_spin = QDoubleSpinBox()
         self.cp_gamma_step_spin.setRange(0.05, 2.0)
@@ -163,7 +178,8 @@ class NucleusWorkflowWidget(QWidget):
         )
         for _w in (self.cp_gamma_min_spin, self.cp_gamma_max_spin, self.cp_gamma_step_spin):
             _w.setToolTip(_gamma_tip)
-        gamma_row.addWidget(self.cp_gamma_step_spin)
+        gamma_row.addWidget(_compact(self.cp_gamma_step_spin, 60))
+        gamma_row.addStretch(1)
         cp_params_lay.addLayout(gamma_row)
 
         self.save_source_check = QCheckBox("Save source label images")
@@ -178,9 +194,9 @@ class NucleusWorkflowWidget(QWidget):
         )
         self.cancel_build_btn = QPushButton("Cancel")
         self.cancel_build_btn.setEnabled(False)
-        build_btn_row.addWidget(self.build_btn)
-        build_btn_row.addWidget(self.preview_contour_btn)
-        build_btn_row.addWidget(self.cancel_build_btn)
+        build_btn_row.addWidget(_compact_btn(self.build_btn))
+        build_btn_row.addWidget(_compact_btn(self.preview_contour_btn))
+        build_btn_row.addWidget(_compact_btn(self.cancel_build_btn))
         contour_lay.addLayout(build_btn_row)
 
         self.build_progress_bar = QProgressBar()
@@ -206,6 +222,7 @@ class NucleusWorkflowWidget(QWidget):
         gen_lay = QVBoxLayout(_gen_inner)
         gen_lay.setContentsMargins(4, 4, 4, 4)
         gen_lay.setSpacing(6)
+        gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         shared_row = QHBoxLayout()
         shared_row.addWidget(QLabel("Min Cell Size (px):"))
@@ -213,7 +230,7 @@ class NucleusWorkflowWidget(QWidget):
         self.min_size_spin.setRange(0, 100000)
         self.min_size_spin.setValue(0)
         self.min_size_spin.setToolTip("Remove regions smaller than this many pixels (0 = keep all)")
-        shared_row.addWidget(self.min_size_spin)
+        shared_row.addWidget(_compact(self.min_size_spin, 80))
         shared_row.addWidget(QLabel("Min Circularity:"))
         self.min_circularity_spin = QDoubleSpinBox()
         self.min_circularity_spin.setRange(0.0, 1.0)
@@ -223,7 +240,7 @@ class NucleusWorkflowWidget(QWidget):
         self.min_circularity_spin.setToolTip(
             "Remove regions with circularity (4π·area/perimeter²) below this value (0 = keep all, 1 = perfect circle)"
         )
-        shared_row.addWidget(self.min_circularity_spin)
+        shared_row.addWidget(_compact(self.min_circularity_spin))
         shared_row.addStretch()
         self.overwrite_check = QCheckBox("Overwrite existing")
         shared_row.addWidget(self.overwrite_check)
@@ -237,7 +254,7 @@ class NucleusWorkflowWidget(QWidget):
         self.noise_scale.setDecimals(2)
         self.noise_scale.setSingleStep(0.01)
         self.noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
-        noise_shared_row.addWidget(self.noise_scale)
+        noise_shared_row.addWidget(_compact(self.noise_scale))
         noise_shared_row.addWidget(QLabel("Blur Sigma:"))
         self.noise_blur = QDoubleSpinBox()
         self.noise_blur.setRange(0.0, 10.0)
@@ -245,7 +262,7 @@ class NucleusWorkflowWidget(QWidget):
         self.noise_blur.setDecimals(1)
         self.noise_blur.setSingleStep(0.5)
         self.noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
-        noise_shared_row.addWidget(self.noise_blur)
+        noise_shared_row.addWidget(_compact(self.noise_blur))
         noise_shared_row.addStretch()
         gen_lay.addLayout(noise_shared_row)
 
@@ -255,16 +272,17 @@ class NucleusWorkflowWidget(QWidget):
         tuning_tab = QWidget()
         tuning_lay = QVBoxLayout(tuning_tab)
 
-        dist_row = QHBoxLayout()
-        dist_row.addWidget(QLabel("Seed Distance:"))
+        tuning_form = QFormLayout()
+        tuning_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        tuning_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        tuning_form.setHorizontalSpacing(8)
+        tuning_form.setVerticalSpacing(4)
+
         self.single_seed_dist = QSpinBox()
         self.single_seed_dist.setRange(1, 500)
         self.single_seed_dist.setValue(10)
-        dist_row.addWidget(self.single_seed_dist)
-        tuning_lay.addLayout(dist_row)
+        tuning_form.addRow("Seed Distance:", _compact(self.single_seed_dist))
 
-        fg_row = QHBoxLayout()
-        fg_row.addWidget(QLabel("Foreground Threshold:"))
         self.single_fg_threshold = QDoubleSpinBox()
         self.single_fg_threshold.setRange(0.01, 0.99)
         self.single_fg_threshold.setValue(0.5)
@@ -273,14 +291,14 @@ class NucleusWorkflowWidget(QWidget):
         self.single_fg_threshold.setToolTip(
             "Sigmoid foreground probability cutoff — pixels below this are excluded from segmentation and seeding."
         )
-        fg_row.addWidget(self.single_fg_threshold)
-        tuning_lay.addLayout(fg_row)
+        tuning_form.addRow("Foreground Threshold:", _compact(self.single_fg_threshold))
+        tuning_lay.addLayout(tuning_form)
 
         tuning_btn_row = QHBoxLayout()
         self.preview_btn = QPushButton("Preview")
         self.save_db_btn = QPushButton("Save to DB")
-        tuning_btn_row.addWidget(self.preview_btn)
-        tuning_btn_row.addWidget(self.save_db_btn)
+        tuning_btn_row.addWidget(_compact_btn(self.preview_btn))
+        tuning_btn_row.addWidget(_compact_btn(self.save_db_btn))
         tuning_lay.addLayout(tuning_btn_row)
         self.gen_tabs.addTab(tuning_tab, "Tuning")
 
@@ -298,6 +316,7 @@ class NucleusWorkflowWidget(QWidget):
                 if decimals > 0:
                     s.setDecimals(decimals)
                 s.setMaximumWidth(62)
+                s.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             min_s.setValue(d_min)
             max_s.setValue(d_max)
             step_s.setValue(d_step)
@@ -320,7 +339,7 @@ class NucleusWorkflowWidget(QWidget):
             "How many times to run the sweep. With noise > 0 each run produces "
             "different stochastic hypotheses stored as separate parameter sets."
         )
-        sweep_runs_row.addWidget(self.sweep_n_runs)
+        sweep_runs_row.addWidget(_compact(self.sweep_n_runs))
         sweep_runs_row.addWidget(QLabel("Workers:"))
         self.sweep_n_workers = QSpinBox()
         self.sweep_n_workers.setRange(1, max(1, os.cpu_count() or 1))
@@ -329,7 +348,7 @@ class NucleusWorkflowWidget(QWidget):
             "Number of parallel threads for the sweep. "
             "scipy/skimage release the GIL so threading scales well."
         )
-        sweep_runs_row.addWidget(self.sweep_n_workers)
+        sweep_runs_row.addWidget(_compact(self.sweep_n_workers))
         sweep_runs_row.addStretch()
         sweep_lay.addLayout(sweep_runs_row)
 
@@ -338,9 +357,9 @@ class NucleusWorkflowWidget(QWidget):
         self.run_terminal_btn = QPushButton("Run in Terminal")
         self.cancel_sweep_btn = QPushButton("Cancel")
         self.cancel_sweep_btn.setEnabled(False)
-        sweep_btn_row.addWidget(self.run_sweep_btn)
-        sweep_btn_row.addWidget(self.run_terminal_btn)
-        sweep_btn_row.addWidget(self.cancel_sweep_btn)
+        sweep_btn_row.addWidget(_compact_btn(self.run_sweep_btn))
+        sweep_btn_row.addWidget(_compact_btn(self.run_terminal_btn))
+        sweep_btn_row.addWidget(_compact_btn(self.cancel_sweep_btn))
         sweep_lay.addLayout(sweep_btn_row)
         self.gen_tabs.addTab(sweep_tab, "Sweep")
 
@@ -354,6 +373,7 @@ class NucleusWorkflowWidget(QWidget):
         _db_inner = QWidget()
         db_lay = QVBoxLayout(_db_inner)
         db_lay.setContentsMargins(4, 4, 4, 4)
+        db_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         hdr_row = QHBoxLayout()
         self.db_activate_btn = QPushButton("Activate")
@@ -375,12 +395,13 @@ class NucleusWorkflowWidget(QWidget):
         self._db_cw_panel = QWidget()
         cw_lay = QHBoxLayout(self._db_cw_panel)
         cw_lay.setContentsMargins(0, 0, 0, 0)
+        cw_lay.setSpacing(4)
         cw_lay.addWidget(QLabel("Seed Dist:"))
         self.db_seed_dist_spin = QSpinBox()
         self.db_seed_dist_spin.setRange(1, 500)
         self.db_seed_dist_spin.setValue(10)
         self.db_seed_dist_spin.setEnabled(False)
-        cw_lay.addWidget(self.db_seed_dist_spin)
+        cw_lay.addWidget(_compact(self.db_seed_dist_spin))
         cw_lay.addWidget(QLabel("FG Thr:"))
         self.db_fg_thr_spin = QDoubleSpinBox()
         self.db_fg_thr_spin.setRange(0.01, 0.99)
@@ -388,13 +409,14 @@ class NucleusWorkflowWidget(QWidget):
         self.db_fg_thr_spin.setDecimals(2)
         self.db_fg_thr_spin.setSingleStep(0.05)
         self.db_fg_thr_spin.setEnabled(False)
-        cw_lay.addWidget(self.db_fg_thr_spin)
+        cw_lay.addWidget(_compact(self.db_fg_thr_spin))
         cw_lay.addWidget(QLabel("Run:"))
         self.db_run_spin = QSpinBox()
         self.db_run_spin.setRange(0, 99)
         self.db_run_spin.setValue(0)
         self.db_run_spin.setEnabled(False)
-        cw_lay.addWidget(self.db_run_spin)
+        cw_lay.addWidget(_compact(self.db_run_spin))
+        cw_lay.addStretch(1)
         db_lay.addWidget(self._db_cw_panel)
 
         self.db_info_lbl = QLabel("—")
@@ -403,7 +425,7 @@ class NucleusWorkflowWidget(QWidget):
 
         db_btn_row = QHBoxLayout()
         self.set_seed_btn = QPushButton("Set as Tracking Seed")
-        db_btn_row.addWidget(self.set_seed_btn)
+        db_btn_row.addWidget(_compact_btn(self.set_seed_btn))
         db_lay.addLayout(db_btn_row)
 
         db_del_row = QHBoxLayout()
@@ -412,7 +434,7 @@ class NucleusWorkflowWidget(QWidget):
             "QPushButton { color: #cc3333; }"
             "QPushButton:hover { background-color: #4a1111; color: white; }"
         )
-        db_del_row.addWidget(self.del_stack_btn)
+        db_del_row.addWidget(_compact_btn(self.del_stack_btn))
         db_lay.addLayout(db_del_row)
         self.db_section = CollapsibleSection(
             "3. Database Browser", _db_inner, expanded=False
@@ -423,32 +445,7 @@ class NucleusWorkflowWidget(QWidget):
         _search_inner = QWidget()
         search_lay = QVBoxLayout(_search_inner)
         search_lay.setContentsMargins(4, 4, 4, 4)
-
-        row_iou = QHBoxLayout()
-        row_iou.addWidget(QLabel("IoU Threshold:"))
-        self.iou_spin = QDoubleSpinBox()
-        self.iou_spin.setRange(0, 1)
-        self.iou_spin.setValue(0.5)
-        self.iou_spin.setSingleStep(0.1)
-        row_iou.addWidget(self.iou_spin)
-        search_lay.addLayout(row_iou)
-
-        row_dist = QHBoxLayout()
-        row_dist.addWidget(QLabel("Max Dist (µm):"))
-        self.dist_spin = QDoubleSpinBox()
-        self.dist_spin.setRange(0, 1000)
-        self.dist_spin.setValue(20.0)
-        row_dist.addWidget(self.dist_spin)
-        search_lay.addLayout(row_dist)
-
-        row_vel = QHBoxLayout()
-        row_vel.addWidget(QLabel("Velocity σ (px):"))
-        self.vel_sigma_spin = QDoubleSpinBox()
-        self.vel_sigma_spin.setRange(1, 500)
-        self.vel_sigma_spin.setValue(25.0)
-        self.vel_sigma_spin.setSingleStep(5.0)
-        row_vel.addWidget(self.vel_sigma_spin)
-        search_lay.addLayout(row_vel)
+        search_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         def _weight_spin(default):
             w = QDoubleSpinBox()
@@ -458,50 +455,62 @@ class NucleusWorkflowWidget(QWidget):
             w.setDecimals(1)
             return w
 
-        row_iou_w = QHBoxLayout()
-        row_iou_w.addWidget(QLabel("IoU Weight:"))
+        search_form = QFormLayout()
+        search_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        search_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        search_form.setHorizontalSpacing(8)
+        search_form.setVerticalSpacing(4)
+
+        self.iou_spin = QDoubleSpinBox()
+        self.iou_spin.setRange(0, 1)
+        self.iou_spin.setValue(0.5)
+        self.iou_spin.setSingleStep(0.1)
+        search_form.addRow("IoU Threshold:", _compact(self.iou_spin))
+
+        self.dist_spin = QDoubleSpinBox()
+        self.dist_spin.setRange(0, 1000)
+        self.dist_spin.setValue(20.0)
+        search_form.addRow("Max Dist (µm):", _compact(self.dist_spin))
+
+        self.vel_sigma_spin = QDoubleSpinBox()
+        self.vel_sigma_spin.setRange(1, 500)
+        self.vel_sigma_spin.setValue(25.0)
+        self.vel_sigma_spin.setSingleStep(5.0)
+        search_form.addRow("Velocity σ (px):", _compact(self.vel_sigma_spin))
+
         self.iou_weight_spin = _weight_spin(1.0)
-        row_iou_w.addWidget(self.iou_weight_spin)
-        search_lay.addLayout(row_iou_w)
+        search_form.addRow("IoU Weight:", _compact(self.iou_weight_spin))
 
-        row_area_w = QHBoxLayout()
-        row_area_w.addWidget(QLabel("Area Weight:"))
         self.area_weight_spin = _weight_spin(1.0)
-        row_area_w.addWidget(self.area_weight_spin)
-        search_lay.addLayout(row_area_w)
+        search_form.addRow("Area Weight:", _compact(self.area_weight_spin))
 
-        row_vel_w = QHBoxLayout()
-        row_vel_w.addWidget(QLabel("Velocity Weight:"))
         self.vel_weight_spin = _weight_spin(1.0)
-        row_vel_w.addWidget(self.vel_weight_spin)
-        search_lay.addLayout(row_vel_w)
+        search_form.addRow("Velocity Weight:", _compact(self.vel_weight_spin))
 
-        row_pos_w = QHBoxLayout()
-        row_pos_w.addWidget(QLabel("Position Weight:"))
         self.pos_weight_spin = _weight_spin(0.0)
-        row_pos_w.addWidget(self.pos_weight_spin)
-        search_lay.addLayout(row_pos_w)
+        search_form.addRow("Position Weight:", _compact(self.pos_weight_spin))
 
-        row_unmatched = QHBoxLayout()
-        row_unmatched.addWidget(QLabel("Unmatched Score:"))
         self.unmatched_spin = QDoubleSpinBox()
         self.unmatched_spin.setRange(0.0, 1.0)
         self.unmatched_spin.setValue(0.1)
         self.unmatched_spin.setSingleStep(0.01)
-        row_unmatched.addWidget(self.unmatched_spin)
-        search_lay.addLayout(row_unmatched)
+        search_form.addRow("Unmatched Score:", _compact(self.unmatched_spin))
+
+        search_lay.addLayout(search_form)
 
         prop_row = QHBoxLayout()
         self.prop_next_btn = QPushButton("Propagate Next")
         self.prop_all_btn  = QPushButton("Propagate All")
         self.stop_btn      = QPushButton("Stop")
-        prop_row.addWidget(self.prop_next_btn)
-        prop_row.addWidget(self.prop_all_btn)
-        prop_row.addWidget(self.stop_btn)
+        prop_row.addWidget(_compact_btn(self.prop_next_btn))
+        prop_row.addWidget(_compact_btn(self.prop_all_btn))
+        prop_row.addWidget(_compact_btn(self.stop_btn))
         search_lay.addLayout(prop_row)
 
+        load_tracked_row = QHBoxLayout()
         self.load_tracked_btn = QPushButton("Load Tracked Labels")
-        search_lay.addWidget(self.load_tracked_btn)
+        load_tracked_row.addWidget(_compact_btn(self.load_tracked_btn))
+        search_lay.addLayout(load_tracked_row)
         self.search_section = CollapsibleSection(
             "4. Automated Search", _search_inner, expanded=False
         )
@@ -515,10 +524,10 @@ class NucleusWorkflowWidget(QWidget):
 
         retrack_row = QHBoxLayout()
         self.retrack_btn = QPushButton("Retrack Frame")
-        retrack_row.addWidget(self.retrack_btn)
+        retrack_row.addWidget(_compact_btn(self.retrack_btn))
         self.validate_btn = QPushButton("Validate Frame")
         self.validate_btn.setCheckable(True)
-        retrack_row.addWidget(self.validate_btn)
+        retrack_row.addWidget(_compact_btn(self.validate_btn))
         _corr_inner_lay.addLayout(retrack_row)
 
         self.correction_widget = CorrectionWidget(
