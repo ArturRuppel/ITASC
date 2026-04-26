@@ -1,9 +1,8 @@
-"""Global LAP-based propagator for nucleus tracking.
+"""Best-match propagator for nucleus tracking.
 
-For each nucleus in the current tracked frame, builds a score matrix against
-all candidate nuclei across all (hypothesis, z-slice) combinations for the
-next timepoint, then solves the linear assignment problem globally to find the
-maximum-weight bipartite matching. Preserves track IDs in the written frame.
+For each nucleus in the current tracked frame, gates all candidate nuclei from
+all hypotheses for the next timepoint by distance and real spatial IoU, scores
+the survivors, and picks the single best match greedily. No clustering, no LAP.
 """
 from __future__ import annotations
 
@@ -12,7 +11,6 @@ from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import center_of_mass
-from scipy.optimize import linear_sum_assignment
 from scipy.spatial import KDTree
 
 from cellflow.database.hypotheses import read_hypothesis_labels, list_hypotheses
@@ -33,57 +31,30 @@ def _label_stats(labels: np.ndarray) -> tuple[np.ndarray, dict[int, np.ndarray]]
     return areas, centroids
 
 
-def _label_rel_pixels(
-    labels: np.ndarray, centroids: dict[int, np.ndarray]
-) -> dict[int, frozenset[tuple[int, int]]]:
-    """Return per-label pixel coordinate sets relative to each label's centroid."""
-    ys, xs = np.nonzero(labels)
-    vals = labels[ys, xs]
+def _nucleus_pixels(labels: np.ndarray) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Return {label_id: (ys, xs)} pixel coordinate arrays for all non-zero labels."""
+    ys_all, xs_all = np.nonzero(labels)
+    vals = labels[ys_all, xs_all]
     result = {}
-    for lid, centroid in centroids.items():
+    for lid in np.unique(vals):
         mask = vals == lid
-        cy, cx = np.round(centroid).astype(int)
-        result[lid] = frozenset(zip(
-            (ys[mask] - cy).tolist(),
-            (xs[mask] - cx).tolist(),
-        ))
+        result[int(lid)] = (ys_all[mask], xs_all[mask])
     return result
 
 
-def _cluster_candidates(
-    centroids: np.ndarray,
-    dedup_radius_px: float,
-) -> list[list[int]]:
-    """Group flat candidate indices by centroid proximity using union-find.
-
-    Candidates within dedup_radius_px of each other are treated as the same
-    physical cell (e.g. the same nucleus appearing in multiple hypothesis slices).
-    """
-    n = len(centroids)
-    if n == 0:
-        return []
-
-    parent = list(range(n))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    tree = KDTree(centroids)
-    for i in range(n):
-        for j in tree.query_ball_point(centroids[i], dedup_radius_px):
-            if j <= i:
-                continue
-            pi, pj = find(i), find(j)
-            if pi != pj:
-                parent[pi] = pj
-
-    clusters: dict[int, list[int]] = {}
-    for i in range(n):
-        clusters.setdefault(find(i), []).append(i)
-    return list(clusters.values())
+def _iou_direct(
+    cur_ys: np.ndarray,
+    cur_xs: np.ndarray,
+    cur_area: int,
+    cand_flat_idx: np.ndarray,
+    cand_area: int,
+    W: int,
+) -> float:
+    """Direct spatial IoU between the current nucleus and a candidate nucleus."""
+    cur_flat = cur_ys * W + cur_xs
+    inter = int(np.isin(cur_flat, cand_flat_idx).sum())
+    union = cur_area + cand_area - inter
+    return inter / union if union > 0 else 0.0
 
 
 def find_best_hypothesis(
@@ -98,139 +69,88 @@ def find_best_hypothesis(
     area_weight: float = 1.0,
     velocity_weight: float = 1.0,
     pos_weight: float = 0.0,
-    dedup_radius_px: float = 0.0,
+    dedup_radius_px: float = 0.0,  # no longer used; kept for API compatibility
 ) -> tuple[np.ndarray, int] | tuple[None, None]:
-    """Return (relabeled_next_frame, winning_p_index) or (None, None).
+    """Return (relabeled_next_frame, winning_entry_index) or (None, None).
 
-    Builds a score matrix S[i, k] over all current nuclei i and all candidate
-    cell clusters k, then solves the linear assignment problem globally.
-
-    Parameters
-    ----------
-    current_labels:
-        (Y, X) uint32 tracked label image for the current frame.
-    candidates:
-        List of (Y, X) uint32 label images — one per (p, z) combination.
-    iou_threshold:
-        Minimum IoU to accept a match (hard gate).
-    max_dist_px:
-        Candidate nuclei whose centroid is farther than this are skipped.
-    predicted_centroids:
-        Optional dict mapping nucleus ID → predicted centroid.
-    velocity_sigma_px:
-        Standard deviation (pixels) for the velocity Gaussian.
-    unmatched_score:
-        Score assigned to the "null" option for each nucleus.
-    iou_weight:
-        Exponent applied to the IoU term.
-    area_weight:
-        Exponent applied to the area ratio term.
-    velocity_weight:
-        Exponent applied to the velocity Gaussian term.
-    pos_weight:
-        Exponent applied to the positional Gaussian term.
-    dedup_radius_px:
-        If > 0, candidates within this radius are clustered into one logical cell.
+    For each current nucleus, all (hypothesis, nucleus_id) candidates are gated
+    by centroid distance and direct spatial IoU, then scored. The best-scoring candidate wins; ties are impossible in practice.
+    No clustering and no global assignment — per-nucleus greedy matching.
     """
     if not candidates:
         return None, None
 
+    H, W = current_labels.shape
     cur_areas, cur_centroids = _label_stats(current_labels)
     cur_ids = sorted(cur_centroids.keys())
     if not cur_ids:
         return None, None
 
-    cur_rel_pixels = _label_rel_pixels(current_labels, cur_centroids)
+    cur_pixels = _nucleus_pixels(current_labels)
 
-    flat_cands: list[tuple[int, int, np.ndarray, int, frozenset]] = []
+    # Build flat list of all (entry_idx, cand_id, centroid, area, flat_pixel_idx).
+    flat_cands: list[tuple[int, int, np.ndarray, int, np.ndarray]] = []
     for entry_idx, cand in enumerate(candidates):
         c_areas, c_centroids = _label_stats(cand)
-        c_rel_pixels = _label_rel_pixels(cand, c_centroids)
-        for cand_id, centroid in c_centroids.items():
-            flat_cands.append((entry_idx, cand_id, centroid, int(c_areas[cand_id]), c_rel_pixels[cand_id]))
+        c_pixels = _nucleus_pixels(cand)
+        for cid, centroid in c_centroids.items():
+            cys, cxs = c_pixels[cid]
+            flat_idx = cys * W + cxs
+            flat_cands.append((entry_idx, int(cid), centroid, int(c_areas[cid]), flat_idx))
 
     if not flat_cands:
         return None, None
 
-    # Optional deduplication clustering
-    if dedup_radius_px > 0:
-        raw_centroids = np.vstack([c[2] for c in flat_cands])
-        clusters = _cluster_candidates(raw_centroids, dedup_radius_px)
-        clustered_cands = []
-        for cluster in clusters:
-            # Pick representative from cluster (first one)
-            rep_idx = cluster[0]
-            entry_idx, cand_id, centroid, area, rel = flat_cands[rep_idx]
-            # Store original indices to resolve winning_p later
-            clustered_cands.append((cluster, entry_idx, cand_id, centroid, area, rel))
-    else:
-        # Each candidate is its own cluster of size 1
-        clustered_cands = [([i], *flat_cands[i]) for i in range(len(flat_cands))]
-
-    C = len(clustered_cands)
+    cand_centroids_arr = np.vstack([c[2] for c in flat_cands])
+    tree = KDTree(cand_centroids_arr)
     two_sigma_sq = 2.0 * velocity_sigma_px ** 2
-    N = len(cur_ids)
 
-    # Score matrix: rows = source nuclei, cols = candidate cells + N nulls.
-    S = np.full((N, C + N), unmatched_score, dtype=np.float64)
-    for i in range(N):
-        S[i, 0:C] = 0.0 # Candidates init
-        S[i, C+i] = unmatched_score # Null init
+    next_frame = np.zeros_like(current_labels)
+    matched_entry_indices: list[int] = []
 
-    for i, current_id in enumerate(cur_ids):
-        cur_centroid = cur_centroids[current_id]
-        cur_area = int(cur_areas[current_id])
-        cur_rel = cur_rel_pixels[current_id]
-        pred_centroid = predicted_centroids.get(current_id) if predicted_centroids else None
-        
-        for k, (_indices, entry_idx, cand_id, cand_centroid, cand_area, cand_rel) in enumerate(clustered_cands):
-            # Distance filter (use predicted centroid if available)
-            ref_pos = pred_centroid if pred_centroid is not None else cur_centroid
-            if np.sqrt(np.sum((ref_pos - cand_centroid) ** 2)) > max_dist_px:
-                continue
+    for cur_id in cur_ids:
+        cur_centroid = cur_centroids[cur_id]
+        cur_area = int(cur_areas[cur_id])
+        cur_ys, cur_xs = cur_pixels[cur_id]
+        pred_centroid = (predicted_centroids or {}).get(cur_id)
+        ref_pos = pred_centroid if pred_centroid is not None else cur_centroid
 
-            # Standard IoU
-            inter = len(cur_rel & cand_rel)
-            union = cur_area + cand_area - inter
-            iou = inter / union if union > 0 else 0.0
+        nearby_ks = tree.query_ball_point(ref_pos, max_dist_px)
+        if not nearby_ks:
+            continue
+
+        best_score = -1.0
+        best_k = -1
+
+        for k in nearby_ks:
+            entry_idx, cand_id, cand_centroid, cand_area, cand_flat_idx = flat_cands[k]
+
+            iou = _iou_direct(cur_ys, cur_xs, cur_area, cand_flat_idx, cand_area, W)
             if iou < iou_threshold:
                 continue
 
             area_ratio = min(cur_area, cand_area) / max(cur_area, cand_area)
 
-            # Positional score
             pos_d2 = float(np.sum((cur_centroid - cand_centroid) ** 2))
-            pos_score = np.exp(-pos_d2 / two_sigma_sq)
+            pos_score = float(np.exp(-pos_d2 / two_sigma_sq))
 
-            # Velocity prediction
             if pred_centroid is not None:
                 vel_d2 = float(np.sum((pred_centroid - cand_centroid) ** 2))
-                vel_score = np.exp(-vel_d2 / two_sigma_sq)
+                vel_score = float(np.exp(-vel_d2 / two_sigma_sq))
             else:
                 vel_score = 1.0
 
-            S[i, k] = (iou ** iou_weight) * (area_ratio ** area_weight) * \
-                      (vel_score ** velocity_weight) * (pos_score ** pos_weight)
+            score = (iou ** iou_weight) * (area_ratio ** area_weight) * \
+                    (vel_score ** velocity_weight) * (pos_score ** pos_weight)
 
-    # Solve LAP: maximize total score
-    row_ind, col_ind = linear_sum_assignment(-S)
+            if score > best_score:
+                best_score = score
+                best_k = k
 
-    next_frame = np.zeros_like(current_labels)
-    matched_entry_indices: list[int] = []
-
-    for i, k in zip(row_ind, col_ind):
-        if k >= C:
-            continue
-        if S[i, k] <= unmatched_score:
-            continue
-
-        cluster_indices, entry_idx, cand_id, *_ = clustered_cands[k]
-        # Label next frame using the representative candidate
-        next_frame[candidates[entry_idx] == cand_id] = cur_ids[i]
-        
-        # Collect all entry indices from the cluster for majority voting
-        for idx in cluster_indices:
-            matched_entry_indices.append(flat_cands[idx][0])
+        if best_k >= 0:
+            entry_idx, cand_id, cand_centroid, cand_area, cand_flat_idx = flat_cands[best_k]
+            next_frame[candidates[entry_idx] == cand_id] = cur_id
+            matched_entry_indices.append(entry_idx)
 
     if not matched_entry_indices:
         return None, None
@@ -254,16 +174,17 @@ def propagate_one_frame(
 ) -> int | None:
     """Propagate tracking from t_current to t_current + 1.
 
-    Searches all (p, z) combinations in the hypothesis database for t_next,
-    matches each tracked nucleus to its best candidate via global linear
-    assignment, then writes a relabeled next frame that preserves track IDs.
+    Searches all hypotheses in the hypothesis database for t_next, matches each
+    tracked nucleus to its best candidate via greedy per-nucleus scoring, then
+    writes a relabeled next frame that preserves track IDs.
 
-    Returns the winning p index, or None if no matches were found.
+    Returns the winning p index (majority over matched nuclei), or None if no
+    matches were found.
     """
     hypotheses_h5 = Path(hypotheses_h5)
     tracked_h5 = Path(tracked_h5)
 
-    current_labels = read_tracked_frame(tracked_h5, t_current)  # (Y, X)
+    current_labels = read_tracked_frame(tracked_h5, t_current)
 
     n_p, params_by_p = list_hypotheses(hypotheses_h5)
     if n_p == 0:
@@ -284,16 +205,13 @@ def propagate_one_frame(
                 if lid in prev_centroids
             }
         except Exception:
-            pass  # no previous frame or read error — velocity scoring disabled
+            pass
 
-    # Build flat list of (p, z, slice_2d) for every (hypothesis, z-plane)
     entries: list[tuple[int, int, np.ndarray]] = []
     for p in params_by_p.keys():
         try:
-            volume = read_hypothesis_labels(hypotheses_h5, t_next, p)  # (Z, Y, X)
+            volume = read_hypothesis_labels(hypotheses_h5, t_next, p)  # (Z, Y, X) with Z=1
         except (KeyError, ValueError):
-            # If t_next or p is missing, we skip this p. 
-            # If t_next is globally missing, entries will remain empty.
             continue
         for z in range(volume.shape[0]):
             entries.append((p, z, volume[z]))

@@ -1,4 +1,4 @@
-"""Tests for the LAP-based nucleus propagator."""
+"""Tests for the best-match nucleus propagator."""
 import numpy as np
 import pytest
 
@@ -12,12 +12,12 @@ def _make_square(shape, row, col, size, label):
     return arr
 
 
-def test_hungarian_beats_greedy_order():
-    """Global assignment outperforms greedy when two nuclei compete.
+def test_two_spatially_separated_nuclei_both_matched():
+    """Two nuclei with spatially separated candidates are both matched.
 
     Nucleus 1 (top-left) and nucleus 2 (top-right) each have one good
-    candidate. Greedy (ID-sorted) would assign nucleus 1 first regardless;
-    Hungarian finds the globally optimal pairing so both are matched.
+    candidate far from the other. Greedy per-nucleus matching assigns each
+    to its own best candidate independently.
     """
     shape = (100, 200)
     sz = 10
@@ -136,14 +136,12 @@ def test_velocity_predicted_centroid_extends_search():
     assert 1 in np.unique(next_frame)
 
 
-def test_dedup_prevents_collision():
-    """Two source nuclei must not both be assigned to the same physical location.
+def test_distant_nucleus_not_matched_to_far_candidate():
+    """A nucleus with no nearby candidates stays unmatched.
 
-    Nucleus 1 is faint (no good match). Nucleus 2 has a clear match. Two
-    hypothesis images both contain a candidate at nucleus 2's next position.
-    Without deduplication, nucleus 1 could steal the duplicate column and appear
-    at the same location as nucleus 2. With deduplication those two columns are
-    merged into one cluster, so only one nucleus can win it.
+    Nucleus 1 is far from the only available candidates (which are near
+    nucleus 2). The distance gate keeps nucleus 1 unmatched while nucleus 2
+    is correctly assigned.
     """
     shape = (100, 200)
     sz = 12
