@@ -14,7 +14,6 @@ from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -81,11 +80,6 @@ class NucleusWorkflowWidget(QWidget):
         self._db_seed_dist_vals: list[int] = []
         self._db_fg_thr_vals: list[float] = []
         self._db_run_vals: list[int] = []
-        self._db_pp_param_map: dict[tuple[float, float, float, int], int] = {}
-        self._db_pp_gamma_vals: list[float] = []
-        self._db_pp_sigma_vals: list[float] = []
-        self._db_pp_thresh_vals: list[float] = []
-        self._db_pp_z_vals: list[int] = []
         self._setup_ui()
         self._connect_signals()
 
@@ -377,13 +371,6 @@ class NucleusWorkflowWidget(QWidget):
         hdr_row.addWidget(self.db_refresh_btn)
         db_lay.addLayout(hdr_row)
 
-        method_row = QHBoxLayout()
-        method_row.addWidget(QLabel("Method:"))
-        self.db_method_combo = QComboBox()
-        self.db_method_combo.setEnabled(False)
-        method_row.addWidget(self.db_method_combo)
-        db_lay.addLayout(method_row)
-
         # ── contour_watershed params panel ────────────────────────────────
         self._db_cw_panel = QWidget()
         cw_lay = QHBoxLayout(self._db_cw_panel)
@@ -409,43 +396,6 @@ class NucleusWorkflowWidget(QWidget):
         self.db_run_spin.setEnabled(False)
         cw_lay.addWidget(self.db_run_spin)
         db_lay.addWidget(self._db_cw_panel)
-
-        # ── cellpose_preproc_sweep params panel ───────────────────────────
-        self._db_pp_panel = QWidget()
-        pp_lay = QHBoxLayout(self._db_pp_panel)
-        pp_lay.setContentsMargins(0, 0, 0, 0)
-        pp_lay.addWidget(QLabel("γ:"))
-        self.db_pp_gamma_spin = QDoubleSpinBox()
-        self.db_pp_gamma_spin.setRange(0.01, 10.0)
-        self.db_pp_gamma_spin.setValue(1.0)
-        self.db_pp_gamma_spin.setDecimals(2)
-        self.db_pp_gamma_spin.setSingleStep(0.1)
-        self.db_pp_gamma_spin.setEnabled(False)
-        pp_lay.addWidget(self.db_pp_gamma_spin)
-        pp_lay.addWidget(QLabel("σ:"))
-        self.db_pp_sigma_spin = QDoubleSpinBox()
-        self.db_pp_sigma_spin.setRange(0.0, 50.0)
-        self.db_pp_sigma_spin.setValue(0.0)
-        self.db_pp_sigma_spin.setDecimals(1)
-        self.db_pp_sigma_spin.setSingleStep(0.5)
-        self.db_pp_sigma_spin.setEnabled(False)
-        pp_lay.addWidget(self.db_pp_sigma_spin)
-        pp_lay.addWidget(QLabel("Thr:"))
-        self.db_pp_thresh_spin = QDoubleSpinBox()
-        self.db_pp_thresh_spin.setRange(-20.0, 20.0)
-        self.db_pp_thresh_spin.setValue(0.0)
-        self.db_pp_thresh_spin.setDecimals(1)
-        self.db_pp_thresh_spin.setSingleStep(0.5)
-        self.db_pp_thresh_spin.setEnabled(False)
-        pp_lay.addWidget(self.db_pp_thresh_spin)
-        pp_lay.addWidget(QLabel("Z:"))
-        self.db_pp_z_spin = QSpinBox()
-        self.db_pp_z_spin.setRange(0, 99)
-        self.db_pp_z_spin.setValue(0)
-        self.db_pp_z_spin.setEnabled(False)
-        pp_lay.addWidget(self.db_pp_z_spin)
-        self._db_pp_panel.setVisible(False)
-        db_lay.addWidget(self._db_pp_panel)
 
         self.db_info_lbl = QLabel("—")
         self.db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -609,14 +559,9 @@ class NucleusWorkflowWidget(QWidget):
         self.run_sweep_btn.clicked.connect(self._on_run_sweep)
         self.run_terminal_btn.clicked.connect(self._on_run_terminal)
         self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
-        self.db_method_combo.currentTextChanged.connect(self._on_db_method_changed)
         self.db_seed_dist_spin.valueChanged.connect(self._on_db_param_changed)
         self.db_fg_thr_spin.valueChanged.connect(self._on_db_param_changed)
         self.db_run_spin.valueChanged.connect(self._on_db_param_changed)
-        self.db_pp_gamma_spin.valueChanged.connect(self._on_db_param_changed)
-        self.db_pp_sigma_spin.valueChanged.connect(self._on_db_param_changed)
-        self.db_pp_thresh_spin.valueChanged.connect(self._on_db_param_changed)
-        self.db_pp_z_spin.valueChanged.connect(self._on_db_param_changed)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
@@ -723,19 +668,10 @@ class NucleusWorkflowWidget(QWidget):
         self._db_seed_dist_vals = []
         self._db_fg_thr_vals = []
         self._db_run_vals = []
-        self._db_pp_param_map = {}
-        self._db_pp_gamma_vals = []
-        self._db_pp_sigma_vals = []
-        self._db_pp_thresh_vals = []
-        self._db_pp_z_vals = []
         self._current_db_p = None
         self.db_seed_dist_spin.setEnabled(False)
         self.db_fg_thr_spin.setEnabled(False)
         self.db_run_spin.setEnabled(False)
-        self.db_pp_gamma_spin.setEnabled(False)
-        self.db_pp_sigma_spin.setEnabled(False)
-        self.db_pp_thresh_spin.setEnabled(False)
-        self.db_pp_z_spin.setEnabled(False)
         self.db_info_lbl.setText("—")
 
         hyp_path = self._hyp_path()
@@ -753,138 +689,60 @@ class NucleusWorkflowWidget(QWidget):
             p: info for p, info in params_by_p.items()
             if str(info.get("method", "")) == "contour_watershed"
         }
-        preproc_entries = {
-            p: info for p, info in params_by_p.items()
-            if str(info.get("method", "")) == "cellpose_preproc_sweep"
-        }
 
-        available_methods: list[str] = []
-        if contour_entries:
-            available_methods.append("contour_watershed")
-        if preproc_entries:
-            available_methods.append("cellpose_preproc_sweep")
-
-        if not available_methods:
+        if not contour_entries:
             self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s) (no browsable entries).")
-            self.db_method_combo.blockSignals(True)
-            self.db_method_combo.clear()
-            self.db_method_combo.setEnabled(False)
-            self.db_method_combo.blockSignals(False)
             return
 
-        # Populate contour_watershed param map
-        if contour_entries:
-            seed_dist_set: set[int] = set()
-            fg_thr_set: set[float] = set()
-            run_set: set[int] = set()
-            for p_idx, info in contour_entries.items():
-                d = int(info.get("seed_distance", 10))
-                fg = round(float(info.get("foreground_threshold", 0.5)), 4)
-                run = int(info.get("run_index", 0))
-                seed_dist_set.add(d)
-                fg_thr_set.add(fg)
-                run_set.add(run)
-                self._db_param_map[(d, fg, run)] = p_idx
-            self._db_seed_dist_vals = sorted(seed_dist_set)
-            self._db_fg_thr_vals = sorted(fg_thr_set)
-            self._db_run_vals = sorted(run_set)
+        seed_dist_set: set[int] = set()
+        fg_thr_set: set[float] = set()
+        run_set: set[int] = set()
+        for p_idx, info in contour_entries.items():
+            d = int(info.get("seed_distance", 10))
+            fg = round(float(info.get("foreground_threshold", 0.5)), 4)
+            run = int(info.get("run_index", 0))
+            seed_dist_set.add(d)
+            fg_thr_set.add(fg)
+            run_set.add(run)
+            self._db_param_map[(d, fg, run)] = p_idx
+        self._db_seed_dist_vals = sorted(seed_dist_set)
+        self._db_fg_thr_vals = sorted(fg_thr_set)
+        self._db_run_vals = sorted(run_set)
 
-        # Populate cellpose_preproc_sweep param map
-        if preproc_entries:
-            gamma_set: set[float] = set()
-            sigma_set: set[float] = set()
-            thresh_set: set[float] = set()
-            z_set: set[int] = set()
-            for p_idx, info in preproc_entries.items():
-                g = round(float(info.get("gamma", 1.0)), 4)
-                s = round(float(info.get("blur_sigma", 0.0)), 4)
-                thr = round(float(info.get("cellprob_threshold", 0.0)), 4)
-                z = int(info.get("z_slice", 0))
-                gamma_set.add(g)
-                sigma_set.add(s)
-                thresh_set.add(thr)
-                z_set.add(z)
-                self._db_pp_param_map[(g, s, thr, z)] = p_idx
-            self._db_pp_gamma_vals = sorted(gamma_set)
-            self._db_pp_sigma_vals = sorted(sigma_set)
-            self._db_pp_thresh_vals = sorted(thresh_set)
-            self._db_pp_z_vals = sorted(z_set)
-
-        # Update method combo, preserving current selection if possible
-        current_method = self.db_method_combo.currentText()
-        self.db_method_combo.blockSignals(True)
-        self.db_method_combo.clear()
-        for m in available_methods:
-            self.db_method_combo.addItem(m)
-        if current_method in available_methods:
-            self.db_method_combo.setCurrentText(current_method)
-        self.db_method_combo.setEnabled(len(available_methods) > 1)
-        self.db_method_combo.blockSignals(False)
-
-        self._apply_method_panel(self.db_method_combo.currentText())
+        self._apply_method_panel()
         self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s).")
 
-    def _apply_method_panel(self, method: str) -> None:
-        """Show the correct param panel and populate its spinboxes for method."""
-        self._db_cw_panel.setVisible(method == "contour_watershed")
-        self._db_pp_panel.setVisible(method == "cellpose_preproc_sweep")
+    def _apply_method_panel(self) -> None:
+        if not self._db_seed_dist_vals:
+            return
 
-        if method == "contour_watershed" and self._db_seed_dist_vals:
-            self.db_seed_dist_spin.blockSignals(True)
-            self.db_seed_dist_spin.setMinimum(self._db_seed_dist_vals[0])
-            self.db_seed_dist_spin.setMaximum(self._db_seed_dist_vals[-1])
-            step_d = (self._db_seed_dist_vals[1] - self._db_seed_dist_vals[0]) if len(self._db_seed_dist_vals) > 1 else 1
-            self.db_seed_dist_spin.setSingleStep(step_d)
-            self.db_seed_dist_spin.setValue(self._db_seed_dist_vals[0])
-            self.db_seed_dist_spin.setEnabled(True)
-            self.db_seed_dist_spin.blockSignals(False)
+        self.db_seed_dist_spin.blockSignals(True)
+        self.db_seed_dist_spin.setMinimum(self._db_seed_dist_vals[0])
+        self.db_seed_dist_spin.setMaximum(self._db_seed_dist_vals[-1])
+        step_d = (self._db_seed_dist_vals[1] - self._db_seed_dist_vals[0]) if len(self._db_seed_dist_vals) > 1 else 1
+        self.db_seed_dist_spin.setSingleStep(step_d)
+        self.db_seed_dist_spin.setValue(self._db_seed_dist_vals[0])
+        self.db_seed_dist_spin.setEnabled(True)
+        self.db_seed_dist_spin.blockSignals(False)
 
-            self.db_fg_thr_spin.blockSignals(True)
-            self.db_fg_thr_spin.setMinimum(self._db_fg_thr_vals[0])
-            self.db_fg_thr_spin.setMaximum(self._db_fg_thr_vals[-1])
-            step_fg = round(self._db_fg_thr_vals[1] - self._db_fg_thr_vals[0], 4) if len(self._db_fg_thr_vals) > 1 else 0.05
-            self.db_fg_thr_spin.setSingleStep(step_fg)
-            self.db_fg_thr_spin.setValue(self._db_fg_thr_vals[0])
-            self.db_fg_thr_spin.setEnabled(True)
-            self.db_fg_thr_spin.blockSignals(False)
+        self.db_fg_thr_spin.blockSignals(True)
+        self.db_fg_thr_spin.setMinimum(self._db_fg_thr_vals[0])
+        self.db_fg_thr_spin.setMaximum(self._db_fg_thr_vals[-1])
+        step_fg = round(self._db_fg_thr_vals[1] - self._db_fg_thr_vals[0], 4) if len(self._db_fg_thr_vals) > 1 else 0.05
+        self.db_fg_thr_spin.setSingleStep(step_fg)
+        self.db_fg_thr_spin.setValue(self._db_fg_thr_vals[0])
+        self.db_fg_thr_spin.setEnabled(True)
+        self.db_fg_thr_spin.blockSignals(False)
 
-            self.db_run_spin.blockSignals(True)
-            self.db_run_spin.setMinimum(self._db_run_vals[0])
-            self.db_run_spin.setMaximum(self._db_run_vals[-1])
-            self.db_run_spin.setSingleStep(1)
-            self.db_run_spin.setValue(self._db_run_vals[0])
-            self.db_run_spin.setEnabled(len(self._db_run_vals) > 1)
-            self.db_run_spin.blockSignals(False)
-
-        elif method == "cellpose_preproc_sweep" and self._db_pp_gamma_vals:
-            def _set_dspin(spin, vals):
-                spin.blockSignals(True)
-                spin.setMinimum(vals[0])
-                spin.setMaximum(vals[-1])
-                step = round(vals[1] - vals[0], 4) if len(vals) > 1 else spin.singleStep()
-                spin.setSingleStep(step)
-                spin.setValue(vals[0])
-                spin.setEnabled(True)
-                spin.blockSignals(False)
-
-            _set_dspin(self.db_pp_gamma_spin,  self._db_pp_gamma_vals)
-            _set_dspin(self.db_pp_sigma_spin,  self._db_pp_sigma_vals)
-            _set_dspin(self.db_pp_thresh_spin, self._db_pp_thresh_vals)
-
-            self.db_pp_z_spin.blockSignals(True)
-            self.db_pp_z_spin.setMinimum(self._db_pp_z_vals[0])
-            self.db_pp_z_spin.setMaximum(self._db_pp_z_vals[-1])
-            self.db_pp_z_spin.setSingleStep(1)
-            self.db_pp_z_spin.setValue(self._db_pp_z_vals[0])
-            self.db_pp_z_spin.setEnabled(len(self._db_pp_z_vals) > 1)
-            self.db_pp_z_spin.blockSignals(False)
+        self.db_run_spin.blockSignals(True)
+        self.db_run_spin.setMinimum(self._db_run_vals[0])
+        self.db_run_spin.setMaximum(self._db_run_vals[-1])
+        self.db_run_spin.setSingleStep(1)
+        self.db_run_spin.setValue(self._db_run_vals[0])
+        self.db_run_spin.setEnabled(len(self._db_run_vals) > 1)
+        self.db_run_spin.blockSignals(False)
 
         self._update_db_info_lbl()
-
-    def _on_db_method_changed(self, method: str) -> None:
-        self._apply_method_panel(method)
-        if self.db_activate_btn.isChecked() and self._current_db_p is not None:
-            self._load_db_stack(self._current_db_p)
 
     def _set_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
@@ -1372,29 +1230,18 @@ class NucleusWorkflowWidget(QWidget):
             self._load_db_stack(self._current_db_p)
 
     def _lookup_db_p(self) -> int | None:
-        method = self.db_method_combo.currentText()
-        if method == "cellpose_preproc_sweep":
-            if not self._db_pp_param_map:
-                return None
-            def _snap_f(val, vals): return round(min(vals, key=lambda x: abs(x - val)), 4)
-            g   = _snap_f(self.db_pp_gamma_spin.value(),  self._db_pp_gamma_vals)  if self._db_pp_gamma_vals  else round(self.db_pp_gamma_spin.value(), 4)
-            s   = _snap_f(self.db_pp_sigma_spin.value(),  self._db_pp_sigma_vals)  if self._db_pp_sigma_vals  else round(self.db_pp_sigma_spin.value(), 4)
-            thr = _snap_f(self.db_pp_thresh_spin.value(), self._db_pp_thresh_vals) if self._db_pp_thresh_vals else round(self.db_pp_thresh_spin.value(), 4)
-            z   = min(self._db_pp_z_vals, key=lambda x: abs(x - self.db_pp_z_spin.value())) if self._db_pp_z_vals else self.db_pp_z_spin.value()
-            return self._db_pp_param_map.get((g, s, thr, z))
-        else:
-            if not self._db_param_map:
-                return None
-            d = self.db_seed_dist_spin.value()
-            fg = round(self.db_fg_thr_spin.value(), 4)
-            run = self.db_run_spin.value()
-            if self._db_seed_dist_vals:
-                d = min(self._db_seed_dist_vals, key=lambda x: abs(x - d))
-            if self._db_fg_thr_vals:
-                fg = round(min(self._db_fg_thr_vals, key=lambda x: abs(x - fg)), 4)
-            if self._db_run_vals:
-                run = min(self._db_run_vals, key=lambda x: abs(x - run))
-            return self._db_param_map.get((d, fg, run))
+        if not self._db_param_map:
+            return None
+        d = self.db_seed_dist_spin.value()
+        fg = round(self.db_fg_thr_spin.value(), 4)
+        run = self.db_run_spin.value()
+        if self._db_seed_dist_vals:
+            d = min(self._db_seed_dist_vals, key=lambda x: abs(x - d))
+        if self._db_fg_thr_vals:
+            fg = round(min(self._db_fg_thr_vals, key=lambda x: abs(x - fg)), 4)
+        if self._db_run_vals:
+            run = min(self._db_run_vals, key=lambda x: abs(x - run))
+        return self._db_param_map.get((d, fg, run))
 
     def _update_db_info_lbl(self) -> None:
         p = self._lookup_db_p()
@@ -1805,14 +1652,9 @@ class NucleusWorkflowWidget(QWidget):
                 "n_workers":      self.sweep_n_workers.value(),
             },
             "db_browser": {
-                "method":       self.db_method_combo.currentText(),
                 "seed_dist":    self.db_seed_dist_spin.value(),
                 "fg_threshold": self.db_fg_thr_spin.value(),
                 "run_index":    self.db_run_spin.value(),
-                "pp_gamma":     self.db_pp_gamma_spin.value(),
-                "pp_sigma":     self.db_pp_sigma_spin.value(),
-                "pp_thresh":    self.db_pp_thresh_spin.value(),
-                "pp_z":         self.db_pp_z_spin.value(),
             },
             "search": {
                 "iou_threshold":    self.iou_spin.value(),
@@ -1863,14 +1705,9 @@ class NucleusWorkflowWidget(QWidget):
             if "n_workers"        in sw: self.sweep_n_workers.setValue(sw["n_workers"])
         if "db_browser" in state:
             db = state["db_browser"]
-            if "method"       in db: self.db_method_combo.setCurrentText(db["method"])
             if "seed_dist"    in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
             if "fg_threshold" in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
             if "run_index"    in db: self.db_run_spin.setValue(db["run_index"])
-            if "pp_gamma"     in db: self.db_pp_gamma_spin.setValue(db["pp_gamma"])
-            if "pp_sigma"     in db: self.db_pp_sigma_spin.setValue(db["pp_sigma"])
-            if "pp_thresh"    in db: self.db_pp_thresh_spin.setValue(db["pp_thresh"])
-            if "pp_z"         in db: self.db_pp_z_spin.setValue(db["pp_z"])
         if "search" in state:
             se = state["search"]
             if "iou_threshold"     in se: self.iou_spin.setValue(se["iou_threshold"])
