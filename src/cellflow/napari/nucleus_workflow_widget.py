@@ -17,6 +17,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -31,6 +32,7 @@ from cellflow.database.hypotheses import (
     build_contour_watershed_parameter_sets,
     delete_hypothesis_parameter,
     iter_contour_watershed_records,
+    iter_contour_watershed_records_from_raw,
     list_hypotheses,
     read_full_hypothesis_stack,
     read_hypothesis_labels,
@@ -48,7 +50,7 @@ from cellflow.database.validation import (
     read_validated_frames,
     validate_frame,
 )
-from cellflow.napari.widgets import PipelineFilesWidget
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
 from cellflow.tracking import propagate_one_frame
 from cellflow.tracking.retracker import retrack_frame
@@ -74,9 +76,10 @@ class NucleusWorkflowWidget(QWidget):
         self._build_worker = None
         self._sweep_worker = None
         self._current_db_p: int | None = None
-        self._db_param_map: dict[tuple[int, float], int] = {}
+        self._db_param_map: dict[tuple[int, float, float], int] = {}
         self._db_seed_dist_vals: list[int] = []
         self._db_fg_thr_vals: list[float] = []
+        self._db_gamma_vals: list[float] = []
         self._setup_ui()
         self._connect_signals()
 
@@ -99,9 +102,12 @@ class NucleusWorkflowWidget(QWidget):
         layout.addWidget(self.input_files)
 
         # ── 1. Contour Maps ───────────────────────────────────────────────
-        contour_group = QGroupBox("1. Contour Maps")
-        contour_lay = QVBoxLayout(contour_group)
-        contour_lay.setSpacing(6)
+        _contour_inner = QWidget()
+        contour_lay = QVBoxLayout(_contour_inner)
+        contour_lay.setContentsMargins(4, 4, 4, 4)
+        contour_lay.setSpacing(4)
+
+        cp_params_lay = contour_lay
 
         cp_row = QHBoxLayout()
         cp_row.addWidget(QLabel("Cellprob:"))
@@ -126,15 +132,58 @@ class NucleusWorkflowWidget(QWidget):
         self.cp_step_spin.setDecimals(1)
         self.cp_step_spin.setSingleStep(0.5)
         cp_row.addWidget(self.cp_step_spin)
-        contour_lay.addLayout(cp_row)
+        cp_params_lay.addLayout(cp_row)
+
+        gamma_row = QHBoxLayout()
+        gamma_row.addWidget(QLabel("Gamma:"))
+        gamma_row.addWidget(QLabel("min"))
+        self.cp_gamma_min_spin = QDoubleSpinBox()
+        self.cp_gamma_min_spin.setRange(0.05, 5.0)
+        self.cp_gamma_min_spin.setValue(1.0)
+        self.cp_gamma_min_spin.setDecimals(2)
+        self.cp_gamma_min_spin.setSingleStep(0.05)
+        gamma_row.addWidget(self.cp_gamma_min_spin)
+        gamma_row.addWidget(QLabel("max"))
+        self.cp_gamma_max_spin = QDoubleSpinBox()
+        self.cp_gamma_max_spin.setRange(0.05, 5.0)
+        self.cp_gamma_max_spin.setValue(1.0)
+        self.cp_gamma_max_spin.setDecimals(2)
+        self.cp_gamma_max_spin.setSingleStep(0.05)
+        gamma_row.addWidget(self.cp_gamma_max_spin)
+        gamma_row.addWidget(QLabel("step"))
+        self.cp_gamma_step_spin = QDoubleSpinBox()
+        self.cp_gamma_step_spin.setRange(0.05, 2.0)
+        self.cp_gamma_step_spin.setValue(0.25)
+        self.cp_gamma_step_spin.setDecimals(2)
+        self.cp_gamma_step_spin.setSingleStep(0.05)
+        _gamma_tip = (
+            "Gamma correction on Cellpose probability logits before boundary building. "
+            "<1 boosts dim signals; >1 suppresses them. 1.0 = no correction. "
+            "Contour maps are averaged over all gamma values in [min, max]."
+        )
+        for _w in (self.cp_gamma_min_spin, self.cp_gamma_max_spin, self.cp_gamma_step_spin):
+            _w.setToolTip(_gamma_tip)
+        gamma_row.addWidget(self.cp_gamma_step_spin)
+        cp_params_lay.addLayout(gamma_row)
 
         build_btn_row = QHBoxLayout()
         self.build_btn = QPushButton("Build")
+        self.preview_contour_btn = QPushButton("Preview")
+        self.preview_contour_btn.setToolTip(
+            "Build contour maps for the current frame only and display in napari"
+        )
         self.cancel_build_btn = QPushButton("Cancel")
         self.cancel_build_btn.setEnabled(False)
         build_btn_row.addWidget(self.build_btn)
+        build_btn_row.addWidget(self.preview_contour_btn)
         build_btn_row.addWidget(self.cancel_build_btn)
         contour_lay.addLayout(build_btn_row)
+
+        self.build_progress_bar = QProgressBar()
+        self.build_progress_bar.setRange(0, 100)
+        self.build_progress_bar.setValue(0)
+        self.build_progress_bar.setVisible(False)
+        contour_lay.addWidget(self.build_progress_bar)
 
         self.contour_files = PipelineFilesWidget([
             ("", [
@@ -143,7 +192,10 @@ class NucleusWorkflowWidget(QWidget):
             ]),
         ])
         contour_lay.addWidget(self.contour_files)
-        layout.addWidget(contour_group)
+        self.contour_section = CollapsibleSection(
+            "1. Contour Maps", _contour_inner, expanded=False
+        )
+        layout.addWidget(self.contour_section)
 
         # ── 2. Hypothesis Generation ──────────────────────────────────────
         gen_group = QGroupBox("2. Hypothesis Generation")
@@ -242,6 +294,7 @@ class NucleusWorkflowWidget(QWidget):
         self.sweep_seed_dist  = _sweep_row("Seed Dist",            8,    14,   2,     decimals=0)
         self.sweep_fg_thr     = _sweep_row("Foreground Threshold", 0.4,  0.6,  0.05,  decimals=2)
         self.sweep_noise      = _sweep_row("Noise Scale",          0.0,  0.1,  0.05,  decimals=2)
+        self.sweep_gamma      = _sweep_row("Gamma",                1.0,  1.0,  0.5,   decimals=2)
 
         sweep_btn_row = QHBoxLayout()
         self.run_sweep_btn    = QPushButton("Run Sweep")
@@ -284,7 +337,7 @@ class NucleusWorkflowWidget(QWidget):
         self.db_seed_dist_spin.setValue(10)
         self.db_seed_dist_spin.setEnabled(False)
         param_row.addWidget(self.db_seed_dist_spin)
-        param_row.addWidget(QLabel("FG Threshold:"))
+        param_row.addWidget(QLabel("FG Thr:"))
         self.db_fg_thr_spin = QDoubleSpinBox()
         self.db_fg_thr_spin.setRange(0.01, 0.99)
         self.db_fg_thr_spin.setValue(0.5)
@@ -292,6 +345,14 @@ class NucleusWorkflowWidget(QWidget):
         self.db_fg_thr_spin.setSingleStep(0.05)
         self.db_fg_thr_spin.setEnabled(False)
         param_row.addWidget(self.db_fg_thr_spin)
+        param_row.addWidget(QLabel("Gamma:"))
+        self.db_gamma_spin = QDoubleSpinBox()
+        self.db_gamma_spin.setRange(0.05, 5.0)
+        self.db_gamma_spin.setValue(1.0)
+        self.db_gamma_spin.setDecimals(2)
+        self.db_gamma_spin.setSingleStep(0.05)
+        self.db_gamma_spin.setEnabled(False)
+        param_row.addWidget(self.db_gamma_spin)
         db_lay.addLayout(param_row)
 
         self.db_info_lbl = QLabel("—")
@@ -432,6 +493,7 @@ class NucleusWorkflowWidget(QWidget):
 
     def _connect_signals(self) -> None:
         self.build_btn.clicked.connect(self._on_build_contour_maps)
+        self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
         self.preview_btn.clicked.connect(self._on_preview)
         self.save_db_btn.clicked.connect(self._on_save_db)
@@ -440,6 +502,7 @@ class NucleusWorkflowWidget(QWidget):
         self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
         self.db_seed_dist_spin.valueChanged.connect(self._on_db_param_changed)
         self.db_fg_thr_spin.valueChanged.connect(self._on_db_param_changed)
+        self.db_gamma_spin.valueChanged.connect(self._on_db_param_changed)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
@@ -545,9 +608,11 @@ class NucleusWorkflowWidget(QWidget):
         self._db_param_map = {}
         self._db_seed_dist_vals = []
         self._db_fg_thr_vals = []
+        self._db_gamma_vals = []
         self._current_db_p = None
         self.db_seed_dist_spin.setEnabled(False)
         self.db_fg_thr_spin.setEnabled(False)
+        self.db_gamma_spin.setEnabled(False)
         self.db_info_lbl.setText("—")
 
         hyp_path = self._hyp_path()
@@ -571,15 +636,19 @@ class NucleusWorkflowWidget(QWidget):
 
         seed_dist_set: set[int] = set()
         fg_thr_set: set[float] = set()
+        gamma_set: set[float] = set()
         for p_idx, info in contour_entries.items():
             d = int(info.get("seed_distance", 10))
             fg = round(float(info.get("foreground_threshold", 0.5)), 4)
+            g = round(float(info.get("gamma", 1.0)), 4)
             seed_dist_set.add(d)
             fg_thr_set.add(fg)
-            self._db_param_map[(d, fg)] = p_idx
+            gamma_set.add(g)
+            self._db_param_map[(d, fg, g)] = p_idx
 
         self._db_seed_dist_vals = sorted(seed_dist_set)
         self._db_fg_thr_vals = sorted(fg_thr_set)
+        self._db_gamma_vals = sorted(gamma_set)
 
         self.db_seed_dist_spin.blockSignals(True)
         self.db_seed_dist_spin.setMinimum(self._db_seed_dist_vals[0])
@@ -599,12 +668,28 @@ class NucleusWorkflowWidget(QWidget):
         self.db_fg_thr_spin.setEnabled(True)
         self.db_fg_thr_spin.blockSignals(False)
 
+        self.db_gamma_spin.blockSignals(True)
+        self.db_gamma_spin.setMinimum(self._db_gamma_vals[0])
+        self.db_gamma_spin.setMaximum(self._db_gamma_vals[-1])
+        step_g = round(self._db_gamma_vals[1] - self._db_gamma_vals[0], 4) if len(self._db_gamma_vals) > 1 else 0.05
+        self.db_gamma_spin.setSingleStep(step_g)
+        self.db_gamma_spin.setValue(self._db_gamma_vals[0])
+        self.db_gamma_spin.setEnabled(True)
+        self.db_gamma_spin.blockSignals(False)
+
         self._update_db_info_lbl()
         self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s).")
 
     def _set_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
         logger.info(msg)
+
+    def _cp_gammas(self) -> list[float]:
+        """Gamma values to iterate during consensus boundary building."""
+        gmin  = self.cp_gamma_min_spin.value()
+        gmax  = self.cp_gamma_max_spin.value()
+        gstep = self.cp_gamma_step_spin.value()
+        return list(np.arange(gmin, gmax + gstep / 2, gstep))
 
     def _contour_sweep_params(self) -> ContourWatershedParams:
         return ContourWatershedParams(
@@ -613,6 +698,7 @@ class NucleusWorkflowWidget(QWidget):
             min_size=self.min_size_spin.value(),
             noise_scale=self.single_noise_scale.value(),
             noise_blur_sigma=self.single_noise_blur.value(),
+            gamma=self.cp_gamma_min_spin.value(),
         )
 
     def _contour_sweep_spec(self) -> ContourWatershedSweepSpec:
@@ -629,12 +715,38 @@ class NucleusWorkflowWidget(QWidget):
             noise_scale_min=self.sweep_noise[0].value(),
             noise_scale_max=self.sweep_noise[1].value(),
             noise_scale_step=self.sweep_noise[2].value(),
+            gamma=self.sweep_gamma[0].value(),
+            gamma_min=self.sweep_gamma[0].value(),
+            gamma_max=self.sweep_gamma[1].value(),
+            gamma_step=self.sweep_gamma[2].value(),
             min_size=self.min_size_spin.value(),
         )
 
     # ──────────────────────────────────────────────────────────────────────────
     # 1. Contour map build
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _build_consensus_boundary_averaged(
+        self,
+        prob_3d: np.ndarray,
+        dp_3d: np.ndarray,
+        thresholds: list[float],
+        gammas: list[float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        from cellflow.segmentation import build_consensus_boundary
+
+        boundary_sum  = None
+        foreground_sum = None
+        for g in gammas:
+            b, fg = build_consensus_boundary(prob_3d, dp_3d, thresholds, gamma=g)
+            if boundary_sum is None:
+                boundary_sum  = b.copy()
+                foreground_sum = fg.copy()
+            else:
+                boundary_sum  += b
+                foreground_sum += fg
+        n = len(gammas)
+        return boundary_sum / n, foreground_sum / n
 
     def _on_build_contour_maps(self) -> None:
         if self._pos_dir is None:
@@ -649,22 +761,19 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status(f"Missing: {dp_path}")
             return
 
-        cp_min  = self.cp_min_spin.value()
-        cp_max  = self.cp_max_spin.value()
-        cp_step = self.cp_step_spin.value()
-        thresholds = list(np.arange(cp_min, cp_max + cp_step / 2, cp_step))
+        thresholds      = list(np.arange(self.cp_min_spin.value(), self.cp_max_spin.value() + self.cp_step_spin.value() / 2, self.cp_step_spin.value()))
+        gammas          = self._cp_gammas()
         contour_path    = self._contour_maps_path()
         foreground_path = self._foreground_maps_path()
         pos_dir         = self._pos_dir
+        build_fn        = self._build_consensus_boundary_averaged
 
         @thread_worker(connect={
-            "yielded":   self._set_status,
+            "yielded":   self._on_build_progress,
             "returned":  self._on_build_done,
             "errored":   self._on_worker_error,
         })
         def _worker():
-            from cellflow.segmentation import build_consensus_boundary
-
             prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
             dp_stack   = np.asarray(tifffile.imread(str(dp_path)),   dtype=np.float32)
             if prob_stack.ndim == 3:
@@ -677,8 +786,8 @@ class NucleusWorkflowWidget(QWidget):
             foreground_frames: list[np.ndarray] = []
 
             for t in range(n_t):
-                yield f"Building contour maps: frame {t + 1}/{n_t}…"
-                boundary, fg = build_consensus_boundary(prob_stack[t], dp_stack[t], thresholds)
+                yield (t + 1, n_t, f"Building contour maps: frame {t + 1}/{n_t}…")
+                boundary, fg = build_fn(prob_stack[t], dp_stack[t], thresholds, gammas)
                 contour_frames.append(boundary)
                 foreground_frames.append(fg)
 
@@ -687,7 +796,8 @@ class NucleusWorkflowWidget(QWidget):
             tifffile.imwrite(str(foreground_path), np.stack(foreground_frames), compression="zlib")
             return pos_dir
 
-        self._set_status(f"Building contour maps ({len(thresholds)} thresholds × all z)…")
+        gamma_desc = f"γ={gammas[0]:.2f}" if len(gammas) == 1 else f"γ={gammas[0]:.2f}–{gammas[-1]:.2f} ({len(gammas)} steps)"
+        self._set_status(f"Building contour maps ({len(thresholds)} cellprob thresholds, {gamma_desc})…")
         self._set_build_buttons_running(True)
         self._build_worker = _worker()
 
@@ -706,7 +816,72 @@ class NucleusWorkflowWidget(QWidget):
 
     def _set_build_buttons_running(self, running: bool) -> None:
         self.build_btn.setEnabled(not running)
+        self.preview_contour_btn.setEnabled(not running)
         self.cancel_build_btn.setEnabled(running)
+        self.build_progress_bar.setVisible(running)
+        if not running:
+            self.build_progress_bar.setValue(0)
+
+    def _on_build_progress(self, data) -> None:
+        if isinstance(data, tuple):
+            done, total, msg = data
+            if total > 0:
+                self.build_progress_bar.setRange(0, total)
+                self.build_progress_bar.setValue(done)
+            self._set_status(msg)
+        else:
+            self._set_status(str(data))
+
+    def _on_preview_contour_maps(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        prob_path = self._prob_path()
+        dp_path   = self._dp_path()
+        if prob_path is None or not prob_path.exists():
+            self._set_status(f"Missing: {prob_path}")
+            return
+        if dp_path is None or not dp_path.exists():
+            self._set_status(f"Missing: {dp_path}")
+            return
+
+        t_frame    = self._current_t()
+        thresholds = list(np.arange(self.cp_min_spin.value(), self.cp_max_spin.value() + self.cp_step_spin.value() / 2, self.cp_step_spin.value()))
+        gammas     = self._cp_gammas()
+        build_fn   = self._build_consensus_boundary_averaged
+
+        def _on_preview_done(result):
+            self._build_worker = None
+            self._set_build_buttons_running(False)
+            boundary, foreground = result
+            data = boundary[np.newaxis]
+            if _CONTOUR_LAYER in self.viewer.layers:
+                self.viewer.layers[_CONTOUR_LAYER].data = data
+            else:
+                self.viewer.add_image(data, name=_CONTOUR_LAYER, colormap="magma", visible=True)
+            self._set_status(
+                f"Preview contour map t={t_frame} — "
+                f"{len(thresholds)} cellprob thresholds, "
+                f"{len(gammas)} gamma value(s)"
+            )
+
+        @thread_worker(connect={
+            "returned": _on_preview_done,
+            "errored":  self._on_worker_error,
+        })
+        def _worker():
+            prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+            dp_stack   = np.asarray(tifffile.imread(str(dp_path)),   dtype=np.float32)
+            if prob_stack.ndim == 3:
+                prob_stack = prob_stack[np.newaxis]
+            if dp_stack.ndim == 4:
+                dp_stack = dp_stack[np.newaxis]
+            t_idx = min(t_frame, prob_stack.shape[0] - 1)
+            return build_fn(prob_stack[t_idx], dp_stack[t_idx], thresholds, gammas)
+
+        self._set_status(f"Previewing contour map for frame t={t_frame}…")
+        self._set_build_buttons_running(True)
+        self._build_worker = _worker()
 
     # ──────────────────────────────────────────────────────────────────────────
     # 2. Hypothesis generation
@@ -797,15 +972,23 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
-        maps = self._load_contour_maps()
-        if maps is None:
+        prob_path = self._prob_path()
+        dp_path   = self._dp_path()
+        if prob_path is None or not prob_path.exists():
+            self._set_status(f"Missing: {prob_path}")
             return
-        contour, foreground = maps
+        if dp_path is None or not dp_path.exists():
+            self._set_status(f"Missing: {dp_path}")
+            return
 
         spec      = self._contour_sweep_spec()
         overwrite = self.overwrite_check.isChecked()
         output_path = self._hyp_path()
         pos_dir     = self._pos_dir
+        cp_min  = self.cp_min_spin.value()
+        cp_max  = self.cp_max_spin.value()
+        cp_step = self.cp_step_spin.value()
+        cellprob_thresholds = list(np.arange(cp_min, cp_max + cp_step / 2, cp_step))
 
         def _on_sweep_done(result):
             self._sweep_worker = None
@@ -855,11 +1038,18 @@ class NucleusWorkflowWidget(QWidget):
             if n_skip:
                 yield f"Sweep: skipping {n_skip} existing, computing {len(params_list)} new…"
 
-            n_t = contour.shape[0]
+            prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+            dp_stack   = np.asarray(tifffile.imread(str(dp_path)),   dtype=np.float32)
+            if prob_stack.ndim == 3:
+                prob_stack = prob_stack[np.newaxis]
+            if dp_stack.ndim == 4:
+                dp_stack = dp_stack[np.newaxis]
+
+            n_t = prob_stack.shape[0]
             total = n_t * len(params_list)
             collected: list[HypothesisRecord] = []
             for done, record in enumerate(
-                iter_contour_watershed_records(contour, foreground, spec), 1
+                iter_contour_watershed_records_from_raw(prob_stack, dp_stack, cellprob_thresholds, spec), 1
             ):
                 collected.append(record)
                 yield f"Sweep {done}/{total}…"
@@ -886,25 +1076,34 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
-        contour_path    = self._contour_maps_path()
-        foreground_path = self._foreground_maps_path()
-        output_path     = self._hyp_path()
-        if contour_path is None or not contour_path.exists():
-            self._set_status("Contour maps not found — run Build first.")
+        prob_path   = self._prob_path()
+        dp_path     = self._dp_path()
+        output_path = self._hyp_path()
+        if prob_path is None or not prob_path.exists():
+            self._set_status(f"Missing: {prob_path}")
+            return
+        if dp_path is None or not dp_path.exists():
+            self._set_status(f"Missing: {dp_path}")
             return
 
         spec      = self._contour_sweep_spec()
         overwrite = self.overwrite_check.isChecked()
+        cp_min  = self.cp_min_spin.value()
+        cp_max  = self.cp_max_spin.value()
+        cp_step = self.cp_step_spin.value()
 
         python_code = (
             "import tifffile, numpy as np\n"
             "from cellflow.database.hypotheses import (\n"
-            "    ContourWatershedSweepSpec, iter_contour_watershed_records,\n"
+            "    ContourWatershedSweepSpec, iter_contour_watershed_records_from_raw,\n"
             "    build_contour_watershed_parameter_sets, list_hypotheses,\n"
             "    write_hypothesis_sweep_h5)\n"
             "import json, pathlib\n"
-            f"contour    = tifffile.imread({str(contour_path)!r}).astype('float32')\n"
-            f"foreground = tifffile.imread({str(foreground_path)!r}).astype('float32')\n"
+            f"prob = tifffile.imread({str(prob_path)!r}).astype('float32')\n"
+            f"dp   = tifffile.imread({str(dp_path)!r}).astype('float32')\n"
+            "if prob.ndim == 3: prob = prob[np.newaxis]\n"
+            "if dp.ndim == 4:   dp   = dp[np.newaxis]\n"
+            f"cellprob_thresholds = list(np.arange({cp_min}, {cp_max} + {cp_step} / 2, {cp_step}))\n"
             f"output_path = pathlib.Path({str(output_path)!r})\n"
             f"overwrite = {overwrite!r}\n"
             f"spec = ContourWatershedSweepSpec(\n"
@@ -915,6 +1114,12 @@ class NucleusWorkflowWidget(QWidget):
             f"    foreground_threshold_min={spec.foreground_threshold_min},\n"
             f"    foreground_threshold_max={spec.foreground_threshold_max},\n"
             f"    foreground_threshold_step={spec.foreground_threshold_step},\n"
+            f"    noise_scale={spec.noise_scale},\n"
+            f"    noise_scale_min={spec.noise_scale_min}, noise_scale_max={spec.noise_scale_max},\n"
+            f"    noise_scale_step={spec.noise_scale_step},\n"
+            f"    gamma={spec.gamma},\n"
+            f"    gamma_min={spec.gamma_min}, gamma_max={spec.gamma_max},\n"
+            f"    gamma_step={spec.gamma_step},\n"
             f"    min_size={spec.min_size},\n"
             ")\n"
             "params_list = build_contour_watershed_parameter_sets(spec)\n"
@@ -925,10 +1130,10 @@ class NucleusWorkflowWidget(QWidget):
             "        params_list = [p for p in params_list if json.dumps(p.to_dict(), sort_keys=True) not in existing_jsons]\n"
             "    except Exception:\n"
             "        pass\n"
-            "n_t = contour.shape[0]\n"
+            "n_t = prob.shape[0]\n"
             "total = n_t * len(params_list)\n"
             "records = []\n"
-            "for done, rec in enumerate(iter_contour_watershed_records(contour, foreground, spec), 1):\n"
+            "for done, rec in enumerate(iter_contour_watershed_records_from_raw(prob, dp, cellprob_thresholds, spec), 1):\n"
             "    records.append(rec)\n"
             "    print(f'Sweep {done}/{total}…', flush=True)\n"
             "write_hypothesis_sweep_h5(str(output_path), iter(records), overwrite=overwrite)\n"
@@ -962,11 +1167,14 @@ class NucleusWorkflowWidget(QWidget):
             return None
         d = self.db_seed_dist_spin.value()
         fg = round(self.db_fg_thr_spin.value(), 4)
+        g = round(self.db_gamma_spin.value(), 4)
         if self._db_seed_dist_vals:
             d = min(self._db_seed_dist_vals, key=lambda x: abs(x - d))
         if self._db_fg_thr_vals:
             fg = round(min(self._db_fg_thr_vals, key=lambda x: abs(x - fg)), 4)
-        return self._db_param_map.get((d, fg))
+        if self._db_gamma_vals:
+            g = round(min(self._db_gamma_vals, key=lambda x: abs(x - g)), 4)
+        return self._db_param_map.get((d, fg, g))
 
     def _update_db_info_lbl(self) -> None:
         p = self._lookup_db_p()
@@ -1324,9 +1532,12 @@ class NucleusWorkflowWidget(QWidget):
             "overwrite":   self.overwrite_check.isChecked(),
             "min_size":    self.min_size_spin.value(),
             "cellprob": {
-                "min":  self.cp_min_spin.value(),
-                "max":  self.cp_max_spin.value(),
-                "step": self.cp_step_spin.value(),
+                "min":       self.cp_min_spin.value(),
+                "max":       self.cp_max_spin.value(),
+                "step":      self.cp_step_spin.value(),
+                "gamma_min": self.cp_gamma_min_spin.value(),
+                "gamma_max": self.cp_gamma_max_spin.value(),
+                "gamma_step": self.cp_gamma_step_spin.value(),
             },
             "tuning": {
                 "seed_dist":      self.single_seed_dist.value(),
@@ -1344,10 +1555,14 @@ class NucleusWorkflowWidget(QWidget):
                 "noise_min":      self.sweep_noise[0].value(),
                 "noise_max":      self.sweep_noise[1].value(),
                 "noise_step":     self.sweep_noise[2].value(),
+                "gamma_min":      self.sweep_gamma[0].value(),
+                "gamma_max":      self.sweep_gamma[1].value(),
+                "gamma_step":     self.sweep_gamma[2].value(),
             },
             "db_browser": {
                 "seed_dist":    self.db_seed_dist_spin.value(),
                 "fg_threshold": self.db_fg_thr_spin.value(),
+                "gamma":        self.db_gamma_spin.value(),
             },
             "search": {
                 "iou_threshold":    self.iou_spin.value(),
@@ -1368,9 +1583,12 @@ class NucleusWorkflowWidget(QWidget):
             self.min_size_spin.setValue(state["min_size"])
         if "cellprob" in state:
             cp = state["cellprob"]
-            if "min"  in cp: self.cp_min_spin.setValue(cp["min"])
-            if "max"  in cp: self.cp_max_spin.setValue(cp["max"])
-            if "step" in cp: self.cp_step_spin.setValue(cp["step"])
+            if "min"        in cp: self.cp_min_spin.setValue(cp["min"])
+            if "max"        in cp: self.cp_max_spin.setValue(cp["max"])
+            if "step"       in cp: self.cp_step_spin.setValue(cp["step"])
+            if "gamma_min"  in cp: self.cp_gamma_min_spin.setValue(cp["gamma_min"])
+            if "gamma_max"  in cp: self.cp_gamma_max_spin.setValue(cp["gamma_max"])
+            if "gamma_step" in cp: self.cp_gamma_step_spin.setValue(cp["gamma_step"])
         if "tuning" in state:
             t = state["tuning"]
             if "seed_dist"    in t: self.single_seed_dist.setValue(t["seed_dist"])
@@ -1388,10 +1606,14 @@ class NucleusWorkflowWidget(QWidget):
             if "noise_min"      in sw: self.sweep_noise[0].setValue(sw["noise_min"])
             if "noise_max"      in sw: self.sweep_noise[1].setValue(sw["noise_max"])
             if "noise_step"     in sw: self.sweep_noise[2].setValue(sw["noise_step"])
+            if "gamma_min"      in sw: self.sweep_gamma[0].setValue(sw["gamma_min"])
+            if "gamma_max"      in sw: self.sweep_gamma[1].setValue(sw["gamma_max"])
+            if "gamma_step"     in sw: self.sweep_gamma[2].setValue(sw["gamma_step"])
         if "db_browser" in state:
             db = state["db_browser"]
             if "seed_dist"    in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
             if "fg_threshold" in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
+            if "gamma"        in db: self.db_gamma_spin.setValue(db["gamma"])
         if "search" in state:
             se = state["search"]
             if "iou_threshold"     in se: self.iou_spin.setValue(se["iou_threshold"])
