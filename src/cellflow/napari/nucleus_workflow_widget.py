@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 from pathlib import Path
 
@@ -342,6 +343,15 @@ class NucleusWorkflowWidget(QWidget):
             "different stochastic hypotheses stored as separate parameter sets."
         )
         sweep_runs_row.addWidget(self.sweep_n_runs)
+        sweep_runs_row.addWidget(QLabel("Workers:"))
+        self.sweep_n_workers = QSpinBox()
+        self.sweep_n_workers.setRange(1, max(1, os.cpu_count() or 1))
+        self.sweep_n_workers.setValue(1)
+        self.sweep_n_workers.setToolTip(
+            "Number of parallel threads for the sweep. "
+            "scipy/skimage release the GIL so threading scales well."
+        )
+        sweep_runs_row.addWidget(self.sweep_n_workers)
         sweep_runs_row.addStretch()
         sweep_lay.addLayout(sweep_runs_row)
 
@@ -1188,6 +1198,7 @@ class NucleusWorkflowWidget(QWidget):
             return
 
         spec      = self._contour_sweep_spec()
+        n_workers = self.sweep_n_workers.value()
         overwrite = self.overwrite_check.isChecked()
         output_path = self._hyp_path()
         pos_dir     = self._pos_dir
@@ -1247,7 +1258,7 @@ class NucleusWorkflowWidget(QWidget):
             total = n_t * len(params_list)
             collected: list[HypothesisRecord] = []
             for done, record in enumerate(
-                iter_contour_watershed_records(contour_stack, foreground_stack, spec), 1
+                iter_contour_watershed_records(contour_stack, foreground_stack, spec, n_workers=n_workers), 1
             ):
                 collected.append(record)
                 yield f"Sweep {done}/{total}…"
@@ -1285,6 +1296,7 @@ class NucleusWorkflowWidget(QWidget):
             return
 
         spec      = self._contour_sweep_spec()
+        n_workers = self.sweep_n_workers.value()
         overwrite = self.overwrite_check.isChecked()
 
         python_code = (
@@ -1323,7 +1335,7 @@ class NucleusWorkflowWidget(QWidget):
             "n_t = contour.shape[0]\n"
             "total = n_t * len(params_list)\n"
             "records = []\n"
-            "for done, rec in enumerate(iter_contour_watershed_records(contour, foreground, spec), 1):\n"
+            f"for done, rec in enumerate(iter_contour_watershed_records(contour, foreground, spec, n_workers={n_workers}), 1):\n"
             "    records.append(rec)\n"
             "    print(f'Sweep {done}/{total}…', flush=True)\n"
             "write_hypothesis_sweep_h5(str(output_path), iter(records), overwrite=overwrite)\n"
@@ -1758,6 +1770,7 @@ class NucleusWorkflowWidget(QWidget):
                 "noise_scale":    self.sweep_noise_scale.value(),
                 "noise_blur_sigma": self.sweep_noise_blur.value(),
                 "n_runs":         self.sweep_n_runs.value(),
+                "n_workers":      self.sweep_n_workers.value(),
             },
             "db_browser": {
                 "method":       self.db_method_combo.currentText(),
@@ -1815,6 +1828,7 @@ class NucleusWorkflowWidget(QWidget):
             if "noise_scale"      in sw: self.sweep_noise_scale.setValue(sw["noise_scale"])
             if "noise_blur_sigma" in sw: self.sweep_noise_blur.setValue(sw["noise_blur_sigma"])
             if "n_runs"           in sw: self.sweep_n_runs.setValue(sw["n_runs"])
+            if "n_workers"        in sw: self.sweep_n_workers.setValue(sw["n_workers"])
         if "db_browser" in state:
             db = state["db_browser"]
             if "method"       in db: self.db_method_combo.setCurrentText(db["method"])
