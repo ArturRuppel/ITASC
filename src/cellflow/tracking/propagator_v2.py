@@ -102,6 +102,138 @@ def find_best_hypothesis_v2(
     return propagated, best_p
 
 
+def _build_composite_frame(
+    current: np.ndarray,
+    candidates: list[np.ndarray],
+    *,
+    min_match_iou: float = 0.1,
+) -> tuple[np.ndarray, int]:
+    """Assemble a composite next frame by selecting the best-matching candidate cell
+    from *any* hypothesis for each current cell.
+
+    For every current cell, scan all hypothesis candidates and record the
+    highest-IoU match (candidate label + source hypothesis index p).
+    Then paint cells into a composite label image in descending IoU order
+    so confident matches claim their pixels first; lower-confidence cells
+    receive whatever pixels remain unoccupied.
+
+    Returns (composite_labels, winning_p_index) where winning_p_index is the
+    hypothesis that contributed the most cells.
+    """
+    n_cur = int(current.max())
+    H, W = current.shape
+
+    # best_for_cell[c_idx] = (best_iou, best_p, best_cand_idx)  -- all 0-based
+    best_for_cell: list[tuple[float, int, int]] = [(-1.0, -1, -1)] * n_cur
+
+    for p, cand in enumerate(candidates):
+        if cand.max() == 0:
+            continue
+        iou = _iou_matrix(current, cand)  # (n_cur, n_cand)
+        if iou.shape[1] == 0:
+            continue
+        best_cand_idxs = np.argmax(iou, axis=1)            # (n_cur,)
+        best_ious = iou[np.arange(n_cur), best_cand_idxs]  # (n_cur,)
+        for c_idx in range(n_cur):
+            if best_ious[c_idx] > best_for_cell[c_idx][0]:
+                best_for_cell[c_idx] = (float(best_ious[c_idx]), p, int(best_cand_idxs[c_idx]))
+
+    # Paint highest-IoU cells first to resolve pixel conflicts
+    order = sorted(range(n_cur), key=lambda i: best_for_cell[i][0], reverse=True)
+
+    composite = np.zeros((H, W), dtype=np.uint32)
+    occupied = np.zeros((H, W), dtype=bool)
+    source_counts: dict[int, int] = {}
+
+    for c_idx in order:
+        best_iou, best_p, best_cand_idx = best_for_cell[c_idx]
+        if best_iou < min_match_iou or best_p < 0:
+            continue
+        c_id = c_idx + 1
+        cand = candidates[best_p]
+        cand_id = best_cand_idx + 1
+        pixels = (cand == cand_id) & ~occupied
+        composite[pixels] = c_id
+        occupied |= pixels
+        source_counts[best_p] = source_counts.get(best_p, 0) + 1
+
+    if not source_counts:
+        return composite, -1
+
+    winning_p = max(source_counts, key=source_counts.__getitem__)
+    return composite, winning_p
+
+
+def find_composite_v2(
+    context: PropagationContext,
+    candidates: list[np.ndarray],
+    *,
+    min_match_iou: float = 0.1,
+    alpha: float = 0.3,
+) -> tuple[np.ndarray, int] | tuple[None, None]:
+    """Return (relabeled_next_frame, winning_p_index) or (None, None).
+
+    Assembles a composite next frame by selecting the best-matching candidate
+    cell from *any* hypothesis for each current cell, rather than picking a
+    single globally best hypothesis.
+    """
+    if not candidates:
+        return None, None
+
+    current = context.current_labels
+    if current.max() == 0:
+        return None, None
+
+    composite, winning_p = _build_composite_frame(current, candidates, min_match_iou=min_match_iou)
+
+    if winning_p < 0 or composite.max() == 0:
+        return None, None
+
+    return composite, winning_p
+
+
+def propagate_one_frame_composite(
+    hypotheses_h5: str | Path,
+    current_labels: np.ndarray,
+    t_next: int,
+    prev_labels: np.ndarray | None = None,
+    validated_history: dict[int, np.ndarray] | None = None,
+    *,
+    min_match_iou: float = 0.1,
+    alpha: float = 0.3,
+) -> tuple[np.ndarray, int] | tuple[None, None]:
+    """Propagate tracking to t_next using the greedy composite frame algorithm.
+
+    For each current nucleus, picks the best-matching candidate from *any*
+    hypothesis rather than choosing a single globally best hypothesis.
+
+    Returns (relabeled_next_frame, winning_p_index) or (None, None) if no valid match.
+    """
+    hypotheses_h5 = Path(hypotheses_h5)
+
+    n_p, _ = list_hypotheses(hypotheses_h5)
+    if n_p == 0:
+        return None, None
+
+    candidates: list[np.ndarray] = []
+    blank = np.zeros(current_labels.shape, dtype=np.uint32)
+    for p in range(n_p):
+        try:
+            raw = read_hypothesis_labels(hypotheses_h5, t_next, p)
+        except (KeyError, ValueError):
+            candidates.append(blank)
+            continue
+        candidate = raw.squeeze(axis=0) if raw.ndim == 3 and raw.shape[0] == 1 else raw[0]
+        candidates.append(candidate)
+
+    context = PropagationContext(
+        current_labels=current_labels,
+        prev_labels=prev_labels,
+        validated_history=validated_history,
+    )
+    return find_composite_v2(context, candidates, min_match_iou=min_match_iou, alpha=alpha)
+
+
 def propagate_one_frame_v2(
     hypotheses_h5: str | Path,
     current_labels: np.ndarray,
