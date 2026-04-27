@@ -53,6 +53,7 @@ from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
 from cellflow.tracking import propagate_one_frame
+from cellflow.tracking.propagator_v2 import propagate_one_frame_v2
 from cellflow.tracking.retracker import retrack_frame
 
 logger = logging.getLogger(__name__)
@@ -557,6 +558,48 @@ class NucleusWorkflowWidget(QWidget):
         )
         layout.addWidget(self.search_section)
 
+        # ── 4b. Automated Search v2 ───────────────────────────────────────
+        _search2_inner = QWidget()
+        search2_lay = QVBoxLayout(_search2_inner)
+        search2_lay.setContentsMargins(4, 4, 4, 4)
+        search2_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        search2_form = QFormLayout()
+        search2_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        search2_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        search2_form.setHorizontalSpacing(8)
+        search2_form.setVerticalSpacing(4)
+
+        self.min_match_iou_spin = QDoubleSpinBox()
+        self.min_match_iou_spin.setRange(0.0, 1.0)
+        self.min_match_iou_spin.setValue(0.1)
+        self.min_match_iou_spin.setSingleStep(0.05)
+        self.min_match_iou_spin.setDecimals(2)
+        search2_form.addRow("Min Match IoU:", _compact(self.min_match_iou_spin))
+
+        self.alpha_spin = QDoubleSpinBox()
+        self.alpha_spin.setRange(0.0, 10.0)
+        self.alpha_spin.setValue(0.3)
+        self.alpha_spin.setSingleStep(0.05)
+        self.alpha_spin.setDecimals(2)
+        search2_form.addRow("Unmatched Penalty (α):", _compact(self.alpha_spin))
+
+        search2_lay.addLayout(search2_form)
+
+        prop2_row = QHBoxLayout()
+        self.prop_next_v2_btn = QPushButton("Propagate Next (v2)")
+        self.prop_all_v2_btn  = QPushButton("Propagate All (v2)")
+        self.stop_v2_btn      = QPushButton("Stop")
+        prop2_row.addWidget(_compact_btn(self.prop_next_v2_btn))
+        prop2_row.addWidget(_compact_btn(self.prop_all_v2_btn))
+        prop2_row.addWidget(_compact_btn(self.stop_v2_btn))
+        search2_lay.addLayout(prop2_row)
+
+        self.search_v2_section = CollapsibleSection(
+            "4b. Automated Search v2", _search2_inner, expanded=False
+        )
+        layout.addWidget(self.search_v2_section)
+
         # ── 5. Manual Correction ──────────────────────────────────────────
         _corr_inner = QWidget()
         _corr_inner_lay = QVBoxLayout(_corr_inner)
@@ -620,6 +663,9 @@ class NucleusWorkflowWidget(QWidget):
         self.prop_next_btn.clicked.connect(self._on_propagate_next)
         self.prop_all_btn.clicked.connect(self._on_propagate_all)
         self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
+        self.prop_next_v2_btn.clicked.connect(self._on_propagate_next_v2)
+        self.prop_all_v2_btn.clicked.connect(self._on_propagate_all_v2)
+        self.stop_v2_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
@@ -1546,6 +1592,99 @@ class NucleusWorkflowWidget(QWidget):
     def _on_prop_done(self) -> None:
         self._set_status("Propagation complete.")
 
+    # ──────────────────────────────────────────────────────────────────────────
+    # 4b. Automated search v2 / propagation
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _on_propagate_next_v2(self) -> None:
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_status("No hypothesis DB found.")
+            return
+
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded. Set a seed first.")
+            return
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3:
+            self._set_status("Tracked layer is not a 3D stack.")
+            return
+
+        t = self._current_t()
+        if t >= layer.data.shape[0]:
+            self._set_status(f"No tracked frame at t={t}. Set a seed first.")
+            return
+
+        current_labels = np.asarray(layer.data[t])
+
+        try:
+            next_frame, winner = propagate_one_frame_v2(
+                hyp_path, current_labels, t + 1,
+                prev_labels=None,
+                min_match_iou=self.min_match_iou_spin.value(),
+                alpha=self.alpha_spin.value(),
+            )
+        except Exception as e:
+            self._set_status(f"Propagation (v2) failed: {e}")
+            return
+
+        if next_frame is None:
+            self._set_status(f"No suitable hypothesis found for t={t + 1} (v2).")
+            return
+
+        self._update_tracked_display(next_frame, t=t + 1)
+        step = list(self.viewer.dims.current_step)
+        step[0] = t + 1
+        self.viewer.dims.current_step = tuple(step)
+        self._set_status(f"Propagated t={t}→{t + 1} via v2 (p={winner}). Unsaved.")
+
+    def _on_propagate_all_v2(self) -> None:
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_status("No hypothesis DB found.")
+            return
+
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded. Set a seed first.")
+            return
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3:
+            self._set_status("Tracked layer is not a 3D stack.")
+            return
+
+        t_start = self._current_t()
+        if t_start >= layer.data.shape[0]:
+            self._set_status(f"No tracked frame at t={t_start}. Set a seed first.")
+            return
+
+        # Snapshot starting frame from the viewer layer before entering the thread.
+        initial_labels = np.asarray(layer.data[t_start])
+
+        min_iou = self.min_match_iou_spin.value()
+        alpha   = self.alpha_spin.value()
+        self._stop_flag = False
+
+        @thread_worker(connect={"yielded": self._on_prop_progress, "finished": self._on_prop_done, "errored": self._on_worker_error})
+        def _worker():
+            current = initial_labels
+            t = t_start
+            while not self._stop_flag:
+                next_frame, winner = propagate_one_frame_v2(
+                    hyp_path, current, t + 1,
+                    prev_labels=None,
+                    min_match_iou=min_iou,
+                    alpha=alpha,
+                )
+                if next_frame is None:
+                    yield (t, None, None)
+                    break
+                yield (t, next_frame, winner)
+                current = next_frame
+                t += 1
+
+        self._set_status("Propagating (v2)…")
+        _worker()
+
     def _on_save_tracked(self) -> None:
         tracked_path = self._tracked_path()
         if tracked_path is None:
@@ -1771,6 +1910,10 @@ class NucleusWorkflowWidget(QWidget):
                 "circularity_weight":   self.circularity_weight_spin.value(),
                 "solidity_weight":      self.solidity_weight_spin.value(),
             },
+            "search_v2": {
+                "min_match_iou":  self.min_match_iou_spin.value(),
+                "alpha":          self.alpha_spin.value(),
+            },
         }
 
     def set_state(self, state: dict) -> None:
@@ -1825,3 +1968,7 @@ class NucleusWorkflowWidget(QWidget):
             if "area_weight"        in se: self.area_weight_spin.setValue(se["area_weight"])
             if "circularity_weight" in se: self.circularity_weight_spin.setValue(se["circularity_weight"])
             if "solidity_weight"    in se: self.solidity_weight_spin.setValue(se["solidity_weight"])
+        if "search_v2" in state:
+            sv = state["search_v2"]
+            if "min_match_iou" in sv: self.min_match_iou_spin.setValue(sv["min_match_iou"])
+            if "alpha"         in sv: self.alpha_spin.setValue(sv["alpha"])
