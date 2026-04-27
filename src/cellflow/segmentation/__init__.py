@@ -25,6 +25,7 @@ class ContourWatershedParams:
 
     seed_distance: int = 10
     foreground_threshold: float = 0.5
+    ridge_threshold: float = 0.5
     min_size: int = 0
     min_circularity: float = 0.0
     noise_scale: float = 0.0
@@ -418,7 +419,11 @@ def compute_contour_watershed(
     foreground: np.ndarray,
     params: ContourWatershedParams,
 ) -> np.ndarray:
-    """Run unseeded watershed on a consensus boundary image.
+    """Run seeded watershed on a consensus boundary image.
+
+    Seeds are placed at EDT maxima of fg_mask & (boundary < ridge_threshold),
+    so contour ridges separating touching cells drive seed placement rather than
+    raw foreground intensity peaks.
 
     boundary:   (Y, X) float32 — high at cell borders
     foreground: (Y, X) float32 — high inside cells (e.g. sigmoid of prob)
@@ -445,10 +450,17 @@ def compute_contour_watershed(
     if params.noise_scale > 0:
         fg_mask = opening(fg_mask, disk(2))
 
+    from scipy.ndimage import distance_transform_edt
+
+    # Carve strong contour ridges out of the mask so touching cells become
+    # separate connected components before seeding.
+    core = fg_mask & (boundary < params.ridge_threshold)
+    edt = distance_transform_edt(core)
+
     coords = peak_local_max(
-        foreground,
+        edt,
         min_distance=max(1, int(params.seed_distance)),
-        threshold_abs=params.foreground_threshold,
+        threshold_abs=1.0,
         exclude_border=False,
     )
     marker_mask = np.zeros(foreground.shape, dtype=bool)
@@ -456,6 +468,7 @@ def compute_contour_watershed(
         marker_mask[coords[:, 0], coords[:, 1]] = True
     markers, _ = nd_label(marker_mask)
 
+    # Watershed floods fg_mask (not core) so basins fill back over carved ridges.
     labels = watershed(boundary, markers=markers, mask=fg_mask, watershed_line=False)
     result = _fill_and_close_labels(np.asarray(labels, dtype=_LABEL_DTYPE))
     result = _remove_small_labels(result, params.min_size)

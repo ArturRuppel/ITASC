@@ -76,9 +76,10 @@ class NucleusWorkflowWidget(QWidget):
         self._build_worker = None
         self._sweep_worker = None
         self._current_db_p: int | None = None
-        self._db_param_map: dict[tuple[int, float, int], int] = {}
+        self._db_param_map: dict[tuple[int, float, float, int], int] = {}
         self._db_seed_dist_vals: list[int] = []
         self._db_fg_thr_vals: list[float] = []
+        self._db_ridge_thr_vals: list[float] = []
         self._db_run_vals: list[int] = []
         self._setup_ui()
         self._connect_signals()
@@ -292,6 +293,16 @@ class NucleusWorkflowWidget(QWidget):
             "Sigmoid foreground probability cutoff — pixels below this are excluded from segmentation and seeding."
         )
         tuning_form.addRow("Foreground Threshold:", _compact(self.single_fg_threshold))
+
+        self.single_ridge_threshold = QDoubleSpinBox()
+        self.single_ridge_threshold.setRange(0.0, 1.0)
+        self.single_ridge_threshold.setValue(0.5)
+        self.single_ridge_threshold.setDecimals(2)
+        self.single_ridge_threshold.setSingleStep(0.05)
+        self.single_ridge_threshold.setToolTip(
+            "Contour boundary fraction cutoff — pixels with boundary ≥ this are carved out of the seeding mask."
+        )
+        tuning_form.addRow("Ridge Threshold:", _compact(self.single_ridge_threshold))
         tuning_lay.addLayout(tuning_form)
 
         tuning_btn_row = QHBoxLayout()
@@ -347,6 +358,15 @@ class NucleusWorkflowWidget(QWidget):
         sweep_grid.addWidget(fg_max, 2, 2)
         sweep_grid.addWidget(fg_step, 2, 3)
         self.sweep_fg_thr = (fg_min, fg_max, fg_step)
+
+        ridge_lbl = QLabel("Ridge Threshold:")
+        ridge_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        sweep_grid.addWidget(ridge_lbl, 3, 0)
+        ridge_min, ridge_max, ridge_step = _make_sweep_spins(0.5, 0.5, 0.05, decimals=2)
+        sweep_grid.addWidget(ridge_min, 3, 1)
+        sweep_grid.addWidget(ridge_max, 3, 2)
+        sweep_grid.addWidget(ridge_step, 3, 3)
+        self.sweep_ridge_thr = (ridge_min, ridge_max, ridge_step)
 
         sweep_lay.addLayout(sweep_grid)
 
@@ -430,6 +450,14 @@ class NucleusWorkflowWidget(QWidget):
         self.db_fg_thr_spin.setSingleStep(0.05)
         self.db_fg_thr_spin.setEnabled(False)
         cw_lay.addWidget(_compact(self.db_fg_thr_spin))
+        cw_lay.addWidget(QLabel("Ridge Thr:"))
+        self.db_ridge_thr_spin = QDoubleSpinBox()
+        self.db_ridge_thr_spin.setRange(0.0, 1.0)
+        self.db_ridge_thr_spin.setValue(0.5)
+        self.db_ridge_thr_spin.setDecimals(2)
+        self.db_ridge_thr_spin.setSingleStep(0.05)
+        self.db_ridge_thr_spin.setEnabled(False)
+        cw_lay.addWidget(_compact(self.db_ridge_thr_spin))
         cw_lay.addWidget(QLabel("Run:"))
         self.db_run_spin = QSpinBox()
         self.db_run_spin.setRange(0, 99)
@@ -486,29 +514,17 @@ class NucleusWorkflowWidget(QWidget):
         self.dist_spin.setValue(20.0)
         search_form.addRow("Max Dist (µm):", _compact(self.dist_spin))
 
-        self.vel_sigma_spin = QDoubleSpinBox()
-        self.vel_sigma_spin.setRange(1, 500)
-        self.vel_sigma_spin.setValue(25.0)
-        self.vel_sigma_spin.setSingleStep(5.0)
-        search_form.addRow("Velocity σ (px):", _compact(self.vel_sigma_spin))
-
         self.iou_weight_spin = _weight_spin(1.0)
         search_form.addRow("IoU Weight:", _compact(self.iou_weight_spin))
 
         self.area_weight_spin = _weight_spin(1.0)
         search_form.addRow("Area Weight:", _compact(self.area_weight_spin))
 
-        self.vel_weight_spin = _weight_spin(1.0)
-        search_form.addRow("Velocity Weight:", _compact(self.vel_weight_spin))
+        self.circularity_weight_spin = _weight_spin(1.0)
+        search_form.addRow("Circularity Weight:", _compact(self.circularity_weight_spin))
 
-        self.pos_weight_spin = _weight_spin(0.0)
-        search_form.addRow("Position Weight:", _compact(self.pos_weight_spin))
-
-        self.unmatched_spin = QDoubleSpinBox()
-        self.unmatched_spin.setRange(0.0, 1.0)
-        self.unmatched_spin.setValue(0.1)
-        self.unmatched_spin.setSingleStep(0.01)
-        search_form.addRow("Unmatched Score:", _compact(self.unmatched_spin))
+        self.solidity_weight_spin = _weight_spin(1.0)
+        search_form.addRow("Solidity Weight:", _compact(self.solidity_weight_spin))
 
         search_lay.addLayout(search_form)
 
@@ -595,6 +611,7 @@ class NucleusWorkflowWidget(QWidget):
         self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
         self.db_seed_dist_spin.valueChanged.connect(self._on_db_param_changed)
         self.db_fg_thr_spin.valueChanged.connect(self._on_db_param_changed)
+        self.db_ridge_thr_spin.valueChanged.connect(self._on_db_param_changed)
         self.db_run_spin.valueChanged.connect(self._on_db_param_changed)
         self.set_seed_btn.clicked.connect(self._on_set_seed)
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
@@ -705,10 +722,12 @@ class NucleusWorkflowWidget(QWidget):
         self._db_param_map = {}
         self._db_seed_dist_vals = []
         self._db_fg_thr_vals = []
+        self._db_ridge_thr_vals = []
         self._db_run_vals = []
         self._current_db_p = None
         self.db_seed_dist_spin.setEnabled(False)
         self.db_fg_thr_spin.setEnabled(False)
+        self.db_ridge_thr_spin.setEnabled(False)
         self.db_run_spin.setEnabled(False)
         self.db_info_lbl.setText("—")
 
@@ -734,17 +753,21 @@ class NucleusWorkflowWidget(QWidget):
 
         seed_dist_set: set[int] = set()
         fg_thr_set: set[float] = set()
+        ridge_thr_set: set[float] = set()
         run_set: set[int] = set()
         for p_idx, info in contour_entries.items():
             d = int(info.get("seed_distance", 10))
             fg = round(float(info.get("foreground_threshold", 0.5)), 4)
+            ridge = round(float(info.get("ridge_threshold", 0.5)), 4)
             run = int(info.get("run_index", 0))
             seed_dist_set.add(d)
             fg_thr_set.add(fg)
+            ridge_thr_set.add(ridge)
             run_set.add(run)
-            self._db_param_map[(d, fg, run)] = p_idx
+            self._db_param_map[(d, fg, ridge, run)] = p_idx
         self._db_seed_dist_vals = sorted(seed_dist_set)
         self._db_fg_thr_vals = sorted(fg_thr_set)
+        self._db_ridge_thr_vals = sorted(ridge_thr_set)
         self._db_run_vals = sorted(run_set)
 
         self._apply_method_panel()
@@ -772,6 +795,15 @@ class NucleusWorkflowWidget(QWidget):
         self.db_fg_thr_spin.setEnabled(True)
         self.db_fg_thr_spin.blockSignals(False)
 
+        self.db_ridge_thr_spin.blockSignals(True)
+        self.db_ridge_thr_spin.setMinimum(self._db_ridge_thr_vals[0])
+        self.db_ridge_thr_spin.setMaximum(self._db_ridge_thr_vals[-1])
+        step_ridge = round(self._db_ridge_thr_vals[1] - self._db_ridge_thr_vals[0], 4) if len(self._db_ridge_thr_vals) > 1 else 0.05
+        self.db_ridge_thr_spin.setSingleStep(step_ridge)
+        self.db_ridge_thr_spin.setValue(self._db_ridge_thr_vals[0])
+        self.db_ridge_thr_spin.setEnabled(True)
+        self.db_ridge_thr_spin.blockSignals(False)
+
         self.db_run_spin.blockSignals(True)
         self.db_run_spin.setMinimum(self._db_run_vals[0])
         self.db_run_spin.setMaximum(self._db_run_vals[-1])
@@ -797,6 +829,7 @@ class NucleusWorkflowWidget(QWidget):
         return ContourWatershedParams(
             seed_distance=self.single_seed_dist.value(),
             foreground_threshold=self.single_fg_threshold.value(),
+            ridge_threshold=self.single_ridge_threshold.value(),
             min_size=self.min_size_spin.value(),
             min_circularity=self.min_circularity_spin.value(),
             noise_scale=self.noise_scale.value(),
@@ -813,6 +846,10 @@ class NucleusWorkflowWidget(QWidget):
             foreground_threshold_min=self.sweep_fg_thr[0].value(),
             foreground_threshold_max=self.sweep_fg_thr[1].value(),
             foreground_threshold_step=self.sweep_fg_thr[2].value(),
+            ridge_threshold=self.sweep_ridge_thr[0].value(),
+            ridge_threshold_min=self.sweep_ridge_thr[0].value(),
+            ridge_threshold_max=self.sweep_ridge_thr[1].value(),
+            ridge_threshold_step=self.sweep_ridge_thr[2].value(),
             noise_scale=self.noise_scale.value(),
             noise_blur_sigma=self.noise_blur.value(),
             n_runs=self.sweep_n_runs.value(),
@@ -1068,6 +1105,10 @@ class NucleusWorkflowWidget(QWidget):
                 foreground_threshold_min=params.foreground_threshold,
                 foreground_threshold_max=params.foreground_threshold,
                 foreground_threshold_step=0.05,
+                ridge_threshold=params.ridge_threshold,
+                ridge_threshold_min=params.ridge_threshold,
+                ridge_threshold_max=params.ridge_threshold,
+                ridge_threshold_step=0.05,
                 noise_scale=params.noise_scale,
                 noise_blur_sigma=params.noise_blur_sigma,
                 min_size=params.min_size,
@@ -1219,6 +1260,10 @@ class NucleusWorkflowWidget(QWidget):
             f"    foreground_threshold_min={spec.foreground_threshold_min},\n"
             f"    foreground_threshold_max={spec.foreground_threshold_max},\n"
             f"    foreground_threshold_step={spec.foreground_threshold_step},\n"
+            f"    ridge_threshold={spec.ridge_threshold},\n"
+            f"    ridge_threshold_min={spec.ridge_threshold_min},\n"
+            f"    ridge_threshold_max={spec.ridge_threshold_max},\n"
+            f"    ridge_threshold_step={spec.ridge_threshold_step},\n"
             f"    noise_scale={spec.noise_scale},\n"
             f"    noise_blur_sigma={spec.noise_blur_sigma},\n"
             f"    n_runs={spec.n_runs},\n"
@@ -1272,14 +1317,17 @@ class NucleusWorkflowWidget(QWidget):
             return None
         d = self.db_seed_dist_spin.value()
         fg = round(self.db_fg_thr_spin.value(), 4)
+        ridge = round(self.db_ridge_thr_spin.value(), 4)
         run = self.db_run_spin.value()
         if self._db_seed_dist_vals:
             d = min(self._db_seed_dist_vals, key=lambda x: abs(x - d))
         if self._db_fg_thr_vals:
             fg = round(min(self._db_fg_thr_vals, key=lambda x: abs(x - fg)), 4)
+        if self._db_ridge_thr_vals:
+            ridge = round(min(self._db_ridge_thr_vals, key=lambda x: abs(x - ridge)), 4)
         if self._db_run_vals:
             run = min(self._db_run_vals, key=lambda x: abs(x - run))
-        return self._db_param_map.get((d, fg, run))
+        return self._db_param_map.get((d, fg, ridge, run))
 
     def _update_db_info_lbl(self) -> None:
         p = self._lookup_db_p()
@@ -1410,12 +1458,10 @@ class NucleusWorkflowWidget(QWidget):
             next_frame, winner = propagate_one_frame(
                 hyp_path, current_labels, t + 1, prev_labels,
                 max_dist_px=self.dist_spin.value(),
-                velocity_sigma_px=self.vel_sigma_spin.value(),
                 iou_weight=self.iou_weight_spin.value(),
                 area_weight=self.area_weight_spin.value(),
-                velocity_weight=self.vel_weight_spin.value(),
-                pos_weight=self.pos_weight_spin.value(),
-                unmatched_score=self.unmatched_spin.value(),
+                circularity_weight=self.circularity_weight_spin.value(),
+                solidity_weight=self.solidity_weight_spin.value(),
             )
         except Exception as e:
             self._set_status(f"Propagation failed: {e}")
@@ -1455,12 +1501,10 @@ class NucleusWorkflowWidget(QWidget):
         prev_labels    = np.asarray(layer.data[t_start - 1]) if t_start > 0 else None
 
         max_dist  = self.dist_spin.value()
-        vel_sigma = self.vel_sigma_spin.value()
         iou_w     = self.iou_weight_spin.value()
         area_w    = self.area_weight_spin.value()
-        vel_w     = self.vel_weight_spin.value()
-        pos_w     = self.pos_weight_spin.value()
-        unmatch_s = self.unmatched_spin.value()
+        circ_w    = self.circularity_weight_spin.value()
+        sol_w     = self.solidity_weight_spin.value()
         self._stop_flag = False
 
         @thread_worker(connect={"yielded": self._on_prop_progress, "finished": self._on_prop_done, "errored": self._on_worker_error})
@@ -1472,12 +1516,10 @@ class NucleusWorkflowWidget(QWidget):
                 next_frame, winner = propagate_one_frame(
                     hyp_path, current, t + 1, prev,
                     max_dist_px=max_dist,
-                    velocity_sigma_px=vel_sigma,
                     iou_weight=iou_w,
                     area_weight=area_w,
-                    velocity_weight=vel_w,
-                    pos_weight=pos_w,
-                    unmatched_score=unmatch_s,
+                    circularity_weight=circ_w,
+                    solidity_weight=sol_w,
                 )
                 if next_frame is None:
                     yield (t, None, None)
@@ -1695,36 +1737,39 @@ class NucleusWorkflowWidget(QWidget):
                 "gamma_step": self.cp_gamma_step_spin.value(),
             },
             "tuning": {
-                "seed_dist":      self.single_seed_dist.value(),
-                "fg_threshold":   self.single_fg_threshold.value(),
-                "noise_scale":    self.noise_scale.value(),
+                "seed_dist":        self.single_seed_dist.value(),
+                "fg_threshold":     self.single_fg_threshold.value(),
+                "ridge_threshold":  self.single_ridge_threshold.value(),
+                "noise_scale":      self.noise_scale.value(),
                 "noise_blur_sigma": self.noise_blur.value(),
             },
             "sweep": {
-                "seed_dist_min":  self.sweep_seed_dist[0].value(),
-                "seed_dist_max":  self.sweep_seed_dist[1].value(),
-                "seed_dist_step": self.sweep_seed_dist[2].value(),
-                "fg_thr_min":     self.sweep_fg_thr[0].value(),
-                "fg_thr_max":     self.sweep_fg_thr[1].value(),
-                "fg_thr_step":    self.sweep_fg_thr[2].value(),
-                "noise_scale":    self.noise_scale.value(),
+                "seed_dist_min":    self.sweep_seed_dist[0].value(),
+                "seed_dist_max":    self.sweep_seed_dist[1].value(),
+                "seed_dist_step":   self.sweep_seed_dist[2].value(),
+                "fg_thr_min":       self.sweep_fg_thr[0].value(),
+                "fg_thr_max":       self.sweep_fg_thr[1].value(),
+                "fg_thr_step":      self.sweep_fg_thr[2].value(),
+                "ridge_thr_min":    self.sweep_ridge_thr[0].value(),
+                "ridge_thr_max":    self.sweep_ridge_thr[1].value(),
+                "ridge_thr_step":   self.sweep_ridge_thr[2].value(),
+                "noise_scale":      self.noise_scale.value(),
                 "noise_blur_sigma": self.noise_blur.value(),
-                "n_runs":         self.sweep_n_runs.value(),
-                "n_workers":      self.sweep_n_workers.value(),
+                "n_runs":           self.sweep_n_runs.value(),
+                "n_workers":        self.sweep_n_workers.value(),
             },
             "db_browser": {
-                "seed_dist":    self.db_seed_dist_spin.value(),
-                "fg_threshold": self.db_fg_thr_spin.value(),
-                "run_index":    self.db_run_spin.value(),
+                "seed_dist":      self.db_seed_dist_spin.value(),
+                "fg_threshold":   self.db_fg_thr_spin.value(),
+                "ridge_threshold": self.db_ridge_thr_spin.value(),
+                "run_index":      self.db_run_spin.value(),
             },
             "search": {
-                "max_dist_um":      self.dist_spin.value(),
-                "velocity_sigma_px": self.vel_sigma_spin.value(),
-                "iou_weight":       self.iou_weight_spin.value(),
-                "area_weight":      self.area_weight_spin.value(),
-                "velocity_weight":  self.vel_weight_spin.value(),
-                "pos_weight":       self.pos_weight_spin.value(),
-                "unmatched_score":  self.unmatched_spin.value(),
+                "max_dist_um":          self.dist_spin.value(),
+                "iou_weight":           self.iou_weight_spin.value(),
+                "area_weight":          self.area_weight_spin.value(),
+                "circularity_weight":   self.circularity_weight_spin.value(),
+                "solidity_weight":      self.solidity_weight_spin.value(),
             },
         }
 
@@ -1747,33 +1792,36 @@ class NucleusWorkflowWidget(QWidget):
             if "gamma_step" in cp: self.cp_gamma_step_spin.setValue(cp["gamma_step"])
         if "tuning" in state:
             t = state["tuning"]
-            if "seed_dist"    in t: self.single_seed_dist.setValue(t["seed_dist"])
-            if "fg_threshold" in t: self.single_fg_threshold.setValue(t["fg_threshold"])
-            if "noise_scale"  in t: self.noise_scale.setValue(t["noise_scale"])
+            if "seed_dist"       in t: self.single_seed_dist.setValue(t["seed_dist"])
+            if "fg_threshold"    in t: self.single_fg_threshold.setValue(t["fg_threshold"])
+            if "ridge_threshold" in t: self.single_ridge_threshold.setValue(t["ridge_threshold"])
+            if "noise_scale"     in t: self.noise_scale.setValue(t["noise_scale"])
             if "noise_blur_sigma" in t: self.noise_blur.setValue(t["noise_blur_sigma"])
         if "sweep" in state:
             sw = state["sweep"]
-            if "seed_dist_min"    in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
-            if "seed_dist_max"    in sw: self.sweep_seed_dist[1].setValue(sw["seed_dist_max"])
-            if "seed_dist_step"   in sw: self.sweep_seed_dist[2].setValue(sw["seed_dist_step"])
-            if "fg_thr_min"       in sw: self.sweep_fg_thr[0].setValue(sw["fg_thr_min"])
-            if "fg_thr_max"       in sw: self.sweep_fg_thr[1].setValue(sw["fg_thr_max"])
-            if "fg_thr_step"      in sw: self.sweep_fg_thr[2].setValue(sw["fg_thr_step"])
-            if "noise_scale"      in sw: self.noise_scale.setValue(sw["noise_scale"])
+            if "seed_dist_min"  in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
+            if "seed_dist_max"  in sw: self.sweep_seed_dist[1].setValue(sw["seed_dist_max"])
+            if "seed_dist_step" in sw: self.sweep_seed_dist[2].setValue(sw["seed_dist_step"])
+            if "fg_thr_min"     in sw: self.sweep_fg_thr[0].setValue(sw["fg_thr_min"])
+            if "fg_thr_max"     in sw: self.sweep_fg_thr[1].setValue(sw["fg_thr_max"])
+            if "fg_thr_step"    in sw: self.sweep_fg_thr[2].setValue(sw["fg_thr_step"])
+            if "ridge_thr_min"  in sw: self.sweep_ridge_thr[0].setValue(sw["ridge_thr_min"])
+            if "ridge_thr_max"  in sw: self.sweep_ridge_thr[1].setValue(sw["ridge_thr_max"])
+            if "ridge_thr_step" in sw: self.sweep_ridge_thr[2].setValue(sw["ridge_thr_step"])
+            if "noise_scale"    in sw: self.noise_scale.setValue(sw["noise_scale"])
             if "noise_blur_sigma" in sw: self.noise_blur.setValue(sw["noise_blur_sigma"])
-            if "n_runs"           in sw: self.sweep_n_runs.setValue(sw["n_runs"])
-            if "n_workers"        in sw: self.sweep_n_workers.setValue(sw["n_workers"])
+            if "n_runs"         in sw: self.sweep_n_runs.setValue(sw["n_runs"])
+            if "n_workers"      in sw: self.sweep_n_workers.setValue(sw["n_workers"])
         if "db_browser" in state:
             db = state["db_browser"]
-            if "seed_dist"    in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
-            if "fg_threshold" in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
-            if "run_index"    in db: self.db_run_spin.setValue(db["run_index"])
+            if "seed_dist"       in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
+            if "fg_threshold"    in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
+            if "ridge_threshold" in db: self.db_ridge_thr_spin.setValue(db["ridge_threshold"])
+            if "run_index"       in db: self.db_run_spin.setValue(db["run_index"])
         if "search" in state:
             se = state["search"]
-            if "max_dist_um"       in se: self.dist_spin.setValue(se["max_dist_um"])
-            if "velocity_sigma_px" in se: self.vel_sigma_spin.setValue(se["velocity_sigma_px"])
-            if "iou_weight"        in se: self.iou_weight_spin.setValue(se["iou_weight"])
-            if "area_weight"       in se: self.area_weight_spin.setValue(se["area_weight"])
-            if "velocity_weight"   in se: self.vel_weight_spin.setValue(se["velocity_weight"])
-            if "pos_weight"        in se: self.pos_weight_spin.setValue(se["pos_weight"])
-            if "unmatched_score"   in se: self.unmatched_spin.setValue(se["unmatched_score"])
+            if "max_dist_um"        in se: self.dist_spin.setValue(se["max_dist_um"])
+            if "iou_weight"         in se: self.iou_weight_spin.setValue(se["iou_weight"])
+            if "area_weight"        in se: self.area_weight_spin.setValue(se["area_weight"])
+            if "circularity_weight" in se: self.circularity_weight_spin.setValue(se["circularity_weight"])
+            if "solidity_weight"    in se: self.solidity_weight_spin.setValue(se["solidity_weight"])

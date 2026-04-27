@@ -325,29 +325,17 @@ class CellWorkflowWidget(QWidget):
         self.dist_spin.setValue(20.0)
         search_form.addRow("Max Dist (px):", _compact(self.dist_spin))
 
-        self.vel_sigma_spin = QDoubleSpinBox()
-        self.vel_sigma_spin.setRange(1, 500)
-        self.vel_sigma_spin.setValue(25.0)
-        self.vel_sigma_spin.setSingleStep(5.0)
-        search_form.addRow("Velocity σ (px):", _compact(self.vel_sigma_spin))
-
         self.iou_weight_spin = _weight_spin(1.0)
         search_form.addRow("IoU Weight:", _compact(self.iou_weight_spin))
 
         self.area_weight_spin = _weight_spin(1.0)
         search_form.addRow("Area Weight:", _compact(self.area_weight_spin))
 
-        self.vel_weight_spin = _weight_spin(1.0)
-        search_form.addRow("Velocity Weight:", _compact(self.vel_weight_spin))
+        self.circularity_weight_spin = _weight_spin(1.0)
+        search_form.addRow("Circularity Weight:", _compact(self.circularity_weight_spin))
 
-        self.pos_weight_spin = _weight_spin(0.0)
-        search_form.addRow("Position Weight:", _compact(self.pos_weight_spin))
-
-        self.unmatched_spin = QDoubleSpinBox()
-        self.unmatched_spin.setRange(0.0, 1.0)
-        self.unmatched_spin.setValue(0.1)
-        self.unmatched_spin.setSingleStep(0.01)
-        search_form.addRow("Unmatched Score:", _compact(self.unmatched_spin))
+        self.solidity_weight_spin = _weight_spin(1.0)
+        search_form.addRow("Solidity Weight:", _compact(self.solidity_weight_spin))
 
         search_lay.addLayout(search_form)
 
@@ -935,12 +923,10 @@ class CellWorkflowWidget(QWidget):
             next_frame, winner = propagate_one_frame(
                 hyp_path, current_labels, t + 1, prev_labels,
                 max_dist_px=self.dist_spin.value(),
-                velocity_sigma_px=self.vel_sigma_spin.value(),
                 iou_weight=self.iou_weight_spin.value(),
                 area_weight=self.area_weight_spin.value(),
-                velocity_weight=self.vel_weight_spin.value(),
-                pos_weight=self.pos_weight_spin.value(),
-                unmatched_score=self.unmatched_spin.value(),
+                circularity_weight=self.circularity_weight_spin.value(),
+                solidity_weight=self.solidity_weight_spin.value(),
             )
         except Exception as e:
             self._set_status(f"Propagation failed: {e}")
@@ -977,12 +963,10 @@ class CellWorkflowWidget(QWidget):
         prev_labels    = np.asarray(layer.data[t_start - 1]) if t_start > 0 else None
 
         max_dist  = self.dist_spin.value()
-        vel_sigma = self.vel_sigma_spin.value()
         iou_w     = self.iou_weight_spin.value()
         area_w    = self.area_weight_spin.value()
-        vel_w     = self.vel_weight_spin.value()
-        pos_w     = self.pos_weight_spin.value()
-        unmatch_s = self.unmatched_spin.value()
+        circ_w    = self.circularity_weight_spin.value()
+        sol_w     = self.solidity_weight_spin.value()
         self._stop_flag = False
 
         @thread_worker(connect={"yielded": self._on_prop_progress, "finished": self._on_prop_done, "errored": self._on_worker_error})
@@ -994,12 +978,10 @@ class CellWorkflowWidget(QWidget):
                 next_frame, winner = propagate_one_frame(
                     hyp_path, current, t + 1, prev,
                     max_dist_px=max_dist,
-                    velocity_sigma_px=vel_sigma,
                     iou_weight=iou_w,
                     area_weight=area_w,
-                    velocity_weight=vel_w,
-                    pos_weight=pos_w,
-                    unmatched_score=unmatch_s,
+                    circularity_weight=circ_w,
+                    solidity_weight=sol_w,
                 )
                 if next_frame is None:
                     yield (t, None, None)
@@ -1223,13 +1205,11 @@ class CellWorkflowWidget(QWidget):
                 "compactness":  self.db_compactness_spin.value(),
             },
             "search": {
-                "max_dist_px":      self.dist_spin.value(),
-                "velocity_sigma_px": self.vel_sigma_spin.value(),
-                "iou_weight":       self.iou_weight_spin.value(),
-                "area_weight":      self.area_weight_spin.value(),
-                "velocity_weight":  self.vel_weight_spin.value(),
-                "pos_weight":       self.pos_weight_spin.value(),
-                "unmatched_score":  self.unmatched_spin.value(),
+                "max_dist_px":          self.dist_spin.value(),
+                "iou_weight":           self.iou_weight_spin.value(),
+                "area_weight":          self.area_weight_spin.value(),
+                "circularity_weight":   self.circularity_weight_spin.value(),
+                "solidity_weight":      self.solidity_weight_spin.value(),
             },
         }
 
@@ -1257,10 +1237,8 @@ class CellWorkflowWidget(QWidget):
             if "compactness"  in db: self.db_compactness_spin.setValue(db["compactness"])
         if "search" in state:
             se = state["search"]
-            if "max_dist_px"       in se: self.dist_spin.setValue(se["max_dist_px"])
-            if "velocity_sigma_px" in se: self.vel_sigma_spin.setValue(se["velocity_sigma_px"])
-            if "iou_weight"        in se: self.iou_weight_spin.setValue(se["iou_weight"])
-            if "area_weight"       in se: self.area_weight_spin.setValue(se["area_weight"])
-            if "velocity_weight"   in se: self.vel_weight_spin.setValue(se["velocity_weight"])
-            if "pos_weight"        in se: self.pos_weight_spin.setValue(se["pos_weight"])
-            if "unmatched_score"   in se: self.unmatched_spin.setValue(se["unmatched_score"])
+            if "max_dist_px"        in se: self.dist_spin.setValue(se["max_dist_px"])
+            if "iou_weight"         in se: self.iou_weight_spin.setValue(se["iou_weight"])
+            if "area_weight"        in se: self.area_weight_spin.setValue(se["area_weight"])
+            if "circularity_weight" in se: self.circularity_weight_spin.setValue(se["circularity_weight"])
+            if "solidity_weight"    in se: self.solidity_weight_spin.setValue(se["solidity_weight"])

@@ -336,6 +336,7 @@ def iter_hypothesis_records(path: str | Path) -> Iterator[HypothesisRecord]:
                     params = ContourWatershedParams(
                         seed_distance=int(p_grp.attrs.get("seed_distance", 10)),
                         foreground_threshold=float(p_grp.attrs.get("foreground_threshold", 0.5)),
+                        ridge_threshold=float(p_grp.attrs.get("ridge_threshold", 0.5)),
                         min_size=int(p_grp.attrs.get("min_size", 0)),
                         min_circularity=float(p_grp.attrs.get("min_circularity", 0.0)),
                         noise_scale=float(p_grp.attrs.get("noise_scale", 0.0)),
@@ -526,6 +527,10 @@ class ContourWatershedSweepSpec:
     foreground_threshold_min: float = 0.5
     foreground_threshold_max: float = 0.5
     foreground_threshold_step: float = 0.05
+    ridge_threshold: float = 0.5
+    ridge_threshold_min: float = 0.5
+    ridge_threshold_max: float = 0.5
+    ridge_threshold_step: float = 0.05
     min_size: int = 0
     min_circularity: float = 0.0
     noise_scale: float = 0.0
@@ -539,12 +544,14 @@ def build_contour_watershed_parameter_sets(spec: ContourWatershedSweepSpec) -> l
     With n_runs > 1 and noise_scale > 0, each run gets a unique run_index so
     stochastic repetitions are stored as distinct hypotheses in the DB.
     """
-    seed_dist_vals = _int_values(spec.seed_distance, spec.seed_distance_min, spec.seed_distance_max, spec.seed_distance_step)
-    fg_vals        = _values(spec.foreground_threshold, spec.foreground_threshold_min, spec.foreground_threshold_max, spec.foreground_threshold_step)
+    seed_dist_vals  = _int_values(spec.seed_distance, spec.seed_distance_min, spec.seed_distance_max, spec.seed_distance_step)
+    fg_vals         = _values(spec.foreground_threshold, spec.foreground_threshold_min, spec.foreground_threshold_max, spec.foreground_threshold_step)
+    ridge_vals      = _values(spec.ridge_threshold, spec.ridge_threshold_min, spec.ridge_threshold_max, spec.ridge_threshold_step)
     return [
         ContourWatershedParams(
             seed_distance=int(d),
             foreground_threshold=float(fg),
+            ridge_threshold=float(rt),
             min_size=int(spec.min_size),
             min_circularity=float(spec.min_circularity),
             noise_scale=float(spec.noise_scale),
@@ -554,6 +561,7 @@ def build_contour_watershed_parameter_sets(spec: ContourWatershedSweepSpec) -> l
         for run_idx in range(max(1, spec.n_runs))
         for d in seed_dist_vals
         for fg in fg_vals
+        for rt in ridge_vals
     ]
 
 
