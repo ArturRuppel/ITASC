@@ -76,7 +76,7 @@ class CellFlowMainWidget(QWidget):
             "3. Nucleus Workflow", self.nucleus_workflow_widget, expanded=False
         )
 
-        self.cell_workflow_widget = CellWorkflowWidget()
+        self.cell_workflow_widget = CellWorkflowWidget(self.viewer)
         self.cell_section = CollapsibleSection(
             "4. Cell Workflow", self.cell_workflow_widget, expanded=False
         )

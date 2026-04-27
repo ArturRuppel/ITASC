@@ -320,12 +320,6 @@ class CellWorkflowWidget(QWidget):
         search_form.setHorizontalSpacing(8)
         search_form.setVerticalSpacing(4)
 
-        self.iou_spin = QDoubleSpinBox()
-        self.iou_spin.setRange(0, 1)
-        self.iou_spin.setValue(0.5)
-        self.iou_spin.setSingleStep(0.1)
-        search_form.addRow("IoU Threshold:", _compact(self.iou_spin))
-
         self.dist_spin = QDoubleSpinBox()
         self.dist_spin.setRange(0, 1000)
         self.dist_spin.setValue(20.0)
@@ -940,7 +934,6 @@ class CellWorkflowWidget(QWidget):
         try:
             next_frame, winner = propagate_one_frame(
                 hyp_path, current_labels, t + 1, prev_labels,
-                iou_threshold=self.iou_spin.value(),
                 max_dist_px=self.dist_spin.value(),
                 velocity_sigma_px=self.vel_sigma_spin.value(),
                 iou_weight=self.iou_weight_spin.value(),
@@ -983,7 +976,6 @@ class CellWorkflowWidget(QWidget):
         initial_labels = np.asarray(layer.data[t_start])
         prev_labels    = np.asarray(layer.data[t_start - 1]) if t_start > 0 else None
 
-        iou_thr   = self.iou_spin.value()
         max_dist  = self.dist_spin.value()
         vel_sigma = self.vel_sigma_spin.value()
         iou_w     = self.iou_weight_spin.value()
@@ -1001,7 +993,6 @@ class CellWorkflowWidget(QWidget):
             while not self._stop_flag:
                 next_frame, winner = propagate_one_frame(
                     hyp_path, current, t + 1, prev,
-                    iou_threshold=iou_thr,
                     max_dist_px=max_dist,
                     velocity_sigma_px=vel_sigma,
                     iou_weight=iou_w,
@@ -1232,7 +1223,6 @@ class CellWorkflowWidget(QWidget):
                 "compactness":  self.db_compactness_spin.value(),
             },
             "search": {
-                "iou_threshold":    self.iou_spin.value(),
                 "max_dist_px":      self.dist_spin.value(),
                 "velocity_sigma_px": self.vel_sigma_spin.value(),
                 "iou_weight":       self.iou_weight_spin.value(),
@@ -1267,7 +1257,6 @@ class CellWorkflowWidget(QWidget):
             if "compactness"  in db: self.db_compactness_spin.setValue(db["compactness"])
         if "search" in state:
             se = state["search"]
-            if "iou_threshold"     in se: self.iou_spin.setValue(se["iou_threshold"])
             if "max_dist_px"       in se: self.dist_spin.setValue(se["max_dist_px"])
             if "velocity_sigma_px" in se: self.vel_sigma_spin.setValue(se["velocity_sigma_px"])
             if "iou_weight"        in se: self.iou_weight_spin.setValue(se["iou_weight"])

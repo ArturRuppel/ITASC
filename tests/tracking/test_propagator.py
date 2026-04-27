@@ -30,7 +30,6 @@ def test_two_spatially_separated_nuclei_both_matched():
 
     next_frame, winner = find_best_hypothesis(
         current, [cand_a, cand_b],
-        iou_threshold=0.1,
         max_dist_px=50.0,
     )
 
@@ -40,20 +39,15 @@ def test_two_spatially_separated_nuclei_both_matched():
     assert 2 in np.unique(next_frame)
 
 
-def test_iou_gate_drops_unmatched():
-    """A candidate whose centroid-corrected IoU is below threshold is rejected.
-
-    Current: large 20×20 square. Candidate: tiny 3×3 square.
-    IoU = 9 / (400 + 9 - 9) ≈ 0.022, well below any reasonable threshold.
-    """
+def test_distance_gate_drops_far_candidate():
+    """A candidate whose centroid is beyond max_dist_px from the predicted position is rejected."""
     shape = (100, 100)
     current = _make_square(shape, 10, 10, 20, 1)
-    cand = _make_square(shape, 50, 50, 3, 1)
+    cand = _make_square(shape, 80, 80, 20, 1)  # centroid ~80px away
 
     next_frame, winner = find_best_hypothesis(
         current, [cand],
-        iou_threshold=0.3,
-        max_dist_px=200.0,
+        max_dist_px=30.0,
     )
 
     assert next_frame is None
@@ -63,7 +57,7 @@ def test_iou_gate_drops_unmatched():
 def test_no_candidates_returns_none():
     shape = (50, 50)
     current = _make_square(shape, 10, 10, 10, 1)
-    result = find_best_hypothesis(current, [], iou_threshold=0.3, max_dist_px=50.0)
+    result = find_best_hypothesis(current, [], max_dist_px=50.0)
     assert result == (None, None)
 
 
@@ -71,7 +65,7 @@ def test_empty_current_returns_none():
     shape = (50, 50)
     current = np.zeros(shape, dtype=np.uint32)
     cand = _make_square(shape, 10, 10, 10, 1)
-    result = find_best_hypothesis(current, [cand], iou_threshold=0.3, max_dist_px=50.0)
+    result = find_best_hypothesis(current, [cand], max_dist_px=50.0)
     assert result == (None, None)
 
 
@@ -83,7 +77,6 @@ def test_perfect_overlap_returns_track_id():
 
     next_frame, winner = find_best_hypothesis(
         current, [cand],
-        iou_threshold=0.5,
         max_dist_px=5.0,
     )
 
@@ -103,7 +96,6 @@ def test_multiple_hypotheses_same_location_picks_best():
 
     next_frame, winner = find_best_hypothesis(
         current, [cand0, cand1, cand2],
-        iou_threshold=0.1,
         max_dist_px=20.0,
     )
 
@@ -135,7 +127,6 @@ def test_distant_nucleus_not_matched_to_far_candidate():
 
     next_frame, _ = find_best_hypothesis(
         current, [cand_a, cand_b],
-        iou_threshold=0.1,
         max_dist_px=50.0,
         dedup_radius_px=10.0,
     )
@@ -163,7 +154,6 @@ def test_two_nuclei_no_cross_assignment():
 
     next_frame, winner = find_best_hypothesis(
         current, [cand],
-        iou_threshold=0.1,
         max_dist_px=30.0,
     )
 

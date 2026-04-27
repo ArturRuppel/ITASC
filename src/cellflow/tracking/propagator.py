@@ -59,7 +59,6 @@ def _iou_direct(
 def find_best_hypothesis(
     current_labels: np.ndarray,
     candidates: list[np.ndarray],
-    iou_threshold: float = 0.3,
     max_dist_px: float = 50.0,
     predicted_centroids: dict[int, np.ndarray] | None = None,
     velocity_sigma_px: float = 25.0,
@@ -72,9 +71,9 @@ def find_best_hypothesis(
 ) -> tuple[np.ndarray, int] | tuple[None, None]:
     """Return (relabeled_next_frame, winning_entry_index) or (None, None).
 
-    For each current nucleus, all (hypothesis, nucleus_id) candidates are gated
-    by centroid distance and direct spatial IoU, then scored. The best-scoring candidate wins; ties are impossible in practice.
-    No clustering and no global assignment — per-nucleus greedy matching.
+    For each current nucleus, candidates are gated by distance from the predicted
+    position (trajectory extrapolation), then scored. Falls back to current centroid
+    when no prediction is available. No IoU threshold gate — per-nucleus greedy matching.
     """
     if not candidates:
         return None, None
@@ -113,7 +112,8 @@ def find_best_hypothesis(
         cur_ys, cur_xs = cur_pixels[cur_id]
         pred_centroid = (predicted_centroids or {}).get(cur_id)
 
-        nearby_ks = tree.query_ball_point(cur_centroid, max_dist_px)
+        gate_centroid = pred_centroid if pred_centroid is not None else cur_centroid
+        nearby_ks = tree.query_ball_point(gate_centroid, max_dist_px)
         if not nearby_ks:
             continue
 
@@ -124,8 +124,6 @@ def find_best_hypothesis(
             entry_idx, cand_id, cand_centroid, cand_area, cand_flat_idx = flat_cands[k]
 
             iou = _iou_direct(cur_ys, cur_xs, cur_area, cand_flat_idx, cand_area, W)
-            if iou < iou_threshold:
-                continue
 
             area_ratio = min(cur_area, cand_area) / max(cur_area, cand_area)
 
@@ -162,7 +160,6 @@ def propagate_one_frame(
     current_labels: np.ndarray,
     t_next: int,
     prev_labels: np.ndarray | None = None,
-    iou_threshold: float = 0.3,
     max_dist_px: float = 50.0,
     velocity_sigma_px: float = 25.0,
     iou_weight: float = 1.0,
@@ -213,7 +210,7 @@ def propagate_one_frame(
 
     candidates = [e[2] for e in entries]
     next_frame, winner_idx = find_best_hypothesis(
-        current_labels, candidates, iou_threshold, max_dist_px,
+        current_labels, candidates, max_dist_px,
         predicted_centroids=predicted_centroids,
         velocity_sigma_px=velocity_sigma_px,
         iou_weight=iou_weight,

@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -222,14 +223,18 @@ class NucleusWorkflowWidget(QWidget):
         gen_lay.setSpacing(6)
         gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        shared_row = QHBoxLayout()
-        shared_row.addWidget(QLabel("Min Cell Size (px):"))
+        gen_form = QFormLayout()
+        gen_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        gen_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        gen_form.setHorizontalSpacing(8)
+        gen_form.setVerticalSpacing(4)
+
         self.min_size_spin = QSpinBox()
         self.min_size_spin.setRange(0, 100000)
         self.min_size_spin.setValue(0)
         self.min_size_spin.setToolTip("Remove regions smaller than this many pixels (0 = keep all)")
-        shared_row.addWidget(_compact(self.min_size_spin, 80))
-        shared_row.addWidget(QLabel("Min Circularity:"))
+        gen_form.addRow("Min Cell Size (px):", _compact(self.min_size_spin, 80))
+
         self.min_circularity_spin = QDoubleSpinBox()
         self.min_circularity_spin.setRange(0.0, 1.0)
         self.min_circularity_spin.setValue(0.0)
@@ -238,31 +243,28 @@ class NucleusWorkflowWidget(QWidget):
         self.min_circularity_spin.setToolTip(
             "Remove regions with circularity (4π·area/perimeter²) below this value (0 = keep all, 1 = perfect circle)"
         )
-        shared_row.addWidget(_compact(self.min_circularity_spin))
-        shared_row.addStretch()
-        self.overwrite_check = QCheckBox("Overwrite existing")
-        shared_row.addWidget(self.overwrite_check)
-        gen_lay.addLayout(shared_row)
+        gen_form.addRow("Min Circularity:", _compact(self.min_circularity_spin))
 
-        noise_shared_row = QHBoxLayout()
-        noise_shared_row.addWidget(QLabel("Noise Scale:"))
         self.noise_scale = QDoubleSpinBox()
         self.noise_scale.setRange(0.0, 1.0)
         self.noise_scale.setValue(0.0)
         self.noise_scale.setDecimals(2)
         self.noise_scale.setSingleStep(0.01)
         self.noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
-        noise_shared_row.addWidget(_compact(self.noise_scale))
-        noise_shared_row.addWidget(QLabel("Blur Sigma:"))
+        gen_form.addRow("Noise Scale:", _compact(self.noise_scale))
+
         self.noise_blur = QDoubleSpinBox()
         self.noise_blur.setRange(0.0, 10.0)
         self.noise_blur.setValue(0.0)
         self.noise_blur.setDecimals(1)
         self.noise_blur.setSingleStep(0.5)
         self.noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
-        noise_shared_row.addWidget(_compact(self.noise_blur))
-        noise_shared_row.addStretch()
-        gen_lay.addLayout(noise_shared_row)
+        gen_form.addRow("Blur Sigma:", _compact(self.noise_blur))
+
+        gen_lay.addLayout(gen_form)
+
+        self.overwrite_check = QCheckBox("Overwrite existing")
+        gen_lay.addWidget(self.overwrite_check)
 
         self.gen_tabs = QTabWidget()
 
@@ -304,9 +306,7 @@ class NucleusWorkflowWidget(QWidget):
         sweep_tab = QWidget()
         sweep_lay = QVBoxLayout(sweep_tab)
 
-        def _sweep_row(label, d_min, d_max, d_step, decimals=0):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(label))
+        def _make_sweep_spins(d_min, d_max, d_step, decimals=0):
             make = QDoubleSpinBox if decimals > 0 else QSpinBox
             min_s, max_s, step_s = make(), make(), make()
             for s in (min_s, max_s, step_s):
@@ -318,15 +318,37 @@ class NucleusWorkflowWidget(QWidget):
             min_s.setValue(d_min)
             max_s.setValue(d_max)
             step_s.setValue(d_step)
-            row.addWidget(QLabel("min")); row.addWidget(min_s)
-            row.addWidget(QLabel("max")); row.addWidget(max_s)
-            row.addWidget(QLabel("step")); row.addWidget(step_s)
-            row.addStretch()
-            sweep_lay.addLayout(row)
             return min_s, max_s, step_s
 
-        self.sweep_seed_dist  = _sweep_row("Seed Dist",            8,    14,   2,     decimals=0)
-        self.sweep_fg_thr     = _sweep_row("Foreground Threshold", 0.4,  0.6,  0.05,  decimals=2)
+        sweep_grid = QGridLayout()
+        sweep_grid.setHorizontalSpacing(4)
+        sweep_grid.setVerticalSpacing(4)
+
+        for col, text in enumerate(["min", "max", "step"], start=1):
+            hdr = QLabel(text)
+            hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sweep_grid.addWidget(hdr, 0, col)
+        sweep_grid.setColumnStretch(4, 1)
+
+        sd_lbl = QLabel("Seed Dist:")
+        sd_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        sweep_grid.addWidget(sd_lbl, 1, 0)
+        sd_min, sd_max, sd_step = _make_sweep_spins(8, 14, 2)
+        sweep_grid.addWidget(sd_min, 1, 1)
+        sweep_grid.addWidget(sd_max, 1, 2)
+        sweep_grid.addWidget(sd_step, 1, 3)
+        self.sweep_seed_dist = (sd_min, sd_max, sd_step)
+
+        fg_lbl = QLabel("Foreground Threshold:")
+        fg_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        sweep_grid.addWidget(fg_lbl, 2, 0)
+        fg_min, fg_max, fg_step = _make_sweep_spins(0.4, 0.6, 0.05, decimals=2)
+        sweep_grid.addWidget(fg_min, 2, 1)
+        sweep_grid.addWidget(fg_max, 2, 2)
+        sweep_grid.addWidget(fg_step, 2, 3)
+        self.sweep_fg_thr = (fg_min, fg_max, fg_step)
+
+        sweep_lay.addLayout(sweep_grid)
 
         sweep_runs_row = QHBoxLayout()
         sweep_runs_row.addWidget(QLabel("Runs:"))
@@ -458,12 +480,6 @@ class NucleusWorkflowWidget(QWidget):
         search_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
         search_form.setHorizontalSpacing(8)
         search_form.setVerticalSpacing(4)
-
-        self.iou_spin = QDoubleSpinBox()
-        self.iou_spin.setRange(0, 1)
-        self.iou_spin.setValue(0.5)
-        self.iou_spin.setSingleStep(0.1)
-        search_form.addRow("IoU Threshold:", _compact(self.iou_spin))
 
         self.dist_spin = QDoubleSpinBox()
         self.dist_spin.setRange(0, 1000)
@@ -1393,7 +1409,6 @@ class NucleusWorkflowWidget(QWidget):
         try:
             next_frame, winner = propagate_one_frame(
                 hyp_path, current_labels, t + 1, prev_labels,
-                iou_threshold=self.iou_spin.value(),
                 max_dist_px=self.dist_spin.value(),
                 velocity_sigma_px=self.vel_sigma_spin.value(),
                 iou_weight=self.iou_weight_spin.value(),
@@ -1439,7 +1454,6 @@ class NucleusWorkflowWidget(QWidget):
         initial_labels = np.asarray(layer.data[t_start])
         prev_labels    = np.asarray(layer.data[t_start - 1]) if t_start > 0 else None
 
-        iou_thr   = self.iou_spin.value()
         max_dist  = self.dist_spin.value()
         vel_sigma = self.vel_sigma_spin.value()
         iou_w     = self.iou_weight_spin.value()
@@ -1457,7 +1471,6 @@ class NucleusWorkflowWidget(QWidget):
             while not self._stop_flag:
                 next_frame, winner = propagate_one_frame(
                     hyp_path, current, t + 1, prev,
-                    iou_threshold=iou_thr,
                     max_dist_px=max_dist,
                     velocity_sigma_px=vel_sigma,
                     iou_weight=iou_w,
@@ -1705,7 +1718,6 @@ class NucleusWorkflowWidget(QWidget):
                 "run_index":    self.db_run_spin.value(),
             },
             "search": {
-                "iou_threshold":    self.iou_spin.value(),
                 "max_dist_um":      self.dist_spin.value(),
                 "velocity_sigma_px": self.vel_sigma_spin.value(),
                 "iou_weight":       self.iou_weight_spin.value(),
@@ -1758,7 +1770,6 @@ class NucleusWorkflowWidget(QWidget):
             if "run_index"    in db: self.db_run_spin.setValue(db["run_index"])
         if "search" in state:
             se = state["search"]
-            if "iou_threshold"     in se: self.iou_spin.setValue(se["iou_threshold"])
             if "max_dist_um"       in se: self.dist_spin.setValue(se["max_dist_um"])
             if "velocity_sigma_px" in se: self.vel_sigma_spin.setValue(se["velocity_sigma_px"])
             if "iou_weight"        in se: self.iou_weight_spin.setValue(se["iou_weight"])
