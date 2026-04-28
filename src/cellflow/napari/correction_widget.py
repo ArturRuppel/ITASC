@@ -300,8 +300,7 @@ class CorrectionWidget(QWidget):
         if self._layer is not None:
             self._deactivate()
         self._activate(layer)
-        if self._show_activate_btn:
-            self._activate_btn.setChecked(True)
+        self._activate_btn.setChecked(True)
 
     def deactivate(self) -> None:
         """Deactivate correction (public API)."""

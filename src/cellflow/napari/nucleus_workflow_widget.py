@@ -11,6 +11,7 @@ import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -22,6 +23,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QShortcut,
     QSizePolicy,
     QSpinBox,
     QTabWidget,
@@ -56,11 +58,12 @@ from cellflow.database.validation import (
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
-from cellflow.tracking.retracker import retrack_frame, retrack_frame_constrained
+from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
 from cellflow.tracking_ultrack.linking import run_linking
+from cellflow.tracking_ultrack.extend import extend_track
 from cellflow.tracking_ultrack.reseed import resolve_with_validation
 from cellflow.tracking_ultrack.solve import run_solve
 
@@ -623,13 +626,18 @@ class NucleusWorkflowWidget(QWidget):
         _corr_inner_lay.setContentsMargins(0, 0, 0, 0)
         _corr_inner_lay.setSpacing(4)
 
+        extend_row = QHBoxLayout()
+        self.extend_back_btn = QPushButton("◀ Extend (Ctrl+Shift+A)")
+        extend_row.addWidget(_compact_btn(self.extend_back_btn))
+        self.extend_fwd_btn = QPushButton("Extend (Ctrl+Shift+D) ▶")
+        extend_row.addWidget(_compact_btn(self.extend_fwd_btn))
+        _corr_inner_lay.addLayout(extend_row)
+
         retrack_row = QHBoxLayout()
-        self.retrack_btn = QPushButton("Retrack Frame")
-        retrack_row.addWidget(_compact_btn(self.retrack_btn))
-        self.retrack_stack_btn = QPushButton("Retrack Stack")
-        retrack_row.addWidget(_compact_btn(self.retrack_stack_btn))
-        self.retrack_from_here_btn = QPushButton("Retrack from here")
-        retrack_row.addWidget(_compact_btn(self.retrack_from_here_btn))
+        self.retrack_back_btn = QPushButton("◀ Retrack (Ctrl+Shift+Q)")
+        retrack_row.addWidget(_compact_btn(self.retrack_back_btn))
+        self.retrack_fwd_btn = QPushButton("Retrack (Ctrl+Shift+E) ▶")
+        retrack_row.addWidget(_compact_btn(self.retrack_fwd_btn))
         _corr_inner_lay.addLayout(retrack_row)
 
         resolve_row = QHBoxLayout()
@@ -698,12 +706,15 @@ class NucleusWorkflowWidget(QWidget):
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
         self.ultrack_linking_mode_combo.currentTextChanged.connect(self._on_ultrack_mode_changed)
-        self.retrack_btn.clicked.connect(self._on_retrack_frame)
-        self.retrack_stack_btn.clicked.connect(self._on_retrack_stack)
-        self.retrack_from_here_btn.clicked.connect(self._on_retrack_from_here)
+        self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
+        self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
+        self.extend_back_btn.clicked.connect(self._on_extend_backward)
+        self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
         self.resolve_validated_btn.clicked.connect(self._on_resolve_with_validation)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
         self.viewer.bind_key("V", self._kb_toggle_cell_validation, overwrite=True)
+        self._install_correction_shortcuts()
+        self.correction_widget._activate_btn.toggled.connect(self._on_correction_mode_toggled)
         # Set initial state for solver label and IoU weight enablement
         solver = _select_solver()
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
@@ -1910,6 +1921,25 @@ class NucleusWorkflowWidget(QWidget):
         present = np.any(layer.data == cell_id, axis=spatial_axes)
         return [int(t) for t in np.where(present)[0]]
 
+    def _install_correction_shortcuts(self) -> None:
+        specs = [
+            ("Ctrl+Shift+A", lambda: self._on_extend(direction="backward")),
+            ("Ctrl+Shift+D", lambda: self._on_extend(direction="forward")),
+            ("Ctrl+Shift+Q", self._on_retrack_backward),
+            ("Ctrl+Shift+E", self._on_retrack_forward),
+        ]
+        self._correction_shortcuts: list[QShortcut] = []
+        for key, slot in specs:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            sc.setEnabled(False)
+            sc.activated.connect(slot)
+            self._correction_shortcuts.append(sc)
+
+    def _on_correction_mode_toggled(self, active: bool) -> None:
+        for sc in self._correction_shortcuts:
+            sc.setEnabled(active)
+
     def _kb_toggle_cell_validation(self, _viewer) -> None:
         if self._pos_dir is None:
             return
@@ -1934,82 +1964,73 @@ class NucleusWorkflowWidget(QWidget):
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
 
-    def _on_retrack_frame(self) -> None:
-        if self._pos_dir is None:
+    def _on_extend_backward(self) -> None:
+        self._on_extend(direction="backward")
+
+    def _on_extend_forward(self) -> None:
+        self._on_extend(direction="forward")
+
+    def _on_extend(self, direction: str) -> None:
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded.")
+            return
+
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
             self._set_status("No project open.")
             return
 
+        source_id = self.correction_widget._selected_label
+        if not source_id:
+            self._set_status("Extend: no cell selected (left-click a cell first).")
+            return
+
+        layer = self.viewer.layers[_TRACKED_LAYER]
         t = self._current_t()
-        if is_validated(self._pos_dir, t):
-            self._set_status(f"Frame t={t} is validated — unvalidate it first to retrack.")
+        tracked = np.asarray(layer.data)
+        T = tracked.shape[0]
+
+        target_frame = t + (1 if direction == "forward" else -1)
+        if direction == "forward" and t >= T - 1:
+            self._set_status("Already at last frame")
+            return
+        if direction == "backward" and t <= 0:
+            self._set_status("Already at first frame")
             return
 
-        validated = sorted(
-            [v for v in read_validated_frames(self._pos_dir) if v < t], reverse=True
+        if not np.any(tracked[t] == source_id):
+            self._set_status(f"Cell {source_id} not present at t={t}")
+            return
+
+        result = extend_track(
+            source_id=source_id,
+            source_frame=t,
+            direction=direction,
+            tracked_labels=tracked,
+            hypotheses_path=hyp_path,
         )
-        t_ref = validated[0] if validated else (t - 1)
-        if t_ref < 0:
-            self._set_status("No reference frame available (t=0 has no predecessor).")
+
+        if result is None:
+            self._set_status(f"No hypothesis within 40px at t={target_frame}")
             return
 
-        if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded.")
-            return
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        if layer.data.ndim != 3 or t >= layer.data.shape[0] or t_ref >= layer.data.shape[0]:
-            self._set_status(f"Frame t={t} or reference t={t_ref} not in tracked layer.")
-            return
+        frame = layer.data[result.target_frame]
+        frame[frame == source_id] = 0
+        paintable = result.mask_2d & (frame == 0)
+        frame[paintable] = source_id
+        layer.refresh()
 
-        ref_labels = np.asarray(layer.data[t_ref])
-        tgt_labels = np.asarray(layer.data[t])
+        step = list(self.viewer.dims.current_step)
+        step[0] = result.target_frame
+        self.viewer.dims.current_step = tuple(step)
 
-        remapped = retrack_frame(ref_labels, tgt_labels, max_dist_px=20.0)
-        new_ids = set(int(i) for i in np.unique(remapped) if i != 0)
-        ref_ids = set(int(i) for i in np.unique(ref_labels) if i != 0)
-        n_matched = len(new_ids & ref_ids)
-        n_new     = len(new_ids - ref_ids)
-
-        self._update_tracked_display(remapped, t=t)
         self._set_status(
-            f"Retracked t={t} using t={t_ref}: {n_matched} matched, {n_new} new ID(s). Unsaved."
+            f"Extended cell {source_id} → t={result.target_frame} "
+            f"(dist={result.centroid_distance:.1f}px, area={result.area_ratio:.2f}, "
+            f"overlap={result.existing_overlap:.2f})"
         )
 
-    def _on_retrack_stack(self) -> None:
-        if self._pos_dir is None:
-            self._set_status("No project open.")
-            return
-        if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded.")
-            return
-
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        if layer.data.ndim != 3 or layer.data.shape[0] < 2:
-            self._set_status("Tracked layer must be a stack of at least 2 frames.")
-            return
-
-        T = layer.data.shape[0]
-        stack = layer.data.copy()
-        fully_validated = read_validated_frames(self._pos_dir)
-
-        n_retracked = 0
-        n_skipped = 0
-        for t in range(1, T):
-            if t in fully_validated:
-                n_skipped += 1
-                continue
-            ref = stack[t - 1]
-            tgt = stack[t]
-            locked = read_validated_cells_at_frame(self._pos_dir, t)
-            stack[t] = retrack_frame_constrained(ref, tgt, locked, max_dist_px=20.0)
-            n_retracked += 1
-
-        layer.data = stack
-        self._set_status(
-            f"Retracked stack: {n_retracked} frame(s) updated, "
-            f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
-        )
-
-    def _on_retrack_from_here(self) -> None:
+    def _on_retrack_forward(self) -> None:
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
@@ -2045,7 +2066,46 @@ class NucleusWorkflowWidget(QWidget):
 
         layer.data = stack
         self._set_status(
-            f"Retracked from frame {t0 + 1}: {n_retracked} frame(s) updated, "
+            f"Retracked forward from t={t0 + 1}: {n_retracked} frame(s) updated, "
+            f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
+        )
+
+    def _on_retrack_backward(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded.")
+            return
+
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3 or layer.data.shape[0] < 2:
+            self._set_status("Tracked layer must be a stack of at least 2 frames.")
+            return
+
+        t0 = int(self.viewer.dims.current_step[0])
+        if t0 <= 0:
+            self._set_status("Already at first frame — nothing to retrack backward.")
+            return
+
+        stack = layer.data.copy()
+        fully_validated = read_validated_frames(self._pos_dir)
+
+        n_retracked = 0
+        n_skipped = 0
+        for t in range(t0 - 1, -1, -1):
+            if t in fully_validated:
+                n_skipped += 1
+                continue
+            ref = stack[t + 1]
+            tgt = stack[t]
+            locked = read_validated_cells_at_frame(self._pos_dir, t)
+            stack[t] = retrack_frame_constrained(ref, tgt, locked, max_dist_px=20.0)
+            n_retracked += 1
+
+        layer.data = stack
+        self._set_status(
+            f"Retracked backward from t={t0 - 1}: {n_retracked} frame(s) updated, "
             f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
         )
 
