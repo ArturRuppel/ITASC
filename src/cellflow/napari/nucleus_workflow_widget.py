@@ -57,7 +57,7 @@ from cellflow.database.validation import (
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
-from cellflow.tracking.retracker import retrack_frame
+from cellflow.tracking.retracker import retrack_frame, retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
@@ -608,6 +608,8 @@ class NucleusWorkflowWidget(QWidget):
         retrack_row = QHBoxLayout()
         self.retrack_btn = QPushButton("Retrack Frame")
         retrack_row.addWidget(_compact_btn(self.retrack_btn))
+        self.retrack_stack_btn = QPushButton("Retrack Stack")
+        retrack_row.addWidget(_compact_btn(self.retrack_stack_btn))
         self.validate_btn = QPushButton("Validate Frame")
         self.validate_btn.setCheckable(True)
         retrack_row.addWidget(_compact_btn(self.validate_btn))
@@ -671,6 +673,7 @@ class NucleusWorkflowWidget(QWidget):
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
         self.ultrack_linking_mode_combo.currentTextChanged.connect(self._on_ultrack_mode_changed)
         self.retrack_btn.clicked.connect(self._on_retrack_frame)
+        self.retrack_stack_btn.clicked.connect(self._on_retrack_stack)
         self.validate_btn.toggled.connect(self._on_validate_toggled)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
         self.viewer.bind_key("V", self._kb_toggle_cell_validation, overwrite=True)
@@ -1992,6 +1995,41 @@ class NucleusWorkflowWidget(QWidget):
         self._update_tracked_display(remapped, t=t)
         self._set_status(
             f"Retracked t={t} using t={t_ref}: {n_matched} matched, {n_new} new ID(s). Unsaved."
+        )
+
+    def _on_retrack_stack(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded.")
+            return
+
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3 or layer.data.shape[0] < 2:
+            self._set_status("Tracked layer must be a stack of at least 2 frames.")
+            return
+
+        T = layer.data.shape[0]
+        stack = layer.data.copy()
+        fully_validated = read_validated_frames(self._pos_dir)
+
+        n_retracked = 0
+        n_skipped = 0
+        for t in range(1, T):
+            if t in fully_validated:
+                n_skipped += 1
+                continue
+            ref = stack[t - 1]
+            tgt = stack[t]
+            locked = read_validated_cells(self._pos_dir, t)
+            stack[t] = retrack_frame_constrained(ref, tgt, locked, max_dist_px=20.0)
+            n_retracked += 1
+
+        layer.data = stack
+        self._set_status(
+            f"Retracked stack: {n_retracked} frame(s) updated, "
+            f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
         )
 
     # ──────────────────────────────────────────────────────────────────────────

@@ -112,3 +112,92 @@ def retrack_frame(
         result[target_labels == tid] = new_id
 
     return result
+
+
+def retrack_frame_constrained(
+    ref_labels: np.ndarray,
+    target_labels: np.ndarray,
+    locked_target_ids: set[int],
+    max_dist_px: float = 50.0,
+) -> np.ndarray:
+    """Like retrack_frame, but target cells whose ID is in locked_target_ids
+    keep their existing IDs unchanged. The IDs they hold are also reserved —
+    no other (non-locked) target cell may be remapped onto them.
+
+    Locked target cells are copied straight to the output and excluded from the
+    LAP entirely. Reference cells that share an ID with a locked target cell are
+    also excluded from the LAP — their ID is already occupied, so letting the
+    LAP assign it to an unlocked cell would create a collision.
+    """
+    locked_target_ids = set(locked_target_ids)  # defensive copy
+
+    ref_centroids = _centroids(ref_labels)
+    tgt_centroids = _centroids(target_labels)
+
+    result = np.zeros_like(target_labels)
+
+    # Copy locked cells directly to output first; they participate in nothing else.
+    for lid in locked_target_ids:
+        if lid in tgt_centroids:
+            result[target_labels == lid] = lid
+
+    unlocked_tgt_ids = [tid for tid in tgt_centroids if tid not in locked_target_ids]
+
+    if not unlocked_tgt_ids:
+        return result
+
+    # Reference IDs that coincide with a locked target ID are reserved — exclude
+    # them so the LAP cannot assign that ID to an unlocked target cell.
+    available_ref_ids = [rid for rid in ref_centroids if rid not in locked_target_ids]
+
+    if not available_ref_ids:
+        # No usable reference cells — assign fresh IDs to all unlocked targets.
+        max_existing = max(
+            int(ref_labels.max()) if ref_labels.max() > 0 else 0,
+            int(target_labels.max()) if target_labels.max() > 0 else 0,
+        )
+        next_id = max_existing + 1
+        for tid in unlocked_tgt_ids:
+            while next_id in locked_target_ids:
+                next_id += 1
+            result[target_labels == tid] = next_id
+            next_id += 1
+        return result
+
+    ref_pts = np.array([ref_centroids[i] for i in available_ref_ids])
+    tgt_pts = np.array([tgt_centroids[i] for i in unlocked_tgt_ids])
+
+    n_ref, n_tgt = len(available_ref_ids), len(unlocked_tgt_ids)
+
+    cost = np.full((n_tgt, n_ref), fill_value=np.inf)
+    for ti, tp in enumerate(tgt_pts):
+        for ri, rp in enumerate(ref_pts):
+            d = float(np.linalg.norm(tp - rp))
+            if d <= max_dist_px:
+                cost[ti, ri] = d
+
+    sentinel = max_dist_px * 10 * (n_tgt + n_ref + 1)
+    finite_cost = np.where(np.isinf(cost), sentinel, cost)
+    row_ind, col_ind = linear_sum_assignment(finite_cost)
+
+    remap: dict[int, int] = {}
+    for ti, ri in zip(row_ind, col_ind):
+        if cost[ti, ri] <= max_dist_px:
+            remap[unlocked_tgt_ids[ti]] = available_ref_ids[ri]
+
+    max_existing = max(
+        int(ref_labels.max()) if ref_labels.max() > 0 else 0,
+        int(target_labels.max()) if target_labels.max() > 0 else 0,
+    )
+    next_id = max_existing + 1
+    for tid in unlocked_tgt_ids:
+        if tid not in remap:
+            while next_id in locked_target_ids:
+                next_id += 1
+            remap[tid] = next_id
+            next_id += 1
+
+    for tid, new_id in remap.items():
+        result[target_labels == tid] = new_id
+
+    return result
