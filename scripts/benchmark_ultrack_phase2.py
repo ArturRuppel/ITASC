@@ -10,6 +10,7 @@ Usage (from repo root, inside cellflow env):
 Outputs:
     <working_dir>/tracked_labels.tif       — new ILP-tracked labelmap
     <working_dir>/benchmark_report.txt     — per-frame + track-length comparison
+    <working_dir>/run.log                  — full stdout tee
 """
 from __future__ import annotations
 
@@ -18,7 +19,6 @@ import sys
 import time
 from pathlib import Path
 
-import h5py
 import numpy as np
 import tifffile
 
@@ -38,25 +38,27 @@ WORKING_DIR = Path(
 )
 
 
-def _crop_h5_to_n_frames(src: Path, dst: Path, n_frames: int) -> None:
-    """Write a copy of src with only the first n_frames timepoints."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(src, "r") as f_in, h5py.File(dst, "w") as f_out:
-        for attr_key in f_in.attrs:
-            f_out.attrs[attr_key] = f_in.attrs[attr_key]
+class _Tee:
+    """Write to both the original stream and a log file simultaneously."""
 
-        root_in = f_in["hypotheses"]
-        root_out = f_out.require_group("hypotheses")
-        t_keys = sorted(k for k in root_in.keys() if k.startswith("t"))[:n_frames]
-        for t_key in t_keys:
-            t_grp_in = root_in[t_key]
-            t_grp_out = root_out.require_group(t_key)
-            for p_key in t_grp_in.keys():
-                p_grp_in = t_grp_in[p_key]
-                p_grp_out = t_grp_out.require_group(p_key)
-                p_grp_out.create_dataset("labels", data=p_grp_in["labels"][:], compression="gzip", compression_opts=4)
-                for attr_key in p_grp_in.attrs:
-                    p_grp_out.attrs[attr_key] = p_grp_in.attrs[attr_key]
+    def __init__(self, stream, log_path: Path):
+        self._stream = stream
+        self._log = open(log_path, "w", buffering=1)
+
+    def write(self, data):
+        self._stream.write(data)
+        self._log.write(data)
+
+    def flush(self):
+        self._stream.flush()
+        self._log.flush()
+
+    def close(self):
+        self._log.close()
+
+    # Proxy attributes that callers (e.g. tqdm) may inspect
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 
 def _cell_count_per_frame(labels: np.ndarray) -> list[int]:
@@ -119,115 +121,138 @@ def main() -> None:
     wd = WORKING_DIR / f"n{n}_{mode}_{p_tag}_a{args.appear_weight}_mn{args.min_area}"
     wd.mkdir(parents=True, exist_ok=True)
 
-    cropped_h5 = wd / "hypotheses_crop.h5"
     output_tif = wd / "tracked_labels.tif"
     report_path = wd / "benchmark_report.txt"
+    log_path = wd / "run.log"
 
-    print(f"=== Phase 2 Benchmark  (n_frames={n}, linking_mode={mode}) ===")
-    print(f"Working dir: {wd}")
+    # Tee stdout to run.log for the entire run
+    _tee = _Tee(sys.stdout, log_path)
+    sys.stdout = _tee
 
-    # ---- Crop hypotheses -----------------------------------------------
-    print(f"\n[1/5] Cropping hypotheses to first {n} frames …")
-    t0 = time.time()
-    _crop_h5_to_n_frames(HYPOTHESES_H5, cropped_h5, n)
-    print(f"      done in {time.time()-t0:.1f}s  →  {cropped_h5}")
+    try:
+        print(f"=== Phase 2 Benchmark  (n_frames={n}, linking_mode={mode}) ===")
+        print(f"Working dir: {wd}")
 
-    # ---- Ingest -----------------------------------------------------------
-    print("\n[2/5] Ingesting into Ultrack NodeDB …")
-    cfg = TrackingConfig(
-        linking_mode=mode,
-        min_area=args.min_area,
-        appear_weight=args.appear_weight,
-        disappear_weight=args.disappear_weight,
-    )
-    t0 = time.time()
-    ingest_hypotheses_to_db(cropped_h5, wd, cfg, overwrite=True, max_partitions=max_partitions)
-    print(f"      done in {time.time()-t0:.1f}s")
+        timings: dict[str, float] = {}
 
-    # ---- Link ------------------------------------------------------------
-    print("\n[3/5] Linking …")
-    t0 = time.time()
-    for step, total, label in run_linking(wd, cfg):
-        print(f"      [{step}/{total}] {label}")
-    print(f"      done in {time.time()-t0:.1f}s")
+        # ---- Ingest -----------------------------------------------------------
+        print("\n[1/4] Ingesting into Ultrack NodeDB …")
+        cfg = TrackingConfig(
+            linking_mode=mode,
+            min_area=args.min_area,
+            appear_weight=args.appear_weight,
+            disappear_weight=args.disappear_weight,
+        )
+        t0 = time.time()
+        ingest_hypotheses_to_db(
+            HYPOTHESES_H5, wd, cfg,
+            overwrite=True,
+            max_partitions=max_partitions,
+            n_frames=n,
+        )
+        timings["ingest"] = time.time() - t0
+        print(f"      done in {timings['ingest']:.1f}s")
 
-    # ---- Solve -----------------------------------------------------------
-    print("\n[4/5] Solving ILP …")
-    t0 = time.time()
-    for step, total, label in run_solve(wd, cfg):
-        print(f"      [{step}/{total}] {label}")
-    print(f"      done in {time.time()-t0:.1f}s")
+        # ---- Link ------------------------------------------------------------
+        print("\n[2/4] Linking …")
+        t0 = time.time()
+        for step, total, label in run_linking(wd, cfg):
+            print(f"      [{step}/{total}] {label}")
+        timings["link"] = time.time() - t0
+        print(f"      done in {timings['link']:.1f}s")
 
-    # ---- Export ----------------------------------------------------------
-    print("\n[5/5] Exporting tracked labels …")
-    t0 = time.time()
-    new_labels = export_tracked_labels(wd, cfg, output_tif)
-    print(f"      done in {time.time()-t0:.1f}s  →  {output_tif}")
+        # ---- Solve -----------------------------------------------------------
+        print("\n[3/4] Solving ILP …")
+        t0 = time.time()
+        for step, total, label in run_solve(wd, cfg):
+            print(f"      [{step}/{total}] {label}")
+        timings["solve"] = time.time() - t0
+        print(f"      done in {timings['solve']:.1f}s")
 
-    # ---- Ground truth ----------------------------------------------------
-    gt_full = tifffile.imread(str(GROUND_TRUTH_TIF))
-    gt_labels = gt_full[:n]  # first n frames
-    # Handle (T, Z, Y, X) vs (T, Y, X)
-    if gt_labels.ndim == 4 and gt_labels.shape[1] == 1:
-        gt_labels = gt_labels[:, 0]
-    new_labels_2d = new_labels
-    if new_labels_2d.ndim == 4 and new_labels_2d.shape[1] == 1:
-        new_labels_2d = new_labels_2d[:, 0]
+        # ---- Export ----------------------------------------------------------
+        print("\n[4/4] Exporting tracked labels …")
+        t0 = time.time()
+        new_labels = export_tracked_labels(wd, cfg, output_tif)
+        timings["export"] = time.time() - t0
+        print(f"      done in {timings['export']:.1f}s  →  {output_tif}")
 
-    # ---- Compare ---------------------------------------------------------
-    gt_counts = _cell_count_per_frame(gt_labels)
-    new_counts = _cell_count_per_frame(new_labels_2d)
+        timings["total"] = sum(timings.values())
 
-    gt_lengths = _track_lengths(gt_labels)
-    new_lengths = _track_lengths(new_labels_2d)
+        # ---- Ground truth ----------------------------------------------------
+        gt_full = tifffile.imread(str(GROUND_TRUTH_TIF))
+        gt_labels = gt_full[:n]  # first n frames
+        # Handle (T, Z, Y, X) vs (T, Y, X)
+        if gt_labels.ndim == 4 and gt_labels.shape[1] == 1:
+            gt_labels = gt_labels[:, 0]
+        new_labels_2d = new_labels
+        if new_labels_2d.ndim == 4 and new_labels_2d.shape[1] == 1:
+            new_labels_2d = new_labels_2d[:, 0]
 
-    # ILP-selected node counts directly from DB (before export relabeling)
-    import sqlalchemy as sqla
-    from sqlalchemy.orm import Session as _Session
-    from ultrack.core.database import NodeDB as _NodeDB
-    _engine = sqla.create_engine(f"sqlite:///{wd}/data.db")
-    ilp_selected = {}
-    with _Session(_engine) as _s:
-        for _t in range(n):
-            ilp_selected[_t] = _s.query(_NodeDB).filter(
-                _NodeDB.t == _t, _NodeDB.selected == True
-            ).count()
+        # ---- Compare ---------------------------------------------------------
+        gt_counts = _cell_count_per_frame(gt_labels)
+        new_counts = _cell_count_per_frame(new_labels_2d)
 
-    lines = [
-        f"Phase 2 Benchmark  n_frames={n}  linking_mode={mode}",
-        f"  appear_weight={cfg.appear_weight}  disappear_weight={cfg.disappear_weight}",
-        f"  min_area={cfg.min_area}  max_partitions={max_partitions}",
-        "=" * 60,
-        "",
-        "Per-frame cell count (ILP selected vs exported vs GT):",
-        f"  {'t':>4}  {'gt':>6}  {'ilp':>6}  {'exp':>6}  {'diff':>6}",
-        f"  {'-'*4}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}",
-    ]
-    for t in range(n):
-        gt_c  = gt_counts[t] if t < len(gt_counts) else 0
-        new_c = new_counts[t] if t < len(new_counts) else 0
-        ilp_c = ilp_selected.get(t, 0)
-        lines.append(f"  {t:>4}  {gt_c:>6}  {ilp_c:>6}  {new_c:>6}  {new_c-gt_c:>+6}")
+        gt_lengths = _track_lengths(gt_labels)
+        new_lengths = _track_lengths(new_labels_2d)
 
-    mean_gt  = np.mean(gt_counts)  if gt_counts  else 0
-    mean_new = np.mean(new_counts) if new_counts else 0
-    mean_ilp = np.mean(list(ilp_selected.values())) if ilp_selected else 0
-    lines += [
-        f"  {'mean':>4}  {mean_gt:>6.1f}  {mean_ilp:>6.1f}  {mean_new:>6.1f}  {mean_new-mean_gt:>+6.1f}",
-        "",
-        "Track length distribution:",
-        "  Ground truth:",
-        _distribution_summary(gt_lengths),
-        "  New (Ultrack ILP):",
-        _distribution_summary(new_lengths),
-        "",
-        f"Output: {output_tif}",
-    ]
+        # ILP-selected node counts directly from DB (before export relabeling)
+        import sqlalchemy as sqla
+        from sqlalchemy.orm import Session as _Session
+        from ultrack.core.database import NodeDB as _NodeDB
+        _engine = sqla.create_engine(f"sqlite:///{wd}/data.db")
+        ilp_selected = {}
+        with _Session(_engine) as _s:
+            for _t in range(n):
+                ilp_selected[_t] = _s.query(_NodeDB).filter(
+                    _NodeDB.t == _t, _NodeDB.selected == True
+                ).count()
 
-    report = "\n".join(lines)
-    print("\n" + report)
-    report_path.write_text(report)
-    print(f"\nReport saved to {report_path}")
+        lines = [
+            f"Phase 2 Benchmark  n_frames={n}  linking_mode={mode}",
+            f"  appear_weight={cfg.appear_weight}  disappear_weight={cfg.disappear_weight}",
+            f"  min_area={cfg.min_area}  max_partitions={max_partitions}",
+            "=" * 60,
+            "",
+            "Per-frame cell count (ILP selected vs exported vs GT):",
+            f"  {'t':>4}  {'gt':>6}  {'ilp':>6}  {'exp':>6}  {'diff':>6}",
+            f"  {'-'*4}  {'-'*6}  {'-'*6}  {'-'*6}  {'-'*6}",
+        ]
+        for t in range(n):
+            gt_c  = gt_counts[t] if t < len(gt_counts) else 0
+            new_c = new_counts[t] if t < len(new_counts) else 0
+            ilp_c = ilp_selected.get(t, 0)
+            lines.append(f"  {t:>4}  {gt_c:>6}  {ilp_c:>6}  {new_c:>6}  {new_c-gt_c:>+6}")
+
+        mean_gt  = np.mean(gt_counts)  if gt_counts  else 0
+        mean_new = np.mean(new_counts) if new_counts else 0
+        mean_ilp = np.mean(list(ilp_selected.values())) if ilp_selected else 0
+        lines += [
+            f"  {'mean':>4}  {mean_gt:>6.1f}  {mean_ilp:>6.1f}  {mean_new:>6.1f}  {mean_new-mean_gt:>+6.1f}",
+            "",
+            "Track length distribution:",
+            "  Ground truth:",
+            _distribution_summary(gt_lengths),
+            "  New (Ultrack ILP):",
+            _distribution_summary(new_lengths),
+            "",
+            f"Output: {output_tif}",
+            "",
+            "Timing breakdown:",
+            f"  {'stage':<10}  {'seconds':>8}",
+            f"  {'-'*10}  {'-'*8}",
+        ]
+        for stage in ("ingest", "link", "solve", "export", "total"):
+            lines.append(f"  {stage:<10}  {timings[stage]:>8.1f}s")
+
+        report = "\n".join(lines)
+        print("\n" + report)
+        report_path.write_text(report)
+        print(f"\nReport saved to {report_path}")
+        print(f"Run log saved to {log_path}")
+
+    finally:
+        sys.stdout = _tee._stream
+        _tee.close()
 
 
 if __name__ == "__main__":

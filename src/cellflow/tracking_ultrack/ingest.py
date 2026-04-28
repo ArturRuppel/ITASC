@@ -5,9 +5,11 @@ cross-p mask overlaps at the same t become OverlapDB pairs.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import pickle
 from dataclasses import dataclass
+from multiprocessing import cpu_count
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +21,45 @@ from cellflow.database.hypotheses import read_hypothesis_labels
 from cellflow.tracking_ultrack.config import TrackingConfig
 
 LOG = logging.getLogger(__name__)
+
+
+def _canonical_hash(labelmap_2d: np.ndarray) -> bytes:
+    """Return an 8-byte hash that identifies the partition structure of a 2D labelmap.
+
+    Two labelmaps are considered duplicates if they describe the same set of cell
+    regions regardless of how the labels are numbered.  We canonicalize by
+    relabelling in raster-scan order of first pixel occurrence (so the first
+    non-zero label encountered becomes 1, the second becomes 2, etc.) then hashing
+    the resulting byte sequence with BLAKE2b.
+
+    All-zero maps hash identically to each other and correctly to a single entry.
+    No division-by-zero or empty-array edge cases: the max-value check handles both.
+    """
+    flat = labelmap_2d.ravel()
+    max_val = int(flat.max()) if flat.size > 0 else 0
+    if max_val == 0:
+        # All background — hash the zero array directly (shape is already fixed
+        # per frame, so all-zero maps of the same shape produce the same hash).
+        return hashlib.blake2b(flat.tobytes(), digest_size=8).digest()
+
+    # np.unique with return_index gives the first occurrence (in raster order)
+    # for every label value.
+    unique_labels, first_indices = np.unique(flat, return_index=True)
+    # Drop background (0) — it keeps its value (0) in the canonical map.
+    nonzero_mask = unique_labels > 0
+    unique_labels = unique_labels[nonzero_mask]
+    first_indices = first_indices[nonzero_mask]
+
+    # Sort non-zero labels by their first-occurrence position → canonical 1, 2, 3 ...
+    sort_order = np.argsort(first_indices)
+    sorted_labels = unique_labels[sort_order]
+
+    # Build a lookup table: old_label_value → canonical_label_value.
+    lookup = np.zeros(max_val + 1, dtype=np.uint32)
+    lookup[sorted_labels] = np.arange(1, len(sorted_labels) + 1, dtype=np.uint32)
+
+    canonical = lookup[flat]
+    return hashlib.blake2b(canonical.tobytes(), digest_size=8).digest()
 
 
 def _generate_id(index: int, time: int, max_segments: int) -> int:
@@ -200,6 +241,116 @@ def _make_node_pickle(t: int, mask_2d: np.ndarray, bbox: np.ndarray, node_id: in
     return pickle.dumps(node)
 
 
+# ---------------------------------------------------------------------------
+# Worker function for parallel ingest (must be module-level for pickling)
+# ---------------------------------------------------------------------------
+
+def _ingest_frame_worker(args: tuple) -> None:
+    """Process one timepoint and write results to a per-frame temp SQLite DB.
+
+    Called in a subprocess via multiprocessing.Pool.map.  Each worker opens its
+    own HDF5 handle (read-only) and writes a standalone SQLite DB that the main
+    process later bulk-merges into data.db via ATTACH DATABASE.
+
+    Node IDs are timepoint-scoped: _generate_id(index, t, max_segments) =
+    index + (t+1)*max_segments.  Since every frame uses a distinct t, IDs
+    cannot collide across temp DBs.
+    """
+    (
+        t,
+        hypotheses_h5_path,
+        max_segments,
+        eff_min_area,
+        eff_max_area,
+        max_partitions,
+        tmp_db_path_str,
+    ) = args
+
+    import sqlalchemy as _sqla
+    from sqlalchemy.orm import Session as _Session
+    from ultrack.core.database import Base as _Base, NodeDB as _NodeDB, OverlapDB as _OverlapDB
+    import pandas as _pd
+
+    hypotheses_h5 = Path(hypotheses_h5_path)
+    tmp_db_path = Path(tmp_db_path_str)
+
+    # Create isolated temp DB for this frame
+    tmp_engine = _sqla.create_engine(f"sqlite:///{tmp_db_path}")
+    _Base.metadata.create_all(tmp_engine)
+
+    all_partitions = _list_partitions(hypotheses_h5, t)
+    n_raw = len(all_partitions)
+
+    all_records: list[_CellRecord] = []
+    nid_lms: list[np.ndarray] = []
+    index = 1
+
+    # Deduplication — same logic as serial path
+    seen_hashes: set[bytes] = set()
+    n_kept = 0
+    n_dropped = 0
+
+    for p in all_partitions:
+        labels = read_hypothesis_labels(hypotheses_h5, t, p)
+        if labels.ndim == 3 and labels.shape[0] == 1:
+            labels_2d = labels[0]
+        elif labels.ndim == 2:
+            labels_2d = labels
+        else:
+            raise NotImplementedError(f"3D ingestion not yet supported (shape {labels.shape})")
+
+        h = _canonical_hash(labels_2d)
+        if h in seen_hashes:
+            n_dropped += 1
+            continue
+        seen_hashes.add(h)
+
+        if max_partitions is not None and n_kept >= max_partitions:
+            n_dropped += 1
+            continue
+
+        n_kept += 1
+        recs, index = _extract_cell_records_2d(
+            labels_2d, t, p, index, max_segments, eff_min_area, eff_max_area
+        )
+        nid_lm = _build_nid_labelmap(labels_2d, recs)
+        all_records.extend(recs)
+        nid_lms.append(nid_lm)
+
+    overlap_pairs = _compute_overlaps_vectorized(nid_lms)
+
+    # Write Nodes
+    with _Session(tmp_engine) as session:
+        session.bulk_save_objects([
+            _NodeDB(
+                id=rec.node_id,
+                t=t,
+                t_node_id=rec.node_id - (t + 1) * max_segments,
+                t_hier_id=rec.p + 1,
+                z=0,
+                y=rec.y,
+                x=rec.x,
+                area=rec.area,
+                pickle=_make_node_pickle(t, rec.mask, rec.bbox, rec.node_id),
+            )
+            for rec in all_records
+        ])
+        session.commit()
+
+    # Write Overlaps
+    if overlap_pairs:
+        df_overlaps = _pd.DataFrame(overlap_pairs, columns=["node_id", "ancestor_id"])
+        with tmp_engine.begin() as conn:
+            df_overlaps.to_sql(
+                _OverlapDB.__tablename__, conn,
+                if_exists="append", index=False,
+                chunksize=50_000, method="multi",
+            )
+
+    tmp_engine.dispose()
+    return (t, n_raw, n_kept, n_dropped, len(all_records), len(overlap_pairs))
+
+
 def ingest_hypotheses_to_db(
     hypotheses_h5: Path,
     working_dir: Path,
@@ -209,6 +360,8 @@ def ingest_hypotheses_to_db(
     min_area: int | None = None,
     max_area: int | None = None,
     max_partitions: int | None = None,
+    n_frames: int | None = None,
+    n_workers: int | None = None,
 ) -> None:
     """Write v2 hypothesis HDF5 into Ultrack's NodeDB + OverlapDB.
 
@@ -227,8 +380,18 @@ def ingest_hypotheses_to_db(
     max_partitions:
         Cap the number of partitions used per frame. Useful for large sweeps.
         None = use all partitions.
+    n_frames:
+        Limit ingestion to the first ``n_frames`` timepoints from the HDF5.
+        None (default) = all timepoints.
+    n_workers:
+        Number of worker processes for parallel frame ingest.
+        None (default) = min(cpu_count(), n_frames, 8).
+        1 = serial (no subprocess overhead).
     """
-    from ultrack.core.database import Base, NodeDB, OverlapDB, clear_all_data
+    import multiprocessing as _mp
+    import time as _time
+
+    from ultrack.core.database import Base, NodeDB, OverlapDB, clear_all_data  # noqa: F401
 
     hypotheses_h5 = Path(hypotheses_h5)
     working_dir = Path(working_dir)
@@ -247,103 +410,116 @@ def ingest_hypotheses_to_db(
     eff_max_area = max_area if max_area is not None else cfg.max_area
     max_segments = cfg.max_segments_per_time
 
-    timepoints = _list_timepoints(hypotheses_h5)
-    LOG.info(f"Ingesting {len(timepoints)} timepoints from {hypotheses_h5}")
+    all_timepoints = _list_timepoints(hypotheses_h5)
+    if n_frames is not None:
+        timepoints = all_timepoints[:n_frames]
+    else:
+        timepoints = all_timepoints
+    n_total = len(timepoints)
+    LOG.info(f"Ingesting {n_total} timepoints from {hypotheses_h5}")
 
     # Write shape metadata required by the solver: (T, Z, Y, X)
+    # Done in main process (cheap + synchronous) before workers start.
     first_t = timepoints[0]
     first_p = _list_partitions(hypotheses_h5, first_t)[0]
     sample = read_hypothesis_labels(hypotheses_h5, first_t, first_p)
     frame_shape = sample.shape  # (Z, Y, X)
-    full_shape = (len(timepoints),) + frame_shape
+    full_shape = (n_total,) + frame_shape
     ultrack_cfg.data_config.metadata_add({"shape": list(full_shape), "properties": []})
 
-    import time as _time
+    # Determine actual worker count
+    if n_workers is None:
+        n_workers = min(cpu_count(), n_total, 8)
+    n_workers = max(1, n_workers)
+
+    # Temp DB directory — clean up any leftover DBs from a previous crashed run
+    tmp_dir = working_dir / "_tmp_frame_dbs"
+    tmp_dir.mkdir(exist_ok=True)
+    for t in timepoints:
+        stale = tmp_dir / f"frame_{t:04d}.db"
+        stale.unlink(missing_ok=True)
+
+    worker_args = [
+        (
+            t,
+            str(hypotheses_h5),
+            max_segments,
+            eff_min_area,
+            eff_max_area,
+            max_partitions,
+            str(tmp_dir / f"frame_{t:04d}.db"),
+        )
+        for t in timepoints
+    ]
 
     t_start_all = _time.monotonic()
-    n_total = len(timepoints)
 
-    for t_idx, t in enumerate(timepoints):
-        t_frame_start = _time.monotonic()
+    if n_workers > 1:
+        print(f"  Parallel ingest: {n_workers} workers for {n_total} frames …", flush=True)
+        ctx = _mp.get_context("spawn")
+        with ctx.Pool(n_workers) as pool:
+            results = pool.map(_ingest_frame_worker, worker_args)
+    else:
+        print(f"  Serial ingest: {n_total} frames …", flush=True)
+        results = [_ingest_frame_worker(a) for a in worker_args]
 
-        all_partitions = _list_partitions(hypotheses_h5, t)
-        if max_partitions is not None:
-            all_partitions = all_partitions[:max_partitions]
-        n_p = len(all_partitions)
+    t_parallel_done = _time.monotonic()
 
-        print(f"  t={t} ({t_idx+1}/{n_total}) — loading {n_p} partitions …", flush=True)
-
-        all_records: list[_CellRecord] = []
-        nid_lms: list[np.ndarray] = []
-        index = 1
-
-        for p in all_partitions:
-            labels = read_hypothesis_labels(hypotheses_h5, t, p)
-            if labels.ndim == 3 and labels.shape[0] == 1:
-                labels_2d = labels[0]
-            elif labels.ndim == 2:
-                labels_2d = labels
-            else:
-                raise NotImplementedError(f"3D ingestion not yet supported (shape {labels.shape})")
-
-            recs, index = _extract_cell_records_2d(
-                labels_2d, t, p, index, max_segments, eff_min_area, eff_max_area
-            )
-            nid_lm = _build_nid_labelmap(labels_2d, recs)
-            all_records.extend(recs)
-            nid_lms.append(nid_lm)
-
-        t_load = _time.monotonic() - t_frame_start
-        print(f"         {len(all_records)} nodes loaded in {t_load:.1f}s — detecting overlaps …", flush=True)
-
-        t_overlap_start = _time.monotonic()
-        overlap_pairs = _compute_overlaps_vectorized(nid_lms)
-        t_overlap = _time.monotonic() - t_overlap_start
-        print(f"         {len(overlap_pairs)} overlap pairs in {t_overlap:.1f}s — writing to DB …", flush=True)
-
-        t_db_start = _time.monotonic()
-        import pandas as pd
-
-        # Nodes — build pickles and insert via ORM (manageable count)
-        with Session(engine) as session:
-            session.bulk_save_objects([
-                NodeDB(
-                    id=rec.node_id,
-                    t=t,
-                    t_node_id=rec.node_id - (t + 1) * max_segments,
-                    t_hier_id=rec.p + 1,
-                    z=0,
-                    y=rec.y,
-                    x=rec.x,
-                    area=rec.area,
-                    pickle=_make_node_pickle(t, rec.mask, rec.bbox, rec.node_id),
-                )
-                for rec in all_records
-            ])
-            session.commit()
-
-        # Overlaps — use pandas to_sql for large-scale inserts (10–50× faster than ORM)
-        if overlap_pairs:
-            df_overlaps = pd.DataFrame(overlap_pairs, columns=["node_id", "ancestor_id"])
-            with engine.begin() as conn:
-                df_overlaps.to_sql(
-                    OverlapDB.__tablename__, conn,
-                    if_exists="append", index=False,
-                    chunksize=50_000, method="multi",
-                )
-        t_db = _time.monotonic() - t_db_start
-
-        t_frame = _time.monotonic() - t_frame_start
-        elapsed = _time.monotonic() - t_start_all
-        frames_done = t_idx + 1
-        eta_s = elapsed / frames_done * (n_total - frames_done)
-        eta_str = f"{int(eta_s//60)}m{int(eta_s%60):02d}s" if eta_s >= 60 else f"{eta_s:.0f}s"
+    # Print per-frame summary (results arrive in submission order from Pool.map)
+    for res in results:
+        t_val, n_raw, n_kept, n_dropped, n_nodes, n_overlaps = res
         print(
-            f"         DB write {t_db:.1f}s — frame total {t_frame:.1f}s "
-            f"| {frames_done}/{n_total} done, ETA {eta_str}",
+            f"  t={t_val}: {n_kept}/{n_raw} unique partitions "
+            f"(dropped {n_dropped}), {n_nodes} nodes, {n_overlaps} overlaps",
             flush=True,
         )
 
+    # --- Merge temp DBs into main data.db via ATTACH DATABASE ----------------
+    print(f"  Merging {n_total} temp DBs into data.db …", flush=True)
+    t_merge_start = _time.monotonic()
+
+    # Use raw SQLite with isolation_level=None (autocommit) so that explicit
+    # BEGIN/COMMIT transactions do not hold a cross-database lock that would
+    # prevent DETACH after the INSERT.
+    import sqlite3 as _sqlite3
+    main_db_file = str(db_path).replace("sqlite:///", "")
+    conn = _sqlite3.connect(main_db_file, isolation_level=None)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        for t in timepoints:
+            frame_db = str(tmp_dir / f"frame_{t:04d}.db")
+            conn.execute(f"ATTACH DATABASE '{frame_db}' AS frame")
+            conn.execute("BEGIN")
+            conn.execute(f"INSERT INTO {NodeDB.__tablename__} SELECT * FROM frame.{NodeDB.__tablename__}")
+            # OverlapDB has an auto-increment rowid 'id' — exclude it so SQLite
+            # assigns fresh unique rowids in the main DB.
+            conn.execute(
+                f"INSERT INTO {OverlapDB.__tablename__} (node_id, ancestor_id) "
+                f"SELECT node_id, ancestor_id FROM frame.{OverlapDB.__tablename__}"
+            )
+            conn.execute("COMMIT")
+            conn.execute("DETACH DATABASE frame")
+    finally:
+        conn.close()
+
+    t_merge_done = _time.monotonic()
+
+    # Clean up temp DBs
+    for t in timepoints:
+        frame_db = tmp_dir / f"frame_{t:04d}.db"
+        frame_db.unlink(missing_ok=True)
+    try:
+        tmp_dir.rmdir()
+    except OSError:
+        pass  # not empty — leave it
+
     total = _time.monotonic() - t_start_all
-    print(f"  Ingestion complete — {n_total} frames in {total/60:.1f}min", flush=True)
+    parallel_s = t_parallel_done - t_start_all
+    merge_s = t_merge_done - t_parallel_done
+    print(
+        f"  Ingest complete — {n_total} frames in {total/60:.1f}min "
+        f"(parallel={parallel_s:.1f}s, merge={merge_s:.1f}s)",
+        flush=True,
+    )
     LOG.info("Ingestion complete.")
