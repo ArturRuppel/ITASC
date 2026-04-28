@@ -400,10 +400,10 @@ def ingest_hypotheses_to_db(
     ultrack_cfg = _build_ultrack_config(cfg, working_dir)
     db_path = ultrack_cfg.data_config.database_path
 
-    if overwrite:
-        clear_all_data(db_path)
-
     engine = sqla.create_engine(db_path)
+    if overwrite:
+        Base.metadata.create_all(engine)  # ensure tables exist so drop_all doesn't fail on fresh DB
+        clear_all_data(db_path)
     Base.metadata.create_all(engine)
 
     eff_min_area = min_area if min_area is not None else cfg.min_area
@@ -456,7 +456,8 @@ def ingest_hypotheses_to_db(
 
     if n_workers > 1:
         print(f"  Parallel ingest: {n_workers} workers for {n_total} frames …", flush=True)
-        ctx = _mp.get_context("spawn")
+        engine.dispose()  # close inherited connections before fork so children don't share file descriptors
+        ctx = _mp.get_context("fork")
         with ctx.Pool(n_workers) as pool:
             results = pool.map(_ingest_frame_worker, worker_args)
     else:

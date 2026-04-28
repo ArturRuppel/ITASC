@@ -14,6 +14,7 @@ from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
@@ -55,6 +56,11 @@ from cellflow.segmentation import ContourWatershedParams, compute_contour_waters
 from cellflow.tracking import propagate_one_frame
 from cellflow.tracking.propagator_v2 import propagate_one_frame_v2
 from cellflow.tracking.retracker import retrack_frame
+from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
+from cellflow.tracking_ultrack.export import export_tracked_labels
+from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
+from cellflow.tracking_ultrack.linking import run_linking
+from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
 
@@ -490,115 +496,105 @@ class NucleusWorkflowWidget(QWidget):
         )
         layout.addWidget(self.db_section)
 
-        # ── 4. Automated Search ──────────────────────────────────────────
-        _search_inner = QWidget()
-        search_lay = QVBoxLayout(_search_inner)
-        search_lay.setContentsMargins(4, 4, 4, 4)
-        search_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # ── 4. Tracking (Ultrack ILP) ────────────────────────────────────────
+        _tracking_inner = QWidget()
+        tracking_lay = QVBoxLayout(_tracking_inner)
+        tracking_lay.setContentsMargins(4, 4, 4, 4)
+        tracking_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        def _weight_spin(default):
-            w = QDoubleSpinBox()
-            w.setRange(0.0, 10.0)
-            w.setValue(default)
-            w.setSingleStep(0.5)
-            w.setDecimals(1)
-            return w
+        tracking_form = QFormLayout()
+        tracking_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        tracking_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        tracking_form.setHorizontalSpacing(8)
+        tracking_form.setVerticalSpacing(4)
 
-        search_form = QFormLayout()
-        search_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        search_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        search_form.setHorizontalSpacing(8)
-        search_form.setVerticalSpacing(4)
+        self.ultrack_min_area_spin = QSpinBox()
+        self.ultrack_min_area_spin.setRange(0, 100000)
+        self.ultrack_min_area_spin.setValue(300)
+        self.ultrack_min_area_spin.setSingleStep(50)
+        tracking_form.addRow("Min Area (px):", _compact(self.ultrack_min_area_spin, 80))
 
-        self.dist_spin = QDoubleSpinBox()
-        self.dist_spin.setRange(0, 1000)
-        self.dist_spin.setValue(20.0)
-        search_form.addRow("Max Dist (µm):", _compact(self.dist_spin))
+        self.ultrack_max_partitions_spin = QSpinBox()
+        self.ultrack_max_partitions_spin.setRange(0, 1000)
+        self.ultrack_max_partitions_spin.setValue(30)
+        self.ultrack_max_partitions_spin.setToolTip("0 = use all partitions")
+        tracking_form.addRow("Max Partitions/frame:", _compact(self.ultrack_max_partitions_spin, 80))
 
-        self.iou_weight_spin = _weight_spin(1.0)
-        search_form.addRow("IoU Weight:", _compact(self.iou_weight_spin))
+        self.ultrack_n_frames_spin = QSpinBox()
+        self.ultrack_n_frames_spin.setRange(0, 10000)
+        self.ultrack_n_frames_spin.setValue(0)
+        self.ultrack_n_frames_spin.setToolTip("0 = process all frames")
+        tracking_form.addRow("First N frames:", _compact(self.ultrack_n_frames_spin, 80))
 
-        self.area_weight_spin = _weight_spin(1.0)
-        search_form.addRow("Area Weight:", _compact(self.area_weight_spin))
+        self.ultrack_linking_mode_combo = QComboBox()
+        self.ultrack_linking_mode_combo.addItems(["default", "iou"])
+        tracking_form.addRow("Linking Mode:", self.ultrack_linking_mode_combo)
 
-        self.circularity_weight_spin = _weight_spin(1.0)
-        search_form.addRow("Circularity Weight:", _compact(self.circularity_weight_spin))
+        self.ultrack_max_dist_spin = QDoubleSpinBox()
+        self.ultrack_max_dist_spin.setRange(0.0, 500.0)
+        self.ultrack_max_dist_spin.setValue(15.0)
+        self.ultrack_max_dist_spin.setSingleStep(1.0)
+        self.ultrack_max_dist_spin.setDecimals(1)
+        tracking_form.addRow("Max Distance (px):", _compact(self.ultrack_max_dist_spin, 80))
 
-        self.solidity_weight_spin = _weight_spin(1.0)
-        search_form.addRow("Solidity Weight:", _compact(self.solidity_weight_spin))
+        self.ultrack_iou_weight_spin = QDoubleSpinBox()
+        self.ultrack_iou_weight_spin.setRange(0.0, 1.0)
+        self.ultrack_iou_weight_spin.setValue(1.0)
+        self.ultrack_iou_weight_spin.setSingleStep(0.05)
+        self.ultrack_iou_weight_spin.setDecimals(2)
+        tracking_form.addRow("IoU Weight:", _compact(self.ultrack_iou_weight_spin, 80))
 
-        search_lay.addLayout(search_form)
+        self.ultrack_appear_spin = QDoubleSpinBox()
+        self.ultrack_appear_spin.setRange(-10.0, 0.0)
+        self.ultrack_appear_spin.setValue(-0.1)
+        self.ultrack_appear_spin.setSingleStep(0.05)
+        self.ultrack_appear_spin.setDecimals(3)
+        tracking_form.addRow("Appear Penalty:", _compact(self.ultrack_appear_spin, 80))
 
-        prop_row = QHBoxLayout()
-        self.prop_next_btn = QPushButton("Propagate Next")
-        self.prop_all_btn  = QPushButton("Propagate All")
-        self.stop_btn      = QPushButton("Stop")
-        prop_row.addWidget(_compact_btn(self.prop_next_btn))
-        prop_row.addWidget(_compact_btn(self.prop_all_btn))
-        prop_row.addWidget(_compact_btn(self.stop_btn))
-        search_lay.addLayout(prop_row)
+        self.ultrack_disappear_spin = QDoubleSpinBox()
+        self.ultrack_disappear_spin.setRange(-10.0, 0.0)
+        self.ultrack_disappear_spin.setValue(-0.1)
+        self.ultrack_disappear_spin.setSingleStep(0.05)
+        self.ultrack_disappear_spin.setDecimals(3)
+        tracking_form.addRow("Disappear Penalty:", _compact(self.ultrack_disappear_spin, 80))
 
-        save_tracked_row = QHBoxLayout()
+        self.ultrack_solver_lbl = QLabel("—")
+        tracking_form.addRow("Solver:", self.ultrack_solver_lbl)
+
+        tracking_lay.addLayout(tracking_form)
+
+        self.ultrack_resolve_only_check = QCheckBox("Re-solve only (skip ingest + link)")
+        tracking_lay.addWidget(self.ultrack_resolve_only_check)
+
+        ultrack_run_row = QHBoxLayout()
+        self.run_ultrack_btn = QPushButton("Run Ultrack Tracking")
+        self.ultrack_terminal_btn = QPushButton("Run in Terminal")
+        ultrack_run_row.addWidget(_compact_btn(self.run_ultrack_btn))
+        ultrack_run_row.addWidget(_compact_btn(self.ultrack_terminal_btn))
+        tracking_lay.addLayout(ultrack_run_row)
+
+        self.ultrack_progress_bar = QProgressBar()
+        self.ultrack_progress_bar.setRange(0, 100)
+        self.ultrack_progress_bar.setValue(0)
+        self.ultrack_progress_bar.setVisible(False)
+        tracking_lay.addWidget(self.ultrack_progress_bar)
+
+        save_load_row = QHBoxLayout()
         self.save_tracked_btn = QPushButton("Save Tracked Labels")
-        save_tracked_row.addWidget(_compact_btn(self.save_tracked_btn))
-        search_lay.addLayout(save_tracked_row)
-
-        load_tracked_row = QHBoxLayout()
         self.load_tracked_btn = QPushButton("Load Tracked Labels")
-        load_tracked_row.addWidget(_compact_btn(self.load_tracked_btn))
-        search_lay.addLayout(load_tracked_row)
+        save_load_row.addWidget(_compact_btn(self.save_tracked_btn))
+        save_load_row.addWidget(_compact_btn(self.load_tracked_btn))
+        tracking_lay.addLayout(save_load_row)
 
         reassign_row = QHBoxLayout()
         self.reassign_ids_btn = QPushButton("Reassign IDs")
         reassign_row.addWidget(_compact_btn(self.reassign_ids_btn))
-        search_lay.addLayout(reassign_row)
+        tracking_lay.addLayout(reassign_row)
 
-        self.search_section = CollapsibleSection(
-            "4. Automated Search", _search_inner, expanded=False
+        self.tracking_section = CollapsibleSection(
+            "4. Tracking", _tracking_inner, expanded=False
         )
-        layout.addWidget(self.search_section)
-
-        # ── 4b. Automated Search v2 ───────────────────────────────────────
-        _search2_inner = QWidget()
-        search2_lay = QVBoxLayout(_search2_inner)
-        search2_lay.setContentsMargins(4, 4, 4, 4)
-        search2_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        search2_form = QFormLayout()
-        search2_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        search2_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        search2_form.setHorizontalSpacing(8)
-        search2_form.setVerticalSpacing(4)
-
-        self.min_match_iou_spin = QDoubleSpinBox()
-        self.min_match_iou_spin.setRange(0.0, 1.0)
-        self.min_match_iou_spin.setValue(0.1)
-        self.min_match_iou_spin.setSingleStep(0.05)
-        self.min_match_iou_spin.setDecimals(2)
-        search2_form.addRow("Min Match IoU:", _compact(self.min_match_iou_spin))
-
-        self.alpha_spin = QDoubleSpinBox()
-        self.alpha_spin.setRange(0.0, 10.0)
-        self.alpha_spin.setValue(0.3)
-        self.alpha_spin.setSingleStep(0.05)
-        self.alpha_spin.setDecimals(2)
-        search2_form.addRow("Unmatched Penalty (α):", _compact(self.alpha_spin))
-
-        search2_lay.addLayout(search2_form)
-
-        prop2_row = QHBoxLayout()
-        self.prop_next_v2_btn = QPushButton("Propagate Next (v2)")
-        self.prop_all_v2_btn  = QPushButton("Propagate All (v2)")
-        self.stop_v2_btn      = QPushButton("Stop")
-        prop2_row.addWidget(_compact_btn(self.prop_next_v2_btn))
-        prop2_row.addWidget(_compact_btn(self.prop_all_v2_btn))
-        prop2_row.addWidget(_compact_btn(self.stop_v2_btn))
-        search2_lay.addLayout(prop2_row)
-
-        self.search_v2_section = CollapsibleSection(
-            "4b. Automated Search v2", _search2_inner, expanded=False
-        )
-        layout.addWidget(self.search_v2_section)
+        layout.addWidget(self.tracking_section)
 
         # ── 5. Manual Correction ──────────────────────────────────────────
         _corr_inner = QWidget()
@@ -660,18 +656,20 @@ class NucleusWorkflowWidget(QWidget):
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
         self.del_stack_btn.clicked.connect(self._on_remove_stack)
-        self.prop_next_btn.clicked.connect(self._on_propagate_next)
-        self.prop_all_btn.clicked.connect(self._on_propagate_all)
-        self.stop_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
-        self.prop_next_v2_btn.clicked.connect(self._on_propagate_next_v2)
-        self.prop_all_v2_btn.clicked.connect(self._on_propagate_all_v2)
-        self.stop_v2_btn.clicked.connect(lambda: setattr(self, "_stop_flag", True))
+        self.run_ultrack_btn.clicked.connect(self._on_run_ultrack)
+        self.ultrack_terminal_btn.clicked.connect(self._on_ultrack_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
+        self.ultrack_linking_mode_combo.currentTextChanged.connect(self._on_ultrack_mode_changed)
         self.retrack_btn.clicked.connect(self._on_retrack_frame)
         self.validate_btn.toggled.connect(self._on_validate_toggled)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
+        # Set initial state for solver label and IoU weight enablement
+        solver = _select_solver()
+        solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
+        self.ultrack_solver_lbl.setText(solver_display)
+        self._on_ultrack_mode_changed(self.ultrack_linking_mode_combo.currentText())
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public refresh
@@ -715,6 +713,9 @@ class NucleusWorkflowWidget(QWidget):
 
     def _nucleus_zavg_path(self) -> Path | None:
         return self._pos_dir / "0_input" / "nucleus_zavg.tif" if self._pos_dir else None
+
+    def _ultrack_workdir(self) -> Path | None:
+        return self._pos_dir / "2_nucleus" / "ultrack_workdir" if self._pos_dir else None
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -1781,6 +1782,186 @@ class NucleusWorkflowWidget(QWidget):
         self._set_status(f"Reassigned {n_cells} cell IDs to contiguous range 1–{n_cells}. Unsaved.")
 
     # ──────────────────────────────────────────────────────────────────────────
+    # 4. Tracking (Ultrack ILP)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _on_ultrack_mode_changed(self, mode: str) -> None:
+        self.ultrack_iou_weight_spin.setEnabled(mode == "iou")
+
+    def _on_run_ultrack(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_status("Hypothesis DB not found — run the sweep first.")
+            return
+        working_dir = self._ultrack_workdir()
+        tracked_path = self._tracked_path()
+
+        # Capture all widget values before entering the worker closure
+        min_area = self.ultrack_min_area_spin.value()
+        max_partitions_raw = self.ultrack_max_partitions_spin.value()
+        max_partitions = None if max_partitions_raw == 0 else max_partitions_raw
+        n_frames_raw = self.ultrack_n_frames_spin.value()
+        n_frames = None if n_frames_raw == 0 else n_frames_raw
+        max_distance = self.ultrack_max_dist_spin.value()
+        linking_mode = self.ultrack_linking_mode_combo.currentText()
+        iou_weight = self.ultrack_iou_weight_spin.value()
+        appear_weight = self.ultrack_appear_spin.value()
+        disappear_weight = self.ultrack_disappear_spin.value()
+        resolve_only = self.ultrack_resolve_only_check.isChecked()
+
+        cfg = UltrackConfig(
+            min_area=min_area,
+            max_distance=max_distance,
+            linking_mode=linking_mode,
+            iou_weight=iou_weight,
+            appear_weight=appear_weight,
+            disappear_weight=disappear_weight,
+        )
+
+        self.ultrack_progress_bar.setVisible(True)
+        self.ultrack_progress_bar.setValue(0)
+        self._set_status("Starting Ultrack tracking…")
+
+        @thread_worker(connect={
+            "yielded":  self._on_ultrack_progress,
+            "returned": self._on_run_ultrack_done,
+            "errored":  self._on_worker_error,
+        })
+        def _worker():
+            # Stage 1: ingest
+            yield ("ingest", 0, 3, "Ingesting hypotheses…")
+            if not resolve_only:
+                ingest_hypotheses_to_db(
+                    hyp_path, working_dir, cfg,
+                    overwrite=True,
+                    max_partitions=max_partitions,
+                    n_frames=n_frames,
+                )
+
+                # Stage 2: linking (IS a generator — relay each progress tuple)
+                for step, total, label in run_linking(working_dir, cfg):
+                    yield ("link", step, total, label)
+
+            # Stage 3: solve (IS a generator — relay each progress tuple)
+            for step, total, label in run_solve(working_dir, cfg, overwrite=True):
+                yield ("solve", step, total, label)
+
+            # Stage 4: export
+            yield ("export", 0, 1, "Exporting tracked labels…")
+            return export_tracked_labels(working_dir, cfg, tracked_path)
+
+        _worker()
+
+    def _on_ultrack_progress(self, payload: tuple) -> None:
+        stage, step, total, label = payload
+        self._set_status(f"[{stage}] {label}")
+        if total > 0:
+            self.ultrack_progress_bar.setValue(int(100 * step / total))
+
+    def _on_run_ultrack_done(self, labels: np.ndarray | None) -> None:
+        self.ultrack_progress_bar.setVisible(False)
+        if labels is None:
+            self._set_status("Ultrack tracking failed (no output).")
+            return
+        # Normalize (T, 1, Y, X) → (T, Y, X)
+        if labels.ndim == 4 and labels.shape[1] == 1:
+            labels = labels[:, 0]
+        nt = labels.shape[0]
+        if _TRACKED_LAYER in self.viewer.layers:
+            self.viewer.layers[_TRACKED_LAYER].data = labels
+        else:
+            self.viewer.add_labels(labels, name=_TRACKED_LAYER)
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        self.correction_widget.activate_layer(layer)
+        self._set_status(f"Ultrack tracking done: {nt} frame(s). Unsaved.")
+
+    def _on_ultrack_terminal(self) -> None:
+        import sys
+        import tempfile
+
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_status("Hypothesis DB not found — run the sweep first.")
+            return
+        working_dir = self._ultrack_workdir()
+        tracked_path = self._tracked_path()
+
+        # Capture all widget values
+        min_area = self.ultrack_min_area_spin.value()
+        max_partitions_raw = self.ultrack_max_partitions_spin.value()
+        max_partitions = None if max_partitions_raw == 0 else max_partitions_raw
+        n_frames_raw = self.ultrack_n_frames_spin.value()
+        n_frames = None if n_frames_raw == 0 else n_frames_raw
+        max_distance = self.ultrack_max_dist_spin.value()
+        linking_mode = self.ultrack_linking_mode_combo.currentText()
+        iou_weight = self.ultrack_iou_weight_spin.value()
+        appear_weight = self.ultrack_appear_spin.value()
+        disappear_weight = self.ultrack_disappear_spin.value()
+
+        # NOTE: body must live under `if __name__ == "__main__":` because
+        # Ultrack's linker uses spawn-based multiprocessing, which re-executes
+        # this script in each child via runpy with run_name="__mp_main__".
+        # Without the guard, every worker re-runs the full pipeline and races
+        # the parent on the SQLite DB.
+        python_code = (
+            "import sys, pathlib\n"
+            "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
+            "from cellflow.tracking_ultrack.config import TrackingConfig\n"
+            "from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db\n"
+            "from cellflow.tracking_ultrack.linking import run_linking\n"
+            "from cellflow.tracking_ultrack.solve import run_solve\n"
+            "from cellflow.tracking_ultrack.export import export_tracked_labels\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            f"    hyp_path    = pathlib.Path({str(hyp_path)!r})\n"
+            f"    working_dir = pathlib.Path({str(working_dir)!r})\n"
+            f"    tracked_path= pathlib.Path({str(tracked_path)!r})\n"
+            f"    cfg = TrackingConfig(\n"
+            f"        min_area={min_area},\n"
+            f"        max_distance={max_distance},\n"
+            f"        linking_mode={linking_mode!r},\n"
+            f"        iou_weight={iou_weight},\n"
+            f"        appear_weight={appear_weight},\n"
+            f"        disappear_weight={disappear_weight},\n"
+            f"    )\n"
+            f"    max_partitions = {max_partitions!r}\n"
+            f"    n_frames       = {n_frames!r}\n"
+            "    print('[1/4] Ingesting…', flush=True)\n"
+            "    ingest_hypotheses_to_db(hyp_path, working_dir, cfg, overwrite=True,\n"
+            "        max_partitions=max_partitions, n_frames=n_frames)\n"
+            "    print('[2/4] Linking…', flush=True)\n"
+            "    for step, total, label in run_linking(working_dir, cfg):\n"
+            "        print(f'  [{step}/{total}] {label}', flush=True)\n"
+            "    print('[3/4] Solving ILP…', flush=True)\n"
+            "    for step, total, label in run_solve(working_dir, cfg, overwrite=True):\n"
+            "        print(f'  [{step}/{total}] {label}', flush=True)\n"
+            "    print('[4/4] Exporting…', flush=True)\n"
+            "    labels = export_tracked_labels(working_dir, cfg, tracked_path)\n"
+            f"    print(f'Done — {{labels.shape}} written to {{tracked_path}}', flush=True)\n"
+        )
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", prefix="cellflow_ultrack_", delete=False
+        ) as tmp:
+            tmp.write(python_code)
+            tmp_path = tmp.name
+
+        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(tmp_path)}"
+        try:
+            from cellflow.napari.utils import launch_in_terminal
+            launch_in_terminal(cmd)
+            self._set_status("Ultrack command launched in terminal.")
+        except Exception:
+            QApplication.clipboard().setText(cmd)
+            self._set_status("Copied Ultrack command to clipboard (terminal launch unavailable).")
+
+    # ──────────────────────────────────────────────────────────────────────────
     # 5. Manual correction
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -1838,7 +2019,7 @@ class NucleusWorkflowWidget(QWidget):
         ref_labels = np.asarray(layer.data[t_ref])
         tgt_labels = np.asarray(layer.data[t])
 
-        remapped = retrack_frame(ref_labels, tgt_labels, max_dist_px=self.dist_spin.value())
+        remapped = retrack_frame(ref_labels, tgt_labels, max_dist_px=20.0)
         new_ids = set(int(i) for i in np.unique(remapped) if i != 0)
         ref_ids = set(int(i) for i in np.unique(ref_labels) if i != 0)
         n_matched = len(new_ids & ref_ids)
@@ -1854,6 +2035,7 @@ class NucleusWorkflowWidget(QWidget):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _on_worker_error(self, exc: Exception) -> None:
+        self.ultrack_progress_bar.setVisible(False)
         self._set_status(f"Error: {exc}")
         logger.exception("Worker error", exc_info=exc)
 
@@ -1903,16 +2085,16 @@ class NucleusWorkflowWidget(QWidget):
                 "ridge_threshold": self.db_ridge_thr_spin.value(),
                 "run_index":      self.db_run_spin.value(),
             },
-            "search": {
-                "max_dist_um":          self.dist_spin.value(),
-                "iou_weight":           self.iou_weight_spin.value(),
-                "area_weight":          self.area_weight_spin.value(),
-                "circularity_weight":   self.circularity_weight_spin.value(),
-                "solidity_weight":      self.solidity_weight_spin.value(),
-            },
-            "search_v2": {
-                "min_match_iou":  self.min_match_iou_spin.value(),
-                "alpha":          self.alpha_spin.value(),
+            "ultrack": {
+                "min_area":         self.ultrack_min_area_spin.value(),
+                "max_partitions":   self.ultrack_max_partitions_spin.value(),
+                "n_frames":         self.ultrack_n_frames_spin.value(),
+                "max_distance":     self.ultrack_max_dist_spin.value(),
+                "linking_mode":     self.ultrack_linking_mode_combo.currentText(),
+                "iou_weight":       self.ultrack_iou_weight_spin.value(),
+                "appear_weight":    self.ultrack_appear_spin.value(),
+                "disappear_weight": self.ultrack_disappear_spin.value(),
+                "resolve_only":     self.ultrack_resolve_only_check.isChecked(),
             },
         }
 
@@ -1962,13 +2144,20 @@ class NucleusWorkflowWidget(QWidget):
             if "ridge_threshold" in db: self.db_ridge_thr_spin.setValue(db["ridge_threshold"])
             if "run_index"       in db: self.db_run_spin.setValue(db["run_index"])
         if "search" in state:
-            se = state["search"]
-            if "max_dist_um"        in se: self.dist_spin.setValue(se["max_dist_um"])
-            if "iou_weight"         in se: self.iou_weight_spin.setValue(se["iou_weight"])
-            if "area_weight"        in se: self.area_weight_spin.setValue(se["area_weight"])
-            if "circularity_weight" in se: self.circularity_weight_spin.setValue(se["circularity_weight"])
-            if "solidity_weight"    in se: self.solidity_weight_spin.setValue(se["solidity_weight"])
+            pass  # Old propagator state — silently skip
         if "search_v2" in state:
-            sv = state["search_v2"]
-            if "min_match_iou" in sv: self.min_match_iou_spin.setValue(sv["min_match_iou"])
-            if "alpha"         in sv: self.alpha_spin.setValue(sv["alpha"])
+            pass  # Old propagator v2 state — silently skip
+        if "ultrack" in state:
+            ul = state["ultrack"]
+            if "min_area"         in ul: self.ultrack_min_area_spin.setValue(ul["min_area"])
+            if "max_partitions"   in ul: self.ultrack_max_partitions_spin.setValue(ul["max_partitions"])
+            if "n_frames"         in ul: self.ultrack_n_frames_spin.setValue(ul["n_frames"])
+            if "max_distance"     in ul: self.ultrack_max_dist_spin.setValue(ul["max_distance"])
+            if "linking_mode"     in ul:
+                idx = self.ultrack_linking_mode_combo.findText(ul["linking_mode"])
+                if idx >= 0:
+                    self.ultrack_linking_mode_combo.setCurrentIndex(idx)
+            if "iou_weight"       in ul: self.ultrack_iou_weight_spin.setValue(ul["iou_weight"])
+            if "appear_weight"    in ul: self.ultrack_appear_spin.setValue(ul["appear_weight"])
+            if "disappear_weight" in ul: self.ultrack_disappear_spin.setValue(ul["disappear_weight"])
+            if "resolve_only"     in ul: self.ultrack_resolve_only_check.setChecked(ul["resolve_only"])
