@@ -628,6 +628,8 @@ class NucleusWorkflowWidget(QWidget):
         retrack_row.addWidget(_compact_btn(self.retrack_btn))
         self.retrack_stack_btn = QPushButton("Retrack Stack")
         retrack_row.addWidget(_compact_btn(self.retrack_stack_btn))
+        self.retrack_from_here_btn = QPushButton("Retrack from here")
+        retrack_row.addWidget(_compact_btn(self.retrack_from_here_btn))
         _corr_inner_lay.addLayout(retrack_row)
 
         resolve_row = QHBoxLayout()
@@ -698,6 +700,7 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_linking_mode_combo.currentTextChanged.connect(self._on_ultrack_mode_changed)
         self.retrack_btn.clicked.connect(self._on_retrack_frame)
         self.retrack_stack_btn.clicked.connect(self._on_retrack_stack)
+        self.retrack_from_here_btn.clicked.connect(self._on_retrack_from_here)
         self.resolve_validated_btn.clicked.connect(self._on_resolve_with_validation)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
         self.viewer.bind_key("V", self._kb_toggle_cell_validation, overwrite=True)
@@ -2003,6 +2006,46 @@ class NucleusWorkflowWidget(QWidget):
         layer.data = stack
         self._set_status(
             f"Retracked stack: {n_retracked} frame(s) updated, "
+            f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
+        )
+
+    def _on_retrack_from_here(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded.")
+            return
+
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim != 3 or layer.data.shape[0] < 2:
+            self._set_status("Tracked layer must be a stack of at least 2 frames.")
+            return
+
+        t0 = int(self.viewer.dims.current_step[0])
+        if t0 >= layer.data.shape[0] - 1:
+            self._set_status("Already at last frame — nothing to retrack forward.")
+            return
+
+        T = layer.data.shape[0]
+        stack = layer.data.copy()
+        fully_validated = read_validated_frames(self._pos_dir)
+
+        n_retracked = 0
+        n_skipped = 0
+        for t in range(t0 + 1, T):
+            if t in fully_validated:
+                n_skipped += 1
+                continue
+            ref = stack[t - 1]
+            tgt = stack[t]
+            locked = read_validated_cells_at_frame(self._pos_dir, t)
+            stack[t] = retrack_frame_constrained(ref, tgt, locked, max_dist_px=20.0)
+            n_retracked += 1
+
+        layer.data = stack
+        self._set_status(
+            f"Retracked from frame {t0 + 1}: {n_retracked} frame(s) updated, "
             f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
         )
 
