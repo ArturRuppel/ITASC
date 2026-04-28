@@ -15,12 +15,19 @@ _LABEL_DTYPE = np.uint32
 
 
 def _load_stack(path: Path) -> np.ndarray:
-    """Load the TIFF as (T, Y, X). Returns empty array if file does not exist."""
+    """Load the TIFF as (T, Y, X). Returns empty array if file does not exist.
+
+    Tolerates legacy files written with a singleton Z axis: ``(T, 1, Y, X)``
+    is squeezed to ``(T, Y, X)`` so the in-memory shape always matches the
+    documented schema.
+    """
     if not path.exists():
         return np.empty((0, 0, 0), dtype=_LABEL_DTYPE)
     stack = np.asarray(tifffile.imread(str(path)), dtype=_LABEL_DTYPE)
     if stack.ndim == 2:
         stack = stack[np.newaxis]
+    elif stack.ndim == 4 and stack.shape[1] == 1:
+        stack = stack[:, 0]
     return stack
 
 

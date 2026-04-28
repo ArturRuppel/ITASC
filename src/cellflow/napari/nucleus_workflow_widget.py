@@ -45,16 +45,18 @@ from cellflow.database.tracked import (
     write_tracked_frame,
 )
 from cellflow.database.validation import (
-    invalidate_frame,
+    invalidate_cells,
+    is_frame_fully_validated,
     is_validated,
+    read_all_validated_cells,
+    read_validated_cells,
     read_validated_frames,
-    validate_frame,
+    validate_all_cells_in_frame,
+    validate_cells,
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
-from cellflow.tracking import propagate_one_frame
-from cellflow.tracking.propagator_v2 import propagate_one_frame_v2
 from cellflow.tracking.retracker import retrack_frame
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.export import export_tracked_labels
@@ -67,6 +69,7 @@ logger = logging.getLogger(__name__)
 _PREVIEW_LAYER = "Preview: Nucleus"
 _HYP_LAYER = "Hypothesis: Nucleus"
 _TRACKED_LAYER = "Tracked: Nucleus"
+_VALIDATED_OVERLAY = "Validated: Nucleus"
 _CONTOUR_LAYER = "Contour Map: Nucleus"
 _CELL_ZAVG_LAYER = "Cell z-avg"
 _NUC_ZAVG_LAYER = "Nucleus z-avg"
@@ -610,11 +613,16 @@ class NucleusWorkflowWidget(QWidget):
         retrack_row.addWidget(_compact_btn(self.validate_btn))
         _corr_inner_lay.addLayout(retrack_row)
 
+        self.validation_counter_lbl = QLabel("")
+        self.validation_counter_lbl.setWordWrap(True)
+        _corr_inner_lay.addWidget(self.validation_counter_lbl)
+
         self.correction_widget = CorrectionWidget(
             self.viewer,
             show_activate_btn=False,
             inspector_first=True,
         )
+        self.correction_widget.set_edit_callback(self._on_cells_edited)
         _corr_inner_lay.addWidget(self.correction_widget)
 
         self.correction_section = CollapsibleSection(
@@ -665,6 +673,8 @@ class NucleusWorkflowWidget(QWidget):
         self.retrack_btn.clicked.connect(self._on_retrack_frame)
         self.validate_btn.toggled.connect(self._on_validate_toggled)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
+        self.viewer.bind_key("V", self._kb_toggle_cell_validation, overwrite=True)
+        self.viewer.bind_key("Ctrl-Shift-V", self._kb_toggle_frame_validation, overwrite=True)
         # Set initial state for solver label and IoU weight enablement
         solver = _select_solver()
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
@@ -685,6 +695,8 @@ class NucleusWorkflowWidget(QWidget):
             return
         self._refresh_db_browser()
         self._refresh_validate_btn()
+        self._refresh_validated_overlay()
+        self._refresh_validation_counter()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Path helpers
@@ -1479,213 +1491,6 @@ class NucleusWorkflowWidget(QWidget):
     # 4. Automated search / propagation
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _on_propagate_next(self) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_status("No hypothesis DB found.")
-            return
-
-        if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded. Set a seed first.")
-            return
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        if layer.data.ndim != 3:
-            self._set_status("Tracked layer is not a 3D stack.")
-            return
-
-        t = self._current_t()
-        if t >= layer.data.shape[0]:
-            self._set_status(f"No tracked frame at t={t}. Set a seed first.")
-            return
-
-        current_labels = np.asarray(layer.data[t])
-        prev_labels = np.asarray(layer.data[t - 1]) if t > 0 else None
-
-        try:
-            next_frame, winner = propagate_one_frame(
-                hyp_path, current_labels, t + 1, prev_labels,
-                max_dist_px=self.dist_spin.value(),
-                iou_weight=self.iou_weight_spin.value(),
-                area_weight=self.area_weight_spin.value(),
-                circularity_weight=self.circularity_weight_spin.value(),
-                solidity_weight=self.solidity_weight_spin.value(),
-            )
-        except Exception as e:
-            self._set_status(f"Propagation failed: {e}")
-            return
-
-        if next_frame is None:
-            self._set_status(f"No suitable hypothesis found for t={t + 1}.")
-            return
-
-        self._update_tracked_display(next_frame, t=t + 1)
-        step = list(self.viewer.dims.current_step)
-        step[0] = t + 1
-        self.viewer.dims.current_step = tuple(step)
-        self._set_status(f"Propagated t={t}→{t + 1} using p={winner}. Unsaved.")
-
-    def _on_propagate_all(self) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_status("No hypothesis DB found.")
-            return
-
-        if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded. Set a seed first.")
-            return
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        if layer.data.ndim != 3:
-            self._set_status("Tracked layer is not a 3D stack.")
-            return
-
-        t_start = self._current_t()
-        if t_start >= layer.data.shape[0]:
-            self._set_status(f"No tracked frame at t={t_start}. Set a seed first.")
-            return
-
-        # Snapshot starting frames from the viewer layer before entering the thread.
-        initial_labels = np.asarray(layer.data[t_start])
-        prev_labels    = np.asarray(layer.data[t_start - 1]) if t_start > 0 else None
-
-        max_dist  = self.dist_spin.value()
-        iou_w     = self.iou_weight_spin.value()
-        area_w    = self.area_weight_spin.value()
-        circ_w    = self.circularity_weight_spin.value()
-        sol_w     = self.solidity_weight_spin.value()
-        self._stop_flag = False
-
-        @thread_worker(connect={"yielded": self._on_prop_progress, "finished": self._on_prop_done, "errored": self._on_worker_error})
-        def _worker():
-            current = initial_labels
-            prev    = prev_labels
-            t = t_start
-            while not self._stop_flag:
-                next_frame, winner = propagate_one_frame(
-                    hyp_path, current, t + 1, prev,
-                    max_dist_px=max_dist,
-                    iou_weight=iou_w,
-                    area_weight=area_w,
-                    circularity_weight=circ_w,
-                    solidity_weight=sol_w,
-                )
-                if next_frame is None:
-                    yield (t, None, None)
-                    break
-                yield (t, next_frame, winner)
-                prev    = current
-                current = next_frame
-                t += 1
-
-        self._set_status("Propagating…")
-        _worker()
-
-    def _on_prop_progress(self, result: tuple[int, np.ndarray | None, int | None]) -> None:
-        t, next_frame, winner = result
-        if next_frame is None:
-            self._set_status(f"Propagation stopped at t={t}: no suitable hypothesis.")
-        else:
-            self._set_status(f"Propagated t={t}→{t + 1} (p={winner}). Unsaved.")
-            self._update_tracked_display(next_frame, t=t + 1)
-            step = list(self.viewer.dims.current_step)
-            step[0] = t + 1
-            self.viewer.dims.current_step = tuple(step)
-
-    def _on_prop_done(self) -> None:
-        self._set_status("Propagation complete.")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # 4b. Automated search v2 / propagation
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def _on_propagate_next_v2(self) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_status("No hypothesis DB found.")
-            return
-
-        if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded. Set a seed first.")
-            return
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        if layer.data.ndim != 3:
-            self._set_status("Tracked layer is not a 3D stack.")
-            return
-
-        t = self._current_t()
-        if t >= layer.data.shape[0]:
-            self._set_status(f"No tracked frame at t={t}. Set a seed first.")
-            return
-
-        current_labels = np.asarray(layer.data[t])
-
-        try:
-            next_frame, winner = propagate_one_frame_v2(
-                hyp_path, current_labels, t + 1,
-                prev_labels=None,
-                min_match_iou=self.min_match_iou_spin.value(),
-                alpha=self.alpha_spin.value(),
-            )
-        except Exception as e:
-            self._set_status(f"Propagation (v2) failed: {e}")
-            return
-
-        if next_frame is None:
-            self._set_status(f"No suitable hypothesis found for t={t + 1} (v2).")
-            return
-
-        self._update_tracked_display(next_frame, t=t + 1)
-        step = list(self.viewer.dims.current_step)
-        step[0] = t + 1
-        self.viewer.dims.current_step = tuple(step)
-        self._set_status(f"Propagated t={t}→{t + 1} via v2 (p={winner}). Unsaved.")
-
-    def _on_propagate_all_v2(self) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_status("No hypothesis DB found.")
-            return
-
-        if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded. Set a seed first.")
-            return
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        if layer.data.ndim != 3:
-            self._set_status("Tracked layer is not a 3D stack.")
-            return
-
-        t_start = self._current_t()
-        if t_start >= layer.data.shape[0]:
-            self._set_status(f"No tracked frame at t={t_start}. Set a seed first.")
-            return
-
-        # Snapshot starting frame from the viewer layer before entering the thread.
-        initial_labels = np.asarray(layer.data[t_start])
-
-        min_iou = self.min_match_iou_spin.value()
-        alpha   = self.alpha_spin.value()
-        self._stop_flag = False
-
-        @thread_worker(connect={"yielded": self._on_prop_progress, "finished": self._on_prop_done, "errored": self._on_worker_error})
-        def _worker():
-            current = initial_labels
-            t = t_start
-            while not self._stop_flag:
-                next_frame, winner = propagate_one_frame_v2(
-                    hyp_path, current, t + 1,
-                    prev_labels=None,
-                    min_match_iou=min_iou,
-                    alpha=alpha,
-                )
-                if next_frame is None:
-                    yield (t, None, None)
-                    break
-                yield (t, next_frame, winner)
-                current = next_frame
-                t += 1
-
-        self._set_status("Propagating (v2)…")
-        _worker()
-
     def _on_save_tracked(self) -> None:
         tracked_path = self._tracked_path()
         if tracked_path is None:
@@ -1967,15 +1772,124 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_dims_step_changed(self, event=None) -> None:
         self._refresh_validate_btn()
+        self._refresh_validated_overlay()
+        self._refresh_validation_counter()
+
+    @staticmethod
+    def _frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:
+        """Return a 2D (Y, X) view of frame t from a (T, Y, X) or (T, 1, Y, X) stack."""
+        if arr.ndim < 3 or t < 0 or t >= arr.shape[0]:
+            return None
+        v = arr[t]
+        while v.ndim > 2:
+            if v.shape[0] != 1:
+                return None
+            v = v[0]
+        return v
+
+    def _current_cell_ids(self, t: int) -> set[int]:
+        """Return the set of non-zero cell IDs in the tracked layer at frame t."""
+        if _TRACKED_LAYER not in self.viewer.layers:
+            return set()
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        frame = self._frame_view_2d(layer.data, t)
+        if frame is None:
+            return set()
+        return set(int(v) for v in np.unique(frame)) - {0}
+
+    def _refresh_validated_overlay(self) -> None:
+        """Rebuild the green overlay layer from current frame's validated cells."""
+        if self._pos_dir is None or _TRACKED_LAYER not in self.viewer.layers:
+            if _VALIDATED_OVERLAY in self.viewer.layers:
+                self.viewer.layers.remove(self.viewer.layers[_VALIDATED_OVERLAY])
+            return
+        tracked = self.viewer.layers[_TRACKED_LAYER]
+        if tracked.data.ndim < 3:
+            return
+        t = self._current_t()
+        if t >= tracked.data.shape[0]:
+            return
+        frame = self._frame_view_2d(tracked.data, t)
+        if frame is None:
+            return
+        validated_ids = read_validated_cells(self._pos_dir, t)
+        overlay_exists = _VALIDATED_OVERLAY in self.viewer.layers
+        if not validated_ids and not overlay_exists:
+            # Nothing to draw and no overlay yet — skip creating one. This avoids
+            # adding a layer during napari's own layer-insertion event chain
+            # (which would re-enter and crash vispy's _reorder_layers).
+            return
+        if validated_ids:
+            mask2d = np.isin(frame, list(validated_ids)).astype(np.uint8)
+        else:
+            mask2d = np.zeros(frame.shape, dtype=np.uint8)
+        full = np.zeros(tracked.data.shape, dtype=np.uint8)
+        full[t] = mask2d
+        if overlay_exists:
+            self.viewer.layers[_VALIDATED_OVERLAY].data = full
+        else:
+            from qtpy.QtCore import QTimer
+            # Defer the add so we don't run inside napari's insert-event chain.
+            QTimer.singleShot(0, lambda data=full: self._add_validated_overlay(data))
+
+    def _add_validated_overlay(self, data: np.ndarray) -> None:
+        if _VALIDATED_OVERLAY in self.viewer.layers:
+            self.viewer.layers[_VALIDATED_OVERLAY].data = data
+            return
+        ov = self.viewer.add_labels(data, name=_VALIDATED_OVERLAY, opacity=0.5)
+        # Single-color colormap: id 1 → green
+        try:
+            ov.color = {1: "green"}
+            ov.color_mode = "direct"
+        except Exception:
+            pass
+        # Send the active layer back to tracked so corrections still target it.
+        if _TRACKED_LAYER in self.viewer.layers:
+            self.viewer.layers.selection.active = self.viewer.layers[_TRACKED_LAYER]
+
+    def _refresh_validation_counter(self) -> None:
+        """Update '23/187 cells validated, 4/30 frames complete' label."""
+        if self._pos_dir is None or _TRACKED_LAYER not in self.viewer.layers:
+            self.validation_counter_lbl.setText("")
+            return
+        tracked = self.viewer.layers[_TRACKED_LAYER]
+        if tracked.data.ndim < 3:
+            self.validation_counter_lbl.setText("")
+            return
+        t = self._current_t()
+        if t >= tracked.data.shape[0]:
+            self.validation_counter_lbl.setText("")
+            return
+        current_ids = self._current_cell_ids(t)
+        validated_ids = read_validated_cells(self._pos_dir, t) & current_ids
+        n_total = len(current_ids)
+        n_val = len(validated_ids)
+        n_frames_total = int(tracked.data.shape[0])
+        n_frames_complete = len(read_validated_frames(self._pos_dir))
+        self.validation_counter_lbl.setText(
+            f"{n_val}/{n_total} cells validated, {n_frames_complete}/{n_frames_total} frames complete"
+        )
+
+    def _on_cells_edited(self, t: int, changed_ids: set[int]) -> None:
+        """Callback registered with CorrectionWidget. Invalidate any edited cell IDs."""
+        if self._pos_dir is None:
+            return
+        invalidate_cells(self._pos_dir, t, changed_ids)
+        self._refresh_validated_overlay()
+        self._refresh_validate_btn()
+        self._refresh_validation_counter()
 
     def _refresh_validate_btn(self) -> None:
         if self._pos_dir is None:
+            self.validate_btn.blockSignals(True)
             self.validate_btn.setChecked(False)
+            self.validate_btn.blockSignals(False)
             return
         t = self._current_t()
-        validated = is_validated(self._pos_dir, t)
+        current = self._current_cell_ids(t)
+        fully = is_frame_fully_validated(self._pos_dir, t, current) if current else False
         self.validate_btn.blockSignals(True)
-        self.validate_btn.setChecked(validated)
+        self.validate_btn.setChecked(fully)
         self.validate_btn.blockSignals(False)
 
     def _on_validate_toggled(self, checked: bool) -> None:
@@ -1983,12 +1897,62 @@ class NucleusWorkflowWidget(QWidget):
             self._set_status("No project open.")
             return
         t = self._current_t()
+        current = self._current_cell_ids(t)
         if checked:
-            validate_frame(self._pos_dir, t)
-            self._set_status(f"Frame t={t} marked as validated.")
+            validate_all_cells_in_frame(self._pos_dir, t, current)
+            self._set_status(f"Frame t={t}: validated {len(current)} cell(s).")
         else:
-            invalidate_frame(self._pos_dir, t)
-            self._set_status(f"Frame t={t} validation removed.")
+            invalidate_cells(self._pos_dir, t, current)
+            self._set_status(f"Frame t={t}: validation cleared.")
+        self._refresh_validated_overlay()
+        self._refresh_validation_counter()
+
+    def _frames_with_cell(self, cell_id: int) -> list[int]:
+        """Return sorted list of frame indices where cell_id is present in the tracked layer."""
+        if cell_id == 0 or _TRACKED_LAYER not in self.viewer.layers:
+            return []
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        if layer.data.ndim < 3:
+            return []
+        # Compare on the whole stack at once — np.any over the spatial axes is cheap.
+        nt = layer.data.shape[0]
+        spatial_axes = tuple(range(1, layer.data.ndim))
+        present = np.any(layer.data == cell_id, axis=spatial_axes)
+        return [int(t) for t in np.where(present)[0]]
+
+    def _kb_toggle_cell_validation(self, _viewer) -> None:
+        if self._pos_dir is None:
+            return
+        sel = self.correction_widget._selected_label
+        if not sel:
+            self._set_status("Validation toggle: no cell selected (left-click a cell first).")
+            return
+        t = self._current_t()
+        if sel not in self._current_cell_ids(t):
+            self._set_status(f"Cell {sel} not present at t={t}.")
+            return
+        frames = self._frames_with_cell(sel)
+        if not frames:
+            return
+        currently_validated = sel in read_validated_cells(self._pos_dir, t)
+        if currently_validated:
+            for tf in frames:
+                invalidate_cells(self._pos_dir, tf, [sel])
+            self._set_status(f"Cell {sel} invalidated across {len(frames)} frame(s).")
+        else:
+            for tf in frames:
+                validate_cells(self._pos_dir, tf, [sel])
+                # If validating this cell completes the frame, also mark the cache.
+                tf_ids = self._current_cell_ids(tf)
+                if tf_ids and is_frame_fully_validated(self._pos_dir, tf, tf_ids):
+                    validate_all_cells_in_frame(self._pos_dir, tf, tf_ids)
+            self._set_status(f"Cell {sel} validated across {len(frames)} frame(s).")
+        self._refresh_validated_overlay()
+        self._refresh_validate_btn()
+        self._refresh_validation_counter()
+
+    def _kb_toggle_frame_validation(self, _viewer) -> None:
+        self.validate_btn.toggle()  # this triggers _on_validate_toggled via the signal
 
     def _on_retrack_frame(self) -> None:
         if self._pos_dir is None:

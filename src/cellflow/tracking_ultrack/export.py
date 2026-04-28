@@ -30,6 +30,8 @@ def export_tracked_labels(
         if hasattr(labels, "compute"):
             labels = labels.compute()
         labels = np.asarray(labels, dtype=np.uint32)
+        if labels.ndim == 4 and labels.shape[1] == 1:
+            labels = labels[:, 0]
         tifffile.imwrite(str(output_path), labels, compression="zlib")
         return labels
     except Exception:
@@ -50,6 +52,8 @@ def export_tracked_labels(
             raise RuntimeError("CTC export produced no mask files.")
         frames = [tifffile.imread(str(f)) for f in mask_files]
         labels = np.stack(frames, axis=0).astype(np.uint32)
+        if labels.ndim == 4 and labels.shape[1] == 1:
+            labels = labels[:, 0]
         tifffile.imwrite(str(output_path), labels, compression="zlib")
         return labels
     finally:

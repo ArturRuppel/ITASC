@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Callable
 
 import napari
 import napari.layers
@@ -43,16 +44,6 @@ _DRAW_LAYER      = "CorrectionDraw"
 _HIGHLIGHT_LAYER = "CellHighlight"
 
 
-def _record_history(layer, t: int, before: np.ndarray) -> None:
-    """Push changed pixels in frame *t* onto napari's undo stack."""
-    after = layer.data[t]
-    changed = np.where(before != after)
-    if not changed[0].size:
-        return
-    indices = (np.full(changed[0].size, t, dtype=layer.data.dtype), *changed)
-    layer._save_history((indices, before[changed], after[changed]))
-
-
 class CorrectionWidget(QWidget):
     """Dock widget for interactive label correction."""
 
@@ -87,6 +78,8 @@ class CorrectionWidget(QWidget):
 
         self._saved_viewer_drag_cbs: list = []
         self._saved_layer_mode: str = "pan_zoom"
+
+        self._edit_callback: Callable[[int, set[int]], None] | None = None
 
         self._setup_ui()
 
@@ -319,6 +312,49 @@ class CorrectionWidget(QWidget):
         colour = "red" if error else "palette(mid)"
         self._status.setStyleSheet(f"color: {colour}; font-style: italic;")
 
+    def set_edit_callback(self, fn: Callable[[int, set[int]], None] | None) -> None:
+        """Register a callback fired after every successful edit.
+        Signature: fn(t: int, changed_ids: set[int]) -> None.
+        Pass None to clear."""
+        self._edit_callback = fn
+
+    @staticmethod
+    def _frame_view(layer, t: int) -> np.ndarray:
+        """Return a 2D writable view of frame *t* (squeezes singleton leading dims)."""
+        v = layer.data[t]
+        while v.ndim > 2:
+            if v.shape[0] != 1:
+                raise ValueError(f"non-singleton dim in frame slice: shape={v.shape}")
+            v = v[0]
+        return v
+
+    def _record_history(self, layer, t: int, before: np.ndarray) -> None:
+        """Push changed pixels in frame *t* onto napari's undo stack and fire edit callback.
+
+        ``before`` is a 2D snapshot of the frame; supports 3D and 4D underlying layers.
+        """
+        after = self._frame_view(layer, t)
+        changed = np.where(before != after)
+        if not changed[0].size:
+            return
+        n = changed[0].size
+        # Build undo indices matching layer.data.ndim. Prepend t, fill any
+        # extra leading dims (e.g. Z=1) with zeros, then the 2D (y, x) coords.
+        extra = layer.data.ndim - 1 - 2
+        parts = [np.full(n, t, dtype=layer.data.dtype)]
+        parts.extend(np.zeros(n, dtype=layer.data.dtype) for _ in range(extra))
+        parts.extend(changed)
+        layer._save_history((tuple(parts), before[changed], after[changed]))
+        if self._edit_callback is not None:
+            ids = set(int(v) for v in before[changed]) | set(int(v) for v in after[changed])
+            ids.discard(0)
+            if ids:
+                try:
+                    self._edit_callback(t, ids)
+                except Exception:
+                    import logging as _logging
+                    _logging.getLogger("cellflow.correction").exception("edit_callback failed")
+
     # ── draw layer ────────────────────────────────────────────────────────────
 
     def _get_draw_layer(self):
@@ -365,7 +401,7 @@ class CorrectionWidget(QWidget):
             hl.data = []
             hl.visible = False
             return
-        seg2d = self._layer.data[t]
+        seg2d = self._frame_view(self._layer, t)
         if not np.any(seg2d == lab):
             hl.data = []
             hl.visible = False
@@ -495,10 +531,10 @@ class CorrectionWidget(QWidget):
                     self._set_status("No cell selected — left-click a cell first")
                     return
                 t = int(self.viewer.dims.current_step[0])
-                seg2d = _layer.data[t]
+                seg2d = self._frame_view(_layer, t)
                 before = seg2d.copy()
                 if erase_cell(seg2d, label=self._selected_label):
-                    _record_history(_layer, t, before)
+                    self._record_history(_layer, t, before)
                     _layer.refresh()
                     self._update_highlight(t, 0)
                     self._set_status(f"Erased — Active on '{_layer.name}'")
@@ -528,7 +564,7 @@ class CorrectionWidget(QWidget):
                 btn = event.button
                 mods = {m.name for m in event.modifiers}
 
-                seg2d = _layer.data[t]
+                seg2d = self._frame_view(_layer, t)
                 pos   = _layer.world_to_data(event.position)
                 log.debug(
                     "on_drag: btn=%s mods=%s t=%d selected=%s",
@@ -542,7 +578,7 @@ class CorrectionWidget(QWidget):
                         return
                     before = seg2d.copy()
                     if erase_cell(seg2d, label=lab):
-                        _record_history(_layer, t, before)
+                        self._record_history(_layer, t, before)
                         _layer.refresh()
                         if lab == self._selected_label:
                             self._update_highlight(t, 0)
@@ -563,7 +599,7 @@ class CorrectionWidget(QWidget):
                         before = seg2d.copy()
                         ok = swap_labels(seg2d, self._selected_pos, pos)
                         if ok:
-                            _record_history(_layer, t, before)
+                            self._record_history(_layer, t, before)
                             _layer.refresh()
                             self._selected_label = 0
                             self._selected_pos = None
@@ -589,7 +625,7 @@ class CorrectionWidget(QWidget):
                             before = seg2d.copy()
                             ok = swap_labels(seg2d, self._swap_first_pos, pos)
                             if ok:
-                                _record_history(_layer, t, before)
+                                self._record_history(_layer, t, before)
                                 _layer.refresh()
                                 self._swap_first_pos = None
                                 self._swap_first_t = -1
@@ -611,7 +647,7 @@ class CorrectionWidget(QWidget):
                             msg_ok  = f"Swapped — Active on '{_layer.name}'"
                             msg_err = "Swap failed — click on a different cell"
                         if ok:
-                            _record_history(_layer, t, before)
+                            self._record_history(_layer, t, before)
                             _layer.refresh()
                             self._set_status(msg_ok)
                         else:
@@ -643,7 +679,7 @@ class CorrectionWidget(QWidget):
                                 if ok else "Split failed — seeds too close or result too small"
                             )
                             if ok:
-                                _record_history(_layer, t, before)
+                                self._record_history(_layer, t, before)
                             _layer.refresh()
                             self._ctrl_click_first = None
                             self._ctrl_click_first_label = 0
@@ -670,7 +706,7 @@ class CorrectionWidget(QWidget):
                                 if ok else "Merge failed — labels not touching"
                             )
                             if ok:
-                                _record_history(_layer, t, before)
+                                self._record_history(_layer, t, before)
                             _layer.refresh()
                             self._selected_label = 0
                             self._selected_pos = None
@@ -728,7 +764,7 @@ class CorrectionWidget(QWidget):
                         if ok else "Split draw failed — line did not divide the cell"
                     )
                     if ok:
-                        _record_history(_layer, t, before)
+                        self._record_history(_layer, t, before)
                     _layer.refresh()
                     self._update_highlight(t, self._selected_label)
                     return
@@ -758,7 +794,7 @@ class CorrectionWidget(QWidget):
                         if ok else "Draw failed — stroke too short"
                     )
                     if ok:
-                        _record_history(_layer, t, before)
+                        self._record_history(_layer, t, before)
                     _layer.refresh()
                     self._update_highlight(t, self._selected_label)
                     return
@@ -794,12 +830,18 @@ class CorrectionWidget(QWidget):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _image_frame(self, t: int) -> np.ndarray | None:
-        """Return the intensity image at frame *t* from the first Image layer found."""
+        """Return the intensity image at frame *t* from the first Image layer found.
+
+        Squeezes singleton leading dims so the result is always 2D."""
         for lyr in self.viewer.layers:
             if isinstance(lyr, napari.layers.Image):
                 d = lyr.data
-                if d.ndim == 3:
-                    return d[t]
                 if d.ndim == 2:
                     return d
+                v = d[t] if d.ndim >= 3 else d
+                while v.ndim > 2:
+                    if v.shape[0] != 1:
+                        return None
+                    v = v[0]
+                return v
         return None
