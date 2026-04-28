@@ -4,16 +4,17 @@ Frame-level validation (validated_frames.json):
     A "fully-validated" frame is one where every current (non-zero) cell ID has
     been individually validated.  The file acts as a *cache* so UI counters can
     count fully-validated frames without scanning the whole stack.
+    Used by the cell workflow (3_cell). Stays untouched.
 
     Schema: JSON array of ints, e.g. [0, 3, 7].
 
-Cell-level validation (validated_cells.json):
-    Tracks which specific cell IDs have been validated at each frame.
+Track-level validation (validated_cells.json):
+    Tracks which frames have been validated for each cell (track) ID.
+    Used by the nucleus workflow (2_nucleus).
 
-    Schema: JSON object with string-keyed frame indices mapping to arrays of
-    validated cell IDs, e.g. {"0": [3, 7, 11], "5": [1, 2, 3, 4]}.
-    Frames with zero validated cells are omitted entirely (sparse).
-    Cell ID 0 (background) is always excluded.
+    Schema: JSON object keyed by cell ID string, value is a list of frame ints,
+    e.g. {"47": [10, 11, 12], "82": [3, 4, 5]}.
+    Cell IDs with no validated frames are omitted entirely (sparse).
 """
 from __future__ import annotations
 
@@ -65,104 +66,74 @@ def is_validated(pos_dir: Path, t: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Cell-level validation
+# Track-level validation (nucleus workflow)
 # ---------------------------------------------------------------------------
 
 def _cells_path(pos_dir: Path) -> Path:
     return pos_dir / "2_nucleus" / "validated_cells.json"
 
 
-def read_all_validated_cells(pos_dir: Path) -> dict[int, set[int]]:
-    """Return the full {t: {cell_ids}} map. Empty dict if file missing/corrupt."""
+def read_validated_tracks(pos_dir: Path) -> dict[int, set[int]]:
+    """Return {cell_id: {frames}} for all validated tracks.
+
+    Empty dict if the file is missing or corrupt.
+    JSON keys are cell ID strings; values are lists of frame ints.
+    """
     p = _cells_path(pos_dir)
     if not p.exists():
         return {}
     try:
         raw: dict = json.loads(p.read_text())
-        return {int(k): set(int(v) for v in vs) - {0} for k, vs in raw.items()}
+        return {int(k): set(int(f) for f in vs) for k, vs in raw.items() if vs}
     except Exception:
         return {}
 
 
-def write_all_validated_cells(pos_dir: Path, data: dict[int, set[int]]) -> None:
-    """Persist the full map. Frames with empty sets are dropped from the file."""
+def _write_validated_tracks(pos_dir: Path, data: dict[int, set[int]]) -> None:
+    """Persist the full {cell_id: {frames}} map. Entries with empty sets are dropped."""
     p = _cells_path(pos_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     serialisable = {
-        str(t): sorted(ids - {0})
-        for t, ids in data.items()
-        if ids - {0}
+        str(cell_id): sorted(frames)
+        for cell_id, frames in data.items()
+        if frames
     }
     p.write_text(json.dumps(serialisable))
 
 
-def read_validated_cells(pos_dir: Path, t: int) -> set[int]:
-    """Return the set of validated cell IDs at frame t (empty set if none).
+def read_validated_cells_at_frame(pos_dir: Path, t: int) -> set[int]:
+    """Return all cell IDs that have frame *t* in their validated set.
 
-    Cell ID 0 is background and is always excluded.
+    Derived from the track-keyed store; suitable for overlay rendering.
     """
-    return read_all_validated_cells(pos_dir).get(t, set())
+    return {cell_id for cell_id, frames in read_validated_tracks(pos_dir).items() if t in frames}
 
 
-def validate_cells(pos_dir: Path, t: int, ids: Iterable[int]) -> None:
-    """Add the given cell IDs to frame t's validated set. ID 0 silently ignored.
+def is_track_validated(pos_dir: Path, cell_id: int) -> bool:
+    """Return True if *cell_id* has any entry in the validated-tracks store."""
+    return cell_id in read_validated_tracks(pos_dir)
 
-    Does NOT update validated_frames.json — the caller would need to supply
-    the full set of current cell IDs to decide whether the frame is now fully
-    validated.  Use validate_all_cells_in_frame for that.
+
+def validate_track(pos_dir: Path, cell_id: int, frames: Iterable[int]) -> None:
+    """Add the given frames to *cell_id*'s validated set (idempotent, accumulates).
+
+    Creates an entry for *cell_id* if none exists yet.
     """
-    ids_set = set(ids) - {0}
-    if not ids_set:
+    frames_set = set(frames)
+    if not frames_set:
         return
-    data = read_all_validated_cells(pos_dir)
-    existing = data.get(t, set())
-    data[t] = existing | ids_set
-    write_all_validated_cells(pos_dir, data)
+    data = read_validated_tracks(pos_dir)
+    existing = data.get(cell_id, set())
+    data[cell_id] = existing | frames_set
+    _write_validated_tracks(pos_dir, data)
 
 
-def invalidate_cells(pos_dir: Path, t: int, ids: Iterable[int]) -> None:
-    """Remove the given cell IDs from frame t's validated set.
+def invalidate_track(pos_dir: Path, cell_id: int) -> None:
+    """Remove the entire entry for *cell_id* from the validated-tracks store.
 
-    Non-existent IDs are a no-op.  If the set becomes empty the frame entry is
-    dropped entirely.  If frame t was in validated_frames.json it is removed
-    there too — invalidating any cell can never leave the frame fully validated.
+    No-op if *cell_id* is not present.
     """
-    ids_set = set(ids) - {0}
-    data = read_all_validated_cells(pos_dir)
-    if t in data:
-        data[t] = data[t] - ids_set
-        if not data[t]:
-            del data[t]
-        write_all_validated_cells(pos_dir, data)
-    # Remove from the fully-validated frames cache unconditionally when any
-    # matching IDs were requested (even if t wasn't in validated_cells).
-    if ids_set:
-        invalidate_frame(pos_dir, t)
-
-
-def validate_all_cells_in_frame(pos_dir: Path, t: int, all_ids: set[int]) -> None:
-    """Mark every cell ID in ``all_ids`` as validated at frame t (excluding 0).
-
-    Also adds t to validated_frames.json (the fully-validated cache).
-    ``all_ids`` is the caller-provided complete set of current cell IDs at t;
-    this function does not read the labelmap.
-    """
-    ids_set = all_ids - {0}
-    data = read_all_validated_cells(pos_dir)
-    existing = data.get(t, set())
-    data[t] = existing | ids_set
-    write_all_validated_cells(pos_dir, data)
-    validate_frame(pos_dir, t)
-
-
-def is_frame_fully_validated(pos_dir: Path, t: int, current_ids: set[int]) -> bool:
-    """Return True iff every id in ``current_ids`` (minus 0) is validated at t.
-
-    Returns False when ``current_ids`` contains no non-zero IDs (nothing to
-    validate).
-    """
-    required = current_ids - {0}
-    if not required:
-        return False
-    validated = read_validated_cells(pos_dir, t)
-    return required <= validated
+    data = read_validated_tracks(pos_dir)
+    if cell_id in data:
+        del data[cell_id]
+        _write_validated_tracks(pos_dir, data)

@@ -45,14 +45,13 @@ from cellflow.database.tracked import (
     write_tracked_frame,
 )
 from cellflow.database.validation import (
-    invalidate_cells,
-    is_frame_fully_validated,
+    invalidate_track,
+    is_track_validated,
     is_validated,
-    read_all_validated_cells,
-    read_validated_cells,
+    read_validated_cells_at_frame,
     read_validated_frames,
-    validate_all_cells_in_frame,
-    validate_cells,
+    read_validated_tracks,
+    validate_track,
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
@@ -62,6 +61,7 @@ from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
 from cellflow.tracking_ultrack.linking import run_linking
+from cellflow.tracking_ultrack.reseed import resolve_with_validation
 from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
@@ -561,6 +561,24 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_disappear_spin.setDecimals(3)
         tracking_form.addRow("Disappear Penalty:", _compact(self.ultrack_disappear_spin, 80))
 
+        self.ultrack_division_spin = QDoubleSpinBox()
+        self.ultrack_division_spin.setRange(-10.0, 0.0)
+        self.ultrack_division_spin.setValue(-0.001)
+        self.ultrack_division_spin.setSingleStep(0.05)
+        self.ultrack_division_spin.setDecimals(3)
+        self.ultrack_division_spin.setToolTip(
+            "ILP penalty for cell division events. More negative = fewer divisions allowed."
+        )
+        tracking_form.addRow("Division Penalty:", _compact(self.ultrack_division_spin, 80))
+
+        self.ultrack_max_neighbors_spin = QSpinBox()
+        self.ultrack_max_neighbors_spin.setRange(1, 50)
+        self.ultrack_max_neighbors_spin.setValue(5)
+        self.ultrack_max_neighbors_spin.setToolTip(
+            "Maximum number of candidate predecessor nodes considered during linking."
+        )
+        tracking_form.addRow("Max Neighbors:", _compact(self.ultrack_max_neighbors_spin, 80))
+
         self.ultrack_solver_lbl = QLabel("—")
         tracking_form.addRow("Solver:", self.ultrack_solver_lbl)
 
@@ -610,10 +628,16 @@ class NucleusWorkflowWidget(QWidget):
         retrack_row.addWidget(_compact_btn(self.retrack_btn))
         self.retrack_stack_btn = QPushButton("Retrack Stack")
         retrack_row.addWidget(_compact_btn(self.retrack_stack_btn))
-        self.validate_btn = QPushButton("Validate Frame")
-        self.validate_btn.setCheckable(True)
-        retrack_row.addWidget(_compact_btn(self.validate_btn))
         _corr_inner_lay.addLayout(retrack_row)
+
+        resolve_row = QHBoxLayout()
+        self.resolve_validated_btn = QPushButton("Re-solve from validated")
+        self.resolve_validated_btn.setToolTip(
+            "Prune hypothesis nodes that overlap validated cells, re-run the ILP solver, "
+            "then paste the validated cells back — preserving all locked tracks."
+        )
+        resolve_row.addWidget(_compact_btn(self.resolve_validated_btn))
+        _corr_inner_lay.addLayout(resolve_row)
 
         self.validation_counter_lbl = QLabel("")
         self.validation_counter_lbl.setWordWrap(True)
@@ -674,10 +698,9 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_linking_mode_combo.currentTextChanged.connect(self._on_ultrack_mode_changed)
         self.retrack_btn.clicked.connect(self._on_retrack_frame)
         self.retrack_stack_btn.clicked.connect(self._on_retrack_stack)
-        self.validate_btn.toggled.connect(self._on_validate_toggled)
+        self.resolve_validated_btn.clicked.connect(self._on_resolve_with_validation)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
         self.viewer.bind_key("V", self._kb_toggle_cell_validation, overwrite=True)
-        self.viewer.bind_key("Ctrl-Shift-V", self._kb_toggle_frame_validation, overwrite=True)
         # Set initial state for solver label and IoU weight enablement
         solver = _select_solver()
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
@@ -697,7 +720,6 @@ class NucleusWorkflowWidget(QWidget):
             self.correction_widget.deactivate()
             return
         self._refresh_db_browser()
-        self._refresh_validate_btn()
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
 
@@ -1774,7 +1796,6 @@ class NucleusWorkflowWidget(QWidget):
     # ──────────────────────────────────────────────────────────────────────────
 
     def _on_dims_step_changed(self, event=None) -> None:
-        self._refresh_validate_btn()
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
 
@@ -1815,7 +1836,7 @@ class NucleusWorkflowWidget(QWidget):
         frame = self._frame_view_2d(tracked.data, t)
         if frame is None:
             return
-        validated_ids = read_validated_cells(self._pos_dir, t)
+        validated_ids = read_validated_cells_at_frame(self._pos_dir, t)
         overlay_exists = _VALIDATED_OVERLAY in self.viewer.layers
         if not validated_ids and not overlay_exists:
             # Nothing to draw and no overlay yet — skip creating one. This avoids
@@ -1851,62 +1872,25 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.layers.selection.active = self.viewer.layers[_TRACKED_LAYER]
 
     def _refresh_validation_counter(self) -> None:
-        """Update '23/187 cells validated, 4/30 frames complete' label."""
+        """Update 'N tracks validated, M cell-frames covered' label."""
         if self._pos_dir is None or _TRACKED_LAYER not in self.viewer.layers:
             self.validation_counter_lbl.setText("")
             return
-        tracked = self.viewer.layers[_TRACKED_LAYER]
-        if tracked.data.ndim < 3:
-            self.validation_counter_lbl.setText("")
-            return
-        t = self._current_t()
-        if t >= tracked.data.shape[0]:
-            self.validation_counter_lbl.setText("")
-            return
-        current_ids = self._current_cell_ids(t)
-        validated_ids = read_validated_cells(self._pos_dir, t) & current_ids
-        n_total = len(current_ids)
-        n_val = len(validated_ids)
-        n_frames_total = int(tracked.data.shape[0])
-        n_frames_complete = len(read_validated_frames(self._pos_dir))
+        validated_tracks = read_validated_tracks(self._pos_dir)
+        n_tracks = len(validated_tracks)
+        n_cellframes = sum(len(frames) for frames in validated_tracks.values())
         self.validation_counter_lbl.setText(
-            f"{n_val}/{n_total} cells validated, {n_frames_complete}/{n_frames_total} frames complete"
+            f"{n_tracks} track(s) validated, {n_cellframes} cell-frame(s) covered"
         )
 
     def _on_cells_edited(self, t: int, changed_ids: set[int]) -> None:
         """Callback registered with CorrectionWidget. Invalidate any edited cell IDs."""
         if self._pos_dir is None:
             return
-        invalidate_cells(self._pos_dir, t, changed_ids)
+        for cell_id in changed_ids:
+            invalidate_track(self._pos_dir, cell_id)
         self._refresh_validated_overlay()
-        self._refresh_validate_btn()
         self._refresh_validation_counter()
-
-    def _refresh_validate_btn(self) -> None:
-        if self._pos_dir is None:
-            self.validate_btn.blockSignals(True)
-            self.validate_btn.setChecked(False)
-            self.validate_btn.blockSignals(False)
-            return
-        t = self._current_t()
-        current = self._current_cell_ids(t)
-        fully = is_frame_fully_validated(self._pos_dir, t, current) if current else False
-        self.validate_btn.blockSignals(True)
-        self.validate_btn.setChecked(fully)
-        self.validate_btn.blockSignals(False)
-
-    def _on_validate_toggled(self, checked: bool) -> None:
-        if self._pos_dir is None:
-            self._set_status("No project open.")
-            return
-        t = self._current_t()
-        current = self._current_cell_ids(t)
-        if checked:
-            validate_all_cells_in_frame(self._pos_dir, t, current)
-            self._set_status(f"Frame t={t}: validated {len(current)} cell(s).")
-        else:
-            invalidate_cells(self._pos_dir, t, current)
-            self._set_status(f"Frame t={t}: validation cleared.")
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
 
@@ -1937,25 +1921,15 @@ class NucleusWorkflowWidget(QWidget):
         frames = self._frames_with_cell(sel)
         if not frames:
             return
-        currently_validated = sel in read_validated_cells(self._pos_dir, t)
+        currently_validated = is_track_validated(self._pos_dir, sel)
         if currently_validated:
-            for tf in frames:
-                invalidate_cells(self._pos_dir, tf, [sel])
+            invalidate_track(self._pos_dir, sel)
             self._set_status(f"Cell {sel} invalidated across {len(frames)} frame(s).")
         else:
-            for tf in frames:
-                validate_cells(self._pos_dir, tf, [sel])
-                # If validating this cell completes the frame, also mark the cache.
-                tf_ids = self._current_cell_ids(tf)
-                if tf_ids and is_frame_fully_validated(self._pos_dir, tf, tf_ids):
-                    validate_all_cells_in_frame(self._pos_dir, tf, tf_ids)
+            validate_track(self._pos_dir, sel, frames)
             self._set_status(f"Cell {sel} validated across {len(frames)} frame(s).")
         self._refresh_validated_overlay()
-        self._refresh_validate_btn()
         self._refresh_validation_counter()
-
-    def _kb_toggle_frame_validation(self, _viewer) -> None:
-        self.validate_btn.toggle()  # this triggers _on_validate_toggled via the signal
 
     def _on_retrack_frame(self) -> None:
         if self._pos_dir is None:
@@ -2022,7 +1996,7 @@ class NucleusWorkflowWidget(QWidget):
                 continue
             ref = stack[t - 1]
             tgt = stack[t]
-            locked = read_validated_cells(self._pos_dir, t)
+            locked = read_validated_cells_at_frame(self._pos_dir, t)
             stack[t] = retrack_frame_constrained(ref, tgt, locked, max_dist_px=20.0)
             n_retracked += 1
 
@@ -2031,6 +2005,160 @@ class NucleusWorkflowWidget(QWidget):
             f"Retracked stack: {n_retracked} frame(s) updated, "
             f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
         )
+
+    def _on_resolve_with_validation(self) -> None:
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+
+        validated_tracks = read_validated_tracks(self._pos_dir)
+        if not validated_tracks:
+            self._set_status("No validated tracks found — validate some cells first (press V).")
+            return
+
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_status("No tracked layer loaded.")
+            return
+
+        working_dir = self._ultrack_workdir()
+        if working_dir is None or not working_dir.exists():
+            self._set_status("Ultrack working directory not found — run Ultrack Tracking first.")
+            return
+
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        tracked_labels = np.asarray(layer.data)
+
+        cfg = UltrackConfig(
+            min_area=self.ultrack_min_area_spin.value(),
+            max_distance=self.ultrack_max_dist_spin.value(),
+            linking_mode=self.ultrack_linking_mode_combo.currentText(),
+            iou_weight=self.ultrack_iou_weight_spin.value(),
+            appear_weight=self.ultrack_appear_spin.value(),
+            disappear_weight=self.ultrack_disappear_spin.value(),
+            division_weight=self.ultrack_division_spin.value(),
+            max_neighbors=self.ultrack_max_neighbors_spin.value(),
+        )
+
+        n_validated = len(validated_tracks)
+        self.resolve_validated_btn.setEnabled(False)
+        self._set_status(
+            f"Re-solving with {n_validated} validated track(s) preserved…"
+        )
+
+        def _on_resolve_done(result: tuple) -> None:
+            self.resolve_validated_btn.setEnabled(True)
+            if result is None:
+                self._set_status("Re-solve failed (no output).")
+                return
+            new_labels, id_map = result
+            # Normalize (T, 1, Y, X) → (T, Y, X) if needed
+            if new_labels.ndim == 4 and new_labels.shape[1] == 1:
+                new_labels = new_labels[:, 0]
+            # Save labelmap to disk BEFORE updating the JSON so they stay in sync.
+            # If the save fails, abort — the JSON must not be updated with IDs
+            # that don't exist on disk.
+            pos_dir = self._pos_dir
+            tracked_path = self._tracked_path()
+            if tracked_path is None or pos_dir is None:
+                self._set_status("Re-solve complete but no project path — not saved.")
+                return
+            self._set_status("Saving tracked labels…")
+            try:
+                for t in range(new_labels.shape[0]):
+                    write_tracked_frame(tracked_path, t, np.asarray(new_labels[t]))
+            except Exception as exc:
+                self._set_status(f"Save failed — JSON not updated. {exc}")
+                return
+            # Labelmap is on disk with new IDs; now update the napari layer and JSON.
+            if _TRACKED_LAYER in self.viewer.layers:
+                self.viewer.layers[_TRACKED_LAYER].data = new_labels
+            else:
+                self.viewer.add_labels(new_labels, name=_TRACKED_LAYER)
+            if id_map:
+                for old_id, new_id in id_map.items():
+                    old_frames = validated_tracks.get(old_id, set())
+                    invalidate_track(pos_dir, old_id)
+                    if old_frames:
+                        validate_track(pos_dir, new_id, old_frames)
+                self._refresh_validated_overlay()
+                self._refresh_validation_counter()
+            n_total_tracks = int(np.unique(new_labels[new_labels != 0]).size)
+            self._set_status(
+                f"Re-solve complete: {n_validated} validated track(s) preserved, "
+                f"{n_total_tracks} total track(s) in output. Saved."
+            )
+
+        def _on_resolve_progress(msg: str) -> None:
+            self._set_status(msg)
+
+        def _on_resolve_error(exc: Exception) -> None:
+            self.resolve_validated_btn.setEnabled(True)
+            self._on_worker_error(exc)
+
+        @thread_worker(connect={
+            "returned": _on_resolve_done,
+            "yielded":  _on_resolve_progress,
+            "errored":  _on_resolve_error,
+        })
+        def _worker():
+            status_msgs = []
+
+            def _cb(msg: str) -> None:
+                status_msgs.append(msg)
+
+            # resolve_with_validation is not a generator, so we call it with a
+            # progress_cb that collects messages.  After each internal stage the
+            # callback appends a message; we yield them all once the function
+            # returns so the UI gets updated between calls.  To emit progress
+            # *during* the solve we run it in steps via the callback trick:
+            # yield a sentinel before calling, collect inside.
+            # Simpler approach: just yield the stage strings ourselves and call
+            # resolve_with_validation with a progress_cb that does a thread-safe
+            # yield via a queue.  But thread_worker yields must come from the
+            # generator itself.  So we use the progress_cb to collect messages
+            # and yield them after the call completes.
+            # Best practical approach: call resolve_with_validation with
+            # progress_cb that stores messages, and yield each after the call.
+            # This gives incremental feedback between stages.
+
+            import queue as _queue
+
+            msg_queue: _queue.SimpleQueue = _queue.SimpleQueue()
+
+            def _progress(msg: str) -> None:
+                msg_queue.put(msg)
+
+            import threading
+
+            result_holder: list = []
+            exc_holder: list = []
+
+            def _run() -> None:
+                try:
+                    result_holder.append(
+                        resolve_with_validation(
+                            working_dir, validated_tracks, tracked_labels, cfg,
+                            progress_cb=_progress,
+                        )
+                    )
+                except Exception as e:
+                    exc_holder.append(e)
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+
+            while t.is_alive() or not msg_queue.empty():
+                try:
+                    yield msg_queue.get_nowait()
+                except _queue.Empty:
+                    t.join(timeout=0.05)
+
+            if exc_holder:
+                raise exc_holder[0]
+
+            return result_holder[0] if result_holder else None
+
+        _worker()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Error handler
@@ -2096,6 +2224,8 @@ class NucleusWorkflowWidget(QWidget):
                 "iou_weight":       self.ultrack_iou_weight_spin.value(),
                 "appear_weight":    self.ultrack_appear_spin.value(),
                 "disappear_weight": self.ultrack_disappear_spin.value(),
+                "division_weight":  self.ultrack_division_spin.value(),
+                "max_neighbors":    self.ultrack_max_neighbors_spin.value(),
                 "resolve_only":     self.ultrack_resolve_only_check.isChecked(),
             },
         }
@@ -2162,4 +2292,6 @@ class NucleusWorkflowWidget(QWidget):
             if "iou_weight"       in ul: self.ultrack_iou_weight_spin.setValue(ul["iou_weight"])
             if "appear_weight"    in ul: self.ultrack_appear_spin.setValue(ul["appear_weight"])
             if "disappear_weight" in ul: self.ultrack_disappear_spin.setValue(ul["disappear_weight"])
+            if "division_weight"  in ul: self.ultrack_division_spin.setValue(ul["division_weight"])
+            if "max_neighbors"    in ul: self.ultrack_max_neighbors_spin.setValue(ul["max_neighbors"])
             if "resolve_only"     in ul: self.ultrack_resolve_only_check.setChecked(ul["resolve_only"])
