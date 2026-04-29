@@ -14,8 +14,6 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
-    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -49,7 +47,16 @@ from cellflow.database.validation import (
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
-from cellflow.napari.ui_style import action_button, compact_spinbox, danger_button
+from cellflow.napari.ui_style import (
+    add_block_button_row,
+    add_block_checkbox_row,
+    add_block_pair_row,
+    add_sweep_parameter_row,
+    block_grid,
+    compact_spinbox,
+    danger_button,
+    sweep_parameter_grid,
+)
 from cellflow.segmentation import SeededWatershedParams, compute_seeded_watershed
 from cellflow.tracking import propagate_one_frame
 from cellflow.tracking.retracker import retrack_frame
@@ -93,9 +100,6 @@ class CellWorkflowWidget(QWidget):
         def _compact(spin, w=SPIN_MAX_W):
             return compact_spinbox(spin, w)
 
-        def _compact_btn(btn):
-            return action_button(btn, expand=True)
-
         # ── Inputs ────────────────────────────────────────────────────────
         self.input_files = PipelineFilesWidget([
             ("Inputs", [
@@ -114,8 +118,7 @@ class CellWorkflowWidget(QWidget):
         gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Basin selector
-        basin_row = QHBoxLayout()
-        basin_row.addWidget(QLabel("Basin:"))
+        basin_grid = block_grid(horizontal_spacing=12)
         self.basin_combo = QComboBox()
         self.basin_combo.addItems(["Prob Map", "Flow Magnitude"])
         self.basin_combo.setToolTip(
@@ -124,11 +127,10 @@ class CellWorkflowWidget(QWidget):
             "Flow Magnitude: L2 magnitude of dp vectors (computed on the fly).\n"
             "Foreground mask is always derived from sigmoid(prob) regardless of choice."
         )
-        basin_row.addWidget(self.basin_combo)
-        basin_row.addStretch()
+        add_block_pair_row(basin_grid, 0, "Basin:", self.basin_combo, field_width=None)
         self.overwrite_check = QCheckBox("Overwrite existing")
-        basin_row.addWidget(self.overwrite_check)
-        gen_lay.addLayout(basin_row)
+        add_block_checkbox_row(basin_grid, 1, self.overwrite_check)
+        gen_lay.addLayout(basin_grid)
 
         self.gen_tabs = QTabWidget()
 
@@ -136,11 +138,7 @@ class CellWorkflowWidget(QWidget):
         tuning_tab = QWidget()
         tuning_lay = QVBoxLayout(tuning_tab)
 
-        tuning_form = QFormLayout()
-        tuning_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        tuning_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        tuning_form.setHorizontalSpacing(8)
-        tuning_form.setVerticalSpacing(4)
+        tuning_params_grid = block_grid(horizontal_spacing=12)
 
         self.single_fg_threshold = QDoubleSpinBox()
         self.single_fg_threshold.setRange(0.01, 0.99)
@@ -151,8 +149,6 @@ class CellWorkflowWidget(QWidget):
             "Sigmoid foreground probability cutoff — pixels below this are excluded "
             "from the segmentation mask. Seeds whose centroid falls outside are dropped."
         )
-        tuning_form.addRow("Foreground Threshold:", _compact(self.single_fg_threshold))
-
         self.single_compactness = QDoubleSpinBox()
         self.single_compactness.setRange(0.0, 10.0)
         self.single_compactness.setValue(0.0)
@@ -162,24 +158,29 @@ class CellWorkflowWidget(QWidget):
             "Watershed compactness parameter — higher values produce rounder cells "
             "(penalises long, narrow regions). 0 = standard watershed."
         )
-        tuning_form.addRow("Compactness:", _compact(self.single_compactness))
-        tuning_lay.addLayout(tuning_form)
+        add_block_pair_row(
+            tuning_params_grid,
+            0,
+            "Foreground Threshold:",
+            _compact(self.single_fg_threshold),
+            "Compactness:",
+            _compact(self.single_compactness),
+        )
+        tuning_lay.addLayout(tuning_params_grid)
 
-        tuning_btn_row = QHBoxLayout()
         self.preview_btn = QPushButton("Preview")
         self.save_db_btn = QPushButton("Save to DB")
-        tuning_btn_row.addWidget(_compact_btn(self.preview_btn))
-        tuning_btn_row.addWidget(_compact_btn(self.save_db_btn))
-        tuning_lay.addLayout(tuning_btn_row)
+        tuning_btn_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(tuning_btn_grid, 0, self.preview_btn, self.save_db_btn)
+        tuning_lay.addLayout(tuning_btn_grid)
         self.gen_tabs.addTab(tuning_tab, "Tuning")
 
         # Tab: Sweep
         sweep_tab = QWidget()
         sweep_lay = QVBoxLayout(sweep_tab)
+        sweep_grid = sweep_parameter_grid()
 
-        def _sweep_row(label, d_min, d_max, d_step, decimals=2):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(label))
+        def _sweep_row(row, label, d_min, d_max, d_step, decimals=2):
             min_s = QDoubleSpinBox()
             max_s = QDoubleSpinBox()
             step_s = QDoubleSpinBox()
@@ -191,33 +192,27 @@ class CellWorkflowWidget(QWidget):
             min_s.setValue(d_min)
             max_s.setValue(d_max)
             step_s.setValue(d_step)
-            row.addWidget(QLabel("min")); row.addWidget(min_s)
-            row.addWidget(QLabel("max")); row.addWidget(max_s)
-            row.addWidget(QLabel("step")); row.addWidget(step_s)
-            row.addStretch()
-            sweep_lay.addLayout(row)
+            add_sweep_parameter_row(sweep_grid, row, label, min_s, max_s, step_s)
             return min_s, max_s, step_s
 
-        self.sweep_fg_thr      = _sweep_row("Foreground Thr", 0.4, 0.6, 0.05)
-        self.sweep_compactness = _sweep_row("Compactness",    0.0, 0.5, 0.1)
+        self.sweep_fg_thr      = _sweep_row(1, "Foreground Thr", 0.4, 0.6, 0.05)
+        self.sweep_compactness = _sweep_row(2, "Compactness",    0.0, 0.5, 0.1)
+        sweep_lay.addLayout(sweep_grid)
 
-        workers_row = QHBoxLayout()
-        workers_row.addWidget(QLabel("Workers:"))
+        workers_grid = block_grid(horizontal_spacing=12)
         self.sweep_n_workers = QSpinBox()
         self.sweep_n_workers.setRange(1, max(1, os.cpu_count() or 1))
         self.sweep_n_workers.setValue(1)
         self.sweep_n_workers.setToolTip("Parallel threads for the sweep.")
-        workers_row.addWidget(_compact(self.sweep_n_workers))
-        workers_row.addStretch()
-        sweep_lay.addLayout(workers_row)
+        add_block_pair_row(workers_grid, 0, "Workers:", _compact(self.sweep_n_workers))
+        sweep_lay.addLayout(workers_grid)
 
-        sweep_btn_row = QHBoxLayout()
         self.run_sweep_btn    = QPushButton("Run Sweep")
         self.cancel_sweep_btn = QPushButton("Cancel")
         self.cancel_sweep_btn.setEnabled(False)
-        sweep_btn_row.addWidget(_compact_btn(self.run_sweep_btn))
-        sweep_btn_row.addWidget(_compact_btn(self.cancel_sweep_btn))
-        sweep_lay.addLayout(sweep_btn_row)
+        sweep_btn_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(sweep_btn_grid, 0, self.run_sweep_btn, self.cancel_sweep_btn)
+        sweep_lay.addLayout(sweep_btn_grid)
 
         self.sweep_progress_bar = QProgressBar()
         self.sweep_progress_bar.setRange(0, 100)
@@ -239,56 +234,61 @@ class CellWorkflowWidget(QWidget):
         db_lay.setContentsMargins(4, 4, 4, 4)
         db_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        hdr_row = QHBoxLayout()
+        hdr_row = block_grid(horizontal_spacing=8)
         self.db_activate_btn = QPushButton("Activate")
         self.db_activate_btn.setCheckable(True)
         self.db_activate_btn.setChecked(False)
-        self.db_activate_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        hdr_row.addWidget(self.db_activate_btn)
-        hdr_row.addStretch()
+        self.db_activate_btn.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.db_refresh_btn = QPushButton()
         self.db_refresh_btn.setToolTip("Refresh database browser")
         self.db_refresh_btn.setIcon(
             self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
         )
-        self.db_refresh_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        hdr_row.addWidget(self.db_refresh_btn)
+        self.db_refresh_btn.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        add_block_button_row(hdr_row, 0, self.db_activate_btn, self.db_refresh_btn)
         db_lay.addLayout(hdr_row)
 
-        params_row = QHBoxLayout()
-        params_row.addWidget(QLabel("FG Thr:"))
+        params_row = block_grid(horizontal_spacing=12)
         self.db_fg_thr_spin = QDoubleSpinBox()
         self.db_fg_thr_spin.setRange(0.01, 0.99)
         self.db_fg_thr_spin.setValue(0.5)
         self.db_fg_thr_spin.setDecimals(2)
         self.db_fg_thr_spin.setSingleStep(0.05)
         self.db_fg_thr_spin.setEnabled(False)
-        params_row.addWidget(_compact(self.db_fg_thr_spin))
-        params_row.addWidget(QLabel("Compactness:"))
         self.db_compactness_spin = QDoubleSpinBox()
         self.db_compactness_spin.setRange(0.0, 10.0)
         self.db_compactness_spin.setValue(0.0)
         self.db_compactness_spin.setDecimals(2)
         self.db_compactness_spin.setSingleStep(0.1)
         self.db_compactness_spin.setEnabled(False)
-        params_row.addWidget(_compact(self.db_compactness_spin))
-        params_row.addStretch(1)
+        add_block_pair_row(
+            params_row,
+            0,
+            "FG Thr:",
+            _compact(self.db_fg_thr_spin),
+            "Compactness:",
+            _compact(self.db_compactness_spin),
+        )
         db_lay.addLayout(params_row)
 
         self.db_info_lbl = QLabel("—")
         self.db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         db_lay.addWidget(self.db_info_lbl)
 
-        db_btn_row = QHBoxLayout()
         self.set_seed_btn = QPushButton("Set as Tracking Seed")
-        db_btn_row.addWidget(_compact_btn(self.set_seed_btn))
-        db_lay.addLayout(db_btn_row)
+        db_btn_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(db_btn_grid, 0, self.set_seed_btn)
+        db_lay.addLayout(db_btn_grid)
 
-        db_del_row = QHBoxLayout()
         self.del_stack_btn = QPushButton("Remove Stack")
         danger_button(self.del_stack_btn)
-        db_del_row.addWidget(_compact_btn(self.del_stack_btn))
-        db_lay.addLayout(db_del_row)
+        db_del_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(db_del_grid, 0, self.del_stack_btn)
+        db_lay.addLayout(db_del_grid)
 
         self.db_section = CollapsibleSection(
             "2. Database Browser", _db_inner, expanded=False
@@ -309,54 +309,65 @@ class CellWorkflowWidget(QWidget):
             w.setDecimals(1)
             return w
 
-        search_form = QFormLayout()
-        search_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        search_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        search_form.setHorizontalSpacing(8)
-        search_form.setVerticalSpacing(4)
+        search_params_grid = block_grid(horizontal_spacing=12)
 
         self.dist_spin = QDoubleSpinBox()
         self.dist_spin.setRange(0, 1000)
         self.dist_spin.setValue(20.0)
-        search_form.addRow("Max Dist (px):", _compact(self.dist_spin))
 
         self.iou_weight_spin = _weight_spin(1.0)
-        search_form.addRow("IoU Weight:", _compact(self.iou_weight_spin))
+        add_block_pair_row(
+            search_params_grid,
+            0,
+            "Max Dist (px):",
+            _compact(self.dist_spin),
+            "IoU Weight:",
+            _compact(self.iou_weight_spin),
+        )
 
         self.area_weight_spin = _weight_spin(1.0)
-        search_form.addRow("Area Weight:", _compact(self.area_weight_spin))
-
         self.circularity_weight_spin = _weight_spin(1.0)
-        search_form.addRow("Circularity Weight:", _compact(self.circularity_weight_spin))
+        add_block_pair_row(
+            search_params_grid,
+            1,
+            "Area Weight:",
+            _compact(self.area_weight_spin),
+            "Circularity Weight:",
+            _compact(self.circularity_weight_spin),
+        )
 
         self.solidity_weight_spin = _weight_spin(1.0)
-        search_form.addRow("Solidity Weight:", _compact(self.solidity_weight_spin))
+        add_block_pair_row(
+            search_params_grid,
+            2,
+            "Solidity Weight:",
+            _compact(self.solidity_weight_spin),
+        )
 
-        search_lay.addLayout(search_form)
+        search_lay.addLayout(search_params_grid)
 
-        prop_row = QHBoxLayout()
         self.prop_next_btn = QPushButton("Propagate Next")
         self.prop_all_btn  = QPushButton("Propagate All")
         self.stop_btn      = QPushButton("Stop")
-        prop_row.addWidget(_compact_btn(self.prop_next_btn))
-        prop_row.addWidget(_compact_btn(self.prop_all_btn))
-        prop_row.addWidget(_compact_btn(self.stop_btn))
-        search_lay.addLayout(prop_row)
+        prop_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(prop_grid, 0, self.prop_next_btn, self.prop_all_btn)
+        add_block_button_row(prop_grid, 1, self.stop_btn)
+        search_lay.addLayout(prop_grid)
 
-        save_tracked_row = QHBoxLayout()
         self.save_tracked_btn = QPushButton("Save Tracked Labels")
-        save_tracked_row.addWidget(_compact_btn(self.save_tracked_btn))
-        search_lay.addLayout(save_tracked_row)
+        save_tracked_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(save_tracked_grid, 0, self.save_tracked_btn)
+        search_lay.addLayout(save_tracked_grid)
 
-        load_tracked_row = QHBoxLayout()
         self.load_tracked_btn = QPushButton("Load Tracked Labels")
-        load_tracked_row.addWidget(_compact_btn(self.load_tracked_btn))
-        search_lay.addLayout(load_tracked_row)
+        load_tracked_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(load_tracked_grid, 0, self.load_tracked_btn)
+        search_lay.addLayout(load_tracked_grid)
 
-        reassign_row = QHBoxLayout()
         self.reassign_ids_btn = QPushButton("Reassign IDs")
-        reassign_row.addWidget(_compact_btn(self.reassign_ids_btn))
-        search_lay.addLayout(reassign_row)
+        reassign_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(reassign_grid, 0, self.reassign_ids_btn)
+        search_lay.addLayout(reassign_grid)
 
         self.search_section = CollapsibleSection(
             "3. Automated Search", _search_inner, expanded=False
@@ -369,13 +380,12 @@ class CellWorkflowWidget(QWidget):
         _corr_inner_lay.setContentsMargins(0, 0, 0, 0)
         _corr_inner_lay.setSpacing(4)
 
-        retrack_row = QHBoxLayout()
         self.retrack_btn = QPushButton("Retrack Frame")
-        retrack_row.addWidget(_compact_btn(self.retrack_btn))
         self.validate_btn = QPushButton("Validate Frame")
         self.validate_btn.setCheckable(True)
-        retrack_row.addWidget(_compact_btn(self.validate_btn))
-        _corr_inner_lay.addLayout(retrack_row)
+        retrack_grid = block_grid(horizontal_spacing=12)
+        add_block_button_row(retrack_grid, 0, self.retrack_btn, self.validate_btn)
+        _corr_inner_lay.addLayout(retrack_grid)
 
         self.correction_widget = CorrectionWidget(
             self.viewer,

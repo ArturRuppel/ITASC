@@ -17,9 +17,6 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
-    QGridLayout,
-    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -58,7 +55,16 @@ from cellflow.database.validation import (
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
-from cellflow.napari.ui_style import action_button, compact_spinbox, danger_button
+from cellflow.napari.ui_style import (
+    add_block_button_row,
+    add_block_checkbox_row,
+    add_block_pair_row,
+    add_sweep_parameter_row,
+    block_grid,
+    compact_spinbox,
+    danger_button,
+    sweep_parameter_grid,
+)
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
 from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
@@ -114,9 +120,6 @@ class NucleusWorkflowWidget(QWidget):
         def _compact(spin, w=SPIN_MAX_W):
             return compact_spinbox(spin, w)
 
-        def _compact_btn(btn):
-            return action_button(btn)
-
         # ── Inputs ────────────────────────────────────────────────────────
         self.input_files = PipelineFilesWidget([
             ("Inputs", [
@@ -135,49 +138,42 @@ class NucleusWorkflowWidget(QWidget):
 
         cp_params_lay = contour_lay
 
-        cp_row = QHBoxLayout()
-        cp_row.addWidget(QLabel("Cellprob:"))
-        cp_row.addWidget(QLabel("min"))
+        contour_sweep_grid = sweep_parameter_grid(spin_width=60)
         self.cp_min_spin = QDoubleSpinBox()
         self.cp_min_spin.setRange(-20.0, 20.0)
         self.cp_min_spin.setValue(-3.0)
         self.cp_min_spin.setDecimals(1)
         self.cp_min_spin.setSingleStep(1.0)
-        cp_row.addWidget(_compact(self.cp_min_spin, 60))
-        cp_row.addWidget(QLabel("max"))
         self.cp_max_spin = QDoubleSpinBox()
         self.cp_max_spin.setRange(-20.0, 20.0)
         self.cp_max_spin.setValue(0.0)
         self.cp_max_spin.setDecimals(1)
         self.cp_max_spin.setSingleStep(1.0)
-        cp_row.addWidget(_compact(self.cp_max_spin, 60))
-        cp_row.addWidget(QLabel("step"))
         self.cp_step_spin = QDoubleSpinBox()
         self.cp_step_spin.setRange(0.1, 10.0)
         self.cp_step_spin.setValue(1.0)
         self.cp_step_spin.setDecimals(1)
         self.cp_step_spin.setSingleStep(0.5)
-        cp_row.addWidget(_compact(self.cp_step_spin, 60))
-        cp_row.addStretch(1)
-        cp_params_lay.addLayout(cp_row)
+        add_sweep_parameter_row(
+            contour_sweep_grid,
+            1,
+            "Cellprob:",
+            self.cp_min_spin,
+            self.cp_max_spin,
+            self.cp_step_spin,
+            spin_width=60,
+        )
 
-        gamma_row = QHBoxLayout()
-        gamma_row.addWidget(QLabel("Gamma:"))
-        gamma_row.addWidget(QLabel("min"))
         self.cp_gamma_min_spin = QDoubleSpinBox()
         self.cp_gamma_min_spin.setRange(0.05, 5.0)
         self.cp_gamma_min_spin.setValue(1.0)
         self.cp_gamma_min_spin.setDecimals(2)
         self.cp_gamma_min_spin.setSingleStep(0.05)
-        gamma_row.addWidget(_compact(self.cp_gamma_min_spin, 60))
-        gamma_row.addWidget(QLabel("max"))
         self.cp_gamma_max_spin = QDoubleSpinBox()
         self.cp_gamma_max_spin.setRange(0.05, 5.0)
         self.cp_gamma_max_spin.setValue(1.0)
         self.cp_gamma_max_spin.setDecimals(2)
         self.cp_gamma_max_spin.setSingleStep(0.05)
-        gamma_row.addWidget(_compact(self.cp_gamma_max_spin, 60))
-        gamma_row.addWidget(QLabel("step"))
         self.cp_gamma_step_spin = QDoubleSpinBox()
         self.cp_gamma_step_spin.setRange(0.05, 2.0)
         self.cp_gamma_step_spin.setValue(0.25)
@@ -190,15 +186,24 @@ class NucleusWorkflowWidget(QWidget):
         )
         for _w in (self.cp_gamma_min_spin, self.cp_gamma_max_spin, self.cp_gamma_step_spin):
             _w.setToolTip(_gamma_tip)
-        gamma_row.addWidget(_compact(self.cp_gamma_step_spin, 60))
-        gamma_row.addStretch(1)
-        cp_params_lay.addLayout(gamma_row)
+        add_sweep_parameter_row(
+            contour_sweep_grid,
+            2,
+            "Gamma:",
+            self.cp_gamma_min_spin,
+            self.cp_gamma_max_spin,
+            self.cp_gamma_step_spin,
+            spin_width=60,
+        )
+        cp_params_lay.addLayout(contour_sweep_grid)
 
         self.save_source_check = QCheckBox("Save source label images")
         self.save_source_check.setToolTip("Save all label images used for contour building in 2_nucleus/source_labels/")
-        cp_params_lay.addWidget(self.save_source_check)
+        save_source_grid = block_grid(horizontal_spacing=12)
+        add_block_checkbox_row(save_source_grid, 0, self.save_source_check)
+        cp_params_lay.addLayout(save_source_grid)
 
-        build_btn_row = QHBoxLayout()
+        build_btn_row = block_grid(horizontal_spacing=12)
         self.build_btn = QPushButton("Build")
         self.preview_contour_btn = QPushButton("Preview")
         self.preview_contour_btn.setToolTip(
@@ -206,9 +211,9 @@ class NucleusWorkflowWidget(QWidget):
         )
         self.cancel_build_btn = QPushButton("Cancel")
         self.cancel_build_btn.setEnabled(False)
-        build_btn_row.addWidget(_compact_btn(self.build_btn))
-        build_btn_row.addWidget(_compact_btn(self.preview_contour_btn))
-        build_btn_row.addWidget(_compact_btn(self.cancel_build_btn))
+        add_block_button_row(
+            build_btn_row, 0, self.build_btn, self.preview_contour_btn, self.cancel_build_btn
+        )
         contour_lay.addLayout(build_btn_row)
 
         self.build_progress_bar = QProgressBar()
@@ -236,18 +241,12 @@ class NucleusWorkflowWidget(QWidget):
         gen_lay.setSpacing(6)
         gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        gen_form = QFormLayout()
-        gen_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        gen_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        gen_form.setHorizontalSpacing(8)
-        gen_form.setVerticalSpacing(4)
+        gen_params_grid = block_grid(horizontal_spacing=12)
 
         self.min_size_spin = QSpinBox()
         self.min_size_spin.setRange(0, 100000)
         self.min_size_spin.setValue(0)
         self.min_size_spin.setToolTip("Remove regions smaller than this many pixels (0 = keep all)")
-        gen_form.addRow("Min Cell Size (px):", _compact(self.min_size_spin, 80))
-
         self.min_circularity_spin = QDoubleSpinBox()
         self.min_circularity_spin.setRange(0.0, 1.0)
         self.min_circularity_spin.setValue(0.0)
@@ -256,7 +255,15 @@ class NucleusWorkflowWidget(QWidget):
         self.min_circularity_spin.setToolTip(
             "Remove regions with circularity (4π·area/perimeter²) below this value (0 = keep all, 1 = perfect circle)"
         )
-        gen_form.addRow("Min Circularity:", _compact(self.min_circularity_spin))
+        add_block_pair_row(
+            gen_params_grid,
+            0,
+            "Min Cell Size (px):",
+            _compact(self.min_size_spin, 80),
+            "Min Circularity:",
+            _compact(self.min_circularity_spin),
+            field_width=80,
+        )
 
         self.noise_scale = QDoubleSpinBox()
         self.noise_scale.setRange(0.0, 1.0)
@@ -264,20 +271,27 @@ class NucleusWorkflowWidget(QWidget):
         self.noise_scale.setDecimals(2)
         self.noise_scale.setSingleStep(0.01)
         self.noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
-        gen_form.addRow("Noise Scale:", _compact(self.noise_scale))
-
         self.noise_blur = QDoubleSpinBox()
         self.noise_blur.setRange(0.0, 10.0)
         self.noise_blur.setValue(0.0)
         self.noise_blur.setDecimals(1)
         self.noise_blur.setSingleStep(0.5)
         self.noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
-        gen_form.addRow("Blur Sigma:", _compact(self.noise_blur))
+        add_block_pair_row(
+            gen_params_grid,
+            1,
+            "Noise Scale:",
+            _compact(self.noise_scale),
+            "Blur Sigma:",
+            _compact(self.noise_blur),
+        )
 
-        gen_lay.addLayout(gen_form)
+        gen_lay.addLayout(gen_params_grid)
 
         self.overwrite_check = QCheckBox("Overwrite existing")
-        gen_lay.addWidget(self.overwrite_check)
+        overwrite_grid = block_grid(horizontal_spacing=12)
+        add_block_checkbox_row(overwrite_grid, 0, self.overwrite_check)
+        gen_lay.addLayout(overwrite_grid)
 
         self.gen_tabs = QTabWidget()
 
@@ -285,17 +299,11 @@ class NucleusWorkflowWidget(QWidget):
         tuning_tab = QWidget()
         tuning_lay = QVBoxLayout(tuning_tab)
 
-        tuning_form = QFormLayout()
-        tuning_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        tuning_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        tuning_form.setHorizontalSpacing(8)
-        tuning_form.setVerticalSpacing(4)
+        tuning_params_grid = block_grid(horizontal_spacing=12)
 
         self.single_seed_dist = QSpinBox()
         self.single_seed_dist.setRange(1, 500)
         self.single_seed_dist.setValue(10)
-        tuning_form.addRow("Seed Distance:", _compact(self.single_seed_dist))
-
         self.single_fg_threshold = QDoubleSpinBox()
         self.single_fg_threshold.setRange(0.01, 0.99)
         self.single_fg_threshold.setValue(0.5)
@@ -304,7 +312,14 @@ class NucleusWorkflowWidget(QWidget):
         self.single_fg_threshold.setToolTip(
             "Sigmoid foreground probability cutoff — pixels below this are excluded from segmentation and seeding."
         )
-        tuning_form.addRow("Foreground Threshold:", _compact(self.single_fg_threshold))
+        add_block_pair_row(
+            tuning_params_grid,
+            0,
+            "Seed Distance:",
+            _compact(self.single_seed_dist),
+            "Foreground Threshold:",
+            _compact(self.single_fg_threshold),
+        )
 
         self.single_ridge_threshold = QDoubleSpinBox()
         self.single_ridge_threshold.setRange(0.0, 1.0)
@@ -314,14 +329,18 @@ class NucleusWorkflowWidget(QWidget):
         self.single_ridge_threshold.setToolTip(
             "Contour boundary fraction cutoff — pixels with boundary ≥ this are carved out of the seeding mask."
         )
-        tuning_form.addRow("Ridge Threshold:", _compact(self.single_ridge_threshold))
-        tuning_lay.addLayout(tuning_form)
+        add_block_pair_row(
+            tuning_params_grid,
+            1,
+            "Ridge Threshold:",
+            _compact(self.single_ridge_threshold),
+        )
+        tuning_lay.addLayout(tuning_params_grid)
 
-        tuning_btn_row = QHBoxLayout()
+        tuning_btn_row = block_grid(horizontal_spacing=12)
         self.preview_btn = QPushButton("Preview")
         self.save_db_btn = QPushButton("Save to DB")
-        tuning_btn_row.addWidget(_compact_btn(self.preview_btn))
-        tuning_btn_row.addWidget(_compact_btn(self.save_db_btn))
+        add_block_button_row(tuning_btn_row, 0, self.preview_btn, self.save_db_btn)
         tuning_lay.addLayout(tuning_btn_row)
         self.gen_tabs.addTab(tuning_tab, "Tuning")
 
@@ -343,47 +362,26 @@ class NucleusWorkflowWidget(QWidget):
             step_s.setValue(d_step)
             return min_s, max_s, step_s
 
-        sweep_grid = QGridLayout()
-        sweep_grid.setHorizontalSpacing(4)
-        sweep_grid.setVerticalSpacing(4)
-
-        for col, text in enumerate(["min", "max", "step"], start=1):
-            hdr = QLabel(text)
-            hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            sweep_grid.addWidget(hdr, 0, col)
-        sweep_grid.setColumnStretch(4, 1)
-
-        sd_lbl = QLabel("Seed Dist:")
-        sd_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        sweep_grid.addWidget(sd_lbl, 1, 0)
+        sweep_grid = sweep_parameter_grid()
         sd_min, sd_max, sd_step = _make_sweep_spins(8, 14, 2)
-        sweep_grid.addWidget(sd_min, 1, 1)
-        sweep_grid.addWidget(sd_max, 1, 2)
-        sweep_grid.addWidget(sd_step, 1, 3)
+        add_sweep_parameter_row(sweep_grid, 1, "Seed Dist:", sd_min, sd_max, sd_step)
         self.sweep_seed_dist = (sd_min, sd_max, sd_step)
 
-        fg_lbl = QLabel("Foreground Threshold:")
-        fg_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        sweep_grid.addWidget(fg_lbl, 2, 0)
         fg_min, fg_max, fg_step = _make_sweep_spins(0.4, 0.6, 0.05, decimals=2)
-        sweep_grid.addWidget(fg_min, 2, 1)
-        sweep_grid.addWidget(fg_max, 2, 2)
-        sweep_grid.addWidget(fg_step, 2, 3)
+        add_sweep_parameter_row(
+            sweep_grid, 2, "Foreground Threshold:", fg_min, fg_max, fg_step
+        )
         self.sweep_fg_thr = (fg_min, fg_max, fg_step)
 
-        ridge_lbl = QLabel("Ridge Threshold:")
-        ridge_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        sweep_grid.addWidget(ridge_lbl, 3, 0)
         ridge_min, ridge_max, ridge_step = _make_sweep_spins(0.5, 0.5, 0.05, decimals=2)
-        sweep_grid.addWidget(ridge_min, 3, 1)
-        sweep_grid.addWidget(ridge_max, 3, 2)
-        sweep_grid.addWidget(ridge_step, 3, 3)
+        add_sweep_parameter_row(
+            sweep_grid, 3, "Ridge Threshold:", ridge_min, ridge_max, ridge_step
+        )
         self.sweep_ridge_thr = (ridge_min, ridge_max, ridge_step)
 
         sweep_lay.addLayout(sweep_grid)
 
-        sweep_runs_row = QHBoxLayout()
-        sweep_runs_row.addWidget(QLabel("Runs:"))
+        sweep_runs_row = block_grid(horizontal_spacing=12)
         self.sweep_n_runs = QSpinBox()
         self.sweep_n_runs.setRange(1, 100)
         self.sweep_n_runs.setValue(1)
@@ -391,8 +389,6 @@ class NucleusWorkflowWidget(QWidget):
             "How many times to run the sweep. With noise > 0 each run produces "
             "different stochastic hypotheses stored as separate parameter sets."
         )
-        sweep_runs_row.addWidget(_compact(self.sweep_n_runs))
-        sweep_runs_row.addWidget(QLabel("Workers:"))
         self.sweep_n_workers = QSpinBox()
         self.sweep_n_workers.setRange(1, max(1, os.cpu_count() or 1))
         self.sweep_n_workers.setValue(1)
@@ -400,18 +396,24 @@ class NucleusWorkflowWidget(QWidget):
             "Number of parallel threads for the sweep. "
             "scipy/skimage release the GIL so threading scales well."
         )
-        sweep_runs_row.addWidget(_compact(self.sweep_n_workers))
-        sweep_runs_row.addStretch()
+        add_block_pair_row(
+            sweep_runs_row,
+            0,
+            "Runs:",
+            _compact(self.sweep_n_runs),
+            "Workers:",
+            _compact(self.sweep_n_workers),
+        )
         sweep_lay.addLayout(sweep_runs_row)
 
-        sweep_btn_row = QHBoxLayout()
+        sweep_btn_row = block_grid(horizontal_spacing=12)
         self.run_sweep_btn    = QPushButton("Run Sweep")
         self.run_terminal_btn = QPushButton("Run in Terminal")
         self.cancel_sweep_btn = QPushButton("Cancel")
         self.cancel_sweep_btn.setEnabled(False)
-        sweep_btn_row.addWidget(_compact_btn(self.run_sweep_btn))
-        sweep_btn_row.addWidget(_compact_btn(self.run_terminal_btn))
-        sweep_btn_row.addWidget(_compact_btn(self.cancel_sweep_btn))
+        add_block_button_row(
+            sweep_btn_row, 0, self.run_sweep_btn, self.run_terminal_btn, self.cancel_sweep_btn
+        )
         sweep_lay.addLayout(sweep_btn_row)
         self.gen_tabs.addTab(sweep_tab, "Sweep")
 
@@ -427,71 +429,76 @@ class NucleusWorkflowWidget(QWidget):
         db_lay.setContentsMargins(4, 4, 4, 4)
         db_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        hdr_row = QHBoxLayout()
+        hdr_row = block_grid(horizontal_spacing=12)
         self.db_activate_btn = QPushButton("Activate")
         self.db_activate_btn.setCheckable(True)
         self.db_activate_btn.setChecked(False)
         self.db_activate_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        hdr_row.addWidget(self.db_activate_btn)
-        hdr_row.addStretch()
         self.db_refresh_btn = QPushButton()
         self.db_refresh_btn.setToolTip("Refresh database browser")
         self.db_refresh_btn.setIcon(
             self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
         )
         self.db_refresh_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        hdr_row.addWidget(self.db_refresh_btn)
+        add_block_button_row(hdr_row, 0, self.db_activate_btn, self.db_refresh_btn)
         db_lay.addLayout(hdr_row)
 
         # ── contour_watershed params panel ────────────────────────────────
         self._db_cw_panel = QWidget()
-        cw_lay = QHBoxLayout(self._db_cw_panel)
+        cw_lay = block_grid(horizontal_spacing=12)
+        self._db_cw_panel.setLayout(cw_lay)
         cw_lay.setContentsMargins(0, 0, 0, 0)
-        cw_lay.setSpacing(4)
-        cw_lay.addWidget(QLabel("Seed Dist:"))
         self.db_seed_dist_spin = QSpinBox()
         self.db_seed_dist_spin.setRange(1, 500)
         self.db_seed_dist_spin.setValue(10)
         self.db_seed_dist_spin.setEnabled(False)
-        cw_lay.addWidget(_compact(self.db_seed_dist_spin))
-        cw_lay.addWidget(QLabel("FG Thr:"))
         self.db_fg_thr_spin = QDoubleSpinBox()
         self.db_fg_thr_spin.setRange(0.01, 0.99)
         self.db_fg_thr_spin.setValue(0.5)
         self.db_fg_thr_spin.setDecimals(2)
         self.db_fg_thr_spin.setSingleStep(0.05)
         self.db_fg_thr_spin.setEnabled(False)
-        cw_lay.addWidget(_compact(self.db_fg_thr_spin))
-        cw_lay.addWidget(QLabel("Ridge Thr:"))
+        add_block_pair_row(
+            cw_lay,
+            0,
+            "Seed Dist:",
+            _compact(self.db_seed_dist_spin),
+            "FG Thr:",
+            _compact(self.db_fg_thr_spin),
+        )
         self.db_ridge_thr_spin = QDoubleSpinBox()
         self.db_ridge_thr_spin.setRange(0.0, 1.0)
         self.db_ridge_thr_spin.setValue(0.5)
         self.db_ridge_thr_spin.setDecimals(2)
         self.db_ridge_thr_spin.setSingleStep(0.05)
         self.db_ridge_thr_spin.setEnabled(False)
-        cw_lay.addWidget(_compact(self.db_ridge_thr_spin))
-        cw_lay.addWidget(QLabel("Run:"))
         self.db_run_spin = QSpinBox()
         self.db_run_spin.setRange(0, 99)
         self.db_run_spin.setValue(0)
         self.db_run_spin.setEnabled(False)
-        cw_lay.addWidget(_compact(self.db_run_spin))
-        cw_lay.addStretch(1)
+        add_block_pair_row(
+            cw_lay,
+            1,
+            "Ridge Thr:",
+            _compact(self.db_ridge_thr_spin),
+            "Run:",
+            _compact(self.db_run_spin),
+        )
         db_lay.addWidget(self._db_cw_panel)
 
         self.db_info_lbl = QLabel("—")
         self.db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         db_lay.addWidget(self.db_info_lbl)
 
-        db_btn_row = QHBoxLayout()
+        db_btn_row = block_grid(horizontal_spacing=12)
         self.set_seed_btn = QPushButton("Set as Tracking Seed")
-        db_btn_row.addWidget(_compact_btn(self.set_seed_btn))
+        add_block_button_row(db_btn_row, 0, self.set_seed_btn)
         db_lay.addLayout(db_btn_row)
 
-        db_del_row = QHBoxLayout()
+        db_del_row = block_grid(horizontal_spacing=12)
         self.del_stack_btn = QPushButton("Remove Stack")
         danger_button(self.del_stack_btn)
-        db_del_row.addWidget(_compact_btn(self.del_stack_btn))
+        add_block_button_row(db_del_row, 0, self.del_stack_btn)
         db_lay.addLayout(db_del_row)
         self.db_section = CollapsibleSection(
             "3. Database Browser", _db_inner, expanded=False
@@ -511,72 +518,50 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.setSpacing(4)
         ultrack_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        tracking_grid = QGridLayout()
+        tracking_grid = block_grid(horizontal_spacing=12)
         tracking_grid.setContentsMargins(0, 0, 0, 0)
-        tracking_grid.setHorizontalSpacing(12)
-        tracking_grid.setVerticalSpacing(0)
-
-        left_tracking_form = QFormLayout()
-        left_tracking_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        left_tracking_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        left_tracking_form.setHorizontalSpacing(8)
-        left_tracking_form.setVerticalSpacing(4)
-
-        right_tracking_form = QFormLayout()
-        right_tracking_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        right_tracking_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        right_tracking_form.setHorizontalSpacing(8)
-        right_tracking_form.setVerticalSpacing(4)
 
         self.ultrack_min_area_spin = QSpinBox()
         self.ultrack_min_area_spin.setRange(0, 100000)
         self.ultrack_min_area_spin.setValue(300)
         self.ultrack_min_area_spin.setSingleStep(50)
-        left_tracking_form.addRow("Min Area (px):", _compact(self.ultrack_min_area_spin, 80))
 
         self.ultrack_max_partitions_spin = QSpinBox()
         self.ultrack_max_partitions_spin.setRange(0, 1000)
         self.ultrack_max_partitions_spin.setValue(30)
         self.ultrack_max_partitions_spin.setToolTip("0 = use all partitions")
-        left_tracking_form.addRow("Max Partitions/frame:", _compact(self.ultrack_max_partitions_spin, 80))
 
         self.ultrack_n_frames_spin = QSpinBox()
         self.ultrack_n_frames_spin.setRange(0, 10000)
         self.ultrack_n_frames_spin.setValue(0)
         self.ultrack_n_frames_spin.setToolTip("0 = process all frames")
-        left_tracking_form.addRow("First N frames:", _compact(self.ultrack_n_frames_spin, 80))
 
         self.ultrack_linking_mode_combo = QComboBox()
         self.ultrack_linking_mode_combo.addItems(["default", "iou"])
-        left_tracking_form.addRow("Linking Mode:", self.ultrack_linking_mode_combo)
 
         self.ultrack_max_dist_spin = QDoubleSpinBox()
         self.ultrack_max_dist_spin.setRange(0.0, 500.0)
         self.ultrack_max_dist_spin.setValue(15.0)
         self.ultrack_max_dist_spin.setSingleStep(1.0)
         self.ultrack_max_dist_spin.setDecimals(1)
-        left_tracking_form.addRow("Max Distance (px):", _compact(self.ultrack_max_dist_spin, 80))
 
         self.ultrack_iou_weight_spin = QDoubleSpinBox()
         self.ultrack_iou_weight_spin.setRange(0.0, 1.0)
         self.ultrack_iou_weight_spin.setValue(1.0)
         self.ultrack_iou_weight_spin.setSingleStep(0.05)
         self.ultrack_iou_weight_spin.setDecimals(2)
-        left_tracking_form.addRow("IoU Weight:", _compact(self.ultrack_iou_weight_spin, 80))
 
         self.ultrack_appear_spin = QDoubleSpinBox()
         self.ultrack_appear_spin.setRange(-10.0, 0.0)
         self.ultrack_appear_spin.setValue(-0.1)
         self.ultrack_appear_spin.setSingleStep(0.05)
         self.ultrack_appear_spin.setDecimals(3)
-        right_tracking_form.addRow("Appear Penalty:", _compact(self.ultrack_appear_spin, 80))
 
         self.ultrack_disappear_spin = QDoubleSpinBox()
         self.ultrack_disappear_spin.setRange(-10.0, 0.0)
         self.ultrack_disappear_spin.setValue(-0.1)
         self.ultrack_disappear_spin.setSingleStep(0.05)
         self.ultrack_disappear_spin.setDecimals(3)
-        right_tracking_form.addRow("Disappear Penalty:", _compact(self.ultrack_disappear_spin, 80))
 
         self.ultrack_division_spin = QDoubleSpinBox()
         self.ultrack_division_spin.setRange(-10.0, 0.0)
@@ -586,7 +571,6 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_division_spin.setToolTip(
             "ILP penalty for cell division events. More negative = fewer divisions allowed."
         )
-        right_tracking_form.addRow("Division Penalty:", _compact(self.ultrack_division_spin, 80))
 
         self.ultrack_max_neighbors_spin = QSpinBox()
         self.ultrack_max_neighbors_spin.setRange(1, 50)
@@ -594,25 +578,71 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_max_neighbors_spin.setToolTip(
             "Maximum number of candidate predecessor nodes considered during linking."
         )
-        right_tracking_form.addRow("Max Neighbors:", _compact(self.ultrack_max_neighbors_spin, 80))
 
         self.ultrack_solver_lbl = QLabel("—")
-        right_tracking_form.addRow("Solver:", self.ultrack_solver_lbl)
-
-        tracking_grid.addLayout(left_tracking_form, 0, 0)
-        tracking_grid.addLayout(right_tracking_form, 0, 1)
-        tracking_grid.setColumnStretch(0, 1)
-        tracking_grid.setColumnStretch(1, 1)
+        add_block_pair_row(
+            tracking_grid,
+            0,
+            "Min Area (px):",
+            _compact(self.ultrack_min_area_spin, 80),
+            "Appear Penalty:",
+            _compact(self.ultrack_appear_spin, 80),
+            field_width=80,
+        )
+        add_block_pair_row(
+            tracking_grid,
+            1,
+            "Max Partitions/frame:",
+            _compact(self.ultrack_max_partitions_spin, 80),
+            "Disappear Penalty:",
+            _compact(self.ultrack_disappear_spin, 80),
+            field_width=80,
+        )
+        add_block_pair_row(
+            tracking_grid,
+            2,
+            "First N frames:",
+            _compact(self.ultrack_n_frames_spin, 80),
+            "Division Penalty:",
+            _compact(self.ultrack_division_spin, 80),
+            field_width=80,
+        )
+        add_block_pair_row(
+            tracking_grid,
+            3,
+            "Linking Mode:",
+            self.ultrack_linking_mode_combo,
+            "Max Neighbors:",
+            _compact(self.ultrack_max_neighbors_spin, 80),
+            field_width=None,
+        )
+        add_block_pair_row(
+            tracking_grid,
+            4,
+            "Max Distance (px):",
+            _compact(self.ultrack_max_dist_spin, 80),
+            "Solver:",
+            self.ultrack_solver_lbl,
+            field_width=None,
+        )
+        add_block_pair_row(
+            tracking_grid,
+            5,
+            "IoU Weight:",
+            _compact(self.ultrack_iou_weight_spin, 80),
+            field_width=80,
+        )
         ultrack_lay.addLayout(tracking_grid)
 
         self.ultrack_route_check = QCheckBox("Resolve from validated")
-        ultrack_lay.addWidget(self.ultrack_route_check)
+        route_grid = block_grid(horizontal_spacing=12)
+        add_block_checkbox_row(route_grid, 0, self.ultrack_route_check)
+        ultrack_lay.addLayout(route_grid)
 
-        ultrack_run_row = QHBoxLayout()
+        ultrack_run_row = block_grid(horizontal_spacing=12)
         self.run_ultrack_btn = QPushButton("Run Ultrack Tracking")
         self.ultrack_terminal_btn = QPushButton("Run in Terminal")
-        ultrack_run_row.addWidget(_compact_btn(self.run_ultrack_btn))
-        ultrack_run_row.addWidget(_compact_btn(self.ultrack_terminal_btn))
+        add_block_button_row(ultrack_run_row, 0, self.run_ultrack_btn, self.ultrack_terminal_btn)
         ultrack_lay.addLayout(ultrack_run_row)
 
         self.ultrack_status_lbl = QLabel("")
@@ -635,47 +665,46 @@ class NucleusWorkflowWidget(QWidget):
         _corr_inner_lay.setContentsMargins(0, 0, 0, 0)
         _corr_inner_lay.setSpacing(4)
 
-        extend_row = QHBoxLayout()
+        extend_row = block_grid(horizontal_spacing=12)
         self.extend_back_btn = QPushButton("◀ Extend (Ctrl+Shift+A)")
-        extend_row.addWidget(_compact_btn(self.extend_back_btn))
         self.extend_fwd_btn = QPushButton("Extend (Ctrl+Shift+D) ▶")
-        extend_row.addWidget(_compact_btn(self.extend_fwd_btn))
+        add_block_button_row(extend_row, 0, self.extend_back_btn, self.extend_fwd_btn)
         _corr_inner_lay.addLayout(extend_row)
 
-        retrack_row = QHBoxLayout()
+        retrack_row = block_grid(horizontal_spacing=12)
         self.retrack_back_btn = QPushButton("◀ Retrack (Ctrl+Shift+Q)")
-        retrack_row.addWidget(_compact_btn(self.retrack_back_btn))
         self.retrack_fwd_btn = QPushButton("Retrack (Ctrl+Shift+E) ▶")
-        retrack_row.addWidget(_compact_btn(self.retrack_fwd_btn))
+        add_block_button_row(retrack_row, 0, self.retrack_back_btn, self.retrack_fwd_btn)
         _corr_inner_lay.addLayout(retrack_row)
 
-        save_load_row = QHBoxLayout()
+        save_load_row = block_grid(horizontal_spacing=12)
         self.save_tracked_btn = QPushButton("Save Tracked Labels")
         self.load_tracked_btn = QPushButton("Load Tracked Labels")
-        save_load_row.addWidget(_compact_btn(self.save_tracked_btn))
-        save_load_row.addWidget(_compact_btn(self.load_tracked_btn))
+        add_block_button_row(save_load_row, 0, self.save_tracked_btn, self.load_tracked_btn)
         _corr_inner_lay.addLayout(save_load_row)
 
-        reassign_row = QHBoxLayout()
+        reassign_row = block_grid(horizontal_spacing=12)
         self.reassign_ids_btn = QPushButton("Reassign IDs")
-        reassign_row.addWidget(_compact_btn(self.reassign_ids_btn))
+        add_block_button_row(reassign_row, 0, self.reassign_ids_btn)
         _corr_inner_lay.addLayout(reassign_row)
 
         extend_params_inner = QWidget()
         extend_params_lay = QVBoxLayout(extend_params_inner)
         extend_params_lay.setContentsMargins(0, 0, 0, 0)
         extend_params_lay.setSpacing(4)
-        extend_params_form = QFormLayout()
-        extend_params_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        extend_params_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        extend_params_form.setHorizontalSpacing(8)
-        extend_params_form.setVerticalSpacing(4)
+        extend_params_form = block_grid(horizontal_spacing=12)
         self.extend_max_dist_spin = QDoubleSpinBox()
         self.extend_max_dist_spin.setRange(0.0, 500.0)
         self.extend_max_dist_spin.setValue(40.0)
         self.extend_max_dist_spin.setSingleStep(1.0)
         self.extend_max_dist_spin.setDecimals(1)
-        extend_params_form.addRow("Max Distance (px):", _compact(self.extend_max_dist_spin, 80))
+        add_block_pair_row(
+            extend_params_form,
+            0,
+            "Max Distance (px):",
+            _compact(self.extend_max_dist_spin, 80),
+            field_width=80,
+        )
         extend_params_lay.addLayout(extend_params_form)
         self.extend_params_section = CollapsibleSection(
             "Extend Parameters", extend_params_inner, expanded=False
@@ -686,17 +715,19 @@ class NucleusWorkflowWidget(QWidget):
         retrack_params_lay = QVBoxLayout(retrack_params_inner)
         retrack_params_lay.setContentsMargins(0, 0, 0, 0)
         retrack_params_lay.setSpacing(4)
-        retrack_params_form = QFormLayout()
-        retrack_params_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        retrack_params_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        retrack_params_form.setHorizontalSpacing(8)
-        retrack_params_form.setVerticalSpacing(4)
+        retrack_params_form = block_grid(horizontal_spacing=12)
         self.retrack_max_dist_spin = QDoubleSpinBox()
         self.retrack_max_dist_spin.setRange(0.0, 500.0)
         self.retrack_max_dist_spin.setValue(20.0)
         self.retrack_max_dist_spin.setSingleStep(1.0)
         self.retrack_max_dist_spin.setDecimals(1)
-        retrack_params_form.addRow("Max Distance (px):", _compact(self.retrack_max_dist_spin, 80))
+        add_block_pair_row(
+            retrack_params_form,
+            0,
+            "Max Distance (px):",
+            _compact(self.retrack_max_dist_spin, 80),
+            field_width=80,
+        )
         retrack_params_lay.addLayout(retrack_params_form)
         self.retrack_params_section = CollapsibleSection(
             "Retrack Parameters", retrack_params_inner, expanded=False
