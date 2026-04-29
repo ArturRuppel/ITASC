@@ -107,6 +107,7 @@ def test_main_widget_labels_the_outer_nucleus_workflow_section():
     widget = widget_class(viewer)
 
     assert widget.nucleus_section.title == "3. Nucleus Segmentation & Tracking"
+    assert widget.nucleus_section._toggle.text() == "3. Nucleus Segmentation && Tracking"
 
     widget.deleteLater()
     viewer.close()
@@ -141,6 +142,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     widget = widget_class(viewer)
 
     assert widget.tracking_correction_section.title == "4. Tracking & Correction"
+    assert widget.tracking_correction_section._toggle.text() == "4. Tracking && Correction"
     assert widget.ultrack_section.title == "Ultrack Tracking"
     assert widget.correction_section.title == "Correction"
     assert widget.correction_shortcuts_section.title == "Correction Shortcuts"

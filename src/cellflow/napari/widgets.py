@@ -47,7 +47,7 @@ class CollapsibleSection(QWidget):
         self._toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self._toggle.setCheckable(True)
         self._toggle.setChecked(expanded)
-        self._toggle.setText(title)
+        self._toggle.setText(self._qt_display_text(title))
         self._toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         self._toggle.setStyleSheet(
             f"QToolButton {{ font-weight: bold; font-size: 10pt; border: none; "
@@ -83,7 +83,7 @@ class CollapsibleSection(QWidget):
     def set_title(self, title: str) -> None:
         """Update the header text."""
         self._base_title = title
-        self._toggle.setText(title)
+        self._toggle.setText(self._qt_display_text(title))
 
     @property
     def title(self) -> str:
@@ -103,6 +103,11 @@ class CollapsibleSection(QWidget):
         self._toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
         self._content_frame.setVisible(checked)
         QTimer.singleShot(0, self._notify_layout_change)
+
+    @staticmethod
+    def _qt_display_text(title: str) -> str:
+        """Escape mnemonic markers so literal ampersands render correctly."""
+        return title.replace("&", "&&")
 
     def _notify_layout_change(self) -> None:
         """Propagate geometry changes up the nested collapsible chain."""
