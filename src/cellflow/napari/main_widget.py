@@ -73,7 +73,7 @@ class CellFlowMainWidget(QWidget):
 
         self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
         self.nucleus_section = CollapsibleSection(
-            "3. Nucleus Workflow", self.nucleus_workflow_widget, expanded=False
+            "3. Nucleus Segmentation & Tracking", self.nucleus_workflow_widget, expanded=False
         )
 
         self.cell_workflow_widget = CellWorkflowWidget(self.viewer)

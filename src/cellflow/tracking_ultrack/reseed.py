@@ -1,14 +1,15 @@
-"""Re-solve with validated tracks: prune → solve → merge.
+"""Re-solve with validated tracks: ingest-with-mask → solve → merge.
 
 The validate-and-resolve loop lets the user lock in confirmed cell tracks
 (validated_tracks), then re-solve the rest of the stack — possibly with
 tweaked parameters — without losing the validated work.
 
 Mechanism:
-1. `prune_validated_overlaps` — remove any hypothesis node that overlaps any
-   validated mask from NodeDB (and cascade-delete referencing OverlapDB rows),
-   so the solver never competes with validated cells.
-2. Normal Ultrack link → solve → export against the pruned DB.
+1. Build per-frame ``forbidden_masks`` from the validated tracks and pass them
+   into ``ingest_hypotheses_to_db``; any hypothesis cell whose pixels touch a
+   validated cell is dropped at ingest time, so the NodeDB never contains
+   competitors in the first place.
+2. Normal Ultrack link → solve → export against the filtered DB.
 3. `merge_validated_into_export` — paste validated masks back onto the exported
    labelmap with fresh unique track IDs, overwriting any stray pixels.
 
@@ -16,6 +17,9 @@ The contract for `validated_tracks` is `dict[int, set[int]]` where keys are
 cell IDs and values are the set of frames at which that cell is validated.
 This is independent of the on-disk JSON shape (which is managed separately by
 `cellflow.database.validation`).
+
+`prune_validated_overlaps` and `_build_frame_masks` are kept for the existing
+unit tests; the live pipeline no longer calls them.
 """
 from __future__ import annotations
 
@@ -84,6 +88,44 @@ def _build_frame_masks(
             frame_index[t].append((cell_id, mask_crop, (y0, x0, y1, x1)))
 
     return frame_index
+
+
+def _build_frame_forbidden_masks(
+    validated_tracks: dict[int, set[int]],
+    tracked_labels: np.ndarray,
+) -> dict[int, np.ndarray]:
+    """Return ``{t: bool_array (Y, X)}`` — union of all validated cell footprints per frame.
+
+    Frames with no validated cells are omitted.  For 4-D ``(T, Z, Y, X)`` input
+    the z-axis is max-projected to give a conservative 2D footprint.
+    """
+    if not validated_tracks:
+        return {}
+
+    n_frames = tracked_labels.shape[0]
+    if tracked_labels.ndim == 4:
+        Y, X = tracked_labels.shape[2], tracked_labels.shape[3]
+    else:
+        Y, X = tracked_labels.shape[1], tracked_labels.shape[2]
+
+    # Group cell IDs by frame so we touch each frame slice once.
+    cells_by_frame: dict[int, list[int]] = {}
+    for cell_id, frames in validated_tracks.items():
+        for t in frames:
+            cells_by_frame.setdefault(int(t), []).append(int(cell_id))
+
+    out: dict[int, np.ndarray] = {}
+    for t, cell_ids in cells_by_frame.items():
+        if t < 0 or t >= n_frames:
+            continue
+        frame_vol = tracked_labels[t]
+        if frame_vol.ndim == 3:
+            frame_2d = np.isin(frame_vol, cell_ids).any(axis=0)
+        else:
+            frame_2d = np.isin(frame_vol, cell_ids)
+        if frame_2d.any():
+            out[t] = np.ascontiguousarray(frame_2d, dtype=bool)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -343,16 +385,22 @@ def merge_validated_into_export(
 # ---------------------------------------------------------------------------
 
 def resolve_with_validation(
-    working_dir: str | Path,
+    hypotheses_path: str | Path,
     validated_tracks: dict[int, set[int]],
     tracked_labels: np.ndarray,
     cfg: TrackingConfig,
     progress_cb: "Callable[[str], None] | None" = None,
 ) -> tuple[np.ndarray, dict[int, int]]:
-    """Prune validated overlaps, re-solve, and merge validated cells back in.
+    """Re-ingest hypotheses, prune validated overlaps, re-solve, merge back.
+
+    Each call creates a **fresh temporary working directory** for Ultrack and
+    discards it on exit.  This keeps the resolve idempotent (no carry-over of
+    pruned-DB state, freelist bloat, or stale WAL files between runs).
 
     Orchestration:
 
+    0. :func:`~cellflow.tracking_ultrack.ingest.ingest_hypotheses_to_db` —
+       build the NodeDB/OverlapDB from ``hypotheses.h5`` in a fresh temp dir.
     1. :func:`prune_validated_overlaps` — remove hypothesis nodes that overlap
        any validated mask so the solver never competes with them.
     2. ``ultrack.core.linking.processing.link`` — build candidate links in the
@@ -365,9 +413,8 @@ def resolve_with_validation(
 
     Parameters
     ----------
-    working_dir:
-        Ultrack working directory that already contains a populated ``data.db``
-        (NodeDB + OverlapDB) from a prior ingestion run.
+    hypotheses_path:
+        Path to ``hypotheses.h5`` — the source of truth for the rebuild.
     validated_tracks:
         ``{cell_id: {frames}}`` — the locked-in validated tracks.
     tracked_labels:
@@ -392,47 +439,57 @@ def resolve_with_validation(
     from ultrack.core.solve.processing import solve
 
     from cellflow.tracking_ultrack.export import export_tracked_labels
+    from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db
 
     def _notify(msg: str) -> None:
         if progress_cb is not None:
             progress_cb(msg)
 
-    working_dir = Path(working_dir)
-    ultrack_cfg = _build_ultrack_config(cfg, working_dir)
+    hypotheses_path = Path(hypotheses_path)
 
-    # Step 1: prune
-    _notify("Pruning validated overlaps…")
-    n_pruned = prune_validated_overlaps(working_dir, validated_tracks, tracked_labels)
-    LOG.info("resolve_with_validation: pruned %d nodes", n_pruned)
+    forbidden_masks = _build_frame_forbidden_masks(validated_tracks, tracked_labels)
 
-    # Step 2: link
-    _notify("Linking hypotheses…")
-    clear_linking_data(ultrack_cfg.data_config.database_path)
-    try:
-        link(ultrack_cfg, overwrite=False)
-    except (ValueError, IndexError) as exc:
-        # Ultrack's linker raises ValueError / IndexError when a frame is empty
-        # (e.g. all nodes were pruned).  Fall back to an all-zero labelmap so
-        # that step 5 can still paste the validated cells back.
-        LOG.warning(
-            "resolve_with_validation: linking failed (%s: %s) — "
-            "falling back to empty labelmap for solver output",
-            type(exc).__name__, exc,
+    with tempfile.TemporaryDirectory(prefix="cellflow_resolve_workdir_") as tmp_workdir:
+        working_dir = Path(tmp_workdir)
+
+        # Step 0: ingest hypotheses, dropping cells that overlap validated tracks
+        _notify("Ingesting hypotheses (skipping validated regions)…")
+        ingest_hypotheses_to_db(
+            hypotheses_path, working_dir, cfg,
+            overwrite=True,
+            forbidden_masks=forbidden_masks,
         )
-        exported = np.zeros_like(tracked_labels, dtype=np.uint32)
-        _notify("Merging validated cells…")
-        exported, id_map = merge_validated_into_export(exported, validated_tracks, tracked_labels)
-        return exported, id_map
 
-    # Step 3: solve
-    _notify("Solving ILP…")
-    solve(ultrack_cfg, overwrite=True)
+        ultrack_cfg = _build_ultrack_config(cfg, working_dir)
 
-    # Step 4: export to a temporary file, load as numpy
-    _notify("Exporting tracks…")
-    with tempfile.TemporaryDirectory(prefix="cellflow_resolve_") as tmpdir:
-        out_path = Path(tmpdir) / "tracked_labels.tif"
-        exported = export_tracked_labels(working_dir, cfg, out_path)
+        # Step 2: link
+        _notify("Linking hypotheses…")
+        clear_linking_data(ultrack_cfg.data_config.database_path)
+        try:
+            link(ultrack_cfg, overwrite=False)
+        except (ValueError, IndexError) as exc:
+            # Ultrack's linker raises ValueError / IndexError when a frame is empty
+            # (e.g. all nodes were pruned).  Fall back to an all-zero labelmap so
+            # that step 5 can still paste the validated cells back.
+            LOG.warning(
+                "resolve_with_validation: linking failed (%s: %s) — "
+                "falling back to empty labelmap for solver output",
+                type(exc).__name__, exc,
+            )
+            exported = np.zeros_like(tracked_labels, dtype=np.uint32)
+            _notify("Merging validated cells…")
+            exported, id_map = merge_validated_into_export(exported, validated_tracks, tracked_labels)
+            return exported, id_map
+
+        # Step 3: solve
+        _notify("Solving ILP…")
+        solve(ultrack_cfg, overwrite=True)
+
+        # Step 4: export to a temporary file, load as numpy
+        _notify("Exporting tracks…")
+        with tempfile.TemporaryDirectory(prefix="cellflow_resolve_export_") as tmpdir:
+            out_path = Path(tmpdir) / "tracked_labels.tif"
+            exported = export_tracked_labels(working_dir, cfg, out_path)
 
     # Ensure uint32 and (T, Y, X) or (T, Z, Y, X) consistent with tracked_labels
     exported = np.asarray(exported, dtype=np.uint32)

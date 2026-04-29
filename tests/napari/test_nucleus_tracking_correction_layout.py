@@ -6,10 +6,12 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtWidgets import QApplication, QPushButton, QScrollArea
+from qtpy.QtWidgets import QApplication, QPushButton, QScrollArea, QWidget
 
 
 def _make_viewer():
@@ -49,10 +51,65 @@ def _install_import_stubs() -> None:
         sys.modules[module_name] = module
 
 
+def _install_main_widget_stubs() -> None:
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+
+    napari_pkg = types.ModuleType("cellflow.napari")
+    napari_pkg.__path__ = [str(package_root)]
+    sys.modules["cellflow.napari"] = napari_pkg
+
+    class _StubWidget(QWidget):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+
+    stub_modules = {
+        "cellflow.napari.analysis_widget": {"AnalysisWidget": _StubWidget},
+        "cellflow.napari.cell_workflow_widget": {"CellWorkflowWidget": _StubWidget},
+        "cellflow.napari.cellpose_widget": {"CellposeWidget": _StubWidget},
+        "cellflow.napari.correction_widget": {"CorrectionWidget": _StubWidget},
+        "cellflow.napari.data_panel_widget": {"ProjectStatusPanel": _StubWidget},
+        "cellflow.napari.data_prep_widget": {"DataPrepWidget": _StubWidget},
+        "cellflow.napari.nucleus_workflow_widget": {"NucleusWorkflowWidget": _StubWidget},
+    }
+
+    for module_name, attrs in stub_modules.items():
+        module = types.ModuleType(module_name)
+        for attr_name, value in attrs.items():
+            setattr(module, attr_name, value)
+        sys.modules[module_name] = module
+
+
 def _load_widget_class():
     _install_import_stubs()
     module = importlib.import_module("cellflow.napari.nucleus_workflow_widget")
     return module.NucleusWorkflowWidget
+
+
+def _load_main_widget_class():
+    _install_main_widget_stubs()
+    module = importlib.import_module("cellflow.napari.main_widget")
+    for module_name in (
+        "cellflow.napari.analysis_widget",
+        "cellflow.napari.cell_workflow_widget",
+        "cellflow.napari.cellpose_widget",
+        "cellflow.napari.correction_widget",
+        "cellflow.napari.data_panel_widget",
+        "cellflow.napari.data_prep_widget",
+        "cellflow.napari.nucleus_workflow_widget",
+    ):
+        sys.modules.pop(module_name, None)
+    return module.CellFlowMainWidget
+
+
+def test_main_widget_labels_the_outer_nucleus_workflow_section():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.nucleus_section.title == "3. Nucleus Segmentation & Tracking"
+
+    widget.deleteLater()
+    viewer.close()
 
 
 def test_tracking_correction_shell_exposes_stable_section_attributes():
@@ -75,6 +132,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
         button.text()
         for button in widget.ultrack_section.findChildren(QPushButton)
     }
+    route_checkboxes = widget.ultrack_section.findChildren(type(widget.ultrack_route_check))
 
     assert "Save Tracked Labels" in correction_button_texts
     assert "Load Tracked Labels" in correction_button_texts
@@ -86,6 +144,10 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert "Save Tracked Labels" not in ultrack_button_texts
     assert "Load Tracked Labels" not in ultrack_button_texts
     assert "Reassign IDs" not in ultrack_button_texts
+    assert widget.ultrack_route_check in route_checkboxes
+    assert widget.ultrack_route_check not in widget.correction_section.findChildren(
+        type(widget.ultrack_route_check)
+    )
 
     widget.deleteLater()
     viewer.close()
@@ -97,8 +159,30 @@ def test_ultrack_section_exposes_route_selector_and_local_status():
     widget = widget_class(viewer)
 
     assert widget.ultrack_route_check.text() == "Resolve from validated"
+    assert widget.ultrack_route_check in widget.ultrack_section.findChildren(
+        type(widget.ultrack_route_check)
+    )
     assert widget.ultrack_status_lbl.text() == ""
     assert widget.ultrack_progress_bar.isVisible() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+@pytest.mark.xfail(reason="Pending nucleus workflow refactor in nucleus_workflow_widget", strict=False)
+def test_correction_section_has_no_separate_resolve_action_group():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    correction_button_texts = {
+        button.text()
+        for button in widget.correction_section.findChildren(QPushButton)
+    }
+
+    assert "Re-solve from validated" not in correction_button_texts
+    assert "Resolve from validated" not in correction_button_texts
+    assert "Run in Terminal" not in correction_button_texts
 
     widget.deleteLater()
     viewer.close()

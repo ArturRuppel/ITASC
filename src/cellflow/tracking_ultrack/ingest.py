@@ -120,8 +120,14 @@ def _extract_cell_records_2d(
     max_segments: int,
     min_area: int | None,
     max_area: int | None,
+    forbidden_mask: np.ndarray | None = None,
 ) -> tuple[list[_CellRecord], int]:
-    """Extract CellRecords from one 2D labelmap. Returns (records, next_index)."""
+    """Extract CellRecords from one 2D labelmap. Returns (records, next_index).
+
+    If ``forbidden_mask`` is given (Y×X bool), any region whose pixels intersect
+    a True pixel in the mask is silently skipped — used to keep validated cells
+    out of the hypothesis DB at ingest time.
+    """
     records: list[_CellRecord] = []
     idx = index_start
 
@@ -136,6 +142,12 @@ def _extract_cell_records_2d(
         min_r, min_c, max_r, max_c = prop.bbox
         bbox = np.array([min_r, min_c, max_r, max_c], dtype=np.int32)
         mask = (labelmap_2d[min_r:max_r, min_c:max_c] == prop.label).astype(bool)
+
+        if forbidden_mask is not None:
+            forbidden_crop = forbidden_mask[min_r:max_r, min_c:max_c]
+            if np.any(mask & forbidden_crop):
+                continue
+
         cy, cx = prop.centroid
 
         records.append(_CellRecord(
@@ -264,6 +276,7 @@ def _ingest_frame_worker(args: tuple) -> None:
         eff_max_area,
         max_partitions,
         tmp_db_path_str,
+        forbidden_mask,
     ) = args
 
     import sqlalchemy as _sqla
@@ -311,7 +324,8 @@ def _ingest_frame_worker(args: tuple) -> None:
 
         n_kept += 1
         recs, index = _extract_cell_records_2d(
-            labels_2d, t, p, index, max_segments, eff_min_area, eff_max_area
+            labels_2d, t, p, index, max_segments, eff_min_area, eff_max_area,
+            forbidden_mask=forbidden_mask,
         )
         nid_lm = _build_nid_labelmap(labels_2d, recs)
         all_records.extend(recs)
@@ -362,6 +376,7 @@ def ingest_hypotheses_to_db(
     max_partitions: int | None = None,
     n_frames: int | None = None,
     n_workers: int | None = None,
+    forbidden_masks: dict[int, np.ndarray] | None = None,
 ) -> None:
     """Write v2 hypothesis HDF5 into Ultrack's NodeDB + OverlapDB.
 
@@ -387,6 +402,11 @@ def ingest_hypotheses_to_db(
         Number of worker processes for parallel frame ingest.
         None (default) = min(cpu_count(), n_frames, 8).
         1 = serial (no subprocess overhead).
+    forbidden_masks:
+        Optional ``{t: bool_array (Y, X)}`` map.  Any hypothesis cell whose
+        pixels intersect ``forbidden_masks[t]`` at frame ``t`` is silently
+        skipped — used by the validate-and-resolve flow to keep validated
+        cells out of the hypothesis DB without a separate prune pass.
     """
     import multiprocessing as _mp
     import time as _time
@@ -448,6 +468,7 @@ def ingest_hypotheses_to_db(
             eff_max_area,
             max_partitions,
             str(tmp_dir / f"frame_{t:04d}.db"),
+            (forbidden_masks.get(t) if forbidden_masks else None),
         )
         for t in timepoints
     ]

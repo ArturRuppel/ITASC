@@ -137,3 +137,17 @@ def invalidate_track(pos_dir: Path, cell_id: int) -> None:
     if cell_id in data:
         del data[cell_id]
         _write_validated_tracks(pos_dir, data)
+
+
+def remap_validated_tracks(pos_dir: Path, old_to_new: dict[int, int]) -> None:
+    """Remap cell IDs in the validated-tracks store using *old_to_new* mapping.
+
+    IDs not present in the mapping are dropped.
+    """
+    data = read_validated_tracks(pos_dir)
+    remapped = {
+        old_to_new[cell_id]: frames
+        for cell_id, frames in data.items()
+        if cell_id in old_to_new
+    }
+    _write_validated_tracks(pos_dir, remapped)

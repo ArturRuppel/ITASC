@@ -516,61 +516,72 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.setSpacing(4)
         ultrack_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        tracking_form = QFormLayout()
-        tracking_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        tracking_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-        tracking_form.setHorizontalSpacing(8)
-        tracking_form.setVerticalSpacing(4)
+        tracking_grid = QGridLayout()
+        tracking_grid.setContentsMargins(0, 0, 0, 0)
+        tracking_grid.setHorizontalSpacing(12)
+        tracking_grid.setVerticalSpacing(0)
+
+        left_tracking_form = QFormLayout()
+        left_tracking_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        left_tracking_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        left_tracking_form.setHorizontalSpacing(8)
+        left_tracking_form.setVerticalSpacing(4)
+
+        right_tracking_form = QFormLayout()
+        right_tracking_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        right_tracking_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        right_tracking_form.setHorizontalSpacing(8)
+        right_tracking_form.setVerticalSpacing(4)
 
         self.ultrack_min_area_spin = QSpinBox()
         self.ultrack_min_area_spin.setRange(0, 100000)
         self.ultrack_min_area_spin.setValue(300)
         self.ultrack_min_area_spin.setSingleStep(50)
-        tracking_form.addRow("Min Area (px):", _compact(self.ultrack_min_area_spin, 80))
+        left_tracking_form.addRow("Min Area (px):", _compact(self.ultrack_min_area_spin, 80))
 
         self.ultrack_max_partitions_spin = QSpinBox()
         self.ultrack_max_partitions_spin.setRange(0, 1000)
         self.ultrack_max_partitions_spin.setValue(30)
         self.ultrack_max_partitions_spin.setToolTip("0 = use all partitions")
-        tracking_form.addRow("Max Partitions/frame:", _compact(self.ultrack_max_partitions_spin, 80))
+        left_tracking_form.addRow("Max Partitions/frame:", _compact(self.ultrack_max_partitions_spin, 80))
 
         self.ultrack_n_frames_spin = QSpinBox()
         self.ultrack_n_frames_spin.setRange(0, 10000)
         self.ultrack_n_frames_spin.setValue(0)
         self.ultrack_n_frames_spin.setToolTip("0 = process all frames")
-        tracking_form.addRow("First N frames:", _compact(self.ultrack_n_frames_spin, 80))
+        left_tracking_form.addRow("First N frames:", _compact(self.ultrack_n_frames_spin, 80))
 
         self.ultrack_linking_mode_combo = QComboBox()
         self.ultrack_linking_mode_combo.addItems(["default", "iou"])
-        tracking_form.addRow("Linking Mode:", self.ultrack_linking_mode_combo)
+        left_tracking_form.addRow("Linking Mode:", self.ultrack_linking_mode_combo)
 
         self.ultrack_max_dist_spin = QDoubleSpinBox()
         self.ultrack_max_dist_spin.setRange(0.0, 500.0)
         self.ultrack_max_dist_spin.setValue(15.0)
         self.ultrack_max_dist_spin.setSingleStep(1.0)
         self.ultrack_max_dist_spin.setDecimals(1)
-        tracking_form.addRow("Max Distance (px):", _compact(self.ultrack_max_dist_spin, 80))
+        left_tracking_form.addRow("Max Distance (px):", _compact(self.ultrack_max_dist_spin, 80))
 
         self.ultrack_iou_weight_spin = QDoubleSpinBox()
         self.ultrack_iou_weight_spin.setRange(0.0, 1.0)
         self.ultrack_iou_weight_spin.setValue(1.0)
         self.ultrack_iou_weight_spin.setSingleStep(0.05)
         self.ultrack_iou_weight_spin.setDecimals(2)
-        tracking_form.addRow("IoU Weight:", _compact(self.ultrack_iou_weight_spin, 80))
+        left_tracking_form.addRow("IoU Weight:", _compact(self.ultrack_iou_weight_spin, 80))
 
         self.ultrack_appear_spin = QDoubleSpinBox()
         self.ultrack_appear_spin.setRange(-10.0, 0.0)
         self.ultrack_appear_spin.setValue(-0.1)
         self.ultrack_appear_spin.setSingleStep(0.05)
         self.ultrack_appear_spin.setDecimals(3)
-        tracking_form.addRow("Appear Penalty:", _compact(self.ultrack_appear_spin, 80))
+        right_tracking_form.addRow("Appear Penalty:", _compact(self.ultrack_appear_spin, 80))
 
         self.ultrack_disappear_spin = QDoubleSpinBox()
         self.ultrack_disappear_spin.setRange(-10.0, 0.0)
         self.ultrack_disappear_spin.setValue(-0.1)
         self.ultrack_disappear_spin.setSingleStep(0.05)
         self.ultrack_disappear_spin.setDecimals(3)
-        tracking_form.addRow("Disappear Penalty:", _compact(self.ultrack_disappear_spin, 80))
+        right_tracking_form.addRow("Disappear Penalty:", _compact(self.ultrack_disappear_spin, 80))
 
         self.ultrack_division_spin = QDoubleSpinBox()
         self.ultrack_division_spin.setRange(-10.0, 0.0)
@@ -580,7 +591,7 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_division_spin.setToolTip(
             "ILP penalty for cell division events. More negative = fewer divisions allowed."
         )
-        tracking_form.addRow("Division Penalty:", _compact(self.ultrack_division_spin, 80))
+        right_tracking_form.addRow("Division Penalty:", _compact(self.ultrack_division_spin, 80))
 
         self.ultrack_max_neighbors_spin = QSpinBox()
         self.ultrack_max_neighbors_spin.setRange(1, 50)
@@ -588,12 +599,16 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_max_neighbors_spin.setToolTip(
             "Maximum number of candidate predecessor nodes considered during linking."
         )
-        tracking_form.addRow("Max Neighbors:", _compact(self.ultrack_max_neighbors_spin, 80))
+        right_tracking_form.addRow("Max Neighbors:", _compact(self.ultrack_max_neighbors_spin, 80))
 
         self.ultrack_solver_lbl = QLabel("—")
-        tracking_form.addRow("Solver:", self.ultrack_solver_lbl)
+        right_tracking_form.addRow("Solver:", self.ultrack_solver_lbl)
 
-        ultrack_lay.addLayout(tracking_form)
+        tracking_grid.addLayout(left_tracking_form, 0, 0)
+        tracking_grid.addLayout(right_tracking_form, 0, 1)
+        tracking_grid.setColumnStretch(0, 1)
+        tracking_grid.setColumnStretch(1, 1)
+        ultrack_lay.addLayout(tracking_grid)
 
         self.ultrack_route_check = QCheckBox("Resolve from validated")
         ultrack_lay.addWidget(self.ultrack_route_check)
@@ -693,21 +708,6 @@ class NucleusWorkflowWidget(QWidget):
         )
         _corr_inner_lay.addWidget(self.retrack_params_section)
 
-        resolve_row = QHBoxLayout()
-        self.resolve_validated_btn = QPushButton("Re-solve from validated")
-        self.resolve_validated_btn.setToolTip(
-            "Prune hypothesis nodes that overlap validated cells, re-run the ILP solver, "
-            "then paste the validated cells back — preserving all locked tracks."
-        )
-        self.resolve_terminal_btn = QPushButton("Run in Terminal")
-        self.resolve_terminal_btn.setToolTip(
-            "Generate a standalone Python script for the Re-solve from validated operation "
-            "and launch it in a new terminal window."
-        )
-        resolve_row.addWidget(_compact_btn(self.resolve_validated_btn))
-        resolve_row.addWidget(_compact_btn(self.resolve_terminal_btn))
-        _corr_inner_lay.addLayout(resolve_row)
-
         self.validation_counter_lbl = QLabel("")
         self.validation_counter_lbl.setWordWrap(True)
         _corr_inner_lay.addWidget(self.validation_counter_lbl)
@@ -781,8 +781,6 @@ class NucleusWorkflowWidget(QWidget):
         self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
         self.extend_back_btn.clicked.connect(self._on_extend_backward)
         self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
-        self.resolve_validated_btn.clicked.connect(self._on_resolve_with_validation)
-        self.resolve_terminal_btn.clicked.connect(self._on_resolve_terminal)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
         self.viewer.bind_key("V", self._kb_toggle_cell_validation, overwrite=True)
         self._install_correction_shortcuts()
@@ -1726,11 +1724,11 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_run_ultrack(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_ultrack_status("No project open.")
             return
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
-            self._set_status("Hypothesis DB not found — run the sweep first.")
+            self._set_ultrack_status("Hypothesis DB not found — run the sweep first.")
             return
         working_dir = self._ultrack_workdir()
         tracked_path = self._tracked_path()
@@ -1746,6 +1744,8 @@ class NucleusWorkflowWidget(QWidget):
         iou_weight = self.ultrack_iou_weight_spin.value()
         appear_weight = self.ultrack_appear_spin.value()
         disappear_weight = self.ultrack_disappear_spin.value()
+        division_weight = self.ultrack_division_spin.value()
+        max_neighbors = self.ultrack_max_neighbors_spin.value()
         cfg = UltrackConfig(
             min_area=min_area,
             max_distance=max_distance,
@@ -1753,8 +1753,11 @@ class NucleusWorkflowWidget(QWidget):
             iou_weight=iou_weight,
             appear_weight=appear_weight,
             disappear_weight=disappear_weight,
+            division_weight=division_weight,
+            max_neighbors=max_neighbors,
         )
 
+        self.ultrack_progress_bar.setRange(0, 100)
         self.ultrack_progress_bar.setVisible(True)
         self.ultrack_progress_bar.setValue(0)
         self._set_ultrack_status("Starting Ultrack tracking…")
@@ -1767,17 +1770,16 @@ class NucleusWorkflowWidget(QWidget):
         def _worker():
             # Stage 1: ingest
             yield ("ingest", 0, 3, "Ingesting hypotheses…")
-            if not resolve_only:
-                ingest_hypotheses_to_db(
-                    hyp_path, working_dir, cfg,
-                    overwrite=True,
-                    max_partitions=max_partitions,
-                    n_frames=n_frames,
-                )
+            ingest_hypotheses_to_db(
+                hyp_path, working_dir, cfg,
+                overwrite=True,
+                max_partitions=max_partitions,
+                n_frames=n_frames,
+            )
 
-                # Stage 2: linking (IS a generator — relay each progress tuple)
-                for step, total, label in run_linking(working_dir, cfg):
-                    yield ("link", step, total, label)
+            # Stage 2: linking (IS a generator — relay each progress tuple)
+            for step, total, label in run_linking(working_dir, cfg):
+                yield ("link", step, total, label)
 
             # Stage 3: solve (IS a generator — relay each progress tuple)
             for step, total, label in run_solve(working_dir, cfg, overwrite=True):
@@ -1837,6 +1839,8 @@ class NucleusWorkflowWidget(QWidget):
         iou_weight = self.ultrack_iou_weight_spin.value()
         appear_weight = self.ultrack_appear_spin.value()
         disappear_weight = self.ultrack_disappear_spin.value()
+        division_weight = self.ultrack_division_spin.value()
+        max_neighbors = self.ultrack_max_neighbors_spin.value()
 
         # NOTE: body must live under `if __name__ == "__main__":` because
         # Ultrack's linker uses spawn-based multiprocessing, which re-executes
@@ -1863,6 +1867,8 @@ class NucleusWorkflowWidget(QWidget):
             f"        iou_weight={iou_weight},\n"
             f"        appear_weight={appear_weight},\n"
             f"        disappear_weight={disappear_weight},\n"
+            f"        division_weight={division_weight},\n"
+            f"        max_neighbors={max_neighbors},\n"
             f"    )\n"
             f"    max_partitions = {max_partitions!r}\n"
             f"    n_frames       = {n_frames!r}\n"
@@ -2344,13 +2350,19 @@ class NucleusWorkflowWidget(QWidget):
         )
 
         n_validated = len(validated_tracks)
-        self.resolve_validated_btn.setEnabled(False)
+        self.run_ultrack_btn.setEnabled(False)
+        self.ultrack_terminal_btn.setEnabled(False)
+        self.ultrack_progress_bar.setRange(0, 0)
+        self.ultrack_progress_bar.setVisible(True)
         self._set_ultrack_status(
             f"Re-solving with {n_validated} validated track(s) preserved…"
         )
 
         def _on_resolve_done(result: tuple) -> None:
-            self.resolve_validated_btn.setEnabled(True)
+            self.run_ultrack_btn.setEnabled(True)
+            self.ultrack_terminal_btn.setEnabled(True)
+            self.ultrack_progress_bar.setVisible(False)
+            self.ultrack_progress_bar.setRange(0, 100)
             if result is None:
                 self._set_ultrack_status("Re-solve failed (no output).")
                 return
@@ -2396,7 +2408,10 @@ class NucleusWorkflowWidget(QWidget):
             self._set_ultrack_status(msg)
 
         def _on_resolve_error(exc: Exception) -> None:
-            self.resolve_validated_btn.setEnabled(True)
+            self.run_ultrack_btn.setEnabled(True)
+            self.ultrack_terminal_btn.setEnabled(True)
+            self.ultrack_progress_bar.setVisible(False)
+            self.ultrack_progress_bar.setRange(0, 100)
             self._on_worker_error(exc)
 
         @thread_worker(connect={
