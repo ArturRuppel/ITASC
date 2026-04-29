@@ -13,6 +13,15 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from .ui_style import (
+    SECTION_MARGIN,
+    TIGHT_SPACING,
+    TINY_MARGIN,
+    icon_button,
+    muted_label,
+    status_label,
+)
+
 
 class CollapsibleSection(QWidget):
     """A labelled section with a toggle button that shows/hides its inner widget."""
@@ -30,7 +39,7 @@ class CollapsibleSection(QWidget):
         self._base_title = title
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setContentsMargins(0, TINY_MARGIN, 0, TINY_MARGIN)
         layout.setSpacing(0)
 
         # Header toggle button
@@ -56,8 +65,10 @@ class CollapsibleSection(QWidget):
             "border-radius: 4px; margin: 0px 2px 2px 2px; }"
         )
         frame_layout = QVBoxLayout(self._content_frame)
-        frame_layout.setContentsMargins(4, 4, 4, 4)
-        frame_layout.setSpacing(2)
+        frame_layout.setContentsMargins(
+            SECTION_MARGIN, SECTION_MARGIN, SECTION_MARGIN, SECTION_MARGIN
+        )
+        frame_layout.setSpacing(TINY_MARGIN)
         frame_layout.addWidget(inner)
 
         self._content_frame.setVisible(expanded)
@@ -120,30 +131,31 @@ class _PipelineFileRow(QWidget):
         self._full_path: "Path | None" = None
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(4, 1, 4, 1)
-        lay.setSpacing(4)
+        lay.setContentsMargins(
+            SECTION_MARGIN, TINY_MARGIN, SECTION_MARGIN, TINY_MARGIN
+        )
+        lay.setSpacing(TIGHT_SPACING)
 
         self._icon_lbl = QLabel("○")
         self._icon_lbl.setFixedWidth(14)
         self._icon_lbl.setAlignment(Qt.AlignCenter)
-        self._icon_lbl.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        muted_label(self._icon_lbl, size_pt=9)
         lay.addWidget(self._icon_lbl)
 
         name_lbl = QLabel(rel_path)
         name_lbl.setFixedWidth(200)
-        name_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        status_label(name_lbl)
         name_lbl.setToolTip(display_name)
         lay.addWidget(name_lbl)
 
         self._info_lbl = QLabel("—")
         self._info_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._info_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        status_label(self._info_lbl)
         lay.addWidget(self._info_lbl)
 
         if loadable is not None:
             self._load_btn = QPushButton("↑")
-            self._load_btn.setFixedWidth(24)
-            self._load_btn.setFixedHeight(18)
+            icon_button(self._load_btn, height=18)
             self._load_btn.setToolTip("Load into napari viewer")
             self._load_btn.setEnabled(False)
             lay.addWidget(self._load_btn)
@@ -154,24 +166,24 @@ class _PipelineFileRow(QWidget):
         self._icon_lbl.setText("✓")
         self._icon_lbl.setStyleSheet("font-size: 9pt; font-weight: bold; color: #4CAF50;")
         self._info_lbl.setText(info_text)
-        self._info_lbl.setStyleSheet("font-size: 8pt; color: white;")
+        status_label(self._info_lbl)
         if self._load_btn:
             self._load_btn.setEnabled(True)
 
     def set_missing(self) -> None:
         self._icon_lbl.setText("✗")
-        self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
+        muted_label(self._icon_lbl, size_pt=9)
         self._info_lbl.setText("missing")
-        self._info_lbl.setStyleSheet("font-size: 8pt; color: #9E9E9E;")
+        muted_label(self._info_lbl)
         self._full_path = None
         if self._load_btn:
             self._load_btn.setEnabled(False)
 
     def set_no_project(self) -> None:
         self._icon_lbl.setText("○")
-        self._icon_lbl.setStyleSheet("font-size: 9pt; color: #9E9E9E;")
+        muted_label(self._icon_lbl, size_pt=9)
         self._info_lbl.setText("—")
-        self._info_lbl.setStyleSheet("font-size: 8pt; color: #9E9E9E;")
+        muted_label(self._info_lbl)
         self._full_path = None
         if self._load_btn:
             self._load_btn.setEnabled(False)
@@ -229,7 +241,7 @@ class PipelineFilesWidget(QWidget):
                 hdr = QLabel(group_label)
                 hdr.setStyleSheet(
                     "font-size: 7pt; font-weight: bold; padding: 1px 4px;"
-                    " background: palette(alternateBase); color: #aaaaaa;"
+                    " background: palette(alternateBase); color: palette(mid);"
                 )
                 lay.addWidget(hdr)
             for rel_path, display_name in entries:

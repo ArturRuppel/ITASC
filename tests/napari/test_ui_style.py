@@ -30,6 +30,7 @@ from cellflow.napari.ui_style import (
     status_label,
     tiny_button,
 )
+from cellflow.napari.widgets import PipelineFilesWidget
 
 
 @pytest.fixture
@@ -146,3 +147,34 @@ def test_checked_success_button_styles_checked_state_green(_app):
     assert "QPushButton:checked" in style
     assert "background-color" in style
     assert "#2e7d32" in style
+
+
+def test_pipeline_files_widget_reflects_present_and_missing_states(_app, tmp_path):
+    widget = PipelineFilesWidget(
+        [
+            (
+                "Outputs",
+                [
+                    ("present.txt", "Present output"),
+                    ("missing.txt", "Missing output"),
+                ],
+            )
+        ]
+    )
+    rows = widget._rows
+
+    widget.refresh(None)
+
+    assert [row._info_lbl.text() for row in rows] == ["—", "—"]
+    assert all("palette(mid)" in row._info_lbl.styleSheet() for row in rows)
+
+    (tmp_path / "present.txt").write_text("data")
+    widget.refresh(tmp_path)
+
+    assert rows[0]._icon_lbl.text() == "✓"
+    assert rows[0]._info_lbl.text() == "0 KB"
+    assert rows[1]._icon_lbl.text() == "✗"
+    assert rows[1]._info_lbl.text() == "missing"
+    assert "palette(mid)" in rows[1]._info_lbl.styleSheet()
+
+    widget.deleteLater()
