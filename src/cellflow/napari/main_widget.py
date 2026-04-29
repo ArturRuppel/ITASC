@@ -26,6 +26,7 @@ from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.data_prep_widget import DataPrepWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari.ui_style import icon_button, muted_label, tiny_button
 
 
 class CellFlowMainWidget(QWidget):
@@ -148,7 +149,7 @@ class CellFlowMainWidget(QWidget):
         meta_row.addWidget(self.pos_spin)
         
         self.refresh_btn = QPushButton("↺")
-        self.refresh_btn.setFixedWidth(24)
+        icon_button(self.refresh_btn)
         self.refresh_btn.setToolTip("Refresh all status")
         meta_row.addWidget(self.refresh_btn)
         
@@ -158,7 +159,7 @@ class CellFlowMainWidget(QWidget):
         project_row = QHBoxLayout()
         project_row.setSpacing(4)
         self.project_btn = QPushButton("Project Directory...")
-        self.project_btn.setStyleSheet("font-size: 8pt; padding: 2px;")
+        tiny_button(self.project_btn)
         project_row.addWidget(self.project_btn)
         proj_lay.addLayout(project_row)
 
@@ -171,13 +172,13 @@ class CellFlowMainWidget(QWidget):
         self.load_from_btn = QPushButton("Load Config From...")
         
         for btn in (self.save_btn, self.save_as_btn, self.load_btn, self.load_from_btn):
-            btn.setStyleSheet("font-size: 8pt; padding: 2px;")
+            tiny_button(btn)
             config_row.addWidget(btn)
         proj_lay.addLayout(config_row)
 
         # Row 4: Path Label
         self.path_label = QLabel("[no project]")
-        self.path_label.setStyleSheet("font-size: 8pt; color: #aaaaaa;")
+        muted_label(self.path_label)
         self.path_label.setWordWrap(True)
         proj_lay.addWidget(self.path_label)
 

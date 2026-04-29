@@ -147,6 +147,7 @@ def test_checked_success_button_styles_checked_state_green(_app):
     assert "QPushButton:checked" in style
     assert "background-color" in style
     assert "#2e7d32" in style
+    assert "font-weight: bold" in style
 
 
 def test_pipeline_files_widget_reflects_present_and_missing_states(_app, tmp_path):

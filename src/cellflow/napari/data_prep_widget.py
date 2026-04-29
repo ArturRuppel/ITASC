@@ -22,6 +22,7 @@ from qtpy.QtCore import Qt, QTimer
 from napari.qt.threading import thread_worker
 
 from cellflow.napari.widgets import PipelineFilesWidget
+from cellflow.napari.ui_style import muted_label, status_label
 from cellflow.core.data_prep import DatasetConfig, discover_metadata, run as run_prep
 from cellflow.napari.utils import launch_in_terminal
 
@@ -58,10 +59,10 @@ class DataPrepWidget(QWidget):
         # Metadata display (placeholders)
         meta_row = QHBoxLayout()
         self.px_label = QLabel("Pixel size: —")
-        self.px_label.setStyleSheet("color: grey; font-size: 8pt;")
+        muted_label(self.px_label)
         meta_row.addWidget(self.px_label)
         self.dt_label = QLabel("Interval: —")
-        self.dt_label.setStyleSheet("color: grey; font-size: 8pt;")
+        muted_label(self.dt_label)
         meta_row.addWidget(self.dt_label)
         meta_row.addStretch()
         layout.addLayout(meta_row)
@@ -101,7 +102,7 @@ class DataPrepWidget(QWidget):
         layout.addWidget(self.progress)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("font-size: 8pt;")
+        status_label(self.status_label)
         layout.addWidget(self.status_label)
 
         # ── Project file status ──────────────────────────────────────────

@@ -32,6 +32,7 @@ from cellflow.correction.labels import (
     split_draw,
     swap_labels,
 )
+from cellflow.napari.ui_style import checked_success_button, danger_button, muted_label, status_label
 
 log = logging.getLogger("cellflow.correction")
 if os.environ.get("CELLFLOW_DEBUG"):
@@ -98,9 +99,7 @@ class CorrectionWidget(QWidget):
         self._activate_btn.setToolTip(
             "Enable interactive mouse callbacks for merging/splitting."
         )
-        self._activate_btn.setStyleSheet(
-            "QPushButton:checked { background-color: #4CAF50; color: white; font-weight: bold; }"
-        )
+        checked_success_button(self._activate_btn)
         self._activate_btn.clicked.connect(self._toggle_active)
         if self._show_activate_btn:
             root.addWidget(self._activate_btn)
@@ -113,16 +112,13 @@ class CorrectionWidget(QWidget):
 
         self._reset_mode_btn = QPushButton("⚠  Restore correction mode")
         self._reset_mode_btn.setVisible(False)
-        self._reset_mode_btn.setStyleSheet(
-            "QPushButton { background-color: #7a3c00; color: white; font-weight: bold; }"
-            "QPushButton:hover { background-color: #a05000; }"
-        )
+        danger_button(self._reset_mode_btn)
         self._reset_mode_btn.clicked.connect(self._reset_tool_mode)
         root.addWidget(self._reset_mode_btn)
 
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status.setStyleSheet("color: palette(mid); font-style: italic;")
+        muted_label(self._status)
         root.addWidget(self._status)
 
         inspect_group = QGroupBox("Inspect cell")
@@ -143,7 +139,7 @@ class CorrectionWidget(QWidget):
 
         self._inspect_frames_label = QLabel("")
         self._inspect_frames_label.setWordWrap(True)
-        self._inspect_frames_label.setStyleSheet("font-size: 9pt; color: palette(mid);")
+        muted_label(self._inspect_frames_label, size_pt=9)
         inspect_lay.addWidget(self._inspect_frames_label)
 
         ref_group = self.build_shortcuts_widget()
@@ -168,7 +164,7 @@ class CorrectionWidget(QWidget):
         )
         attrib.setOpenExternalLinks(True)
         attrib.setWordWrap(True)
-        attrib.setStyleSheet("color: palette(mid); font-size: 9pt;")
+        muted_label(attrib, size_pt=9)
         root.addWidget(attrib)
 
     def build_shortcuts_widget(self) -> QWidget:
@@ -331,8 +327,10 @@ class CorrectionWidget(QWidget):
 
     def _set_status(self, msg: str, error: bool = False) -> None:
         self._status.setText(msg)
-        colour = "red" if error else "palette(mid)"
-        self._status.setStyleSheet(f"color: {colour}; font-style: italic;")
+        if error:
+            self._status.setStyleSheet("color: #b00020; font-style: italic;")
+        else:
+            status_label(self._status, italic=True)
 
     def set_edit_callback(self, fn: Callable[[int, set[int]], None] | None) -> None:
         """Register a callback fired after every successful edit.

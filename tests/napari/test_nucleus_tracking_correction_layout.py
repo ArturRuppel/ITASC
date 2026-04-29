@@ -112,6 +112,29 @@ def test_main_widget_labels_the_outer_nucleus_workflow_section():
     viewer.close()
 
 
+def test_main_widget_project_header_uses_compact_action_controls():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    for button in (
+        widget.project_btn,
+        widget.save_btn,
+        widget.save_as_btn,
+        widget.load_btn,
+        widget.load_from_btn,
+    ):
+        assert button.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
+        assert "font-size: 8pt" in button.styleSheet()
+        assert "padding: 1px 4px" in button.styleSheet()
+
+    assert widget.refresh_btn.minimumWidth() == 24
+    assert widget.refresh_btn.maximumWidth() == 24
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_tracking_correction_shell_exposes_stable_section_attributes():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()

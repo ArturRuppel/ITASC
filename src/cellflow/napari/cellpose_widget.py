@@ -7,6 +7,7 @@ import napari
 import tifffile
 from qtpy.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from cellflow.napari.ui_style import muted_label
 from cellflow.napari.widgets import PipelineFilesWidget
 
 
@@ -25,7 +26,7 @@ class CellposeWidget(QWidget):
             "the expected input/output files and loads them into napari."
         )
         description.setWordWrap(True)
-        description.setStyleSheet("font-size: 8pt; color: #aaaaaa;")
+        muted_label(description)
         layout.addWidget(description)
 
         self.files_tracker = PipelineFilesWidget([

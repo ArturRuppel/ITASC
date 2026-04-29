@@ -58,6 +58,7 @@ from cellflow.database.validation import (
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+from cellflow.napari.ui_style import action_button, compact_spinbox, danger_button
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
 from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
@@ -111,13 +112,10 @@ class NucleusWorkflowWidget(QWidget):
         SPIN_MAX_W = 70
 
         def _compact(spin, w=SPIN_MAX_W):
-            spin.setMaximumWidth(w)
-            spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            return spin
+            return compact_spinbox(spin, w)
 
         def _compact_btn(btn):
-            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            return btn
+            return action_button(btn)
 
         # ── Inputs ────────────────────────────────────────────────────────
         self.input_files = PipelineFilesWidget([
@@ -492,10 +490,7 @@ class NucleusWorkflowWidget(QWidget):
 
         db_del_row = QHBoxLayout()
         self.del_stack_btn = QPushButton("Remove Stack")
-        self.del_stack_btn.setStyleSheet(
-            "QPushButton { color: #cc3333; }"
-            "QPushButton:hover { background-color: #4a1111; color: white; }"
-        )
+        danger_button(self.del_stack_btn)
         db_del_row.addWidget(_compact_btn(self.del_stack_btn))
         db_lay.addLayout(db_del_row)
         self.db_section = CollapsibleSection(

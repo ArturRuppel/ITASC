@@ -71,6 +71,7 @@ def checked_success_button(button):
         QPushButton:checked {
             background-color: #2e7d32;
             color: white;
+            font-weight: bold;
         }
         """
     )
