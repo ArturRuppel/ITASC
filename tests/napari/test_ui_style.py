@@ -5,6 +5,8 @@ import sys
 import types
 from pathlib import Path
 
+import h5py
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -30,7 +32,9 @@ from cellflow.napari.ui_style import (
     status_label,
     tiny_button,
 )
+from cellflow.database.hypotheses import HypothesisRecord, write_hypothesis_record
 from cellflow.napari.widgets import PipelineFilesWidget
+from cellflow.segmentation import NucleusHypothesisParams
 
 
 @pytest.fixture
@@ -182,5 +186,35 @@ def test_pipeline_files_widget_reflects_present_and_missing_states(_app, tmp_pat
     assert rows[1]._icon_lbl.text() == "✗"
     assert rows[1]._info_lbl.text() == "missing"
     assert "palette(mid)" in rows[1]._info_lbl.styleSheet()
+
+    widget.deleteLater()
+
+
+def test_hypotheses_h5_summary_shows_parameter_and_time_counts(_app, tmp_path):
+    h5_path = tmp_path / "hypotheses.h5"
+    labels = np.zeros((1, 12, 34), dtype=np.uint32)
+    with h5py.File(h5_path, "w") as h5:
+        h5.attrs["version"] = 2
+        h5.attrs["stage"] = "nucleus_hypotheses"
+        h5.attrs["layout"] = "hypotheses/t{t:03d}/p{p:03d}/labels"
+        for t in range(2):
+            for p in range(2):
+                write_hypothesis_record(
+                    h5,
+                    HypothesisRecord(
+                        t=t,
+                        p=p,
+                        labels=labels,
+                        params=NucleusHypothesisParams(z_slice=0),
+                    ),
+                )
+
+    widget = PipelineFilesWidget(
+        [("Outputs", [("hypotheses.h5", "Hypotheses DB")])]
+    )
+
+    widget.refresh(tmp_path)
+
+    assert widget._rows[0]._info_lbl.text() == "2×2×12×34"
 
     widget.deleteLater()

@@ -193,6 +193,36 @@ def _file_info(path: "Path") -> str:
     """Return a concise shape/dtype string for a pipeline output file."""
     if path.is_dir():
         return "Directory"
+    if path.name == "hypotheses.h5":
+        try:
+            import h5py
+
+            with h5py.File(path, "r") as h5:
+                root = h5.get("hypotheses")
+                if root is None:
+                    return "HDF5"
+
+                t_keys = sorted(k for k in root.keys() if k.startswith("t"))
+                if not t_keys:
+                    return "0×0"
+
+                first_t = root[t_keys[0]]
+                p_keys = sorted(k for k in first_t.keys() if k.startswith("p"))
+                if not p_keys:
+                    n_t = int(h5.attrs.get("n_t", len(t_keys)))
+                    return f"0×{n_t}"
+
+                p_name = p_keys[0]
+                ds = first_t[p_name]["labels"]
+                spatial_shape = tuple(int(d) for d in ds.shape)
+                if len(spatial_shape) == 3 and spatial_shape[0] == 1:
+                    spatial_shape = spatial_shape[1:]
+
+                n_p = int(h5.attrs.get("n_p", len(p_keys)))
+                n_t = int(h5.attrs.get("n_t", len(t_keys)))
+                return "×".join([str(n_p), str(n_t), *[str(d) for d in spatial_shape]])
+        except Exception:
+            pass
     suffix = path.suffix.lower()
     if suffix in (".tif", ".tiff"):
         try:
