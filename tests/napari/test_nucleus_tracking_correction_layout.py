@@ -341,6 +341,12 @@ def test_hypothesis_tuning_spinboxes_expand_equally_in_the_top_grid():
     assert abs(widget.min_size_spin.width() - widget.min_circularity_spin.width()) <= 1
     assert abs(widget.noise_scale.width() - widget.noise_blur.width()) <= 1
     assert abs(widget.min_size_spin.width() - widget.noise_scale.width()) <= 1
+    assert abs(widget.preview_btn.x() - widget.min_size_spin.x()) <= 2
+    assert abs(widget.save_db_btn.x() - widget.min_circularity_spin.x()) <= 20
+    assert widget.preview_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert widget.save_db_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert widget.preview_btn.width() >= 80
+    assert widget.save_db_btn.width() >= 80
 
     host.deleteLater()
     viewer.close()

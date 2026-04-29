@@ -415,11 +415,30 @@ class NucleusWorkflowWidget(QWidget):
         )
         tuning_lay.addLayout(tuning_params_grid)
 
-        tuning_btn_row = block_grid(horizontal_spacing=12)
         self.preview_btn = QPushButton("Preview")
         self.save_db_btn = QPushButton("Save to DB")
-        add_block_button_row(tuning_btn_row, 0, self.preview_btn, self.save_db_btn)
-        tuning_lay.addLayout(tuning_btn_row)
+        for button in (self.preview_btn, self.save_db_btn):
+            button.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+        tuning_params_grid.addWidget(QLabel(""), 2, 0)
+        tuning_params_grid.addWidget(
+            self.preview_btn,
+            2,
+            1,
+            1,
+            1,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        tuning_params_grid.addWidget(QLabel(""), 2, 2)
+        tuning_params_grid.addWidget(
+            self.save_db_btn,
+            2,
+            3,
+            1,
+            1,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
         self.gen_tabs.addTab(tuning_tab, "Tuning")
 
         # Tab: Sweep
