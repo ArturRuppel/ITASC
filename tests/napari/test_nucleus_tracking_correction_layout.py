@@ -11,6 +11,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QApplication, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 
@@ -178,7 +179,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     viewer.close()
 
 
-def test_tracking_correction_action_buttons_do_not_expand_horizontally():
+def test_tracking_correction_action_buttons_expand_horizontally():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -196,7 +197,7 @@ def test_tracking_correction_action_buttons_do_not_expand_horizontally():
     ]
 
     for button in tracked_buttons:
-        assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+        assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
 
     widget.deleteLater()
     viewer.close()
@@ -258,6 +259,57 @@ def test_tracking_correction_widget_minimum_width_stays_compact():
     assert widget.minimumSizeHint().width() < 560
 
     widget.deleteLater()
+    viewer.close()
+
+
+def test_contour_maps_parameters_expand_and_scroll_when_narrow():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.contour_section.expand()
+    _app.processEvents()
+
+    scroll_areas = widget.contour_section.findChildren(QScrollArea)
+    assert len(scroll_areas) == 1
+
+    params_scroll = scroll_areas[0]
+    assert params_scroll.widgetResizable() is True
+    assert params_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    assert params_scroll.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert params_scroll.widget().sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+    for spin in (
+        widget.cp_min_spin,
+        widget.cp_max_spin,
+        widget.cp_step_spin,
+        widget.cp_gamma_min_spin,
+        widget.cp_gamma_max_spin,
+        widget.cp_gamma_step_spin,
+    ):
+        assert spin.minimumWidth() == 54
+        assert spin.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+    host = QWidget()
+    host_layout = QVBoxLayout(host)
+    host_layout.setContentsMargins(0, 0, 0, 0)
+    host_layout.addWidget(widget)
+    host.resize(180, 320)
+    host.show()
+    _app.processEvents()
+
+    assert widget.save_source_check.text() == "Save source label images"
+    assert widget.save_source_check.x() == widget.preview_contour_btn.x()
+    assert widget.preview_contour_btn.x() == widget.cp_min_spin.x()
+    assert widget.build_btn.x() == widget.cp_max_spin.x()
+    assert widget.cancel_build_btn.x() == widget.cp_step_spin.x()
+    assert abs(widget.preview_contour_btn.width() - widget.cp_min_spin.width()) <= 1
+    assert abs(widget.build_btn.width() - widget.cp_max_spin.width()) <= 1
+    assert abs(widget.cancel_build_btn.width() - widget.cp_step_spin.width()) <= 1
+
+    assert params_scroll.horizontalScrollBar().maximum() > 0
+
+    host.deleteLater()
     viewer.close()
 
 

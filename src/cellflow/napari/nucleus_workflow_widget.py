@@ -17,12 +17,15 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
+    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
     QShortcut,
     QSizePolicy,
     QSpinBox,
+    QScrollArea,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -84,6 +87,8 @@ _VALIDATED_OVERLAY = "Validated: Nucleus"
 _CONTOUR_LAYER = "Contour Map: Nucleus"
 _CELL_ZAVG_LAYER = "Cell z-avg"
 _NUC_ZAVG_LAYER = "Nucleus z-avg"
+_CONTOUR_SWEEP_WIDTH = 60
+_CONTOUR_SWEEP_MIN_WIDTH = int(_CONTOUR_SWEEP_WIDTH * 0.9)
 
 
 class NucleusWorkflowWidget(QWidget):
@@ -136,49 +141,88 @@ class NucleusWorkflowWidget(QWidget):
         contour_lay.setSpacing(4)
         contour_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        cp_params_lay = contour_lay
+        cp_params_scroll = QScrollArea()
+        cp_params_scroll.setWidgetResizable(True)
+        cp_params_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        cp_params_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        cp_params_scroll.setFrameShape(QFrame.NoFrame)
+        cp_params_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
 
-        contour_sweep_grid = sweep_parameter_grid(spin_width=60)
+        cp_params_widget = QWidget()
+        cp_params_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        cp_params_lay = QVBoxLayout(cp_params_widget)
+        cp_params_lay.setContentsMargins(0, 0, 0, 0)
+        cp_params_lay.setSpacing(4)
+        cp_params_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        contour_sweep_grid = sweep_parameter_grid(spin_width=_CONTOUR_SWEEP_WIDTH)
         self.cp_min_spin = QDoubleSpinBox()
         self.cp_min_spin.setRange(-20.0, 20.0)
         self.cp_min_spin.setValue(-3.0)
         self.cp_min_spin.setDecimals(1)
         self.cp_min_spin.setSingleStep(1.0)
+        self.cp_min_spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+        self.cp_min_spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self.cp_max_spin = QDoubleSpinBox()
         self.cp_max_spin.setRange(-20.0, 20.0)
         self.cp_max_spin.setValue(0.0)
         self.cp_max_spin.setDecimals(1)
         self.cp_max_spin.setSingleStep(1.0)
+        self.cp_max_spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+        self.cp_max_spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self.cp_step_spin = QDoubleSpinBox()
         self.cp_step_spin.setRange(0.1, 10.0)
         self.cp_step_spin.setValue(1.0)
         self.cp_step_spin.setDecimals(1)
         self.cp_step_spin.setSingleStep(0.5)
-        add_sweep_parameter_row(
-            contour_sweep_grid,
-            1,
-            "Cellprob:",
-            self.cp_min_spin,
-            self.cp_max_spin,
-            self.cp_step_spin,
-            spin_width=60,
+        self.cp_step_spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+        self.cp_step_spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
+
+        contour_sweep_grid.addWidget(QLabel("Cellprob:"), 1, 0)
+        contour_sweep_grid.addWidget(self.cp_min_spin, 1, 1)
+        contour_sweep_grid.addWidget(self.cp_max_spin, 1, 2)
+        contour_sweep_grid.addWidget(self.cp_step_spin, 1, 3)
+        contour_sweep_grid.setColumnStretch(1, 1)
+        contour_sweep_grid.setColumnStretch(2, 1)
+        contour_sweep_grid.setColumnStretch(3, 1)
 
         self.cp_gamma_min_spin = QDoubleSpinBox()
         self.cp_gamma_min_spin.setRange(0.05, 5.0)
         self.cp_gamma_min_spin.setValue(1.0)
         self.cp_gamma_min_spin.setDecimals(2)
         self.cp_gamma_min_spin.setSingleStep(0.05)
+        self.cp_gamma_min_spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+        self.cp_gamma_min_spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self.cp_gamma_max_spin = QDoubleSpinBox()
         self.cp_gamma_max_spin.setRange(0.05, 5.0)
         self.cp_gamma_max_spin.setValue(1.0)
         self.cp_gamma_max_spin.setDecimals(2)
         self.cp_gamma_max_spin.setSingleStep(0.05)
+        self.cp_gamma_max_spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+        self.cp_gamma_max_spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         self.cp_gamma_step_spin = QDoubleSpinBox()
         self.cp_gamma_step_spin.setRange(0.05, 2.0)
         self.cp_gamma_step_spin.setValue(0.25)
         self.cp_gamma_step_spin.setDecimals(2)
         self.cp_gamma_step_spin.setSingleStep(0.05)
+        self.cp_gamma_step_spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+        self.cp_gamma_step_spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
         _gamma_tip = (
             "Gamma correction on Cellpose probability logits before boundary building. "
             "<1 boosts dim signals; >1 suppresses them. 1.0 = no correction. "
@@ -186,49 +230,80 @@ class NucleusWorkflowWidget(QWidget):
         )
         for _w in (self.cp_gamma_min_spin, self.cp_gamma_max_spin, self.cp_gamma_step_spin):
             _w.setToolTip(_gamma_tip)
-        add_sweep_parameter_row(
-            contour_sweep_grid,
-            2,
-            "Gamma:",
-            self.cp_gamma_min_spin,
-            self.cp_gamma_max_spin,
-            self.cp_gamma_step_spin,
-            spin_width=60,
-        )
+        contour_sweep_grid.addWidget(QLabel("Gamma:"), 2, 0)
+        contour_sweep_grid.addWidget(self.cp_gamma_min_spin, 2, 1)
+        contour_sweep_grid.addWidget(self.cp_gamma_max_spin, 2, 2)
+        contour_sweep_grid.addWidget(self.cp_gamma_step_spin, 2, 3)
+        contour_sweep_grid.setColumnStretch(1, 1)
+        contour_sweep_grid.setColumnStretch(2, 1)
+        contour_sweep_grid.setColumnStretch(3, 1)
         cp_params_lay.addLayout(contour_sweep_grid)
 
         self.save_source_check = QCheckBox("Save source label images")
         self.save_source_check.setToolTip("Save all label images used for contour building in 2_nucleus/source_labels/")
-        save_source_grid = block_grid(horizontal_spacing=12)
-        add_block_checkbox_row(save_source_grid, 0, self.save_source_check)
-        cp_params_lay.addLayout(save_source_grid)
+        self.save_source_check.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        contour_sweep_grid.addWidget(QLabel(""), 3, 0)
+        contour_sweep_grid.addWidget(
+            self.save_source_check,
+            3,
+            1,
+            1,
+            1,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
 
-        build_btn_row = block_grid(horizontal_spacing=12)
-        self.build_btn = QPushButton("Build")
         self.preview_contour_btn = QPushButton("Preview")
         self.preview_contour_btn.setToolTip(
             "Build contour maps for the current frame only and display in napari"
         )
+        self.build_btn = QPushButton("Build")
         self.cancel_build_btn = QPushButton("Cancel")
         self.cancel_build_btn.setEnabled(False)
-        add_block_button_row(
-            build_btn_row, 0, self.build_btn, self.preview_contour_btn, self.cancel_build_btn
+
+        for button in (self.preview_contour_btn, self.build_btn, self.cancel_build_btn):
+            button.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+
+        contour_sweep_grid.addWidget(
+            QLabel(""),
+            4,
+            0,
         )
-        contour_lay.addLayout(build_btn_row)
+        contour_sweep_grid.addWidget(
+            self.preview_contour_btn,
+            4,
+            1,
+        )
+        contour_sweep_grid.addWidget(
+            self.build_btn,
+            4,
+            2,
+        )
+        contour_sweep_grid.addWidget(
+            self.cancel_build_btn,
+            4,
+            3,
+        )
 
         self.build_progress_bar = QProgressBar()
         self.build_progress_bar.setRange(0, 100)
         self.build_progress_bar.setValue(0)
         self.build_progress_bar.setVisible(False)
-        contour_lay.addWidget(self.build_progress_bar)
-
         self.contour_files = PipelineFilesWidget([
             ("", [
                 ("2_nucleus/contour_maps.tif",   "Contour maps"),
                 ("2_nucleus/foreground_maps.tif", "Foreground maps"),
             ]),
         ])
-        contour_lay.addWidget(self.contour_files)
+        cp_params_lay.addWidget(self.build_progress_bar)
+        cp_params_lay.addWidget(self.contour_files)
+
+        cp_params_scroll.setWidget(cp_params_widget)
+        contour_lay.addWidget(cp_params_scroll)
         self.contour_section = CollapsibleSection(
             "1. Contour Maps", _contour_inner, expanded=False
         )
