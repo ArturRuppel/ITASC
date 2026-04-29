@@ -102,6 +102,17 @@ def _load_main_widget_class():
     return module.CellFlowMainWidget
 
 
+def _load_correction_widget_class():
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+
+    napari_pkg = types.ModuleType("cellflow.napari")
+    napari_pkg.__path__ = [str(package_root)]
+    sys.modules["cellflow.napari"] = napari_pkg
+
+    module = importlib.import_module("cellflow.napari.correction_widget")
+    return module.CorrectionWidget
+
+
 def test_main_widget_labels_the_outer_nucleus_workflow_section():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
@@ -409,6 +420,23 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     assert widget.retrack_params_section.is_expanded is False
     assert widget.extend_max_dist_spin.value() == 40.0
     assert widget.retrack_max_dist_spin.value() == 20.0
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_top_buttons_expand_horizontally():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+
+    for button in (
+        widget._activate_btn,
+        widget._outline_btn,
+        widget._reset_mode_btn,
+        widget._goto_btn,
+    ):
+        assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
 
     widget.deleteLater()
     viewer.close()

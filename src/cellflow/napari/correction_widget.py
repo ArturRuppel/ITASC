@@ -32,7 +32,13 @@ from cellflow.correction.labels import (
     split_draw,
     swap_labels,
 )
-from cellflow.napari.ui_style import checked_success_button, danger_button, muted_label, status_label
+from cellflow.napari.ui_style import (
+    action_button,
+    checked_success_button,
+    danger_button,
+    muted_label,
+    status_label,
+)
 
 log = logging.getLogger("cellflow.correction")
 if os.environ.get("CELLFLOW_DEBUG"):
@@ -99,6 +105,7 @@ class CorrectionWidget(QWidget):
         self._activate_btn.setToolTip(
             "Enable interactive mouse callbacks for merging/splitting."
         )
+        action_button(self._activate_btn, expand=True)
         checked_success_button(self._activate_btn)
         self._activate_btn.clicked.connect(self._toggle_active)
         if self._show_activate_btn:
@@ -107,11 +114,13 @@ class CorrectionWidget(QWidget):
         self._outline_btn = QPushButton("Show outlines only")
         self._outline_btn.setCheckable(True)
         self._outline_btn.setEnabled(False)
+        action_button(self._outline_btn, expand=True)
         self._outline_btn.clicked.connect(self._toggle_outline)
         root.addWidget(self._outline_btn)
 
         self._reset_mode_btn = QPushButton("⚠  Restore correction mode")
         self._reset_mode_btn.setVisible(False)
+        action_button(self._reset_mode_btn, expand=True)
         danger_button(self._reset_mode_btn)
         self._reset_mode_btn.clicked.connect(self._reset_tool_mode)
         root.addWidget(self._reset_mode_btn)
@@ -133,6 +142,7 @@ class CorrectionWidget(QWidget):
         id_row.addWidget(self._goto_cell_id)
         self._goto_btn = QPushButton("Go")
         self._goto_btn.setEnabled(False)
+        action_button(self._goto_btn, expand=True)
         self._goto_btn.clicked.connect(self._goto_cell)
         id_row.addWidget(self._goto_btn)
         inspect_lay.addLayout(id_row)
