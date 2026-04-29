@@ -298,7 +298,7 @@ def test_contour_maps_parameters_expand_and_scroll_when_narrow():
     host.show()
     _app.processEvents()
 
-    assert widget.save_source_check.text() == "Save source label images"
+    assert widget.save_source_check.text() == "Save label images"
     assert widget.save_source_check.x() == widget.preview_contour_btn.x()
     assert widget.preview_contour_btn.x() == widget.cp_min_spin.x()
     assert widget.build_btn.x() == widget.cp_max_spin.x()
@@ -308,6 +308,39 @@ def test_contour_maps_parameters_expand_and_scroll_when_narrow():
     assert abs(widget.cancel_build_btn.width() - widget.cp_step_spin.width()) <= 1
 
     assert params_scroll.horizontalScrollBar().maximum() > 0
+
+    host.deleteLater()
+    viewer.close()
+
+
+def test_hypothesis_tuning_spinboxes_expand_equally_in_the_top_grid():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.gen_section.expand()
+    widget.gen_tabs.setCurrentIndex(0)
+    _app.processEvents()
+
+    host = QWidget()
+    host_layout = QVBoxLayout(host)
+    host_layout.setContentsMargins(0, 0, 0, 0)
+    host_layout.addWidget(widget)
+    host.resize(220, 280)
+    host.show()
+    _app.processEvents()
+
+    for spin in (
+        widget.min_size_spin,
+        widget.min_circularity_spin,
+        widget.noise_scale,
+        widget.noise_blur,
+    ):
+        assert spin.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+    assert abs(widget.min_size_spin.width() - widget.min_circularity_spin.width()) <= 1
+    assert abs(widget.noise_scale.width() - widget.noise_blur.width()) <= 1
+    assert abs(widget.min_size_spin.width() - widget.noise_scale.width()) <= 1
 
     host.deleteLater()
     viewer.close()

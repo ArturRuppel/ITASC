@@ -239,7 +239,7 @@ class NucleusWorkflowWidget(QWidget):
         contour_sweep_grid.setColumnStretch(3, 1)
         cp_params_lay.addLayout(contour_sweep_grid)
 
-        self.save_source_check = QCheckBox("Save source label images")
+        self.save_source_check = QCheckBox("Save label images")
         self.save_source_check.setToolTip("Save all label images used for contour building in 2_nucleus/source_labels/")
         self.save_source_check.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
@@ -317,6 +317,8 @@ class NucleusWorkflowWidget(QWidget):
         gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         gen_params_grid = block_grid(horizontal_spacing=12)
+        gen_params_grid.setColumnStretch(1, 1)
+        gen_params_grid.setColumnStretch(3, 1)
 
         self.min_size_spin = QSpinBox()
         self.min_size_spin.setRange(0, 100000)
@@ -330,15 +332,15 @@ class NucleusWorkflowWidget(QWidget):
         self.min_circularity_spin.setToolTip(
             "Remove regions with circularity (4π·area/perimeter²) below this value (0 = keep all, 1 = perfect circle)"
         )
-        add_block_pair_row(
-            gen_params_grid,
-            0,
-            "Min Cell Size (px):",
-            _compact(self.min_size_spin, 80),
-            "Min Circularity:",
-            _compact(self.min_circularity_spin),
-            field_width=80,
-        )
+        for spin in (self.min_size_spin, self.min_circularity_spin):
+            spin.setMinimumWidth(80)
+            spin.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+        gen_params_grid.addWidget(QLabel("Min Cell Size (px):"), 0, 0)
+        gen_params_grid.addWidget(self.min_size_spin, 0, 1)
+        gen_params_grid.addWidget(QLabel("Min Circularity:"), 0, 2)
+        gen_params_grid.addWidget(self.min_circularity_spin, 0, 3)
 
         self.noise_scale = QDoubleSpinBox()
         self.noise_scale.setRange(0.0, 1.0)
@@ -352,14 +354,15 @@ class NucleusWorkflowWidget(QWidget):
         self.noise_blur.setDecimals(1)
         self.noise_blur.setSingleStep(0.5)
         self.noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
-        add_block_pair_row(
-            gen_params_grid,
-            1,
-            "Noise Scale:",
-            _compact(self.noise_scale),
-            "Blur Sigma:",
-            _compact(self.noise_blur),
-        )
+        for spin in (self.noise_scale, self.noise_blur):
+            spin.setMinimumWidth(80)
+            spin.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+        gen_params_grid.addWidget(QLabel("Noise Scale:"), 1, 0)
+        gen_params_grid.addWidget(self.noise_scale, 1, 1)
+        gen_params_grid.addWidget(QLabel("Blur Sigma:"), 1, 2)
+        gen_params_grid.addWidget(self.noise_blur, 1, 3)
 
         gen_lay.addLayout(gen_params_grid)
 
