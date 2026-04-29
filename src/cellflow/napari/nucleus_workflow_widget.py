@@ -116,7 +116,7 @@ class NucleusWorkflowWidget(QWidget):
             return spin
 
         def _compact_btn(btn):
-            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             return btn
 
         # ── Inputs ────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtWidgets import QApplication, QPushButton, QScrollArea, QWidget
+from qtpy.QtWidgets import QApplication, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 
 def _make_viewer():
@@ -153,6 +153,30 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     viewer.close()
 
 
+def test_tracking_correction_action_buttons_do_not_expand_horizontally():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    tracked_buttons = [
+        widget.run_ultrack_btn,
+        widget.ultrack_terminal_btn,
+        widget.extend_back_btn,
+        widget.extend_fwd_btn,
+        widget.retrack_back_btn,
+        widget.retrack_fwd_btn,
+        widget.save_tracked_btn,
+        widget.load_tracked_btn,
+        widget.reassign_ids_btn,
+    ]
+
+    for button in tracked_buttons:
+        assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_section_exposes_route_selector_and_local_status():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
@@ -164,6 +188,76 @@ def test_ultrack_section_exposes_route_selector_and_local_status():
     )
     assert widget.ultrack_status_lbl.text() == ""
     assert widget.ultrack_progress_bar.isVisible() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_tracking_correction_widget_allows_horizontal_scrolling_when_narrow():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    outer = QWidget()
+    outer_layout = QVBoxLayout(outer)
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setWidget(widget)
+    outer_layout.addWidget(scroll)
+    outer.show()
+    scroll.resize(196, 260)
+    outer.resize(220, 300)
+    _app.processEvents()
+
+    assert scroll.horizontalScrollBar().maximum() > 0
+    assert widget.minimumSizeHint().width() > scroll.viewport().width()
+
+    outer.deleteLater()
+    viewer.close()
+
+
+def test_tracking_correction_widget_minimum_width_stays_compact():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.tracking_correction_section.expand()
+    widget.ultrack_section.expand()
+    widget.correction_section.expand()
+    widget.correction_shortcuts_section.expand()
+    _app.processEvents()
+
+    # The old broken layout measured well above 600px because the shortcut
+    # help was unwrapped and multiple long controls forced wide horizontal
+    # rows. Keep a generous ceiling so the test remains stable across Qt
+    # styles while still catching a return to the original oversized layout.
+    assert widget.minimumSizeHint().width() < 560
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.tracking_correction_section.expand()
+    widget.ultrack_section.expand()
+    widget.correction_section.expand()
+    widget.show()
+    _app.processEvents()
+
+    # Ultrack parameters should present as two side-by-side columns again.
+    assert widget.ultrack_min_area_spin.y() == widget.ultrack_appear_spin.y()
+    assert widget.ultrack_min_area_spin.x() < widget.ultrack_appear_spin.x()
+
+    # Paired correction actions should also sit side-by-side.
+    assert widget.extend_back_btn.y() == widget.extend_fwd_btn.y()
+    assert widget.extend_back_btn.x() < widget.extend_fwd_btn.x()
+    assert widget.retrack_back_btn.y() == widget.retrack_fwd_btn.y()
+    assert widget.retrack_back_btn.x() < widget.retrack_fwd_btn.x()
+    assert widget.save_tracked_btn.y() == widget.load_tracked_btn.y()
+    assert widget.save_tracked_btn.x() < widget.load_tracked_btn.x()
 
     widget.deleteLater()
     viewer.close()

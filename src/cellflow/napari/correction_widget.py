@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -173,7 +174,8 @@ class CorrectionWidget(QWidget):
     def build_shortcuts_widget(self) -> QWidget:
         group = QGroupBox("Correction shortcuts")
         lay = QVBoxLayout(group)
-        lay.setSpacing(2)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(6)
         for key, desc in [
             ("Left-click",                         "Select / highlight cell"),
             ("Middle-click",                       "Erase clicked cell"),
@@ -188,7 +190,20 @@ class CorrectionWidget(QWidget):
             ("Shift+Right-drag",                   "Split by drawn line"),
             ("Shift+Left-drag",                    "Draw cell path (extends or creates)"),
         ]:
-            lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
+            row = QWidget()
+            row_lay = QVBoxLayout(row)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.setSpacing(1)
+
+            key_lbl = QLabel(f"<tt>{key}</tt>")
+            key_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            desc_lbl = QLabel(desc)
+            desc_lbl.setWordWrap(True)
+            desc_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+
+            row_lay.addWidget(key_lbl)
+            row_lay.addWidget(desc_lbl)
+            lay.addWidget(row)
         return group
 
     # ── activation ────────────────────────────────────────────────────────────
