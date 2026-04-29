@@ -53,6 +53,7 @@ from cellflow.database.validation import (
     read_validated_cells_at_frame,
     read_validated_frames,
     read_validated_tracks,
+    remap_validated_tracks,
     validate_track,
 )
 from cellflow.napari.correction_widget import CorrectionWidget
@@ -502,11 +503,18 @@ class NucleusWorkflowWidget(QWidget):
         )
         layout.addWidget(self.db_section)
 
-        # ── 4. Tracking (Ultrack ILP) ────────────────────────────────────────
-        _tracking_inner = QWidget()
-        tracking_lay = QVBoxLayout(_tracking_inner)
-        tracking_lay.setContentsMargins(4, 4, 4, 4)
-        tracking_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # ── 4. Tracking & Correction ───────────────────────────────────────
+        _tracking_correction_inner = QWidget()
+        tracking_correction_lay = QVBoxLayout(_tracking_correction_inner)
+        tracking_correction_lay.setContentsMargins(4, 4, 4, 4)
+        tracking_correction_lay.setSpacing(4)
+        tracking_correction_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        _ultrack_inner = QWidget()
+        ultrack_lay = QVBoxLayout(_ultrack_inner)
+        ultrack_lay.setContentsMargins(0, 0, 0, 0)
+        ultrack_lay.setSpacing(4)
+        ultrack_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         tracking_form = QFormLayout()
         tracking_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -585,42 +593,33 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_solver_lbl = QLabel("—")
         tracking_form.addRow("Solver:", self.ultrack_solver_lbl)
 
-        tracking_lay.addLayout(tracking_form)
+        ultrack_lay.addLayout(tracking_form)
 
-        self.ultrack_resolve_only_check = QCheckBox("Re-solve only (skip ingest + link)")
-        tracking_lay.addWidget(self.ultrack_resolve_only_check)
+        self.ultrack_route_check = QCheckBox("Resolve from validated")
+        ultrack_lay.addWidget(self.ultrack_route_check)
 
         ultrack_run_row = QHBoxLayout()
         self.run_ultrack_btn = QPushButton("Run Ultrack Tracking")
         self.ultrack_terminal_btn = QPushButton("Run in Terminal")
         ultrack_run_row.addWidget(_compact_btn(self.run_ultrack_btn))
         ultrack_run_row.addWidget(_compact_btn(self.ultrack_terminal_btn))
-        tracking_lay.addLayout(ultrack_run_row)
+        ultrack_lay.addLayout(ultrack_run_row)
+
+        self.ultrack_status_lbl = QLabel("")
+        self.ultrack_status_lbl.setWordWrap(True)
+        ultrack_lay.addWidget(self.ultrack_status_lbl)
 
         self.ultrack_progress_bar = QProgressBar()
         self.ultrack_progress_bar.setRange(0, 100)
         self.ultrack_progress_bar.setValue(0)
         self.ultrack_progress_bar.setVisible(False)
-        tracking_lay.addWidget(self.ultrack_progress_bar)
+        ultrack_lay.addWidget(self.ultrack_progress_bar)
 
-        save_load_row = QHBoxLayout()
-        self.save_tracked_btn = QPushButton("Save Tracked Labels")
-        self.load_tracked_btn = QPushButton("Load Tracked Labels")
-        save_load_row.addWidget(_compact_btn(self.save_tracked_btn))
-        save_load_row.addWidget(_compact_btn(self.load_tracked_btn))
-        tracking_lay.addLayout(save_load_row)
-
-        reassign_row = QHBoxLayout()
-        self.reassign_ids_btn = QPushButton("Reassign IDs")
-        reassign_row.addWidget(_compact_btn(self.reassign_ids_btn))
-        tracking_lay.addLayout(reassign_row)
-
-        self.tracking_section = CollapsibleSection(
-            "4. Tracking", _tracking_inner, expanded=False
+        self.ultrack_section = CollapsibleSection(
+            "Ultrack Tracking", _ultrack_inner, expanded=False
         )
-        layout.addWidget(self.tracking_section)
+        tracking_correction_lay.addWidget(self.ultrack_section)
 
-        # ── 5. Manual Correction ──────────────────────────────────────────
         _corr_inner = QWidget()
         _corr_inner_lay = QVBoxLayout(_corr_inner)
         _corr_inner_lay.setContentsMargins(0, 0, 0, 0)
@@ -640,13 +639,73 @@ class NucleusWorkflowWidget(QWidget):
         retrack_row.addWidget(_compact_btn(self.retrack_fwd_btn))
         _corr_inner_lay.addLayout(retrack_row)
 
+        save_load_row = QHBoxLayout()
+        self.save_tracked_btn = QPushButton("Save Tracked Labels")
+        self.load_tracked_btn = QPushButton("Load Tracked Labels")
+        save_load_row.addWidget(_compact_btn(self.save_tracked_btn))
+        save_load_row.addWidget(_compact_btn(self.load_tracked_btn))
+        _corr_inner_lay.addLayout(save_load_row)
+
+        reassign_row = QHBoxLayout()
+        self.reassign_ids_btn = QPushButton("Reassign IDs")
+        reassign_row.addWidget(_compact_btn(self.reassign_ids_btn))
+        _corr_inner_lay.addLayout(reassign_row)
+
+        extend_params_inner = QWidget()
+        extend_params_lay = QVBoxLayout(extend_params_inner)
+        extend_params_lay.setContentsMargins(0, 0, 0, 0)
+        extend_params_lay.setSpacing(4)
+        extend_params_form = QFormLayout()
+        extend_params_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        extend_params_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        extend_params_form.setHorizontalSpacing(8)
+        extend_params_form.setVerticalSpacing(4)
+        self.extend_max_dist_spin = QDoubleSpinBox()
+        self.extend_max_dist_spin.setRange(0.0, 500.0)
+        self.extend_max_dist_spin.setValue(40.0)
+        self.extend_max_dist_spin.setSingleStep(1.0)
+        self.extend_max_dist_spin.setDecimals(1)
+        extend_params_form.addRow("Max Distance (px):", _compact(self.extend_max_dist_spin, 80))
+        extend_params_lay.addLayout(extend_params_form)
+        self.extend_params_section = CollapsibleSection(
+            "Extend Parameters", extend_params_inner, expanded=False
+        )
+        _corr_inner_lay.addWidget(self.extend_params_section)
+
+        retrack_params_inner = QWidget()
+        retrack_params_lay = QVBoxLayout(retrack_params_inner)
+        retrack_params_lay.setContentsMargins(0, 0, 0, 0)
+        retrack_params_lay.setSpacing(4)
+        retrack_params_form = QFormLayout()
+        retrack_params_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        retrack_params_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        retrack_params_form.setHorizontalSpacing(8)
+        retrack_params_form.setVerticalSpacing(4)
+        self.retrack_max_dist_spin = QDoubleSpinBox()
+        self.retrack_max_dist_spin.setRange(0.0, 500.0)
+        self.retrack_max_dist_spin.setValue(20.0)
+        self.retrack_max_dist_spin.setSingleStep(1.0)
+        self.retrack_max_dist_spin.setDecimals(1)
+        retrack_params_form.addRow("Max Distance (px):", _compact(self.retrack_max_dist_spin, 80))
+        retrack_params_lay.addLayout(retrack_params_form)
+        self.retrack_params_section = CollapsibleSection(
+            "Retrack Parameters", retrack_params_inner, expanded=False
+        )
+        _corr_inner_lay.addWidget(self.retrack_params_section)
+
         resolve_row = QHBoxLayout()
         self.resolve_validated_btn = QPushButton("Re-solve from validated")
         self.resolve_validated_btn.setToolTip(
             "Prune hypothesis nodes that overlap validated cells, re-run the ILP solver, "
             "then paste the validated cells back — preserving all locked tracks."
         )
+        self.resolve_terminal_btn = QPushButton("Run in Terminal")
+        self.resolve_terminal_btn.setToolTip(
+            "Generate a standalone Python script for the Re-solve from validated operation "
+            "and launch it in a new terminal window."
+        )
         resolve_row.addWidget(_compact_btn(self.resolve_validated_btn))
+        resolve_row.addWidget(_compact_btn(self.resolve_terminal_btn))
         _corr_inner_lay.addLayout(resolve_row)
 
         self.validation_counter_lbl = QLabel("")
@@ -656,15 +715,27 @@ class NucleusWorkflowWidget(QWidget):
         self.correction_widget = CorrectionWidget(
             self.viewer,
             show_activate_btn=False,
+            show_shortcuts=False,
             inspector_first=True,
         )
         self.correction_widget.set_edit_callback(self._on_cells_edited)
+        self.correction_shortcuts_section = CollapsibleSection(
+            "Correction Shortcuts",
+            self.correction_widget.build_shortcuts_widget(),
+            expanded=True,
+        )
+        _corr_inner_lay.addWidget(self.correction_shortcuts_section)
         _corr_inner_lay.addWidget(self.correction_widget)
 
         self.correction_section = CollapsibleSection(
-            "5. Manual Correction", _corr_inner, expanded=False
+            "Correction", _corr_inner, expanded=False
         )
-        layout.addWidget(self.correction_section)
+        tracking_correction_lay.addWidget(self.correction_section)
+
+        self.tracking_correction_section = CollapsibleSection(
+            "4. Tracking & Correction", _tracking_correction_inner, expanded=False
+        )
+        layout.addWidget(self.tracking_correction_section)
 
         # ── Status label ──────────────────────────────────────────────────
         self.status_lbl = QLabel("")
@@ -700,8 +771,8 @@ class NucleusWorkflowWidget(QWidget):
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
         self.del_stack_btn.clicked.connect(self._on_remove_stack)
-        self.run_ultrack_btn.clicked.connect(self._on_run_ultrack)
-        self.ultrack_terminal_btn.clicked.connect(self._on_ultrack_terminal)
+        self.run_ultrack_btn.clicked.connect(self._on_run_tracking_route)
+        self.ultrack_terminal_btn.clicked.connect(self._on_run_tracking_route_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
@@ -711,6 +782,7 @@ class NucleusWorkflowWidget(QWidget):
         self.extend_back_btn.clicked.connect(self._on_extend_backward)
         self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
         self.resolve_validated_btn.clicked.connect(self._on_resolve_with_validation)
+        self.resolve_terminal_btn.clicked.connect(self._on_resolve_terminal)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
         self.viewer.bind_key("V", self._kb_toggle_cell_validation, overwrite=True)
         self._install_correction_shortcuts()
@@ -914,6 +986,10 @@ class NucleusWorkflowWidget(QWidget):
 
     def _set_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
+
+    def _set_ultrack_status(self, msg: str) -> None:
+        self.ultrack_status_lbl.setText(msg)
+        self._set_status(msg)
         logger.info(msg)
 
     def _cp_gammas(self) -> list[float]:
@@ -1611,26 +1687,42 @@ class NucleusWorkflowWidget(QWidget):
             unique_ids = np.unique(stack)
             unique_ids = unique_ids[unique_ids != 0]
             if unique_ids.size == 0:
-                return stack, 0
+                return stack, 0, {}
             lut = np.zeros(int(unique_ids.max()) + 1, dtype=np.uint32)
+            old_to_new: dict[int, int] = {}
             for new_id, old_id in enumerate(unique_ids, start=1):
                 lut[old_id] = new_id
-            return lut[stack], len(unique_ids)
+                old_to_new[int(old_id)] = new_id
+            return lut[stack], len(unique_ids), old_to_new
 
         _worker()
 
     def _on_reassign_ids_done(self, result: tuple) -> None:
-        remapped, n_cells = result
+        remapped, n_cells, old_to_new = result
         if _TRACKED_LAYER in self.viewer.layers:
             self.viewer.layers[_TRACKED_LAYER].data = remapped
+        if self._pos_dir is not None and old_to_new:
+            remap_validated_tracks(self._pos_dir, old_to_new)
         self._set_status(f"Reassigned {n_cells} cell IDs to contiguous range 1–{n_cells}. Unsaved.")
 
     # ──────────────────────────────────────────────────────────────────────────
-    # 4. Tracking (Ultrack ILP)
+    # 4. Tracking & Correction
     # ──────────────────────────────────────────────────────────────────────────
 
     def _on_ultrack_mode_changed(self, mode: str) -> None:
         self.ultrack_iou_weight_spin.setEnabled(mode == "iou")
+
+    def _on_run_tracking_route(self) -> None:
+        if self.ultrack_route_check.isChecked():
+            self._on_resolve_with_validation()
+        else:
+            self._on_run_ultrack()
+
+    def _on_run_tracking_route_terminal(self) -> None:
+        if self.ultrack_route_check.isChecked():
+            self._on_resolve_terminal()
+        else:
+            self._on_ultrack_terminal()
 
     def _on_run_ultrack(self) -> None:
         if self._pos_dir is None:
@@ -1654,8 +1746,6 @@ class NucleusWorkflowWidget(QWidget):
         iou_weight = self.ultrack_iou_weight_spin.value()
         appear_weight = self.ultrack_appear_spin.value()
         disappear_weight = self.ultrack_disappear_spin.value()
-        resolve_only = self.ultrack_resolve_only_check.isChecked()
-
         cfg = UltrackConfig(
             min_area=min_area,
             max_distance=max_distance,
@@ -1667,7 +1757,7 @@ class NucleusWorkflowWidget(QWidget):
 
         self.ultrack_progress_bar.setVisible(True)
         self.ultrack_progress_bar.setValue(0)
-        self._set_status("Starting Ultrack tracking…")
+        self._set_ultrack_status("Starting Ultrack tracking…")
 
         @thread_worker(connect={
             "yielded":  self._on_ultrack_progress,
@@ -1701,14 +1791,14 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_ultrack_progress(self, payload: tuple) -> None:
         stage, step, total, label = payload
-        self._set_status(f"[{stage}] {label}")
+        self._set_ultrack_status(f"[{stage}] {label}")
         if total > 0:
             self.ultrack_progress_bar.setValue(int(100 * step / total))
 
     def _on_run_ultrack_done(self, labels: np.ndarray | None) -> None:
         self.ultrack_progress_bar.setVisible(False)
         if labels is None:
-            self._set_status("Ultrack tracking failed (no output).")
+            self._set_ultrack_status("Ultrack tracking failed (no output).")
             return
         # Normalize (T, 1, Y, X) → (T, Y, X)
         if labels.ndim == 4 and labels.shape[1] == 1:
@@ -1720,18 +1810,18 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.add_labels(labels, name=_TRACKED_LAYER)
         layer = self.viewer.layers[_TRACKED_LAYER]
         self.correction_widget.activate_layer(layer)
-        self._set_status(f"Ultrack tracking done: {nt} frame(s). Unsaved.")
+        self._set_ultrack_status(f"Ultrack tracking done: {nt} frame(s). Unsaved.")
 
     def _on_ultrack_terminal(self) -> None:
         import sys
         import tempfile
 
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_ultrack_status("No project open.")
             return
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
-            self._set_status("Hypothesis DB not found — run the sweep first.")
+            self._set_ultrack_status("Hypothesis DB not found — run the sweep first.")
             return
         working_dir = self._ultrack_workdir()
         tracked_path = self._tracked_path()
@@ -1800,10 +1890,108 @@ class NucleusWorkflowWidget(QWidget):
         try:
             from cellflow.napari.utils import launch_in_terminal
             launch_in_terminal(cmd)
-            self._set_status("Ultrack command launched in terminal.")
+            self._set_ultrack_status("Ultrack command launched in terminal.")
         except Exception:
             QApplication.clipboard().setText(cmd)
-            self._set_status("Copied Ultrack command to clipboard (terminal launch unavailable).")
+            self._set_ultrack_status("Copied Ultrack command to clipboard (terminal launch unavailable).")
+
+    def _on_resolve_terminal(self) -> None:
+        import sys
+        import tempfile
+
+        if self._pos_dir is None:
+            self._set_ultrack_status("No project open.")
+            return
+        validated_tracks = read_validated_tracks(self._pos_dir)
+        if not validated_tracks:
+            self._set_status("No validated tracks — validate some cells first (press V).")
+            return
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_ultrack_status("hypotheses.h5 not found — generate hypotheses first.")
+            return
+        tracked_path = self._tracked_path()
+        if tracked_path is None or not tracked_path.exists():
+            self._set_ultrack_status("Tracked labels not found.")
+            return
+        pos_dir = self._pos_dir
+
+        # Capture widget values (same as _on_resolve_with_validation)
+        min_area = self.ultrack_min_area_spin.value()
+        max_distance = self.ultrack_max_dist_spin.value()
+        linking_mode = self.ultrack_linking_mode_combo.currentText()
+        iou_weight = self.ultrack_iou_weight_spin.value()
+        appear_weight = self.ultrack_appear_spin.value()
+        disappear_weight = self.ultrack_disappear_spin.value()
+        division_weight = self.ultrack_division_spin.value()
+        max_neighbors = self.ultrack_max_neighbors_spin.value()
+
+        python_code = (
+            "import sys, pathlib\n"
+            "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
+            "from cellflow.tracking_ultrack.config import TrackingConfig\n"
+            "from cellflow.tracking_ultrack.reseed import resolve_with_validation\n"
+            "from cellflow.database.tracked import read_full_tracked_stack, write_tracked_frame\n"
+            "from cellflow.database.validation import (\n"
+            "    read_validated_tracks, invalidate_track, validate_track)\n"
+            "import numpy as np\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            f"    pos_dir      = pathlib.Path({str(pos_dir)!r})\n"
+            f"    hyp_path     = pathlib.Path({str(hyp_path)!r})\n"
+            f"    tracked_path = pathlib.Path({str(tracked_path)!r})\n"
+            f"    cfg = TrackingConfig(\n"
+            f"        min_area={min_area},\n"
+            f"        max_distance={max_distance},\n"
+            f"        linking_mode={linking_mode!r},\n"
+            f"        iou_weight={iou_weight},\n"
+            f"        appear_weight={appear_weight},\n"
+            f"        disappear_weight={disappear_weight},\n"
+            f"        division_weight={division_weight},\n"
+            f"        max_neighbors={max_neighbors},\n"
+            f"    )\n"
+            "    validated_tracks = read_validated_tracks(pos_dir)\n"
+            "    print(f'Loaded {len(validated_tracks)} validated track(s).', flush=True)\n"
+            "    tracked_labels = read_full_tracked_stack(tracked_path)\n"
+            "    print(f'Loaded tracked labels: {tracked_labels.shape}', flush=True)\n"
+            "    new_labels, id_map = resolve_with_validation(\n"
+            "        hyp_path, validated_tracks, tracked_labels, cfg,\n"
+            "        progress_cb=lambda msg: print(msg, flush=True),\n"
+            "    )\n"
+            "    if new_labels.ndim == 4 and new_labels.shape[1] == 1:\n"
+            "        new_labels = new_labels[:, 0]\n"
+            "    print('Saving tracked labels…', flush=True)\n"
+            "    for t in range(new_labels.shape[0]):\n"
+            "        write_tracked_frame(tracked_path, t, np.asarray(new_labels[t]))\n"
+            "    if id_map:\n"
+            "        for old_id, new_id in id_map.items():\n"
+            "            old_frames = validated_tracks.get(old_id, set())\n"
+            "            invalidate_track(pos_dir, old_id)\n"
+            "            if old_frames:\n"
+            "                validate_track(pos_dir, new_id, old_frames)\n"
+            "    n_validated = len(validated_tracks)\n"
+            "    n_total = int(np.unique(new_labels[new_labels != 0]).size)\n"
+            "    print(\n"
+            "        f'Done — {n_validated} validated track(s) preserved, '\n"
+            "        f'{n_total} total track(s). Saved to {tracked_path}',\n"
+            "        flush=True,\n"
+            "    )\n"
+        )
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", prefix="cellflow_resolve_", delete=False
+        ) as tmp:
+            tmp.write(python_code)
+            tmp_path = tmp.name
+
+        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(tmp_path)}"
+        try:
+            from cellflow.napari.utils import launch_in_terminal
+            launch_in_terminal(cmd)
+            self._set_ultrack_status("Re-solve command launched in terminal.")
+        except Exception:
+            QApplication.clipboard().setText(cmd)
+            self._set_ultrack_status("Copied Re-solve command to clipboard (terminal launch unavailable).")
 
     # ──────────────────────────────────────────────────────────────────────────
     # 5. Manual correction
@@ -2008,10 +2196,13 @@ class NucleusWorkflowWidget(QWidget):
             direction=direction,
             tracked_labels=tracked,
             hypotheses_path=hyp_path,
+            d_max=float(self.extend_max_dist_spin.value()),
         )
 
         if result is None:
-            self._set_status(f"No hypothesis within 40px at t={target_frame}")
+            self._set_status(
+                f"No hypothesis within {self.extend_max_dist_spin.value():g}px at t={target_frame}"
+            )
             return
 
         frame = layer.data[result.target_frame]
@@ -2061,7 +2252,12 @@ class NucleusWorkflowWidget(QWidget):
             ref = stack[t - 1]
             tgt = stack[t]
             locked = read_validated_cells_at_frame(self._pos_dir, t)
-            stack[t] = retrack_frame_constrained(ref, tgt, locked, max_dist_px=20.0)
+            stack[t] = retrack_frame_constrained(
+                ref,
+                tgt,
+                locked,
+                max_dist_px=float(self.retrack_max_dist_spin.value()),
+            )
             n_retracked += 1
 
         layer.data = stack
@@ -2100,7 +2296,12 @@ class NucleusWorkflowWidget(QWidget):
             ref = stack[t + 1]
             tgt = stack[t]
             locked = read_validated_cells_at_frame(self._pos_dir, t)
-            stack[t] = retrack_frame_constrained(ref, tgt, locked, max_dist_px=20.0)
+            stack[t] = retrack_frame_constrained(
+                ref,
+                tgt,
+                locked,
+                max_dist_px=float(self.retrack_max_dist_spin.value()),
+            )
             n_retracked += 1
 
         layer.data = stack
@@ -2111,21 +2312,21 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_resolve_with_validation(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_ultrack_status("No project open.")
             return
 
         validated_tracks = read_validated_tracks(self._pos_dir)
         if not validated_tracks:
-            self._set_status("No validated tracks found — validate some cells first (press V).")
+            self._set_ultrack_status("No validated tracks found — validate some cells first (press V).")
             return
 
         if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded.")
+            self._set_ultrack_status("No tracked layer loaded.")
             return
 
-        working_dir = self._ultrack_workdir()
-        if working_dir is None or not working_dir.exists():
-            self._set_status("Ultrack working directory not found — run Ultrack Tracking first.")
+        hyp_path = self._hyp_path()
+        if hyp_path is None or not hyp_path.exists():
+            self._set_ultrack_status("hypotheses.h5 not found — generate hypotheses first.")
             return
 
         layer = self.viewer.layers[_TRACKED_LAYER]
@@ -2144,14 +2345,14 @@ class NucleusWorkflowWidget(QWidget):
 
         n_validated = len(validated_tracks)
         self.resolve_validated_btn.setEnabled(False)
-        self._set_status(
+        self._set_ultrack_status(
             f"Re-solving with {n_validated} validated track(s) preserved…"
         )
 
         def _on_resolve_done(result: tuple) -> None:
             self.resolve_validated_btn.setEnabled(True)
             if result is None:
-                self._set_status("Re-solve failed (no output).")
+                self._set_ultrack_status("Re-solve failed (no output).")
                 return
             new_labels, id_map = result
             # Normalize (T, 1, Y, X) → (T, Y, X) if needed
@@ -2163,14 +2364,14 @@ class NucleusWorkflowWidget(QWidget):
             pos_dir = self._pos_dir
             tracked_path = self._tracked_path()
             if tracked_path is None or pos_dir is None:
-                self._set_status("Re-solve complete but no project path — not saved.")
+                self._set_ultrack_status("Re-solve complete but no project path — not saved.")
                 return
-            self._set_status("Saving tracked labels…")
+            self._set_ultrack_status("Saving tracked labels…")
             try:
                 for t in range(new_labels.shape[0]):
                     write_tracked_frame(tracked_path, t, np.asarray(new_labels[t]))
             except Exception as exc:
-                self._set_status(f"Save failed — JSON not updated. {exc}")
+                self._set_ultrack_status(f"Save failed — JSON not updated. {exc}")
                 return
             # Labelmap is on disk with new IDs; now update the napari layer and JSON.
             if _TRACKED_LAYER in self.viewer.layers:
@@ -2186,13 +2387,13 @@ class NucleusWorkflowWidget(QWidget):
                 self._refresh_validated_overlay()
                 self._refresh_validation_counter()
             n_total_tracks = int(np.unique(new_labels[new_labels != 0]).size)
-            self._set_status(
+            self._set_ultrack_status(
                 f"Re-solve complete: {n_validated} validated track(s) preserved, "
                 f"{n_total_tracks} total track(s) in output. Saved."
             )
 
         def _on_resolve_progress(msg: str) -> None:
-            self._set_status(msg)
+            self._set_ultrack_status(msg)
 
         def _on_resolve_error(exc: Exception) -> None:
             self.resolve_validated_btn.setEnabled(True)
@@ -2240,7 +2441,7 @@ class NucleusWorkflowWidget(QWidget):
                 try:
                     result_holder.append(
                         resolve_with_validation(
-                            working_dir, validated_tracks, tracked_labels, cfg,
+                            hyp_path, validated_tracks, tracked_labels, cfg,
                             progress_cb=_progress,
                         )
                     )
@@ -2329,7 +2530,7 @@ class NucleusWorkflowWidget(QWidget):
                 "disappear_weight": self.ultrack_disappear_spin.value(),
                 "division_weight":  self.ultrack_division_spin.value(),
                 "max_neighbors":    self.ultrack_max_neighbors_spin.value(),
-                "resolve_only":     self.ultrack_resolve_only_check.isChecked(),
+                "resolve_only":     self.ultrack_route_check.isChecked(),
             },
         }
 
@@ -2397,4 +2598,4 @@ class NucleusWorkflowWidget(QWidget):
             if "disappear_weight" in ul: self.ultrack_disappear_spin.setValue(ul["disappear_weight"])
             if "division_weight"  in ul: self.ultrack_division_spin.setValue(ul["division_weight"])
             if "max_neighbors"    in ul: self.ultrack_max_neighbors_spin.setValue(ul["max_neighbors"])
-            if "resolve_only"     in ul: self.ultrack_resolve_only_check.setChecked(ul["resolve_only"])
+            if "resolve_only"     in ul: self.ultrack_route_check.setChecked(ul["resolve_only"])

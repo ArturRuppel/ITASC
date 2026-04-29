@@ -194,6 +194,8 @@ Requirements:
 - controls should prefer the existing compact button/spinbox behavior already used elsewhere in the codebase
 - the two-column ultrack parameter layout should remain legible at typical dock widths
 - collapsible subsections should keep the default view compact, with advanced controls hidden until needed
+- when a collapsible section expands, it should grow to its natural full height rather than locking into a fixed-size scroll area
+- when a collapsible section is collapsed, the surrounding container should shrink back to fit the compact state again
 
 ## Behavior and State Rules
 
@@ -234,3 +236,5 @@ The redesign is complete when:
 - `Extend Parameters` and `Retrack Parameters` exist as nested collapsibles inside `Correction`, both closed by default
 - extend and retrack action buttons remain always visible
 - the redesigned buttons shrink appropriately with dock width
+- expanded collapsible sections use natural height without a fixed-height scrollbar
+- collapsing a section returns the outer container to a tight fit

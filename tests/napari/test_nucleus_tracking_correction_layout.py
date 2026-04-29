@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import importlib
+import os
+import sys
+import types
+from pathlib import Path
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import napari
+from qtpy.QtWidgets import QApplication, QPushButton, QScrollArea
+
+
+def _make_viewer():
+    app = QApplication.instance() or QApplication([])
+    viewer = napari.Viewer(show=False)
+    return app, viewer
+
+
+def _install_import_stubs() -> None:
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+
+    napari_pkg = types.ModuleType("cellflow.napari")
+    napari_pkg.__path__ = [str(package_root)]
+    sys.modules["cellflow.napari"] = napari_pkg
+
+    tracking_pkg = types.ModuleType("cellflow.tracking_ultrack")
+    tracking_pkg.__path__ = []
+    sys.modules["cellflow.tracking_ultrack"] = tracking_pkg
+
+    stub_exports = {
+        "cellflow.tracking_ultrack.config": {"TrackingConfig": type("TrackingConfig", (), {})},
+        "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
+        "cellflow.tracking_ultrack.ingest": {
+            "ingest_hypotheses_to_db": lambda *args, **kwargs: None,
+            "_select_solver": lambda: "CBC",
+        },
+        "cellflow.tracking_ultrack.linking": {"run_linking": lambda *args, **kwargs: iter(())},
+        "cellflow.tracking_ultrack.extend": {"extend_track": lambda *args, **kwargs: None},
+        "cellflow.tracking_ultrack.reseed": {"resolve_with_validation": lambda *args, **kwargs: None},
+        "cellflow.tracking_ultrack.solve": {"run_solve": lambda *args, **kwargs: iter(())},
+    }
+
+    for module_name, attrs in stub_exports.items():
+        module = types.ModuleType(module_name)
+        for attr_name, value in attrs.items():
+            setattr(module, attr_name, value)
+        sys.modules[module_name] = module
+
+
+def _load_widget_class():
+    _install_import_stubs()
+    module = importlib.import_module("cellflow.napari.nucleus_workflow_widget")
+    return module.NucleusWorkflowWidget
+
+
+def test_tracking_correction_shell_exposes_stable_section_attributes():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.tracking_correction_section.title == "4. Tracking & Correction"
+    assert widget.ultrack_section.title == "Ultrack Tracking"
+    assert widget.correction_section.title == "Correction"
+    assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
+    assert widget.correction_shortcuts_section.is_expanded is True
+    assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
+
+    correction_button_texts = {
+        button.text()
+        for button in widget.correction_section.findChildren(QPushButton)
+    }
+    ultrack_button_texts = {
+        button.text()
+        for button in widget.ultrack_section.findChildren(QPushButton)
+    }
+
+    assert "Save Tracked Labels" in correction_button_texts
+    assert "Load Tracked Labels" in correction_button_texts
+    assert "Reassign IDs" in correction_button_texts
+    assert "◀ Extend (Ctrl+Shift+A)" in correction_button_texts
+    assert "Extend (Ctrl+Shift+D) ▶" in correction_button_texts
+    assert "◀ Retrack (Ctrl+Shift+Q)" in correction_button_texts
+    assert "Retrack (Ctrl+Shift+E) ▶" in correction_button_texts
+    assert "Save Tracked Labels" not in ultrack_button_texts
+    assert "Load Tracked Labels" not in ultrack_button_texts
+    assert "Reassign IDs" not in ultrack_button_texts
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_section_exposes_route_selector_and_local_status():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.ultrack_route_check.text() == "Resolve from validated"
+    assert widget.ultrack_status_lbl.text() == ""
+    assert widget.ultrack_progress_bar.isVisible() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_section_exposes_extend_and_retrack_parameters():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.extend_params_section.title == "Extend Parameters"
+    assert widget.extend_params_section.is_expanded is False
+    assert widget.retrack_params_section.title == "Retrack Parameters"
+    assert widget.retrack_params_section.is_expanded is False
+    assert widget.extend_max_dist_spin.value() == 40.0
+    assert widget.retrack_max_dist_spin.value() == 20.0
+
+    widget.deleteLater()
+    viewer.close()

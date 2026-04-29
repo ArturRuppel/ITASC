@@ -53,11 +53,13 @@ class CorrectionWidget(QWidget):
         parent: QWidget | None = None,
         *,
         show_activate_btn: bool = True,
+        show_shortcuts: bool = True,
         inspector_first: bool = False,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self._show_activate_btn = show_activate_btn
+        self._show_shortcuts = show_shortcuts
         self._inspector_first = inspector_first
 
         self._layer: napari.layers.Labels | None = None
@@ -143,30 +145,15 @@ class CorrectionWidget(QWidget):
         self._inspect_frames_label.setStyleSheet("font-size: 9pt; color: palette(mid);")
         inspect_lay.addWidget(self._inspect_frames_label)
 
-        ref_group = QGroupBox("Correction shortcuts")
-        ref_lay = QVBoxLayout(ref_group)
-        ref_lay.setSpacing(2)
-        for key, desc in [
-            ("Left-click",                         "Select / highlight cell"),
-            ("Middle-click",                       "Erase clicked cell"),
-            ("Delete",                             "Erase selected cell"),
-            ("Ctrl+Left-click (cell selected)",    "Merge with clicked cell"),
-            ("Ctrl+Left-click × 2 (same cell)",    "Split (watershed, 2 seeds)"),
-            ("Right-click (cell selected)",         "Swap with clicked cell (same or other frame)"),
-            ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell (same frame)"),
-            ("Ctrl+Right-click → Right-click",     "Swap (two-step, no selection)"),
-            ("Ctrl-z",                             "Undo"),
-            ("Shift+Left / Shift+Right",           "Previous / next cell across all frames"),
-            ("Shift+Right-drag",                   "Split by drawn line"),
-            ("Shift+Left-drag",                    "Draw cell path (extends or creates)"),
-        ]:
-            ref_lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
+        ref_group = self.build_shortcuts_widget()
 
         if self._inspector_first:
             root.addWidget(inspect_group)
-            root.addWidget(ref_group)
+            if self._show_shortcuts:
+                root.addWidget(ref_group)
         else:
-            root.addWidget(ref_group)
+            if self._show_shortcuts:
+                root.addWidget(ref_group)
             root.addWidget(inspect_group)
 
         root.addStretch()
@@ -182,6 +169,27 @@ class CorrectionWidget(QWidget):
         attrib.setWordWrap(True)
         attrib.setStyleSheet("color: palette(mid); font-size: 9pt;")
         root.addWidget(attrib)
+
+    def build_shortcuts_widget(self) -> QWidget:
+        group = QGroupBox("Correction shortcuts")
+        lay = QVBoxLayout(group)
+        lay.setSpacing(2)
+        for key, desc in [
+            ("Left-click",                         "Select / highlight cell"),
+            ("Middle-click",                       "Erase clicked cell"),
+            ("Delete",                             "Erase selected cell"),
+            ("Ctrl+Left-click (cell selected)",    "Merge with clicked cell"),
+            ("Ctrl+Left-click × 2 (same cell)",    "Split (watershed, 2 seeds)"),
+            ("Right-click (cell selected)",         "Swap with clicked cell (same or other frame)"),
+            ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell (same frame)"),
+            ("Ctrl+Right-click → Right-click",     "Swap (two-step, no selection)"),
+            ("Ctrl-z",                             "Undo"),
+            ("Shift+Left / Shift+Right",           "Previous / next cell across all frames"),
+            ("Shift+Right-drag",                   "Split by drawn line"),
+            ("Shift+Left-drag",                    "Draw cell path (extends or creates)"),
+        ]:
+            lay.addWidget(QLabel(f"<tt>{key}</tt>  –  {desc}"))
+        return group
 
     # ── activation ────────────────────────────────────────────────────────────
 
