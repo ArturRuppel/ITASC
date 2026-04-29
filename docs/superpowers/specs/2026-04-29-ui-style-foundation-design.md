@@ -50,4 +50,3 @@ Add focused tests for the helper module and migrate existing napari layout tests
 - helper functions set the expected size policies and styles
 - existing napari layout tests still pass
 - Python compilation succeeds for modified UI modules
-

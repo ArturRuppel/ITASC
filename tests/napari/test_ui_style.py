@@ -116,6 +116,7 @@ def test_muted_label_uses_palette_mid_and_font_size(_app):
 def test_status_label_sets_font_size_and_optional_italic(_app):
     plain = QLabel("Idle")
     italic = QLabel("Waiting")
+    muted = QLabel("Muted")
 
     assert status_label(plain, size_pt=10) is plain
     assert "font-size: 10pt" in plain.styleSheet()
@@ -124,6 +125,10 @@ def test_status_label_sets_font_size_and_optional_italic(_app):
     status_label(italic, italic=True)
     assert "font-size: 8pt" in italic.styleSheet()
     assert "font-style: italic" in italic.styleSheet()
+
+    status_label(muted, italic=True, muted=True)
+    assert "palette(mid)" in muted.styleSheet()
+    assert "font-style: italic" in muted.styleSheet()
 
 
 def test_danger_button_uses_semantic_red_and_hover_style(_app):

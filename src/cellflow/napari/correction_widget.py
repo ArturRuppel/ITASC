@@ -118,7 +118,7 @@ class CorrectionWidget(QWidget):
 
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        muted_label(self._status)
+        status_label(self._status, italic=True, muted=True)
         root.addWidget(self._status)
 
         inspect_group = QGroupBox("Inspect cell")
@@ -330,7 +330,7 @@ class CorrectionWidget(QWidget):
         if error:
             self._status.setStyleSheet("color: #b00020; font-style: italic;")
         else:
-            status_label(self._status, italic=True)
+            status_label(self._status, italic=True, muted=True)
 
     def set_edit_callback(self, fn: Callable[[int, set[int]], None] | None) -> None:
         """Register a callback fired after every successful edit.

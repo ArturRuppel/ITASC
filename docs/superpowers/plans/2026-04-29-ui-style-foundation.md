@@ -61,4 +61,3 @@
 - The plan covers all requirements in the spec.
 - The plan has no placeholders.
 - Helper names are concrete and scoped to the current Qt widgets.
-

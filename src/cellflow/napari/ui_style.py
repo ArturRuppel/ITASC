@@ -42,8 +42,10 @@ def muted_label(label, size_pt=8):
     return label
 
 
-def status_label(label, size_pt=8, italic=False):
+def status_label(label, size_pt=8, italic=False, muted=False):
     style = f"font-size: {size_pt}pt;"
+    if muted:
+        style += " color: palette(mid);"
     if italic:
         style += " font-style: italic;"
     label.setStyleSheet(style)
