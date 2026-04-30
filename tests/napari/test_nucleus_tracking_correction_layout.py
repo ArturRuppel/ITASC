@@ -7,6 +7,7 @@ import types
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -420,6 +421,26 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     assert widget.retrack_params_section.is_expanded is False
     assert widget.extend_max_dist_spin.value() == 40.0
     assert widget.retrack_max_dist_spin.value() == 20.0
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_validated_overlay_uses_green_fill_at_full_opacity():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    viewer.add_labels(np.array([[[0, 1], [1, 0]]], dtype=np.uint8), name="Tracked: Nucleus")
+    widget._add_validated_overlay(np.array([[[0, 1], [0, 0]]], dtype=np.uint8))
+
+    layer = viewer.layers["Validated: Nucleus"]
+    color = layer.get_color(1)
+
+    assert layer.contour == 0
+    assert layer.opacity == 1.0
+    assert np.allclose(color[:3], [0.0, 1.0, 0.0], atol=1e-6)
+    assert color[3] == 1.0
 
     widget.deleteLater()
     viewer.close()

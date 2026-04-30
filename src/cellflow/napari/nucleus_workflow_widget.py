@@ -10,6 +10,7 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
+from napari.utils.colormaps import direct_colormap
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
@@ -2191,13 +2192,12 @@ class NucleusWorkflowWidget(QWidget):
         if _VALIDATED_OVERLAY in self.viewer.layers:
             self.viewer.layers[_VALIDATED_OVERLAY].data = data
             return
-        ov = self.viewer.add_labels(data, name=_VALIDATED_OVERLAY, opacity=0.5)
-        # Single-color colormap: id 1 → green
-        try:
-            ov.color = {1: "green"}
-            ov.color_mode = "direct"
-        except Exception:
-            pass
+        ov = self.viewer.add_labels(
+            data,
+            name=_VALIDATED_OVERLAY,
+            opacity=1.0,
+            colormap=direct_colormap({None: (0, 0, 0, 0), 1: "#00ff00"}),
+        )
         # Send the active layer back to tracked so corrections still target it.
         if _TRACKED_LAYER in self.viewer.layers:
             self.viewer.layers.selection.active = self.viewer.layers[_TRACKED_LAYER]
