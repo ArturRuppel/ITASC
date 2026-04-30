@@ -499,6 +499,46 @@ def normalize_seeded_watershed_dp_stack(
     return np.asarray(dp, dtype=np.float32)
 
 
+def normalize_seeded_watershed_nucleus_stack(
+    nucleus_stack: np.ndarray,
+    prob_shape: tuple[int, int, int, int],
+) -> np.ndarray:
+    """Return nucleus seed labels as (T, Z, Y, X), accepting 2D tracked labels."""
+    nucleus = np.asarray(nucleus_stack)
+    n_t, n_z, n_y, n_x = prob_shape
+
+    if nucleus.ndim == 2:
+        if nucleus.shape != (n_y, n_x):
+            raise ValueError(
+                f"Expected nucleus labels matching prob shape {prob_shape}, got {nucleus.shape}"
+            )
+        nucleus = np.broadcast_to(nucleus, (n_t, n_z, n_y, n_x)).copy()
+    elif nucleus.ndim == 3:
+        if nucleus.shape == (n_t, n_y, n_x):
+            nucleus = np.broadcast_to(nucleus[:, np.newaxis], (n_t, n_z, n_y, n_x)).copy()
+        elif nucleus.shape == (n_z, n_y, n_x) and n_t == 1:
+            nucleus = nucleus[np.newaxis]
+        else:
+            raise ValueError(
+                f"Expected nucleus labels matching prob shape {prob_shape}, got {nucleus.shape}"
+            )
+    elif nucleus.ndim == 4:
+        if nucleus.shape == (n_t, n_z, n_y, n_x):
+            pass
+        elif nucleus.shape == (1, n_t, n_y, n_x):
+            nucleus = np.broadcast_to(nucleus[0, :, np.newaxis], (n_t, n_z, n_y, n_x)).copy()
+        elif nucleus.shape == (1, n_z, n_y, n_x) and n_t == 1:
+            pass
+        else:
+            raise ValueError(
+                f"Expected nucleus labels matching prob shape {prob_shape}, got {nucleus.shape}"
+            )
+    else:
+        raise ValueError(f"Expected nucleus labels with 2-4 dimensions, got shape {nucleus.shape}")
+
+    return np.asarray(nucleus)
+
+
 def _run_seeded_watershed_task(
     args: tuple[int, int, "SeededWatershedParams", np.ndarray, np.ndarray | None, np.ndarray],
 ) -> "HypothesisRecord":
@@ -533,9 +573,7 @@ def iter_seeded_watershed_records(
         prob_stack = prob_stack[np.newaxis]
     if dp_stack is not None:
         dp_stack = normalize_seeded_watershed_dp_stack(dp_stack, prob_stack.shape)
-    nucleus_stack = np.asarray(nucleus_stack)
-    if nucleus_stack.ndim == 3:
-        nucleus_stack = nucleus_stack[np.newaxis]
+    nucleus_stack = normalize_seeded_watershed_nucleus_stack(nucleus_stack, prob_stack.shape)
 
     n_t = prob_stack.shape[0]
     tasks = [

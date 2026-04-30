@@ -69,3 +69,32 @@ def test_seeded_watershed_records_prefer_canonical_dp_when_z_is_channel_sized(mo
     list(iter_seeded_watershed_records(prob, dp, nucleus, spec))
 
     assert seen_values == [(1.0, 10.0), (2.0, 20.0)]
+
+
+def test_seeded_watershed_records_accept_ui_time_first_2d_nucleus_labels(monkeypatch):
+    prob = np.zeros((2, 3, 4, 5), dtype=np.float32)
+    nucleus = np.zeros((1, 2, 4, 5), dtype=np.uint32)
+    nucleus[0, 0, 1:3, 2:4] = 7
+    nucleus[0, 1, 1:3, 2:4] = 11
+    seen_seed_maxima = []
+
+    def fake_seeded_watershed(prob_2d, dp_2d, seeds_2d, params):
+        seen_seed_maxima.append(int(seeds_2d.max()))
+        return np.full(prob_2d.shape, int(seeds_2d.max()), dtype=np.uint32)
+
+    monkeypatch.setattr(hypotheses, "compute_seeded_watershed", fake_seeded_watershed)
+
+    spec = SeededWatershedSweepSpec(
+        foreground_threshold=0.5,
+        foreground_threshold_min=0.5,
+        foreground_threshold_max=0.5,
+        compactness=0.0,
+        compactness_min=0.0,
+        compactness_max=0.0,
+    )
+
+    records = list(iter_seeded_watershed_records(prob, None, nucleus, spec))
+
+    assert [record.t for record in records] == [0, 1]
+    assert [int(record.labels.max()) for record in records] == [7, 11]
+    assert seen_seed_maxima == [7, 7, 7, 11, 11, 11]
