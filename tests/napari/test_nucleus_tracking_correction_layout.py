@@ -161,6 +161,14 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
     assert widget.correction_shortcuts_section.is_expanded is True
     assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
+    correction_inner = widget.correction_section._content_frame.layout().itemAt(0).widget()
+    correction_layout = correction_inner.layout()
+    assert correction_layout.indexOf(widget.correction_widget) != -1
+    assert correction_layout.indexOf(widget.correction_shortcuts_section) != -1
+    assert (
+        correction_layout.indexOf(widget.correction_shortcuts_section)
+        > correction_layout.indexOf(widget.correction_widget)
+    )
 
     correction_button_texts = {
         button.text()

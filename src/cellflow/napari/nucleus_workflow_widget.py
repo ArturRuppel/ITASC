@@ -843,13 +843,13 @@ class NucleusWorkflowWidget(QWidget):
             inspector_first=True,
         )
         self.correction_widget.set_edit_callback(self._on_cells_edited)
+        _corr_inner_lay.addWidget(self.correction_widget)
         self.correction_shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
             self.correction_widget.build_shortcuts_widget(),
             expanded=True,
         )
         _corr_inner_lay.addWidget(self.correction_shortcuts_section)
-        _corr_inner_lay.addWidget(self.correction_widget)
 
         self.correction_section = CollapsibleSection(
             "Correction", _corr_inner, expanded=False
