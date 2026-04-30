@@ -64,6 +64,8 @@ from cellflow.tracking.retracker import retrack_frame
 logger = logging.getLogger(__name__)
 
 _PREVIEW_LAYER  = "Preview: Cell"
+_PREVIEW_BASIN_LAYER = "Preview: Cell Basin"
+_PREVIEW_SEEDS_LAYER = "Preview: Cell Seeds"
 _HYP_LAYER      = "Hypothesis: Cell"
 _TRACKED_LAYER  = "Tracked: Cell"
 _CELL_ZAVG_LAYER = "Cell z-avg"
@@ -571,6 +573,47 @@ class CellWorkflowWidget(QWidget):
         else:
             self.viewer.add_labels(data, name=name)
 
+    def _update_image_layer(self, name: str, data: np.ndarray, *, colormap: str = "gray") -> None:
+        if name in self.viewer.layers:
+            layer = self.viewer.layers[name]
+            layer.data = data
+            layer.colormap = colormap
+        else:
+            self.viewer.add_image(data, name=name, colormap=colormap)
+
+    def _preview_seed_slice(self, nucleus: np.ndarray, t: int, z: int, n_t: int) -> np.ndarray:
+        if nucleus.ndim == 4:
+            if nucleus.shape[0] == n_t:
+                return np.asarray(nucleus[t, min(z, nucleus.shape[1] - 1)])
+            if nucleus.shape[0] == 1 and nucleus.shape[1] == n_t:
+                return np.asarray(nucleus[0, t])
+        if nucleus.ndim == 3:
+            return np.asarray(nucleus[min(t, nucleus.shape[0] - 1)])
+        if nucleus.ndim == 2:
+            return np.asarray(nucleus)
+        raise ValueError(f"Expected nucleus labels with 2-4 dimensions, got shape {nucleus.shape}")
+
+    def _preview_basin_stack(
+        self,
+        prob_t: np.ndarray,
+        dp_t: np.ndarray | None,
+        params: SeededWatershedParams,
+    ) -> np.ndarray:
+        if params.basin == "prob":
+            return (1.0 / (1.0 + np.exp(-np.asarray(prob_t, dtype=np.float32)))).astype(np.float32)
+        if params.basin != "flow_mag":
+            raise ValueError(f"Unknown basin={params.basin!r}; expected 'prob' or 'flow_mag'")
+        if dp_t is None:
+            raise ValueError("flow_mag basin requires a dp array")
+        dp_t = np.asarray(dp_t, dtype=np.float32)
+        if dp_t.ndim == 4 and dp_t.shape[1] in (2, 3):
+            return np.sqrt(np.sum(dp_t * dp_t, axis=1)).astype(np.float32)
+        if dp_t.ndim == 4 and dp_t.shape[-1] in (2, 3):
+            return np.sqrt(np.sum(dp_t * dp_t, axis=-1)).astype(np.float32)
+        if dp_t.ndim == 3:
+            return np.abs(dp_t).astype(np.float32)
+        raise ValueError(f"Expected flow stack with shape (Z, C, Y, X) or (Z, Y, X, C), got {dp_t.shape}")
+
     def _refresh_db_browser(self) -> None:
         self._db_param_map = {}
         self._db_fg_vals = []
@@ -677,11 +720,16 @@ class CellWorkflowWidget(QWidget):
 
         dp_2d = dp[t, z] if dp is not None else None
         try:
-            labels = compute_seeded_watershed(prob[t, z], dp_2d, nucleus[t, z], params)
+            seed_2d = self._preview_seed_slice(nucleus, t, z, prob.shape[0])
+            basin_stack = self._preview_basin_stack(prob[t], dp[t] if dp is not None else None, params)
+            seed_stack = np.broadcast_to(seed_2d, prob[t].shape).copy()
+            labels = compute_seeded_watershed(prob[t, z], dp_2d, seed_2d, params)
         except Exception as e:
             self._set_status(f"Preview failed: {e}")
             return
 
+        self._update_image_layer(_PREVIEW_BASIN_LAYER, basin_stack, colormap="magma")
+        self._update_layer(_PREVIEW_SEEDS_LAYER, seed_stack)
         self._update_layer(_PREVIEW_LAYER, labels)
         self._set_status(
             f"Preview t={t} z={z}: {int(labels.max())} cells "
