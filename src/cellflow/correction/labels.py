@@ -10,7 +10,7 @@ import logging
 import os
 
 import numpy as np
-from scipy.ndimage import binary_dilation, binary_closing, label as nd_label
+from scipy.ndimage import binary_dilation, binary_closing, binary_fill_holes, label as nd_label
 from scipy.ndimage import distance_transform_edt
 from skimage.draw import polygon as draw_polygon
 from skimage.morphology import disk
@@ -318,7 +318,12 @@ def draw_cell_path(
 
     fill_mask = np.zeros(seg.shape, dtype=bool)
     fill_mask[rr, cc] = True
-    if not extending:
+    if extending:
+        existing_mask = seg == label
+        connected_regions, _ = nd_label(existing_mask | fill_mask)
+        connected_ids = np.unique(connected_regions[existing_mask])
+        fill_mask &= np.isin(connected_regions, connected_ids)
+    else:
         fill_mask &= (seg == 0)
 
     n_px = int(np.sum(fill_mask))
@@ -326,6 +331,10 @@ def draw_cell_path(
         return False
 
     seg[fill_mask] = label
+    if extending:
+        cell_mask = seg == label
+        filled_mask = binary_fill_holes(cell_mask)
+        seg[filled_mask & ~cell_mask] = label
     return True
 
 

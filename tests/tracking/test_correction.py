@@ -1,7 +1,6 @@
 
-from cellflow.correction.labels import apply_gamma
+from cellflow.correction.labels import apply_gamma, draw_cell_path
 import numpy as np
-import pytest
 
 def test_gamma_identity():
     logits = np.array([-1.0, 0.0, 1.0])
@@ -16,3 +15,40 @@ def test_gamma_values():
     # gamma 0.5 -> prob 0.707 -> logit log(0.707/0.293) = 0.857
     corrected = apply_gamma(logits, 0.5)
     assert np.isclose(corrected, np.log(np.sqrt(0.5) / (1 - np.sqrt(0.5))))
+
+
+def test_draw_cell_path_rejects_disconnected_extension():
+    seg = np.zeros((12, 12), dtype=np.uint32)
+    seg[1:3, 1:3] = 1
+    before = seg.copy()
+
+    positions = [
+        (7, 7),
+        (7, 10),
+        (10, 10),
+        (10, 7),
+    ]
+
+    ok = draw_cell_path(seg, positions, curlabel=1)
+
+    assert ok is False
+    assert np.array_equal(seg, before)
+
+
+def test_draw_cell_path_extension_fills_enclosed_holes():
+    seg = np.zeros((12, 12), dtype=np.uint32)
+    seg[4:8, 4:8] = 1
+    seg[5:7, 5:7] = 0
+
+    positions = [
+        (4, 7),
+        (4, 9),
+        (7, 9),
+        (7, 7),
+    ]
+
+    ok = draw_cell_path(seg, positions, curlabel=1)
+
+    assert ok is True
+    assert seg[5, 5] == 1
+    assert seg[0, 0] == 0
