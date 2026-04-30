@@ -764,14 +764,14 @@ class NucleusWorkflowWidget(QWidget):
         _corr_inner_lay.setSpacing(4)
 
         extend_row = block_grid(horizontal_spacing=12)
-        self.extend_back_btn = QPushButton("◀ Extend (Ctrl+Shift+A)")
-        self.extend_fwd_btn = QPushButton("Extend (Ctrl+Shift+D) ▶")
+        self.extend_back_btn = QPushButton("◀ Extend (A)")
+        self.extend_fwd_btn = QPushButton("Extend (D) ▶")
         add_block_button_row(extend_row, 0, self.extend_back_btn, self.extend_fwd_btn)
         _corr_inner_lay.addLayout(extend_row)
 
         retrack_row = block_grid(horizontal_spacing=12)
-        self.retrack_back_btn = QPushButton("◀ Retrack (Ctrl+Shift+Q)")
-        self.retrack_fwd_btn = QPushButton("Retrack (Ctrl+Shift+E) ▶")
+        self.retrack_back_btn = QPushButton("◀ Retrack (Q)")
+        self.retrack_fwd_btn = QPushButton("Retrack (E) ▶")
         add_block_button_row(retrack_row, 0, self.retrack_back_btn, self.retrack_fwd_btn)
         _corr_inner_lay.addLayout(retrack_row)
 
@@ -2240,10 +2240,10 @@ class NucleusWorkflowWidget(QWidget):
 
     def _install_correction_shortcuts(self) -> None:
         specs = [
-            ("Ctrl+Shift+A", lambda: self._on_extend(direction="backward")),
-            ("Ctrl+Shift+D", lambda: self._on_extend(direction="forward")),
-            ("Ctrl+Shift+Q", self._on_retrack_backward),
-            ("Ctrl+Shift+E", self._on_retrack_forward),
+            ("A", lambda: self._on_extend(direction="backward")),
+            ("D", lambda: self._on_extend(direction="forward")),
+            ("Q", self._on_retrack_backward),
+            ("E", self._on_retrack_forward),
         ]
         self._correction_shortcuts: list[QShortcut] = []
         for key, slot in specs:

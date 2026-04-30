@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QKeySequence, QShortcut
 from qtpy.QtWidgets import QApplication, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 
@@ -183,10 +184,15 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert "Save Tracked Labels" in correction_button_texts
     assert "Load Tracked Labels" in correction_button_texts
     assert "Reassign IDs" in correction_button_texts
-    assert "◀ Extend (Ctrl+Shift+A)" in correction_button_texts
-    assert "Extend (Ctrl+Shift+D) ▶" in correction_button_texts
-    assert "◀ Retrack (Ctrl+Shift+Q)" in correction_button_texts
-    assert "Retrack (Ctrl+Shift+E) ▶" in correction_button_texts
+    assert "◀ Extend (A)" in correction_button_texts
+    assert "Extend (D) ▶" in correction_button_texts
+    assert "◀ Retrack (Q)" in correction_button_texts
+    assert "Retrack (E) ▶" in correction_button_texts
+    shortcut_keys = {
+        shortcut.key().toString(QKeySequence.SequenceFormat.PortableText)
+        for shortcut in widget.findChildren(QShortcut)
+    }
+    assert {"A", "D", "Q", "E"} <= shortcut_keys
     assert "Save Tracked Labels" not in ultrack_button_texts
     assert "Load Tracked Labels" not in ultrack_button_texts
     assert "Reassign IDs" not in ultrack_button_texts
