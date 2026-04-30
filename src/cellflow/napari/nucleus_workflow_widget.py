@@ -677,6 +677,61 @@ class NucleusWorkflowWidget(QWidget):
             "Maximum number of candidate predecessor nodes considered during linking."
         )
 
+        self.ultrack_power_spin = QDoubleSpinBox()
+        self.ultrack_power_spin.setRange(0.1, 20.0)
+        self.ultrack_power_spin.setValue(4.0)
+        self.ultrack_power_spin.setSingleStep(0.5)
+        self.ultrack_power_spin.setDecimals(2)
+        self.ultrack_power_spin.setToolTip(
+            "Ultrack's solver transform for node_prob and link weights. "
+            "With link_function=power, stored weights are raised to this power during solving."
+        )
+
+        self.ultrack_quality_exp_spin = QDoubleSpinBox()
+        self.ultrack_quality_exp_spin.setRange(0.1, 50.0)
+        self.ultrack_quality_exp_spin.setValue(8.0)
+        self.ultrack_quality_exp_spin.setSingleStep(0.5)
+        self.ultrack_quality_exp_spin.setDecimals(2)
+        self.ultrack_quality_exp_spin.setToolTip(
+            "Raises the signal-based segmentation quality before storing it as node_prob. "
+            "Higher values favor high-confidence whole-object candidates over fragments."
+        )
+
+        self.ultrack_seed_weight_spin = QDoubleSpinBox()
+        self.ultrack_seed_weight_spin.setRange(0.0, 10.0)
+        self.ultrack_seed_weight_spin.setValue(0.5)
+        self.ultrack_seed_weight_spin.setSingleStep(0.1)
+        self.ultrack_seed_weight_spin.setDecimals(2)
+        self.ultrack_seed_weight_spin.setToolTip(
+            "Additive reward for candidates similar to nearby validated cells. "
+            "Zero disables the seed-local bonus."
+        )
+
+        self.ultrack_seed_space_spin = QDoubleSpinBox()
+        self.ultrack_seed_space_spin.setRange(1.0, 500.0)
+        self.ultrack_seed_space_spin.setValue(25.0)
+        self.ultrack_seed_space_spin.setSingleStep(5.0)
+        self.ultrack_seed_space_spin.setDecimals(1)
+        self.ultrack_seed_space_spin.setToolTip(
+            "Spatial decay scale for seed proximity. Larger values let validated cells influence candidates farther away."
+        )
+
+        self.ultrack_seed_time_spin = QDoubleSpinBox()
+        self.ultrack_seed_time_spin.setRange(0.1, 50.0)
+        self.ultrack_seed_time_spin.setValue(2.0)
+        self.ultrack_seed_time_spin.setSingleStep(0.5)
+        self.ultrack_seed_time_spin.setDecimals(1)
+        self.ultrack_seed_time_spin.setToolTip(
+            "Temporal decay scale in frames. Larger values let validated cells influence more distant frames within the seed window."
+        )
+
+        self.ultrack_seed_window_spin = QSpinBox()
+        self.ultrack_seed_window_spin.setRange(0, 100)
+        self.ultrack_seed_window_spin.setValue(5)
+        self.ultrack_seed_window_spin.setToolTip(
+            "Maximum frame distance from a validated cell used for seed affinity."
+        )
+
         self.ultrack_solver_lbl = QLabel("—")
         add_block_pair_row(
             tracking_grid,
@@ -736,6 +791,36 @@ class NucleusWorkflowWidget(QWidget):
         route_grid = block_grid(horizontal_spacing=12)
         add_block_checkbox_row(route_grid, 0, self.ultrack_route_check)
         ultrack_lay.addLayout(route_grid)
+
+        resolve_grid = block_grid(horizontal_spacing=12)
+        add_block_pair_row(
+            resolve_grid,
+            0,
+            "Ultrack Power:",
+            _compact(self.ultrack_power_spin, 80),
+            "Quality Exp:",
+            _compact(self.ultrack_quality_exp_spin, 80),
+            field_width=80,
+        )
+        add_block_pair_row(
+            resolve_grid,
+            1,
+            "Seed Weight:",
+            _compact(self.ultrack_seed_weight_spin, 80),
+            "Seed Space (px):",
+            _compact(self.ultrack_seed_space_spin, 80),
+            field_width=80,
+        )
+        add_block_pair_row(
+            resolve_grid,
+            2,
+            "Seed Time:",
+            _compact(self.ultrack_seed_time_spin, 80),
+            "Seed Window:",
+            _compact(self.ultrack_seed_window_spin, 80),
+            field_width=80,
+        )
+        ultrack_lay.addLayout(resolve_grid)
 
         ultrack_run_row = block_grid(horizontal_spacing=12)
         self.run_ultrack_btn = QPushButton("Run Ultrack Tracking")
@@ -901,6 +986,7 @@ class NucleusWorkflowWidget(QWidget):
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
         self.ultrack_linking_mode_combo.currentTextChanged.connect(self._on_ultrack_mode_changed)
+        self.ultrack_route_check.toggled.connect(self._set_resolve_prior_controls_enabled)
         self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
         self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
         self.extend_back_btn.clicked.connect(self._on_extend_backward)
@@ -914,6 +1000,7 @@ class NucleusWorkflowWidget(QWidget):
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
         self.ultrack_solver_lbl.setText(solver_display)
         self._on_ultrack_mode_changed(self.ultrack_linking_mode_combo.currentText())
+        self._set_resolve_prior_controls_enabled(self.ultrack_route_check.isChecked())
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public refresh
@@ -1834,6 +1921,34 @@ class NucleusWorkflowWidget(QWidget):
     def _on_ultrack_mode_changed(self, mode: str) -> None:
         self.ultrack_iou_weight_spin.setEnabled(mode == "iou")
 
+    def _set_resolve_prior_controls_enabled(self, enabled: bool) -> None:
+        for control in (
+            self.ultrack_quality_exp_spin,
+            self.ultrack_seed_weight_spin,
+            self.ultrack_seed_space_spin,
+            self.ultrack_seed_time_spin,
+            self.ultrack_seed_window_spin,
+        ):
+            control.setEnabled(enabled)
+
+    def _ultrack_config_from_controls(self) -> UltrackConfig:
+        return UltrackConfig(
+            min_area=self.ultrack_min_area_spin.value(),
+            max_distance=self.ultrack_max_dist_spin.value(),
+            linking_mode=self.ultrack_linking_mode_combo.currentText(),
+            iou_weight=self.ultrack_iou_weight_spin.value(),
+            appear_weight=self.ultrack_appear_spin.value(),
+            disappear_weight=self.ultrack_disappear_spin.value(),
+            division_weight=self.ultrack_division_spin.value(),
+            max_neighbors=self.ultrack_max_neighbors_spin.value(),
+            power=self.ultrack_power_spin.value(),
+            quality_exponent=self.ultrack_quality_exp_spin.value(),
+            seed_weight=self.ultrack_seed_weight_spin.value(),
+            seed_sigma_space=self.ultrack_seed_space_spin.value(),
+            seed_tau_time=self.ultrack_seed_time_spin.value(),
+            seed_max_dt=self.ultrack_seed_window_spin.value(),
+        )
+
     def _on_run_tracking_route(self) -> None:
         if self.ultrack_route_check.isChecked():
             self._on_resolve_with_validation()
@@ -1858,28 +1973,11 @@ class NucleusWorkflowWidget(QWidget):
         tracked_path = self._tracked_path()
 
         # Capture all widget values before entering the worker closure
-        min_area = self.ultrack_min_area_spin.value()
         max_partitions_raw = self.ultrack_max_partitions_spin.value()
         max_partitions = None if max_partitions_raw == 0 else max_partitions_raw
         n_frames_raw = self.ultrack_n_frames_spin.value()
         n_frames = None if n_frames_raw == 0 else n_frames_raw
-        max_distance = self.ultrack_max_dist_spin.value()
-        linking_mode = self.ultrack_linking_mode_combo.currentText()
-        iou_weight = self.ultrack_iou_weight_spin.value()
-        appear_weight = self.ultrack_appear_spin.value()
-        disappear_weight = self.ultrack_disappear_spin.value()
-        division_weight = self.ultrack_division_spin.value()
-        max_neighbors = self.ultrack_max_neighbors_spin.value()
-        cfg = UltrackConfig(
-            min_area=min_area,
-            max_distance=max_distance,
-            linking_mode=linking_mode,
-            iou_weight=iou_weight,
-            appear_weight=appear_weight,
-            disappear_weight=disappear_weight,
-            division_weight=division_weight,
-            max_neighbors=max_neighbors,
-        )
+        cfg = self._ultrack_config_from_controls()
 
         self.ultrack_progress_bar.setRange(0, 100)
         self.ultrack_progress_bar.setVisible(True)
@@ -2465,16 +2563,7 @@ class NucleusWorkflowWidget(QWidget):
         layer = self.viewer.layers[_TRACKED_LAYER]
         tracked_labels = np.asarray(layer.data)
 
-        cfg = UltrackConfig(
-            min_area=self.ultrack_min_area_spin.value(),
-            max_distance=self.ultrack_max_dist_spin.value(),
-            linking_mode=self.ultrack_linking_mode_combo.currentText(),
-            iou_weight=self.ultrack_iou_weight_spin.value(),
-            appear_weight=self.ultrack_appear_spin.value(),
-            disappear_weight=self.ultrack_disappear_spin.value(),
-            division_weight=self.ultrack_division_spin.value(),
-            max_neighbors=self.ultrack_max_neighbors_spin.value(),
-        )
+        cfg = self._ultrack_config_from_controls()
 
         n_validated = len(validated_tracks)
         self.run_ultrack_btn.setEnabled(False)
@@ -2673,6 +2762,12 @@ class NucleusWorkflowWidget(QWidget):
                 "division_weight":  self.ultrack_division_spin.value(),
                 "max_neighbors":    self.ultrack_max_neighbors_spin.value(),
                 "resolve_only":     self.ultrack_route_check.isChecked(),
+                "power":            self.ultrack_power_spin.value(),
+                "quality_exponent": self.ultrack_quality_exp_spin.value(),
+                "seed_weight":      self.ultrack_seed_weight_spin.value(),
+                "seed_sigma_space": self.ultrack_seed_space_spin.value(),
+                "seed_tau_time":    self.ultrack_seed_time_spin.value(),
+                "seed_max_dt":      self.ultrack_seed_window_spin.value(),
             },
         }
 
@@ -2741,3 +2836,9 @@ class NucleusWorkflowWidget(QWidget):
             if "division_weight"  in ul: self.ultrack_division_spin.setValue(ul["division_weight"])
             if "max_neighbors"    in ul: self.ultrack_max_neighbors_spin.setValue(ul["max_neighbors"])
             if "resolve_only"     in ul: self.ultrack_route_check.setChecked(ul["resolve_only"])
+            if "power"            in ul: self.ultrack_power_spin.setValue(ul["power"])
+            if "quality_exponent" in ul: self.ultrack_quality_exp_spin.setValue(ul["quality_exponent"])
+            if "seed_weight"      in ul: self.ultrack_seed_weight_spin.setValue(ul["seed_weight"])
+            if "seed_sigma_space" in ul: self.ultrack_seed_space_spin.setValue(ul["seed_sigma_space"])
+            if "seed_tau_time"    in ul: self.ultrack_seed_time_spin.setValue(ul["seed_tau_time"])
+            if "seed_max_dt"      in ul: self.ultrack_seed_window_spin.setValue(ul["seed_max_dt"])

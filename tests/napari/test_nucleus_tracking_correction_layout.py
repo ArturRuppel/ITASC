@@ -245,6 +245,84 @@ def test_ultrack_section_exposes_route_selector_and_local_status():
     viewer.close()
 
 
+def test_ultrack_section_exposes_validated_seed_prior_controls():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.ultrack_power_spin.value() == 4.0
+    assert widget.ultrack_quality_exp_spin.value() == 8.0
+    assert widget.ultrack_seed_weight_spin.value() == 0.5
+    assert widget.ultrack_seed_space_spin.value() == 25.0
+    assert widget.ultrack_seed_time_spin.value() == 2.0
+    assert widget.ultrack_seed_window_spin.value() == 5
+
+    assert "solver transform" in widget.ultrack_power_spin.toolTip()
+    assert "node_prob" in widget.ultrack_quality_exp_spin.toolTip()
+    assert "validated cells" in widget.ultrack_seed_weight_spin.toolTip()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_validated_seed_prior_controls_follow_resolve_checkbox():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    controls = [
+        widget.ultrack_quality_exp_spin,
+        widget.ultrack_seed_weight_spin,
+        widget.ultrack_seed_space_spin,
+        widget.ultrack_seed_time_spin,
+        widget.ultrack_seed_window_spin,
+    ]
+
+    widget.ultrack_route_check.setChecked(False)
+    _app.processEvents()
+    assert all(not control.isEnabled() for control in controls)
+    assert widget.ultrack_power_spin.isEnabled()
+
+    widget.ultrack_route_check.setChecked(True)
+    _app.processEvents()
+    assert all(control.isEnabled() for control in controls)
+    assert widget.ultrack_power_spin.isEnabled()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_seed_prior_controls_persist_through_state():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.ultrack_route_check.setChecked(True)
+    widget.ultrack_power_spin.setValue(3.5)
+    widget.ultrack_quality_exp_spin.setValue(9.0)
+    widget.ultrack_seed_weight_spin.setValue(0.75)
+    widget.ultrack_seed_space_spin.setValue(30.0)
+    widget.ultrack_seed_time_spin.setValue(3.0)
+    widget.ultrack_seed_window_spin.setValue(7)
+
+    state = widget.get_state()
+    widget.deleteLater()
+
+    widget = widget_class(viewer)
+    widget.set_state(state)
+
+    assert widget.ultrack_route_check.isChecked()
+    assert widget.ultrack_power_spin.value() == 3.5
+    assert widget.ultrack_quality_exp_spin.value() == 9.0
+    assert widget.ultrack_seed_weight_spin.value() == 0.75
+    assert widget.ultrack_seed_space_spin.value() == 30.0
+    assert widget.ultrack_seed_time_spin.value() == 3.0
+    assert widget.ultrack_seed_window_spin.value() == 7
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_tracking_correction_widget_allows_horizontal_scrolling_when_narrow():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
