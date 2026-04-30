@@ -2051,18 +2051,11 @@ class NucleusWorkflowWidget(QWidget):
         tracked_path = self._tracked_path()
 
         # Capture all widget values
-        min_area = self.ultrack_min_area_spin.value()
+        cfg = self._ultrack_config_from_controls()
         max_partitions_raw = self.ultrack_max_partitions_spin.value()
         max_partitions = None if max_partitions_raw == 0 else max_partitions_raw
         n_frames_raw = self.ultrack_n_frames_spin.value()
         n_frames = None if n_frames_raw == 0 else n_frames_raw
-        max_distance = self.ultrack_max_dist_spin.value()
-        linking_mode = self.ultrack_linking_mode_combo.currentText()
-        iou_weight = self.ultrack_iou_weight_spin.value()
-        appear_weight = self.ultrack_appear_spin.value()
-        disappear_weight = self.ultrack_disappear_spin.value()
-        division_weight = self.ultrack_division_spin.value()
-        max_neighbors = self.ultrack_max_neighbors_spin.value()
 
         # NOTE: body must live under `if __name__ == "__main__":` because
         # Ultrack's linker uses spawn-based multiprocessing, which re-executes
@@ -2083,14 +2076,20 @@ class NucleusWorkflowWidget(QWidget):
             f"    working_dir = pathlib.Path({str(working_dir)!r})\n"
             f"    tracked_path= pathlib.Path({str(tracked_path)!r})\n"
             f"    cfg = TrackingConfig(\n"
-            f"        min_area={min_area},\n"
-            f"        max_distance={max_distance},\n"
-            f"        linking_mode={linking_mode!r},\n"
-            f"        iou_weight={iou_weight},\n"
-            f"        appear_weight={appear_weight},\n"
-            f"        disappear_weight={disappear_weight},\n"
-            f"        division_weight={division_weight},\n"
-            f"        max_neighbors={max_neighbors},\n"
+            f"        min_area={cfg.min_area},\n"
+            f"        max_distance={cfg.max_distance},\n"
+            f"        linking_mode={cfg.linking_mode!r},\n"
+            f"        iou_weight={cfg.iou_weight},\n"
+            f"        appear_weight={cfg.appear_weight},\n"
+            f"        disappear_weight={cfg.disappear_weight},\n"
+            f"        division_weight={cfg.division_weight},\n"
+            f"        max_neighbors={cfg.max_neighbors},\n"
+            f"        power={cfg.power},\n"
+            f"        quality_exponent={cfg.quality_exponent},\n"
+            f"        seed_weight={cfg.seed_weight},\n"
+            f"        seed_sigma_space={cfg.seed_sigma_space},\n"
+            f"        seed_tau_time={cfg.seed_tau_time},\n"
+            f"        seed_max_dt={cfg.seed_max_dt},\n"
             f"    )\n"
             f"    max_partitions = {max_partitions!r}\n"
             f"    n_frames       = {n_frames!r}\n"
@@ -2145,14 +2144,7 @@ class NucleusWorkflowWidget(QWidget):
         pos_dir = self._pos_dir
 
         # Capture widget values (same as _on_resolve_with_validation)
-        min_area = self.ultrack_min_area_spin.value()
-        max_distance = self.ultrack_max_dist_spin.value()
-        linking_mode = self.ultrack_linking_mode_combo.currentText()
-        iou_weight = self.ultrack_iou_weight_spin.value()
-        appear_weight = self.ultrack_appear_spin.value()
-        disappear_weight = self.ultrack_disappear_spin.value()
-        division_weight = self.ultrack_division_spin.value()
-        max_neighbors = self.ultrack_max_neighbors_spin.value()
+        cfg = self._ultrack_config_from_controls()
 
         python_code = (
             "import sys, pathlib\n"
@@ -2169,14 +2161,20 @@ class NucleusWorkflowWidget(QWidget):
             f"    hyp_path     = pathlib.Path({str(hyp_path)!r})\n"
             f"    tracked_path = pathlib.Path({str(tracked_path)!r})\n"
             f"    cfg = TrackingConfig(\n"
-            f"        min_area={min_area},\n"
-            f"        max_distance={max_distance},\n"
-            f"        linking_mode={linking_mode!r},\n"
-            f"        iou_weight={iou_weight},\n"
-            f"        appear_weight={appear_weight},\n"
-            f"        disappear_weight={disappear_weight},\n"
-            f"        division_weight={division_weight},\n"
-            f"        max_neighbors={max_neighbors},\n"
+            f"        min_area={cfg.min_area},\n"
+            f"        max_distance={cfg.max_distance},\n"
+            f"        linking_mode={cfg.linking_mode!r},\n"
+            f"        iou_weight={cfg.iou_weight},\n"
+            f"        appear_weight={cfg.appear_weight},\n"
+            f"        disappear_weight={cfg.disappear_weight},\n"
+            f"        division_weight={cfg.division_weight},\n"
+            f"        max_neighbors={cfg.max_neighbors},\n"
+            f"        power={cfg.power},\n"
+            f"        quality_exponent={cfg.quality_exponent},\n"
+            f"        seed_weight={cfg.seed_weight},\n"
+            f"        seed_sigma_space={cfg.seed_sigma_space},\n"
+            f"        seed_tau_time={cfg.seed_tau_time},\n"
+            f"        seed_max_dt={cfg.seed_max_dt},\n"
             f"    )\n"
             "    validated_tracks = read_validated_tracks(pos_dir)\n"
             "    print(f'Loaded {len(validated_tracks)} validated track(s).', flush=True)\n"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import shlex
 import sys
 import types
 from pathlib import Path
@@ -34,8 +35,12 @@ def _install_import_stubs() -> None:
     tracking_pkg.__path__ = []
     sys.modules["cellflow.tracking_ultrack"] = tracking_pkg
 
+    class _StubTrackingConfig:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
     stub_exports = {
-        "cellflow.tracking_ultrack.config": {"TrackingConfig": type("TrackingConfig", (), {})},
+        "cellflow.tracking_ultrack.config": {"TrackingConfig": _StubTrackingConfig},
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
             "ingest_hypotheses_to_db": lambda *args, **kwargs: None,
@@ -113,6 +118,23 @@ def _load_correction_widget_class():
 
     module = importlib.import_module("cellflow.napari.correction_widget")
     return module.CorrectionWidget
+
+
+def _install_terminal_capture(monkeypatch):
+    captured = {}
+    utils_module = types.ModuleType("cellflow.napari.utils")
+
+    def _capture_launch(cmd):
+        captured["cmd"] = cmd
+
+    utils_module.launch_in_terminal = _capture_launch
+    monkeypatch.setitem(sys.modules, "cellflow.napari.utils", utils_module)
+    return captured
+
+
+def _read_launched_script(captured: dict) -> str:
+    cmd_parts = shlex.split(captured["cmd"])
+    return Path(cmd_parts[-1]).read_text()
 
 
 def test_main_widget_labels_the_outer_nucleus_workflow_section():
@@ -318,6 +340,73 @@ def test_ultrack_seed_prior_controls_persist_through_state():
     assert widget.ultrack_seed_space_spin.value() == 30.0
     assert widget.ultrack_seed_time_spin.value() == 3.0
     assert widget.ultrack_seed_window_spin.value() == 7
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    captured = _install_terminal_capture(monkeypatch)
+
+    pos_dir = tmp_path / "pos00"
+    nucleus_dir = pos_dir / "2_nucleus"
+    nucleus_dir.mkdir(parents=True)
+    (nucleus_dir / "hypotheses.h5").touch()
+    widget._pos_dir = pos_dir
+    widget.ultrack_power_spin.setValue(3.25)
+    widget.ultrack_quality_exp_spin.setValue(9.5)
+    widget.ultrack_seed_weight_spin.setValue(0.85)
+    widget.ultrack_seed_space_spin.setValue(35.0)
+    widget.ultrack_seed_time_spin.setValue(4.0)
+    widget.ultrack_seed_window_spin.setValue(8)
+
+    widget._on_ultrack_terminal()
+    script = _read_launched_script(captured)
+
+    assert "power=3.25" in script
+    assert "quality_exponent=9.5" in script
+    assert "seed_weight=0.85" in script
+    assert "seed_sigma_space=35.0" in script
+    assert "seed_tau_time=4.0" in script
+    assert "seed_max_dt=8" in script
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    captured = _install_terminal_capture(monkeypatch)
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {12: {0, 1}})
+
+    pos_dir = tmp_path / "pos00"
+    nucleus_dir = pos_dir / "2_nucleus"
+    nucleus_dir.mkdir(parents=True)
+    (nucleus_dir / "hypotheses.h5").touch()
+    (nucleus_dir / "tracked_labels.tif").touch()
+    widget._pos_dir = pos_dir
+    widget.ultrack_power_spin.setValue(3.75)
+    widget.ultrack_quality_exp_spin.setValue(10.5)
+    widget.ultrack_seed_weight_spin.setValue(0.9)
+    widget.ultrack_seed_space_spin.setValue(40.0)
+    widget.ultrack_seed_time_spin.setValue(4.5)
+    widget.ultrack_seed_window_spin.setValue(9)
+
+    widget._on_resolve_terminal()
+    script = _read_launched_script(captured)
+
+    assert "power=3.75" in script
+    assert "quality_exponent=10.5" in script
+    assert "seed_weight=0.9" in script
+    assert "seed_sigma_space=40.0" in script
+    assert "seed_tau_time=4.5" in script
+    assert "seed_max_dt=9" in script
 
     widget.deleteLater()
     viewer.close()
