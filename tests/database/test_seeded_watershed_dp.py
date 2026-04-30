@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import numpy as np
+
+from cellflow.database import hypotheses
+from cellflow.database.hypotheses import (
+    SeededWatershedSweepSpec,
+    iter_seeded_watershed_records,
+)
+
+
+def test_seeded_watershed_records_normalize_channel_first_dp(monkeypatch):
+    prob = np.zeros((1, 3, 4, 5), dtype=np.float32)
+    nucleus = np.ones((1, 3, 4, 5), dtype=np.uint32)
+    dp = np.zeros((1, 2, 3, 4, 5), dtype=np.float32)
+    dp[:, 0] = 3
+    dp[:, 1] = 4
+    seen_shapes = []
+
+    def fake_seeded_watershed(prob_2d, dp_2d, seeds_2d, params):
+        seen_shapes.append(dp_2d.shape)
+        return np.ones(prob_2d.shape, dtype=np.uint32)
+
+    monkeypatch.setattr(hypotheses, "compute_seeded_watershed", fake_seeded_watershed)
+
+    spec = SeededWatershedSweepSpec(
+        basin="flow_mag",
+        foreground_threshold=0.5,
+        foreground_threshold_min=0.5,
+        foreground_threshold_max=0.5,
+        compactness=0.0,
+        compactness_min=0.0,
+        compactness_max=0.0,
+    )
+
+    records = list(iter_seeded_watershed_records(prob, dp, nucleus, spec))
+
+    assert len(records) == 1
+    assert records[0].labels.shape == (3, 4, 5)
+    assert seen_shapes == [(2, 4, 5), (2, 4, 5), (2, 4, 5)]
+
+
+def test_seeded_watershed_records_prefer_canonical_dp_when_z_is_channel_sized(monkeypatch):
+    prob = np.zeros((1, 2, 4, 5), dtype=np.float32)
+    nucleus = np.ones((1, 2, 4, 5), dtype=np.uint32)
+    dp = np.zeros((1, 2, 2, 4, 5), dtype=np.float32)
+    dp[0, 0, 0] = 1
+    dp[0, 0, 1] = 10
+    dp[0, 1, 0] = 2
+    dp[0, 1, 1] = 20
+    seen_values = []
+
+    def fake_seeded_watershed(prob_2d, dp_2d, seeds_2d, params):
+        seen_values.append((float(dp_2d[0, 0, 0]), float(dp_2d[1, 0, 0])))
+        return np.ones(prob_2d.shape, dtype=np.uint32)
+
+    monkeypatch.setattr(hypotheses, "compute_seeded_watershed", fake_seeded_watershed)
+
+    spec = SeededWatershedSweepSpec(
+        basin="flow_mag",
+        foreground_threshold=0.5,
+        foreground_threshold_min=0.5,
+        foreground_threshold_max=0.5,
+        compactness=0.0,
+        compactness_min=0.0,
+        compactness_max=0.0,
+    )
+
+    list(iter_seeded_watershed_records(prob, dp, nucleus, spec))
+
+    assert seen_values == [(1.0, 10.0), (2.0, 20.0)]

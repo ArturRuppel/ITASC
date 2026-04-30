@@ -31,6 +31,7 @@ from cellflow.database.hypotheses import (
     delete_hypothesis_parameter,
     iter_seeded_watershed_records,
     list_hypotheses,
+    normalize_seeded_watershed_dp_stack,
     read_full_hypothesis_stack,
     read_hypothesis_labels,
     write_hypothesis_sweep_h5,
@@ -106,7 +107,6 @@ class CellWorkflowWidget(QWidget):
         self.input_files = PipelineFilesWidget([
             ("Inputs", [
                 ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
-                ("1_cellpose/cell_dp_3dt.tif",   "Cell dp 3D+t"),
                 ("2_nucleus/tracked_labels.tif",  "Nucleus tracked labels"),
             ]),
         ])
@@ -517,6 +517,10 @@ class CellWorkflowWidget(QWidget):
         self.status_lbl.setText(msg)
         logger.info(msg)
 
+    def _normalize_dp_stack(self, dp: np.ndarray, prob_shape: tuple[int, int, int, int]) -> np.ndarray:
+        """Return flow vectors as (T, Z, C, Y, X), accepting common Cellpose layouts."""
+        return normalize_seeded_watershed_dp_stack(dp, prob_shape)
+
     def _load_inputs(self) -> tuple[np.ndarray, np.ndarray | None, np.ndarray] | None:
         """Load prob, dp (optional for prob basin), and nucleus stacks. Returns None on error."""
         prob_path = self._prob_path()
@@ -545,8 +549,12 @@ class CellWorkflowWidget(QWidget):
             prob = prob[np.newaxis]
         if nucleus.ndim == 3:
             nucleus = nucleus[np.newaxis]
-        if dp is not None and dp.ndim == 4:
-            dp = dp[np.newaxis]
+        if dp is not None:
+            try:
+                dp = self._normalize_dp_stack(dp, prob.shape)
+            except ValueError as e:
+                self._set_status(f"Could not load Flow Magnitude dp stack: {e}")
+                return None
 
         return prob, dp, nucleus
 
@@ -582,16 +590,45 @@ class CellWorkflowWidget(QWidget):
             self.viewer.add_image(data, name=name, colormap=colormap)
 
     def _preview_seed_slice(self, nucleus: np.ndarray, t: int, z: int, n_t: int) -> np.ndarray:
+        seed_stack = self._preview_seed_stack(nucleus, t, n_t, target_shape=None)
+        if seed_stack.ndim == 3:
+            return np.asarray(seed_stack[min(z, seed_stack.shape[0] - 1)])
+        return np.asarray(seed_stack)
+
+    def _preview_seed_stack(
+        self,
+        nucleus: np.ndarray,
+        t: int,
+        n_t: int,
+        target_shape: tuple[int, int, int] | None,
+    ) -> np.ndarray:
         if nucleus.ndim == 4:
             if nucleus.shape[0] == n_t:
-                return np.asarray(nucleus[t, min(z, nucleus.shape[1] - 1)])
-            if nucleus.shape[0] == 1 and nucleus.shape[1] == n_t:
-                return np.asarray(nucleus[0, t])
-        if nucleus.ndim == 3:
-            return np.asarray(nucleus[min(t, nucleus.shape[0] - 1)])
-        if nucleus.ndim == 2:
-            return np.asarray(nucleus)
-        raise ValueError(f"Expected nucleus labels with 2-4 dimensions, got shape {nucleus.shape}")
+                seeds = np.asarray(nucleus[t])
+            elif nucleus.shape[0] == 1 and nucleus.shape[1] == n_t:
+                seeds = np.asarray(nucleus[0, t])
+            else:
+                raise ValueError(
+                    f"Expected nucleus labels with time axis matching {n_t}, got shape {nucleus.shape}"
+                )
+        elif nucleus.ndim == 3:
+            seeds = np.asarray(nucleus[min(t, nucleus.shape[0] - 1)])
+        elif nucleus.ndim == 2:
+            seeds = np.asarray(nucleus)
+        else:
+            raise ValueError(f"Expected nucleus labels with 2-4 dimensions, got shape {nucleus.shape}")
+
+        if target_shape is None:
+            return seeds
+        if seeds.ndim == 3:
+            if seeds.shape != target_shape:
+                raise ValueError(
+                    f"Expected seed stack shape {target_shape}, got {seeds.shape}"
+                )
+            return seeds
+        if seeds.ndim == 2:
+            return np.broadcast_to(seeds, target_shape).copy()
+        raise ValueError(f"Expected 2D or 3D seed labels, got shape {seeds.shape}")
 
     def _preview_basin_stack(
         self,
@@ -715,15 +752,23 @@ class CellWorkflowWidget(QWidget):
         prob, dp, nucleus = inputs
 
         t = min(self._current_t(), prob.shape[0] - 1)
-        z = min(self._current_z(), prob.shape[1] - 1)
         params = self._tuning_params()
 
-        dp_2d = dp[t, z] if dp is not None else None
         try:
-            seed_2d = self._preview_seed_slice(nucleus, t, z, prob.shape[0])
+            seed_stack = self._preview_seed_stack(nucleus, t, prob.shape[0], prob[t].shape)
             basin_stack = self._preview_basin_stack(prob[t], dp[t] if dp is not None else None, params)
-            seed_stack = np.broadcast_to(seed_2d, prob[t].shape).copy()
-            labels = compute_seeded_watershed(prob[t, z], dp_2d, seed_2d, params)
+            labels = np.stack(
+                [
+                    compute_seeded_watershed(
+                        prob[t, z],
+                        dp[t, z] if dp is not None else None,
+                        seed_stack[z],
+                        params,
+                    )
+                    for z in range(prob[t].shape[0])
+                ],
+                axis=0,
+            )
         except Exception as e:
             self._set_status(f"Preview failed: {e}")
             return
@@ -732,7 +777,7 @@ class CellWorkflowWidget(QWidget):
         self._update_layer(_PREVIEW_SEEDS_LAYER, seed_stack)
         self._update_layer(_PREVIEW_LAYER, labels)
         self._set_status(
-            f"Preview t={t} z={z}: {int(labels.max())} cells "
+            f"Preview t={t}: {int(labels.max())} cells across {labels.shape[0]} z-slices "
             f"(fg_thr={params.foreground_threshold:.2f}, compactness={params.compactness:.2f})"
         )
 
