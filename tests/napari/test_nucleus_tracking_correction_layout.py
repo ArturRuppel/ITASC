@@ -386,10 +386,13 @@ def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path
     monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {12: {0, 1}})
 
     pos_dir = tmp_path / "pos00"
+    cellpose_dir = pos_dir / "1_cellpose"
     nucleus_dir = pos_dir / "2_nucleus"
-    nucleus_dir.mkdir(parents=True)
+    cellpose_dir.mkdir(parents=True)
+    nucleus_dir.mkdir()
     (nucleus_dir / "hypotheses.h5").touch()
     (nucleus_dir / "tracked_labels.tif").touch()
+    (cellpose_dir / "cell_prob_zavg.tif").touch()
     widget._pos_dir = pos_dir
     widget.ultrack_power_spin.setValue(3.75)
     widget.ultrack_quality_exp_spin.setValue(10.5)
@@ -407,6 +410,48 @@ def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path
     assert "seed_sigma_space=40.0" in script
     assert "seed_tau_time=4.5" in script
     assert "seed_max_dt=9" in script
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_resolve_terminal_script_includes_seed_prior_and_cellprob_zavg(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    captured = _install_terminal_capture(monkeypatch)
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {7: {0}})
+
+    pos_dir = tmp_path / "pos00"
+    cellpose_dir = pos_dir / "1_cellpose"
+    nucleus_dir = pos_dir / "2_nucleus"
+    cellpose_dir.mkdir(parents=True)
+    nucleus_dir.mkdir()
+    (nucleus_dir / "hypotheses.h5").touch()
+    (nucleus_dir / "tracked_labels.tif").touch()
+    (cellpose_dir / "cell_prob_zavg.tif").touch()
+    widget._pos_dir = pos_dir
+
+    widget.ultrack_route_check.setChecked(True)
+    widget.ultrack_power_spin.setValue(3.5)
+    widget.ultrack_quality_exp_spin.setValue(9.0)
+    widget.ultrack_seed_weight_spin.setValue(0.75)
+    widget.ultrack_seed_space_spin.setValue(30.0)
+    widget.ultrack_seed_time_spin.setValue(3.0)
+    widget.ultrack_seed_window_spin.setValue(7)
+
+    widget._on_resolve_terminal()
+    script = _read_launched_script(captured)
+
+    assert "cell_prob_zavg.tif" in script
+    assert "power=3.5" in script
+    assert "quality_exponent=9.0" in script
+    assert "seed_weight=0.75" in script
+    assert "seed_sigma_space=30.0" in script
+    assert "seed_tau_time=3.0" in script
+    assert "seed_max_dt=7" in script
+    assert "intensity_image_path=cellprob_zavg_path" in script
 
     widget.deleteLater()
     viewer.close()

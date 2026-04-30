@@ -1046,6 +1046,9 @@ class NucleusWorkflowWidget(QWidget):
     def _nucleus_zavg_path(self) -> Path | None:
         return self._pos_dir / "0_input" / "nucleus_zavg.tif" if self._pos_dir else None
 
+    def _cellprob_zavg_path(self) -> Path | None:
+        return self._pos_dir / "1_cellpose" / "cell_prob_zavg.tif" if self._pos_dir else None
+
     def _ultrack_workdir(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "ultrack_workdir" if self._pos_dir else None
 
@@ -2141,6 +2144,10 @@ class NucleusWorkflowWidget(QWidget):
         if tracked_path is None or not tracked_path.exists():
             self._set_ultrack_status("Tracked labels not found.")
             return
+        cellprob_zavg_path = self._cellprob_zavg_path()
+        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
+            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+            return
         pos_dir = self._pos_dir
 
         # Capture widget values (same as _on_resolve_with_validation)
@@ -2160,6 +2167,7 @@ class NucleusWorkflowWidget(QWidget):
             f"    pos_dir      = pathlib.Path({str(pos_dir)!r})\n"
             f"    hyp_path     = pathlib.Path({str(hyp_path)!r})\n"
             f"    tracked_path = pathlib.Path({str(tracked_path)!r})\n"
+            f"    cellprob_zavg_path = pathlib.Path({str(cellprob_zavg_path)!r})\n"
             f"    cfg = TrackingConfig(\n"
             f"        min_area={cfg.min_area},\n"
             f"        max_distance={cfg.max_distance},\n"
@@ -2183,6 +2191,7 @@ class NucleusWorkflowWidget(QWidget):
             "    new_labels, id_map = resolve_with_validation(\n"
             "        hyp_path, validated_tracks, tracked_labels, cfg,\n"
             "        progress_cb=lambda msg: print(msg, flush=True),\n"
+            "        intensity_image_path=cellprob_zavg_path,\n"
             "    )\n"
             "    if new_labels.ndim == 4 and new_labels.shape[1] == 1:\n"
             "        new_labels = new_labels[:, 0]\n"
@@ -2557,6 +2566,10 @@ class NucleusWorkflowWidget(QWidget):
         if hyp_path is None or not hyp_path.exists():
             self._set_ultrack_status("hypotheses.h5 not found — generate hypotheses first.")
             return
+        cellprob_zavg_path = self._cellprob_zavg_path()
+        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
+            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+            return
 
         layer = self.viewer.layers[_TRACKED_LAYER]
         tracked_labels = np.asarray(layer.data)
@@ -2672,6 +2685,7 @@ class NucleusWorkflowWidget(QWidget):
                         resolve_with_validation(
                             hyp_path, validated_tracks, tracked_labels, cfg,
                             progress_cb=_progress,
+                            intensity_image_path=cellprob_zavg_path,
                         )
                     )
                 except Exception as e:
