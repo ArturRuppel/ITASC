@@ -49,6 +49,7 @@ def _install_import_stubs() -> None:
         "cellflow.tracking_ultrack.linking": {"run_linking": lambda *args, **kwargs: iter(())},
         "cellflow.tracking_ultrack.extend": {"extend_track": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.reseed": {"resolve_with_validation": lambda *args, **kwargs: None},
+        "cellflow.tracking_ultrack.seed_prior": {"write_seed_prior_node_probs": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.solve": {"run_solve": lambda *args, **kwargs: iter(())},
     }
 
@@ -352,9 +353,12 @@ def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monk
     captured = _install_terminal_capture(monkeypatch)
 
     pos_dir = tmp_path / "pos00"
+    cellpose_dir = pos_dir / "1_cellpose"
     nucleus_dir = pos_dir / "2_nucleus"
-    nucleus_dir.mkdir(parents=True)
+    cellpose_dir.mkdir(parents=True)
+    nucleus_dir.mkdir()
     (nucleus_dir / "hypotheses.h5").touch()
+    (cellpose_dir / "cell_prob_zavg.tif").touch()
     widget._pos_dir = pos_dir
     widget.ultrack_power_spin.setValue(3.25)
     widget.ultrack_quality_exp_spin.setValue(9.5)
@@ -372,6 +376,8 @@ def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monk
     assert "seed_sigma_space=35.0" in script
     assert "seed_tau_time=4.0" in script
     assert "seed_max_dt=8" in script
+    assert "cell_prob_zavg.tif" in script
+    assert "write_seed_prior_node_probs(working_dir, cellprob_zavg_path, cfg)" in script
 
     widget.deleteLater()
     viewer.close()

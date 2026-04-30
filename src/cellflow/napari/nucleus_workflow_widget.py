@@ -77,6 +77,7 @@ from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_so
 from cellflow.tracking_ultrack.linking import run_linking
 from cellflow.tracking_ultrack.extend import extend_track
 from cellflow.tracking_ultrack.reseed import resolve_with_validation
+from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
@@ -1972,6 +1973,10 @@ class NucleusWorkflowWidget(QWidget):
         if hyp_path is None or not hyp_path.exists():
             self._set_ultrack_status("Hypothesis DB not found — run the sweep first.")
             return
+        cellprob_zavg_path = self._cellprob_zavg_path()
+        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
+            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+            return
         working_dir = self._ultrack_workdir()
         tracked_path = self._tracked_path()
 
@@ -2001,6 +2006,9 @@ class NucleusWorkflowWidget(QWidget):
                 max_partitions=max_partitions,
                 n_frames=n_frames,
             )
+
+            yield ("score", 0, 1, "Scoring segmentation quality…")
+            write_seed_prior_node_probs(working_dir, cellprob_zavg_path, cfg)
 
             # Stage 2: linking (IS a generator — relay each progress tuple)
             for step, total, label in run_linking(working_dir, cfg):
@@ -2050,6 +2058,10 @@ class NucleusWorkflowWidget(QWidget):
         if hyp_path is None or not hyp_path.exists():
             self._set_ultrack_status("Hypothesis DB not found — run the sweep first.")
             return
+        cellprob_zavg_path = self._cellprob_zavg_path()
+        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
+            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+            return
         working_dir = self._ultrack_workdir()
         tracked_path = self._tracked_path()
 
@@ -2071,6 +2083,7 @@ class NucleusWorkflowWidget(QWidget):
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
             "from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db\n"
             "from cellflow.tracking_ultrack.linking import run_linking\n"
+            "from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs\n"
             "from cellflow.tracking_ultrack.solve import run_solve\n"
             "from cellflow.tracking_ultrack.export import export_tracked_labels\n"
             "\n"
@@ -2078,6 +2091,7 @@ class NucleusWorkflowWidget(QWidget):
             f"    hyp_path    = pathlib.Path({str(hyp_path)!r})\n"
             f"    working_dir = pathlib.Path({str(working_dir)!r})\n"
             f"    tracked_path= pathlib.Path({str(tracked_path)!r})\n"
+            f"    cellprob_zavg_path = pathlib.Path({str(cellprob_zavg_path)!r})\n"
             f"    cfg = TrackingConfig(\n"
             f"        min_area={cfg.min_area},\n"
             f"        max_distance={cfg.max_distance},\n"
@@ -2099,13 +2113,15 @@ class NucleusWorkflowWidget(QWidget):
             "    print('[1/4] Ingesting…', flush=True)\n"
             "    ingest_hypotheses_to_db(hyp_path, working_dir, cfg, overwrite=True,\n"
             "        max_partitions=max_partitions, n_frames=n_frames)\n"
-            "    print('[2/4] Linking…', flush=True)\n"
+            "    print('[2/5] Scoring segmentation quality…', flush=True)\n"
+            "    write_seed_prior_node_probs(working_dir, cellprob_zavg_path, cfg)\n"
+            "    print('[3/5] Linking…', flush=True)\n"
             "    for step, total, label in run_linking(working_dir, cfg):\n"
             "        print(f'  [{step}/{total}] {label}', flush=True)\n"
-            "    print('[3/4] Solving ILP…', flush=True)\n"
+            "    print('[4/5] Solving ILP…', flush=True)\n"
             "    for step, total, label in run_solve(working_dir, cfg, overwrite=True):\n"
             "        print(f'  [{step}/{total}] {label}', flush=True)\n"
-            "    print('[4/4] Exporting…', flush=True)\n"
+            "    print('[5/5] Exporting…', flush=True)\n"
             "    labels = export_tracked_labels(working_dir, cfg, tracked_path)\n"
             f"    print(f'Done — {{labels.shape}} written to {{tracked_path}}', flush=True)\n"
         )
