@@ -521,6 +521,25 @@ class CellWorkflowWidget(QWidget):
         """Return flow vectors as (T, Z, C, Y, X), accepting common Cellpose layouts."""
         return normalize_seeded_watershed_dp_stack(dp, prob_shape)
 
+    def _zavg_for_loaded_stack(self, zavg_data: np.ndarray, stack: np.ndarray) -> np.ndarray:
+        """Broadcast z-average images to the visible stack axes."""
+        zavg = np.asarray(zavg_data)
+        if stack.ndim == 4:
+            nt, nz, ny, nx = stack.shape
+            if zavg.shape == stack.shape:
+                return zavg
+            if zavg.ndim == 2 and zavg.shape == (ny, nx):
+                return np.broadcast_to(zavg[np.newaxis, np.newaxis], stack.shape).copy()
+            if zavg.ndim == 3 and zavg.shape == (nt, ny, nx):
+                return np.broadcast_to(zavg[:, np.newaxis], stack.shape).copy()
+        elif stack.ndim == 3:
+            nt, ny, nx = stack.shape
+            if zavg.shape == stack.shape:
+                return zavg
+            if zavg.ndim == 2 and zavg.shape == (ny, nx):
+                return np.broadcast_to(zavg[np.newaxis], stack.shape).copy()
+        return zavg
+
     def _load_inputs(self) -> tuple[np.ndarray, np.ndarray | None, np.ndarray] | None:
         """Load prob, dp (optional for prob basin), and nucleus stacks. Returns None on error."""
         prob_path = self._prob_path()
@@ -945,8 +964,7 @@ class CellWorkflowWidget(QWidget):
         ):
             if zavg_data is None:
                 continue
-            if zavg_data.ndim == 2:
-                zavg_data = np.broadcast_to(zavg_data[np.newaxis], (nt,) + zavg_data.shape).copy()
+            zavg_data = self._zavg_for_loaded_stack(zavg_data, stack)
             if layer_name in self.viewer.layers:
                 self.viewer.layers[layer_name].data = zavg_data
             else:

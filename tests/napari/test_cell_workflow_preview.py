@@ -175,3 +175,29 @@ def test_cell_preview_flow_magnitude_loads_channel_first_dp(monkeypatch, tmp_pat
 
     widget.deleteLater()
     app.processEvents()
+
+
+def test_cell_db_browser_broadcasts_zavg_images_across_hypothesis_z(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    module = _load_cell_widget_module(monkeypatch)
+
+    widget = module.CellWorkflowWidget(_FakeViewer())
+
+    stack = np.zeros((2, 3, 4, 5), dtype=np.uint32)
+    cell_zavg = np.arange(2 * 4 * 5, dtype=np.float32).reshape(2, 4, 5)
+    nuc_zavg = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+
+    widget._on_load_stack_done((0, stack, cell_zavg, nuc_zavg))
+
+    loaded_cell = widget.viewer.layers[module._CELL_ZAVG_LAYER].data
+    loaded_nuc = widget.viewer.layers[module._NUC_ZAVG_LAYER].data
+    assert loaded_cell.shape == stack.shape
+    assert loaded_nuc.shape == stack.shape
+    np.testing.assert_array_equal(loaded_cell[:, 0], cell_zavg)
+    np.testing.assert_array_equal(loaded_cell[:, 1], cell_zavg)
+    np.testing.assert_array_equal(loaded_cell[:, 2], cell_zavg)
+    np.testing.assert_array_equal(loaded_nuc[0, 0], nuc_zavg)
+    np.testing.assert_array_equal(loaded_nuc[1, 2], nuc_zavg)
+
+    widget.deleteLater()
+    app.processEvents()
