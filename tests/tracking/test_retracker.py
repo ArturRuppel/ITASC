@@ -188,6 +188,26 @@ def test_constrained_unlocked_cannot_steal_locked_id():
     assert fresh > max(int(ref.max()), int(tgt.max()))
 
 
+def test_constrained_unlocked_cannot_steal_reserved_validated_id():
+    """A reserved validated track ID must not be assigned to an unlocked target."""
+    shape = (100, 100)
+    ref = _sq(shape, 50, 50, 8, 5)
+    tgt = _sq(shape, 50, 50, 8, 99)
+
+    result = retrack_frame_constrained(
+        ref,
+        tgt,
+        locked_target_ids=set(),
+        max_dist_px=20.0,
+        reserved_ids={5},
+    )
+
+    ids = set(int(i) for i in np.unique(result) if i != 0)
+    assert 5 not in ids
+    assert len(ids) == 1
+    assert next(iter(ids)) > max(int(ref.max()), int(tgt.max()))
+
+
 def test_constrained_empty_locked_set_matches_retrack_frame():
     """With no locked cells, retrack_frame_constrained must produce the same
     result as retrack_frame."""

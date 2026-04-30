@@ -2371,6 +2371,7 @@ class NucleusWorkflowWidget(QWidget):
         T = layer.data.shape[0]
         stack = layer.data.copy()
         fully_validated = read_validated_frames(self._pos_dir)
+        reserved_ids = set(read_validated_tracks(self._pos_dir))
 
         n_retracked = 0
         n_skipped = 0
@@ -2386,6 +2387,7 @@ class NucleusWorkflowWidget(QWidget):
                 tgt,
                 locked,
                 max_dist_px=float(self.retrack_max_dist_spin.value()),
+                reserved_ids=reserved_ids,
             )
             n_retracked += 1
 
@@ -2415,6 +2417,7 @@ class NucleusWorkflowWidget(QWidget):
 
         stack = layer.data.copy()
         fully_validated = read_validated_frames(self._pos_dir)
+        reserved_ids = set(read_validated_tracks(self._pos_dir))
 
         n_retracked = 0
         n_skipped = 0
@@ -2430,6 +2433,7 @@ class NucleusWorkflowWidget(QWidget):
                 tgt,
                 locked,
                 max_dist_px=float(self.retrack_max_dist_spin.value()),
+                reserved_ids=reserved_ids,
             )
             n_retracked += 1
 

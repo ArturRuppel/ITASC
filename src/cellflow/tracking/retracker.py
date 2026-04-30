@@ -119,6 +119,7 @@ def retrack_frame_constrained(
     target_labels: np.ndarray,
     locked_target_ids: set[int],
     max_dist_px: float = 50.0,
+    reserved_ids: set[int] | None = None,
 ) -> np.ndarray:
     """Like retrack_frame, but target cells whose ID is in locked_target_ids
     keep their existing IDs unchanged. The IDs they hold are also reserved —
@@ -128,8 +129,13 @@ def retrack_frame_constrained(
     LAP entirely. Reference cells that share an ID with a locked target cell are
     also excluded from the LAP — their ID is already occupied, so letting the
     LAP assign it to an unlocked cell would create a collision.
+
+    Additional reserved_ids are protected from assignment to unlocked targets
+    even if they are present in the reference frame.
     """
     locked_target_ids = set(locked_target_ids)  # defensive copy
+    reserved_ids = set(reserved_ids or set())
+    blocked_ids = locked_target_ids | reserved_ids
 
     ref_centroids = _centroids(ref_labels)
     tgt_centroids = _centroids(target_labels)
@@ -146,9 +152,9 @@ def retrack_frame_constrained(
     if not unlocked_tgt_ids:
         return result
 
-    # Reference IDs that coincide with a locked target ID are reserved — exclude
-    # them so the LAP cannot assign that ID to an unlocked target cell.
-    available_ref_ids = [rid for rid in ref_centroids if rid not in locked_target_ids]
+    # Protected IDs are excluded so the LAP cannot assign them to an unlocked
+    # target cell.
+    available_ref_ids = [rid for rid in ref_centroids if rid not in blocked_ids]
 
     if not available_ref_ids:
         # No usable reference cells — assign fresh IDs to all unlocked targets.
@@ -158,7 +164,7 @@ def retrack_frame_constrained(
         )
         next_id = max_existing + 1
         for tid in unlocked_tgt_ids:
-            while next_id in locked_target_ids:
+            while next_id in blocked_ids:
                 next_id += 1
             result[target_labels == tid] = next_id
             next_id += 1
@@ -192,7 +198,7 @@ def retrack_frame_constrained(
     next_id = max_existing + 1
     for tid in unlocked_tgt_ids:
         if tid not in remap:
-            while next_id in locked_target_ids:
+            while next_id in blocked_ids:
                 next_id += 1
             remap[tid] = next_id
             next_id += 1
