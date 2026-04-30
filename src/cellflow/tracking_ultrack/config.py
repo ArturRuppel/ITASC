@@ -36,3 +36,11 @@ class TrackingConfig(BaseModel):
     solution_gap: float = 0.001
     time_limit: int = 36000
     window_size: int = 0  # 0 = solve all at once
+
+    # Resolve-from-validated node prior
+    quality_exponent: float = 8.0
+    seed_weight: float = 0.5
+    seed_sigma_space: float = 25.0
+    seed_tau_time: float = 2.0
+    seed_max_dt: int = 5
+    seed_sigma_area: float = 0.5
