@@ -4,9 +4,12 @@ import numpy as np
 
 from cellflow.database import hypotheses
 from cellflow.database.hypotheses import (
+    ContourWatershedParams,
+    ContourWatershedSweepSpec,
     HypothesisRecord,
     SeededWatershedParams,
     SeededWatershedSweepSpec,
+    iter_contour_watershed_records,
     iter_seeded_watershed_records,
     iter_write_hypothesis_sweep_h5,
     read_hypothesis_labels,
@@ -142,3 +145,43 @@ def test_ordered_bounded_map_does_not_consume_all_inputs_before_first_result():
     assert next(mapped) == 2
     assert consumed == [0, 1, 2]
     assert list(mapped) == [4, 6, 8, 10, 12, 14, 16, 18]
+
+
+def test_contour_watershed_records_accept_filtered_params_and_stream_tasks(monkeypatch):
+    contour = np.zeros((3, 4, 5), dtype=np.float32)
+    foreground = np.zeros((3, 4, 5), dtype=np.float32)
+    params = [ContourWatershedParams(seed_distance=5), ContourWatershedParams(seed_distance=7)]
+    seen = []
+
+    def fake_task(args):
+        t, p_idx, param, contour_frame, fg_frame = args
+        seen.append((t, p_idx, param.seed_distance))
+        return HypothesisRecord(
+            t=t,
+            p=p_idx,
+            labels=np.full((1, *contour_frame.shape), param.seed_distance, dtype=np.uint32),
+            params=param,
+        )
+
+    monkeypatch.setattr(hypotheses, "_run_watershed_task", fake_task)
+
+    records = iter_contour_watershed_records(
+        contour,
+        foreground,
+        ContourWatershedSweepSpec(),
+        n_workers=2,
+        params_list=params,
+    )
+
+    first = next(records)
+
+    assert first.p == 0
+    assert int(first.labels.max()) == 5
+    assert seen == [(0, 0, 5)]
+    assert [(record.t, record.p, int(record.labels.max())) for record in records] == [
+        (0, 1, 7),
+        (1, 0, 5),
+        (1, 1, 7),
+        (2, 0, 5),
+        (2, 1, 7),
+    ]

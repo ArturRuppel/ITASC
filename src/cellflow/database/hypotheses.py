@@ -701,6 +701,7 @@ def iter_contour_watershed_records(
     foreground_stack: np.ndarray,
     spec: ContourWatershedSweepSpec,
     n_workers: int = 1,
+    params_list: list[ContourWatershedParams] | None = None,
 ) -> Iterator[HypothesisRecord]:
     """Yield HypothesisRecords from cached contour and foreground maps (single gamma).
 
@@ -708,19 +709,21 @@ def iter_contour_watershed_records(
     foreground_stack: (T, Y, X) float32 foreground probability maps
     n_workers:        number of threads (scipy/skimage release the GIL)
     """
-    params_list = build_contour_watershed_parameter_sets(spec)
+    if params_list is None:
+        params_list = build_contour_watershed_parameter_sets(spec)
+    if not params_list:
+        return
     n_t = contour_stack.shape[0]
-    args = [
-        (t, p_idx, params, contour_stack[t], foreground_stack[t])
-        for t in range(n_t)
-        for p_idx, params in enumerate(params_list)
-    ]
+
+    def tasks():
+        for t in range(n_t):
+            for p_idx, params in enumerate(params_list):
+                yield (t, p_idx, params, contour_stack[t], foreground_stack[t])
+
     if n_workers > 1:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            yield from executor.map(_run_watershed_task, args)
+        yield from _ordered_bounded_map(_run_watershed_task, tasks(), n_workers)
     else:
-        for a in args:
+        for a in tasks():
             yield _run_watershed_task(a)
 
 

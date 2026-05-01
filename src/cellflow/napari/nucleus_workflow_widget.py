@@ -34,10 +34,10 @@ from qtpy.QtWidgets import (
 
 from cellflow.database.hypotheses import (
     ContourWatershedSweepSpec,
-    HypothesisRecord,
     build_contour_watershed_parameter_sets,
     delete_hypothesis_parameter,
     iter_contour_watershed_records,
+    iter_write_hypothesis_sweep_h5,
     list_hypotheses,
     read_full_hypothesis_stack,
     read_hypothesis_labels,
@@ -1612,13 +1612,15 @@ class NucleusWorkflowWidget(QWidget):
 
             n_t = contour_stack.shape[0]
             total = n_t * len(params_list)
-            collected: list[HypothesisRecord] = []
-            for done, record in enumerate(
-                iter_contour_watershed_records(contour_stack, foreground_stack, spec, n_workers=n_workers), 1
-            ):
-                collected.append(record)
+            records = iter_contour_watershed_records(
+                contour_stack,
+                foreground_stack,
+                spec,
+                n_workers=n_workers,
+                params_list=params_list,
+            )
+            for done in iter_write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite):
                 yield f"Sweep {done}/{total}…"
-            write_hypothesis_sweep_h5(output_path, iter(collected), overwrite=overwrite)
             return pos_dir
 
         self._set_status("Running sweep…")
@@ -1660,7 +1662,7 @@ class NucleusWorkflowWidget(QWidget):
             "from cellflow.database.hypotheses import (\n"
             "    ContourWatershedSweepSpec, iter_contour_watershed_records,\n"
             "    build_contour_watershed_parameter_sets, list_hypotheses,\n"
-            "    write_hypothesis_sweep_h5)\n"
+            "    iter_write_hypothesis_sweep_h5)\n"
             "import json, pathlib\n"
             f"contour    = tifffile.imread({str(contour_path)!r}).astype('float32')\n"
             f"foreground = tifffile.imread({str(foreground_path)!r}).astype('float32')\n"
@@ -1694,11 +1696,10 @@ class NucleusWorkflowWidget(QWidget):
             "        pass\n"
             "n_t = contour.shape[0]\n"
             "total = n_t * len(params_list)\n"
-            "records = []\n"
-            f"for done, rec in enumerate(iter_contour_watershed_records(contour, foreground, spec, n_workers={n_workers}), 1):\n"
-            "    records.append(rec)\n"
+            "records = iter_contour_watershed_records(contour, foreground, spec, n_workers="
+            f"{n_workers}, params_list=params_list)\n"
+            "for done in iter_write_hypothesis_sweep_h5(str(output_path), records, overwrite=overwrite):\n"
             "    print(f'Sweep {done}/{total}…', flush=True)\n"
-            "write_hypothesis_sweep_h5(str(output_path), iter(records), overwrite=overwrite)\n"
             "print('Done.')\n"
         )
 
