@@ -118,6 +118,55 @@ def test_cell_preview_runs_seeded_watershed_for_all_z_slices(monkeypatch, tmp_pa
     app.processEvents()
 
 
+def test_cell_preview_loads_complete_basin_stack_with_time_axis(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    module = _load_cell_widget_module(monkeypatch)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+
+    prob = np.zeros((2, 3, 4, 5), dtype=np.float32)
+    prob[0] = -1.0
+    prob[1] = 1.0
+    nucleus = np.zeros((2, 3, 4, 5), dtype=np.uint32)
+    nucleus[1, :, 1:3, 2:4] = 7
+
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "cell_prob_3dt.tif",
+        prob,
+        photometric="minisblack",
+    )
+    tifffile.imwrite(
+        pos_dir / "2_nucleus" / "tracked_labels.tif",
+        nucleus,
+        photometric="minisblack",
+    )
+
+    def fake_seeded_watershed(prob_2d, dp_2d, seeds_2d, params):
+        return np.full(prob_2d.shape, int(seeds_2d.max()), dtype=np.uint32)
+
+    monkeypatch.setattr(module, "compute_seeded_watershed", fake_seeded_watershed)
+
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 0, 0, 0)
+    widget = module.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+
+    widget._on_preview()
+
+    basin = widget.viewer.layers[module._PREVIEW_BASIN_LAYER].data
+    preview = widget.viewer.layers[module._PREVIEW_LAYER].data
+    assert basin.shape == (2, 3, 4, 5)
+    assert preview.shape == (3, 4, 5)
+    np.testing.assert_allclose(basin[0], 1.0 / (1.0 + np.exp(1.0)))
+    np.testing.assert_allclose(basin[1], 1.0 / (1.0 + np.exp(-1.0)))
+    assert int(preview.max()) == 7
+
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_cell_preview_flow_magnitude_loads_channel_first_dp(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     module = _load_cell_widget_module(monkeypatch)
@@ -169,9 +218,9 @@ def test_cell_preview_flow_magnitude_loads_channel_first_dp(monkeypatch, tmp_pat
     preview = widget.viewer.layers[module._PREVIEW_LAYER].data
     basin = widget.viewer.layers[module._PREVIEW_BASIN_LAYER].data
     assert preview.shape == (3, 4, 5)
-    assert basin.shape == (3, 4, 5)
+    assert basin.shape == (1, 3, 4, 5)
     assert seen_dp_shapes == [(2, 4, 5), (2, 4, 5), (2, 4, 5)]
-    np.testing.assert_allclose(basin[:, 0, 0], [5.0, np.sqrt(32.0), np.sqrt(41.0)])
+    np.testing.assert_allclose(basin[0, :, 0, 0], [5.0, np.sqrt(32.0), np.sqrt(41.0)])
 
     widget.deleteLater()
     app.processEvents()

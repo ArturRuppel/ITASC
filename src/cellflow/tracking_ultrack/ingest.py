@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import pickle
+import threading
 from dataclasses import dataclass
 from multiprocessing import cpu_count
 from pathlib import Path
@@ -60,6 +61,16 @@ def _canonical_hash(labelmap_2d: np.ndarray) -> bytes:
 
     canonical = lookup[flat]
     return hashlib.blake2b(canonical.tobytes(), digest_size=8).digest()
+
+
+def _cell_mask_hash(bbox: np.ndarray, mask: np.ndarray) -> bytes:
+    """Return a hash for one cell mask in frame coordinates."""
+    bbox_arr = np.asarray(bbox, dtype=np.int32)
+    mask_arr = np.ascontiguousarray(mask, dtype=bool)
+    h = hashlib.blake2b(digest_size=16)
+    h.update(bbox_arr.tobytes())
+    h.update(mask_arr.tobytes())
+    return h.digest()
 
 
 def _generate_id(index: int, time: int, max_segments: int) -> int:
@@ -121,6 +132,7 @@ def _extract_cell_records_2d(
     min_area: int | None,
     max_area: int | None,
     forbidden_mask: np.ndarray | None = None,
+    seen_cell_hashes: set[bytes] | None = None,
 ) -> tuple[list[_CellRecord], int]:
     """Extract CellRecords from one 2D labelmap. Returns (records, next_index).
 
@@ -138,7 +150,6 @@ def _extract_cell_records_2d(
         if max_area is not None and area > max_area:
             continue
 
-        node_id = _generate_id(idx, t, max_segments)
         min_r, min_c, max_r, max_c = prop.bbox
         bbox = np.array([min_r, min_c, max_r, max_c], dtype=np.int32)
         mask = (labelmap_2d[min_r:max_r, min_c:max_c] == prop.label).astype(bool)
@@ -148,6 +159,13 @@ def _extract_cell_records_2d(
             if np.any(mask & forbidden_crop):
                 continue
 
+        if seen_cell_hashes is not None:
+            cell_hash = _cell_mask_hash(bbox, mask)
+            if cell_hash in seen_cell_hashes:
+                continue
+            seen_cell_hashes.add(cell_hash)
+
+        node_id = _generate_id(idx, t, max_segments)
         cy, cx = prop.centroid
 
         records.append(_CellRecord(
@@ -243,6 +261,15 @@ def _list_partitions(hypotheses_h5: Path, t: int) -> list[int]:
         return sorted(int(k[1:]) for k in grp.keys() if k.startswith("p"))
 
 
+def _resolve_ingest_worker_count(n_total: int, n_workers: int | None) -> int:
+    """Return a worker count that avoids fork-based pools from background threads."""
+    if n_workers is not None:
+        return max(1, int(n_workers))
+    if threading.current_thread() is not threading.main_thread():
+        return 1
+    return max(1, min(cpu_count(), n_total, 8))
+
+
 def _make_node_pickle(t: int, mask_2d: np.ndarray, bbox: np.ndarray, node_id: int) -> bytes:
     from ultrack.core.segmentation.node import Node
     # Lift to 3D (1, h, w) so paint_buffer works against a (Z, Y, X) export buffer
@@ -300,6 +327,7 @@ def _ingest_frame_worker(args: tuple) -> None:
 
     # Deduplication — same logic as serial path
     seen_hashes: set[bytes] = set()
+    seen_cell_hashes: set[bytes] = set()
     n_kept = 0
     n_dropped = 0
 
@@ -326,6 +354,7 @@ def _ingest_frame_worker(args: tuple) -> None:
         recs, index = _extract_cell_records_2d(
             labels_2d, t, p, index, max_segments, eff_min_area, eff_max_area,
             forbidden_mask=forbidden_mask,
+            seen_cell_hashes=seen_cell_hashes,
         )
         nid_lm = _build_nid_labelmap(labels_2d, recs)
         all_records.extend(recs)
@@ -400,7 +429,8 @@ def ingest_hypotheses_to_db(
         None (default) = all timepoints.
     n_workers:
         Number of worker processes for parallel frame ingest.
-        None (default) = min(cpu_count(), n_frames, 8).
+        None (default) = min(cpu_count(), n_frames, 8) on the main thread,
+        or serial when called from a background thread.
         1 = serial (no subprocess overhead).
     forbidden_masks:
         Optional ``{t: bool_array (Y, X)}`` map.  Any hypothesis cell whose
@@ -447,10 +477,7 @@ def ingest_hypotheses_to_db(
     full_shape = (n_total,) + frame_shape
     ultrack_cfg.data_config.metadata_add({"shape": list(full_shape), "properties": []})
 
-    # Determine actual worker count
-    if n_workers is None:
-        n_workers = min(cpu_count(), n_total, 8)
-    n_workers = max(1, n_workers)
+    n_workers = _resolve_ingest_worker_count(n_total, n_workers)
 
     # Temp DB directory — clean up any leftover DBs from a previous crashed run
     tmp_dir = working_dir / "_tmp_frame_dbs"

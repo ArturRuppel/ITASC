@@ -1,5 +1,6 @@
 """Tests for ultrack hypothesis ingestion."""
 import json
+import threading
 from pathlib import Path
 
 import h5py
@@ -269,6 +270,30 @@ def test_dedup_genuinely_different_partitions_both_kept(tmp_path, tracking_cfg):
     assert _count_overlapdb_rows(db_path) == 2
 
 
+def test_dedup_identical_cell_masks_across_different_partitions(tmp_path, tracking_cfg):
+    """Exact duplicate cell masks across non-identical partitions are inserted once."""
+    # p=0: cells A and B
+    lm_p0 = np.zeros((1, 64, 64), dtype=np.uint32)
+    lm_p0[0, 0:20, 0:20] = 1    # A
+    lm_p0[0, 0:20, 30:50] = 2   # B
+
+    # p=1: same A mask plus a genuinely new, non-overlapping cell C.
+    # The whole partition is not a duplicate of p=0, but A itself is.
+    lm_p1 = np.zeros((1, 64, 64), dtype=np.uint32)
+    lm_p1[0, 0:20, 0:20] = 7    # A duplicate with a different label value
+    lm_p1[0, 35:55, 35:55] = 8  # C
+
+    h5_path = tmp_path / "hypotheses.h5"
+    working_dir = tmp_path / "tracking"
+    _create_test_h5(h5_path, {0: {0: lm_p0, 1: lm_p1}})
+
+    ingest_hypotheses_to_db(h5_path, working_dir, tracking_cfg, overwrite=True)
+
+    db_path = working_dir / "data.db"
+    assert _count_nodedb_rows(db_path) == 3
+    assert _count_overlapdb_rows(db_path) == 0
+
+
 def test_dedup_all_zero_labelmaps(tmp_path, tracking_cfg):
     """Two all-zero labelmaps dedup correctly with no errors or edge cases."""
     from cellflow.tracking_ultrack.ingest import _canonical_hash
@@ -315,6 +340,21 @@ def test_n_frames_cap(tmp_path, tracking_cfg):
     assert len(nodes) == 2, f"Expected 2 nodes (one per frame), got {len(nodes)}"
     present_t = {n.t for n in nodes}
     assert present_t == {0, 1}, f"Expected t={{0,1}}, got {present_t}"
+
+
+def test_default_ingest_worker_count_is_serial_off_main_thread():
+    """Avoid fork-based multiprocessing from napari's background worker thread."""
+    from cellflow.tracking_ultrack.ingest import _resolve_ingest_worker_count
+
+    resolved: list[int] = []
+
+    thread = threading.Thread(
+        target=lambda: resolved.append(_resolve_ingest_worker_count(50, None))
+    )
+    thread.start()
+    thread.join()
+
+    assert resolved == [1]
 
 
 def test_overlap_encoding_late_timepoint(tmp_path, tracking_cfg):

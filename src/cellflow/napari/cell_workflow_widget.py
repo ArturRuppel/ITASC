@@ -25,11 +25,11 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.database.hypotheses import (
-    HypothesisRecord,
     SeededWatershedSweepSpec,
     build_seeded_watershed_parameter_sets,
     delete_hypothesis_parameter,
     iter_seeded_watershed_records,
+    iter_write_hypothesis_sweep_h5,
     list_hypotheses,
     normalize_seeded_watershed_dp_stack,
     read_full_hypothesis_stack,
@@ -775,7 +775,17 @@ class CellWorkflowWidget(QWidget):
 
         try:
             seed_stack = self._preview_seed_stack(nucleus, t, prob.shape[0], prob[t].shape)
-            basin_stack = self._preview_basin_stack(prob[t], dp[t] if dp is not None else None, params)
+            basin_stack = np.stack(
+                [
+                    self._preview_basin_stack(
+                        prob[t_idx],
+                        dp[t_idx] if dp is not None else None,
+                        params,
+                    )
+                    for t_idx in range(prob.shape[0])
+                ],
+                axis=0,
+            )
             labels = np.stack(
                 [
                     compute_seeded_watershed(
@@ -881,13 +891,9 @@ class CellWorkflowWidget(QWidget):
             "errored":  _on_sweep_error,
         })
         def _worker():
-            collected: list[HypothesisRecord] = []
-            for done, record in enumerate(
-                iter_seeded_watershed_records(prob, dp, nucleus, spec, n_workers=n_workers), 1
-            ):
-                collected.append(record)
+            records = iter_seeded_watershed_records(prob, dp, nucleus, spec, n_workers=n_workers)
+            for done in iter_write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite):
                 yield (done, total, f"Sweep {done}/{total}…")
-            write_hypothesis_sweep_h5(output_path, iter(collected), overwrite=overwrite)
             return pos_dir
 
         self._set_status(f"Running sweep ({len(params_list)} param sets × {n_t} frames)…")

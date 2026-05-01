@@ -4,8 +4,13 @@ import numpy as np
 
 from cellflow.database import hypotheses
 from cellflow.database.hypotheses import (
+    HypothesisRecord,
+    SeededWatershedParams,
     SeededWatershedSweepSpec,
     iter_seeded_watershed_records,
+    iter_write_hypothesis_sweep_h5,
+    read_hypothesis_labels,
+    _ordered_bounded_map,
 )
 
 
@@ -98,3 +103,42 @@ def test_seeded_watershed_records_accept_ui_time_first_2d_nucleus_labels(monkeyp
     assert [record.t for record in records] == [0, 1]
     assert [int(record.labels.max()) for record in records] == [7, 11]
     assert seen_seed_maxima == [7, 7, 7, 11, 11, 11]
+
+
+def test_iter_write_hypothesis_sweep_h5_streams_records(tmp_path):
+    output_path = tmp_path / "hypotheses.h5"
+    params = SeededWatershedParams()
+    consumed = []
+
+    def records():
+        for t in range(3):
+            consumed.append(t)
+            labels = np.full((1, 4, 5), t + 1, dtype=np.uint32)
+            yield HypothesisRecord(t=t, p=0, labels=labels, params=params)
+
+    progress = iter_write_hypothesis_sweep_h5(output_path, records(), overwrite=True)
+
+    assert consumed == []
+    assert next(progress) == 1
+    assert consumed == [0]
+    assert np.array_equal(read_hypothesis_labels(output_path, 0, 0), np.full((1, 4, 5), 1, dtype=np.uint32))
+
+    assert list(progress) == [2, 3]
+    assert consumed == [0, 1, 2]
+
+
+def test_ordered_bounded_map_does_not_consume_all_inputs_before_first_result():
+    consumed = []
+
+    def inputs():
+        for value in range(10):
+            consumed.append(value)
+            yield value
+
+    mapped = _ordered_bounded_map(lambda value: value * 2, inputs(), max_workers=2)
+
+    assert next(mapped) == 0
+    assert consumed == [0, 1]
+    assert next(mapped) == 2
+    assert consumed == [0, 1, 2]
+    assert list(mapped) == [4, 6, 8, 10, 12, 14, 16, 18]

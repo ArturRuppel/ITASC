@@ -7,6 +7,7 @@ Parameters are stored as group attributes on each p group.
 from __future__ import annotations
 
 import json
+from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -189,6 +190,26 @@ def write_hypothesis_sweep_h5(
     already present are skipped; new parameter sets are appended after the
     highest existing p index.
     """
+    for _ in iter_write_hypothesis_sweep_h5(
+        output_path,
+        records,
+        overwrite=overwrite,
+        n_t=n_t,
+        n_p=n_p,
+    ):
+        pass
+    return Path(output_path)
+
+
+def iter_write_hypothesis_sweep_h5(
+    output_path: str | Path,
+    records: Iterable[HypothesisRecord],
+    *,
+    overwrite: bool = True,
+    n_t: int | None = None,
+    n_p: int | None = None,
+) -> Iterator[int]:
+    """Write hypothesis records lazily, yielding the number written so far."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     appending = not overwrite and path.exists()
@@ -199,6 +220,7 @@ def write_hypothesis_sweep_h5(
     # Maps param_json -> assigned p index for param sets added in this call.
     new_param_p: dict[str, int] = {}
     mode = "w" if not appending else "a"
+    n_written = 0
     with h5py.File(path, mode) as h5:
         _write_root_metadata(h5, n_t=n_t, n_p=n_p)
         for record in records:
@@ -210,7 +232,8 @@ def write_hypothesis_sweep_h5(
                 next_p += 1
             shifted = HypothesisRecord(t=record.t, p=new_param_p[param_json], labels=record.labels, params=record.params)
             write_hypothesis_record(h5, shifted)
-    return path
+            n_written += 1
+            yield n_written
 
 
 def read_hypothesis_labels(path: str | Path, t: int, p: int) -> np.ndarray:
@@ -551,6 +574,33 @@ def _run_seeded_watershed_task(
     return HypothesisRecord(t=t, p=p_idx, labels=np.stack(slices, axis=0), params=params)
 
 
+def _ordered_bounded_map(fn, inputs: Iterable, max_workers: int) -> Iterator:
+    """Map fn over inputs while keeping at most max_workers submitted tasks."""
+    if max_workers <= 1:
+        for item in inputs:
+            yield fn(item)
+        return
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    iterator = iter(inputs)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        pending = deque()
+        for _ in range(max_workers):
+            try:
+                pending.append(executor.submit(fn, next(iterator)))
+            except StopIteration:
+                break
+
+        while pending:
+            future = pending.popleft()
+            yield future.result()
+            try:
+                pending.append(executor.submit(fn, next(iterator)))
+            except StopIteration:
+                pass
+
+
 def iter_seeded_watershed_records(
     prob_stack: np.ndarray,
     dp_stack: np.ndarray | None,
@@ -576,18 +626,15 @@ def iter_seeded_watershed_records(
     nucleus_stack = normalize_seeded_watershed_nucleus_stack(nucleus_stack, prob_stack.shape)
 
     n_t = prob_stack.shape[0]
-    tasks = [
-        (t, p_idx, params, prob_stack[t], dp_stack[t] if dp_stack is not None else None, nucleus_stack[t])
-        for t in range(n_t)
-        for p_idx, params in enumerate(params_list)
-    ]
+    def tasks():
+        for t in range(n_t):
+            for p_idx, params in enumerate(params_list):
+                yield (t, p_idx, params, prob_stack[t], dp_stack[t] if dp_stack is not None else None, nucleus_stack[t])
 
     if n_workers > 1:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            yield from executor.map(_run_seeded_watershed_task, tasks)
+        yield from _ordered_bounded_map(_run_seeded_watershed_task, tasks(), n_workers)
     else:
-        for a in tasks:
+        for a in tasks():
             yield _run_seeded_watershed_task(a)
 
 

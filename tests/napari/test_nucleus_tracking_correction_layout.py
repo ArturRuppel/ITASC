@@ -70,6 +70,10 @@ def _install_main_widget_stubs() -> None:
     class _StubWidget(QWidget):
         def __init__(self, *args, **kwargs):
             super().__init__()
+            self.refreshed_pos_dir = None
+
+        def refresh(self, pos_dir):
+            self.refreshed_pos_dir = pos_dir
 
     stub_modules = {
         "cellflow.napari.analysis_widget": {"AnalysisWidget": _StubWidget},
@@ -168,6 +172,36 @@ def test_main_widget_project_header_uses_compact_action_controls():
 
     assert widget.refresh_btn.minimumWidth() == 24
     assert widget.refresh_btn.maximumWidth() == 24
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_cell_workflow_required_inputs_exclude_optional_flow_vectors():
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    source = (package_root / "cell_workflow_widget.py").read_text()
+    input_section = source.split("self.input_files = PipelineFilesWidget([", 1)[1].split(
+        "layout.addWidget(self.input_files)", 1
+    )[0]
+
+    assert "1_cellpose/cell_prob_3dt.tif" in input_section
+    assert "2_nucleus/tracked_labels.tif" in input_section
+    assert "1_cellpose/cell_dp_3dt.tif" not in input_section
+
+
+def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_status(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget.path_label.setText(str(tmp_path))
+
+    widget._refresh_all()
+
+    assert widget.data_panel.refreshed_pos_dir == pos_dir
+    assert widget.cell_workflow_widget.refreshed_pos_dir == pos_dir
 
     widget.deleteLater()
     viewer.close()

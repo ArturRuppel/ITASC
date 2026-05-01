@@ -297,5 +297,6 @@ class CellFlowMainWidget(QWidget):
         self._data_prep_widget.refresh(pos_dir)
         self._cellpose_widget.refresh(pos_dir)
         self.nucleus_workflow_widget.refresh(pos_dir)
+        self.cell_workflow_widget.refresh(pos_dir)
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)
