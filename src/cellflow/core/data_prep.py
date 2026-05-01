@@ -27,8 +27,8 @@ class DatasetConfig:
 
 
 # Channel indices (0-based) in the NDTiff dataset
-_CH_405 = 1  # CSU405  — nuclear marker
-_CH_488 = 2  # CSU488  — membrane marker
+_CH_642 = 3  # CSU642  — nuclear marker
+_CH_488 = 1  # CSU488  — membrane marker
 
 
 def discover_metadata(ndtiff_path: str) -> dict:
@@ -290,7 +290,7 @@ def run(config: DatasetConfig, pos: int, overwrite: bool = False) -> Generator[t
     nuc_4d = np.empty((len(all_times), nz, h, w), dtype=np.uint16)
     nuc_stack = np.empty((len(all_times), h, w), dtype=np.uint16)
     for i, t in enumerate(all_times):
-        vol = _read_corrected_volume(ds, pos, t, _CH_405, z_indices, config.xy_downsample, z_shifts[t])
+        vol = _read_corrected_volume(ds, pos, t, _CH_642, z_indices, config.xy_downsample, z_shifts[t])
         nuc_4d[i] = vol
         nuc_stack[i] = vol.mean(axis=0).astype(np.uint16)
         yield (i + 1, len(all_times), "nucleus")

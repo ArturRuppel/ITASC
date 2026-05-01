@@ -1,5 +1,6 @@
 import numpy as np
 
+import cellflow.tracking.frame_selector as frame_selector
 from cellflow.database.hypotheses import (
     HypothesisRecord,
     SeededWatershedParams,
@@ -142,3 +143,23 @@ def test_select_top_k_paths_can_bound_active_beam_width():
     paths = select_top_k_paths(candidates, k=2, beam_width=1)
 
     assert len(paths) == 1
+
+
+def test_select_top_k_paths_reuses_transition_scores_for_duplicate_path_endings(monkeypatch):
+    candidates = [
+        [compute_frame_stats(_frame(20 + p * 2), t=0, p=p) for p in range(3)],
+        [compute_frame_stats(_frame(22 + p * 2), t=1, p=p) for p in range(3)],
+        [compute_frame_stats(_frame(24 + p * 2), t=2, p=p) for p in range(3)],
+    ]
+    original_score_transition = frame_selector.score_transition
+    scored_pairs: list[tuple[int, int]] = []
+
+    def counting_score_transition(previous, current, weights):
+        scored_pairs.append((id(previous), id(current)))
+        return original_score_transition(previous, current, weights)
+
+    monkeypatch.setattr(frame_selector, "score_transition", counting_score_transition)
+
+    select_top_k_paths(candidates, k=5, beam_width=20)
+
+    assert len(scored_pairs) == len(set(scored_pairs))

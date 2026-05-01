@@ -87,6 +87,7 @@ _HYP_LAYER = "Hypothesis: Nucleus"
 _TRACKED_LAYER = "Tracked: Nucleus"
 _VALIDATED_OVERLAY = "Validated: Nucleus"
 _CONTOUR_LAYER = "Contour Map: Nucleus"
+_CELLPROB_LAYER = "Cellprob Map: Nucleus"
 _CELL_ZAVG_LAYER = "Cell z-avg"
 _NUC_ZAVG_LAYER = "Nucleus z-avg"
 _CONTOUR_SWEEP_WIDTH = 60
@@ -1101,6 +1102,18 @@ class NucleusWorkflowWidget(QWidget):
         else:
             self.viewer.add_labels(data, name=name)
 
+    def _set_viewer_frame(self, t: int) -> None:
+        step = list(self.viewer.dims.current_step)
+        if not step:
+            return
+        step[0] = int(t)
+        self.viewer.dims.current_step = tuple(step)
+
+    @staticmethod
+    def _sigmoid_zavg(stack: np.ndarray) -> np.ndarray:
+        zavg_logits = np.asarray(stack, dtype=np.float32).mean(axis=1)
+        return (1.0 / (1.0 + np.exp(-zavg_logits))).astype(np.float32)
+
     def _refresh_db_browser(self) -> None:
         self._db_param_map = {}
         self._db_seed_dist_vals = []
@@ -1391,14 +1404,26 @@ class NucleusWorkflowWidget(QWidget):
         def _on_preview_done(result):
             self._build_worker = None
             self._set_build_buttons_running(False)
-            boundary, foreground = result
-            data = boundary[np.newaxis]
+            boundary, _foreground, cellprob_zavg, t_idx = result
+            data = np.zeros((cellprob_zavg.shape[0],) + boundary.shape, dtype=boundary.dtype)
+            data[t_idx] = boundary
+            if _CELLPROB_LAYER in self.viewer.layers:
+                self.viewer.layers[_CELLPROB_LAYER].data = cellprob_zavg
+            else:
+                self.viewer.add_image(
+                    cellprob_zavg,
+                    name=_CELLPROB_LAYER,
+                    colormap="inferno",
+                    blending="additive",
+                    visible=True,
+                )
             if _CONTOUR_LAYER in self.viewer.layers:
                 self.viewer.layers[_CONTOUR_LAYER].data = data
             else:
                 self.viewer.add_image(data, name=_CONTOUR_LAYER, colormap="magma", visible=True)
+            self._set_viewer_frame(t_idx)
             self._set_status(
-                f"Preview contour map t={t_frame} — "
+                f"Preview contour map t={t_idx} — "
                 f"{len(thresholds)} cellprob thresholds, "
                 f"{len(gammas)} gamma value(s)"
             )
@@ -1414,8 +1439,10 @@ class NucleusWorkflowWidget(QWidget):
                 prob_stack = prob_stack[np.newaxis]
             if dp_stack.ndim == 4:
                 dp_stack = dp_stack[np.newaxis]
-            t_idx = min(t_frame, prob_stack.shape[0] - 1)
-            return build_fn(prob_stack[t_idx], dp_stack[t_idx], thresholds, gammas)
+            n_t = min(prob_stack.shape[0], dp_stack.shape[0])
+            t_idx = min(max(t_frame, 0), n_t - 1)
+            boundary, foreground = build_fn(prob_stack[t_idx], dp_stack[t_idx], thresholds, gammas)
+            return boundary, foreground, self._sigmoid_zavg(prob_stack), t_idx
 
         self._set_status(f"Previewing contour map for frame t={t_frame}…")
         self._set_build_buttons_running(True)

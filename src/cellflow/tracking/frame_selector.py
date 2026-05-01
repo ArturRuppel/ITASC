@@ -6,7 +6,7 @@ measured from same-ID boundary statistics rather than centroid search.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import h5py
@@ -31,6 +31,8 @@ class FrameStats:
     areas: np.ndarray
     compactness: np.ndarray
     foreground_area: int
+    id_array: np.ndarray | None = field(default=None, compare=False, repr=False)
+    id_set: frozenset[int] | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,7 @@ class RankedPath:
     score: float
     states: tuple[FrameStats, ...]
     transitions: tuple[TransitionScore, ...]
+    state_key: tuple[tuple[int, int], ...] = field(default=(), compare=False, repr=False)
 
 
 def compute_frame_stats(labels: np.ndarray, *, t: int, p: int, z: int = 0) -> FrameStats:
@@ -65,7 +68,9 @@ def compute_frame_stats(labels: np.ndarray, *, t: int, p: int, z: int = 0) -> Fr
     areas = np.bincount(arr.ravel().astype(np.int64))
     if areas.size == 0:
         areas = np.zeros(1, dtype=np.int64)
-    ids = tuple(int(i) for i in np.flatnonzero(areas) if i != 0)
+    id_array = np.flatnonzero(areas).astype(np.int64, copy=False)
+    id_array = id_array[id_array != 0]
+    ids = tuple(int(i) for i in id_array)
     compactness = _label_compactness(arr, areas)
     foreground_area = int(areas[1:].sum()) if areas.size > 1 else 0
     return FrameStats(
@@ -76,6 +81,8 @@ def compute_frame_stats(labels: np.ndarray, *, t: int, p: int, z: int = 0) -> Fr
         areas=areas,
         compactness=compactness,
         foreground_area=foreground_area,
+        id_array=id_array,
+        id_set=frozenset(ids),
     )
 
 
@@ -110,36 +117,42 @@ def score_transition(
     weights: SelectorWeights = SelectorWeights(),
 ) -> TransitionScore:
     """Score how coherent it is to move from one full frame to the next."""
-    prev_ids = set(previous.ids)
-    cur_ids = set(current.ids)
-    common = sorted(prev_ids & cur_ids)
-    missing = prev_ids - cur_ids
-    extra = cur_ids - prev_ids
+    if previous.ids == current.ids:
+        common = _id_array(previous)
+        missing_count = 0
+        extra_count = 0
+    else:
+        prev_ids = _id_set(previous)
+        cur_ids = _id_set(current)
+        common_set = prev_ids & cur_ids
+        common = np.fromiter(sorted(common_set), dtype=np.int64, count=len(common_set))
+        missing_count = len(prev_ids - cur_ids)
+        extra_count = len(cur_ids - prev_ids)
 
     area_cost = 0.0
     shape_cost = 0.0
-    if common:
-        prev_area = np.array([previous.areas[i] for i in common], dtype=np.float64)
-        cur_area = np.array([current.areas[i] for i in common], dtype=np.float64)
+    if common.size:
+        prev_area = previous.areas[common].astype(np.float64, copy=False)
+        cur_area = current.areas[common].astype(np.float64, copy=False)
         area_cost = float(np.mean(np.abs(np.log((cur_area + 1.0) / (prev_area + 1.0)))))
-        prev_shape = np.array([previous.compactness[i] for i in common], dtype=np.float64)
-        cur_shape = np.array([current.compactness[i] for i in common], dtype=np.float64)
+        prev_shape = previous.compactness[common].astype(np.float64, copy=False)
+        cur_shape = current.compactness[common].astype(np.float64, copy=False)
         shape_cost = float(np.mean(np.abs(cur_shape - prev_shape)))
 
     switch_cost = weights.parameter_switch if previous.p != current.p else 0.0
     total = (
         weights.area * area_cost
         + weights.shape * shape_cost
-        + weights.missing * len(missing)
-        + weights.extra * len(extra)
+        + weights.missing * missing_count
+        + weights.extra * extra_count
         + switch_cost
     )
     return TransitionScore(
         total=float(total),
         area_cost=area_cost,
         shape_cost=shape_cost,
-        missing_count=len(missing),
-        extra_count=len(extra),
+        missing_count=missing_count,
+        extra_count=extra_count,
         switch_cost=float(switch_cost),
     )
 
@@ -162,28 +175,58 @@ def select_top_k_paths(
         raise ValueError("Each timepoint must contain at least one candidate")
 
     active_paths = [
-        RankedPath(score=0.0, states=(state,), transitions=())
+        RankedPath(
+            score=0.0,
+            states=(state,),
+            transitions=(),
+            state_key=((state.p, state.z),),
+        )
         for state in candidates_by_t[0]
     ]
-    active_paths.sort(key=lambda path: (path.score, tuple((s.p, s.z) for s in path.states)))
+    active_paths.sort(key=lambda path: (path.score, _path_state_key(path)))
     active_paths = active_paths[:beam_width]
 
     for candidates in candidates_by_t[1:]:
         expanded = []
+        transition_cache: dict[tuple[int, int], TransitionScore] = {}
         for state in candidates:
             for path in active_paths:
-                transition = score_transition(path.states[-1], state, weights)
+                previous = path.states[-1]
+                cache_key = (id(previous), id(state))
+                transition = transition_cache.get(cache_key)
+                if transition is None:
+                    transition = score_transition(previous, state, weights)
+                    transition_cache[cache_key] = transition
                 expanded.append(
                     RankedPath(
                         score=path.score + transition.total,
                         states=path.states + (state,),
                         transitions=path.transitions + (transition,),
+                        state_key=_path_state_key(path) + ((state.p, state.z),),
                     )
                 )
-        expanded.sort(key=lambda path: (path.score, tuple((s.p, s.z) for s in path.states)))
+        expanded.sort(key=lambda path: (path.score, _path_state_key(path)))
         active_paths = expanded[:beam_width]
 
     return active_paths[:k]
+
+
+def _id_array(stats: FrameStats) -> np.ndarray:
+    if stats.id_array is not None:
+        return stats.id_array
+    return np.fromiter(stats.ids, dtype=np.int64, count=len(stats.ids))
+
+
+def _id_set(stats: FrameStats) -> frozenset[int]:
+    if stats.id_set is not None:
+        return stats.id_set
+    return frozenset(stats.ids)
+
+
+def _path_state_key(path: RankedPath) -> tuple[tuple[int, int], ...]:
+    if path.state_key:
+        return path.state_key
+    return tuple((state.p, state.z) for state in path.states)
 
 
 def load_hypothesis_frame_stats(path: str | Path) -> list[list[FrameStats]]:
