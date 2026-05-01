@@ -20,6 +20,9 @@ from cellflow.segmentation import (
     ContourWatershedParams,
     NucleusHypothesisParams,
     SeededWatershedParams,
+    _fill_and_close_labels,
+    _remove_low_circularity_labels,
+    _remove_small_labels,
     build_consensus_boundary,
     compute_cellpose_flow_hypothesis,
     compute_contour_watershed,
@@ -134,7 +137,14 @@ def _write_root_metadata(h5: h5py.File, *, n_t: int | None, n_p: int | None) -> 
         attrs["n_p"] = int(n_p)
 
 
-def write_hypothesis_record(h5: h5py.File, record: HypothesisRecord) -> None:
+def write_hypothesis_record(
+    h5: h5py.File,
+    record: HypothesisRecord,
+    *,
+    compression: str | None = "gzip",
+    compression_opts: int | None = None,
+    shuffle: bool = True,
+) -> None:
     """Write one (t, p) record into the open HDF5 file."""
     root = h5.require_group(_ROOT_GROUP)
     t_grp = root.require_group(f"t{record.t:03d}")
@@ -143,7 +153,16 @@ def write_hypothesis_record(h5: h5py.File, record: HypothesisRecord) -> None:
     labels = np.asarray(record.labels, dtype=_LABEL_DTYPE)
     if "labels" in p_grp:
         del p_grp["labels"]
-    p_grp.create_dataset("labels", data=labels, compression="gzip", compression_opts=4, shuffle=True)
+    dataset_kwargs = {}
+    if compression is not None:
+        dataset_kwargs["compression"] = compression
+        effective_compression_opts = (
+            4 if compression == "gzip" and compression_opts is None else compression_opts
+        )
+        if effective_compression_opts is not None:
+            dataset_kwargs["compression_opts"] = effective_compression_opts
+        dataset_kwargs["shuffle"] = shuffle
+    p_grp.create_dataset("labels", data=labels, **dataset_kwargs)
 
     params = record.params.to_dict()
     p_grp.attrs["parameter_index"] = int(record.p)
@@ -183,6 +202,9 @@ def write_hypothesis_sweep_h5(
     overwrite: bool = True,
     n_t: int | None = None,
     n_p: int | None = None,
+    compression: str | None = "gzip",
+    compression_opts: int | None = None,
+    shuffle: bool = True,
 ) -> Path:
     """Write a full hypothesis sweep to a single HDF5 file.
 
@@ -196,6 +218,9 @@ def write_hypothesis_sweep_h5(
         overwrite=overwrite,
         n_t=n_t,
         n_p=n_p,
+        compression=compression,
+        compression_opts=compression_opts,
+        shuffle=shuffle,
     ):
         pass
     return Path(output_path)
@@ -208,6 +233,9 @@ def iter_write_hypothesis_sweep_h5(
     overwrite: bool = True,
     n_t: int | None = None,
     n_p: int | None = None,
+    compression: str | None = "gzip",
+    compression_opts: int | None = None,
+    shuffle: bool = True,
 ) -> Iterator[int]:
     """Write hypothesis records lazily, yielding the number written so far."""
     path = Path(output_path)
@@ -231,7 +259,13 @@ def iter_write_hypothesis_sweep_h5(
                 new_param_p[param_json] = next_p
                 next_p += 1
             shifted = HypothesisRecord(t=record.t, p=new_param_p[param_json], labels=record.labels, params=record.params)
-            write_hypothesis_record(h5, shifted)
+            write_hypothesis_record(
+                h5,
+                shifted,
+                compression=compression,
+                compression_opts=compression_opts,
+                shuffle=shuffle,
+            )
             n_written += 1
             yield n_written
 
@@ -688,12 +722,64 @@ def build_contour_watershed_parameter_sets(spec: ContourWatershedSweepSpec) -> l
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class _ContourWatershedFrameCache:
+    fg_mask: np.ndarray
+    edt: np.ndarray
+
+
+def _prepare_contour_watershed_frame(
+    boundary: np.ndarray,
+    foreground: np.ndarray,
+    params: ContourWatershedParams,
+) -> _ContourWatershedFrameCache:
+    from scipy.ndimage import binary_fill_holes, distance_transform_edt
+
+    fg_mask = binary_fill_holes(foreground > params.foreground_threshold)
+    core = fg_mask & (boundary < params.ridge_threshold)
+    return _ContourWatershedFrameCache(
+        fg_mask=np.asarray(fg_mask, dtype=bool),
+        edt=distance_transform_edt(core),
+    )
+
+
 def _run_watershed_task(
     args: tuple[int, int, "ContourWatershedParams", np.ndarray, np.ndarray],
 ) -> "HypothesisRecord":
     t, p_idx, params, contour_frame, fg_frame = args
     labels_2d = compute_contour_watershed(contour_frame, fg_frame, params)
     return HypothesisRecord(t=t, p=p_idx, labels=labels_2d[np.newaxis], params=params)
+
+
+def _run_cached_watershed_task(
+    args: tuple[int, int, "ContourWatershedParams", np.ndarray, _ContourWatershedFrameCache],
+) -> "HypothesisRecord":
+    from scipy.ndimage import label as nd_label
+    from skimage.feature import peak_local_max
+    from skimage.segmentation import watershed
+
+    t, p_idx, params, boundary, cached = args
+    coords = peak_local_max(
+        cached.edt,
+        min_distance=max(1, int(params.seed_distance)),
+        threshold_abs=1.0,
+        exclude_border=False,
+    )
+    marker_mask = np.zeros(boundary.shape, dtype=bool)
+    if coords.size:
+        marker_mask[coords[:, 0], coords[:, 1]] = True
+    markers, _ = nd_label(marker_mask)
+
+    labels = watershed(boundary, markers=markers, mask=cached.fg_mask, watershed_line=False)
+    result = _fill_and_close_labels(np.asarray(labels, dtype=_LABEL_DTYPE))
+    result = _remove_small_labels(result, params.min_size)
+    labels_2d = _remove_low_circularity_labels(result, params.min_circularity)
+    return HypothesisRecord(t=t, p=p_idx, labels=labels_2d[np.newaxis], params=params)
+
+
+def _run_contour_watershed_task(args):
+    fn, fn_args = args
+    return fn(fn_args)
 
 
 def iter_contour_watershed_records(
@@ -717,14 +803,23 @@ def iter_contour_watershed_records(
 
     def tasks():
         for t in range(n_t):
+            frame_cache: dict[tuple[float, float], _ContourWatershedFrameCache] = {}
             for p_idx, params in enumerate(params_list):
-                yield (t, p_idx, params, contour_stack[t], foreground_stack[t])
+                if params.noise_scale > 0:
+                    yield (_run_watershed_task, (t, p_idx, params, contour_stack[t], foreground_stack[t]))
+                    continue
+                cache_key = (float(params.foreground_threshold), float(params.ridge_threshold))
+                cached = frame_cache.get(cache_key)
+                if cached is None:
+                    cached = _prepare_contour_watershed_frame(contour_stack[t], foreground_stack[t], params)
+                    frame_cache[cache_key] = cached
+                yield (_run_cached_watershed_task, (t, p_idx, params, contour_stack[t], cached))
 
     if n_workers > 1:
-        yield from _ordered_bounded_map(_run_watershed_task, tasks(), n_workers)
+        yield from _ordered_bounded_map(_run_contour_watershed_task, tasks(), n_workers)
     else:
         for a in tasks():
-            yield _run_watershed_task(a)
+            yield _run_contour_watershed_task(a)
 
 
 def iter_contour_watershed_records_from_raw(

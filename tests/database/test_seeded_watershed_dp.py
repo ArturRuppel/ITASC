@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import h5py
 
 from cellflow.database import hypotheses
 from cellflow.database.hypotheses import (
@@ -15,6 +16,7 @@ from cellflow.database.hypotheses import (
     read_hypothesis_labels,
     _ordered_bounded_map,
 )
+from cellflow.segmentation import compute_contour_watershed
 
 
 def test_seeded_watershed_records_normalize_channel_first_dp(monkeypatch):
@@ -130,6 +132,33 @@ def test_iter_write_hypothesis_sweep_h5_streams_records(tmp_path):
     assert consumed == [0, 1, 2]
 
 
+def test_iter_write_hypothesis_sweep_h5_accepts_fast_compression(tmp_path):
+    output_path = tmp_path / "hypotheses.h5"
+    params = SeededWatershedParams()
+    records = [
+        HypothesisRecord(
+            t=0,
+            p=0,
+            labels=np.ones((1, 4, 5), dtype=np.uint32),
+            params=params,
+        )
+    ]
+
+    list(
+        iter_write_hypothesis_sweep_h5(
+            output_path,
+            records,
+            overwrite=True,
+            compression="lzf",
+        )
+    )
+
+    with h5py.File(output_path, "r") as h5:
+        labels = h5["hypotheses/t000/p000/labels"]
+        assert labels.compression == "lzf"
+        assert labels.compression_opts is None
+
+
 def test_ordered_bounded_map_does_not_consume_all_inputs_before_first_result():
     consumed = []
 
@@ -150,7 +179,10 @@ def test_ordered_bounded_map_does_not_consume_all_inputs_before_first_result():
 def test_contour_watershed_records_accept_filtered_params_and_stream_tasks(monkeypatch):
     contour = np.zeros((3, 4, 5), dtype=np.float32)
     foreground = np.zeros((3, 4, 5), dtype=np.float32)
-    params = [ContourWatershedParams(seed_distance=5), ContourWatershedParams(seed_distance=7)]
+    params = [
+        ContourWatershedParams(seed_distance=5, noise_scale=0.1),
+        ContourWatershedParams(seed_distance=7, noise_scale=0.1),
+    ]
     seen = []
 
     def fake_task(args):
@@ -185,3 +217,68 @@ def test_contour_watershed_records_accept_filtered_params_and_stream_tasks(monke
         (2, 0, 5),
         (2, 1, 7),
     ]
+
+
+def test_contour_watershed_records_reuse_deterministic_frame_cache(monkeypatch):
+    contour = np.zeros((1, 10, 10), dtype=np.float32)
+    foreground = np.ones((1, 10, 10), dtype=np.float32)
+    params = [
+        ContourWatershedParams(seed_distance=3, foreground_threshold=0.5, ridge_threshold=0.5),
+        ContourWatershedParams(seed_distance=5, foreground_threshold=0.5, ridge_threshold=0.5),
+    ]
+    prepared = []
+
+    def fake_prepare(boundary, foreground_frame, params):
+        prepared.append((params.foreground_threshold, params.ridge_threshold))
+        return object()
+
+    def fake_cached_task(args):
+        t, p_idx, param, boundary, cached = args
+        return HypothesisRecord(
+            t=t,
+            p=p_idx,
+            labels=np.full((1, 10, 10), param.seed_distance, dtype=np.uint32),
+            params=param,
+        )
+
+    monkeypatch.setattr(hypotheses, "_prepare_contour_watershed_frame", fake_prepare)
+    monkeypatch.setattr(hypotheses, "_run_cached_watershed_task", fake_cached_task)
+
+    records = list(
+        iter_contour_watershed_records(
+            contour,
+            foreground,
+            ContourWatershedSweepSpec(),
+            params_list=params,
+        )
+    )
+
+    assert [int(record.labels.max()) for record in records] == [3, 5]
+    assert prepared == [(0.5, 0.5)]
+
+
+def test_contour_watershed_cached_records_match_direct_computation():
+    y, x = np.mgrid[:24, :24]
+    foreground = np.exp(-((y - 8) ** 2 + (x - 8) ** 2) / 24.0)
+    foreground += np.exp(-((y - 16) ** 2 + (x - 16) ** 2) / 24.0)
+    foreground = (foreground / foreground.max()).astype(np.float32)
+    boundary = np.zeros_like(foreground, dtype=np.float32)
+    boundary[11:13, :] = 1.0
+    boundary[:, 11:13] = 1.0
+    params = [
+        ContourWatershedParams(seed_distance=3, foreground_threshold=0.2, ridge_threshold=0.5),
+        ContourWatershedParams(seed_distance=5, foreground_threshold=0.2, ridge_threshold=0.5),
+    ]
+
+    records = list(
+        iter_contour_watershed_records(
+            boundary[np.newaxis],
+            foreground[np.newaxis],
+            ContourWatershedSweepSpec(),
+            params_list=params,
+        )
+    )
+
+    direct = [compute_contour_watershed(boundary, foreground, param) for param in params]
+    assert [record.p for record in records] == [0, 1]
+    assert all(np.array_equal(record.labels[0], expected) for record, expected in zip(records, direct))

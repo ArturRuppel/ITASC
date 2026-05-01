@@ -148,7 +148,13 @@ def _fill_and_close_labels(labels: np.ndarray) -> np.ndarray:
     for label_id in np.unique(labels):
         if label_id == 0:
             continue
-        out[binary_fill_holes(labels == label_id)] = label_id
+        coords = np.nonzero(labels == label_id)
+        if not coords or coords[0].size == 0:
+            continue
+        slices = tuple(slice(int(axis.min()), int(axis.max()) + 1) for axis in coords)
+        filled = binary_fill_holes(labels[slices] == label_id)
+        out_view = out[slices]
+        out_view[filled] = label_id
     return out
 
 

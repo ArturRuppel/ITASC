@@ -1619,7 +1619,13 @@ class NucleusWorkflowWidget(QWidget):
                 n_workers=n_workers,
                 params_list=params_list,
             )
-            for done in iter_write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite):
+            for done in iter_write_hypothesis_sweep_h5(
+                output_path,
+                records,
+                overwrite=overwrite,
+                compression="lzf",
+                compression_opts=None,
+            ):
                 yield f"Sweep {done}/{total}…"
             return pos_dir
 
@@ -1698,7 +1704,7 @@ class NucleusWorkflowWidget(QWidget):
             "total = n_t * len(params_list)\n"
             "records = iter_contour_watershed_records(contour, foreground, spec, n_workers="
             f"{n_workers}, params_list=params_list)\n"
-            "for done in iter_write_hypothesis_sweep_h5(str(output_path), records, overwrite=overwrite):\n"
+            "for done in iter_write_hypothesis_sweep_h5(str(output_path), records, overwrite=overwrite, compression='lzf', compression_opts=None):\n"
             "    print(f'Sweep {done}/{total}…', flush=True)\n"
             "print('Done.')\n"
         )
