@@ -134,6 +134,16 @@ class CellWorkflowWidget(QWidget):
         add_block_checkbox_row(basin_grid, 1, self.overwrite_check)
         gen_lay.addLayout(basin_grid)
 
+        self.gen_input_status_lbl = QLabel("")
+        self.gen_input_status_lbl.setWordWrap(True)
+        self.gen_input_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gen_lay.addWidget(self.gen_input_status_lbl)
+
+        self.gen_output_status_lbl = QLabel("")
+        self.gen_output_status_lbl.setWordWrap(True)
+        self.gen_output_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gen_lay.addWidget(self.gen_output_status_lbl)
+
         self.gen_tabs = QTabWidget()
 
         # Tab: Tuning
@@ -276,6 +286,16 @@ class CellWorkflowWidget(QWidget):
             _compact(self.db_compactness_spin),
         )
         db_lay.addLayout(params_row)
+
+        self.db_input_status_lbl = QLabel("")
+        self.db_input_status_lbl.setWordWrap(True)
+        self.db_input_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        db_lay.addWidget(self.db_input_status_lbl)
+
+        self.db_output_status_lbl = QLabel("")
+        self.db_output_status_lbl.setWordWrap(True)
+        self.db_output_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        db_lay.addWidget(self.db_output_status_lbl)
 
         self.db_info_lbl = QLabel("—")
         self.db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -447,6 +467,8 @@ class CellWorkflowWidget(QWidget):
         self._pos_dir = pos_dir
         self.input_files.refresh(pos_dir)
         self.output_files.refresh(pos_dir)
+        self._update_gen_io_status_labels()
+        self._update_db_io_status_labels()
         if pos_dir is None:
             self.correction_widget.deactivate()
             return
@@ -516,6 +538,40 @@ class CellWorkflowWidget(QWidget):
     def _set_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
         logger.info(msg)
+
+    def _update_gen_io_status_labels(self) -> None:
+        prob_path = self._prob_path()
+        nucleus_path = self._nucleus_tracked_path()
+        hyp_path = self._hyp_path()
+        if self._pos_dir is None:
+            self.gen_input_status_lbl.setText("Input data: —")
+            self.gen_output_status_lbl.setText("Output data: —")
+            return
+
+        input_ready = bool(prob_path and prob_path.exists() and nucleus_path and nucleus_path.exists())
+        output_ready = bool(hyp_path and hyp_path.exists())
+        self.gen_input_status_lbl.setText(
+            "Input data: 1_cellpose/cell_prob_3dt.tif, 2_nucleus/tracked_labels.tif "
+            f"({'ready' if input_ready else 'missing'})"
+        )
+        self.gen_output_status_lbl.setText(
+            "Output data: 3_cell/hypotheses.h5 "
+            f"({'ready' if output_ready else 'missing'})"
+        )
+
+    def _update_db_io_status_labels(self) -> None:
+        hyp_path = self._hyp_path()
+        if self._pos_dir is None:
+            self.db_input_status_lbl.setText("Input data: —")
+            self.db_output_status_lbl.setText("Output data: —")
+            return
+
+        input_ready = bool(hyp_path and hyp_path.exists())
+        self.db_input_status_lbl.setText(
+            "Input data: 3_cell/hypotheses.h5 "
+            f"({'ready' if input_ready else 'missing'})"
+        )
+        self.db_output_status_lbl.setText("Output data: napari hypothesis layers")
 
     def _normalize_dp_stack(self, dp: np.ndarray, prob_shape: tuple[int, int, int, int]) -> np.ndarray:
         """Return flow vectors as (T, Z, C, Y, X), accepting common Cellpose layouts."""
@@ -678,6 +734,7 @@ class CellWorkflowWidget(QWidget):
         self.db_fg_thr_spin.setEnabled(False)
         self.db_compactness_spin.setEnabled(False)
         self.db_info_lbl.setText("—")
+        self._update_db_io_status_labels()
 
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():

@@ -67,6 +67,7 @@ from cellflow.napari.ui_style import (
     block_grid,
     compact_spinbox,
     danger_button,
+    muted_label,
     sweep_parameter_grid,
 )
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
@@ -262,35 +263,39 @@ class NucleusWorkflowWidget(QWidget):
             "Build contour maps for the current frame only and display in napari"
         )
         self.build_btn = QPushButton("Build")
+        self.contour_terminal_btn = QPushButton("Run in Terminal")
         self.cancel_build_btn = QPushButton("Cancel")
         self.cancel_build_btn.setEnabled(False)
 
-        for button in (self.preview_contour_btn, self.build_btn, self.cancel_build_btn):
+        for button in (
+            self.preview_contour_btn,
+            self.build_btn,
+            self.contour_terminal_btn,
+            self.cancel_build_btn,
+        ):
             button.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
             button.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
             )
 
-        contour_sweep_grid.addWidget(
-            QLabel(""),
-            4,
+        contour_btn_row = block_grid(horizontal_spacing=12)
+        add_block_button_row(
+            contour_btn_row,
             0,
-        )
-        contour_sweep_grid.addWidget(
             self.preview_contour_btn,
-            4,
-            1,
-        )
-        contour_sweep_grid.addWidget(
             self.build_btn,
-            4,
-            2,
-        )
-        contour_sweep_grid.addWidget(
+            self.contour_terminal_btn,
             self.cancel_build_btn,
-            4,
-            3,
         )
+        cp_params_lay.addLayout(contour_btn_row)
+
+        self.contour_input_lbl = QLabel("")
+        self.contour_input_lbl.setWordWrap(True)
+        cp_params_lay.addWidget(self.contour_input_lbl)
+
+        self.contour_output_lbl = QLabel("")
+        self.contour_output_lbl.setWordWrap(True)
+        cp_params_lay.addWidget(self.contour_output_lbl)
 
         self.build_progress_bar = QProgressBar()
         self.build_progress_bar.setRange(0, 100)
@@ -299,11 +304,13 @@ class NucleusWorkflowWidget(QWidget):
         self.contour_files = PipelineFilesWidget([
             ("", [
                 ("2_nucleus/contour_maps.tif",   "Contour maps"),
-                ("2_nucleus/foreground_maps.tif", "Foreground maps"),
+                ("2_nucleus/foreground_maps.tif", "Foreground maps (diagnostic)"),
+                ("2_nucleus/foreground_mask.tif", "Foreground mask"),
             ]),
         ])
         cp_params_lay.addWidget(self.build_progress_bar)
         cp_params_lay.addWidget(self.contour_files)
+        self._update_contour_status_labels()
 
         cp_params_scroll.setWidget(cp_params_widget)
         contour_lay.addWidget(cp_params_scroll)
@@ -391,14 +398,14 @@ class NucleusWorkflowWidget(QWidget):
         self.single_fg_threshold.setDecimals(2)
         self.single_fg_threshold.setSingleStep(0.05)
         self.single_fg_threshold.setToolTip(
-            "Sigmoid foreground probability cutoff — pixels below this are excluded from segmentation and seeding."
+            "Contour preprocessing cutoff — contour pixels below this are set to zero before seeding and watershed."
         )
         add_block_pair_row(
             tuning_params_grid,
             0,
             "Seed Distance:",
             _compact(self.single_seed_dist),
-            "Foreground Threshold:",
+            "Contour Floor:",
             _compact(self.single_fg_threshold),
         )
 
@@ -469,7 +476,7 @@ class NucleusWorkflowWidget(QWidget):
 
         fg_min, fg_max, fg_step = _make_sweep_spins(0.4, 0.6, 0.05, decimals=2)
         add_sweep_parameter_row(
-            sweep_grid, 2, "Foreground Threshold:", fg_min, fg_max, fg_step
+            sweep_grid, 2, "Contour Floor:", fg_min, fg_max, fg_step
         )
         self.sweep_fg_thr = (fg_min, fg_max, fg_step)
 
@@ -563,7 +570,7 @@ class NucleusWorkflowWidget(QWidget):
             0,
             "Seed Dist:",
             _compact(self.db_seed_dist_spin),
-            "FG Thr:",
+            "Contour Floor:",
             _compact(self.db_fg_thr_spin),
         )
         self.db_ridge_thr_spin = QDoubleSpinBox()
@@ -840,8 +847,17 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_progress_bar.setVisible(False)
         ultrack_lay.addWidget(self.ultrack_progress_bar)
 
+        ultrack_attrib = QLabel(
+            "Ultrack tracking is powered by the "
+            '<a href="https://github.com/royerlab/ultrack">Ultrack</a> project.'
+        )
+        ultrack_attrib.setOpenExternalLinks(True)
+        ultrack_attrib.setWordWrap(True)
+        muted_label(ultrack_attrib, size_pt=9)
+        ultrack_lay.addWidget(ultrack_attrib)
+
         self.ultrack_section = CollapsibleSection(
-            "Ultrack Tracking", _ultrack_inner, expanded=False
+            "Ultrack Tracking", _ultrack_inner, expanded=True
         )
         tracking_correction_lay.addWidget(self.ultrack_section)
 
@@ -934,17 +950,17 @@ class NucleusWorkflowWidget(QWidget):
         self.correction_shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
             self.correction_widget.build_shortcuts_widget(),
-            expanded=True,
+            expanded=False,
         )
         _corr_inner_lay.addWidget(self.correction_shortcuts_section)
 
         self.correction_section = CollapsibleSection(
-            "Correction", _corr_inner, expanded=False
+            "Correction", _corr_inner, expanded=True
         )
         tracking_correction_lay.addWidget(self.correction_section)
 
         self.tracking_correction_section = CollapsibleSection(
-            "4. Tracking & Correction", _tracking_correction_inner, expanded=False
+            "4. Tracking & Correction", _tracking_correction_inner, expanded=True
         )
         layout.addWidget(self.tracking_correction_section)
 
@@ -968,6 +984,7 @@ class NucleusWorkflowWidget(QWidget):
     def _connect_signals(self) -> None:
         self.build_btn.clicked.connect(self._on_build_contour_maps)
         self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
+        self.contour_terminal_btn.clicked.connect(self._on_run_contour_terminal)
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
         self.preview_btn.clicked.connect(self._on_preview)
         self.save_db_btn.clicked.connect(self._on_save_db)
@@ -1012,6 +1029,7 @@ class NucleusWorkflowWidget(QWidget):
         self._pos_dir = pos_dir
         self.input_files.refresh(pos_dir)
         self.contour_files.refresh(pos_dir)
+        self._update_contour_status_labels()
         self.output_files.refresh(pos_dir)
         if pos_dir is None:
             self.correction_widget.deactivate()
@@ -1041,6 +1059,9 @@ class NucleusWorkflowWidget(QWidget):
 
     def _foreground_maps_path(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "foreground_maps.tif" if self._pos_dir else None
+
+    def _foreground_mask_path(self) -> Path | None:
+        return self._pos_dir / "2_nucleus" / "foreground_mask.tif" if self._pos_dir else None
 
     def _cell_zavg_path(self) -> Path | None:
         return self._pos_dir / "0_input" / "cell_zavg.tif" if self._pos_dir else None
@@ -1218,6 +1239,28 @@ class NucleusWorkflowWidget(QWidget):
         self._set_status(msg)
         logger.info(msg)
 
+    def _update_contour_status_labels(self) -> None:
+        if self._pos_dir is None:
+            self.contour_input_lbl.setText("Inputs: no project open.")
+            self.contour_output_lbl.setText("Outputs: no project open.")
+            return
+
+        prob_path = self._prob_path()
+        dp_path = self._dp_path()
+        contour_path = self._contour_maps_path()
+        foreground_path = self._foreground_maps_path()
+
+        self.contour_input_lbl.setText(
+            "Inputs: "
+            f"prob {'found' if prob_path is not None and prob_path.exists() else 'missing'}, "
+            f"dp {'found' if dp_path is not None and dp_path.exists() else 'missing'}"
+        )
+        self.contour_output_lbl.setText(
+            "Outputs: "
+            f"contour {'ready' if contour_path is not None and contour_path.exists() else 'pending'}, "
+            f"foreground {'ready' if foreground_path is not None and foreground_path.exists() else 'pending'}"
+        )
+
     def _cp_gammas(self) -> list[float]:
         """Gamma values to iterate during consensus boundary building."""
         gmin  = self.cp_gamma_min_spin.value()
@@ -1356,6 +1399,7 @@ class NucleusWorkflowWidget(QWidget):
         self._build_worker = None
         self._set_build_buttons_running(False)
         self.contour_files.refresh(pos_dir)
+        self._update_contour_status_labels()
         self._set_status("Contour maps built.")
 
     def _on_cancel_build(self) -> None:
@@ -1363,11 +1407,13 @@ class NucleusWorkflowWidget(QWidget):
             self._build_worker.quit()
         self._build_worker = None
         self._set_build_buttons_running(False)
+        self._update_contour_status_labels()
         self._set_status("Build cancelled.")
 
     def _set_build_buttons_running(self, running: bool) -> None:
         self.build_btn.setEnabled(not running)
         self.preview_contour_btn.setEnabled(not running)
+        self.contour_terminal_btn.setEnabled(not running)
         self.cancel_build_btn.setEnabled(running)
         self.build_progress_bar.setVisible(running)
         if not running:
@@ -1448,32 +1494,166 @@ class NucleusWorkflowWidget(QWidget):
         self._set_build_buttons_running(True)
         self._build_worker = _worker()
 
+    def _on_run_contour_terminal(self) -> None:
+        import sys
+        import tempfile
+
+        if self._pos_dir is None:
+            self._set_status("No project open.")
+            return
+        prob_path = self._prob_path()
+        dp_path = self._dp_path()
+        contour_path = self._contour_maps_path()
+        foreground_path = self._foreground_maps_path()
+        if prob_path is None or not prob_path.exists():
+            self._set_status(f"Missing: {prob_path}")
+            return
+        if dp_path is None or not dp_path.exists():
+            self._set_status(f"Missing: {dp_path}")
+            return
+
+        thresholds = list(
+            np.arange(
+                self.cp_min_spin.value(),
+                self.cp_max_spin.value() + self.cp_step_spin.value() / 2,
+                self.cp_step_spin.value(),
+            )
+        )
+        gammas = self._cp_gammas()
+        save_source = self.save_source_check.isChecked()
+        pos_dir = self._pos_dir
+
+        python_code = (
+            "import pathlib\n"
+            "import numpy as np\n"
+            "import tifffile\n"
+            "from cellflow.segmentation import build_consensus_boundary\n"
+            f"prob_path = pathlib.Path({str(prob_path)!r})\n"
+            f"dp_path = pathlib.Path({str(dp_path)!r})\n"
+            f"contour_path = pathlib.Path({str(contour_path)!r})\n"
+            f"foreground_path = pathlib.Path({str(foreground_path)!r})\n"
+            f"save_source = {save_source!r}\n"
+            f"source_dir = pathlib.Path({str(pos_dir / '2_nucleus/source_labels')!r})\n"
+            f"thresholds = {thresholds!r}\n"
+            f"gammas = {gammas!r}\n"
+            "def build_consensus_boundary_averaged(prob_3d, dp_3d, thresholds, gammas, mask_callback=None):\n"
+            "    boundary_sum = None\n"
+            "    foreground_sum = None\n"
+            "    for g_idx, g in enumerate(gammas):\n"
+            "        cb = None\n"
+            "        if mask_callback is not None:\n"
+            "            def cb(masks, i_thresh, *, _gi=g_idx):\n"
+            "                mask_callback(masks, _gi, i_thresh)\n"
+            "        boundary, foreground = build_consensus_boundary(\n"
+            "            prob_3d,\n"
+            "            dp_3d,\n"
+            "            thresholds,\n"
+            "            gamma=g,\n"
+            "            mask_callback=cb,\n"
+            "        )\n"
+            "        if boundary_sum is None:\n"
+            "            boundary_sum = boundary.copy()\n"
+            "            foreground_sum = foreground.copy()\n"
+            "        else:\n"
+            "            boundary_sum += boundary\n"
+            "            foreground_sum += foreground\n"
+            "    n = len(gammas)\n"
+            "    return boundary_sum / n, foreground_sum / n\n"
+            "prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)\n"
+            "dp_stack = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)\n"
+            "if prob_stack.ndim == 3:\n"
+            "    prob_stack = prob_stack[np.newaxis]\n"
+            "if dp_stack.ndim == 4:\n"
+            "    dp_stack = dp_stack[np.newaxis]\n"
+            "n_t = prob_stack.shape[0]\n"
+            "contour_frames = []\n"
+            "foreground_frames = []\n"
+            "for t in range(n_t):\n"
+            "    print(f'Building contour maps: frame {t + 1}/{n_t}...', flush=True)\n"
+            "    mask_cb = None\n"
+            "    if save_source:\n"
+            "        source_dir.mkdir(parents=True, exist_ok=True)\n"
+            "        def mask_cb(masks, g_idx, thresh_idx, *, _t=t):\n"
+            "            tifffile.imwrite(\n"
+            "                source_dir / f'masks_t{_t:04d}_g{g_idx:02d}_thr{thresh_idx:02d}.tif',\n"
+            "                masks,\n"
+            "                compression='zlib',\n"
+            "            )\n"
+            "    boundary, foreground = build_consensus_boundary_averaged(\n"
+            "        prob_stack[t],\n"
+            "        dp_stack[t],\n"
+            "        thresholds,\n"
+            "        gammas,\n"
+            "        mask_callback=mask_cb,\n"
+            "    )\n"
+            "    contour_frames.append(boundary)\n"
+            "    foreground_frames.append(foreground)\n"
+            "contour_path.parent.mkdir(parents=True, exist_ok=True)\n"
+            "print('Writing contour maps...', flush=True)\n"
+            "tifffile.imwrite(str(contour_path), np.stack(contour_frames), compression='zlib')\n"
+            "tifffile.imwrite(str(foreground_path), np.stack(foreground_frames), compression='zlib')\n"
+            "print('Done.')\n"
+        )
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", prefix="cellflow_contour_build_", delete=False
+        ) as tmp:
+            tmp.write(python_code)
+            tmp_path = tmp.name
+
+        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(tmp_path)}"
+        try:
+            from cellflow.napari.utils import launch_in_terminal
+            launch_in_terminal(cmd)
+            self._set_status("Contour build command launched in terminal.")
+        except Exception:
+            QApplication.clipboard().setText(cmd)
+            self._set_status(
+                "Copied contour build command to clipboard (terminal launch unavailable)."
+            )
+
     # ──────────────────────────────────────────────────────────────────────────
     # 2. Hypothesis generation
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _load_contour_maps(self) -> tuple[np.ndarray, np.ndarray] | None:
-        """Read contour and foreground maps from disk. Returns None and sets status on error."""
-        contour_path    = self._contour_maps_path()
-        foreground_path = self._foreground_maps_path()
+    def _load_contour_inputs(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Read contour maps and the external foreground mask from disk."""
+        contour_path = self._contour_maps_path()
+        mask_path = self._foreground_mask_path()
         if contour_path is None or not contour_path.exists():
             self._set_status("Contour maps not found — run Build first.")
             return None
-        if foreground_path is None or not foreground_path.exists():
-            self._set_status("Foreground maps not found — run Build first.")
+        if mask_path is None or not mask_path.exists():
+            self._set_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
             return None
-        contour    = np.asarray(tifffile.imread(str(contour_path)),    dtype=np.float32)
-        foreground = np.asarray(tifffile.imread(str(foreground_path)), dtype=np.float32)
-        return contour, foreground
+        contour = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
+        foreground_mask = np.asarray(tifffile.imread(str(mask_path)))
+        return contour, foreground_mask
+
+    @staticmethod
+    def _normalize_contour_mask_stack(mask: np.ndarray, contour_shape: tuple[int, ...]) -> np.ndarray:
+        mask = np.asarray(mask)
+        if mask.shape == contour_shape:
+            return mask
+        if mask.ndim == 2 and len(contour_shape) == 3 and mask.shape == contour_shape[1:]:
+            return np.broadcast_to(mask[np.newaxis], contour_shape)
+        if mask.ndim == 3 and len(contour_shape) == 3 and mask.shape[0] == 1 and mask.shape[1:] == contour_shape[1:]:
+            return np.broadcast_to(mask, contour_shape)
+        raise ValueError(f"Foreground mask shape {mask.shape} does not match contour shape {contour_shape}")
 
     def _on_preview(self) -> None:
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
-        maps = self._load_contour_maps()
+        maps = self._load_contour_inputs()
         if maps is None:
             return
-        contour, foreground = maps
+        contour, foreground_mask = maps
+        try:
+            foreground_mask = self._normalize_contour_mask_stack(foreground_mask, contour.shape)
+        except ValueError as e:
+            self._set_status(str(e))
+            return
         t = min(self._current_t(), contour.shape[0] - 1)
         params = self._contour_sweep_params()
 
@@ -1483,7 +1663,7 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.layers[_CONTOUR_LAYER].data = contour
 
         try:
-            labels = compute_contour_watershed(contour[t], foreground[t], params)
+            labels = compute_contour_watershed(contour[t], foreground_mask[t], params)
         except Exception as e:
             self._set_status(f"Segmentation failed: {e}")
             return
@@ -1498,10 +1678,15 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
-        maps = self._load_contour_maps()
+        maps = self._load_contour_inputs()
         if maps is None:
             return
-        contour, foreground = maps
+        contour, foreground_mask = maps
+        try:
+            foreground_mask = self._normalize_contour_mask_stack(foreground_mask, contour.shape)
+        except ValueError as e:
+            self._set_status(str(e))
+            return
 
         params   = self._contour_sweep_params()
         overwrite = self.overwrite_check.isChecked()
@@ -1528,7 +1713,7 @@ class NucleusWorkflowWidget(QWidget):
                 min_size=params.min_size,
                 min_circularity=params.min_circularity,
             )
-            records = iter_contour_watershed_records(contour, foreground, spec)
+            records = iter_contour_watershed_records(contour, foreground_mask, spec)
             write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite, n_t=None, n_p=1)
             return pos_dir
 
@@ -1544,13 +1729,13 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
-        contour_path    = self._contour_maps_path()
-        foreground_path = self._foreground_maps_path()
+        contour_path = self._contour_maps_path()
+        mask_path = self._foreground_mask_path()
         if contour_path is None or not contour_path.exists():
             self._set_status("Contour maps not found — run Build first.")
             return
-        if foreground_path is None or not foreground_path.exists():
-            self._set_status("Foreground maps not found — run Build first.")
+        if mask_path is None or not mask_path.exists():
+            self._set_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
             return
 
         spec      = self._contour_sweep_spec()
@@ -1607,8 +1792,11 @@ class NucleusWorkflowWidget(QWidget):
             if n_skip:
                 yield f"Sweep: skipping {n_skip} existing, computing {len(params_list)} new…"
 
-            contour_stack    = np.asarray(tifffile.imread(str(contour_path)),    dtype=np.float32)
-            foreground_stack = np.asarray(tifffile.imread(str(foreground_path)), dtype=np.float32)
+            contour_stack = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
+            foreground_stack = self._normalize_contour_mask_stack(
+                tifffile.imread(str(mask_path)),
+                contour_stack.shape,
+            )
 
             n_t = contour_stack.shape[0]
             total = n_t * len(params_list)
@@ -1649,14 +1837,14 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_status("No project open.")
             return
-        contour_path    = self._contour_maps_path()
-        foreground_path = self._foreground_maps_path()
+        contour_path = self._contour_maps_path()
+        mask_path = self._foreground_mask_path()
         output_path     = self._hyp_path()
         if contour_path is None or not contour_path.exists():
             self._set_status("Contour maps not found — run Build first.")
             return
-        if foreground_path is None or not foreground_path.exists():
-            self._set_status("Foreground maps not found — run Build first.")
+        if mask_path is None or not mask_path.exists():
+            self._set_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
             return
 
         spec      = self._contour_sweep_spec()
@@ -1671,7 +1859,14 @@ class NucleusWorkflowWidget(QWidget):
             "    iter_write_hypothesis_sweep_h5)\n"
             "import json, pathlib\n"
             f"contour    = tifffile.imread({str(contour_path)!r}).astype('float32')\n"
-            f"foreground = tifffile.imread({str(foreground_path)!r}).astype('float32')\n"
+            f"foreground_mask = tifffile.imread({str(mask_path)!r})\n"
+            "if foreground_mask.shape != contour.shape:\n"
+            "    if foreground_mask.ndim == 2 and foreground_mask.shape == contour.shape[1:]:\n"
+            "        foreground_mask = np.broadcast_to(foreground_mask[None], contour.shape)\n"
+            "    elif foreground_mask.ndim == 3 and foreground_mask.shape[0] == 1 and foreground_mask.shape[1:] == contour.shape[1:]:\n"
+            "        foreground_mask = np.broadcast_to(foreground_mask, contour.shape)\n"
+            "    else:\n"
+            "        raise ValueError(f'Foreground mask shape {foreground_mask.shape} does not match contour shape {contour.shape}')\n"
             f"output_path = pathlib.Path({str(output_path)!r})\n"
             f"overwrite = {overwrite!r}\n"
             f"spec = ContourWatershedSweepSpec(\n"
@@ -1702,7 +1897,7 @@ class NucleusWorkflowWidget(QWidget):
             "        pass\n"
             "n_t = contour.shape[0]\n"
             "total = n_t * len(params_list)\n"
-            "records = iter_contour_watershed_records(contour, foreground, spec, n_workers="
+            "records = iter_contour_watershed_records(contour, foreground_mask, spec, n_workers="
             f"{n_workers}, params_list=params_list)\n"
             "for done in iter_write_hypothesis_sweep_h5(str(output_path), records, overwrite=overwrite, compression='lzf', compression_opts=None):\n"
             "    print(f'Sweep {done}/{total}…', flush=True)\n"

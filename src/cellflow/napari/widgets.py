@@ -1,6 +1,8 @@
 """Shared reusable Qt widgets for the CellFlow napari plugin."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QFrame,
@@ -132,7 +134,7 @@ class _PipelineFileRow(QWidget):
     def __init__(self, rel_path: str, display_name: str, loadable: str | None = None):
         super().__init__()
         self._rel_path = rel_path
-        self._loadable = loadable
+        self._loadable = loadable or self._infer_load_kind(rel_path)
         self._full_path: "Path | None" = None
 
         lay = QHBoxLayout(self)
@@ -158,22 +160,19 @@ class _PipelineFileRow(QWidget):
         status_label(self._info_lbl)
         lay.addWidget(self._info_lbl)
 
-        if loadable is not None:
-            self._load_btn = QPushButton("↑")
-            icon_button(self._load_btn, height=18)
-            self._load_btn.setToolTip("Load into napari viewer")
-            self._load_btn.setEnabled(False)
-            lay.addWidget(self._load_btn)
-        else:
-            self._load_btn = None
+        self._load_btn = QPushButton("↑")
+        icon_button(self._load_btn, width=18, height=18)
+        self._load_btn.clicked.connect(self._on_load_clicked)
+        self._load_btn.setEnabled(False)
+        self._load_btn.setToolTip(self._load_tooltip())
+        lay.addWidget(self._load_btn)
 
     def set_present(self, info_text: str) -> None:
         self._icon_lbl.setText("✓")
         self._icon_lbl.setStyleSheet("font-size: 9pt; font-weight: bold; color: #4CAF50;")
         self._info_lbl.setText(info_text)
         status_label(self._info_lbl)
-        if self._load_btn:
-            self._load_btn.setEnabled(True)
+        self._update_load_button()
 
     def set_missing(self) -> None:
         self._icon_lbl.setText("✗")
@@ -181,8 +180,8 @@ class _PipelineFileRow(QWidget):
         self._info_lbl.setText("missing")
         muted_label(self._info_lbl)
         self._full_path = None
-        if self._load_btn:
-            self._load_btn.setEnabled(False)
+        self._load_btn.setEnabled(False)
+        self._load_btn.setToolTip(self._load_tooltip(missing=True))
 
     def set_no_project(self) -> None:
         self._icon_lbl.setText("○")
@@ -190,8 +189,160 @@ class _PipelineFileRow(QWidget):
         self._info_lbl.setText("—")
         muted_label(self._info_lbl)
         self._full_path = None
-        if self._load_btn:
+        self._load_btn.setEnabled(False)
+        self._load_btn.setToolTip(self._load_tooltip(no_project=True))
+
+    def _update_load_button(self) -> None:
+        if self._full_path is None or not self._full_path.exists():
             self._load_btn.setEnabled(False)
+            self._load_btn.setToolTip(self._load_tooltip(missing=True))
+            return
+
+        if self._loadable == "hypotheses":
+            handler = self._find_hypothesis_loader()
+            enabled = handler is not None
+            self._load_btn.setEnabled(enabled)
+            self._load_btn.setToolTip(
+                self._load_tooltip()
+                if enabled
+                else "No direct load action: select a hypothesis parameter set in the workflow browser."
+            )
+            return
+
+        if self._loadable in {"tracked", "tiff"}:
+            self._load_btn.setEnabled(True)
+            self._load_btn.setToolTip(self._load_tooltip())
+            return
+
+        self._load_btn.setEnabled(False)
+        self._load_btn.setToolTip("No direct napari load action for this file.")
+
+    def _on_load_clicked(self) -> None:
+        if self._full_path is None or not self._full_path.exists():
+            return
+
+        if self._loadable == "hypotheses":
+            loader = self._find_hypothesis_loader()
+            if loader is not None:
+                loader()
+            return
+
+        if self._loadable == "tracked":
+            loader = self._find_tracked_loader()
+            if loader is not None:
+                loader()
+                return
+
+        self._load_file_into_viewer()
+
+    def _load_file_into_viewer(self) -> None:
+        viewer = self._find_viewer()
+        if viewer is None:
+            return
+
+        import tifffile
+
+        data = tifffile.imread(str(self._full_path))
+        layer_name = self._layer_name()
+        if self._loadable == "tracked" or self._loadable == "labels":
+            viewer.add_labels(data, name=layer_name)
+        else:
+            viewer.add_image(data, name=layer_name)
+
+    def _find_viewer(self):
+        widget = self.parentWidget()
+        while widget is not None:
+            viewer = getattr(widget, "viewer", None)
+            if viewer is not None and hasattr(viewer, "add_image") and hasattr(viewer, "add_labels"):
+                return viewer
+            widget = widget.parentWidget()
+        return None
+
+    def _find_descendant_widget(self, predicate):
+        root = self.window()
+        if not isinstance(root, QWidget):
+            return None
+
+        stack = [root]
+        seen: set[int] = set()
+        while stack:
+            widget = stack.pop()
+            ident = id(widget)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            if predicate(widget):
+                return widget
+            for child in widget.children():
+                if isinstance(child, QWidget):
+                    stack.append(child)
+        return None
+
+    def _find_hypothesis_loader(self):
+        if self._full_path is None:
+            return None
+
+        def _matches(widget: QWidget) -> bool:
+            loader = getattr(widget, "_load_db_stack", None)
+            hyp_path = getattr(widget, "_hyp_path", None)
+            current_db_p = getattr(widget, "_current_db_p", None)
+            if not callable(loader) or not callable(hyp_path):
+                return False
+            try:
+                return hyp_path() == self._full_path and current_db_p is not None
+            except Exception:
+                return False
+
+        widget = self._find_descendant_widget(_matches)
+        if widget is None:
+            return None
+
+        def _loader() -> None:
+            widget._load_db_stack(widget._current_db_p)
+
+        return _loader
+
+    def _find_tracked_loader(self):
+        if self._full_path is None:
+            return None
+
+        def _matches(widget: QWidget) -> bool:
+            loader = getattr(widget, "_on_load_tracked", None)
+            tracked_path = getattr(widget, "_tracked_path", None)
+            return callable(loader) and callable(tracked_path) and tracked_path() == self._full_path
+
+        widget = self._find_descendant_widget(_matches)
+        if widget is None:
+            return None
+
+        return getattr(widget, "_on_load_tracked")
+
+    def _layer_name(self) -> str:
+        return Path(self._rel_path).with_suffix("").as_posix().replace("/", "_")
+
+    def _load_tooltip(self, *, missing: bool = False, no_project: bool = False) -> str:
+        if no_project:
+            return "No project open."
+        if missing:
+            return "File is missing."
+        if self._loadable == "hypotheses":
+            return "Load the currently selected hypothesis stack into napari."
+        if self._loadable == "tracked":
+            return "Load tracked labels into napari."
+        if self._loadable == "tiff":
+            return "Load into napari viewer."
+        return "No direct napari load action for this file."
+
+    @staticmethod
+    def _infer_load_kind(rel_path: str) -> str | None:
+        name = Path(rel_path).name
+        if name == "hypotheses.h5":
+            return "hypotheses"
+        if name == "tracked_labels.tif":
+            return "tracked"
+        if name.endswith((".tif", ".tiff")):
+            return "tiff"
+        return None
 
 
 def _file_info(path: "Path") -> str:

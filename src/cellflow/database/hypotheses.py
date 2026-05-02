@@ -725,20 +725,29 @@ def build_contour_watershed_parameter_sets(spec: ContourWatershedSweepSpec) -> l
 @dataclass(frozen=True, slots=True)
 class _ContourWatershedFrameCache:
     fg_mask: np.ndarray
+    boundary: np.ndarray
     edt: np.ndarray
 
 
 def _prepare_contour_watershed_frame(
     boundary: np.ndarray,
-    foreground: np.ndarray,
+    foreground_mask: np.ndarray,
     params: ContourWatershedParams,
 ) -> _ContourWatershedFrameCache:
-    from scipy.ndimage import binary_fill_holes, distance_transform_edt
+    from scipy.ndimage import distance_transform_edt
 
-    fg_mask = binary_fill_holes(foreground > params.foreground_threshold)
-    core = fg_mask & (boundary < params.ridge_threshold)
+    boundary_pre = np.asarray(boundary, dtype=np.float32).copy()
+    boundary_pre[boundary_pre < params.foreground_threshold] = 0
+    foreground_mask = np.asarray(foreground_mask)
+    if foreground_mask.shape != boundary_pre.shape:
+        raise ValueError(
+            f"Foreground mask shape {foreground_mask.shape} does not match boundary shape {boundary_pre.shape}"
+        )
+    fg_mask = foreground_mask > 0
+    core = fg_mask & (boundary_pre < params.ridge_threshold)
     return _ContourWatershedFrameCache(
         fg_mask=np.asarray(fg_mask, dtype=bool),
+        boundary=boundary_pre,
         edt=distance_transform_edt(core),
     )
 
@@ -765,12 +774,12 @@ def _run_cached_watershed_task(
         threshold_abs=1.0,
         exclude_border=False,
     )
-    marker_mask = np.zeros(boundary.shape, dtype=bool)
+    marker_mask = np.zeros(cached.boundary.shape, dtype=bool)
     if coords.size:
         marker_mask[coords[:, 0], coords[:, 1]] = True
     markers, _ = nd_label(marker_mask)
 
-    labels = watershed(boundary, markers=markers, mask=cached.fg_mask, watershed_line=False)
+    labels = watershed(cached.boundary, markers=markers, mask=cached.fg_mask, watershed_line=False)
     result = _fill_and_close_labels(np.asarray(labels, dtype=_LABEL_DTYPE))
     result = _remove_small_labels(result, params.min_size)
     labels_2d = _remove_low_circularity_labels(result, params.min_circularity)
@@ -789,10 +798,10 @@ def iter_contour_watershed_records(
     n_workers: int = 1,
     params_list: list[ContourWatershedParams] | None = None,
 ) -> Iterator[HypothesisRecord]:
-    """Yield HypothesisRecords from cached contour and foreground maps (single gamma).
+    """Yield HypothesisRecords from cached contour maps and foreground masks.
 
     contour_stack:    (T, Y, X) float32 consensus boundary maps
-    foreground_stack: (T, Y, X) float32 foreground probability maps
+    foreground_stack: (T, Y, X) binary foreground masks
     n_workers:        number of threads (scipy/skimage release the GIL)
     """
     if params_list is None:

@@ -8,10 +8,11 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pytest
+import tifffile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel, QPushButton, QSizePolicy, QSpinBox
+from qtpy.QtWidgets import QApplication, QLabel, QPushButton, QSizePolicy, QSpinBox, QWidget
 
 package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
 napari_pkg = types.ModuleType("cellflow.napari")
@@ -216,5 +217,62 @@ def test_hypotheses_h5_summary_shows_parameter_and_time_counts(_app, tmp_path):
     widget.refresh(tmp_path)
 
     assert widget._rows[0]._info_lbl.text() == "2×2×12×34"
+
+    widget.deleteLater()
+
+
+def test_pipeline_files_widget_load_buttons_route_supported_rows_and_disable_hypotheses(_app, tmp_path):
+    class _FakeViewer:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, tuple[int, ...]]] = []
+
+        def add_image(self, data, name=None, **kwargs):
+            self.calls.append(("image", name, tuple(np.asarray(data).shape)))
+
+        def add_labels(self, data, name=None, **kwargs):
+            self.calls.append(("labels", name, tuple(np.asarray(data).shape)))
+
+    wrapper = QWidget()
+    wrapper.viewer = _FakeViewer()
+
+    tifffile.imwrite(
+        tmp_path / "nucleus_zavg.tif",
+        np.zeros((4, 6), dtype=np.uint16),
+        compression=None,
+    )
+    tifffile.imwrite(
+        tmp_path / "tracked_labels.tif",
+        np.zeros((2, 4, 6), dtype=np.uint32),
+        compression=None,
+    )
+    with h5py.File(tmp_path / "hypotheses.h5", "w"):
+        pass
+
+    widget = PipelineFilesWidget(
+        [
+            (
+                "Outputs",
+                [
+                    ("nucleus_zavg.tif", "Nucleus z-avg"),
+                    ("tracked_labels.tif", "Tracked labels"),
+                    ("hypotheses.h5", "Hypotheses DB"),
+                ],
+            )
+        ],
+        parent=wrapper,
+    )
+    widget.refresh(tmp_path)
+
+    assert widget._rows[0]._load_btn.isEnabled()
+    assert widget._rows[1]._load_btn.isEnabled()
+    assert not widget._rows[2]._load_btn.isEnabled()
+
+    widget._rows[0]._load_btn.click()
+    widget._rows[1]._load_btn.click()
+
+    assert wrapper.viewer.calls == [
+        ("image", "nucleus_zavg", (4, 6)),
+        ("labels", "tracked_labels", (2, 4, 6)),
+    ]
 
     widget.deleteLater()
