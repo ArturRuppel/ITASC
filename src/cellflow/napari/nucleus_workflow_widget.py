@@ -393,7 +393,7 @@ class NucleusWorkflowWidget(QWidget):
         self.single_seed_dist.setRange(1, 500)
         self.single_seed_dist.setValue(10)
         self.single_fg_threshold = QDoubleSpinBox()
-        self.single_fg_threshold.setRange(0.01, 0.99)
+        self.single_fg_threshold.setRange(0.0, 0.99)
         self.single_fg_threshold.setValue(0.5)
         self.single_fg_threshold.setDecimals(2)
         self.single_fg_threshold.setSingleStep(0.05)
@@ -474,7 +474,7 @@ class NucleusWorkflowWidget(QWidget):
         add_sweep_parameter_row(sweep_grid, 1, "Seed Dist:", sd_min, sd_max, sd_step)
         self.sweep_seed_dist = (sd_min, sd_max, sd_step)
 
-        fg_min, fg_max, fg_step = _make_sweep_spins(0.4, 0.6, 0.05, decimals=2)
+        fg_min, fg_max, fg_step = _make_sweep_spins(0.0, 0.6, 0.05, decimals=2)
         add_sweep_parameter_row(
             sweep_grid, 2, "Contour Floor:", fg_min, fg_max, fg_step
         )
@@ -560,7 +560,7 @@ class NucleusWorkflowWidget(QWidget):
         self.db_seed_dist_spin.setValue(10)
         self.db_seed_dist_spin.setEnabled(False)
         self.db_fg_thr_spin = QDoubleSpinBox()
-        self.db_fg_thr_spin.setRange(0.01, 0.99)
+        self.db_fg_thr_spin.setRange(0.0, 0.99)
         self.db_fg_thr_spin.setValue(0.5)
         self.db_fg_thr_spin.setDecimals(2)
         self.db_fg_thr_spin.setSingleStep(0.05)
