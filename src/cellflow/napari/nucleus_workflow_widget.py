@@ -2772,17 +2772,21 @@ class NucleusWorkflowWidget(QWidget):
         if not validated_tracks:
             self._set_ultrack_status("No validated tracks — validate some cells first (press V).")
             return
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_ultrack_status("hypotheses.h5 not found — generate hypotheses first.")
-            return
         tracked_path = self._tracked_path()
         if tracked_path is None or not tracked_path.exists():
             self._set_ultrack_status("Tracked labels not found.")
             return
-        cellprob_zavg_path = self._cellprob_zavg_path()
-        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
-            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+        contour_path = self._contour_maps_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_ultrack_status("Missing: contour_maps.tif")
+            return
+        fg_path = self._foreground_masks_path()
+        if fg_path is None or not fg_path.exists():
+            self._set_ultrack_status("Missing: foreground_masks.tif")
+            return
+        nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
+        if nucleus_prob_zavg_path is None or not nucleus_prob_zavg_path.exists():
+            self._set_ultrack_status("Missing: nucleus_prob_zavg.tif")
             return
         pos_dir = self._pos_dir
 
@@ -2793,27 +2797,34 @@ class NucleusWorkflowWidget(QWidget):
             "import sys, pathlib\n"
             "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
-            "from cellflow.tracking_ultrack.reseed import resolve_with_validation\n"
+            "from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment\n"
             "from cellflow.database.tracked import read_full_tracked_stack\n"
             "from cellflow.database.validation import read_validated_tracks\n"
             "import numpy as np\n"
+            "import tifffile\n"
             "\n"
             "if __name__ == '__main__':\n"
             f"    pos_dir      = pathlib.Path({str(pos_dir)!r})\n"
-            f"    hyp_path     = pathlib.Path({str(hyp_path)!r})\n"
+            f"    contour_path = pathlib.Path({str(contour_path)!r})\n"
+            f"    foreground_masks_path = pathlib.Path({str(fg_path)!r})\n"
             f"    tracked_path = pathlib.Path({str(tracked_path)!r})\n"
-            f"    cellprob_zavg_path = pathlib.Path({str(cellprob_zavg_path)!r})\n"
+            f"    nucleus_prob_zavg_path = pathlib.Path({str(nucleus_prob_zavg_path)!r})\n"
             f"    cfg = TrackingConfig(\n"
-            f"        min_area={cfg.min_area},\n"
+            f"        seg_min_area={cfg.seg_min_area},\n"
+            f"        seg_max_area={cfg.seg_max_area},\n"
+            f"        seg_foreground_threshold={cfg.seg_foreground_threshold},\n"
+            f"        seg_min_frontier={cfg.seg_min_frontier},\n"
+            f"        seg_ws_hierarchy={cfg.seg_ws_hierarchy!r},\n"
+            f"        seg_n_workers={cfg.seg_n_workers},\n"
             f"        max_distance={cfg.max_distance},\n"
+            f"        max_neighbors={cfg.max_neighbors},\n"
             f"        linking_mode={cfg.linking_mode!r},\n"
             f"        iou_weight={cfg.iou_weight},\n"
+            f"        quality_exponent={cfg.quality_exponent},\n"
+            f"        power={cfg.power},\n"
             f"        appear_weight={cfg.appear_weight},\n"
             f"        disappear_weight={cfg.disappear_weight},\n"
             f"        division_weight={cfg.division_weight},\n"
-            f"        max_neighbors={cfg.max_neighbors},\n"
-            f"        power={cfg.power},\n"
-            f"        quality_exponent={cfg.quality_exponent},\n"
             f"        seed_weight={cfg.seed_weight},\n"
             f"        seed_sigma_space={cfg.seed_sigma_space},\n"
             f"        seed_tau_time={cfg.seed_tau_time},\n"
@@ -2823,18 +2834,25 @@ class NucleusWorkflowWidget(QWidget):
             "    print(f'Loaded {len(validated_tracks)} validated track(s).', flush=True)\n"
             "    tracked_labels = read_full_tracked_stack(tracked_path)\n"
             "    print(f'Loaded tracked labels: {tracked_labels.shape}', flush=True)\n"
-            "    new_labels, _id_map = resolve_with_validation(\n"
-            "        hyp_path, validated_tracks, tracked_labels, cfg,\n"
+            "    new_labels, _id_map = resolve_with_canonical_segment(\n"
+            "        contour_maps_path=contour_path,\n"
+            "        foreground_masks_path=foreground_masks_path,\n"
+            "        validated_tracks=validated_tracks,\n"
+            "        tracked_labels=tracked_labels,\n"
+            "        cfg=cfg,\n"
             "        progress_cb=lambda msg: print(msg, flush=True),\n"
-            "        intensity_image_path=cellprob_zavg_path,\n"
+            "        intensity_image_path=nucleus_prob_zavg_path,\n"
             "    )\n"
             "    if new_labels.ndim == 4 and new_labels.shape[1] == 1:\n"
             "        new_labels = new_labels[:, 0]\n"
+            "    preview_path = tracked_path.with_name('tracked_labels_resolve_preview.tif')\n"
+            "    tifffile.imwrite(str(preview_path), new_labels, compression='zlib')\n"
             "    n_validated = len(validated_tracks)\n"
             "    n_total = int(np.unique(new_labels[new_labels != 0]).size)\n"
             "    print(\n"
             "        f'Done — {n_validated} validated track(s) preserved, '\n"
-            "        f'{n_total} total track(s). Result computed only; not saved.',\n"
+            "        f'{n_total} total track(s). Preview saved to {preview_path}. '\n"
+            "        f'Canonical tracked_labels.tif was not saved.',\n"
             "        flush=True,\n"
             "    )\n"
         )
@@ -3190,13 +3208,19 @@ class NucleusWorkflowWidget(QWidget):
             self._set_ultrack_status("No tracked layer loaded.")
             return
 
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_ultrack_status("hypotheses.h5 not found — generate hypotheses first.")
+        contour_path = self._contour_maps_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_ultrack_status("Missing: contour_maps.tif — run Contour Maps first.")
             return
-        cellprob_zavg_path = self._cellprob_zavg_path()
-        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
-            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+        fg_path = self._foreground_masks_path()
+        if fg_path is None or not fg_path.exists():
+            self._set_ultrack_status(
+                "Missing: foreground_masks.tif — provide 2_nucleus/foreground_masks.tif."
+            )
+            return
+        nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
+        if nucleus_prob_zavg_path is None or not nucleus_prob_zavg_path.exists():
+            self._set_ultrack_status("Missing: nucleus_prob_zavg.tif — run Cellpose first.")
             return
 
         layer = self.viewer.layers[_TRACKED_LAYER]
@@ -3290,10 +3314,14 @@ class NucleusWorkflowWidget(QWidget):
             def _run() -> None:
                 try:
                     result_holder.append(
-                        resolve_with_validation(
-                            hyp_path, validated_tracks, tracked_labels, cfg,
+                        resolve_with_canonical_segment(
+                            contour_maps_path=contour_path,
+                            foreground_masks_path=fg_path,
+                            validated_tracks=validated_tracks,
+                            tracked_labels=tracked_labels,
+                            cfg=cfg,
                             progress_cb=_progress,
-                            intensity_image_path=cellprob_zavg_path,
+                            intensity_image_path=nucleus_prob_zavg_path,
                         )
                     )
                 except Exception as e:

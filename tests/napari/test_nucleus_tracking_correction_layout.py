@@ -475,9 +475,10 @@ def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path
     nucleus_dir = pos_dir / "2_nucleus"
     cellpose_dir.mkdir(parents=True)
     nucleus_dir.mkdir()
-    (nucleus_dir / "hypotheses.h5").touch()
+    (nucleus_dir / "contour_maps.tif").touch()
+    (nucleus_dir / "foreground_masks.tif").touch()
     (nucleus_dir / "tracked_labels.tif").touch()
-    (cellpose_dir / "cell_prob_zavg.tif").touch()
+    (cellpose_dir / "nucleus_prob_zavg.tif").touch()
     widget._pos_dir = pos_dir
     widget.db_gen_power_spin.setValue(3.75)
     widget.db_gen_quality_exp_spin.setValue(10.5)
@@ -526,9 +527,10 @@ def test_resolve_terminal_script_does_not_autosave_tracked_labels(tmp_path, monk
     nucleus_dir = pos_dir / "2_nucleus"
     cellpose_dir.mkdir(parents=True)
     nucleus_dir.mkdir()
-    (nucleus_dir / "hypotheses.h5").touch()
+    (nucleus_dir / "contour_maps.tif").touch()
+    (nucleus_dir / "foreground_masks.tif").touch()
     (nucleus_dir / "tracked_labels.tif").touch()
-    (cellpose_dir / "cell_prob_zavg.tif").touch()
+    (cellpose_dir / "nucleus_prob_zavg.tif").touch()
     widget._pos_dir = pos_dir
 
     widget._on_resolve_terminal()
@@ -537,6 +539,8 @@ def test_resolve_terminal_script_does_not_autosave_tracked_labels(tmp_path, monk
     assert "write_tracked_frame" not in script
     assert "invalidate_track(pos_dir" not in script
     assert "validate_track(pos_dir" not in script
+    assert "tracked_labels_resolve_preview.tif" in script
+    assert "tifffile.imwrite(str(preview_path), new_labels" in script
     assert "not saved" in script
 
     widget.deleteLater()
@@ -556,9 +560,10 @@ def test_resolve_terminal_script_includes_seed_prior_and_cellprob_zavg(tmp_path,
     nucleus_dir = pos_dir / "2_nucleus"
     cellpose_dir.mkdir(parents=True)
     nucleus_dir.mkdir()
-    (nucleus_dir / "hypotheses.h5").touch()
+    (nucleus_dir / "contour_maps.tif").touch()
+    (nucleus_dir / "foreground_masks.tif").touch()
     (nucleus_dir / "tracked_labels.tif").touch()
-    (cellpose_dir / "cell_prob_zavg.tif").touch()
+    (cellpose_dir / "nucleus_prob_zavg.tif").touch()
     widget._pos_dir = pos_dir
 
     widget.ultrack_route_check.setChecked(True)
@@ -572,14 +577,14 @@ def test_resolve_terminal_script_includes_seed_prior_and_cellprob_zavg(tmp_path,
     widget._on_resolve_terminal()
     script = _read_launched_script(captured)
 
-    assert "cell_prob_zavg.tif" in script
+    assert "nucleus_prob_zavg.tif" in script
     assert "power=3.5" in script
     assert "quality_exponent=9.0" in script
     assert "seed_weight=0.75" in script
     assert "seed_sigma_space=30.0" in script
     assert "seed_tau_time=3.0" in script
     assert "seed_max_dt=7" in script
-    assert "intensity_image_path=cellprob_zavg_path" in script
+    assert "intensity_image_path=nucleus_prob_zavg_path" in script
 
     widget.deleteLater()
     viewer.close()
@@ -1187,6 +1192,65 @@ def test_extend_fails_clearly_if_db_missing(tmp_path):
 
     text = widget.correction_status_lbl.text().lower()
     assert "data.db" in text or "database" in text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+# ── Task 9: Resolve from validated uses canonical segmentation ───────────────
+
+def test_resolve_from_validated_fails_clearly_if_foreground_masks_missing(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {1: {0, 1}})
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
+    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
+    (pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif").touch()
+    widget._pos_dir = pos_dir
+    viewer.add_labels(np.zeros((2, 8, 8), dtype=np.uint32), name="Tracked: Nucleus")
+
+    widget.ultrack_route_check.setChecked(True)
+    widget._on_run_tracking_route()
+
+    text = widget.ultrack_status_lbl.text().lower()
+    assert "foreground_masks" in text or "missing" in text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_resolve_terminal_script_uses_canonical_segment_not_hypotheses_h5(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    captured = _install_terminal_capture(monkeypatch)
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {12: {0, 1}})
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
+    (pos_dir / "2_nucleus" / "foreground_masks.tif").touch()
+    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
+    (pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif").touch()
+    widget._pos_dir = pos_dir
+
+    widget._on_resolve_terminal()
+    script = _read_launched_script(captured)
+
+    assert "foreground_masks" in script
+    assert "contour_maps" in script
+    assert "nucleus_prob_zavg" in script
+    assert "resolve_with_canonical_segment" in script
+    assert "hypotheses.h5" not in script
+    assert "ingest_hypotheses_to_db" not in script
 
     widget.deleteLater()
     viewer.close()
