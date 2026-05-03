@@ -808,3 +808,23 @@ def test_tracking_config_has_segmentation_fields():
     assert cfg.seg_min_frontier == 0.0
     assert cfg.seg_ws_hierarchy == "area"
     assert cfg.seg_n_workers == 1
+
+
+def test_build_ultrack_config_applies_segmentation_fields(tmp_path):
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+    cfg = TrackingConfig(
+        seg_min_area=500,
+        seg_max_area=50_000,
+        seg_foreground_threshold=0.3,
+        seg_min_frontier=0.05,
+        seg_ws_hierarchy="dynamics",
+        seg_n_workers=2,
+    )
+    ultrack_cfg = _build_ultrack_config(cfg, tmp_path)
+    sc = ultrack_cfg.segmentation_config
+    assert sc.min_area == 500
+    assert sc.max_area == 50_000
+    assert abs(sc.threshold - 0.3) < 1e-6
+    assert abs(sc.min_frontier - 0.05) < 1e-6
+    assert sc.n_workers == 2
