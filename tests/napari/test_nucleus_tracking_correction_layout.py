@@ -37,6 +37,7 @@ def _install_import_stubs() -> None:
 
     class _StubTrackingConfig:
         def __init__(self, **kwargs):
+            self.max_segments_per_time = 1_000_000
             self.__dict__.update(kwargs)
 
     stub_exports = {
@@ -991,6 +992,133 @@ def test_correction_shortcuts_are_still_installed():
         for shortcut in widget.findChildren(QShortcut)
     }
     assert {"A", "D", "Q", "E"} <= shortcut_keys
+
+    widget.deleteLater()
+    viewer.close()
+
+
+# ── Task 6: DB generation run + terminal ─────────────────────────────────────
+
+def _install_sync_thread_worker(monkeypatch, module):
+    def _sync_thread_worker(*, connect):
+        def _decorator(func):
+            def _runner():
+                yielded = connect.get("yielded")
+                returned = connect.get("returned")
+                errored = connect.get("errored")
+                try:
+                    result = func()
+                    if hasattr(result, "__next__"):
+                        while True:
+                            try:
+                                item = next(result)
+                            except StopIteration as stop:
+                                if returned is not None:
+                                    returned(stop.value)
+                                break
+                            else:
+                                if yielded is not None:
+                                    yielded(item)
+                    elif returned is not None:
+                        returned(result)
+                except Exception as exc:
+                    if errored is not None:
+                        errored(exc)
+                    else:
+                        raise
+
+            return _runner
+
+        return _decorator
+
+    monkeypatch.setattr(module, "thread_worker", _sync_thread_worker)
+
+
+def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    calls = []
+
+    def fake_segment(foreground, contours, ultrack_cfg, **kwargs):
+        calls.append((foreground.shape, contours.shape, kwargs))
+
+    monkeypatch.setattr(module, "_ultrack_segment", fake_segment, raising=False)
+    monkeypatch.setattr(module, "write_seed_prior_node_probs", lambda *a, **kw: calls.append(("score", a)))
+    monkeypatch.setattr(module, "run_linking", lambda *a, **kw: iter([(1, 1, "linked")]))
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+    dummy = np.zeros((2, 1, 4, 4), dtype=np.float32)
+    import tifffile
+
+    tifffile.imwrite(str(pos_dir / "2_nucleus" / "contour_maps.tif"), dummy)
+    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_masks.tif"), dummy)
+    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif"), dummy)
+    widget._pos_dir = pos_dir
+
+    widget._on_run_db_generation()
+
+    assert calls[0][0] == (2, 4, 4)
+    assert calls[0][1] == (2, 4, 4)
+    assert calls[0][2]["overwrite"] is True
+    assert calls[0][2]["max_segments_per_time"] == 1_000_000
+    assert calls[1][0] == "score"
+    assert widget.run_db_gen_btn.isEnabled()
+    assert widget.db_gen_terminal_btn.isEnabled()
+    assert "complete" in widget.db_gen_status_lbl.text().lower()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_db_gen_section_terminal_script_includes_canonical_segment(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    captured = _install_terminal_capture(monkeypatch)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
+    (pos_dir / "2_nucleus" / "foreground_masks.tif").touch()
+    (pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif").touch()
+    widget._pos_dir = pos_dir
+
+    widget._on_db_gen_terminal()
+    script = _read_launched_script(captured)
+
+    assert "ultrack.core.segmentation.processing" in script
+    assert "foreground_masks" in script
+    assert "contour_maps" in script
+    assert "nucleus_prob_zavg" in script
+    assert "write_seed_prior_node_probs" in script
+    assert "run_linking" in script
+    assert "if __name__ == '__main__':" in script
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_db_gen_section_fails_clearly_if_foreground_masks_missing(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
+    widget._pos_dir = pos_dir
+
+    widget._on_run_db_generation()
+
+    text = widget.db_gen_status_lbl.text().lower()
+    assert "foreground_masks" in text or "missing" in text
 
     widget.deleteLater()
     viewer.close()

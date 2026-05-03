@@ -1234,11 +1234,184 @@ class NucleusWorkflowWidget(QWidget):
 
     # ── DB Generation section ─────────────────────────────────────────────────
 
+    def _db_gen_config_from_controls(self) -> UltrackConfig:
+        return UltrackConfig(
+            seg_min_area=self.db_gen_min_area_spin.value(),
+            seg_max_area=self.db_gen_max_area_spin.value(),
+            seg_foreground_threshold=self.db_gen_fg_thr_spin.value(),
+            seg_min_frontier=self.db_gen_min_frontier_spin.value(),
+            seg_ws_hierarchy=self.db_gen_ws_hierarchy_combo.currentText(),
+            seg_n_workers=self.db_gen_n_workers_spin.value(),
+            max_distance=self.db_gen_max_dist_spin.value(),
+            max_neighbors=self.db_gen_max_neighbors_spin.value(),
+            linking_mode=self.db_gen_linking_mode_combo.currentText(),
+            iou_weight=self.db_gen_iou_weight_spin.value(),
+            quality_exponent=self.db_gen_quality_exp_spin.value(),
+            power=self.db_gen_power_spin.value(),
+            link_n_workers=self.db_gen_n_workers_spin.value(),
+        )
+
     def _on_run_db_generation(self) -> None:
-        self._set_db_gen_status("DB generation not yet implemented.")
+        if self._pos_dir is None:
+            self._set_db_gen_status("No project open.")
+            return
+        contour_path = self._contour_maps_path()
+        fg_path = self._foreground_masks_path()
+        nuc_zavg_path = self._nucleus_prob_zavg_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_db_gen_status("Missing: contour_maps.tif — run Contour Maps first.")
+            return
+        if fg_path is None or not fg_path.exists():
+            self._set_db_gen_status(
+                "Missing: foreground_masks.tif — provide 2_nucleus/foreground_masks.tif."
+            )
+            return
+        if nuc_zavg_path is None or not nuc_zavg_path.exists():
+            self._set_db_gen_status("Missing: nucleus_prob_zavg.tif — run Cellpose first.")
+            return
+        if _ultrack_segment is None:
+            self._set_db_gen_status("ultrack not installed — activate the cellflow conda environment.")
+            return
+
+        cfg = self._db_gen_config_from_controls()
+        working_dir = self._ultrack_workdir()
+        pos_dir = self._pos_dir
+
+        self.db_gen_progress_bar.setRange(0, 0)
+        self.db_gen_progress_bar.setVisible(True)
+        self._set_db_gen_status("Starting DB generation…")
+        self.run_db_gen_btn.setEnabled(False)
+        self.db_gen_terminal_btn.setEnabled(False)
+
+        @thread_worker(connect={
+            "yielded": self._on_db_gen_progress,
+            "returned": self._on_db_gen_done,
+            "errored": self._on_db_gen_worker_error,
+        })
+        def _worker():
+            yield "Loading inputs…"
+            contours = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
+            foreground = np.asarray(tifffile.imread(str(fg_path)), dtype=np.float32)
+            if contours.ndim == 4 and contours.shape[1] == 1:
+                contours = contours[:, 0]
+            if foreground.ndim == 4 and foreground.shape[1] == 1:
+                foreground = foreground[:, 0]
+
+            from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+
+            working_dir.mkdir(parents=True, exist_ok=True)
+            ultrack_cfg = _build_ultrack_config(cfg, working_dir)
+
+            yield "Segmenting candidates (ultrack hierarchy)…"
+            _ultrack_segment(
+                foreground,
+                contours,
+                ultrack_cfg,
+                max_segments_per_time=cfg.max_segments_per_time,
+                overwrite=True,
+            )
+
+            yield "Scoring node probabilities…"
+            write_seed_prior_node_probs(working_dir, nuc_zavg_path, cfg)
+
+            yield "Linking candidates…"
+            for step, total, label in run_linking(working_dir, cfg):
+                yield f"[link {step}/{total}] {label}"
+
+            return pos_dir
+
+        _worker()
 
     def _on_db_gen_terminal(self) -> None:
-        self._set_db_gen_status("Terminal launch not yet implemented.")
+        import sys
+        import tempfile
+
+        if self._pos_dir is None:
+            self._set_db_gen_status("No project open.")
+            return
+        contour_path = self._contour_maps_path()
+        fg_path = self._foreground_masks_path()
+        nuc_zavg_path = self._nucleus_prob_zavg_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_db_gen_status("Missing: contour_maps.tif")
+            return
+        if fg_path is None or not fg_path.exists():
+            self._set_db_gen_status("Missing: foreground_masks.tif")
+            return
+        if nuc_zavg_path is None or not nuc_zavg_path.exists():
+            self._set_db_gen_status("Missing: nucleus_prob_zavg.tif")
+            return
+
+        cfg = self._db_gen_config_from_controls()
+        working_dir = self._ultrack_workdir()
+
+        python_code = (
+            "import pathlib, sys\n"
+            "import numpy as np\n"
+            "import tifffile\n"
+            "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
+            "from cellflow.tracking_ultrack.config import TrackingConfig\n"
+            "from cellflow.tracking_ultrack.ingest import _build_ultrack_config\n"
+            "from cellflow.tracking_ultrack.linking import run_linking\n"
+            "from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs\n"
+            "from ultrack.core.segmentation.processing import segment as ultrack_segment\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            f"    contour_path = pathlib.Path({str(contour_path)!r})\n"
+            f"    foreground_masks_path = pathlib.Path({str(fg_path)!r})\n"
+            f"    nucleus_prob_zavg_path = pathlib.Path({str(nuc_zavg_path)!r})\n"
+            f"    working_dir = pathlib.Path({str(working_dir)!r})\n"
+            "    cfg = TrackingConfig(\n"
+            f"        seg_min_area={cfg.seg_min_area},\n"
+            f"        seg_max_area={cfg.seg_max_area},\n"
+            f"        seg_foreground_threshold={cfg.seg_foreground_threshold},\n"
+            f"        seg_min_frontier={cfg.seg_min_frontier},\n"
+            f"        seg_ws_hierarchy={cfg.seg_ws_hierarchy!r},\n"
+            f"        seg_n_workers={cfg.seg_n_workers},\n"
+            f"        max_distance={cfg.max_distance},\n"
+            f"        max_neighbors={cfg.max_neighbors},\n"
+            f"        linking_mode={cfg.linking_mode!r},\n"
+            f"        iou_weight={cfg.iou_weight},\n"
+            f"        quality_exponent={cfg.quality_exponent},\n"
+            f"        power={cfg.power},\n"
+            f"        link_n_workers={cfg.link_n_workers},\n"
+            "    )\n"
+            "    contours = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)\n"
+            "    foreground_masks = np.asarray(tifffile.imread(str(foreground_masks_path)), dtype=np.float32)\n"
+            "    if contours.ndim == 4 and contours.shape[1] == 1:\n"
+            "        contours = contours[:, 0]\n"
+            "    if foreground_masks.ndim == 4 and foreground_masks.shape[1] == 1:\n"
+            "        foreground_masks = foreground_masks[:, 0]\n"
+            "    working_dir.mkdir(parents=True, exist_ok=True)\n"
+            "    ultrack_cfg = _build_ultrack_config(cfg, working_dir)\n"
+            "    print('[1/3] Segmenting candidates...', flush=True)\n"
+            "    ultrack_segment(\n"
+            "        foreground_masks,\n"
+            "        contours,\n"
+            "        ultrack_cfg,\n"
+            "        max_segments_per_time=cfg.max_segments_per_time,\n"
+            "        overwrite=True,\n"
+            "    )\n"
+            "    print('[2/3] Scoring node probabilities...', flush=True)\n"
+            "    write_seed_prior_node_probs(working_dir, nucleus_prob_zavg_path, cfg)\n"
+            "    print('[3/3] Linking candidates...', flush=True)\n"
+            "    for step, total, label in run_linking(working_dir, cfg):\n"
+            "        print(f'  [{step}/{total}] {label}', flush=True)\n"
+            "    print('Done.', flush=True)\n"
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", prefix="cellflow_db_gen_", delete=False) as tmp:
+            tmp.write(python_code)
+            tmp_path = tmp.name
+
+        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(tmp_path)}"
+        try:
+            from cellflow.napari.utils import launch_in_terminal
+            launch_in_terminal(cmd)
+            self._set_db_gen_status("DB generation launched in terminal.")
+        except Exception:
+            QApplication.clipboard().setText(cmd)
+            self._set_db_gen_status("Copied DB generation command to clipboard.")
 
     def _on_db_gen_mode_changed(self, mode: str) -> None:
         self.db_gen_iou_weight_spin.setEnabled(mode == "iou")
