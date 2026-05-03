@@ -76,12 +76,17 @@ from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
 from cellflow.tracking_ultrack.linking import run_linking
-from cellflow.tracking_ultrack.extend import extend_track
-from cellflow.tracking_ultrack.reseed import resolve_with_validation
+from cellflow.tracking_ultrack.extend import extend_track, extend_track_from_db
+from cellflow.tracking_ultrack.reseed import resolve_with_validation, resolve_with_canonical_segment
 from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
+
+try:
+    from ultrack.core.segmentation.processing import segment as _ultrack_segment
+except ImportError:
+    _ultrack_segment = None  # type: ignore[assignment]
 
 _PREVIEW_LAYER = "Preview: Nucleus"
 _HYP_LAYER = "Hypothesis: Nucleus"
@@ -155,6 +160,7 @@ class NucleusWorkflowWidget(QWidget):
         )
 
         cp_params_widget = QWidget()
+        cp_params_widget.setMinimumWidth(520)
         cp_params_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
@@ -626,12 +632,147 @@ class NucleusWorkflowWidget(QWidget):
         )
         layout.addWidget(self.db_section)
 
-        # ── 4. Tracking & Correction ───────────────────────────────────────
-        _tracking_correction_inner = QWidget()
-        tracking_correction_lay = QVBoxLayout(_tracking_correction_inner)
-        tracking_correction_lay.setContentsMargins(4, 4, 4, 4)
-        tracking_correction_lay.setSpacing(4)
-        tracking_correction_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Hide deprecated H5-based sections — preserved in code for backward compat
+        self.gen_section.setVisible(False)
+        self.db_section.setVisible(False)
+
+        # ── 2. Ultrack Database Generation ────────────────────────────────
+        _db_gen_inner = QWidget()
+        db_gen_lay = QVBoxLayout(_db_gen_inner)
+        db_gen_lay.setContentsMargins(0, 0, 0, 0)
+        db_gen_lay.setSpacing(4)
+        db_gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        db_gen_grid = block_grid(horizontal_spacing=12)
+        db_gen_grid.setContentsMargins(0, 0, 0, 0)
+
+        self.db_gen_min_area_spin = QSpinBox()
+        self.db_gen_min_area_spin.setRange(0, 1_000_000)
+        self.db_gen_min_area_spin.setValue(300)
+
+        self.db_gen_max_area_spin = QSpinBox()
+        self.db_gen_max_area_spin.setRange(0, 10_000_000)
+        self.db_gen_max_area_spin.setValue(100_000)
+
+        self.db_gen_fg_thr_spin = QDoubleSpinBox()
+        self.db_gen_fg_thr_spin.setRange(0.0, 1.0)
+        self.db_gen_fg_thr_spin.setValue(0.5)
+        self.db_gen_fg_thr_spin.setDecimals(2)
+        self.db_gen_fg_thr_spin.setSingleStep(0.05)
+        self.db_gen_fg_thr_spin.setToolTip(
+            "Pixel-level foreground threshold for ultrack segmentation (threshold in segmentation_config)"
+        )
+
+        self.db_gen_min_frontier_spin = QDoubleSpinBox()
+        self.db_gen_min_frontier_spin.setRange(0.0, 1.0)
+        self.db_gen_min_frontier_spin.setValue(0.0)
+        self.db_gen_min_frontier_spin.setDecimals(3)
+        self.db_gen_min_frontier_spin.setSingleStep(0.01)
+        self.db_gen_min_frontier_spin.setToolTip(
+            "Minimum boundary fraction to keep a candidate (min_frontier in segmentation_config)"
+        )
+
+        self.db_gen_ws_hierarchy_combo = QComboBox()
+        self.db_gen_ws_hierarchy_combo.addItems(["area", "dynamics", "volume"])
+
+        self.db_gen_n_workers_spin = QSpinBox()
+        self.db_gen_n_workers_spin.setRange(1, max(1, os.cpu_count() or 1))
+        self.db_gen_n_workers_spin.setValue(1)
+        self.db_gen_n_workers_spin.setToolTip("Parallel workers for segmentation")
+
+        self.db_gen_max_dist_spin = QDoubleSpinBox()
+        self.db_gen_max_dist_spin.setRange(0.0, 500.0)
+        self.db_gen_max_dist_spin.setValue(15.0)
+        self.db_gen_max_dist_spin.setDecimals(1)
+
+        self.db_gen_max_neighbors_spin = QSpinBox()
+        self.db_gen_max_neighbors_spin.setRange(1, 50)
+        self.db_gen_max_neighbors_spin.setValue(5)
+
+        self.db_gen_linking_mode_combo = QComboBox()
+        self.db_gen_linking_mode_combo.addItems(["default", "iou"])
+
+        self.db_gen_iou_weight_spin = QDoubleSpinBox()
+        self.db_gen_iou_weight_spin.setRange(0.0, 1.0)
+        self.db_gen_iou_weight_spin.setValue(1.0)
+        self.db_gen_iou_weight_spin.setDecimals(2)
+        self.db_gen_iou_weight_spin.setEnabled(False)
+
+        self.db_gen_quality_exp_spin = QDoubleSpinBox()
+        self.db_gen_quality_exp_spin.setRange(0.1, 50.0)
+        self.db_gen_quality_exp_spin.setValue(8.0)
+        self.db_gen_quality_exp_spin.setDecimals(2)
+        self.db_gen_quality_exp_spin.setToolTip(
+            "Raises signal-based quality before storing as node_prob"
+        )
+
+        self.db_gen_power_spin = QDoubleSpinBox()
+        self.db_gen_power_spin.setRange(0.1, 20.0)
+        self.db_gen_power_spin.setValue(4.0)
+        self.db_gen_power_spin.setDecimals(2)
+        self.db_gen_power_spin.setToolTip(
+            "Ultrack solver transform for node_prob and link weights"
+        )
+
+        add_block_pair_row(db_gen_grid, 0, "Min Area (px):", _compact(self.db_gen_min_area_spin), "Max Area (px):", _compact(self.db_gen_max_area_spin))
+        add_block_pair_row(db_gen_grid, 1, "FG Threshold:", _compact(self.db_gen_fg_thr_spin), "Min Frontier:", _compact(self.db_gen_min_frontier_spin))
+        add_block_pair_row(db_gen_grid, 2, "WS Hierarchy:", self.db_gen_ws_hierarchy_combo, "N Workers:", _compact(self.db_gen_n_workers_spin))
+        add_block_pair_row(db_gen_grid, 3, "Max Distance (px):", _compact(self.db_gen_max_dist_spin), "Max Neighbors:", _compact(self.db_gen_max_neighbors_spin))
+        add_block_pair_row(db_gen_grid, 4, "Linking Mode:", self.db_gen_linking_mode_combo, "IoU Weight:", _compact(self.db_gen_iou_weight_spin))
+        add_block_pair_row(db_gen_grid, 5, "Quality Exp:", _compact(self.db_gen_quality_exp_spin), "Power:", _compact(self.db_gen_power_spin))
+        db_gen_lay.addLayout(db_gen_grid)
+
+        db_gen_run_row = block_grid(horizontal_spacing=12)
+        self.run_db_gen_btn = QPushButton("Run DB Generation")
+        self.run_db_gen_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.db_gen_terminal_btn = QPushButton("Run in Terminal")
+        self.db_gen_terminal_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        add_block_button_row(db_gen_run_row, 0, self.run_db_gen_btn, self.db_gen_terminal_btn)
+        db_gen_lay.addLayout(db_gen_run_row)
+
+        self.db_gen_status_lbl = QLabel("")
+        self.db_gen_status_lbl.setWordWrap(True)
+        self.db_gen_status_lbl.setVisible(False)
+        db_gen_lay.addWidget(self.db_gen_status_lbl)
+
+        self.db_gen_progress_bar = QProgressBar()
+        self.db_gen_progress_bar.setRange(0, 100)
+        self.db_gen_progress_bar.setValue(0)
+        self.db_gen_progress_bar.setVisible(False)
+        db_gen_lay.addWidget(self.db_gen_progress_bar)
+
+        self.db_gen_section = CollapsibleSection(
+            "2. Ultrack Database Generation", _db_gen_inner, expanded=False
+        )
+        layout.addWidget(self.db_gen_section)
+
+        # ── 3. Ultrack Database Browser ───────────────────────────────────
+        _ultrack_db_browser_inner = QWidget()
+        ultrack_db_browser_lay = QVBoxLayout(_ultrack_db_browser_inner)
+        ultrack_db_browser_lay.setContentsMargins(0, 0, 0, 0)
+        ultrack_db_browser_lay.setSpacing(4)
+
+        from qtpy.QtGui import QIcon
+        self.ultrack_db_info_lbl = QLabel("—")
+        self.ultrack_db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_info_lbl)
+
+        self.ultrack_db_refresh_btn = QPushButton()
+        self.ultrack_db_refresh_btn.setToolTip("Refresh Ultrack database browser")
+        self.ultrack_db_refresh_btn.setIcon(QIcon.fromTheme("view-refresh"))
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_refresh_btn)
+
+        self.ultrack_db_section_status_lbl = QLabel("")
+        self.ultrack_db_section_status_lbl.setWordWrap(True)
+        self.ultrack_db_section_status_lbl.setVisible(False)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_section_status_lbl)
+
+        self.ultrack_db_browser_section = CollapsibleSection(
+            "3. Ultrack Database Browser", _ultrack_db_browser_inner, expanded=False
+        )
+        layout.addWidget(self.ultrack_db_browser_section)
+
+        # ── 4. Ultrack Tracking ───────────────────────────────────────────
 
         _ultrack_inner = QWidget()
         ultrack_lay = QVBoxLayout(_ultrack_inner)
@@ -872,9 +1013,9 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.addWidget(ultrack_attrib)
 
         self.ultrack_section = CollapsibleSection(
-            "Ultrack Tracking", _ultrack_inner, expanded=True
+            "4. Ultrack Tracking", _ultrack_inner, expanded=True
         )
-        tracking_correction_lay.addWidget(self.ultrack_section)
+        layout.addWidget(self.ultrack_section)
 
         _corr_inner = QWidget()
         _corr_inner_lay = QVBoxLayout(_corr_inner)
@@ -975,22 +1116,9 @@ class NucleusWorkflowWidget(QWidget):
         _corr_inner_lay.addWidget(self.correction_shortcuts_section)
 
         self.correction_section = CollapsibleSection(
-            "Correction", _corr_inner, expanded=True
+            "5. Correction", _corr_inner, expanded=True
         )
-        tracking_correction_lay.addWidget(self.correction_section)
-
-        self.tracking_correction_section = CollapsibleSection(
-            "4. Tracking & Correction", _tracking_correction_inner, expanded=True
-        )
-        layout.addWidget(self.tracking_correction_section)
-
-        # ── Outputs ───────────────────────────────────────────────────────
-        self.output_files = PipelineFilesWidget([
-            ("Outputs", [
-                ("2_nucleus/hypotheses.h5", "Hypotheses DB"),
-            ]),
-        ])
-        layout.addWidget(self.output_files)
+        layout.addWidget(self.correction_section)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Signal wiring
@@ -1014,6 +1142,10 @@ class NucleusWorkflowWidget(QWidget):
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
         self.del_stack_btn.clicked.connect(self._on_remove_stack)
+        self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
+        self.db_gen_terminal_btn.clicked.connect(self._on_db_gen_terminal)
+        self.db_gen_linking_mode_combo.currentTextChanged.connect(self._on_db_gen_mode_changed)
+        self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
         self.run_ultrack_btn.clicked.connect(self._on_run_tracking_route)
         self.ultrack_terminal_btn.clicked.connect(self._on_run_tracking_route_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
@@ -1045,7 +1177,7 @@ class NucleusWorkflowWidget(QWidget):
         self.input_files.refresh(pos_dir)
         self.contour_files.refresh(pos_dir)
         self._update_contour_status_labels()
-        self.output_files.refresh(pos_dir)
+        pass  # output_files removed; per-section file widgets handle display
         if pos_dir is None:
             self.correction_widget.deactivate()
             return
@@ -1089,6 +1221,78 @@ class NucleusWorkflowWidget(QWidget):
 
     def _ultrack_workdir(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "ultrack_workdir" if self._pos_dir else None
+
+    def _ultrack_db_path(self) -> Path | None:
+        workdir = self._ultrack_workdir()
+        return workdir / "data.db" if workdir else None
+
+    def _foreground_masks_path(self) -> Path | None:
+        return self._pos_dir / "2_nucleus" / "foreground_masks.tif" if self._pos_dir else None
+
+    def _nucleus_prob_zavg_path(self) -> Path | None:
+        return self._pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif" if self._pos_dir else None
+
+    # ── DB Generation section ─────────────────────────────────────────────────
+
+    def _on_run_db_generation(self) -> None:
+        self._set_db_gen_status("DB generation not yet implemented.")
+
+    def _on_db_gen_terminal(self) -> None:
+        self._set_db_gen_status("Terminal launch not yet implemented.")
+
+    def _on_db_gen_mode_changed(self, mode: str) -> None:
+        self.db_gen_iou_weight_spin.setEnabled(mode == "iou")
+
+    def _on_db_gen_progress(self, msg: str) -> None:
+        self._set_db_gen_status(msg)
+
+    def _on_db_gen_done(self, pos_dir: Path) -> None:
+        self.db_gen_progress_bar.setVisible(False)
+        self.run_db_gen_btn.setEnabled(True)
+        self.db_gen_terminal_btn.setEnabled(True)
+        self._set_db_gen_status("DB generation complete.")
+        self._refresh_ultrack_db_browser()
+
+    def _on_db_gen_worker_error(self, exc: Exception) -> None:
+        self.db_gen_progress_bar.setVisible(False)
+        self.run_db_gen_btn.setEnabled(True)
+        self.db_gen_terminal_btn.setEnabled(True)
+        self._set_db_gen_status(f"Error: {exc}")
+        logger.exception("DB generation worker error", exc_info=exc)
+
+    def _set_db_gen_status(self, msg: str) -> None:
+        self.db_gen_status_lbl.setText(msg)
+        self.db_gen_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
+    # ── Ultrack DB Browser section ────────────────────────────────────────────
+
+    def _set_ultrack_db_status(self, msg: str) -> None:
+        self.ultrack_db_section_status_lbl.setText(msg)
+        self.ultrack_db_section_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
+    def _refresh_ultrack_db_browser(self) -> None:
+        self.ultrack_db_info_lbl.setText("—")
+        db_path = self._ultrack_db_path()
+        if db_path is None or not db_path.exists():
+            self._set_ultrack_db_status("data.db not found — run DB generation first.")
+            return
+        try:
+            import sqlalchemy as sqla
+            from sqlalchemy import func
+            from sqlalchemy.orm import Session
+            from ultrack.core.database import LinkDB, NodeDB
+            engine = sqla.create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+            with Session(engine) as session:
+                n_nodes = int(session.query(func.count(NodeDB.id)).scalar() or 0)
+                n_links = int(session.query(func.count(LinkDB.source_id)).scalar() or 0)
+            engine.dispose()
+            self.ultrack_db_info_lbl.setText(f"{n_nodes} nodes | {n_links} links")
+            self._set_ultrack_db_status("")
+        except Exception as e:
+            self._set_ultrack_db_status(f"DB read error: {e}")
+            logger.warning("DB browser error: %s", e)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -1778,7 +1982,7 @@ class NucleusWorkflowWidget(QWidget):
         _worker()
 
     def _on_save_done(self, pos_dir: Path) -> None:
-        self.output_files.refresh(pos_dir)
+        pass  # output_files removed; per-section file widgets handle display
         self._set_hypothesis_status("Saved to hypotheses.h5.")
         self.refresh(pos_dir)
 

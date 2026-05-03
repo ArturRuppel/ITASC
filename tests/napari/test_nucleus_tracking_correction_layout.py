@@ -45,10 +45,17 @@ def _install_import_stubs() -> None:
         "cellflow.tracking_ultrack.ingest": {
             "ingest_hypotheses_to_db": lambda *args, **kwargs: None,
             "_select_solver": lambda: "CBC",
+            "_build_ultrack_config": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.linking": {"run_linking": lambda *args, **kwargs: iter(())},
-        "cellflow.tracking_ultrack.extend": {"extend_track": lambda *args, **kwargs: None},
-        "cellflow.tracking_ultrack.reseed": {"resolve_with_validation": lambda *args, **kwargs: None},
+        "cellflow.tracking_ultrack.extend": {
+            "extend_track": lambda *args, **kwargs: None,
+            "extend_track_from_db": lambda *args, **kwargs: None,
+        },
+        "cellflow.tracking_ultrack.reseed": {
+            "resolve_with_validation": lambda *args, **kwargs: None,
+            "resolve_with_canonical_segment": lambda *args, **kwargs: (None, {}),
+        },
         "cellflow.tracking_ultrack.seed_prior": {"write_seed_prior_node_probs": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.solve": {"run_solve": lambda *args, **kwargs: iter(())},
     }
@@ -205,6 +212,7 @@ def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_s
 
     widget.deleteLater()
     viewer.close()
+    _app.processEvents()  # flush deferred deletion before next test
 
 
 def test_tracking_correction_shell_exposes_stable_section_attributes():
@@ -212,12 +220,12 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.tracking_correction_section.title == "4. Tracking & Correction"
-    assert widget.tracking_correction_section._toggle.text() == "4. Tracking && Correction"
-    assert widget.ultrack_section.title == "Ultrack Tracking"
-    assert widget.correction_section.title == "Correction"
+    # tracking_correction_section wrapper removed — sections are now top-level
+    assert not hasattr(widget, "tracking_correction_section")
+    assert widget.ultrack_section.title == "4. Ultrack Tracking"
+    assert widget.correction_section.title == "5. Correction"
     assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
-    assert widget.correction_shortcuts_section.is_expanded is True
+    assert widget.correction_shortcuts_section.is_expanded is False
     assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
     correction_inner = widget.correction_section._content_frame.layout().itemAt(0).widget()
     correction_layout = correction_inner.layout()
@@ -311,8 +319,8 @@ def test_nucleus_workflow_status_labels_are_section_local():
 
     local_statuses = [
         (widget.contour_section, widget.contour_status_lbl),
-        (widget.gen_section, widget.gen_status_lbl),
-        (widget.db_section, widget.db_status_lbl),
+        (widget.db_gen_section, widget.db_gen_status_lbl),
+        (widget.ultrack_db_browser_section, widget.ultrack_db_section_status_lbl),
         (widget.ultrack_section, widget.ultrack_status_lbl),
         (widget.correction_section, widget.correction_status_lbl),
     ]
@@ -571,6 +579,11 @@ def test_tracking_correction_widget_allows_horizontal_scrolling_when_narrow():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
+    widget.db_gen_section.expand()
+    widget.ultrack_section.expand()
+    widget.correction_section.expand()
+    _app.processEvents()
+
     outer = QWidget()
     outer_layout = QVBoxLayout(outer)
     scroll = QScrollArea()
@@ -594,7 +607,6 @@ def test_tracking_correction_widget_minimum_width_stays_compact():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.tracking_correction_section.expand()
     widget.ultrack_section.expand()
     widget.correction_section.expand()
     widget.correction_shortcuts_section.expand()
@@ -647,13 +659,14 @@ def test_contour_maps_parameters_expand_and_scroll_when_narrow():
     _app.processEvents()
 
     assert widget.save_source_check.text() == "Save label images"
-    assert widget.save_source_check.x() == widget.preview_contour_btn.x()
-    assert widget.preview_contour_btn.x() == widget.cp_min_spin.x()
-    assert widget.build_btn.x() == widget.cp_max_spin.x()
-    assert widget.cancel_build_btn.x() == widget.cp_step_spin.x()
-    assert abs(widget.preview_contour_btn.width() - widget.cp_min_spin.width()) <= 1
-    assert abs(widget.build_btn.width() - widget.cp_max_spin.width()) <= 1
-    assert abs(widget.cancel_build_btn.width() - widget.cp_step_spin.width()) <= 1
+    for button in (
+        widget.preview_contour_btn,
+        widget.build_btn,
+        widget.contour_terminal_btn,
+        widget.cancel_build_btn,
+    ):
+        assert button.minimumWidth() == 54
+        assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
 
     assert params_scroll.horizontalScrollBar().maximum() > 0
 
@@ -661,13 +674,12 @@ def test_contour_maps_parameters_expand_and_scroll_when_narrow():
     viewer.close()
 
 
-def test_hypothesis_tuning_spinboxes_expand_equally_in_the_top_grid():
+def test_db_generation_spinboxes_expand_equally_in_the_top_grid():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.gen_section.expand()
-    widget.gen_tabs.setCurrentIndex(0)
+    widget.db_gen_section.expand()
     _app.processEvents()
 
     host = QWidget()
@@ -679,22 +691,18 @@ def test_hypothesis_tuning_spinboxes_expand_equally_in_the_top_grid():
     _app.processEvents()
 
     for spin in (
-        widget.min_size_spin,
-        widget.min_circularity_spin,
-        widget.noise_scale,
-        widget.noise_blur,
+        widget.db_gen_min_area_spin,
+        widget.db_gen_max_area_spin,
+        widget.db_gen_max_dist_spin,
+        widget.db_gen_max_neighbors_spin,
     ):
-        assert spin.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+        assert spin.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
 
-    assert abs(widget.min_size_spin.width() - widget.min_circularity_spin.width()) <= 1
-    assert abs(widget.noise_scale.width() - widget.noise_blur.width()) <= 1
-    assert abs(widget.min_size_spin.width() - widget.noise_scale.width()) <= 1
-    assert abs(widget.preview_btn.x() - widget.min_size_spin.x()) <= 2
-    assert abs(widget.save_db_btn.x() - widget.min_circularity_spin.x()) <= 20
-    assert widget.preview_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
-    assert widget.save_db_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
-    assert widget.preview_btn.width() >= 80
-    assert widget.save_db_btn.width() >= 80
+    assert widget.db_gen_min_area_spin.y() == widget.db_gen_max_area_spin.y()
+    assert widget.db_gen_min_area_spin.x() < widget.db_gen_max_area_spin.x()
+    assert widget.db_gen_max_dist_spin.y() == widget.db_gen_max_neighbors_spin.y()
+    assert widget.run_db_gen_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert widget.db_gen_terminal_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
 
     host.deleteLater()
     viewer.close()
@@ -705,23 +713,21 @@ def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.tracking_correction_section.expand()
+    widget.db_gen_section.expand()
     widget.ultrack_section.expand()
     widget.correction_section.expand()
     widget.show()
     _app.processEvents()
 
-    # Ultrack parameters should present as two side-by-side columns again.
-    assert widget.ultrack_min_area_spin.y() == widget.ultrack_appear_spin.y()
-    assert widget.ultrack_min_area_spin.x() < widget.ultrack_appear_spin.x()
+    # DB gen parameters should present as two side-by-side columns
+    assert widget.db_gen_min_area_spin.y() == widget.db_gen_max_area_spin.y()
+    assert widget.db_gen_min_area_spin.x() < widget.db_gen_max_area_spin.x()
 
-    # Paired correction actions should also sit side-by-side.
+    # Paired correction actions should also sit side-by-side
     assert widget.extend_back_btn.y() == widget.extend_fwd_btn.y()
     assert widget.extend_back_btn.x() < widget.extend_fwd_btn.x()
     assert widget.retrack_back_btn.y() == widget.retrack_fwd_btn.y()
-    assert widget.retrack_back_btn.x() < widget.retrack_fwd_btn.x()
     assert widget.save_tracked_btn.y() == widget.load_tracked_btn.y()
-    assert widget.save_tracked_btn.x() < widget.load_tracked_btn.x()
 
     widget.deleteLater()
     viewer.close()
@@ -800,6 +806,8 @@ def test_correction_widget_top_buttons_expand_horizontally():
 
 
 def test_tracking_config_has_segmentation_fields():
+    sys.modules.pop("cellflow.tracking_ultrack.config", None)
+    sys.modules.pop("cellflow.tracking_ultrack", None)
     from cellflow.tracking_ultrack.config import TrackingConfig
     cfg = TrackingConfig()
     assert cfg.seg_min_area == 300
@@ -811,6 +819,8 @@ def test_tracking_config_has_segmentation_fields():
 
 
 def test_build_ultrack_config_applies_segmentation_fields(tmp_path):
+    for mod in ["cellflow.tracking_ultrack.config", "cellflow.tracking_ultrack.ingest", "cellflow.tracking_ultrack"]:
+        sys.modules.pop(mod, None)
     from cellflow.tracking_ultrack.config import TrackingConfig
     from cellflow.tracking_ultrack.ingest import _build_ultrack_config
     cfg = TrackingConfig(
@@ -831,6 +841,8 @@ def test_build_ultrack_config_applies_segmentation_fields(tmp_path):
 
 
 def test_resolve_with_canonical_segment_exists():
+    for mod in ["cellflow.tracking_ultrack.reseed", "cellflow.tracking_ultrack"]:
+        sys.modules.pop(mod, None)
     from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment
     import inspect
     sig = inspect.signature(resolve_with_canonical_segment)
@@ -846,6 +858,8 @@ def test_resolve_with_canonical_segment_exists():
 
 
 def test_extend_track_from_db_missing_db_raises(tmp_path):
+    sys.modules.pop("cellflow.tracking_ultrack.extend", None)
+    sys.modules.pop("cellflow.tracking_ultrack", None)
     from cellflow.tracking_ultrack.extend import extend_track_from_db
     import numpy as np
     tracked = np.zeros((3, 10, 10), dtype=np.uint32)
@@ -859,3 +873,124 @@ def test_extend_track_from_db_missing_db_raises(tmp_path):
         d_max=40.0,
     )
     assert result is None  # missing DB returns None; widget shows clear error
+
+
+# ── Task 5: New layout tests ──────────────────────────────────────────────────
+
+def test_nucleus_workflow_has_five_canonical_top_level_sections():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.contour_section.title == "1. Contour Maps"
+    assert widget.db_gen_section.title == "2. Ultrack Database Generation"
+    assert widget.ultrack_db_browser_section.title == "3. Ultrack Database Browser"
+    assert widget.ultrack_section.title == "4. Ultrack Tracking"
+    assert widget.correction_section.title == "5. Correction"
+
+    assert not hasattr(widget, "tracking_correction_section")
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_deprecated_sections_are_hidden():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert hasattr(widget, "gen_section")
+    assert hasattr(widget, "db_section")
+    assert not widget.gen_section.isVisible()
+    assert not widget.db_section.isVisible()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_canonical_sections_expose_required_elements():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    # Section 1: Contour Maps
+    assert hasattr(widget, "build_btn")
+    assert hasattr(widget, "contour_terminal_btn")
+    assert hasattr(widget, "contour_status_lbl")
+    assert hasattr(widget, "build_progress_bar")
+
+    # Section 2: Ultrack Database Generation
+    assert hasattr(widget, "run_db_gen_btn")
+    assert hasattr(widget, "db_gen_terminal_btn")
+    assert hasattr(widget, "db_gen_status_lbl")
+    assert hasattr(widget, "db_gen_progress_bar")
+
+    # Section 3: Ultrack Database Browser
+    assert hasattr(widget, "ultrack_db_info_lbl")
+    assert hasattr(widget, "ultrack_db_refresh_btn")
+    assert hasattr(widget, "ultrack_db_section_status_lbl")
+
+    # Section 4: Ultrack Tracking
+    assert hasattr(widget, "run_ultrack_btn")
+    assert hasattr(widget, "ultrack_terminal_btn")
+    assert hasattr(widget, "ultrack_status_lbl")
+    assert hasattr(widget, "ultrack_progress_bar")
+
+    # Section 5: Correction (no Run button per spec)
+    assert hasattr(widget, "correction_status_lbl")
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_section_is_top_level_and_has_route_selector():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.ultrack_section.title == "4. Ultrack Tracking"
+    assert widget.ultrack_route_check.text() == "Resolve from validated"
+    assert widget.ultrack_route_check in widget.ultrack_section.findChildren(
+        type(widget.ultrack_route_check)
+    )
+    assert widget.ultrack_status_lbl.text() == ""
+    assert widget.ultrack_progress_bar.isVisible() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_section_is_top_level():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.correction_section.title == "5. Correction"
+    correction_button_texts = {
+        button.text()
+        for button in widget.correction_section.findChildren(QPushButton)
+    }
+    assert "Save Tracked Labels" in correction_button_texts
+    assert "Load Tracked Labels" in correction_button_texts
+    assert "◀ Extend (A)" in correction_button_texts
+    assert "Extend (D) ▶" in correction_button_texts
+    assert "◀ Retrack (Q)" in correction_button_texts
+    assert "Retrack (E) ▶" in correction_button_texts
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_shortcuts_are_still_installed():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    shortcut_keys = {
+        shortcut.key().toString(QKeySequence.SequenceFormat.PortableText)
+        for shortcut in widget.findChildren(QShortcut)
+    }
+    assert {"A", "D", "Q", "E"} <= shortcut_keys
+
+    widget.deleteLater()
+    viewer.close()
