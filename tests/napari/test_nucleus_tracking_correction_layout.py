@@ -1122,3 +1122,23 @@ def test_db_gen_section_fails_clearly_if_foreground_masks_missing(tmp_path):
 
     widget.deleteLater()
     viewer.close()
+
+
+# ── Task 7: Ultrack DB browser ────────────────────────────────────────────────
+
+def test_ultrack_db_browser_shows_missing_db_status(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget._pos_dir = pos_dir
+
+    widget._refresh_ultrack_db_browser()
+
+    text = widget.ultrack_db_section_status_lbl.text().lower()
+    assert "data.db" in text or "missing" in text or "not found" in text
+
+    widget.deleteLater()
+    viewer.close()
