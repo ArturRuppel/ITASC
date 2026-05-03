@@ -1254,3 +1254,46 @@ def test_resolve_terminal_script_uses_canonical_segment_not_hypotheses_h5(tmp_pa
 
     widget.deleteLater()
     viewer.close()
+
+
+# ── Task 10: DB generation state persistence ─────────────────────────────────
+
+def test_db_gen_controls_persist_through_state():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.db_gen_min_area_spin.setValue(500)
+    widget.db_gen_max_area_spin.setValue(80_000)
+    widget.db_gen_fg_thr_spin.setValue(0.4)
+    widget.db_gen_min_frontier_spin.setValue(0.05)
+    widget.db_gen_ws_hierarchy_combo.setCurrentText("dynamics")
+    widget.db_gen_max_dist_spin.setValue(20.0)
+    widget.db_gen_max_neighbors_spin.setValue(8)
+    widget.db_gen_linking_mode_combo.setCurrentText("iou")
+    widget.db_gen_iou_weight_spin.setValue(0.8)
+    widget.db_gen_quality_exp_spin.setValue(6.0)
+    widget.db_gen_power_spin.setValue(3.0)
+    widget.db_gen_n_workers_spin.setValue(4)
+
+    state = widget.get_state()
+    widget.deleteLater()
+
+    widget = widget_class(viewer)
+    widget.set_state(state)
+
+    assert widget.db_gen_min_area_spin.value() == 500
+    assert widget.db_gen_max_area_spin.value() == 80_000
+    assert abs(widget.db_gen_fg_thr_spin.value() - 0.4) < 0.01
+    assert abs(widget.db_gen_min_frontier_spin.value() - 0.05) < 0.01
+    assert widget.db_gen_ws_hierarchy_combo.currentText() == "dynamics"
+    assert widget.db_gen_max_dist_spin.value() == 20.0
+    assert widget.db_gen_max_neighbors_spin.value() == 8
+    assert widget.db_gen_linking_mode_combo.currentText() == "iou"
+    assert abs(widget.db_gen_iou_weight_spin.value() - 0.8) < 0.01
+    assert abs(widget.db_gen_quality_exp_spin.value() - 6.0) < 0.01
+    assert abs(widget.db_gen_power_spin.value() - 3.0) < 0.01
+    assert widget.db_gen_n_workers_spin.value() == 4
+
+    widget.deleteLater()
+    viewer.close()

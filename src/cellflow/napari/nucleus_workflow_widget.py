@@ -3389,6 +3389,20 @@ class NucleusWorkflowWidget(QWidget):
                 "ridge_threshold": self.db_ridge_thr_spin.value(),
                 "run_index":      self.db_run_spin.value(),
             },
+            "db_generation": {
+                "min_area":         self.db_gen_min_area_spin.value(),
+                "max_area":         self.db_gen_max_area_spin.value(),
+                "fg_threshold":     self.db_gen_fg_thr_spin.value(),
+                "min_frontier":     self.db_gen_min_frontier_spin.value(),
+                "ws_hierarchy":     self.db_gen_ws_hierarchy_combo.currentText(),
+                "max_distance":     self.db_gen_max_dist_spin.value(),
+                "max_neighbors":    self.db_gen_max_neighbors_spin.value(),
+                "linking_mode":     self.db_gen_linking_mode_combo.currentText(),
+                "iou_weight":       self.db_gen_iou_weight_spin.value(),
+                "quality_exponent": self.db_gen_quality_exp_spin.value(),
+                "power":            self.db_gen_power_spin.value(),
+                "n_workers":        self.db_gen_n_workers_spin.value(),
+            },
             "ultrack": {
                 "min_area":         self.ultrack_min_area_spin.value(),
                 "max_partitions":   self.ultrack_max_partitions_spin.value(),
@@ -3455,6 +3469,26 @@ class NucleusWorkflowWidget(QWidget):
             if "fg_threshold"    in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
             if "ridge_threshold" in db: self.db_ridge_thr_spin.setValue(db["ridge_threshold"])
             if "run_index"       in db: self.db_run_spin.setValue(db["run_index"])
+        if "db_generation" in state:
+            dbg = state["db_generation"]
+            if "min_area"         in dbg: self.db_gen_min_area_spin.setValue(dbg["min_area"])
+            if "max_area"         in dbg: self.db_gen_max_area_spin.setValue(dbg["max_area"])
+            if "fg_threshold"     in dbg: self.db_gen_fg_thr_spin.setValue(dbg["fg_threshold"])
+            if "min_frontier"     in dbg: self.db_gen_min_frontier_spin.setValue(dbg["min_frontier"])
+            if "ws_hierarchy"     in dbg:
+                idx = self.db_gen_ws_hierarchy_combo.findText(dbg["ws_hierarchy"])
+                if idx >= 0:
+                    self.db_gen_ws_hierarchy_combo.setCurrentIndex(idx)
+            if "max_distance"     in dbg: self.db_gen_max_dist_spin.setValue(dbg["max_distance"])
+            if "max_neighbors"    in dbg: self.db_gen_max_neighbors_spin.setValue(dbg["max_neighbors"])
+            if "linking_mode"     in dbg:
+                idx = self.db_gen_linking_mode_combo.findText(dbg["linking_mode"])
+                if idx >= 0:
+                    self.db_gen_linking_mode_combo.setCurrentIndex(idx)
+            if "iou_weight"       in dbg: self.db_gen_iou_weight_spin.setValue(dbg["iou_weight"])
+            if "quality_exponent" in dbg: self.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
+            if "power"            in dbg: self.db_gen_power_spin.setValue(dbg["power"])
+            if "n_workers"        in dbg: self.db_gen_n_workers_spin.setValue(dbg["n_workers"])
         if "search" in state:
             pass  # Old propagator state — silently skip
         if "search_v2" in state:
