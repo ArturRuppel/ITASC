@@ -37,6 +37,20 @@ def _install_import_stubs() -> None:
 
     class _StubTrackingConfig:
         def __init__(self, **kwargs):
+            self.min_area = 100
+            self.max_distance = 15.0
+            self.max_neighbors = 5
+            self.linking_mode = "default"
+            self.iou_weight = 1.0
+            self.power = 4.0
+            self.quality_exponent = 8.0
+            self.appear_weight = -0.001
+            self.disappear_weight = -0.001
+            self.division_weight = -0.001
+            self.seed_weight = 0.5
+            self.seed_sigma_space = 25.0
+            self.seed_tau_time = 2.0
+            self.seed_max_dt = 5
             self.max_segments_per_time = 1_000_000
             self.__dict__.update(kwargs)
 
@@ -423,15 +437,13 @@ def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monk
     captured = _install_terminal_capture(monkeypatch)
 
     pos_dir = tmp_path / "pos00"
-    cellpose_dir = pos_dir / "1_cellpose"
     nucleus_dir = pos_dir / "2_nucleus"
-    cellpose_dir.mkdir(parents=True)
-    nucleus_dir.mkdir()
-    (nucleus_dir / "hypotheses.h5").touch()
-    (cellpose_dir / "cell_prob_zavg.tif").touch()
+    workdir = nucleus_dir / "ultrack_workdir"
+    workdir.mkdir(parents=True)
+    (workdir / "data.db").touch()
     widget._pos_dir = pos_dir
-    widget.ultrack_power_spin.setValue(3.25)
-    widget.ultrack_quality_exp_spin.setValue(9.5)
+    widget.db_gen_power_spin.setValue(3.25)
+    widget.db_gen_quality_exp_spin.setValue(9.5)
     widget.ultrack_seed_weight_spin.setValue(0.85)
     widget.ultrack_seed_space_spin.setValue(35.0)
     widget.ultrack_seed_time_spin.setValue(4.0)
@@ -441,13 +453,10 @@ def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monk
     script = _read_launched_script(captured)
 
     assert "power=3.25" in script
-    assert "quality_exponent=9.5" in script
-    assert "seed_weight=0.85" in script
-    assert "seed_sigma_space=35.0" in script
-    assert "seed_tau_time=4.0" in script
-    assert "seed_max_dt=8" in script
-    assert "cell_prob_zavg.tif" in script
-    assert "write_seed_prior_node_probs(working_dir, cellprob_zavg_path, cfg)" in script
+    assert "run_solve(working_dir, cfg, overwrite=True)" in script
+    assert "export_tracked_labels(working_dir, cfg, tracked_path)" in script
+    assert "ingest_hypotheses_to_db" not in script
+    assert "write_seed_prior_node_probs" not in script
 
     widget.deleteLater()
     viewer.close()
@@ -470,8 +479,8 @@ def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path
     (nucleus_dir / "tracked_labels.tif").touch()
     (cellpose_dir / "cell_prob_zavg.tif").touch()
     widget._pos_dir = pos_dir
-    widget.ultrack_power_spin.setValue(3.75)
-    widget.ultrack_quality_exp_spin.setValue(10.5)
+    widget.db_gen_power_spin.setValue(3.75)
+    widget.db_gen_quality_exp_spin.setValue(10.5)
     widget.ultrack_seed_weight_spin.setValue(0.9)
     widget.ultrack_seed_space_spin.setValue(40.0)
     widget.ultrack_seed_time_spin.setValue(4.5)
@@ -553,8 +562,8 @@ def test_resolve_terminal_script_includes_seed_prior_and_cellprob_zavg(tmp_path,
     widget._pos_dir = pos_dir
 
     widget.ultrack_route_check.setChecked(True)
-    widget.ultrack_power_spin.setValue(3.5)
-    widget.ultrack_quality_exp_spin.setValue(9.0)
+    widget.db_gen_power_spin.setValue(3.5)
+    widget.db_gen_quality_exp_spin.setValue(9.0)
     widget.ultrack_seed_weight_spin.setValue(0.75)
     widget.ultrack_seed_space_spin.setValue(30.0)
     widget.ultrack_seed_time_spin.setValue(3.0)
@@ -1139,6 +1148,45 @@ def test_ultrack_db_browser_shows_missing_db_status(tmp_path):
 
     text = widget.ultrack_db_section_status_lbl.text().lower()
     assert "data.db" in text or "missing" in text or "not found" in text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+# ── Task 8: Tracking solves existing DB; extend uses DB ──────────────────────
+
+def test_ultrack_tracking_solve_fails_clearly_if_db_missing(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    widget._pos_dir = pos_dir
+
+    widget._on_run_ultrack()
+
+    text = widget.ultrack_status_lbl.text().lower()
+    assert "data.db" in text or "missing" in text or "database" in text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_extend_fails_clearly_if_db_missing(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget._pos_dir = pos_dir
+    viewer.add_labels(np.zeros((2, 8, 8), dtype=np.uint32), name="Tracked: Nucleus")
+
+    widget._on_extend(direction="forward")
+
+    text = widget.correction_status_lbl.text().lower()
+    assert "data.db" in text or "database" in text
 
     widget.deleteLater()
     viewer.close()
