@@ -297,6 +297,11 @@ class NucleusWorkflowWidget(QWidget):
         self.contour_output_lbl.setWordWrap(True)
         cp_params_lay.addWidget(self.contour_output_lbl)
 
+        self.contour_status_lbl = QLabel("")
+        self.contour_status_lbl.setWordWrap(True)
+        self.contour_status_lbl.setVisible(False)
+        cp_params_lay.addWidget(self.contour_status_lbl)
+
         self.build_progress_bar = QProgressBar()
         self.build_progress_bar.setRange(0, 100)
         self.build_progress_bar.setValue(0)
@@ -525,6 +530,10 @@ class NucleusWorkflowWidget(QWidget):
         self.gen_tabs.addTab(sweep_tab, "Sweep")
 
         gen_lay.addWidget(self.gen_tabs)
+        self.gen_status_lbl = QLabel("")
+        self.gen_status_lbl.setWordWrap(True)
+        self.gen_status_lbl.setVisible(False)
+        gen_lay.addWidget(self.gen_status_lbl)
         self.gen_section = CollapsibleSection(
             "2. Hypothesis Generation", _gen_inner, expanded=False
         )
@@ -596,6 +605,11 @@ class NucleusWorkflowWidget(QWidget):
         self.db_info_lbl = QLabel("—")
         self.db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         db_lay.addWidget(self.db_info_lbl)
+
+        self.db_status_lbl = QLabel("")
+        self.db_status_lbl.setWordWrap(True)
+        self.db_status_lbl.setVisible(False)
+        db_lay.addWidget(self.db_status_lbl)
 
         db_btn_row = block_grid(horizontal_spacing=12)
         self.set_seed_btn = QPushButton("Set as Tracking Seed")
@@ -839,6 +853,7 @@ class NucleusWorkflowWidget(QWidget):
 
         self.ultrack_status_lbl = QLabel("")
         self.ultrack_status_lbl.setWordWrap(True)
+        self.ultrack_status_lbl.setVisible(False)
         ultrack_lay.addWidget(self.ultrack_status_lbl)
 
         self.ultrack_progress_bar = QProgressBar()
@@ -939,6 +954,11 @@ class NucleusWorkflowWidget(QWidget):
         self.validation_counter_lbl.setWordWrap(True)
         _corr_inner_lay.addWidget(self.validation_counter_lbl)
 
+        self.correction_status_lbl = QLabel("")
+        self.correction_status_lbl.setWordWrap(True)
+        self.correction_status_lbl.setVisible(False)
+        _corr_inner_lay.addWidget(self.correction_status_lbl)
+
         self.correction_widget = CorrectionWidget(
             self.viewer,
             show_activate_btn=False,
@@ -963,11 +983,6 @@ class NucleusWorkflowWidget(QWidget):
             "4. Tracking & Correction", _tracking_correction_inner, expanded=True
         )
         layout.addWidget(self.tracking_correction_section)
-
-        # ── Status label ──────────────────────────────────────────────────
-        self.status_lbl = QLabel("")
-        self.status_lbl.setWordWrap(True)
-        layout.addWidget(self.status_lbl)
 
         # ── Outputs ───────────────────────────────────────────────────────
         self.output_files = PipelineFilesWidget([
@@ -1150,13 +1165,13 @@ class NucleusWorkflowWidget(QWidget):
 
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
-            self.status_lbl.setText("Hypothesis DB: not found.")
+            self._set_db_status("Hypothesis DB: not found.")
             return
         try:
             n_p, params_by_p = list_hypotheses(hyp_path)
         except Exception as e:
             logger.warning("Could not read hypotheses.h5: %s", e)
-            self.status_lbl.setText(f"Hypothesis DB: read error — {e}")
+            self._set_db_status(f"Hypothesis DB: read error — {e}")
             return
 
         contour_entries = {
@@ -1165,7 +1180,7 @@ class NucleusWorkflowWidget(QWidget):
         }
 
         if not contour_entries:
-            self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s) (no browsable entries).")
+            self._set_db_status(f"Hypothesis DB: {n_p} parameter set(s) (no browsable entries).")
             return
 
         seed_dist_set: set[int] = set()
@@ -1188,7 +1203,7 @@ class NucleusWorkflowWidget(QWidget):
         self._db_run_vals = sorted(run_set)
 
         self._apply_method_panel()
-        self.status_lbl.setText(f"Hypothesis DB: {n_p} parameter set(s).")
+        self._set_db_status(f"Hypothesis DB: {n_p} parameter set(s).")
 
     def _apply_method_panel(self) -> None:
         if not self._db_seed_dist_vals:
@@ -1231,13 +1246,55 @@ class NucleusWorkflowWidget(QWidget):
 
         self._update_db_info_lbl()
 
-    def _set_status(self, msg: str) -> None:
-        self.status_lbl.setText(msg)
+    def _set_contour_status(self, msg: str) -> None:
+        self.contour_status_lbl.setText(msg)
+        self.contour_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
+    def _set_hypothesis_status(self, msg: str) -> None:
+        self.gen_status_lbl.setText(msg)
+        self.gen_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
+    def _set_db_status(self, msg: str) -> None:
+        self.db_status_lbl.setText(msg)
+        self.db_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
+    def _set_correction_status(self, msg: str) -> None:
+        self.correction_status_lbl.setText(msg)
+        self.correction_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
 
     def _set_ultrack_status(self, msg: str) -> None:
         self.ultrack_status_lbl.setText(msg)
-        self._set_status(msg)
+        self.ultrack_status_lbl.setVisible(bool(msg))
         logger.info(msg)
+
+    def _on_contour_worker_error(self, exc: Exception) -> None:
+        self.build_progress_bar.setVisible(False)
+        self._set_contour_status(f"Error: {exc}")
+        logger.exception("Contour worker error", exc_info=exc)
+
+    def _on_hypothesis_worker_error(self, exc: Exception) -> None:
+        self._set_hypothesis_status(f"Error: {exc}")
+        logger.exception("Hypothesis worker error", exc_info=exc)
+
+    def _on_db_worker_error(self, exc: Exception) -> None:
+        self._set_db_status(f"Error: {exc}")
+        logger.exception("Database browser worker error", exc_info=exc)
+
+    def _on_correction_worker_error(self, exc: Exception) -> None:
+        self._set_correction_status(f"Error: {exc}")
+        logger.exception("Correction worker error", exc_info=exc)
+
+    def _on_ultrack_worker_error(self, exc: Exception) -> None:
+        self.ultrack_progress_bar.setVisible(False)
+        self.ultrack_progress_bar.setRange(0, 100)
+        self.run_ultrack_btn.setEnabled(True)
+        self.ultrack_terminal_btn.setEnabled(True)
+        self._set_ultrack_status(f"Error: {exc}")
+        logger.exception("Ultrack worker error", exc_info=exc)
 
     def _update_contour_status_labels(self) -> None:
         if self._pos_dir is None:
@@ -1334,15 +1391,15 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_build_contour_maps(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_contour_status("No project open.")
             return
         prob_path = self._prob_path()
         dp_path   = self._dp_path()
         if prob_path is None or not prob_path.exists():
-            self._set_status(f"Missing: {prob_path}")
+            self._set_contour_status(f"Missing: {prob_path}")
             return
         if dp_path is None or not dp_path.exists():
-            self._set_status(f"Missing: {dp_path}")
+            self._set_contour_status(f"Missing: {dp_path}")
             return
 
         thresholds      = list(np.arange(self.cp_min_spin.value(), self.cp_max_spin.value() + self.cp_step_spin.value() / 2, self.cp_step_spin.value()))
@@ -1356,7 +1413,7 @@ class NucleusWorkflowWidget(QWidget):
         @thread_worker(connect={
             "yielded":   self._on_build_progress,
             "returned":  self._on_build_done,
-            "errored":   self._on_worker_error,
+            "errored":   self._on_contour_worker_error,
         })
         def _worker():
             prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
@@ -1391,7 +1448,7 @@ class NucleusWorkflowWidget(QWidget):
             return pos_dir
 
         gamma_desc = f"γ={gammas[0]:.2f}" if len(gammas) == 1 else f"γ={gammas[0]:.2f}–{gammas[-1]:.2f} ({len(gammas)} steps)"
-        self._set_status(f"Building contour maps ({len(thresholds)} cellprob thresholds, {gamma_desc})…")
+        self._set_contour_status(f"Building contour maps ({len(thresholds)} cellprob thresholds, {gamma_desc})…")
         self._set_build_buttons_running(True)
         self._build_worker = _worker()
 
@@ -1400,7 +1457,7 @@ class NucleusWorkflowWidget(QWidget):
         self._set_build_buttons_running(False)
         self.contour_files.refresh(pos_dir)
         self._update_contour_status_labels()
-        self._set_status("Contour maps built.")
+        self._set_contour_status("Contour maps built.")
 
     def _on_cancel_build(self) -> None:
         if self._build_worker is not None:
@@ -1408,7 +1465,7 @@ class NucleusWorkflowWidget(QWidget):
         self._build_worker = None
         self._set_build_buttons_running(False)
         self._update_contour_status_labels()
-        self._set_status("Build cancelled.")
+        self._set_contour_status("Build cancelled.")
 
     def _set_build_buttons_running(self, running: bool) -> None:
         self.build_btn.setEnabled(not running)
@@ -1425,21 +1482,21 @@ class NucleusWorkflowWidget(QWidget):
             if total > 0:
                 self.build_progress_bar.setRange(0, total)
                 self.build_progress_bar.setValue(done)
-            self._set_status(msg)
+            self._set_contour_status(msg)
         else:
-            self._set_status(str(data))
+            self._set_contour_status(str(data))
 
     def _on_preview_contour_maps(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_contour_status("No project open.")
             return
         prob_path = self._prob_path()
         dp_path   = self._dp_path()
         if prob_path is None or not prob_path.exists():
-            self._set_status(f"Missing: {prob_path}")
+            self._set_contour_status(f"Missing: {prob_path}")
             return
         if dp_path is None or not dp_path.exists():
-            self._set_status(f"Missing: {dp_path}")
+            self._set_contour_status(f"Missing: {dp_path}")
             return
 
         t_frame    = self._current_t()
@@ -1468,7 +1525,7 @@ class NucleusWorkflowWidget(QWidget):
             else:
                 self.viewer.add_image(data, name=_CONTOUR_LAYER, colormap="magma", visible=True)
             self._set_viewer_frame(t_idx)
-            self._set_status(
+            self._set_contour_status(
                 f"Preview contour map t={t_idx} — "
                 f"{len(thresholds)} cellprob thresholds, "
                 f"{len(gammas)} gamma value(s)"
@@ -1476,7 +1533,7 @@ class NucleusWorkflowWidget(QWidget):
 
         @thread_worker(connect={
             "returned": _on_preview_done,
-            "errored":  self._on_worker_error,
+            "errored":  self._on_contour_worker_error,
         })
         def _worker():
             prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
@@ -1490,7 +1547,7 @@ class NucleusWorkflowWidget(QWidget):
             boundary, foreground = build_fn(prob_stack[t_idx], dp_stack[t_idx], thresholds, gammas)
             return boundary, foreground, self._sigmoid_zavg(prob_stack), t_idx
 
-        self._set_status(f"Previewing contour map for frame t={t_frame}…")
+        self._set_contour_status(f"Previewing contour map for frame t={t_frame}…")
         self._set_build_buttons_running(True)
         self._build_worker = _worker()
 
@@ -1499,17 +1556,17 @@ class NucleusWorkflowWidget(QWidget):
         import tempfile
 
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_contour_status("No project open.")
             return
         prob_path = self._prob_path()
         dp_path = self._dp_path()
         contour_path = self._contour_maps_path()
         foreground_path = self._foreground_maps_path()
         if prob_path is None or not prob_path.exists():
-            self._set_status(f"Missing: {prob_path}")
+            self._set_contour_status(f"Missing: {prob_path}")
             return
         if dp_path is None or not dp_path.exists():
-            self._set_status(f"Missing: {dp_path}")
+            self._set_contour_status(f"Missing: {dp_path}")
             return
 
         thresholds = list(
@@ -1605,10 +1662,10 @@ class NucleusWorkflowWidget(QWidget):
         try:
             from cellflow.napari.utils import launch_in_terminal
             launch_in_terminal(cmd)
-            self._set_status("Contour build command launched in terminal.")
+            self._set_contour_status("Contour build command launched in terminal.")
         except Exception:
             QApplication.clipboard().setText(cmd)
-            self._set_status(
+            self._set_contour_status(
                 "Copied contour build command to clipboard (terminal launch unavailable)."
             )
 
@@ -1621,10 +1678,10 @@ class NucleusWorkflowWidget(QWidget):
         contour_path = self._contour_maps_path()
         mask_path = self._foreground_mask_path()
         if contour_path is None or not contour_path.exists():
-            self._set_status("Contour maps not found — run Build first.")
+            self._set_hypothesis_status("Contour maps not found — run Build first.")
             return None
         if mask_path is None or not mask_path.exists():
-            self._set_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
+            self._set_hypothesis_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
             return None
         contour = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
         foreground_mask = np.asarray(tifffile.imread(str(mask_path)))
@@ -1643,7 +1700,7 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_preview(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_hypothesis_status("No project open.")
             return
         maps = self._load_contour_inputs()
         if maps is None:
@@ -1652,7 +1709,7 @@ class NucleusWorkflowWidget(QWidget):
         try:
             foreground_mask = self._normalize_contour_mask_stack(foreground_mask, contour.shape)
         except ValueError as e:
-            self._set_status(str(e))
+            self._set_hypothesis_status(str(e))
             return
         t = min(self._current_t(), contour.shape[0] - 1)
         params = self._contour_sweep_params()
@@ -1665,18 +1722,18 @@ class NucleusWorkflowWidget(QWidget):
         try:
             labels = compute_contour_watershed(contour[t], foreground_mask[t], params)
         except Exception as e:
-            self._set_status(f"Segmentation failed: {e}")
+            self._set_hypothesis_status(f"Segmentation failed: {e}")
             return
 
         self._update_layer(_PREVIEW_LAYER, labels)
-        self._set_status(
+        self._set_hypothesis_status(
             f"Preview t={t}: {int(labels.max())} cells  "
             f"(dist={params.seed_distance})"
         )
 
     def _on_save_db(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_hypothesis_status("No project open.")
             return
         maps = self._load_contour_inputs()
         if maps is None:
@@ -1685,7 +1742,7 @@ class NucleusWorkflowWidget(QWidget):
         try:
             foreground_mask = self._normalize_contour_mask_stack(foreground_mask, contour.shape)
         except ValueError as e:
-            self._set_status(str(e))
+            self._set_hypothesis_status(str(e))
             return
 
         params   = self._contour_sweep_params()
@@ -1693,7 +1750,7 @@ class NucleusWorkflowWidget(QWidget):
         output_path = self._hyp_path()
         pos_dir     = self._pos_dir
 
-        @thread_worker(connect={"returned": self._on_save_done, "errored": self._on_worker_error})
+        @thread_worker(connect={"returned": self._on_save_done, "errored": self._on_hypothesis_worker_error})
         def _worker():
             spec = ContourWatershedSweepSpec(
                 seed_distance=params.seed_distance,
@@ -1717,25 +1774,25 @@ class NucleusWorkflowWidget(QWidget):
             write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite, n_t=None, n_p=1)
             return pos_dir
 
-        self._set_status("Saving to DB…")
+        self._set_hypothesis_status("Saving to DB…")
         _worker()
 
     def _on_save_done(self, pos_dir: Path) -> None:
         self.output_files.refresh(pos_dir)
-        self._set_status("Saved to hypotheses.h5.")
+        self._set_hypothesis_status("Saved to hypotheses.h5.")
         self.refresh(pos_dir)
 
     def _on_run_sweep(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_hypothesis_status("No project open.")
             return
         contour_path = self._contour_maps_path()
         mask_path = self._foreground_mask_path()
         if contour_path is None or not contour_path.exists():
-            self._set_status("Contour maps not found — run Build first.")
+            self._set_hypothesis_status("Contour maps not found — run Build first.")
             return
         if mask_path is None or not mask_path.exists():
-            self._set_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
+            self._set_hypothesis_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
             return
 
         spec      = self._contour_sweep_spec()
@@ -1752,15 +1809,15 @@ class NucleusWorkflowWidget(QWidget):
         def _on_sweep_aborted():
             self._sweep_worker = None
             self._set_sweep_buttons_running(False)
-            self._set_status("Sweep cancelled.")
+            self._set_hypothesis_status("Sweep cancelled.")
 
         def _on_sweep_error(exc):
             self._sweep_worker = None
             self._set_sweep_buttons_running(False)
-            self._on_worker_error(exc)
+            self._on_hypothesis_worker_error(exc)
 
         @thread_worker(connect={
-            "yielded":  self._set_status,
+            "yielded":  self._set_hypothesis_status,
             "returned": _on_sweep_done,
             "aborted":  _on_sweep_aborted,
             "errored":  _on_sweep_error,
@@ -1817,7 +1874,7 @@ class NucleusWorkflowWidget(QWidget):
                 yield f"Sweep {done}/{total}…"
             return pos_dir
 
-        self._set_status("Running sweep…")
+        self._set_hypothesis_status("Running sweep…")
         self._set_sweep_buttons_running(True)
         self._sweep_worker = _worker()
 
@@ -1835,16 +1892,16 @@ class NucleusWorkflowWidget(QWidget):
         import tempfile
 
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_hypothesis_status("No project open.")
             return
         contour_path = self._contour_maps_path()
         mask_path = self._foreground_mask_path()
         output_path     = self._hyp_path()
         if contour_path is None or not contour_path.exists():
-            self._set_status("Contour maps not found — run Build first.")
+            self._set_hypothesis_status("Contour maps not found — run Build first.")
             return
         if mask_path is None or not mask_path.exists():
-            self._set_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
+            self._set_hypothesis_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
             return
 
         spec      = self._contour_sweep_spec()
@@ -1914,10 +1971,10 @@ class NucleusWorkflowWidget(QWidget):
         try:
             from cellflow.napari.utils import launch_in_terminal
             launch_in_terminal(cmd)
-            self._set_status("Command launched in terminal.")
+            self._set_hypothesis_status("Command launched in terminal.")
         except Exception:
             QApplication.clipboard().setText(cmd)
-            self._set_status("Copied command to clipboard (terminal launch unavailable).")
+            self._set_hypothesis_status("Copied command to clipboard (terminal launch unavailable).")
 
     # ──────────────────────────────────────────────────────────────────────────
     # 3. Database Browser
@@ -1961,9 +2018,9 @@ class NucleusWorkflowWidget(QWidget):
             return
         cell_zavg_path = self._cell_zavg_path()
         nuc_zavg_path  = self._nucleus_zavg_path()
-        self._set_status(f"Loading p={p}…")
+        self._set_db_status(f"Loading p={p}…")
 
-        @thread_worker(connect={"returned": self._on_load_stack_done, "errored": self._on_worker_error})
+        @thread_worker(connect={"returned": self._on_load_stack_done, "errored": self._on_db_worker_error})
         def _worker():
             stack = read_full_hypothesis_stack(hyp_path, p)
             cell_zavg = (
@@ -1989,7 +2046,7 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.add_labels(stack, name=_HYP_LAYER)
         n_cells = int(stack.max()) if stack.size > 0 else 0
         self.db_info_lbl.setText(f"p={p:03d}  |  {n_cells} cells")
-        self._set_status(f"Loaded p={p} → {stack.shape} into napari.")
+        self._set_db_status(f"Loaded p={p} → {stack.shape} into napari.")
 
         for zavg_data, layer_name, cmap in (
             (cell_zavg, _CELL_ZAVG_LAYER, "gray"),
@@ -2007,11 +2064,11 @@ class NucleusWorkflowWidget(QWidget):
     def _on_set_seed(self) -> None:
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
-            self._set_status("No hypothesis DB found.")
+            self._set_db_status("No hypothesis DB found.")
             return
         p = self._current_db_p
         if p is None:
-            self._set_status("No parameter set selected in the DB browser.")
+            self._set_db_status("No parameter set selected in the DB browser.")
             return
         t = self._current_t()
         try:
@@ -2020,28 +2077,28 @@ class NucleusWorkflowWidget(QWidget):
             tracked_path = self._tracked_path()
             write_tracked_frame(tracked_path, t, slice_2d)
             self._update_tracked_display(slice_2d, t=t)
-            self._set_status(f"Hypothesis p={p} set as tracking seed at t={t}.")
+            self._set_db_status(f"Hypothesis p={p} set as tracking seed at t={t}.")
         except Exception as e:
-            self._set_status(f"Error setting seed: {e}")
+            self._set_db_status(f"Error setting seed: {e}")
 
     def _on_remove_stack(self) -> None:
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
-            self._set_status("No hypothesis DB found.")
+            self._set_db_status("No hypothesis DB found.")
             return
         p = self._current_db_p
         if p is None:
-            self._set_status("No parameter set selected in the DB browser.")
+            self._set_db_status("No parameter set selected in the DB browser.")
             return
         try:
             delete_hypothesis_parameter(hyp_path, p)
         except Exception as e:
-            self._set_status(f"Remove stack failed: {e}")
+            self._set_db_status(f"Remove stack failed: {e}")
             return
         if _HYP_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[_HYP_LAYER])
         self._current_db_p = None
-        self._set_status(f"Removed p={p}.")
+        self._set_db_status(f"Removed p={p}.")
         self.refresh(self._pos_dir)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -2051,30 +2108,30 @@ class NucleusWorkflowWidget(QWidget):
     def _on_save_tracked(self) -> None:
         tracked_path = self._tracked_path()
         if tracked_path is None:
-            self._set_status("No project open.")
+            self._set_correction_status("No project open.")
             return
         if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer to save.")
+            self._set_correction_status("No tracked layer to save.")
             return
         layer = self.viewer.layers[_TRACKED_LAYER]
         if layer.data.ndim != 3:
-            self._set_status("Tracked layer is not a 3D stack.")
+            self._set_correction_status("Tracked layer is not a 3D stack.")
             return
         n = layer.data.shape[0]
         for t in range(n):
             write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
-        self._set_status(f"Saved {n} frame(s) to {tracked_path.name}.")
+        self._set_correction_status(f"Saved {n} frame(s) to {tracked_path.name}.")
 
     def _on_load_tracked(self) -> None:
         tracked_path   = self._tracked_path()
         cell_zavg_path = self._cell_zavg_path()
         nuc_zavg_path  = self._nucleus_zavg_path()
         if tracked_path is None or not tracked_path.exists():
-            self._set_status("No tracked labels file found.")
+            self._set_correction_status("No tracked labels file found.")
             return
-        self._set_status("Loading tracked labels…")
+        self._set_correction_status("Loading tracked labels…")
 
-        @thread_worker(connect={"returned": self._on_load_tracked_done, "errored": self._on_worker_error})
+        @thread_worker(connect={"returned": self._on_load_tracked_done, "errored": self._on_correction_worker_error})
         def _worker():
             stack = read_full_tracked_stack(tracked_path)
             cell_zavg = (
@@ -2112,19 +2169,19 @@ class NucleusWorkflowWidget(QWidget):
             else:
                 self.viewer.add_image(broadcast_zavg, name=layer_name, colormap=cmap, blending="additive")
 
-        self._set_status(f"Loaded tracked stack {stack.shape} into napari.")
+        self._set_correction_status(f"Loaded tracked stack {stack.shape} into napari.")
         layer = self.viewer.layers[_TRACKED_LAYER]
         self.correction_widget.activate_layer(layer)
         self.correction_section.expand()
 
     def _on_reassign_ids(self) -> None:
         if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded.")
+            self._set_correction_status("No tracked layer loaded.")
             return
         stack = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
-        self._set_status("Reassigning cell IDs to contiguous range…")
+        self._set_correction_status("Reassigning cell IDs to contiguous range…")
 
-        @thread_worker(connect={"returned": self._on_reassign_ids_done, "errored": self._on_worker_error})
+        @thread_worker(connect={"returned": self._on_reassign_ids_done, "errored": self._on_correction_worker_error})
         def _worker():
             unique_ids = np.unique(stack)
             unique_ids = unique_ids[unique_ids != 0]
@@ -2145,7 +2202,7 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.layers[_TRACKED_LAYER].data = remapped
         if self._pos_dir is not None and old_to_new:
             remap_validated_tracks(self._pos_dir, old_to_new)
-        self._set_status(f"Reassigned {n_cells} cell IDs to contiguous range 1–{n_cells}. Unsaved.")
+        self._set_correction_status(f"Reassigned {n_cells} cell IDs to contiguous range 1–{n_cells}. Unsaved.")
 
     # ──────────────────────────────────────────────────────────────────────────
     # 4. Tracking & Correction
@@ -2224,7 +2281,7 @@ class NucleusWorkflowWidget(QWidget):
         @thread_worker(connect={
             "yielded":  self._on_ultrack_progress,
             "returned": self._on_run_ultrack_done,
-            "errored":  self._on_worker_error,
+            "errored":  self._on_ultrack_worker_error,
         })
         def _worker():
             # Stage 1: ingest
@@ -2379,7 +2436,7 @@ class NucleusWorkflowWidget(QWidget):
             return
         validated_tracks = read_validated_tracks(self._pos_dir)
         if not validated_tracks:
-            self._set_status("No validated tracks — validate some cells first (press V).")
+            self._set_ultrack_status("No validated tracks — validate some cells first (press V).")
             return
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
@@ -2403,9 +2460,8 @@ class NucleusWorkflowWidget(QWidget):
             "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
             "from cellflow.tracking_ultrack.reseed import resolve_with_validation\n"
-            "from cellflow.database.tracked import read_full_tracked_stack, write_tracked_frame\n"
-            "from cellflow.database.validation import (\n"
-            "    read_validated_tracks, invalidate_track, validate_track)\n"
+            "from cellflow.database.tracked import read_full_tracked_stack\n"
+            "from cellflow.database.validation import read_validated_tracks\n"
             "import numpy as np\n"
             "\n"
             "if __name__ == '__main__':\n"
@@ -2433,27 +2489,18 @@ class NucleusWorkflowWidget(QWidget):
             "    print(f'Loaded {len(validated_tracks)} validated track(s).', flush=True)\n"
             "    tracked_labels = read_full_tracked_stack(tracked_path)\n"
             "    print(f'Loaded tracked labels: {tracked_labels.shape}', flush=True)\n"
-            "    new_labels, id_map = resolve_with_validation(\n"
+            "    new_labels, _id_map = resolve_with_validation(\n"
             "        hyp_path, validated_tracks, tracked_labels, cfg,\n"
             "        progress_cb=lambda msg: print(msg, flush=True),\n"
             "        intensity_image_path=cellprob_zavg_path,\n"
             "    )\n"
             "    if new_labels.ndim == 4 and new_labels.shape[1] == 1:\n"
             "        new_labels = new_labels[:, 0]\n"
-            "    print('Saving tracked labels…', flush=True)\n"
-            "    for t in range(new_labels.shape[0]):\n"
-            "        write_tracked_frame(tracked_path, t, np.asarray(new_labels[t]))\n"
-            "    if id_map:\n"
-            "        for old_id, new_id in id_map.items():\n"
-            "            old_frames = validated_tracks.get(old_id, set())\n"
-            "            invalidate_track(pos_dir, old_id)\n"
-            "            if old_frames:\n"
-            "                validate_track(pos_dir, new_id, old_frames)\n"
             "    n_validated = len(validated_tracks)\n"
             "    n_total = int(np.unique(new_labels[new_labels != 0]).size)\n"
             "    print(\n"
             "        f'Done — {n_validated} validated track(s) preserved, '\n"
-            "        f'{n_total} total track(s). Saved to {tracked_path}',\n"
+            "        f'{n_total} total track(s). Result computed only; not saved.',\n"
             "        flush=True,\n"
             "    )\n"
         )
@@ -2612,11 +2659,11 @@ class NucleusWorkflowWidget(QWidget):
             return
         sel = self.correction_widget._selected_label
         if not sel:
-            self._set_status("Validation toggle: no cell selected (left-click a cell first).")
+            self._set_correction_status("Validation toggle: no cell selected (left-click a cell first).")
             return
         t = self._current_t()
         if sel not in self._current_cell_ids(t):
-            self._set_status(f"Cell {sel} not present at t={t}.")
+            self._set_correction_status(f"Cell {sel} not present at t={t}.")
             return
         frames = self._frames_with_cell(sel)
         if not frames:
@@ -2624,10 +2671,10 @@ class NucleusWorkflowWidget(QWidget):
         currently_validated = is_track_validated(self._pos_dir, sel)
         if currently_validated:
             invalidate_track(self._pos_dir, sel)
-            self._set_status(f"Cell {sel} invalidated across {len(frames)} frame(s).")
+            self._set_correction_status(f"Cell {sel} invalidated across {len(frames)} frame(s).")
         else:
             validate_track(self._pos_dir, sel, frames)
-            self._set_status(f"Cell {sel} validated across {len(frames)} frame(s).")
+            self._set_correction_status(f"Cell {sel} validated across {len(frames)} frame(s).")
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
 
@@ -2639,17 +2686,17 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_extend(self, direction: str) -> None:
         if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded.")
+            self._set_correction_status("No tracked layer loaded.")
             return
 
         hyp_path = self._hyp_path()
         if hyp_path is None or not hyp_path.exists():
-            self._set_status("No project open.")
+            self._set_correction_status("No project open.")
             return
 
         source_id = self.correction_widget._selected_label
         if not source_id:
-            self._set_status("Extend: no cell selected (left-click a cell first).")
+            self._set_correction_status("Extend: no cell selected (left-click a cell first).")
             return
 
         layer = self.viewer.layers[_TRACKED_LAYER]
@@ -2659,14 +2706,14 @@ class NucleusWorkflowWidget(QWidget):
 
         target_frame = t + (1 if direction == "forward" else -1)
         if direction == "forward" and t >= T - 1:
-            self._set_status("Already at last frame")
+            self._set_correction_status("Already at last frame")
             return
         if direction == "backward" and t <= 0:
-            self._set_status("Already at first frame")
+            self._set_correction_status("Already at first frame")
             return
 
         if not np.any(tracked[t] == source_id):
-            self._set_status(f"Cell {source_id} not present at t={t}")
+            self._set_correction_status(f"Cell {source_id} not present at t={t}")
             return
 
         result = extend_track(
@@ -2679,7 +2726,7 @@ class NucleusWorkflowWidget(QWidget):
         )
 
         if result is None:
-            self._set_status(
+            self._set_correction_status(
                 f"No hypothesis within {self.extend_max_dist_spin.value():g}px at t={target_frame}"
             )
             return
@@ -2694,7 +2741,7 @@ class NucleusWorkflowWidget(QWidget):
         step[0] = result.target_frame
         self.viewer.dims.current_step = tuple(step)
 
-        self._set_status(
+        self._set_correction_status(
             f"Extended cell {source_id} → t={result.target_frame} "
             f"(dist={result.centroid_distance:.1f}px, area={result.area_ratio:.2f}, "
             f"overlap={result.existing_overlap:.2f})"
@@ -2702,20 +2749,20 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_retrack_forward(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_correction_status("No project open.")
             return
         if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded.")
+            self._set_correction_status("No tracked layer loaded.")
             return
 
         layer = self.viewer.layers[_TRACKED_LAYER]
         if layer.data.ndim != 3 or layer.data.shape[0] < 2:
-            self._set_status("Tracked layer must be a stack of at least 2 frames.")
+            self._set_correction_status("Tracked layer must be a stack of at least 2 frames.")
             return
 
         t0 = int(self.viewer.dims.current_step[0])
         if t0 >= layer.data.shape[0] - 1:
-            self._set_status("Already at last frame — nothing to retrack forward.")
+            self._set_correction_status("Already at last frame — nothing to retrack forward.")
             return
 
         T = layer.data.shape[0]
@@ -2742,27 +2789,27 @@ class NucleusWorkflowWidget(QWidget):
             n_retracked += 1
 
         layer.data = stack
-        self._set_status(
+        self._set_correction_status(
             f"Retracked forward from t={t0 + 1}: {n_retracked} frame(s) updated, "
             f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
         )
 
     def _on_retrack_backward(self) -> None:
         if self._pos_dir is None:
-            self._set_status("No project open.")
+            self._set_correction_status("No project open.")
             return
         if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_status("No tracked layer loaded.")
+            self._set_correction_status("No tracked layer loaded.")
             return
 
         layer = self.viewer.layers[_TRACKED_LAYER]
         if layer.data.ndim != 3 or layer.data.shape[0] < 2:
-            self._set_status("Tracked layer must be a stack of at least 2 frames.")
+            self._set_correction_status("Tracked layer must be a stack of at least 2 frames.")
             return
 
         t0 = int(self.viewer.dims.current_step[0])
         if t0 <= 0:
-            self._set_status("Already at first frame — nothing to retrack backward.")
+            self._set_correction_status("Already at first frame — nothing to retrack backward.")
             return
 
         stack = layer.data.copy()
@@ -2788,7 +2835,7 @@ class NucleusWorkflowWidget(QWidget):
             n_retracked += 1
 
         layer.data = stack
-        self._set_status(
+        self._set_correction_status(
             f"Retracked backward from t={t0 - 1}: {n_retracked} frame(s) updated, "
             f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
         )
@@ -2838,42 +2885,22 @@ class NucleusWorkflowWidget(QWidget):
             if result is None:
                 self._set_ultrack_status("Re-solve failed (no output).")
                 return
-            new_labels, id_map = result
+            new_labels, _id_map = result
             # Normalize (T, 1, Y, X) → (T, Y, X) if needed
             if new_labels.ndim == 4 and new_labels.shape[1] == 1:
                 new_labels = new_labels[:, 0]
-            # Save labelmap to disk BEFORE updating the JSON so they stay in sync.
-            # If the save fails, abort — the JSON must not be updated with IDs
-            # that don't exist on disk.
-            pos_dir = self._pos_dir
-            tracked_path = self._tracked_path()
-            if tracked_path is None or pos_dir is None:
-                self._set_ultrack_status("Re-solve complete but no project path — not saved.")
-                return
-            self._set_ultrack_status("Saving tracked labels…")
-            try:
-                for t in range(new_labels.shape[0]):
-                    write_tracked_frame(tracked_path, t, np.asarray(new_labels[t]))
-            except Exception as exc:
-                self._set_ultrack_status(f"Save failed — JSON not updated. {exc}")
-                return
-            # Labelmap is on disk with new IDs; now update the napari layer and JSON.
             if _TRACKED_LAYER in self.viewer.layers:
                 self.viewer.layers[_TRACKED_LAYER].data = new_labels
             else:
                 self.viewer.add_labels(new_labels, name=_TRACKED_LAYER)
-            if id_map:
-                for old_id, new_id in id_map.items():
-                    old_frames = validated_tracks.get(old_id, set())
-                    invalidate_track(pos_dir, old_id)
-                    if old_frames:
-                        validate_track(pos_dir, new_id, old_frames)
-                self._refresh_validated_overlay()
-                self._refresh_validation_counter()
+            layer = self.viewer.layers[_TRACKED_LAYER]
+            self.correction_widget.activate_layer(layer)
+            self._refresh_validated_overlay()
+            self._refresh_validation_counter()
             n_total_tracks = int(np.unique(new_labels[new_labels != 0]).size)
             self._set_ultrack_status(
                 f"Re-solve complete: {n_validated} validated track(s) preserved, "
-                f"{n_total_tracks} total track(s) in output. Saved."
+                f"{n_total_tracks} total track(s) in output. Unsaved."
             )
 
         def _on_resolve_progress(msg: str) -> None:
@@ -2884,7 +2911,7 @@ class NucleusWorkflowWidget(QWidget):
             self.ultrack_terminal_btn.setEnabled(True)
             self.ultrack_progress_bar.setVisible(False)
             self.ultrack_progress_bar.setRange(0, 100)
-            self._on_worker_error(exc)
+            self._on_ultrack_worker_error(exc)
 
         @thread_worker(connect={
             "returned": _on_resolve_done,
@@ -2951,15 +2978,6 @@ class NucleusWorkflowWidget(QWidget):
             return result_holder[0] if result_holder else None
 
         _worker()
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Error handler
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def _on_worker_error(self, exc: Exception) -> None:
-        self.ultrack_progress_bar.setVisible(False)
-        self._set_status(f"Error: {exc}")
-        logger.exception("Worker error", exc_info=exc)
 
     # ──────────────────────────────────────────────────────────────────────────
     # State persistence

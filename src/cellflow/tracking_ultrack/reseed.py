@@ -327,12 +327,11 @@ def merge_validated_into_export(
 ) -> tuple[np.ndarray, dict[int, int]]:
     """Paste validated masks back onto the solver's exported labelmap.
 
-    Each validated ``cell_id`` gets a **single fresh track ID** (starting from
-    ``exported_labels.max() + 1``) so that all frames of one validated cell
-    form a continuous track in the output.  Validated pixels overwrite any
-    conflicting content in the exported labelmap (the pruning was aggressive
-    but the solver may still produce stray segments near validated cells;
-    validated cells always win).
+    Validated ``cell_id`` values are reserved and pasted back with their
+    original IDs so the validation store remains stable across resolve runs.
+    If the solver independently used a reserved validated ID elsewhere, those
+    solver pixels are moved to a fresh ID before the validated mask is pasted.
+    Validated pixels overwrite any conflicting content in the exported labelmap.
 
     Parameters
     ----------
@@ -348,40 +347,73 @@ def merge_validated_into_export(
     Returns
     -------
     tuple[np.ndarray, dict[int, int]]
-        ``(merged_labelmap, id_map)`` where ``id_map`` maps each original
-        ``old_cell_id`` to the ``new_cell_id`` assigned in the output.
-        The labelmap is the same array as ``exported_labels``, modified in place.
+        ``(merged_labelmap, id_map)`` where ``id_map`` maps original validated
+        IDs to changed output IDs. The normal path preserves validated IDs, so
+        ``id_map`` is usually empty. The labelmap is the same array as
+        ``exported_labels``, modified in place.
     """
     if not validated_tracks:
         return exported_labels, {}
 
-    next_id = int(exported_labels.max()) + 1
     id_map: dict[int, int] = {}
+    reserved_ids = {int(cell_id) for cell_id, frames in validated_tracks.items() if frames}
+    used_fresh_ids = set(int(v) for v in np.unique(exported_labels))
+
+    def _next_fresh_id() -> int:
+        next_id = int(exported_labels.max()) + 1
+        while next_id in reserved_ids or next_id in used_fresh_ids:
+            next_id += 1
+        used_fresh_ids.add(next_id)
+        return next_id
 
     for cell_id, frames in validated_tracks.items():
+        cell_id = int(cell_id)
         if not frames:
             continue
 
-        new_track_id = next_id
-        id_map[cell_id] = new_track_id
-        next_id += 1
-
+        present_masks: list[tuple[int, np.ndarray]] = []
         for t in sorted(frames):
             t = int(t)
+            if t < 0 or t >= tracked_labels.shape[0] or t >= exported_labels.shape[0]:
+                continue
             frame_src = tracked_labels[t]
+            mask = np.asarray(frame_src == cell_id)
+            if mask.any():
+                present_masks.append((t, mask))
 
-            if frame_src.ndim == 3:
-                mask_3d = frame_src == cell_id
-                if not mask_3d.any():
-                    continue
-                exported_labels[t][mask_3d] = 0      # clear first
-                exported_labels[t][mask_3d] = new_track_id
+        if not present_masks:
+            continue
+
+        solver_collision = np.asarray(exported_labels == cell_id)
+        for t, mask in present_masks:
+            frame_collision = solver_collision[t]
+            if mask.ndim == frame_collision.ndim:
+                frame_collision[mask] = False
+            elif mask.ndim == 2 and frame_collision.ndim == 3:
+                frame_collision[:, mask] = False
+            elif mask.ndim == 3 and frame_collision.ndim == 2:
+                frame_collision[mask.any(axis=0)] = False
             else:
-                mask_2d = frame_src == cell_id
-                if not mask_2d.any():
-                    continue
-                exported_labels[t][mask_2d] = 0      # clear first
-                exported_labels[t][mask_2d] = new_track_id
+                raise ValueError(
+                    "Validated mask shape is incompatible with exported labels: "
+                    f"mask={mask.shape}, exported={frame_collision.shape}"
+                )
+        if solver_collision.any():
+            exported_labels[solver_collision] = _next_fresh_id()
+
+        for t, mask in present_masks:
+            frame_out = exported_labels[t]
+            if mask.ndim == frame_out.ndim:
+                frame_out[mask] = cell_id
+            elif mask.ndim == 2 and frame_out.ndim == 3:
+                frame_out[:, mask] = cell_id
+            elif mask.ndim == 3 and frame_out.ndim == 2:
+                frame_out[mask.any(axis=0)] = cell_id
+            else:
+                raise ValueError(
+                    "Validated mask shape is incompatible with exported labels: "
+                    f"mask={mask.shape}, exported={frame_out.shape}"
+                )
 
     return exported_labels, id_map
 
@@ -532,5 +564,9 @@ def resolve_with_validation(
             exported = export_tracked_labels(working_dir, cfg, out_path)
 
     exported = np.asarray(exported, dtype=np.uint32)
-    id_map = _validated_export_id_map(exported, validated_tracks, tracked_labels)
+    exported, id_map = merge_validated_into_export(
+        exported,
+        validated_tracks,
+        tracked_labels,
+    )
     return exported, id_map

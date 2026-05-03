@@ -290,13 +290,12 @@ class TestMergeValidatedIntoExport:
 
         result, id_map = merge_validated_into_export(exported, {77: {1}}, tracked)
 
-        new_id = 6  # exported.max() + 1 = 5 + 1
-        assert result[1, 2, 2] == new_id
-        assert result[1, 4, 4] == new_id
+        assert result[1, 2, 2] == 77
+        assert result[1, 4, 4] == 77
         # Pixels outside the validated mask keep their original value
         assert result[0, 0, 0] == 5
         assert result[2, 9, 9] == 5
-        assert id_map == {77: new_id}
+        assert id_map == {}
 
     def test_all_frames_of_one_cell_get_same_new_id(self):
         """A multi-frame validated cell uses the same track ID across all its frames."""
@@ -316,10 +315,11 @@ class TestMergeValidatedIntoExport:
 
         # All frames must use the same single new ID
         assert len(ids_used) == 1
-        assert id_map == {33: next(iter(ids_used))}
+        assert ids_used == {33}
+        assert id_map == {}
 
     def test_different_cells_get_different_ids(self):
-        """Two validated cells get distinct fresh IDs."""
+        """Two validated cells keep their distinct validated IDs."""
         T, H, W = 2, 20, 20
         exported = np.zeros((T, H, W), dtype=np.uint32)
 
@@ -335,16 +335,17 @@ class TestMergeValidatedIntoExport:
         assert id_a != 0
         assert id_b != 0
         assert id_a != id_b
-        assert set(id_map.keys()) == {10, 20}
-        assert id_map[10] == id_a
-        assert id_map[20] == id_b
+        assert id_a == 10
+        assert id_b == 20
+        assert id_map == {}
 
-    def test_new_ids_all_above_exported_max(self):
-        """All assigned track IDs are strictly greater than exported_labels.max()."""
+    def test_validated_ids_are_reserved_from_solver_collisions(self):
+        """Solver pixels using a validated ID outside its mask are moved away."""
         T, H, W = 3, 20, 20
         max_solver_id = 1000
         exported = np.zeros((T, H, W), dtype=np.uint32)
         exported[0, 0:3, 0:3] = max_solver_id
+        exported[2, 0:3, 0:3] = 11
 
         tracked = np.zeros((T, H, W), dtype=np.uint32)
         tracked[0, 5:10, 5:10] = 11
@@ -360,16 +361,14 @@ class TestMergeValidatedIntoExport:
         all_ids = set(result.ravel()) - {0}
         # The original max_solver_id is still there
         assert max_solver_id in all_ids
-        # All validated-cell IDs are > max_solver_id
-        new_ids = all_ids - {max_solver_id}
-        assert all(nid > max_solver_id for nid in new_ids)
-        # id_map keys are the original validated cell IDs
-        assert set(id_map.keys()) == {11, 22, 33}
-        # id_map values are all > max_solver_id
-        assert all(v > max_solver_id for v in id_map.values())
+        assert result[0, 5, 5] == 11
+        assert result[1, 5, 5] == 22
+        assert result[2, 5, 5] == 33
+        assert result[2, 1, 1] > max_solver_id
+        assert id_map == {}
 
-    def test_id_map_keys_are_original_ids_values_above_max(self):
-        """id_map keys are original validated cell IDs; values are all > original labelmap max."""
+    def test_id_map_omits_unchanged_validated_ids(self):
+        """Unchanged validated IDs do not force validation JSON remapping."""
         T, H, W = 2, 20, 20
         original_max = 50
         exported = np.zeros((T, H, W), dtype=np.uint32)
@@ -386,12 +385,7 @@ class TestMergeValidatedIntoExport:
             tracked,
         )
 
-        assert set(id_map.keys()) == {10, 20, 30}, (
-            f"Expected keys {{10, 20, 30}}, got {set(id_map.keys())}"
-        )
-        assert all(v > original_max for v in id_map.values()), (
-            f"All new IDs must be > {original_max}, got {id_map}"
-        )
+        assert id_map == {}
 
     def test_validated_cell_absent_at_frame_skipped_gracefully(self):
         """If a validated cell is absent from tracked_labels at a claimed frame, skip it."""
@@ -405,7 +399,7 @@ class TestMergeValidatedIntoExport:
 
         assert np.any(result[0] != 0)  # t=0: cell placed
         assert np.all(result[1] == 0)  # t=1: nothing placed (cell absent)
-        assert 5 in id_map  # id_map entry exists for cell 5
+        assert id_map == {}
 
     def test_3d_spatial_input(self):
         """4-D (T, Z, Y, X) labelmap works correctly."""
@@ -417,10 +411,9 @@ class TestMergeValidatedIntoExport:
 
         result, id_map = merge_validated_into_export(exported, {99: {0}}, tracked)
 
-        new_id = 1  # exported was all zeros, max+1 = 1
-        assert np.all(result[0, :, 3:7, 3:7] == new_id)
+        assert np.all(result[0, :, 3:7, 3:7] == 99)
         assert np.all(result[1] == 0)
-        assert id_map == {99: new_id}
+        assert id_map == {}
 
 
 # ===========================================================================
@@ -467,9 +460,54 @@ def test_resolve_with_validation_solves_with_annotations(monkeypatch, tmp_path):
         lambda *args, **kwargs: tracked.copy(),
         raising=False,
     )
+    result, id_map = resolve_with_validation(
+        tmp_path / "hypotheses.h5",
+        {7: {0}},
+        tracked,
+        TrackingConfig(),
+        intensity_image_path=image_path,
+    )
+
+    assert result.shape == tracked.shape
+    assert id_map == {}
+    assert np.all(result[0, 1:5, 1:5] == 7)
+    assert calls["solve"] == [{"overwrite": True, "use_annotations": True}]
+
+
+def test_resolve_with_validation_pastes_validated_masks_after_export(monkeypatch, tmp_path):
+    from cellflow.tracking_ultrack.reseed import resolve_with_validation
+
+    tracked = np.zeros((1, 16, 16), dtype=np.uint32)
+    tracked[0, 1:5, 1:5] = 7
+    exported = np.zeros_like(tracked)
+    exported[0, 1:5, 1:5] = 99
+    image_path = tmp_path / "nucleus_zavg.tif"
+    import tifffile
+    tifffile.imwrite(image_path, np.ones((1, 16, 16), dtype=np.float32))
+
     monkeypatch.setattr(
-        "cellflow.tracking_ultrack.reseed.merge_validated_into_export",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("paste-back should not run")),
+        "cellflow.tracking_ultrack.reseed.ingest_hypotheses_to_db",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "cellflow.tracking_ultrack.reseed.inject_validated_nodes",
+        lambda *args, **kwargs: type("Report", (), {"inserted": 1, "skipped_missing": 0, "faked": 0})(),
+    )
+    monkeypatch.setattr(
+        "cellflow.tracking_ultrack.reseed.write_seed_prior_node_probs",
+        lambda *args, **kwargs: type("Report", (), {"scored": 1, "seeds": 1})(),
+    )
+    monkeypatch.setattr(
+        "cellflow.tracking_ultrack.reseed.run_linking",
+        lambda *args, **kwargs: iter([(1, 1, "linked")]),
+    )
+    monkeypatch.setattr(
+        "cellflow.tracking_ultrack.reseed.run_solve",
+        lambda *args, **kwargs: iter([(1, 1, "solved")]),
+    )
+    monkeypatch.setattr(
+        "cellflow.tracking_ultrack.reseed.export_tracked_labels",
+        lambda *args, **kwargs: exported.copy(),
     )
 
     result, id_map = resolve_with_validation(
@@ -480,9 +518,8 @@ def test_resolve_with_validation_solves_with_annotations(monkeypatch, tmp_path):
         intensity_image_path=image_path,
     )
 
-    assert result.shape == tracked.shape
-    assert id_map == {7: 7}
-    assert calls["solve"] == [{"overwrite": True, "use_annotations": True}]
+    assert id_map == {}
+    assert np.all(result[0, 1:5, 1:5] == 7)
 
 
 def test_resolve_with_validation_uses_configured_linker(monkeypatch, tmp_path):
@@ -535,7 +572,7 @@ def test_resolve_with_validation_uses_configured_linker(monkeypatch, tmp_path):
     assert calls[0][1] is cfg
     assert calls[0][1].linking_mode == "iou"
     assert np.array_equal(result, tracked)
-    assert id_map == {7: 7}
+    assert id_map == {}
 
 
 # ===========================================================================

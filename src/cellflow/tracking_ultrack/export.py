@@ -9,7 +9,21 @@ import numpy as np
 import tifffile
 
 from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+
+
+def _build_export_config(cfg: TrackingConfig, working_dir: Path):
+    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+
+    return _build_ultrack_config(cfg, working_dir)
+
+
+def _materialize_labels(labels) -> np.ndarray:
+    if hasattr(labels, "compute"):
+        labels = labels.compute()
+    labels = np.asarray(labels, dtype=np.uint32)
+    if labels.ndim == 4 and labels.shape[1] == 1:
+        labels = labels[:, 0]
+    return labels
 
 
 def export_tracked_labels(
@@ -20,18 +34,27 @@ def export_tracked_labels(
     """Write ``tracked_labels.tif`` and return the (T, [Z,] Y, X) array."""
     wd = Path(working_dir)
     output_path = Path(output_path)
-    ultrack_cfg = _build_ultrack_config(cfg, wd)
+    ultrack_cfg = _build_export_config(cfg, wd)
 
-    # Try the modern to_labels API first (returns dask or numpy)
+    # Prefer public track export: tracks_to_zarr rasterizes each segment with
+    # its track_id, while label-export helpers may expose per-frame segment IDs.
+    try:
+        from ultrack.core.export import to_tracks_layer, tracks_to_zarr  # type: ignore[import]
+
+        tracks_df, _graph = to_tracks_layer(ultrack_cfg)
+        labels = _materialize_labels(
+            tracks_to_zarr(ultrack_cfg, tracks_df, overwrite=True)
+        )
+        tifffile.imwrite(str(output_path), labels, compression="zlib")
+        return labels
+    except Exception:
+        pass
+
+    # Try the modern to_labels API next (returns dask or numpy)
     try:
         from ultrack.core.export.labels import to_labels  # type: ignore[import]
 
-        labels = to_labels(ultrack_cfg)
-        if hasattr(labels, "compute"):
-            labels = labels.compute()
-        labels = np.asarray(labels, dtype=np.uint32)
-        if labels.ndim == 4 and labels.shape[1] == 1:
-            labels = labels[:, 0]
+        labels = _materialize_labels(to_labels(ultrack_cfg))
         tifffile.imwrite(str(output_path), labels, compression="zlib")
         return labels
     except Exception:
@@ -51,9 +74,7 @@ def export_tracked_labels(
         if not mask_files:
             raise RuntimeError("CTC export produced no mask files.")
         frames = [tifffile.imread(str(f)) for f in mask_files]
-        labels = np.stack(frames, axis=0).astype(np.uint32)
-        if labels.ndim == 4 and labels.shape[1] == 1:
-            labels = labels[:, 0]
+        labels = _materialize_labels(np.stack(frames, axis=0))
         tifffile.imwrite(str(output_path), labels, compression="zlib")
         return labels
     finally:

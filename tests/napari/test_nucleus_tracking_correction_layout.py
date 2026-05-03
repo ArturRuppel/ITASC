@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import napari
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence, QShortcut
-from qtpy.QtWidgets import QApplication, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 
 def _make_viewer():
@@ -302,6 +302,33 @@ def test_ultrack_section_exposes_route_selector_and_local_status():
     viewer.close()
 
 
+def test_nucleus_workflow_status_labels_are_section_local():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert not hasattr(widget, "status_lbl")
+
+    local_statuses = [
+        (widget.contour_section, widget.contour_status_lbl),
+        (widget.gen_section, widget.gen_status_lbl),
+        (widget.db_section, widget.db_status_lbl),
+        (widget.ultrack_section, widget.ultrack_status_lbl),
+        (widget.correction_section, widget.correction_status_lbl),
+    ]
+    for section, label in local_statuses:
+        assert label.text() == ""
+        assert label in section.findChildren(QLabel)
+
+    widget._set_ultrack_status("Ultrack stayed local")
+
+    assert widget.ultrack_status_lbl.text() == "Ultrack stayed local"
+    assert not hasattr(widget, "status_lbl")
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_section_exposes_validated_seed_prior_controls():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
@@ -450,6 +477,49 @@ def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path
     assert "seed_sigma_space=40.0" in script
     assert "seed_tau_time=4.5" in script
     assert "seed_max_dt=9" in script
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_resolve_done_updates_layer_without_saving_tracked_labels():
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    source = (package_root / "nucleus_workflow_widget.py").read_text()
+    resolve_done = source.split("        def _on_resolve_done(result: tuple) -> None:", 1)[1].split(
+        "        def _on_resolve_progress", 1
+    )[0]
+
+    assert "write_tracked_frame" not in resolve_done
+    assert "invalidate_track(pos_dir" not in resolve_done
+    assert "validate_track(pos_dir" not in resolve_done
+    assert "Unsaved" in resolve_done
+
+
+def test_resolve_terminal_script_does_not_autosave_tracked_labels(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    captured = _install_terminal_capture(monkeypatch)
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {12: {0, 1}})
+
+    pos_dir = tmp_path / "pos00"
+    cellpose_dir = pos_dir / "1_cellpose"
+    nucleus_dir = pos_dir / "2_nucleus"
+    cellpose_dir.mkdir(parents=True)
+    nucleus_dir.mkdir()
+    (nucleus_dir / "hypotheses.h5").touch()
+    (nucleus_dir / "tracked_labels.tif").touch()
+    (cellpose_dir / "cell_prob_zavg.tif").touch()
+    widget._pos_dir = pos_dir
+
+    widget._on_resolve_terminal()
+    script = _read_launched_script(captured)
+
+    assert "write_tracked_frame" not in script
+    assert "invalidate_track(pos_dir" not in script
+    assert "validate_track(pos_dir" not in script
+    assert "not saved" in script
 
     widget.deleteLater()
     viewer.close()
