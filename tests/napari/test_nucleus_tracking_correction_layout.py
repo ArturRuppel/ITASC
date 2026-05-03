@@ -797,3 +797,14 @@ def test_correction_widget_top_buttons_expand_horizontally():
 
     widget.deleteLater()
     viewer.close()
+
+
+def test_tracking_config_has_segmentation_fields():
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    cfg = TrackingConfig()
+    assert cfg.seg_min_area == 300
+    assert cfg.seg_max_area == 100_000
+    assert cfg.seg_foreground_threshold == 0.5
+    assert cfg.seg_min_frontier == 0.0
+    assert cfg.seg_ws_hierarchy == "area"
+    assert cfg.seg_n_workers == 1
