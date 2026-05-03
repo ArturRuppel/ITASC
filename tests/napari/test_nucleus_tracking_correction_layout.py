@@ -352,20 +352,29 @@ def test_nucleus_workflow_status_labels_are_section_local():
     viewer.close()
 
 
-def test_ultrack_section_exposes_validated_seed_prior_controls():
+def test_db_gen_section_exposes_quality_and_power_controls():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.ultrack_power_spin.value() == 4.0
-    assert widget.ultrack_quality_exp_spin.value() == 8.0
+    assert widget.db_gen_power_spin.value() == 4.0
+    assert widget.db_gen_quality_exp_spin.value() == 8.0
+    assert "solver transform" in widget.db_gen_power_spin.toolTip()
+    assert "node_prob" in widget.db_gen_quality_exp_spin.toolTip()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_section_still_exposes_seed_prior_controls():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
     assert widget.ultrack_seed_weight_spin.value() == 0.5
     assert widget.ultrack_seed_space_spin.value() == 25.0
     assert widget.ultrack_seed_time_spin.value() == 2.0
     assert widget.ultrack_seed_window_spin.value() == 5
-
-    assert "solver transform" in widget.ultrack_power_spin.toolTip()
-    assert "node_prob" in widget.ultrack_quality_exp_spin.toolTip()
     assert "validated cells" in widget.ultrack_seed_weight_spin.toolTip()
 
     widget.deleteLater()
@@ -378,7 +387,6 @@ def test_validated_seed_prior_controls_follow_resolve_checkbox():
     widget = widget_class(viewer)
 
     controls = [
-        widget.ultrack_quality_exp_spin,
         widget.ultrack_seed_weight_spin,
         widget.ultrack_seed_space_spin,
         widget.ultrack_seed_time_spin,
@@ -388,12 +396,10 @@ def test_validated_seed_prior_controls_follow_resolve_checkbox():
     widget.ultrack_route_check.setChecked(False)
     _app.processEvents()
     assert all(not control.isEnabled() for control in controls)
-    assert widget.ultrack_power_spin.isEnabled()
 
     widget.ultrack_route_check.setChecked(True)
     _app.processEvents()
     assert all(control.isEnabled() for control in controls)
-    assert widget.ultrack_power_spin.isEnabled()
 
     widget.deleteLater()
     viewer.close()
@@ -405,8 +411,6 @@ def test_ultrack_seed_prior_controls_persist_through_state():
     widget = widget_class(viewer)
 
     widget.ultrack_route_check.setChecked(True)
-    widget.ultrack_power_spin.setValue(3.5)
-    widget.ultrack_quality_exp_spin.setValue(9.0)
     widget.ultrack_seed_weight_spin.setValue(0.75)
     widget.ultrack_seed_space_spin.setValue(30.0)
     widget.ultrack_seed_time_spin.setValue(3.0)
@@ -419,8 +423,6 @@ def test_ultrack_seed_prior_controls_persist_through_state():
     widget.set_state(state)
 
     assert widget.ultrack_route_check.isChecked()
-    assert widget.ultrack_power_spin.value() == 3.5
-    assert widget.ultrack_quality_exp_spin.value() == 9.0
     assert widget.ultrack_seed_weight_spin.value() == 0.75
     assert widget.ultrack_seed_space_spin.value() == 30.0
     assert widget.ultrack_seed_time_spin.value() == 3.0
@@ -748,7 +750,6 @@ def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
     viewer.close()
 
 
-@pytest.mark.xfail(reason="Pending nucleus workflow refactor in nucleus_workflow_widget", strict=False)
 def test_correction_section_has_no_separate_resolve_action_group():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
