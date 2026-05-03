@@ -828,3 +828,19 @@ def test_build_ultrack_config_applies_segmentation_fields(tmp_path):
     assert abs(sc.threshold - 0.3) < 1e-6
     assert abs(sc.min_frontier - 0.05) < 1e-6
     assert sc.n_workers == 2
+
+
+def test_extend_track_from_db_missing_db_raises(tmp_path):
+    from cellflow.tracking_ultrack.extend import extend_track_from_db
+    import numpy as np
+    tracked = np.zeros((3, 10, 10), dtype=np.uint32)
+    tracked[0, 2:5, 2:5] = 7
+    result = extend_track_from_db(
+        source_id=7,
+        source_frame=0,
+        direction="forward",
+        tracked_labels=tracked,
+        db_path=tmp_path / "data.db",
+        d_max=40.0,
+    )
+    assert result is None  # missing DB returns None; widget shows clear error
