@@ -830,6 +830,21 @@ def test_build_ultrack_config_applies_segmentation_fields(tmp_path):
     assert sc.n_workers == 2
 
 
+def test_resolve_with_canonical_segment_exists():
+    from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment
+    import inspect
+    sig = inspect.signature(resolve_with_canonical_segment)
+    params = set(sig.parameters)
+    assert "contour_maps_path" in params
+    assert "foreground_masks_path" in params
+    assert "validated_tracks" in params
+    assert "tracked_labels" in params
+    assert "cfg" in params
+    assert "intensity_image_path" in params
+    # must NOT require hypotheses_path
+    assert "hypotheses_path" not in params
+
+
 def test_extend_track_from_db_missing_db_raises(tmp_path):
     from cellflow.tracking_ultrack.extend import extend_track_from_db
     import numpy as np
