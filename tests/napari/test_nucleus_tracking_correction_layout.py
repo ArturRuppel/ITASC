@@ -519,7 +519,9 @@ def test_resolve_terminal_script_does_not_autosave_tracked_labels(tmp_path, monk
     assert "write_tracked_frame" not in script
     assert "invalidate_track(pos_dir" not in script
     assert "validate_track(pos_dir" not in script
-    assert "not saved" in script
+    assert "tracked_labels_resolve_preview.tif" in script
+    assert "tifffile.imwrite(str(preview_path), new_labels" in script
+    assert "Preview saved" in script
 
     widget.deleteLater()
     viewer.close()
