@@ -37,6 +37,14 @@ class TrackingConfig(BaseModel):
     time_limit: int = 36000
     window_size: int = 0  # 0 = solve all at once
 
+    # Segmentation (ultrack.segment / ultrack.core.segmentation.processing.segment)
+    seg_min_area: int = 300
+    seg_max_area: int = 100_000
+    seg_foreground_threshold: float = 0.5
+    seg_min_frontier: float = 0.0
+    seg_ws_hierarchy: str = "area"    # "area", "dynamics", or "volume"
+    seg_n_workers: int = 1
+
     # Resolve-from-validated node prior
     quality_exponent: float = 8.0
     seed_weight: float = 0.5

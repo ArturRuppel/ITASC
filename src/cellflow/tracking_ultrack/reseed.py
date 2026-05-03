@@ -570,3 +570,107 @@ def resolve_with_validation(
         tracked_labels,
     )
     return exported, id_map
+
+
+def resolve_with_canonical_segment(
+    contour_maps_path: str | Path,
+    foreground_masks_path: str | Path,
+    validated_tracks: dict[int, set[int]],
+    tracked_labels: np.ndarray,
+    cfg: "TrackingConfig",
+    progress_cb: Callable[[str], None] | None = None,
+    *,
+    intensity_image_path: str | Path,
+) -> tuple[np.ndarray, dict[int, int]]:
+    """Re-solve using canonical ultrack.segment instead of hypotheses.h5.
+
+    Replaces the old resolve_with_validation() call chain:
+      old: hypotheses.h5 → ingest_hypotheses_to_db → inject → score → link → solve
+      new: foreground_masks + contour_maps → ultrack.segment → inject → score → link → solve
+    """
+    import tifffile
+
+    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+
+    try:
+        from ultrack.core.segmentation.processing import segment as ultrack_segment
+    except ImportError as exc:
+        raise ImportError(
+            "ultrack must be installed (conda env cellflow) to use canonical segment"
+        ) from exc
+
+    def _notify(msg: str) -> None:
+        if progress_cb is not None:
+            progress_cb(msg)
+
+    contour_maps_path = Path(contour_maps_path)
+    foreground_masks_path = Path(foreground_masks_path)
+
+    if not validated_tracks:
+        return np.asarray(tracked_labels, dtype=np.uint32).copy(), {}
+
+    _notify("Loading contour maps and foreground masks…")
+    contours = np.asarray(tifffile.imread(str(contour_maps_path)), dtype=np.float32)
+    foreground = np.asarray(tifffile.imread(str(foreground_masks_path)), dtype=np.float32)
+    if contours.ndim == 4 and contours.shape[1] == 1:
+        contours = contours[:, 0]
+    if foreground.ndim == 4 and foreground.shape[1] == 1:
+        foreground = foreground[:, 0]
+
+    with tempfile.TemporaryDirectory(prefix="cellflow_resolve_") as tmp_dir:
+        working_dir = Path(tmp_dir)
+        ultrack_cfg = _build_ultrack_config(cfg, working_dir)
+
+        _notify("Segmenting with canonical Ultrack hierarchy…")
+        ultrack_segment(
+            foreground,
+            contours,
+            ultrack_cfg,
+            max_segments_per_time=cfg.max_segments_per_time,
+            overwrite=True,
+        )
+
+        _notify("Injecting validated nodes…")
+        inject_validated_nodes(
+            working_dir=working_dir,
+            validated_tracks=validated_tracks,
+            tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
+            cfg=cfg,
+        )
+
+        _notify("Scoring node probabilities…")
+        write_seed_prior_node_probs(working_dir, intensity_image_path, cfg)
+
+        _notify("Linking candidates…")
+        for _step, _total, label in run_linking(working_dir, cfg):
+            _notify(f"[link] {label}")
+
+        _notify("Solving ILP…")
+        for _step, _total, label in run_solve(working_dir, cfg, overwrite=True):
+            _notify(f"[solve] {label}")
+
+        _notify("Exporting tracked labels…")
+        tmp_out = working_dir / "tracked_labels_resolve.tif"
+        export_tracked_labels(working_dir, cfg, tmp_out)
+        new_labels = np.asarray(tifffile.imread(str(tmp_out)), dtype=np.uint32)
+        if new_labels.ndim == 4 and new_labels.shape[1] == 1:
+            new_labels = new_labels[:, 0]
+
+    # Build id_map: validated cell_id → exported ID covering its pixels most often
+    id_map: dict[int, int] = {}
+    tl = np.asarray(tracked_labels, dtype=np.uint32)
+    for cell_id, frames in validated_tracks.items():
+        vote: dict[int, int] = {}
+        for t in frames:
+            if t >= new_labels.shape[0] or t >= tl.shape[0]:
+                continue
+            src_mask = tl[t] == cell_id
+            if not src_mask.any():
+                continue
+            for exported_id in np.unique(new_labels[t][src_mask]):
+                if exported_id != 0:
+                    vote[int(exported_id)] = vote.get(int(exported_id), 0) + 1
+        if vote:
+            id_map[cell_id] = max(vote, key=vote.__getitem__)
+
+    return new_labels, id_map

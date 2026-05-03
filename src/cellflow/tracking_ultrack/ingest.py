@@ -79,8 +79,9 @@ def _generate_id(index: int, time: int, max_segments: int) -> int:
 
 def _build_ultrack_config(cfg: TrackingConfig, working_dir: Path):
     from ultrack.config import MainConfig
+    from ultrack.config.segmentationconfig import NAME_TO_WS_HIER
 
-    return MainConfig(
+    ultrack_cfg = MainConfig(
         data={"working_dir": str(working_dir)},
         linking={
             "max_distance": cfg.max_distance,
@@ -101,6 +102,14 @@ def _build_ultrack_config(cfg: TrackingConfig, working_dir: Path):
             "window_size": cfg.window_size if cfg.window_size > 0 else None,
         },
     )
+    sc = ultrack_cfg.segmentation_config
+    sc.min_area = cfg.seg_min_area
+    sc.max_area = cfg.seg_max_area
+    sc.threshold = cfg.seg_foreground_threshold
+    sc.min_frontier = cfg.seg_min_frontier
+    sc.ws_hierarchy = NAME_TO_WS_HIER[cfg.seg_ws_hierarchy]
+    sc.n_workers = cfg.seg_n_workers
+    return ultrack_cfg
 
 
 def _select_solver() -> str:

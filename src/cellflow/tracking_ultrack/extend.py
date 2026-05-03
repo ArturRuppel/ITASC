@@ -95,3 +95,91 @@ def extend_track(
                 best_score = score
 
     return best
+
+
+def extend_track_from_db(
+    *,
+    source_id: int,
+    source_frame: int,
+    direction: Literal["forward", "backward"],
+    tracked_labels: np.ndarray,   # (T, Y, X) uint32
+    db_path: Path,
+    d_max: float = _D_MAX_DEFAULT,
+) -> ExtendResult | None:
+    """Extend a track using candidates from ultrack_workdir/data.db.
+
+    Returns None if the DB is missing, target frame is out of range, or no
+    candidate within d_max is found.  Widget caller should show a local status
+    message on None.
+    """
+    import pickle
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    if not db_path.exists():
+        return None
+
+    T = tracked_labels.shape[0]
+    target_frame = source_frame + (1 if direction == "forward" else -1)
+    if target_frame < 0 or target_frame >= T:
+        return None
+
+    source_mask = tracked_labels[source_frame] == source_id
+    if not source_mask.any():
+        return None
+
+    props = regionprops(source_mask.astype(np.uint8))
+    src_cy, src_cx = props[0].centroid
+    src_area = float(props[0].area)
+
+    target_frame_labels = tracked_labels[target_frame]
+    other_cells = (target_frame_labels != 0) & (target_frame_labels != source_id)
+
+    engine = sqla.create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    best: ExtendResult | None = None
+    best_score: tuple[float, float] | None = None
+
+    with Session(engine) as session:
+        candidates = session.query(NodeDB).filter(NodeDB.t == target_frame).all()
+        for node in candidates:
+            # Use centroid from NodeDB for quick distance filter before unpickling
+            cy = float(node.y)
+            cx = float(node.x)
+            dist = float(np.hypot(cy - src_cy, cx - src_cx))
+            if dist > d_max:
+                continue
+            try:
+                node_obj = pickle.loads(node.pickle)
+            except Exception:
+                continue
+            # Node.bbox = [z_min, y_min, x_min, z_max, y_max, x_max] (3D)
+            bbox_arr = node_obj.bbox
+            y0, x0, y1, x1 = int(bbox_arr[1]), int(bbox_arr[2]), int(bbox_arr[4]), int(bbox_arr[5])
+            mask_nd = node_obj.mask
+            mask_2d = mask_nd[0] if mask_nd.ndim == 3 else mask_nd
+            if mask_2d.shape != (y1 - y0, x1 - x0):
+                continue
+            full_mask = np.zeros(tracked_labels.shape[1:], dtype=bool)
+            full_mask[y0:y1, x0:x1] = mask_2d.astype(bool)
+            cand_area = float(full_mask.sum())
+            if cand_area == 0:
+                continue
+            existing_overlap = float((full_mask & other_cells).sum()) / cand_area
+            area_ratio = min(src_area, cand_area) / max(src_area, cand_area)
+            combined = area_ratio * (1.0 - existing_overlap)
+            score = (combined, -dist)
+            if best_score is None or score > best_score:
+                best_score = score
+                best = ExtendResult(
+                    target_frame=target_frame,
+                    candidate_label=int(node.id),
+                    candidate_partition=0,
+                    mask_2d=full_mask,
+                    bbox=(y0, x0, y1, x1),
+                    centroid_distance=dist,
+                    area_ratio=area_ratio,
+                    existing_overlap=existing_overlap,
+                )
+    engine.dispose()
+    return best

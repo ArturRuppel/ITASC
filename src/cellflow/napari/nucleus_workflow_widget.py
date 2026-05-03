@@ -76,12 +76,17 @@ from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
 from cellflow.tracking_ultrack.linking import run_linking
-from cellflow.tracking_ultrack.extend import extend_track
-from cellflow.tracking_ultrack.reseed import resolve_with_validation
+from cellflow.tracking_ultrack.extend import extend_track, extend_track_from_db
+from cellflow.tracking_ultrack.reseed import resolve_with_validation, resolve_with_canonical_segment
 from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
+
+try:
+    from ultrack.core.segmentation.processing import segment as _ultrack_segment
+except ImportError:
+    _ultrack_segment = None  # type: ignore[assignment]
 
 _PREVIEW_LAYER = "Preview: Nucleus"
 _HYP_LAYER = "Hypothesis: Nucleus"
@@ -155,6 +160,7 @@ class NucleusWorkflowWidget(QWidget):
         )
 
         cp_params_widget = QWidget()
+        cp_params_widget.setMinimumWidth(520)
         cp_params_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
@@ -626,12 +632,147 @@ class NucleusWorkflowWidget(QWidget):
         )
         layout.addWidget(self.db_section)
 
-        # ── 4. Tracking & Correction ───────────────────────────────────────
-        _tracking_correction_inner = QWidget()
-        tracking_correction_lay = QVBoxLayout(_tracking_correction_inner)
-        tracking_correction_lay.setContentsMargins(4, 4, 4, 4)
-        tracking_correction_lay.setSpacing(4)
-        tracking_correction_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Hide deprecated H5-based sections — preserved in code for backward compat
+        self.gen_section.setVisible(False)
+        self.db_section.setVisible(False)
+
+        # ── 2. Ultrack Database Generation ────────────────────────────────
+        _db_gen_inner = QWidget()
+        db_gen_lay = QVBoxLayout(_db_gen_inner)
+        db_gen_lay.setContentsMargins(0, 0, 0, 0)
+        db_gen_lay.setSpacing(4)
+        db_gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        db_gen_grid = block_grid(horizontal_spacing=12)
+        db_gen_grid.setContentsMargins(0, 0, 0, 0)
+
+        self.db_gen_min_area_spin = QSpinBox()
+        self.db_gen_min_area_spin.setRange(0, 1_000_000)
+        self.db_gen_min_area_spin.setValue(300)
+
+        self.db_gen_max_area_spin = QSpinBox()
+        self.db_gen_max_area_spin.setRange(0, 10_000_000)
+        self.db_gen_max_area_spin.setValue(100_000)
+
+        self.db_gen_fg_thr_spin = QDoubleSpinBox()
+        self.db_gen_fg_thr_spin.setRange(0.0, 1.0)
+        self.db_gen_fg_thr_spin.setValue(0.5)
+        self.db_gen_fg_thr_spin.setDecimals(2)
+        self.db_gen_fg_thr_spin.setSingleStep(0.05)
+        self.db_gen_fg_thr_spin.setToolTip(
+            "Pixel-level foreground threshold for ultrack segmentation (threshold in segmentation_config)"
+        )
+
+        self.db_gen_min_frontier_spin = QDoubleSpinBox()
+        self.db_gen_min_frontier_spin.setRange(0.0, 1.0)
+        self.db_gen_min_frontier_spin.setValue(0.0)
+        self.db_gen_min_frontier_spin.setDecimals(3)
+        self.db_gen_min_frontier_spin.setSingleStep(0.01)
+        self.db_gen_min_frontier_spin.setToolTip(
+            "Minimum boundary fraction to keep a candidate (min_frontier in segmentation_config)"
+        )
+
+        self.db_gen_ws_hierarchy_combo = QComboBox()
+        self.db_gen_ws_hierarchy_combo.addItems(["area", "dynamics", "volume"])
+
+        self.db_gen_n_workers_spin = QSpinBox()
+        self.db_gen_n_workers_spin.setRange(1, max(1, os.cpu_count() or 1))
+        self.db_gen_n_workers_spin.setValue(1)
+        self.db_gen_n_workers_spin.setToolTip("Parallel workers for segmentation")
+
+        self.db_gen_max_dist_spin = QDoubleSpinBox()
+        self.db_gen_max_dist_spin.setRange(0.0, 500.0)
+        self.db_gen_max_dist_spin.setValue(15.0)
+        self.db_gen_max_dist_spin.setDecimals(1)
+
+        self.db_gen_max_neighbors_spin = QSpinBox()
+        self.db_gen_max_neighbors_spin.setRange(1, 50)
+        self.db_gen_max_neighbors_spin.setValue(5)
+
+        self.db_gen_linking_mode_combo = QComboBox()
+        self.db_gen_linking_mode_combo.addItems(["default", "iou"])
+
+        self.db_gen_iou_weight_spin = QDoubleSpinBox()
+        self.db_gen_iou_weight_spin.setRange(0.0, 1.0)
+        self.db_gen_iou_weight_spin.setValue(1.0)
+        self.db_gen_iou_weight_spin.setDecimals(2)
+        self.db_gen_iou_weight_spin.setEnabled(False)
+
+        self.db_gen_quality_exp_spin = QDoubleSpinBox()
+        self.db_gen_quality_exp_spin.setRange(0.1, 50.0)
+        self.db_gen_quality_exp_spin.setValue(8.0)
+        self.db_gen_quality_exp_spin.setDecimals(2)
+        self.db_gen_quality_exp_spin.setToolTip(
+            "Raises signal-based quality before storing as node_prob"
+        )
+
+        self.db_gen_power_spin = QDoubleSpinBox()
+        self.db_gen_power_spin.setRange(0.1, 20.0)
+        self.db_gen_power_spin.setValue(4.0)
+        self.db_gen_power_spin.setDecimals(2)
+        self.db_gen_power_spin.setToolTip(
+            "Ultrack solver transform for node_prob and link weights"
+        )
+
+        add_block_pair_row(db_gen_grid, 0, "Min Area (px):", _compact(self.db_gen_min_area_spin), "Max Area (px):", _compact(self.db_gen_max_area_spin))
+        add_block_pair_row(db_gen_grid, 1, "FG Threshold:", _compact(self.db_gen_fg_thr_spin), "Min Frontier:", _compact(self.db_gen_min_frontier_spin))
+        add_block_pair_row(db_gen_grid, 2, "WS Hierarchy:", self.db_gen_ws_hierarchy_combo, "N Workers:", _compact(self.db_gen_n_workers_spin))
+        add_block_pair_row(db_gen_grid, 3, "Max Distance (px):", _compact(self.db_gen_max_dist_spin), "Max Neighbors:", _compact(self.db_gen_max_neighbors_spin))
+        add_block_pair_row(db_gen_grid, 4, "Linking Mode:", self.db_gen_linking_mode_combo, "IoU Weight:", _compact(self.db_gen_iou_weight_spin))
+        add_block_pair_row(db_gen_grid, 5, "Quality Exp:", _compact(self.db_gen_quality_exp_spin), "Power:", _compact(self.db_gen_power_spin))
+        db_gen_lay.addLayout(db_gen_grid)
+
+        db_gen_run_row = block_grid(horizontal_spacing=12)
+        self.run_db_gen_btn = QPushButton("Run DB Generation")
+        self.run_db_gen_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.db_gen_terminal_btn = QPushButton("Run in Terminal")
+        self.db_gen_terminal_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        add_block_button_row(db_gen_run_row, 0, self.run_db_gen_btn, self.db_gen_terminal_btn)
+        db_gen_lay.addLayout(db_gen_run_row)
+
+        self.db_gen_status_lbl = QLabel("")
+        self.db_gen_status_lbl.setWordWrap(True)
+        self.db_gen_status_lbl.setVisible(False)
+        db_gen_lay.addWidget(self.db_gen_status_lbl)
+
+        self.db_gen_progress_bar = QProgressBar()
+        self.db_gen_progress_bar.setRange(0, 100)
+        self.db_gen_progress_bar.setValue(0)
+        self.db_gen_progress_bar.setVisible(False)
+        db_gen_lay.addWidget(self.db_gen_progress_bar)
+
+        self.db_gen_section = CollapsibleSection(
+            "2. Ultrack Database Generation", _db_gen_inner, expanded=False
+        )
+        layout.addWidget(self.db_gen_section)
+
+        # ── 3. Ultrack Database Browser ───────────────────────────────────
+        _ultrack_db_browser_inner = QWidget()
+        ultrack_db_browser_lay = QVBoxLayout(_ultrack_db_browser_inner)
+        ultrack_db_browser_lay.setContentsMargins(0, 0, 0, 0)
+        ultrack_db_browser_lay.setSpacing(4)
+
+        from qtpy.QtGui import QIcon
+        self.ultrack_db_info_lbl = QLabel("—")
+        self.ultrack_db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_info_lbl)
+
+        self.ultrack_db_refresh_btn = QPushButton()
+        self.ultrack_db_refresh_btn.setToolTip("Refresh Ultrack database browser")
+        self.ultrack_db_refresh_btn.setIcon(QIcon.fromTheme("view-refresh"))
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_refresh_btn)
+
+        self.ultrack_db_section_status_lbl = QLabel("")
+        self.ultrack_db_section_status_lbl.setWordWrap(True)
+        self.ultrack_db_section_status_lbl.setVisible(False)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_section_status_lbl)
+
+        self.ultrack_db_browser_section = CollapsibleSection(
+            "3. Ultrack Database Browser", _ultrack_db_browser_inner, expanded=False
+        )
+        layout.addWidget(self.ultrack_db_browser_section)
+
+        # ── 4. Ultrack Tracking ───────────────────────────────────────────
 
         _ultrack_inner = QWidget()
         ultrack_lay = QVBoxLayout(_ultrack_inner)
@@ -872,9 +1013,9 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.addWidget(ultrack_attrib)
 
         self.ultrack_section = CollapsibleSection(
-            "Ultrack Tracking", _ultrack_inner, expanded=True
+            "4. Ultrack Tracking", _ultrack_inner, expanded=True
         )
-        tracking_correction_lay.addWidget(self.ultrack_section)
+        layout.addWidget(self.ultrack_section)
 
         _corr_inner = QWidget()
         _corr_inner_lay = QVBoxLayout(_corr_inner)
@@ -975,22 +1116,9 @@ class NucleusWorkflowWidget(QWidget):
         _corr_inner_lay.addWidget(self.correction_shortcuts_section)
 
         self.correction_section = CollapsibleSection(
-            "Correction", _corr_inner, expanded=True
+            "5. Correction", _corr_inner, expanded=True
         )
-        tracking_correction_lay.addWidget(self.correction_section)
-
-        self.tracking_correction_section = CollapsibleSection(
-            "4. Tracking & Correction", _tracking_correction_inner, expanded=True
-        )
-        layout.addWidget(self.tracking_correction_section)
-
-        # ── Outputs ───────────────────────────────────────────────────────
-        self.output_files = PipelineFilesWidget([
-            ("Outputs", [
-                ("2_nucleus/hypotheses.h5", "Hypotheses DB"),
-            ]),
-        ])
-        layout.addWidget(self.output_files)
+        layout.addWidget(self.correction_section)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Signal wiring
@@ -1014,6 +1142,10 @@ class NucleusWorkflowWidget(QWidget):
         self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
         self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
         self.del_stack_btn.clicked.connect(self._on_remove_stack)
+        self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
+        self.db_gen_terminal_btn.clicked.connect(self._on_db_gen_terminal)
+        self.db_gen_linking_mode_combo.currentTextChanged.connect(self._on_db_gen_mode_changed)
+        self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
         self.run_ultrack_btn.clicked.connect(self._on_run_tracking_route)
         self.ultrack_terminal_btn.clicked.connect(self._on_run_tracking_route_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
@@ -1045,7 +1177,7 @@ class NucleusWorkflowWidget(QWidget):
         self.input_files.refresh(pos_dir)
         self.contour_files.refresh(pos_dir)
         self._update_contour_status_labels()
-        self.output_files.refresh(pos_dir)
+        pass  # output_files removed; per-section file widgets handle display
         if pos_dir is None:
             self.correction_widget.deactivate()
             return
@@ -1089,6 +1221,251 @@ class NucleusWorkflowWidget(QWidget):
 
     def _ultrack_workdir(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "ultrack_workdir" if self._pos_dir else None
+
+    def _ultrack_db_path(self) -> Path | None:
+        workdir = self._ultrack_workdir()
+        return workdir / "data.db" if workdir else None
+
+    def _foreground_masks_path(self) -> Path | None:
+        return self._pos_dir / "2_nucleus" / "foreground_masks.tif" if self._pos_dir else None
+
+    def _nucleus_prob_zavg_path(self) -> Path | None:
+        return self._pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif" if self._pos_dir else None
+
+    # ── DB Generation section ─────────────────────────────────────────────────
+
+    def _db_gen_config_from_controls(self) -> UltrackConfig:
+        return UltrackConfig(
+            seg_min_area=self.db_gen_min_area_spin.value(),
+            seg_max_area=self.db_gen_max_area_spin.value(),
+            seg_foreground_threshold=self.db_gen_fg_thr_spin.value(),
+            seg_min_frontier=self.db_gen_min_frontier_spin.value(),
+            seg_ws_hierarchy=self.db_gen_ws_hierarchy_combo.currentText(),
+            seg_n_workers=self.db_gen_n_workers_spin.value(),
+            max_distance=self.db_gen_max_dist_spin.value(),
+            max_neighbors=self.db_gen_max_neighbors_spin.value(),
+            linking_mode=self.db_gen_linking_mode_combo.currentText(),
+            iou_weight=self.db_gen_iou_weight_spin.value(),
+            quality_exponent=self.db_gen_quality_exp_spin.value(),
+            power=self.db_gen_power_spin.value(),
+            link_n_workers=self.db_gen_n_workers_spin.value(),
+        )
+
+    def _on_run_db_generation(self) -> None:
+        if self._pos_dir is None:
+            self._set_db_gen_status("No project open.")
+            return
+        contour_path = self._contour_maps_path()
+        fg_path = self._foreground_masks_path()
+        nuc_zavg_path = self._nucleus_prob_zavg_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_db_gen_status("Missing: contour_maps.tif — run Contour Maps first.")
+            return
+        if fg_path is None or not fg_path.exists():
+            self._set_db_gen_status(
+                "Missing: foreground_masks.tif — provide 2_nucleus/foreground_masks.tif."
+            )
+            return
+        if nuc_zavg_path is None or not nuc_zavg_path.exists():
+            self._set_db_gen_status("Missing: nucleus_prob_zavg.tif — run Cellpose first.")
+            return
+        if _ultrack_segment is None:
+            self._set_db_gen_status("ultrack not installed — activate the cellflow conda environment.")
+            return
+
+        cfg = self._db_gen_config_from_controls()
+        working_dir = self._ultrack_workdir()
+        pos_dir = self._pos_dir
+
+        self.db_gen_progress_bar.setRange(0, 0)
+        self.db_gen_progress_bar.setVisible(True)
+        self._set_db_gen_status("Starting DB generation…")
+        self.run_db_gen_btn.setEnabled(False)
+        self.db_gen_terminal_btn.setEnabled(False)
+
+        @thread_worker(connect={
+            "yielded": self._on_db_gen_progress,
+            "returned": self._on_db_gen_done,
+            "errored": self._on_db_gen_worker_error,
+        })
+        def _worker():
+            yield "Loading inputs…"
+            contours = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
+            foreground = np.asarray(tifffile.imread(str(fg_path)), dtype=np.float32)
+            if contours.ndim == 4 and contours.shape[1] == 1:
+                contours = contours[:, 0]
+            if foreground.ndim == 4 and foreground.shape[1] == 1:
+                foreground = foreground[:, 0]
+
+            from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+
+            working_dir.mkdir(parents=True, exist_ok=True)
+            ultrack_cfg = _build_ultrack_config(cfg, working_dir)
+
+            yield "Segmenting candidates (ultrack hierarchy)…"
+            _ultrack_segment(
+                foreground,
+                contours,
+                ultrack_cfg,
+                max_segments_per_time=cfg.max_segments_per_time,
+                overwrite=True,
+            )
+
+            yield "Scoring node probabilities…"
+            write_seed_prior_node_probs(working_dir, nuc_zavg_path, cfg)
+
+            yield "Linking candidates…"
+            for step, total, label in run_linking(working_dir, cfg):
+                yield f"[link {step}/{total}] {label}"
+
+            return pos_dir
+
+        _worker()
+
+    def _on_db_gen_terminal(self) -> None:
+        import sys
+        import tempfile
+
+        if self._pos_dir is None:
+            self._set_db_gen_status("No project open.")
+            return
+        contour_path = self._contour_maps_path()
+        fg_path = self._foreground_masks_path()
+        nuc_zavg_path = self._nucleus_prob_zavg_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_db_gen_status("Missing: contour_maps.tif")
+            return
+        if fg_path is None or not fg_path.exists():
+            self._set_db_gen_status("Missing: foreground_masks.tif")
+            return
+        if nuc_zavg_path is None or not nuc_zavg_path.exists():
+            self._set_db_gen_status("Missing: nucleus_prob_zavg.tif")
+            return
+
+        cfg = self._db_gen_config_from_controls()
+        working_dir = self._ultrack_workdir()
+
+        python_code = (
+            "import pathlib, sys\n"
+            "import numpy as np\n"
+            "import tifffile\n"
+            "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
+            "from cellflow.tracking_ultrack.config import TrackingConfig\n"
+            "from cellflow.tracking_ultrack.ingest import _build_ultrack_config\n"
+            "from cellflow.tracking_ultrack.linking import run_linking\n"
+            "from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs\n"
+            "from ultrack.core.segmentation.processing import segment as ultrack_segment\n"
+            "\n"
+            "if __name__ == '__main__':\n"
+            f"    contour_path = pathlib.Path({str(contour_path)!r})\n"
+            f"    foreground_masks_path = pathlib.Path({str(fg_path)!r})\n"
+            f"    nucleus_prob_zavg_path = pathlib.Path({str(nuc_zavg_path)!r})\n"
+            f"    working_dir = pathlib.Path({str(working_dir)!r})\n"
+            "    cfg = TrackingConfig(\n"
+            f"        seg_min_area={cfg.seg_min_area},\n"
+            f"        seg_max_area={cfg.seg_max_area},\n"
+            f"        seg_foreground_threshold={cfg.seg_foreground_threshold},\n"
+            f"        seg_min_frontier={cfg.seg_min_frontier},\n"
+            f"        seg_ws_hierarchy={cfg.seg_ws_hierarchy!r},\n"
+            f"        seg_n_workers={cfg.seg_n_workers},\n"
+            f"        max_distance={cfg.max_distance},\n"
+            f"        max_neighbors={cfg.max_neighbors},\n"
+            f"        linking_mode={cfg.linking_mode!r},\n"
+            f"        iou_weight={cfg.iou_weight},\n"
+            f"        quality_exponent={cfg.quality_exponent},\n"
+            f"        power={cfg.power},\n"
+            f"        link_n_workers={cfg.link_n_workers},\n"
+            "    )\n"
+            "    contours = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)\n"
+            "    foreground_masks = np.asarray(tifffile.imread(str(foreground_masks_path)), dtype=np.float32)\n"
+            "    if contours.ndim == 4 and contours.shape[1] == 1:\n"
+            "        contours = contours[:, 0]\n"
+            "    if foreground_masks.ndim == 4 and foreground_masks.shape[1] == 1:\n"
+            "        foreground_masks = foreground_masks[:, 0]\n"
+            "    working_dir.mkdir(parents=True, exist_ok=True)\n"
+            "    ultrack_cfg = _build_ultrack_config(cfg, working_dir)\n"
+            "    print('[1/3] Segmenting candidates...', flush=True)\n"
+            "    ultrack_segment(\n"
+            "        foreground_masks,\n"
+            "        contours,\n"
+            "        ultrack_cfg,\n"
+            "        max_segments_per_time=cfg.max_segments_per_time,\n"
+            "        overwrite=True,\n"
+            "    )\n"
+            "    print('[2/3] Scoring node probabilities...', flush=True)\n"
+            "    write_seed_prior_node_probs(working_dir, nucleus_prob_zavg_path, cfg)\n"
+            "    print('[3/3] Linking candidates...', flush=True)\n"
+            "    for step, total, label in run_linking(working_dir, cfg):\n"
+            "        print(f'  [{step}/{total}] {label}', flush=True)\n"
+            "    print('Done.', flush=True)\n"
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", prefix="cellflow_db_gen_", delete=False) as tmp:
+            tmp.write(python_code)
+            tmp_path = tmp.name
+
+        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(tmp_path)}"
+        try:
+            from cellflow.napari.utils import launch_in_terminal
+            launch_in_terminal(cmd)
+            self._set_db_gen_status("DB generation launched in terminal.")
+        except Exception:
+            QApplication.clipboard().setText(cmd)
+            self._set_db_gen_status("Copied DB generation command to clipboard.")
+
+    def _on_db_gen_mode_changed(self, mode: str) -> None:
+        self.db_gen_iou_weight_spin.setEnabled(mode == "iou")
+
+    def _on_db_gen_progress(self, msg: str) -> None:
+        self._set_db_gen_status(msg)
+
+    def _on_db_gen_done(self, pos_dir: Path) -> None:
+        self.db_gen_progress_bar.setVisible(False)
+        self.run_db_gen_btn.setEnabled(True)
+        self.db_gen_terminal_btn.setEnabled(True)
+        self._set_db_gen_status("DB generation complete.")
+        self._refresh_ultrack_db_browser()
+
+    def _on_db_gen_worker_error(self, exc: Exception) -> None:
+        self.db_gen_progress_bar.setVisible(False)
+        self.run_db_gen_btn.setEnabled(True)
+        self.db_gen_terminal_btn.setEnabled(True)
+        self._set_db_gen_status(f"Error: {exc}")
+        logger.exception("DB generation worker error", exc_info=exc)
+
+    def _set_db_gen_status(self, msg: str) -> None:
+        self.db_gen_status_lbl.setText(msg)
+        self.db_gen_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
+    # ── Ultrack DB Browser section ────────────────────────────────────────────
+
+    def _set_ultrack_db_status(self, msg: str) -> None:
+        self.ultrack_db_section_status_lbl.setText(msg)
+        self.ultrack_db_section_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
+    def _refresh_ultrack_db_browser(self) -> None:
+        self.ultrack_db_info_lbl.setText("—")
+        db_path = self._ultrack_db_path()
+        if db_path is None or not db_path.exists():
+            self._set_ultrack_db_status("data.db not found — run DB generation first.")
+            return
+        try:
+            import sqlalchemy as sqla
+            from sqlalchemy import func
+            from sqlalchemy.orm import Session
+            from ultrack.core.database import LinkDB, NodeDB
+            engine = sqla.create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+            with Session(engine) as session:
+                n_nodes = int(session.query(func.count(NodeDB.id)).scalar() or 0)
+                n_links = int(session.query(func.count(LinkDB.source_id)).scalar() or 0)
+            engine.dispose()
+            self.ultrack_db_info_lbl.setText(f"{n_nodes} nodes | {n_links} links")
+            self._set_ultrack_db_status("")
+        except Exception as e:
+            self._set_ultrack_db_status(f"DB read error: {e}")
+            logger.warning("DB browser error: %s", e)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -1778,7 +2155,7 @@ class NucleusWorkflowWidget(QWidget):
         _worker()
 
     def _on_save_done(self, pos_dir: Path) -> None:
-        self.output_files.refresh(pos_dir)
+        pass  # output_files removed; per-section file widgets handle display
         self._set_hypothesis_status("Saved to hypotheses.h5.")
         self.refresh(pos_dir)
 
@@ -2223,16 +2600,21 @@ class NucleusWorkflowWidget(QWidget):
 
     def _ultrack_config_from_controls(self) -> UltrackConfig:
         return UltrackConfig(
-            min_area=self.ultrack_min_area_spin.value(),
-            max_distance=self.ultrack_max_dist_spin.value(),
-            linking_mode=self.ultrack_linking_mode_combo.currentText(),
-            iou_weight=self.ultrack_iou_weight_spin.value(),
+            seg_min_area=self.db_gen_min_area_spin.value(),
+            seg_max_area=self.db_gen_max_area_spin.value(),
+            seg_foreground_threshold=self.db_gen_fg_thr_spin.value(),
+            seg_min_frontier=self.db_gen_min_frontier_spin.value(),
+            seg_ws_hierarchy=self.db_gen_ws_hierarchy_combo.currentText(),
+            seg_n_workers=self.db_gen_n_workers_spin.value(),
+            max_distance=self.db_gen_max_dist_spin.value(),
+            max_neighbors=self.db_gen_max_neighbors_spin.value(),
+            linking_mode=self.db_gen_linking_mode_combo.currentText(),
+            iou_weight=self.db_gen_iou_weight_spin.value(),
+            quality_exponent=self.db_gen_quality_exp_spin.value(),
+            power=self.db_gen_power_spin.value(),
             appear_weight=self.ultrack_appear_spin.value(),
             disappear_weight=self.ultrack_disappear_spin.value(),
             division_weight=self.ultrack_division_spin.value(),
-            max_neighbors=self.ultrack_max_neighbors_spin.value(),
-            power=self.ultrack_power_spin.value(),
-            quality_exponent=self.ultrack_quality_exp_spin.value(),
             seed_weight=self.ultrack_seed_weight_spin.value(),
             seed_sigma_space=self.ultrack_seed_space_spin.value(),
             seed_tau_time=self.ultrack_seed_time_spin.value(),
@@ -2255,28 +2637,21 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_ultrack_status("No project open.")
             return
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_ultrack_status("Hypothesis DB not found — run the sweep first.")
-            return
-        cellprob_zavg_path = self._cellprob_zavg_path()
-        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
-            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+        db_path = self._ultrack_db_path()
+        if db_path is None or not db_path.exists():
+            self._set_ultrack_status("data.db not found — run DB generation first.")
             return
         working_dir = self._ultrack_workdir()
         tracked_path = self._tracked_path()
 
-        # Capture all widget values before entering the worker closure
-        max_partitions_raw = self.ultrack_max_partitions_spin.value()
-        max_partitions = None if max_partitions_raw == 0 else max_partitions_raw
-        n_frames_raw = self.ultrack_n_frames_spin.value()
-        n_frames = None if n_frames_raw == 0 else n_frames_raw
         cfg = self._ultrack_config_from_controls()
 
         self.ultrack_progress_bar.setRange(0, 100)
         self.ultrack_progress_bar.setVisible(True)
         self.ultrack_progress_bar.setValue(0)
-        self._set_ultrack_status("Starting Ultrack tracking…")
+        self._set_ultrack_status("Starting Ultrack solve…")
+        self.run_ultrack_btn.setEnabled(False)
+        self.ultrack_terminal_btn.setEnabled(False)
 
         @thread_worker(connect={
             "yielded":  self._on_ultrack_progress,
@@ -2284,27 +2659,8 @@ class NucleusWorkflowWidget(QWidget):
             "errored":  self._on_ultrack_worker_error,
         })
         def _worker():
-            # Stage 1: ingest
-            yield ("ingest", 0, 3, "Ingesting hypotheses…")
-            ingest_hypotheses_to_db(
-                hyp_path, working_dir, cfg,
-                overwrite=True,
-                max_partitions=max_partitions,
-                n_frames=n_frames,
-            )
-
-            yield ("score", 0, 1, "Scoring segmentation quality…")
-            write_seed_prior_node_probs(working_dir, cellprob_zavg_path, cfg)
-
-            # Stage 2: linking (IS a generator — relay each progress tuple)
-            for step, total, label in run_linking(working_dir, cfg):
-                yield ("link", step, total, label)
-
-            # Stage 3: solve (IS a generator — relay each progress tuple)
             for step, total, label in run_solve(working_dir, cfg, overwrite=True):
                 yield ("solve", step, total, label)
-
-            # Stage 4: export
             yield ("export", 0, 1, "Exporting tracked labels…")
             return export_tracked_labels(working_dir, cfg, tracked_path)
 
@@ -2318,6 +2674,8 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_run_ultrack_done(self, labels: np.ndarray | None) -> None:
         self.ultrack_progress_bar.setVisible(False)
+        self.run_ultrack_btn.setEnabled(True)
+        self.ultrack_terminal_btn.setEnabled(True)
         if labels is None:
             self._set_ultrack_status("Ultrack tracking failed (no output).")
             return
@@ -2331,7 +2689,7 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.add_labels(labels, name=_TRACKED_LAYER)
         layer = self.viewer.layers[_TRACKED_LAYER]
         self.correction_widget.activate_layer(layer)
-        self._set_ultrack_status(f"Ultrack tracking done: {nt} frame(s). Unsaved.")
+        self._set_ultrack_status(f"Tracking done: {nt} frame(s). Unsaved.")
 
     def _on_ultrack_terminal(self) -> None:
         import sys
@@ -2340,23 +2698,14 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_ultrack_status("No project open.")
             return
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_ultrack_status("Hypothesis DB not found — run the sweep first.")
-            return
-        cellprob_zavg_path = self._cellprob_zavg_path()
-        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
-            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+        db_path = self._ultrack_db_path()
+        if db_path is None or not db_path.exists():
+            self._set_ultrack_status("data.db not found — run DB generation first.")
             return
         working_dir = self._ultrack_workdir()
         tracked_path = self._tracked_path()
 
-        # Capture all widget values
         cfg = self._ultrack_config_from_controls()
-        max_partitions_raw = self.ultrack_max_partitions_spin.value()
-        max_partitions = None if max_partitions_raw == 0 else max_partitions_raw
-        n_frames_raw = self.ultrack_n_frames_spin.value()
-        n_frames = None if n_frames_raw == 0 else n_frames_raw
 
         # NOTE: body must live under `if __name__ == "__main__":` because
         # Ultrack's linker uses spawn-based multiprocessing, which re-executes
@@ -2367,47 +2716,32 @@ class NucleusWorkflowWidget(QWidget):
             "import sys, pathlib\n"
             "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
-            "from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db\n"
-            "from cellflow.tracking_ultrack.linking import run_linking\n"
-            "from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs\n"
             "from cellflow.tracking_ultrack.solve import run_solve\n"
             "from cellflow.tracking_ultrack.export import export_tracked_labels\n"
             "\n"
             "if __name__ == '__main__':\n"
-            f"    hyp_path    = pathlib.Path({str(hyp_path)!r})\n"
             f"    working_dir = pathlib.Path({str(working_dir)!r})\n"
             f"    tracked_path= pathlib.Path({str(tracked_path)!r})\n"
-            f"    cellprob_zavg_path = pathlib.Path({str(cellprob_zavg_path)!r})\n"
             f"    cfg = TrackingConfig(\n"
-            f"        min_area={cfg.min_area},\n"
+            f"        seg_min_area={cfg.seg_min_area},\n"
+            f"        seg_max_area={cfg.seg_max_area},\n"
+            f"        seg_foreground_threshold={cfg.seg_foreground_threshold},\n"
+            f"        seg_min_frontier={cfg.seg_min_frontier},\n"
+            f"        seg_ws_hierarchy={cfg.seg_ws_hierarchy!r},\n"
+            f"        seg_n_workers={cfg.seg_n_workers},\n"
             f"        max_distance={cfg.max_distance},\n"
+            f"        max_neighbors={cfg.max_neighbors},\n"
             f"        linking_mode={cfg.linking_mode!r},\n"
             f"        iou_weight={cfg.iou_weight},\n"
+            f"        power={cfg.power},\n"
             f"        appear_weight={cfg.appear_weight},\n"
             f"        disappear_weight={cfg.disappear_weight},\n"
             f"        division_weight={cfg.division_weight},\n"
-            f"        max_neighbors={cfg.max_neighbors},\n"
-            f"        power={cfg.power},\n"
-            f"        quality_exponent={cfg.quality_exponent},\n"
-            f"        seed_weight={cfg.seed_weight},\n"
-            f"        seed_sigma_space={cfg.seed_sigma_space},\n"
-            f"        seed_tau_time={cfg.seed_tau_time},\n"
-            f"        seed_max_dt={cfg.seed_max_dt},\n"
             f"    )\n"
-            f"    max_partitions = {max_partitions!r}\n"
-            f"    n_frames       = {n_frames!r}\n"
-            "    print('[1/4] Ingesting…', flush=True)\n"
-            "    ingest_hypotheses_to_db(hyp_path, working_dir, cfg, overwrite=True,\n"
-            "        max_partitions=max_partitions, n_frames=n_frames)\n"
-            "    print('[2/5] Scoring segmentation quality…', flush=True)\n"
-            "    write_seed_prior_node_probs(working_dir, cellprob_zavg_path, cfg)\n"
-            "    print('[3/5] Linking…', flush=True)\n"
-            "    for step, total, label in run_linking(working_dir, cfg):\n"
-            "        print(f'  [{step}/{total}] {label}', flush=True)\n"
-            "    print('[4/5] Solving ILP…', flush=True)\n"
+            "    print('[1/2] Solving ILP…', flush=True)\n"
             "    for step, total, label in run_solve(working_dir, cfg, overwrite=True):\n"
             "        print(f'  [{step}/{total}] {label}', flush=True)\n"
-            "    print('[5/5] Exporting…', flush=True)\n"
+            "    print('[2/2] Exporting…', flush=True)\n"
             "    labels = export_tracked_labels(working_dir, cfg, tracked_path)\n"
             f"    print(f'Done — {{labels.shape}} written to {{tracked_path}}', flush=True)\n"
         )
@@ -2438,17 +2772,21 @@ class NucleusWorkflowWidget(QWidget):
         if not validated_tracks:
             self._set_ultrack_status("No validated tracks — validate some cells first (press V).")
             return
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_ultrack_status("hypotheses.h5 not found — generate hypotheses first.")
-            return
         tracked_path = self._tracked_path()
         if tracked_path is None or not tracked_path.exists():
             self._set_ultrack_status("Tracked labels not found.")
             return
-        cellprob_zavg_path = self._cellprob_zavg_path()
-        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
-            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+        contour_path = self._contour_maps_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_ultrack_status("Missing: contour_maps.tif")
+            return
+        fg_path = self._foreground_masks_path()
+        if fg_path is None or not fg_path.exists():
+            self._set_ultrack_status("Missing: foreground_masks.tif")
+            return
+        nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
+        if nucleus_prob_zavg_path is None or not nucleus_prob_zavg_path.exists():
+            self._set_ultrack_status("Missing: nucleus_prob_zavg.tif")
             return
         pos_dir = self._pos_dir
 
@@ -2459,7 +2797,7 @@ class NucleusWorkflowWidget(QWidget):
             "import sys, pathlib\n"
             "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
-            "from cellflow.tracking_ultrack.reseed import resolve_with_validation\n"
+            "from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment\n"
             "from cellflow.database.tracked import read_full_tracked_stack\n"
             "from cellflow.database.validation import read_validated_tracks\n"
             "import numpy as np\n"
@@ -2467,20 +2805,26 @@ class NucleusWorkflowWidget(QWidget):
             "\n"
             "if __name__ == '__main__':\n"
             f"    pos_dir      = pathlib.Path({str(pos_dir)!r})\n"
-            f"    hyp_path     = pathlib.Path({str(hyp_path)!r})\n"
+            f"    contour_path = pathlib.Path({str(contour_path)!r})\n"
+            f"    foreground_masks_path = pathlib.Path({str(fg_path)!r})\n"
             f"    tracked_path = pathlib.Path({str(tracked_path)!r})\n"
-            f"    cellprob_zavg_path = pathlib.Path({str(cellprob_zavg_path)!r})\n"
+            f"    nucleus_prob_zavg_path = pathlib.Path({str(nucleus_prob_zavg_path)!r})\n"
             f"    cfg = TrackingConfig(\n"
-            f"        min_area={cfg.min_area},\n"
+            f"        seg_min_area={cfg.seg_min_area},\n"
+            f"        seg_max_area={cfg.seg_max_area},\n"
+            f"        seg_foreground_threshold={cfg.seg_foreground_threshold},\n"
+            f"        seg_min_frontier={cfg.seg_min_frontier},\n"
+            f"        seg_ws_hierarchy={cfg.seg_ws_hierarchy!r},\n"
+            f"        seg_n_workers={cfg.seg_n_workers},\n"
             f"        max_distance={cfg.max_distance},\n"
+            f"        max_neighbors={cfg.max_neighbors},\n"
             f"        linking_mode={cfg.linking_mode!r},\n"
             f"        iou_weight={cfg.iou_weight},\n"
+            f"        quality_exponent={cfg.quality_exponent},\n"
+            f"        power={cfg.power},\n"
             f"        appear_weight={cfg.appear_weight},\n"
             f"        disappear_weight={cfg.disappear_weight},\n"
             f"        division_weight={cfg.division_weight},\n"
-            f"        max_neighbors={cfg.max_neighbors},\n"
-            f"        power={cfg.power},\n"
-            f"        quality_exponent={cfg.quality_exponent},\n"
             f"        seed_weight={cfg.seed_weight},\n"
             f"        seed_sigma_space={cfg.seed_sigma_space},\n"
             f"        seed_tau_time={cfg.seed_tau_time},\n"
@@ -2490,10 +2834,14 @@ class NucleusWorkflowWidget(QWidget):
             "    print(f'Loaded {len(validated_tracks)} validated track(s).', flush=True)\n"
             "    tracked_labels = read_full_tracked_stack(tracked_path)\n"
             "    print(f'Loaded tracked labels: {tracked_labels.shape}', flush=True)\n"
-            "    new_labels, _id_map = resolve_with_validation(\n"
-            "        hyp_path, validated_tracks, tracked_labels, cfg,\n"
+            "    new_labels, _id_map = resolve_with_canonical_segment(\n"
+            "        contour_maps_path=contour_path,\n"
+            "        foreground_masks_path=foreground_masks_path,\n"
+            "        validated_tracks=validated_tracks,\n"
+            "        tracked_labels=tracked_labels,\n"
+            "        cfg=cfg,\n"
             "        progress_cb=lambda msg: print(msg, flush=True),\n"
-            "        intensity_image_path=cellprob_zavg_path,\n"
+            "        intensity_image_path=nucleus_prob_zavg_path,\n"
             "    )\n"
             "    if new_labels.ndim == 4 and new_labels.shape[1] == 1:\n"
             "        new_labels = new_labels[:, 0]\n"
@@ -2504,7 +2852,7 @@ class NucleusWorkflowWidget(QWidget):
             "    print(\n"
             "        f'Done — {n_validated} validated track(s) preserved, '\n"
             "        f'{n_total} total track(s). Preview saved to {preview_path}. '\n"
-            "        f'Canonical tracked_labels.tif was not overwritten.',\n"
+            "        f'Canonical tracked_labels.tif was not saved or overwritten.',\n"
             "        flush=True,\n"
             "    )\n"
         )
@@ -2693,9 +3041,11 @@ class NucleusWorkflowWidget(QWidget):
             self._set_correction_status("No tracked layer loaded.")
             return
 
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_correction_status("No project open.")
+        db_path = self._ultrack_db_path()
+        if db_path is None or not db_path.exists():
+            self._set_correction_status(
+                "Extend: data.db not found — run DB generation first."
+            )
             return
 
         source_id = self.correction_widget._selected_label
@@ -2720,18 +3070,18 @@ class NucleusWorkflowWidget(QWidget):
             self._set_correction_status(f"Cell {source_id} not present at t={t}")
             return
 
-        result = extend_track(
+        result = extend_track_from_db(
             source_id=source_id,
             source_frame=t,
             direction=direction,
             tracked_labels=tracked,
-            hypotheses_path=hyp_path,
+            db_path=db_path,
             d_max=float(self.extend_max_dist_spin.value()),
         )
 
         if result is None:
             self._set_correction_status(
-                f"No hypothesis within {self.extend_max_dist_spin.value():g}px at t={target_frame}"
+                f"No candidate within {self.extend_max_dist_spin.value():g}px at t={target_frame}"
             )
             return
 
@@ -2858,13 +3208,19 @@ class NucleusWorkflowWidget(QWidget):
             self._set_ultrack_status("No tracked layer loaded.")
             return
 
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_ultrack_status("hypotheses.h5 not found — generate hypotheses first.")
+        contour_path = self._contour_maps_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_ultrack_status("Missing: contour_maps.tif — run Contour Maps first.")
             return
-        cellprob_zavg_path = self._cellprob_zavg_path()
-        if cellprob_zavg_path is None or not cellprob_zavg_path.exists():
-            self._set_ultrack_status("Cellpose cellprob z-avg image not found — run Cellpose first.")
+        fg_path = self._foreground_masks_path()
+        if fg_path is None or not fg_path.exists():
+            self._set_ultrack_status(
+                "Missing: foreground_masks.tif — provide 2_nucleus/foreground_masks.tif."
+            )
+            return
+        nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
+        if nucleus_prob_zavg_path is None or not nucleus_prob_zavg_path.exists():
+            self._set_ultrack_status("Missing: nucleus_prob_zavg.tif — run Cellpose first.")
             return
 
         layer = self.viewer.layers[_TRACKED_LAYER]
@@ -2958,10 +3314,14 @@ class NucleusWorkflowWidget(QWidget):
             def _run() -> None:
                 try:
                     result_holder.append(
-                        resolve_with_validation(
-                            hyp_path, validated_tracks, tracked_labels, cfg,
+                        resolve_with_canonical_segment(
+                            contour_maps_path=contour_path,
+                            foreground_masks_path=fg_path,
+                            validated_tracks=validated_tracks,
+                            tracked_labels=tracked_labels,
+                            cfg=cfg,
                             progress_cb=_progress,
-                            intensity_image_path=cellprob_zavg_path,
+                            intensity_image_path=nucleus_prob_zavg_path,
                         )
                     )
                 except Exception as e:
@@ -3029,6 +3389,20 @@ class NucleusWorkflowWidget(QWidget):
                 "ridge_threshold": self.db_ridge_thr_spin.value(),
                 "run_index":      self.db_run_spin.value(),
             },
+            "db_generation": {
+                "min_area":         self.db_gen_min_area_spin.value(),
+                "max_area":         self.db_gen_max_area_spin.value(),
+                "fg_threshold":     self.db_gen_fg_thr_spin.value(),
+                "min_frontier":     self.db_gen_min_frontier_spin.value(),
+                "ws_hierarchy":     self.db_gen_ws_hierarchy_combo.currentText(),
+                "max_distance":     self.db_gen_max_dist_spin.value(),
+                "max_neighbors":    self.db_gen_max_neighbors_spin.value(),
+                "linking_mode":     self.db_gen_linking_mode_combo.currentText(),
+                "iou_weight":       self.db_gen_iou_weight_spin.value(),
+                "quality_exponent": self.db_gen_quality_exp_spin.value(),
+                "power":            self.db_gen_power_spin.value(),
+                "n_workers":        self.db_gen_n_workers_spin.value(),
+            },
             "ultrack": {
                 "min_area":         self.ultrack_min_area_spin.value(),
                 "max_partitions":   self.ultrack_max_partitions_spin.value(),
@@ -3095,6 +3469,26 @@ class NucleusWorkflowWidget(QWidget):
             if "fg_threshold"    in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
             if "ridge_threshold" in db: self.db_ridge_thr_spin.setValue(db["ridge_threshold"])
             if "run_index"       in db: self.db_run_spin.setValue(db["run_index"])
+        if "db_generation" in state:
+            dbg = state["db_generation"]
+            if "min_area"         in dbg: self.db_gen_min_area_spin.setValue(dbg["min_area"])
+            if "max_area"         in dbg: self.db_gen_max_area_spin.setValue(dbg["max_area"])
+            if "fg_threshold"     in dbg: self.db_gen_fg_thr_spin.setValue(dbg["fg_threshold"])
+            if "min_frontier"     in dbg: self.db_gen_min_frontier_spin.setValue(dbg["min_frontier"])
+            if "ws_hierarchy"     in dbg:
+                idx = self.db_gen_ws_hierarchy_combo.findText(dbg["ws_hierarchy"])
+                if idx >= 0:
+                    self.db_gen_ws_hierarchy_combo.setCurrentIndex(idx)
+            if "max_distance"     in dbg: self.db_gen_max_dist_spin.setValue(dbg["max_distance"])
+            if "max_neighbors"    in dbg: self.db_gen_max_neighbors_spin.setValue(dbg["max_neighbors"])
+            if "linking_mode"     in dbg:
+                idx = self.db_gen_linking_mode_combo.findText(dbg["linking_mode"])
+                if idx >= 0:
+                    self.db_gen_linking_mode_combo.setCurrentIndex(idx)
+            if "iou_weight"       in dbg: self.db_gen_iou_weight_spin.setValue(dbg["iou_weight"])
+            if "quality_exponent" in dbg: self.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
+            if "power"            in dbg: self.db_gen_power_spin.setValue(dbg["power"])
+            if "n_workers"        in dbg: self.db_gen_n_workers_spin.setValue(dbg["n_workers"])
         if "search" in state:
             pass  # Old propagator state — silently skip
         if "search_v2" in state:
