@@ -1,6 +1,8 @@
 """Tests for cellflow.tracking_ultrack.extend."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import h5py
 import numpy as np
 import pytest
@@ -8,6 +10,7 @@ import pytest
 from cellflow.database.hypotheses import HypothesisRecord, write_hypothesis_record
 from cellflow.segmentation import NucleusHypothesisParams
 from cellflow.tracking_ultrack.extend import ExtendResult, extend_track
+from cellflow.tracking_ultrack.validation_nodes import _make_node_pickle
 
 
 def _default_params(p: int = 0) -> NucleusHypothesisParams:
@@ -88,6 +91,99 @@ def far_hyp(tmp_path):
 # ---------------------------------------------------------------------------
 
 class TestExtendTrack:
+    def test_extend_track_from_db_handles_deserialized_2d_node(self, tmp_path):
+        """DB-backed extend should accept already-deserialized 2D NodeDB.pickle values."""
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from tests.tracking_ultrack.test_reseed import _make_engine
+
+        from cellflow.tracking_ultrack.extend import extend_track_from_db
+
+        engine = _make_engine(tmp_path / "data.db")
+        node_id = 101
+        y0, x0, y1, x1 = 8, 9, 14, 15
+        mask_2d = np.ones((y1 - y0, x1 - x0), dtype=bool)
+        node_pickle = _make_node_pickle(
+            1,
+            mask_2d,
+            np.array([y0, x0, y1, x1], dtype=np.int64),
+            node_id,
+        )
+
+        with Session(engine) as session:
+            session.add(
+                NodeDB(
+                    id=node_id,
+                    t=1,
+                    t_node_id=1,
+                    t_hier_id=0,
+                    z=0,
+                    y=(y0 + y1) / 2.0,
+                    x=(x0 + x1) / 2.0,
+                    area=int(mask_2d.sum()),
+                    pickle=node_pickle,
+                )
+            )
+            session.commit()
+
+        tracked = np.zeros((2, 24, 24), dtype=np.uint32)
+        tracked[0, y0:y1, x0:x1] = 7
+
+        result = extend_track_from_db(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+        )
+
+        assert result is not None
+        assert result.candidate_label == node_id
+        assert result.bbox == (y0, x0, y1, x1)
+        assert result.mask_2d.shape == tracked.shape[1:]
+        assert result.mask_2d[y0:y1, x0:x1].all()
+
+    def test_extend_track_from_db_skips_candidate_with_mismatched_mask_shape(self, tmp_path):
+        """Malformed DB candidates should be skipped instead of crashing during paint."""
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from tests.tracking_ultrack.test_reseed import _make_engine
+
+        from cellflow.tracking_ultrack.extend import extend_track_from_db
+
+        engine = _make_engine(tmp_path / "data.db")
+        y0, x0, y1, x1 = 8, 9, 14, 15
+        with Session(engine) as session:
+            session.add(
+                NodeDB(
+                    id=102,
+                    t=1,
+                    t_node_id=1,
+                    t_hier_id=0,
+                    z=0,
+                    y=(y0 + y1) / 2.0,
+                    x=(x0 + x1) / 2.0,
+                    area=25,
+                    pickle=SimpleNamespace(
+                        bbox=np.array([y0, x0, y1, x1], dtype=np.int64),
+                        mask=np.ones((5, 5), dtype=bool),
+                    ),
+                )
+            )
+            session.commit()
+
+        tracked = np.zeros((2, 24, 24), dtype=np.uint32)
+        tracked[0, y0:y1, x0:x1] = 7
+
+        result = extend_track_from_db(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+        )
+
+        assert result is None
 
     def test_forward_single_match(self, simple_hyp):
         """Forward with one close hypothesis returns a valid ExtendResult."""

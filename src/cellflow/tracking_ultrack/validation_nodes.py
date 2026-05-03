@@ -134,10 +134,9 @@ def _generate_node_id(index: int, time: int, max_segments: int) -> int:
 def _make_node_pickle(t: int, mask_2d: np.ndarray, bbox: np.ndarray, node_id: int) -> bytes:
     from ultrack.core.segmentation.node import Node
 
-    mask_3d = np.asarray(mask_2d, dtype=bool)[np.newaxis]
     min_y, min_x, max_y, max_x = bbox
-    bbox_3d = np.array([0, int(min_y), int(min_x), 1, int(max_y), int(max_x)], dtype=np.int64)
-    node = Node.from_mask(time=t, mask=mask_3d, bbox=bbox_3d, node_id=node_id)
+    bbox_2d = np.array([int(min_y), int(min_x), int(max_y), int(max_x)], dtype=np.int64)
+    node = Node.from_mask(time=t, mask=np.asarray(mask_2d, dtype=bool), bbox=bbox_2d, node_id=node_id)
     return pickle.dumps(node)
 
 

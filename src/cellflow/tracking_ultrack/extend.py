@@ -112,10 +112,10 @@ def extend_track_from_db(
     candidate within d_max is found.  Widget caller should show a local status
     message on None.
     """
-    import pickle
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
     from ultrack.core.database import NodeDB
+    from cellflow.tracking_ultrack.validation_nodes import _node_bbox_and_mask
 
     if not db_path.exists():
         return None
@@ -150,18 +150,13 @@ def extend_track_from_db(
             if dist > d_max:
                 continue
             try:
-                node_obj = pickle.loads(node.pickle)
+                (y0, x0, y1, x1), mask_2d = _node_bbox_and_mask(int(node.id), node.pickle)
             except Exception:
                 continue
-            # Node.bbox = [z_min, y_min, x_min, z_max, y_max, x_max] (3D)
-            bbox_arr = node_obj.bbox
-            y0, x0, y1, x1 = int(bbox_arr[1]), int(bbox_arr[2]), int(bbox_arr[4]), int(bbox_arr[5])
-            mask_nd = node_obj.mask
-            mask_2d = mask_nd[0] if mask_nd.ndim == 3 else mask_nd
             if mask_2d.shape != (y1 - y0, x1 - x0):
                 continue
             full_mask = np.zeros(tracked_labels.shape[1:], dtype=bool)
-            full_mask[y0:y1, x0:x1] = mask_2d.astype(bool)
+            full_mask[y0:y1, x0:x1] = mask_2d
             cand_area = float(full_mask.sum())
             if cand_area == 0:
                 continue

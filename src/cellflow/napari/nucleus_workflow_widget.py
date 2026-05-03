@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pickle
 import shlex
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QShortcut,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QScrollArea,
     QTabWidget,
@@ -96,6 +98,9 @@ _CONTOUR_LAYER = "Contour Map: Nucleus"
 _CELLPROB_LAYER = "Cellprob Map: Nucleus"
 _CELL_ZAVG_LAYER = "Cell z-avg"
 _NUC_ZAVG_LAYER = "Nucleus z-avg"
+_ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
+_CONTOUR_MAPS_DB_LAYER = "Contour Maps: Nucleus"
+_FOREGROUND_MASKS_DB_LAYER = "Foreground Masks: Nucleus"
 _CONTOUR_SWEEP_WIDTH = 60
 _CONTOUR_SWEEP_MIN_WIDTH = int(_CONTOUR_SWEEP_WIDTH * 0.9)
 
@@ -116,6 +121,10 @@ class NucleusWorkflowWidget(QWidget):
         self._db_fg_thr_vals: list[float] = []
         self._db_ridge_thr_vals: list[float] = []
         self._db_run_vals: list[int] = []
+        self._ultrack_db_preview_cache: dict[tuple, tuple[np.ndarray, str]] = {}
+        self._ultrack_db_height_range_cache: dict[tuple, tuple[float, float]] = {}
+        self._ultrack_db_browser_active: bool = False
+        self._ultrack_db_frame_initialized: bool = False
         self._setup_ui()
         self._connect_signals()
 
@@ -753,14 +762,62 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_db_browser_lay.setSpacing(4)
 
         from qtpy.QtGui import QIcon
+        from qtpy.QtCore import Qt as _Qt
         self.ultrack_db_info_lbl = QLabel("—")
         self.ultrack_db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ultrack_db_browser_lay.addWidget(self.ultrack_db_info_lbl)
 
+        ultrack_db_grid = block_grid(horizontal_spacing=12)
+        ultrack_db_grid.setContentsMargins(0, 0, 0, 0)
+        self.ultrack_db_mode_combo = QComboBox()
+        self.ultrack_db_mode_combo.addItems([
+            "Summary only",
+            "Hierarchy cut",
+        ])
+        add_block_pair_row(
+            ultrack_db_grid,
+            0,
+            "Mode:",
+            self.ultrack_db_mode_combo,
+            "",
+            QWidget(),
+        )
+
+        self.ultrack_db_hierarchy_slider = QSlider(_Qt.Horizontal)
+        self.ultrack_db_hierarchy_slider.setRange(0, 100)
+        self.ultrack_db_hierarchy_slider.setValue(50)
+        self.ultrack_db_hierarchy_slider.setToolTip(
+            "Hierarchy cut level: 0 = most split, 1 = most merged"
+        )
+        self.ultrack_db_height_lbl = QLabel("0.50")
+        self.ultrack_db_height_lbl.setFixedWidth(48)
+        self._ultrack_db_slider_row = QWidget()
+        _slider_lay = QHBoxLayout(self._ultrack_db_slider_row)
+        _slider_lay.setContentsMargins(0, 0, 0, 0)
+        _slider_lay.addWidget(self.ultrack_db_hierarchy_slider)
+        _slider_lay.addWidget(self.ultrack_db_height_lbl)
+        ultrack_db_grid.addWidget(self._ultrack_db_slider_row, 1, 0, 1, 4)
+        self._ultrack_db_slider_row.setVisible(False)
+
+        ultrack_db_browser_lay.addLayout(ultrack_db_grid)
+
+        _db_btn_row = QWidget()
+        _db_btn_lay = QHBoxLayout(_db_btn_row)
+        _db_btn_lay.setContentsMargins(0, 0, 0, 0)
+        _db_btn_lay.setSpacing(4)
+        self.ultrack_db_active_btn = QPushButton("Activate")
+        self.ultrack_db_active_btn.setCheckable(True)
+        self.ultrack_db_active_btn.setChecked(False)
+        self.ultrack_db_active_btn.setToolTip("Load contour maps and foreground masks into viewer and enable DB preview")
         self.ultrack_db_refresh_btn = QPushButton()
         self.ultrack_db_refresh_btn.setToolTip("Refresh Ultrack database browser")
         self.ultrack_db_refresh_btn.setIcon(QIcon.fromTheme("view-refresh"))
-        ultrack_db_browser_lay.addWidget(self.ultrack_db_refresh_btn)
+        self.ultrack_db_refresh_btn.setEnabled(False)
+        _db_btn_lay.addWidget(self.ultrack_db_active_btn)
+        _db_btn_lay.addWidget(self.ultrack_db_refresh_btn)
+        ultrack_db_browser_lay.addWidget(_db_btn_row)
+        self.ultrack_db_mode_combo.setEnabled(False)
+        self.ultrack_db_hierarchy_slider.setEnabled(False)
 
         self.ultrack_db_section_status_lbl = QLabel("")
         self.ultrack_db_section_status_lbl.setWordWrap(True)
@@ -1145,7 +1202,10 @@ class NucleusWorkflowWidget(QWidget):
         self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
         self.db_gen_terminal_btn.clicked.connect(self._on_db_gen_terminal)
         self.db_gen_linking_mode_combo.currentTextChanged.connect(self._on_db_gen_mode_changed)
+        self.ultrack_db_active_btn.toggled.connect(self._on_ultrack_db_activate)
         self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
+        self.ultrack_db_mode_combo.currentTextChanged.connect(self._on_ultrack_db_mode_changed)
+        self.ultrack_db_hierarchy_slider.valueChanged.connect(self._on_ultrack_db_slider_changed)
         self.run_ultrack_btn.clicked.connect(self._on_run_tracking_route)
         self.ultrack_terminal_btn.clicked.connect(self._on_run_tracking_route_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
@@ -1382,6 +1442,13 @@ class NucleusWorkflowWidget(QWidget):
             "        contours = contours[:, 0]\n"
             "    if foreground_masks.ndim == 4 and foreground_masks.shape[1] == 1:\n"
             "        foreground_masks = foreground_masks[:, 0]\n"
+            "    # ultrack skips its small-object filter when num_labels == 1, crashing on regions < 8 px\n"
+            "    from skimage.morphology import remove_small_objects as _rso\n"
+            "    _fg_min = max(8, cfg.seg_min_area // 4)\n"
+            "    _fg_bin = foreground_masks.astype(bool)\n"
+            "    for _t in range(_fg_bin.shape[0]):\n"
+            "        _rso(_fg_bin[_t], min_size=_fg_min, out=_fg_bin[_t])\n"
+            "    foreground_masks = _fg_bin.astype(np.float32)\n"
             "    working_dir.mkdir(parents=True, exist_ok=True)\n"
             "    ultrack_cfg = _build_ultrack_config(cfg, working_dir)\n"
             "    print('[1/3] Segmenting candidates...', flush=True)\n"
@@ -1445,27 +1512,323 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_section_status_lbl.setVisible(bool(msg))
         logger.info(msg)
 
+    def _on_ultrack_db_browser_param_changed(self, *_args) -> None:
+        self._ultrack_db_preview_cache.clear()
+
+    def _on_ultrack_db_mode_changed(self, mode: str) -> None:
+        self._ultrack_db_preview_cache.clear()
+        self._ultrack_db_slider_row.setVisible(mode == "Hierarchy cut")
+
+    def _on_ultrack_db_slider_changed(self, value: int) -> None:
+        if not self._ultrack_db_browser_active:
+            return
+        t = value / 100.0
+        db_path = self._ultrack_db_path()
+        if db_path is not None and db_path.exists():
+            try:
+                mtime_ns = db_path.stat().st_mtime_ns
+                h_min, h_max = self._query_height_range(db_path, mtime_ns)
+                h_actual = h_min + t * (h_max - h_min)
+                self.ultrack_db_height_lbl.setText(f"{t:.2f} → {h_actual:.1f}")
+            except Exception:
+                self.ultrack_db_height_lbl.setText(f"{t:.2f}")
+        else:
+            self.ultrack_db_height_lbl.setText(f"{t:.2f}")
+        self._ultrack_db_preview_cache.clear()
+        from qtpy.QtCore import QTimer
+        QTimer.singleShot(150, self._refresh_ultrack_db_browser)
+
+    def _on_ultrack_db_activate(self, checked: bool) -> None:
+        self._ultrack_db_browser_active = checked
+        self.ultrack_db_active_btn.setText("Deactivate" if checked else "Activate")
+        self.ultrack_db_refresh_btn.setEnabled(checked)
+        self.ultrack_db_mode_combo.setEnabled(checked)
+        self.ultrack_db_hierarchy_slider.setEnabled(checked)
+        if checked:
+            self._ultrack_db_frame_initialized = False
+            self._refresh_ultrack_db_browser()
+        else:
+            self._remove_ultrack_db_browser_layers()
+
+    def _remove_ultrack_db_browser_layers(self) -> None:
+        for name in (_ULTRACK_DB_PREVIEW_LAYER, _CONTOUR_MAPS_DB_LAYER, _FOREGROUND_MASKS_DB_LAYER):
+            if name in self.viewer.layers:
+                self.viewer.layers.remove(name)
+        self.ultrack_db_info_lbl.setText("—")
+        self._set_ultrack_db_status("")
+
+    def _ensure_ultrack_db_browser_layers_loaded(self) -> None:
+        contour_path = self._contour_maps_path()
+        fg_path = self._foreground_masks_path()
+        try:
+            if (
+                contour_path and contour_path.exists()
+                and _CONTOUR_MAPS_DB_LAYER not in self.viewer.layers
+            ):
+                data = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
+                self.viewer.add_image(data, name=_CONTOUR_MAPS_DB_LAYER, colormap="magma", visible=True)
+            if (
+                fg_path and fg_path.exists()
+                and _FOREGROUND_MASKS_DB_LAYER not in self.viewer.layers
+            ):
+                data = np.asarray(tifffile.imread(str(fg_path)), dtype=np.float32)
+                self.viewer.add_image(data, name=_FOREGROUND_MASKS_DB_LAYER, colormap="gray", visible=True)
+        except Exception as e:
+            logger.warning("Failed to load DB browser layers: %s", e)
+
+    def _ultrack_db_middle_frame(self, db_path: Path) -> int | None:
+        import sqlalchemy as sqla
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        engine = sqla.create_engine(
+            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        )
+        try:
+            with Session(engine) as session:
+                frames = sorted(
+                    int(r[0]) for r in session.query(NodeDB.t).distinct().all()
+                )
+        except Exception:
+            return None
+        finally:
+            engine.dispose()
+        if not frames:
+            return None
+        return frames[len(frames) // 2]
+
     def _refresh_ultrack_db_browser(self) -> None:
+        if not self._ultrack_db_browser_active:
+            return
         self.ultrack_db_info_lbl.setText("—")
         db_path = self._ultrack_db_path()
         if db_path is None or not db_path.exists():
             self._set_ultrack_db_status("data.db not found — run DB generation first.")
             return
+        self._ensure_ultrack_db_browser_layers_loaded()
+        frame = self._current_t()
+        if not self._ultrack_db_frame_initialized:
+            self._ultrack_db_frame_initialized = True
+            if frame == 0:
+                mid = self._ultrack_db_middle_frame(db_path)
+                if mid is not None and mid > 0:
+                    frame = mid
+                    self._set_viewer_frame(frame)
         try:
-            import sqlalchemy as sqla
-            from sqlalchemy import func
-            from sqlalchemy.orm import Session
-            from ultrack.core.database import LinkDB, NodeDB
-            engine = sqla.create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-            with Session(engine) as session:
-                n_nodes = int(session.query(func.count(NodeDB.id)).scalar() or 0)
-                n_links = int(session.query(func.count(LinkDB.source_id)).scalar() or 0)
-            engine.dispose()
-            self.ultrack_db_info_lbl.setText(f"{n_nodes} nodes | {n_links} links")
-            self._set_ultrack_db_status("")
+            self.ultrack_db_info_lbl.setText(self._ultrack_db_summary_text(db_path, frame))
+            mode = self.ultrack_db_mode_combo.currentText()
+            if mode == "Summary only":
+                self._set_ultrack_db_status("Summary refreshed.")
+                return
+
+            slider_int = int(self.ultrack_db_hierarchy_slider.value())
+            key = (
+                str(db_path.resolve()),
+                db_path.stat().st_mtime_ns,
+                frame,
+                slider_int,
+            )
+            cached = self._ultrack_db_preview_cache.get(key)
+            if cached is None:
+                cached = self._render_hierarchy_cut(db_path, frame, slider_int)
+                self._ultrack_db_preview_cache[key] = cached
+            labels, status = cached
+            self._update_layer(_ULTRACK_DB_PREVIEW_LAYER, labels.astype(np.uint32, copy=False))
+            self._set_ultrack_db_status(status)
         except Exception as e:
             self._set_ultrack_db_status(f"DB read error: {e}")
             logger.warning("DB browser error: %s", e)
+
+    def _ultrack_db_summary_text(self, db_path: Path, frame: int) -> str:
+        import sqlalchemy as sqla
+        from sqlalchemy import func
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import LinkDB, NodeDB
+
+        try:
+            from ultrack.core.database import OverlapDB
+        except Exception:
+            OverlapDB = None
+
+        engine = sqla.create_engine(
+            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        )
+        try:
+            with Session(engine) as session:
+                n_nodes = int(session.query(func.count(NodeDB.id)).scalar() or 0)
+                n_links = int(session.query(func.count(LinkDB.source_id)).scalar() or 0)
+                frame_nodes = session.query(NodeDB).filter(NodeDB.t == frame).all()
+                selected = sum(1 for n in frame_nodes if getattr(n, "selected", False))
+                node_ids = [int(n.id) for n in frame_nodes]
+                outgoing = incoming = overlaps = 0
+                if node_ids:
+                    outgoing = int(
+                        session.query(func.count(LinkDB.source_id))
+                        .filter(LinkDB.source_id.in_(node_ids))
+                        .scalar() or 0
+                    )
+                    incoming = int(
+                        session.query(func.count(LinkDB.target_id))
+                        .filter(LinkDB.target_id.in_(node_ids))
+                        .scalar() or 0
+                    )
+                    if OverlapDB is not None:
+                        try:
+                            overlaps = int(
+                                session.query(func.count(OverlapDB.node_id))
+                                .filter(
+                                    OverlapDB.node_id.in_(node_ids)
+                                    | OverlapDB.ancestor_id.in_(node_ids)
+                                )
+                                .scalar() or 0
+                            )
+                        except Exception:
+                            overlaps = 0
+            return (
+                f"{n_nodes} nodes | {n_links} links | frame {frame}: "
+                f"{len(node_ids)} nodes, {selected} selected, "
+                f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
+            )
+        finally:
+            engine.dispose()
+
+    def _query_height_range(self, db_path: Path, mtime_ns: int) -> tuple[float, float]:
+        key = (str(db_path), mtime_ns)
+        cached = self._ultrack_db_height_range_cache.get(key)
+        if cached is not None:
+            return cached
+        import sqlalchemy as sqla
+        from sqlalchemy import func
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        engine = sqla.create_engine(
+            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        )
+        try:
+            with Session(engine) as session:
+                h_min = float(session.query(func.min(NodeDB.height)).scalar() or 0.0)
+                h_max = float(session.query(func.max(NodeDB.height)).scalar() or 1.0)
+        finally:
+            engine.dispose()
+        if h_min >= h_max:
+            h_max = h_min + 1.0
+        self._ultrack_db_height_range_cache[key] = (h_min, h_max)
+        return h_min, h_max
+
+    def _render_hierarchy_cut(
+        self, db_path: Path, frame: int, slider_int: int
+    ) -> tuple[np.ndarray, str]:
+        import sqlalchemy as sqla
+        from sqlalchemy.orm import Session, aliased
+        from ultrack.core.database import NodeDB
+        from ultrack.utils.constants import NO_PARENT
+
+        mtime_ns = db_path.stat().st_mtime_ns
+        h_min, h_max = self._query_height_range(db_path, mtime_ns)
+        t = slider_int / 100.0
+        h_actual = h_min + t * (h_max - h_min)
+
+        engine = sqla.create_engine(
+            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        )
+        try:
+            with Session(engine) as session:
+                P = aliased(NodeDB)
+                nodes = (
+                    session.query(NodeDB)
+                    .outerjoin(P, NodeDB.hier_parent_id == P.id)
+                    .where(NodeDB.t == frame)
+                    .where(NodeDB.height <= h_actual)
+                    .where(
+                        (NodeDB.hier_parent_id == NO_PARENT) | (P.height > h_actual)
+                    )
+                    .all()
+                )
+        finally:
+            engine.dispose()
+
+        if not nodes:
+            return self._empty_ultrack_db_preview(), (
+                f"No segments at this threshold for frame {frame}."
+            )
+        labels = self._paint_ultrack_db_nodes(nodes)
+        return labels, (
+            f"Frame {frame}: {len(nodes)} segment(s) at cut level {t:.2f} (h={h_actual:.2f})."
+        )
+
+    def _empty_ultrack_db_preview(self) -> np.ndarray:
+        shape = self._viewer_plane_shape()
+        return np.zeros(shape, dtype=np.uint32)
+
+    def _viewer_plane_shape(self) -> tuple[int, int]:
+        for layer in self.viewer.layers:
+            data = getattr(layer, "data", None)
+            if isinstance(data, np.ndarray) and data.ndim >= 2:
+                return tuple(int(v) for v in data.shape[-2:])
+        return (1, 1)
+
+    def _paint_ultrack_db_nodes(self, nodes: list) -> np.ndarray:
+        masks: list[tuple[int, tuple[int, int, int, int], np.ndarray]] = []
+        max_y = max_x = 0
+        for label, node in enumerate(nodes, start=1):
+            parsed = self._node_mask_and_bbox(node)
+            if parsed is None:
+                continue
+            bbox, mask = parsed
+            y0, x0, y1, x1 = bbox
+            max_y = max(max_y, y1)
+            max_x = max(max_x, x1)
+            masks.append((label, bbox, mask))
+
+        base_y, base_x = self._viewer_plane_shape()
+        labels = np.zeros((max(base_y, max_y, 1), max(base_x, max_x, 1)), dtype=np.uint32)
+        for label, (y0, x0, y1, x1), mask in masks:
+            target = labels[y0:y1, x0:x1]
+            if target.shape != mask.shape:
+                continue
+            target[mask.astype(bool)] = label
+        return labels
+
+    @staticmethod
+    def _node_mask_and_bbox(node) -> tuple[tuple[int, int, int, int], np.ndarray] | None:
+        try:
+            # MaybePickleType already unpickles on read; only call pickle.loads if raw bytes
+            node_obj = node.pickle
+            if isinstance(node_obj, (bytes, memoryview)):
+                node_obj = pickle.loads(bytes(node_obj))
+            if node_obj is None:
+                return None
+        except Exception:
+            return None
+
+        if isinstance(node_obj, dict):
+            bbox = node_obj.get("bbox")
+            mask = node_obj.get("mask")
+        elif isinstance(node_obj, tuple) and len(node_obj) >= 2:
+            bbox, mask = node_obj[0], node_obj[1]
+        else:
+            bbox = getattr(node_obj, "bbox", None)
+            mask = getattr(node_obj, "mask", None)
+
+        if bbox is None or mask is None:
+            return None
+        bbox_arr = np.asarray(bbox, dtype=int).ravel()
+        if bbox_arr.size >= 6:
+            y0, x0, y1, x1 = int(bbox_arr[1]), int(bbox_arr[2]), int(bbox_arr[4]), int(bbox_arr[5])
+        elif bbox_arr.size >= 4:
+            y0, x0, y1, x1 = (int(v) for v in bbox_arr[:4])
+        else:
+            return None
+
+        mask_arr = np.asarray(mask)
+        if mask_arr.ndim == 3 and mask_arr.shape[0] == 1:
+            mask_arr = mask_arr[0]
+        elif mask_arr.ndim > 2:
+            mask_arr = np.squeeze(mask_arr)
+        if mask_arr.ndim != 2:
+            return None
+        if mask_arr.shape != (y1 - y0, x1 - x0):
+            return None
+        return (y0, x0, y1, x1), mask_arr.astype(bool, copy=False)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -2879,6 +3242,12 @@ class NucleusWorkflowWidget(QWidget):
     def _on_dims_step_changed(self, event=None) -> None:
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
+        if (
+            self.ultrack_db_browser_section.is_expanded
+            and self.ultrack_db_mode_combo.currentText() == "Hierarchy cut"
+        ):
+            from qtpy.QtCore import QTimer
+            QTimer.singleShot(0, self._refresh_ultrack_db_browser)
 
     @staticmethod
     def _frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:

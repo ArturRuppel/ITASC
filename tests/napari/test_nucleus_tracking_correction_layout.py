@@ -944,7 +944,11 @@ def test_canonical_sections_expose_required_elements():
 
     # Section 3: Ultrack Database Browser
     assert hasattr(widget, "ultrack_db_info_lbl")
+    assert hasattr(widget, "ultrack_db_active_btn")
     assert hasattr(widget, "ultrack_db_refresh_btn")
+    assert hasattr(widget, "ultrack_db_mode_combo")
+    assert hasattr(widget, "ultrack_db_hierarchy_slider")
+    assert hasattr(widget, "ultrack_db_height_lbl")
     assert hasattr(widget, "ultrack_db_section_status_lbl")
 
     # Section 4: Ultrack Tracking
@@ -1150,11 +1154,100 @@ def test_ultrack_db_browser_shows_missing_db_status(tmp_path):
     pos_dir = tmp_path / "pos00"
     pos_dir.mkdir()
     widget._pos_dir = pos_dir
+    widget._ultrack_db_browser_active = True
 
     widget._refresh_ultrack_db_browser()
 
     text = widget.ultrack_db_section_status_lbl.text().lower()
     assert "data.db" in text or "missing" in text or "not found" in text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_exposes_two_modes():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    modes = [
+        widget.ultrack_db_mode_combo.itemText(i)
+        for i in range(widget.ultrack_db_mode_combo.count())
+    ]
+
+    assert modes == ["Summary only", "Hierarchy cut"]
+    assert widget.ultrack_db_hierarchy_slider.minimum() == 0
+    assert widget.ultrack_db_hierarchy_slider.maximum() == 100
+    assert widget.ultrack_db_hierarchy_slider.value() == 50
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    widget.ultrack_db_hierarchy_slider.setValue(75)
+    monkeypatch.setattr(widget, "_current_t", lambda: 0)
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True  # skip middle-frame jump; no real DB to query
+
+    calls = []
+
+    def _fake_summary(path, frame):
+        return "3 nodes | 2 links | frame 0: 1 nodes"
+
+    def _fake_render(path, frame, slider_int):
+        calls.append((path, frame, slider_int))
+        return np.zeros((5, 5), dtype=np.uint32), "rendered hierarchy cut"
+
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", _fake_summary)
+    monkeypatch.setattr(widget, "_render_hierarchy_cut", _fake_render)
+
+    widget._refresh_ultrack_db_browser()
+    widget._refresh_ultrack_db_browser()
+
+    assert len(calls) == 1
+    assert calls[0] == (db_path, 0, 75)
+    assert widget.ultrack_db_info_lbl.text() == "3 nodes | 2 links | frame 0: 1 nodes"
+    assert widget.ultrack_db_section_status_lbl.text() == "rendered hierarchy cut"
+    assert "Ultrack DB Preview" in viewer.layers
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_summary_mode_does_not_render(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True  # skip middle-frame jump; no real DB to query
+
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda path, frame: "summary")
+    monkeypatch.setattr(
+        widget,
+        "_render_hierarchy_cut",
+        lambda *args, **kwargs: pytest.fail("summary mode must not render"),
+    )
+
+    widget._refresh_ultrack_db_browser()
+
+    assert widget.ultrack_db_info_lbl.text() == "summary"
+    assert widget.ultrack_db_section_status_lbl.text() == "Summary refreshed."
+    assert "Ultrack DB Preview" not in viewer.layers
 
     widget.deleteLater()
     viewer.close()
