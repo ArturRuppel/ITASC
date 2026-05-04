@@ -16,7 +16,6 @@ from qtpy.QtWidgets import (
     QApplication,
     QDoubleSpinBox,
     QFrame,
-    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -238,13 +237,15 @@ class CellWorkflowWidget(QWidget):
         lo   = self.cp_min_spin.value()
         hi   = self.cp_max_spin.value()
         step = self.cp_step_spin.value()
-        return list(np.arange(lo, hi + step / 2, step))
+        n = max(1, round((hi - lo) / step) + 1)
+        return list(np.linspace(lo, hi, n))
 
     def _cp_gammas(self) -> list[float]:
         gmin  = self.cp_gamma_min_spin.value()
         gmax  = self.cp_gamma_max_spin.value()
         gstep = self.cp_gamma_step_spin.value()
-        return list(np.arange(gmin, gmax + gstep / 2, gstep))
+        n = max(1, round((gmax - gmin) / gstep) + 1)
+        return list(np.linspace(gmin, gmax, n))
 
     def _current_t(self) -> int:
         step = self.viewer.dims.current_step
@@ -293,6 +294,8 @@ class CellWorkflowWidget(QWidget):
             self._set_contour_status(str(data))
 
     def _on_contour_worker_error(self, exc: Exception) -> None:
+        if self._build_worker is None:
+            return  # worker was already cleared by cancel — don't overwrite "cancelled" status
         self._build_worker = None
         self.build_progress_bar.setVisible(False)
         self._set_build_buttons_running(False)
@@ -335,14 +338,25 @@ class CellWorkflowWidget(QWidget):
             full = np.zeros((cellprob_zavg.shape[0],) + boundary.shape, dtype=np.float32)
             full[t_idx] = boundary
             if _CELLPROB_LAYER in self.viewer.layers:
-                self.viewer.layers[_CELLPROB_LAYER].data = cellprob_zavg
+                try:
+                    self.viewer.layers[_CELLPROB_LAYER].data = cellprob_zavg
+                except Exception:
+                    self.viewer.layers.remove(self.viewer.layers[_CELLPROB_LAYER])
+                    self.viewer.add_image(
+                        cellprob_zavg, name=_CELLPROB_LAYER,
+                        colormap="inferno", blending="additive", visible=True,
+                    )
             else:
                 self.viewer.add_image(
                     cellprob_zavg, name=_CELLPROB_LAYER,
                     colormap="inferno", blending="additive", visible=True,
                 )
             if _CONTOUR_LAYER in self.viewer.layers:
-                self.viewer.layers[_CONTOUR_LAYER].data = full
+                try:
+                    self.viewer.layers[_CONTOUR_LAYER].data = full
+                except Exception:
+                    self.viewer.layers.remove(self.viewer.layers[_CONTOUR_LAYER])
+                    self.viewer.add_image(full, name=_CONTOUR_LAYER, colormap="magma", visible=True)
             else:
                 self.viewer.add_image(full, name=_CONTOUR_LAYER, colormap="magma", visible=True)
             step = list(self.viewer.dims.current_step)
@@ -434,8 +448,9 @@ class CellWorkflowWidget(QWidget):
 
     def _on_cancel_build(self) -> None:
         if self._build_worker is not None:
-            self._build_worker.quit()
-            self._build_worker = None
+            worker = self._build_worker
+            self._build_worker = None  # clear before quit so errored callback is a no-op
+            worker.quit()
         self._set_build_buttons_running(False)
         self._set_contour_status("Build cancelled.")
 

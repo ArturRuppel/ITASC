@@ -79,7 +79,7 @@ class CellFlowMainWidget(QWidget):
 
         self.cell_workflow_widget = CellWorkflowWidget(self.viewer)
         self.cell_section = CollapsibleSection(
-            "4. Cell Workflow", self.cell_workflow_widget, expanded=False
+            "4. Cell Segmentation", self.cell_workflow_widget, expanded=False
         )
 
         self.correction_widget = CorrectionWidget(self.viewer)
