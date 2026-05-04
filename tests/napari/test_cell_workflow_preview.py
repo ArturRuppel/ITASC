@@ -1,11 +1,14 @@
+"""Tests for the cell Contour Maps widget (CellWorkflowWidget)."""
 from __future__ import annotations
 
 import importlib
+import inspect
 import os
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import tifffile
@@ -24,229 +27,262 @@ class _FakeViewer:
     def __init__(self) -> None:
         self.layers = _LayerCollection()
         self.dims = SimpleNamespace(
-            current_step=(0, 1),
+            current_step=(0,),
             events=SimpleNamespace(
-                current_step=SimpleNamespace(connect=lambda callback: None)
+                current_step=SimpleNamespace(connect=lambda cb: None)
             ),
         )
 
-    def add_labels(self, data, *, name):
-        layer = SimpleNamespace(data=np.asarray(data), name=name)
-        self.layers[name] = layer
-        return layer
-
-    def add_image(self, data, *, name, colormap="gray", **kwargs):
-        layer = SimpleNamespace(
-            data=np.asarray(data),
-            name=name,
-            colormap=colormap,
-            **kwargs,
-        )
+    def add_image(self, data, *, name, **kwargs):
+        layer = SimpleNamespace(data=np.asarray(data), name=name, **kwargs)
         self.layers[name] = layer
         return layer
 
 
-def _load_cell_widget_module(monkeypatch):
+def _load_module(monkeypatch):
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-
     napari_pkg = types.ModuleType("cellflow.napari")
     napari_pkg.__path__ = [str(package_root)]
     monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-
-    correction_module = types.ModuleType("cellflow.napari.correction_widget")
-
-    class _StubCorrectionWidget(QWidget):
-        def __init__(self, *args, **kwargs):
-            super().__init__()
-
-        def deactivate(self):
-            pass
-
-    correction_module.CorrectionWidget = _StubCorrectionWidget
-    monkeypatch.setitem(
-        sys.modules, "cellflow.napari.correction_widget", correction_module
-    )
     sys.modules.pop("cellflow.napari.cell_workflow_widget", None)
-    module = importlib.import_module("cellflow.napari.cell_workflow_widget")
-    monkeypatch.setitem(sys.modules, "cellflow.napari.cell_workflow_widget", module)
-    return module
+    mod = importlib.import_module("cellflow.napari.cell_workflow_widget")
+    monkeypatch.setitem(sys.modules, "cellflow.napari.cell_workflow_widget", mod)
+    return mod
 
 
-def test_cell_preview_runs_seeded_watershed_for_all_z_slices(monkeypatch, tmp_path):
+def _make_sync_thread_worker():
+    """Return a replacement for napari thread_worker that runs synchronously."""
+
+    def fake_thread_worker(connect=None):
+        def decorator(fn):
+            def wrapper(*args, **kwargs):
+                try:
+                    result = fn(*args, **kwargs)
+                except Exception as exc:
+                    if connect and "errored" in connect:
+                        connect["errored"](exc)
+                    return None
+
+                if inspect.isgenerator(result):
+                    return_value = None
+                    while True:
+                        try:
+                            yielded = next(result)
+                        except StopIteration as exc:
+                            return_value = exc.value
+                            break
+                        if connect and "yielded" in connect:
+                            connect["yielded"](yielded)
+                    if connect and "returned" in connect:
+                        connect["returned"](return_value)
+                else:
+                    if connect and "returned" in connect:
+                        connect["returned"](result)
+                return None
+
+            return wrapper
+
+        return decorator
+
+    return fake_thread_worker
+
+
+# ── get_state / set_state round-trip ─────────────────────────────────────────
+
+def test_get_set_state_round_trips_cellprob_params(monkeypatch):
     app = QApplication.instance() or QApplication([])
-    module = _load_cell_widget_module(monkeypatch)
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
 
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
+    state = {
+        "cellprob": {
+            "min": -5.0, "max": 1.0, "step": 2.0,
+            "gamma_min": 0.8, "gamma_max": 1.2, "gamma_step": 0.1,
+        }
+    }
+    widget.set_state(state)
+    got = widget.get_state()
 
-    prob = np.zeros((1, 3, 4, 5), dtype=np.float32)
-    nucleus = np.zeros((1, 3, 4, 5), dtype=np.uint32)
-    for z in range(3):
-        nucleus[0, z, 1:3, 2:4] = z + 1
-
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "cell_prob_3dt.tif",
-        prob,
-        photometric="minisblack",
-    )
-    tifffile.imwrite(
-        pos_dir / "2_nucleus" / "tracked_labels.tif",
-        nucleus,
-        photometric="minisblack",
-    )
-
-    calls = []
-
-    def fake_seeded_watershed(prob_2d, dp_2d, seeds_2d, params):
-        calls.append((prob_2d.copy(), dp_2d, seeds_2d.copy()))
-        return np.full(prob_2d.shape, int(seeds_2d.max()), dtype=np.uint32)
-
-    monkeypatch.setattr(module, "compute_seeded_watershed", fake_seeded_watershed)
-
-    widget = module.CellWorkflowWidget(_FakeViewer())
-    widget.refresh(pos_dir)
-
-    widget._on_preview()
-
-    preview = widget.viewer.layers[module._PREVIEW_LAYER].data
-    assert preview.shape == (3, 4, 5)
-    assert [int(slice_.max()) for slice_ in preview] == [1, 2, 3]
-    assert len(calls) == 3
+    assert got["cellprob"]["min"]        == -5.0
+    assert got["cellprob"]["max"]        ==  1.0
+    assert got["cellprob"]["step"]       ==  2.0
+    assert got["cellprob"]["gamma_min"]  ==  0.8
+    assert got["cellprob"]["gamma_max"]  ==  1.2
+    assert got["cellprob"]["gamma_step"] ==  0.1
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_cell_preview_loads_complete_basin_stack_with_time_axis(monkeypatch, tmp_path):
+# ── status labels ─────────────────────────────────────────────────────────────
+
+def test_refresh_none_shows_no_project_message(monkeypatch):
     app = QApplication.instance() or QApplication([])
-    module = _load_cell_widget_module(monkeypatch)
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    widget.refresh(None)
+
+    assert "no project" in widget.contour_input_lbl.text().lower()
+    assert "no project" in widget.contour_output_lbl.text().lower()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_refresh_existing_files_shows_checkmarks(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
 
     pos_dir = tmp_path / "pos00"
     (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
+    (pos_dir / "3_cell").mkdir()
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_3dt.tif", np.zeros((1, 2, 4, 4), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_dp_3dt.tif",   np.zeros((1, 2, 2, 4, 4), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "3_cell" / "contour_maps.tif",      np.zeros((1, 4, 4), dtype=np.float32))
 
-    prob = np.zeros((2, 3, 4, 5), dtype=np.float32)
-    prob[0] = -1.0
-    prob[1] = 1.0
-    nucleus = np.zeros((2, 3, 4, 5), dtype=np.uint32)
-    nucleus[1, :, 1:3, 2:4] = 7
+    widget.refresh(pos_dir)
 
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "cell_prob_3dt.tif",
-        prob,
-        photometric="minisblack",
-    )
-    tifffile.imwrite(
-        pos_dir / "2_nucleus" / "tracked_labels.tif",
-        nucleus,
-        photometric="minisblack",
-    )
+    assert "✓" in widget.contour_input_lbl.text()
+    assert "✓" in widget.contour_output_lbl.text()
 
-    def fake_seeded_watershed(prob_2d, dp_2d, seeds_2d, params):
-        return np.full(prob_2d.shape, int(seeds_2d.max()), dtype=np.uint32)
+    widget.deleteLater()
+    app.processEvents()
 
-    monkeypatch.setattr(module, "compute_seeded_watershed", fake_seeded_watershed)
+
+# ── _thresholds / _cp_gammas helpers ──────────────────────────────────────────
+
+def test_thresholds_returns_correct_values(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    widget.cp_min_spin.setValue(-2.0)
+    widget.cp_max_spin.setValue(0.0)
+    widget.cp_step_spin.setValue(1.0)
+
+    thr = widget._thresholds()
+
+    assert len(thr) == 3
+    np.testing.assert_allclose(thr, [-2.0, -1.0, 0.0], atol=1e-6)
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_cp_gammas_single_value_when_min_equals_max(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    widget.cp_gamma_min_spin.setValue(1.0)
+    widget.cp_gamma_max_spin.setValue(1.0)
+    widget.cp_gamma_step_spin.setValue(0.25)
+
+    gammas = widget._cp_gammas()
+
+    assert gammas == [1.0]
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+# ── preview worker ────────────────────────────────────────────────────────────
+
+def test_on_preview_contour_maps_calls_build_mean_z_consensus_boundary(monkeypatch, tmp_path):
+    """Preview should call build_mean_z_consensus_boundary and add napari layers."""
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    # Force thread_worker to run synchronously so patches apply inside the worker.
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+
+    n_t, n_z, n_y, n_x = 2, 3, 8, 8
+    prob = np.zeros((n_t, n_z, n_y, n_x), dtype=np.float32)
+    dp   = np.zeros((n_t, n_z, 2, n_y, n_x), dtype=np.float32)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_3dt.tif", prob)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_dp_3dt.tif",   dp)
+
+    boundary_result = np.full((n_y, n_x), 0.5, dtype=np.float32)
+    fg_result       = np.full((n_y, n_x), 0.4, dtype=np.float32)
 
     viewer = _FakeViewer()
-    viewer.dims.current_step = (1, 0, 0, 0)
-    widget = module.CellWorkflowWidget(viewer)
+    viewer.dims.current_step = (1,)
+    widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
 
-    widget._on_preview()
+    with patch(
+        "cellflow.segmentation.build_mean_z_consensus_boundary",
+        return_value=(boundary_result, fg_result),
+    ) as mock_fn:
+        widget._on_preview_contour_maps()
 
-    basin = widget.viewer.layers[module._PREVIEW_BASIN_LAYER].data
-    preview = widget.viewer.layers[module._PREVIEW_LAYER].data
-    assert basin.shape == (2, 3, 4, 5)
-    assert preview.shape == (3, 4, 5)
-    np.testing.assert_allclose(basin[0], 1.0 / (1.0 + np.exp(1.0)))
-    np.testing.assert_allclose(basin[1], 1.0 / (1.0 + np.exp(-1.0)))
-    assert int(preview.max()) == 7
+    mock_fn.assert_called_once()
+    call_args = mock_fn.call_args
+    # First positional arg is prob[t_idx]: shape (n_z, n_y, n_x)
+    assert call_args[0][0].shape == (n_z, n_y, n_x)
+    # Second positional arg is dp[t_idx]: shape (n_z, 2, n_y, n_x)
+    assert call_args[0][1].shape == (n_z, 2, n_y, n_x)
+
+    # Both napari layers should have been added
+    assert mod._CONTOUR_LAYER in viewer.layers
+    assert mod._CELLPROB_LAYER in viewer.layers
+
+    # Contour layer is a T-stack; boundary appears at t=1
+    contour_data = viewer.layers[mod._CONTOUR_LAYER].data
+    assert contour_data.shape == (n_t, n_y, n_x)
+    np.testing.assert_array_equal(contour_data[1], boundary_result)
+    np.testing.assert_array_equal(contour_data[0], 0.0)
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_cell_preview_flow_magnitude_loads_channel_first_dp(monkeypatch, tmp_path):
+# ── build worker writes output file ───────────────────────────────────────────
+
+def test_on_build_contour_maps_writes_tif_file(monkeypatch, tmp_path):
+    """Build should stack per-frame boundaries and write contour_maps.tif."""
     app = QApplication.instance() or QApplication([])
-    module = _load_cell_widget_module(monkeypatch)
+    mod = _load_module(monkeypatch)
+
+    # Force thread_worker to run synchronously so patches apply inside the worker.
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
 
     pos_dir = tmp_path / "pos00"
     (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
 
-    prob = np.zeros((1, 3, 4, 5), dtype=np.float32)
-    nucleus = np.zeros((1, 3, 4, 5), dtype=np.uint32)
-    nucleus[:, :, 1:3, 2:4] = 1
+    n_t, n_z, n_y, n_x = 3, 2, 6, 6
+    prob = np.zeros((n_t, n_z, n_y, n_x), dtype=np.float32)
+    dp   = np.zeros((n_t, n_z, 2, n_y, n_x), dtype=np.float32)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_3dt.tif", prob)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_dp_3dt.tif",   dp)
 
-    # External Cellpose output may store vector channels before Z: (T, C, Z, Y, X).
-    dp = np.zeros((1, 2, 3, 4, 5), dtype=np.float32)
-    for z in range(3):
-        dp[0, 0, z] = z + 3
-        dp[0, 1, z] = 4
+    call_count = 0
 
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "cell_prob_3dt.tif",
-        prob,
-        photometric="minisblack",
-    )
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "cell_dp_3dt.tif",
-        dp,
-        photometric="minisblack",
-    )
-    tifffile.imwrite(
-        pos_dir / "2_nucleus" / "tracked_labels.tif",
-        nucleus,
-        photometric="minisblack",
-    )
+    def fake_build(prob_t, dp_t, thresholds, gammas, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        boundary = np.full((n_y, n_x), float(call_count) * 0.1, dtype=np.float32)
+        fg       = np.zeros((n_y, n_x), dtype=np.float32)
+        return boundary, fg
 
-    seen_dp_shapes = []
-
-    def fake_seeded_watershed(prob_2d, dp_2d, seeds_2d, params):
-        seen_dp_shapes.append(dp_2d.shape)
-        return np.full(prob_2d.shape, len(seen_dp_shapes), dtype=np.uint32)
-
-    monkeypatch.setattr(module, "compute_seeded_watershed", fake_seeded_watershed)
-
-    widget = module.CellWorkflowWidget(_FakeViewer())
+    widget = mod.CellWorkflowWidget(_FakeViewer())
     widget.refresh(pos_dir)
-    widget.basin_combo.setCurrentText("Flow Magnitude")
 
-    widget._on_preview()
+    with patch("cellflow.segmentation.build_mean_z_consensus_boundary", fake_build):
+        widget._on_build_contour_maps()
 
-    preview = widget.viewer.layers[module._PREVIEW_LAYER].data
-    basin = widget.viewer.layers[module._PREVIEW_BASIN_LAYER].data
-    assert preview.shape == (3, 4, 5)
-    assert basin.shape == (1, 3, 4, 5)
-    assert seen_dp_shapes == [(2, 4, 5), (2, 4, 5), (2, 4, 5)]
-    np.testing.assert_allclose(basin[0, :, 0, 0], [5.0, np.sqrt(32.0), np.sqrt(41.0)])
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_cell_db_browser_broadcasts_zavg_images_across_hypothesis_z(monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    module = _load_cell_widget_module(monkeypatch)
-
-    widget = module.CellWorkflowWidget(_FakeViewer())
-
-    stack = np.zeros((2, 3, 4, 5), dtype=np.uint32)
-    cell_zavg = np.arange(2 * 4 * 5, dtype=np.float32).reshape(2, 4, 5)
-    nuc_zavg = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
-
-    widget._on_load_stack_done((0, stack, cell_zavg, nuc_zavg))
-
-    loaded_cell = widget.viewer.layers[module._CELL_ZAVG_LAYER].data
-    loaded_nuc = widget.viewer.layers[module._NUC_ZAVG_LAYER].data
-    assert loaded_cell.shape == stack.shape
-    assert loaded_nuc.shape == stack.shape
-    np.testing.assert_array_equal(loaded_cell[:, 0], cell_zavg)
-    np.testing.assert_array_equal(loaded_cell[:, 1], cell_zavg)
-    np.testing.assert_array_equal(loaded_cell[:, 2], cell_zavg)
-    np.testing.assert_array_equal(loaded_nuc[0, 0], nuc_zavg)
-    np.testing.assert_array_equal(loaded_nuc[1, 2], nuc_zavg)
+    contour_path = pos_dir / "3_cell" / "contour_maps.tif"
+    assert contour_path.exists(), "contour_maps.tif was not written"
+    result = tifffile.imread(str(contour_path))
+    assert result.shape == (n_t, n_y, n_x)
+    assert call_count == n_t
+    np.testing.assert_allclose(result[0], 0.1, atol=1e-5)
+    np.testing.assert_allclose(result[2], 0.3, atol=1e-5)
 
     widget.deleteLater()
     app.processEvents()
