@@ -1,13 +1,12 @@
-"""Run a 2D per-frame α-expansion graph cut experiment for cell labels.
+"""Run a 2D per-frame α-expansion graph cut experiment for cell labels (fast variant).
 
-Each frame is segmented independently. Centroid seeds from curated nuclear
-labels are hard-pinned. A Potts smoothness term derived from the contour
-probability map penalizes label disagreements across low-contour edges.
+Uses vectorized add_grid_edges / add_grid_tedges / get_grid_segments on the full
+(H, W) pixel grid instead of a compact foreground-only node set with a Python
+edge loop. Background pixels are pinned to the sink via infinite t-link capacity.
 """
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +34,9 @@ DEFAULT_CONTOUR_DIR = (
 DEFAULT_SMOOTHNESS_WEIGHT = [5.0, 20.0, 50.0, 100.0]
 _INF = 1e10
 
+_H_STRUCT = np.array([[0, 0, 0], [0, 0, 1], [0, 0, 0]], dtype=bool)
+_V_STRUCT = np.array([[0, 1, 0], [0, 0, 0], [0, 0, 0]], dtype=bool)
+
 
 def _json_default(value: Any) -> Any:
     if isinstance(value, Path):
@@ -53,96 +55,107 @@ def _format_float(value: float) -> str:
     return text or "0"
 
 
-def _run_alpha_expansion(
+def _precompute_edge_weights(
+    contours: np.ndarray,
+    foreground: np.ndarray,
+    smoothness_weight: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Precompute per-pixel edge weights for add_grid_edges.
+
+    Returns h_weights (H, W) and v_weights (H, W). Each value is the edge weight
+    from pixel (y, x) to its right / down neighbor. Edges crossing the
+    foreground-background boundary are zeroed out.
+    """
+    H, W = contours.shape
+    c = np.asarray(contours, dtype=np.float32)
+    fg = foreground.astype(bool)
+
+    h_weights = np.zeros((H, W), dtype=np.float64)
+    h_weights[:, :-1] = (
+        smoothness_weight
+        * np.maximum(0.0, 1.0 - 0.5 * (c[:, :-1] + c[:, 1:]))
+        * (fg[:, :-1] & fg[:, 1:])
+    )
+
+    v_weights = np.zeros((H, W), dtype=np.float64)
+    v_weights[:-1, :] = (
+        smoothness_weight
+        * np.maximum(0.0, 1.0 - 0.5 * (c[:-1, :] + c[1:, :]))
+        * (fg[:-1, :] & fg[1:, :])
+    )
+
+    return h_weights, v_weights
+
+
+def _run_alpha_expansion_fast(
     contours: np.ndarray,
     foreground: np.ndarray,
     seeds: np.ndarray,
     smoothness_weight: float,
     max_rounds: int = 5,
 ) -> np.ndarray:
-    """2D α-expansion graph cut with hard seed constraints and Potts smoothness.
+    """2D α-expansion graph cut on the full pixel grid using vectorized edge ops.
 
     contours:  (Y, X) float32 in [0, 1]; high = likely boundary
     foreground: (Y, X) bool; pixels outside are fixed to label 0
     seeds:     (Y, X) uint32; nonzero pixels are hard-pinned to their label
-    Returns:   (Y, X) uint32 label assignments; background pixels are 0
+    Returns:   (Y, X) uint32; background pixels are 0
     """
-    height, width = contours.shape
-    fg_mask = np.asarray(foreground, dtype=bool)
+    H, W = contours.shape
+    n_nodes = H * W
+    fg = np.asarray(foreground, dtype=bool)
+    flat_fg = fg.ravel()
+    flat_seeds = seeds.ravel().astype(np.uint32)
 
-    # Map foreground pixels to compact node indices
-    fg_yx = np.argwhere(fg_mask)          # (N, 2)
-    n_nodes = len(fg_yx)
-    if n_nodes == 0:
-        return np.zeros((height, width), dtype=np.uint32)
+    # Node ID grid — all pixels are nodes (background pinned via t-links)
+    nodeids = np.arange(n_nodes, dtype=np.int32).reshape(H, W)
+    flat_nodeids = nodeids.ravel()
 
-    pixel_to_node = np.full((height, width), -1, dtype=np.int32)
-    pixel_to_node[fg_yx[:, 0], fg_yx[:, 1]] = np.arange(n_nodes, dtype=np.int32)
+    # Precompute edge weights once (reused across all GC builds)
+    h_weights, v_weights = _precompute_edge_weights(contours, fg, smoothness_weight)
 
-    # Precompute horizontal and vertical n-link weights (vectorized)
-    c = np.asarray(contours, dtype=np.float32)
-    # horizontal: edge between (y, x) and (y, x+1)
-    h_left_yx = fg_yx[(fg_yx[:, 1] + 1 < width) & (pixel_to_node[fg_yx[:, 0], np.minimum(fg_yx[:, 1] + 1, width - 1)] >= 0)]
-    # vertical: edge between (y, x) and (y+1, x)
-    v_top_yx = fg_yx[(fg_yx[:, 0] + 1 < height) & (pixel_to_node[np.minimum(fg_yx[:, 0] + 1, height - 1), fg_yx[:, 1]] >= 0)]
-
-    def _edge_weight(y0: int, x0: int, y1: int, x1: int) -> float:
-        avg = 0.5 * (float(c[y0, x0]) + float(c[y1, x1]))
-        return float(smoothness_weight) * max(0.0, 1.0 - avg)
-
-    # Build edge list once (reused across all α rounds)
-    edges: list[tuple[int, int, float]] = []
-    for y, x in fg_yx.tolist():
-        node_i = int(pixel_to_node[y, x])
-        for dy, dx in ((0, 1), (1, 0)):
-            ny, nx = y + dy, x + dx
-            if ny >= height or nx >= width:
-                continue
-            node_j = int(pixel_to_node[ny, nx])
-            if node_j < 0:
-                continue
-            w = _edge_weight(y, x, ny, nx)
-            edges.append((node_i, node_j, w))
-
-    # Initialize: each foreground pixel gets the label of its nearest seed
+    # Initialize: each foreground pixel gets nearest-seed label
     seed_pixels = seeds > 0
     if seed_pixels.any():
         _, nearest = distance_transform_edt(~seed_pixels, return_indices=True)
         init_labels = seeds[nearest[0], nearest[1]]
     else:
-        init_labels = np.zeros((height, width), dtype=np.uint32)
-    current_labels = np.where(fg_mask, init_labels, 0).astype(np.uint32)
+        init_labels = np.zeros((H, W), dtype=np.uint32)
+    current_labels = np.where(fg, init_labels, 0).astype(np.uint32)
 
     label_ids = np.unique(seeds)
     label_ids = label_ids[label_ids != 0]
 
-    seed_vals = seeds[fg_yx[:, 0], fg_yx[:, 1]]  # (N,) uint32, precomputed once
-    node_ids = np.arange(n_nodes, dtype=np.int32)
-
     for _round in range(max_rounds):
         changed = False
         for alpha in label_ids:
-            g = maxflow.Graph[float](n_nodes, len(edges))
+            g = maxflow.Graph[float](n_nodes, 2 * n_nodes)
             g.add_nodes(n_nodes)
 
-            # Data term (vectorized): hard-pin seeds via add_grid_tedges
-            sourcecaps = np.where(seed_vals == alpha, _INF, 0.0)
-            sinkcaps = np.where((seed_vals != 0) & (seed_vals != alpha), _INF, 0.0)
-            g.add_grid_tedges(node_ids, sourcecaps, sinkcaps)
+            # Data term (all vectorized)
+            sourcecaps = np.zeros(n_nodes, dtype=np.float64)
+            sinkcaps = np.zeros(n_nodes, dtype=np.float64)
+            sinkcaps[~flat_fg] = _INF                              # pin background to sink
+            sourcecaps[flat_seeds == alpha] = _INF                 # pin alpha seeds to source
+            sinkcaps[flat_seeds == alpha] = 0.0
+            other_seeds = (flat_seeds != 0) & (flat_seeds != alpha)
+            sinkcaps[other_seeds] = _INF                           # pin other seeds to sink
+            sourcecaps[other_seeds] = 0.0
+            g.add_grid_tedges(flat_nodeids, sourcecaps, sinkcaps)
 
-            # Smoothness term: 4-connected n-links
-            for node_i, node_j, w in edges:
-                g.add_edge(node_i, node_j, w, w)
+            # Smoothness term (vectorized — no Python edge loop)
+            g.add_grid_edges(nodeids, h_weights, _H_STRUCT, symmetric=True)
+            g.add_grid_edges(nodeids, v_weights, _V_STRUCT, symmetric=True)
 
             g.maxflow()
 
-            # Update (vectorized): False=source partition → label alpha
-            in_sink = g.get_grid_segments(node_ids)
-            alpha_nodes = fg_yx[~in_sink]
-            prev = current_labels[alpha_nodes[:, 0], alpha_nodes[:, 1]]
+            # Update (vectorized)
+            in_sink = g.get_grid_segments(flat_nodeids).reshape(H, W)
+            new_alpha = ~in_sink & fg
+            prev = current_labels[new_alpha]
             if np.any(prev != alpha):
                 changed = True
-            current_labels[alpha_nodes[:, 0], alpha_nodes[:, 1]] = alpha
+            current_labels[new_alpha] = alpha
 
         if not changed:
             break
@@ -152,79 +165,50 @@ def _run_alpha_expansion(
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="2D per-frame α-expansion graph cut for tracked cell segmentation."
+        description="Fast 2D α-expansion graph cut (vectorized edges) for cell segmentation."
     )
     parser.add_argument("--pos-dir", type=Path, default=DEFAULT_POS_DIR)
     parser.add_argument(
         "--contours",
         type=Path,
         default=DEFAULT_CONTOUR_DIR / "contours.tif",
-        help="Contour probability volume, expected shape (T, Y, X).",
     )
     parser.add_argument(
         "--foreground-mask",
         type=Path,
         default=DEFAULT_CONTOUR_DIR / "foreground_masks.tif",
-        help="Binary foreground domain mask, expected shape (T, Y, X).",
     )
     parser.add_argument(
         "--markers",
         type=Path,
         default=DEFAULT_POS_DIR / "2_nucleus" / "tracked_labels.tif",
-        help="Curated tracked nuclear labels, expected shape (T, Y, X).",
     )
     parser.add_argument(
         "--smoothness-weight",
         type=float,
         nargs="+",
         default=DEFAULT_SMOOTHNESS_WEIGHT,
-        help="Potts smoothness weight; higher = stronger contour barriers.",
     )
-    parser.add_argument(
-        "--max-rounds",
-        type=int,
-        default=5,
-        help="Maximum α-expansion rounds per frame.",
-    )
+    parser.add_argument("--max-rounds", type=int, default=5)
     parser.add_argument(
         "--timestamp",
         default=datetime.now().strftime("%Y%m%d-%H%M%S"),
-        help="Checkpoint directory name under 3_cell/graphcut_experiment.",
     )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite an existing timestamped checkpoint directory.",
-    )
+    parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--crop",
         type=int,
         nargs=6,
         metavar=("T0", "T1", "Y0", "Y1", "X0", "X1"),
-        help="Optional crop for pilot runs, using half-open ranges.",
-    )
-    parser.add_argument(
-        "--contours-source",
-        type=Path,
-        default=None,
-        help="Override contours path (e.g. use mean-z contours).",
     )
     return parser.parse_args()
 
 
 def _load_inputs(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    contour_path = args.contours_source if args.contours_source is not None else args.contours
-    contours = np.asarray(tifffile.imread(contour_path), dtype=np.float32)
+    contours = np.asarray(tifffile.imread(args.contours), dtype=np.float32)
     foreground = np.asarray(tifffile.imread(args.foreground_mask))
     markers = np.asarray(tifffile.imread(args.markers), dtype=np.uint32)
 
-    for arr, name in ((contours, "contours"), (foreground, "foreground"), (markers, "markers")):
-        if arr.ndim == 4 and arr.shape[1] == 1:
-            arr = arr[:, 0]
-        if arr.ndim != 3:
-            raise ValueError(f"Expected {name} as (T, Y, X), got {arr.shape}")
-
-    # Re-extract after potential squeeze
     if contours.ndim == 4 and contours.shape[1] == 1:
         contours = contours[:, 0]
     if foreground.ndim == 4 and foreground.shape[1] == 1:
@@ -232,21 +216,17 @@ def _load_inputs(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.n
     if markers.ndim == 4 and markers.shape[1] == 1:
         markers = markers[:, 0]
 
+    if contours.ndim != 3:
+        raise ValueError(f"Expected contours as (T, Y, X), got {contours.shape}")
     if foreground.shape != contours.shape:
-        raise ValueError(
-            f"Foreground shape {foreground.shape} does not match contours {contours.shape}"
-        )
+        raise ValueError(f"Foreground shape {foreground.shape} != contours {contours.shape}")
     if markers.shape != contours.shape:
-        raise ValueError(
-            f"Markers shape {markers.shape} does not match contours {contours.shape}"
-        )
+        raise ValueError(f"Markers shape {markers.shape} != contours {contours.shape}")
 
     if args.crop is not None:
         t0, t1, y0, y1, x0, x1 = args.crop
         crop = (slice(t0, t1), slice(y0, y1), slice(x0, x1))
-        contours = contours[crop]
-        foreground = foreground[crop]
-        markers = markers[crop]
+        contours, foreground, markers = contours[crop], foreground[crop], markers[crop]
 
     return contours, foreground, markers
 
@@ -260,7 +240,7 @@ def _summarize_labels(
     label_ids = label_ids[label_ids != 0]
     missing_ids = np.setdiff1d(marker_ids, label_ids)
     extra_ids = np.setdiff1d(label_ids, marker_ids)
-    unlabeled_foreground = mask & (labels == 0)
+    unlabeled_fg = mask & (labels == 0)
     return {
         "n_marker_ids": int(marker_ids.size),
         "n_output_ids": int(label_ids.size),
@@ -270,14 +250,14 @@ def _summarize_labels(
         "n_extra_output_ids": int(extra_ids.size),
         "foreground_voxels": int(np.count_nonzero(mask)),
         "labeled_voxels": int(np.count_nonzero(labels)),
-        "unlabeled_foreground_voxels": int(np.count_nonzero(unlabeled_foreground)),
+        "unlabeled_foreground_voxels": int(np.count_nonzero(unlabeled_fg)),
         "max_label": int(labels.max()) if labels.size else 0,
     }
 
 
 def main() -> None:
     args = _parse_args()
-    output_dir = args.pos_dir / "3_cell" / "graphcut_experiment" / args.timestamp
+    output_dir = args.pos_dir / "3_cell" / "graphcut_fast_experiment" / args.timestamp
     if output_dir.exists() and not args.overwrite:
         raise FileExistsError(f"{output_dir} exists; pass --overwrite or use a new --timestamp")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -291,7 +271,6 @@ def main() -> None:
         "script": str(Path(__file__).resolve()),
         "pos_dir": args.pos_dir,
         "contours": args.contours,
-        "contours_source": args.contours_source,
         "foreground_mask": args.foreground_mask,
         "markers": args.markers,
         "smoothness_weight": [float(v) for v in args.smoothness_weight],
@@ -299,6 +278,7 @@ def main() -> None:
         "shape": tuple(int(v) for v in contours.shape),
         "crop": args.crop,
         "seed_mode": "centroid",
+        "variant": "fast_grid_edges",
         "seed_marker_voxels": int(np.count_nonzero(seeds)),
         "foreground_voxels": int(np.count_nonzero(fg_mask)),
         "started_at": datetime.now().isoformat(timespec="seconds"),
@@ -313,12 +293,12 @@ def main() -> None:
     for smoothness_weight in args.smoothness_weight:
         suffix = f"sw_{_format_float(float(smoothness_weight))}"
         label_path = output_dir / f"tracked_labels_{suffix}.tif"
-        print(f"Running graph cut {suffix} ({n_frames} frames)...", flush=True)
+        print(f"Running fast graph cut {suffix} ({n_frames} frames)...", flush=True)
         t0 = perf_counter()
 
         all_frames: list[np.ndarray] = []
         for t in range(n_frames):
-            frame_labels = _run_alpha_expansion(
+            frame_labels = _run_alpha_expansion_fast(
                 contours[t],
                 fg_mask[t],
                 seeds[t],
