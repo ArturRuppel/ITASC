@@ -17,6 +17,7 @@ dependencies = [
     "scipy",
     "pandas",
     "tifffile",
+    "numba",
 ]
 
 [project.entry-points."napari.manifest"]
