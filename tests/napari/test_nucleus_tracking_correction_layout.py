@@ -207,8 +207,9 @@ def test_cell_workflow_required_inputs_exclude_optional_flow_vectors():
     )[0]
 
     assert "1_cellpose/cell_prob_3dt.tif" in input_section
+    assert "1_cellpose/cell_dp_3dt.tif" in input_section
+    assert "3_cell/foreground_masks.tif" in input_section
     assert "2_nucleus/tracked_labels.tif" in input_section
-    assert "1_cellpose/cell_dp_3dt.tif" not in input_section
 
 
 def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_status(tmp_path):

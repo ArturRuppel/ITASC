@@ -1,8 +1,6 @@
 """Nucleus segmentation via watershed on Cellpose probability maps."""
 from __future__ import annotations
 
-from cellflow.segmentation.watershed_3d import compute_3d_temporal_watershed
-
 from cellflow.segmentation.flow_following import (
     FlowFollowingParams,
     compute_flow_following_movie,
@@ -416,78 +414,6 @@ def compute_masks_for_threshold(
         masks = result[0] if isinstance(result, tuple) else result
         out[z] = np.asarray(masks, dtype=_LABEL_DTYPE)
     return out
-
-
-def build_mean_z_consensus_boundary(
-    prob_zyx: np.ndarray,
-    dp_zcyx: np.ndarray,
-    cellprob_thresholds: list[float],
-    gammas: list[float] = (1.0,),
-    *,
-    niter: int = 200,
-    mask_callback: Callable[[np.ndarray, int, int], None] | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build boundary map by mean-projecting prob/dp across Z then sweeping threshold x gamma.
-
-    Unlike build_consensus_boundary (threshold x z-slice), this projects Z first so each
-    Cellpose call sees a 2-D image that integrates the full z-stack. Appropriate for
-    cells that span many z-planes.
-
-    prob_zyx:            (Z, Y, X) Cellpose probability logits
-    dp_zcyx:             (Z, C, Y, X) Cellpose flow fields, C >= 2
-    cellprob_thresholds: list of cellprob_threshold values to sweep
-    gammas:              list of gamma correction values; boundary averaged over all combos
-    niter:               number of Cellpose flow iterations per mask (default 200)
-    mask_callback:       optional, called as mask_callback(masks_yx, gamma_idx, thresh_idx)
-    Returns: (boundary, foreground) both (Y, X) float32
-      boundary   -- mean find_boundaries density across all gamma x threshold combinations
-      foreground -- sigmoid of z-mean gamma-corrected prob, averaged over gammas
-    """
-    try:
-        import torch
-        from cellpose.dynamics import compute_masks
-        from skimage.segmentation import find_boundaries
-    except ImportError as exc:
-        raise ImportError("cellpose, torch, and scikit-image required") from exc
-
-    prob_zyx = np.asarray(prob_zyx, dtype=np.float32)
-    dp_zcyx = np.asarray(dp_zcyx, dtype=np.float32)
-
-    # Mean-project dp across Z once: (Z, C, Y, X) -> (C, Y, X)
-    projected_dp = dp_zcyx.mean(axis=0)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    boundary_accum = np.zeros(prob_zyx.shape[1:], dtype=np.float32)
-    fg_accum = np.zeros(prob_zyx.shape[1:], dtype=np.float32)
-    n_total = 0
-
-    for g_idx, gamma in enumerate(gammas):
-        # Apply gamma then mean-project across Z: (Z, Y, X) -> (Y, X)
-        gamma_prob = apply_gamma(prob_zyx, gamma)
-        projected_prob = gamma_prob.mean(axis=0)
-        fg_accum += (1.0 / (1.0 + np.exp(-gamma_prob))).mean(axis=0)
-
-        for t_idx, thresh in enumerate(cellprob_thresholds):
-            result = compute_masks(
-                projected_dp,
-                projected_prob,
-                cellprob_threshold=float(thresh),
-                flow_threshold=0.0,
-                niter=niter,
-                do_3D=False,
-                device=device,
-            )
-            masks = result[0] if isinstance(result, tuple) else result
-            masks = np.asarray(masks, dtype=np.uint32)
-            boundary_accum += find_boundaries(masks, mode="inner").astype(np.float32)
-            n_total += 1
-            if mask_callback is not None:
-                mask_callback(masks, g_idx, t_idx)
-
-    n_gammas = len(gammas)
-    boundary = boundary_accum / n_total if n_total > 0 else boundary_accum
-    foreground = fg_accum / n_gammas if n_gammas > 0 else fg_accum
-    return boundary.astype(np.float32), foreground.astype(np.float32)
 
 
 @dataclass(frozen=True, slots=True)
