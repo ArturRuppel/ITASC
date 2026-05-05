@@ -3,6 +3,11 @@ from __future__ import annotations
 
 from cellflow.segmentation.watershed_3d import compute_3d_temporal_watershed
 
+from cellflow.segmentation.flow_following import (
+    FlowFollowingParams,
+    compute_flow_following_movie,
+)
+
 import warnings
 from collections.abc import Callable
 from dataclasses import asdict, dataclass

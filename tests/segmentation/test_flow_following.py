@@ -362,3 +362,12 @@ def test_compute_flow_following_movie_progress_callback_invoked_per_frame():
         progress_cb=lambda done, total: calls.append((done, total)),
     )
     assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def test_flow_following_symbols_reexported_from_segmentation_package():
+    from cellflow.segmentation import (
+        FlowFollowingParams as PkgParams,
+        compute_flow_following_movie as pkg_fn,
+    )
+    assert PkgParams().capture_radius == 3.0
+    assert callable(pkg_fn)
