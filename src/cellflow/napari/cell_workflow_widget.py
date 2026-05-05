@@ -265,7 +265,15 @@ class CellWorkflowWidget(QWidget):
         ws_grid.setColumnStretch(1, 1)
 
         self.ws_compact_space_spin = _ws_dspin(0.0, 100.0, 0.0, step=1.0)
-        self.ws_compact_time_spin  = _ws_dspin(0.0, 100.0, 0.0, step=1.0)
+        self.ws_compact_space_spin.setToolTip(
+            "Spatial compactness (×0.01 internally). Higher = rounder basins in XY. "
+            "0 = pure topographic flood."
+        )
+        self.ws_compact_time_spin  = _ws_dspin(0.0, 100.0, 10.0, step=1.0)
+        self.ws_compact_time_spin.setToolTip(
+            "Temporal compactness (×0.01 internally). Higher = less expansion into adjacent frames. "
+            "Raise this to restrict the watershed to XY-first expansion."
+        )
         ws_grid.addWidget(QLabel("Compactness space:"), 5, 0)
         ws_grid.addWidget(self.ws_compact_space_spin,   5, 1)
         ws_grid.addWidget(QLabel("Compactness time:"),  6, 0)
@@ -776,8 +784,8 @@ class CellWorkflowWidget(QWidget):
         gauss_time    = self.ws_gauss_time_spin.value()
         median_space  = self.ws_median_space_spin.value()
         median_time   = self.ws_median_time_spin.value()
-        compact_space = self.ws_compact_space_spin.value()
-        compact_time  = self.ws_compact_time_spin.value()
+        compact_space = self.ws_compact_space_spin.value() * 0.01
+        compact_time  = self.ws_compact_time_spin.value() * 0.01
         pos_dir       = self._pos_dir
 
         def _on_done(result):
