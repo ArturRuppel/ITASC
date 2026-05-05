@@ -1,6 +1,8 @@
 """Nucleus segmentation via watershed on Cellpose probability maps."""
 from __future__ import annotations
 
+from cellflow.segmentation.watershed_3d import compute_3d_temporal_watershed
+
 import warnings
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -156,6 +158,49 @@ def _fill_and_close_labels(labels: np.ndarray) -> np.ndarray:
         filled = binary_fill_holes(labels[slices] == label_id)
         out_view = out[slices]
         out_view[filled] = label_id
+    return out
+
+
+def _centroid_markers_2d(labels: np.ndarray) -> np.ndarray:
+    """Place one marker pixel at the centroid of each 2D label."""
+    labels = np.asarray(labels)
+    out = np.zeros_like(labels)
+    for label_id in np.unique(labels):
+        if label_id == 0:
+            continue
+        coords = np.argwhere(labels == label_id)
+        centroid = coords.mean(axis=0)
+        seed_yx = np.rint(centroid).astype(np.int64)
+        if (
+            seed_yx[0] < 0
+            or seed_yx[0] >= labels.shape[0]
+            or seed_yx[1] < 0
+            or seed_yx[1] >= labels.shape[1]
+            or labels[seed_yx[0], seed_yx[1]] != label_id
+        ):
+            distances = np.sum((coords - centroid) ** 2, axis=1)
+            seed_yx = coords[int(np.argmin(distances))]
+        out[int(seed_yx[0]), int(seed_yx[1])] = label_id
+    return out
+
+
+def centroid_markers_from_labels(labels: np.ndarray) -> np.ndarray:
+    """Return one centroid seed pixel per non-zero label.
+
+    For a 2D label image, each label is replaced by a single marker pixel at
+    its rounded centroid. If the rounded centroid falls outside the label, the
+    closest pixel belonging to that label is used instead. For a 3D stack, the
+    operation is applied independently to each first-axis plane, matching
+    time-first ``(T, Y, X)`` tracked nuclear labels.
+    """
+    labels = np.asarray(labels)
+    if labels.ndim == 2:
+        return _centroid_markers_2d(labels)
+    if labels.ndim != 3:
+        raise ValueError(f"Expected 2D labels or time-first 3D stack, got {labels.shape}")
+    out = np.zeros_like(labels)
+    for t in range(labels.shape[0]):
+        out[t] = _centroid_markers_2d(labels[t])
     return out
 
 
@@ -374,6 +419,7 @@ def build_mean_z_consensus_boundary(
     cellprob_thresholds: list[float],
     gammas: list[float] = (1.0,),
     *,
+    niter: int = 200,
     mask_callback: Callable[[np.ndarray, int, int], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build boundary map by mean-projecting prob/dp across Z then sweeping threshold x gamma.
@@ -386,6 +432,7 @@ def build_mean_z_consensus_boundary(
     dp_zcyx:             (Z, C, Y, X) Cellpose flow fields, C >= 2
     cellprob_thresholds: list of cellprob_threshold values to sweep
     gammas:              list of gamma correction values; boundary averaged over all combos
+    niter:               number of Cellpose flow iterations per mask (default 200)
     mask_callback:       optional, called as mask_callback(masks_yx, gamma_idx, thresh_idx)
     Returns: (boundary, foreground) both (Y, X) float32
       boundary   -- mean find_boundaries density across all gamma x threshold combinations
@@ -411,8 +458,9 @@ def build_mean_z_consensus_boundary(
 
     for g_idx, gamma in enumerate(gammas):
         # Apply gamma then mean-project across Z: (Z, Y, X) -> (Y, X)
-        projected_prob = apply_gamma(prob_zyx, gamma).mean(axis=0)
-        fg_accum += 1.0 / (1.0 + np.exp(-projected_prob))
+        gamma_prob = apply_gamma(prob_zyx, gamma)
+        projected_prob = gamma_prob.mean(axis=0)
+        fg_accum += (1.0 / (1.0 + np.exp(-gamma_prob))).mean(axis=0)
 
         for t_idx, thresh in enumerate(cellprob_thresholds):
             result = compute_masks(
@@ -420,7 +468,7 @@ def build_mean_z_consensus_boundary(
                 projected_prob,
                 cellprob_threshold=float(thresh),
                 flow_threshold=0.0,
-                niter=200,
+                niter=niter,
                 do_3D=False,
                 device=device,
             )
