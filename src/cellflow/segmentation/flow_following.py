@@ -111,3 +111,101 @@ def _flow_integrate(
             result[i, j] = label
 
     return result
+
+
+def compute_flow_following_movie(
+    foreground_tyx: np.ndarray,    # (T, Y, X) bool
+    dp_tcyx: np.ndarray,           # (T, 2, Y, X) float32
+    labels_tyx: np.ndarray,        # (T, Y, X) int32
+    params: FlowFollowingParams,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-frame flow-following segmentation with pre-integration filtering.
+
+    Returns
+    -------
+    filtered_dp_tcyx : (T, 2, Y, X) float32 — flow stack after median+Gaussian.
+    cell_labels_tyx  : (T, Y, X) int32      — same labelling as input nuclei.
+    """
+    foreground = np.asarray(foreground_tyx, dtype=bool)
+    dp = np.asarray(dp_tcyx, dtype=np.float32)
+    labels = np.asarray(labels_tyx, dtype=np.int32)
+
+    T = dp.shape[0]
+
+    filtered = dp
+    if params.median_kernel_time > 1 or params.median_kernel_space > 1:
+        filtered = median_filter(
+            filtered,
+            size=(
+                1,
+                int(params.median_kernel_time),
+                int(params.median_kernel_space),
+                int(params.median_kernel_space),
+            ),
+        )
+    if params.gaussian_sigma_time > 0.0 or params.gaussian_sigma_space > 0.0:
+        filtered = gaussian_filter(
+            filtered,
+            sigma=(
+                0.0,
+                float(params.gaussian_sigma_time),
+                float(params.gaussian_sigma_space),
+                float(params.gaussian_sigma_space),
+            ),
+        )
+    filtered = np.asarray(filtered, dtype=np.float32)
+
+    out_labels = np.zeros_like(labels, dtype=np.int32)
+
+    for t in range(T):
+        prob_mask = foreground[t]
+        nuclear_labels = labels[t]
+
+        if not prob_mask.any() or not (nuclear_labels > 0).any():
+            if progress_cb is not None:
+                progress_cb(t + 1, T)
+            continue
+
+        flow_yx2 = np.stack(
+            [filtered[t, 0], filtered[t, 1]], axis=-1
+        ).astype(np.float32)
+        mags = np.hypot(flow_yx2[..., 0], flow_yx2[..., 1])
+        mean_mag = float(mags[prob_mask].mean()) if prob_mask.any() else 0.0
+        if mean_mag > 1e-6:
+            flow_yx2 = (flow_yx2 / mean_mag).astype(np.float32)
+
+        dist, (ny, nx) = distance_transform_edt(
+            nuclear_labels == 0, return_indices=True
+        )
+        H, W = nuclear_labels.shape
+        yi, xi = np.indices((H, W))
+        dy = (ny - yi).astype(np.float32)
+        dx = (nx - xi).astype(np.float32)
+        norm = np.hypot(dy, dx)
+        safe = np.where(norm > 0, norm, 1.0)
+        grav_y = (dy / safe).astype(np.float32)
+        grav_x = (dx / safe).astype(np.float32)
+        inside = nuclear_labels > 0
+        grav_y[inside] = 0.0
+        grav_x[inside] = 0.0
+
+        integrated = _flow_integrate(
+            nuclear_labels.astype(np.int32),
+            np.ascontiguousarray(flow_yx2, dtype=np.float32),
+            grav_y, grav_x,
+            dist.astype(np.float32),
+            ny.astype(np.int32), nx.astype(np.int32),
+            prob_mask,
+            int(params.max_iterations),
+            float(params.flow_step_scale),
+            float(params.flow_weight),
+            float(params.capture_radius),
+        )
+
+        out_labels[t] = _fill_foreground(integrated, prob_mask)
+
+        if progress_cb is not None:
+            progress_cb(t + 1, T)
+
+    return filtered, out_labels

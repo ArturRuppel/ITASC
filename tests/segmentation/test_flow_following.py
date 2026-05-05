@@ -167,3 +167,198 @@ def test_flow_integrate_preserves_existing_labels():
 
     assert result[2, 2] == 11
     assert result[3, 3] == 22
+
+
+def _make_inward_flow(H: int, W: int, cy: float, cx: float) -> np.ndarray:
+    """Flow vectors pointing each pixel toward (cy, cx), unit magnitude."""
+    yi, xi = np.indices((H, W))
+    dy = (cy - yi).astype(np.float32)
+    dx = (cx - xi).astype(np.float32)
+    norm = np.hypot(dy, dx)
+    safe = np.where(norm > 0, norm, 1.0)
+    return np.stack([dy / safe, dx / safe], axis=0).astype(np.float32)
+
+
+def test_compute_flow_following_movie_assigns_foreground_pixels_to_nucleus():
+    from cellflow.segmentation.flow_following import compute_flow_following_movie
+
+    T, H, W = 2, 24, 24
+    foreground = np.ones((T, H, W), dtype=bool)
+    labels = np.zeros((T, H, W), dtype=np.int32)
+    labels[0, 12, 12] = 7
+    labels[1, 12, 12] = 7
+
+    flow_t0 = _make_inward_flow(H, W, 12.0, 12.0)
+    flow_t1 = _make_inward_flow(H, W, 12.0, 12.0)
+    dp = np.stack([flow_t0, flow_t1], axis=0).astype(np.float32)
+
+    params = FlowFollowingParams(
+        median_kernel_time=1,
+        median_kernel_space=1,
+        gaussian_sigma_time=0.0,
+        gaussian_sigma_space=0.0,
+        flow_weight=0.5,
+        flow_step_scale=0.5,
+        max_iterations=100,
+        capture_radius=3.0,
+    )
+
+    filtered_dp, cell_labels = compute_flow_following_movie(
+        foreground, dp, labels, params
+    )
+
+    assert filtered_dp.shape == dp.shape
+    assert filtered_dp.dtype == np.float32
+    assert cell_labels.shape == (T, H, W)
+    assert cell_labels.dtype == np.int32
+    # Every foreground pixel collapses onto the single nucleus, so all are label 7.
+    assert (cell_labels == 7).all()
+
+
+def test_compute_flow_following_movie_voronoi_fills_zero_flow_foreground():
+    from cellflow.segmentation.flow_following import compute_flow_following_movie
+
+    T, H, W = 1, 12, 12
+    foreground = np.ones((T, H, W), dtype=bool)
+    labels = np.zeros((T, H, W), dtype=np.int32)
+    labels[0, 2, 2] = 4
+    labels[0, 9, 9] = 8
+
+    # Zero flow → integrator never converges; Voronoi must fill.
+    dp = np.zeros((T, 2, H, W), dtype=np.float32)
+
+    params = FlowFollowingParams(
+        median_kernel_time=1, median_kernel_space=1,
+        gaussian_sigma_time=0.0, gaussian_sigma_space=0.0,
+        flow_weight=1.0,        # ignore gravity → integrator will not move
+        flow_step_scale=0.2,
+        max_iterations=10,
+        capture_radius=0.5,
+    )
+
+    _, cell_labels = compute_flow_following_movie(foreground, dp, labels, params)
+
+    # Every foreground pixel must end up labelled, partitioned by EDT distance.
+    assert (cell_labels[0] > 0).all()
+    assert cell_labels[0, 0, 0] == 4   # closer to seed 4
+    assert cell_labels[0, 11, 11] == 8 # closer to seed 8
+
+
+def test_compute_flow_following_movie_returns_zeros_for_empty_foreground_frame():
+    from cellflow.segmentation.flow_following import compute_flow_following_movie
+
+    T, H, W = 2, 8, 8
+    foreground = np.ones((T, H, W), dtype=bool)
+    foreground[1] = False                          # second frame is empty
+    labels = np.zeros((T, H, W), dtype=np.int32)
+    labels[0, 4, 4] = 1
+    dp = np.zeros((T, 2, H, W), dtype=np.float32)
+
+    _, cell_labels = compute_flow_following_movie(
+        foreground, dp, labels, FlowFollowingParams(
+            median_kernel_time=1, median_kernel_space=1,
+        ),
+    )
+    assert (cell_labels[1] == 0).all()
+
+
+def test_compute_flow_following_movie_returns_zeros_for_no_nuclei_frame():
+    from cellflow.segmentation.flow_following import compute_flow_following_movie
+
+    T, H, W = 1, 8, 8
+    foreground = np.ones((T, H, W), dtype=bool)
+    labels = np.zeros((T, H, W), dtype=np.int32)   # no nuclei in t=0
+    dp = np.zeros((T, 2, H, W), dtype=np.float32)
+
+    _, cell_labels = compute_flow_following_movie(
+        foreground, dp, labels, FlowFollowingParams(
+            median_kernel_time=1, median_kernel_space=1,
+        ),
+    )
+    assert (cell_labels[0] == 0).all()
+
+
+def test_compute_flow_following_movie_applies_median_and_gaussian_filters(monkeypatch):
+    from cellflow.segmentation import flow_following as ff
+
+    T, H, W = 2, 6, 6
+    foreground = np.ones((T, H, W), dtype=bool)
+    labels = np.zeros((T, H, W), dtype=np.int32)
+    labels[0, 3, 3] = 1
+    labels[1, 3, 3] = 1
+    dp = np.ones((T, 2, H, W), dtype=np.float32)
+
+    median_calls: list[tuple] = []
+    gauss_calls: list[tuple] = []
+
+    real_median = ff.median_filter
+    real_gauss = ff.gaussian_filter
+
+    def spy_median(arr, size):
+        median_calls.append(tuple(size))
+        return real_median(arr, size=size)
+
+    def spy_gauss(arr, sigma):
+        gauss_calls.append(tuple(sigma))
+        return real_gauss(arr, sigma=sigma)
+
+    monkeypatch.setattr(ff, "median_filter", spy_median)
+    monkeypatch.setattr(ff, "gaussian_filter", spy_gauss)
+
+    params = FlowFollowingParams(
+        median_kernel_time=3,
+        median_kernel_space=3,
+        gaussian_sigma_time=1.0,
+        gaussian_sigma_space=1.0,
+    )
+    ff.compute_flow_following_movie(foreground, dp, labels, params)
+
+    # Channel axis is left at size 1 so the filter operates only on (T, Y, X).
+    assert median_calls == [(1, 3, 3, 3)]
+    assert gauss_calls == [(0, 1.0, 1.0, 1.0)]
+
+
+def test_compute_flow_following_movie_skips_filter_when_kernels_off(monkeypatch):
+    from cellflow.segmentation import flow_following as ff
+
+    T, H, W = 1, 6, 6
+    foreground = np.ones((T, H, W), dtype=bool)
+    labels = np.zeros((T, H, W), dtype=np.int32)
+    labels[0, 3, 3] = 1
+    dp = np.zeros((T, 2, H, W), dtype=np.float32)
+
+    median_calls: list[tuple] = []
+    gauss_calls: list[tuple] = []
+    monkeypatch.setattr(ff, "median_filter",
+                        lambda arr, size: (median_calls.append(size), arr)[1])
+    monkeypatch.setattr(ff, "gaussian_filter",
+                        lambda arr, sigma: (gauss_calls.append(sigma), arr)[1])
+
+    ff.compute_flow_following_movie(
+        foreground, dp, labels,
+        FlowFollowingParams(
+            median_kernel_time=1, median_kernel_space=1,
+            gaussian_sigma_time=0.0, gaussian_sigma_space=0.0,
+        ),
+    )
+
+    assert median_calls == []
+    assert gauss_calls == []
+
+
+def test_compute_flow_following_movie_progress_callback_invoked_per_frame():
+    from cellflow.segmentation.flow_following import compute_flow_following_movie
+
+    T, H, W = 3, 6, 6
+    foreground = np.ones((T, H, W), dtype=bool)
+    labels = np.zeros((T, H, W), dtype=np.int32)
+    labels[:, 3, 3] = 1
+    dp = np.zeros((T, 2, H, W), dtype=np.float32)
+
+    calls: list[tuple[int, int]] = []
+    compute_flow_following_movie(
+        foreground, dp, labels,
+        FlowFollowingParams(median_kernel_time=1, median_kernel_space=1),
+        progress_cb=lambda done, total: calls.append((done, total)),
+    )
+    assert calls == [(1, 3), (2, 3), (3, 3)]
