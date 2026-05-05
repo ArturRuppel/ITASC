@@ -13,4 +13,5 @@ build/
 .env
 .claude/
 .worktrees/
+.deepseek/
 test_dupes.py
