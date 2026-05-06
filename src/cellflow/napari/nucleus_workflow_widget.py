@@ -326,14 +326,14 @@ class NucleusWorkflowWidget(QWidget):
         fg_grid = block_grid(horizontal_spacing=12)
         fg_grid.setContentsMargins(0, 0, 0, 0)
 
-        self.fg_source_combo = QComboBox()
-        self.fg_source_combo.addItems(["Sigmoid probability", "Flow DP"])
-
         self.fg_threshold_spin = QDoubleSpinBox()
-        self.fg_threshold_spin.setRange(0.0, 1.0)
-        self.fg_threshold_spin.setValue(0.5)
+        self.fg_threshold_spin.setRange(-10.0, 10.0)
+        self.fg_threshold_spin.setValue(0.0)
         self.fg_threshold_spin.setDecimals(2)
-        self.fg_threshold_spin.setSingleStep(0.01)
+        self.fg_threshold_spin.setSingleStep(0.5)
+        self.fg_threshold_spin.setToolTip(
+            "Cellpose cellprob_threshold — lower = more foreground, higher = stricter"
+        )
 
         self.fg_gamma_spin = QDoubleSpinBox()
         self.fg_gamma_spin.setRange(0.05, 5.0)
@@ -341,13 +341,21 @@ class NucleusWorkflowWidget(QWidget):
         self.fg_gamma_spin.setDecimals(2)
         self.fg_gamma_spin.setSingleStep(0.05)
 
+        self.fg_niter_spin = QSpinBox()
+        self.fg_niter_spin.setRange(1, 2000)
+        self.fg_niter_spin.setValue(200)
+        self.fg_niter_spin.setSingleStep(50)
+        self.fg_niter_spin.setToolTip(
+            "Number of iterations for Cellpose flow dynamics (higher = more precise but slower)"
+        )
+
         add_block_pair_row(
             fg_grid,
             0,
-            "Source:",
-            self.fg_source_combo,
             "Threshold:",
             _compact(self.fg_threshold_spin, 80),
+            "Niter:",
+            _compact(self.fg_niter_spin, 80),
             field_width=80,
         )
         add_block_pair_row(
@@ -415,7 +423,7 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_max_area_spin.setValue(100_000)
 
         self.db_gen_fg_thr_spin = QDoubleSpinBox()
-        self.db_gen_fg_thr_spin.setRange(0.0, 1.0)
+        self.db_gen_fg_thr_spin.setRange(-5.0, 1.0)
         self.db_gen_fg_thr_spin.setValue(0.5)
         self.db_gen_fg_thr_spin.setDecimals(2)
         self.db_gen_fg_thr_spin.setSingleStep(0.05)
@@ -1029,22 +1037,6 @@ class NucleusWorkflowWidget(QWidget):
 
     # ── Foreground Mask section ───────────────────────────────────────────────
 
-    def _foreground_source_key(self) -> str:
-        return "flow_dp" if self.fg_source_combo.currentText() == "Flow DP" else "probability"
-
-    def _foreground_source_path(self) -> Path | None:
-        return self._dp_path() if self._foreground_source_key() == "flow_dp" else self._prob_path()
-
-    @staticmethod
-    def _foreground_frame(data: np.ndarray, source: str, t: int) -> tuple[np.ndarray, int, int]:
-        if source == "probability":
-            n_t = data.shape[0] if data.ndim >= 4 else 1
-            t_idx = min(max(int(t), 0), n_t - 1)
-            return (data[t_idx] if data.ndim >= 4 else data), t_idx, n_t
-        n_t = data.shape[0] if data.ndim >= 5 else 1
-        t_idx = min(max(int(t), 0), n_t - 1)
-        return (data[t_idx] if data.ndim >= 5 else data), t_idx, n_t
-
     def _set_foreground_status(self, msg: str) -> None:
         self.fg_status_lbl.setText(msg)
         self.fg_status_lbl.setVisible(bool(msg))
@@ -1078,34 +1070,30 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_foreground_status("No project open.")
             return
-        source = self._foreground_source_key()
-        src_path = self._foreground_source_path()
-        if src_path is None or not src_path.exists():
-            self._set_foreground_status(f"Missing: {src_path}")
+        prob_path = self._prob_path()
+        dp_path = self._dp_path()
+        if prob_path is None or not prob_path.exists():
+            self._set_foreground_status(f"Missing: {prob_path}")
+            return
+        if dp_path is None or not dp_path.exists():
+            self._set_foreground_status(f"Missing: {dp_path}")
             return
 
         t_frame = self._current_t()
         threshold = self.fg_threshold_spin.value()
         gamma = self.fg_gamma_spin.value()
+        niter = self.fg_niter_spin.value()
 
         def _on_preview_done(result):
             self._foreground_worker = None
             self._set_foreground_buttons_running(False)
-            score, mask, t_idx, n_t = result
-            score_stack = np.zeros((n_t,) + score.shape, dtype=np.float32)
+            mask, t_idx, n_t, prob_tstack = result
             mask_stack = np.zeros((n_t,) + mask.shape, dtype=np.uint8)
-            score_stack[t_idx] = score
             mask_stack[t_idx] = mask
-            if _FOREGROUND_SCORE_LAYER in self.viewer.layers:
-                self.viewer.layers[_FOREGROUND_SCORE_LAYER].data = score_stack
+            if _CELLPROB_LAYER in self.viewer.layers:
+                self.viewer.layers[_CELLPROB_LAYER].data = prob_tstack
             else:
-                self.viewer.add_image(
-                    score_stack,
-                    name=_FOREGROUND_SCORE_LAYER,
-                    colormap="gray",
-                    blending="additive",
-                    visible=True,
-                )
+                self.viewer.add_image(prob_tstack, name=_CELLPROB_LAYER, colormap="inferno", blending="additive", visible=True)
             self._update_layer(_FOREGROUND_MASK_LAYER, mask_stack)
             self._set_viewer_frame(t_idx)
             self._set_foreground_status(f"Preview foreground mask t={t_idx}.")
@@ -1115,18 +1103,38 @@ class NucleusWorkflowWidget(QWidget):
             "errored": self._on_foreground_worker_error,
         })
         def _worker():
-            from cellflow.segmentation import foreground_mask_stack, foreground_score_stack
+            import torch
+            from cellpose.dynamics import compute_masks
+            from cellflow.segmentation import apply_gamma
 
-            data = np.asarray(tifffile.imread(str(src_path)), dtype=np.float32)
-            frame, t_idx, n_t = self._foreground_frame(data, source, t_frame)
-            score = foreground_score_stack(frame, source, gamma=gamma)
-            mask = foreground_mask_stack(frame, source, threshold=threshold, gamma=gamma)
-            return (
-                np.asarray(score, dtype=np.float32),
-                np.asarray(mask, dtype=np.uint8),
-                t_idx,
-                n_t,
+            prob = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+            dp = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)
+            # prob: (T, Z, Y, X), dp: (T, Z, 2, Y, X)
+            n_t = prob.shape[0]
+            t_idx = min(max(int(t_frame), 0), n_t - 1)
+
+            # Z-average the selected frame
+            prob_zavg = prob[t_idx].mean(axis=0).astype(np.float32)       # (Y, X)
+            dp_zavg = dp[t_idx].mean(axis=0).astype(np.float32)            # (2, Y, X)
+
+            # Full T-stack sigmoid Z-average for display across all frames
+            prob_tstack = self._sigmoid_zavg(prob)                          # (T, Y, X)
+
+            # Gamma-correct prob logits, then run Cellpose
+            prob_gamma = apply_gamma(prob_zavg, gamma)
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            result = compute_masks(
+                dp_zavg, prob_gamma,
+                cellprob_threshold=float(threshold),
+                flow_threshold=0.0,
+                min_size=-1,
+                niter=int(niter),
+                do_3D=False,
+                device=device,
             )
+            masks = result[0] if isinstance(result, tuple) else result
+            mask = (np.asarray(masks) > 0).astype(np.uint8)
+            return mask, t_idx, n_t, prob_tstack
 
         self._set_foreground_status(f"Previewing foreground mask for frame t={t_frame}…")
         self._set_foreground_buttons_running(True)
@@ -1136,11 +1144,14 @@ class NucleusWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._set_foreground_status("No project open.")
             return
-        source = self._foreground_source_key()
-        src_path = self._foreground_source_path()
+        prob_path = self._prob_path()
+        dp_path = self._dp_path()
         out_path = self._foreground_masks_path()
-        if src_path is None or not src_path.exists():
-            self._set_foreground_status(f"Missing: {src_path}")
+        if prob_path is None or not prob_path.exists():
+            self._set_foreground_status(f"Missing: {prob_path}")
+            return
+        if dp_path is None or not dp_path.exists():
+            self._set_foreground_status(f"Missing: {dp_path}")
             return
         if out_path is None:
             self._set_foreground_status("No project open.")
@@ -1148,6 +1159,7 @@ class NucleusWorkflowWidget(QWidget):
 
         threshold = self.fg_threshold_spin.value()
         gamma = self.fg_gamma_spin.value()
+        niter = self.fg_niter_spin.value()
         pos_dir = self._pos_dir
 
         @thread_worker(connect={
@@ -1156,15 +1168,18 @@ class NucleusWorkflowWidget(QWidget):
             "errored": self._on_foreground_worker_error,
         })
         def _worker():
-            from cellflow.segmentation import foreground_mask_stack
+            from cellflow.segmentation import compute_cellpose_foreground_mask
 
-            yield (0, 1, "Loading foreground source…")
-            data = np.asarray(tifffile.imread(str(src_path)), dtype=np.float32)
-            yield (0, 1, "Building foreground masks…")
-            mask = foreground_mask_stack(data, source, threshold=threshold, gamma=gamma)
-            if mask.ndim == 2:
-                mask = mask[np.newaxis]
-            mask = (np.asarray(mask) > 0).astype(np.uint8)
+            yield (0, 1, "Loading prob and dp maps…")
+            prob = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+            dp = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)
+            yield (0, 1, "Building foreground masks via Cellpose…")
+            mask = compute_cellpose_foreground_mask(
+                prob, dp,
+                threshold=threshold,
+                gamma=gamma,
+                niter=niter,
+            )
             out_path.parent.mkdir(parents=True, exist_ok=True)
             tifffile.imwrite(str(out_path), mask, compression="zlib")
             yield (1, 1, "Foreground masks written.")
@@ -3057,9 +3072,9 @@ class NucleusWorkflowWidget(QWidget):
                 "gamma_step": self.cp_gamma_step_spin.value(),
             },
             "foreground_mask": {
-                "source":    self.fg_source_combo.currentText(),
                 "threshold": self.fg_threshold_spin.value(),
                 "gamma":     self.fg_gamma_spin.value(),
+                "niter":     self.fg_niter_spin.value(),
             },
             "db_generation": {
                 "min_area":         self.db_gen_min_area_spin.value(),
@@ -3109,12 +3124,9 @@ class NucleusWorkflowWidget(QWidget):
             if "gamma_step" in cp: self.cp_gamma_step_spin.setValue(cp["gamma_step"])
         if "foreground_mask" in state:
             fg = state["foreground_mask"]
-            if "source" in fg:
-                idx = self.fg_source_combo.findText(fg["source"])
-                if idx >= 0:
-                    self.fg_source_combo.setCurrentIndex(idx)
             if "threshold" in fg: self.fg_threshold_spin.setValue(fg["threshold"])
             if "gamma"     in fg: self.fg_gamma_spin.setValue(fg["gamma"])
+            if "niter"     in fg: self.fg_niter_spin.setValue(fg["niter"])
         if "db_generation" in state:
             dbg = state["db_generation"]
             if "min_area"         in dbg: self.db_gen_min_area_spin.setValue(dbg["min_area"])
