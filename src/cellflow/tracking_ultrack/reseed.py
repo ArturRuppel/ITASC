@@ -4,23 +4,14 @@ The validate-and-resolve loop lets the user lock in confirmed cell tracks
 (validated_tracks), then re-solve the rest of the stack — possibly with
 tweaked parameters — without losing the validated work.
 
-Mechanism:
-1. Rebuild Ultrack's NodeDB from ``hypotheses.h5`` in a fresh temporary
-   working directory.
-2. Insert validated masks as annotated ``REAL`` nodes and mark overlapping
-   candidates ``FAKE``.
-3. Score candidate node probabilities from image quality plus proximity to
-   validated seed nodes.
-4. Link → solve with annotations → export directly from Ultrack.
-
 The contract for `validated_tracks` is `dict[int, set[int]]` where keys are
 cell IDs and values are the set of frames at which that cell is validated.
 This is independent of the on-disk JSON shape (which is managed separately by
 `cellflow.database.validation`).
 
-`prune_validated_overlaps`, `_build_frame_masks`, and
-`merge_validated_into_export` are kept for existing unit tests and ad hoc use;
-the live pipeline no longer calls them.
+`prune_validated_overlaps` and `_build_frame_masks` are kept for existing
+unit tests and ad hoc use.  `merge_validated_into_export` is called at the
+end of `resolve_with_canonical_segment` to paste validated IDs back.
 """
 from __future__ import annotations
 
@@ -36,7 +27,7 @@ from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db
 from cellflow.tracking_ultrack.linking import run_linking
-from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
+from cellflow.tracking_ultrack.seed_prior import boost_validated_edges, write_seed_prior_node_probs
 from cellflow.tracking_ultrack.solve import run_solve
 from cellflow.tracking_ultrack.validation_nodes import inject_validated_nodes
 
@@ -366,12 +357,13 @@ def merge_validated_into_export(
         used_fresh_ids.add(next_id)
         return next_id
 
+    # Build validated_masks: per cell_id, list of (t, mask) pairs present in tracked_labels
+    validated_masks: dict[int, list[tuple[int, np.ndarray]]] = {}
     for cell_id, frames in validated_tracks.items():
         cell_id = int(cell_id)
         if not frames:
             continue
-
-        present_masks: list[tuple[int, np.ndarray]] = []
+        present: list[tuple[int, np.ndarray]] = []
         for t in sorted(frames):
             t = int(t)
             if t < 0 or t >= tracked_labels.shape[0] or t >= exported_labels.shape[0]:
@@ -379,11 +371,96 @@ def merge_validated_into_export(
             frame_src = tracked_labels[t]
             mask = np.asarray(frame_src == cell_id)
             if mask.any():
-                present_masks.append((t, mask))
+                present.append((t, mask))
+        if present:
+            validated_masks[cell_id] = present
 
-        if not present_masks:
+    # Build solver_track_remap: solver_id -> validated cell_id
+    # Inspect each validated frame to find the dominant solver track covering that mask region,
+    # then propagate that solver track's ID to the validated cell_id everywhere in the export.
+    solver_track_remap: dict[int, int] = {}
+    for cell_id in sorted(validated_masks.keys()):
+        present_masks = validated_masks[cell_id]
+        dominant_solver_id: int | None = None
+        best_count = 0
+        for t, mask in present_masks:
+            if exported_labels.ndim == 4:
+                # (T, Z, Y, X): project mask to 3D for indexing
+                frame_exp = exported_labels[t]
+                if mask.ndim == 2:
+                    solver_pixels = frame_exp[:, mask]
+                elif mask.ndim == 3:
+                    solver_pixels = frame_exp[mask]
+                else:
+                    continue
+            else:
+                frame_exp = exported_labels[t]
+                if mask.ndim == frame_exp.ndim:
+                    solver_pixels = frame_exp[mask]
+                elif mask.ndim == 2 and frame_exp.ndim == 3:
+                    solver_pixels = frame_exp[:, mask]
+                elif mask.ndim == 3 and frame_exp.ndim == 2:
+                    solver_pixels = frame_exp[mask.any(axis=0)]
+                else:
+                    continue
+            nonzero = solver_pixels[solver_pixels != 0]
+            if nonzero.size == 0:
+                continue
+            unique_ids, counts = np.unique(nonzero, return_counts=True)
+            t_best_idx = int(np.argmax(counts))
+            t_best_id = int(unique_ids[t_best_idx])
+            t_best_count = int(counts[t_best_idx])
+            if t_best_count > best_count:
+                best_count = t_best_count
+                dominant_solver_id = t_best_id
+
+        if dominant_solver_id is None or dominant_solver_id == 0:
             continue
+        if dominant_solver_id == cell_id:
+            # Solver already used the correct ID — no remap needed, but still handle
+            # collision below where the solver used cell_id for unrelated pixels
+            pass
+        elif dominant_solver_id in solver_track_remap:
+            LOG.warning(
+                "Solver track %d claimed by multiple validated cells; "
+                "keeping first claim (cell %d), skipping cell %d",
+                dominant_solver_id,
+                solver_track_remap[dominant_solver_id],
+                cell_id,
+            )
+            continue
+        else:
+            solver_track_remap[dominant_solver_id] = cell_id
 
+    # Resolve collisions: if any existing pixels have value == target cell_id
+    # but DON'T belong to the source solver track, move them to a fresh ID.
+    # This is the same as the original collision handling, now generalized to
+    # cover both the remap targets and direct-match cases.
+    for solver_id, target_cell_id in list(solver_track_remap.items()):
+        if solver_id == target_cell_id:
+            continue
+        # Pixels currently carrying target_cell_id that are NOT from this solver track
+        collision_mask = np.asarray(exported_labels == target_cell_id)
+        # Remove pixels belonging to the source solver track from collision set
+        src_mask = np.asarray(exported_labels == solver_id)
+        # Exclude src_mask locations — those will become target_cell_id after remap anyway
+        collision_mask = collision_mask & ~src_mask
+        if collision_mask.any():
+            exported_labels[collision_mask] = _next_fresh_id()
+
+    # Handle cells that are not remapped (dominant_solver_id == cell_id or no dominant found)
+    # — original collision logic for reserved IDs used by solver for unrelated pixels.
+    remapped_sources = set(solver_track_remap.keys())
+    remapped_targets = set(solver_track_remap.values())
+    for cell_id, present_masks in validated_masks.items():
+        if cell_id in remapped_targets and cell_id not in remapped_sources:
+            # Already handled in collision resolution above
+            continue
+        if cell_id in remapped_sources:
+            # This cell IS the source solver track being remapped — no separate collision needed
+            continue
+        # No remap found: solver either didn't have this cell or already used correct ID.
+        # Run original collision resolution for the reserved cell_id.
         solver_collision = np.asarray(exported_labels == cell_id)
         for t, mask in present_masks:
             frame_collision = solver_collision[t]
@@ -401,6 +478,14 @@ def merge_validated_into_export(
         if solver_collision.any():
             exported_labels[solver_collision] = _next_fresh_id()
 
+    # Apply solver track remap: rename solver track IDs to validated cell IDs
+    for solver_id, target_cell_id in solver_track_remap.items():
+        if solver_id == target_cell_id:
+            continue
+        exported_labels[exported_labels == solver_id] = target_cell_id
+
+    # Paste validated masks (overrides geometry at validated frames)
+    for cell_id, present_masks in validated_masks.items():
         for t, mask in present_masks:
             frame_out = exported_labels[t]
             if mask.ndim == frame_out.ndim:
@@ -418,44 +503,6 @@ def merge_validated_into_export(
     return exported_labels, id_map
 
 
-# ---------------------------------------------------------------------------
-# 3. resolve_with_validation
-# ---------------------------------------------------------------------------
-
-def _validated_export_id_map(
-    exported_labels: np.ndarray,
-    validated_tracks: dict[int, set[int]],
-    tracked_labels: np.ndarray,
-) -> dict[int, int]:
-    id_map: dict[int, int] = {}
-    for cell_id, frames in validated_tracks.items():
-        seen: list[int] = []
-        for t in sorted(frames):
-            t = int(t)
-            frame_src = tracked_labels[t]
-            frame_out = exported_labels[t]
-            if frame_src.ndim == 3:
-                mask = frame_src == cell_id
-            else:
-                mask = frame_src == cell_id
-            if not mask.any():
-                continue
-            if mask.ndim == 2 and frame_out.ndim == 3:
-                out_values = frame_out[:, mask]
-            elif mask.ndim == 3 and frame_out.ndim == 2:
-                out_values = frame_out[mask.any(axis=0)]
-            else:
-                out_values = frame_out[mask]
-            out_values = out_values[out_values != 0]
-            if out_values.size:
-                values, counts = np.unique(out_values, return_counts=True)
-                seen.append(int(values[int(np.argmax(counts))]))
-        if seen:
-            values, counts = np.unique(np.asarray(seen, dtype=np.int64), return_counts=True)
-            id_map[int(cell_id)] = int(values[int(np.argmax(counts))])
-    return id_map
-
-
 def resolve_with_validation(
     hypotheses_path: str | Path,
     validated_tracks: dict[int, set[int]],
@@ -465,51 +512,7 @@ def resolve_with_validation(
     *,
     intensity_image_path: str | Path,
 ) -> tuple[np.ndarray, dict[int, int]]:
-    """Re-ingest hypotheses, inject validated nodes, solve with annotations.
-
-    Each call creates a **fresh temporary working directory** for Ultrack and
-    discards it on exit.  This keeps the resolve idempotent (no carry-over of
-    DB state, freelist bloat, or stale WAL files between runs).
-
-    Orchestration:
-
-    0. :func:`~cellflow.tracking_ultrack.ingest.ingest_hypotheses_to_db` —
-       build the NodeDB/OverlapDB from ``hypotheses.h5`` in a fresh temp dir.
-    1. :func:`~cellflow.tracking_ultrack.validation_nodes.inject_validated_nodes`
-       — add validated masks as ``REAL`` nodes and suppress overlaps.
-    2. :func:`~cellflow.tracking_ultrack.seed_prior.write_seed_prior_node_probs`
-       — score candidate nodes from the nucleus zavg image and seed affinity.
-    3. :func:`~cellflow.tracking_ultrack.linking.run_linking` — build candidate
-       links.
-    4. :func:`~cellflow.tracking_ultrack.solve.run_solve` — run the ILP solver
-       with annotations enabled.
-    5. :func:`~cellflow.tracking_ultrack.export.export_tracked_labels` — export
-       the solver's result to a temporary file, load it back as a numpy array.
-
-    Parameters
-    ----------
-    hypotheses_path:
-        Path to ``hypotheses.h5`` — the source of truth for the rebuild.
-    validated_tracks:
-        ``{cell_id: {frames}}`` — the locked-in validated tracks.
-    tracked_labels:
-        Current corrected labelmap, ``(T, Y, X)`` or ``(T, Z, Y, X)``.
-    cfg:
-        Tracking configuration (ILP parameters, linking options, …).
-    progress_cb:
-        Optional callable that receives a human-readable status string at each
-        stage.  Called synchronously from this function (safe from a worker
-        thread).
-    intensity_image_path:
-        Path to the nucleus z-average image used to score candidate quality.
-
-    Returns
-    -------
-    tuple[np.ndarray, dict[int, int]]
-        ``(exported_labelmap, id_map)`` where ``id_map`` maps each original
-        validated ``cell_id`` to the exported ID that covers its validated
-        pixels most often.
-    """
+    """Re-ingest hypotheses, inject validated nodes, solve with annotations."""
     def _notify(msg: str) -> None:
         if progress_cb is not None:
             progress_cb(msg)
@@ -533,17 +536,9 @@ def resolve_with_validation(
             )
         if injection.inserted == 0:
             raise ValueError("No validated masks could be injected; resolve aborted before solve.")
-        _notify(
-            f"Injected {injection.inserted} validated node(s); "
-            f"marked {injection.faked} overlapping candidate(s) false."
-        )
 
         _notify("Scoring node probabilities…")
-        score_report = write_seed_prior_node_probs(working_dir, intensity_image_path, cfg)
-        _notify(
-            f"Scored {score_report.scored} candidate node(s) from "
-            f"{score_report.seeds} validated seed node(s)."
-        )
+        write_seed_prior_node_probs(working_dir, intensity_image_path, cfg)
 
         _notify("Linking hypotheses…")
         for _step, _total, label in run_linking(working_dir, cfg):
@@ -645,8 +640,12 @@ def resolve_with_canonical_segment(
         for _step, _total, label in run_linking(working_dir, cfg):
             _notify(f"[link] {label}")
 
+        _notify("Boosting edges incident to validated nodes…")
+        report = boost_validated_edges(working_dir, cfg)
+        _notify(f"  boosted {report.boosted} link(s) across {report.seeds} validated node(s)")
+
         _notify("Solving ILP…")
-        for _step, _total, label in run_solve(working_dir, cfg, overwrite=True):
+        for _step, _total, label in run_solve(working_dir, cfg, overwrite=True, use_annotations=True):
             _notify(f"[solve] {label}")
 
         _notify("Exporting tracked labels…")
@@ -656,21 +655,11 @@ def resolve_with_canonical_segment(
         if new_labels.ndim == 4 and new_labels.shape[1] == 1:
             new_labels = new_labels[:, 0]
 
-    # Build id_map: validated cell_id → exported ID covering its pixels most often
-    id_map: dict[int, int] = {}
-    tl = np.asarray(tracked_labels, dtype=np.uint32)
-    for cell_id, frames in validated_tracks.items():
-        vote: dict[int, int] = {}
-        for t in frames:
-            if t >= new_labels.shape[0] or t >= tl.shape[0]:
-                continue
-            src_mask = tl[t] == cell_id
-            if not src_mask.any():
-                continue
-            for exported_id in np.unique(new_labels[t][src_mask]):
-                if exported_id != 0:
-                    vote[int(exported_id)] = vote.get(int(exported_id), 0) + 1
-        if vote:
-            id_map[cell_id] = max(vote, key=vote.__getitem__)
+    _notify("Pasting validated IDs back into export…")
+    new_labels, id_map = merge_validated_into_export(
+        new_labels,
+        validated_tracks,
+        np.asarray(tracked_labels, dtype=np.uint32),
+    )
 
     return new_labels, id_map

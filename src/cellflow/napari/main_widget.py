@@ -21,7 +21,6 @@ from qtpy.QtWidgets import (
 from cellflow.napari.analysis_widget import AnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.cellpose_widget import CellposeWidget
-from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.data_prep_widget import DataPrepWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
@@ -57,7 +56,7 @@ class CellFlowMainWidget(QWidget):
         main_layout.addWidget(self.scroll)
 
         # Add sections
-        self.data_panel = ProjectStatusPanel()
+        self.data_panel = ProjectStatusPanel(self.viewer)
         self.data_section = CollapsibleSection(
             "Project Status", self.data_panel, expanded=True, title_color="#ADD8E6"
         )
@@ -82,14 +81,9 @@ class CellFlowMainWidget(QWidget):
             "4. Cell Segmentation", self.cell_workflow_widget, expanded=False
         )
 
-        self.correction_widget = CorrectionWidget(self.viewer)
-        self.correction_section = CollapsibleSection(
-            "5. Correction", self.correction_widget, expanded=False
-        )
-
         self.analysis_widget = AnalysisWidget()
         self.analysis_section = CollapsibleSection(
-            "6. Analysis", self.analysis_widget, expanded=False
+            "5. Analysis", self.analysis_widget, expanded=False
         )
 
         self.scroll_layout.addWidget(self.data_section)
@@ -97,7 +91,6 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
-        self.scroll_layout.addWidget(self.correction_section)
         self.scroll_layout.addWidget(self.analysis_section)
 
         # Add stretch at the end

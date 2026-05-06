@@ -44,3 +44,25 @@ def test_merge_moves_solver_collisions_off_reserved_validated_ids():
     assert id_map == {}
     assert np.all(result[0, 2:5, 2:5] == 7)
     assert np.all(result[1, 8:10, 8:10] == 8)
+
+
+def test_merge_propagates_validated_id_along_solver_track():
+    merge_validated_into_export = _merge_validated_into_export()
+    # 5-frame movie, solver assigned track_id=42 across frames 1-4 for the cell
+    # the user validated at frame 2 with cell_id=7.
+    exported = np.zeros((5, 12, 12), dtype=np.uint32)
+    exported[1, 2:5, 2:5] = 42
+    exported[2, 3:6, 2:5] = 42
+    exported[3, 4:7, 2:5] = 42
+    exported[4, 5:8, 2:5] = 42
+    tracked = np.zeros_like(exported)
+    tracked[2, 3:6, 2:5] = 7  # only frame 2 is validated
+
+    result, id_map = merge_validated_into_export(exported, {7: {2}}, tracked)
+
+    # Frame 2 has the validated mask with id 7
+    assert np.all(result[2, 3:6, 2:5] == 7)
+    # Frames 1, 3, 4 should also be 7 because they were the same solver track
+    assert np.all(result[1, 2:5, 2:5] == 7)
+    assert np.all(result[3, 4:7, 2:5] == 7)
+    assert np.all(result[4, 5:8, 2:5] == 7)

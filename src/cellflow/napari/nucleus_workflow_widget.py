@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QShortcut,
@@ -34,17 +35,6 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.database.hypotheses import (
-    ContourWatershedSweepSpec,
-    build_contour_watershed_parameter_sets,
-    delete_hypothesis_parameter,
-    iter_contour_watershed_records,
-    iter_write_hypothesis_sweep_h5,
-    list_hypotheses,
-    read_full_hypothesis_stack,
-    read_hypothesis_labels,
-    write_hypothesis_sweep_h5,
-)
 from cellflow.database.tracked import (
     read_full_tracked_stack,
     write_tracked_frame,
@@ -79,7 +69,7 @@ from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
 from cellflow.tracking_ultrack.linking import run_linking
 from cellflow.tracking_ultrack.extend import extend_track, extend_track_from_db
-from cellflow.tracking_ultrack.reseed import resolve_with_validation, resolve_with_canonical_segment
+from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment
 from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 from cellflow.tracking_ultrack.solve import run_solve
 
@@ -96,6 +86,8 @@ _TRACKED_LAYER = "Tracked: Nucleus"
 _VALIDATED_OVERLAY = "Validated: Nucleus"
 _CONTOUR_LAYER = "Contour Map: Nucleus"
 _CELLPROB_LAYER = "Cellprob Map: Nucleus"
+_FOREGROUND_SCORE_LAYER = "Foreground Score: Nucleus"
+_FOREGROUND_MASK_LAYER = "Foreground Mask: Nucleus"
 _CELL_ZAVG_LAYER = "Cell z-avg"
 _NUC_ZAVG_LAYER = "Nucleus z-avg"
 _ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
@@ -114,15 +106,10 @@ class NucleusWorkflowWidget(QWidget):
         self._pos_dir: Path | None = None
         self._stop_flag: bool = False
         self._build_worker = None
+        self._foreground_worker = None
         self._sweep_worker = None
-        self._current_db_p: int | None = None
-        self._db_param_map: dict[tuple[int, float, float, int], int] = {}
-        self._db_seed_dist_vals: list[int] = []
-        self._db_fg_thr_vals: list[float] = []
-        self._db_ridge_thr_vals: list[float] = []
-        self._db_run_vals: list[int] = []
         self._ultrack_db_preview_cache: dict[tuple, tuple[np.ndarray, str]] = {}
-        self._ultrack_db_height_range_cache: dict[tuple, tuple[float, float]] = {}
+        self._ultrack_db_height_values_cache: dict[tuple, tuple[float, ...]] = {}
         self._ultrack_db_browser_active: bool = False
         self._ultrack_db_frame_initialized: bool = False
         self._setup_ui()
@@ -304,14 +291,6 @@ class NucleusWorkflowWidget(QWidget):
         )
         cp_params_lay.addLayout(contour_btn_row)
 
-        self.contour_input_lbl = QLabel("")
-        self.contour_input_lbl.setWordWrap(True)
-        cp_params_lay.addWidget(self.contour_input_lbl)
-
-        self.contour_output_lbl = QLabel("")
-        self.contour_output_lbl.setWordWrap(True)
-        cp_params_lay.addWidget(self.contour_output_lbl)
-
         self.contour_status_lbl = QLabel("")
         self.contour_status_lbl.setWordWrap(True)
         self.contour_status_lbl.setVisible(False)
@@ -322,10 +301,8 @@ class NucleusWorkflowWidget(QWidget):
         self.build_progress_bar.setValue(0)
         self.build_progress_bar.setVisible(False)
         self.contour_files = PipelineFilesWidget([
-            ("", [
-                ("2_nucleus/contour_maps.tif",   "Contour maps"),
-                ("2_nucleus/foreground_maps.tif", "Foreground maps (diagnostic)"),
-                ("2_nucleus/foreground_mask.tif", "Foreground mask"),
+            ("Outputs", [
+                ("2_nucleus/contour_maps.tif", "Contour maps"),
             ]),
         ])
         cp_params_lay.addWidget(self.build_progress_bar)
@@ -339,313 +316,87 @@ class NucleusWorkflowWidget(QWidget):
         )
         layout.addWidget(self.contour_section)
 
-        # ── 2. Hypothesis Generation ──────────────────────────────────────
-        _gen_inner = QWidget()
-        gen_lay = QVBoxLayout(_gen_inner)
-        gen_lay.setContentsMargins(4, 4, 4, 4)
-        gen_lay.setSpacing(6)
-        gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # ── 2. Foreground Mask ────────────────────────────────────────────
+        _fg_inner = QWidget()
+        fg_lay = QVBoxLayout(_fg_inner)
+        fg_lay.setContentsMargins(0, 0, 0, 0)
+        fg_lay.setSpacing(4)
+        fg_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        gen_params_grid = block_grid(horizontal_spacing=12)
-        gen_params_grid.setColumnStretch(1, 1)
-        gen_params_grid.setColumnStretch(3, 1)
+        fg_grid = block_grid(horizontal_spacing=12)
+        fg_grid.setContentsMargins(0, 0, 0, 0)
 
-        self.min_size_spin = QSpinBox()
-        self.min_size_spin.setRange(0, 100000)
-        self.min_size_spin.setValue(0)
-        self.min_size_spin.setToolTip("Remove regions smaller than this many pixels (0 = keep all)")
-        self.min_circularity_spin = QDoubleSpinBox()
-        self.min_circularity_spin.setRange(0.0, 1.0)
-        self.min_circularity_spin.setValue(0.0)
-        self.min_circularity_spin.setDecimals(2)
-        self.min_circularity_spin.setSingleStep(0.05)
-        self.min_circularity_spin.setToolTip(
-            "Remove regions with circularity (4π·area/perimeter²) below this value (0 = keep all, 1 = perfect circle)"
-        )
-        for spin in (self.min_size_spin, self.min_circularity_spin):
-            spin.setMinimumWidth(80)
-            spin.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-            )
-        gen_params_grid.addWidget(QLabel("Min Cell Size (px):"), 0, 0)
-        gen_params_grid.addWidget(self.min_size_spin, 0, 1)
-        gen_params_grid.addWidget(QLabel("Min Circularity:"), 0, 2)
-        gen_params_grid.addWidget(self.min_circularity_spin, 0, 3)
+        self.fg_source_combo = QComboBox()
+        self.fg_source_combo.addItems(["Sigmoid probability", "Flow DP"])
 
-        self.noise_scale = QDoubleSpinBox()
-        self.noise_scale.setRange(0.0, 1.0)
-        self.noise_scale.setValue(0.0)
-        self.noise_scale.setDecimals(2)
-        self.noise_scale.setSingleStep(0.01)
-        self.noise_scale.setToolTip("Stochastic perturbation level for segmentation diversity.")
-        self.noise_blur = QDoubleSpinBox()
-        self.noise_blur.setRange(0.0, 10.0)
-        self.noise_blur.setValue(0.0)
-        self.noise_blur.setDecimals(1)
-        self.noise_blur.setSingleStep(0.5)
-        self.noise_blur.setToolTip("Sigma for correlating noise (higher = larger structures).")
-        for spin in (self.noise_scale, self.noise_blur):
-            spin.setMinimumWidth(80)
-            spin.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-            )
-        gen_params_grid.addWidget(QLabel("Noise Scale:"), 1, 0)
-        gen_params_grid.addWidget(self.noise_scale, 1, 1)
-        gen_params_grid.addWidget(QLabel("Blur Sigma:"), 1, 2)
-        gen_params_grid.addWidget(self.noise_blur, 1, 3)
+        self.fg_threshold_spin = QDoubleSpinBox()
+        self.fg_threshold_spin.setRange(0.0, 1.0)
+        self.fg_threshold_spin.setValue(0.5)
+        self.fg_threshold_spin.setDecimals(2)
+        self.fg_threshold_spin.setSingleStep(0.01)
 
-        gen_lay.addLayout(gen_params_grid)
+        self.fg_gamma_spin = QDoubleSpinBox()
+        self.fg_gamma_spin.setRange(0.05, 5.0)
+        self.fg_gamma_spin.setValue(1.0)
+        self.fg_gamma_spin.setDecimals(2)
+        self.fg_gamma_spin.setSingleStep(0.05)
 
-        self.overwrite_check = QCheckBox("Overwrite existing")
-        overwrite_grid = block_grid(horizontal_spacing=12)
-        add_block_checkbox_row(overwrite_grid, 0, self.overwrite_check)
-        gen_lay.addLayout(overwrite_grid)
-
-        self.gen_tabs = QTabWidget()
-
-        # Tab: Tuning
-        tuning_tab = QWidget()
-        tuning_lay = QVBoxLayout(tuning_tab)
-
-        tuning_params_grid = block_grid(horizontal_spacing=12)
-
-        self.single_seed_dist = QSpinBox()
-        self.single_seed_dist.setRange(1, 500)
-        self.single_seed_dist.setValue(10)
-        self.single_fg_threshold = QDoubleSpinBox()
-        self.single_fg_threshold.setRange(0.0, 0.99)
-        self.single_fg_threshold.setValue(0.5)
-        self.single_fg_threshold.setDecimals(2)
-        self.single_fg_threshold.setSingleStep(0.05)
-        self.single_fg_threshold.setToolTip(
-            "Contour preprocessing cutoff — contour pixels below this are set to zero before seeding and watershed."
-        )
         add_block_pair_row(
-            tuning_params_grid,
+            fg_grid,
             0,
-            "Seed Distance:",
-            _compact(self.single_seed_dist),
-            "Contour Floor:",
-            _compact(self.single_fg_threshold),
-        )
-
-        self.single_ridge_threshold = QDoubleSpinBox()
-        self.single_ridge_threshold.setRange(0.0, 1.0)
-        self.single_ridge_threshold.setValue(0.5)
-        self.single_ridge_threshold.setDecimals(2)
-        self.single_ridge_threshold.setSingleStep(0.05)
-        self.single_ridge_threshold.setToolTip(
-            "Contour boundary fraction cutoff — pixels with boundary ≥ this are carved out of the seeding mask."
+            "Source:",
+            self.fg_source_combo,
+            "Threshold:",
+            _compact(self.fg_threshold_spin, 80),
+            field_width=80,
         )
         add_block_pair_row(
-            tuning_params_grid,
+            fg_grid,
             1,
-            "Ridge Threshold:",
-            _compact(self.single_ridge_threshold),
+            "Gamma:",
+            _compact(self.fg_gamma_spin, 80),
+            field_width=80,
         )
-        tuning_lay.addLayout(tuning_params_grid)
+        fg_lay.addLayout(fg_grid)
 
-        self.preview_btn = QPushButton("Preview")
-        self.save_db_btn = QPushButton("Save to DB")
-        for button in (self.preview_btn, self.save_db_btn):
-            button.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-            )
-        tuning_params_grid.addWidget(QLabel(""), 2, 0)
-        tuning_params_grid.addWidget(
-            self.preview_btn,
-            2,
-            1,
-            1,
-            1,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-        )
-        tuning_params_grid.addWidget(QLabel(""), 2, 2)
-        tuning_params_grid.addWidget(
-            self.save_db_btn,
-            2,
-            3,
-            1,
-            1,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-        )
-        self.gen_tabs.addTab(tuning_tab, "Tuning")
-
-        # Tab: Sweep
-        sweep_tab = QWidget()
-        sweep_lay = QVBoxLayout(sweep_tab)
-
-        def _make_sweep_spins(d_min, d_max, d_step, decimals=0):
-            make = QDoubleSpinBox if decimals > 0 else QSpinBox
-            min_s, max_s, step_s = make(), make(), make()
-            for s in (min_s, max_s, step_s):
-                s.setRange(1 if decimals == 0 else 0.0, 500 if decimals == 0 else 20.0)
-                if decimals > 0:
-                    s.setDecimals(decimals)
-                s.setMaximumWidth(62)
-                s.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            min_s.setValue(d_min)
-            max_s.setValue(d_max)
-            step_s.setValue(d_step)
-            return min_s, max_s, step_s
-
-        sweep_grid = sweep_parameter_grid()
-        sd_min, sd_max, sd_step = _make_sweep_spins(8, 14, 2)
-        add_sweep_parameter_row(sweep_grid, 1, "Seed Dist:", sd_min, sd_max, sd_step)
-        self.sweep_seed_dist = (sd_min, sd_max, sd_step)
-
-        fg_min, fg_max, fg_step = _make_sweep_spins(0.0, 0.6, 0.05, decimals=2)
-        add_sweep_parameter_row(
-            sweep_grid, 2, "Contour Floor:", fg_min, fg_max, fg_step
-        )
-        self.sweep_fg_thr = (fg_min, fg_max, fg_step)
-
-        ridge_min, ridge_max, ridge_step = _make_sweep_spins(0.5, 0.5, 0.05, decimals=2)
-        add_sweep_parameter_row(
-            sweep_grid, 3, "Ridge Threshold:", ridge_min, ridge_max, ridge_step
-        )
-        self.sweep_ridge_thr = (ridge_min, ridge_max, ridge_step)
-
-        sweep_lay.addLayout(sweep_grid)
-
-        sweep_runs_row = block_grid(horizontal_spacing=12)
-        self.sweep_n_runs = QSpinBox()
-        self.sweep_n_runs.setRange(1, 100)
-        self.sweep_n_runs.setValue(1)
-        self.sweep_n_runs.setToolTip(
-            "How many times to run the sweep. With noise > 0 each run produces "
-            "different stochastic hypotheses stored as separate parameter sets."
-        )
-        self.sweep_n_workers = QSpinBox()
-        self.sweep_n_workers.setRange(1, max(1, os.cpu_count() or 1))
-        self.sweep_n_workers.setValue(1)
-        self.sweep_n_workers.setToolTip(
-            "Number of parallel threads for the sweep. "
-            "scipy/skimage release the GIL so threading scales well."
-        )
-        add_block_pair_row(
-            sweep_runs_row,
-            0,
-            "Runs:",
-            _compact(self.sweep_n_runs),
-            "Workers:",
-            _compact(self.sweep_n_workers),
-        )
-        sweep_lay.addLayout(sweep_runs_row)
-
-        sweep_btn_row = block_grid(horizontal_spacing=12)
-        self.run_sweep_btn    = QPushButton("Run Sweep")
-        self.run_terminal_btn = QPushButton("Run in Terminal")
-        self.cancel_sweep_btn = QPushButton("Cancel")
-        self.cancel_sweep_btn.setEnabled(False)
+        fg_btn_row = block_grid(horizontal_spacing=12)
+        self.fg_preview_btn = QPushButton("Preview")
+        self.fg_build_btn = QPushButton("Build")
+        self.fg_cancel_btn = QPushButton("Cancel")
+        self.fg_cancel_btn.setEnabled(False)
         add_block_button_row(
-            sweep_btn_row, 0, self.run_sweep_btn, self.run_terminal_btn, self.cancel_sweep_btn
-        )
-        sweep_lay.addLayout(sweep_btn_row)
-        self.gen_tabs.addTab(sweep_tab, "Sweep")
-
-        gen_lay.addWidget(self.gen_tabs)
-        self.gen_status_lbl = QLabel("")
-        self.gen_status_lbl.setWordWrap(True)
-        self.gen_status_lbl.setVisible(False)
-        gen_lay.addWidget(self.gen_status_lbl)
-        self.gen_section = CollapsibleSection(
-            "2. Hypothesis Generation", _gen_inner, expanded=False
-        )
-        layout.addWidget(self.gen_section)
-
-        # ── 3. Database Browser ──────────────────────────────────────────
-        _db_inner = QWidget()
-        db_lay = QVBoxLayout(_db_inner)
-        db_lay.setContentsMargins(4, 4, 4, 4)
-        db_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        hdr_row = block_grid(horizontal_spacing=12)
-        self.db_activate_btn = QPushButton("Activate")
-        self.db_activate_btn.setCheckable(True)
-        self.db_activate_btn.setChecked(False)
-        self.db_activate_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.db_refresh_btn = QPushButton()
-        self.db_refresh_btn.setToolTip("Refresh database browser")
-        self.db_refresh_btn.setIcon(
-            self.style().standardIcon(self.style().StandardPixmap.SP_BrowserReload)
-        )
-        self.db_refresh_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        add_block_button_row(hdr_row, 0, self.db_activate_btn, self.db_refresh_btn)
-        db_lay.addLayout(hdr_row)
-
-        # ── contour_watershed params panel ────────────────────────────────
-        self._db_cw_panel = QWidget()
-        cw_lay = block_grid(horizontal_spacing=12)
-        self._db_cw_panel.setLayout(cw_lay)
-        cw_lay.setContentsMargins(0, 0, 0, 0)
-        self.db_seed_dist_spin = QSpinBox()
-        self.db_seed_dist_spin.setRange(1, 500)
-        self.db_seed_dist_spin.setValue(10)
-        self.db_seed_dist_spin.setEnabled(False)
-        self.db_fg_thr_spin = QDoubleSpinBox()
-        self.db_fg_thr_spin.setRange(0.0, 0.99)
-        self.db_fg_thr_spin.setValue(0.5)
-        self.db_fg_thr_spin.setDecimals(2)
-        self.db_fg_thr_spin.setSingleStep(0.05)
-        self.db_fg_thr_spin.setEnabled(False)
-        add_block_pair_row(
-            cw_lay,
+            fg_btn_row,
             0,
-            "Seed Dist:",
-            _compact(self.db_seed_dist_spin),
-            "Contour Floor:",
-            _compact(self.db_fg_thr_spin),
+            self.fg_preview_btn,
+            self.fg_build_btn,
+            self.fg_cancel_btn,
         )
-        self.db_ridge_thr_spin = QDoubleSpinBox()
-        self.db_ridge_thr_spin.setRange(0.0, 1.0)
-        self.db_ridge_thr_spin.setValue(0.5)
-        self.db_ridge_thr_spin.setDecimals(2)
-        self.db_ridge_thr_spin.setSingleStep(0.05)
-        self.db_ridge_thr_spin.setEnabled(False)
-        self.db_run_spin = QSpinBox()
-        self.db_run_spin.setRange(0, 99)
-        self.db_run_spin.setValue(0)
-        self.db_run_spin.setEnabled(False)
-        add_block_pair_row(
-            cw_lay,
-            1,
-            "Ridge Thr:",
-            _compact(self.db_ridge_thr_spin),
-            "Run:",
-            _compact(self.db_run_spin),
+        fg_lay.addLayout(fg_btn_row)
+
+        self.fg_status_lbl = QLabel("")
+        self.fg_status_lbl.setWordWrap(True)
+        self.fg_status_lbl.setVisible(False)
+        fg_lay.addWidget(self.fg_status_lbl)
+
+        self.fg_progress_bar = QProgressBar()
+        self.fg_progress_bar.setRange(0, 100)
+        self.fg_progress_bar.setValue(0)
+        self.fg_progress_bar.setVisible(False)
+        fg_lay.addWidget(self.fg_progress_bar)
+
+        self.foreground_files = PipelineFilesWidget([
+            ("Outputs", [
+                ("2_nucleus/foreground_masks.tif", "Foreground masks"),
+            ]),
+        ])
+        fg_lay.addWidget(self.foreground_files)
+
+        self.foreground_section = CollapsibleSection(
+            "2. Foreground Mask", _fg_inner, expanded=False
         )
-        db_lay.addWidget(self._db_cw_panel)
+        layout.addWidget(self.foreground_section)
 
-        self.db_info_lbl = QLabel("—")
-        self.db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        db_lay.addWidget(self.db_info_lbl)
-
-        self.db_status_lbl = QLabel("")
-        self.db_status_lbl.setWordWrap(True)
-        self.db_status_lbl.setVisible(False)
-        db_lay.addWidget(self.db_status_lbl)
-
-        db_btn_row = block_grid(horizontal_spacing=12)
-        self.set_seed_btn = QPushButton("Set as Tracking Seed")
-        add_block_button_row(db_btn_row, 0, self.set_seed_btn)
-        db_lay.addLayout(db_btn_row)
-
-        db_del_row = block_grid(horizontal_spacing=12)
-        self.del_stack_btn = QPushButton("Remove Stack")
-        danger_button(self.del_stack_btn)
-        add_block_button_row(db_del_row, 0, self.del_stack_btn)
-        db_lay.addLayout(db_del_row)
-        self.db_section = CollapsibleSection(
-            "3. Database Browser", _db_inner, expanded=False
-        )
-        layout.addWidget(self.db_section)
-
-        # Hide deprecated H5-based sections — preserved in code for backward compat
-        self.gen_section.setVisible(False)
-        self.db_section.setVisible(False)
-
-        # ── 2. Ultrack Database Generation ────────────────────────────────
+        # ── 3. Ultrack Database Generation ────────────────────────────────
         _db_gen_inner = QWidget()
         db_gen_lay = QVBoxLayout(_db_gen_inner)
         db_gen_lay.setContentsMargins(0, 0, 0, 0)
@@ -751,11 +502,11 @@ class NucleusWorkflowWidget(QWidget):
         db_gen_lay.addWidget(self.db_gen_progress_bar)
 
         self.db_gen_section = CollapsibleSection(
-            "2. Ultrack Database Generation", _db_gen_inner, expanded=False
+            "3. Ultrack Database Generation", _db_gen_inner, expanded=False
         )
         layout.addWidget(self.db_gen_section)
 
-        # ── 3. Ultrack Database Browser ───────────────────────────────────
+        # ── 4. Ultrack Database Browser ───────────────────────────────────
         _ultrack_db_browser_inner = QWidget()
         ultrack_db_browser_lay = QVBoxLayout(_ultrack_db_browser_inner)
         ultrack_db_browser_lay.setContentsMargins(0, 0, 0, 0)
@@ -825,11 +576,11 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_db_browser_lay.addWidget(self.ultrack_db_section_status_lbl)
 
         self.ultrack_db_browser_section = CollapsibleSection(
-            "3. Ultrack Database Browser", _ultrack_db_browser_inner, expanded=False
+            "4. Ultrack Database Browser", _ultrack_db_browser_inner, expanded=False
         )
         layout.addWidget(self.ultrack_db_browser_section)
 
-        # ── 4. Ultrack Tracking ───────────────────────────────────────────
+        # ── 5. Ultrack Tracking ───────────────────────────────────────────
 
         _ultrack_inner = QWidget()
         ultrack_lay = QVBoxLayout(_ultrack_inner)
@@ -1060,6 +811,13 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_progress_bar.setVisible(False)
         ultrack_lay.addWidget(self.ultrack_progress_bar)
 
+        self.tracking_files = PipelineFilesWidget([
+            ("Outputs", [
+                ("2_nucleus/tracked_labels.tif", "Tracked labels"),
+            ]),
+        ])
+        ultrack_lay.addWidget(self.tracking_files)
+
         ultrack_attrib = QLabel(
             "Ultrack tracking is powered by the "
             '<a href="https://github.com/royerlab/ultrack">Ultrack</a> project.'
@@ -1070,7 +828,7 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.addWidget(ultrack_attrib)
 
         self.ultrack_section = CollapsibleSection(
-            "4. Ultrack Tracking", _ultrack_inner, expanded=True
+            "5. Ultrack Tracking", _ultrack_inner, expanded=True
         )
         layout.addWidget(self.ultrack_section)
 
@@ -1173,7 +931,7 @@ class NucleusWorkflowWidget(QWidget):
         _corr_inner_lay.addWidget(self.correction_shortcuts_section)
 
         self.correction_section = CollapsibleSection(
-            "5. Correction", _corr_inner, expanded=True
+            "6. Correction", _corr_inner, expanded=True
         )
         layout.addWidget(self.correction_section)
 
@@ -1186,19 +944,9 @@ class NucleusWorkflowWidget(QWidget):
         self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
         self.contour_terminal_btn.clicked.connect(self._on_run_contour_terminal)
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
-        self.preview_btn.clicked.connect(self._on_preview)
-        self.save_db_btn.clicked.connect(self._on_save_db)
-        self.run_sweep_btn.clicked.connect(self._on_run_sweep)
-        self.run_terminal_btn.clicked.connect(self._on_run_terminal)
-        self.cancel_sweep_btn.clicked.connect(self._on_cancel_sweep)
-        self.db_seed_dist_spin.valueChanged.connect(self._on_db_param_changed)
-        self.db_fg_thr_spin.valueChanged.connect(self._on_db_param_changed)
-        self.db_ridge_thr_spin.valueChanged.connect(self._on_db_param_changed)
-        self.db_run_spin.valueChanged.connect(self._on_db_param_changed)
-        self.set_seed_btn.clicked.connect(self._on_set_seed)
-        self.db_activate_btn.toggled.connect(self._on_db_activate_toggled)
-        self.db_refresh_btn.clicked.connect(lambda: self._refresh_db_browser())
-        self.del_stack_btn.clicked.connect(self._on_remove_stack)
+        self.fg_preview_btn.clicked.connect(self._on_preview_foreground_mask)
+        self.fg_build_btn.clicked.connect(self._on_build_foreground_mask)
+        self.fg_cancel_btn.clicked.connect(self._on_cancel_foreground_mask)
         self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
         self.db_gen_terminal_btn.clicked.connect(self._on_db_gen_terminal)
         self.db_gen_linking_mode_combo.currentTextChanged.connect(self._on_db_gen_mode_changed)
@@ -1236,21 +984,17 @@ class NucleusWorkflowWidget(QWidget):
         self._pos_dir = pos_dir
         self.input_files.refresh(pos_dir)
         self.contour_files.refresh(pos_dir)
-        self._update_contour_status_labels()
-        pass  # output_files removed; per-section file widgets handle display
+        self.foreground_files.refresh(pos_dir)
+        self.tracking_files.refresh(pos_dir)
         if pos_dir is None:
             self.correction_widget.deactivate()
             return
-        self._refresh_db_browser()
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Path helpers
     # ──────────────────────────────────────────────────────────────────────────
-
-    def _hyp_path(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "hypotheses.h5" if self._pos_dir else None
 
     def _tracked_path(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
@@ -1264,20 +1008,11 @@ class NucleusWorkflowWidget(QWidget):
     def _contour_maps_path(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "contour_maps.tif" if self._pos_dir else None
 
-    def _foreground_maps_path(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "foreground_maps.tif" if self._pos_dir else None
-
-    def _foreground_mask_path(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "foreground_mask.tif" if self._pos_dir else None
-
     def _cell_zavg_path(self) -> Path | None:
         return self._pos_dir / "0_input" / "cell_zavg.tif" if self._pos_dir else None
 
     def _nucleus_zavg_path(self) -> Path | None:
         return self._pos_dir / "0_input" / "nucleus_zavg.tif" if self._pos_dir else None
-
-    def _cellprob_zavg_path(self) -> Path | None:
-        return self._pos_dir / "1_cellpose" / "cell_prob_zavg.tif" if self._pos_dir else None
 
     def _ultrack_workdir(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "ultrack_workdir" if self._pos_dir else None
@@ -1291,6 +1026,166 @@ class NucleusWorkflowWidget(QWidget):
 
     def _nucleus_prob_zavg_path(self) -> Path | None:
         return self._pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif" if self._pos_dir else None
+
+    # ── Foreground Mask section ───────────────────────────────────────────────
+
+    def _foreground_source_key(self) -> str:
+        return "flow_dp" if self.fg_source_combo.currentText() == "Flow DP" else "probability"
+
+    def _foreground_source_path(self) -> Path | None:
+        return self._dp_path() if self._foreground_source_key() == "flow_dp" else self._prob_path()
+
+    @staticmethod
+    def _foreground_frame(data: np.ndarray, source: str, t: int) -> tuple[np.ndarray, int, int]:
+        if source == "probability":
+            n_t = data.shape[0] if data.ndim >= 4 else 1
+            t_idx = min(max(int(t), 0), n_t - 1)
+            return (data[t_idx] if data.ndim >= 4 else data), t_idx, n_t
+        n_t = data.shape[0] if data.ndim >= 5 else 1
+        t_idx = min(max(int(t), 0), n_t - 1)
+        return (data[t_idx] if data.ndim >= 5 else data), t_idx, n_t
+
+    def _set_foreground_status(self, msg: str) -> None:
+        self.fg_status_lbl.setText(msg)
+        self.fg_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
+    def _set_foreground_buttons_running(self, running: bool) -> None:
+        self.fg_preview_btn.setEnabled(not running)
+        self.fg_build_btn.setEnabled(not running)
+        self.fg_cancel_btn.setEnabled(running)
+        self.fg_progress_bar.setVisible(running)
+        if not running:
+            self.fg_progress_bar.setValue(0)
+
+    def _on_foreground_worker_error(self, exc: Exception) -> None:
+        self._foreground_worker = None
+        self._set_foreground_buttons_running(False)
+        self._set_foreground_status(f"Error: {exc}")
+        logger.exception("Foreground mask worker error", exc_info=exc)
+
+    def _on_foreground_progress(self, data) -> None:
+        if isinstance(data, tuple):
+            done, total, msg = data
+            if total > 0:
+                self.fg_progress_bar.setRange(0, total)
+                self.fg_progress_bar.setValue(done)
+            self._set_foreground_status(msg)
+        else:
+            self._set_foreground_status(str(data))
+
+    def _on_preview_foreground_mask(self) -> None:
+        if self._pos_dir is None:
+            self._set_foreground_status("No project open.")
+            return
+        source = self._foreground_source_key()
+        src_path = self._foreground_source_path()
+        if src_path is None or not src_path.exists():
+            self._set_foreground_status(f"Missing: {src_path}")
+            return
+
+        t_frame = self._current_t()
+        threshold = self.fg_threshold_spin.value()
+        gamma = self.fg_gamma_spin.value()
+
+        def _on_preview_done(result):
+            self._foreground_worker = None
+            self._set_foreground_buttons_running(False)
+            score, mask, t_idx, n_t = result
+            score_stack = np.zeros((n_t,) + score.shape, dtype=np.float32)
+            mask_stack = np.zeros((n_t,) + mask.shape, dtype=np.uint8)
+            score_stack[t_idx] = score
+            mask_stack[t_idx] = mask
+            if _FOREGROUND_SCORE_LAYER in self.viewer.layers:
+                self.viewer.layers[_FOREGROUND_SCORE_LAYER].data = score_stack
+            else:
+                self.viewer.add_image(
+                    score_stack,
+                    name=_FOREGROUND_SCORE_LAYER,
+                    colormap="gray",
+                    blending="additive",
+                    visible=True,
+                )
+            self._update_layer(_FOREGROUND_MASK_LAYER, mask_stack)
+            self._set_viewer_frame(t_idx)
+            self._set_foreground_status(f"Preview foreground mask t={t_idx}.")
+
+        @thread_worker(connect={
+            "returned": _on_preview_done,
+            "errored": self._on_foreground_worker_error,
+        })
+        def _worker():
+            from cellflow.segmentation import foreground_mask_stack, foreground_score_stack
+
+            data = np.asarray(tifffile.imread(str(src_path)), dtype=np.float32)
+            frame, t_idx, n_t = self._foreground_frame(data, source, t_frame)
+            score = foreground_score_stack(frame, source, gamma=gamma)
+            mask = foreground_mask_stack(frame, source, threshold=threshold, gamma=gamma)
+            return (
+                np.asarray(score, dtype=np.float32),
+                np.asarray(mask, dtype=np.uint8),
+                t_idx,
+                n_t,
+            )
+
+        self._set_foreground_status(f"Previewing foreground mask for frame t={t_frame}…")
+        self._set_foreground_buttons_running(True)
+        self._foreground_worker = _worker()
+
+    def _on_build_foreground_mask(self) -> None:
+        if self._pos_dir is None:
+            self._set_foreground_status("No project open.")
+            return
+        source = self._foreground_source_key()
+        src_path = self._foreground_source_path()
+        out_path = self._foreground_masks_path()
+        if src_path is None or not src_path.exists():
+            self._set_foreground_status(f"Missing: {src_path}")
+            return
+        if out_path is None:
+            self._set_foreground_status("No project open.")
+            return
+
+        threshold = self.fg_threshold_spin.value()
+        gamma = self.fg_gamma_spin.value()
+        pos_dir = self._pos_dir
+
+        @thread_worker(connect={
+            "yielded": self._on_foreground_progress,
+            "returned": self._on_build_foreground_done,
+            "errored": self._on_foreground_worker_error,
+        })
+        def _worker():
+            from cellflow.segmentation import foreground_mask_stack
+
+            yield (0, 1, "Loading foreground source…")
+            data = np.asarray(tifffile.imread(str(src_path)), dtype=np.float32)
+            yield (0, 1, "Building foreground masks…")
+            mask = foreground_mask_stack(data, source, threshold=threshold, gamma=gamma)
+            if mask.ndim == 2:
+                mask = mask[np.newaxis]
+            mask = (np.asarray(mask) > 0).astype(np.uint8)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            tifffile.imwrite(str(out_path), mask, compression="zlib")
+            yield (1, 1, "Foreground masks written.")
+            return pos_dir
+
+        self._set_foreground_status("Building foreground masks…")
+        self._set_foreground_buttons_running(True)
+        self._foreground_worker = _worker()
+
+    def _on_build_foreground_done(self, pos_dir: Path) -> None:
+        self._foreground_worker = None
+        self._set_foreground_buttons_running(False)
+        self.foreground_files.refresh(pos_dir)
+        self._set_foreground_status("Foreground masks built.")
+
+    def _on_cancel_foreground_mask(self) -> None:
+        if self._foreground_worker is not None:
+            self._foreground_worker.quit()
+        self._foreground_worker = None
+        self._set_foreground_buttons_running(False)
+        self._set_foreground_status("Foreground mask build cancelled.")
 
     # ── DB Generation section ─────────────────────────────────────────────────
 
@@ -1323,7 +1218,7 @@ class NucleusWorkflowWidget(QWidget):
             return
         if fg_path is None or not fg_path.exists():
             self._set_db_gen_status(
-                "Missing: foreground_masks.tif — provide 2_nucleus/foreground_masks.tif."
+                "Missing: foreground_masks.tif — run Foreground Mask first."
             )
             return
         if nuc_zavg_path is None or not nuc_zavg_path.exists():
@@ -1396,7 +1291,7 @@ class NucleusWorkflowWidget(QWidget):
             self._set_db_gen_status("Missing: contour_maps.tif")
             return
         if fg_path is None or not fg_path.exists():
-            self._set_db_gen_status("Missing: foreground_masks.tif")
+            self._set_db_gen_status("Missing: foreground_masks.tif — run Foreground Mask first.")
             return
         if nuc_zavg_path is None or not nuc_zavg_path.exists():
             self._set_db_gen_status("Missing: nucleus_prob_zavg.tif")
@@ -1522,18 +1417,20 @@ class NucleusWorkflowWidget(QWidget):
     def _on_ultrack_db_slider_changed(self, value: int) -> None:
         if not self._ultrack_db_browser_active:
             return
-        t = value / 100.0
         db_path = self._ultrack_db_path()
         if db_path is not None and db_path.exists():
             try:
                 mtime_ns = db_path.stat().st_mtime_ns
-                h_min, h_max = self._query_height_range(db_path, mtime_ns)
-                h_actual = h_min + t * (h_max - h_min)
-                self.ultrack_db_height_lbl.setText(f"{t:.2f} → {h_actual:.1f}")
+                heights = self._query_distinct_heights(db_path, mtime_ns)
+                index = min(max(int(value), 0), max(len(heights) - 1, 0))
+                if heights:
+                    self._set_ultrack_db_height_label(index, heights[index], len(heights))
+                else:
+                    self.ultrack_db_height_lbl.setText("—")
             except Exception:
-                self.ultrack_db_height_lbl.setText(f"{t:.2f}")
+                self.ultrack_db_height_lbl.setText(str(value))
         else:
-            self.ultrack_db_height_lbl.setText(f"{t:.2f}")
+            self.ultrack_db_height_lbl.setText(str(value))
         self._ultrack_db_preview_cache.clear()
         from qtpy.QtCore import QTimer
         QTimer.singleShot(150, self._refresh_ultrack_db_browser)
@@ -1620,16 +1517,26 @@ class NucleusWorkflowWidget(QWidget):
                 self._set_ultrack_db_status("Summary refreshed.")
                 return
 
+            mtime_ns = db_path.stat().st_mtime_ns
+            heights = self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns)
+            if not heights:
+                labels = self._empty_ultrack_db_preview()
+                self._update_layer(_ULTRACK_DB_PREVIEW_LAYER, labels)
+                self._set_ultrack_db_status(f"No hierarchy heights for frame {frame}.")
+                return
+
             slider_int = int(self.ultrack_db_hierarchy_slider.value())
+            h_actual = float(heights[slider_int])
             key = (
                 str(db_path.resolve()),
-                db_path.stat().st_mtime_ns,
+                mtime_ns,
                 frame,
                 slider_int,
+                h_actual,
             )
             cached = self._ultrack_db_preview_cache.get(key)
             if cached is None:
-                cached = self._render_hierarchy_cut(db_path, frame, slider_int)
+                cached = self._render_hierarchy_cut(db_path, frame, h_actual)
                 self._ultrack_db_preview_cache[key] = cached
             labels, status = cached
             self._update_layer(_ULTRACK_DB_PREVIEW_LAYER, labels.astype(np.uint32, copy=False))
@@ -1691,13 +1598,12 @@ class NucleusWorkflowWidget(QWidget):
         finally:
             engine.dispose()
 
-    def _query_height_range(self, db_path: Path, mtime_ns: int) -> tuple[float, float]:
-        key = (str(db_path), mtime_ns)
-        cached = self._ultrack_db_height_range_cache.get(key)
+    def _query_distinct_heights(self, db_path: Path, mtime_ns: int) -> tuple[float, ...]:
+        key = (str(db_path.resolve()), mtime_ns)
+        cached = self._ultrack_db_height_values_cache.get(key)
         if cached is not None:
             return cached
         import sqlalchemy as sqla
-        from sqlalchemy import func
         from sqlalchemy.orm import Session
         from ultrack.core.database import NodeDB
         engine = sqla.create_engine(
@@ -1705,27 +1611,49 @@ class NucleusWorkflowWidget(QWidget):
         )
         try:
             with Session(engine) as session:
-                h_min = float(session.query(func.min(NodeDB.height)).scalar() or 0.0)
-                h_max = float(session.query(func.max(NodeDB.height)).scalar() or 1.0)
+                heights = tuple(
+                    float(row[0])
+                    for row in session.query(NodeDB.height)
+                    .distinct()
+                    .order_by(NodeDB.height)
+                    .all()
+                    if row[0] is not None
+                )
         finally:
             engine.dispose()
-        if h_min >= h_max:
-            h_max = h_min + 1.0
-        self._ultrack_db_height_range_cache[key] = (h_min, h_max)
-        return h_min, h_max
+        self._ultrack_db_height_values_cache[key] = heights
+        return heights
+
+    def _configure_ultrack_db_hierarchy_slider(
+        self, db_path: Path, mtime_ns: int
+    ) -> tuple[float, ...]:
+        heights = self._query_distinct_heights(db_path, mtime_ns)
+        maximum = max(len(heights) - 1, 0)
+        value = min(max(int(self.ultrack_db_hierarchy_slider.value()), 0), maximum)
+
+        old_blocked = self.ultrack_db_hierarchy_slider.blockSignals(True)
+        try:
+            self.ultrack_db_hierarchy_slider.setRange(0, maximum)
+            self.ultrack_db_hierarchy_slider.setValue(value)
+        finally:
+            self.ultrack_db_hierarchy_slider.blockSignals(old_blocked)
+
+        if heights:
+            self._set_ultrack_db_height_label(value, float(heights[value]), len(heights))
+        else:
+            self.ultrack_db_height_lbl.setText("—")
+        return heights
+
+    def _set_ultrack_db_height_label(self, index: int, height: float, total: int) -> None:
+        self.ultrack_db_height_lbl.setText(f"i={index} h={height:.2f} ({index + 1}/{total})")
 
     def _render_hierarchy_cut(
-        self, db_path: Path, frame: int, slider_int: int
+        self, db_path: Path, frame: int, h_actual: float
     ) -> tuple[np.ndarray, str]:
         import sqlalchemy as sqla
         from sqlalchemy.orm import Session, aliased
         from ultrack.core.database import NodeDB
         from ultrack.utils.constants import NO_PARENT
-
-        mtime_ns = db_path.stat().st_mtime_ns
-        h_min, h_max = self._query_height_range(db_path, mtime_ns)
-        t = slider_int / 100.0
-        h_actual = h_min + t * (h_max - h_min)
 
         engine = sqla.create_engine(
             f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
@@ -1752,7 +1680,7 @@ class NucleusWorkflowWidget(QWidget):
             )
         labels = self._paint_ultrack_db_nodes(nodes)
         return labels, (
-            f"Frame {frame}: {len(nodes)} segment(s) at cut level {t:.2f} (h={h_actual:.2f})."
+            f"Frame {frame}: {len(nodes)} segment(s) at h={h_actual:.2f}."
         )
 
     def _empty_ultrack_db_preview(self) -> np.ndarray:
@@ -1838,18 +1766,6 @@ class NucleusWorkflowWidget(QWidget):
         step = self.viewer.dims.current_step
         return int(step[0]) if len(step) >= 1 else 0
 
-    def _get_nz(self) -> int:
-        for layer in self.viewer.layers:
-            if hasattr(layer, "data") and layer.data.ndim == 4:
-                return layer.data.shape[1]
-        hyp_path = self._hyp_path()
-        if hyp_path and hyp_path.exists():
-            try:
-                return read_hypothesis_labels(hyp_path, 0, 0).shape[0]
-            except Exception:
-                pass
-        return 1
-
     def _update_tracked_display(
         self,
         labels: np.ndarray,
@@ -1890,115 +1806,9 @@ class NucleusWorkflowWidget(QWidget):
         zavg_logits = np.asarray(stack, dtype=np.float32).mean(axis=1)
         return (1.0 / (1.0 + np.exp(-zavg_logits))).astype(np.float32)
 
-    def _refresh_db_browser(self) -> None:
-        self._db_param_map = {}
-        self._db_seed_dist_vals = []
-        self._db_fg_thr_vals = []
-        self._db_ridge_thr_vals = []
-        self._db_run_vals = []
-        self._current_db_p = None
-        self.db_seed_dist_spin.setEnabled(False)
-        self.db_fg_thr_spin.setEnabled(False)
-        self.db_ridge_thr_spin.setEnabled(False)
-        self.db_run_spin.setEnabled(False)
-        self.db_info_lbl.setText("—")
-
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_db_status("Hypothesis DB: not found.")
-            return
-        try:
-            n_p, params_by_p = list_hypotheses(hyp_path)
-        except Exception as e:
-            logger.warning("Could not read hypotheses.h5: %s", e)
-            self._set_db_status(f"Hypothesis DB: read error — {e}")
-            return
-
-        contour_entries = {
-            p: info for p, info in params_by_p.items()
-            if str(info.get("method", "")) == "contour_watershed"
-        }
-
-        if not contour_entries:
-            self._set_db_status(f"Hypothesis DB: {n_p} parameter set(s) (no browsable entries).")
-            return
-
-        seed_dist_set: set[int] = set()
-        fg_thr_set: set[float] = set()
-        ridge_thr_set: set[float] = set()
-        run_set: set[int] = set()
-        for p_idx, info in contour_entries.items():
-            d = int(info.get("seed_distance", 10))
-            fg = round(float(info.get("foreground_threshold", 0.5)), 4)
-            ridge = round(float(info.get("ridge_threshold", 0.5)), 4)
-            run = int(info.get("run_index", 0))
-            seed_dist_set.add(d)
-            fg_thr_set.add(fg)
-            ridge_thr_set.add(ridge)
-            run_set.add(run)
-            self._db_param_map[(d, fg, ridge, run)] = p_idx
-        self._db_seed_dist_vals = sorted(seed_dist_set)
-        self._db_fg_thr_vals = sorted(fg_thr_set)
-        self._db_ridge_thr_vals = sorted(ridge_thr_set)
-        self._db_run_vals = sorted(run_set)
-
-        self._apply_method_panel()
-        self._set_db_status(f"Hypothesis DB: {n_p} parameter set(s).")
-
-    def _apply_method_panel(self) -> None:
-        if not self._db_seed_dist_vals:
-            return
-
-        self.db_seed_dist_spin.blockSignals(True)
-        self.db_seed_dist_spin.setMinimum(self._db_seed_dist_vals[0])
-        self.db_seed_dist_spin.setMaximum(self._db_seed_dist_vals[-1])
-        step_d = (self._db_seed_dist_vals[1] - self._db_seed_dist_vals[0]) if len(self._db_seed_dist_vals) > 1 else 1
-        self.db_seed_dist_spin.setSingleStep(step_d)
-        self.db_seed_dist_spin.setValue(self._db_seed_dist_vals[0])
-        self.db_seed_dist_spin.setEnabled(True)
-        self.db_seed_dist_spin.blockSignals(False)
-
-        self.db_fg_thr_spin.blockSignals(True)
-        self.db_fg_thr_spin.setMinimum(self._db_fg_thr_vals[0])
-        self.db_fg_thr_spin.setMaximum(self._db_fg_thr_vals[-1])
-        step_fg = round(self._db_fg_thr_vals[1] - self._db_fg_thr_vals[0], 4) if len(self._db_fg_thr_vals) > 1 else 0.05
-        self.db_fg_thr_spin.setSingleStep(step_fg)
-        self.db_fg_thr_spin.setValue(self._db_fg_thr_vals[0])
-        self.db_fg_thr_spin.setEnabled(True)
-        self.db_fg_thr_spin.blockSignals(False)
-
-        self.db_ridge_thr_spin.blockSignals(True)
-        self.db_ridge_thr_spin.setMinimum(self._db_ridge_thr_vals[0])
-        self.db_ridge_thr_spin.setMaximum(self._db_ridge_thr_vals[-1])
-        step_ridge = round(self._db_ridge_thr_vals[1] - self._db_ridge_thr_vals[0], 4) if len(self._db_ridge_thr_vals) > 1 else 0.05
-        self.db_ridge_thr_spin.setSingleStep(step_ridge)
-        self.db_ridge_thr_spin.setValue(self._db_ridge_thr_vals[0])
-        self.db_ridge_thr_spin.setEnabled(True)
-        self.db_ridge_thr_spin.blockSignals(False)
-
-        self.db_run_spin.blockSignals(True)
-        self.db_run_spin.setMinimum(self._db_run_vals[0])
-        self.db_run_spin.setMaximum(self._db_run_vals[-1])
-        self.db_run_spin.setSingleStep(1)
-        self.db_run_spin.setValue(self._db_run_vals[0])
-        self.db_run_spin.setEnabled(len(self._db_run_vals) > 1)
-        self.db_run_spin.blockSignals(False)
-
-        self._update_db_info_lbl()
-
     def _set_contour_status(self, msg: str) -> None:
         self.contour_status_lbl.setText(msg)
         self.contour_status_lbl.setVisible(bool(msg))
-        logger.info(msg)
-
-    def _set_hypothesis_status(self, msg: str) -> None:
-        self.gen_status_lbl.setText(msg)
-        self.gen_status_lbl.setVisible(bool(msg))
-        logger.info(msg)
-
-    def _set_db_status(self, msg: str) -> None:
-        self.db_status_lbl.setText(msg)
-        self.db_status_lbl.setVisible(bool(msg))
         logger.info(msg)
 
     def _set_correction_status(self, msg: str) -> None:
@@ -2016,14 +1826,6 @@ class NucleusWorkflowWidget(QWidget):
         self._set_contour_status(f"Error: {exc}")
         logger.exception("Contour worker error", exc_info=exc)
 
-    def _on_hypothesis_worker_error(self, exc: Exception) -> None:
-        self._set_hypothesis_status(f"Error: {exc}")
-        logger.exception("Hypothesis worker error", exc_info=exc)
-
-    def _on_db_worker_error(self, exc: Exception) -> None:
-        self._set_db_status(f"Error: {exc}")
-        logger.exception("Database browser worker error", exc_info=exc)
-
     def _on_correction_worker_error(self, exc: Exception) -> None:
         self._set_correction_status(f"Error: {exc}")
         logger.exception("Correction worker error", exc_info=exc)
@@ -2037,26 +1839,8 @@ class NucleusWorkflowWidget(QWidget):
         logger.exception("Ultrack worker error", exc_info=exc)
 
     def _update_contour_status_labels(self) -> None:
-        if self._pos_dir is None:
-            self.contour_input_lbl.setText("Inputs: no project open.")
-            self.contour_output_lbl.setText("Outputs: no project open.")
-            return
-
-        prob_path = self._prob_path()
-        dp_path = self._dp_path()
-        contour_path = self._contour_maps_path()
-        foreground_path = self._foreground_maps_path()
-
-        self.contour_input_lbl.setText(
-            "Inputs: "
-            f"prob {'found' if prob_path is not None and prob_path.exists() else 'missing'}, "
-            f"dp {'found' if dp_path is not None and dp_path.exists() else 'missing'}"
-        )
-        self.contour_output_lbl.setText(
-            "Outputs: "
-            f"contour {'ready' if contour_path is not None and contour_path.exists() else 'pending'}, "
-            f"foreground {'ready' if foreground_path is not None and foreground_path.exists() else 'pending'}"
-        )
+        """(placeholder — file status now handled by PipelineFilesWidget rows)"""
+        pass
 
     def _cp_gammas(self) -> list[float]:
         """Gamma values to iterate during consensus boundary building."""
@@ -2065,37 +1849,6 @@ class NucleusWorkflowWidget(QWidget):
         gstep = self.cp_gamma_step_spin.value()
         return list(np.arange(gmin, gmax + gstep / 2, gstep))
 
-    def _contour_sweep_params(self) -> ContourWatershedParams:
-        return ContourWatershedParams(
-            seed_distance=self.single_seed_dist.value(),
-            foreground_threshold=self.single_fg_threshold.value(),
-            ridge_threshold=self.single_ridge_threshold.value(),
-            min_size=self.min_size_spin.value(),
-            min_circularity=self.min_circularity_spin.value(),
-            noise_scale=self.noise_scale.value(),
-            noise_blur_sigma=self.noise_blur.value(),
-        )
-
-    def _contour_sweep_spec(self) -> ContourWatershedSweepSpec:
-        return ContourWatershedSweepSpec(
-            seed_distance=self.sweep_seed_dist[0].value(),
-            seed_distance_min=self.sweep_seed_dist[0].value(),
-            seed_distance_max=self.sweep_seed_dist[1].value(),
-            seed_distance_step=self.sweep_seed_dist[2].value(),
-            foreground_threshold=self.sweep_fg_thr[0].value(),
-            foreground_threshold_min=self.sweep_fg_thr[0].value(),
-            foreground_threshold_max=self.sweep_fg_thr[1].value(),
-            foreground_threshold_step=self.sweep_fg_thr[2].value(),
-            ridge_threshold=self.sweep_ridge_thr[0].value(),
-            ridge_threshold_min=self.sweep_ridge_thr[0].value(),
-            ridge_threshold_max=self.sweep_ridge_thr[1].value(),
-            ridge_threshold_step=self.sweep_ridge_thr[2].value(),
-            noise_scale=self.noise_scale.value(),
-            noise_blur_sigma=self.noise_blur.value(),
-            n_runs=self.sweep_n_runs.value(),
-            min_size=self.min_size_spin.value(),
-            min_circularity=self.min_circularity_spin.value(),
-        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # 1. Contour map build
@@ -2145,7 +1898,6 @@ class NucleusWorkflowWidget(QWidget):
         thresholds      = list(np.arange(self.cp_min_spin.value(), self.cp_max_spin.value() + self.cp_step_spin.value() / 2, self.cp_step_spin.value()))
         gammas          = self._cp_gammas()
         contour_path    = self._contour_maps_path()
-        foreground_path = self._foreground_maps_path()
         save_source     = self.save_source_check.isChecked()
         pos_dir         = self._pos_dir
         build_fn        = self._build_consensus_boundary_averaged
@@ -2165,7 +1917,6 @@ class NucleusWorkflowWidget(QWidget):
 
             n_t = prob_stack.shape[0]
             contour_frames:    list[np.ndarray] = []
-            foreground_frames: list[np.ndarray] = []
             source_dir = pos_dir / "2_nucleus/source_labels"
 
             for t in range(n_t):
@@ -2178,13 +1929,11 @@ class NucleusWorkflowWidget(QWidget):
                             source_dir / f"masks_t{_t:04d}_g{g_idx:02d}_thr{thresh_idx:02d}.tif",
                             masks, compression="zlib",
                         )
-                boundary, fg = build_fn(prob_stack[t], dp_stack[t], thresholds, gammas, mask_callback=mask_cb)
+                boundary, _fg = build_fn(prob_stack[t], dp_stack[t], thresholds, gammas, mask_callback=mask_cb)
                 contour_frames.append(boundary)
-                foreground_frames.append(fg)
 
             contour_path.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(str(contour_path),    np.stack(contour_frames),    compression="zlib")
-            tifffile.imwrite(str(foreground_path), np.stack(foreground_frames), compression="zlib")
+            tifffile.imwrite(str(contour_path), np.stack(contour_frames), compression="zlib")
             return pos_dir
 
         gamma_desc = f"γ={gammas[0]:.2f}" if len(gammas) == 1 else f"γ={gammas[0]:.2f}–{gammas[-1]:.2f} ({len(gammas)} steps)"
@@ -2301,7 +2050,6 @@ class NucleusWorkflowWidget(QWidget):
         prob_path = self._prob_path()
         dp_path = self._dp_path()
         contour_path = self._contour_maps_path()
-        foreground_path = self._foreground_maps_path()
         if prob_path is None or not prob_path.exists():
             self._set_contour_status(f"Missing: {prob_path}")
             return
@@ -2328,7 +2076,6 @@ class NucleusWorkflowWidget(QWidget):
             f"prob_path = pathlib.Path({str(prob_path)!r})\n"
             f"dp_path = pathlib.Path({str(dp_path)!r})\n"
             f"contour_path = pathlib.Path({str(contour_path)!r})\n"
-            f"foreground_path = pathlib.Path({str(foreground_path)!r})\n"
             f"save_source = {save_source!r}\n"
             f"source_dir = pathlib.Path({str(pos_dir / '2_nucleus/source_labels')!r})\n"
             f"thresholds = {thresholds!r}\n"
@@ -2364,7 +2111,6 @@ class NucleusWorkflowWidget(QWidget):
             "    dp_stack = dp_stack[np.newaxis]\n"
             "n_t = prob_stack.shape[0]\n"
             "contour_frames = []\n"
-            "foreground_frames = []\n"
             "for t in range(n_t):\n"
             "    print(f'Building contour maps: frame {t + 1}/{n_t}...', flush=True)\n"
             "    mask_cb = None\n"
@@ -2384,11 +2130,9 @@ class NucleusWorkflowWidget(QWidget):
             "        mask_callback=mask_cb,\n"
             "    )\n"
             "    contour_frames.append(boundary)\n"
-            "    foreground_frames.append(foreground)\n"
             "contour_path.parent.mkdir(parents=True, exist_ok=True)\n"
             "print('Writing contour maps...', flush=True)\n"
             "tifffile.imwrite(str(contour_path), np.stack(contour_frames), compression='zlib')\n"
-            "tifffile.imwrite(str(foreground_path), np.stack(foreground_frames), compression='zlib')\n"
             "print('Done.')\n"
         )
 
@@ -2408,438 +2152,6 @@ class NucleusWorkflowWidget(QWidget):
             self._set_contour_status(
                 "Copied contour build command to clipboard (terminal launch unavailable)."
             )
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # 2. Hypothesis generation
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def _load_contour_inputs(self) -> tuple[np.ndarray, np.ndarray] | None:
-        """Read contour maps and the external foreground mask from disk."""
-        contour_path = self._contour_maps_path()
-        mask_path = self._foreground_mask_path()
-        if contour_path is None or not contour_path.exists():
-            self._set_hypothesis_status("Contour maps not found — run Build first.")
-            return None
-        if mask_path is None or not mask_path.exists():
-            self._set_hypothesis_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
-            return None
-        contour = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
-        foreground_mask = np.asarray(tifffile.imread(str(mask_path)))
-        return contour, foreground_mask
-
-    @staticmethod
-    def _normalize_contour_mask_stack(mask: np.ndarray, contour_shape: tuple[int, ...]) -> np.ndarray:
-        mask = np.asarray(mask)
-        if mask.shape == contour_shape:
-            return mask
-        if mask.ndim == 2 and len(contour_shape) == 3 and mask.shape == contour_shape[1:]:
-            return np.broadcast_to(mask[np.newaxis], contour_shape)
-        if mask.ndim == 3 and len(contour_shape) == 3 and mask.shape[0] == 1 and mask.shape[1:] == contour_shape[1:]:
-            return np.broadcast_to(mask, contour_shape)
-        raise ValueError(f"Foreground mask shape {mask.shape} does not match contour shape {contour_shape}")
-
-    def _on_preview(self) -> None:
-        if self._pos_dir is None:
-            self._set_hypothesis_status("No project open.")
-            return
-        maps = self._load_contour_inputs()
-        if maps is None:
-            return
-        contour, foreground_mask = maps
-        try:
-            foreground_mask = self._normalize_contour_mask_stack(foreground_mask, contour.shape)
-        except ValueError as e:
-            self._set_hypothesis_status(str(e))
-            return
-        t = min(self._current_t(), contour.shape[0] - 1)
-        params = self._contour_sweep_params()
-
-        if _CONTOUR_LAYER not in self.viewer.layers:
-            self.viewer.add_image(contour, name=_CONTOUR_LAYER, colormap="magma", visible=True)
-        elif self.viewer.layers[_CONTOUR_LAYER].data is not contour:
-            self.viewer.layers[_CONTOUR_LAYER].data = contour
-
-        try:
-            labels = compute_contour_watershed(contour[t], foreground_mask[t], params)
-        except Exception as e:
-            self._set_hypothesis_status(f"Segmentation failed: {e}")
-            return
-
-        self._update_layer(_PREVIEW_LAYER, labels)
-        self._set_hypothesis_status(
-            f"Preview t={t}: {int(labels.max())} cells  "
-            f"(dist={params.seed_distance})"
-        )
-
-    def _on_save_db(self) -> None:
-        if self._pos_dir is None:
-            self._set_hypothesis_status("No project open.")
-            return
-        maps = self._load_contour_inputs()
-        if maps is None:
-            return
-        contour, foreground_mask = maps
-        try:
-            foreground_mask = self._normalize_contour_mask_stack(foreground_mask, contour.shape)
-        except ValueError as e:
-            self._set_hypothesis_status(str(e))
-            return
-
-        params   = self._contour_sweep_params()
-        overwrite = self.overwrite_check.isChecked()
-        output_path = self._hyp_path()
-        pos_dir     = self._pos_dir
-
-        @thread_worker(connect={"returned": self._on_save_done, "errored": self._on_hypothesis_worker_error})
-        def _worker():
-            spec = ContourWatershedSweepSpec(
-                seed_distance=params.seed_distance,
-                seed_distance_min=params.seed_distance,
-                seed_distance_max=params.seed_distance,
-                seed_distance_step=1,
-                foreground_threshold=params.foreground_threshold,
-                foreground_threshold_min=params.foreground_threshold,
-                foreground_threshold_max=params.foreground_threshold,
-                foreground_threshold_step=0.05,
-                ridge_threshold=params.ridge_threshold,
-                ridge_threshold_min=params.ridge_threshold,
-                ridge_threshold_max=params.ridge_threshold,
-                ridge_threshold_step=0.05,
-                noise_scale=params.noise_scale,
-                noise_blur_sigma=params.noise_blur_sigma,
-                min_size=params.min_size,
-                min_circularity=params.min_circularity,
-            )
-            records = iter_contour_watershed_records(contour, foreground_mask, spec)
-            write_hypothesis_sweep_h5(output_path, records, overwrite=overwrite, n_t=None, n_p=1)
-            return pos_dir
-
-        self._set_hypothesis_status("Saving to DB…")
-        _worker()
-
-    def _on_save_done(self, pos_dir: Path) -> None:
-        pass  # output_files removed; per-section file widgets handle display
-        self._set_hypothesis_status("Saved to hypotheses.h5.")
-        self.refresh(pos_dir)
-
-    def _on_run_sweep(self) -> None:
-        if self._pos_dir is None:
-            self._set_hypothesis_status("No project open.")
-            return
-        contour_path = self._contour_maps_path()
-        mask_path = self._foreground_mask_path()
-        if contour_path is None or not contour_path.exists():
-            self._set_hypothesis_status("Contour maps not found — run Build first.")
-            return
-        if mask_path is None or not mask_path.exists():
-            self._set_hypothesis_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
-            return
-
-        spec      = self._contour_sweep_spec()
-        n_workers = self.sweep_n_workers.value()
-        overwrite = self.overwrite_check.isChecked()
-        output_path = self._hyp_path()
-        pos_dir     = self._pos_dir
-
-        def _on_sweep_done(result):
-            self._sweep_worker = None
-            self._set_sweep_buttons_running(False)
-            self._on_save_done(result)
-
-        def _on_sweep_aborted():
-            self._sweep_worker = None
-            self._set_sweep_buttons_running(False)
-            self._set_hypothesis_status("Sweep cancelled.")
-
-        def _on_sweep_error(exc):
-            self._sweep_worker = None
-            self._set_sweep_buttons_running(False)
-            self._on_hypothesis_worker_error(exc)
-
-        @thread_worker(connect={
-            "yielded":  self._set_hypothesis_status,
-            "returned": _on_sweep_done,
-            "aborted":  _on_sweep_aborted,
-            "errored":  _on_sweep_error,
-        })
-        def _worker():
-            import json as _json
-            params_list = build_contour_watershed_parameter_sets(spec)
-
-            if not overwrite and output_path.exists():
-                try:
-                    _, existing = list_hypotheses(output_path)
-                    existing_jsons = {
-                        attrs["parameter_json"]
-                        for attrs in existing.values()
-                        if "parameter_json" in attrs
-                    }
-                    params_list = [
-                        p for p in params_list
-                        if _json.dumps(p.to_dict(), sort_keys=True) not in existing_jsons
-                    ]
-                except Exception:
-                    pass
-
-            n_full = len(build_contour_watershed_parameter_sets(spec))
-            n_skip = n_full - len(params_list)
-            if not params_list:
-                yield f"Sweep: all {n_full} parameter set(s) already present, nothing to do."
-                return pos_dir
-            if n_skip:
-                yield f"Sweep: skipping {n_skip} existing, computing {len(params_list)} new…"
-
-            contour_stack = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
-            foreground_stack = self._normalize_contour_mask_stack(
-                tifffile.imread(str(mask_path)),
-                contour_stack.shape,
-            )
-
-            n_t = contour_stack.shape[0]
-            total = n_t * len(params_list)
-            records = iter_contour_watershed_records(
-                contour_stack,
-                foreground_stack,
-                spec,
-                n_workers=n_workers,
-                params_list=params_list,
-            )
-            for done in iter_write_hypothesis_sweep_h5(
-                output_path,
-                records,
-                overwrite=overwrite,
-                compression="lzf",
-                compression_opts=None,
-            ):
-                yield f"Sweep {done}/{total}…"
-            return pos_dir
-
-        self._set_hypothesis_status("Running sweep…")
-        self._set_sweep_buttons_running(True)
-        self._sweep_worker = _worker()
-
-    def _set_sweep_buttons_running(self, running: bool) -> None:
-        self.run_sweep_btn.setEnabled(not running)
-        self.run_terminal_btn.setEnabled(not running)
-        self.cancel_sweep_btn.setEnabled(running)
-
-    def _on_cancel_sweep(self) -> None:
-        if self._sweep_worker is not None:
-            self._sweep_worker.quit()
-
-    def _on_run_terminal(self) -> None:
-        import sys
-        import tempfile
-
-        if self._pos_dir is None:
-            self._set_hypothesis_status("No project open.")
-            return
-        contour_path = self._contour_maps_path()
-        mask_path = self._foreground_mask_path()
-        output_path     = self._hyp_path()
-        if contour_path is None or not contour_path.exists():
-            self._set_hypothesis_status("Contour maps not found — run Build first.")
-            return
-        if mask_path is None or not mask_path.exists():
-            self._set_hypothesis_status("Foreground mask not found — provide 2_nucleus/foreground_mask.tif.")
-            return
-
-        spec      = self._contour_sweep_spec()
-        n_workers = self.sweep_n_workers.value()
-        overwrite = self.overwrite_check.isChecked()
-
-        python_code = (
-            "import tifffile, numpy as np\n"
-            "from cellflow.database.hypotheses import (\n"
-            "    ContourWatershedSweepSpec, iter_contour_watershed_records,\n"
-            "    build_contour_watershed_parameter_sets, list_hypotheses,\n"
-            "    iter_write_hypothesis_sweep_h5)\n"
-            "import json, pathlib\n"
-            f"contour    = tifffile.imread({str(contour_path)!r}).astype('float32')\n"
-            f"foreground_mask = tifffile.imread({str(mask_path)!r})\n"
-            "if foreground_mask.shape != contour.shape:\n"
-            "    if foreground_mask.ndim == 2 and foreground_mask.shape == contour.shape[1:]:\n"
-            "        foreground_mask = np.broadcast_to(foreground_mask[None], contour.shape)\n"
-            "    elif foreground_mask.ndim == 3 and foreground_mask.shape[0] == 1 and foreground_mask.shape[1:] == contour.shape[1:]:\n"
-            "        foreground_mask = np.broadcast_to(foreground_mask, contour.shape)\n"
-            "    else:\n"
-            "        raise ValueError(f'Foreground mask shape {foreground_mask.shape} does not match contour shape {contour.shape}')\n"
-            f"output_path = pathlib.Path({str(output_path)!r})\n"
-            f"overwrite = {overwrite!r}\n"
-            f"spec = ContourWatershedSweepSpec(\n"
-            f"    seed_distance={spec.seed_distance},\n"
-            f"    seed_distance_min={spec.seed_distance_min}, seed_distance_max={spec.seed_distance_max},\n"
-            f"    seed_distance_step={spec.seed_distance_step},\n"
-            f"    foreground_threshold={spec.foreground_threshold},\n"
-            f"    foreground_threshold_min={spec.foreground_threshold_min},\n"
-            f"    foreground_threshold_max={spec.foreground_threshold_max},\n"
-            f"    foreground_threshold_step={spec.foreground_threshold_step},\n"
-            f"    ridge_threshold={spec.ridge_threshold},\n"
-            f"    ridge_threshold_min={spec.ridge_threshold_min},\n"
-            f"    ridge_threshold_max={spec.ridge_threshold_max},\n"
-            f"    ridge_threshold_step={spec.ridge_threshold_step},\n"
-            f"    noise_scale={spec.noise_scale},\n"
-            f"    noise_blur_sigma={spec.noise_blur_sigma},\n"
-            f"    n_runs={spec.n_runs},\n"
-            f"    min_size={spec.min_size},\n"
-            f"    min_circularity={spec.min_circularity},\n"
-            ")\n"
-            "params_list = build_contour_watershed_parameter_sets(spec)\n"
-            "if not overwrite and output_path.exists():\n"
-            "    try:\n"
-            "        _, existing = list_hypotheses(output_path)\n"
-            "        existing_jsons = {attrs['parameter_json'] for attrs in existing.values() if 'parameter_json' in attrs}\n"
-            "        params_list = [p for p in params_list if json.dumps(p.to_dict(), sort_keys=True) not in existing_jsons]\n"
-            "    except Exception:\n"
-            "        pass\n"
-            "n_t = contour.shape[0]\n"
-            "total = n_t * len(params_list)\n"
-            "records = iter_contour_watershed_records(contour, foreground_mask, spec, n_workers="
-            f"{n_workers}, params_list=params_list)\n"
-            "for done in iter_write_hypothesis_sweep_h5(str(output_path), records, overwrite=overwrite, compression='lzf', compression_opts=None):\n"
-            "    print(f'Sweep {done}/{total}…', flush=True)\n"
-            "print('Done.')\n"
-        )
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", prefix="cellflow_sweep_", delete=False
-        ) as tmp:
-            tmp.write(python_code)
-            tmp_path = tmp.name
-
-        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(tmp_path)}"
-        try:
-            from cellflow.napari.utils import launch_in_terminal
-            launch_in_terminal(cmd)
-            self._set_hypothesis_status("Command launched in terminal.")
-        except Exception:
-            QApplication.clipboard().setText(cmd)
-            self._set_hypothesis_status("Copied command to clipboard (terminal launch unavailable).")
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # 3. Database Browser
-    # ──────────────────────────────────────────────────────────────────────────
-
-    def _on_db_activate_toggled(self, active: bool) -> None:
-        self.db_activate_btn.setText("Deactivate" if active else "Activate")
-        if active and self._current_db_p is not None:
-            self._load_db_stack(self._current_db_p)
-
-    def _lookup_db_p(self) -> int | None:
-        if not self._db_param_map:
-            return None
-        d = self.db_seed_dist_spin.value()
-        fg = round(self.db_fg_thr_spin.value(), 4)
-        ridge = round(self.db_ridge_thr_spin.value(), 4)
-        run = self.db_run_spin.value()
-        if self._db_seed_dist_vals:
-            d = min(self._db_seed_dist_vals, key=lambda x: abs(x - d))
-        if self._db_fg_thr_vals:
-            fg = round(min(self._db_fg_thr_vals, key=lambda x: abs(x - fg)), 4)
-        if self._db_ridge_thr_vals:
-            ridge = round(min(self._db_ridge_thr_vals, key=lambda x: abs(x - ridge)), 4)
-        if self._db_run_vals:
-            run = min(self._db_run_vals, key=lambda x: abs(x - run))
-        return self._db_param_map.get((d, fg, ridge, run))
-
-    def _update_db_info_lbl(self) -> None:
-        p = self._lookup_db_p()
-        self._current_db_p = p
-        self.db_info_lbl.setText(f"p={p:03d}" if p is not None else "—")
-
-    def _on_db_param_changed(self) -> None:
-        self._update_db_info_lbl()
-        if self.db_activate_btn.isChecked() and self._current_db_p is not None:
-            self._load_db_stack(self._current_db_p)
-
-    def _load_db_stack(self, p: int) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            return
-        cell_zavg_path = self._cell_zavg_path()
-        nuc_zavg_path  = self._nucleus_zavg_path()
-        self._set_db_status(f"Loading p={p}…")
-
-        @thread_worker(connect={"returned": self._on_load_stack_done, "errored": self._on_db_worker_error})
-        def _worker():
-            stack = read_full_hypothesis_stack(hyp_path, p)
-            cell_zavg = (
-                np.asarray(tifffile.imread(str(cell_zavg_path)), dtype=np.float32)
-                if cell_zavg_path and cell_zavg_path.exists() else None
-            )
-            nuc_zavg = (
-                np.asarray(tifffile.imread(str(nuc_zavg_path)), dtype=np.float32)
-                if nuc_zavg_path and nuc_zavg_path.exists() else None
-            )
-            return p, stack, cell_zavg, nuc_zavg
-
-        _worker()
-
-    def _on_load_stack_done(self, result: tuple) -> None:
-        p, stack, cell_zavg, nuc_zavg = result
-        if stack.ndim == 4:
-            stack = stack[:, 0]  # contour_watershed stores (1, Y, X) per frame
-        nt = stack.shape[0]
-        if _HYP_LAYER in self.viewer.layers:
-            self.viewer.layers[_HYP_LAYER].data = stack
-        else:
-            self.viewer.add_labels(stack, name=_HYP_LAYER)
-        n_cells = int(stack.max()) if stack.size > 0 else 0
-        self.db_info_lbl.setText(f"p={p:03d}  |  {n_cells} cells")
-        self._set_db_status(f"Loaded p={p} → {stack.shape} into napari.")
-
-        for zavg_data, layer_name, cmap in (
-            (cell_zavg, _CELL_ZAVG_LAYER, "gray"),
-            (nuc_zavg,  _NUC_ZAVG_LAYER,  "bop orange"),
-        ):
-            if zavg_data is None:
-                continue
-            if zavg_data.ndim == 2:
-                zavg_data = np.broadcast_to(zavg_data[np.newaxis], (nt,) + zavg_data.shape).copy()
-            if layer_name in self.viewer.layers:
-                self.viewer.layers[layer_name].data = zavg_data
-            else:
-                self.viewer.add_image(zavg_data, name=layer_name, colormap=cmap, blending="additive")
-
-    def _on_set_seed(self) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_db_status("No hypothesis DB found.")
-            return
-        p = self._current_db_p
-        if p is None:
-            self._set_db_status("No parameter set selected in the DB browser.")
-            return
-        t = self._current_t()
-        try:
-            volume = read_hypothesis_labels(hyp_path, t, p)  # (1, Y, X) for contour_watershed
-            slice_2d = volume[0]
-            tracked_path = self._tracked_path()
-            write_tracked_frame(tracked_path, t, slice_2d)
-            self._update_tracked_display(slice_2d, t=t)
-            self._set_db_status(f"Hypothesis p={p} set as tracking seed at t={t}.")
-        except Exception as e:
-            self._set_db_status(f"Error setting seed: {e}")
-
-    def _on_remove_stack(self) -> None:
-        hyp_path = self._hyp_path()
-        if hyp_path is None or not hyp_path.exists():
-            self._set_db_status("No hypothesis DB found.")
-            return
-        p = self._current_db_p
-        if p is None:
-            self._set_db_status("No parameter set selected in the DB browser.")
-            return
-        try:
-            delete_hypothesis_parameter(hyp_path, p)
-        except Exception as e:
-            self._set_db_status(f"Remove stack failed: {e}")
-            return
-        if _HYP_LAYER in self.viewer.layers:
-            self.viewer.layers.remove(self.viewer.layers[_HYP_LAYER])
-        self._current_db_p = None
-        self._set_db_status(f"Removed p={p}.")
-        self.refresh(self._pos_dir)
 
     # ──────────────────────────────────────────────────────────────────────────
     # 4. Automated search / propagation
@@ -3135,6 +2447,19 @@ class NucleusWorkflowWidget(QWidget):
         if not validated_tracks:
             self._set_ultrack_status("No validated tracks — validate some cells first (press V).")
             return
+
+        # Show confirmation dialog before overwriting tracked_labels.tif
+        msg = QMessageBox(self.viewer.window._qt_window)
+        msg.setWindowTitle("Overwrite tracked labels?")
+        msg.setText(
+            "Resolve will overwrite `tracked_labels.tif`. If you want to preserve the current tracking, "
+            "copy the file first.\n\nContinue?"
+        )
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        if msg.exec() != QMessageBox.Yes:
+            self._set_ultrack_status("Resolve cancelled.")
+            return
         tracked_path = self._tracked_path()
         if tracked_path is None or not tracked_path.exists():
             self._set_ultrack_status("Tracked labels not found.")
@@ -3148,9 +2473,6 @@ class NucleusWorkflowWidget(QWidget):
             self._set_ultrack_status("Missing: foreground_masks.tif")
             return
         nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
-        if nucleus_prob_zavg_path is None or not nucleus_prob_zavg_path.exists():
-            self._set_ultrack_status("Missing: nucleus_prob_zavg.tif")
-            return
         pos_dir = self._pos_dir
 
         # Capture widget values (same as _on_resolve_with_validation)
@@ -3208,14 +2530,12 @@ class NucleusWorkflowWidget(QWidget):
             "    )\n"
             "    if new_labels.ndim == 4 and new_labels.shape[1] == 1:\n"
             "        new_labels = new_labels[:, 0]\n"
-            "    preview_path = tracked_path.with_name('tracked_labels_resolve_preview.tif')\n"
-            "    tifffile.imwrite(str(preview_path), new_labels, compression='zlib')\n"
+            "    tifffile.imwrite(str(tracked_path), new_labels, compression='zlib')\n"
             "    n_validated = len(validated_tracks)\n"
             "    n_total = int(np.unique(new_labels[new_labels != 0]).size)\n"
             "    print(\n"
             "        f'Done — {n_validated} validated track(s) preserved, '\n"
-            "        f'{n_total} total track(s). Preview saved to {preview_path}. '\n"
-            "        f'Canonical tracked_labels.tif was not saved or overwritten.',\n"
+            "        f'{n_total} total track(s). Saved to {tracked_path}.',\n"
             "        flush=True,\n"
             "    )\n"
         )
@@ -3573,6 +2893,19 @@ class NucleusWorkflowWidget(QWidget):
             self._set_ultrack_status("No validated tracks found — validate some cells first (press V).")
             return
 
+        # Show confirmation dialog before overwriting tracked_labels.tif
+        msg = QMessageBox(self.viewer.window._qt_window)
+        msg.setWindowTitle("Overwrite tracked labels?")
+        msg.setText(
+            "Resolve will overwrite `tracked_labels.tif`. If you want to preserve the current tracking, "
+            "copy the file first.\n\nContinue?"
+        )
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        if msg.exec() != QMessageBox.Yes:
+            self._set_ultrack_status("Resolve cancelled.")
+            return
+
         if _TRACKED_LAYER not in self.viewer.layers:
             self._set_ultrack_status("No tracked layer loaded.")
             return
@@ -3588,10 +2921,6 @@ class NucleusWorkflowWidget(QWidget):
             )
             return
         nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
-        if nucleus_prob_zavg_path is None or not nucleus_prob_zavg_path.exists():
-            self._set_ultrack_status("Missing: nucleus_prob_zavg.tif — run Cellpose first.")
-            return
-
         layer = self.viewer.layers[_TRACKED_LAYER]
         tracked_labels = np.asarray(layer.data)
 
@@ -3718,10 +3047,7 @@ class NucleusWorkflowWidget(QWidget):
 
     def get_state(self) -> dict:
         return {
-            "overwrite":        self.overwrite_check.isChecked(),
             "save_source":      self.save_source_check.isChecked(),
-            "min_size":         self.min_size_spin.value(),
-            "min_circularity":  self.min_circularity_spin.value(),
             "cellprob": {
                 "min":       self.cp_min_spin.value(),
                 "max":       self.cp_max_spin.value(),
@@ -3730,33 +3056,10 @@ class NucleusWorkflowWidget(QWidget):
                 "gamma_max": self.cp_gamma_max_spin.value(),
                 "gamma_step": self.cp_gamma_step_spin.value(),
             },
-            "tuning": {
-                "seed_dist":        self.single_seed_dist.value(),
-                "fg_threshold":     self.single_fg_threshold.value(),
-                "ridge_threshold":  self.single_ridge_threshold.value(),
-                "noise_scale":      self.noise_scale.value(),
-                "noise_blur_sigma": self.noise_blur.value(),
-            },
-            "sweep": {
-                "seed_dist_min":    self.sweep_seed_dist[0].value(),
-                "seed_dist_max":    self.sweep_seed_dist[1].value(),
-                "seed_dist_step":   self.sweep_seed_dist[2].value(),
-                "fg_thr_min":       self.sweep_fg_thr[0].value(),
-                "fg_thr_max":       self.sweep_fg_thr[1].value(),
-                "fg_thr_step":      self.sweep_fg_thr[2].value(),
-                "ridge_thr_min":    self.sweep_ridge_thr[0].value(),
-                "ridge_thr_max":    self.sweep_ridge_thr[1].value(),
-                "ridge_thr_step":   self.sweep_ridge_thr[2].value(),
-                "noise_scale":      self.noise_scale.value(),
-                "noise_blur_sigma": self.noise_blur.value(),
-                "n_runs":           self.sweep_n_runs.value(),
-                "n_workers":        self.sweep_n_workers.value(),
-            },
-            "db_browser": {
-                "seed_dist":      self.db_seed_dist_spin.value(),
-                "fg_threshold":   self.db_fg_thr_spin.value(),
-                "ridge_threshold": self.db_ridge_thr_spin.value(),
-                "run_index":      self.db_run_spin.value(),
+            "foreground_mask": {
+                "source":    self.fg_source_combo.currentText(),
+                "threshold": self.fg_threshold_spin.value(),
+                "gamma":     self.fg_gamma_spin.value(),
             },
             "db_generation": {
                 "min_area":         self.db_gen_min_area_spin.value(),
@@ -3794,14 +3097,8 @@ class NucleusWorkflowWidget(QWidget):
         }
 
     def set_state(self, state: dict) -> None:
-        if "overwrite" in state:
-            self.overwrite_check.setChecked(state["overwrite"])
         if "save_source" in state:
             self.save_source_check.setChecked(state["save_source"])
-        if "min_size" in state:
-            self.min_size_spin.setValue(state["min_size"])
-        if "min_circularity" in state:
-            self.min_circularity_spin.setValue(state["min_circularity"])
         if "cellprob" in state:
             cp = state["cellprob"]
             if "min"        in cp: self.cp_min_spin.setValue(cp["min"])
@@ -3810,34 +3107,14 @@ class NucleusWorkflowWidget(QWidget):
             if "gamma_min"  in cp: self.cp_gamma_min_spin.setValue(cp["gamma_min"])
             if "gamma_max"  in cp: self.cp_gamma_max_spin.setValue(cp["gamma_max"])
             if "gamma_step" in cp: self.cp_gamma_step_spin.setValue(cp["gamma_step"])
-        if "tuning" in state:
-            t = state["tuning"]
-            if "seed_dist"       in t: self.single_seed_dist.setValue(t["seed_dist"])
-            if "fg_threshold"    in t: self.single_fg_threshold.setValue(t["fg_threshold"])
-            if "ridge_threshold" in t: self.single_ridge_threshold.setValue(t["ridge_threshold"])
-            if "noise_scale"     in t: self.noise_scale.setValue(t["noise_scale"])
-            if "noise_blur_sigma" in t: self.noise_blur.setValue(t["noise_blur_sigma"])
-        if "sweep" in state:
-            sw = state["sweep"]
-            if "seed_dist_min"  in sw: self.sweep_seed_dist[0].setValue(sw["seed_dist_min"])
-            if "seed_dist_max"  in sw: self.sweep_seed_dist[1].setValue(sw["seed_dist_max"])
-            if "seed_dist_step" in sw: self.sweep_seed_dist[2].setValue(sw["seed_dist_step"])
-            if "fg_thr_min"     in sw: self.sweep_fg_thr[0].setValue(sw["fg_thr_min"])
-            if "fg_thr_max"     in sw: self.sweep_fg_thr[1].setValue(sw["fg_thr_max"])
-            if "fg_thr_step"    in sw: self.sweep_fg_thr[2].setValue(sw["fg_thr_step"])
-            if "ridge_thr_min"  in sw: self.sweep_ridge_thr[0].setValue(sw["ridge_thr_min"])
-            if "ridge_thr_max"  in sw: self.sweep_ridge_thr[1].setValue(sw["ridge_thr_max"])
-            if "ridge_thr_step" in sw: self.sweep_ridge_thr[2].setValue(sw["ridge_thr_step"])
-            if "noise_scale"    in sw: self.noise_scale.setValue(sw["noise_scale"])
-            if "noise_blur_sigma" in sw: self.noise_blur.setValue(sw["noise_blur_sigma"])
-            if "n_runs"         in sw: self.sweep_n_runs.setValue(sw["n_runs"])
-            if "n_workers"      in sw: self.sweep_n_workers.setValue(sw["n_workers"])
-        if "db_browser" in state:
-            db = state["db_browser"]
-            if "seed_dist"       in db: self.db_seed_dist_spin.setValue(db["seed_dist"])
-            if "fg_threshold"    in db: self.db_fg_thr_spin.setValue(db["fg_threshold"])
-            if "ridge_threshold" in db: self.db_ridge_thr_spin.setValue(db["ridge_threshold"])
-            if "run_index"       in db: self.db_run_spin.setValue(db["run_index"])
+        if "foreground_mask" in state:
+            fg = state["foreground_mask"]
+            if "source" in fg:
+                idx = self.fg_source_combo.findText(fg["source"])
+                if idx >= 0:
+                    self.fg_source_combo.setCurrentIndex(idx)
+            if "threshold" in fg: self.fg_threshold_spin.setValue(fg["threshold"])
+            if "gamma"     in fg: self.fg_gamma_spin.setValue(fg["gamma"])
         if "db_generation" in state:
             dbg = state["db_generation"]
             if "min_area"         in dbg: self.db_gen_min_area_spin.setValue(dbg["min_area"])

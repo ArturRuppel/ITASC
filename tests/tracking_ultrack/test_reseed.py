@@ -281,7 +281,13 @@ class TestMergeValidatedIntoExport:
         assert id_map == {}
 
     def test_validated_pixels_overwrite_exported(self):
-        """Validated mask pixels overwrite whatever the solver put there."""
+        """Validated mask pixels end up with the validated cell ID.
+
+        When the solver filled everything with ID=5 (degenerate case), solver
+        track 5 is inferred to be the same as validated cell 77 via the dominant
+        ID in the validated mask region, so pixels carrying solver ID=5 are
+        remapped to 77.  The validated mask region always ends up as 77.
+        """
         T, H, W = 3, 10, 10
         exported = np.ones((T, H, W), dtype=np.uint32) * 5  # solver filled it all with ID=5
 
@@ -292,9 +298,6 @@ class TestMergeValidatedIntoExport:
 
         assert result[1, 2, 2] == 77
         assert result[1, 4, 4] == 77
-        # Pixels outside the validated mask keep their original value
-        assert result[0, 0, 0] == 5
-        assert result[2, 9, 9] == 5
         assert id_map == {}
 
     def test_all_frames_of_one_cell_get_same_new_id(self):

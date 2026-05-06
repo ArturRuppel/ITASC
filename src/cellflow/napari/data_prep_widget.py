@@ -107,14 +107,14 @@ class DataPrepWidget(QWidget):
 
         # ── Project file status ──────────────────────────────────────────
         self.files_tracker = PipelineFilesWidget([
-            ("Output", [
+            ("Outputs", [
                 ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
                 ("0_input/cell_zavg.tif", "Cell z-avg"),
                 ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
                 ("0_input/cell_3dt.tif", "Cell 3D+t"),
                 ("0_input/z_shift.csv", "Z shift CSV"),
             ]),
-        ])
+        ], viewer=self.viewer)
         layout.addWidget(self.files_tracker)
 
         # Connect signals

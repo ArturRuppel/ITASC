@@ -25,6 +25,98 @@ def apply_gamma(logits: np.ndarray, gamma: float) -> np.ndarray:
     return np.log(probs / (1.0 - probs))
 
 
+def _validate_foreground_gamma(gamma: float) -> float:
+    gamma = float(gamma)
+    if gamma <= 0.0:
+        raise ValueError(f"gamma must be > 0, got {gamma}")
+    return gamma
+
+
+def _validate_foreground_threshold(threshold: float) -> float:
+    threshold = float(threshold)
+    if threshold < 0.0 or threshold > 1.0:
+        raise ValueError(f"threshold must be in [0, 1], got {threshold}")
+    return threshold
+
+
+def _apply_post_average_gamma(score: np.ndarray, gamma: float) -> np.ndarray:
+    score = np.clip(score, 0.0, 1.0).astype(np.float32, copy=False)
+    if gamma == 1.0:
+        return score
+    return np.power(score, gamma).astype(np.float32)
+
+
+def _normalize_foreground_score(score: np.ndarray) -> np.ndarray:
+    score = np.asarray(score, dtype=np.float32)
+    lo = float(np.min(score))
+    hi = float(np.max(score))
+    if hi <= lo:
+        return np.zeros_like(score, dtype=np.float32)
+    return np.clip((score - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
+
+
+def _flow_dp_magnitude_stack(data: np.ndarray) -> tuple[np.ndarray, bool]:
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim == 3:
+        return np.abs(data), False
+    if data.ndim == 4:
+        if data.shape[-1] in (2, 3):
+            return np.sqrt(np.sum(data * data, axis=-1)).astype(np.float32), False
+        if data.shape[1] in (2, 3):
+            return np.sqrt(np.sum(data * data, axis=1)).astype(np.float32), False
+        return np.abs(data), True
+    if data.ndim == 5:
+        if data.shape[2] in (2, 3):
+            axis = 2
+        elif data.shape[-1] in (2, 3):
+            axis = -1
+        else:
+            raise ValueError(f"Unsupported flow_dp shape {data.shape}")
+        return np.sqrt(np.sum(data * data, axis=axis)).astype(np.float32), True
+    raise ValueError(f"Unsupported flow_dp shape {data.shape}")
+
+
+def foreground_score_stack(data, source: str, gamma: float = 1.0) -> np.ndarray:
+    """Return a foreground score image or time stack from probability or flow-DP data."""
+    gamma = _validate_foreground_gamma(gamma)
+    source_key = str(source).lower()
+    arr = np.asarray(data, dtype=np.float32)
+
+    if source_key == "probability":
+        if arr.ndim == 3:
+            score = 1.0 / (1.0 + np.exp(-arr.mean(axis=0)))
+        elif arr.ndim == 4:
+            score = 1.0 / (1.0 + np.exp(-arr.mean(axis=1)))
+        else:
+            raise ValueError(f"Unsupported probability shape {arr.shape}")
+        return _apply_post_average_gamma(score, gamma)
+
+    if source_key == "flow_dp":
+        magnitude, has_time_axis = _flow_dp_magnitude_stack(arr)
+        if has_time_axis:
+            score = magnitude.mean(axis=1)
+            normalized = np.empty_like(score, dtype=np.float32)
+            for t in range(score.shape[0]):
+                normalized[t] = _normalize_foreground_score(score[t])
+        else:
+            normalized = _normalize_foreground_score(magnitude.mean(axis=0))
+        return _apply_post_average_gamma(normalized, gamma)
+
+    raise ValueError(f"Unsupported foreground source {source!r}")
+
+
+def foreground_mask_stack(
+    data,
+    source: str,
+    threshold: float = 0.5,
+    gamma: float = 1.0,
+) -> np.ndarray:
+    """Return a uint8 foreground mask with values 0/1."""
+    threshold = _validate_foreground_threshold(threshold)
+    score = foreground_score_stack(data, source, gamma=gamma)
+    return (score >= threshold).astype(np.uint8)
+
+
 @dataclass(frozen=True, slots=True)
 class ContourWatershedParams:
     """Parameters for contour-map watershed hypothesis generation."""

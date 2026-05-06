@@ -35,11 +35,14 @@ _TRACKED_FILE_GROUPS = [
         ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
     ]),
     ("Nucleus Workflow", [
-        ("2_nucleus/hypotheses.h5", "Hypotheses HDF5"),
+        ("2_nucleus/contour_maps.tif", "Contour maps"),
+        ("2_nucleus/foreground_masks.tif", "Foreground masks (external)"),
+        ("2_nucleus/ultrack_workdir/data.db", "Ultrack DB"),
         ("2_nucleus/tracked_labels.tif", "Tracked labels"),
     ]),
     ("Cell Workflow", [
-        ("3_cell/hypotheses.h5", "Hypotheses HDF5"),
+        ("3_cell/foreground_masks.tif", "Foreground masks (external)"),
+        ("3_cell/filtered_flow_mag.tif", "Filtered flow magnitude"),
         ("3_cell/tracked_labels.tif", "Tracked labels"),
     ]),
 ]
@@ -48,14 +51,14 @@ _TRACKED_FILE_GROUPS = [
 class ProjectStatusPanel(QWidget):
     """Widget for viewing project file status."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, viewer=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
 
         # ── File Tracker (Scrollable) ─────────
-        self.file_tracker = PipelineFilesWidget(_TRACKED_FILE_GROUPS)
+        self.file_tracker = PipelineFilesWidget(_TRACKED_FILE_GROUPS, viewer=viewer)
         
         scroll = QScrollArea()
         scroll.setWidget(self.file_tracker)

@@ -238,8 +238,8 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
 
     # tracking_correction_section wrapper removed — sections are now top-level
     assert not hasattr(widget, "tracking_correction_section")
-    assert widget.ultrack_section.title == "4. Ultrack Tracking"
-    assert widget.correction_section.title == "5. Correction"
+    assert widget.ultrack_section.title == "5. Ultrack Tracking"
+    assert widget.correction_section.title == "6. Correction"
     assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
     assert widget.correction_shortcuts_section.is_expanded is False
     assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
@@ -335,6 +335,7 @@ def test_nucleus_workflow_status_labels_are_section_local():
 
     local_statuses = [
         (widget.contour_section, widget.contour_status_lbl),
+        (widget.foreground_section, widget.fg_status_lbl),
         (widget.db_gen_section, widget.db_gen_status_lbl),
         (widget.ultrack_db_browser_section, widget.ultrack_db_section_status_lbl),
         (widget.ultrack_section, widget.ultrack_status_lbl),
@@ -362,6 +363,78 @@ def test_db_gen_section_exposes_quality_and_power_controls():
     assert widget.db_gen_quality_exp_spin.value() == 8.0
     assert "solver transform" in widget.db_gen_power_spin.toolTip()
     assert "node_prob" in widget.db_gen_quality_exp_spin.toolTip()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_foreground_mask_section_exposes_controls_and_output_row():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.foreground_section.title == "2. Foreground Mask"
+    assert widget.fg_source_combo.currentText() == "Sigmoid probability"
+    assert [
+        widget.fg_source_combo.itemText(i)
+        for i in range(widget.fg_source_combo.count())
+    ] == ["Sigmoid probability", "Flow DP"]
+    assert widget.fg_threshold_spin.minimum() == 0.0
+    assert widget.fg_threshold_spin.maximum() == 1.0
+    assert widget.fg_threshold_spin.value() == 0.5
+    assert widget.fg_threshold_spin.singleStep() == 0.01
+    assert widget.fg_gamma_spin.minimum() == 0.05
+    assert widget.fg_gamma_spin.maximum() == 5.0
+    assert widget.fg_gamma_spin.value() == 1.0
+    assert widget.fg_gamma_spin.singleStep() == 0.05
+    assert widget.fg_preview_btn.text() == "Preview"
+    assert widget.fg_build_btn.text() == "Build"
+    assert widget.fg_cancel_btn.text() == "Cancel"
+    assert widget.fg_status_lbl in widget.foreground_section.findChildren(QLabel)
+    assert widget.fg_progress_bar.isVisible() is False
+
+    output_text = " ".join(
+        label.text()
+        for label in widget.foreground_files.findChildren(QLabel)
+    )
+    assert "2_nucleus/foreground_masks.tif" in output_text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_foreground_mask_gamma_stays_enabled_for_flow_dp():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.fg_source_combo.setCurrentText("Flow DP")
+    _app.processEvents()
+
+    assert widget.fg_gamma_spin.isEnabled()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_foreground_mask_controls_persist_through_state():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.fg_source_combo.setCurrentText("Flow DP")
+    widget.fg_threshold_spin.setValue(0.42)
+    widget.fg_gamma_spin.setValue(1.75)
+
+    state = widget.get_state()
+    widget.deleteLater()
+
+    widget = widget_class(viewer)
+    widget.set_state(state)
+
+    assert widget.fg_source_combo.currentText() == "Flow DP"
+    assert abs(widget.fg_threshold_spin.value() - 0.42) < 0.01
+    assert abs(widget.fg_gamma_spin.value() - 1.75) < 0.01
 
     widget.deleteLater()
     viewer.close()
@@ -895,16 +968,17 @@ def test_extend_track_from_db_missing_db_raises(tmp_path):
 
 # ── Task 5: New layout tests ──────────────────────────────────────────────────
 
-def test_nucleus_workflow_has_five_canonical_top_level_sections():
+def test_nucleus_workflow_has_six_canonical_top_level_sections():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     assert widget.contour_section.title == "1. Contour Maps"
-    assert widget.db_gen_section.title == "2. Ultrack Database Generation"
-    assert widget.ultrack_db_browser_section.title == "3. Ultrack Database Browser"
-    assert widget.ultrack_section.title == "4. Ultrack Tracking"
-    assert widget.correction_section.title == "5. Correction"
+    assert widget.foreground_section.title == "2. Foreground Mask"
+    assert widget.db_gen_section.title == "3. Ultrack Database Generation"
+    assert widget.ultrack_db_browser_section.title == "4. Ultrack Database Browser"
+    assert widget.ultrack_section.title == "5. Ultrack Tracking"
+    assert widget.correction_section.title == "6. Correction"
 
     assert not hasattr(widget, "tracking_correction_section")
 
@@ -937,13 +1011,23 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "contour_status_lbl")
     assert hasattr(widget, "build_progress_bar")
 
-    # Section 2: Ultrack Database Generation
+    # Section 2: Foreground Mask
+    assert hasattr(widget, "fg_source_combo")
+    assert hasattr(widget, "fg_threshold_spin")
+    assert hasattr(widget, "fg_gamma_spin")
+    assert hasattr(widget, "fg_preview_btn")
+    assert hasattr(widget, "fg_build_btn")
+    assert hasattr(widget, "fg_cancel_btn")
+    assert hasattr(widget, "fg_status_lbl")
+    assert hasattr(widget, "fg_progress_bar")
+
+    # Section 3: Ultrack Database Generation
     assert hasattr(widget, "run_db_gen_btn")
     assert hasattr(widget, "db_gen_terminal_btn")
     assert hasattr(widget, "db_gen_status_lbl")
     assert hasattr(widget, "db_gen_progress_bar")
 
-    # Section 3: Ultrack Database Browser
+    # Section 4: Ultrack Database Browser
     assert hasattr(widget, "ultrack_db_info_lbl")
     assert hasattr(widget, "ultrack_db_active_btn")
     assert hasattr(widget, "ultrack_db_refresh_btn")
@@ -952,13 +1036,13 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "ultrack_db_height_lbl")
     assert hasattr(widget, "ultrack_db_section_status_lbl")
 
-    # Section 4: Ultrack Tracking
+    # Section 5: Ultrack Tracking
     assert hasattr(widget, "run_ultrack_btn")
     assert hasattr(widget, "ultrack_terminal_btn")
     assert hasattr(widget, "ultrack_status_lbl")
     assert hasattr(widget, "ultrack_progress_bar")
 
-    # Section 5: Correction (no Run button per spec)
+    # Section 6: Correction (no Run button per spec)
     assert hasattr(widget, "correction_status_lbl")
 
     widget.deleteLater()
@@ -970,7 +1054,7 @@ def test_ultrack_section_is_top_level_and_has_route_selector():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.ultrack_section.title == "4. Ultrack Tracking"
+    assert widget.ultrack_section.title == "5. Ultrack Tracking"
     assert widget.ultrack_route_check.text() == "Resolve from validated"
     assert widget.ultrack_route_check in widget.ultrack_section.findChildren(
         type(widget.ultrack_route_check)
@@ -987,7 +1071,7 @@ def test_correction_section_is_top_level():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.correction_section.title == "5. Correction"
+    assert widget.correction_section.title == "6. Correction"
     correction_button_texts = {
         button.text()
         for button in widget.correction_section.findChildren(QPushButton)
@@ -1140,6 +1224,8 @@ def test_db_gen_section_fails_clearly_if_foreground_masks_missing(tmp_path):
 
     text = widget.db_gen_status_lbl.text().lower()
     assert "foreground_masks" in text or "missing" in text
+    assert "foreground mask" in text
+    assert "run" in text
 
     widget.deleteLater()
     viewer.close()
@@ -1191,11 +1277,11 @@ def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, m
     widget = widget_class(viewer)
 
     db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
-    db_path.parent.mkdir(parents=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.write_bytes(b"sqlite placeholder")
     widget._pos_dir = tmp_path / "pos00"
     widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
-    widget.ultrack_db_hierarchy_slider.setValue(75)
+    widget.ultrack_db_hierarchy_slider.setValue(1)
     monkeypatch.setattr(widget, "_current_t", lambda: 0)
     widget._ultrack_db_browser_active = True
     widget._ultrack_db_frame_initialized = True  # skip middle-frame jump; no real DB to query
@@ -1210,13 +1296,14 @@ def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, m
         return np.zeros((5, 5), dtype=np.uint32), "rendered hierarchy cut"
 
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", _fake_summary)
+    monkeypatch.setattr(widget, "_query_distinct_heights", lambda path, mtime_ns: (0.25, 0.75))
     monkeypatch.setattr(widget, "_render_hierarchy_cut", _fake_render)
 
     widget._refresh_ultrack_db_browser()
     widget._refresh_ultrack_db_browser()
 
     assert len(calls) == 1
-    assert calls[0] == (db_path, 0, 75)
+    assert calls[0] == (db_path, 0, 0.75)
     assert widget.ultrack_db_info_lbl.text() == "3 nodes | 2 links | frame 0: 1 nodes"
     assert widget.ultrack_db_section_status_lbl.text() == "rendered hierarchy cut"
     assert "Ultrack DB Preview" in viewer.layers
@@ -1231,7 +1318,7 @@ def test_ultrack_db_browser_summary_mode_does_not_render(tmp_path, monkeypatch):
     widget = widget_class(viewer)
 
     db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
-    db_path.parent.mkdir(parents=True)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.write_bytes(b"sqlite placeholder")
     widget._pos_dir = tmp_path / "pos00"
     widget._ultrack_db_browser_active = True
@@ -1390,6 +1477,127 @@ def test_db_gen_controls_persist_through_state():
     assert abs(widget.db_gen_quality_exp_spin.value() - 6.0) < 0.01
     assert abs(widget.db_gen_power_spin.value() - 3.0) < 0.01
     assert widget.db_gen_n_workers_spin.value() == 4
+
+    widget.deleteLater()
+    viewer.close()
+
+
+# ── DB Browser hierarchy slider: discrete height-index tests ────────────
+
+
+def _make_ultrack_db_with_heights(db_path: Path, heights: list[float]) -> None:
+    import pickle
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import Base
+    from ultrack.core.database import NodeDB
+    from ultrack.core.segmentation.node import Node
+    from ultrack.utils.constants import NO_PARENT
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        for i, height in enumerate(heights, start=1):
+            mask = np.ones((1, 2, 2), dtype=bool)
+            bbox = np.array([0, i, i, 1, i + 2, i + 2], dtype=np.int64)
+            node_obj = Node.from_mask(time=0, mask=mask, bbox=bbox, node_id=i)
+            session.add(
+                NodeDB(
+                    id=i,
+                    t=0,
+                    t_node_id=i,
+                    t_hier_id=1,
+                    z=0,
+                    y=i + 1,
+                    x=i + 1,
+                    area=4,
+                    height=float(height),
+                    hier_parent_id=NO_PARENT,
+                    pickle=pickle.dumps(node_obj),
+                )
+            )
+        session.commit()
+        assert session.query(NodeDB.height).distinct().count() == len(set(heights))
+    engine.dispose()
+
+
+def test_ultrack_db_hierarchy_slider_uses_distinct_db_heights(tmp_path, monkeypatch):
+    _make_ultrack_db_with_heights(
+        tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db",
+        [0.1, 0.4, 0.9],
+    )
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    calls = []
+
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    widget.ultrack_db_hierarchy_slider.setValue(1)
+    monkeypatch.setattr(widget, "_current_t", lambda: 0)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda _path, _frame: "ok")
+
+    def _render(db_path, frame, db_height):
+        calls.append((db_path, frame, db_height))
+        return np.zeros((5, 5), dtype=np.uint32), f"rendered h={db_height:.2f}"
+
+    monkeypatch.setattr(widget, "_render_hierarchy_cut", _render)
+
+    widget._refresh_ultrack_db_browser()
+
+    assert widget.ultrack_db_hierarchy_slider.minimum() == 0
+    assert widget.ultrack_db_hierarchy_slider.maximum() == 2
+    assert widget.ultrack_db_hierarchy_slider.value() == 1
+    assert "1" in widget.ultrack_db_height_lbl.text()
+    assert "0.40" in widget.ultrack_db_height_lbl.text()
+    assert calls == [
+        (
+            tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db",
+            0,
+            0.4,
+        )
+    ]
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_hierarchy_slider_clamps_when_db_heights_shrink(tmp_path, monkeypatch):
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    _make_ultrack_db_with_heights(db_path, [0.1, 0.3, 0.5, 0.7])
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    calls = []
+
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    widget.ultrack_db_hierarchy_slider.setValue(3)
+    monkeypatch.setattr(widget, "_current_t", lambda: 0)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda _path, _frame: "ok")
+
+    def _render(_db_path, _frame, db_height):
+        calls.append(db_height)
+        return np.zeros((5, 5), dtype=np.uint32), "ok"
+
+    monkeypatch.setattr(widget, "_render_hierarchy_cut", _render)
+    widget._refresh_ultrack_db_browser()
+
+    db_path.unlink()
+    _make_ultrack_db_with_heights(db_path, [0.2, 0.6])
+    widget._ultrack_db_preview_cache.clear()
+    widget._refresh_ultrack_db_browser()
+
+    assert widget.ultrack_db_hierarchy_slider.maximum() == 1
+    assert widget.ultrack_db_hierarchy_slider.value() == 1
+    assert "1" in widget.ultrack_db_height_lbl.text()
+    assert "0.60" in widget.ultrack_db_height_lbl.text()
+    assert calls == [0.7, 0.6]
 
     widget.deleteLater()
     viewer.close()

@@ -131,11 +131,18 @@ class CollapsibleSection(QWidget):
 class _PipelineFileRow(QWidget):
     """One pipeline file status row: icon | rel-path | info | [load btn]"""
 
-    def __init__(self, rel_path: str, display_name: str, loadable: str | None = None):
+    def __init__(
+        self,
+        rel_path: str,
+        display_name: str,
+        loadable: str | None = None,
+        viewer=None,
+    ):
         super().__init__()
         self._rel_path = rel_path
         self._loadable = loadable or self._infer_load_kind(rel_path)
         self._full_path: "Path | None" = None
+        self._viewer = viewer
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(
@@ -165,6 +172,8 @@ class _PipelineFileRow(QWidget):
         self._load_btn.clicked.connect(self._on_load_clicked)
         self._load_btn.setEnabled(False)
         self._load_btn.setToolTip(self._load_tooltip())
+        # Hide the button entirely when no viewer is wired in or file is not napari-loadable.
+        self._load_btn.setVisible(viewer is not None and self._loadable is not None)
         lay.addWidget(self._load_btn)
 
     def set_present(self, info_text: str) -> None:
@@ -209,7 +218,7 @@ class _PipelineFileRow(QWidget):
             )
             return
 
-        if self._loadable in {"tracked", "tiff"}:
+        if self._loadable in {"tracked", "labels", "tiff"}:
             self._load_btn.setEnabled(True)
             self._load_btn.setToolTip(self._load_tooltip())
             return
@@ -236,7 +245,7 @@ class _PipelineFileRow(QWidget):
         self._load_file_into_viewer()
 
     def _load_file_into_viewer(self) -> None:
-        viewer = self._find_viewer()
+        viewer = self._viewer if self._viewer is not None else self._find_viewer()
         if viewer is None:
             return
 
@@ -244,10 +253,42 @@ class _PipelineFileRow(QWidget):
 
         data = tifffile.imread(str(self._full_path))
         layer_name = self._layer_name()
-        if self._loadable == "tracked" or self._loadable == "labels":
+        use_labels = self._loadable in {"tracked", "labels"}
+
+        if use_labels:
+            if layer_name in viewer.layers:
+                try:
+                    viewer.layers[layer_name].data = data
+                    return
+                except Exception:
+                    viewer.layers.remove(viewer.layers[layer_name])
             viewer.add_labels(data, name=layer_name)
         else:
-            viewer.add_image(data, name=layer_name)
+            colormap = self._pick_colormap()
+            if layer_name in viewer.layers:
+                try:
+                    viewer.layers[layer_name].data = data
+                    return
+                except Exception:
+                    viewer.layers.remove(viewer.layers[layer_name])
+            viewer.add_image(data, name=layer_name, colormap=colormap)
+
+    def _pick_colormap(self) -> str:
+        rel = self._rel_path
+        name = Path(rel).name
+        if rel.startswith("0_input/") or name.endswith(("_zavg.tif", "_3dt.tif")):
+            return "gray"
+        if (
+            rel.startswith("1_cellpose/")
+            or rel in (
+                "2_nucleus/contour_maps.tif",
+                "3_cell/filtered_flow_mag.tif",
+            )
+            or (rel.startswith("2_nucleus/") and name.startswith("foreground_"))
+            or (rel.startswith("3_cell/") and name.startswith("foreground_"))
+        ):
+            return "inferno"
+        return "gray"
 
     def _find_viewer(self):
         widget = self.parentWidget()
@@ -327,8 +368,8 @@ class _PipelineFileRow(QWidget):
             return "File is missing."
         if self._loadable == "hypotheses":
             return "Load the currently selected hypothesis stack into napari."
-        if self._loadable == "tracked":
-            return "Load tracked labels into napari."
+        if self._loadable in {"tracked", "labels"}:
+            return "Load labels into napari."
         if self._loadable == "tiff":
             return "Load into napari viewer."
         return "No direct napari load action for this file."
@@ -340,6 +381,8 @@ class _PipelineFileRow(QWidget):
             return "hypotheses"
         if name == "tracked_labels.tif":
             return "tracked"
+        if name.endswith("_labels.tif") or ("labels" in name and name.endswith((".tif", ".tiff"))):
+            return "labels"
         if name.endswith((".tif", ".tiff")):
             return "tiff"
         return None
@@ -415,6 +458,7 @@ class PipelineFilesWidget(QWidget):
         self,
         groups: list[tuple[str, list[tuple[str, str]]]],
         parent: QWidget | None = None,
+        viewer=None,
     ) -> None:
         super().__init__(parent)
         lay = QVBoxLayout(self)
@@ -431,7 +475,7 @@ class PipelineFilesWidget(QWidget):
                 )
                 lay.addWidget(hdr)
             for rel_path, display_name in entries:
-                row = _PipelineFileRow(rel_path, display_name, loadable=None)
+                row = _PipelineFileRow(rel_path, display_name, loadable=None, viewer=viewer)
                 self._rows.append(row)
                 lay.addWidget(row)
 

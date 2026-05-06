@@ -59,7 +59,7 @@ class CellWorkflowWidget(QWidget):
                 ("3_cell/foreground_masks.tif",    "Foreground masks"),
                 ("2_nucleus/tracked_labels.tif",   "Nucleus tracked labels"),
             ]),
-        ])
+        ], viewer=self.viewer)
         layout.addWidget(self.input_files)
 
         _ff_inner = QWidget()
@@ -160,13 +160,6 @@ class CellWorkflowWidget(QWidget):
         self.ff_progress_bar.setVisible(False)
         ff_params_lay.addWidget(self.ff_progress_bar)
 
-        self.ff_files = PipelineFilesWidget([
-            ("", [
-                ("3_cell/filtered_flow_mag.tif", "Filtered flow magnitude"),
-                ("3_cell/tracked_labels.tif",    "Cell labels"),
-            ]),
-        ])
-        ff_params_lay.addWidget(self.ff_files)
         self._update_ff_status_labels()
 
         ff_scroll.setWidget(ff_params_widget)
@@ -175,6 +168,14 @@ class CellWorkflowWidget(QWidget):
             "Flow-Following Segmentation", _ff_inner, expanded=True
         )
         layout.addWidget(self.flow_section)
+
+        self.ff_files = PipelineFilesWidget([
+            ("Outputs", [
+                ("3_cell/filtered_flow_mag.tif", "Filtered flow magnitude"),
+                ("3_cell/tracked_labels.tif",    "Cell labels"),
+            ]),
+        ], viewer=self.viewer)
+        layout.addWidget(self.ff_files)
         layout.addStretch()
 
     def _connect_signals(self) -> None:
