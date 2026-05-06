@@ -108,7 +108,9 @@ class NucleusWorkflowWidget(QWidget):
         self._build_worker = None
         self._foreground_worker = None
         self._sweep_worker = None
-        self._ultrack_db_preview_cache: dict[tuple, tuple[np.ndarray, str]] = {}
+        self._ultrack_db_preview_cache: dict[
+            tuple, tuple[np.ndarray, str] | tuple[np.ndarray, str, dict[int, float]]
+        ] = {}
         self._ultrack_db_height_values_cache: dict[tuple, tuple[float, ...]] = {}
         self._ultrack_db_browser_active: bool = False
         self._ultrack_db_frame_initialized: bool = False
@@ -577,6 +579,10 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_db_browser_lay.addWidget(_db_btn_row)
         self.ultrack_db_mode_combo.setEnabled(False)
         self.ultrack_db_hierarchy_slider.setEnabled(False)
+        self.ultrack_db_prob_alpha_check = QCheckBox("Node prob transparency")
+        self.ultrack_db_prob_alpha_check.setToolTip("Modulate label opacity by node probability (higher quality = more opaque)")
+        self.ultrack_db_prob_alpha_check.setEnabled(False)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_prob_alpha_check)
 
         self.ultrack_db_section_status_lbl = QLabel("")
         self.ultrack_db_section_status_lbl.setWordWrap(True)
@@ -962,6 +968,7 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_mode_combo.currentTextChanged.connect(self._on_ultrack_db_mode_changed)
         self.ultrack_db_hierarchy_slider.valueChanged.connect(self._on_ultrack_db_slider_changed)
+        self.ultrack_db_prob_alpha_check.toggled.connect(self._refresh_ultrack_db_browser)
         self.run_ultrack_btn.clicked.connect(self._on_run_tracking_route)
         self.ultrack_terminal_btn.clicked.connect(self._on_run_tracking_route_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
@@ -1456,6 +1463,7 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_refresh_btn.setEnabled(checked)
         self.ultrack_db_mode_combo.setEnabled(checked)
         self.ultrack_db_hierarchy_slider.setEnabled(checked)
+        self.ultrack_db_prob_alpha_check.setEnabled(checked)
         if checked:
             self._ultrack_db_frame_initialized = False
             self._refresh_ultrack_db_browser()
@@ -1553,12 +1561,78 @@ class NucleusWorkflowWidget(QWidget):
             if cached is None:
                 cached = self._render_hierarchy_cut(db_path, frame, h_actual)
                 self._ultrack_db_preview_cache[key] = cached
-            labels, status = cached
-            self._update_layer(_ULTRACK_DB_PREVIEW_LAYER, labels.astype(np.uint32, copy=False))
+            labels, status, prob_dict = self._normalize_ultrack_db_preview(cached)
+            self._update_ultrack_db_preview_layer(
+                labels.astype(np.uint32, copy=False), prob_dict
+            )
             self._set_ultrack_db_status(status)
         except Exception as e:
             self._set_ultrack_db_status(f"DB read error: {e}")
             logger.warning("DB browser error: %s", e)
+
+    @staticmethod
+    def _normalize_ultrack_db_preview(
+        cached: tuple[np.ndarray, str] | tuple[np.ndarray, str, dict[int, float]],
+    ) -> tuple[np.ndarray, str, dict[int, float]]:
+        if len(cached) == 2:
+            labels, status = cached
+            return labels, status, {}
+        labels, status, prob_dict = cached
+        return labels, status, prob_dict
+
+    def _update_ultrack_db_preview_layer(
+        self, labels: np.ndarray, prob_dict: dict[int, float]
+    ) -> None:
+        if self.ultrack_db_prob_alpha_check.isChecked() and prob_dict:
+            data = self._ultrack_db_probability_rgba(labels, prob_dict)
+            self._update_image_layer(_ULTRACK_DB_PREVIEW_LAYER, data, rgb=True)
+            return
+        self._update_labels_layer(_ULTRACK_DB_PREVIEW_LAYER, labels)
+
+    def _update_labels_layer(self, name: str, data: np.ndarray) -> None:
+        from napari.layers import Labels
+
+        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Labels):
+            self.viewer.layers[name].data = data
+            return
+        if name in self.viewer.layers:
+            self.viewer.layers.remove(name)
+        self.viewer.add_labels(data, name=name)
+
+    def _update_image_layer(self, name: str, data: np.ndarray, *, rgb: bool = False) -> None:
+        from napari.layers import Image
+
+        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Image):
+            self.viewer.layers[name].data = data
+            return
+        if name in self.viewer.layers:
+            self.viewer.layers.remove(name)
+        self.viewer.add_image(data, name=name, rgb=rgb, blending="translucent")
+
+    @staticmethod
+    def _ultrack_db_probability_rgba(
+        labels: np.ndarray, prob_dict: dict[int, float]
+    ) -> np.ndarray:
+        from napari.utils.colormaps import label_colormap
+
+        rgba = np.zeros(labels.shape + (4,), dtype=np.float32)
+        if labels.size == 0 or not prob_dict:
+            return rgba
+
+        probs = [float(v) for v in prob_dict.values()]
+        min_p = min(probs)
+        max_p = max(probs)
+        denom = max(max_p - min_p, 1e-9)
+        cmap = label_colormap(max(prob_dict.keys()) + 1)
+        for label_id, prob in prob_dict.items():
+            label_mask = labels == int(label_id)
+            if not np.any(label_mask):
+                continue
+            color = np.asarray(cmap.map(int(label_id)), dtype=np.float32)
+            alpha = 0.15 + 0.85 * (float(prob) - min_p) / denom
+            color[3] = float(np.clip(alpha, 0.15, 1.0))
+            rgba[label_mask] = color
+        return rgba
 
     def _ultrack_db_summary_text(self, db_path: Path, frame: int) -> str:
         import sqlalchemy as sqla
@@ -1692,11 +1766,18 @@ class NucleusWorkflowWidget(QWidget):
         if not nodes:
             return self._empty_ultrack_db_preview(), (
                 f"No segments at this threshold for frame {frame}."
-            )
+            ), {}
         labels = self._paint_ultrack_db_nodes(nodes)
+        prob_dict: dict[int, float] = {}
+        for label, node in enumerate(nodes, start=1):
+            try:
+                prob = float(node.node_prob if node.node_prob is not None else 1.0)
+            except (TypeError, ValueError):
+                prob = 1.0
+            prob_dict[label] = prob
         return labels, (
             f"Frame {frame}: {len(nodes)} segment(s) at h={h_actual:.2f}."
-        )
+        ), prob_dict
 
     def _empty_ultrack_db_preview(self) -> np.ndarray:
         shape = self._viewer_plane_shape()
@@ -1804,10 +1885,7 @@ class NucleusWorkflowWidget(QWidget):
         self._update_layer(_TRACKED_LAYER, display)
 
     def _update_layer(self, name: str, data: np.ndarray) -> None:
-        if name in self.viewer.layers:
-            self.viewer.layers[name].data = data
-        else:
-            self.viewer.add_labels(data, name=name)
+        self._update_labels_layer(name, data)
 
     def _set_viewer_frame(self, t: int) -> None:
         step = list(self.viewer.dims.current_step)

@@ -1312,6 +1312,48 @@ def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, m
     viewer.close()
 
 
+def test_ultrack_db_browser_probability_transparency_renders_rgba_preview(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    widget.ultrack_db_hierarchy_slider.setValue(0)
+    widget.ultrack_db_prob_alpha_check.setChecked(True)
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    monkeypatch.setattr(widget, "_current_t", lambda: 0)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda path, frame: "summary")
+    monkeypatch.setattr(widget, "_query_distinct_heights", lambda path, mtime_ns: (0.5,))
+
+    labels = np.array(
+        [
+            [1, 0],
+            [0, 2],
+        ],
+        dtype=np.uint32,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_render_hierarchy_cut",
+        lambda *args: (labels, "rendered hierarchy cut", {1: 0.2, 2: 0.8}),
+    )
+
+    widget._refresh_ultrack_db_browser()
+
+    layer = viewer.layers["Ultrack DB Preview"]
+    assert layer.data.shape == (2, 2, 4)
+    assert layer.data[0, 0, 3] < layer.data[1, 1, 3]
+    assert layer.data[0, 1, 3] == 0
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_db_browser_summary_mode_does_not_render(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
