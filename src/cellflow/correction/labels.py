@@ -166,6 +166,8 @@ def split_across(
     img: np.ndarray | None,
     pos_start: tuple,
     pos_end: tuple,
+    *,
+    new_label: int | None = None,
 ) -> bool:
     """Watershed-split the cell under *pos_start* using two seeds."""
     la = _label_at(seg, pos_start)
@@ -186,7 +188,7 @@ def split_across(
     re = max(0, min(int(round(float(pos_end[-2]))) - r0, mask.shape[0] - 1))
     ce = max(0, min(int(round(float(pos_end[-1]))) - c0, mask.shape[1] - 1))
 
-    new_lab = _free_label(seg)
+    new_lab = int(new_label) if new_label is not None else _free_label(seg)
 
     for radius in range(7):
         markers = np.zeros(mask.shape, dtype=np.int32)
@@ -218,7 +220,13 @@ def split_across(
     return False
 
 
-def split_draw(seg: np.ndarray, positions: list, *, curlabel: int | None = None) -> bool:
+def split_draw(
+    seg: np.ndarray,
+    positions: list,
+    *,
+    curlabel: int | None = None,
+    new_label: int | None = None,
+) -> bool:
     """Split a cell along a manually drawn line."""
     log.debug("split_draw: %d raw positions, curlabel=%s", len(positions), curlabel)
     if curlabel is None or curlabel == 0 or not np.any(seg == curlabel):
@@ -251,7 +259,7 @@ def split_draw(seg: np.ndarray, positions: list, *, curlabel: int | None = None)
     if int(np.sum(line & (crop == curlabel))) == 0:
         return False
 
-    return _split_in_crop(seg, crop, line, bbox, curlabel)
+    return _split_in_crop(seg, crop, line, bbox, curlabel, new_label=new_label)
 
 
 def _split_in_crop(
@@ -261,6 +269,8 @@ def _split_in_crop(
     bbox: tuple,
     curlabel: int,
     retry: int = 0,
+    *,
+    new_label: int | None = None,
 ) -> bool:
     if retry > 6:
         return False
@@ -284,12 +294,12 @@ def _split_in_crop(
             regions_2[regions == id_b] = 2
             expanded = expand_labels(regions_2, distance=max(retry + 2, 3))
             r0, c0, r1, c1 = bbox
-            new_lab = _free_label(seg)
+            new_lab = int(new_label) if new_label is not None else _free_label(seg)
             orig_cell = crop == curlabel
             seg[r0:r1, c0:c1][(expanded == 2) & orig_cell] = new_lab
             return True
 
-    return _split_in_crop(seg, crop, line, bbox, curlabel, retry + 1)
+    return _split_in_crop(seg, crop, line, bbox, curlabel, retry + 1, new_label=new_label)
 
 
 def draw_cell_path(
@@ -297,6 +307,7 @@ def draw_cell_path(
     positions: list,
     *,
     curlabel: int | None = None,
+    new_label: int | None = None,
 ) -> bool:
     """Draw a closed region from the user's stroke and fill its interior."""
     log.debug("draw_cell_path: %d raw positions, curlabel=%s", len(positions), curlabel)
@@ -314,7 +325,9 @@ def draw_cell_path(
         return False
 
     extending = bool(curlabel) and curlabel != 0 and np.any(seg == curlabel)
-    label = curlabel if extending else _free_label(seg)
+    label = curlabel if extending else (
+        int(new_label) if new_label is not None else _free_label(seg)
+    )
 
     fill_mask = np.zeros(seg.shape, dtype=bool)
     fill_mask[rr, cc] = True

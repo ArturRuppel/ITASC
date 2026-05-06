@@ -358,6 +358,12 @@ class CorrectionWidget(QWidget):
             v = v[0]
         return v
 
+    def _next_free_label(self) -> int:
+        """Return the next unused label across the full active stack."""
+        if self._layer is None:
+            return 1
+        return int(np.max(self._layer.data)) + 1
+
     def _record_history(self, layer, t: int, before: np.ndarray) -> None:
         """Push changed pixels in frame *t* onto napari's undo stack and fire edit callback.
 
@@ -703,6 +709,7 @@ class CorrectionWidget(QWidget):
                             ok = split_across(
                                 seg2d, self._image_frame(t),
                                 self._ctrl_click_first, pos,
+                                new_label=self._next_free_label(),
                             )
                             self._set_status(
                                 f"Split — Active on '{_layer.name}'"
@@ -788,7 +795,12 @@ class CorrectionWidget(QWidget):
                     self.viewer.layers.selection.active = _layer
                     curlabel = self._selected_label if self._selected_label else None
                     before = seg2d.copy()
-                    ok = split_draw(seg2d, pos_list, curlabel=curlabel)
+                    ok = split_draw(
+                        seg2d,
+                        pos_list,
+                        curlabel=curlabel,
+                        new_label=self._next_free_label(),
+                    )
                     self._set_status(
                         f"Split — Active on '{_layer.name}'"
                         if ok else "Split draw failed — line did not divide the cell"
@@ -818,7 +830,12 @@ class CorrectionWidget(QWidget):
                     self.viewer.layers.selection.active = _layer
                     curlabel = self._selected_label if self._selected_label else None
                     before = seg2d.copy()
-                    ok = draw_cell_path(seg2d, pos_list, curlabel=curlabel)
+                    ok = draw_cell_path(
+                        seg2d,
+                        pos_list,
+                        curlabel=curlabel,
+                        new_label=self._next_free_label(),
+                    )
                     self._set_status(
                         f"Drew cell path — Active on '{_layer.name}'"
                         if ok else "Draw failed — stroke too short"
