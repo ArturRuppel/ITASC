@@ -91,6 +91,7 @@ _FOREGROUND_MASK_LAYER = "Foreground Mask: Nucleus"
 _CELL_ZAVG_LAYER = "Cell z-avg"
 _NUC_ZAVG_LAYER = "Nucleus z-avg"
 _ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
+_ULTRACK_DB_SELECTION_LAYER = "Ultrack DB Selection"
 _CONTOUR_MAPS_DB_LAYER = "Contour Maps: Nucleus"
 _FOREGROUND_MASKS_DB_LAYER = "Foreground Masks: Nucleus"
 _CONTOUR_SWEEP_WIDTH = 60
@@ -109,11 +110,26 @@ class NucleusWorkflowWidget(QWidget):
         self._foreground_worker = None
         self._sweep_worker = None
         self._ultrack_db_preview_cache: dict[
-            tuple, tuple[np.ndarray, str] | tuple[np.ndarray, str, dict[int, float]]
+            tuple,
+            tuple[np.ndarray, str]
+            | tuple[np.ndarray, str, dict[int, float]]
+            | tuple[
+                np.ndarray,
+                str,
+                dict[int, float],
+                dict[int, int],
+                dict[int, int],
+            ],
         ] = {}
         self._ultrack_db_height_values_cache: dict[tuple, tuple[float, ...]] = {}
         self._ultrack_db_browser_active: bool = False
         self._ultrack_db_frame_initialized: bool = False
+        self._ultrack_db_selected_node_id: int | None = None
+        self._ultrack_db_selected_frame: int | None = None
+        self._ultrack_db_label_to_node_id: dict[int, int] = {}
+        self._ultrack_db_node_id_to_label: dict[int, int] = {}
+        self._ultrack_db_preview_labels: np.ndarray | None = None
+        self._ultrack_db_preview_mouse_callback = None
         self._setup_ui()
         self._connect_signals()
 
@@ -582,7 +598,19 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_prob_alpha_check = QCheckBox("Node prob transparency")
         self.ultrack_db_prob_alpha_check.setToolTip("Modulate label opacity by node probability (higher quality = more opaque)")
         self.ultrack_db_prob_alpha_check.setEnabled(False)
+        self.ultrack_db_connected_focus_check = QCheckBox("Connected focus")
+        self.ultrack_db_connected_focus_check.setToolTip(
+            "Focus the DB preview on a selected node and its temporal neighbors"
+        )
+        self.ultrack_db_connected_focus_check.setEnabled(False)
+        self.ultrack_db_edge_alpha_check = QCheckBox("Edge weight transparency")
+        self.ultrack_db_edge_alpha_check.setToolTip(
+            "Modulate connected-neighbor opacity by link weight"
+        )
+        self.ultrack_db_edge_alpha_check.setEnabled(False)
         ultrack_db_browser_lay.addWidget(self.ultrack_db_prob_alpha_check)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_connected_focus_check)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_edge_alpha_check)
 
         self.ultrack_db_section_status_lbl = QLabel("")
         self.ultrack_db_section_status_lbl.setWordWrap(True)
@@ -969,6 +997,8 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_mode_combo.currentTextChanged.connect(self._on_ultrack_db_mode_changed)
         self.ultrack_db_hierarchy_slider.valueChanged.connect(self._on_ultrack_db_slider_changed)
         self.ultrack_db_prob_alpha_check.toggled.connect(self._refresh_ultrack_db_browser)
+        self.ultrack_db_connected_focus_check.toggled.connect(self._refresh_ultrack_db_browser)
+        self.ultrack_db_edge_alpha_check.toggled.connect(self._refresh_ultrack_db_browser)
         self.run_ultrack_btn.clicked.connect(self._on_run_tracking_route)
         self.ultrack_terminal_btn.clicked.connect(self._on_run_tracking_route_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
@@ -1464,6 +1494,8 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_mode_combo.setEnabled(checked)
         self.ultrack_db_hierarchy_slider.setEnabled(checked)
         self.ultrack_db_prob_alpha_check.setEnabled(checked)
+        self.ultrack_db_connected_focus_check.setEnabled(checked)
+        self.ultrack_db_edge_alpha_check.setEnabled(checked)
         if checked:
             self._ultrack_db_frame_initialized = False
             self._refresh_ultrack_db_browser()
@@ -1471,9 +1503,12 @@ class NucleusWorkflowWidget(QWidget):
             self._remove_ultrack_db_browser_layers()
 
     def _remove_ultrack_db_browser_layers(self) -> None:
+        self._remove_ultrack_db_preview_selector()
         for name in (_ULTRACK_DB_PREVIEW_LAYER, _CONTOUR_MAPS_DB_LAYER, _FOREGROUND_MASKS_DB_LAYER):
             if name in self.viewer.layers:
                 self.viewer.layers.remove(name)
+        if _ULTRACK_DB_SELECTION_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(_ULTRACK_DB_SELECTION_LAYER)
         self.ultrack_db_info_lbl.setText("—")
         self._set_ultrack_db_status("")
 
@@ -1561,10 +1596,34 @@ class NucleusWorkflowWidget(QWidget):
             if cached is None:
                 cached = self._render_hierarchy_cut(db_path, frame, h_actual)
                 self._ultrack_db_preview_cache[key] = cached
-            labels, status, prob_dict = self._normalize_ultrack_db_preview(cached)
-            self._update_ultrack_db_preview_layer(
-                labels.astype(np.uint32, copy=False), prob_dict
+            labels, status, prob_dict, label_to_node_id, node_id_to_label = (
+                self._normalize_ultrack_db_preview(cached)
             )
+            self._ultrack_db_label_to_node_id = label_to_node_id
+            self._ultrack_db_node_id_to_label = node_id_to_label
+            alpha_dict: dict[int, float] = {}
+            if self.ultrack_db_connected_focus_check.isChecked():
+                labels, status, alpha_dict = self._render_ultrack_db_connected_focus(
+                    db_path,
+                    frame,
+                    labels,
+                    status,
+                    prob_dict,
+                    label_to_node_id,
+                    node_id_to_label,
+                )
+            self._ultrack_db_preview_labels = labels.astype(np.uint32, copy=False)
+            self._update_ultrack_db_preview_layer(
+                self._ultrack_db_preview_labels, prob_dict, alpha_dict
+            )
+            self._install_ultrack_db_preview_selector()
+            if not self.ultrack_db_connected_focus_check.isChecked():
+                status = self._refresh_ultrack_db_selection_highlight(
+                    self._ultrack_db_preview_labels,
+                    status,
+                    node_id_to_label,
+                    frame,
+                )
             self._set_ultrack_db_status(status)
         except Exception as e:
             self._set_ultrack_db_status(f"DB read error: {e}")
@@ -1572,17 +1631,35 @@ class NucleusWorkflowWidget(QWidget):
 
     @staticmethod
     def _normalize_ultrack_db_preview(
-        cached: tuple[np.ndarray, str] | tuple[np.ndarray, str, dict[int, float]],
-    ) -> tuple[np.ndarray, str, dict[int, float]]:
+        cached: tuple[np.ndarray, str]
+        | tuple[np.ndarray, str, dict[int, float]]
+        | tuple[
+            np.ndarray,
+            str,
+            dict[int, float],
+            dict[int, int],
+            dict[int, int],
+        ],
+    ) -> tuple[np.ndarray, str, dict[int, float], dict[int, int], dict[int, int]]:
         if len(cached) == 2:
             labels, status = cached
-            return labels, status, {}
-        labels, status, prob_dict = cached
-        return labels, status, prob_dict
+            return labels, status, {}, {}, {}
+        if len(cached) == 3:
+            labels, status, prob_dict = cached
+            return labels, status, prob_dict, {}, {}
+        labels, status, prob_dict, label_to_node_id, node_id_to_label = cached
+        return labels, status, prob_dict, label_to_node_id, node_id_to_label
 
     def _update_ultrack_db_preview_layer(
-        self, labels: np.ndarray, prob_dict: dict[int, float]
+        self,
+        labels: np.ndarray,
+        prob_dict: dict[int, float],
+        alpha_dict: dict[int, float] | None = None,
     ) -> None:
+        if alpha_dict:
+            data = self._ultrack_db_alpha_rgba(labels, alpha_dict)
+            self._update_image_layer(_ULTRACK_DB_PREVIEW_LAYER, data, rgb=True)
+            return
         if self.ultrack_db_prob_alpha_check.isChecked() and prob_dict:
             data = self._ultrack_db_probability_rgba(labels, prob_dict)
             self._update_image_layer(_ULTRACK_DB_PREVIEW_LAYER, data, rgb=True)
@@ -1633,6 +1710,297 @@ class NucleusWorkflowWidget(QWidget):
             color[3] = float(np.clip(alpha, 0.15, 1.0))
             rgba[label_mask] = color
         return rgba
+
+    @staticmethod
+    def _ultrack_db_alpha_rgba(
+        labels: np.ndarray, alpha_dict: dict[int, float]
+    ) -> np.ndarray:
+        from napari.utils.colormaps import label_colormap
+
+        rgba = np.zeros(labels.shape + (4,), dtype=np.float32)
+        if labels.size == 0 or not alpha_dict:
+            return rgba
+
+        cmap = label_colormap(max(alpha_dict.keys()) + 1)
+        for label_id, alpha in alpha_dict.items():
+            label_mask = labels == int(label_id)
+            if not np.any(label_mask):
+                continue
+            color = np.asarray(cmap.map(int(label_id)), dtype=np.float32)
+            color[3] = float(np.clip(alpha, 0.0, 1.0))
+            rgba[label_mask] = color
+        return rgba
+
+    def _install_ultrack_db_preview_selector(self) -> None:
+        if _ULTRACK_DB_PREVIEW_LAYER not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[_ULTRACK_DB_PREVIEW_LAYER]
+        self._remove_ultrack_db_preview_selector()
+
+        def _on_drag(_layer, event):
+            if getattr(event, "type", None) != "mouse_press":
+                return
+            if getattr(event, "button", None) != 1:
+                return
+            if getattr(event, "modifiers", set()):
+                return
+            labels = self._ultrack_db_preview_labels
+            if labels is None or labels.size == 0:
+                return
+            pos = _layer.world_to_data(event.position)
+            y = int(round(float(pos[-2])))
+            x = int(round(float(pos[-1])))
+            if y < 0 or x < 0 or y >= labels.shape[-2] or x >= labels.shape[-1]:
+                return
+            display_label = int(labels[y, x])
+            if display_label == 0:
+                return
+            self._select_ultrack_db_preview_label(display_label, frame=self._current_t())
+            yield
+
+        layer.mouse_drag_callbacks.append(_on_drag)
+        self._ultrack_db_preview_mouse_callback = _on_drag
+
+    def _remove_ultrack_db_preview_selector(self) -> None:
+        callback = self._ultrack_db_preview_mouse_callback
+        if callback is None or _ULTRACK_DB_PREVIEW_LAYER not in self.viewer.layers:
+            self._ultrack_db_preview_mouse_callback = None
+            return
+        layer = self.viewer.layers[_ULTRACK_DB_PREVIEW_LAYER]
+        try:
+            layer.mouse_drag_callbacks.remove(callback)
+        except ValueError:
+            pass
+        self._ultrack_db_preview_mouse_callback = None
+
+    def _select_ultrack_db_preview_label(
+        self, display_label: int, *, frame: int | None = None
+    ) -> None:
+        node_id = self._ultrack_db_label_to_node_id.get(int(display_label))
+        if node_id is None:
+            self._set_ultrack_db_status(f"No DB node mapped to label {display_label}.")
+            self._clear_ultrack_db_highlight()
+            return
+        selected_frame = self._current_t() if frame is None else int(frame)
+        self._ultrack_db_selected_node_id = int(node_id)
+        self._ultrack_db_selected_frame = selected_frame
+        self._update_ultrack_db_highlight(self._ultrack_db_preview_labels, int(display_label))
+        self._set_ultrack_db_status(
+            f"Selected node {node_id} at t={selected_frame}."
+        )
+        if self.ultrack_db_connected_focus_check.isChecked():
+            self._refresh_ultrack_db_browser()
+
+    def _refresh_ultrack_db_selection_highlight(
+        self,
+        labels: np.ndarray,
+        status: str,
+        node_id_to_label: dict[int, int],
+        frame: int,
+    ) -> str:
+        selected_node_id = self._ultrack_db_selected_node_id
+        if selected_node_id is None:
+            self._clear_ultrack_db_highlight()
+            return status
+        display_label = node_id_to_label.get(int(selected_node_id))
+        if display_label is None:
+            self._clear_ultrack_db_highlight()
+            return (
+                f"{status} Selected node {selected_node_id} is hidden "
+                f"at frame {frame} and the current hierarchy threshold."
+            )
+        self._update_ultrack_db_highlight(labels, int(display_label))
+        return status
+
+    def _get_ultrack_db_highlight_layer(self):
+        if _ULTRACK_DB_SELECTION_LAYER in self.viewer.layers:
+            return self.viewer.layers[_ULTRACK_DB_SELECTION_LAYER]
+        layer = self.viewer.add_shapes(
+            name=_ULTRACK_DB_SELECTION_LAYER,
+            ndim=2,
+            edge_color="cyan",
+            edge_width=2,
+            face_color="transparent",
+        )
+        layer.visible = False
+        return layer
+
+    def _update_ultrack_db_highlight(
+        self, labels: np.ndarray | None, display_label: int
+    ) -> None:
+        layer = self._get_ultrack_db_highlight_layer()
+        if labels is None or display_label == 0:
+            layer.data = []
+            layer.visible = False
+            return
+        mask = (labels == int(display_label)).astype(np.uint8)
+        if not np.any(mask):
+            layer.data = []
+            layer.visible = False
+            return
+        from skimage.measure import find_contours
+
+        contours = find_contours(mask, level=0.5)
+        if not contours:
+            layer.data = []
+            layer.visible = False
+            return
+        layer.data = [max(contours, key=len)]
+        layer.shape_type = ["polygon"]
+        layer.visible = True
+
+    def _clear_ultrack_db_highlight(self) -> None:
+        if _ULTRACK_DB_SELECTION_LAYER not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[_ULTRACK_DB_SELECTION_LAYER]
+        layer.data = []
+        layer.visible = False
+
+    def _query_ultrack_db_connected_nodes(
+        self, db_path: Path, selected_node_id: int
+    ) -> tuple[dict[int, float], dict[int, float]]:
+        import sqlalchemy as sqla
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import LinkDB
+
+        engine = sqla.create_engine(
+            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        )
+        predecessors: dict[int, float] = {}
+        successors: dict[int, float] = {}
+        try:
+            with Session(engine) as session:
+                rows = (
+                    session.query(LinkDB.source_id, LinkDB.target_id, LinkDB.weight)
+                    .filter(
+                        (LinkDB.source_id == int(selected_node_id))
+                        | (LinkDB.target_id == int(selected_node_id))
+                    )
+                    .all()
+                )
+                for source_id, target_id, weight in rows:
+                    weight_f = float(weight if weight is not None else 1.0)
+                    if int(target_id) == int(selected_node_id):
+                        source_i = int(source_id)
+                        predecessors[source_i] = predecessors.get(source_i, 1.0) * weight_f
+                    if int(source_id) == int(selected_node_id):
+                        target_i = int(target_id)
+                        successors[target_i] = successors.get(target_i, 1.0) * weight_f
+        finally:
+            engine.dispose()
+        return predecessors, successors
+
+    def _render_ultrack_db_connected_focus(
+        self,
+        db_path: Path,
+        frame: int,
+        labels: np.ndarray,
+        status: str,
+        prob_dict: dict[int, float],
+        label_to_node_id: dict[int, int],
+        node_id_to_label: dict[int, int],
+    ) -> tuple[np.ndarray, str, dict[int, float]]:
+        selected_node_id = self._ultrack_db_selected_node_id
+        selected_frame = self._ultrack_db_selected_frame
+        if selected_node_id is None or selected_frame is None:
+            self._clear_ultrack_db_highlight()
+            return labels, f"{status} Click a DB preview node to focus links.", {}
+
+        predecessors, successors = self._query_ultrack_db_connected_nodes(
+            db_path, selected_node_id
+        )
+        if frame == selected_frame:
+            relation = "selected"
+            allowed_weights = {selected_node_id: 1.0}
+            if int(selected_node_id) not in node_id_to_label:
+                self._clear_ultrack_db_highlight()
+                empty = np.zeros_like(labels, dtype=np.uint32)
+                return (
+                    empty,
+                    f"Selected node {selected_node_id} at t={selected_frame} is "
+                    "hidden at the current hierarchy threshold.",
+                    {},
+                )
+        elif frame == selected_frame - 1:
+            relation = "t-1"
+            allowed_weights = predecessors
+        elif frame == selected_frame + 1:
+            relation = "t+1"
+            allowed_weights = successors
+        else:
+            empty = np.zeros_like(labels, dtype=np.uint32)
+            self._clear_ultrack_db_highlight()
+            return (
+                empty,
+                f"Selected node {selected_node_id} at t={selected_frame} | "
+                f"frame {frame}: outside connected focus.",
+                {},
+            )
+
+        focused = np.zeros_like(labels, dtype=np.uint32)
+        alpha_dict: dict[int, float] = {}
+        for label_id, node_id in label_to_node_id.items():
+            label_i = int(label_id)
+            node_i = int(node_id)
+            if node_i not in allowed_weights:
+                continue
+            focused[labels == label_i] = label_i
+            alpha_enabled = (
+                self.ultrack_db_edge_alpha_check.isChecked()
+                or self.ultrack_db_prob_alpha_check.isChecked()
+            )
+            if alpha_enabled:
+                if node_i == selected_node_id:
+                    alpha_dict[label_i] = 1.0
+                else:
+                    alpha_dict[label_i] = self._ultrack_db_connected_alpha(
+                        label_i,
+                        float(allowed_weights[node_i]),
+                        prob_dict,
+                    )
+
+        selected_label = node_id_to_label.get(int(selected_node_id))
+        if frame == selected_frame and selected_label is not None:
+            self._update_ultrack_db_highlight(focused, int(selected_label))
+        else:
+            self._clear_ultrack_db_highlight()
+
+        edge_values = [
+            float(v)
+            for node_id, v in allowed_weights.items()
+            if node_id in node_id_to_label and node_id != selected_node_id
+        ]
+        if edge_values:
+            edge_summary = (
+                f" | edge product range {min(edge_values):.2f}-{max(edge_values):.2f}"
+            )
+        else:
+            edge_summary = ""
+        count = int(np.unique(focused[focused != 0]).size)
+        return (
+            focused,
+            f"Selected node {selected_node_id} at t={selected_frame} | "
+            f"{relation}: {count} connected node(s){edge_summary}",
+            alpha_dict,
+        )
+
+    def _ultrack_db_connected_alpha(
+        self,
+        label_id: int,
+        edge_weight: float,
+        prob_dict: dict[int, float],
+    ) -> float:
+        alpha = 1.0
+        if self.ultrack_db_edge_alpha_check.isChecked():
+            alpha *= float(edge_weight)
+        if self.ultrack_db_prob_alpha_check.isChecked() and prob_dict:
+            probs = [float(v) for v in prob_dict.values()]
+            min_p = min(probs)
+            max_p = max(probs)
+            denom = max(max_p - min_p, 1e-9)
+            prob = float(prob_dict.get(int(label_id), 1.0))
+            alpha *= 0.15 + 0.85 * (prob - min_p) / denom
+        return float(np.clip(alpha, 0.05, 1.0))
 
     def _ultrack_db_summary_text(self, db_path: Path, frame: int) -> str:
         import sqlalchemy as sqla
@@ -1738,7 +2106,13 @@ class NucleusWorkflowWidget(QWidget):
 
     def _render_hierarchy_cut(
         self, db_path: Path, frame: int, h_actual: float
-    ) -> tuple[np.ndarray, str]:
+    ) -> tuple[
+        np.ndarray,
+        str,
+        dict[int, float],
+        dict[int, int],
+        dict[int, int],
+    ]:
         import sqlalchemy as sqla
         from sqlalchemy.orm import Session, aliased
         from ultrack.core.database import NodeDB
@@ -1766,18 +2140,35 @@ class NucleusWorkflowWidget(QWidget):
         if not nodes:
             return self._empty_ultrack_db_preview(), (
                 f"No segments at this threshold for frame {frame}."
-            ), {}
+            ), {}, {}, {}
         labels = self._paint_ultrack_db_nodes(nodes)
+        prob_dict, label_to_node_id, node_id_to_label = (
+            self._ultrack_db_node_preview_metadata(nodes)
+        )
+        return labels, (
+            f"Frame {frame}: {len(nodes)} segment(s) at h={h_actual:.2f}."
+        ), prob_dict, label_to_node_id, node_id_to_label
+
+    @staticmethod
+    def _ultrack_db_node_preview_metadata(
+        nodes: list,
+    ) -> tuple[dict[int, float], dict[int, int], dict[int, int]]:
         prob_dict: dict[int, float] = {}
+        label_to_node_id: dict[int, int] = {}
+        node_id_to_label: dict[int, int] = {}
         for label, node in enumerate(nodes, start=1):
             try:
                 prob = float(node.node_prob if node.node_prob is not None else 1.0)
             except (TypeError, ValueError):
                 prob = 1.0
             prob_dict[label] = prob
-        return labels, (
-            f"Frame {frame}: {len(nodes)} segment(s) at h={h_actual:.2f}."
-        ), prob_dict
+            try:
+                node_id = int(node.id)
+            except (TypeError, ValueError):
+                continue
+            label_to_node_id[label] = node_id
+            node_id_to_label[node_id] = label
+        return prob_dict, label_to_node_id, node_id_to_label
 
     def _empty_ultrack_db_preview(self) -> np.ndarray:
         shape = self._viewer_plane_shape()

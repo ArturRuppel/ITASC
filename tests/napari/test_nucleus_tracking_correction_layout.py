@@ -1271,6 +1271,316 @@ def test_ultrack_db_browser_exposes_two_modes():
     viewer.close()
 
 
+def test_ultrack_db_browser_exposes_connected_focus_controls():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.ultrack_db_connected_focus_check.text() == "Connected focus"
+    assert widget.ultrack_db_edge_alpha_check.text() == "Edge weight transparency"
+    assert widget.ultrack_db_prob_alpha_check.text() == "Node prob transparency"
+    assert not widget.ultrack_db_connected_focus_check.isEnabled()
+    assert not widget.ultrack_db_edge_alpha_check.isEnabled()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_normalizes_preview_metadata():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    labels = np.array([[1, 0]], dtype=np.uint32)
+    normalized = widget._normalize_ultrack_db_preview(
+        (labels, "status", {1: 0.5}, {1: 101}, {101: 1})
+    )
+
+    assert normalized[0] is labels
+    assert normalized[1] == "status"
+    assert normalized[2] == {1: 0.5}
+    assert normalized[3] == {1: 101}
+    assert normalized[4] == {101: 1}
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_builds_display_label_node_id_metadata():
+    widget_class = _load_widget_class()
+
+    prob_dict, label_to_node_id, node_id_to_label = (
+        widget_class._ultrack_db_node_preview_metadata(
+            [
+                types.SimpleNamespace(id=101, node_prob=0.25),
+                types.SimpleNamespace(id=202, node_prob=0.75),
+            ]
+        )
+    )
+
+    assert prob_dict == {1: 0.25, 2: 0.75}
+    assert label_to_node_id == {1: 101, 2: 202}
+    assert node_id_to_label == {101: 1, 202: 2}
+
+
+def test_ultrack_db_browser_click_selects_node_id_from_display_label(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    monkeypatch.setattr(widget, "_current_t", lambda: 4)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
+    monkeypatch.setattr(widget, "_query_distinct_heights", lambda *a: (0.5,))
+    monkeypatch.setattr(
+        widget,
+        "_render_hierarchy_cut",
+        lambda *a: (
+            np.array([[0, 2], [0, 0]], dtype=np.uint32),
+            "rendered",
+            {2: 0.8},
+            {2: 222},
+            {222: 2},
+        ),
+    )
+
+    widget._refresh_ultrack_db_browser()
+    widget._select_ultrack_db_preview_label(2, frame=4)
+
+    assert widget._ultrack_db_selected_node_id == 222
+    assert widget._ultrack_db_selected_frame == 4
+    assert "Selected node 222" in widget.ultrack_db_section_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_selection_highlight_uses_cyan_contour():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    labels = np.zeros((6, 6), dtype=np.uint32)
+    labels[2:5, 1:4] = 7
+
+    widget._update_ultrack_db_highlight(labels, 7)
+
+    layer = viewer.layers["Ultrack DB Selection"]
+    assert layer.visible
+    assert len(layer.data) == 1
+    assert layer.name == "Ultrack DB Selection"
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_connected_focus_filters_by_viewer_frame(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    widget.ultrack_db_connected_focus_check.setChecked(True)
+    widget._ultrack_db_selected_node_id = 222
+    widget._ultrack_db_selected_frame = 4
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
+    monkeypatch.setattr(widget, "_query_distinct_heights", lambda *a: (0.5,))
+    monkeypatch.setattr(
+        widget,
+        "_query_ultrack_db_connected_nodes",
+        lambda *a: ({111: 0.25}, {333: 0.9}),
+    )
+
+    labels_by_frame = {
+        3: (
+            np.array([[1, 0], [2, 0]], dtype=np.uint32),
+            {1: 111, 2: 999},
+            {111: 1, 999: 2},
+        ),
+        4: (
+            np.array([[1, 0], [2, 0]], dtype=np.uint32),
+            {1: 222, 2: 999},
+            {222: 1, 999: 2},
+        ),
+        5: (
+            np.array([[1, 0], [2, 0]], dtype=np.uint32),
+            {1: 333, 2: 999},
+            {333: 1, 999: 2},
+        ),
+    }
+    current = {"t": 4}
+    monkeypatch.setattr(widget, "_current_t", lambda: current["t"])
+
+    def _render(*args):
+        labels, label_to_node_id, node_id_to_label = labels_by_frame[current["t"]]
+        return labels, "rendered", {1: 1.0, 2: 1.0}, label_to_node_id, node_id_to_label
+
+    monkeypatch.setattr(widget, "_render_hierarchy_cut", _render)
+
+    widget._refresh_ultrack_db_browser()
+    assert set(np.unique(viewer.layers["Ultrack DB Preview"].data)) == {0, 1}
+
+    current["t"] = 3
+    widget._refresh_ultrack_db_browser()
+    assert set(np.unique(viewer.layers["Ultrack DB Preview"].data)) == {0, 1}
+
+    current["t"] = 5
+    widget._refresh_ultrack_db_browser()
+    assert set(np.unique(viewer.layers["Ultrack DB Preview"].data)) == {0, 1}
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_edge_and_node_prob_transparency_multiply(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    widget.ultrack_db_connected_focus_check.setChecked(True)
+    widget.ultrack_db_edge_alpha_check.setChecked(True)
+    widget.ultrack_db_prob_alpha_check.setChecked(True)
+    widget._ultrack_db_selected_node_id = 222
+    widget._ultrack_db_selected_frame = 4
+    monkeypatch.setattr(widget, "_current_t", lambda: 5)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
+    monkeypatch.setattr(widget, "_query_distinct_heights", lambda *a: (0.5,))
+    monkeypatch.setattr(
+        widget,
+        "_query_ultrack_db_connected_nodes",
+        lambda *a: ({}, {333: 0.5, 444: 1.0}),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_render_hierarchy_cut",
+        lambda *a: (
+            np.array([[1, 0], [2, 0]], dtype=np.uint32),
+            "rendered",
+            {1: 0.2, 2: 0.8},
+            {1: 333, 2: 444},
+            {333: 1, 444: 2},
+        ),
+    )
+
+    widget._refresh_ultrack_db_browser()
+
+    layer = viewer.layers["Ultrack DB Preview"]
+    assert layer.data.shape == (2, 2, 4)
+    assert layer.data[0, 0, 3] == pytest.approx(0.075)
+    assert layer.data[1, 0, 3] == pytest.approx(1.0)
+    assert layer.data[0, 1, 3] == 0
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_refresh_reanchors_selection_contour(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    monkeypatch.setattr(widget, "_current_t", lambda: 4)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
+    monkeypatch.setattr(widget, "_query_distinct_heights", lambda *a: (0.5,))
+    renders = [
+        (
+            np.array([[1, 1, 0], [1, 1, 0], [0, 0, 0]], dtype=np.uint32),
+            "rendered",
+            {1: 0.8},
+            {1: 222},
+            {222: 1},
+        ),
+        (
+            np.array([[0, 0, 0], [0, 2, 2], [0, 2, 2]], dtype=np.uint32),
+            "rendered",
+            {2: 0.8},
+            {2: 222},
+            {222: 2},
+        ),
+    ]
+    monkeypatch.setattr(widget, "_render_hierarchy_cut", lambda *a: renders.pop(0))
+
+    widget._refresh_ultrack_db_browser()
+    widget._select_ultrack_db_preview_label(1, frame=4)
+    first_contour = np.asarray(viewer.layers["Ultrack DB Selection"].data[0]).copy()
+    widget._ultrack_db_preview_cache.clear()
+    widget._refresh_ultrack_db_browser()
+    second_contour = np.asarray(viewer.layers["Ultrack DB Selection"].data[0])
+
+    assert widget._ultrack_db_node_id_to_label == {222: 2}
+    assert second_contour[:, 0].max() > first_contour[:, 0].max()
+    assert second_contour[:, 1].max() > first_contour[:, 1].max()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_connected_focus_reports_hidden_selected_node(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_mode_combo.setCurrentText("Hierarchy cut")
+    widget.ultrack_db_connected_focus_check.setChecked(True)
+    widget._ultrack_db_selected_node_id = 222
+    widget._ultrack_db_selected_frame = 4
+    monkeypatch.setattr(widget, "_current_t", lambda: 4)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
+    monkeypatch.setattr(widget, "_query_distinct_heights", lambda *a: (0.5,))
+    monkeypatch.setattr(widget, "_query_ultrack_db_connected_nodes", lambda *a: ({}, {}))
+    monkeypatch.setattr(
+        widget,
+        "_render_hierarchy_cut",
+        lambda *a: (
+            np.array([[1, 0]], dtype=np.uint32),
+            "rendered",
+            {1: 0.8},
+            {1: 999},
+            {999: 1},
+        ),
+    )
+
+    widget._refresh_ultrack_db_browser()
+
+    assert "hidden" in widget.ultrack_db_section_status_lbl.text().lower()
+    assert "222" in widget.ultrack_db_section_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
