@@ -49,6 +49,8 @@ def test_run_exports_only_selected_inclusive_frame_range(monkeypatch, tmp_path):
     nucleus_3dt = tifffile.imread(pos_dir / "nucleus_3dt.tif")
     cells = tifffile.imread(pos_dir / "cell_zavg.tif")
     cells_3dt = tifffile.imread(pos_dir / "cell_3dt.tif")
+    nls = tifffile.imread(pos_dir / "NLS_zavg.tif")
+    nls_3dt = tifffile.imread(pos_dir / "NLS_3dt.tif")
     with (pos_dir / "z_shift.csv").open(newline="", encoding="utf-8") as fh:
         shift_times = [int(float(row["time"])) for row in csv.DictReader(fh)]
 
@@ -56,9 +58,20 @@ def test_run_exports_only_selected_inclusive_frame_range(monkeypatch, tmp_path):
     assert nucleus_3dt.shape == (3, 5, 4, 6)
     assert cells.shape == (3, 4, 6)
     assert cells_3dt.shape == (3, 5, 4, 6)
+    assert nls.shape == (3, 4, 6)
+    assert nls_3dt.shape == (3, 5, 4, 6)
+    np.testing.assert_array_equal(
+        nls_3dt[0, :, 0, 0],
+        np.array([120, 121, 122, 123, 124], dtype=np.uint16),
+    )
+    np.testing.assert_array_equal(
+        nls[0, 0, 0],
+        np.array(122, dtype=np.uint16),
+    )
     assert shift_times == [1, 2, 3]
     assert [label for _done, _total, label in progress] == [
         "z-shift", "z-shift", "z-shift",
         "nucleus", "nucleus", "nucleus",
         "cell", "cell", "cell",
+        "NLS", "NLS", "NLS",
     ]

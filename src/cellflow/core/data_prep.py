@@ -31,6 +31,7 @@ class DatasetConfig:
 # Channel indices (0-based) in the NDTiff dataset
 _CH_642 = 3  # CSU642  — nuclear marker
 _CH_488 = 1  # CSU488  — membrane marker
+_CH_561 = 2  # CSU561  — NLS-mCherry marker
 
 
 def discover_metadata(ndtiff_path: str) -> dict:
@@ -94,6 +95,14 @@ def _cell_4d_path(root_dir, pos):
 
 def _cell_3dt_path(root_dir, pos):
     return _raw_dir(root_dir, pos) / "cell_3dt.tif"
+
+
+def _nls_4d_path(root_dir, pos):
+    return _raw_dir(root_dir, pos) / "NLS_zavg.tif"
+
+
+def _nls_3dt_path(root_dir, pos):
+    return _raw_dir(root_dir, pos) / "NLS_3dt.tif"
 
 
 def _z_shift_csv_path(root_dir, pos):
@@ -269,9 +278,10 @@ def run(config: DatasetConfig, pos: int, overwrite: bool = False) -> Generator[t
     out_dir.mkdir(parents=True, exist_ok=True)
     nuc_out, cell_out = _nucleus_4d_path(config.root_dir, pos), _cell_4d_path(config.root_dir, pos)
     nuc_3dt_out, cell_3dt_out = _nucleus_3dt_path(config.root_dir, pos), _cell_3dt_path(config.root_dir, pos)
+    nls_out, nls_3dt_out = _nls_4d_path(config.root_dir, pos), _nls_3dt_path(config.root_dir, pos)
     shift_out, run_params_out = _z_shift_csv_path(config.root_dir, pos), out_dir / "run_params.json"
 
-    if not overwrite and all(p.exists() for p in [nuc_out, cell_out, nuc_3dt_out, cell_3dt_out, shift_out, run_params_out]):
+    if not overwrite and all(p.exists() for p in [nuc_out, cell_out, nls_out, nuc_3dt_out, cell_3dt_out, nls_3dt_out, shift_out, run_params_out]):
         yield (len(all_times), len(all_times), "done")
         return
 
@@ -317,6 +327,17 @@ def run(config: DatasetConfig, pos: int, overwrite: bool = False) -> Generator[t
         yield (i + 1, len(all_times), "cell")
     tifffile.imwrite(str(cell_3dt_out), cell_4d, compression="zlib", metadata={"axes": "TZYX"})
     tifffile.imwrite(str(cell_out), cell_stack, compression="zlib", metadata={"axes": "TYX"})
+
+    # Export NLS-mCherry volumes from CSU561
+    nls_4d = np.empty((len(all_times), nz, h, w), dtype=np.uint16)
+    nls_stack = np.empty((len(all_times), h, w), dtype=np.uint16)
+    for i, t in enumerate(all_times):
+        vol = _read_corrected_volume(ds, pos, t, _CH_561, z_indices, config.xy_downsample, z_shifts[t])
+        nls_4d[i] = vol
+        nls_stack[i] = vol.mean(axis=0).astype(np.uint16)
+        yield (i + 1, len(all_times), "NLS")
+    tifffile.imwrite(str(nls_3dt_out), nls_4d, compression="zlib", metadata={"axes": "TZYX"})
+    tifffile.imwrite(str(nls_out), nls_stack, compression="zlib", metadata={"axes": "TYX"})
 
     # Metadata
     meta = discover_metadata(config.ndtiff_path)
