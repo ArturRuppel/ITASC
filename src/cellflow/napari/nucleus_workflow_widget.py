@@ -109,7 +109,6 @@ class NucleusWorkflowWidget(QWidget):
         self._pos_dir: Path | None = None
         self._stop_flag: bool = False
         self._build_worker = None
-        self._foreground_worker = None
         self._sweep_worker = None
         self._ultrack_db_preview_cache: dict[
             tuple,
@@ -266,15 +265,26 @@ class NucleusWorkflowWidget(QWidget):
         contour_sweep_grid.setColumnStretch(3, 1)
         cp_params_lay.addLayout(contour_sweep_grid)
 
+        self.contour_fg_threshold_spin = QDoubleSpinBox()
+        self.contour_fg_threshold_spin.setRange(0.0, 1.0)
+        self.contour_fg_threshold_spin.setValue(0.5)
+        self.contour_fg_threshold_spin.setDecimals(2)
+        self.contour_fg_threshold_spin.setSingleStep(0.01)
+        self.contour_fg_threshold_spin.setToolTip(
+            "Threshold applied to the fuzzy foreground score written by Contour Maps"
+        )
+        contour_sweep_grid.addWidget(QLabel("Foreground Threshold:"), 3, 0)
+        contour_sweep_grid.addWidget(self.contour_fg_threshold_spin, 3, 1)
+
         self.save_source_check = QCheckBox("Save label images")
         self.save_source_check.setToolTip("Save all label images used for contour building in 2_nucleus/source_labels/")
         self.save_source_check.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
-        contour_sweep_grid.addWidget(QLabel(""), 3, 0)
+        contour_sweep_grid.addWidget(QLabel(""), 4, 0)
         contour_sweep_grid.addWidget(
             self.save_source_check,
-            3,
+            4,
             1,
             1,
             1,
@@ -324,6 +334,8 @@ class NucleusWorkflowWidget(QWidget):
         self.contour_files = PipelineFilesWidget([
             ("Outputs", [
                 ("2_nucleus/contour_maps.tif", "Contour maps"),
+                ("2_nucleus/foreground_scores.tif", "Foreground scores"),
+                ("2_nucleus/foreground_masks.tif", "Foreground masks"),
             ]),
         ])
         cp_params_lay.addWidget(self.build_progress_bar)
@@ -337,95 +349,7 @@ class NucleusWorkflowWidget(QWidget):
         )
         layout.addWidget(self.contour_section)
 
-        # ── 2. Foreground Mask ────────────────────────────────────────────
-        _fg_inner = QWidget()
-        fg_lay = QVBoxLayout(_fg_inner)
-        fg_lay.setContentsMargins(0, 0, 0, 0)
-        fg_lay.setSpacing(4)
-        fg_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        fg_grid = block_grid(horizontal_spacing=12)
-        fg_grid.setContentsMargins(0, 0, 0, 0)
-
-        self.fg_threshold_spin = QDoubleSpinBox()
-        self.fg_threshold_spin.setRange(-10.0, 10.0)
-        self.fg_threshold_spin.setValue(0.0)
-        self.fg_threshold_spin.setDecimals(2)
-        self.fg_threshold_spin.setSingleStep(0.5)
-        self.fg_threshold_spin.setToolTip(
-            "Cellpose cellprob_threshold — lower = more foreground, higher = stricter"
-        )
-
-        self.fg_gamma_spin = QDoubleSpinBox()
-        self.fg_gamma_spin.setRange(0.05, 5.0)
-        self.fg_gamma_spin.setValue(1.0)
-        self.fg_gamma_spin.setDecimals(2)
-        self.fg_gamma_spin.setSingleStep(0.05)
-
-        self.fg_niter_spin = QSpinBox()
-        self.fg_niter_spin.setRange(1, 2000)
-        self.fg_niter_spin.setValue(200)
-        self.fg_niter_spin.setSingleStep(50)
-        self.fg_niter_spin.setToolTip(
-            "Number of iterations for Cellpose flow dynamics (higher = more precise but slower)"
-        )
-
-        add_block_pair_row(
-            fg_grid,
-            0,
-            "Threshold:",
-            _compact(self.fg_threshold_spin, 80),
-            "Niter:",
-            _compact(self.fg_niter_spin, 80),
-            field_width=80,
-        )
-        add_block_pair_row(
-            fg_grid,
-            1,
-            "Gamma:",
-            _compact(self.fg_gamma_spin, 80),
-            field_width=80,
-        )
-        fg_lay.addLayout(fg_grid)
-
-        fg_btn_row = block_grid(horizontal_spacing=12)
-        self.fg_preview_btn = QPushButton("Preview")
-        self.fg_build_btn = QPushButton("Build")
-        self.fg_cancel_btn = QPushButton("Cancel")
-        self.fg_cancel_btn.setEnabled(False)
-        add_block_button_row(
-            fg_btn_row,
-            0,
-            self.fg_preview_btn,
-            self.fg_build_btn,
-            self.fg_cancel_btn,
-        )
-        fg_lay.addLayout(fg_btn_row)
-
-        self.fg_status_lbl = QLabel("")
-        self.fg_status_lbl.setWordWrap(True)
-        self.fg_status_lbl.setVisible(False)
-        fg_lay.addWidget(self.fg_status_lbl)
-
-        self.fg_progress_bar = QProgressBar()
-        self.fg_progress_bar.setRange(0, 100)
-        self.fg_progress_bar.setValue(0)
-        self.fg_progress_bar.setVisible(False)
-        fg_lay.addWidget(self.fg_progress_bar)
-
-        self.foreground_files = PipelineFilesWidget([
-            ("Outputs", [
-                ("2_nucleus/foreground_masks.tif", "Foreground masks"),
-            ]),
-        ])
-        fg_lay.addWidget(self.foreground_files)
-
-        self.foreground_section = CollapsibleSection(
-            "2. Foreground Mask", _fg_inner, expanded=False
-        )
-        layout.addWidget(self.foreground_section)
-
-        # ── 3. Ultrack Database Generation ────────────────────────────────
+        # ── 2. Ultrack Database Generation ────────────────────────────────
         _db_gen_inner = QWidget()
         db_gen_lay = QVBoxLayout(_db_gen_inner)
         db_gen_lay.setContentsMargins(0, 0, 0, 0)
@@ -537,11 +461,11 @@ class NucleusWorkflowWidget(QWidget):
         db_gen_lay.addWidget(self.db_gen_progress_bar)
 
         self.db_gen_section = CollapsibleSection(
-            "3. Ultrack Database Generation", _db_gen_inner, expanded=False
+            "2. Ultrack Database Generation", _db_gen_inner, expanded=False
         )
         layout.addWidget(self.db_gen_section)
 
-        # ── 4. Ultrack Database Browser ───────────────────────────────────
+        # ── 3. Ultrack Database Browser ───────────────────────────────────
         _ultrack_db_browser_inner = QWidget()
         ultrack_db_browser_lay = QVBoxLayout(_ultrack_db_browser_inner)
         ultrack_db_browser_lay.setContentsMargins(0, 0, 0, 0)
@@ -635,11 +559,11 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_db_browser_lay.addWidget(self.ultrack_db_section_status_lbl)
 
         self.ultrack_db_browser_section = CollapsibleSection(
-            "4. Ultrack Database Browser", _ultrack_db_browser_inner, expanded=False
+            "3. Ultrack Database Browser", _ultrack_db_browser_inner, expanded=False
         )
         layout.addWidget(self.ultrack_db_browser_section)
 
-        # ── 5. Ultrack Tracking ───────────────────────────────────────────
+        # ── 4. Ultrack Tracking ───────────────────────────────────────────
 
         _ultrack_inner = QWidget()
         ultrack_lay = QVBoxLayout(_ultrack_inner)
@@ -888,7 +812,7 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.addWidget(ultrack_attrib)
 
         self.ultrack_section = CollapsibleSection(
-            "5. Ultrack Tracking", _ultrack_inner, expanded=True
+            "4. Ultrack Tracking", _ultrack_inner, expanded=True
         )
         layout.addWidget(self.ultrack_section)
 
@@ -991,7 +915,7 @@ class NucleusWorkflowWidget(QWidget):
         _corr_inner_lay.addWidget(self.correction_shortcuts_section)
 
         self.correction_section = CollapsibleSection(
-            "6. Correction", _corr_inner, expanded=True
+            "5. Correction", _corr_inner, expanded=True
         )
         layout.addWidget(self.correction_section)
 
@@ -1004,9 +928,6 @@ class NucleusWorkflowWidget(QWidget):
         self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
         self.contour_terminal_btn.clicked.connect(self._on_run_contour_terminal)
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
-        self.fg_preview_btn.clicked.connect(self._on_preview_foreground_mask)
-        self.fg_build_btn.clicked.connect(self._on_build_foreground_mask)
-        self.fg_cancel_btn.clicked.connect(self._on_cancel_foreground_mask)
         self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
         self.db_gen_terminal_btn.clicked.connect(self._on_db_gen_terminal)
         self.db_gen_linking_mode_combo.currentTextChanged.connect(self._on_db_gen_mode_changed)
@@ -1049,7 +970,6 @@ class NucleusWorkflowWidget(QWidget):
         self._pos_dir = pos_dir
         self.input_files.refresh(pos_dir)
         self.contour_files.refresh(pos_dir)
-        self.foreground_files.refresh(pos_dir)
         self.tracking_files.refresh(pos_dir)
         if pos_dir is None:
             self.correction_widget.deactivate()
@@ -1073,6 +993,9 @@ class NucleusWorkflowWidget(QWidget):
     def _contour_maps_path(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "contour_maps.tif" if self._pos_dir else None
 
+    def _foreground_scores_path(self) -> Path | None:
+        return self._pos_dir / "2_nucleus" / "foreground_scores.tif" if self._pos_dir else None
+
     def _cell_zavg_path(self) -> Path | None:
         return self._pos_dir / "0_input" / "cell_zavg.tif" if self._pos_dir else None
 
@@ -1091,173 +1014,6 @@ class NucleusWorkflowWidget(QWidget):
 
     def _nucleus_prob_zavg_path(self) -> Path | None:
         return self._pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif" if self._pos_dir else None
-
-    # ── Foreground Mask section ───────────────────────────────────────────────
-
-    def _set_foreground_status(self, msg: str) -> None:
-        self.fg_status_lbl.setText(msg)
-        self.fg_status_lbl.setVisible(bool(msg))
-        logger.info(msg)
-
-    def _set_foreground_buttons_running(self, running: bool) -> None:
-        self.fg_preview_btn.setEnabled(not running)
-        self.fg_build_btn.setEnabled(not running)
-        self.fg_cancel_btn.setEnabled(running)
-        self.fg_progress_bar.setVisible(running)
-        if not running:
-            self.fg_progress_bar.setValue(0)
-
-    def _on_foreground_worker_error(self, exc: Exception) -> None:
-        self._foreground_worker = None
-        self._set_foreground_buttons_running(False)
-        self._set_foreground_status(f"Error: {exc}")
-        logger.exception("Foreground mask worker error", exc_info=exc)
-
-    def _on_foreground_progress(self, data) -> None:
-        if isinstance(data, tuple):
-            done, total, msg = data
-            if total > 0:
-                self.fg_progress_bar.setRange(0, total)
-                self.fg_progress_bar.setValue(done)
-            self._set_foreground_status(msg)
-        else:
-            self._set_foreground_status(str(data))
-
-    def _on_preview_foreground_mask(self) -> None:
-        if self._pos_dir is None:
-            self._set_foreground_status("No project open.")
-            return
-        prob_path = self._prob_path()
-        dp_path = self._dp_path()
-        if prob_path is None or not prob_path.exists():
-            self._set_foreground_status(f"Missing: {prob_path}")
-            return
-        if dp_path is None or not dp_path.exists():
-            self._set_foreground_status(f"Missing: {dp_path}")
-            return
-
-        t_frame = self._current_t()
-        threshold = self.fg_threshold_spin.value()
-        gamma = self.fg_gamma_spin.value()
-        niter = self.fg_niter_spin.value()
-
-        def _on_preview_done(result):
-            self._foreground_worker = None
-            self._set_foreground_buttons_running(False)
-            mask, t_idx, n_t, prob_tstack = result
-            mask_stack = np.zeros((n_t,) + mask.shape, dtype=np.uint8)
-            mask_stack[t_idx] = mask
-            if _CELLPROB_LAYER in self.viewer.layers:
-                self.viewer.layers[_CELLPROB_LAYER].data = prob_tstack
-            else:
-                self.viewer.add_image(prob_tstack, name=_CELLPROB_LAYER, colormap="inferno", blending="additive", visible=True)
-            self._update_layer(_FOREGROUND_MASK_LAYER, mask_stack)
-            self._set_viewer_frame(t_idx)
-            self._set_foreground_status(f"Preview foreground mask t={t_idx}.")
-
-        @thread_worker(connect={
-            "returned": _on_preview_done,
-            "errored": self._on_foreground_worker_error,
-        })
-        def _worker():
-            import torch
-            from cellpose.dynamics import compute_masks
-            from cellflow.segmentation import apply_gamma
-
-            prob = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
-            dp = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)
-            # prob: (T, Z, Y, X), dp: (T, Z, 2, Y, X)
-            n_t = prob.shape[0]
-            t_idx = min(max(int(t_frame), 0), n_t - 1)
-
-            # Z-average the selected frame
-            prob_zavg = prob[t_idx].mean(axis=0).astype(np.float32)       # (Y, X)
-            dp_zavg = dp[t_idx].mean(axis=0).astype(np.float32)            # (2, Y, X)
-
-            # Full T-stack sigmoid Z-average for display across all frames
-            prob_tstack = self._sigmoid_zavg(prob)                          # (T, Y, X)
-
-            # Gamma-correct prob logits, then run Cellpose
-            prob_gamma = apply_gamma(prob_zavg, gamma)
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            result = compute_masks(
-                dp_zavg, prob_gamma,
-                cellprob_threshold=float(threshold),
-                flow_threshold=0.0,
-                min_size=-1,
-                niter=int(niter),
-                do_3D=False,
-                device=device,
-            )
-            masks = result[0] if isinstance(result, tuple) else result
-            mask = (np.asarray(masks) > 0).astype(np.uint8)
-            return mask, t_idx, n_t, prob_tstack
-
-        self._set_foreground_status(f"Previewing foreground mask for frame t={t_frame}…")
-        self._set_foreground_buttons_running(True)
-        self._foreground_worker = _worker()
-
-    def _on_build_foreground_mask(self) -> None:
-        if self._pos_dir is None:
-            self._set_foreground_status("No project open.")
-            return
-        prob_path = self._prob_path()
-        dp_path = self._dp_path()
-        out_path = self._foreground_masks_path()
-        if prob_path is None or not prob_path.exists():
-            self._set_foreground_status(f"Missing: {prob_path}")
-            return
-        if dp_path is None or not dp_path.exists():
-            self._set_foreground_status(f"Missing: {dp_path}")
-            return
-        if out_path is None:
-            self._set_foreground_status("No project open.")
-            return
-
-        threshold = self.fg_threshold_spin.value()
-        gamma = self.fg_gamma_spin.value()
-        niter = self.fg_niter_spin.value()
-        pos_dir = self._pos_dir
-
-        @thread_worker(connect={
-            "yielded": self._on_foreground_progress,
-            "returned": self._on_build_foreground_done,
-            "errored": self._on_foreground_worker_error,
-        })
-        def _worker():
-            from cellflow.segmentation import compute_cellpose_foreground_mask
-
-            yield (0, 1, "Loading prob and dp maps…")
-            prob = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
-            dp = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)
-            yield (0, 1, "Building foreground masks via Cellpose…")
-            mask = compute_cellpose_foreground_mask(
-                prob, dp,
-                threshold=threshold,
-                gamma=gamma,
-                niter=niter,
-            )
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(str(out_path), mask, compression="zlib")
-            yield (1, 1, "Foreground masks written.")
-            return pos_dir
-
-        self._set_foreground_status("Building foreground masks…")
-        self._set_foreground_buttons_running(True)
-        self._foreground_worker = _worker()
-
-    def _on_build_foreground_done(self, pos_dir: Path) -> None:
-        self._foreground_worker = None
-        self._set_foreground_buttons_running(False)
-        self.foreground_files.refresh(pos_dir)
-        self._set_foreground_status("Foreground masks built.")
-
-    def _on_cancel_foreground_mask(self) -> None:
-        if self._foreground_worker is not None:
-            self._foreground_worker.quit()
-        self._foreground_worker = None
-        self._set_foreground_buttons_running(False)
-        self._set_foreground_status("Foreground mask build cancelled.")
 
     # ── DB Generation section ─────────────────────────────────────────────────
 
@@ -1293,7 +1049,7 @@ class NucleusWorkflowWidget(QWidget):
             return
         if fg_path is None or not fg_path.exists():
             self._set_db_gen_status(
-                "Missing: foreground_masks.tif — run Foreground Mask first."
+                "Missing: foreground_masks.tif (foreground mask) — run Contour Maps first."
             )
             return
         if nuc_zavg_path is None or not nuc_zavg_path.exists():
@@ -1386,7 +1142,7 @@ class NucleusWorkflowWidget(QWidget):
             self._set_db_gen_status("Missing: contour_maps.tif")
             return
         if fg_path is None or not fg_path.exists():
-            self._set_db_gen_status("Missing: foreground_masks.tif — run Foreground Mask first.")
+            self._set_db_gen_status("Missing: foreground_masks.tif (foreground mask) — run Contour Maps first.")
             return
         if nuc_zavg_path is None or not nuc_zavg_path.exists():
             self._set_db_gen_status("Missing: nucleus_prob_zavg.tif")
@@ -2538,9 +2294,15 @@ class NucleusWorkflowWidget(QWidget):
         thresholds      = list(np.arange(self.cp_min_spin.value(), self.cp_max_spin.value() + self.cp_step_spin.value() / 2, self.cp_step_spin.value()))
         gammas          = self._cp_gammas()
         contour_path    = self._contour_maps_path()
+        score_path      = self._foreground_scores_path()
+        mask_path       = self._foreground_masks_path()
+        foreground_threshold = self.contour_fg_threshold_spin.value()
         save_source     = self.save_source_check.isChecked()
         pos_dir         = self._pos_dir
         build_fn        = self._build_consensus_boundary_averaged
+        if contour_path is None or score_path is None or mask_path is None:
+            self._set_contour_status("No project open.")
+            return
 
         @thread_worker(connect={
             "yielded":   self._on_build_progress,
@@ -2557,10 +2319,12 @@ class NucleusWorkflowWidget(QWidget):
 
             n_t = prob_stack.shape[0]
             contour_frames:    list[np.ndarray] = []
+            foreground_score_frames: list[np.ndarray] = []
+            foreground_mask_frames: list[np.ndarray] = []
             source_dir = pos_dir / "2_nucleus/source_labels"
 
             for t in range(n_t):
-                yield (t + 1, n_t, f"Building contour maps: frame {t + 1}/{n_t}…")
+                yield (t + 1, n_t, f"Building contour maps and foreground masks: frame {t + 1}/{n_t}…")
                 mask_cb = None
                 if save_source:
                     source_dir.mkdir(parents=True, exist_ok=True)
@@ -2569,15 +2333,24 @@ class NucleusWorkflowWidget(QWidget):
                             source_dir / f"masks_t{_t:04d}_g{g_idx:02d}_thr{thresh_idx:02d}.tif",
                             masks, compression="zlib",
                         )
-                boundary, _fg = build_fn(prob_stack[t], dp_stack[t], thresholds, gammas, mask_callback=mask_cb)
-                contour_frames.append(boundary)
+                boundary, foreground_score = build_fn(
+                    prob_stack[t], dp_stack[t], thresholds, gammas, mask_callback=mask_cb
+                )
+                contour_frames.append(boundary.astype(np.float32, copy=False))
+                foreground_score = foreground_score.astype(np.float32, copy=False)
+                foreground_score_frames.append(foreground_score)
+                foreground_mask_frames.append(
+                    (foreground_score >= foreground_threshold).astype(np.uint8)
+                )
 
             contour_path.parent.mkdir(parents=True, exist_ok=True)
             tifffile.imwrite(str(contour_path), np.stack(contour_frames), compression="zlib")
+            tifffile.imwrite(str(score_path), np.stack(foreground_score_frames), compression="zlib")
+            tifffile.imwrite(str(mask_path), np.stack(foreground_mask_frames), compression="zlib")
             return pos_dir
 
         gamma_desc = f"γ={gammas[0]:.2f}" if len(gammas) == 1 else f"γ={gammas[0]:.2f}–{gammas[-1]:.2f} ({len(gammas)} steps)"
-        self._set_contour_status(f"Building contour maps ({len(thresholds)} cellprob thresholds, {gamma_desc})…")
+        self._set_contour_status(f"Building contour maps and foreground masks ({len(thresholds)} cellprob thresholds, {gamma_desc})…")
         self._set_build_buttons_running(True)
         self._build_worker = _worker()
 
@@ -2586,7 +2359,7 @@ class NucleusWorkflowWidget(QWidget):
         self._set_build_buttons_running(False)
         self.contour_files.refresh(pos_dir)
         self._update_contour_status_labels()
-        self._set_contour_status("Contour maps built.")
+        self._set_contour_status("Contour maps and foreground masks built.")
 
     def _on_cancel_build(self) -> None:
         if self._build_worker is not None:
@@ -2636,9 +2409,16 @@ class NucleusWorkflowWidget(QWidget):
         def _on_preview_done(result):
             self._build_worker = None
             self._set_build_buttons_running(False)
-            boundary, _foreground, cellprob_zavg, t_idx = result
+            boundary, foreground, cellprob_zavg, t_idx = result
             data = np.zeros((cellprob_zavg.shape[0],) + boundary.shape, dtype=boundary.dtype)
             data[t_idx] = boundary
+            foreground_score_data = np.zeros(
+                (cellprob_zavg.shape[0],) + foreground.shape, dtype=np.float32
+            )
+            foreground_score_data[t_idx] = foreground
+            foreground_mask_data = (
+                foreground_score_data >= self.contour_fg_threshold_spin.value()
+            ).astype(np.uint8)
             if _CELLPROB_LAYER in self.viewer.layers:
                 self.viewer.layers[_CELLPROB_LAYER].data = cellprob_zavg
             else:
@@ -2653,9 +2433,19 @@ class NucleusWorkflowWidget(QWidget):
                 self.viewer.layers[_CONTOUR_LAYER].data = data
             else:
                 self.viewer.add_image(data, name=_CONTOUR_LAYER, colormap="magma", visible=True)
+            if _FOREGROUND_SCORE_LAYER in self.viewer.layers:
+                self.viewer.layers[_FOREGROUND_SCORE_LAYER].data = foreground_score_data
+            else:
+                self.viewer.add_image(
+                    foreground_score_data,
+                    name=_FOREGROUND_SCORE_LAYER,
+                    colormap="viridis",
+                    visible=True,
+                )
+            self._update_layer(_FOREGROUND_MASK_LAYER, foreground_mask_data)
             self._set_viewer_frame(t_idx)
             self._set_contour_status(
-                f"Preview contour map t={t_idx} — "
+                f"Preview contour map and foreground mask t={t_idx} — "
                 f"{len(thresholds)} cellprob thresholds, "
                 f"{len(gammas)} gamma value(s)"
             )
@@ -2690,11 +2480,16 @@ class NucleusWorkflowWidget(QWidget):
         prob_path = self._prob_path()
         dp_path = self._dp_path()
         contour_path = self._contour_maps_path()
+        score_path = self._foreground_scores_path()
+        mask_path = self._foreground_masks_path()
         if prob_path is None or not prob_path.exists():
             self._set_contour_status(f"Missing: {prob_path}")
             return
         if dp_path is None or not dp_path.exists():
             self._set_contour_status(f"Missing: {dp_path}")
+            return
+        if contour_path is None or score_path is None or mask_path is None:
+            self._set_contour_status("No project open.")
             return
 
         thresholds = list(
@@ -2705,6 +2500,7 @@ class NucleusWorkflowWidget(QWidget):
             )
         )
         gammas = self._cp_gammas()
+        foreground_threshold = self.contour_fg_threshold_spin.value()
         save_source = self.save_source_check.isChecked()
         pos_dir = self._pos_dir
 
@@ -2716,10 +2512,13 @@ class NucleusWorkflowWidget(QWidget):
             f"prob_path = pathlib.Path({str(prob_path)!r})\n"
             f"dp_path = pathlib.Path({str(dp_path)!r})\n"
             f"contour_path = pathlib.Path({str(contour_path)!r})\n"
+            f"score_path = pathlib.Path({str(score_path)!r})\n"
+            f"mask_path = pathlib.Path({str(mask_path)!r})\n"
             f"save_source = {save_source!r}\n"
             f"source_dir = pathlib.Path({str(pos_dir / '2_nucleus/source_labels')!r})\n"
             f"thresholds = {thresholds!r}\n"
             f"gammas = {gammas!r}\n"
+            f"foreground_threshold = {foreground_threshold!r}\n"
             "def build_consensus_boundary_averaged(prob_3d, dp_3d, thresholds, gammas, mask_callback=None):\n"
             "    boundary_sum = None\n"
             "    foreground_sum = None\n"
@@ -2751,8 +2550,10 @@ class NucleusWorkflowWidget(QWidget):
             "    dp_stack = dp_stack[np.newaxis]\n"
             "n_t = prob_stack.shape[0]\n"
             "contour_frames = []\n"
+            "foreground_score_frames = []\n"
+            "foreground_mask_frames = []\n"
             "for t in range(n_t):\n"
-            "    print(f'Building contour maps: frame {t + 1}/{n_t}...', flush=True)\n"
+            "    print(f'Building contour maps and foreground masks: frame {t + 1}/{n_t}...', flush=True)\n"
             "    mask_cb = None\n"
             "    if save_source:\n"
             "        source_dir.mkdir(parents=True, exist_ok=True)\n"
@@ -2769,10 +2570,15 @@ class NucleusWorkflowWidget(QWidget):
             "        gammas,\n"
             "        mask_callback=mask_cb,\n"
             "    )\n"
-            "    contour_frames.append(boundary)\n"
+            "    contour_frames.append(boundary.astype(np.float32, copy=False))\n"
+            "    foreground = foreground.astype(np.float32, copy=False)\n"
+            "    foreground_score_frames.append(foreground)\n"
+            "    foreground_mask_frames.append((foreground >= foreground_threshold).astype(np.uint8))\n"
             "contour_path.parent.mkdir(parents=True, exist_ok=True)\n"
-            "print('Writing contour maps...', flush=True)\n"
+            "print('Writing contour maps and foreground masks...', flush=True)\n"
             "tifffile.imwrite(str(contour_path), np.stack(contour_frames), compression='zlib')\n"
+            "tifffile.imwrite(str(score_path), np.stack(foreground_score_frames), compression='zlib')\n"
+            "tifffile.imwrite(str(mask_path), np.stack(foreground_mask_frames), compression='zlib')\n"
             "print('Done.')\n"
         )
 
@@ -3145,7 +2951,7 @@ class NucleusWorkflowWidget(QWidget):
             return
         fg_path = self._foreground_masks_path()
         if fg_path is None or not fg_path.exists():
-            self._set_ultrack_status("Missing: foreground_masks.tif")
+            self._set_ultrack_status("Missing: foreground_masks.tif (foreground mask) — run Contour Maps first.")
             return
         nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
         pos_dir = self._pos_dir
@@ -3592,7 +3398,7 @@ class NucleusWorkflowWidget(QWidget):
         fg_path = self._foreground_masks_path()
         if fg_path is None or not fg_path.exists():
             self._set_ultrack_status(
-                "Missing: foreground_masks.tif — provide 2_nucleus/foreground_masks.tif."
+                "Missing: foreground_masks.tif (foreground mask) — run Contour Maps first."
             )
             return
         nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
@@ -3730,11 +3536,7 @@ class NucleusWorkflowWidget(QWidget):
                 "gamma_min": self.cp_gamma_min_spin.value(),
                 "gamma_max": self.cp_gamma_max_spin.value(),
                 "gamma_step": self.cp_gamma_step_spin.value(),
-            },
-            "foreground_mask": {
-                "threshold": self.fg_threshold_spin.value(),
-                "gamma":     self.fg_gamma_spin.value(),
-                "niter":     self.fg_niter_spin.value(),
+                "foreground_threshold": self.contour_fg_threshold_spin.value(),
             },
             "db_generation": {
                 "min_area":         self.db_gen_min_area_spin.value(),
@@ -3781,11 +3583,8 @@ class NucleusWorkflowWidget(QWidget):
             if "gamma_min"  in cp: self.cp_gamma_min_spin.setValue(cp["gamma_min"])
             if "gamma_max"  in cp: self.cp_gamma_max_spin.setValue(cp["gamma_max"])
             if "gamma_step" in cp: self.cp_gamma_step_spin.setValue(cp["gamma_step"])
-        if "foreground_mask" in state:
-            fg = state["foreground_mask"]
-            if "threshold" in fg: self.fg_threshold_spin.setValue(fg["threshold"])
-            if "gamma"     in fg: self.fg_gamma_spin.setValue(fg["gamma"])
-            if "niter"     in fg: self.fg_niter_spin.setValue(fg["niter"])
+            if "foreground_threshold" in cp:
+                self.contour_fg_threshold_spin.setValue(cp["foreground_threshold"])
         if "db_generation" in state:
             dbg = state["db_generation"]
             if "min_area"         in dbg: self.db_gen_min_area_spin.setValue(dbg["min_area"])

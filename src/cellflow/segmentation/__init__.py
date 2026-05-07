@@ -435,13 +435,13 @@ def build_consensus_boundary(
     *,
     mask_callback: Callable[[np.ndarray, int], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Average find_boundaries over (threshold × z-slice) to build a consensus boundary map.
+    """Average mask boundaries and occupancy over (threshold × z-slice).
 
     prob_3d: (Z, Y, X) logits  dp_3d: (Z, 2, Y, X)
     mask_callback: optional sink called as mask_callback(masks_zyx, thresh_idx) after each threshold.
     Returns: (boundary, foreground) both (Y, X) float32.
       boundary   — mean boundary density in [0, 1]
-      foreground — sigmoid of z-averaged gamma-corrected prob logits
+      foreground — mean Cellpose label occupancy in [0, 1]
     """
     try:
         import torch
@@ -454,6 +454,7 @@ def build_consensus_boundary(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_z = prob_3d.shape[0]
     accum = np.zeros(prob_3d.shape[1:], dtype=np.float32)
+    foreground_accum = np.zeros(prob_3d.shape[1:], dtype=np.float32)
     n_total = 0
 
     for i_thresh, thresh in enumerate(cellprob_thresholds):
@@ -468,15 +469,17 @@ def build_consensus_boundary(
                 device=device,
             )
             masks = result[0] if isinstance(result, tuple) else result
-            accum += find_boundaries(np.asarray(masks), mode="inner").astype(np.float32)
+            masks_arr = np.asarray(masks)
+            accum += find_boundaries(masks_arr, mode="inner").astype(np.float32)
+            foreground_accum += (masks_arr > 0).astype(np.float32)
             n_total += 1
             if mask_callback is not None:
-                z_masks.append(np.asarray(masks, dtype=np.uint32))
+                z_masks.append(np.asarray(masks_arr, dtype=np.uint32))
         if mask_callback is not None:
             mask_callback(np.stack(z_masks), i_thresh)
 
     boundary = accum / n_total if n_total > 0 else accum
-    foreground = 1.0 / (1.0 + np.exp(-prob_3d.mean(axis=0).astype(np.float32)))
+    foreground = foreground_accum / n_total if n_total > 0 else foreground_accum
     return boundary, foreground
 
 
@@ -506,88 +509,6 @@ def compute_masks_for_threshold(
         masks = result[0] if isinstance(result, tuple) else result
         out[z] = np.asarray(masks, dtype=_LABEL_DTYPE)
     return out
-
-def compute_cellpose_foreground_mask(
-    prob: np.ndarray,
-    dp: np.ndarray,
-    threshold: float = 0.0,
-    gamma: float = 1.0,
-    niter: int = 200,
-) -> np.ndarray:
-    """Build a binary foreground mask by z-averaging then running Cellpose.
-
-    For each time frame, the Z-axis of the probability and flow maps is
-    averaged, gamma correction is applied to the prob logits, and Cellpose's
-    ``compute_masks`` is called once on the resulting 2D frame.  All returned
-    cell labels are merged into a single binary foreground.
-
-    Parameters
-    ----------
-    prob: (T, Z, Y, X) float32
-        Cellpose probability logits (``flows[2]``).
-    dp: (T, Z, 2, Y, X) float32
-        Cellpose flow fields (``flows[1]``).
-    threshold: float
-        Passed as ``cellprob_threshold`` to ``compute_masks``.
-    gamma: float
-        Gamma correction applied to the z-averaged prob logits before Cellpose.
-    niter: int
-        Passed as ``niter`` to ``compute_masks``.
-
-    Returns
-    -------
-    (T, Y, X) uint8
-        Binary foreground mask (0 = background, 1 = foreground).
-    """
-    try:
-        import torch
-        from cellpose.dynamics import compute_masks
-    except ImportError as exc:
-        raise ImportError(
-            "cellpose and torch must be installed to use cellpose-based foreground masking"
-        ) from exc
-
-    prob = np.asarray(prob, dtype=np.float32)
-    dp = np.asarray(dp, dtype=np.float32)
-
-    if prob.ndim != 4:
-        raise ValueError(f"Expected (T, Z, Y, X) prob, got {prob.shape}")
-    if dp.ndim != 5 or dp.shape[2] != 2:
-        raise ValueError(f"Expected (T, Z, 2, Y, X) dp, got {dp.shape}")
-    if prob.shape[0] != dp.shape[0]:
-        raise ValueError(
-            f"Time dim mismatch: prob {prob.shape[0]} vs dp {dp.shape[0]}"
-        )
-
-    n_t = prob.shape[0]
-    out_h, out_w = prob.shape[2], prob.shape[3]
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    out = np.zeros((n_t, out_h, out_w), dtype=np.uint8)
-
-    for t in range(n_t):
-        # Z-average
-        prob_zavg = prob[t].mean(axis=0).astype(np.float32)       # (Y, X)
-        dp_zavg = dp[t].mean(axis=0).astype(np.float32)            # (2, Y, X)
-
-        # Gamma-correct prob logits
-        prob_gamma = apply_gamma(prob_zavg, gamma)
-
-        result = compute_masks(
-            dp_zavg,
-            prob_gamma,
-            cellprob_threshold=float(threshold),
-            flow_threshold=0.0,
-            min_size=-1,
-            niter=int(niter),
-            do_3D=False,
-            device=device,
-        )
-        masks = result[0] if isinstance(result, tuple) else result
-        masks = np.asarray(masks)
-        out[t] = (masks > 0).astype(np.uint8)
-
-    return out
-
 
 @dataclass(frozen=True, slots=True)
 class SeededWatershedParams:

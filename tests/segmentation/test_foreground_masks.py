@@ -1,5 +1,7 @@
 import numpy as np
 import pytest
+import sys
+import types
 
 from cellflow import segmentation
 
@@ -91,3 +93,46 @@ def test_foreground_mask_validation(kwargs, match):
 
     with pytest.raises(ValueError, match=match):
         segmentation.foreground_mask_stack(data, source, **kwargs)
+
+
+def test_consensus_boundary_accumulates_foreground_from_cellpose_masks(monkeypatch):
+    masks_by_call = [
+        np.array([[1, 1, 0], [0, 0, 0], [0, 0, 0]], dtype=np.uint32),
+        np.array([[0, 0, 0], [2, 2, 0], [0, 0, 0]], dtype=np.uint32),
+        np.array([[3, 0, 0], [3, 0, 0], [0, 0, 0]], dtype=np.uint32),
+        np.array([[0, 0, 0], [0, 4, 4], [0, 0, 0]], dtype=np.uint32),
+    ]
+    calls: list[float] = []
+
+    def fake_compute_masks(*_args, cellprob_threshold, **_kwargs):
+        calls.append(float(cellprob_threshold))
+        return masks_by_call[len(calls) - 1]
+
+    fake_cellpose = types.ModuleType("cellpose")
+    fake_dynamics = types.ModuleType("cellpose.dynamics")
+    fake_dynamics.compute_masks = fake_compute_masks
+    monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
+    monkeypatch.setitem(sys.modules, "cellpose.dynamics", fake_dynamics)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            device=lambda name: name,
+        ),
+    )
+
+    prob = np.ones((2, 3, 3), dtype=np.float32)
+    dp = np.zeros((2, 2, 3, 3), dtype=np.float32)
+
+    boundary, foreground = segmentation.build_consensus_boundary(
+        prob, dp, [0.1, 0.6], gamma=1.0
+    )
+
+    expected_foreground = (
+        sum((mask > 0).astype(np.float32) for mask in masks_by_call) / len(masks_by_call)
+    )
+    np.testing.assert_allclose(foreground, expected_foreground)
+    assert foreground.dtype == np.float32
+    assert boundary.shape == (3, 3)
+    assert calls == [0.1, 0.1, 0.6, 0.6]

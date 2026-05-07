@@ -293,8 +293,8 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
 
     # tracking_correction_section wrapper removed — sections are now top-level
     assert not hasattr(widget, "tracking_correction_section")
-    assert widget.ultrack_section.title == "5. Ultrack Tracking"
-    assert widget.correction_section.title == "6. Correction"
+    assert widget.ultrack_section.title == "4. Ultrack Tracking"
+    assert widget.correction_section.title == "5. Correction"
     assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
     assert widget.correction_shortcuts_section.is_expanded is False
     assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
@@ -390,7 +390,6 @@ def test_nucleus_workflow_status_labels_are_section_local():
 
     local_statuses = [
         (widget.contour_section, widget.contour_status_lbl),
-        (widget.foreground_section, widget.fg_status_lbl),
         (widget.db_gen_section, widget.db_gen_status_lbl),
         (widget.ultrack_db_browser_section, widget.ultrack_db_section_status_lbl),
         (widget.ultrack_section, widget.ultrack_status_lbl),
@@ -423,73 +422,49 @@ def test_db_gen_section_exposes_quality_and_power_controls():
     viewer.close()
 
 
-def test_foreground_mask_section_exposes_controls_and_output_row():
+def test_contour_maps_section_exposes_foreground_threshold_and_outputs():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.foreground_section.title == "2. Foreground Mask"
-    assert widget.fg_source_combo.currentText() == "Sigmoid probability"
-    assert [
-        widget.fg_source_combo.itemText(i)
-        for i in range(widget.fg_source_combo.count())
-    ] == ["Sigmoid probability", "Flow DP"]
-    assert widget.fg_threshold_spin.minimum() == 0.0
-    assert widget.fg_threshold_spin.maximum() == 1.0
-    assert widget.fg_threshold_spin.value() == 0.5
-    assert widget.fg_threshold_spin.singleStep() == 0.01
-    assert widget.fg_gamma_spin.minimum() == 0.05
-    assert widget.fg_gamma_spin.maximum() == 5.0
-    assert widget.fg_gamma_spin.value() == 1.0
-    assert widget.fg_gamma_spin.singleStep() == 0.05
-    assert widget.fg_preview_btn.text() == "Preview"
-    assert widget.fg_build_btn.text() == "Build"
-    assert widget.fg_cancel_btn.text() == "Cancel"
-    assert widget.fg_status_lbl in widget.foreground_section.findChildren(QLabel)
-    assert widget.fg_progress_bar.isVisible() is False
+    assert not hasattr(widget, "foreground_section")
+    assert widget.contour_fg_threshold_spin.minimum() == 0.0
+    assert widget.contour_fg_threshold_spin.maximum() == 1.0
+    assert widget.contour_fg_threshold_spin.value() == 0.5
+    assert widget.contour_fg_threshold_spin.singleStep() == 0.01
 
     output_text = " ".join(
         label.text()
-        for label in widget.foreground_files.findChildren(QLabel)
+        for label in widget.contour_files.findChildren(QLabel)
     )
     assert "2_nucleus/foreground_masks.tif" in output_text
+    assert "2_nucleus/foreground_scores.tif" in output_text
+    assert "2_nucleus/contour_maps.tif" in output_text
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_foreground_mask_gamma_stays_enabled_for_flow_dp():
+def test_contour_foreground_threshold_persists_without_old_foreground_state():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.fg_source_combo.setCurrentText("Flow DP")
-    _app.processEvents()
-
-    assert widget.fg_gamma_spin.isEnabled()
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_foreground_mask_controls_persist_through_state():
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    widget.fg_source_combo.setCurrentText("Flow DP")
-    widget.fg_threshold_spin.setValue(0.42)
-    widget.fg_gamma_spin.setValue(1.75)
+    widget.contour_fg_threshold_spin.setValue(0.42)
 
     state = widget.get_state()
+    assert "foreground_mask" not in state
+    assert state["cellprob"]["foreground_threshold"] == pytest.approx(0.42)
     widget.deleteLater()
 
     widget = widget_class(viewer)
-    widget.set_state(state)
+    widget.set_state({
+        **state,
+        "cellprob": {**state["cellprob"], "foreground_threshold": 0.73},
+        "foreground_mask": {"threshold": 0.1, "gamma": 2.0, "niter": 50},
+    })
 
-    assert widget.fg_source_combo.currentText() == "Flow DP"
-    assert abs(widget.fg_threshold_spin.value() - 0.42) < 0.01
-    assert abs(widget.fg_gamma_spin.value() - 1.75) < 0.01
+    assert widget.contour_fg_threshold_spin.value() == pytest.approx(0.73)
 
     widget.deleteLater()
     viewer.close()
@@ -824,6 +799,54 @@ def test_contour_maps_parameters_expand_and_scroll_when_narrow():
     viewer.close()
 
 
+def test_contour_maps_build_writes_contour_scores_and_thresholded_masks(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+    widget._pos_dir = pos_dir
+    widget.contour_fg_threshold_spin.setValue(0.5)
+
+    import tifffile
+
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif", np.zeros((2, 1, 3, 3), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif", np.zeros((2, 1, 2, 3, 3), dtype=np.float32))
+
+    def fake_build(prob_3d, _dp_3d, _thresholds, _gammas, *, mask_callback=None):
+        frame_value = 0.25 if float(prob_3d[0, 0, 0]) == 0.0 else 0.75
+        boundary = np.full((3, 3), frame_value, dtype=np.float32)
+        foreground = np.array(
+            [[0.0, 0.49, 0.5], [0.51, 0.75, 1.0], [0.2, 0.8, 0.4]],
+            dtype=np.float32,
+        )
+        return boundary, foreground
+
+    monkeypatch.setattr(widget, "_build_consensus_boundary_averaged", fake_build)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif", np.stack([
+        np.zeros((1, 3, 3), dtype=np.float32),
+        np.ones((1, 3, 3), dtype=np.float32),
+    ]))
+
+    widget._on_build_contour_maps()
+
+    contours = tifffile.imread(pos_dir / "2_nucleus" / "contour_maps.tif")
+    scores = tifffile.imread(pos_dir / "2_nucleus" / "foreground_scores.tif")
+    masks = tifffile.imread(pos_dir / "2_nucleus" / "foreground_masks.tif")
+    assert contours.shape == (2, 3, 3)
+    assert contours.dtype == np.float32
+    assert scores.dtype == np.float32
+    assert masks.dtype == np.uint8
+    np.testing.assert_array_equal(masks, (scores >= 0.5).astype(np.uint8))
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_db_generation_spinboxes_expand_equally_in_the_top_grid():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
@@ -1026,17 +1049,17 @@ def test_extend_track_from_db_missing_db_raises(tmp_path):
 
 # ── Task 5: New layout tests ──────────────────────────────────────────────────
 
-def test_nucleus_workflow_has_six_canonical_top_level_sections():
+def test_nucleus_workflow_has_five_canonical_top_level_sections():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     assert widget.contour_section.title == "1. Contour Maps"
-    assert widget.foreground_section.title == "2. Foreground Mask"
-    assert widget.db_gen_section.title == "3. Ultrack Database Generation"
-    assert widget.ultrack_db_browser_section.title == "4. Ultrack Database Browser"
-    assert widget.ultrack_section.title == "5. Ultrack Tracking"
-    assert widget.correction_section.title == "6. Correction"
+    assert not hasattr(widget, "foreground_section")
+    assert widget.db_gen_section.title == "2. Ultrack Database Generation"
+    assert widget.ultrack_db_browser_section.title == "3. Ultrack Database Browser"
+    assert widget.ultrack_section.title == "4. Ultrack Tracking"
+    assert widget.correction_section.title == "5. Correction"
 
     assert not hasattr(widget, "tracking_correction_section")
 
@@ -1068,16 +1091,8 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "contour_terminal_btn")
     assert hasattr(widget, "contour_status_lbl")
     assert hasattr(widget, "build_progress_bar")
-
-    # Section 2: Foreground Mask
-    assert hasattr(widget, "fg_source_combo")
-    assert hasattr(widget, "fg_threshold_spin")
-    assert hasattr(widget, "fg_gamma_spin")
-    assert hasattr(widget, "fg_preview_btn")
-    assert hasattr(widget, "fg_build_btn")
-    assert hasattr(widget, "fg_cancel_btn")
-    assert hasattr(widget, "fg_status_lbl")
-    assert hasattr(widget, "fg_progress_bar")
+    assert hasattr(widget, "contour_fg_threshold_spin")
+    assert not hasattr(widget, "fg_threshold_spin")
 
     # Section 3: Ultrack Database Generation
     assert hasattr(widget, "run_db_gen_btn")
@@ -1100,7 +1115,7 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "ultrack_status_lbl")
     assert hasattr(widget, "ultrack_progress_bar")
 
-    # Section 6: Correction (no Run button per spec)
+    # Correction has no Run button per spec.
     assert hasattr(widget, "correction_status_lbl")
 
     widget.deleteLater()
@@ -1112,7 +1127,7 @@ def test_ultrack_section_is_top_level_and_has_route_selector():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.ultrack_section.title == "5. Ultrack Tracking"
+    assert widget.ultrack_section.title == "4. Ultrack Tracking"
     assert widget.ultrack_route_check.text() == "Resolve from validated"
     assert widget.ultrack_route_check in widget.ultrack_section.findChildren(
         type(widget.ultrack_route_check)
@@ -1129,7 +1144,7 @@ def test_correction_section_is_top_level():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.correction_section.title == "6. Correction"
+    assert widget.correction_section.title == "5. Correction"
     correction_button_texts = {
         button.text()
         for button in widget.correction_section.findChildren(QPushButton)
