@@ -6,6 +6,9 @@ import tifffile
 from cellflow.analysis.position_artifact import (
     build_position_analysis_artifact,
     assign_persistent_edge_ids,
+    _coordinate_segments,
+    _extract_frame_cell_edges,
+    _order_coordinates,
 )
 
 
@@ -141,6 +144,67 @@ def test_build_position_artifact_rejects_cell_nucleus_identity_mismatch(tmp_path
 
     with pytest.raises(ValueError, match="cell_id == nucleus_id"):
         build_position_analysis_artifact(pos_dir, tmp_path / "bad.h5")
+
+
+def test_extract_frame_cell_edges_splits_discontinuous_segments_for_same_cell_pair():
+    frame = np.asarray(
+        [
+            [1, 2, 0, 1, 2],
+            [1, 2, 0, 1, 2],
+            [0, 0, 0, 0, 0],
+            [1, 2, 0, 1, 2],
+            [1, 2, 0, 1, 2],
+        ],
+        dtype=np.uint16,
+    )
+
+    records = _extract_frame_cell_edges(frame, frame_idx=0)
+
+    assert [record.pair for record in records] == [(1, 2), (1, 2), (1, 2), (1, 2)]
+    assert [len(record.coordinates) for record in records] == [2, 2, 2, 2]
+    for record in records:
+        jumps = np.linalg.norm(np.diff(record.coordinates, axis=0), axis=1)
+        assert np.all(jumps <= 1.0)
+
+
+def test_order_coordinates_starts_open_segments_at_true_endpoint():
+    coords = np.asarray(
+        [
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 2.0],
+        ],
+        dtype=float,
+    )
+
+    ordered = _order_coordinates(coords)
+
+    jumps = np.linalg.norm(np.diff(ordered, axis=0), axis=1)
+    assert np.all(jumps <= 1.0)
+    assert ordered[0].tolist() in ([2.0, 0.0], [0.0, 2.0])
+    assert ordered[-1].tolist() in ([2.0, 0.0], [0.0, 2.0])
+
+
+def test_coordinate_segments_split_branched_components_into_jump_free_paths():
+    coords = np.asarray(
+        [
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [2.0, 1.0],
+        ],
+        dtype=float,
+    )
+
+    segments = _coordinate_segments(coords)
+
+    assert len(segments) > 1
+    for segment in segments:
+        jumps = np.linalg.norm(np.diff(segment, axis=0), axis=1)
+        assert np.all(jumps <= 1.0)
 
 
 def test_assign_persistent_edge_ids_links_losing_and_gaining_pairs_through_t1():

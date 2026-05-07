@@ -261,8 +261,9 @@ def _extract_frame_cell_edges(frame: np.ndarray, frame_idx: int) -> list[EdgeRec
 
     rows = []
     for pair in sorted(points_by_pair):
-        coords = _order_coordinates(np.asarray(points_by_pair[pair], dtype=float))
-        rows.append(_edge_record(frame_idx, pair, "cell_cell", "", coords))
+        for segment in _coordinate_segments(np.asarray(points_by_pair[pair], dtype=float)):
+            coords = _order_coordinates(segment)
+            rows.append(_edge_record(frame_idx, pair, "cell_cell", "", coords))
     return rows
 
 
@@ -295,8 +296,9 @@ def _extract_frame_border_edges(frame: np.ndarray, frame_idx: int) -> list[EdgeR
 
     rows = []
     for cell_id in sorted(points_by_cell):
-        coords = _order_coordinates(np.asarray(points_by_cell[cell_id], dtype=float))
-        rows.append(_edge_record(frame_idx, (cell_id, 0), "border", "border", coords))
+        for segment in _coordinate_segments(np.asarray(points_by_cell[cell_id], dtype=float)):
+            coords = _order_coordinates(segment)
+            rows.append(_edge_record(frame_idx, (cell_id, 0), "border", "border", coords))
     return rows
 
 
@@ -474,14 +476,152 @@ def _is_valid_t1(
 def _order_coordinates(coords: np.ndarray) -> np.ndarray:
     if len(coords) <= 2:
         return coords[np.lexsort((coords[:, 1], coords[:, 0]))]
-    remaining = [tuple(row) for row in coords[np.lexsort((coords[:, 1], coords[:, 0]))]]
-    ordered = [remaining.pop(0)]
-    while remaining:
-        tail = np.asarray(ordered[-1])
-        distances = [float(np.linalg.norm(tail - np.asarray(point))) for point in remaining]
-        idx = min(range(len(remaining)), key=lambda i: (distances[i], remaining[i]))
-        ordered.append(remaining.pop(idx))
-    return np.asarray(ordered, dtype=float)
+
+    coords = np.unique(np.asarray(coords, dtype=float), axis=0)
+    neighbors = _coordinate_neighbors(coords)
+    endpoints = [idx for idx, adjacent in enumerate(neighbors) if len(adjacent) == 1]
+    start = min(endpoints or range(len(coords)), key=lambda idx: (coords[idx, 0], coords[idx, 1]))
+
+    ordered_indices = [start]
+    visited = {start}
+    prev_idx: int | None = None
+    current_idx = start
+    while len(visited) < len(coords):
+        candidates = [idx for idx in neighbors[current_idx] if idx not in visited]
+        if candidates:
+            next_idx = min(
+                candidates,
+                key=lambda idx: (
+                    _turn_cost(coords[prev_idx], coords[current_idx], coords[idx])
+                    if prev_idx is not None
+                    else 0.0,
+                    coords[idx, 0],
+                    coords[idx, 1],
+                ),
+            )
+        else:
+            remaining = [idx for idx in range(len(coords)) if idx not in visited]
+            next_idx = min(
+                remaining,
+                key=lambda idx: (
+                    float(np.linalg.norm(coords[current_idx] - coords[idx])),
+                    coords[idx, 0],
+                    coords[idx, 1],
+                ),
+            )
+        ordered_indices.append(next_idx)
+        visited.add(next_idx)
+        prev_idx = current_idx
+        current_idx = next_idx
+    return coords[np.asarray(ordered_indices, dtype=np.intp)]
+
+
+def _coordinate_neighbors(coords: np.ndarray) -> list[list[int]]:
+    scaled = np.rint(coords * 2.0).astype(np.int64)
+    point_to_idx = {tuple(point): idx for idx, point in enumerate(scaled)}
+    neighbor_offsets = [
+        (dy, dx)
+        for dy in range(-2, 3)
+        for dx in range(-2, 3)
+        if (dy or dx) and (dy * dy + dx * dx) <= 4
+    ]
+    neighbors: list[list[int]] = []
+    for y, x in scaled:
+        adjacent = []
+        for dy, dx in neighbor_offsets:
+            idx = point_to_idx.get((int(y + dy), int(x + dx)))
+            if idx is not None:
+                adjacent.append(idx)
+        neighbors.append(sorted(adjacent, key=lambda idx: (coords[idx, 0], coords[idx, 1])))
+    return neighbors
+
+
+def _turn_cost(prev: np.ndarray, current: np.ndarray, candidate: np.ndarray) -> float:
+    incoming = current - prev
+    outgoing = candidate - current
+    incoming_norm = float(np.linalg.norm(incoming))
+    outgoing_norm = float(np.linalg.norm(outgoing))
+    if incoming_norm == 0.0 or outgoing_norm == 0.0:
+        return 0.0
+    return float(1.0 - np.dot(incoming, outgoing) / (incoming_norm * outgoing_norm))
+
+
+def _coordinate_segments(coords: np.ndarray) -> list[np.ndarray]:
+    if len(coords) <= 1:
+        return [coords]
+
+    coords = np.unique(np.asarray(coords, dtype=float), axis=0)
+    neighbors = _coordinate_neighbors(coords)
+    unused_edges = {
+        tuple(sorted((idx, neighbor_idx)))
+        for idx, adjacent in enumerate(neighbors)
+        for neighbor_idx in adjacent
+        if idx != neighbor_idx
+    }
+    segments: list[np.ndarray] = []
+
+    while unused_edges:
+        start_idx = _next_trail_start(coords, neighbors, unused_edges)
+        next_idx = _next_unused_neighbor(coords, start_idx, None, neighbors, unused_edges)
+        if next_idx is None:
+            unused_edges = {edge for edge in unused_edges if start_idx not in edge}
+            continue
+
+        path = [start_idx]
+        prev_idx = start_idx
+        current_idx = next_idx
+        unused_edges.remove(tuple(sorted((prev_idx, current_idx))))
+        path.append(current_idx)
+
+        while len(neighbors[current_idx]) == 2:
+            next_idx = _next_unused_neighbor(
+                coords, current_idx, prev_idx, neighbors, unused_edges
+            )
+            if next_idx is None:
+                break
+            unused_edges.remove(tuple(sorted((current_idx, next_idx))))
+            path.append(next_idx)
+            prev_idx, current_idx = current_idx, next_idx
+
+        segments.append(coords[np.asarray(path, dtype=np.intp)])
+
+    return sorted(segments, key=lambda segment: (segment[0, 0], segment[0, 1], len(segment)))
+
+
+def _next_trail_start(
+    coords: np.ndarray,
+    neighbors: list[list[int]],
+    unused_edges: set[tuple[int, int]],
+) -> int:
+    incident = {idx for edge in unused_edges for idx in edge}
+    preferred = [idx for idx in incident if len(neighbors[idx]) != 2]
+    return min(preferred or incident, key=lambda idx: (coords[idx, 0], coords[idx, 1]))
+
+
+def _next_unused_neighbor(
+    coords: np.ndarray,
+    current_idx: int,
+    prev_idx: int | None,
+    neighbors: list[list[int]],
+    unused_edges: set[tuple[int, int]],
+) -> int | None:
+    candidates = [
+        idx
+        for idx in neighbors[current_idx]
+        if tuple(sorted((current_idx, idx))) in unused_edges
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda idx: (
+            _turn_cost(coords[prev_idx], coords[current_idx], coords[idx])
+            if prev_idx is not None
+            else 0.0,
+            coords[idx, 0],
+            coords[idx, 1],
+        ),
+    )
 
 
 def _path_length(coords: np.ndarray) -> float:
