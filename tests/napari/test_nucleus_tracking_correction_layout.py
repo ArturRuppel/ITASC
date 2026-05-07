@@ -262,6 +262,7 @@ def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_s
     assert widget.data_panel.refreshed_pos_dir == pos_dir
     assert widget.hpc_cellpose_widget.refreshed_pos_dir == pos_dir
     assert widget.cell_workflow_widget.refreshed_pos_dir == pos_dir
+    assert widget.analysis_widget.refreshed_pos_dir == pos_dir
 
     widget.deleteLater()
     viewer.close()

@@ -87,7 +87,7 @@ class CellFlowMainWidget(QWidget):
             "4. Cell Segmentation", self.cell_workflow_widget, expanded=False
         )
 
-        self.analysis_widget = AnalysisWidget()
+        self.analysis_widget = AnalysisWidget(self.viewer)
         self.analysis_section = CollapsibleSection(
             "5. Analysis", self.analysis_widget, expanded=False
         )
@@ -303,5 +303,6 @@ class CellFlowMainWidget(QWidget):
         self.hpc_cellpose_widget.refresh(pos_dir)
         self.nucleus_workflow_widget.refresh(pos_dir)
         self.cell_workflow_widget.refresh(pos_dir)
+        self.analysis_widget.refresh(pos_dir)
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)
