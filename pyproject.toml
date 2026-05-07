@@ -15,6 +15,7 @@ dependencies = [
     "h5py",
     "numpy",
     "scipy",
+    "scikit-image",
     "pandas",
     "tifffile",
     "numba",
@@ -22,6 +23,9 @@ dependencies = [
 
 [project.entry-points."napari.manifest"]
 cellflow = "cellflow:napari.yaml"
+
+[project.scripts]
+cellflow-classify-nls = "cellflow.analysis.nls_classification:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cellflow"]

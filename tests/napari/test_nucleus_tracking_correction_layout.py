@@ -123,6 +123,7 @@ def _install_main_widget_stubs() -> None:
         "cellflow.napari.data_prep_widget": {"DataPrepWidget": _StubWidget},
         "cellflow.napari.hpc_cellpose_widget": {"HpcCellposeWidget": _StubWidget},
         "cellflow.napari.nucleus_workflow_widget": {"NucleusWorkflowWidget": _StubWidget},
+        "cellflow.napari.nls_classification_widget": {"NLSClassificationWidget": _StubWidget},
     }
 
     for module_name, attrs in stub_modules.items():
@@ -140,6 +141,7 @@ def _load_widget_class():
 
 def _load_main_widget_class():
     _install_main_widget_stubs()
+    sys.modules.pop("cellflow.napari.main_widget", None)
     module = importlib.import_module("cellflow.napari.main_widget")
     for module_name in (
         "cellflow.napari.analysis_widget",
@@ -150,6 +152,7 @@ def _load_main_widget_class():
         "cellflow.napari.data_prep_widget",
         "cellflow.napari.hpc_cellpose_widget",
         "cellflow.napari.nucleus_workflow_widget",
+        "cellflow.napari.nls_classification_widget",
     ):
         sys.modules.pop(module_name, None)
     return module.CellFlowMainWidget
@@ -235,6 +238,20 @@ def test_main_widget_includes_hpc_cellpose_section_after_cellpose():
     viewer.close()
 
 
+def test_main_widget_includes_nls_classification_section_after_analysis():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.nls_classification_section.title == "5b. NLS Classification"
+    assert widget.scroll_layout.indexOf(widget.analysis_section) < widget.scroll_layout.indexOf(
+        widget.nls_classification_section
+    )
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_cell_workflow_required_inputs_exclude_optional_flow_vectors():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
     source = (package_root / "cell_workflow_widget.py").read_text()
@@ -263,6 +280,7 @@ def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_s
     assert widget.hpc_cellpose_widget.refreshed_pos_dir == pos_dir
     assert widget.cell_workflow_widget.refreshed_pos_dir == pos_dir
     assert widget.analysis_widget.refreshed_pos_dir == pos_dir
+    assert widget.nls_classification_widget.refreshed_pos_dir == pos_dir
 
     widget.deleteLater()
     viewer.close()
