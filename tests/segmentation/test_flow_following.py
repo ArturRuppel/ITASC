@@ -346,6 +346,36 @@ def test_compute_flow_following_movie_skips_filter_when_kernels_off(monkeypatch)
     assert gauss_calls == []
 
 
+def test_compute_flow_following_movie_can_consume_prefiltered_vectors(monkeypatch):
+    from cellflow.segmentation import flow_following as ff
+
+    T, H, W = 1, 6, 6
+    foreground = np.ones((T, H, W), dtype=bool)
+    labels = np.zeros((T, H, W), dtype=np.int32)
+    labels[0, 3, 3] = 1
+    dp = np.ones((T, 2, H, W), dtype=np.float32)
+
+    median_calls: list[tuple] = []
+    gauss_calls: list[tuple] = []
+    monkeypatch.setattr(ff, "median_filter",
+                        lambda arr, size: (median_calls.append(size), arr)[1])
+    monkeypatch.setattr(ff, "gaussian_filter",
+                        lambda arr, sigma: (gauss_calls.append(sigma), arr)[1])
+
+    filtered, _ = ff.compute_flow_following_movie(
+        foreground, dp, labels,
+        FlowFollowingParams(
+            median_kernel_time=3, median_kernel_space=3,
+            gaussian_sigma_time=1.0, gaussian_sigma_space=1.0,
+        ),
+        filter_vectors=False,
+    )
+
+    np.testing.assert_array_equal(filtered, dp)
+    assert median_calls == []
+    assert gauss_calls == []
+
+
 def test_compute_flow_following_movie_progress_callback_invoked_per_frame():
     from cellflow.segmentation.flow_following import compute_flow_following_movie
 
@@ -366,8 +396,10 @@ def test_compute_flow_following_movie_progress_callback_invoked_per_frame():
 
 def test_flow_following_symbols_reexported_from_segmentation_package():
     from cellflow.segmentation import (
+        compute_filtered_flow_vectors as pkg_filter_fn,
         FlowFollowingParams as PkgParams,
         compute_flow_following_movie as pkg_fn,
     )
     assert PkgParams().capture_radius == 3.0
     assert callable(pkg_fn)
+    assert callable(pkg_filter_fn)

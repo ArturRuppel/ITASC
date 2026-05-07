@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from cellflow.segmentation.flow_following import (
     FlowFollowingParams,
+    compute_filtered_flow_vectors,
     compute_flow_following_movie,
 )
 

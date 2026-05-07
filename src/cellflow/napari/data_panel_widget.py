@@ -44,6 +44,7 @@ _TRACKED_FILE_GROUPS = [
     ]),
     ("Cell Workflow", [
         ("3_cell/foreground_masks.tif", "Foreground masks (external)"),
+        ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
         ("3_cell/filtered_flow_mag.tif", "Filtered flow magnitude"),
         ("3_cell/tracked_labels.tif", "Tracked labels"),
     ]),

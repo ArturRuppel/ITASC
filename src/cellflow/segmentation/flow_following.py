@@ -29,6 +29,35 @@ class FlowFollowingParams:
     capture_radius: float = 3.0
 
 
+def compute_filtered_flow_vectors(
+    dp_tcyx: np.ndarray,
+    params: FlowFollowingParams,
+) -> np.ndarray:
+    """Return flow vectors after the configured median and Gaussian filters."""
+    filtered = np.asarray(dp_tcyx, dtype=np.float32)
+    if params.median_kernel_time > 1 or params.median_kernel_space > 1:
+        filtered = median_filter(
+            filtered,
+            size=(
+                1,
+                int(params.median_kernel_time),
+                int(params.median_kernel_space),
+                int(params.median_kernel_space),
+            ),
+        )
+    if params.gaussian_sigma_time > 0.0 or params.gaussian_sigma_space > 0.0:
+        filtered = gaussian_filter(
+            filtered,
+            sigma=(
+                0.0,
+                float(params.gaussian_sigma_time),
+                float(params.gaussian_sigma_space),
+                float(params.gaussian_sigma_space),
+            ),
+        )
+    return np.asarray(filtered, dtype=np.float32)
+
+
 def _fill_foreground(labels: np.ndarray, prob_mask: np.ndarray) -> np.ndarray:
     """Voronoi-fill any foreground pixels that the integrator did not assign."""
     missing = prob_mask & (labels == 0)
@@ -119,6 +148,8 @@ def compute_flow_following_movie(
     labels_tyx: np.ndarray,        # (T, Y, X) int32
     params: FlowFollowingParams,
     progress_cb: Callable[[int, int], None] | None = None,
+    *,
+    filter_vectors: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Per-frame flow-following segmentation with pre-integration filtering.
 
@@ -133,28 +164,7 @@ def compute_flow_following_movie(
 
     T = dp.shape[0]
 
-    filtered = dp
-    if params.median_kernel_time > 1 or params.median_kernel_space > 1:
-        filtered = median_filter(
-            filtered,
-            size=(
-                1,
-                int(params.median_kernel_time),
-                int(params.median_kernel_space),
-                int(params.median_kernel_space),
-            ),
-        )
-    if params.gaussian_sigma_time > 0.0 or params.gaussian_sigma_space > 0.0:
-        filtered = gaussian_filter(
-            filtered,
-            sigma=(
-                0.0,
-                float(params.gaussian_sigma_time),
-                float(params.gaussian_sigma_space),
-                float(params.gaussian_sigma_space),
-            ),
-        )
-    filtered = np.asarray(filtered, dtype=np.float32)
+    filtered = compute_filtered_flow_vectors(dp, params) if filter_vectors else dp
 
     out_labels = np.zeros_like(labels, dtype=np.int32)
 
