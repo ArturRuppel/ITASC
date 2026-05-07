@@ -26,6 +26,7 @@ from cellflow.napari.ui_style import add_block_button_row, block_grid, sweep_par
 logger = logging.getLogger(__name__)
 
 _FILTERED_FLOW_LAYER = "Filtered Flow Magnitude"
+_FOREGROUND_MASK_LAYER = "Foreground Mask"
 _CELL_LABELS_LAYER = "Cell Labels"
 _FF_SPIN_WIDTH = 80
 _FF_SPIN_MIN_WIDTH = int(_FF_SPIN_WIDTH * 0.9)
@@ -112,6 +113,39 @@ class CellWorkflowWidget(QWidget):
         )
         layout.addWidget(self.filtered_flow_section)
 
+        self.foreground_mask_params_widget = QWidget()
+        fg_lay = QVBoxLayout(self.foreground_mask_params_widget)
+        fg_lay.setContentsMargins(0, 0, 0, 0)
+        fg_lay.setSpacing(4)
+        fg_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        fg_grid = sweep_parameter_grid(spin_width=_FF_SPIN_WIDTH)
+        self.fg_cellprob_threshold_spin = _dspin(-10.0, 10.0, 0.0, 0.1)
+        self.fg_flow_threshold_spin = _dspin(0.0, 10.0, 0.0, 0.1)
+        self.fg_min_size_spin = _ispin(0, 100000, 15)
+        self.fg_niter_spin = _ispin(1, 2000, 200, step=10)
+        fg_grid.addWidget(QLabel("Cellprob threshold:"), 1, 0)
+        fg_grid.addWidget(self.fg_cellprob_threshold_spin, 1, 1)
+        fg_grid.addWidget(QLabel("Flow threshold:"), 2, 0)
+        fg_grid.addWidget(self.fg_flow_threshold_spin, 2, 1)
+        fg_grid.addWidget(QLabel("Min size:"), 3, 0)
+        fg_grid.addWidget(self.fg_min_size_spin, 3, 1)
+        fg_grid.addWidget(QLabel("Niter:"), 4, 0)
+        fg_grid.addWidget(self.fg_niter_spin, 4, 1)
+        fg_grid.setColumnStretch(1, 1)
+        fg_lay.addLayout(fg_grid)
+
+        self.fg_masks_btn = QPushButton("Create foreground_masks")
+        self.fg_masks_btn.setMinimumWidth(_FF_SPIN_MIN_WIDTH)
+        self.fg_masks_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        fg_btn_row = block_grid(horizontal_spacing=12)
+        add_block_button_row(fg_btn_row, 0, self.fg_masks_btn)
+        fg_lay.addLayout(fg_btn_row)
+
+        self.foreground_mask_section = CollapsibleSection(
+            "Foreground Mask", self.foreground_mask_params_widget, expanded=True
+        )
+        layout.addWidget(self.foreground_mask_section)
+
         self.tracked_labels_params_widget = QWidget()
         labels_lay = QVBoxLayout(self.tracked_labels_params_widget)
         labels_lay.setContentsMargins(0, 0, 0, 0)
@@ -182,6 +216,7 @@ class CellWorkflowWidget(QWidget):
 
     def _connect_signals(self) -> None:
         self.ff_flow_mag_btn.clicked.connect(self._on_create_flow_mag)
+        self.fg_masks_btn.clicked.connect(self._on_create_foreground_masks)
         self.ff_labels_btn.clicked.connect(self._on_create_tracked_labels)
         self.ff_cancel_btn.clicked.connect(self._on_cancel_flow_following)
 
@@ -230,6 +265,12 @@ class CellWorkflowWidget(QWidget):
                 "max_iter":        self.ff_max_iter_spin.value(),
                 "capture_radius":  self.ff_capture_radius_spin.value(),
             },
+            "foreground_mask": {
+                "cellprob_threshold": self.fg_cellprob_threshold_spin.value(),
+                "flow_threshold":     self.fg_flow_threshold_spin.value(),
+                "min_size":           self.fg_min_size_spin.value(),
+                "niter":              self.fg_niter_spin.value(),
+            },
         }
 
     def set_state(self, state: dict) -> None:
@@ -243,6 +284,16 @@ class CellWorkflowWidget(QWidget):
             if "step_scale"     in ff: self.ff_step_scale_spin.setValue(ff["step_scale"])
             if "max_iter"       in ff: self.ff_max_iter_spin.setValue(ff["max_iter"])
             if "capture_radius" in ff: self.ff_capture_radius_spin.setValue(ff["capture_radius"])
+        if "foreground_mask" in state:
+            fg = state["foreground_mask"]
+            if "cellprob_threshold" in fg:
+                self.fg_cellprob_threshold_spin.setValue(fg["cellprob_threshold"])
+            if "flow_threshold" in fg:
+                self.fg_flow_threshold_spin.setValue(fg["flow_threshold"])
+            if "min_size" in fg:
+                self.fg_min_size_spin.setValue(fg["min_size"])
+            if "niter" in fg:
+                self.fg_niter_spin.setValue(fg["niter"])
 
     def _update_ff_status_labels(self) -> None:
         if self._pos_dir is None:
@@ -270,6 +321,7 @@ class CellWorkflowWidget(QWidget):
 
     def _set_ff_buttons_running(self, running: bool) -> None:
         self.ff_flow_mag_btn.setEnabled(not running)
+        self.fg_masks_btn.setEnabled(not running)
         self.ff_labels_btn.setEnabled(not running)
         self.ff_cancel_btn.setEnabled(running)
         self.ff_progress_bar.setVisible(running)
@@ -385,6 +437,77 @@ class CellWorkflowWidget(QWidget):
         self._set_ff_buttons_running(True)
         self._ff_worker = _worker()
 
+    def _on_create_foreground_masks(self) -> None:
+        if self._pos_dir is None:
+            self._set_ff_status("No project open.")
+            return
+
+        prob_path = self._prob_path()
+        filtered_dp_path = self._filtered_dp_out_path()
+        fg_path = self._foreground_path()
+
+        for path, name in [
+            (prob_path, "cell_prob_3dt.tif"),
+            (filtered_dp_path, "filtered_dp.tif (run Filtered Flow first)"),
+        ]:
+            if path is None or not path.exists():
+                self._set_ff_status(f"Missing: {name}")
+                return
+        if fg_path is None:
+            self._set_ff_status("No project open.")
+            return
+
+        params_snapshot = self._foreground_params_from_ui()
+        pos_dir = self._pos_dir
+
+        def _on_done(result):
+            self._ff_worker = None
+            self._set_ff_buttons_running(False)
+            foreground = result
+            self._show_layer(
+                _FOREGROUND_MASK_LAYER,
+                foreground,
+                {},
+                self.viewer.add_labels,
+            )
+            self.input_files.refresh(pos_dir)
+            self.ff_files.refresh(pos_dir)
+            self._update_ff_status_labels()
+            self._set_ff_status("Foreground masks complete.")
+
+        @thread_worker(connect={
+            "yielded":  self._on_ff_progress,
+            "returned": _on_done,
+            "errored":  self._on_ff_worker_error,
+        })
+        def _worker():
+            from cellflow.segmentation import compute_cellpose_foreground_masks
+
+            yield (0, 4, "Loading foreground inputs...")
+            prob = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+            filtered_dp = np.asarray(tifffile.imread(str(filtered_dp_path)), dtype=np.float32)
+
+            yield (1, 4, "Creating foreground masks...")
+            foreground = compute_cellpose_foreground_masks(
+                prob,
+                filtered_dp,
+                **params_snapshot,
+                progress_cb=None,
+            )
+
+            yield (3, 4, "Saving foreground masks...")
+            fg_path.parent.mkdir(parents=True, exist_ok=True)
+            tifffile.imwrite(
+                str(fg_path),
+                foreground.astype(np.uint8, copy=False),
+                compression="zlib",
+            )
+            return foreground.astype(np.uint8, copy=False)
+
+        self._set_ff_status("Creating foreground masks...")
+        self._set_ff_buttons_running(True)
+        self._ff_worker = _worker()
+
     def _on_create_tracked_labels(self) -> None:
         if self._pos_dir is None:
             self._set_ff_status("No project open.")
@@ -477,3 +600,11 @@ class CellWorkflowWidget(QWidget):
             max_iterations=int(self.ff_max_iter_spin.value()),
             capture_radius=float(self.ff_capture_radius_spin.value()),
         )
+
+    def _foreground_params_from_ui(self) -> dict[str, object]:
+        return {
+            "cellprob_threshold": float(self.fg_cellprob_threshold_spin.value()),
+            "flow_threshold": float(self.fg_flow_threshold_spin.value()),
+            "min_size": int(self.fg_min_size_spin.value()),
+            "niter": int(self.fg_niter_spin.value()),
+        }

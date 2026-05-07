@@ -136,3 +136,116 @@ def test_consensus_boundary_accumulates_foreground_from_cellpose_masks(monkeypat
     assert foreground.dtype == np.float32
     assert boundary.shape == (3, 3)
     assert calls == [0.1, 0.1, 0.6, 0.6]
+
+
+def test_cellpose_foreground_masks_use_zavg_probability_and_filtered_flow(monkeypatch):
+    masks_by_call = [
+        np.array([[1, 0], [0, 2]], dtype=np.uint32),
+        np.array([[0, 0], [3, 3]], dtype=np.uint32),
+    ]
+    calls: list[dict[str, object]] = []
+
+    def fake_compute_masks(dp, prob, **kwargs):
+        calls.append({
+            "dp": np.asarray(dp).copy(),
+            "prob": np.asarray(prob).copy(),
+            **kwargs,
+        })
+        return masks_by_call[len(calls) - 1]
+
+    fake_cellpose = types.ModuleType("cellpose")
+    fake_dynamics = types.ModuleType("cellpose.dynamics")
+    fake_dynamics.compute_masks = fake_compute_masks
+    monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
+    monkeypatch.setitem(sys.modules, "cellpose.dynamics", fake_dynamics)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            device=lambda name: name,
+        ),
+    )
+
+    prob = np.array(
+        [
+            [
+                [[0.0, 2.0], [4.0, 6.0]],
+                [[2.0, 4.0], [6.0, 8.0]],
+            ],
+            [
+                [[10.0, 12.0], [14.0, 16.0]],
+                [[12.0, 14.0], [16.0, 18.0]],
+            ],
+        ],
+        dtype=np.float32,
+    )
+    filtered_dp = np.zeros((2, 2, 2, 2), dtype=np.float32)
+    filtered_dp[0, 0] = 1.0
+    filtered_dp[0, 1] = 2.0
+    filtered_dp[1, 0] = 3.0
+    filtered_dp[1, 1] = 4.0
+    progress: list[tuple[int, int]] = []
+
+    foreground = segmentation.compute_cellpose_foreground_masks(
+        prob,
+        filtered_dp,
+        cellprob_threshold=0.25,
+        flow_threshold=1.5,
+        min_size=9,
+        niter=77,
+        progress_cb=lambda done, total: progress.append((done, total)),
+    )
+
+    expected = np.stack([(mask > 0).astype(np.uint8) for mask in masks_by_call])
+    np.testing.assert_array_equal(foreground, expected)
+    assert foreground.dtype == np.uint8
+    assert progress == [(1, 2), (2, 2)]
+    assert len(calls) == 2
+    np.testing.assert_array_equal(calls[0]["dp"], filtered_dp[0])
+    np.testing.assert_array_equal(calls[1]["dp"], filtered_dp[1])
+    np.testing.assert_array_equal(calls[0]["prob"], prob[0].mean(axis=0))
+    np.testing.assert_array_equal(calls[1]["prob"], prob[1].mean(axis=0))
+    assert calls[0]["cellprob_threshold"] == 0.25
+    assert calls[0]["flow_threshold"] == 1.5
+    assert calls[0]["min_size"] == 9
+    assert calls[0]["niter"] == 77
+    assert calls[0]["do_3D"] is False
+    assert calls[0]["device"] == "cpu"
+
+
+def test_cellpose_foreground_masks_accept_single_time_volume(monkeypatch):
+    def fake_compute_masks(_dp, _prob, **_kwargs):
+        return np.array([[0, 5], [0, 0]], dtype=np.uint32)
+
+    fake_cellpose = types.ModuleType("cellpose")
+    fake_dynamics = types.ModuleType("cellpose.dynamics")
+    fake_dynamics.compute_masks = fake_compute_masks
+    monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
+    monkeypatch.setitem(sys.modules, "cellpose.dynamics", fake_dynamics)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            device=lambda name: name,
+        ),
+    )
+
+    prob = np.zeros((3, 2, 2), dtype=np.float32)
+    filtered_dp = np.zeros((1, 2, 2, 2), dtype=np.float32)
+
+    foreground = segmentation.compute_cellpose_foreground_masks(prob, filtered_dp)
+
+    np.testing.assert_array_equal(
+        foreground,
+        np.array([[[0, 1], [0, 0]]], dtype=np.uint8),
+    )
+
+
+def test_cellpose_foreground_masks_validate_shapes():
+    prob = np.zeros((2, 3, 4, 4), dtype=np.float32)
+    filtered_dp = np.zeros((2, 2, 5, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="probability.*filtered flow"):
+        segmentation.compute_cellpose_foreground_masks(prob, filtered_dp)
