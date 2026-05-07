@@ -9,6 +9,7 @@ import numpy as np
 import tifffile
 
 from cellflow.tracking_ultrack.config import TrackingConfig
+from cellflow.tracking_ultrack.solve import database_has_annotations
 
 
 def _build_export_config(cfg: TrackingConfig, working_dir: Path):
@@ -30,8 +31,40 @@ def export_tracked_labels(
     working_dir: str | Path,
     cfg: TrackingConfig,
     output_path: str | Path,
+    *,
+    validated_tracks: dict[int, set[int]] | None = None,
+    tracked_labels: np.ndarray | None = None,
+    preserve_validated_ids: bool | None = None,
 ) -> np.ndarray:
     """Write ``tracked_labels.tif`` and return the (T, [Z,] Y, X) array."""
+    wd = Path(working_dir)
+    output_path = Path(output_path)
+    annotated_db = database_has_annotations(wd)
+    if preserve_validated_ids is None:
+        preserve_validated_ids = annotated_db
+    if preserve_validated_ids and (not validated_tracks or tracked_labels is None):
+        raise ValueError(
+            "Validated-aware export requires validated tracks and tracked labels."
+        )
+
+    labels = _export_tracked_labels_raw(wd, cfg, output_path)
+    if preserve_validated_ids:
+        from cellflow.tracking_ultrack.reseed import merge_validated_into_export
+
+        labels, _id_map = merge_validated_into_export(
+            labels,
+            validated_tracks or {},
+            np.asarray(tracked_labels, dtype=np.uint32),
+        )
+        tifffile.imwrite(str(output_path), labels, compression="zlib")
+    return labels
+
+
+def _export_tracked_labels_raw(
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    output_path: str | Path,
+) -> np.ndarray:
     wd = Path(working_dir)
     output_path = Path(output_path)
     ultrack_cfg = _build_export_config(cfg, wd)

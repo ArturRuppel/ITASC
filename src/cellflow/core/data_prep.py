@@ -24,6 +24,8 @@ class DatasetConfig:
     root_dir: str
     positions: list[int]
     xy_downsample: int = 3
+    frame_start: int = 0
+    frame_end: int = -1
 
 
 # Channel indices (0-based) in the NDTiff dataset
@@ -249,10 +251,18 @@ def run(config: DatasetConfig, pos: int, overwrite: bool = False) -> Generator[t
     if pos not in available_positions:
         raise ValueError(f"Position {pos} not found.")
 
-    all_times = sorted(axes.get("time", [0]))
+    available_times = sorted(axes.get("time", [0]))
     z_indices = sorted(axes.get("z", [0]))
-    if not all_times:
+    if not available_times:
         raise ValueError("No timepoints found.")
+    start = max(0, int(config.frame_start))
+    end = int(config.frame_end)
+    if end < 0:
+        end = len(available_times) - 1
+    end = min(end, len(available_times) - 1)
+    if start > end:
+        raise ValueError(f"Invalid frame range: start {start} is after end {end}.")
+    all_times = available_times[start:end + 1]
     max_shift_slices = max(1.0, min(8.0, (len(z_indices) - 1) / 2.0))
 
     out_dir = _raw_dir(config.root_dir, pos)
@@ -312,6 +322,7 @@ def run(config: DatasetConfig, pos: int, overwrite: bool = False) -> Generator[t
     meta = discover_metadata(config.ndtiff_path)
     run_params = {
         "stage": "raw", "pos": pos, "xy_downsample": config.xy_downsample,
+        "frame_start": start, "frame_end": end,
         "pixel_size_um": (meta["pixel_size_um"] or 0.1) * config.xy_downsample,
         "time_interval_s": meta["time_interval_s"] or 60.0,
     }

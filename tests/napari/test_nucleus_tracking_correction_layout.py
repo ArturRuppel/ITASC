@@ -47,6 +47,9 @@ def _install_import_stubs() -> None:
             self.appear_weight = -0.001
             self.disappear_weight = -0.001
             self.division_weight = -0.001
+            self.solution_gap = 0.001
+            self.time_limit = 36000
+            self.window_size = 0
             self.seed_weight = 0.5
             self.seed_sigma_space = 25.0
             self.seed_tau_time = 2.0
@@ -63,6 +66,7 @@ def _install_import_stubs() -> None:
             "_build_ultrack_config": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.linking": {"run_linking": lambda *args, **kwargs: iter(())},
+        "cellflow.tracking_ultrack.db_build": {"build_ultrack_database": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.extend": {
             "extend_track": lambda *args, **kwargs: None,
             "extend_track_from_db": lambda *args, **kwargs: None,
@@ -71,8 +75,14 @@ def _install_import_stubs() -> None:
             "resolve_with_validation": lambda *args, **kwargs: None,
             "resolve_with_canonical_segment": lambda *args, **kwargs: (None, {}),
         },
-        "cellflow.tracking_ultrack.seed_prior": {"write_seed_prior_node_probs": lambda *args, **kwargs: None},
-        "cellflow.tracking_ultrack.solve": {"run_solve": lambda *args, **kwargs: iter(())},
+        "cellflow.tracking_ultrack.seed_prior": {
+            "boost_validated_edges": lambda *args, **kwargs: None,
+            "write_seed_prior_node_probs": lambda *args, **kwargs: None,
+        },
+        "cellflow.tracking_ultrack.solve": {
+            "database_has_annotations": lambda *args, **kwargs: False,
+            "run_solve": lambda *args, **kwargs: iter(()),
+        },
     }
 
     for module_name, attrs in stub_exports.items():
@@ -93,9 +103,16 @@ def _install_main_widget_stubs() -> None:
         def __init__(self, *args, **kwargs):
             super().__init__()
             self.refreshed_pos_dir = None
+            self.state_received = None
 
         def refresh(self, pos_dir):
             self.refreshed_pos_dir = pos_dir
+
+        def get_state(self):
+            return {"widget": type(self).__name__}
+
+        def set_state(self, state):
+            self.state_received = state
 
     stub_modules = {
         "cellflow.napari.analysis_widget": {"AnalysisWidget": _StubWidget},
@@ -104,6 +121,7 @@ def _install_main_widget_stubs() -> None:
         "cellflow.napari.correction_widget": {"CorrectionWidget": _StubWidget},
         "cellflow.napari.data_panel_widget": {"ProjectStatusPanel": _StubWidget},
         "cellflow.napari.data_prep_widget": {"DataPrepWidget": _StubWidget},
+        "cellflow.napari.hpc_cellpose_widget": {"HpcCellposeWidget": _StubWidget},
         "cellflow.napari.nucleus_workflow_widget": {"NucleusWorkflowWidget": _StubWidget},
     }
 
@@ -130,6 +148,7 @@ def _load_main_widget_class():
         "cellflow.napari.correction_widget",
         "cellflow.napari.data_panel_widget",
         "cellflow.napari.data_prep_widget",
+        "cellflow.napari.hpc_cellpose_widget",
         "cellflow.napari.nucleus_workflow_widget",
     ):
         sys.modules.pop(module_name, None)
@@ -199,6 +218,23 @@ def test_main_widget_project_header_uses_compact_action_controls():
     viewer.close()
 
 
+def test_main_widget_includes_hpc_cellpose_section_after_cellpose():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.hpc_cellpose_section.title == "2b. HPC Cellpose"
+    assert widget.scroll_layout.indexOf(widget.cellpose_section) < widget.scroll_layout.indexOf(
+        widget.hpc_cellpose_section
+    )
+    assert widget.scroll_layout.indexOf(widget.hpc_cellpose_section) < widget.scroll_layout.indexOf(
+        widget.nucleus_section
+    )
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_cell_workflow_required_inputs_exclude_optional_flow_vectors():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
     source = (package_root / "cell_workflow_widget.py").read_text()
@@ -224,11 +260,30 @@ def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_s
     widget._refresh_all()
 
     assert widget.data_panel.refreshed_pos_dir == pos_dir
+    assert widget.hpc_cellpose_widget.refreshed_pos_dir == pos_dir
     assert widget.cell_workflow_widget.refreshed_pos_dir == pos_dir
 
     widget.deleteLater()
     viewer.close()
     _app.processEvents()  # flush deferred deletion before next test
+
+
+def test_main_widget_persists_hpc_cellpose_state():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    state = widget.get_state()
+    assert state["hpc_cellpose"] == {"widget": "_StubWidget"}
+
+    widget.set_state({"hpc_cellpose": {"frames": "0,2", "remote_host": "maestro.pasteur.fr"}})
+    assert widget.hpc_cellpose_widget.state_received == {
+        "frames": "0,2",
+        "remote_host": "maestro.pasteur.fr",
+    }
+
+    widget.deleteLater()
+    viewer.close()
 
 
 def test_tracking_correction_shell_exposes_stable_section_attributes():
@@ -519,6 +574,7 @@ def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monk
     (workdir / "data.db").touch()
     widget._pos_dir = pos_dir
     widget.db_gen_power_spin.setValue(3.25)
+    widget.ultrack_power_spin.setValue(4.25)
     widget.db_gen_quality_exp_spin.setValue(9.5)
     widget.ultrack_seed_weight_spin.setValue(0.85)
     widget.ultrack_seed_space_spin.setValue(35.0)
@@ -528,9 +584,11 @@ def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monk
     widget._on_ultrack_terminal()
     script = _read_launched_script(captured)
 
-    assert "power=3.25" in script
+    assert "power=4.25" in script
+    assert "seg_min_area=" not in script
+    assert "max_distance=" not in script
     assert "run_solve(working_dir, cfg, overwrite=True)" in script
-    assert "export_tracked_labels(working_dir, cfg, tracked_path)" in script
+    assert "export_tracked_labels(" in script
     assert "ingest_hypotheses_to_db" not in script
     assert "write_seed_prior_node_probs" not in script
 

@@ -23,6 +23,7 @@ from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.data_prep_widget import DataPrepWidget
+from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.napari.ui_style import icon_button, muted_label, tiny_button
@@ -71,6 +72,11 @@ class CellFlowMainWidget(QWidget):
             "2. Cellpose", self._cellpose_widget, expanded=False
         )
 
+        self.hpc_cellpose_widget = HpcCellposeWidget(self.viewer)
+        self.hpc_cellpose_section = CollapsibleSection(
+            "2b. HPC Cellpose", self.hpc_cellpose_widget, expanded=False
+        )
+
         self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
         self.nucleus_section = CollapsibleSection(
             "3. Nucleus Segmentation & Tracking", self.nucleus_workflow_widget, expanded=False
@@ -89,6 +95,7 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.data_section)
         self.scroll_layout.addWidget(self.prep_section)
         self.scroll_layout.addWidget(self.cellpose_section)
+        self.scroll_layout.addWidget(self.hpc_cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.analysis_section)
@@ -202,6 +209,7 @@ class CellFlowMainWidget(QWidget):
                 "position": self.pos_spin.value(),
             },
             "data_prep": self._data_prep_widget.get_state(),
+            "hpc_cellpose": self.hpc_cellpose_widget.get_state(),
             "nucleus": self.nucleus_workflow_widget.get_state(),
             "cell": self.cell_workflow_widget.get_state(),
         }
@@ -217,6 +225,9 @@ class CellFlowMainWidget(QWidget):
 
         if "data_prep" in state:
             self._data_prep_widget.set_state(state["data_prep"])
+
+        if "hpc_cellpose" in state:
+            self.hpc_cellpose_widget.set_state(state["hpc_cellpose"])
         
         if "nucleus" in state:
             self.nucleus_workflow_widget.set_state(state["nucleus"])
@@ -289,6 +300,7 @@ class CellFlowMainWidget(QWidget):
         self.data_panel.refresh(pos_dir)
         self._data_prep_widget.refresh(pos_dir)
         self._cellpose_widget.refresh(pos_dir)
+        self.hpc_cellpose_widget.refresh(pos_dir)
         self.nucleus_workflow_widget.refresh(pos_dir)
         self.cell_workflow_widget.refresh(pos_dir)
         # Emit signal for other widgets

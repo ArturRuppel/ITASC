@@ -65,13 +65,14 @@ from cellflow.napari.ui_style import (
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
 from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
+from cellflow.tracking_ultrack.db_build import build_ultrack_database
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
 from cellflow.tracking_ultrack.linking import run_linking
 from cellflow.tracking_ultrack.extend import extend_track, extend_track_from_db
 from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment
 from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
-from cellflow.tracking_ultrack.solve import run_solve
+from cellflow.tracking_ultrack.solve import database_has_annotations, run_solve
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ _CELL_ZAVG_LAYER = "Cell z-avg"
 _NUC_ZAVG_LAYER = "Nucleus z-avg"
 _ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
 _ULTRACK_DB_SELECTION_LAYER = "Ultrack DB Selection"
+_ULTRACK_DB_ANNOTATION_LAYER = "Ultrack DB Annotations"
 _CONTOUR_MAPS_DB_LAYER = "Contour Maps: Nucleus"
 _FOREGROUND_MASKS_DB_LAYER = "Foreground Masks: Nucleus"
 _CONTOUR_SWEEP_WIDTH = 60
@@ -128,6 +130,7 @@ class NucleusWorkflowWidget(QWidget):
         self._ultrack_db_selected_frame: int | None = None
         self._ultrack_db_label_to_node_id: dict[int, int] = {}
         self._ultrack_db_node_id_to_label: dict[int, int] = {}
+        self._ultrack_db_node_annotations: dict[int, str] = {}
         self._ultrack_db_preview_labels: np.ndarray | None = None
         self._ultrack_db_preview_mouse_callback = None
         self._setup_ui()
@@ -497,16 +500,22 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_power_spin.setValue(4.0)
         self.db_gen_power_spin.setDecimals(2)
         self.db_gen_power_spin.setToolTip(
-            "Ultrack solver transform for node_prob and link weights"
+            "Deprecated duplicate of the solver power control"
         )
+        self.db_gen_power_spin.setVisible(False)
 
         add_block_pair_row(db_gen_grid, 0, "Min Area (px):", _compact(self.db_gen_min_area_spin), "Max Area (px):", _compact(self.db_gen_max_area_spin))
         add_block_pair_row(db_gen_grid, 1, "FG Threshold:", _compact(self.db_gen_fg_thr_spin), "Min Frontier:", _compact(self.db_gen_min_frontier_spin))
         add_block_pair_row(db_gen_grid, 2, "WS Hierarchy:", self.db_gen_ws_hierarchy_combo, "N Workers:", _compact(self.db_gen_n_workers_spin))
         add_block_pair_row(db_gen_grid, 3, "Max Distance (px):", _compact(self.db_gen_max_dist_spin), "Max Neighbors:", _compact(self.db_gen_max_neighbors_spin))
         add_block_pair_row(db_gen_grid, 4, "Linking Mode:", self.db_gen_linking_mode_combo, "IoU Weight:", _compact(self.db_gen_iou_weight_spin))
-        add_block_pair_row(db_gen_grid, 5, "Quality Exp:", _compact(self.db_gen_quality_exp_spin), "Power:", _compact(self.db_gen_power_spin))
+        add_block_pair_row(db_gen_grid, 5, "Quality Exp:", _compact(self.db_gen_quality_exp_spin), "", QWidget())
         db_gen_lay.addLayout(db_gen_grid)
+
+        self.db_gen_use_validated_check = QCheckBox("Use validated corrections")
+        db_gen_validated_grid = block_grid(horizontal_spacing=12)
+        add_block_checkbox_row(db_gen_validated_grid, 0, self.db_gen_use_validated_check)
+        db_gen_lay.addLayout(db_gen_validated_grid)
 
         db_gen_run_row = block_grid(horizontal_spacing=12)
         self.run_db_gen_btn = QPushButton("Run DB Generation")
@@ -608,9 +617,17 @@ class NucleusWorkflowWidget(QWidget):
             "Modulate connected-neighbor opacity by link weight"
         )
         self.ultrack_db_edge_alpha_check.setEnabled(False)
+        self.ultrack_db_show_validated_check = QCheckBox("Show validated nodes")
+        self.ultrack_db_show_validated_check.setChecked(True)
+        self.ultrack_db_show_validated_check.setEnabled(False)
+        self.ultrack_db_show_fake_check = QCheckBox("Show fake nodes")
+        self.ultrack_db_show_fake_check.setChecked(False)
+        self.ultrack_db_show_fake_check.setEnabled(False)
         ultrack_db_browser_lay.addWidget(self.ultrack_db_prob_alpha_check)
         ultrack_db_browser_lay.addWidget(self.ultrack_db_connected_focus_check)
         ultrack_db_browser_lay.addWidget(self.ultrack_db_edge_alpha_check)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_show_validated_check)
+        ultrack_db_browser_lay.addWidget(self.ultrack_db_show_fake_check)
 
         self.ultrack_db_section_status_lbl = QLabel("")
         self.ultrack_db_section_status_lbl.setWordWrap(True)
@@ -802,6 +819,7 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.addLayout(tracking_grid)
 
         self.ultrack_route_check = QCheckBox("Resolve from validated")
+        self.ultrack_route_check.setVisible(False)
         route_grid = block_grid(horizontal_spacing=12)
         add_block_checkbox_row(route_grid, 0, self.ultrack_route_check)
         ultrack_lay.addLayout(route_grid)
@@ -992,6 +1010,7 @@ class NucleusWorkflowWidget(QWidget):
         self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
         self.db_gen_terminal_btn.clicked.connect(self._on_db_gen_terminal)
         self.db_gen_linking_mode_combo.currentTextChanged.connect(self._on_db_gen_mode_changed)
+        self.db_gen_use_validated_check.toggled.connect(self._set_resolve_prior_controls_enabled)
         self.ultrack_db_active_btn.toggled.connect(self._on_ultrack_db_activate)
         self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_mode_combo.currentTextChanged.connect(self._on_ultrack_db_mode_changed)
@@ -999,13 +1018,14 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_prob_alpha_check.toggled.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_connected_focus_check.toggled.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_edge_alpha_check.toggled.connect(self._refresh_ultrack_db_browser)
+        self.ultrack_db_show_validated_check.toggled.connect(self._refresh_ultrack_db_browser)
+        self.ultrack_db_show_fake_check.toggled.connect(self._refresh_ultrack_db_browser)
         self.run_ultrack_btn.clicked.connect(self._on_run_tracking_route)
         self.ultrack_terminal_btn.clicked.connect(self._on_run_tracking_route_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
         self.ultrack_linking_mode_combo.currentTextChanged.connect(self._on_ultrack_mode_changed)
-        self.ultrack_route_check.toggled.connect(self._set_resolve_prior_controls_enabled)
         self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
         self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
         self.extend_back_btn.clicked.connect(self._on_extend_backward)
@@ -1019,7 +1039,7 @@ class NucleusWorkflowWidget(QWidget):
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
         self.ultrack_solver_lbl.setText(solver_display)
         self._on_ultrack_mode_changed(self.ultrack_linking_mode_combo.currentText())
-        self._set_resolve_prior_controls_enabled(self.ultrack_route_check.isChecked())
+        self._set_resolve_prior_controls_enabled(self.db_gen_use_validated_check.isChecked())
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public refresh
@@ -1254,8 +1274,11 @@ class NucleusWorkflowWidget(QWidget):
             linking_mode=self.db_gen_linking_mode_combo.currentText(),
             iou_weight=self.db_gen_iou_weight_spin.value(),
             quality_exponent=self.db_gen_quality_exp_spin.value(),
-            power=self.db_gen_power_spin.value(),
             link_n_workers=self.db_gen_n_workers_spin.value(),
+            seed_weight=self.ultrack_seed_weight_spin.value(),
+            seed_sigma_space=self.ultrack_seed_space_spin.value(),
+            seed_tau_time=self.ultrack_seed_time_spin.value(),
+            seed_max_dt=self.ultrack_seed_window_spin.value(),
         )
 
     def _on_run_db_generation(self) -> None:
@@ -1283,6 +1306,18 @@ class NucleusWorkflowWidget(QWidget):
         cfg = self._db_gen_config_from_controls()
         working_dir = self._ultrack_workdir()
         pos_dir = self._pos_dir
+        use_validated = self.db_gen_use_validated_check.isChecked()
+        validated_tracks: dict[int, set[int]] | None = None
+        tracked_labels: np.ndarray | None = None
+        if use_validated:
+            validated_tracks = read_validated_tracks(pos_dir)
+            if not validated_tracks:
+                self._set_db_gen_status("No validated tracks found — validate some cells first (press V).")
+                return
+            if _TRACKED_LAYER not in self.viewer.layers:
+                self._set_db_gen_status("No tracked layer loaded for validated DB generation.")
+                return
+            tracked_labels = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
 
         self.db_gen_progress_bar.setRange(0, 0)
         self.db_gen_progress_bar.setVisible(True)
@@ -1296,35 +1331,43 @@ class NucleusWorkflowWidget(QWidget):
             "errored": self._on_db_gen_worker_error,
         })
         def _worker():
-            yield "Loading inputs…"
-            contours = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
-            foreground = np.asarray(tifffile.imread(str(fg_path)), dtype=np.float32)
-            if contours.ndim == 4 and contours.shape[1] == 1:
-                contours = contours[:, 0]
-            if foreground.ndim == 4 and foreground.shape[1] == 1:
-                foreground = foreground[:, 0]
+            import queue as _queue
+            import threading
 
-            from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+            msg_queue: _queue.SimpleQueue = _queue.SimpleQueue()
+            result_holder: list = []
+            exc_holder: list = []
 
-            working_dir.mkdir(parents=True, exist_ok=True)
-            ultrack_cfg = _build_ultrack_config(cfg, working_dir)
+            def _progress(msg: str) -> None:
+                msg_queue.put(msg)
 
-            yield "Segmenting candidates (ultrack hierarchy)…"
-            _ultrack_segment(
-                foreground,
-                contours,
-                ultrack_cfg,
-                max_segments_per_time=cfg.max_segments_per_time,
-                overwrite=True,
-            )
+            def _run() -> None:
+                try:
+                    result_holder.append(
+                        build_ultrack_database(
+                            contour_maps_path=contour_path,
+                            foreground_masks_path=fg_path,
+                            nucleus_prob_zavg_path=nuc_zavg_path,
+                            working_dir=working_dir,
+                            cfg=cfg,
+                            validated_tracks=validated_tracks,
+                            tracked_labels=tracked_labels,
+                            use_validated=use_validated,
+                            progress_cb=_progress,
+                        )
+                    )
+                except Exception as e:
+                    exc_holder.append(e)
 
-            yield "Scoring node probabilities…"
-            write_seed_prior_node_probs(working_dir, nuc_zavg_path, cfg)
-
-            yield "Linking candidates…"
-            for step, total, label in run_linking(working_dir, cfg):
-                yield f"[link {step}/{total}] {label}"
-
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            while t.is_alive() or not msg_queue.empty():
+                try:
+                    yield msg_queue.get_nowait()
+                except _queue.Empty:
+                    t.join(timeout=0.05)
+            if exc_holder:
+                raise exc_holder[0]
             return pos_dir
 
         _worker()
@@ -1351,23 +1394,33 @@ class NucleusWorkflowWidget(QWidget):
 
         cfg = self._db_gen_config_from_controls()
         working_dir = self._ultrack_workdir()
+        use_validated = self.db_gen_use_validated_check.isChecked()
+        tracked_path = self._tracked_path()
+        if use_validated:
+            validated_tracks = read_validated_tracks(self._pos_dir)
+            if not validated_tracks:
+                self._set_db_gen_status("No validated tracks found — validate some cells first (press V).")
+                return
+            if tracked_path is None or not tracked_path.exists():
+                self._set_db_gen_status("Tracked labels not found for validated DB generation.")
+                return
 
         python_code = (
             "import pathlib, sys\n"
-            "import numpy as np\n"
-            "import tifffile\n"
             "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
+            "from cellflow.database.tracked import read_full_tracked_stack\n"
+            "from cellflow.database.validation import read_validated_tracks\n"
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
-            "from cellflow.tracking_ultrack.ingest import _build_ultrack_config\n"
-            "from cellflow.tracking_ultrack.linking import run_linking\n"
-            "from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs\n"
-            "from ultrack.core.segmentation.processing import segment as ultrack_segment\n"
+            "from cellflow.tracking_ultrack.db_build import build_ultrack_database\n"
             "\n"
             "if __name__ == '__main__':\n"
+            f"    pos_dir = pathlib.Path({str(self._pos_dir)!r})\n"
             f"    contour_path = pathlib.Path({str(contour_path)!r})\n"
             f"    foreground_masks_path = pathlib.Path({str(fg_path)!r})\n"
             f"    nucleus_prob_zavg_path = pathlib.Path({str(nuc_zavg_path)!r})\n"
             f"    working_dir = pathlib.Path({str(working_dir)!r})\n"
+            f"    tracked_path = pathlib.Path({str(tracked_path)!r})\n"
+            f"    use_validated = {bool(use_validated)!r}\n"
             "    cfg = TrackingConfig(\n"
             f"        seg_min_area={cfg.seg_min_area},\n"
             f"        seg_max_area={cfg.seg_max_area},\n"
@@ -1380,38 +1433,26 @@ class NucleusWorkflowWidget(QWidget):
             f"        linking_mode={cfg.linking_mode!r},\n"
             f"        iou_weight={cfg.iou_weight},\n"
             f"        quality_exponent={cfg.quality_exponent},\n"
-            f"        power={cfg.power},\n"
             f"        link_n_workers={cfg.link_n_workers},\n"
+            f"        seed_weight={cfg.seed_weight},\n"
+            f"        seed_sigma_space={cfg.seed_sigma_space},\n"
+            f"        seed_tau_time={cfg.seed_tau_time},\n"
+            f"        seed_max_dt={cfg.seed_max_dt},\n"
             "    )\n"
-            "    contours = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)\n"
-            "    foreground_masks = np.asarray(tifffile.imread(str(foreground_masks_path)), dtype=np.float32)\n"
-            "    if contours.ndim == 4 and contours.shape[1] == 1:\n"
-            "        contours = contours[:, 0]\n"
-            "    if foreground_masks.ndim == 4 and foreground_masks.shape[1] == 1:\n"
-            "        foreground_masks = foreground_masks[:, 0]\n"
-            "    # ultrack skips its small-object filter when num_labels == 1, crashing on regions < 8 px\n"
-            "    from skimage.morphology import remove_small_objects as _rso\n"
-            "    _fg_min = max(8, cfg.seg_min_area // 4)\n"
-            "    _fg_bin = foreground_masks.astype(bool)\n"
-            "    for _t in range(_fg_bin.shape[0]):\n"
-            "        _rso(_fg_bin[_t], min_size=_fg_min, out=_fg_bin[_t])\n"
-            "    foreground_masks = _fg_bin.astype(np.float32)\n"
-            "    working_dir.mkdir(parents=True, exist_ok=True)\n"
-            "    ultrack_cfg = _build_ultrack_config(cfg, working_dir)\n"
-            "    print('[1/3] Segmenting candidates...', flush=True)\n"
-            "    ultrack_segment(\n"
-            "        foreground_masks,\n"
-            "        contours,\n"
-            "        ultrack_cfg,\n"
-            "        max_segments_per_time=cfg.max_segments_per_time,\n"
-            "        overwrite=True,\n"
+            "    validated_tracks = read_validated_tracks(pos_dir) if use_validated else None\n"
+            "    tracked_labels = read_full_tracked_stack(tracked_path) if use_validated else None\n"
+            "    report = build_ultrack_database(\n"
+            "        contour_maps_path=contour_path,\n"
+            "        foreground_masks_path=foreground_masks_path,\n"
+            "        nucleus_prob_zavg_path=nucleus_prob_zavg_path,\n"
+            "        working_dir=working_dir,\n"
+            "        cfg=cfg,\n"
+            "        validated_tracks=validated_tracks,\n"
+            "        tracked_labels=tracked_labels,\n"
+            "        use_validated=use_validated,\n"
+            "        progress_cb=lambda msg: print(msg, flush=True),\n"
             "    )\n"
-            "    print('[2/3] Scoring node probabilities...', flush=True)\n"
-            "    write_seed_prior_node_probs(working_dir, nucleus_prob_zavg_path, cfg)\n"
-            "    print('[3/3] Linking candidates...', flush=True)\n"
-            "    for step, total, label in run_linking(working_dir, cfg):\n"
-            "        print(f'  [{step}/{total}] {label}', flush=True)\n"
-            "    print('Done.', flush=True)\n"
+            "    print(f'Done. {report}', flush=True)\n"
         )
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", prefix="cellflow_db_gen_", delete=False) as tmp:
@@ -1496,6 +1537,8 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_prob_alpha_check.setEnabled(checked)
         self.ultrack_db_connected_focus_check.setEnabled(checked)
         self.ultrack_db_edge_alpha_check.setEnabled(checked)
+        self.ultrack_db_show_validated_check.setEnabled(checked)
+        self.ultrack_db_show_fake_check.setEnabled(checked)
         if checked:
             self._ultrack_db_frame_initialized = False
             self._refresh_ultrack_db_browser()
@@ -1504,7 +1547,12 @@ class NucleusWorkflowWidget(QWidget):
 
     def _remove_ultrack_db_browser_layers(self) -> None:
         self._remove_ultrack_db_preview_selector()
-        for name in (_ULTRACK_DB_PREVIEW_LAYER, _CONTOUR_MAPS_DB_LAYER, _FOREGROUND_MASKS_DB_LAYER):
+        for name in (
+            _ULTRACK_DB_PREVIEW_LAYER,
+            _ULTRACK_DB_ANNOTATION_LAYER,
+            _CONTOUR_MAPS_DB_LAYER,
+            _FOREGROUND_MASKS_DB_LAYER,
+        ):
             if name in self.viewer.layers:
                 self.viewer.layers.remove(name)
         if _ULTRACK_DB_SELECTION_LAYER in self.viewer.layers:
@@ -1591,16 +1639,19 @@ class NucleusWorkflowWidget(QWidget):
                 frame,
                 slider_int,
                 h_actual,
+                self.ultrack_db_show_validated_check.isChecked(),
+                self.ultrack_db_show_fake_check.isChecked(),
             )
             cached = self._ultrack_db_preview_cache.get(key)
             if cached is None:
                 cached = self._render_hierarchy_cut(db_path, frame, h_actual)
                 self._ultrack_db_preview_cache[key] = cached
-            labels, status, prob_dict, label_to_node_id, node_id_to_label = (
+            labels, status, prob_dict, label_to_node_id, node_id_to_label, node_annotations = (
                 self._normalize_ultrack_db_preview(cached)
             )
             self._ultrack_db_label_to_node_id = label_to_node_id
             self._ultrack_db_node_id_to_label = node_id_to_label
+            self._ultrack_db_node_annotations = node_annotations
             alpha_dict: dict[int, float] = {}
             if self.ultrack_db_connected_focus_check.isChecked():
                 labels, status, alpha_dict = self._render_ultrack_db_connected_focus(
@@ -1615,6 +1666,11 @@ class NucleusWorkflowWidget(QWidget):
             self._ultrack_db_preview_labels = labels.astype(np.uint32, copy=False)
             self._update_ultrack_db_preview_layer(
                 self._ultrack_db_preview_labels, prob_dict, alpha_dict
+            )
+            self._update_ultrack_db_annotation_layer(
+                self._ultrack_db_preview_labels,
+                label_to_node_id,
+                node_annotations,
             )
             self._install_ultrack_db_preview_selector()
             if not self.ultrack_db_connected_focus_check.isChecked():
@@ -1639,16 +1695,20 @@ class NucleusWorkflowWidget(QWidget):
             dict[int, float],
             dict[int, int],
             dict[int, int],
+            dict[int, str],
         ],
-    ) -> tuple[np.ndarray, str, dict[int, float], dict[int, int], dict[int, int]]:
+    ) -> tuple[np.ndarray, str, dict[int, float], dict[int, int], dict[int, int], dict[int, str]]:
         if len(cached) == 2:
             labels, status = cached
-            return labels, status, {}, {}, {}
+            return labels, status, {}, {}, {}, {}
         if len(cached) == 3:
             labels, status, prob_dict = cached
-            return labels, status, prob_dict, {}, {}
-        labels, status, prob_dict, label_to_node_id, node_id_to_label = cached
-        return labels, status, prob_dict, label_to_node_id, node_id_to_label
+            return labels, status, prob_dict, {}, {}, {}
+        if len(cached) == 5:
+            labels, status, prob_dict, label_to_node_id, node_id_to_label = cached
+            return labels, status, prob_dict, label_to_node_id, node_id_to_label, {}
+        labels, status, prob_dict, label_to_node_id, node_id_to_label, node_annotations = cached
+        return labels, status, prob_dict, label_to_node_id, node_id_to_label, node_annotations
 
     def _update_ultrack_db_preview_layer(
         self,
@@ -1665,6 +1725,25 @@ class NucleusWorkflowWidget(QWidget):
             self._update_image_layer(_ULTRACK_DB_PREVIEW_LAYER, data, rgb=True)
             return
         self._update_labels_layer(_ULTRACK_DB_PREVIEW_LAYER, labels)
+
+    def _update_ultrack_db_annotation_layer(
+        self,
+        labels: np.ndarray,
+        label_to_node_id: dict[int, int],
+        node_annotations: dict[int, str],
+    ) -> None:
+        overlay = np.zeros_like(labels, dtype=np.uint8)
+        for label_id, node_id in label_to_node_id.items():
+            annot = node_annotations.get(int(node_id), "UNKNOWN")
+            if annot == "REAL":
+                overlay[labels == int(label_id)] = 1
+            elif annot == "FAKE":
+                overlay[labels == int(label_id)] = 2
+        if not np.any(overlay):
+            if _ULTRACK_DB_ANNOTATION_LAYER in self.viewer.layers:
+                self.viewer.layers.remove(_ULTRACK_DB_ANNOTATION_LAYER)
+            return
+        self._update_labels_layer(_ULTRACK_DB_ANNOTATION_LAYER, overlay)
 
     def _update_labels_layer(self, name: str, data: np.ndarray) -> None:
         from napari.layers import Labels
@@ -1785,8 +1864,10 @@ class NucleusWorkflowWidget(QWidget):
         self._ultrack_db_selected_node_id = int(node_id)
         self._ultrack_db_selected_frame = selected_frame
         self._update_ultrack_db_highlight(self._ultrack_db_preview_labels, int(display_label))
+        annot = self._ultrack_db_node_annotations.get(int(node_id), "UNKNOWN")
+        annot_suffix = "" if annot == "UNKNOWN" else f" [{annot}]"
         self._set_ultrack_db_status(
-            f"Selected node {node_id} at t={selected_frame}."
+            f"Selected node {node_id}{annot_suffix} at t={selected_frame}."
         )
         if self.ultrack_db_connected_focus_check.isChecked():
             self._refresh_ultrack_db_browser()
@@ -1805,12 +1886,25 @@ class NucleusWorkflowWidget(QWidget):
         display_label = node_id_to_label.get(int(selected_node_id))
         if display_label is None:
             self._clear_ultrack_db_highlight()
+            annot = self._query_ultrack_db_node_annotation_for_status(
+                node_id_to_label, selected_node_id
+            )
+            if annot in {"REAL", "FAKE"}:
+                return (
+                    f"{status} Selected node {selected_node_id} [{annot}] is hidden "
+                    f"by annotation filter at frame {frame}."
+                )
             return (
                 f"{status} Selected node {selected_node_id} is hidden "
                 f"at frame {frame} and the current hierarchy threshold."
             )
         self._update_ultrack_db_highlight(labels, int(display_label))
         return status
+
+    def _query_ultrack_db_node_annotation_for_status(
+        self, node_id_to_label: dict[int, int], selected_node_id: int
+    ) -> str:
+        return self._ultrack_db_node_annotations.get(int(selected_node_id), "UNKNOWN")
 
     def _get_ultrack_db_highlight_layer(self):
         if _ULTRACK_DB_SELECTION_LAYER in self.viewer.layers:
@@ -1915,10 +2009,12 @@ class NucleusWorkflowWidget(QWidget):
             if int(selected_node_id) not in node_id_to_label:
                 self._clear_ultrack_db_highlight()
                 empty = np.zeros_like(labels, dtype=np.uint32)
+                annot = self._ultrack_db_node_annotations.get(int(selected_node_id), "UNKNOWN")
+                annot_suffix = "" if annot == "UNKNOWN" else f" [{annot}]"
                 return (
                     empty,
-                    f"Selected node {selected_node_id} at t={selected_frame} is "
-                    "hidden at the current hierarchy threshold.",
+                    f"Selected node {selected_node_id}{annot_suffix} at t={selected_frame} is "
+                    "hidden by the current threshold or annotation filter.",
                     {},
                 )
         elif frame == selected_frame - 1:
@@ -1977,9 +2073,11 @@ class NucleusWorkflowWidget(QWidget):
         else:
             edge_summary = ""
         count = int(np.unique(focused[focused != 0]).size)
+        annot = self._ultrack_db_node_annotations.get(int(selected_node_id), "UNKNOWN")
+        annot_suffix = "" if annot == "UNKNOWN" else f" [{annot}]"
         return (
             focused,
-            f"Selected node {selected_node_id} at t={selected_frame} | "
+            f"Selected node {selected_node_id}{annot_suffix} at t={selected_frame} | "
             f"{relation}: {count} connected node(s){edge_summary}",
             alpha_dict,
         )
@@ -2006,7 +2104,7 @@ class NucleusWorkflowWidget(QWidget):
         import sqlalchemy as sqla
         from sqlalchemy import func
         from sqlalchemy.orm import Session
-        from ultrack.core.database import LinkDB, NodeDB
+        from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
 
         try:
             from ultrack.core.database import OverlapDB
@@ -2020,6 +2118,16 @@ class NucleusWorkflowWidget(QWidget):
             with Session(engine) as session:
                 n_nodes = int(session.query(func.count(NodeDB.id)).scalar() or 0)
                 n_links = int(session.query(func.count(LinkDB.source_id)).scalar() or 0)
+                n_real = int(
+                    session.query(func.count(NodeDB.id))
+                    .filter(NodeDB.node_annot == VarAnnotation.REAL)
+                    .scalar() or 0
+                )
+                n_fake = int(
+                    session.query(func.count(NodeDB.id))
+                    .filter(NodeDB.node_annot == VarAnnotation.FAKE)
+                    .scalar() or 0
+                )
                 frame_nodes = session.query(NodeDB).filter(NodeDB.t == frame).all()
                 selected = sum(1 for n in frame_nodes if getattr(n, "selected", False))
                 node_ids = [int(n.id) for n in frame_nodes]
@@ -2048,7 +2156,7 @@ class NucleusWorkflowWidget(QWidget):
                         except Exception:
                             overlaps = 0
             return (
-                f"{n_nodes} nodes | {n_links} links | frame {frame}: "
+                f"{n_nodes} nodes | {n_links} links | REAL {n_real} | FAKE {n_fake} | frame {frame}: "
                 f"{len(node_ids)} nodes, {selected} selected, "
                 f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
             )
@@ -2112,6 +2220,7 @@ class NucleusWorkflowWidget(QWidget):
         dict[int, float],
         dict[int, int],
         dict[int, int],
+        dict[int, str],
     ]:
         import sqlalchemy as sqla
         from sqlalchemy.orm import Session, aliased
@@ -2140,14 +2249,48 @@ class NucleusWorkflowWidget(QWidget):
         if not nodes:
             return self._empty_ultrack_db_preview(), (
                 f"No segments at this threshold for frame {frame}."
-            ), {}, {}, {}
-        labels = self._paint_ultrack_db_nodes(nodes)
+            ), {}, {}, {}, {}
+        show_validated = self.ultrack_db_show_validated_check.isChecked()
+        show_fake = self.ultrack_db_show_fake_check.isChecked()
+        filtered_nodes = []
+        hidden_real = hidden_fake = 0
+        for node in nodes:
+            annot = self._ultrack_db_annotation_name(getattr(node, "node_annot", None))
+            if annot == "REAL" and not show_validated:
+                hidden_real += 1
+                continue
+            if annot == "FAKE" and not show_fake:
+                hidden_fake += 1
+                continue
+            filtered_nodes.append(node)
+        if not filtered_nodes:
+            return self._empty_ultrack_db_preview(), (
+                f"Frame {frame}: annotation filters hid all {len(nodes)} segment(s)."
+            ), {}, {}, {}, {}
+        labels = self._paint_ultrack_db_nodes(filtered_nodes)
         prob_dict, label_to_node_id, node_id_to_label = (
-            self._ultrack_db_node_preview_metadata(nodes)
+            self._ultrack_db_node_preview_metadata(filtered_nodes)
         )
+        node_annotations = self._ultrack_db_node_annotation_metadata(filtered_nodes)
+        hidden_summary = ""
+        if hidden_real or hidden_fake:
+            hidden_summary = f" Hidden by annotation filter: REAL {hidden_real}, FAKE {hidden_fake}."
         return labels, (
-            f"Frame {frame}: {len(nodes)} segment(s) at h={h_actual:.2f}."
-        ), prob_dict, label_to_node_id, node_id_to_label
+            f"Frame {frame}: {len(filtered_nodes)} segment(s) at h={h_actual:.2f}."
+            f"{hidden_summary}"
+        ), prob_dict, label_to_node_id, node_id_to_label, node_annotations
+
+    @staticmethod
+    def _ultrack_db_annotation_name(value) -> str:
+        if value is None:
+            return "UNKNOWN"
+        raw = getattr(value, "value", value)
+        if raw is None:
+            return "UNKNOWN"
+        name = str(raw).split(".")[-1].upper()
+        if name in {"REAL", "FAKE"}:
+            return name
+        return "UNKNOWN"
 
     @staticmethod
     def _ultrack_db_node_preview_metadata(
@@ -2169,6 +2312,19 @@ class NucleusWorkflowWidget(QWidget):
             label_to_node_id[label] = node_id
             node_id_to_label[node_id] = label
         return prob_dict, label_to_node_id, node_id_to_label
+
+    @staticmethod
+    def _ultrack_db_node_annotation_metadata(nodes: list) -> dict[int, str]:
+        node_annotations: dict[int, str] = {}
+        for node in nodes:
+            try:
+                node_id = int(node.id)
+            except (TypeError, ValueError):
+                continue
+            node_annotations[node_id] = NucleusWorkflowWidget._ultrack_db_annotation_name(
+                getattr(node, "node_annot", None)
+            )
+        return node_annotations
 
     def _empty_ultrack_db_preview(self) -> np.ndarray:
         shape = self._viewer_plane_shape()
@@ -2749,6 +2905,7 @@ class NucleusWorkflowWidget(QWidget):
 
     def _set_resolve_prior_controls_enabled(self, enabled: bool) -> None:
         for control in (
+            self.db_gen_quality_exp_spin,
             self.ultrack_quality_exp_spin,
             self.ultrack_seed_weight_spin,
             self.ultrack_seed_space_spin,
@@ -2770,7 +2927,7 @@ class NucleusWorkflowWidget(QWidget):
             linking_mode=self.db_gen_linking_mode_combo.currentText(),
             iou_weight=self.db_gen_iou_weight_spin.value(),
             quality_exponent=self.db_gen_quality_exp_spin.value(),
-            power=self.db_gen_power_spin.value(),
+            power=self.ultrack_power_spin.value(),
             appear_weight=self.ultrack_appear_spin.value(),
             disappear_weight=self.ultrack_disappear_spin.value(),
             division_weight=self.ultrack_division_spin.value(),
@@ -2781,16 +2938,10 @@ class NucleusWorkflowWidget(QWidget):
         )
 
     def _on_run_tracking_route(self) -> None:
-        if self.ultrack_route_check.isChecked():
-            self._on_resolve_with_validation()
-        else:
-            self._on_run_ultrack()
+        self._on_run_ultrack()
 
     def _on_run_tracking_route_terminal(self) -> None:
-        if self.ultrack_route_check.isChecked():
-            self._on_resolve_terminal()
-        else:
-            self._on_ultrack_terminal()
+        self._on_ultrack_terminal()
 
     def _on_run_ultrack(self) -> None:
         if self._pos_dir is None:
@@ -2804,6 +2955,22 @@ class NucleusWorkflowWidget(QWidget):
         tracked_path = self._tracked_path()
 
         cfg = self._ultrack_config_from_controls()
+        needs_validated_export = database_has_annotations(working_dir)
+        validated_tracks = None
+        tracked_labels = None
+        if needs_validated_export:
+            validated_tracks = read_validated_tracks(self._pos_dir)
+            if not validated_tracks:
+                self._set_ultrack_status(
+                    "Annotated data.db requires validated tracks for ID-preserving export."
+                )
+                return
+            if _TRACKED_LAYER not in self.viewer.layers:
+                self._set_ultrack_status(
+                    "Annotated data.db requires the current tracked layer for ID-preserving export."
+                )
+                return
+            tracked_labels = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
 
         self.ultrack_progress_bar.setRange(0, 100)
         self.ultrack_progress_bar.setVisible(True)
@@ -2821,7 +2988,13 @@ class NucleusWorkflowWidget(QWidget):
             for step, total, label in run_solve(working_dir, cfg, overwrite=True):
                 yield ("solve", step, total, label)
             yield ("export", 0, 1, "Exporting tracked labels…")
-            return export_tracked_labels(working_dir, cfg, tracked_path)
+            return export_tracked_labels(
+                working_dir,
+                cfg,
+                tracked_path,
+                validated_tracks=validated_tracks,
+                tracked_labels=tracked_labels,
+            )
 
         _worker()
 
@@ -2865,6 +3038,19 @@ class NucleusWorkflowWidget(QWidget):
         tracked_path = self._tracked_path()
 
         cfg = self._ultrack_config_from_controls()
+        needs_validated_export = database_has_annotations(working_dir)
+        if needs_validated_export:
+            validated_tracks = read_validated_tracks(self._pos_dir)
+            if not validated_tracks:
+                self._set_ultrack_status(
+                    "Annotated data.db requires validated tracks for ID-preserving export."
+                )
+                return
+            if tracked_path is None or not tracked_path.exists():
+                self._set_ultrack_status(
+                    "Annotated data.db requires current tracked labels for ID-preserving export."
+                )
+                return
 
         # NOTE: body must live under `if __name__ == "__main__":` because
         # Ultrack's linker uses spawn-based multiprocessing, which re-executes
@@ -2877,31 +3063,36 @@ class NucleusWorkflowWidget(QWidget):
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
             "from cellflow.tracking_ultrack.solve import run_solve\n"
             "from cellflow.tracking_ultrack.export import export_tracked_labels\n"
+            "from cellflow.database.tracked import read_full_tracked_stack\n"
+            "from cellflow.database.validation import read_validated_tracks\n"
             "\n"
             "if __name__ == '__main__':\n"
+            f"    pos_dir = pathlib.Path({str(self._pos_dir)!r})\n"
             f"    working_dir = pathlib.Path({str(working_dir)!r})\n"
             f"    tracked_path= pathlib.Path({str(tracked_path)!r})\n"
+            f"    needs_validated_export = {bool(needs_validated_export)!r}\n"
             f"    cfg = TrackingConfig(\n"
-            f"        seg_min_area={cfg.seg_min_area},\n"
-            f"        seg_max_area={cfg.seg_max_area},\n"
-            f"        seg_foreground_threshold={cfg.seg_foreground_threshold},\n"
-            f"        seg_min_frontier={cfg.seg_min_frontier},\n"
-            f"        seg_ws_hierarchy={cfg.seg_ws_hierarchy!r},\n"
-            f"        seg_n_workers={cfg.seg_n_workers},\n"
-            f"        max_distance={cfg.max_distance},\n"
-            f"        max_neighbors={cfg.max_neighbors},\n"
-            f"        linking_mode={cfg.linking_mode!r},\n"
-            f"        iou_weight={cfg.iou_weight},\n"
             f"        power={cfg.power},\n"
             f"        appear_weight={cfg.appear_weight},\n"
             f"        disappear_weight={cfg.disappear_weight},\n"
             f"        division_weight={cfg.division_weight},\n"
+            f"        solution_gap={cfg.solution_gap},\n"
+            f"        time_limit={cfg.time_limit},\n"
+            f"        window_size={cfg.window_size},\n"
             f"    )\n"
             "    print('[1/2] Solving ILP…', flush=True)\n"
             "    for step, total, label in run_solve(working_dir, cfg, overwrite=True):\n"
             "        print(f'  [{step}/{total}] {label}', flush=True)\n"
             "    print('[2/2] Exporting…', flush=True)\n"
-            "    labels = export_tracked_labels(working_dir, cfg, tracked_path)\n"
+            "    validated_tracks = read_validated_tracks(pos_dir) if needs_validated_export else None\n"
+            "    tracked_labels = read_full_tracked_stack(tracked_path) if needs_validated_export else None\n"
+            "    labels = export_tracked_labels(\n"
+            "        working_dir,\n"
+            "        cfg,\n"
+            "        tracked_path,\n"
+            "        validated_tracks=validated_tracks,\n"
+            "        tracked_labels=tracked_labels,\n"
+            "    )\n"
             f"    print(f'Done — {{labels.shape}} written to {{tracked_path}}', flush=True)\n"
         )
 
@@ -3556,8 +3747,8 @@ class NucleusWorkflowWidget(QWidget):
                 "linking_mode":     self.db_gen_linking_mode_combo.currentText(),
                 "iou_weight":       self.db_gen_iou_weight_spin.value(),
                 "quality_exponent": self.db_gen_quality_exp_spin.value(),
-                "power":            self.db_gen_power_spin.value(),
                 "n_workers":        self.db_gen_n_workers_spin.value(),
+                "use_validated":    self.db_gen_use_validated_check.isChecked(),
             },
             "ultrack": {
                 "min_area":         self.ultrack_min_area_spin.value(),
@@ -3570,7 +3761,6 @@ class NucleusWorkflowWidget(QWidget):
                 "disappear_weight": self.ultrack_disappear_spin.value(),
                 "division_weight":  self.ultrack_division_spin.value(),
                 "max_neighbors":    self.ultrack_max_neighbors_spin.value(),
-                "resolve_only":     self.ultrack_route_check.isChecked(),
                 "power":            self.ultrack_power_spin.value(),
                 "quality_exponent": self.ultrack_quality_exp_spin.value(),
                 "seed_weight":      self.ultrack_seed_weight_spin.value(),
@@ -3614,8 +3804,8 @@ class NucleusWorkflowWidget(QWidget):
                     self.db_gen_linking_mode_combo.setCurrentIndex(idx)
             if "iou_weight"       in dbg: self.db_gen_iou_weight_spin.setValue(dbg["iou_weight"])
             if "quality_exponent" in dbg: self.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
-            if "power"            in dbg: self.db_gen_power_spin.setValue(dbg["power"])
             if "n_workers"        in dbg: self.db_gen_n_workers_spin.setValue(dbg["n_workers"])
+            if "use_validated"    in dbg: self.db_gen_use_validated_check.setChecked(dbg["use_validated"])
         if "search" in state:
             pass  # Old propagator state — silently skip
         if "search_v2" in state:
@@ -3635,7 +3825,6 @@ class NucleusWorkflowWidget(QWidget):
             if "disappear_weight" in ul: self.ultrack_disappear_spin.setValue(ul["disappear_weight"])
             if "division_weight"  in ul: self.ultrack_division_spin.setValue(ul["division_weight"])
             if "max_neighbors"    in ul: self.ultrack_max_neighbors_spin.setValue(ul["max_neighbors"])
-            if "resolve_only"     in ul: self.ultrack_route_check.setChecked(ul["resolve_only"])
             if "power"            in ul: self.ultrack_power_spin.setValue(ul["power"])
             if "quality_exponent" in ul: self.ultrack_quality_exp_spin.setValue(ul["quality_exponent"])
             if "seed_weight"      in ul: self.ultrack_seed_weight_spin.setValue(ul["seed_weight"])

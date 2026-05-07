@@ -81,6 +81,22 @@ class DataPrepWidget(QWidget):
         ds_row.addWidget(self.ds_spin)
         layout.addLayout(ds_row)
 
+        # Frame range
+        frame_row = QHBoxLayout()
+        frame_row.addWidget(QLabel("Frames:"))
+        frame_row.addWidget(QLabel("Start"))
+        self.frame_start_spin = QSpinBox()
+        self.frame_start_spin.setRange(0, 999999)
+        self.frame_start_spin.setValue(0)
+        frame_row.addWidget(self.frame_start_spin)
+        frame_row.addWidget(QLabel("End"))
+        self.frame_end_spin = QSpinBox()
+        self.frame_end_spin.setRange(-1, 999999)
+        self.frame_end_spin.setValue(-1)
+        self.frame_end_spin.setSpecialValueText("last")
+        frame_row.addWidget(self.frame_end_spin)
+        layout.addLayout(frame_row)
+
         # Overwrite
         self.overwrite_check = QCheckBox("Overwrite existing files")
         layout.addWidget(self.overwrite_check)
@@ -192,7 +208,9 @@ class DataPrepWidget(QWidget):
             ndtiff_path=ndtiff_path,
             root_dir=root_dir,
             positions=positions,
-            xy_downsample=self.ds_spin.value()
+            xy_downsample=self.ds_spin.value(),
+            frame_start=self.frame_start_spin.value(),
+            frame_end=self.frame_end_spin.value(),
         )
 
         self.run_btn.setEnabled(False)
@@ -255,11 +273,14 @@ class DataPrepWidget(QWidget):
         overwrite = self.overwrite_check.isChecked()
         ds = self.ds_spin.value()
         positions = self.pos_edit.text().strip()
+        frame_start = self.frame_start_spin.value()
+        frame_end = self.frame_end_spin.value()
 
         python_code = (
             "from cellflow.core.data_prep import DatasetConfig, run\n"
             f"config = DatasetConfig(ndtiff_path={ndtiff_path!r}, root_dir={root_dir!r}, "
-            f"positions=[{positions}], xy_downsample={ds})\n"
+            f"positions=[{positions}], xy_downsample={ds}, "
+            f"frame_start={frame_start}, frame_end={frame_end})\n"
             "for pos in config.positions:\n"
             "    print(f'--- pos{pos} ---', flush=True)\n"
             f"    for d, t, l in run(config, pos, overwrite={overwrite}):\n"
@@ -279,6 +300,8 @@ class DataPrepWidget(QWidget):
             "ndtiff_path": self.ndtiff_edit.text(),
             "positions": self.pos_edit.text(),
             "xy_downsample": self.ds_spin.value(),
+            "frame_start": self.frame_start_spin.value(),
+            "frame_end": self.frame_end_spin.value(),
             "overwrite": self.overwrite_check.isChecked(),
         }
 
@@ -290,6 +313,10 @@ class DataPrepWidget(QWidget):
             self.pos_edit.setText(state["positions"])
         if "xy_downsample" in state:
             self.ds_spin.setValue(state["xy_downsample"])
+        if "frame_start" in state:
+            self.frame_start_spin.setValue(state["frame_start"])
+        if "frame_end" in state:
+            self.frame_end_spin.setValue(state["frame_end"])
         if "overwrite" in state:
             self.overwrite_check.setChecked(state["overwrite"])
 

@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from cellflow.tracking_ultrack.config import TrackingConfig
+from cellflow.tracking_ultrack.db_build import build_ultrack_database
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db
 from cellflow.tracking_ultrack.linking import run_linking
@@ -556,7 +557,13 @@ def resolve_with_validation(
         _notify("Exporting tracks…")
         with tempfile.TemporaryDirectory(prefix="cellflow_resolve_export_") as tmpdir:
             out_path = Path(tmpdir) / "tracked_labels.tif"
-            exported = export_tracked_labels(working_dir, cfg, out_path)
+            exported = export_tracked_labels(
+                working_dir,
+                cfg,
+                out_path,
+                validated_tracks=validated_tracks,
+                tracked_labels=tracked_labels,
+            )
 
     exported = np.asarray(exported, dtype=np.uint32)
     exported, id_map = merge_validated_into_export(
@@ -583,17 +590,6 @@ def resolve_with_canonical_segment(
       old: hypotheses.h5 → ingest_hypotheses_to_db → inject → score → link → solve
       new: foreground_masks + contour_maps → ultrack.segment → inject → score → link → solve
     """
-    import tifffile
-
-    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
-
-    try:
-        from ultrack.core.segmentation.processing import segment as ultrack_segment
-    except ImportError as exc:
-        raise ImportError(
-            "ultrack must be installed (conda env cellflow) to use canonical segment"
-        ) from exc
-
     def _notify(msg: str) -> None:
         if progress_cb is not None:
             progress_cb(msg)
@@ -604,53 +600,34 @@ def resolve_with_canonical_segment(
     if not validated_tracks:
         return np.asarray(tracked_labels, dtype=np.uint32).copy(), {}
 
-    _notify("Loading contour maps and foreground masks…")
-    contours = np.asarray(tifffile.imread(str(contour_maps_path)), dtype=np.float32)
-    foreground = np.asarray(tifffile.imread(str(foreground_masks_path)), dtype=np.float32)
-    if contours.ndim == 4 and contours.shape[1] == 1:
-        contours = contours[:, 0]
-    if foreground.ndim == 4 and foreground.shape[1] == 1:
-        foreground = foreground[:, 0]
-
     with tempfile.TemporaryDirectory(prefix="cellflow_resolve_") as tmp_dir:
         working_dir = Path(tmp_dir)
-        ultrack_cfg = _build_ultrack_config(cfg, working_dir)
-
-        _notify("Segmenting with canonical Ultrack hierarchy…")
-        ultrack_segment(
-            foreground,
-            contours,
-            ultrack_cfg,
-            max_segments_per_time=cfg.max_segments_per_time,
-            overwrite=True,
-        )
-
-        _notify("Injecting validated nodes…")
-        inject_validated_nodes(
+        build_ultrack_database(
+            contour_maps_path=contour_maps_path,
+            foreground_masks_path=foreground_masks_path,
+            nucleus_prob_zavg_path=intensity_image_path,
             working_dir=working_dir,
+            cfg=cfg,
             validated_tracks=validated_tracks,
             tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
-            cfg=cfg,
+            use_validated=True,
+            progress_cb=_notify,
         )
 
-        _notify("Scoring node probabilities…")
-        write_seed_prior_node_probs(working_dir, intensity_image_path, cfg)
-
-        _notify("Linking candidates…")
-        for _step, _total, label in run_linking(working_dir, cfg):
-            _notify(f"[link] {label}")
-
-        _notify("Boosting edges incident to validated nodes…")
-        report = boost_validated_edges(working_dir, cfg)
-        _notify(f"  boosted {report.boosted} link(s) across {report.seeds} validated node(s)")
-
         _notify("Solving ILP…")
-        for _step, _total, label in run_solve(working_dir, cfg, overwrite=True, use_annotations=True):
+        for _step, _total, label in run_solve(working_dir, cfg, overwrite=True):
             _notify(f"[solve] {label}")
 
         _notify("Exporting tracked labels…")
         tmp_out = working_dir / "tracked_labels_resolve.tif"
-        export_tracked_labels(working_dir, cfg, tmp_out)
+        export_tracked_labels(
+            working_dir,
+            cfg,
+            tmp_out,
+            validated_tracks=validated_tracks,
+            tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
+        )
+        import tifffile
         new_labels = np.asarray(tifffile.imread(str(tmp_out)), dtype=np.uint32)
         if new_labels.ndim == 4 and new_labels.shape[1] == 1:
             new_labels = new_labels[:, 0]
