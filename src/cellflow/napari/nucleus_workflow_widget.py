@@ -5,6 +5,7 @@ import logging
 import os
 import pickle
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
 
 import napari
@@ -100,6 +101,12 @@ _CONTOUR_SWEEP_WIDTH = 60
 _CONTOUR_SWEEP_MIN_WIDTH = int(_CONTOUR_SWEEP_WIDTH * 0.9)
 
 
+@dataclass(frozen=True)
+class _HierarchyCutState:
+    node_ids: tuple[int, ...]
+    height: float | None
+
+
 class NucleusWorkflowWidget(QWidget):
     """Nucleus hypothesis generation and tracking management."""
 
@@ -123,6 +130,7 @@ class NucleusWorkflowWidget(QWidget):
             ],
         ] = {}
         self._ultrack_db_height_values_cache: dict[tuple, tuple[float, ...]] = {}
+        self._ultrack_db_cut_state_cache: dict[tuple, tuple[_HierarchyCutState, ...]] = {}
         self._ultrack_db_browser_active: bool = False
         self._ultrack_db_frame_initialized: bool = False
         self._ultrack_db_selected_node_id: int | None = None
@@ -1380,27 +1388,27 @@ class NucleusWorkflowWidget(QWidget):
                 return
 
             mtime_ns = db_path.stat().st_mtime_ns
-            heights = self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns)
-            if not heights:
+            states = self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, frame)
+            if not states:
                 labels = self._empty_ultrack_db_preview()
                 self._update_layer(_ULTRACK_DB_PREVIEW_LAYER, labels)
-                self._set_ultrack_db_status(f"No hierarchy heights for frame {frame}.")
+                self._set_ultrack_db_status(f"No hierarchy states for frame {frame}.")
                 return
 
             slider_int = int(self.ultrack_db_hierarchy_slider.value())
-            h_actual = float(heights[slider_int])
+            state = states[slider_int]
             key = (
                 str(db_path.resolve()),
                 mtime_ns,
                 frame,
                 slider_int,
-                h_actual,
+                state,
                 self.ultrack_db_show_validated_check.isChecked(),
                 self.ultrack_db_show_fake_check.isChecked(),
             )
             cached = self._ultrack_db_preview_cache.get(key)
             if cached is None:
-                cached = self._render_hierarchy_cut(db_path, frame, h_actual)
+                cached = self._render_hierarchy_cut_state(db_path, frame, state)
                 self._ultrack_db_preview_cache[key] = cached
             labels, status, prob_dict, label_to_node_id, node_id_to_label, node_annotations = (
                 self._normalize_ultrack_db_preview(cached)
@@ -1945,11 +1953,104 @@ class NucleusWorkflowWidget(QWidget):
         self._ultrack_db_height_values_cache[key] = heights
         return heights
 
+    def _query_hierarchy_cut_states(
+        self, db_path: Path, mtime_ns: int, frame: int
+    ) -> tuple[_HierarchyCutState, ...]:
+        key = (str(db_path.resolve()), mtime_ns, frame)
+        cached = self._ultrack_db_cut_state_cache.get(key)
+        if cached is not None:
+            return cached
+
+        import sqlalchemy as sqla
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from ultrack.utils.constants import NO_PARENT
+
+        engine = sqla.create_engine(
+            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        )
+        try:
+            with Session(engine) as session:
+                rows = [
+                    (int(node_id), int(parent_id), float(height))
+                    for node_id, parent_id, height in session.query(
+                        NodeDB.id, NodeDB.hier_parent_id, NodeDB.height
+                    )
+                    .filter(NodeDB.t == frame)
+                    .order_by(NodeDB.height, NodeDB.id)
+                    .all()
+                    if height is not None
+                ]
+        except Exception:
+            heights = self._query_distinct_heights(db_path, mtime_ns)
+            return tuple(_HierarchyCutState((), float(height)) for height in heights)
+        finally:
+            engine.dispose()
+
+        if not rows:
+            self._ultrack_db_cut_state_cache[key] = ()
+            return ()
+
+        node_ids = {node_id for node_id, _parent_id, _height in rows}
+        heights_by_id = {node_id: height for node_id, _parent_id, height in rows}
+        parent_by_id = {
+            node_id: parent_id
+            for node_id, parent_id, _height in rows
+            if parent_id != NO_PARENT and parent_id in node_ids
+        }
+        children_by_parent: dict[int, set[int]] = {}
+        for child_id, parent_id in parent_by_id.items():
+            children_by_parent.setdefault(parent_id, set()).add(child_id)
+
+        active = {
+            node_id for node_id, _parent_id, _height in rows
+            if node_id not in children_by_parent
+        }
+        if not active:
+            active = set(node_ids)
+
+        states: list[_HierarchyCutState] = []
+        seen_states: set[tuple[int, ...]] = set()
+
+        def _append_state() -> None:
+            ordered = tuple(
+                sorted(active, key=lambda node_id: (heights_by_id[node_id], node_id))
+            )
+            if ordered in seen_states:
+                return
+            seen_states.add(ordered)
+            height = max((heights_by_id[node_id] for node_id in ordered), default=None)
+            states.append(_HierarchyCutState(ordered, height))
+
+        _append_state()
+        while True:
+            promotable = [
+                parent_id
+                for parent_id, child_ids in children_by_parent.items()
+                if parent_id not in active and child_ids and child_ids.issubset(active)
+            ]
+            if not promotable:
+                break
+            min_height = min(heights_by_id[parent_id] for parent_id in promotable)
+            promote_now = [
+                parent_id
+                for parent_id in promotable
+                if heights_by_id[parent_id] == min_height
+            ]
+            for parent_id in sorted(promote_now):
+                active.difference_update(children_by_parent[parent_id])
+                active.add(parent_id)
+            _append_state()
+
+        result = tuple(states)
+        self._ultrack_db_cut_state_cache[key] = result
+        return result
+
     def _configure_ultrack_db_hierarchy_slider(
-        self, db_path: Path, mtime_ns: int
-    ) -> tuple[float, ...]:
-        heights = self._query_distinct_heights(db_path, mtime_ns)
-        maximum = max(len(heights) - 1, 0)
+        self, db_path: Path, mtime_ns: int, frame: int
+    ) -> tuple[_HierarchyCutState, ...]:
+        states = self._query_hierarchy_cut_states(db_path, mtime_ns, frame)
+        maximum = max(len(states) - 1, 0)
         value = min(max(int(self.ultrack_db_hierarchy_slider.value()), 0), maximum)
 
         old_blocked = self.ultrack_db_hierarchy_slider.blockSignals(True)
@@ -1959,14 +2060,19 @@ class NucleusWorkflowWidget(QWidget):
         finally:
             self.ultrack_db_hierarchy_slider.blockSignals(old_blocked)
 
-        if heights:
-            self._set_ultrack_db_height_label(value, float(heights[value]), len(heights))
+        if states:
+            self._set_ultrack_db_height_label(value, states[value].height, len(states))
         else:
             self.ultrack_db_height_lbl.setText("—")
-        return heights
+        return states
 
-    def _set_ultrack_db_height_label(self, index: int, height: float, total: int) -> None:
-        self.ultrack_db_height_lbl.setText(f"i={index} h={height:.2f} ({index + 1}/{total})")
+    def _set_ultrack_db_height_label(
+        self, index: int, height: float | None, total: int
+    ) -> None:
+        height_text = "—" if height is None else f"{height:.2f}"
+        self.ultrack_db_height_lbl.setText(
+            f"i={index} h={height_text} ({index + 1}/{total})"
+        )
 
     def _render_hierarchy_cut(
         self, db_path: Path, frame: int, h_actual: float
@@ -1989,23 +2095,99 @@ class NucleusWorkflowWidget(QWidget):
         try:
             with Session(engine) as session:
                 P = aliased(NodeDB)
+                C = aliased(NodeDB)
+                same_height_child_exists = (
+                    session.query(C.id)
+                    .where(C.hier_parent_id == NodeDB.id)
+                    .where(C.height == NodeDB.height)
+                    .where(NodeDB.height == h_actual)
+                    .exists()
+                )
                 nodes = (
                     session.query(NodeDB)
                     .outerjoin(P, NodeDB.hier_parent_id == P.id)
                     .where(NodeDB.t == frame)
                     .where(NodeDB.height <= h_actual)
                     .where(
-                        (NodeDB.hier_parent_id == NO_PARENT) | (P.height > h_actual)
+                        (NodeDB.hier_parent_id == NO_PARENT)
+                        | ((NodeDB.height < h_actual) & (P.height > h_actual))
+                        | ((NodeDB.height == h_actual) & (P.height >= h_actual))
                     )
+                    .where(~same_height_child_exists)
                     .all()
                 )
         finally:
             engine.dispose()
 
+        return self._finalize_hierarchy_nodes(
+            nodes,
+            frame,
+            empty_msg=f"No segments at this threshold for frame {frame}.",
+            status_suffix=f"at h={h_actual:.2f}",
+        )
+
+    def _render_hierarchy_cut_state(
+        self, db_path: Path, frame: int, state: _HierarchyCutState
+    ) -> tuple[
+        np.ndarray,
+        str,
+        dict[int, float],
+        dict[int, int],
+        dict[int, int],
+        dict[int, str],
+    ]:
+        if not state.node_ids:
+            return self._render_hierarchy_cut(db_path, frame, float(state.height or 0.0))
+
+        import sqlalchemy as sqla
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+
+        engine = sqla.create_engine(
+            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+        )
+        try:
+            with Session(engine) as session:
+                rows = (
+                    session.query(NodeDB)
+                    .where(NodeDB.t == frame)
+                    .where(NodeDB.id.in_(state.node_ids))
+                    .all()
+                )
+        finally:
+            engine.dispose()
+
+        nodes_by_id = {int(node.id): node for node in rows}
+        nodes = [
+            nodes_by_id[node_id]
+            for node_id in state.node_ids
+            if node_id in nodes_by_id
+        ]
+        height_text = "—" if state.height is None else f"{state.height:.2f}"
+        return self._finalize_hierarchy_nodes(
+            nodes,
+            frame,
+            empty_msg=f"No hierarchy state segments for frame {frame}.",
+            status_suffix=f"at cut state h={height_text}",
+        )
+
+    def _finalize_hierarchy_nodes(
+        self,
+        nodes: list,
+        frame: int,
+        *,
+        empty_msg: str,
+        status_suffix: str,
+    ) -> tuple[
+        np.ndarray,
+        str,
+        dict[int, float],
+        dict[int, int],
+        dict[int, int],
+        dict[int, str],
+    ]:
         if not nodes:
-            return self._empty_ultrack_db_preview(), (
-                f"No segments at this threshold for frame {frame}."
-            ), {}, {}, {}, {}
+            return self._empty_ultrack_db_preview(), empty_msg, {}, {}, {}, {}
         show_validated = self.ultrack_db_show_validated_check.isChecked()
         show_fake = self.ultrack_db_show_fake_check.isChecked()
         filtered_nodes = []
@@ -2032,7 +2214,7 @@ class NucleusWorkflowWidget(QWidget):
         if hidden_real or hidden_fake:
             hidden_summary = f" Hidden by annotation filter: REAL {hidden_real}, FAKE {hidden_fake}."
         return labels, (
-            f"Frame {frame}: {len(filtered_nodes)} segment(s) at h={h_actual:.2f}."
+            f"Frame {frame}: {len(filtered_nodes)} segment(s) {status_suffix}."
             f"{hidden_summary}"
         ), prob_dict, label_to_node_id, node_id_to_label, node_annotations
 
