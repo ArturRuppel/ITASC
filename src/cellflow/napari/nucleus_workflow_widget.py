@@ -98,8 +98,6 @@ _NUC_ZAVG_LAYER = "Nucleus z-avg"
 _ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
 _ULTRACK_DB_SELECTION_LAYER = "Ultrack DB Selection"
 _ULTRACK_DB_ANNOTATION_LAYER = "Ultrack DB Annotations"
-_CONTOUR_MAPS_DB_LAYER = "Contour Maps: Nucleus"
-_FOREGROUND_MASKS_DB_LAYER = "Foreground Masks: Nucleus"
 _CONTOUR_SWEEP_WIDTH = 60
 _CONTOUR_SWEEP_MIN_WIDTH = int(_CONTOUR_SWEEP_WIDTH * 0.9)
 
@@ -1493,8 +1491,6 @@ class NucleusWorkflowWidget(QWidget):
         for name in (
             _ULTRACK_DB_PREVIEW_LAYER,
             _ULTRACK_DB_ANNOTATION_LAYER,
-            _CONTOUR_MAPS_DB_LAYER,
-            _FOREGROUND_MASKS_DB_LAYER,
         ):
             if name in self.viewer.layers:
                 self.viewer.layers.remove(name)
@@ -1502,25 +1498,6 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.layers.remove(_ULTRACK_DB_SELECTION_LAYER)
         self.ultrack_db_info_lbl.setText("—")
         self._set_ultrack_db_status("")
-
-    def _ensure_ultrack_db_browser_layers_loaded(self) -> None:
-        contour_path = self._contour_maps_path()
-        fg_path = self._foreground_masks_path()
-        try:
-            if (
-                contour_path and contour_path.exists()
-                and _CONTOUR_MAPS_DB_LAYER not in self.viewer.layers
-            ):
-                data = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
-                self.viewer.add_image(data, name=_CONTOUR_MAPS_DB_LAYER, colormap="magma", visible=True)
-            if (
-                fg_path and fg_path.exists()
-                and _FOREGROUND_MASKS_DB_LAYER not in self.viewer.layers
-            ):
-                data = np.asarray(tifffile.imread(str(fg_path)), dtype=np.float32)
-                self.viewer.add_image(data, name=_FOREGROUND_MASKS_DB_LAYER, colormap="gray", visible=True)
-        except Exception as e:
-            logger.warning("Failed to load DB browser layers: %s", e)
 
     def _ultrack_db_middle_frame(self, db_path: Path) -> int | None:
         import sqlalchemy as sqla
@@ -1550,7 +1527,6 @@ class NucleusWorkflowWidget(QWidget):
         if db_path is None or not db_path.exists():
             self._set_ultrack_db_status("data.db not found — run DB generation first.")
             return
-        self._ensure_ultrack_db_browser_layers_loaded()
         frame = self._current_t()
         if not self._ultrack_db_frame_initialized:
             self._ultrack_db_frame_initialized = True

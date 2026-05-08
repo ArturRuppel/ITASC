@@ -2361,6 +2361,43 @@ def test_ultrack_db_browser_shows_summary_while_rendering_hierarchy(tmp_path, mo
     viewer.close()
 
 
+def test_ultrack_db_browser_does_not_add_contour_or_foreground_layers(tmp_path, monkeypatch):
+    import tifffile
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", np.zeros((1, 4, 4), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_masks.tif", np.zeros((1, 4, 4), dtype=np.uint8))
+    widget._pos_dir = pos_dir
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+
+    monkeypatch.setattr(widget, "_current_t", lambda: 0)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda path, frame: "summary")
+    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    monkeypatch.setattr(
+        widget,
+        "_render_hierarchy_cut",
+        lambda *args: (np.zeros((4, 4), dtype=np.uint32), "rendered hierarchy cut"),
+    )
+
+    widget._refresh_ultrack_db_browser()
+
+    assert "Ultrack DB Preview" in viewer.layers
+    assert "Ultrack DB Annotations" not in viewer.layers
+    assert "Contour Maps: Nucleus" not in viewer.layers
+    assert "Foreground Masks: Nucleus" not in viewer.layers
+
+    widget.deleteLater()
+    viewer.close()
+
+
 # ── Task 8: Tracking solves existing DB; extend uses DB ──────────────────────
 
 def test_ultrack_tracking_solve_fails_clearly_if_db_missing(tmp_path):
