@@ -5,7 +5,11 @@ import pytest
 import tifffile
 
 from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.seed_prior import compute_drop_frac, write_seed_prior_node_probs
+from cellflow.tracking_ultrack.seed_prior import (
+    compute_drop_frac,
+    compute_mask_circularity,
+    write_seed_prior_node_probs,
+)
 
 
 def test_compute_drop_frac_counts_outer_ring_pixels_below_inside_median():
@@ -15,6 +19,24 @@ def test_compute_drop_frac_counts_outer_ring_pixels_below_inside_median():
     mask = np.ones((4, 4), dtype=bool)
 
     assert compute_drop_frac(image, (3, 3, 7, 7), mask) == 1.0
+
+
+def test_compute_mask_circularity_prefers_compact_masks():
+    yy, xx = np.ogrid[:21, :21]
+    disk = ((yy - 10) ** 2 + (xx - 10) ** 2) <= 6**2
+    bar = np.zeros((21, 21), dtype=bool)
+    bar[9:12, 2:19] = True
+
+    disk_circularity = compute_mask_circularity(disk)
+    bar_circularity = compute_mask_circularity(bar)
+
+    assert 0.0 <= bar_circularity <= 1.0
+    assert 0.0 <= disk_circularity <= 1.0
+    assert disk_circularity > bar_circularity
+
+
+def test_compute_mask_circularity_handles_empty_masks():
+    assert compute_mask_circularity(np.zeros((5, 5), dtype=bool)) == 0.0
 
 
 def test_write_seed_prior_node_probs_uses_drop_quality_and_best_seed_affinity(tmp_path):

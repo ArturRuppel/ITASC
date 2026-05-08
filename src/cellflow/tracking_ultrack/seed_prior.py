@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 import numpy as np
@@ -88,6 +89,22 @@ def compute_drop_frac(frame: np.ndarray, bbox: tuple[int, int, int, int], mask: 
 
     ring_values = frame[pad_y0:pad_y1, pad_x0:pad_x1][ring]
     return float(np.mean(ring_values < inside_median))
+
+
+def compute_mask_circularity(mask: np.ndarray) -> float:
+    from skimage.measure import perimeter
+
+    mask = np.asarray(mask, dtype=bool)
+    area = int(mask.sum())
+    if area == 0:
+        return 0.0
+
+    perimeter_px = float(perimeter(mask, neighborhood=4))
+    if perimeter_px <= 0.0:
+        return 0.0
+
+    circularity = 4.0 * math.pi * float(area) / (perimeter_px * perimeter_px)
+    return float(np.clip(circularity, 0.0, 1.0))
 
 
 def _affinity(node: _NodeScoreRecord, seed: _NodeScoreRecord, cfg: TrackingConfig) -> float:
