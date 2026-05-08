@@ -1216,21 +1216,23 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     viewer.close()
 
 
-def test_validated_overlay_uses_green_fill_at_full_opacity():
+def test_validated_overlay_uses_green_fill_at_default_opacity_below_spotlight():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     viewer.add_labels(np.array([[[0, 1], [1, 0]]], dtype=np.uint8), name="Tracked: Nucleus")
+    viewer.add_image(np.zeros((2, 2, 4), dtype=np.float32), name="CellSpotlight", rgb=True)
     widget._add_validated_overlay(np.array([[[0, 1], [0, 0]]], dtype=np.uint8))
 
     layer = viewer.layers["Validated: Nucleus"]
     color = layer.get_color(1)
 
     assert layer.contour == 0
-    assert layer.opacity == 1.0
+    assert layer.opacity == 0.4
     assert np.allclose(color[:3], [0.0, 1.0, 0.0], atol=1e-6)
     assert color[3] == 1.0
+    assert viewer.layers.index("Validated: Nucleus") < viewer.layers.index("CellSpotlight")
 
     widget.deleteLater()
     viewer.close()
@@ -1248,6 +1250,79 @@ def test_correction_widget_top_buttons_expand_horizontally():
         widget._goto_btn,
     ):
         assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_defaults_to_one_pixel_outlines():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    layer = viewer.add_labels(np.zeros((1, 4, 4), dtype=np.uint8), name="Tracked: Nucleus")
+
+    widget.activate_layer(layer)
+
+    assert widget._outline_btn.isChecked() is True
+    assert layer.contour == 1
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_deactivation_restores_previous_outline_width():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    layer = viewer.add_labels(np.zeros((1, 4, 4), dtype=np.uint8), name="Tracked: Nucleus")
+    layer.contour = 3
+
+    widget.activate_layer(layer)
+    widget.deactivate()
+
+    assert layer.contour == 3
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_highlight_adds_soft_spotlight():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    labels = np.zeros((1, 81, 81), dtype=np.uint8)
+    labels[0, 30:50, 30:50] = 7
+    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
+
+    widget.activate_layer(layer)
+    widget._update_highlight(0, 7)
+
+    spotlight = viewer.layers["CellSpotlight"]
+    data = np.asarray(spotlight.data)
+
+    assert spotlight.visible is True
+    assert data.shape == (81, 81, 4)
+    assert np.allclose(data[..., :3], 0.0)
+    assert data[40, 40, 3] == pytest.approx(0.0)
+    assert data[0, 40, 3] == pytest.approx(0.7)
+    assert data[20, 40, 3] == pytest.approx(0.35, abs=0.08)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_spotlight_is_not_used_as_intensity_image():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    labels = np.zeros((1, 9, 9), dtype=np.uint8)
+    labels[0, 3:6, 3:6] = 7
+    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
+
+    widget.activate_layer(layer)
+    widget._update_highlight(0, 7)
+
+    assert widget._image_frame(0) is None
 
     widget.deleteLater()
     viewer.close()

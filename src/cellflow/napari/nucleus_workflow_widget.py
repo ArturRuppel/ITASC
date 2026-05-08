@@ -86,6 +86,8 @@ _PREVIEW_LAYER = "Preview: Nucleus"
 _HYP_LAYER = "Hypothesis: Nucleus"
 _TRACKED_LAYER = "Tracked: Nucleus"
 _VALIDATED_OVERLAY = "Validated: Nucleus"
+_SPOTLIGHT_LAYER = "CellSpotlight"
+_VALIDATED_OVERLAY_OPACITY = 0.4
 _CONTOUR_LAYER = "Contour Map: Nucleus"
 _CELLPROB_LAYER = "Cellprob Map: Nucleus"
 _FOREGROUND_SCORE_LAYER = "Foreground Score: Nucleus"
@@ -3483,17 +3485,29 @@ class NucleusWorkflowWidget(QWidget):
 
     def _add_validated_overlay(self, data: np.ndarray) -> None:
         if _VALIDATED_OVERLAY in self.viewer.layers:
-            self.viewer.layers[_VALIDATED_OVERLAY].data = data
+            layer = self.viewer.layers[_VALIDATED_OVERLAY]
+            layer.data = data
+            layer.opacity = _VALIDATED_OVERLAY_OPACITY
+            self._place_validated_overlay_below_spotlight()
             return
         ov = self.viewer.add_labels(
             data,
             name=_VALIDATED_OVERLAY,
-            opacity=1.0,
+            opacity=_VALIDATED_OVERLAY_OPACITY,
             colormap=direct_colormap({None: (0, 0, 0, 0), 1: "#00ff00"}),
         )
+        self._place_validated_overlay_below_spotlight()
         # Send the active layer back to tracked so corrections still target it.
         if _TRACKED_LAYER in self.viewer.layers:
             self.viewer.layers.selection.active = self.viewer.layers[_TRACKED_LAYER]
+
+    def _place_validated_overlay_below_spotlight(self) -> None:
+        if _VALIDATED_OVERLAY not in self.viewer.layers or _SPOTLIGHT_LAYER not in self.viewer.layers:
+            return
+        validated_index = self.viewer.layers.index(_VALIDATED_OVERLAY)
+        spotlight_index = self.viewer.layers.index(_SPOTLIGHT_LAYER)
+        if validated_index > spotlight_index:
+            self.viewer.layers.move(validated_index, spotlight_index)
 
     def _refresh_validation_counter(self) -> None:
         """Update 'N tracks validated, M cell-frames covered' label."""

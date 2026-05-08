@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from scipy.ndimage import distance_transform_edt
 from skimage.measure import find_contours
 
 from cellflow.correction.labels import (
@@ -50,6 +51,9 @@ if os.environ.get("CELLFLOW_DEBUG"):
 
 _DRAW_LAYER      = "CorrectionDraw"
 _HIGHLIGHT_LAYER = "CellHighlight"
+_SPOTLIGHT_LAYER = "CellSpotlight"
+_SPOTLIGHT_OPACITY = 0.7
+_SPOTLIGHT_SCALE = 3.0
 
 
 class CorrectionWidget(QWidget):
@@ -88,6 +92,7 @@ class CorrectionWidget(QWidget):
 
         self._saved_viewer_drag_cbs: list = []
         self._saved_layer_mode: str = "pan_zoom"
+        self._saved_layer_contour: int = 0
 
         self._edit_callback: Callable[[int, set[int]], None] | None = None
 
@@ -248,10 +253,12 @@ class CorrectionWidget(QWidget):
             self._saved_viewer_drag_cbs = []
 
         self._saved_layer_mode = layer.mode
+        self._saved_layer_contour = int(layer.contour)
         layer.mode = "pan_zoom"
 
         self.viewer.layers.selection.active = layer
         self._get_draw_layer()
+        self._get_spotlight_layer()
         self._get_highlight_layer()
 
         self.viewer.dims.events.current_step.connect(self._on_dims_change)
@@ -263,6 +270,8 @@ class CorrectionWidget(QWidget):
         self._register_callbacks()
         self._activate_btn.setText("Deactivate")
         self._outline_btn.setEnabled(True)
+        self._outline_btn.setChecked(True)
+        self._toggle_outline(True)
         self._goto_btn.setEnabled(True)
         self._set_status(f"Active on '{layer.name}'")
 
@@ -296,6 +305,10 @@ class CorrectionWidget(QWidget):
                 self._layer.mode = self._saved_layer_mode
             except Exception:
                 pass
+            try:
+                self._layer.contour = self._saved_layer_contour
+            except Exception:
+                pass
 
             if hasattr(self.viewer, "mouse_drag_callbacks"):
                 self.viewer.mouse_drag_callbacks.clear()
@@ -323,6 +336,7 @@ class CorrectionWidget(QWidget):
         self._set_status("Inactive")
         self._cleanup_draw_layer()
         self._cleanup_highlight_layer()
+        self._cleanup_spotlight_layer()
 
     def activate_layer(self, layer: napari.layers.Labels) -> None:
         """Activate correction on a specific Labels layer (bypasses the UI button)."""
@@ -429,6 +443,20 @@ class CorrectionWidget(QWidget):
             self.viewer.layers.selection.active = self._layer
         return hl
 
+    def _get_spotlight_layer(self):
+        if _SPOTLIGHT_LAYER in self.viewer.layers:
+            return self.viewer.layers[_SPOTLIGHT_LAYER]
+        spotlight = self.viewer.add_image(
+            np.zeros((1, 1, 4), dtype=np.float32),
+            name=_SPOTLIGHT_LAYER,
+            rgb=True,
+            blending="translucent",
+        )
+        spotlight.visible = False
+        if self._layer is not None:
+            self.viewer.layers.selection.active = self._layer
+        return spotlight
+
     def _update_highlight(self, t: int, lab: int) -> None:
         """Redraw the cyan boundary for *lab* at time *t*. Pass 0 to clear."""
         self._selected_label = lab
@@ -436,18 +464,22 @@ class CorrectionWidget(QWidget):
         if lab == 0 or self._layer is None:
             hl.data = []
             hl.visible = False
+            self._clear_spotlight()
             return
         seg2d = self._frame_view(self._layer, t)
         if not np.any(seg2d == lab):
             hl.data = []
             hl.visible = False
+            self._clear_spotlight()
             return
         mask = (seg2d == lab).astype(np.uint8)
         contours = find_contours(mask, level=0.5)
         if not contours:
             hl.data = []
             hl.visible = False
+            self._clear_spotlight()
             return
+        self._update_spotlight(mask.astype(bool))
         contour = max(contours, key=len)
         hl.data = [contour]
         hl.shape_type = ["polygon"]
@@ -457,6 +489,53 @@ class CorrectionWidget(QWidget):
     def _cleanup_highlight_layer(self) -> None:
         if _HIGHLIGHT_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[_HIGHLIGHT_LAYER])
+
+    def _update_spotlight(self, mask: np.ndarray) -> None:
+        spotlight = self._get_spotlight_layer()
+        outer_mask = self._scaled_mask(mask, scale=_SPOTLIGHT_SCALE)
+        ring = outer_mask & ~mask
+        alpha = np.full(mask.shape, _SPOTLIGHT_OPACITY, dtype=np.float32)
+        if np.any(ring):
+            inner_dist = distance_transform_edt(~mask)
+            outer_dist = distance_transform_edt(outer_mask)
+            denom = inner_dist + outer_dist
+            ramp = np.divide(
+                inner_dist,
+                denom,
+                out=np.zeros_like(inner_dist, dtype=np.float64),
+                where=denom > 0,
+            )
+            alpha[ring] = (ramp[ring] * _SPOTLIGHT_OPACITY).astype(np.float32)
+        alpha[mask] = 0.0
+        data = np.zeros(mask.shape + (4,), dtype=np.float32)
+        data[..., 3] = alpha
+        spotlight.data = data
+        spotlight.visible = True
+        if self._layer is not None:
+            self.viewer.layers.selection.active = self._layer
+
+    @staticmethod
+    def _scaled_mask(mask: np.ndarray, *, scale: float) -> np.ndarray:
+        coords = np.argwhere(mask)
+        if coords.size == 0:
+            return np.zeros_like(mask, dtype=bool)
+        center = coords.mean(axis=0)
+        yy, xx = np.indices(mask.shape)
+        src_y = np.rint(center[0] + (yy - center[0]) / scale).astype(int)
+        src_x = np.rint(center[1] + (xx - center[1]) / scale).astype(int)
+        np.clip(src_y, 0, mask.shape[0] - 1, out=src_y)
+        np.clip(src_x, 0, mask.shape[1] - 1, out=src_x)
+        return mask[src_y, src_x]
+
+    def _clear_spotlight(self) -> None:
+        if _SPOTLIGHT_LAYER in self.viewer.layers:
+            spotlight = self.viewer.layers[_SPOTLIGHT_LAYER]
+            spotlight.data = np.zeros((1, 1, 4), dtype=np.float32)
+            spotlight.visible = False
+
+    def _cleanup_spotlight_layer(self) -> None:
+        if _SPOTLIGHT_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[_SPOTLIGHT_LAYER])
 
     def _on_dims_change(self, event=None) -> None:
         if not (self._selected_label and self._layer is not None):
@@ -496,7 +575,7 @@ class CorrectionWidget(QWidget):
     def _on_layer_removed(self, event=None) -> None:
         removed = getattr(event, "value", None)
         removed_name = getattr(removed, "name", None)
-        if removed is self._layer or removed_name in (_DRAW_LAYER, _HIGHLIGHT_LAYER):
+        if removed is self._layer or removed_name in (_DRAW_LAYER, _HIGHLIGHT_LAYER, _SPOTLIGHT_LAYER):
             log.debug("_on_layer_removed: '%s' removed, deactivating", removed_name)
             self._deactivate()
 
@@ -872,7 +951,7 @@ class CorrectionWidget(QWidget):
         if self._layer is None:
             self._outline_btn.setChecked(False)
             return
-        self._layer.contour = 2 if checked else 0
+        self._layer.contour = 1 if checked else 0
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -881,6 +960,8 @@ class CorrectionWidget(QWidget):
 
         Squeezes singleton leading dims so the result is always 2D."""
         for lyr in self.viewer.layers:
+            if getattr(lyr, "name", None) == _SPOTLIGHT_LAYER:
+                continue
             if isinstance(lyr, napari.layers.Image):
                 d = lyr.data
                 if d.ndim == 2:
