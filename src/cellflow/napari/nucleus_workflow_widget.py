@@ -628,20 +628,6 @@ class NucleusWorkflowWidget(QWidget):
 
         ultrack_db_grid = block_grid(horizontal_spacing=12)
         ultrack_db_grid.setContentsMargins(0, 0, 0, 0)
-        self.ultrack_db_mode_combo = QComboBox()
-        self.ultrack_db_mode_combo.addItems([
-            "Summary only",
-            "Hierarchy cut",
-        ])
-        add_block_pair_row(
-            ultrack_db_grid,
-            0,
-            "Mode:",
-            self.ultrack_db_mode_combo,
-            "",
-            QWidget(),
-        )
-
         self.ultrack_db_hierarchy_slider = QSlider(_Qt.Horizontal)
         self.ultrack_db_hierarchy_slider.setRange(0, 100)
         self.ultrack_db_hierarchy_slider.setValue(50)
@@ -655,8 +641,8 @@ class NucleusWorkflowWidget(QWidget):
         _slider_lay.setContentsMargins(0, 0, 0, 0)
         _slider_lay.addWidget(self.ultrack_db_hierarchy_slider)
         _slider_lay.addWidget(self.ultrack_db_height_lbl)
-        ultrack_db_grid.addWidget(self._ultrack_db_slider_row, 1, 0, 1, 4)
-        self._ultrack_db_slider_row.setVisible(False)
+        ultrack_db_grid.addWidget(self._ultrack_db_slider_row, 0, 0, 1, 4)
+        self._ultrack_db_slider_row.setVisible(True)
 
         ultrack_db_browser_lay.addLayout(ultrack_db_grid)
 
@@ -675,7 +661,6 @@ class NucleusWorkflowWidget(QWidget):
         _db_btn_lay.addWidget(self.ultrack_db_active_btn)
         _db_btn_lay.addWidget(self.ultrack_db_refresh_btn)
         ultrack_db_browser_lay.addWidget(_db_btn_row)
-        self.ultrack_db_mode_combo.setEnabled(False)
         self.ultrack_db_hierarchy_slider.setEnabled(False)
         self.ultrack_db_prob_alpha_check = QCheckBox("Node prob transparency")
         self.ultrack_db_prob_alpha_check.setToolTip("Modulate label opacity by node probability (higher quality = more opaque)")
@@ -1123,7 +1108,6 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_use_validated_check.toggled.connect(self._set_resolve_prior_controls_enabled)
         self.ultrack_db_active_btn.toggled.connect(self._on_ultrack_db_activate)
         self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
-        self.ultrack_db_mode_combo.currentTextChanged.connect(self._on_ultrack_db_mode_changed)
         self.ultrack_db_hierarchy_slider.valueChanged.connect(self._on_ultrack_db_slider_changed)
         self.ultrack_db_prob_alpha_check.toggled.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_connected_focus_check.toggled.connect(self._refresh_ultrack_db_browser)
@@ -1467,10 +1451,6 @@ class NucleusWorkflowWidget(QWidget):
     def _on_ultrack_db_browser_param_changed(self, *_args) -> None:
         self._ultrack_db_preview_cache.clear()
 
-    def _on_ultrack_db_mode_changed(self, mode: str) -> None:
-        self._ultrack_db_preview_cache.clear()
-        self._ultrack_db_slider_row.setVisible(mode == "Hierarchy cut")
-
     def _on_ultrack_db_slider_changed(self, value: int) -> None:
         if not self._ultrack_db_browser_active:
             return
@@ -1496,7 +1476,6 @@ class NucleusWorkflowWidget(QWidget):
         self._ultrack_db_browser_active = checked
         self.ultrack_db_active_btn.setText("Deactivate" if checked else "Activate")
         self.ultrack_db_refresh_btn.setEnabled(checked)
-        self.ultrack_db_mode_combo.setEnabled(checked)
         self.ultrack_db_hierarchy_slider.setEnabled(checked)
         self.ultrack_db_prob_alpha_check.setEnabled(checked)
         self.ultrack_db_connected_focus_check.setEnabled(checked)
@@ -1582,11 +1561,6 @@ class NucleusWorkflowWidget(QWidget):
                     self._set_viewer_frame(frame)
         try:
             self.ultrack_db_info_lbl.setText(self._ultrack_db_summary_text(db_path, frame))
-            mode = self.ultrack_db_mode_combo.currentText()
-            if mode == "Summary only":
-                self._set_ultrack_db_status("Summary refreshed.")
-                return
-
             mtime_ns = db_path.stat().st_mtime_ns
             states = self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, frame)
             if not states:
@@ -3541,10 +3515,7 @@ class NucleusWorkflowWidget(QWidget):
     def _on_dims_step_changed(self, event=None) -> None:
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
-        if (
-            self.ultrack_db_browser_section.is_expanded
-            and self.ultrack_db_mode_combo.currentText() == "Hierarchy cut"
-        ):
+        if self.ultrack_db_browser_section.is_expanded:
             from qtpy.QtCore import QTimer
             QTimer.singleShot(0, self._refresh_ultrack_db_browser)
 
