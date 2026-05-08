@@ -1324,6 +1324,9 @@ class NucleusWorkflowWidget(QWidget):
             "from cellflow.database.validation import read_validated_tracks\n"
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
             "from cellflow.tracking_ultrack.db_build import build_ultrack_database\n"
+            "from cellflow.tracking_ultrack.linking import run_linking\n"
+            "from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs\n"
+            "from ultrack.core.segmentation.processing import segment as _ultrack_segment\n"
             "\n"
             "if __name__ == '__main__':\n"
             f"    pos_dir = pathlib.Path({str(self._pos_dir)!r})\n"
@@ -1344,7 +1347,9 @@ class NucleusWorkflowWidget(QWidget):
             f"        max_neighbors={cfg.max_neighbors},\n"
             f"        linking_mode={cfg.linking_mode!r},\n"
             f"        iou_weight={cfg.iou_weight},\n"
+            f"        quality_weight={cfg.quality_weight},\n"
             f"        quality_exponent={cfg.quality_exponent},\n"
+            f"        circularity_weight={cfg.circularity_weight},\n"
             f"        link_n_workers={cfg.link_n_workers},\n"
             f"        seed_weight={cfg.seed_weight},\n"
             f"        seed_sigma_space={cfg.seed_sigma_space},\n"
@@ -3441,7 +3446,9 @@ class NucleusWorkflowWidget(QWidget):
             f"        max_neighbors={cfg.max_neighbors},\n"
             f"        linking_mode={cfg.linking_mode!r},\n"
             f"        iou_weight={cfg.iou_weight},\n"
+            f"        quality_weight={cfg.quality_weight},\n"
             f"        quality_exponent={cfg.quality_exponent},\n"
+            f"        circularity_weight={cfg.circularity_weight},\n"
             f"        power={cfg.power},\n"
             f"        appear_weight={cfg.appear_weight},\n"
             f"        disappear_weight={cfg.disappear_weight},\n"
@@ -4022,7 +4029,10 @@ class NucleusWorkflowWidget(QWidget):
                 "max_neighbors":    self.db_gen_max_neighbors_spin.value(),
                 "linking_mode":     self.db_gen_linking_mode_combo.currentText(),
                 "iou_weight":       self.db_gen_iou_weight_spin.value(),
+                "quality_weight":   self.db_gen_quality_weight_spin.value(),
                 "quality_exponent": self.db_gen_quality_exp_spin.value(),
+                "circularity_weight": self.db_gen_circularity_weight_spin.value(),
+                "power":            self.db_gen_power_spin.value(),
                 "n_workers":        self.db_gen_n_workers_spin.value(),
                 "use_validated":    self.db_gen_use_validated_check.isChecked(),
             },
@@ -4088,7 +4098,10 @@ class NucleusWorkflowWidget(QWidget):
                 if idx >= 0:
                     self.db_gen_linking_mode_combo.setCurrentIndex(idx)
             if "iou_weight"       in dbg: self.db_gen_iou_weight_spin.setValue(dbg["iou_weight"])
+            if "quality_weight"   in dbg: self.db_gen_quality_weight_spin.setValue(dbg["quality_weight"])
             if "quality_exponent" in dbg: self.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
+            if "circularity_weight" in dbg: self.db_gen_circularity_weight_spin.setValue(dbg["circularity_weight"])
+            if "power"            in dbg: self.db_gen_power_spin.setValue(dbg["power"])
             if "n_workers"        in dbg: self.db_gen_n_workers_spin.setValue(dbg["n_workers"])
             if "use_validated"    in dbg: self.db_gen_use_validated_check.setChecked(dbg["use_validated"])
         if "search" in state:
