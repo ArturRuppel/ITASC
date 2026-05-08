@@ -375,6 +375,10 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert not hasattr(widget, "tracking_correction_section")
     assert widget.ultrack_section.title == "4. Ultrack Tracking"
     assert widget.correction_section.title == "5. Correction"
+    assert widget.ultrack_db_browser_section.title == "Ultrack Database Browser"
+    assert widget.layout().indexOf(widget.correction_section) < widget.layout().indexOf(
+        widget.ultrack_db_browser_section
+    )
     assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
     assert widget.ultrack_section.is_expanded is False
     assert widget.correction_section.is_expanded is False
@@ -1377,6 +1381,11 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     assert widget.retrack_params_section.title == "Retrack Parameters"
     assert widget.retrack_params_section.is_expanded is False
     assert widget.extend_max_dist_spin.value() == 40.0
+    assert widget.extend_area_weight_spin.value() == 1.0
+    assert widget.extend_iou_weight_spin.value() == 1.0
+    assert widget.extend_distance_weight_spin.value() == 0.25
+    assert widget.extend_overlap_penalty_spin.value() == 1.0
+    assert widget.extend_greedy_overwrite_check.isChecked() is False
     assert widget.retrack_max_dist_spin.value() == 20.0
 
     widget.deleteLater()
@@ -1567,7 +1576,7 @@ def test_extend_track_from_db_missing_db_raises(tmp_path):
 
 # ── Task 5: New layout tests ──────────────────────────────────────────────────
 
-def test_nucleus_workflow_has_five_canonical_top_level_sections():
+def test_nucleus_workflow_has_five_canonical_sections_plus_optional_db_browser():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -1575,9 +1584,12 @@ def test_nucleus_workflow_has_five_canonical_top_level_sections():
     assert widget.contour_section.title == "1. Contour Maps"
     assert not hasattr(widget, "foreground_section")
     assert widget.db_gen_section.title == "2. Ultrack Database Generation"
-    assert widget.ultrack_db_browser_section.title == "3. Ultrack Database Browser"
     assert widget.ultrack_section.title == "4. Ultrack Tracking"
     assert widget.correction_section.title == "5. Correction"
+    assert widget.ultrack_db_browser_section.title == "Ultrack Database Browser"
+    assert widget.layout().indexOf(widget.correction_section) < widget.layout().indexOf(
+        widget.ultrack_db_browser_section
+    )
 
     assert not hasattr(widget, "tracking_correction_section")
 
@@ -2400,6 +2412,103 @@ def test_extend_fails_clearly_if_db_missing(tmp_path):
 
     text = widget.correction_status_lbl.text().lower()
     assert "data.db" in text or "database" in text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_extend_passes_weight_parameters_to_db_tracker(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+
+    pos_dir = tmp_path / "pos00"
+    db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = pos_dir
+
+    labels = np.zeros((2, 12, 12), dtype=np.uint32)
+    labels[0, 3:6, 3:6] = 7
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 7
+
+    widget.extend_max_dist_spin.setValue(31.0)
+    widget.extend_area_weight_spin.setValue(0.7)
+    widget.extend_iou_weight_spin.setValue(1.5)
+    widget.extend_distance_weight_spin.setValue(0.2)
+    widget.extend_overlap_penalty_spin.setValue(2.0)
+    widget.extend_greedy_overwrite_check.setChecked(True)
+
+    captured = {}
+
+    def fake_extend_track_from_db(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(module, "extend_track_from_db", fake_extend_track_from_db)
+
+    widget._on_extend(direction="forward")
+
+    assert captured["d_max"] == pytest.approx(31.0)
+    assert captured["area_weight"] == pytest.approx(0.7)
+    assert captured["iou_weight"] == pytest.approx(1.5)
+    assert captured["distance_weight"] == pytest.approx(0.2)
+    assert captured["overlap_penalty"] == pytest.approx(2.0)
+    assert captured["greedy_overwrite"] is True
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_extend_greedy_overwrite_paints_combined_assignments(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+
+    pos_dir = tmp_path / "pos00"
+    db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = pos_dir
+
+    labels = np.zeros((2, 32, 32), dtype=np.uint32)
+    labels[0, 5:10, 5:10] = 7
+    labels[1, 6:11, 6:11] = 9
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 7
+    widget.extend_greedy_overwrite_check.setChecked(True)
+
+    source_mask = np.zeros((32, 32), dtype=bool)
+    source_mask[6:11, 6:11] = True
+    displaced_mask = np.zeros((32, 32), dtype=bool)
+    displaced_mask[20:25, 20:25] = True
+
+    result = types.SimpleNamespace(
+        target_frame=1,
+        candidate_label=101,
+        candidate_partition=0,
+        mask_2d=source_mask,
+        bbox=(6, 6, 11, 11),
+        centroid_distance=1.0,
+        area_ratio=1.0,
+        centroid_corrected_iou=1.0,
+        existing_overlap=1.0,
+        assignments=(
+            types.SimpleNamespace(cell_id=7, mask_2d=source_mask),
+            types.SimpleNamespace(cell_id=9, mask_2d=displaced_mask),
+        ),
+    )
+    monkeypatch.setattr(module, "extend_track_from_db", lambda **_kwargs: result)
+
+    widget._on_extend(direction="forward")
+
+    frame = viewer.layers["Tracked: Nucleus"].data[1]
+    assert np.all(frame[6:11, 6:11] == 7)
+    assert np.all(frame[20:25, 20:25] == 9)
+    assert "reassigned 1 conflict" in widget.correction_status_lbl.text()
 
     widget.deleteLater()
     viewer.close()

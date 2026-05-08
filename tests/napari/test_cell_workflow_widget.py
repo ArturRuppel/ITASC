@@ -165,7 +165,9 @@ def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     assert widget.ff_flow_weight_spin.value() == 0.5
     assert widget.ff_step_scale_spin.value() == 0.2
     assert widget.ff_max_iter_spin.value() == 100
+    assert widget.ff_max_iter_spin.maximum() == 5000
     assert widget.ff_capture_radius_spin.value() == 3.0
+    assert widget.ff_capture_radius_spin.maximum() == 100.0
 
     assert widget.ff_flow_mag_btn.text() == "Create filtered_dp"
     assert widget.preview_fg_masks_btn.text() == "Preview"

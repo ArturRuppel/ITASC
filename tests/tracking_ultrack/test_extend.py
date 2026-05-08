@@ -3,33 +3,29 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import h5py
 import numpy as np
 import pytest
 
-from cellflow.database.hypotheses import HypothesisRecord, write_hypothesis_record
-from cellflow.segmentation import NucleusHypothesisParams
 from cellflow.tracking_ultrack.extend import ExtendResult, extend_track
 from cellflow.tracking_ultrack.validation_nodes import _make_node_pickle
 
 
-def _default_params(p: int = 0) -> NucleusHypothesisParams:
-    return NucleusHypothesisParams(z_slice=p)
-
-
 def _write_hyp_h5(path, records: list[tuple[int, int, np.ndarray]]) -> None:
     """Write (t, p, labels_2d) tuples into a minimal hypotheses.h5."""
+    import h5py
+
     with h5py.File(path, "w") as f:
         f.attrs["version"] = 2
         f.attrs["stage"] = "nucleus_hypotheses"
         f.attrs["layout"] = "hypotheses/t{t:03d}/p{p:03d}/labels"
         for t, p, labels_2d in records:
-            rec = HypothesisRecord(
-                t=t, p=p,
-                labels=labels_2d[np.newaxis],  # (1, Y, X)
-                params=_default_params(p),
+            group = f.require_group(f"hypotheses/t{t:03d}/p{p:03d}")
+            group.attrs["z_slice"] = p
+            group.create_dataset(
+                "labels",
+                data=labels_2d[np.newaxis].astype(np.uint32),
+                compression="gzip",
             )
-            write_hypothesis_record(f, rec)
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +181,116 @@ class TestExtendTrack:
 
         assert result is None
 
+    def test_extend_track_from_db_greedy_overwrite_reassigns_conflicted_cell(self, tmp_path):
+        """Greedy overwrite returns a combined assignment for the source and displaced cell."""
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from tests.tracking_ultrack.test_reseed import _make_engine
+
+        from cellflow.tracking_ultrack.extend import extend_track_from_db
+
+        engine = _make_engine(tmp_path / "data.db")
+
+        def add_node(session, node_id, y0, x0, y1, x1):
+            mask_2d = np.ones((y1 - y0, x1 - x0), dtype=bool)
+            node_pickle = _make_node_pickle(
+                1,
+                mask_2d,
+                np.array([y0, x0, y1, x1], dtype=np.int64),
+                node_id,
+            )
+            session.add(
+                NodeDB(
+                    id=node_id,
+                    t=1,
+                    t_node_id=node_id,
+                    t_hier_id=0,
+                    z=0,
+                    y=(y0 + y1) / 2.0,
+                    x=(x0 + x1) / 2.0,
+                    area=int(mask_2d.sum()),
+                    pickle=node_pickle,
+                )
+            )
+
+        with Session(engine) as session:
+            add_node(session, 101, 6, 6, 11, 11)    # best source candidate, conflicts with cell 9
+            add_node(session, 102, 20, 20, 25, 25)  # alternative candidate for displaced cell 9
+            session.commit()
+
+        tracked = np.zeros((2, 32, 32), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+        tracked[0, 20:25, 20:25] = 9
+        tracked[1, 6:11, 6:11] = 9
+
+        result = extend_track_from_db(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+            greedy_overwrite=True,
+        )
+
+        assert result is not None
+        assignments = {assignment.cell_id: assignment for assignment in result.assignments}
+        assert set(assignments) == {7, 9}
+        assert assignments[7].candidate_label == 101
+        assert assignments[9].candidate_label == 102
+        assert assignments[7].mask_2d[6:11, 6:11].all()
+        assert assignments[9].mask_2d[20:25, 20:25].all()
+
+    def test_extend_track_from_db_greedy_overwrite_ignores_target_only_conflict(self, tmp_path):
+        """Destination labels without a source-frame partner should not block greedy overwrite."""
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from tests.tracking_ultrack.test_reseed import _make_engine
+
+        from cellflow.tracking_ultrack.extend import extend_track_from_db
+
+        engine = _make_engine(tmp_path / "data.db")
+        mask_2d = np.ones((5, 5), dtype=bool)
+        node_pickle = _make_node_pickle(
+            1,
+            mask_2d,
+            np.array([6, 6, 11, 11], dtype=np.int64),
+            101,
+        )
+
+        with Session(engine) as session:
+            session.add(
+                NodeDB(
+                    id=101,
+                    t=1,
+                    t_node_id=101,
+                    t_hier_id=0,
+                    z=0,
+                    y=8.5,
+                    x=8.5,
+                    area=int(mask_2d.sum()),
+                    pickle=node_pickle,
+                )
+            )
+            session.commit()
+
+        tracked = np.zeros((2, 32, 32), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+        tracked[1, 6:11, 6:11] = 9
+
+        result = extend_track_from_db(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+            greedy_overwrite=True,
+        )
+
+        assert result is not None
+        assert [assignment.cell_id for assignment in result.assignments] == [7]
+        assert result.candidate_label == 101
+        assert result.mask_2d[6:11, 6:11].all()
+
     def test_forward_single_match(self, simple_hyp):
         """Forward with one close hypothesis returns a valid ExtendResult."""
         tracked, h5_path = simple_hyp
@@ -220,6 +326,38 @@ class TestExtendTrack:
         # The full cell (p=1) has area_ratio≈1.0; fragment (p=0) has ≈0.09
         assert result.candidate_partition == 1
         assert result.area_ratio > 0.9
+
+    def test_centroid_corrected_iou_breaks_equal_area_tie(self, tmp_path):
+        """Equal-area candidates should prefer the translated matching shape."""
+        tracked = np.zeros((2, H, W), dtype=np.uint32)
+        tracked[0, 10:14, 10:14] = 1
+        tracked[0, 14:18, 10:12] = 1
+
+        wrong_shape = np.zeros((H, W), dtype=np.uint32)
+        wrong_shape[10:13, 10:18] = 1
+
+        translated_match = np.zeros((H, W), dtype=np.uint32)
+        translated_match[10:14, 20:24] = 1
+        translated_match[14:18, 20:22] = 1
+
+        h5_path = tmp_path / "hypotheses.h5"
+        _write_hyp_h5(h5_path, [(1, 0, wrong_shape), (1, 1, translated_match)])
+
+        result = extend_track(
+            source_id=1,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            hypotheses_path=h5_path,
+            area_weight=1.0,
+            iou_weight=1.0,
+            distance_weight=0.0,
+            overlap_penalty=0.0,
+        )
+
+        assert result is not None
+        assert result.candidate_partition == 1
+        assert result.centroid_corrected_iou == 1.0
 
     def test_no_candidate_within_d_max_returns_none(self, far_hyp):
         """When the only hypothesis is beyond d_max, returns None."""
@@ -260,7 +398,8 @@ class TestExtendTrack:
     def test_overlap_penalty_picks_clear_candidate(self, tmp_path):
         """A perfect-area candidate occluded by another cell loses to a smaller clear candidate.
 
-        Score = area_ratio * (1 - existing_overlap).
+        With IoU and distance weights disabled:
+        Score = area_ratio - existing_overlap.
         - Occluded full match: area_ratio=1.0, overlap=0.6 → 0.40
         - Clear smaller match: area_ratio=0.64, overlap=0.0 → 0.64 (wins)
         """
@@ -286,6 +425,9 @@ class TestExtendTrack:
             direction="forward",
             tracked_labels=tracked,
             hypotheses_path=h5_path,
+            iou_weight=0.0,
+            distance_weight=0.0,
+            overlap_penalty=1.0,
         )
         assert result is not None
         assert result.candidate_partition == 1

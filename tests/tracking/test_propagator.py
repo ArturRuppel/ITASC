@@ -103,6 +103,36 @@ def test_multiple_hypotheses_same_location_picks_best():
     assert winner == 0
 
 
+def test_centroid_corrected_iou_breaks_equal_area_tie():
+    """Equal-area candidates should prefer the translated matching shape."""
+    shape = (50, 50)
+    current = np.zeros(shape, dtype=np.uint32)
+    current[10:14, 10:14] = 1
+    current[14:18, 10:12] = 1
+
+    wrong_shape = np.zeros(shape, dtype=np.uint32)
+    wrong_shape[10:13, 10:18] = 1
+
+    translated_match = np.zeros(shape, dtype=np.uint32)
+    translated_match[10:14, 20:24] = 1
+    translated_match[14:18, 20:22] = 1
+
+    next_frame, winner = find_best_hypothesis(
+        current,
+        [wrong_shape, translated_match],
+        max_dist_px=20.0,
+        area_weight=1.0,
+        iou_weight=1.0,
+        circularity_weight=0.0,
+        solidity_weight=0.0,
+    )
+
+    assert next_frame is not None
+    assert winner == 1
+    assert int(next_frame[12, 22]) == 1
+    assert int(next_frame[11, 11]) == 0
+
+
 
 def test_distant_nucleus_not_matched_to_far_candidate():
     """A nucleus with no nearby candidates stays unmatched.

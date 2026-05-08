@@ -7,6 +7,7 @@ import pickle
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import napari
 import numpy as np
@@ -608,7 +609,7 @@ class NucleusWorkflowWidget(QWidget):
         )
         layout.addWidget(self.db_gen_section)
 
-        # ── 3. Ultrack Database Browser ───────────────────────────────────
+        # ── Optional Ultrack Database Browser ──────────────────────────────
         _ultrack_db_browser_inner = QWidget()
         ultrack_db_browser_lay = QVBoxLayout(_ultrack_db_browser_inner)
         ultrack_db_browser_lay.setContentsMargins(0, 0, 0, 0)
@@ -702,9 +703,8 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_db_browser_lay.addWidget(self.ultrack_db_section_status_lbl)
 
         self.ultrack_db_browser_section = CollapsibleSection(
-            "3. Ultrack Database Browser", _ultrack_db_browser_inner, expanded=False
+            "Ultrack Database Browser", _ultrack_db_browser_inner, expanded=False
         )
-        layout.addWidget(self.ultrack_db_browser_section)
 
         # ── 4. Ultrack Tracking ───────────────────────────────────────────
 
@@ -995,13 +995,53 @@ class NucleusWorkflowWidget(QWidget):
         self.extend_max_dist_spin.setValue(40.0)
         self.extend_max_dist_spin.setSingleStep(1.0)
         self.extend_max_dist_spin.setDecimals(1)
+        self.extend_area_weight_spin = QDoubleSpinBox()
+        self.extend_area_weight_spin.setRange(0.0, 10.0)
+        self.extend_area_weight_spin.setValue(1.0)
+        self.extend_area_weight_spin.setSingleStep(0.1)
+        self.extend_area_weight_spin.setDecimals(2)
+        self.extend_iou_weight_spin = QDoubleSpinBox()
+        self.extend_iou_weight_spin.setRange(0.0, 10.0)
+        self.extend_iou_weight_spin.setValue(1.0)
+        self.extend_iou_weight_spin.setSingleStep(0.1)
+        self.extend_iou_weight_spin.setDecimals(2)
+        self.extend_distance_weight_spin = QDoubleSpinBox()
+        self.extend_distance_weight_spin.setRange(0.0, 10.0)
+        self.extend_distance_weight_spin.setValue(0.25)
+        self.extend_distance_weight_spin.setSingleStep(0.05)
+        self.extend_distance_weight_spin.setDecimals(2)
+        self.extend_overlap_penalty_spin = QDoubleSpinBox()
+        self.extend_overlap_penalty_spin.setRange(0.0, 10.0)
+        self.extend_overlap_penalty_spin.setValue(1.0)
+        self.extend_overlap_penalty_spin.setSingleStep(0.1)
+        self.extend_overlap_penalty_spin.setDecimals(2)
+        self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
         add_block_pair_row(
             extend_params_form,
             0,
             "Max Distance (px):",
             _compact(self.extend_max_dist_spin, 80),
+            "Area Weight:",
+            _compact(self.extend_area_weight_spin, 80),
             field_width=80,
         )
+        add_block_pair_row(
+            extend_params_form,
+            1,
+            "IoU Weight:",
+            _compact(self.extend_iou_weight_spin, 80),
+            "Distance Weight:",
+            _compact(self.extend_distance_weight_spin, 80),
+            field_width=80,
+        )
+        add_block_pair_row(
+            extend_params_form,
+            2,
+            "Overlap Penalty:",
+            _compact(self.extend_overlap_penalty_spin, 80),
+            field_width=80,
+        )
+        add_block_checkbox_row(extend_params_form, 3, self.extend_greedy_overwrite_check)
         extend_params_lay.addLayout(extend_params_form)
         self.extend_params_section = CollapsibleSection(
             "Extend Parameters", extend_params_inner, expanded=False
@@ -1059,6 +1099,7 @@ class NucleusWorkflowWidget(QWidget):
             "5. Correction", _corr_inner, expanded=False
         )
         layout.addWidget(self.correction_section)
+        layout.addWidget(self.ultrack_db_browser_section)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Signal wiring
@@ -3711,6 +3752,11 @@ class NucleusWorkflowWidget(QWidget):
             tracked_labels=tracked,
             db_path=db_path,
             d_max=float(self.extend_max_dist_spin.value()),
+            area_weight=float(self.extend_area_weight_spin.value()),
+            iou_weight=float(self.extend_iou_weight_spin.value()),
+            distance_weight=float(self.extend_distance_weight_spin.value()),
+            overlap_penalty=float(self.extend_overlap_penalty_spin.value()),
+            greedy_overwrite=self.extend_greedy_overwrite_check.isChecked(),
         )
 
         if result is None:
@@ -3719,20 +3765,38 @@ class NucleusWorkflowWidget(QWidget):
             )
             return
 
+        assignments = result.assignments or ()
+        if not assignments:
+            assignments = (
+                SimpleNamespace(cell_id=source_id, mask_2d=result.mask_2d),
+            )
+
         frame = layer.data[result.target_frame]
-        frame[frame == source_id] = 0
-        paintable = result.mask_2d & (frame == 0)
-        frame[paintable] = source_id
+        changed_ids = {int(assignment.cell_id) for assignment in assignments}
+        for cell_id in changed_ids:
+            frame[frame == cell_id] = 0
+
+        if self.extend_greedy_overwrite_check.isChecked():
+            for assignment in assignments:
+                frame[assignment.mask_2d] = int(assignment.cell_id)
+        else:
+            for assignment in assignments:
+                paintable = assignment.mask_2d & (frame == 0)
+                frame[paintable] = int(assignment.cell_id)
         layer.refresh()
 
         step = list(self.viewer.dims.current_step)
         step[0] = result.target_frame
         self.viewer.dims.current_step = tuple(step)
 
+        moved_text = (
+            f", reassigned {len(changed_ids) - 1} conflict(s)"
+            if len(changed_ids) > 1 else ""
+        )
         self._set_correction_status(
-            f"Extended cell {source_id} → t={result.target_frame} "
+            f"Extended cell {source_id} → t={result.target_frame}{moved_text} "
             f"(dist={result.centroid_distance:.1f}px, area={result.area_ratio:.2f}, "
-            f"overlap={result.existing_overlap:.2f})"
+            f"iou={result.centroid_corrected_iou:.2f}, overlap={result.existing_overlap:.2f})"
         )
 
     def _on_retrack_forward(self) -> None:
@@ -4026,6 +4090,14 @@ class NucleusWorkflowWidget(QWidget):
                 "n_workers":        self.db_gen_n_workers_spin.value(),
                 "use_validated":    self.db_gen_use_validated_check.isChecked(),
             },
+            "extend": {
+                "max_distance":     self.extend_max_dist_spin.value(),
+                "area_weight":      self.extend_area_weight_spin.value(),
+                "iou_weight":       self.extend_iou_weight_spin.value(),
+                "distance_weight":  self.extend_distance_weight_spin.value(),
+                "overlap_penalty":  self.extend_overlap_penalty_spin.value(),
+                "greedy_overwrite": self.extend_greedy_overwrite_check.isChecked(),
+            },
             "ultrack": {
                 "min_area":         self.ultrack_min_area_spin.value(),
                 "max_partitions":   self.ultrack_max_partitions_spin.value(),
@@ -4094,6 +4166,14 @@ class NucleusWorkflowWidget(QWidget):
             if "power"            in dbg: self.db_gen_power_spin.setValue(dbg["power"])
             if "n_workers"        in dbg: self.db_gen_n_workers_spin.setValue(dbg["n_workers"])
             if "use_validated"    in dbg: self.db_gen_use_validated_check.setChecked(dbg["use_validated"])
+        if "extend" in state:
+            ext = state["extend"]
+            if "max_distance"    in ext: self.extend_max_dist_spin.setValue(ext["max_distance"])
+            if "area_weight"     in ext: self.extend_area_weight_spin.setValue(ext["area_weight"])
+            if "iou_weight"      in ext: self.extend_iou_weight_spin.setValue(ext["iou_weight"])
+            if "distance_weight" in ext: self.extend_distance_weight_spin.setValue(ext["distance_weight"])
+            if "overlap_penalty" in ext: self.extend_overlap_penalty_spin.setValue(ext["overlap_penalty"])
+            if "greedy_overwrite" in ext: self.extend_greedy_overwrite_check.setChecked(ext["greedy_overwrite"])
         if "search" in state:
             pass  # Old propagator state — silently skip
         if "search_v2" in state:

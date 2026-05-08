@@ -1,6 +1,5 @@
 """Flow-following cell segmentation: per-frame Euler integration of the
-Cellpose flow field with an EDT-direction gravity blend toward tracked nuclei,
-plus Voronoi fill for unconverged foreground pixels."""
+Cellpose flow field with an EDT-direction gravity blend toward tracked nuclei."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -56,17 +55,6 @@ def compute_filtered_flow_vectors(
             ),
         )
     return np.asarray(filtered, dtype=np.float32)
-
-
-def _fill_foreground(labels: np.ndarray, prob_mask: np.ndarray) -> np.ndarray:
-    """Voronoi-fill any foreground pixels that the integrator did not assign."""
-    missing = prob_mask & (labels == 0)
-    if not missing.any():
-        return labels
-    _, (iy, ix) = distance_transform_edt(labels == 0, return_indices=True)
-    out = labels.copy()
-    out[missing] = labels[iy[missing], ix[missing]]
-    return out
 
 
 @numba.njit(parallel=True, cache=True)
@@ -213,7 +201,7 @@ def compute_flow_following_movie(
             float(params.capture_radius),
         )
 
-        out_labels[t] = _fill_foreground(integrated, prob_mask)
+        out_labels[t] = integrated
 
         if progress_cb is not None:
             progress_cb(t + 1, T)

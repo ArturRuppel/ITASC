@@ -7,7 +7,6 @@ from scipy.ndimage import distance_transform_edt
 
 from cellflow.segmentation.flow_following import (
     FlowFollowingParams,
-    _fill_foreground,
 )
 
 
@@ -21,48 +20,6 @@ def test_flow_following_params_defaults_match_spec():
     assert p.flow_step_scale == 0.2
     assert p.max_iterations == 100
     assert p.capture_radius == 3.0
-
-
-def test_fill_foreground_voronoi_assigns_unlabelled_foreground():
-    labels = np.zeros((6, 6), dtype=np.int32)
-    labels[1, 1] = 7
-    labels[4, 4] = 9
-    fg = np.ones((6, 6), dtype=bool)
-
-    out = _fill_foreground(labels, fg)
-
-    # Closer to seed 7 (top-left) ⇒ label 7
-    assert out[0, 0] == 7
-    assert out[2, 2] == 7
-    # Closer to seed 9 (bottom-right) ⇒ label 9
-    assert out[5, 5] == 9
-    assert out[3, 3] == 9
-    # Original seeds preserved
-    assert out[1, 1] == 7
-    assert out[4, 4] == 9
-
-
-def test_fill_foreground_skips_when_no_unlabelled_foreground():
-    labels = np.array([[1, 1], [2, 2]], dtype=np.int32)
-    fg = np.ones((2, 2), dtype=bool)
-
-    out = _fill_foreground(labels, fg)
-    np.testing.assert_array_equal(out, labels)
-
-
-def test_fill_foreground_leaves_background_zero():
-    labels = np.zeros((4, 4), dtype=np.int32)
-    labels[0, 0] = 5
-    fg = np.zeros((4, 4), dtype=bool)
-    fg[0, 0] = True
-    fg[0, 1] = True
-
-    out = _fill_foreground(labels, fg)
-    assert out[0, 0] == 5
-    assert out[0, 1] == 5
-    # Outside foreground stays zero
-    assert out[2, 2] == 0
-    assert out[3, 3] == 0
 
 
 def test_flow_integrate_captures_foreground_pixel_into_seed_label():
@@ -215,7 +172,7 @@ def test_compute_flow_following_movie_assigns_foreground_pixels_to_nucleus():
     assert (cell_labels == 7).all()
 
 
-def test_compute_flow_following_movie_voronoi_fills_zero_flow_foreground():
+def test_compute_flow_following_movie_leaves_uncaptured_zero_flow_foreground_unlabelled():
     from cellflow.segmentation.flow_following import compute_flow_following_movie
 
     T, H, W = 1, 12, 12
@@ -224,7 +181,7 @@ def test_compute_flow_following_movie_voronoi_fills_zero_flow_foreground():
     labels[0, 2, 2] = 4
     labels[0, 9, 9] = 8
 
-    # Zero flow → integrator never converges; Voronoi must fill.
+    # Zero flow with gravity disabled means only existing nuclei are labelled.
     dp = np.zeros((T, 2, H, W), dtype=np.float32)
 
     params = FlowFollowingParams(
@@ -238,10 +195,10 @@ def test_compute_flow_following_movie_voronoi_fills_zero_flow_foreground():
 
     _, cell_labels = compute_flow_following_movie(foreground, dp, labels, params)
 
-    # Every foreground pixel must end up labelled, partitioned by EDT distance.
-    assert (cell_labels[0] > 0).all()
-    assert cell_labels[0, 0, 0] == 4   # closer to seed 4
-    assert cell_labels[0, 11, 11] == 8 # closer to seed 8
+    expected = np.zeros((H, W), dtype=np.int32)
+    expected[2, 2] = 4
+    expected[9, 9] = 8
+    np.testing.assert_array_equal(cell_labels[0], expected)
 
 
 def test_compute_flow_following_movie_returns_zeros_for_empty_foreground_frame():
