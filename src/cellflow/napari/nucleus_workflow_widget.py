@@ -566,7 +566,7 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_power_spin.setValue(4.0)
         self.db_gen_power_spin.setDecimals(2)
         self.db_gen_power_spin.setToolTip(
-            "Deprecated duplicate of the solver power control"
+            "Deprecated duplicate of the solver power control; solver transform for stored weights"
         )
         self.db_gen_power_spin.setVisible(False)
 
@@ -3389,18 +3389,6 @@ class NucleusWorkflowWidget(QWidget):
             self._set_ultrack_status("No validated tracks — validate some cells first (press V).")
             return
 
-        # Show confirmation dialog before overwriting tracked_labels.tif
-        msg = QMessageBox(self.viewer.window._qt_window)
-        msg.setWindowTitle("Overwrite tracked labels?")
-        msg.setText(
-            "Resolve will overwrite `tracked_labels.tif`. If you want to preserve the current tracking, "
-            "copy the file first.\n\nContinue?"
-        )
-        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
-        msg.setDefaultButton(QMessageBox.Cancel)
-        if msg.exec() != QMessageBox.Yes:
-            self._set_ultrack_status("Resolve cancelled.")
-            return
         tracked_path = self._tracked_path()
         if tracked_path is None or not tracked_path.exists():
             self._set_ultrack_status("Tracked labels not found.")
@@ -3418,6 +3406,7 @@ class NucleusWorkflowWidget(QWidget):
 
         # Capture widget values (same as _on_resolve_with_validation)
         cfg = self._ultrack_config_from_controls()
+        cfg.power = self.db_gen_power_spin.value()
 
         python_code = (
             "import sys, pathlib\n"
@@ -3434,6 +3423,7 @@ class NucleusWorkflowWidget(QWidget):
             f"    contour_path = pathlib.Path({str(contour_path)!r})\n"
             f"    foreground_masks_path = pathlib.Path({str(fg_path)!r})\n"
             f"    tracked_path = pathlib.Path({str(tracked_path)!r})\n"
+            "    preview_path = tracked_path.with_name('tracked_labels_resolve_preview.tif')\n"
             f"    nucleus_prob_zavg_path = pathlib.Path({str(nucleus_prob_zavg_path)!r})\n"
             f"    cfg = TrackingConfig(\n"
             f"        seg_min_area={cfg.seg_min_area},\n"
@@ -3473,12 +3463,12 @@ class NucleusWorkflowWidget(QWidget):
             "    )\n"
             "    if new_labels.ndim == 4 and new_labels.shape[1] == 1:\n"
             "        new_labels = new_labels[:, 0]\n"
-            "    tifffile.imwrite(str(tracked_path), new_labels, compression='zlib')\n"
+            "    tifffile.imwrite(str(preview_path), new_labels, compression='zlib')\n"
             "    n_validated = len(validated_tracks)\n"
             "    n_total = int(np.unique(new_labels[new_labels != 0]).size)\n"
             "    print(\n"
             "        f'Done — {n_validated} validated track(s) preserved, '\n"
-            "        f'{n_total} total track(s). Saved to {tracked_path}.',\n"
+            "        f'{n_total} total track(s). Preview saved to {preview_path}; tracked_labels.tif not saved.',\n"
             "        flush=True,\n"
             "    )\n"
         )
