@@ -15,7 +15,7 @@ from skimage.filters import threshold_otsu
 
 HIGH_LABEL = "ctrl"
 LOW_LABEL = "vimentin_ko"
-METHOD = "otsu_track_median"
+METHOD = "two_cluster_track_median"
 
 
 class NLSClassificationError(ValueError):
@@ -93,6 +93,103 @@ def split_tracks_otsu(track_medians: Mapping[int, float]) -> tuple[float, dict[i
     return threshold, assignments
 
 
+def split_tracks_two_clusters(track_medians: Mapping[int, float]) -> tuple[float, dict[int, str]]:
+    """Split per-track median intensities into deterministic two-Gaussian classes."""
+    if len(track_medians) < 2:
+        raise NLSClassificationError("Cannot classify fewer than two nonzero tracks with sampled pixels")
+
+    ordered_items = sorted(
+        ((int(track_id), float(median)) for track_id, median in track_medians.items()),
+        key=lambda item: (item[1], item[0]),
+    )
+    ordered_ids = [track_id for track_id, _ in ordered_items]
+    values = np.asarray([median for _, median in ordered_items], dtype=float)
+    if np.any(~np.isfinite(values)):
+        raise NLSClassificationError("Track median intensities must be finite for two-cluster classification")
+    if np.all(values == values[0]):
+        raise NLSClassificationError("Cannot classify tracks because all track intensity scalars are identical")
+
+    if len(values) == 2:
+        high_ids = {ordered_ids[1]}
+    else:
+        high_ids = _fit_high_intensity_gaussian_cluster(ordered_ids, values)
+
+    low_values = np.asarray(
+        [median for track_id, median in zip(ordered_ids, values) if track_id not in high_ids],
+        dtype=float,
+    )
+    high_values = np.asarray(
+        [median for track_id, median in zip(ordered_ids, values) if track_id in high_ids],
+        dtype=float,
+    )
+    if low_values.size == 0 or high_values.size == 0:
+        raise NLSClassificationError(
+            "Two-cluster split assigned all tracks to one group; refusing to write classifications"
+        )
+
+    low_center = float(np.mean(low_values))
+    high_center = float(np.mean(high_values))
+    if high_center <= low_center:
+        raise NLSClassificationError("Cannot classify tracks because two-cluster centers are not separated")
+
+    threshold = (float(np.max(low_values)) + float(np.min(high_values))) / 2.0
+
+    assignments = {
+        track_id: ("high" if track_id in high_ids else "low")
+        for track_id in ordered_ids
+    }
+    high_count = sum(status == "high" for status in assignments.values())
+    low_count = sum(status == "low" for status in assignments.values())
+    if high_count == 0 or low_count == 0:
+        raise NLSClassificationError(
+            "Two-cluster split assigned all tracks to one group; refusing to write classifications"
+        )
+    return threshold, assignments
+
+
+def _fit_high_intensity_gaussian_cluster(ordered_ids: list[int], values: np.ndarray) -> set[int]:
+    global_variance = float(np.var(values))
+    min_variance = max(global_variance * 1e-6, 1e-6)
+    means = np.asarray([np.percentile(values, 25), np.percentile(values, 75)], dtype=float)
+    if means[0] == means[1]:
+        means = np.asarray([float(np.min(values)), float(np.max(values))], dtype=float)
+    variances = np.asarray([max(global_variance, min_variance), max(global_variance, min_variance)], dtype=float)
+    weights = np.asarray([0.5, 0.5], dtype=float)
+
+    for _ in range(200):
+        log_prob = np.empty((values.size, 2), dtype=float)
+        for component in range(2):
+            variance = max(float(variances[component]), min_variance)
+            weight = max(float(weights[component]), 1e-12)
+            log_prob[:, component] = (
+                np.log(weight)
+                - 0.5 * np.log(2.0 * np.pi * variance)
+                - ((values - means[component]) ** 2) / (2.0 * variance)
+            )
+
+        row_max = np.max(log_prob, axis=1, keepdims=True)
+        responsibilities = np.exp(log_prob - row_max)
+        responsibilities /= np.sum(responsibilities, axis=1, keepdims=True)
+
+        component_weights = np.sum(responsibilities, axis=0)
+        if np.any(component_weights <= 1e-9):
+            raise NLSClassificationError("Cannot classify NLS tracks because a two-cluster component is empty")
+
+        weights = component_weights / values.size
+        means = np.sum(responsibilities * values[:, np.newaxis], axis=0) / component_weights
+        variances = (
+            np.sum(responsibilities * ((values[:, np.newaxis] - means) ** 2), axis=0)
+            / component_weights
+        )
+
+    high_component = int(np.argmax(means))
+    return {
+        track_id
+        for track_id, responsibility in zip(ordered_ids, responsibilities[:, high_component])
+        if float(responsibility) >= 0.5
+    }
+
+
 def patch_position_artifact_nls_classes(
     h5_path: str | Path,
     nls_zavg_path: str | Path | None = None,
@@ -111,7 +208,7 @@ def patch_position_artifact_nls_classes(
     labels = _read_image_stack(labels_path)
     measurements = measure_track_nls_intensity(nls, labels)
     medians = {track_id: item.median_intensity for track_id, item in measurements.items()}
-    threshold, assignments = split_tracks_otsu(medians)
+    threshold, assignments = split_tracks_two_clusters(medians)
     cell_ids = _read_cell_ids(source_h5_path)
     if not set(cell_ids).intersection(assignments):
         raise NLSClassificationError(

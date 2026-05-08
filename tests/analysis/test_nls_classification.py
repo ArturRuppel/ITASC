@@ -7,6 +7,7 @@ from cellflow.analysis.nls_classification import (
     NLSClassificationError,
     measure_track_nls_intensity,
     patch_position_artifact_nls_classes,
+    split_tracks_two_clusters,
     split_tracks_otsu,
 )
 
@@ -55,13 +56,40 @@ def test_split_tracks_otsu_splits_synthetic_bimodal_track_medians():
     assert assignments == {1: "low", 2: "low", 3: "high", 4: "high"}
 
 
+def test_split_tracks_two_clusters_keeps_faint_positive_cluster_high():
+    medians = dict(
+        enumerate(
+            [106.0, 106.0, 106.0, 106.0, 107.0, 107.0, 107.0, 108.0, 124.0, 132.0, 168.0, 306.0],
+            start=1,
+        )
+    )
+
+    threshold, assignments = split_tracks_two_clusters(medians)
+
+    assert 108.0 < threshold < 124.0
+    assert assignments == {
+        1: "low",
+        2: "low",
+        3: "low",
+        4: "low",
+        5: "low",
+        6: "low",
+        7: "low",
+        8: "low",
+        9: "high",
+        10: "high",
+        11: "high",
+        12: "high",
+    }
+
+
 def test_patch_position_artifact_writes_classes_audit_columns_and_metadata(tmp_path):
     h5_path = tmp_path / "position_analysis.h5"
     _write_minimal_position_h5(h5_path, [1, 2, 99])
     nls_path = tmp_path / "NLS_zavg.tif"
     labels_path = tmp_path / "tracked_labels.tif"
     labels = np.asarray([[[1, 1, 0, 2, 2], [0, 0, 0, 0, 0]]], dtype=np.uint16)
-    nls = np.asarray([[[10.0, 12.0, 0.0, 100.0, 110.0], [0.0, 0.0, 0.0, 0.0, 0.0]]], dtype=np.float32)
+    nls = np.asarray([[[10.0, 12.0, 10.0, 100.0, 110.0], [10.0, 11.0, 10.0, 12.0, 11.0]]], dtype=np.float32)
     tifffile.imwrite(nls_path, nls)
     tifffile.imwrite(labels_path, labels)
 
@@ -80,12 +108,62 @@ def test_patch_position_artifact_writes_classes_audit_columns_and_metadata(tmp_p
         assert cells["nls_track_pixel_count"][:].tolist() == [2, 2, 0]
         assert cells["nls_track_frame_count"][:].tolist() == [1, 1, 0]
         meta = h5["cells/measurements/nls_classification"].attrs
-        assert meta["method"] == "otsu_track_median"
+        assert meta["method"] == "two_cluster_track_median"
         assert meta["high_label"] == "ctrl"
         assert meta["low_label"] == "vimentin_ko"
         assert meta["classified_track_count"] == 2
         assert meta["nls_zavg_path"] == str(nls_path)
         assert meta["nucleus_tracked_labels_path"] == str(labels_path)
+
+
+def test_patch_position_artifact_classifies_faint_signal_above_background_as_ctrl(tmp_path):
+    h5_path = tmp_path / "position_analysis.h5"
+    _write_minimal_position_h5(h5_path, range(1, 13))
+    nls_path = tmp_path / "NLS_zavg.tif"
+    labels_path = tmp_path / "tracked_labels.tif"
+    labels = np.asarray(
+        [
+            [
+                [0, 0, 0, 0, 0, 0],
+                [1, 2, 3, 4, 5, 6],
+                [7, 8, 9, 10, 11, 12],
+            ]
+        ],
+        dtype=np.uint16,
+    )
+    nls = np.asarray(
+        [
+            [
+                [104.0, 105.0, 106.0, 107.0, 108.0, 109.0],
+                [106.0, 106.0, 106.0, 106.0, 107.0, 107.0],
+                [107.0, 108.0, 124.0, 132.0, 168.0, 306.0],
+            ]
+        ],
+        dtype=np.float32,
+    )
+    tifffile.imwrite(nls_path, nls)
+    tifffile.imwrite(labels_path, labels)
+
+    summary = patch_position_artifact_nls_classes(h5_path, nls_path, labels_path)
+
+    assert summary.high_track_count == 4
+    assert summary.low_track_count == 8
+    with h5py.File(h5_path, "r") as h5:
+        cells = h5["cells/table"]
+        assert cells["class_label"].asstr()[:].tolist() == [
+            "vimentin_ko",
+            "vimentin_ko",
+            "vimentin_ko",
+            "vimentin_ko",
+            "vimentin_ko",
+            "vimentin_ko",
+            "vimentin_ko",
+            "vimentin_ko",
+            "ctrl",
+            "ctrl",
+            "ctrl",
+            "ctrl",
+        ]
 
 
 def test_patch_position_artifact_replaces_existing_nls_columns_on_rerun(tmp_path):
