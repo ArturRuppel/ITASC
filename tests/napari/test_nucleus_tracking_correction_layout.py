@@ -2326,7 +2326,7 @@ def test_ultrack_db_browser_probability_transparency_renders_rgba_preview(tmp_pa
     viewer.close()
 
 
-def test_ultrack_db_browser_summary_mode_does_not_render(tmp_path, monkeypatch):
+def test_ultrack_db_browser_shows_summary_while_rendering_hierarchy(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -2336,20 +2336,26 @@ def test_ultrack_db_browser_summary_mode_does_not_render(tmp_path, monkeypatch):
     db_path.write_bytes(b"sqlite placeholder")
     widget._pos_dir = tmp_path / "pos00"
     widget._ultrack_db_browser_active = True
-    widget._ultrack_db_frame_initialized = True  # skip middle-frame jump; no real DB to query
+    widget._ultrack_db_frame_initialized = True
 
-    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda path, frame: "summary")
+    calls = []
+    labels = np.zeros((5, 5), dtype=np.uint32)
+    monkeypatch.setattr(widget, "_current_t", lambda: 0)
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda path, frame: "summary stats")
+    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
     monkeypatch.setattr(
         widget,
         "_render_hierarchy_cut",
-        lambda *args, **kwargs: pytest.fail("summary mode must not render"),
+        lambda path, frame, height: calls.append((path, frame, height))
+        or (labels, "rendered hierarchy cut"),
     )
 
     widget._refresh_ultrack_db_browser()
 
-    assert widget.ultrack_db_info_lbl.text() == "summary"
-    assert widget.ultrack_db_section_status_lbl.text() == "Summary refreshed."
-    assert "Ultrack DB Preview" not in viewer.layers
+    assert calls == [(db_path, 0, 0.5)]
+    assert widget.ultrack_db_info_lbl.text() == "summary stats"
+    assert widget.ultrack_db_section_status_lbl.text() == "rendered hierarchy cut"
+    assert "Ultrack DB Preview" in viewer.layers
 
     widget.deleteLater()
     viewer.close()
