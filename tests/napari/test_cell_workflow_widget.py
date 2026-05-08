@@ -15,7 +15,7 @@ import tifffile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QScrollArea
+from qtpy.QtWidgets import QApplication, QLabel, QProgressBar, QScrollArea
 
 
 class _LayerCollection(dict):
@@ -84,6 +84,14 @@ def _make_sync_thread_worker():
     return fake_thread_worker
 
 
+def _label_texts(widget):
+    return [child.text() for child in widget.findChildren(QLabel)]
+
+
+def _progress_bars(widget):
+    return widget.findChildren(QProgressBar)
+
+
 def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
@@ -100,6 +108,51 @@ def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     assert widget.layout().indexOf(widget.filtered_flow_section) < widget.layout().indexOf(widget.foreground_mask_section)
     assert widget.layout().indexOf(widget.foreground_mask_section) < widget.layout().indexOf(widget.tracked_labels_section)
 
+    assert not hasattr(widget, "input_files")
+    assert not hasattr(widget, "ff_files")
+    assert not hasattr(widget, "ff_input_lbl")
+    assert not hasattr(widget, "ff_status_lbl")
+    assert not hasattr(widget, "ff_progress_bar")
+
+    assert hasattr(widget, "filtered_flow_input_files")
+    assert hasattr(widget, "filtered_flow_output_files")
+    assert hasattr(widget, "filtered_flow_status_lbl")
+    assert hasattr(widget, "filtered_flow_progress_bar")
+
+    assert hasattr(widget, "foreground_mask_input_files")
+    assert hasattr(widget, "foreground_mask_output_files")
+    assert hasattr(widget, "foreground_mask_status_lbl")
+    assert hasattr(widget, "foreground_mask_progress_bar")
+
+    assert hasattr(widget, "tracked_labels_input_files")
+    assert hasattr(widget, "tracked_labels_output_files")
+    assert hasattr(widget, "tracked_labels_status_lbl")
+    assert hasattr(widget, "tracked_labels_progress_bar")
+
+    assert widget.filtered_flow_input_files.parent() is widget.filtered_flow_params_widget
+    assert widget.filtered_flow_output_files.parent() is widget.filtered_flow_params_widget
+    assert widget.filtered_flow_status_lbl.parent() is widget.filtered_flow_params_widget
+    assert widget.filtered_flow_progress_bar.parent() is widget.filtered_flow_params_widget
+
+    assert widget.foreground_mask_input_files.parent() is widget.foreground_mask_params_widget
+    assert widget.foreground_mask_output_files.parent() is widget.foreground_mask_params_widget
+    assert widget.foreground_mask_status_lbl.parent() is widget.foreground_mask_params_widget
+    assert widget.foreground_mask_progress_bar.parent() is widget.foreground_mask_params_widget
+
+    assert widget.tracked_labels_input_files.parent() is widget.tracked_labels_params_widget
+    assert widget.tracked_labels_output_files.parent() is widget.tracked_labels_params_widget
+    assert widget.tracked_labels_status_lbl.parent() is widget.tracked_labels_params_widget
+    assert widget.tracked_labels_progress_bar.parent() is widget.tracked_labels_params_widget
+
+    assert widget.filtered_flow_progress_bar.isVisible() is False
+    assert widget.foreground_mask_progress_bar.isVisible() is False
+    assert widget.tracked_labels_progress_bar.isVisible() is False
+
+    texts = _label_texts(widget)
+    assert "min" not in texts
+    assert "max" not in texts
+    assert "step" not in texts
+
     assert widget.ff_median_time_spin.value() == 3
     assert widget.ff_median_space_spin.value() == 5
     assert widget.ff_gauss_time_spin.value() == 0.0
@@ -115,6 +168,7 @@ def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     assert widget.ff_capture_radius_spin.value() == 3.0
 
     assert widget.ff_flow_mag_btn.text() == "Create filtered_dp"
+    assert widget.preview_fg_masks_btn.text() == "Preview"
     assert widget.fg_masks_btn.text() == "Create foreground_masks"
     assert widget.ff_labels_btn.text() == "Create tracked_labels"
     assert widget.ff_cancel_btn.text() == "Cancel"
@@ -130,6 +184,7 @@ def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     assert widget.fg_flow_threshold_spin.parent() is widget.foreground_mask_params_widget
     assert widget.fg_min_size_spin.parent() is widget.foreground_mask_params_widget
     assert widget.fg_niter_spin.parent() is widget.foreground_mask_params_widget
+    assert widget.preview_fg_masks_btn.parent() is widget.foreground_mask_params_widget
     assert widget.fg_masks_btn.parent() is widget.foreground_mask_params_widget
 
     assert widget.ff_flow_weight_spin.parent() is widget.tracked_labels_params_widget
@@ -171,7 +226,7 @@ def test_widget_get_set_state_round_trips_flow_following_params(monkeypatch):
     app.processEvents()
 
 
-def test_widget_input_status_label_shows_check_for_each_required_file(monkeypatch, tmp_path):
+def test_widget_stage_file_widgets_show_present_and_missing_files(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.CellWorkflowWidget(_FakeViewer())
@@ -193,15 +248,18 @@ def test_widget_input_status_label_shows_check_for_each_required_file(monkeypatc
 
     widget.refresh(pos_dir)
 
-    text = widget.ff_input_lbl.text()
-    assert text.count("✓") == 5
-    assert "✗" not in text
+    texts = _label_texts(widget)
+    assert texts.count("✓") >= 7
+    assert "missing" in texts
+    assert widget.filtered_flow_input_files.parent() is widget.filtered_flow_params_widget
+    assert widget.foreground_mask_output_files.parent() is widget.foreground_mask_params_widget
+    assert widget.tracked_labels_input_files.parent() is widget.tracked_labels_params_widget
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_widget_input_status_label_shows_cross_when_files_missing(monkeypatch, tmp_path):
+def test_widget_stage_file_widgets_show_missing_when_files_are_absent(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.CellWorkflowWidget(_FakeViewer())
@@ -210,8 +268,9 @@ def test_widget_input_status_label_shows_cross_when_files_missing(monkeypatch, t
     pos_dir.mkdir()
     widget.refresh(pos_dir)
 
-    text = widget.ff_input_lbl.text()
-    assert text.count("✗") == 5
+    texts = _label_texts(widget)
+    assert texts.count("✗") >= 9
+    assert texts.count("missing") >= 9
 
     widget.deleteLater()
     app.processEvents()
