@@ -60,7 +60,7 @@ class CellFlowMainWidget(QWidget):
         # Add sections
         self.data_panel = ProjectStatusPanel(self.viewer)
         self.data_section = CollapsibleSection(
-            "Project Status", self.data_panel, expanded=True, title_color="#ADD8E6"
+            "Project Status", self.data_panel, expanded=False, title_color="#ADD8E6"
         )
 
         self._data_prep_widget = DataPrepWidget(self.viewer, self)

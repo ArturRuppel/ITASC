@@ -6,6 +6,10 @@ from cellflow.segmentation.flow_following import (
     compute_filtered_flow_vectors,
     compute_flow_following_movie,
 )
+from cellflow.segmentation.contour_filtering import (
+    ContourFilterParams,
+    compute_filtered_contour_maps,
+)
 
 import warnings
 from collections.abc import Callable
@@ -433,6 +437,7 @@ def build_consensus_boundary(
     dp_3d: np.ndarray,
     cellprob_thresholds: list[float],
     gamma: float = 1.0,
+    flow_threshold: float = 0.0,
     *,
     mask_callback: Callable[[np.ndarray, int], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -464,7 +469,7 @@ def build_consensus_boundary(
             result = compute_masks(
                 dp_3d[z], prob_3d[z],
                 cellprob_threshold=float(thresh),
-                flow_threshold=0.0,
+                flow_threshold=float(flow_threshold),
                 niter=200,
                 do_3D=False,
                 device=device,

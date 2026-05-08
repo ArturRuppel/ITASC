@@ -138,7 +138,7 @@ class CellWorkflowWidget(QWidget):
         filter_lay.addWidget(self.filtered_flow_output_files)
 
         self.filtered_flow_section = CollapsibleSection(
-            "Filtered Flow", self.filtered_flow_params_widget, expanded=True
+            "Filtered Flow", self.filtered_flow_params_widget, expanded=False
         )
         layout.addWidget(self.filtered_flow_section)
 
@@ -181,7 +181,7 @@ class CellWorkflowWidget(QWidget):
         fg_lay.addWidget(self.foreground_mask_output_files)
 
         self.foreground_mask_section = CollapsibleSection(
-            "Foreground Mask", self.foreground_mask_params_widget, expanded=True
+            "Foreground Mask", self.foreground_mask_params_widget, expanded=False
         )
         layout.addWidget(self.foreground_mask_section)
 
@@ -223,7 +223,7 @@ class CellWorkflowWidget(QWidget):
         labels_lay.addWidget(self.tracked_labels_output_files)
 
         self.tracked_labels_section = CollapsibleSection(
-            "Tracked Cell Labels", self.tracked_labels_params_widget, expanded=True
+            "Tracked Cell Labels", self.tracked_labels_params_widget, expanded=False
         )
         layout.addWidget(self.tracked_labels_section)
 

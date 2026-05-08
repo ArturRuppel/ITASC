@@ -138,6 +138,41 @@ def test_consensus_boundary_accumulates_foreground_from_cellpose_masks(monkeypat
     assert calls == [0.1, 0.1, 0.6, 0.6]
 
 
+def test_consensus_boundary_passes_flow_threshold_to_cellpose(monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    def fake_compute_masks(_dp, _prob, **kwargs):
+        calls.append(kwargs)
+        return np.array([[1, 0], [0, 0]], dtype=np.uint32)
+
+    fake_cellpose = types.ModuleType("cellpose")
+    fake_dynamics = types.ModuleType("cellpose.dynamics")
+    fake_dynamics.compute_masks = fake_compute_masks
+    monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
+    monkeypatch.setitem(sys.modules, "cellpose.dynamics", fake_dynamics)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        types.SimpleNamespace(
+            cuda=types.SimpleNamespace(is_available=lambda: False),
+            device=lambda name: name,
+        ),
+    )
+
+    prob = np.ones((1, 2, 2), dtype=np.float32)
+    dp = np.zeros((1, 2, 2, 2), dtype=np.float32)
+
+    segmentation.build_consensus_boundary(
+        prob,
+        dp,
+        [0.2],
+        gamma=1.0,
+        flow_threshold=1.3,
+    )
+
+    assert calls[0]["flow_threshold"] == 1.3
+
+
 def test_cellpose_foreground_masks_use_zavg_probability_and_filtered_flow(monkeypatch):
     masks_by_call = [
         np.array([[1, 0], [0, 2]], dtype=np.uint32),

@@ -207,6 +207,27 @@ def test_main_widget_labels_the_outer_nucleus_workflow_section():
     viewer.close()
 
 
+def test_main_widget_sections_are_collapsed_by_default():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    sections = (
+        widget.data_section,
+        widget.prep_section,
+        widget.cellpose_section,
+        widget.hpc_cellpose_section,
+        widget.nucleus_section,
+        widget.cell_section,
+        widget.analysis_section,
+        widget.nls_classification_section,
+    )
+    assert all(section.is_expanded is False for section in sections)
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_main_widget_project_header_uses_compact_action_controls():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
@@ -353,6 +374,8 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert widget.ultrack_section.title == "4. Ultrack Tracking"
     assert widget.correction_section.title == "5. Correction"
     assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
+    assert widget.ultrack_section.is_expanded is False
+    assert widget.correction_section.is_expanded is False
     assert widget.correction_shortcuts_section.is_expanded is False
     assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
     correction_inner = widget.correction_section._content_frame.layout().itemAt(0).widget()
@@ -489,6 +512,10 @@ def test_contour_maps_section_exposes_stage_files_and_foreground_threshold():
     assert widget.contour_fg_threshold_spin.maximum() == 1.0
     assert widget.contour_fg_threshold_spin.value() == 0.5
     assert widget.contour_fg_threshold_spin.singleStep() == 0.01
+    assert widget.contour_flow_threshold_spin.minimum() == 0.0
+    assert widget.contour_flow_threshold_spin.maximum() == 10.0
+    assert widget.contour_flow_threshold_spin.value() == 0.0
+    assert widget.contour_flow_threshold_spin.singleStep() == 0.1
 
     input_text = " ".join(
         label.text()
@@ -500,6 +527,7 @@ def test_contour_maps_section_exposes_stage_files_and_foreground_threshold():
     )
     assert "1_cellpose/nucleus_prob_3dt.tif" in input_text
     assert "1_cellpose/nucleus_dp_3dt.tif" in input_text
+    assert "Flow threshold:" in _label_texts(widget.contour_section)
     assert "2_nucleus/foreground_masks.tif" in output_text
     assert "2_nucleus/foreground_scores.tif" in output_text
     assert "2_nucleus/contour_maps.tif" in output_text
@@ -932,6 +960,7 @@ def test_contour_maps_parameters_expand_and_scroll_when_narrow():
         widget.cp_min_spin,
         widget.cp_max_spin,
         widget.cp_step_spin,
+        widget.contour_flow_threshold_spin,
         widget.cp_gamma_min_spin,
         widget.cp_gamma_max_spin,
         widget.cp_gamma_step_spin,
@@ -985,7 +1014,15 @@ def test_contour_maps_build_writes_contour_scores_and_thresholded_masks(tmp_path
     tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif", np.zeros((2, 1, 3, 3), dtype=np.float32))
     tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif", np.zeros((2, 1, 2, 3, 3), dtype=np.float32))
 
-    def fake_build(prob_3d, _dp_3d, _thresholds, _gammas, *, mask_callback=None):
+    def fake_build(
+        prob_3d,
+        _dp_3d,
+        _thresholds,
+        _gammas,
+        *,
+        flow_threshold=0.0,
+        mask_callback=None,
+    ):
         frame_value = 0.25 if float(prob_3d[0, 0, 0]) == 0.0 else 0.75
         boundary = np.full((3, 3), frame_value, dtype=np.float32)
         foreground = np.array(
@@ -1014,6 +1051,89 @@ def test_contour_maps_build_writes_contour_scores_and_thresholded_masks(tmp_path
     assert "✓" in output_texts
     assert "Contour maps and foreground masks built." in widget.contour_status_lbl.text()
     assert widget.build_progress_bar.isVisible() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_contour_maps_build_passes_flow_threshold_to_builder(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+    widget._pos_dir = pos_dir
+    widget.contour_flow_threshold_spin.setValue(1.2)
+
+    import tifffile
+
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif",
+        np.zeros((1, 1, 3, 3), dtype=np.float32),
+    )
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif",
+        np.zeros((1, 1, 2, 3, 3), dtype=np.float32),
+    )
+    captured: dict[str, float] = {}
+
+    def fake_build(
+        _prob_3d,
+        _dp_3d,
+        _thresholds,
+        _gammas,
+        *,
+        flow_threshold,
+        mask_callback=None,
+    ):
+        captured["flow_threshold"] = flow_threshold
+        return (
+            np.zeros((3, 3), dtype=np.float32),
+            np.ones((3, 3), dtype=np.float32),
+        )
+
+    monkeypatch.setattr(widget, "_build_consensus_boundary_averaged", fake_build)
+
+    widget._on_build_contour_maps()
+
+    assert captured["flow_threshold"] == pytest.approx(1.2)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_contour_terminal_script_includes_flow_threshold(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    captured = _install_terminal_capture(monkeypatch)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+    widget._pos_dir = pos_dir
+    widget.contour_flow_threshold_spin.setValue(1.4)
+
+    import tifffile
+
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif",
+        np.zeros((1, 1, 3, 3), dtype=np.float32),
+    )
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif",
+        np.zeros((1, 1, 2, 3, 3), dtype=np.float32),
+    )
+
+    widget._on_run_contour_terminal()
+    script = _read_launched_script(captured)
+
+    assert "flow_threshold = 1.4" in script
+    assert "flow_threshold=flow_threshold" in script
 
     widget.deleteLater()
     viewer.close()
@@ -1118,6 +1238,25 @@ def test_contour_filter_controls_persist_through_state():
     assert widget.contour_filter_median_space_spin.value() == 5
     assert abs(widget.contour_filter_gauss_time_spin.value() - 1.5) < 0.01
     assert abs(widget.contour_filter_gauss_space_spin.value() - 2.5) < 0.01
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_contour_flow_threshold_persists_through_state():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.contour_flow_threshold_spin.setValue(1.7)
+
+    state = widget.get_state()
+    widget.deleteLater()
+
+    widget = widget_class(viewer)
+    widget.set_state(state)
+
+    assert widget.contour_flow_threshold_spin.value() == pytest.approx(1.7)
 
     widget.deleteLater()
     viewer.close()
@@ -1445,6 +1584,7 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "contour_status_lbl")
     assert hasattr(widget, "build_progress_bar")
     assert hasattr(widget, "contour_fg_threshold_spin")
+    assert hasattr(widget, "contour_flow_threshold_spin")
     assert hasattr(widget, "contour_filter_median_time_spin")
     assert hasattr(widget, "contour_filter_median_space_spin")
     assert hasattr(widget, "contour_filter_gauss_time_spin")

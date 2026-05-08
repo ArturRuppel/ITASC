@@ -101,9 +101,9 @@ def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     assert widget.filtered_flow_section.title == "Filtered Flow"
     assert widget.foreground_mask_section.title == "Foreground Mask"
     assert widget.tracked_labels_section.title == "Tracked Cell Labels"
-    assert widget.filtered_flow_section.is_expanded is True
-    assert widget.foreground_mask_section.is_expanded is True
-    assert widget.tracked_labels_section.is_expanded is True
+    assert widget.filtered_flow_section.is_expanded is False
+    assert widget.foreground_mask_section.is_expanded is False
+    assert widget.tracked_labels_section.is_expanded is False
     assert widget.findChildren(QScrollArea) == []
     assert widget.layout().indexOf(widget.filtered_flow_section) < widget.layout().indexOf(widget.foreground_mask_section)
     assert widget.layout().indexOf(widget.foreground_mask_section) < widget.layout().indexOf(widget.tracked_labels_section)

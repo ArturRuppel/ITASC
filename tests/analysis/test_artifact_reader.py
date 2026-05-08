@@ -34,6 +34,8 @@ def test_read_position_artifact_reconstructs_edges_and_centroids(tmp_path):
     centroids = artifact.centroid_points()
     assert centroids.shape == (4, 3)
     np.testing.assert_allclose(centroids[:, 0], [0, 0, 1, 1])
+    assert artifact.cell_tracked_labels_path == str(pos_dir / "cell" / "tracked_labels.tif")
+    assert artifact.nucleus_tracked_labels_path == str(pos_dir / "nucleus" / "tracked_labels.tif")
 
     lines = artifact.edge_lines()
     assert len(lines) == len(artifact.edges["frame"])

@@ -28,6 +28,12 @@ class _FakeViewer:
         self.calls.append(("points", name, np.asarray(data), kwargs))
         return layer
 
+    def add_labels(self, data, *, name, **kwargs):
+        layer = SimpleNamespace(data=np.asarray(data), name=name, **kwargs)
+        self.layers[name] = layer
+        self.calls.append(("labels", name, np.asarray(data), kwargs))
+        return layer
+
     def add_shapes(self, data, *, name, shape_type, **kwargs):
         layer = SimpleNamespace(data=list(data), name=name, shape_type=shape_type, **kwargs)
         self.layers[name] = layer
@@ -80,6 +86,49 @@ def _make_artifact() -> dict[str, dict[str, np.ndarray]]:
             "location_x": np.asarray([8.5], dtype=float),
         },
     }
+
+
+def _make_artifact_with_label_paths(tmp_path) -> dict[str, object]:
+    artifact = _make_artifact()
+    cell_labels = np.zeros((2, 4, 4), dtype=np.uint16)
+    cell_labels[0, 1:3, 1:3] = 11
+    cell_labels[1, 2:4, 2:4] = 12
+    nucleus_labels = np.zeros((2, 4, 4), dtype=np.uint16)
+    nucleus_labels[0, 1, 1] = 11
+    nucleus_labels[1, 2, 2] = 12
+
+    import tifffile
+
+    cell_path = tmp_path / "cell_labels.tif"
+    nucleus_path = tmp_path / "nucleus_labels.tif"
+    tifffile.imwrite(cell_path, cell_labels)
+    tifffile.imwrite(nucleus_path, nucleus_labels)
+    artifact["cell_tracked_labels_path"] = str(cell_path)
+    artifact["nucleus_tracked_labels_path"] = str(nucleus_path)
+    return artifact
+
+
+def _add_t1_edge_pair(artifact: dict[str, object]) -> None:
+    edges = artifact["edges"]
+    assert isinstance(edges, dict)
+    edges["frame"] = np.asarray([0, 1, 4, 5], dtype=int)
+    edges["edge_id"] = np.asarray([101, 103, 102, 102], dtype=int)
+    edges["cell_a"] = np.asarray([11, 12, 11, 11], dtype=int)
+    edges["cell_b"] = np.asarray([13, 0, 12, 13], dtype=int)
+    edges["kind"] = np.asarray(["cell_cell", "border", "cell_cell", "cell_cell"], dtype=object)
+    edges["edge_label"] = np.asarray(["junction", "border", "before_t1", "after_t1"], dtype=object)
+    edges["length"] = np.asarray([2.5, 3.5, 4.0, 4.5], dtype=float)
+    edges["is_t1_frame"] = np.asarray([False, False, True, False], dtype=bool)
+    edges["coord_offset"] = np.asarray([0, 3, 6, 9], dtype=int)
+    edges["coord_count"] = np.asarray([3, 3, 3, 3], dtype=int)
+    artifact["coord_y"] = np.asarray(
+        [1.0, 1.0, 2.0, 0.0, 0.0, 0.0, 9.0, 9.0, 10.0, 8.0, 8.0, 9.0],
+        dtype=float,
+    )
+    artifact["coord_x"] = np.asarray(
+        [4.0, 5.0, 5.0, 0.0, 1.0, 2.0, 8.0, 9.0, 9.0, 8.5, 9.5, 9.5],
+        dtype=float,
+    )
 
 
 def test_build_cell_centroid_points_returns_frame_prefixed_points_and_features(monkeypatch):
@@ -161,19 +210,23 @@ def test_build_edge_shapes_can_color_by_edge_label(monkeypatch):
     np.testing.assert_array_equal(features["edge_label"], ["same_label", "same_label"])
 
 
-def test_add_artifact_layers_can_color_cells_by_class_label(monkeypatch):
+def test_add_artifact_layers_can_color_cells_by_class_label(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
+    artifact = _make_artifact_with_label_paths(tmp_path)
     artifact["cells"]["class_label"] = np.asarray(["epithelial", "epithelial"], dtype=object)
     viewer = _FakeViewer()
 
     mod.add_artifact_layers(viewer, artifact, color_cells_by_label=True)
 
     cell_call = viewer.calls[0]
-    face_colors = np.asarray(cell_call[3]["face_color"])
-    assert face_colors.shape == (2, 4)
-    np.testing.assert_allclose(face_colors[0], face_colors[1])
-    assert cell_call[3]["border_width"] == 0
+    color_map = cell_call[3]["colormap"].color_dict
+    np.testing.assert_allclose(color_map[11], color_map[12])
+    np.testing.assert_allclose(color_map[None], [0.0, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(color_map[0], [0.0, 0.0, 0.0, 0.0])
+    nucleus_call = viewer.calls[1]
+    nucleus_color_map = nucleus_call[3]["colormap"].color_dict
+    np.testing.assert_allclose(nucleus_color_map[11], color_map[11])
+    np.testing.assert_allclose(nucleus_color_map[12], color_map[12])
 
 
 def test_build_edge_shapes_filters_edges_with_fewer_than_two_coords(monkeypatch):
@@ -201,17 +254,23 @@ def test_build_edge_shapes_filters_edges_with_fewer_than_two_coords(monkeypatch)
     np.testing.assert_array_equal(features["edge_id"], [101, 102])
 
 
-def test_build_t1_points_returns_frame_prefixed_points_and_features(monkeypatch):
+def test_build_t1_edge_shapes_returns_before_and_after_transition_edges(monkeypatch):
     mod = _load_module(monkeypatch)
     artifact = _make_artifact()
+    _add_t1_edge_pair(artifact)
 
-    points, features = mod.build_t1_points(artifact)
+    lines, colors, features = mod.build_t1_edge_shapes(artifact)
 
-    assert points.shape == (1, 3)
-    np.testing.assert_allclose(points[0], [4.0, 9.5, 8.5])
+    assert len(lines) == 2
+    np.testing.assert_allclose(lines[0], [[4.0, 9.0, 8.0], [4.0, 9.0, 9.0], [4.0, 10.0, 9.0]])
+    np.testing.assert_allclose(lines[1], [[5.0, 8.0, 8.5], [5.0, 8.0, 9.5], [5.0, 9.0, 9.5]])
+    assert colors.shape == (2, 4)
+    np.testing.assert_allclose(colors, [[0.0, 1.0, 0.9, 1.0], [0.0, 1.0, 0.9, 1.0]])
     assert set(features) == {
         "t1_event_id",
         "frame",
+        "transition_frame",
+        "transition_side",
         "edge_id",
         "losing_cell_a",
         "losing_cell_b",
@@ -220,31 +279,47 @@ def test_build_t1_points_returns_frame_prefixed_points_and_features(monkeypatch)
         "location_y",
         "location_x",
     }
-    np.testing.assert_array_equal(features["t1_event_id"], [7])
-    np.testing.assert_array_equal(features["edge_id"], [102])
+    np.testing.assert_array_equal(features["t1_event_id"], [7, 7])
+    np.testing.assert_array_equal(features["frame"], [4, 5])
+    np.testing.assert_array_equal(features["transition_frame"], [4, 4])
+    np.testing.assert_array_equal(features["transition_side"], ["before", "after"])
+    np.testing.assert_array_equal(features["edge_id"], [102, 102])
 
 
-def test_add_artifact_layers_uses_fake_viewer_and_styles_t1_points(monkeypatch):
+def test_add_artifact_layers_uses_fake_viewer_and_styles_t1_edges(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
+    artifact = _make_artifact_with_label_paths(tmp_path)
+    _add_t1_edge_pair(artifact)
     viewer = _FakeViewer()
 
     layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
 
     assert [layer.name for layer in layers] == [
-        "[Artifact] Cell centroids",
+        "[Artifact] Cell labels",
+        "[Artifact] Nucleus labels",
         "[Artifact] Edges",
-        "[Artifact] T1 events",
+        "[Artifact] T1 edges",
     ]
-    assert [call[0] for call in viewer.calls] == ["points", "shapes", "points"]
-    t1_call = viewer.calls[2]
-    assert t1_call[3]["symbol"] == "star"
-    assert t1_call[3]["face_color"] == "red"
-    assert t1_call[3]["border_color"] == "red"
-    edge_call = viewer.calls[1]
+    assert [call[0] for call in viewer.calls] == ["labels", "labels", "shapes", "shapes"]
+    cell_call = viewer.calls[0]
+    nucleus_call = viewer.calls[1]
+    assert cell_call[2].shape == (2, 4, 4)
+    assert nucleus_call[2].shape == (2, 4, 4)
+    t1_call = viewer.calls[3]
+    assert t1_call[3]["shape_type"] == "path"
+    assert t1_call[3]["edge_width"] == 1
+    assert t1_call[3]["face_color"] == "transparent"
+    np.testing.assert_allclose(
+        np.asarray(t1_call[3]["edge_color"]),
+        [[0.0, 1.0, 0.9, 1.0], [0.0, 1.0, 0.9, 1.0]],
+    )
+    np.testing.assert_array_equal(t1_call[3]["features"]["transition_side"], ["before", "after"])
+    edge_call = viewer.calls[2]
     assert edge_call[3]["shape_type"] == "path"
+    assert edge_call[3]["edge_width"] == 1
     assert edge_call[3]["face_color"] == "transparent"
     np.testing.assert_allclose(np.asarray(edge_call[3]["edge_color"])[1], [0.6, 0.6, 0.6, 1.0])
-    assert "[Artifact] Cell centroids" in viewer.layers
+    assert "[Artifact] Cell labels" in viewer.layers
+    assert "[Artifact] Nucleus labels" in viewer.layers
     assert "[Artifact] Edges" in viewer.layers
-    assert "[Artifact] T1 events" in viewer.layers
+    assert "[Artifact] T1 edges" in viewer.layers

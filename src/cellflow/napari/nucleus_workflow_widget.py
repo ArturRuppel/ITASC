@@ -184,6 +184,11 @@ class NucleusWorkflowWidget(QWidget):
             grid.setColumnStretch(3, 1)
             return grid
 
+        def _param_group_label(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setStyleSheet("font-weight: 600;")
+            return label
+
         # ── 1. Contour Maps ───────────────────────────────────────────────
         _contour_inner = QWidget()
         contour_lay = QVBoxLayout(_contour_inner)
@@ -216,7 +221,6 @@ class NucleusWorkflowWidget(QWidget):
         ])
         cp_params_lay.addWidget(self.contour_input_files)
 
-        contour_sweep_grid = _param_grid()
         self.cp_min_spin = QDoubleSpinBox()
         self.cp_min_spin.setRange(-20.0, 20.0)
         self.cp_min_spin.setValue(-3.0)
@@ -242,6 +246,18 @@ class NucleusWorkflowWidget(QWidget):
         self.cp_step_spin.setSingleStep(0.5)
         self.cp_step_spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
         self.cp_step_spin.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.contour_flow_threshold_spin = QDoubleSpinBox()
+        self.contour_flow_threshold_spin.setRange(0.0, 10.0)
+        self.contour_flow_threshold_spin.setValue(0.0)
+        self.contour_flow_threshold_spin.setDecimals(2)
+        self.contour_flow_threshold_spin.setSingleStep(0.1)
+        self.contour_flow_threshold_spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+        self.contour_flow_threshold_spin.setToolTip(
+            "Cellpose flow error threshold passed to compute_masks. 0 disables filtering."
+        )
+        self.contour_flow_threshold_spin.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
 
@@ -292,17 +308,38 @@ class NucleusWorkflowWidget(QWidget):
         self.save_source_check.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
+        contour_sweep_grid = _param_grid()
         add_parameter_grid_row(contour_sweep_grid, 0, 0, "Cellprob min:", self.cp_min_spin)
         add_parameter_grid_row(contour_sweep_grid, 0, 1, "Cellprob max:", self.cp_max_spin)
         add_parameter_grid_row(contour_sweep_grid, 1, 0, "Cellprob step:", self.cp_step_spin)
-        add_parameter_grid_row(contour_sweep_grid, 1, 1, "FG threshold:", self.contour_fg_threshold_spin)
-        add_parameter_grid_row(contour_sweep_grid, 2, 0, "Gamma min:", self.cp_gamma_min_spin)
-        add_parameter_grid_row(contour_sweep_grid, 2, 1, "Gamma max:", self.cp_gamma_max_spin)
-        add_parameter_grid_row(contour_sweep_grid, 3, 0, "Gamma step:", self.cp_gamma_step_spin)
+        add_parameter_grid_row(contour_sweep_grid, 1, 1, "Flow threshold:", self.contour_flow_threshold_spin)
+        cp_params_lay.addWidget(_param_group_label("Cellpose mask sweep"))
+        cp_params_lay.addLayout(contour_sweep_grid)
+
+        contour_gamma_grid = _param_grid()
+        add_parameter_grid_row(contour_gamma_grid, 0, 0, "Gamma min:", self.cp_gamma_min_spin)
+        add_parameter_grid_row(contour_gamma_grid, 0, 1, "Gamma max:", self.cp_gamma_max_spin)
+        add_parameter_grid_row(contour_gamma_grid, 1, 0, "Gamma step:", self.cp_gamma_step_spin)
+        cp_params_lay.addWidget(_param_group_label("Gamma averaging"))
+        cp_params_lay.addLayout(contour_gamma_grid)
+
+        contour_output_grid = _param_grid()
+        add_parameter_grid_row(contour_output_grid, 0, 0, "FG threshold:", self.contour_fg_threshold_spin)
+        contour_output_grid.addWidget(
+            self.save_source_check,
+            0,
+            2,
+            1,
+            2,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        cp_params_lay.addWidget(_param_group_label("Foreground output"))
+        cp_params_lay.addLayout(contour_output_grid)
         for spin in (
             self.cp_min_spin,
             self.cp_max_spin,
             self.cp_step_spin,
+            self.contour_flow_threshold_spin,
             self.cp_gamma_min_spin,
             self.cp_gamma_max_spin,
             self.cp_gamma_step_spin,
@@ -311,15 +348,6 @@ class NucleusWorkflowWidget(QWidget):
             spin.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
             )
-        contour_sweep_grid.addWidget(
-            self.save_source_check,
-            3,
-            2,
-            1,
-            2,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-        )
-        cp_params_lay.addLayout(contour_sweep_grid)
 
         self.preview_contour_btn = QPushButton("Preview")
         self.preview_contour_btn.setToolTip(
@@ -394,6 +422,7 @@ class NucleusWorkflowWidget(QWidget):
             spin.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
             )
+        cp_params_lay.addWidget(_param_group_label("Post-filter contour maps"))
         cp_params_lay.addLayout(contour_filter_grid)
 
         self.preview_contour_filter_btn = QPushButton("Preview Filter")
@@ -905,7 +934,7 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.addWidget(ultrack_attrib)
 
         self.ultrack_section = CollapsibleSection(
-            "4. Ultrack Tracking", _ultrack_inner, expanded=True
+            "4. Ultrack Tracking", _ultrack_inner, expanded=False
         )
         layout.addWidget(self.ultrack_section)
 
@@ -1008,7 +1037,7 @@ class NucleusWorkflowWidget(QWidget):
         _corr_inner_lay.addWidget(self.correction_shortcuts_section)
 
         self.correction_section = CollapsibleSection(
-            "5. Correction", _corr_inner, expanded=True
+            "5. Correction", _corr_inner, expanded=False
         )
         layout.addWidget(self.correction_section)
 
@@ -2534,6 +2563,7 @@ class NucleusWorkflowWidget(QWidget):
         thresholds: list[float],
         gammas: list[float],
         *,
+        flow_threshold: float = 0.0,
         mask_callback=None,
     ) -> tuple[np.ndarray, np.ndarray]:
         from cellflow.segmentation import build_consensus_boundary
@@ -2545,7 +2575,14 @@ class NucleusWorkflowWidget(QWidget):
             if mask_callback is not None:
                 def cb(masks, i_thresh, *, _gi=g_idx):
                     mask_callback(masks, _gi, i_thresh)
-            b, fg = build_consensus_boundary(prob_3d, dp_3d, thresholds, gamma=g, mask_callback=cb)
+            b, fg = build_consensus_boundary(
+                prob_3d,
+                dp_3d,
+                thresholds,
+                gamma=g,
+                flow_threshold=flow_threshold,
+                mask_callback=cb,
+            )
             if boundary_sum is None:
                 boundary_sum  = b.copy()
                 foreground_sum = fg.copy()
@@ -2574,6 +2611,7 @@ class NucleusWorkflowWidget(QWidget):
         score_path      = self._foreground_scores_path()
         mask_path       = self._foreground_masks_path()
         foreground_threshold = self.contour_fg_threshold_spin.value()
+        flow_threshold = self.contour_flow_threshold_spin.value()
         save_source     = self.save_source_check.isChecked()
         pos_dir         = self._pos_dir
         build_fn        = self._build_consensus_boundary_averaged
@@ -2611,7 +2649,12 @@ class NucleusWorkflowWidget(QWidget):
                             masks, compression="zlib",
                         )
                 boundary, foreground_score = build_fn(
-                    prob_stack[t], dp_stack[t], thresholds, gammas, mask_callback=mask_cb
+                    prob_stack[t],
+                    dp_stack[t],
+                    thresholds,
+                    gammas,
+                    flow_threshold=flow_threshold,
+                    mask_callback=mask_cb,
                 )
                 contour_frames.append(boundary.astype(np.float32, copy=False))
                 foreground_score = foreground_score.astype(np.float32, copy=False)
@@ -2681,6 +2724,7 @@ class NucleusWorkflowWidget(QWidget):
         t_frame    = self._current_t()
         thresholds = list(np.arange(self.cp_min_spin.value(), self.cp_max_spin.value() + self.cp_step_spin.value() / 2, self.cp_step_spin.value()))
         gammas     = self._cp_gammas()
+        flow_threshold = self.contour_flow_threshold_spin.value()
         build_fn   = self._build_consensus_boundary_averaged
 
         def _on_preview_done(result):
@@ -2740,7 +2784,13 @@ class NucleusWorkflowWidget(QWidget):
                 dp_stack = dp_stack[np.newaxis]
             n_t = min(prob_stack.shape[0], dp_stack.shape[0])
             t_idx = min(max(t_frame, 0), n_t - 1)
-            boundary, foreground = build_fn(prob_stack[t_idx], dp_stack[t_idx], thresholds, gammas)
+            boundary, foreground = build_fn(
+                prob_stack[t_idx],
+                dp_stack[t_idx],
+                thresholds,
+                gammas,
+                flow_threshold=flow_threshold,
+            )
             return boundary, foreground, self._sigmoid_zavg(prob_stack), t_idx
 
         self._set_contour_status(f"Previewing contour map for frame t={t_frame}…")
@@ -2876,6 +2926,7 @@ class NucleusWorkflowWidget(QWidget):
         )
         gammas = self._cp_gammas()
         foreground_threshold = self.contour_fg_threshold_spin.value()
+        flow_threshold = self.contour_flow_threshold_spin.value()
         save_source = self.save_source_check.isChecked()
         pos_dir = self._pos_dir
 
@@ -2894,7 +2945,8 @@ class NucleusWorkflowWidget(QWidget):
             f"thresholds = {thresholds!r}\n"
             f"gammas = {gammas!r}\n"
             f"foreground_threshold = {foreground_threshold!r}\n"
-            "def build_consensus_boundary_averaged(prob_3d, dp_3d, thresholds, gammas, mask_callback=None):\n"
+            f"flow_threshold = {flow_threshold!r}\n"
+            "def build_consensus_boundary_averaged(prob_3d, dp_3d, thresholds, gammas, flow_threshold=0.0, mask_callback=None):\n"
             "    boundary_sum = None\n"
             "    foreground_sum = None\n"
             "    for g_idx, g in enumerate(gammas):\n"
@@ -2907,6 +2959,7 @@ class NucleusWorkflowWidget(QWidget):
             "            dp_3d,\n"
             "            thresholds,\n"
             "            gamma=g,\n"
+            "            flow_threshold=flow_threshold,\n"
             "            mask_callback=cb,\n"
             "        )\n"
             "        if boundary_sum is None:\n"
@@ -2943,6 +2996,7 @@ class NucleusWorkflowWidget(QWidget):
             "        dp_stack[t],\n"
             "        thresholds,\n"
             "        gammas,\n"
+            "        flow_threshold=flow_threshold,\n"
             "        mask_callback=mask_cb,\n"
             "    )\n"
             "    contour_frames.append(boundary.astype(np.float32, copy=False))\n"
@@ -3925,6 +3979,7 @@ class NucleusWorkflowWidget(QWidget):
                 "gamma_max": self.cp_gamma_max_spin.value(),
                 "gamma_step": self.cp_gamma_step_spin.value(),
                 "foreground_threshold": self.contour_fg_threshold_spin.value(),
+                "flow_threshold": self.contour_flow_threshold_spin.value(),
             },
             "contour_filter": {
                 "median_time": self.contour_filter_median_time_spin.value(),
@@ -3977,6 +4032,8 @@ class NucleusWorkflowWidget(QWidget):
             if "gamma_min"  in cp: self.cp_gamma_min_spin.setValue(cp["gamma_min"])
             if "gamma_max"  in cp: self.cp_gamma_max_spin.setValue(cp["gamma_max"])
             if "gamma_step" in cp: self.cp_gamma_step_spin.setValue(cp["gamma_step"])
+            if "flow_threshold" in cp:
+                self.contour_flow_threshold_spin.setValue(cp["flow_threshold"])
             if "foreground_threshold" in cp:
                 self.contour_fg_threshold_spin.setValue(cp["foreground_threshold"])
         if "contour_filter" in state:

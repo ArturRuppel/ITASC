@@ -29,6 +29,11 @@ class _FakeViewer:
         self.layers[name] = layer
         return layer
 
+    def add_labels(self, data, *, name, **kwargs):
+        layer = types.SimpleNamespace(data=data, name=name, **kwargs)
+        self.layers[name] = layer
+        return layer
+
     def add_shapes(self, data, *, name, **kwargs):
         layer = types.SimpleNamespace(data=data, name=name, **kwargs)
         self.layers[name] = layer
@@ -368,12 +373,14 @@ def test_analysis_widget_show_artifact_uses_real_reader_and_visualizer(monkeypat
     )
     widget.refresh(pos_dir)
 
-    widget.show_artifact_btn.click()
+    widget._on_show_artifact()
 
-    assert "[Artifact] Cell centroids" in viewer.layers
+    assert "[Artifact] Cell labels" in viewer.layers
+    assert "[Artifact] Nucleus labels" in viewer.layers
     assert "[Artifact] Edges" in viewer.layers
-    assert "[Artifact] T1 events" in viewer.layers
-    assert viewer.layers["[Artifact] Cell centroids"].data.shape == (2, 3)
+    assert "[Artifact] T1 edges" in viewer.layers
+    assert viewer.layers["[Artifact] Cell labels"].data.shape == (1, 4, 4)
+    assert viewer.layers["[Artifact] Nucleus labels"].data.shape == (1, 4, 4)
     assert len(viewer.layers["[Artifact] Edges"].data) >= 1
 
     widget.deleteLater()
