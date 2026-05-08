@@ -288,8 +288,11 @@ def write_seed_prior_node_probs(
                 (_affinity(record, seed, cfg) for seed in seed_records),
                 default=0.0,
             )
+            circularity = compute_mask_circularity(record.mask)
             node_prob = float(
-                (drop_frac ** cfg.quality_exponent) + cfg.seed_weight * best_affinity
+                cfg.quality_weight * (drop_frac ** cfg.quality_exponent)
+                + cfg.circularity_weight * circularity
+                + cfg.seed_weight * best_affinity
             )
             session.query(NodeDB).where(NodeDB.id == record.node_id).update(
                 {NodeDB.node_prob: node_prob},
