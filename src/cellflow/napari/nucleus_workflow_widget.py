@@ -56,12 +56,12 @@ from cellflow.napari.ui_style import (
     add_block_button_row,
     add_block_checkbox_row,
     add_block_pair_row,
-    add_sweep_parameter_row,
+    add_parameter_grid_row,
     block_grid,
     compact_spinbox,
     danger_button,
     muted_label,
-    sweep_parameter_grid,
+    status_label,
 )
 from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
 from cellflow.tracking.retracker import retrack_frame_constrained
@@ -158,14 +158,29 @@ class NucleusWorkflowWidget(QWidget):
         def _compact(spin, w=SPIN_MAX_W):
             return compact_spinbox(spin, w)
 
-        # ── Inputs ────────────────────────────────────────────────────────
-        self.input_files = PipelineFilesWidget([
-            ("Inputs", [
-                ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-                ("1_cellpose/nucleus_dp_3dt.tif",  "Nucleus dp 3D+t"),
-            ]),
-        ])
-        layout.addWidget(self.input_files)
+        def _stage_files(group_label: str, entries: list[tuple[str, str]]) -> PipelineFilesWidget:
+            return PipelineFilesWidget([(group_label, entries)], viewer=self.viewer)
+
+        def _stage_status() -> QLabel:
+            label = QLabel("")
+            label.setWordWrap(True)
+            label.setVisible(False)
+            status_label(label)
+            return label
+
+        def _stage_progress() -> QProgressBar:
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(True)
+            bar.setVisible(False)
+            return bar
+
+        def _param_grid():
+            grid = block_grid(horizontal_spacing=12, vertical_spacing=4)
+            grid.setColumnStretch(1, 1)
+            grid.setColumnStretch(3, 1)
+            return grid
 
         # ── 1. Contour Maps ───────────────────────────────────────────────
         _contour_inner = QWidget()
@@ -193,7 +208,13 @@ class NucleusWorkflowWidget(QWidget):
         cp_params_lay.setSpacing(4)
         cp_params_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        contour_sweep_grid = sweep_parameter_grid(spin_width=_CONTOUR_SWEEP_WIDTH)
+        self.contour_input_files = _stage_files("Inputs", [
+            ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
+            ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
+        ])
+        cp_params_lay.addWidget(self.contour_input_files)
+
+        contour_sweep_grid = _param_grid()
         self.cp_min_spin = QDoubleSpinBox()
         self.cp_min_spin.setRange(-20.0, 20.0)
         self.cp_min_spin.setValue(-3.0)
@@ -221,14 +242,6 @@ class NucleusWorkflowWidget(QWidget):
         self.cp_step_spin.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-
-        contour_sweep_grid.addWidget(QLabel("Cellprob:"), 1, 0)
-        contour_sweep_grid.addWidget(self.cp_min_spin, 1, 1)
-        contour_sweep_grid.addWidget(self.cp_max_spin, 1, 2)
-        contour_sweep_grid.addWidget(self.cp_step_spin, 1, 3)
-        contour_sweep_grid.setColumnStretch(1, 1)
-        contour_sweep_grid.setColumnStretch(2, 1)
-        contour_sweep_grid.setColumnStretch(3, 1)
 
         self.cp_gamma_min_spin = QDoubleSpinBox()
         self.cp_gamma_min_spin.setRange(0.05, 5.0)
@@ -264,15 +277,6 @@ class NucleusWorkflowWidget(QWidget):
         )
         for _w in (self.cp_gamma_min_spin, self.cp_gamma_max_spin, self.cp_gamma_step_spin):
             _w.setToolTip(_gamma_tip)
-        contour_sweep_grid.addWidget(QLabel("Gamma:"), 2, 0)
-        contour_sweep_grid.addWidget(self.cp_gamma_min_spin, 2, 1)
-        contour_sweep_grid.addWidget(self.cp_gamma_max_spin, 2, 2)
-        contour_sweep_grid.addWidget(self.cp_gamma_step_spin, 2, 3)
-        contour_sweep_grid.setColumnStretch(1, 1)
-        contour_sweep_grid.setColumnStretch(2, 1)
-        contour_sweep_grid.setColumnStretch(3, 1)
-        cp_params_lay.addLayout(contour_sweep_grid)
-
         self.contour_fg_threshold_spin = QDoubleSpinBox()
         self.contour_fg_threshold_spin.setRange(0.0, 1.0)
         self.contour_fg_threshold_spin.setValue(0.5)
@@ -281,23 +285,39 @@ class NucleusWorkflowWidget(QWidget):
         self.contour_fg_threshold_spin.setToolTip(
             "Threshold applied to the fuzzy foreground score written by Contour Maps"
         )
-        contour_sweep_grid.addWidget(QLabel("Foreground Threshold:"), 3, 0)
-        contour_sweep_grid.addWidget(self.contour_fg_threshold_spin, 3, 1)
-
         self.save_source_check = QCheckBox("Save label images")
         self.save_source_check.setToolTip("Save all label images used for contour building in 2_nucleus/source_labels/")
         self.save_source_check.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
-        contour_sweep_grid.addWidget(QLabel(""), 4, 0)
+        add_parameter_grid_row(contour_sweep_grid, 0, 0, "Cellprob min:", self.cp_min_spin)
+        add_parameter_grid_row(contour_sweep_grid, 0, 1, "Cellprob max:", self.cp_max_spin)
+        add_parameter_grid_row(contour_sweep_grid, 1, 0, "Cellprob step:", self.cp_step_spin)
+        add_parameter_grid_row(contour_sweep_grid, 1, 1, "FG threshold:", self.contour_fg_threshold_spin)
+        add_parameter_grid_row(contour_sweep_grid, 2, 0, "Gamma min:", self.cp_gamma_min_spin)
+        add_parameter_grid_row(contour_sweep_grid, 2, 1, "Gamma max:", self.cp_gamma_max_spin)
+        add_parameter_grid_row(contour_sweep_grid, 3, 0, "Gamma step:", self.cp_gamma_step_spin)
+        for spin in (
+            self.cp_min_spin,
+            self.cp_max_spin,
+            self.cp_step_spin,
+            self.cp_gamma_min_spin,
+            self.cp_gamma_max_spin,
+            self.cp_gamma_step_spin,
+            self.contour_fg_threshold_spin,
+        ):
+            spin.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
         contour_sweep_grid.addWidget(
             self.save_source_check,
-            4,
+            3,
+            2,
             1,
-            1,
-            1,
+            2,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
         )
+        cp_params_lay.addLayout(contour_sweep_grid)
 
         self.preview_contour_btn = QPushButton("Preview")
         self.preview_contour_btn.setToolTip(
@@ -330,25 +350,83 @@ class NucleusWorkflowWidget(QWidget):
         )
         cp_params_lay.addLayout(contour_btn_row)
 
-        self.contour_status_lbl = QLabel("")
-        self.contour_status_lbl.setWordWrap(True)
-        self.contour_status_lbl.setVisible(False)
+        contour_filter_grid = _param_grid()
+        self.contour_filter_median_time_spin = QSpinBox()
+        self.contour_filter_median_time_spin.setRange(1, 15)
+        self.contour_filter_median_time_spin.setValue(1)
+        self.contour_filter_median_time_spin.setSingleStep(1)
+        self.contour_filter_median_space_spin = QSpinBox()
+        self.contour_filter_median_space_spin.setRange(1, 15)
+        self.contour_filter_median_space_spin.setValue(1)
+        self.contour_filter_median_space_spin.setSingleStep(1)
+        self.contour_filter_gauss_time_spin = QDoubleSpinBox()
+        self.contour_filter_gauss_time_spin.setRange(0.0, 10.0)
+        self.contour_filter_gauss_time_spin.setValue(0.0)
+        self.contour_filter_gauss_time_spin.setDecimals(1)
+        self.contour_filter_gauss_time_spin.setSingleStep(0.1)
+        self.contour_filter_gauss_space_spin = QDoubleSpinBox()
+        self.contour_filter_gauss_space_spin.setRange(0.0, 10.0)
+        self.contour_filter_gauss_space_spin.setValue(0.0)
+        self.contour_filter_gauss_space_spin.setDecimals(1)
+        self.contour_filter_gauss_space_spin.setSingleStep(0.1)
+        for spin in (
+            self.contour_filter_median_time_spin,
+            self.contour_filter_median_space_spin,
+            self.contour_filter_gauss_time_spin,
+            self.contour_filter_gauss_space_spin,
+        ):
+            spin.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+            spin.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+        add_parameter_grid_row(contour_filter_grid, 0, 0, "Median t kernel:", self.contour_filter_median_time_spin)
+        add_parameter_grid_row(contour_filter_grid, 0, 1, "Median xy kernel:", self.contour_filter_median_space_spin)
+        add_parameter_grid_row(contour_filter_grid, 1, 0, "Gaussian t sigma:", self.contour_filter_gauss_time_spin)
+        add_parameter_grid_row(contour_filter_grid, 1, 1, "Gaussian xy sigma:", self.contour_filter_gauss_space_spin)
+        for spin in (
+            self.contour_filter_median_time_spin,
+            self.contour_filter_median_space_spin,
+            self.contour_filter_gauss_time_spin,
+            self.contour_filter_gauss_space_spin,
+        ):
+            spin.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+        cp_params_lay.addLayout(contour_filter_grid)
+
+        self.preview_contour_filter_btn = QPushButton("Preview Filter")
+        self.preview_contour_filter_btn.setToolTip(
+            "Preview filtered contour_maps.tif in napari without overwriting it"
+        )
+        self.run_contour_filter_btn = QPushButton("Run Filter")
+        self.run_contour_filter_btn.setToolTip(
+            "Filter contour_maps.tif and overwrite contour_maps.tif"
+        )
+        for button in (self.preview_contour_filter_btn, self.run_contour_filter_btn):
+            button.setMinimumWidth(_CONTOUR_SWEEP_MIN_WIDTH)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+        contour_filter_btn_row = block_grid(horizontal_spacing=12)
+        add_block_button_row(
+            contour_filter_btn_row,
+            0,
+            self.preview_contour_filter_btn,
+            self.run_contour_filter_btn,
+        )
+        cp_params_lay.addLayout(contour_filter_btn_row)
+
+        self.contour_status_lbl = _stage_status()
         cp_params_lay.addWidget(self.contour_status_lbl)
 
-        self.build_progress_bar = QProgressBar()
-        self.build_progress_bar.setRange(0, 100)
-        self.build_progress_bar.setValue(0)
-        self.build_progress_bar.setVisible(False)
-        self.contour_files = PipelineFilesWidget([
-            ("Outputs", [
-                ("2_nucleus/contour_maps.tif", "Contour maps"),
-                ("2_nucleus/foreground_scores.tif", "Foreground scores"),
-                ("2_nucleus/foreground_masks.tif", "Foreground masks"),
-            ]),
+        self.build_progress_bar = _stage_progress()
+        self.contour_output_files = _stage_files("Outputs", [
+            ("2_nucleus/contour_maps.tif", "Contour maps"),
+            ("2_nucleus/foreground_scores.tif", "Foreground scores"),
+            ("2_nucleus/foreground_masks.tif", "Foreground masks"),
         ])
         cp_params_lay.addWidget(self.build_progress_bar)
-        cp_params_lay.addWidget(self.contour_files)
-        self._update_contour_status_labels()
+        cp_params_lay.addWidget(self.contour_output_files)
 
         cp_params_scroll.setWidget(cp_params_widget)
         contour_lay.addWidget(cp_params_scroll)
@@ -363,6 +441,13 @@ class NucleusWorkflowWidget(QWidget):
         db_gen_lay.setContentsMargins(0, 0, 0, 0)
         db_gen_lay.setSpacing(4)
         db_gen_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self.db_gen_input_files = _stage_files("Inputs", [
+            ("2_nucleus/contour_maps.tif", "Contour maps"),
+            ("2_nucleus/foreground_masks.tif", "Foreground masks"),
+            ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
+        ])
+        db_gen_lay.addWidget(self.db_gen_input_files)
 
         db_gen_grid = block_grid(horizontal_spacing=12)
         db_gen_grid.setContentsMargins(0, 0, 0, 0)
@@ -457,16 +542,16 @@ class NucleusWorkflowWidget(QWidget):
         add_block_button_row(db_gen_run_row, 0, self.run_db_gen_btn, self.db_gen_terminal_btn)
         db_gen_lay.addLayout(db_gen_run_row)
 
-        self.db_gen_status_lbl = QLabel("")
-        self.db_gen_status_lbl.setWordWrap(True)
-        self.db_gen_status_lbl.setVisible(False)
+        self.db_gen_status_lbl = _stage_status()
         db_gen_lay.addWidget(self.db_gen_status_lbl)
 
-        self.db_gen_progress_bar = QProgressBar()
-        self.db_gen_progress_bar.setRange(0, 100)
-        self.db_gen_progress_bar.setValue(0)
-        self.db_gen_progress_bar.setVisible(False)
+        self.db_gen_progress_bar = _stage_progress()
         db_gen_lay.addWidget(self.db_gen_progress_bar)
+
+        self.db_gen_output_files = _stage_files("Outputs", [
+            ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
+        ])
+        db_gen_lay.addWidget(self.db_gen_output_files)
 
         self.db_gen_section = CollapsibleSection(
             "2. Ultrack Database Generation", _db_gen_inner, expanded=False
@@ -578,6 +663,11 @@ class NucleusWorkflowWidget(QWidget):
         ultrack_lay.setContentsMargins(0, 0, 0, 0)
         ultrack_lay.setSpacing(4)
         ultrack_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self.ultrack_input_files = _stage_files("Inputs", [
+            ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
+        ])
+        ultrack_lay.addWidget(self.ultrack_input_files)
 
         tracking_grid = block_grid(horizontal_spacing=12)
         tracking_grid.setContentsMargins(0, 0, 0, 0)
@@ -792,23 +882,16 @@ class NucleusWorkflowWidget(QWidget):
         add_block_button_row(ultrack_run_row, 0, self.run_ultrack_btn, self.ultrack_terminal_btn)
         ultrack_lay.addLayout(ultrack_run_row)
 
-        self.ultrack_status_lbl = QLabel("")
-        self.ultrack_status_lbl.setWordWrap(True)
-        self.ultrack_status_lbl.setVisible(False)
+        self.ultrack_status_lbl = _stage_status()
         ultrack_lay.addWidget(self.ultrack_status_lbl)
 
-        self.ultrack_progress_bar = QProgressBar()
-        self.ultrack_progress_bar.setRange(0, 100)
-        self.ultrack_progress_bar.setValue(0)
-        self.ultrack_progress_bar.setVisible(False)
+        self.ultrack_progress_bar = _stage_progress()
         ultrack_lay.addWidget(self.ultrack_progress_bar)
 
-        self.tracking_files = PipelineFilesWidget([
-            ("Outputs", [
-                ("2_nucleus/tracked_labels.tif", "Tracked labels"),
-            ]),
+        self.ultrack_output_files = _stage_files("Outputs", [
+            ("2_nucleus/tracked_labels.tif", "Tracked labels"),
         ])
-        ultrack_lay.addWidget(self.tracking_files)
+        ultrack_lay.addWidget(self.ultrack_output_files)
 
         ultrack_attrib = QLabel(
             "Ultrack tracking is powered by the "
@@ -935,6 +1018,8 @@ class NucleusWorkflowWidget(QWidget):
         self.build_btn.clicked.connect(self._on_build_contour_maps)
         self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
         self.contour_terminal_btn.clicked.connect(self._on_run_contour_terminal)
+        self.preview_contour_filter_btn.clicked.connect(self._on_preview_contour_filter)
+        self.run_contour_filter_btn.clicked.connect(self._on_run_contour_filter)
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
         self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
         self.db_gen_terminal_btn.clicked.connect(self._on_db_gen_terminal)
@@ -976,14 +1061,25 @@ class NucleusWorkflowWidget(QWidget):
 
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
-        self.input_files.refresh(pos_dir)
-        self.contour_files.refresh(pos_dir)
-        self.tracking_files.refresh(pos_dir)
+        self._refresh_stage_files(pos_dir)
         if pos_dir is None:
             self.correction_widget.deactivate()
             return
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
+
+    def _refresh_stage_files(self, pos_dir: Path | None = None) -> None:
+        if pos_dir is None:
+            pos_dir = self._pos_dir
+        for files_widget in (
+            self.contour_input_files,
+            self.contour_output_files,
+            self.db_gen_input_files,
+            self.db_gen_output_files,
+            self.ultrack_input_files,
+            self.ultrack_output_files,
+        ):
+            files_widget.refresh(pos_dir)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Path helpers
@@ -1243,6 +1339,7 @@ class NucleusWorkflowWidget(QWidget):
         self.run_db_gen_btn.setEnabled(True)
         self.db_gen_terminal_btn.setEnabled(True)
         self._set_db_gen_status("DB generation complete.")
+        self._refresh_stage_files(pos_dir)
         self._refresh_ultrack_db_browser()
 
     def _on_db_gen_worker_error(self, exc: Exception) -> None:
@@ -2416,10 +2513,6 @@ class NucleusWorkflowWidget(QWidget):
         self._set_ultrack_status(f"Error: {exc}")
         logger.exception("Ultrack worker error", exc_info=exc)
 
-    def _update_contour_status_labels(self) -> None:
-        """(placeholder — file status now handled by PipelineFilesWidget rows)"""
-        pass
-
     def _cp_gammas(self) -> list[float]:
         """Gamma values to iterate during consensus boundary building."""
         gmin  = self.cp_gamma_min_spin.value()
@@ -2539,8 +2632,7 @@ class NucleusWorkflowWidget(QWidget):
     def _on_build_done(self, pos_dir: Path) -> None:
         self._build_worker = None
         self._set_build_buttons_running(False)
-        self.contour_files.refresh(pos_dir)
-        self._update_contour_status_labels()
+        self._refresh_stage_files(pos_dir)
         self._set_contour_status("Contour maps and foreground masks built.")
 
     def _on_cancel_build(self) -> None:
@@ -2548,13 +2640,14 @@ class NucleusWorkflowWidget(QWidget):
             self._build_worker.quit()
         self._build_worker = None
         self._set_build_buttons_running(False)
-        self._update_contour_status_labels()
         self._set_contour_status("Build cancelled.")
 
     def _set_build_buttons_running(self, running: bool) -> None:
         self.build_btn.setEnabled(not running)
         self.preview_contour_btn.setEnabled(not running)
         self.contour_terminal_btn.setEnabled(not running)
+        self.preview_contour_filter_btn.setEnabled(not running)
+        self.run_contour_filter_btn.setEnabled(not running)
         self.cancel_build_btn.setEnabled(running)
         self.build_progress_bar.setVisible(running)
         if not running:
@@ -2649,6 +2742,104 @@ class NucleusWorkflowWidget(QWidget):
             return boundary, foreground, self._sigmoid_zavg(prob_stack), t_idx
 
         self._set_contour_status(f"Previewing contour map for frame t={t_frame}…")
+        self._set_build_buttons_running(True)
+        self._build_worker = _worker()
+
+    def _contour_filter_params_from_ui(self):
+        from cellflow.segmentation import ContourFilterParams
+
+        return ContourFilterParams(
+            median_kernel_time=int(self.contour_filter_median_time_spin.value()),
+            median_kernel_space=int(self.contour_filter_median_space_spin.value()),
+            gaussian_sigma_time=float(self.contour_filter_gauss_time_spin.value()),
+            gaussian_sigma_space=float(self.contour_filter_gauss_space_spin.value()),
+        )
+
+    def _update_contour_image_layer(self, data: np.ndarray) -> None:
+        if _CONTOUR_LAYER in self.viewer.layers:
+            self.viewer.layers[_CONTOUR_LAYER].data = data
+        else:
+            self.viewer.add_image(
+                data,
+                name=_CONTOUR_LAYER,
+                colormap="magma",
+                visible=True,
+            )
+
+    def _on_preview_contour_filter(self) -> None:
+        if self._pos_dir is None:
+            self._set_contour_status("No project open.")
+            return
+        contour_path = self._contour_maps_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_contour_status(
+                "Missing: contour_maps.tif — run Contour Maps first."
+            )
+            return
+
+        params = self._contour_filter_params_from_ui()
+
+        def _on_preview_done(result):
+            self._build_worker = None
+            self._set_build_buttons_running(False)
+            filtered = result
+            self._update_contour_image_layer(filtered)
+            self._set_contour_status("Previewed filtered contour maps.")
+
+        @thread_worker(connect={
+            "returned": _on_preview_done,
+            "errored":  self._on_contour_worker_error,
+        })
+        def _worker():
+            from cellflow.segmentation import compute_filtered_contour_maps
+
+            contours = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
+            return compute_filtered_contour_maps(contours, params)
+
+        self._set_contour_status("Previewing filtered contour maps…")
+        self._set_build_buttons_running(True)
+        self._build_worker = _worker()
+
+    def _on_run_contour_filter(self) -> None:
+        if self._pos_dir is None:
+            self._set_contour_status("No project open.")
+            return
+        contour_path = self._contour_maps_path()
+        if contour_path is None or not contour_path.exists():
+            self._set_contour_status(
+                "Missing: contour_maps.tif — run Contour Maps first."
+            )
+            return
+
+        params = self._contour_filter_params_from_ui()
+        pos_dir = self._pos_dir
+
+        def _on_filter_done(result):
+            self._build_worker = None
+            self._set_build_buttons_running(False)
+            pos_dir, filtered = result
+            self._refresh_stage_files(pos_dir)
+            self._update_contour_image_layer(filtered)
+            self._set_contour_status("Filtered contour maps written to contour_maps.tif.")
+
+        @thread_worker(connect={
+            "returned": _on_filter_done,
+            "errored":  self._on_contour_worker_error,
+        })
+        def _worker():
+            from cellflow.segmentation import compute_filtered_contour_maps
+
+            contours = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
+            filtered = compute_filtered_contour_maps(contours, params)
+            tifffile.imwrite(
+                str(contour_path),
+                filtered.astype(np.float32, copy=False),
+                compression="zlib",
+                photometric="minisblack",
+            )
+            return pos_dir, filtered
+
+        self._set_contour_status("Filtering contour_maps.tif…")
         self._set_build_buttons_running(True)
         self._build_worker = _worker()
 
@@ -3009,6 +3200,7 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.add_labels(labels, name=_TRACKED_LAYER)
         layer = self.viewer.layers[_TRACKED_LAYER]
         self.correction_widget.activate_layer(layer)
+        self._refresh_stage_files()
         self._set_ultrack_status(f"Tracking done: {nt} frame(s). Unsaved.")
 
     def _on_ultrack_terminal(self) -> None:
@@ -3720,6 +3912,12 @@ class NucleusWorkflowWidget(QWidget):
                 "gamma_step": self.cp_gamma_step_spin.value(),
                 "foreground_threshold": self.contour_fg_threshold_spin.value(),
             },
+            "contour_filter": {
+                "median_time": self.contour_filter_median_time_spin.value(),
+                "median_space": self.contour_filter_median_space_spin.value(),
+                "gauss_time": self.contour_filter_gauss_time_spin.value(),
+                "gauss_space": self.contour_filter_gauss_space_spin.value(),
+            },
             "db_generation": {
                 "min_area":         self.db_gen_min_area_spin.value(),
                 "max_area":         self.db_gen_max_area_spin.value(),
@@ -3767,6 +3965,16 @@ class NucleusWorkflowWidget(QWidget):
             if "gamma_step" in cp: self.cp_gamma_step_spin.setValue(cp["gamma_step"])
             if "foreground_threshold" in cp:
                 self.contour_fg_threshold_spin.setValue(cp["foreground_threshold"])
+        if "contour_filter" in state:
+            cf = state["contour_filter"]
+            if "median_time" in cf:
+                self.contour_filter_median_time_spin.setValue(cf["median_time"])
+            if "median_space" in cf:
+                self.contour_filter_median_space_spin.setValue(cf["median_space"])
+            if "gauss_time" in cf:
+                self.contour_filter_gauss_time_spin.setValue(cf["gauss_time"])
+            if "gauss_space" in cf:
+                self.contour_filter_gauss_space_spin.setValue(cf["gauss_space"])
         if "db_generation" in state:
             dbg = state["db_generation"]
             if "min_area"         in dbg: self.db_gen_min_area_spin.setValue(dbg["min_area"])

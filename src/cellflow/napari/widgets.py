@@ -236,7 +236,7 @@ class _PipelineFileRow(QWidget):
                 loader()
             return
 
-        if self._loadable == "tracked":
+        if self._loadable == "tracked" and self._viewer is None:
             loader = self._find_tracked_loader()
             if loader is not None:
                 loader()

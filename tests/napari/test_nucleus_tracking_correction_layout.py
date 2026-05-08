@@ -15,7 +15,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import napari
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence, QShortcut
-from qtpy.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QApplication,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 def _make_viewer():
@@ -252,17 +261,46 @@ def test_main_widget_includes_nls_classification_section_after_analysis():
     viewer.close()
 
 
-def test_cell_workflow_required_inputs_exclude_optional_flow_vectors():
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    source = (package_root / "cell_workflow_widget.py").read_text()
-    input_section = source.split("self.input_files = PipelineFilesWidget([", 1)[1].split(
-        "layout.addWidget(self.input_files)", 1
-    )[0]
+def test_nucleus_workflow_uses_stage_local_file_widgets():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
 
-    assert "1_cellpose/cell_prob_3dt.tif" in input_section
-    assert "1_cellpose/cell_dp_3dt.tif" in input_section
-    assert "3_cell/foreground_masks.tif" in input_section
-    assert "2_nucleus/tracked_labels.tif" in input_section
+    assert not hasattr(widget, "input_files")
+
+    assert hasattr(widget, "contour_input_files")
+    assert hasattr(widget, "contour_output_files")
+    assert hasattr(widget, "contour_status_lbl")
+    assert hasattr(widget, "build_progress_bar")
+
+    assert hasattr(widget, "db_gen_input_files")
+    assert hasattr(widget, "db_gen_output_files")
+    assert hasattr(widget, "db_gen_status_lbl")
+    assert hasattr(widget, "db_gen_progress_bar")
+
+    assert hasattr(widget, "ultrack_input_files")
+    assert hasattr(widget, "ultrack_output_files")
+    assert hasattr(widget, "ultrack_status_lbl")
+    assert hasattr(widget, "ultrack_progress_bar")
+
+    assert widget.contour_input_files in widget.contour_section.findChildren(type(widget.contour_input_files))
+    assert widget.contour_output_files in widget.contour_section.findChildren(type(widget.contour_output_files))
+    assert widget.db_gen_input_files in widget.db_gen_section.findChildren(type(widget.db_gen_input_files))
+    assert widget.db_gen_output_files in widget.db_gen_section.findChildren(type(widget.db_gen_output_files))
+    assert widget.ultrack_input_files in widget.ultrack_section.findChildren(type(widget.ultrack_input_files))
+    assert widget.ultrack_output_files in widget.ultrack_section.findChildren(type(widget.ultrack_output_files))
+
+    assert widget.build_progress_bar.isVisible() is False
+    assert widget.db_gen_progress_bar.isVisible() is False
+    assert widget.ultrack_progress_bar.isVisible() is False
+
+    texts = _label_texts(widget.contour_section)
+    assert "min" not in texts
+    assert "max" not in texts
+    assert "step" not in texts
+
+    widget.deleteLater()
+    viewer.close()
 
 
 def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_status(tmp_path):
@@ -441,7 +479,7 @@ def test_db_gen_section_exposes_quality_and_power_controls():
     viewer.close()
 
 
-def test_contour_maps_section_exposes_foreground_threshold_and_outputs():
+def test_contour_maps_section_exposes_stage_files_and_foreground_threshold():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -452,13 +490,120 @@ def test_contour_maps_section_exposes_foreground_threshold_and_outputs():
     assert widget.contour_fg_threshold_spin.value() == 0.5
     assert widget.contour_fg_threshold_spin.singleStep() == 0.01
 
+    input_text = " ".join(
+        label.text()
+        for label in widget.contour_input_files.findChildren(QLabel)
+    )
     output_text = " ".join(
         label.text()
-        for label in widget.contour_files.findChildren(QLabel)
+        for label in widget.contour_output_files.findChildren(QLabel)
     )
+    assert "1_cellpose/nucleus_prob_3dt.tif" in input_text
+    assert "1_cellpose/nucleus_dp_3dt.tif" in input_text
     assert "2_nucleus/foreground_masks.tif" in output_text
     assert "2_nucleus/foreground_scores.tif" in output_text
     assert "2_nucleus/contour_maps.tif" in output_text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_db_gen_and_ultrack_sections_expose_stage_file_rows():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_input_text = " ".join(
+        label.text()
+        for label in widget.db_gen_input_files.findChildren(QLabel)
+    )
+    db_output_text = " ".join(
+        label.text()
+        for label in widget.db_gen_output_files.findChildren(QLabel)
+    )
+    ultrack_input_text = " ".join(
+        label.text()
+        for label in widget.ultrack_input_files.findChildren(QLabel)
+    )
+    ultrack_output_text = " ".join(
+        label.text()
+        for label in widget.ultrack_output_files.findChildren(QLabel)
+    )
+
+    assert "2_nucleus/contour_maps.tif" in db_input_text
+    assert "2_nucleus/foreground_masks.tif" in db_input_text
+    assert "1_cellpose/nucleus_prob_zavg.tif" in db_input_text
+    assert "2_nucleus/ultrack_workdir/data.db" in db_output_text
+    assert "2_nucleus/ultrack_workdir/data.db" in ultrack_input_text
+    assert "2_nucleus/tracked_labels.tif" in ultrack_output_text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_stage_file_widgets_show_present_and_missing_files(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
+    import tifffile
+
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif", np.zeros((1, 1, 4, 4), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif", np.zeros((1, 1, 2, 4, 4), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif", np.zeros((1, 4, 4), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", np.zeros((1, 4, 4), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_masks.tif", np.zeros((1, 4, 4), dtype=np.uint8))
+    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", np.zeros((1, 4, 4), dtype=np.uint32))
+    (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(b"sqlite placeholder")
+
+    widget.refresh(pos_dir)
+
+    texts = _label_texts(widget)
+    assert texts.count("✓") >= 8
+    assert "missing" in texts
+    assert widget.contour_input_files in widget.contour_section.findChildren(type(widget.contour_input_files))
+    assert widget.db_gen_output_files in widget.db_gen_section.findChildren(type(widget.db_gen_output_files))
+    assert widget.ultrack_output_files in widget.ultrack_section.findChildren(type(widget.ultrack_output_files))
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_stage_file_load_buttons_load_files_into_viewer(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    contours = np.ones((2, 4, 4), dtype=np.float32)
+    masks = np.ones((2, 4, 4), dtype=np.uint8)
+    labels = np.ones((2, 4, 4), dtype=np.uint32)
+    import tifffile
+
+    tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", contours)
+    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_masks.tif", masks)
+    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", labels)
+
+    widget.refresh(pos_dir)
+
+    for files_widget in (
+        widget.contour_output_files,
+        widget.ultrack_output_files,
+    ):
+        for row in files_widget._rows:
+            if row._full_path is not None:
+                row._on_load_clicked()
+
+    assert "2_nucleus_contour_maps" in viewer.layers
+    assert "2_nucleus_foreground_masks" in viewer.layers
+    assert "2_nucleus_tracked_labels" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["2_nucleus_contour_maps"].data, contours)
+    np.testing.assert_array_equal(viewer.layers["2_nucleus_foreground_masks"].data, masks)
+    np.testing.assert_array_equal(viewer.layers["2_nucleus_tracked_labels"].data, labels)
 
     widget.deleteLater()
     viewer.close()
@@ -812,7 +957,11 @@ def test_contour_maps_parameters_expand_and_scroll_when_narrow():
         assert button.minimumWidth() == 54
         assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
 
-    assert params_scroll.horizontalScrollBar().maximum() > 0
+    texts = _label_texts(widget.contour_section)
+    assert "min" not in texts
+    assert "max" not in texts
+    assert "step" not in texts
+    assert params_scroll.horizontalScrollBar().maximum() >= 0
 
     host.deleteLater()
     viewer.close()
@@ -861,6 +1010,114 @@ def test_contour_maps_build_writes_contour_scores_and_thresholded_masks(tmp_path
     assert scores.dtype == np.float32
     assert masks.dtype == np.uint8
     np.testing.assert_array_equal(masks, (scores >= 0.5).astype(np.uint8))
+    output_texts = _label_texts(widget.contour_output_files)
+    assert "✓" in output_texts
+    assert "Contour maps and foreground masks built." in widget.contour_status_lbl.text()
+    assert widget.build_progress_bar.isVisible() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_contour_filter_preview_updates_layer_without_overwriting(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    widget._pos_dir = pos_dir
+
+    import tifffile
+
+    original = np.zeros((2, 4, 4), dtype=np.float32)
+    original[1, 2, 2] = 10.0
+    tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", original)
+
+    def fake_filter(contours, params):
+        assert params.median_kernel_time == 3
+        return np.asarray(contours, dtype=np.float32) + 1.0
+
+    monkeypatch.setattr("cellflow.segmentation.compute_filtered_contour_maps", fake_filter)
+    widget.contour_filter_median_time_spin.setValue(3)
+
+    widget._on_preview_contour_filter()
+
+    np.testing.assert_array_equal(
+        tifffile.imread(pos_dir / "2_nucleus" / "contour_maps.tif"),
+        original,
+    )
+    assert "Contour Map: Nucleus" in viewer.layers
+    np.testing.assert_array_equal(
+        viewer.layers["Contour Map: Nucleus"].data,
+        original + 1.0,
+    )
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_contour_filter_run_overwrites_contour_maps(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    widget._pos_dir = pos_dir
+
+    import tifffile
+
+    original = np.zeros((2, 4, 4), dtype=np.float32)
+    original[0, 1, 1] = 5.0
+    tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", original)
+
+    monkeypatch.setattr(
+        "cellflow.segmentation.compute_filtered_contour_maps",
+        lambda contours, params: np.asarray(contours, dtype=np.float32) + 2.0,
+    )
+
+    widget._on_run_contour_filter()
+
+    written = tifffile.imread(pos_dir / "2_nucleus" / "contour_maps.tif")
+    assert written.dtype == np.float32
+    np.testing.assert_array_equal(written, original + 2.0)
+    assert "Contour Map: Nucleus" in viewer.layers
+    np.testing.assert_array_equal(
+        viewer.layers["Contour Map: Nucleus"].data,
+        original + 2.0,
+    )
+    assert "Filtered contour maps written to contour_maps.tif." in widget.contour_status_lbl.text()
+    assert "✓" in _label_texts(widget.contour_output_files)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_contour_filter_controls_persist_through_state():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.contour_filter_median_time_spin.setValue(3)
+    widget.contour_filter_median_space_spin.setValue(5)
+    widget.contour_filter_gauss_time_spin.setValue(1.5)
+    widget.contour_filter_gauss_space_spin.setValue(2.5)
+
+    state = widget.get_state()
+    widget.deleteLater()
+
+    widget = widget_class(viewer)
+    widget.set_state(state)
+
+    assert widget.contour_filter_median_time_spin.value() == 3
+    assert widget.contour_filter_median_space_spin.value() == 5
+    assert abs(widget.contour_filter_gauss_time_spin.value() - 1.5) < 0.01
+    assert abs(widget.contour_filter_gauss_space_spin.value() - 2.5) < 0.01
 
     widget.deleteLater()
     viewer.close()
@@ -1106,14 +1363,24 @@ def test_canonical_sections_expose_required_elements():
     widget = widget_class(viewer)
 
     # Section 1: Contour Maps
+    assert hasattr(widget, "contour_input_files")
+    assert hasattr(widget, "contour_output_files")
     assert hasattr(widget, "build_btn")
     assert hasattr(widget, "contour_terminal_btn")
     assert hasattr(widget, "contour_status_lbl")
     assert hasattr(widget, "build_progress_bar")
     assert hasattr(widget, "contour_fg_threshold_spin")
+    assert hasattr(widget, "contour_filter_median_time_spin")
+    assert hasattr(widget, "contour_filter_median_space_spin")
+    assert hasattr(widget, "contour_filter_gauss_time_spin")
+    assert hasattr(widget, "contour_filter_gauss_space_spin")
+    assert hasattr(widget, "preview_contour_filter_btn")
+    assert hasattr(widget, "run_contour_filter_btn")
     assert not hasattr(widget, "fg_threshold_spin")
 
     # Section 3: Ultrack Database Generation
+    assert hasattr(widget, "db_gen_input_files")
+    assert hasattr(widget, "db_gen_output_files")
     assert hasattr(widget, "run_db_gen_btn")
     assert hasattr(widget, "db_gen_terminal_btn")
     assert hasattr(widget, "db_gen_status_lbl")
@@ -1129,6 +1396,8 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "ultrack_db_section_status_lbl")
 
     # Section 5: Ultrack Tracking
+    assert hasattr(widget, "ultrack_input_files")
+    assert hasattr(widget, "ultrack_output_files")
     assert hasattr(widget, "run_ultrack_btn")
     assert hasattr(widget, "ultrack_terminal_btn")
     assert hasattr(widget, "ultrack_status_lbl")
@@ -1231,6 +1500,14 @@ def _install_sync_thread_worker(monkeypatch, module):
     monkeypatch.setattr(module, "thread_worker", _sync_thread_worker)
 
 
+def _label_texts(widget):
+    return [child.text() for child in widget.findChildren(QLabel)]
+
+
+def _progress_bars(widget):
+    return widget.findChildren(QProgressBar)
+
+
 def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
@@ -1246,6 +1523,29 @@ def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_ultrack_segment", fake_segment, raising=False)
     monkeypatch.setattr(module, "write_seed_prior_node_probs", lambda *a, **kw: calls.append(("score", a)))
     monkeypatch.setattr(module, "run_linking", lambda *a, **kw: iter([(1, 1, "linked")]))
+
+    def fake_build_database(**kwargs):
+        foreground = np.asarray(tifffile.imread(kwargs["foreground_masks_path"]))
+        contours = np.asarray(tifffile.imread(kwargs["contour_maps_path"]))
+        if foreground.ndim == 4 and foreground.shape[1] == 1:
+            foreground = foreground[:, 0]
+        if contours.ndim == 4 and contours.shape[1] == 1:
+            contours = contours[:, 0]
+        module._ultrack_segment(
+            foreground,
+            contours,
+            kwargs["cfg"],
+            overwrite=True,
+            max_segments_per_time=1_000_000,
+        )
+        module.write_seed_prior_node_probs(kwargs["working_dir"], kwargs["cfg"])
+        list(module.run_linking(kwargs["working_dir"], kwargs["cfg"]))
+        data_db = kwargs["working_dir"] / "data.db"
+        data_db.parent.mkdir(parents=True, exist_ok=True)
+        data_db.write_bytes(b"sqlite placeholder")
+        return {"database": str(data_db)}
+
+    monkeypatch.setattr(module, "build_ultrack_database", fake_build_database)
 
     pos_dir = tmp_path / "pos00"
     (pos_dir / "1_cellpose").mkdir(parents=True)
@@ -1268,6 +1568,8 @@ def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
     assert widget.run_db_gen_btn.isEnabled()
     assert widget.db_gen_terminal_btn.isEnabled()
     assert "complete" in widget.db_gen_status_lbl.text().lower()
+    assert widget.db_gen_progress_bar.isVisible() is False
+    assert "✓" in _label_texts(widget.db_gen_output_files)
 
     widget.deleteLater()
     viewer.close()
@@ -1800,6 +2102,40 @@ def test_ultrack_tracking_solve_fails_clearly_if_db_missing(tmp_path):
 
     text = widget.ultrack_status_lbl.text().lower()
     assert "data.db" in text or "missing" in text or "database" in text
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_tracking_refreshes_stage_output_files(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
+    (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(b"sqlite placeholder")
+    widget._pos_dir = pos_dir
+
+    labels = np.ones((2, 4, 4), dtype=np.uint32)
+
+    def fake_export(_working_dir, _cfg, tracked_path, **_kwargs):
+        tracked_path.parent.mkdir(parents=True, exist_ok=True)
+        import tifffile
+        tifffile.imwrite(tracked_path, labels)
+        return labels
+
+    monkeypatch.setattr(module, "run_solve", lambda *a, **kw: iter([(1, 1, "solved")]))
+    monkeypatch.setattr(module, "export_tracked_labels", fake_export)
+
+    widget._on_run_ultrack()
+
+    assert "Tracked: Nucleus" in viewer.layers
+    assert (pos_dir / "2_nucleus" / "tracked_labels.tif").exists()
+    assert "✓" in _label_texts(widget.ultrack_output_files)
+    assert widget.ultrack_progress_bar.isVisible() is False
 
     widget.deleteLater()
     viewer.close()
