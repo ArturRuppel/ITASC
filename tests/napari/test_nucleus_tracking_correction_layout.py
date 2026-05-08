@@ -1903,6 +1903,21 @@ def test_ultrack_db_browser_shows_missing_db_status(tmp_path):
     viewer.close()
 
 
+def test_ultrack_db_browser_summary_label_wraps_instead_of_widening():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.ultrack_db_info_lbl.wordWrap() is True
+    assert (
+        widget.ultrack_db_info_lbl.sizePolicy().horizontalPolicy()
+        != QSizePolicy.Policy.Expanding
+    )
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_db_browser_exposes_two_modes():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()

@@ -619,6 +619,11 @@ class NucleusWorkflowWidget(QWidget):
         from qtpy.QtCore import Qt as _Qt
         self.ultrack_db_info_lbl = QLabel("—")
         self.ultrack_db_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ultrack_db_info_lbl.setWordWrap(True)
+        self.ultrack_db_info_lbl.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Minimum,
+        )
         ultrack_db_browser_lay.addWidget(self.ultrack_db_info_lbl)
 
         ultrack_db_grid = block_grid(horizontal_spacing=12)
