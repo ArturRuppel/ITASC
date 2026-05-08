@@ -52,7 +52,9 @@ def _install_import_stubs() -> None:
             self.linking_mode = "default"
             self.iou_weight = 1.0
             self.power = 4.0
+            self.quality_weight = 1.0
             self.quality_exponent = 8.0
+            self.circularity_weight = 0.25
             self.appear_weight = -0.001
             self.disappear_weight = -0.001
             self.division_weight = -0.001
@@ -497,6 +499,32 @@ def test_db_gen_section_exposes_quality_and_power_controls():
     assert widget.db_gen_quality_exp_spin.value() == 8.0
     assert "solver transform" in widget.db_gen_power_spin.toolTip()
     assert "node_prob" in widget.db_gen_quality_exp_spin.toolTip()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_db_gen_exposes_node_probability_weight_controls():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert hasattr(widget, "db_gen_quality_weight_spin")
+    assert hasattr(widget, "db_gen_quality_exp_spin")
+    assert hasattr(widget, "db_gen_circularity_weight_spin")
+    assert widget.db_gen_quality_weight_spin.value() == pytest.approx(1.0)
+    assert widget.db_gen_quality_exp_spin.value() == pytest.approx(8.0)
+    assert widget.db_gen_circularity_weight_spin.value() == pytest.approx(0.25)
+
+    widget.db_gen_quality_weight_spin.setValue(0.8)
+    widget.db_gen_quality_exp_spin.setValue(6.0)
+    widget.db_gen_circularity_weight_spin.setValue(0.35)
+
+    cfg = widget._db_gen_config_from_controls()
+
+    assert cfg.quality_weight == pytest.approx(0.8)
+    assert cfg.quality_exponent == pytest.approx(6.0)
+    assert cfg.circularity_weight == pytest.approx(0.35)
 
     widget.deleteLater()
     viewer.close()
@@ -1811,6 +1839,8 @@ def test_db_gen_section_terminal_script_includes_canonical_segment(tmp_path, mon
     assert "foreground_masks" in script
     assert "contour_maps" in script
     assert "nucleus_prob_zavg" in script
+    assert "quality_weight=" in script
+    assert "circularity_weight=" in script
     assert "write_seed_prior_node_probs" in script
     assert "run_linking" in script
     assert "if __name__ == '__main__':" in script
@@ -2450,7 +2480,9 @@ def test_db_gen_controls_persist_through_state():
     widget.db_gen_max_neighbors_spin.setValue(8)
     widget.db_gen_linking_mode_combo.setCurrentText("iou")
     widget.db_gen_iou_weight_spin.setValue(0.8)
+    widget.db_gen_quality_weight_spin.setValue(0.8)
     widget.db_gen_quality_exp_spin.setValue(6.0)
+    widget.db_gen_circularity_weight_spin.setValue(0.35)
     widget.db_gen_power_spin.setValue(3.0)
     widget.db_gen_n_workers_spin.setValue(4)
 
@@ -2469,7 +2501,9 @@ def test_db_gen_controls_persist_through_state():
     assert widget.db_gen_max_neighbors_spin.value() == 8
     assert widget.db_gen_linking_mode_combo.currentText() == "iou"
     assert abs(widget.db_gen_iou_weight_spin.value() - 0.8) < 0.01
+    assert abs(widget.db_gen_quality_weight_spin.value() - 0.8) < 0.01
     assert abs(widget.db_gen_quality_exp_spin.value() - 6.0) < 0.01
+    assert abs(widget.db_gen_circularity_weight_spin.value() - 0.35) < 0.01
     assert abs(widget.db_gen_power_spin.value() - 3.0) < 0.01
     assert widget.db_gen_n_workers_spin.value() == 4
 

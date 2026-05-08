@@ -535,12 +535,30 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_iou_weight_spin.setDecimals(2)
         self.db_gen_iou_weight_spin.setEnabled(False)
 
+        self.db_gen_quality_weight_spin = QDoubleSpinBox()
+        self.db_gen_quality_weight_spin.setRange(0.0, 10.0)
+        self.db_gen_quality_weight_spin.setValue(1.0)
+        self.db_gen_quality_weight_spin.setDecimals(2)
+        self.db_gen_quality_weight_spin.setSingleStep(0.05)
+        self.db_gen_quality_weight_spin.setToolTip(
+            "Weight applied to signal-based segmentation quality before storing node_prob"
+        )
+
         self.db_gen_quality_exp_spin = QDoubleSpinBox()
         self.db_gen_quality_exp_spin.setRange(0.1, 50.0)
         self.db_gen_quality_exp_spin.setValue(8.0)
         self.db_gen_quality_exp_spin.setDecimals(2)
         self.db_gen_quality_exp_spin.setToolTip(
             "Raises signal-based quality before storing as node_prob"
+        )
+
+        self.db_gen_circularity_weight_spin = QDoubleSpinBox()
+        self.db_gen_circularity_weight_spin.setRange(0.0, 10.0)
+        self.db_gen_circularity_weight_spin.setValue(0.25)
+        self.db_gen_circularity_weight_spin.setDecimals(2)
+        self.db_gen_circularity_weight_spin.setSingleStep(0.05)
+        self.db_gen_circularity_weight_spin.setToolTip(
+            "Weight applied to shape circularity before storing node_prob"
         )
 
         self.db_gen_power_spin = QDoubleSpinBox()
@@ -557,7 +575,8 @@ class NucleusWorkflowWidget(QWidget):
         add_block_pair_row(db_gen_grid, 2, "WS Hierarchy:", self.db_gen_ws_hierarchy_combo, "N Workers:", _compact(self.db_gen_n_workers_spin))
         add_block_pair_row(db_gen_grid, 3, "Max Distance (px):", _compact(self.db_gen_max_dist_spin), "Max Neighbors:", _compact(self.db_gen_max_neighbors_spin))
         add_block_pair_row(db_gen_grid, 4, "Linking Mode:", self.db_gen_linking_mode_combo, "IoU Weight:", _compact(self.db_gen_iou_weight_spin))
-        add_block_pair_row(db_gen_grid, 5, "Quality Exp:", _compact(self.db_gen_quality_exp_spin), "", QWidget())
+        add_block_pair_row(db_gen_grid, 5, "Quality Weight:", _compact(self.db_gen_quality_weight_spin), "Quality Exp:", _compact(self.db_gen_quality_exp_spin))
+        add_block_pair_row(db_gen_grid, 6, "Circularity Weight:", _compact(self.db_gen_circularity_weight_spin), "", QWidget())
         db_gen_lay.addLayout(db_gen_grid)
 
         self.db_gen_use_validated_check = QCheckBox("Use validated corrections")
@@ -1164,7 +1183,9 @@ class NucleusWorkflowWidget(QWidget):
             max_neighbors=self.db_gen_max_neighbors_spin.value(),
             linking_mode=self.db_gen_linking_mode_combo.currentText(),
             iou_weight=self.db_gen_iou_weight_spin.value(),
+            quality_weight=self.db_gen_quality_weight_spin.value(),
             quality_exponent=self.db_gen_quality_exp_spin.value(),
+            circularity_weight=self.db_gen_circularity_weight_spin.value(),
             link_n_workers=self.db_gen_n_workers_spin.value(),
             seed_weight=self.ultrack_seed_weight_spin.value(),
             seed_sigma_space=self.ultrack_seed_space_spin.value(),
@@ -3140,7 +3161,9 @@ class NucleusWorkflowWidget(QWidget):
 
     def _set_resolve_prior_controls_enabled(self, enabled: bool) -> None:
         for control in (
+            self.db_gen_quality_weight_spin,
             self.db_gen_quality_exp_spin,
+            self.db_gen_circularity_weight_spin,
             self.ultrack_quality_exp_spin,
             self.ultrack_seed_weight_spin,
             self.ultrack_seed_space_spin,
@@ -3161,7 +3184,9 @@ class NucleusWorkflowWidget(QWidget):
             max_neighbors=self.db_gen_max_neighbors_spin.value(),
             linking_mode=self.db_gen_linking_mode_combo.currentText(),
             iou_weight=self.db_gen_iou_weight_spin.value(),
+            quality_weight=self.db_gen_quality_weight_spin.value(),
             quality_exponent=self.db_gen_quality_exp_spin.value(),
+            circularity_weight=self.db_gen_circularity_weight_spin.value(),
             power=self.ultrack_power_spin.value(),
             appear_weight=self.ultrack_appear_spin.value(),
             disappear_weight=self.ultrack_disappear_spin.value(),
