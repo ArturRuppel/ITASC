@@ -210,8 +210,9 @@ def test_analysis_widget_shows_and_clears_artifact_layers(monkeypatch, tmp_path)
         read_calls.append(path)
         return artifact
 
-    def fake_add(viewer_arg, artifact_arg, *, prefix):
-        add_calls.append((viewer_arg, artifact_arg, prefix))
+    def fake_add(viewer_arg, artifact_arg, **kwargs):
+        prefix = kwargs["prefix"]
+        add_calls.append((viewer_arg, artifact_arg, kwargs))
         viewer_arg.layers[f"{prefix}Cells"] = types.SimpleNamespace(
             name=f"{prefix}Cells"
         )
@@ -226,7 +227,19 @@ def test_analysis_widget_shows_and_clears_artifact_layers(monkeypatch, tmp_path)
     widget.show_artifact_btn.click()
 
     assert read_calls == [artifact_path]
-    assert add_calls == [(viewer, artifact, "[Artifact] ")]
+    assert add_calls == [
+        (
+            viewer,
+            artifact,
+            {
+                "prefix": "[Artifact] ",
+                "color_cells_by_label": False,
+                "color_edges_by_id": False,
+                "color_edges_by_label": False,
+                "hide_border_edges": False,
+            },
+        )
+    ]
     assert f"[Artifact] Cells" in viewer.layers
     assert "Background" in viewer.layers
 
@@ -235,6 +248,95 @@ def test_analysis_widget_shows_and_clears_artifact_layers(monkeypatch, tmp_path)
     assert "[Artifact] Cells" not in viewer.layers
     assert "[Artifact] Edges" not in viewer.layers
     assert "Background" in viewer.layers
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    viewer = _FakeViewer()
+    widget = mod.AnalysisWidget(viewer)
+
+    pos_dir = tmp_path / "pos10"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    (pos_dir / "3_cell").mkdir()
+    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
+    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
+    artifact_path = pos_dir / "4_analysis" / "position_analysis.h5"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_bytes(b"h5")
+    widget.refresh(pos_dir)
+
+    artifact = {"cells": [1]}
+    add_calls = []
+    monkeypatch.setattr(mod, "read_position_artifact", lambda _path: artifact)
+
+    def fake_add(viewer_arg, artifact_arg, **kwargs):
+        add_calls.append((viewer_arg, artifact_arg, kwargs))
+        viewer_arg.layers[f"{kwargs['prefix']}Cells"] = types.SimpleNamespace(
+            name=f"{kwargs['prefix']}Cells"
+        )
+
+    monkeypatch.setattr(mod, "add_artifact_layers", fake_add)
+
+    widget.color_cells_by_label_cb.setChecked(True)
+    widget.color_edges_by_id_cb.setChecked(True)
+    widget.color_edges_by_label_cb.setChecked(True)
+    widget.hide_border_edges_cb.setChecked(True)
+    widget.show_artifact_btn.click()
+
+    assert add_calls == [
+        (
+            viewer,
+            artifact,
+            {
+                "prefix": "[Artifact] ",
+                "color_cells_by_label": True,
+                "color_edges_by_id": True,
+                "color_edges_by_label": True,
+                "hide_border_edges": True,
+            },
+        )
+    ]
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_analysis_widget_checkbox_changes_refresh_loaded_artifact(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    viewer = _FakeViewer()
+    widget = mod.AnalysisWidget(viewer)
+
+    pos_dir = tmp_path / "pos11"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    (pos_dir / "3_cell").mkdir()
+    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
+    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
+    artifact_path = pos_dir / "4_analysis" / "position_analysis.h5"
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_bytes(b"h5")
+    widget.refresh(pos_dir)
+
+    artifact = {"cells": [1]}
+    monkeypatch.setattr(mod, "read_position_artifact", lambda _path: artifact)
+    add_calls = []
+
+    def fake_add(viewer_arg, artifact_arg, **kwargs):
+        add_calls.append(kwargs)
+        viewer_arg.layers[f"{kwargs['prefix']}Cells"] = types.SimpleNamespace(
+            name=f"{kwargs['prefix']}Cells"
+        )
+
+    monkeypatch.setattr(mod, "add_artifact_layers", fake_add)
+
+    widget.show_artifact_btn.click()
+    widget.color_cells_by_label_cb.setChecked(True)
+
+    assert [call["color_cells_by_label"] for call in add_calls] == [False, True]
 
     widget.deleteLater()
     app.processEvents()

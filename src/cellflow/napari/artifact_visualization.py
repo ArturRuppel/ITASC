@@ -14,6 +14,7 @@ __all__ = [
 
 _BORDER_EDGE_COLOR = np.array([0.6, 0.6, 0.6, 1.0], dtype=float)
 _CELL_EDGE_COLOR = np.array([0.12156863, 0.46666667, 0.70588235, 1.0], dtype=float)
+_UNLABELED_COLOR = np.array([0.7, 0.7, 0.7, 1.0], dtype=float)
 
 
 def build_cell_centroid_points(artifact: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
@@ -33,6 +34,10 @@ def build_cell_centroid_points(artifact: Any) -> tuple[np.ndarray, dict[str, np.
 
 def build_edge_shapes(
     artifact: Any,
+    *,
+    hide_border_edges: bool = False,
+    color_by_id: bool = False,
+    color_by_label: bool = False,
 ) -> tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]:
     edges = _section(artifact, "edges")
     coord_y = np.asarray(_value(artifact, "coord_y"), dtype=float)
@@ -43,6 +48,7 @@ def build_edge_shapes(
     cell_a = _column(edges, "cell_a")
     cell_b = _column(edges, "cell_b")
     kind = _column(edges, "kind")
+    edge_label = _column(edges, "edge_label")
     length = _column(edges, "length").astype(float, copy=False)
     is_t1_frame = _column(edges, "is_t1_frame").astype(bool, copy=False)
     coord_offset = _column(edges, "coord_offset")
@@ -52,6 +58,8 @@ def build_edge_shapes(
     colors: list[np.ndarray] = []
     keep: list[int] = []
     for idx in range(len(frame)):
+        if hide_border_edges and str(kind[idx]) == "border":
+            continue
         start = int(coord_offset[idx])
         count = int(coord_count[idx])
         if count < 2:
@@ -60,22 +68,31 @@ def build_edge_shapes(
         ys = coord_y[start:stop]
         xs = coord_x[start:stop]
         lines.append(_stack_points(np.full(len(ys), frame[idx], dtype=float), ys, xs))
-        colors.append(_edge_color_for_kind(kind[idx]))
         keep.append(idx)
 
     mask = np.asarray(keep, dtype=np.intp)
+    if color_by_label:
+        colors = _categorical_colors(edge_label[mask])
+    elif color_by_id:
+        colors = _categorical_colors(edge_id[mask])
+    else:
+        colors = [_edge_color_for_kind(item) for item in kind[mask]]
     features = {
         "frame": frame[mask],
         "edge_id": edge_id[mask],
         "cell_a": cell_a[mask],
         "cell_b": cell_b[mask],
         "kind": kind[mask],
+        "edge_label": edge_label[mask],
         "length": length[mask],
         "is_t1_frame": is_t1_frame[mask],
         "coord_offset": coord_offset[mask],
         "coord_count": coord_count[mask],
     }
-    return lines, np.asarray(colors, dtype=float) if colors else np.empty((0, 4), dtype=float), features
+    color_array = np.asarray(colors, dtype=float)
+    if color_array.size == 0:
+        color_array = np.empty((0, 4), dtype=float)
+    return lines, color_array, features
 
 
 def build_t1_points(artifact: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
@@ -98,10 +115,31 @@ def build_t1_points(artifact: Any) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     return points, features
 
 
-def add_artifact_layers(viewer: Any, artifact: Any, prefix: str = "[Artifact] ") -> list[Any]:
+def add_artifact_layers(
+    viewer: Any,
+    artifact: Any,
+    prefix: str = "[Artifact] ",
+    *,
+    color_cells_by_label: bool = False,
+    color_edges_by_id: bool = False,
+    color_edges_by_label: bool = False,
+    hide_border_edges: bool = False,
+) -> list[Any]:
     cell_points, cell_features = build_cell_centroid_points(artifact)
-    edge_lines, edge_colors, edge_features = build_edge_shapes(artifact)
+    edge_lines, edge_colors, edge_features = build_edge_shapes(
+        artifact,
+        hide_border_edges=hide_border_edges,
+        color_by_id=color_edges_by_id,
+        color_by_label=color_edges_by_label,
+    )
     t1_points, t1_features = build_t1_points(artifact)
+    cell_face_color: str | np.ndarray
+    if color_cells_by_label:
+        cell_face_color = _categorical_colors(cell_features["class_label"])
+        cell_border_width = 0
+    else:
+        cell_face_color = "#2f7ed8"
+        cell_border_width = 1
 
     layers = [
         viewer.add_points(
@@ -109,9 +147,9 @@ def add_artifact_layers(viewer: Any, artifact: Any, prefix: str = "[Artifact] ")
             name=f"{prefix}Cell centroids",
             features=cell_features,
             size=5,
-            face_color="#2f7ed8",
+            face_color=cell_face_color,
             border_color="white",
-            border_width=1,
+            border_width=cell_border_width,
             blending="translucent",
         ),
         viewer.add_shapes(
@@ -169,3 +207,44 @@ def _edge_color_for_kind(kind: Any) -> np.ndarray:
     if str(kind) == "border":
         return _BORDER_EDGE_COLOR
     return _CELL_EDGE_COLOR
+
+
+def _categorical_colors(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values)
+    if len(values) == 0:
+        return np.empty((0, 4), dtype=float)
+
+    keys = [str(value) for value in values]
+    palette = {
+        key: _palette_color(idx)
+        for idx, key in enumerate(sorted({key for key in keys if key != ""}))
+    }
+    colors = np.empty((len(values), 4), dtype=float)
+    for idx, key in enumerate(keys):
+        colors[idx] = _UNLABELED_COLOR if key == "" else palette[key]
+    return colors
+
+
+def _palette_color(index: int) -> np.ndarray:
+    hue = (index * 0.618033988749895) % 1.0
+    return np.asarray((*_hsv_to_rgb(hue, 0.65, 0.9), 1.0), dtype=float)
+
+
+def _hsv_to_rgb(hue: float, saturation: float, value: float) -> tuple[float, float, float]:
+    sector = int(hue * 6.0)
+    fraction = hue * 6.0 - sector
+    p = value * (1.0 - saturation)
+    q = value * (1.0 - fraction * saturation)
+    t = value * (1.0 - (1.0 - fraction) * saturation)
+    sector %= 6
+    if sector == 0:
+        return value, t, p
+    if sector == 1:
+        return q, value, p
+    if sector == 2:
+        return p, value, t
+    if sector == 3:
+        return p, q, value
+    if sector == 4:
+        return t, p, value
+    return value, p, q

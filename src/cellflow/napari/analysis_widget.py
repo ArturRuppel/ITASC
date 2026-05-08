@@ -5,7 +5,7 @@ from pathlib import Path
 
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import QObject, Signal
-from qtpy.QtWidgets import QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QCheckBox, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 from cellflow.analysis import build_position_analysis_artifact
 from cellflow.napari.ui_style import action_button, status_label
@@ -82,6 +82,18 @@ class AnalysisWidget(QWidget):
         action_button(self.show_artifact_btn, expand=True)
         layout.addWidget(self.show_artifact_btn)
 
+        self.color_cells_by_label_cb = QCheckBox("Color cells by label")
+        layout.addWidget(self.color_cells_by_label_cb)
+
+        self.color_edges_by_id_cb = QCheckBox("Color edges by ID")
+        layout.addWidget(self.color_edges_by_id_cb)
+
+        self.color_edges_by_label_cb = QCheckBox("Color edges by label")
+        layout.addWidget(self.color_edges_by_label_cb)
+
+        self.hide_border_edges_cb = QCheckBox("Hide border edges")
+        layout.addWidget(self.hide_border_edges_cb)
+
         self.clear_artifact_btn = QPushButton("Clear Artifact Layers")
         action_button(self.clear_artifact_btn, expand=True)
         layout.addWidget(self.clear_artifact_btn)
@@ -92,6 +104,10 @@ class AnalysisWidget(QWidget):
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
         self.show_artifact_btn.clicked.connect(self._on_show_artifact)
         self.clear_artifact_btn.clicked.connect(self._on_clear_artifact_layers)
+        self.color_cells_by_label_cb.stateChanged.connect(self._on_visualizer_options_changed)
+        self.color_edges_by_id_cb.stateChanged.connect(self._on_visualizer_options_changed)
+        self.color_edges_by_label_cb.stateChanged.connect(self._on_visualizer_options_changed)
+        self.hide_border_edges_cb.stateChanged.connect(self._on_visualizer_options_changed)
         self.refresh(None)
 
     @property
@@ -255,9 +271,23 @@ class AnalysisWidget(QWidget):
             return
 
         artifact = read_position_artifact(artifact_path)
-        add_artifact_layers(self.viewer, artifact, prefix=self._artifact_layer_prefix)
+        self._clear_artifact_layers(set_status=False)
+        add_artifact_layers(
+            self.viewer,
+            artifact,
+            prefix=self._artifact_layer_prefix,
+            color_cells_by_label=self.color_cells_by_label_cb.isChecked(),
+            color_edges_by_id=self.color_edges_by_id_cb.isChecked(),
+            color_edges_by_label=self.color_edges_by_label_cb.isChecked(),
+            hide_border_edges=self.hide_border_edges_cb.isChecked(),
+        )
         self._set_artifact_status(f"Status: loaded {artifact_path.name}")
         self._update_action_states()
+
+    def _on_visualizer_options_changed(self, _state: int) -> None:
+        if self.viewer is None or not self._artifact_layer_names():
+            return
+        self._on_show_artifact()
 
     def _artifact_layer_names(self) -> list[str]:
         if self.viewer is None:
@@ -274,6 +304,13 @@ class AnalysisWidget(QWidget):
             self._set_artifact_status("Status: no viewer available.")
             self._update_action_states()
             return
+
+        self._clear_artifact_layers(set_status=True)
+        self._update_action_states()
+
+    def _clear_artifact_layers(self, *, set_status: bool) -> int:
+        if self.viewer is None:
+            return 0
 
         removed = 0
         names = self._artifact_layer_names()
@@ -293,8 +330,9 @@ class AnalysisWidget(QWidget):
                     pass
             removed += 1
 
-        if removed:
-            self._set_artifact_status(f"Status: cleared {removed} artifact layers.")
-        else:
-            self._set_artifact_status("Status: no artifact layers to clear.")
-        self._update_action_states()
+        if set_status:
+            if removed:
+                self._set_artifact_status(f"Status: cleared {removed} artifact layers.")
+            else:
+                self._set_artifact_status("Status: no artifact layers to clear.")
+        return removed

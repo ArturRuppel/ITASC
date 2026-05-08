@@ -60,6 +60,7 @@ def _make_artifact() -> dict[str, dict[str, np.ndarray]]:
             "cell_a": np.asarray([11, 12], dtype=int),
             "cell_b": np.asarray([13, 0], dtype=int),
             "kind": np.asarray(["cell_cell", "border"], dtype=object),
+            "edge_label": np.asarray(["junction", "border"], dtype=object),
             "length": np.asarray([2.5, 3.5], dtype=float),
             "is_t1_frame": np.asarray([False, False], dtype=bool),
             "coord_offset": np.asarray([0, 3], dtype=int),
@@ -114,6 +115,7 @@ def test_build_edge_shapes_returns_line_payloads_and_colored_border_edges(monkey
         "cell_a",
         "cell_b",
         "kind",
+        "edge_label",
         "length",
         "is_t1_frame",
         "coord_offset",
@@ -121,6 +123,57 @@ def test_build_edge_shapes_returns_line_payloads_and_colored_border_edges(monkey
     }
     np.testing.assert_array_equal(features["coord_count"], [3, 3])
     np.testing.assert_array_equal(features["kind"], ["cell_cell", "border"])
+    np.testing.assert_array_equal(features["edge_label"], ["junction", "border"])
+
+
+def test_build_edge_shapes_can_hide_border_edges(monkeypatch):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact()
+
+    lines, edge_colors, features = mod.build_edge_shapes(artifact, hide_border_edges=True)
+
+    assert len(lines) == 1
+    assert edge_colors.shape == (1, 4)
+    np.testing.assert_array_equal(features["edge_id"], [101])
+    np.testing.assert_array_equal(features["kind"], ["cell_cell"])
+
+
+def test_build_edge_shapes_can_color_by_edge_id(monkeypatch):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact()
+
+    _lines, edge_colors, features = mod.build_edge_shapes(artifact, color_by_id=True)
+
+    assert edge_colors.shape == (2, 4)
+    assert not np.allclose(edge_colors[0], edge_colors[1])
+    np.testing.assert_array_equal(features["edge_id"], [101, 102])
+
+
+def test_build_edge_shapes_can_color_by_edge_label(monkeypatch):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact()
+    artifact["edges"]["edge_label"] = np.asarray(["same_label", "same_label"], dtype=object)
+
+    _lines, edge_colors, features = mod.build_edge_shapes(artifact, color_by_label=True, color_by_id=True)
+
+    assert edge_colors.shape == (2, 4)
+    np.testing.assert_allclose(edge_colors[0], edge_colors[1])
+    np.testing.assert_array_equal(features["edge_label"], ["same_label", "same_label"])
+
+
+def test_add_artifact_layers_can_color_cells_by_class_label(monkeypatch):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact()
+    artifact["cells"]["class_label"] = np.asarray(["epithelial", "epithelial"], dtype=object)
+    viewer = _FakeViewer()
+
+    mod.add_artifact_layers(viewer, artifact, color_cells_by_label=True)
+
+    cell_call = viewer.calls[0]
+    face_colors = np.asarray(cell_call[3]["face_color"])
+    assert face_colors.shape == (2, 4)
+    np.testing.assert_allclose(face_colors[0], face_colors[1])
+    assert cell_call[3]["border_width"] == 0
 
 
 def test_build_edge_shapes_filters_edges_with_fewer_than_two_coords(monkeypatch):
@@ -132,6 +185,7 @@ def test_build_edge_shapes_filters_edges_with_fewer_than_two_coords(monkeypatch)
     artifact["edges"]["cell_a"] = np.concatenate([[1], artifact["edges"]["cell_a"]])
     artifact["edges"]["cell_b"] = np.concatenate([[2], artifact["edges"]["cell_b"]])
     artifact["edges"]["kind"] = np.concatenate([["cell_cell"], artifact["edges"]["kind"]])
+    artifact["edges"]["edge_label"] = np.concatenate([[""], artifact["edges"]["edge_label"]])
     artifact["edges"]["length"] = np.concatenate([[0.5], artifact["edges"]["length"]])
     artifact["edges"]["is_t1_frame"] = np.concatenate([[False], artifact["edges"]["is_t1_frame"]])
     # Prepend a single degenerate coord and shift existing offsets by 1
