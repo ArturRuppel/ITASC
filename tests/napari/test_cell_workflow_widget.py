@@ -314,6 +314,8 @@ def test_widget_create_flow_mag_writes_filtered_dp_and_flow_mag(monkeypatch, tmp
     np.testing.assert_allclose(mag, 5.0)
     assert "Filtered Flow Magnitude" in widget.viewer.layers
     assert "Cell Labels" not in widget.viewer.layers
+    assert "Flow magnitude complete." in widget.filtered_flow_status_lbl.text()
+    assert widget.filtered_flow_progress_bar.isVisible() is False
 
     widget.deleteLater()
     app.processEvents()
@@ -377,8 +379,53 @@ def test_widget_create_foreground_masks_uses_cellprob_and_filtered_dp(monkeypatc
     assert foreground_out.dtype == np.uint8
     assert "Foreground Mask" in viewer.layers
     np.testing.assert_array_equal(viewer.layers["Foreground Mask"].data, expected_fg)
-    assert "foreground" in widget.ff_input_lbl.text()
-    assert "Foreground masks complete." in widget.ff_status_lbl.text()
+    assert "Foreground masks complete." in widget.foreground_mask_status_lbl.text()
+    assert widget.foreground_mask_progress_bar.isVisible() is False
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_widget_preview_foreground_masks_uses_current_frame_without_writing(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "3_cell").mkdir()
+
+    T, Z, H, W = 3, 2, 5, 5
+    prob = np.arange(T * Z * H * W, dtype=np.float32).reshape(T, Z, H, W)
+    filtered_dp = np.zeros((T, 2, H, W), dtype=np.float32)
+    expected_preview = np.zeros((1, H, W), dtype=np.uint8)
+    expected_preview[:, 2:4, 1:4] = 1
+
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_3dt.tif", prob)
+    tifffile.imwrite(pos_dir / "3_cell" / "filtered_dp.tif", filtered_dp)
+
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (2,)
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+
+    captured: dict[str, object] = {}
+
+    def fake_foreground(prob_arg, dp_arg, **kwargs):
+        captured["prob"] = np.asarray(prob_arg).copy()
+        captured["dp"] = np.asarray(dp_arg).copy()
+        captured.update(kwargs)
+        return expected_preview
+
+    with patch("cellflow.segmentation.compute_cellpose_foreground_masks", fake_foreground):
+        widget._on_preview_foreground_masks()
+
+    np.testing.assert_array_equal(captured["prob"], prob[2:3])
+    np.testing.assert_array_equal(captured["dp"], filtered_dp[2:3])
+    assert captured["progress_cb"] is None
+    assert not (pos_dir / "3_cell" / "foreground_masks.tif").exists()
+    assert "Preview: Foreground Mask" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["Preview: Foreground Mask"].data, expected_preview[0])
+    assert "Previewed foreground mask at t=2." in widget.foreground_mask_status_lbl.text()
 
     widget.deleteLater()
     app.processEvents()
@@ -448,6 +495,8 @@ def test_widget_create_tracked_labels_calls_compute_flow_following_movie_and_wri
 
     assert "Filtered Flow Magnitude" not in viewer.layers
     assert "Cell Labels" in viewer.layers
+    assert "Tracked labels complete." in widget.tracked_labels_status_lbl.text()
+    assert widget.tracked_labels_progress_bar.isVisible() is False
 
     widget.deleteLater()
     app.processEvents()
@@ -477,7 +526,44 @@ def test_widget_run_aborts_when_input_file_missing(monkeypatch, tmp_path):
         widget._on_create_tracked_labels()
 
     assert called is False
-    assert "Missing" in widget.ff_status_lbl.text()
+    assert "Missing" in widget.tracked_labels_status_lbl.text()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_widget_section_file_load_buttons_load_files_into_viewer(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "3_cell").mkdir(parents=True)
+    flow_mag = np.ones((2, 4, 4), dtype=np.float32)
+    foreground = np.ones((2, 4, 4), dtype=np.uint8)
+    labels = np.ones((2, 4, 4), dtype=np.uint32)
+    tifffile.imwrite(pos_dir / "3_cell" / "filtered_flow_mag.tif", flow_mag)
+    tifffile.imwrite(pos_dir / "3_cell" / "foreground_masks.tif", foreground)
+    tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
+
+    viewer = _FakeViewer()
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+
+    for files_widget in (
+        widget.filtered_flow_output_files,
+        widget.foreground_mask_output_files,
+        widget.tracked_labels_output_files,
+    ):
+        for row in files_widget._rows:
+            if row._full_path is not None:
+                row._on_load_clicked()
+
+    assert "3_cell_filtered_flow_mag" in viewer.layers
+    assert "3_cell_foreground_masks" in viewer.layers
+    assert "3_cell_tracked_labels" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["3_cell_filtered_flow_mag"].data, flow_mag)
+    np.testing.assert_array_equal(viewer.layers["3_cell_foreground_masks"].data, foreground)
+    np.testing.assert_array_equal(viewer.layers["3_cell_tracked_labels"].data, labels)
 
     widget.deleteLater()
     app.processEvents()

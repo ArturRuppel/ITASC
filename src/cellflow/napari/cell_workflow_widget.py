@@ -21,12 +21,18 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
-from cellflow.napari.ui_style import add_block_button_row, block_grid, sweep_parameter_grid
+from cellflow.napari.ui_style import (
+    add_block_button_row,
+    add_parameter_grid_row,
+    block_grid,
+    status_label,
+)
 
 logger = logging.getLogger(__name__)
 
 _FILTERED_FLOW_LAYER = "Filtered Flow Magnitude"
 _FOREGROUND_MASK_LAYER = "Foreground Mask"
+_FOREGROUND_MASK_PREVIEW_LAYER = "Preview: Foreground Mask"
 _CELL_LABELS_LAYER = "Cell Labels"
 _FF_SPIN_WIDTH = 80
 _FF_SPIN_MIN_WIDTH = int(_FF_SPIN_WIDTH * 0.9)
@@ -51,15 +57,29 @@ class CellWorkflowWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(8)
 
-        self.input_files = PipelineFilesWidget([
-            ("Inputs", [
-                ("1_cellpose/cell_prob_3dt.tif",   "Cell prob 3D+t"),
-                ("1_cellpose/cell_dp_3dt.tif",     "Cell dp 3D+t"),
-                ("3_cell/foreground_masks.tif",    "Foreground masks"),
-                ("2_nucleus/tracked_labels.tif",   "Nucleus tracked labels"),
-            ]),
-        ], viewer=self.viewer)
-        layout.addWidget(self.input_files)
+        def _stage_files(group_label: str, entries: list[tuple[str, str]]) -> PipelineFilesWidget:
+            return PipelineFilesWidget([(group_label, entries)], viewer=self.viewer)
+
+        def _stage_status() -> QLabel:
+            label = QLabel("")
+            label.setWordWrap(True)
+            label.setVisible(False)
+            status_label(label)
+            return label
+
+        def _stage_progress() -> QProgressBar:
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(True)
+            bar.setVisible(False)
+            return bar
+
+        def _param_grid():
+            grid = block_grid(horizontal_spacing=12, vertical_spacing=4)
+            grid.setColumnStretch(1, 1)
+            grid.setColumnStretch(3, 1)
+            return grid
 
         def _dspin(lo, hi, val, step, decimals=1):
             s = QDoubleSpinBox()
@@ -85,20 +105,20 @@ class CellWorkflowWidget(QWidget):
         filter_lay.setContentsMargins(0, 0, 0, 0)
         filter_lay.setSpacing(4)
         filter_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        filter_grid = sweep_parameter_grid(spin_width=_FF_SPIN_WIDTH)
+        self.filtered_flow_input_files = _stage_files("Inputs", [
+            ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
+            ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
+        ])
+        filter_lay.addWidget(self.filtered_flow_input_files)
+        filter_grid = _param_grid()
         self.ff_median_time_spin   = _ispin(1, 15, 3)
         self.ff_median_space_spin  = _ispin(1, 15, 5)
         self.ff_gauss_time_spin    = _dspin(0.0, 10.0, 0.0, 0.1)
         self.ff_gauss_space_spin   = _dspin(0.0, 10.0, 0.0, 0.1)
-        filter_grid.addWidget(QLabel("Median t kernel:"),  1, 0)
-        filter_grid.addWidget(self.ff_median_time_spin,    1, 1)
-        filter_grid.addWidget(QLabel("Median xy kernel:"), 2, 0)
-        filter_grid.addWidget(self.ff_median_space_spin,   2, 1)
-        filter_grid.addWidget(QLabel("Gaussian t σ:"),     3, 0)
-        filter_grid.addWidget(self.ff_gauss_time_spin,     3, 1)
-        filter_grid.addWidget(QLabel("Gaussian xy σ:"),    4, 0)
-        filter_grid.addWidget(self.ff_gauss_space_spin,    4, 1)
-        filter_grid.setColumnStretch(1, 1)
+        add_parameter_grid_row(filter_grid, 0, 0, "Median t kernel:", self.ff_median_time_spin)
+        add_parameter_grid_row(filter_grid, 0, 1, "Median xy kernel:", self.ff_median_space_spin)
+        add_parameter_grid_row(filter_grid, 1, 0, "Gaussian t sigma:", self.ff_gauss_time_spin)
+        add_parameter_grid_row(filter_grid, 1, 1, "Gaussian xy sigma:", self.ff_gauss_space_spin)
         filter_lay.addLayout(filter_grid)
 
         self.ff_flow_mag_btn = QPushButton("Create filtered_dp")
@@ -107,6 +127,15 @@ class CellWorkflowWidget(QWidget):
         filter_btn_row = block_grid(horizontal_spacing=12)
         add_block_button_row(filter_btn_row, 0, self.ff_flow_mag_btn)
         filter_lay.addLayout(filter_btn_row)
+        self.filtered_flow_status_lbl = _stage_status()
+        filter_lay.addWidget(self.filtered_flow_status_lbl)
+        self.filtered_flow_progress_bar = _stage_progress()
+        filter_lay.addWidget(self.filtered_flow_progress_bar)
+        self.filtered_flow_output_files = _stage_files("Outputs", [
+            ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
+            ("3_cell/filtered_flow_mag.tif", "Filtered flow magnitude"),
+        ])
+        filter_lay.addWidget(self.filtered_flow_output_files)
 
         self.filtered_flow_section = CollapsibleSection(
             "Filtered Flow", self.filtered_flow_params_widget, expanded=True
@@ -118,28 +147,38 @@ class CellWorkflowWidget(QWidget):
         fg_lay.setContentsMargins(0, 0, 0, 0)
         fg_lay.setSpacing(4)
         fg_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        fg_grid = sweep_parameter_grid(spin_width=_FF_SPIN_WIDTH)
+        self.foreground_mask_input_files = _stage_files("Inputs", [
+            ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
+            ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
+        ])
+        fg_lay.addWidget(self.foreground_mask_input_files)
+        fg_grid = _param_grid()
         self.fg_cellprob_threshold_spin = _dspin(-10.0, 10.0, 0.0, 0.1)
         self.fg_flow_threshold_spin = _dspin(0.0, 10.0, 0.0, 0.1)
         self.fg_min_size_spin = _ispin(0, 100000, 15)
         self.fg_niter_spin = _ispin(1, 2000, 200, step=10)
-        fg_grid.addWidget(QLabel("Cellprob threshold:"), 1, 0)
-        fg_grid.addWidget(self.fg_cellprob_threshold_spin, 1, 1)
-        fg_grid.addWidget(QLabel("Flow threshold:"), 2, 0)
-        fg_grid.addWidget(self.fg_flow_threshold_spin, 2, 1)
-        fg_grid.addWidget(QLabel("Min size:"), 3, 0)
-        fg_grid.addWidget(self.fg_min_size_spin, 3, 1)
-        fg_grid.addWidget(QLabel("Niter:"), 4, 0)
-        fg_grid.addWidget(self.fg_niter_spin, 4, 1)
-        fg_grid.setColumnStretch(1, 1)
+        add_parameter_grid_row(fg_grid, 0, 0, "Cellprob threshold:", self.fg_cellprob_threshold_spin)
+        add_parameter_grid_row(fg_grid, 0, 1, "Flow threshold:", self.fg_flow_threshold_spin)
+        add_parameter_grid_row(fg_grid, 1, 0, "Min size:", self.fg_min_size_spin)
+        add_parameter_grid_row(fg_grid, 1, 1, "Niter:", self.fg_niter_spin)
         fg_lay.addLayout(fg_grid)
 
+        self.preview_fg_masks_btn = QPushButton("Preview")
         self.fg_masks_btn = QPushButton("Create foreground_masks")
-        self.fg_masks_btn.setMinimumWidth(_FF_SPIN_MIN_WIDTH)
-        self.fg_masks_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        for button in (self.preview_fg_masks_btn, self.fg_masks_btn):
+            button.setMinimumWidth(_FF_SPIN_MIN_WIDTH)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         fg_btn_row = block_grid(horizontal_spacing=12)
-        add_block_button_row(fg_btn_row, 0, self.fg_masks_btn)
+        add_block_button_row(fg_btn_row, 0, self.preview_fg_masks_btn, self.fg_masks_btn)
         fg_lay.addLayout(fg_btn_row)
+        self.foreground_mask_status_lbl = _stage_status()
+        fg_lay.addWidget(self.foreground_mask_status_lbl)
+        self.foreground_mask_progress_bar = _stage_progress()
+        fg_lay.addWidget(self.foreground_mask_progress_bar)
+        self.foreground_mask_output_files = _stage_files("Outputs", [
+            ("3_cell/foreground_masks.tif", "Foreground masks"),
+        ])
+        fg_lay.addWidget(self.foreground_mask_output_files)
 
         self.foreground_mask_section = CollapsibleSection(
             "Foreground Mask", self.foreground_mask_params_widget, expanded=True
@@ -151,20 +190,21 @@ class CellWorkflowWidget(QWidget):
         labels_lay.setContentsMargins(0, 0, 0, 0)
         labels_lay.setSpacing(4)
         labels_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
-        labels_grid = sweep_parameter_grid(spin_width=_FF_SPIN_WIDTH)
+        self.tracked_labels_input_files = _stage_files("Inputs", [
+            ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
+            ("3_cell/foreground_masks.tif", "Foreground masks"),
+            ("2_nucleus/tracked_labels.tif", "Nucleus tracked labels"),
+        ])
+        labels_lay.addWidget(self.tracked_labels_input_files)
+        labels_grid = _param_grid()
         self.ff_flow_weight_spin     = _dspin(0.0, 1.0, 0.5, 0.05, decimals=2)
         self.ff_step_scale_spin      = _dspin(0.05, 1.0, 0.2, 0.05, decimals=2)
         self.ff_max_iter_spin        = _ispin(10, 500, 100, step=10)
         self.ff_capture_radius_spin  = _dspin(0.5, 10.0, 3.0, 0.5)
-        labels_grid.addWidget(QLabel("Flow weight:"),       1, 0)
-        labels_grid.addWidget(self.ff_flow_weight_spin,     1, 1)
-        labels_grid.addWidget(QLabel("Step scale:"),        2, 0)
-        labels_grid.addWidget(self.ff_step_scale_spin,      2, 1)
-        labels_grid.addWidget(QLabel("Max iterations:"),    3, 0)
-        labels_grid.addWidget(self.ff_max_iter_spin,        3, 1)
-        labels_grid.addWidget(QLabel("Capture radius:"),    4, 0)
-        labels_grid.addWidget(self.ff_capture_radius_spin,  4, 1)
-        labels_grid.setColumnStretch(1, 1)
+        add_parameter_grid_row(labels_grid, 0, 0, "Flow weight:", self.ff_flow_weight_spin)
+        add_parameter_grid_row(labels_grid, 0, 1, "Step scale:", self.ff_step_scale_spin)
+        add_parameter_grid_row(labels_grid, 1, 0, "Max iterations:", self.ff_max_iter_spin)
+        add_parameter_grid_row(labels_grid, 1, 1, "Capture radius:", self.ff_capture_radius_spin)
         labels_lay.addLayout(labels_grid)
 
         self.ff_labels_btn = QPushButton("Create tracked_labels")
@@ -173,6 +213,14 @@ class CellWorkflowWidget(QWidget):
         labels_btn_row = block_grid(horizontal_spacing=12)
         add_block_button_row(labels_btn_row, 0, self.ff_labels_btn)
         labels_lay.addLayout(labels_btn_row)
+        self.tracked_labels_status_lbl = _stage_status()
+        labels_lay.addWidget(self.tracked_labels_status_lbl)
+        self.tracked_labels_progress_bar = _stage_progress()
+        labels_lay.addWidget(self.tracked_labels_progress_bar)
+        self.tracked_labels_output_files = _stage_files("Outputs", [
+            ("3_cell/tracked_labels.tif", "Cell labels"),
+        ])
+        labels_lay.addWidget(self.tracked_labels_output_files)
 
         self.tracked_labels_section = CollapsibleSection(
             "Tracked Cell Labels", self.tracked_labels_params_widget, expanded=True
@@ -187,35 +235,11 @@ class CellWorkflowWidget(QWidget):
         add_block_button_row(cancel_row, 0, self.ff_cancel_btn)
         layout.addLayout(cancel_row)
 
-        self.ff_input_lbl = QLabel("")
-        self.ff_input_lbl.setWordWrap(True)
-        layout.addWidget(self.ff_input_lbl)
-
-        self.ff_status_lbl = QLabel("")
-        self.ff_status_lbl.setWordWrap(True)
-        self.ff_status_lbl.setVisible(False)
-        layout.addWidget(self.ff_status_lbl)
-
-        self.ff_progress_bar = QProgressBar()
-        self.ff_progress_bar.setRange(0, 100)
-        self.ff_progress_bar.setValue(0)
-        self.ff_progress_bar.setVisible(False)
-        layout.addWidget(self.ff_progress_bar)
-
-        self._update_ff_status_labels()
-
-        self.ff_files = PipelineFilesWidget([
-            ("Outputs", [
-                ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
-                ("3_cell/filtered_flow_mag.tif", "Filtered flow magnitude"),
-                ("3_cell/tracked_labels.tif",    "Cell labels"),
-            ]),
-        ], viewer=self.viewer)
-        layout.addWidget(self.ff_files)
         layout.addStretch()
 
     def _connect_signals(self) -> None:
         self.ff_flow_mag_btn.clicked.connect(self._on_create_flow_mag)
+        self.preview_fg_masks_btn.clicked.connect(self._on_preview_foreground_masks)
         self.fg_masks_btn.clicked.connect(self._on_create_foreground_masks)
         self.ff_labels_btn.clicked.connect(self._on_create_tracked_labels)
         self.ff_cancel_btn.clicked.connect(self._on_cancel_flow_following)
@@ -249,9 +273,20 @@ class CellWorkflowWidget(QWidget):
     # ------------------------------------------------------------------
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
-        self.input_files.refresh(pos_dir)
-        self.ff_files.refresh(pos_dir)
-        self._update_ff_status_labels()
+        self._refresh_stage_files(pos_dir)
+
+    def _refresh_stage_files(self, pos_dir: Path | None = None) -> None:
+        if pos_dir is None:
+            pos_dir = self._pos_dir
+        for files_widget in (
+            self.filtered_flow_input_files,
+            self.filtered_flow_output_files,
+            self.foreground_mask_input_files,
+            self.foreground_mask_output_files,
+            self.tracked_labels_input_files,
+            self.tracked_labels_output_files,
+        ):
+            files_widget.refresh(pos_dir)
 
     def get_state(self) -> dict:
         return {
@@ -295,38 +330,40 @@ class CellWorkflowWidget(QWidget):
             if "niter" in fg:
                 self.fg_niter_spin.setValue(fg["niter"])
 
-    def _update_ff_status_labels(self) -> None:
-        if self._pos_dir is None:
-            self.ff_input_lbl.setText("Inputs: no project open.")
-            return
-        check = "✓"
-        cross = "✗"
-        prob_ok    = (p := self._prob_path()) is not None and p.exists()
-        dp_ok      = (p := self._dp_path()) is not None and p.exists()
-        filtered_ok = (p := self._filtered_dp_out_path()) is not None and p.exists()
-        fg_ok      = (p := self._foreground_path()) is not None and p.exists()
-        nuc_ok     = (p := self._nucleus_labels_path()) is not None and p.exists()
-        self.ff_input_lbl.setText(
-            f"Inputs: {check if prob_ok else cross} prob  "
-            f"{check if dp_ok else cross} dp  "
-            f"{check if filtered_ok else cross} filtered dp  "
-            f"{check if fg_ok else cross} foreground  "
-            f"{check if nuc_ok else cross} nucleus labels"
-        )
-
-    def _set_ff_status(self, msg: str) -> None:
-        self.ff_status_lbl.setText(msg)
-        self.ff_status_lbl.setVisible(bool(msg))
+    def _set_stage_status(self, stage: str, msg: str) -> None:
+        label = self._stage_status_label(stage)
+        label.setText(msg)
+        label.setVisible(bool(msg))
         logger.info(msg)
+
+    def _stage_status_label(self, stage: str) -> QLabel:
+        return {
+            "filtered_flow": self.filtered_flow_status_lbl,
+            "foreground_mask": self.foreground_mask_status_lbl,
+            "tracked_labels": self.tracked_labels_status_lbl,
+        }[stage]
+
+    def _stage_progress_bar(self, stage: str) -> QProgressBar:
+        return {
+            "filtered_flow": self.filtered_flow_progress_bar,
+            "foreground_mask": self.foreground_mask_progress_bar,
+            "tracked_labels": self.tracked_labels_progress_bar,
+        }[stage]
 
     def _set_ff_buttons_running(self, running: bool) -> None:
         self.ff_flow_mag_btn.setEnabled(not running)
+        self.preview_fg_masks_btn.setEnabled(not running)
         self.fg_masks_btn.setEnabled(not running)
         self.ff_labels_btn.setEnabled(not running)
         self.ff_cancel_btn.setEnabled(running)
-        self.ff_progress_bar.setVisible(running)
         if not running:
-            self.ff_progress_bar.setValue(0)
+            for bar in (
+                self.filtered_flow_progress_bar,
+                self.foreground_mask_progress_bar,
+                self.tracked_labels_progress_bar,
+            ):
+                bar.setValue(0)
+                bar.setVisible(False)
 
     def _show_layer(self, layer_name: str, data: np.ndarray, kwargs: dict, adder) -> None:
         if layer_name in self.viewer.layers:
@@ -338,24 +375,25 @@ class CellWorkflowWidget(QWidget):
         else:
             adder(data, name=layer_name, **kwargs)
 
-    def _on_ff_progress(self, data) -> None:
+    def _on_stage_progress(self, stage: str, data) -> None:
         if isinstance(data, tuple):
             done, total, msg = data
+            bar = self._stage_progress_bar(stage)
             if total > 0:
-                self.ff_progress_bar.setRange(0, total)
-                self.ff_progress_bar.setValue(done)
-            self._set_ff_status(msg)
+                bar.setVisible(True)
+                bar.setRange(0, total)
+                bar.setValue(done)
+            self._set_stage_status(stage, msg)
         else:
-            self._set_ff_status(str(data))
+            self._set_stage_status(stage, str(data))
 
-    def _on_ff_worker_error(self, exc: Exception) -> None:
+    def _on_stage_worker_error(self, stage: str, exc: Exception) -> None:
         if self._ff_worker is None:
             return
         self._ff_worker = None
-        self.ff_progress_bar.setVisible(False)
         self._set_ff_buttons_running(False)
-        self._set_ff_status(f"Error: {exc}")
-        logger.exception("Flow-following worker error", exc_info=exc)
+        self._set_stage_status(stage, f"Error: {exc}")
+        logger.exception("Cell workflow worker error", exc_info=exc)
 
     # ------------------------------------------------------------------
     # Run / Cancel
@@ -372,7 +410,7 @@ class CellWorkflowWidget(QWidget):
 
     def _on_create_flow_mag(self) -> None:
         if self._pos_dir is None:
-            self._set_ff_status("No project open.")
+            self._set_stage_status("filtered_flow", "No project open.")
             return
 
         prob_path = self._prob_path()
@@ -385,10 +423,10 @@ class CellWorkflowWidget(QWidget):
             (dp_path,   "cell_dp_3dt.tif"),
         ]:
             if path is None or not path.exists():
-                self._set_ff_status(f"Missing: {name}")
+                self._set_stage_status("filtered_flow", f"Missing: {name}")
                 return
         if filtered_dp_path is None or flow_mag_path is None:
-            self._set_ff_status("No project open.")
+            self._set_stage_status("filtered_flow", "No project open.")
             return
 
         params_snapshot = self._params_from_ui()
@@ -404,14 +442,13 @@ class CellWorkflowWidget(QWidget):
                 {"colormap": "inferno", "blending": "additive"},
                 self.viewer.add_image,
             )
-            self.ff_files.refresh(pos_dir)
-            self._update_ff_status_labels()
-            self._set_ff_status("Flow magnitude complete.")
+            self._refresh_stage_files(pos_dir)
+            self._set_stage_status("filtered_flow", "Flow magnitude complete.")
 
         @thread_worker(connect={
-            "yielded":  self._on_ff_progress,
+            "yielded":  lambda data: self._on_stage_progress("filtered_flow", data),
             "returned": _on_done,
-            "errored":  self._on_ff_worker_error,
+            "errored":  lambda exc: self._on_stage_worker_error("filtered_flow", exc),
         })
         def _worker():
             from cellflow.segmentation import compute_filtered_flow_vectors
@@ -433,13 +470,66 @@ class CellWorkflowWidget(QWidget):
             tifffile.imwrite(str(flow_mag_path), filtered_mag, compression="zlib")
             return filtered_mag
 
-        self._set_ff_status("Creating flow magnitude...")
+        self._set_stage_status("filtered_flow", "Creating flow magnitude...")
         self._set_ff_buttons_running(True)
         self._ff_worker = _worker()
 
+    def _current_time_index(self, max_t: int) -> int:
+        step = getattr(getattr(self.viewer, "dims", None), "current_step", ())
+        if not step:
+            return 0
+        return min(max(int(step[0]), 0), max(max_t - 1, 0))
+
+    def _on_preview_foreground_masks(self) -> None:
+        if self._pos_dir is None:
+            self._set_stage_status("foreground_mask", "No project open.")
+            return
+
+        prob_path = self._prob_path()
+        filtered_dp_path = self._filtered_dp_out_path()
+        for path, name in [
+            (prob_path, "cell_prob_3dt.tif"),
+            (filtered_dp_path, "filtered_dp.tif (run Filtered Flow first)"),
+        ]:
+            if path is None or not path.exists():
+                self._set_stage_status("foreground_mask", f"Missing: {name}")
+                return
+
+        from cellflow.segmentation import compute_cellpose_foreground_masks
+
+        prob = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+        filtered_dp = np.asarray(tifffile.imread(str(filtered_dp_path)), dtype=np.float32)
+        if prob.ndim == 3:
+            prob = prob[np.newaxis]
+        if filtered_dp.ndim == 3:
+            filtered_dp = filtered_dp[np.newaxis]
+
+        t_idx = self._current_time_index(min(prob.shape[0], filtered_dp.shape[0]))
+        params_snapshot = self._foreground_params_from_ui()
+        self._set_stage_status("foreground_mask", f"Previewing foreground mask at t={t_idx}...")
+        self.foreground_mask_progress_bar.setVisible(True)
+        self.foreground_mask_progress_bar.setRange(0, 1)
+        self.foreground_mask_progress_bar.setValue(0)
+        try:
+            preview = compute_cellpose_foreground_masks(
+                prob[t_idx:t_idx + 1],
+                filtered_dp[t_idx:t_idx + 1],
+                **params_snapshot,
+                progress_cb=None,
+            )[0].astype(np.uint8, copy=False)
+        except Exception as exc:
+            self.foreground_mask_progress_bar.setVisible(False)
+            self._set_stage_status("foreground_mask", f"Error: {exc}")
+            logger.exception("Foreground mask preview error", exc_info=exc)
+            return
+
+        self.foreground_mask_progress_bar.setValue(1)
+        self._show_layer(_FOREGROUND_MASK_PREVIEW_LAYER, preview, {}, self.viewer.add_labels)
+        self._set_stage_status("foreground_mask", f"Previewed foreground mask at t={t_idx}.")
+
     def _on_create_foreground_masks(self) -> None:
         if self._pos_dir is None:
-            self._set_ff_status("No project open.")
+            self._set_stage_status("foreground_mask", "No project open.")
             return
 
         prob_path = self._prob_path()
@@ -451,10 +541,10 @@ class CellWorkflowWidget(QWidget):
             (filtered_dp_path, "filtered_dp.tif (run Filtered Flow first)"),
         ]:
             if path is None or not path.exists():
-                self._set_ff_status(f"Missing: {name}")
+                self._set_stage_status("foreground_mask", f"Missing: {name}")
                 return
         if fg_path is None:
-            self._set_ff_status("No project open.")
+            self._set_stage_status("foreground_mask", "No project open.")
             return
 
         params_snapshot = self._foreground_params_from_ui()
@@ -470,15 +560,13 @@ class CellWorkflowWidget(QWidget):
                 {},
                 self.viewer.add_labels,
             )
-            self.input_files.refresh(pos_dir)
-            self.ff_files.refresh(pos_dir)
-            self._update_ff_status_labels()
-            self._set_ff_status("Foreground masks complete.")
+            self._refresh_stage_files(pos_dir)
+            self._set_stage_status("foreground_mask", "Foreground masks complete.")
 
         @thread_worker(connect={
-            "yielded":  self._on_ff_progress,
+            "yielded":  lambda data: self._on_stage_progress("foreground_mask", data),
             "returned": _on_done,
-            "errored":  self._on_ff_worker_error,
+            "errored":  lambda exc: self._on_stage_worker_error("foreground_mask", exc),
         })
         def _worker():
             from cellflow.segmentation import compute_cellpose_foreground_masks
@@ -504,13 +592,13 @@ class CellWorkflowWidget(QWidget):
             )
             return foreground.astype(np.uint8, copy=False)
 
-        self._set_ff_status("Creating foreground masks...")
+        self._set_stage_status("foreground_mask", "Creating foreground masks...")
         self._set_ff_buttons_running(True)
         self._ff_worker = _worker()
 
     def _on_create_tracked_labels(self) -> None:
         if self._pos_dir is None:
-            self._set_ff_status("No project open.")
+            self._set_stage_status("tracked_labels", "No project open.")
             return
 
         filtered_dp_path = self._filtered_dp_out_path()
@@ -524,10 +612,10 @@ class CellWorkflowWidget(QWidget):
             (nuc_path,  "tracked_labels.tif (2_nucleus)"),
         ]:
             if path is None or not path.exists():
-                self._set_ff_status(f"Missing: {name}")
+                self._set_stage_status("tracked_labels", f"Missing: {name}")
                 return
         if labels_path is None:
-            self._set_ff_status("No project open.")
+            self._set_stage_status("tracked_labels", "No project open.")
             return
 
         params_snapshot = self._params_from_ui()
@@ -538,14 +626,13 @@ class CellWorkflowWidget(QWidget):
             self._set_ff_buttons_running(False)
             labels = result
             self._show_layer(_CELL_LABELS_LAYER, labels, {}, self.viewer.add_labels)
-            self.ff_files.refresh(pos_dir)
-            self._update_ff_status_labels()
-            self._set_ff_status("Tracked labels complete.")
+            self._refresh_stage_files(pos_dir)
+            self._set_stage_status("tracked_labels", "Tracked labels complete.")
 
         @thread_worker(connect={
-            "yielded":  self._on_ff_progress,
+            "yielded":  lambda data: self._on_stage_progress("tracked_labels", data),
             "returned": _on_done,
-            "errored":  self._on_ff_worker_error,
+            "errored":  lambda exc: self._on_stage_worker_error("tracked_labels", exc),
         })
         def _worker():
             from cellflow.segmentation import compute_flow_following_movie
@@ -573,7 +660,7 @@ class CellWorkflowWidget(QWidget):
             )
             return cell_labels.astype(np.uint32)
 
-        self._set_ff_status("Creating tracked labels...")
+        self._set_stage_status("tracked_labels", "Creating tracked labels...")
         self._set_ff_buttons_running(True)
         self._ff_worker = _worker()
 
@@ -586,7 +673,9 @@ class CellWorkflowWidget(QWidget):
             self._ff_worker = None
             worker.quit()
         self._set_ff_buttons_running(False)
-        self._set_ff_status("Flow-following cancelled.")
+        self._set_stage_status("filtered_flow", "Cancelled.")
+        self._set_stage_status("foreground_mask", "Cancelled.")
+        self._set_stage_status("tracked_labels", "Cancelled.")
 
     def _params_from_ui(self):
         from cellflow.segmentation import FlowFollowingParams
