@@ -11,3 +11,11 @@ def test_tracking_config_exposes_seed_prior_defaults():
     assert cfg.seed_tau_time == 2.0
     assert cfg.seed_max_dt == 5
     assert cfg.seed_sigma_area == 0.5
+
+
+def test_tracking_config_exposes_node_probability_weights():
+    cfg = TrackingConfig()
+
+    assert cfg.quality_weight == 1.0
+    assert cfg.circularity_weight == 0.25
+    assert cfg.quality_exponent == 8.0

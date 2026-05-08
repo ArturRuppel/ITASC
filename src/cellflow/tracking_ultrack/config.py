@@ -46,7 +46,9 @@ class TrackingConfig(BaseModel):
     seg_n_workers: int = 1
 
     # Resolve-from-validated node prior
+    quality_weight: float = 1.0
     quality_exponent: float = 8.0
+    circularity_weight: float = 0.25
     seed_weight: float = 0.5
     seed_sigma_space: float = 25.0
     seed_tau_time: float = 2.0
