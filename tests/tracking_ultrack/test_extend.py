@@ -291,6 +291,63 @@ class TestExtendTrack:
         assert result.candidate_label == 101
         assert result.mask_2d[6:11, 6:11].all()
 
+    def test_extend_track_from_db_greedy_overwrite_preserves_validated_target_cell(self, tmp_path):
+        """Validated target-frame cells block overwrite candidates instead of being moved."""
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from tests.tracking_ultrack.test_reseed import _make_engine
+
+        from cellflow.tracking_ultrack.extend import extend_track_from_db
+
+        engine = _make_engine(tmp_path / "data.db")
+
+        def add_node(session, node_id, y0, x0, y1, x1):
+            mask_2d = np.ones((y1 - y0, x1 - x0), dtype=bool)
+            node_pickle = _make_node_pickle(
+                1,
+                mask_2d,
+                np.array([y0, x0, y1, x1], dtype=np.int64),
+                node_id,
+            )
+            session.add(
+                NodeDB(
+                    id=node_id,
+                    t=1,
+                    t_node_id=node_id,
+                    t_hier_id=0,
+                    z=0,
+                    y=(y0 + y1) / 2.0,
+                    x=(x0 + x1) / 2.0,
+                    area=int(mask_2d.sum()),
+                    pickle=node_pickle,
+                )
+            )
+
+        with Session(engine) as session:
+            add_node(session, 101, 6, 6, 11, 11)      # nearest, overlaps validated cell 9
+            add_node(session, 102, 12, 12, 17, 17)    # farther, does not touch cell 9
+            session.commit()
+
+        tracked = np.zeros((2, 32, 32), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+        tracked[1, 6:11, 6:11] = 9
+
+        result = extend_track_from_db(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+            greedy_overwrite=True,
+            validated_tracks={9: {1}},
+        )
+
+        assert result is not None
+        assert [assignment.cell_id for assignment in result.assignments] == [7]
+        assert result.candidate_label == 102
+        assert result.mask_2d[12:17, 12:17].all()
+        assert not result.mask_2d[6:11, 6:11].any()
+
     def test_forward_single_match(self, simple_hyp):
         """Forward with one close hypothesis returns a valid ExtendResult."""
         tracked, h5_path = simple_hyp

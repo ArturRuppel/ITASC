@@ -198,6 +198,24 @@ def _plan_overwrites_only_assigned_cells(
     return (overwritten_ids & protected_ids).issubset(assigned_ids)
 
 
+def _plan_preserves_locked_target_cells(
+    assignments: tuple[ExtendAssignment, ...],
+    target_frame_labels: np.ndarray,
+    locked_target_ids: set[int],
+) -> bool:
+    if not locked_target_ids:
+        return True
+    overwritten = np.zeros_like(target_frame_labels, dtype=bool)
+    for assignment in assignments:
+        overwritten |= assignment.mask_2d
+    overwritten_ids = {
+        int(v)
+        for v in np.unique(target_frame_labels[overwritten])
+        if int(v) != 0
+    }
+    return not (overwritten_ids & locked_target_ids)
+
+
 def _top_assignments_for_cell(
     *,
     cell_id: int,
@@ -242,7 +260,12 @@ def _best_greedy_overwrite_plan(
     iou_weight: float,
     distance_weight: float,
     overlap_penalty: float,
+    locked_target_ids: set[int] | None = None,
 ) -> tuple[ExtendAssignment, ...] | None:
+    locked_target_ids = set(locked_target_ids or set())
+    if source_id in locked_target_ids:
+        return None
+
     source_assignments = _top_assignments_for_cell(
         cell_id=source_id,
         reference_mask=source_mask,
@@ -263,6 +286,12 @@ def _best_greedy_overwrite_plan(
     protected_ids.discard(source_id)
 
     for source_assignment in source_assignments:
+        if not _plan_preserves_locked_target_cells(
+            (source_assignment,),
+            target_frame_labels,
+            locked_target_ids,
+        ):
+            continue
         conflict_labels = target_frame_labels[
             source_assignment.mask_2d
             & (target_frame_labels != 0)
@@ -305,6 +334,12 @@ def _best_greedy_overwrite_plan(
         for combo in product(*choices):
             plan = (source_assignment, *combo)
             if not _masks_are_disjoint(plan):
+                continue
+            if not _plan_preserves_locked_target_cells(
+                plan,
+                target_frame_labels,
+                locked_target_ids,
+            ):
                 continue
             if not _plan_overwrites_only_assigned_cells(
                 plan,
@@ -425,6 +460,7 @@ def extend_track_from_db(
     distance_weight: float = 0.25,
     overlap_penalty: float = 1.0,
     greedy_overwrite: bool = False,
+    validated_tracks: dict[int, set[int]] | None = None,
 ) -> ExtendResult | None:
     """Extend a track using candidates from ultrack_workdir/data.db.
 
@@ -451,6 +487,11 @@ def extend_track_from_db(
 
     source_frame_labels = tracked_labels[source_frame]
     target_frame_labels = tracked_labels[target_frame]
+    locked_target_ids = {
+        int(cell_id)
+        for cell_id, frames in (validated_tracks or {}).items()
+        if target_frame in frames
+    }
 
     engine = sqla.create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     candidates: list[_DbCandidate] = []
@@ -494,6 +535,7 @@ def extend_track_from_db(
             iou_weight=iou_weight,
             distance_weight=distance_weight,
             overlap_penalty=overlap_penalty,
+            locked_target_ids=locked_target_ids,
         )
         if not plan:
             return None

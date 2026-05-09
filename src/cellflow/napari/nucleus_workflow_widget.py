@@ -3555,6 +3555,7 @@ class NucleusWorkflowWidget(QWidget):
             self._set_correction_status(f"Cell {source_id} not present at t={t}")
             return
 
+        validated_tracks = read_validated_tracks(self._pos_dir) if self._pos_dir is not None else {}
         result = extend_track_from_db(
             source_id=source_id,
             source_frame=t,
@@ -3567,6 +3568,7 @@ class NucleusWorkflowWidget(QWidget):
             distance_weight=float(self.extend_distance_weight_spin.value()),
             overlap_penalty=float(self.extend_overlap_penalty_spin.value()),
             greedy_overwrite=self.extend_greedy_overwrite_check.isChecked(),
+            validated_tracks=validated_tracks,
         )
 
         if result is None:

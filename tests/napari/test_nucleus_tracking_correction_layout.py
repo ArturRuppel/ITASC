@@ -2534,6 +2534,8 @@ def test_extend_fails_clearly_if_db_missing(tmp_path):
 
 
 def test_extend_passes_weight_parameters_to_db_tracker(tmp_path, monkeypatch):
+    from cellflow.database.validation import validate_track
+
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -2544,6 +2546,7 @@ def test_extend_passes_weight_parameters_to_db_tracker(tmp_path, monkeypatch):
     db_path.parent.mkdir(parents=True)
     db_path.write_bytes(b"sqlite placeholder")
     widget._pos_dir = pos_dir
+    validate_track(pos_dir, 9, [1])
 
     labels = np.zeros((2, 12, 12), dtype=np.uint32)
     labels[0, 3:6, 3:6] = 7
@@ -2573,6 +2576,7 @@ def test_extend_passes_weight_parameters_to_db_tracker(tmp_path, monkeypatch):
     assert captured["distance_weight"] == pytest.approx(0.2)
     assert captured["overlap_penalty"] == pytest.approx(2.0)
     assert captured["greedy_overwrite"] is True
+    assert captured["validated_tracks"] == {9: {1}}
 
     widget.deleteLater()
     viewer.close()

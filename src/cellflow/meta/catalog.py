@@ -226,7 +226,11 @@ def _ids_for_h5_paths(paths: list[Path]) -> list[str]:
     ids: list[str] = []
     used: set[str] = set()
     for path in paths:
-        parent_name = path.parent.name
+        parent_name = (
+            path.parent.parent.name
+            if path.parent.name == "4_analysis"
+            else path.parent.name
+        )
         source_id = (
             parent_name
             if path.stem in duplicate_stems or parent_name.lower().startswith("pos")

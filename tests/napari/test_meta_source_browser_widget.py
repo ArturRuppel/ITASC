@@ -10,7 +10,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QComboBox, QPushButton
+from qtpy.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton, QTreeWidget
 
 
 # ---------------------------------------------------------------------------
@@ -91,12 +91,25 @@ def _combo_current(combo: QComboBox) -> str:
     return combo.currentText()
 
 
+def _tree_labels(widget: QTreeWidget) -> list[str]:
+    labels: list[str] = []
+
+    def visit_item(item):
+        labels.append(item.text(0))
+        for child_index in range(item.childCount()):
+            visit_item(item.child(child_index))
+
+    for index in range(widget.topLevelItemCount()):
+        visit_item(widget.topLevelItem(index))
+    return labels
+
+
 # ---------------------------------------------------------------------------
 # widget instantiation
 # ---------------------------------------------------------------------------
 
 def test_widget_creates_selector_combos_and_load_button(monkeypatch):
-    """Widget should expose selectors, catalog action buttons, and a Load Source button."""
+    """Widget should expose metadata inputs, catalog tree, actions, and Load Source."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.MetaSourceBrowserWidget()
@@ -107,6 +120,16 @@ def test_widget_creates_selector_combos_and_load_button(monkeypatch):
     assert isinstance(widget.experiment_combo, QComboBox)
     assert hasattr(widget, "position_combo")
     assert isinstance(widget.position_combo, QComboBox)
+    assert hasattr(widget, "catalog_tree")
+    assert isinstance(widget.catalog_tree, QTreeWidget)
+    assert hasattr(widget, "condition_edit")
+    assert isinstance(widget.condition_edit, QLineEdit)
+    assert hasattr(widget, "experiment_edit")
+    assert isinstance(widget.experiment_edit, QLineEdit)
+    assert hasattr(widget, "position_edit")
+    assert isinstance(widget.position_edit, QLineEdit)
+    assert hasattr(widget, "labels_edit")
+    assert isinstance(widget.labels_edit, QLineEdit)
     assert hasattr(widget, "load_source_btn")
     assert isinstance(widget.load_source_btn, QPushButton)
     assert widget.load_source_btn.text() == "Load Source"
@@ -197,6 +220,41 @@ def test_refresh_populates_position_combo_for_selected_experiment(monkeypatch, t
     widget.refresh(root)
 
     assert _combo_items(widget.position_combo) == ["pos00", "pos01", "pos02"]
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_refresh_populates_full_collapsible_catalog_tree(monkeypatch, tmp_path):
+    """The catalog tree should show every condition, experiment, and position."""
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.MetaSourceBrowserWidget()
+
+    root = tmp_path / "study"
+    for index in range(7):
+        _make_ready_position(root, "cond", "exp", f"pos{index:02d}")
+    _make_ready_position(root, "other", "exp2", "pos00")
+
+    widget.refresh(root)
+
+    assert _tree_labels(widget.catalog_tree) == [
+        "cond",
+        "exp",
+        "pos00",
+        "pos01",
+        "pos02",
+        "pos03",
+        "pos04",
+        "pos05",
+        "pos06",
+        "other",
+        "exp2",
+        "pos00",
+    ]
+    assert "..." not in _tree_labels(widget.catalog_tree)
+    assert widget.catalog_tree.topLevelItem(0).isExpanded() is True
+    assert widget.catalog_tree.topLevelItem(0).child(0).isExpanded() is True
 
     widget.deleteLater()
     app.processEvents()
@@ -515,6 +573,37 @@ def test_add_h5_appends_ready_record(monkeypatch, tmp_path):
     app.processEvents()
 
 
+def test_add_h5_uses_typed_catalog_metadata(monkeypatch, tmp_path):
+    """Adding one H5 should store the metadata currently typed into the form."""
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    source = tmp_path / "position_analysis.h5"
+    source.touch()
+    widget = mod.MetaSourceBrowserWidget()
+    widget.condition_edit.setText("treated")
+    widget.experiment_edit.setText("day3")
+    widget.position_edit.setText("pos42")
+    widget.labels_edit.setText("manual")
+
+    monkeypatch.setattr(
+        mod.QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(source), "H5 Files (*.h5 *.hdf5)"),
+    )
+
+    widget.add_h5_btn.click()
+
+    assert len(widget._records) == 1
+    assert widget._records[0]["condition"] == "treated"
+    assert widget._records[0]["date"] == "day3"
+    assert widget._records[0]["id"] == "pos42"
+    assert widget._records[0]["labels"] == "manual"
+    assert _tree_labels(widget.catalog_tree) == ["treated", "day3", "pos42"]
+
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_autodiscover_folder_appends_multiple_h5_records_and_skips_duplicates(monkeypatch, tmp_path):
     """Autodiscovery should recursively add H5 files while keeping existing records unique."""
     app = QApplication.instance() or QApplication([])
@@ -539,6 +628,41 @@ def test_autodiscover_folder_appends_multiple_h5_records_and_skips_duplicates(mo
 
     assert [record["artifact_path"] for record in widget._records] == [first, second]
     assert _combo_items(widget.position_combo) == ["pos_a", "pos_b"]
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_autodiscover_folder_uses_typed_metadata_and_auto_positions(monkeypatch, tmp_path):
+    """Folder discovery should reuse typed metadata and derive each position from the path."""
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    root = tmp_path / "project"
+    first = root / "pos_a" / "4_analysis" / "position_analysis.h5"
+    second = root / "pos_b" / "4_analysis" / "position_analysis.h5"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.touch()
+    second.touch()
+    widget = mod.MetaSourceBrowserWidget()
+    widget.condition_edit.setText("control")
+    widget.experiment_edit.setText("day5")
+    widget.position_edit.setText("ignored")
+    widget.labels_edit.setText("auto")
+
+    monkeypatch.setattr(
+        mod.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(root),
+    )
+
+    widget.autodiscover_folder_btn.click()
+
+    assert [record["condition"] for record in widget._records] == ["control", "control"]
+    assert [record["date"] for record in widget._records] == ["day5", "day5"]
+    assert [record["id"] for record in widget._records] == ["pos_a", "pos_b"]
+    assert [record["labels"] for record in widget._records] == ["auto", "auto"]
+    assert _tree_labels(widget.catalog_tree) == ["control", "day5", "pos_a", "pos_b"]
 
     widget.deleteLater()
     app.processEvents()
