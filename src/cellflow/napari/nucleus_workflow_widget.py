@@ -69,11 +69,8 @@ from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.db_build import build_ultrack_database
 from cellflow.tracking_ultrack.export import export_tracked_labels
-from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db, _select_solver
-from cellflow.tracking_ultrack.linking import run_linking
+from cellflow.tracking_ultrack.ingest import _select_solver
 from cellflow.tracking_ultrack.extend import extend_track, extend_track_from_db
-from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment
-from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 from cellflow.tracking_ultrack.solve import database_has_annotations, run_solve
 
 logger = logging.getLogger(__name__)
@@ -479,9 +476,6 @@ class NucleusWorkflowWidget(QWidget):
         ])
         db_gen_lay.addWidget(self.db_gen_input_files)
 
-        db_gen_grid = block_grid(horizontal_spacing=12)
-        db_gen_grid.setContentsMargins(0, 0, 0, 0)
-
         self.db_gen_min_area_spin = QSpinBox()
         self.db_gen_min_area_spin.setRange(0, 1_000_000)
         self.db_gen_min_area_spin.setValue(300)
@@ -569,19 +563,89 @@ class NucleusWorkflowWidget(QWidget):
         )
         self.db_gen_power_spin.setVisible(False)
 
-        add_block_pair_row(db_gen_grid, 0, "Min Area (px):", _compact(self.db_gen_min_area_spin), "Max Area (px):", _compact(self.db_gen_max_area_spin))
-        add_block_pair_row(db_gen_grid, 1, "FG Threshold:", _compact(self.db_gen_fg_thr_spin), "Min Frontier:", _compact(self.db_gen_min_frontier_spin))
-        add_block_pair_row(db_gen_grid, 2, "WS Hierarchy:", self.db_gen_ws_hierarchy_combo, "N Workers:", _compact(self.db_gen_n_workers_spin))
-        add_block_pair_row(db_gen_grid, 3, "Max Distance (px):", _compact(self.db_gen_max_dist_spin), "Max Neighbors:", _compact(self.db_gen_max_neighbors_spin))
-        add_block_pair_row(db_gen_grid, 4, "Linking Mode:", self.db_gen_linking_mode_combo, "IoU Weight:", _compact(self.db_gen_iou_weight_spin))
-        add_block_pair_row(db_gen_grid, 5, "Quality Weight:", _compact(self.db_gen_quality_weight_spin), "Quality Exp:", _compact(self.db_gen_quality_exp_spin))
-        add_block_pair_row(db_gen_grid, 6, "Circularity Weight:", _compact(self.db_gen_circularity_weight_spin), "", QWidget())
-        db_gen_lay.addLayout(db_gen_grid)
+        self.ultrack_seed_weight_spin = QDoubleSpinBox()
+        self.ultrack_seed_weight_spin.setRange(0.0, 10.0)
+        self.ultrack_seed_weight_spin.setValue(0.5)
+        self.ultrack_seed_weight_spin.setSingleStep(0.1)
+        self.ultrack_seed_weight_spin.setDecimals(2)
+        self.ultrack_seed_weight_spin.setToolTip(
+            "Additive reward for candidates similar to nearby validated cells. "
+            "Zero disables the seed-local bonus."
+        )
+
+        self.ultrack_seed_space_spin = QDoubleSpinBox()
+        self.ultrack_seed_space_spin.setRange(1.0, 500.0)
+        self.ultrack_seed_space_spin.setValue(25.0)
+        self.ultrack_seed_space_spin.setSingleStep(5.0)
+        self.ultrack_seed_space_spin.setDecimals(1)
+        self.ultrack_seed_space_spin.setToolTip(
+            "Spatial decay scale for seed proximity. Larger values let validated cells influence candidates farther away."
+        )
+
+        self.ultrack_seed_time_spin = QDoubleSpinBox()
+        self.ultrack_seed_time_spin.setRange(0.1, 50.0)
+        self.ultrack_seed_time_spin.setValue(2.0)
+        self.ultrack_seed_time_spin.setSingleStep(0.5)
+        self.ultrack_seed_time_spin.setDecimals(1)
+        self.ultrack_seed_time_spin.setToolTip(
+            "Temporal decay scale in frames. Larger values let validated cells influence more distant frames within the seed window."
+        )
+
+        self.ultrack_seed_window_spin = QSpinBox()
+        self.ultrack_seed_window_spin.setRange(0, 100)
+        self.ultrack_seed_window_spin.setValue(5)
+        self.ultrack_seed_window_spin.setToolTip(
+            "Maximum frame distance from a validated cell used for seed affinity."
+        )
+
+        db_candidate_grid = block_grid(horizontal_spacing=12)
+        db_candidate_grid.setContentsMargins(0, 0, 0, 0)
+        add_block_pair_row(db_candidate_grid, 0, "Min Area (px):", _compact(self.db_gen_min_area_spin), "Max Area (px):", _compact(self.db_gen_max_area_spin))
+        add_block_pair_row(db_candidate_grid, 1, "FG Threshold:", _compact(self.db_gen_fg_thr_spin), "Min Frontier:", _compact(self.db_gen_min_frontier_spin))
+        add_block_pair_row(db_candidate_grid, 2, "WS Hierarchy:", self.db_gen_ws_hierarchy_combo, "N Workers:", _compact(self.db_gen_n_workers_spin))
+        db_gen_lay.addWidget(muted_label(QLabel("Candidate extraction")))
+        db_gen_lay.addLayout(db_candidate_grid)
+
+        db_linking_grid = block_grid(horizontal_spacing=12)
+        db_linking_grid.setContentsMargins(0, 0, 0, 0)
+        add_block_pair_row(db_linking_grid, 0, "Max Distance (px):", _compact(self.db_gen_max_dist_spin), "Max Neighbors:", _compact(self.db_gen_max_neighbors_spin))
+        add_block_pair_row(db_linking_grid, 1, "Linking Mode:", self.db_gen_linking_mode_combo, "IoU Weight:", _compact(self.db_gen_iou_weight_spin))
+        db_gen_lay.addWidget(muted_label(QLabel("Candidate linking")))
+        db_gen_lay.addLayout(db_linking_grid)
+
+        db_scoring_grid = block_grid(horizontal_spacing=12)
+        db_scoring_grid.setContentsMargins(0, 0, 0, 0)
+        add_block_pair_row(db_scoring_grid, 0, "Quality Weight:", _compact(self.db_gen_quality_weight_spin), "Quality Exp:", _compact(self.db_gen_quality_exp_spin))
+        add_block_pair_row(db_scoring_grid, 1, "Circularity Weight:", _compact(self.db_gen_circularity_weight_spin), "", QWidget())
+        db_gen_lay.addWidget(muted_label(QLabel("Node scoring")))
+        db_gen_lay.addLayout(db_scoring_grid)
 
         self.db_gen_use_validated_check = QCheckBox("Use validated corrections")
         db_gen_validated_grid = block_grid(horizontal_spacing=12)
         add_block_checkbox_row(db_gen_validated_grid, 0, self.db_gen_use_validated_check)
         db_gen_lay.addLayout(db_gen_validated_grid)
+
+        db_seed_grid = block_grid(horizontal_spacing=12)
+        add_block_pair_row(
+            db_seed_grid,
+            0,
+            "Seed Weight:",
+            _compact(self.ultrack_seed_weight_spin, 80),
+            "Seed Space (px):",
+            _compact(self.ultrack_seed_space_spin, 80),
+            field_width=80,
+        )
+        add_block_pair_row(
+            db_seed_grid,
+            1,
+            "Seed Time:",
+            _compact(self.ultrack_seed_time_spin, 80),
+            "Seed Window:",
+            _compact(self.ultrack_seed_window_spin, 80),
+            field_width=80,
+        )
+        db_gen_lay.addWidget(muted_label(QLabel("Validated seed prior")))
+        db_gen_lay.addLayout(db_seed_grid)
 
         db_gen_run_row = block_grid(horizontal_spacing=12)
         self.run_db_gen_btn = QPushButton("Run DB Generation")
@@ -707,9 +771,6 @@ class NucleusWorkflowWidget(QWidget):
         ])
         ultrack_lay.addWidget(self.ultrack_input_files)
 
-        tracking_grid = block_grid(horizontal_spacing=12)
-        tracking_grid.setContentsMargins(0, 0, 0, 0)
-
         self.ultrack_min_area_spin = QSpinBox()
         self.ultrack_min_area_spin.setRange(0, 100000)
         self.ultrack_min_area_spin.setValue(300)
@@ -788,131 +849,55 @@ class NucleusWorkflowWidget(QWidget):
             "Higher values favor high-confidence whole-object candidates over fragments."
         )
 
-        self.ultrack_seed_weight_spin = QDoubleSpinBox()
-        self.ultrack_seed_weight_spin.setRange(0.0, 10.0)
-        self.ultrack_seed_weight_spin.setValue(0.5)
-        self.ultrack_seed_weight_spin.setSingleStep(0.1)
-        self.ultrack_seed_weight_spin.setDecimals(2)
-        self.ultrack_seed_weight_spin.setToolTip(
-            "Additive reward for candidates similar to nearby validated cells. "
-            "Zero disables the seed-local bonus."
-        )
-
-        self.ultrack_seed_space_spin = QDoubleSpinBox()
-        self.ultrack_seed_space_spin.setRange(1.0, 500.0)
-        self.ultrack_seed_space_spin.setValue(25.0)
-        self.ultrack_seed_space_spin.setSingleStep(5.0)
-        self.ultrack_seed_space_spin.setDecimals(1)
-        self.ultrack_seed_space_spin.setToolTip(
-            "Spatial decay scale for seed proximity. Larger values let validated cells influence candidates farther away."
-        )
-
-        self.ultrack_seed_time_spin = QDoubleSpinBox()
-        self.ultrack_seed_time_spin.setRange(0.1, 50.0)
-        self.ultrack_seed_time_spin.setValue(2.0)
-        self.ultrack_seed_time_spin.setSingleStep(0.5)
-        self.ultrack_seed_time_spin.setDecimals(1)
-        self.ultrack_seed_time_spin.setToolTip(
-            "Temporal decay scale in frames. Larger values let validated cells influence more distant frames within the seed window."
-        )
-
-        self.ultrack_seed_window_spin = QSpinBox()
-        self.ultrack_seed_window_spin.setRange(0, 100)
-        self.ultrack_seed_window_spin.setValue(5)
-        self.ultrack_seed_window_spin.setToolTip(
-            "Maximum frame distance from a validated cell used for seed affinity."
-        )
-
         self.ultrack_solver_lbl = QLabel("—")
+        track_scope_grid = block_grid(horizontal_spacing=12)
+        track_scope_grid.setContentsMargins(0, 0, 0, 0)
         add_block_pair_row(
-            tracking_grid,
+            track_scope_grid,
             0,
-            "Min Area (px):",
-            _compact(self.ultrack_min_area_spin, 80),
-            "Appear Penalty:",
-            _compact(self.ultrack_appear_spin, 80),
-            field_width=80,
-        )
-        add_block_pair_row(
-            tracking_grid,
-            1,
             "Max Partitions/frame:",
             _compact(self.ultrack_max_partitions_spin, 80),
+            "First N frames:",
+            _compact(self.ultrack_n_frames_spin, 80),
+            field_width=80,
+        )
+        ultrack_lay.addWidget(muted_label(QLabel("Track scope")))
+        ultrack_lay.addLayout(track_scope_grid)
+
+        event_penalty_grid = block_grid(horizontal_spacing=12)
+        event_penalty_grid.setContentsMargins(0, 0, 0, 0)
+        add_block_pair_row(
+            event_penalty_grid,
+            0,
+            "Appear Penalty:",
+            _compact(self.ultrack_appear_spin, 80),
             "Disappear Penalty:",
             _compact(self.ultrack_disappear_spin, 80),
             field_width=80,
         )
         add_block_pair_row(
-            tracking_grid,
-            2,
-            "First N frames:",
-            _compact(self.ultrack_n_frames_spin, 80),
+            event_penalty_grid,
+            1,
             "Division Penalty:",
             _compact(self.ultrack_division_spin, 80),
             field_width=80,
         )
+        ultrack_lay.addWidget(muted_label(QLabel("Event penalties")))
+        ultrack_lay.addLayout(event_penalty_grid)
+
+        solver_grid = block_grid(horizontal_spacing=12)
+        solver_grid.setContentsMargins(0, 0, 0, 0)
         add_block_pair_row(
-            tracking_grid,
-            3,
-            "Linking Mode:",
-            self.ultrack_linking_mode_combo,
-            "Max Neighbors:",
-            _compact(self.ultrack_max_neighbors_spin, 80),
-            field_width=None,
-        )
-        add_block_pair_row(
-            tracking_grid,
-            4,
-            "Max Distance (px):",
-            _compact(self.ultrack_max_dist_spin, 80),
+            solver_grid,
+            0,
+            "Ultrack Power:",
+            _compact(self.ultrack_power_spin, 80),
             "Solver:",
             self.ultrack_solver_lbl,
             field_width=None,
         )
-        add_block_pair_row(
-            tracking_grid,
-            5,
-            "IoU Weight:",
-            _compact(self.ultrack_iou_weight_spin, 80),
-            field_width=80,
-        )
-        ultrack_lay.addLayout(tracking_grid)
-
-        self.ultrack_route_check = QCheckBox("Resolve from validated")
-        self.ultrack_route_check.setVisible(False)
-        route_grid = block_grid(horizontal_spacing=12)
-        add_block_checkbox_row(route_grid, 0, self.ultrack_route_check)
-        ultrack_lay.addLayout(route_grid)
-
-        resolve_grid = block_grid(horizontal_spacing=12)
-        add_block_pair_row(
-            resolve_grid,
-            0,
-            "Ultrack Power:",
-            _compact(self.ultrack_power_spin, 80),
-            "Quality Exp:",
-            _compact(self.ultrack_quality_exp_spin, 80),
-            field_width=80,
-        )
-        add_block_pair_row(
-            resolve_grid,
-            1,
-            "Seed Weight:",
-            _compact(self.ultrack_seed_weight_spin, 80),
-            "Seed Space (px):",
-            _compact(self.ultrack_seed_space_spin, 80),
-            field_width=80,
-        )
-        add_block_pair_row(
-            resolve_grid,
-            2,
-            "Seed Time:",
-            _compact(self.ultrack_seed_time_spin, 80),
-            "Seed Window:",
-            _compact(self.ultrack_seed_window_spin, 80),
-            field_width=80,
-        )
-        ultrack_lay.addLayout(resolve_grid)
+        ultrack_lay.addWidget(muted_label(QLabel("Solver scoring")))
+        ultrack_lay.addLayout(solver_grid)
 
         ultrack_run_row = block_grid(horizontal_spacing=12)
         self.run_ultrack_btn = QPushButton("Run Ultrack Tracking")
@@ -1112,8 +1097,8 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_edge_alpha_check.toggled.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_show_validated_check.toggled.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_show_fake_check.toggled.connect(self._refresh_ultrack_db_browser)
-        self.run_ultrack_btn.clicked.connect(self._on_run_tracking_route)
-        self.ultrack_terminal_btn.clicked.connect(self._on_run_tracking_route_terminal)
+        self.run_ultrack_btn.clicked.connect(self._on_run_ultrack)
+        self.ultrack_terminal_btn.clicked.connect(self._on_ultrack_terminal)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
@@ -1131,7 +1116,7 @@ class NucleusWorkflowWidget(QWidget):
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
         self.ultrack_solver_lbl.setText(solver_display)
         self._on_ultrack_mode_changed(self.ultrack_linking_mode_combo.currentText())
-        self._set_resolve_prior_controls_enabled(self.db_gen_use_validated_check.isChecked())
+        self._set_resolve_prior_controls_enabled()
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public refresh
@@ -1352,9 +1337,6 @@ class NucleusWorkflowWidget(QWidget):
             "from cellflow.database.validation import read_validated_tracks\n"
             "from cellflow.tracking_ultrack.config import TrackingConfig\n"
             "from cellflow.tracking_ultrack.db_build import build_ultrack_database\n"
-            "from cellflow.tracking_ultrack.linking import run_linking\n"
-            "from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs\n"
-            "from ultrack.core.segmentation.processing import segment as _ultrack_segment\n"
             "\n"
             "if __name__ == '__main__':\n"
             f"    pos_dir = pathlib.Path({str(self._pos_dir)!r})\n"
@@ -3160,12 +3142,9 @@ class NucleusWorkflowWidget(QWidget):
     def _on_ultrack_mode_changed(self, mode: str) -> None:
         self.ultrack_iou_weight_spin.setEnabled(mode == "iou")
 
-    def _set_resolve_prior_controls_enabled(self, enabled: bool) -> None:
+    def _set_resolve_prior_controls_enabled(self, _checked: bool | None = None) -> None:
+        enabled = self.db_gen_use_validated_check.isChecked()
         for control in (
-            self.db_gen_quality_weight_spin,
-            self.db_gen_quality_exp_spin,
-            self.db_gen_circularity_weight_spin,
-            self.ultrack_quality_exp_spin,
             self.ultrack_seed_weight_spin,
             self.ultrack_seed_space_spin,
             self.ultrack_seed_time_spin,
@@ -3192,17 +3171,7 @@ class NucleusWorkflowWidget(QWidget):
             appear_weight=self.ultrack_appear_spin.value(),
             disappear_weight=self.ultrack_disappear_spin.value(),
             division_weight=self.ultrack_division_spin.value(),
-            seed_weight=self.ultrack_seed_weight_spin.value(),
-            seed_sigma_space=self.ultrack_seed_space_spin.value(),
-            seed_tau_time=self.ultrack_seed_time_spin.value(),
-            seed_max_dt=self.ultrack_seed_window_spin.value(),
         )
-
-    def _on_run_tracking_route(self) -> None:
-        self._on_run_ultrack()
-
-    def _on_run_tracking_route_terminal(self) -> None:
-        self._on_ultrack_terminal()
 
     def _on_run_ultrack(self) -> None:
         if self._pos_dir is None:
@@ -3372,117 +3341,6 @@ class NucleusWorkflowWidget(QWidget):
         except Exception:
             QApplication.clipboard().setText(cmd)
             self._set_ultrack_status("Copied Ultrack command to clipboard (terminal launch unavailable).")
-
-    def _on_resolve_terminal(self) -> None:
-        import sys
-        import tempfile
-
-        if self._pos_dir is None:
-            self._set_ultrack_status("No project open.")
-            return
-        validated_tracks = read_validated_tracks(self._pos_dir)
-        if not validated_tracks:
-            self._set_ultrack_status("No validated tracks — validate some cells first (press V).")
-            return
-
-        tracked_path = self._tracked_path()
-        if tracked_path is None or not tracked_path.exists():
-            self._set_ultrack_status("Tracked labels not found.")
-            return
-        contour_path = self._contour_maps_path()
-        if contour_path is None or not contour_path.exists():
-            self._set_ultrack_status("Missing: contour_maps.tif")
-            return
-        fg_path = self._foreground_masks_path()
-        if fg_path is None or not fg_path.exists():
-            self._set_ultrack_status("Missing: foreground_masks.tif (foreground mask) — run Contour Maps first.")
-            return
-        nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
-        pos_dir = self._pos_dir
-
-        # Capture widget values (same as _on_resolve_with_validation)
-        cfg = self._ultrack_config_from_controls()
-        cfg.power = self.db_gen_power_spin.value()
-
-        python_code = (
-            "import sys, pathlib\n"
-            "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
-            "from cellflow.tracking_ultrack.config import TrackingConfig\n"
-            "from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment\n"
-            "from cellflow.database.tracked import read_full_tracked_stack\n"
-            "from cellflow.database.validation import read_validated_tracks\n"
-            "import numpy as np\n"
-            "import tifffile\n"
-            "\n"
-            "if __name__ == '__main__':\n"
-            f"    pos_dir      = pathlib.Path({str(pos_dir)!r})\n"
-            f"    contour_path = pathlib.Path({str(contour_path)!r})\n"
-            f"    foreground_masks_path = pathlib.Path({str(fg_path)!r})\n"
-            f"    tracked_path = pathlib.Path({str(tracked_path)!r})\n"
-            "    preview_path = tracked_path.with_name('tracked_labels_resolve_preview.tif')\n"
-            f"    nucleus_prob_zavg_path = pathlib.Path({str(nucleus_prob_zavg_path)!r})\n"
-            f"    cfg = TrackingConfig(\n"
-            f"        seg_min_area={cfg.seg_min_area},\n"
-            f"        seg_max_area={cfg.seg_max_area},\n"
-            f"        seg_foreground_threshold={cfg.seg_foreground_threshold},\n"
-            f"        seg_min_frontier={cfg.seg_min_frontier},\n"
-            f"        seg_ws_hierarchy={cfg.seg_ws_hierarchy!r},\n"
-            f"        seg_n_workers={cfg.seg_n_workers},\n"
-            f"        max_distance={cfg.max_distance},\n"
-            f"        max_neighbors={cfg.max_neighbors},\n"
-            f"        linking_mode={cfg.linking_mode!r},\n"
-            f"        iou_weight={cfg.iou_weight},\n"
-            f"        quality_weight={cfg.quality_weight},\n"
-            f"        quality_exponent={cfg.quality_exponent},\n"
-            f"        circularity_weight={cfg.circularity_weight},\n"
-            f"        power={cfg.power},\n"
-            f"        appear_weight={cfg.appear_weight},\n"
-            f"        disappear_weight={cfg.disappear_weight},\n"
-            f"        division_weight={cfg.division_weight},\n"
-            f"        seed_weight={cfg.seed_weight},\n"
-            f"        seed_sigma_space={cfg.seed_sigma_space},\n"
-            f"        seed_tau_time={cfg.seed_tau_time},\n"
-            f"        seed_max_dt={cfg.seed_max_dt},\n"
-            f"    )\n"
-            "    validated_tracks = read_validated_tracks(pos_dir)\n"
-            "    print(f'Loaded {len(validated_tracks)} validated track(s).', flush=True)\n"
-            "    tracked_labels = read_full_tracked_stack(tracked_path)\n"
-            "    print(f'Loaded tracked labels: {tracked_labels.shape}', flush=True)\n"
-            "    new_labels, _id_map = resolve_with_canonical_segment(\n"
-            "        contour_maps_path=contour_path,\n"
-            "        foreground_masks_path=foreground_masks_path,\n"
-            "        validated_tracks=validated_tracks,\n"
-            "        tracked_labels=tracked_labels,\n"
-            "        cfg=cfg,\n"
-            "        progress_cb=lambda msg: print(msg, flush=True),\n"
-            "        intensity_image_path=nucleus_prob_zavg_path,\n"
-            "    )\n"
-            "    if new_labels.ndim == 4 and new_labels.shape[1] == 1:\n"
-            "        new_labels = new_labels[:, 0]\n"
-            "    tifffile.imwrite(str(preview_path), new_labels, compression='zlib')\n"
-            "    n_validated = len(validated_tracks)\n"
-            "    n_total = int(np.unique(new_labels[new_labels != 0]).size)\n"
-            "    print(\n"
-            "        f'Done — {n_validated} validated track(s) preserved, '\n"
-            "        f'{n_total} total track(s). Preview saved to {preview_path}; tracked_labels.tif not saved.',\n"
-            "        flush=True,\n"
-            "    )\n"
-        )
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", prefix="cellflow_resolve_", delete=False
-        ) as tmp:
-            tmp.write(python_code)
-            tmp_path = tmp.name
-
-        cmd = f"{shlex.quote(sys.executable)} {shlex.quote(tmp_path)}"
-        try:
-            from cellflow.napari.utils import launch_in_terminal
-            launch_in_terminal(cmd)
-            self._set_ultrack_status("Re-solve command launched in terminal.")
-        except Exception:
-            QApplication.clipboard().setText(cmd)
-            self._set_ultrack_status("Copied Re-solve command to clipboard (terminal launch unavailable).")
 
     # ──────────────────────────────────────────────────────────────────────────
     # 5. Manual correction
@@ -3844,164 +3702,6 @@ class NucleusWorkflowWidget(QWidget):
             f"{n_skipped} fully-validated frame(s) skipped. Unsaved."
         )
 
-    def _on_resolve_with_validation(self) -> None:
-        if self._pos_dir is None:
-            self._set_ultrack_status("No project open.")
-            return
-
-        validated_tracks = read_validated_tracks(self._pos_dir)
-        if not validated_tracks:
-            self._set_ultrack_status("No validated tracks found — validate some cells first (press V).")
-            return
-
-        # Show confirmation dialog before overwriting tracked_labels.tif
-        msg = QMessageBox(self.viewer.window._qt_window)
-        msg.setWindowTitle("Overwrite tracked labels?")
-        msg.setText(
-            "Resolve will overwrite `tracked_labels.tif`. If you want to preserve the current tracking, "
-            "copy the file first.\n\nContinue?"
-        )
-        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
-        msg.setDefaultButton(QMessageBox.Cancel)
-        if msg.exec() != QMessageBox.Yes:
-            self._set_ultrack_status("Resolve cancelled.")
-            return
-
-        if _TRACKED_LAYER not in self.viewer.layers:
-            self._set_ultrack_status("No tracked layer loaded.")
-            return
-
-        contour_path = self._contour_maps_path()
-        if contour_path is None or not contour_path.exists():
-            self._set_ultrack_status("Missing: contour_maps.tif — run Contour Maps first.")
-            return
-        fg_path = self._foreground_masks_path()
-        if fg_path is None or not fg_path.exists():
-            self._set_ultrack_status(
-                "Missing: foreground_masks.tif (foreground mask) — run Contour Maps first."
-            )
-            return
-        nucleus_prob_zavg_path = self._nucleus_prob_zavg_path()
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        tracked_labels = np.asarray(layer.data)
-
-        cfg = self._ultrack_config_from_controls()
-
-        n_validated = len(validated_tracks)
-        self.run_ultrack_btn.setEnabled(False)
-        self.ultrack_terminal_btn.setEnabled(False)
-        self.ultrack_progress_bar.setRange(0, 0)
-        self.ultrack_progress_bar.setVisible(True)
-        self._set_ultrack_status(
-            f"Re-solving with {n_validated} validated track(s) preserved…"
-        )
-
-        def _on_resolve_done(result: tuple) -> None:
-            self.run_ultrack_btn.setEnabled(True)
-            self.ultrack_terminal_btn.setEnabled(True)
-            self.ultrack_progress_bar.setVisible(False)
-            self.ultrack_progress_bar.setRange(0, 100)
-            if result is None:
-                self._set_ultrack_status("Re-solve failed (no output).")
-                return
-            new_labels, _id_map = result
-            # Normalize (T, 1, Y, X) → (T, Y, X) if needed
-            if new_labels.ndim == 4 and new_labels.shape[1] == 1:
-                new_labels = new_labels[:, 0]
-            if _TRACKED_LAYER in self.viewer.layers:
-                self.viewer.layers[_TRACKED_LAYER].data = new_labels
-            else:
-                self.viewer.add_labels(new_labels, name=_TRACKED_LAYER)
-            layer = self.viewer.layers[_TRACKED_LAYER]
-            self.correction_widget.activate_layer(layer)
-            self._refresh_validated_overlay()
-            self._refresh_validation_counter()
-            n_total_tracks = int(np.unique(new_labels[new_labels != 0]).size)
-            self._set_ultrack_status(
-                f"Re-solve complete: {n_validated} validated track(s) preserved, "
-                f"{n_total_tracks} total track(s) in output. Unsaved."
-            )
-
-        def _on_resolve_progress(msg: str) -> None:
-            self._set_ultrack_status(msg)
-
-        def _on_resolve_error(exc: Exception) -> None:
-            self.run_ultrack_btn.setEnabled(True)
-            self.ultrack_terminal_btn.setEnabled(True)
-            self.ultrack_progress_bar.setVisible(False)
-            self.ultrack_progress_bar.setRange(0, 100)
-            self._on_ultrack_worker_error(exc)
-
-        @thread_worker(connect={
-            "returned": _on_resolve_done,
-            "yielded":  _on_resolve_progress,
-            "errored":  _on_resolve_error,
-        })
-        def _worker():
-            status_msgs = []
-
-            def _cb(msg: str) -> None:
-                status_msgs.append(msg)
-
-            # resolve_with_validation is not a generator, so we call it with a
-            # progress_cb that collects messages.  After each internal stage the
-            # callback appends a message; we yield them all once the function
-            # returns so the UI gets updated between calls.  To emit progress
-            # *during* the solve we run it in steps via the callback trick:
-            # yield a sentinel before calling, collect inside.
-            # Simpler approach: just yield the stage strings ourselves and call
-            # resolve_with_validation with a progress_cb that does a thread-safe
-            # yield via a queue.  But thread_worker yields must come from the
-            # generator itself.  So we use the progress_cb to collect messages
-            # and yield them after the call completes.
-            # Best practical approach: call resolve_with_validation with
-            # progress_cb that stores messages, and yield each after the call.
-            # This gives incremental feedback between stages.
-
-            import queue as _queue
-
-            msg_queue: _queue.SimpleQueue = _queue.SimpleQueue()
-
-            def _progress(msg: str) -> None:
-                msg_queue.put(msg)
-
-            import threading
-
-            result_holder: list = []
-            exc_holder: list = []
-
-            def _run() -> None:
-                try:
-                    result_holder.append(
-                        resolve_with_canonical_segment(
-                            contour_maps_path=contour_path,
-                            foreground_masks_path=fg_path,
-                            validated_tracks=validated_tracks,
-                            tracked_labels=tracked_labels,
-                            cfg=cfg,
-                            progress_cb=_progress,
-                            intensity_image_path=nucleus_prob_zavg_path,
-                        )
-                    )
-                except Exception as e:
-                    exc_holder.append(e)
-
-            t = threading.Thread(target=_run, daemon=True)
-            t.start()
-
-            while t.is_alive() or not msg_queue.empty():
-                try:
-                    yield msg_queue.get_nowait()
-                except _queue.Empty:
-                    t.join(timeout=0.05)
-
-            if exc_holder:
-                raise exc_holder[0]
-
-            return result_holder[0] if result_holder else None
-
-        _worker()
-
     # ──────────────────────────────────────────────────────────────────────────
     # State persistence
     # ──────────────────────────────────────────────────────────────────────────
@@ -4041,6 +3741,10 @@ class NucleusWorkflowWidget(QWidget):
                 "power":            self.db_gen_power_spin.value(),
                 "n_workers":        self.db_gen_n_workers_spin.value(),
                 "use_validated":    self.db_gen_use_validated_check.isChecked(),
+                "seed_weight":      self.ultrack_seed_weight_spin.value(),
+                "seed_sigma_space": self.ultrack_seed_space_spin.value(),
+                "seed_tau_time":    self.ultrack_seed_time_spin.value(),
+                "seed_max_dt":      self.ultrack_seed_window_spin.value(),
             },
             "extend": {
                 "max_distance":     self.extend_max_dist_spin.value(),
@@ -4051,22 +3755,12 @@ class NucleusWorkflowWidget(QWidget):
                 "greedy_overwrite": self.extend_greedy_overwrite_check.isChecked(),
             },
             "ultrack": {
-                "min_area":         self.ultrack_min_area_spin.value(),
                 "max_partitions":   self.ultrack_max_partitions_spin.value(),
                 "n_frames":         self.ultrack_n_frames_spin.value(),
-                "max_distance":     self.ultrack_max_dist_spin.value(),
-                "linking_mode":     self.ultrack_linking_mode_combo.currentText(),
-                "iou_weight":       self.ultrack_iou_weight_spin.value(),
                 "appear_weight":    self.ultrack_appear_spin.value(),
                 "disappear_weight": self.ultrack_disappear_spin.value(),
                 "division_weight":  self.ultrack_division_spin.value(),
-                "max_neighbors":    self.ultrack_max_neighbors_spin.value(),
                 "power":            self.ultrack_power_spin.value(),
-                "quality_exponent": self.ultrack_quality_exp_spin.value(),
-                "seed_weight":      self.ultrack_seed_weight_spin.value(),
-                "seed_sigma_space": self.ultrack_seed_space_spin.value(),
-                "seed_tau_time":    self.ultrack_seed_time_spin.value(),
-                "seed_max_dt":      self.ultrack_seed_window_spin.value(),
             },
         }
 
@@ -4118,6 +3812,10 @@ class NucleusWorkflowWidget(QWidget):
             if "power"            in dbg: self.db_gen_power_spin.setValue(dbg["power"])
             if "n_workers"        in dbg: self.db_gen_n_workers_spin.setValue(dbg["n_workers"])
             if "use_validated"    in dbg: self.db_gen_use_validated_check.setChecked(dbg["use_validated"])
+            if "seed_weight"      in dbg: self.ultrack_seed_weight_spin.setValue(dbg["seed_weight"])
+            if "seed_sigma_space" in dbg: self.ultrack_seed_space_spin.setValue(dbg["seed_sigma_space"])
+            if "seed_tau_time"    in dbg: self.ultrack_seed_time_spin.setValue(dbg["seed_tau_time"])
+            if "seed_max_dt"      in dbg: self.ultrack_seed_window_spin.setValue(dbg["seed_max_dt"])
         if "extend" in state:
             ext = state["extend"]
             if "max_distance"    in ext: self.extend_max_dist_spin.setValue(ext["max_distance"])
@@ -4132,22 +3830,56 @@ class NucleusWorkflowWidget(QWidget):
             pass  # Old propagator v2 state — silently skip
         if "ultrack" in state:
             ul = state["ultrack"]
-            if "min_area"         in ul: self.ultrack_min_area_spin.setValue(ul["min_area"])
+            if "min_area" in ul and (
+                "db_generation" not in state or "min_area" not in state["db_generation"]
+            ):
+                self.db_gen_min_area_spin.setValue(ul["min_area"])
             if "max_partitions"   in ul: self.ultrack_max_partitions_spin.setValue(ul["max_partitions"])
             if "n_frames"         in ul: self.ultrack_n_frames_spin.setValue(ul["n_frames"])
-            if "max_distance"     in ul: self.ultrack_max_dist_spin.setValue(ul["max_distance"])
-            if "linking_mode"     in ul:
-                idx = self.ultrack_linking_mode_combo.findText(ul["linking_mode"])
+            if "max_distance" in ul and (
+                "db_generation" not in state or "max_distance" not in state["db_generation"]
+            ):
+                self.db_gen_max_dist_spin.setValue(ul["max_distance"])
+            if "linking_mode" in ul and (
+                "db_generation" not in state or "linking_mode" not in state["db_generation"]
+            ):
+                idx = self.db_gen_linking_mode_combo.findText(ul["linking_mode"])
                 if idx >= 0:
-                    self.ultrack_linking_mode_combo.setCurrentIndex(idx)
-            if "iou_weight"       in ul: self.ultrack_iou_weight_spin.setValue(ul["iou_weight"])
+                    self.db_gen_linking_mode_combo.setCurrentIndex(idx)
+            if "iou_weight" in ul and (
+                "db_generation" not in state or "iou_weight" not in state["db_generation"]
+            ):
+                self.db_gen_iou_weight_spin.setValue(ul["iou_weight"])
             if "appear_weight"    in ul: self.ultrack_appear_spin.setValue(ul["appear_weight"])
             if "disappear_weight" in ul: self.ultrack_disappear_spin.setValue(ul["disappear_weight"])
             if "division_weight"  in ul: self.ultrack_division_spin.setValue(ul["division_weight"])
-            if "max_neighbors"    in ul: self.ultrack_max_neighbors_spin.setValue(ul["max_neighbors"])
+            if "max_neighbors" in ul and (
+                "db_generation" not in state or "max_neighbors" not in state["db_generation"]
+            ):
+                self.db_gen_max_neighbors_spin.setValue(ul["max_neighbors"])
             if "power"            in ul: self.ultrack_power_spin.setValue(ul["power"])
-            if "quality_exponent" in ul: self.ultrack_quality_exp_spin.setValue(ul["quality_exponent"])
-            if "seed_weight"      in ul: self.ultrack_seed_weight_spin.setValue(ul["seed_weight"])
-            if "seed_sigma_space" in ul: self.ultrack_seed_space_spin.setValue(ul["seed_sigma_space"])
-            if "seed_tau_time"    in ul: self.ultrack_seed_time_spin.setValue(ul["seed_tau_time"])
-            if "seed_max_dt"      in ul: self.ultrack_seed_window_spin.setValue(ul["seed_max_dt"])
+            if "resolve_from_validated" in ul and (
+                "db_generation" not in state or "use_validated" not in state["db_generation"]
+            ):
+                self.db_gen_use_validated_check.setChecked(ul["resolve_from_validated"])
+            if "quality_exponent" in ul and (
+                "db_generation" not in state
+                or "quality_exponent" not in state["db_generation"]
+            ):
+                self.db_gen_quality_exp_spin.setValue(ul["quality_exponent"])
+            if "seed_weight" in ul and (
+                "db_generation" not in state or "seed_weight" not in state["db_generation"]
+            ):
+                self.ultrack_seed_weight_spin.setValue(ul["seed_weight"])
+            if "seed_sigma_space" in ul and (
+                "db_generation" not in state or "seed_sigma_space" not in state["db_generation"]
+            ):
+                self.ultrack_seed_space_spin.setValue(ul["seed_sigma_space"])
+            if "seed_tau_time" in ul and (
+                "db_generation" not in state or "seed_tau_time" not in state["db_generation"]
+            ):
+                self.ultrack_seed_time_spin.setValue(ul["seed_tau_time"])
+            if "seed_max_dt" in ul and (
+                "db_generation" not in state or "seed_max_dt" not in state["db_generation"]
+            ):
+                self.ultrack_seed_window_spin.setValue(ul["seed_max_dt"])

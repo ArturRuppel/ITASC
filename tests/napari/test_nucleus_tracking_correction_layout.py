@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QCheckBox,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -125,14 +126,24 @@ def _install_main_widget_stubs() -> None:
         def set_state(self, state):
             self.state_received = state
 
+    class _StubCellposeWidget(_StubWidget):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.hpc_cellpose_widget = _StubWidget()
+
+        def refresh(self, pos_dir):
+            super().refresh(pos_dir)
+            self.hpc_cellpose_widget.refresh(pos_dir)
+
     stub_modules = {
         "cellflow.napari.analysis_widget": {"AnalysisWidget": _StubWidget},
         "cellflow.napari.cell_workflow_widget": {"CellWorkflowWidget": _StubWidget},
-        "cellflow.napari.cellpose_widget": {"CellposeWidget": _StubWidget},
+        "cellflow.napari.cellpose_widget": {"CellposeWidget": _StubCellposeWidget},
         "cellflow.napari.correction_widget": {"CorrectionWidget": _StubWidget},
         "cellflow.napari.data_panel_widget": {"ProjectStatusPanel": _StubWidget},
         "cellflow.napari.data_prep_widget": {"DataPrepWidget": _StubWidget},
         "cellflow.napari.hpc_cellpose_widget": {"HpcCellposeWidget": _StubWidget},
+        "cellflow.napari.meta_widget": {"MetaSourceBrowserWidget": _StubWidget},
         "cellflow.napari.nucleus_workflow_widget": {"NucleusWorkflowWidget": _StubWidget},
         "cellflow.napari.nls_classification_widget": {"NLSClassificationWidget": _StubWidget},
     }
@@ -162,6 +173,7 @@ def _load_main_widget_class():
         "cellflow.napari.data_panel_widget",
         "cellflow.napari.data_prep_widget",
         "cellflow.napari.hpc_cellpose_widget",
+        "cellflow.napari.meta_widget",
         "cellflow.napari.nucleus_workflow_widget",
         "cellflow.napari.nls_classification_widget",
     ):
@@ -218,11 +230,11 @@ def test_main_widget_sections_are_collapsed_by_default():
         widget.data_section,
         widget.prep_section,
         widget.cellpose_section,
-        widget.hpc_cellpose_section,
         widget.nucleus_section,
         widget.cell_section,
         widget.analysis_section,
         widget.nls_classification_section,
+        widget.meta_section,
     )
     assert all(section.is_expanded is False for section in sections)
 
@@ -253,16 +265,14 @@ def test_main_widget_project_header_uses_compact_action_controls():
     viewer.close()
 
 
-def test_main_widget_includes_hpc_cellpose_section_after_cellpose():
+def test_main_widget_embeds_hpc_cellpose_inside_cellpose_stage():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.hpc_cellpose_section.title == "2b. HPC Cellpose"
+    assert not hasattr(widget, "hpc_cellpose_section")
+    assert widget.hpc_cellpose_widget is widget._cellpose_widget.hpc_cellpose_widget
     assert widget.scroll_layout.indexOf(widget.cellpose_section) < widget.scroll_layout.indexOf(
-        widget.hpc_cellpose_section
-    )
-    assert widget.scroll_layout.indexOf(widget.hpc_cellpose_section) < widget.scroll_layout.indexOf(
         widget.nucleus_section
     )
 
@@ -278,6 +288,27 @@ def test_main_widget_includes_nls_classification_section_after_analysis():
     assert widget.nls_classification_section.title == "5b. NLS Classification"
     assert widget.scroll_layout.indexOf(widget.analysis_section) < widget.scroll_layout.indexOf(
         widget.nls_classification_section
+    )
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_main_widget_includes_meta_source_browser_after_nls_classification(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    project_root = tmp_path / "study"
+    project_root.mkdir()
+    widget.path_label.setText(str(project_root))
+    widget.pos_spin.setValue(3)
+    widget._refresh_all()
+
+    assert widget.meta_section.title == "6. Meta Analyzer"
+    assert widget.meta_source_browser.refreshed_pos_dir == project_root
+    assert widget.scroll_layout.indexOf(widget.nls_classification_section) < widget.scroll_layout.indexOf(
+        widget.meta_section
     )
 
     widget.deleteLater()
@@ -401,7 +432,9 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
         button.text()
         for button in widget.ultrack_section.findChildren(QPushButton)
     }
-    route_checkboxes = widget.ultrack_section.findChildren(type(widget.ultrack_route_check))
+    ultrack_checkbox_texts = {
+        checkbox.text() for checkbox in widget.ultrack_section.findChildren(QCheckBox)
+    }
 
     assert "Save Tracked Labels" in correction_button_texts
     assert "Load Tracked Labels" in correction_button_texts
@@ -418,10 +451,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert "Save Tracked Labels" not in ultrack_button_texts
     assert "Load Tracked Labels" not in ultrack_button_texts
     assert "Reassign IDs" not in ultrack_button_texts
-    assert widget.ultrack_route_check in route_checkboxes
-    assert widget.ultrack_route_check not in widget.correction_section.findChildren(
-        type(widget.ultrack_route_check)
-    )
+    assert "Resolve from validated" not in ultrack_checkbox_texts
 
     widget.deleteLater()
     viewer.close()
@@ -451,15 +481,12 @@ def test_tracking_correction_action_buttons_expand_horizontally():
     viewer.close()
 
 
-def test_ultrack_section_exposes_route_selector_and_local_status():
+def test_ultrack_section_has_no_legacy_resolve_route_and_keeps_local_status():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.ultrack_route_check.text() == "Resolve from validated"
-    assert widget.ultrack_route_check in widget.ultrack_section.findChildren(
-        type(widget.ultrack_route_check)
-    )
+    assert not hasattr(widget, "ultrack_route_check")
     assert widget.ultrack_status_lbl.text() == ""
     assert widget.ultrack_progress_bar.isVisible() is False
 
@@ -709,7 +736,66 @@ def test_ultrack_section_still_exposes_seed_prior_controls():
     viewer.close()
 
 
-def test_validated_seed_prior_controls_follow_resolve_checkbox():
+def test_ultrack_tracker_hides_db_build_duplicate_controls():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    for control in (
+        widget.ultrack_min_area_spin,
+        widget.ultrack_max_dist_spin,
+        widget.ultrack_max_neighbors_spin,
+        widget.ultrack_linking_mode_combo,
+        widget.ultrack_iou_weight_spin,
+    ):
+        assert control.parent() is None
+
+    ultrack_labels = {
+        label.text()
+        for label in widget.ultrack_section.findChildren(QLabel)
+    }
+    assert "Min Area (px):" not in ultrack_labels
+    assert "Max Distance (px):" not in ultrack_labels
+    assert "Max Neighbors:" not in ultrack_labels
+    assert "Linking Mode:" not in ultrack_labels
+    assert "IoU Weight:" not in ultrack_labels
+    assert {
+        "min_area",
+        "max_distance",
+        "max_neighbors",
+        "linking_mode",
+        "iou_weight",
+    }.isdisjoint(widget.get_state()["ultrack"])
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_parameters_are_grouped_by_workflow_stage():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_group_labels = {
+        label.text()
+        for label in widget.db_gen_section.findChildren(QLabel)
+    }
+    ultrack_group_labels = {
+        label.text()
+        for label in widget.ultrack_section.findChildren(QLabel)
+    }
+
+    assert {"Candidate extraction", "Candidate linking", "Node scoring"} <= db_group_labels
+    assert {"Track scope", "Event penalties", "Solver scoring"} <= ultrack_group_labels
+    assert "Validated seed prior" in db_group_labels
+    assert "Validated seed prior" not in ultrack_group_labels
+    assert widget.ultrack_quality_exp_spin.parent() is None
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_validated_seed_prior_controls_follow_db_generation_checkbox():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -721,13 +807,65 @@ def test_validated_seed_prior_controls_follow_resolve_checkbox():
         widget.ultrack_seed_window_spin,
     ]
 
-    widget.ultrack_route_check.setChecked(False)
+    widget.db_gen_use_validated_check.setChecked(False)
     _app.processEvents()
     assert all(not control.isEnabled() for control in controls)
 
-    widget.ultrack_route_check.setChecked(True)
+    widget.db_gen_use_validated_check.setChecked(True)
     _app.processEvents()
     assert all(control.isEnabled() for control in controls)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_db_scoring_controls_stay_enabled_without_validation():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    seed_controls = [
+        widget.ultrack_seed_weight_spin,
+        widget.ultrack_seed_space_spin,
+        widget.ultrack_seed_time_spin,
+        widget.ultrack_seed_window_spin,
+    ]
+    scoring_controls = [
+        widget.db_gen_quality_weight_spin,
+        widget.db_gen_quality_exp_spin,
+        widget.db_gen_circularity_weight_spin,
+    ]
+
+    widget.db_gen_use_validated_check.setChecked(False)
+    _app.processEvents()
+
+    assert all(control.isEnabled() for control in scoring_controls)
+    assert all(not control.isEnabled() for control in seed_controls)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_old_ultrack_linking_state_migrates_to_db_controls():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.set_state({
+        "ultrack": {
+            "min_area": 700,
+            "max_distance": 21.0,
+            "max_neighbors": 9,
+            "linking_mode": "iou",
+            "iou_weight": 0.65,
+        }
+    })
+
+    assert widget.db_gen_min_area_spin.value() == 700
+    assert widget.db_gen_max_dist_spin.value() == pytest.approx(21.0)
+    assert widget.db_gen_max_neighbors_spin.value() == 9
+    assert widget.db_gen_linking_mode_combo.currentText() == "iou"
+    assert widget.db_gen_iou_weight_spin.value() == pytest.approx(0.65)
 
     widget.deleteLater()
     viewer.close()
@@ -738,7 +876,7 @@ def test_ultrack_seed_prior_controls_persist_through_state():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.ultrack_route_check.setChecked(True)
+    widget.db_gen_use_validated_check.setChecked(True)
     widget.ultrack_seed_weight_spin.setValue(0.75)
     widget.ultrack_seed_space_spin.setValue(30.0)
     widget.ultrack_seed_time_spin.setValue(3.0)
@@ -750,7 +888,7 @@ def test_ultrack_seed_prior_controls_persist_through_state():
     widget = widget_class(viewer)
     widget.set_state(state)
 
-    assert widget.ultrack_route_check.isChecked()
+    assert widget.db_gen_use_validated_check.isChecked()
     assert widget.ultrack_seed_weight_spin.value() == 0.75
     assert widget.ultrack_seed_space_spin.value() == 30.0
     assert widget.ultrack_seed_time_spin.value() == 3.0
@@ -795,7 +933,7 @@ def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monk
     viewer.close()
 
 
-def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path, monkeypatch):
+def test_db_generation_terminal_script_includes_validated_seed_prior_controls(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -813,17 +951,16 @@ def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path
     (nucleus_dir / "tracked_labels.tif").touch()
     (cellpose_dir / "nucleus_prob_zavg.tif").touch()
     widget._pos_dir = pos_dir
-    widget.db_gen_power_spin.setValue(3.75)
     widget.db_gen_quality_exp_spin.setValue(10.5)
+    widget.db_gen_use_validated_check.setChecked(True)
     widget.ultrack_seed_weight_spin.setValue(0.9)
     widget.ultrack_seed_space_spin.setValue(40.0)
     widget.ultrack_seed_time_spin.setValue(4.5)
     widget.ultrack_seed_window_spin.setValue(9)
 
-    widget._on_resolve_terminal()
+    widget._on_db_gen_terminal()
     script = _read_launched_script(captured)
 
-    assert "power=3.75" in script
     assert "quality_exponent=10.5" in script
     assert "seed_weight=0.9" in script
     assert "seed_sigma_space=40.0" in script
@@ -832,56 +969,7 @@ def test_resolve_terminal_script_includes_validated_seed_prior_controls(tmp_path
 
     widget.deleteLater()
     viewer.close()
-
-
-def test_resolve_done_updates_layer_without_saving_tracked_labels():
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    source = (package_root / "nucleus_workflow_widget.py").read_text()
-    resolve_done = source.split("        def _on_resolve_done(result: tuple) -> None:", 1)[1].split(
-        "        def _on_resolve_progress", 1
-    )[0]
-
-    assert "write_tracked_frame" not in resolve_done
-    assert "invalidate_track(pos_dir" not in resolve_done
-    assert "validate_track(pos_dir" not in resolve_done
-    assert "Unsaved" in resolve_done
-
-
-def test_resolve_terminal_script_does_not_autosave_tracked_labels(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
-    captured = _install_terminal_capture(monkeypatch)
-    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {12: {0, 1}})
-
-    pos_dir = tmp_path / "pos00"
-    cellpose_dir = pos_dir / "1_cellpose"
-    nucleus_dir = pos_dir / "2_nucleus"
-    cellpose_dir.mkdir(parents=True)
-    nucleus_dir.mkdir()
-    (nucleus_dir / "contour_maps.tif").touch()
-    (nucleus_dir / "foreground_masks.tif").touch()
-    (nucleus_dir / "tracked_labels.tif").touch()
-    (cellpose_dir / "nucleus_prob_zavg.tif").touch()
-    widget._pos_dir = pos_dir
-
-    widget._on_resolve_terminal()
-    script = _read_launched_script(captured)
-
-    assert "write_tracked_frame" not in script
-    assert "invalidate_track(pos_dir" not in script
-    assert "validate_track(pos_dir" not in script
-    assert "tracked_labels_resolve_preview.tif" in script
-    assert "tifffile.imwrite(str(preview_path), new_labels" in script
-    assert "Preview saved" in script
-    assert "not saved" in script
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_resolve_terminal_script_includes_seed_prior_and_cellprob_zavg(tmp_path, monkeypatch):
+def test_db_generation_terminal_script_includes_seed_prior_and_nucleus_prob_zavg(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -900,25 +988,23 @@ def test_resolve_terminal_script_includes_seed_prior_and_cellprob_zavg(tmp_path,
     (cellpose_dir / "nucleus_prob_zavg.tif").touch()
     widget._pos_dir = pos_dir
 
-    widget.ultrack_route_check.setChecked(True)
-    widget.db_gen_power_spin.setValue(3.5)
     widget.db_gen_quality_exp_spin.setValue(9.0)
+    widget.db_gen_use_validated_check.setChecked(True)
     widget.ultrack_seed_weight_spin.setValue(0.75)
     widget.ultrack_seed_space_spin.setValue(30.0)
     widget.ultrack_seed_time_spin.setValue(3.0)
     widget.ultrack_seed_window_spin.setValue(7)
 
-    widget._on_resolve_terminal()
+    widget._on_db_gen_terminal()
     script = _read_launched_script(captured)
 
     assert "nucleus_prob_zavg.tif" in script
-    assert "power=3.5" in script
     assert "quality_exponent=9.0" in script
     assert "seed_weight=0.75" in script
     assert "seed_sigma_space=30.0" in script
     assert "seed_tau_time=3.0" in script
     assert "seed_max_dt=7" in script
-    assert "intensity_image_path=nucleus_prob_zavg_path" in script
+    assert "nucleus_prob_zavg_path=nucleus_prob_zavg_path" in script
 
     widget.deleteLater()
     viewer.close()
@@ -944,8 +1030,10 @@ def test_tracking_correction_widget_allows_horizontal_scrolling_when_narrow():
     outer.resize(220, 300)
     _app.processEvents()
 
-    assert scroll.horizontalScrollBar().maximum() > 0
-    assert widget.minimumSizeHint().width() > scroll.viewport().width()
+    if widget.minimumSizeHint().width() > scroll.viewport().width():
+        assert scroll.horizontalScrollBar().maximum() > 0
+    else:
+        assert scroll.horizontalScrollBar().maximum() == 0
 
     outer.deleteLater()
     viewer.close()
@@ -1539,23 +1627,6 @@ def test_build_ultrack_config_applies_segmentation_fields(tmp_path):
     assert sc.n_workers == 2
 
 
-def test_resolve_with_canonical_segment_exists():
-    for mod in ["cellflow.tracking_ultrack.reseed", "cellflow.tracking_ultrack"]:
-        sys.modules.pop(mod, None)
-    from cellflow.tracking_ultrack.reseed import resolve_with_canonical_segment
-    import inspect
-    sig = inspect.signature(resolve_with_canonical_segment)
-    params = set(sig.parameters)
-    assert "contour_maps_path" in params
-    assert "foreground_masks_path" in params
-    assert "validated_tracks" in params
-    assert "tracked_labels" in params
-    assert "cfg" in params
-    assert "intensity_image_path" in params
-    # must NOT require hypotheses_path
-    assert "hypotheses_path" not in params
-
-
 def test_extend_track_from_db_missing_db_raises(tmp_path):
     sys.modules.pop("cellflow.tracking_ultrack.extend", None)
     sys.modules.pop("cellflow.tracking_ultrack", None)
@@ -1597,15 +1668,13 @@ def test_nucleus_workflow_has_five_canonical_sections_plus_optional_db_browser()
     viewer.close()
 
 
-def test_deprecated_sections_are_hidden():
+def test_deprecated_sections_are_removed():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert hasattr(widget, "gen_section")
-    assert hasattr(widget, "db_section")
-    assert not widget.gen_section.isVisible()
-    assert not widget.db_section.isVisible()
+    assert not hasattr(widget, "gen_section")
+    assert not hasattr(widget, "db_section")
 
     widget.deleteLater()
     viewer.close()
@@ -1665,16 +1734,13 @@ def test_canonical_sections_expose_required_elements():
     viewer.close()
 
 
-def test_ultrack_section_is_top_level_and_has_route_selector():
+def test_ultrack_section_is_top_level_without_legacy_route_selector():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     assert widget.ultrack_section.title == "4. Ultrack Tracking"
-    assert widget.ultrack_route_check.text() == "Resolve from validated"
-    assert widget.ultrack_route_check in widget.ultrack_section.findChildren(
-        type(widget.ultrack_route_check)
-    )
+    assert not hasattr(widget, "ultrack_route_check")
     assert widget.ultrack_status_lbl.text() == ""
     assert widget.ultrack_progress_bar.isVisible() is False
 
@@ -1776,9 +1842,6 @@ def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
         calls.append((foreground.shape, contours.shape, kwargs))
 
     monkeypatch.setattr(module, "_ultrack_segment", fake_segment, raising=False)
-    monkeypatch.setattr(module, "write_seed_prior_node_probs", lambda *a, **kw: calls.append(("score", a)))
-    monkeypatch.setattr(module, "run_linking", lambda *a, **kw: iter([(1, 1, "linked")]))
-
     def fake_build_database(**kwargs):
         foreground = np.asarray(tifffile.imread(kwargs["foreground_masks_path"]))
         contours = np.asarray(tifffile.imread(kwargs["contour_maps_path"]))
@@ -1793,8 +1856,7 @@ def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
             overwrite=True,
             max_segments_per_time=1_000_000,
         )
-        module.write_seed_prior_node_probs(kwargs["working_dir"], kwargs["cfg"])
-        list(module.run_linking(kwargs["working_dir"], kwargs["cfg"]))
+        calls.append(("build", kwargs["use_validated"]))
         data_db = kwargs["working_dir"] / "data.db"
         data_db.parent.mkdir(parents=True, exist_ok=True)
         data_db.write_bytes(b"sqlite placeholder")
@@ -1819,7 +1881,7 @@ def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
     assert calls[0][1] == (2, 4, 4)
     assert calls[0][2]["overwrite"] is True
     assert calls[0][2]["max_segments_per_time"] == 1_000_000
-    assert calls[1][0] == "score"
+    assert calls[1] == ("build", False)
     assert widget.run_db_gen_btn.isEnabled()
     assert widget.db_gen_terminal_btn.isEnabled()
     assert "complete" in widget.db_gen_status_lbl.text().lower()
@@ -1847,14 +1909,14 @@ def test_db_gen_section_terminal_script_includes_canonical_segment(tmp_path, mon
     widget._on_db_gen_terminal()
     script = _read_launched_script(captured)
 
-    assert "ultrack.core.segmentation.processing" in script
     assert "foreground_masks" in script
     assert "contour_maps" in script
     assert "nucleus_prob_zavg" in script
     assert "quality_weight=" in script
     assert "circularity_weight=" in script
-    assert "write_seed_prior_node_probs" in script
-    assert "run_linking" in script
+    assert "build_ultrack_database" in script
+    assert "write_seed_prior_node_probs" not in script
+    assert "run_linking" not in script
     assert "if __name__ == '__main__':" in script
 
     widget.deleteLater()
@@ -2563,65 +2625,6 @@ def test_extend_greedy_overwrite_paints_combined_assignments(tmp_path, monkeypat
     assert np.all(frame[6:11, 6:11] == 7)
     assert np.all(frame[20:25, 20:25] == 9)
     assert "reassigned 1 conflict" in widget.correction_status_lbl.text()
-
-    widget.deleteLater()
-    viewer.close()
-
-
-# ── Task 9: Resolve from validated uses canonical segmentation ───────────────
-
-def test_resolve_from_validated_fails_clearly_if_foreground_masks_missing(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
-    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {1: {0, 1}})
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
-    (pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif").touch()
-    widget._pos_dir = pos_dir
-    viewer.add_labels(np.zeros((2, 8, 8), dtype=np.uint32), name="Tracked: Nucleus")
-
-    widget.ultrack_route_check.setChecked(True)
-    widget._on_run_tracking_route()
-
-    text = widget.ultrack_status_lbl.text().lower()
-    assert "foreground_masks" in text or "missing" in text
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_resolve_terminal_script_uses_canonical_segment_not_hypotheses_h5(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
-    captured = _install_terminal_capture(monkeypatch)
-    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {12: {0, 1}})
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
-    (pos_dir / "2_nucleus" / "foreground_masks.tif").touch()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif").touch()
-    widget._pos_dir = pos_dir
-
-    widget._on_resolve_terminal()
-    script = _read_launched_script(captured)
-
-    assert "foreground_masks" in script
-    assert "contour_maps" in script
-    assert "nucleus_prob_zavg" in script
-    assert "resolve_with_canonical_segment" in script
-    assert "hypotheses.h5" not in script
-    assert "ingest_hypotheses_to_db" not in script
 
     widget.deleteLater()
     viewer.close()

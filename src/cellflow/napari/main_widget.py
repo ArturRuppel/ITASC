@@ -23,7 +23,7 @@ from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.data_prep_widget import DataPrepWidget
-from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
+from cellflow.napari.meta_widget import MetaSourceBrowserWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.nls_classification_widget import NLSClassificationWidget
 from cellflow.napari.widgets import CollapsibleSection
@@ -72,11 +72,7 @@ class CellFlowMainWidget(QWidget):
         self.cellpose_section = CollapsibleSection(
             "2. Cellpose", self._cellpose_widget, expanded=False
         )
-
-        self.hpc_cellpose_widget = HpcCellposeWidget(self.viewer)
-        self.hpc_cellpose_section = CollapsibleSection(
-            "2b. HPC Cellpose", self.hpc_cellpose_widget, expanded=False
-        )
+        self.hpc_cellpose_widget = self._cellpose_widget.hpc_cellpose_widget
 
         self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
         self.nucleus_section = CollapsibleSection(
@@ -98,14 +94,19 @@ class CellFlowMainWidget(QWidget):
             "5b. NLS Classification", self.nls_classification_widget, expanded=False
         )
 
+        self.meta_source_browser = MetaSourceBrowserWidget(self.viewer)
+        self.meta_section = CollapsibleSection(
+            "6. Meta Analyzer", self.meta_source_browser, expanded=False
+        )
+
         self.scroll_layout.addWidget(self.data_section)
         self.scroll_layout.addWidget(self.prep_section)
         self.scroll_layout.addWidget(self.cellpose_section)
-        self.scroll_layout.addWidget(self.hpc_cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.analysis_section)
         self.scroll_layout.addWidget(self.nls_classification_section)
+        self.scroll_layout.addWidget(self.meta_section)
 
         # Add stretch at the end
         self.scroll_layout.addStretch()
@@ -307,10 +308,11 @@ class CellFlowMainWidget(QWidget):
         self.data_panel.refresh(pos_dir)
         self._data_prep_widget.refresh(pos_dir)
         self._cellpose_widget.refresh(pos_dir)
-        self.hpc_cellpose_widget.refresh(pos_dir)
         self.nucleus_workflow_widget.refresh(pos_dir)
         self.cell_workflow_widget.refresh(pos_dir)
         self.analysis_widget.refresh(pos_dir)
         self.nls_classification_widget.refresh(pos_dir)
+        project_root = Path(path_text) if path_text and path_text != "[no project]" else None
+        self.meta_source_browser.refresh(project_root)
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)

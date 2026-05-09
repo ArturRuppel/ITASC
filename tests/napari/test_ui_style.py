@@ -5,7 +5,6 @@ import sys
 import types
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pytest
 import tifffile
@@ -33,9 +32,7 @@ from cellflow.napari.ui_style import (
     status_label,
     tiny_button,
 )
-from cellflow.database.hypotheses import HypothesisRecord, write_hypothesis_record
 from cellflow.napari.widgets import PipelineFilesWidget
-from cellflow.segmentation import NucleusHypothesisParams
 
 
 @pytest.fixture
@@ -191,40 +188,11 @@ def test_pipeline_files_widget_reflects_present_and_missing_states(_app, tmp_pat
     widget.deleteLater()
 
 
-def test_hypotheses_h5_summary_shows_parameter_and_time_counts(_app, tmp_path):
-    h5_path = tmp_path / "hypotheses.h5"
-    labels = np.zeros((1, 12, 34), dtype=np.uint32)
-    with h5py.File(h5_path, "w") as h5:
-        h5.attrs["version"] = 2
-        h5.attrs["stage"] = "nucleus_hypotheses"
-        h5.attrs["layout"] = "hypotheses/t{t:03d}/p{p:03d}/labels"
-        for t in range(2):
-            for p in range(2):
-                write_hypothesis_record(
-                    h5,
-                    HypothesisRecord(
-                        t=t,
-                        p=p,
-                        labels=labels,
-                        params=NucleusHypothesisParams(z_slice=0),
-                    ),
-                )
-
-    widget = PipelineFilesWidget(
-        [("Outputs", [("hypotheses.h5", "Hypotheses DB")])]
-    )
-
-    widget.refresh(tmp_path)
-
-    assert widget._rows[0]._info_lbl.text() == "2×2×12×34"
-
-    widget.deleteLater()
-
-
-def test_pipeline_files_widget_load_buttons_route_supported_rows_and_disable_hypotheses(_app, tmp_path):
+def test_pipeline_files_widget_load_buttons_load_supported_files_directly(_app, tmp_path):
     class _FakeViewer:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str, tuple[int, ...]]] = []
+            self.layers = {}
 
         def add_image(self, data, name=None, **kwargs):
             self.calls.append(("image", name, tuple(np.asarray(data).shape)))
@@ -245,8 +213,6 @@ def test_pipeline_files_widget_load_buttons_route_supported_rows_and_disable_hyp
         np.zeros((2, 4, 6), dtype=np.uint32),
         compression=None,
     )
-    with h5py.File(tmp_path / "hypotheses.h5", "w"):
-        pass
 
     widget = PipelineFilesWidget(
         [
@@ -255,7 +221,6 @@ def test_pipeline_files_widget_load_buttons_route_supported_rows_and_disable_hyp
                 [
                     ("nucleus_zavg.tif", "Nucleus z-avg"),
                     ("tracked_labels.tif", "Tracked labels"),
-                    ("hypotheses.h5", "Hypotheses DB"),
                 ],
             )
         ],
@@ -265,7 +230,6 @@ def test_pipeline_files_widget_load_buttons_route_supported_rows_and_disable_hyp
 
     assert widget._rows[0]._load_btn.isEnabled()
     assert widget._rows[1]._load_btn.isEnabled()
-    assert not widget._rows[2]._load_btn.isEnabled()
 
     widget._rows[0]._load_btn.click()
     widget._rows[1]._load_btn.click()
@@ -276,3 +240,45 @@ def test_pipeline_files_widget_load_buttons_route_supported_rows_and_disable_hyp
     ]
 
     widget.deleteLater()
+
+
+def test_pipeline_files_widget_tracked_label_rows_do_not_delegate_to_workflow_loader(_app, tmp_path):
+    class _FakeViewer:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, tuple[int, ...]]] = []
+            self.layers = {}
+
+        def add_image(self, data, name=None, **kwargs):
+            self.calls.append(("image", name, tuple(np.asarray(data).shape)))
+
+        def add_labels(self, data, name=None, **kwargs):
+            self.calls.append(("labels", name, tuple(np.asarray(data).shape)))
+
+    class _WorkflowWidget(QWidget):
+        viewer = _FakeViewer()
+
+        def __init__(self, tracked_path: Path) -> None:
+            super().__init__()
+            self._tracked_path_value = tracked_path
+            self.custom_loader_called = False
+
+        def _tracked_path(self):
+            return self._tracked_path_value
+
+        def _on_load_tracked(self):
+            self.custom_loader_called = True
+
+    labels = np.zeros((2, 4, 6), dtype=np.uint32)
+    tifffile.imwrite(tmp_path / "tracked_labels.tif", labels, compression=None)
+
+    wrapper = _WorkflowWidget(tmp_path / "tracked_labels.tif")
+    widget = PipelineFilesWidget([("Outputs", [("tracked_labels.tif", "Tracked labels")])], parent=wrapper)
+    widget.refresh(tmp_path)
+
+    widget._rows[0]._load_btn.click()
+
+    assert wrapper.custom_loader_called is False
+    assert wrapper.viewer.calls == [("labels", "tracked_labels", (2, 4, 6))]
+
+    widget.deleteLater()
+    wrapper.deleteLater()

@@ -207,17 +207,6 @@ class _PipelineFileRow(QWidget):
             self._load_btn.setToolTip(self._load_tooltip(missing=True))
             return
 
-        if self._loadable == "hypotheses":
-            handler = self._find_hypothesis_loader()
-            enabled = handler is not None
-            self._load_btn.setEnabled(enabled)
-            self._load_btn.setToolTip(
-                self._load_tooltip()
-                if enabled
-                else "No direct load action: select a hypothesis parameter set in the workflow browser."
-            )
-            return
-
         if self._loadable in {"tracked", "labels", "tiff"}:
             self._load_btn.setEnabled(True)
             self._load_btn.setToolTip(self._load_tooltip())
@@ -229,18 +218,6 @@ class _PipelineFileRow(QWidget):
     def _on_load_clicked(self) -> None:
         if self._full_path is None or not self._full_path.exists():
             return
-
-        if self._loadable == "hypotheses":
-            loader = self._find_hypothesis_loader()
-            if loader is not None:
-                loader()
-            return
-
-        if self._loadable == "tracked" and self._viewer is None:
-            loader = self._find_tracked_loader()
-            if loader is not None:
-                loader()
-                return
 
         self._load_file_into_viewer()
 
@@ -299,65 +276,6 @@ class _PipelineFileRow(QWidget):
             widget = widget.parentWidget()
         return None
 
-    def _find_descendant_widget(self, predicate):
-        root = self.window()
-        if not isinstance(root, QWidget):
-            return None
-
-        stack = [root]
-        seen: set[int] = set()
-        while stack:
-            widget = stack.pop()
-            ident = id(widget)
-            if ident in seen:
-                continue
-            seen.add(ident)
-            if predicate(widget):
-                return widget
-            for child in widget.children():
-                if isinstance(child, QWidget):
-                    stack.append(child)
-        return None
-
-    def _find_hypothesis_loader(self):
-        if self._full_path is None:
-            return None
-
-        def _matches(widget: QWidget) -> bool:
-            loader = getattr(widget, "_load_db_stack", None)
-            hyp_path = getattr(widget, "_hyp_path", None)
-            current_db_p = getattr(widget, "_current_db_p", None)
-            if not callable(loader) or not callable(hyp_path):
-                return False
-            try:
-                return hyp_path() == self._full_path and current_db_p is not None
-            except Exception:
-                return False
-
-        widget = self._find_descendant_widget(_matches)
-        if widget is None:
-            return None
-
-        def _loader() -> None:
-            widget._load_db_stack(widget._current_db_p)
-
-        return _loader
-
-    def _find_tracked_loader(self):
-        if self._full_path is None:
-            return None
-
-        def _matches(widget: QWidget) -> bool:
-            loader = getattr(widget, "_on_load_tracked", None)
-            tracked_path = getattr(widget, "_tracked_path", None)
-            return callable(loader) and callable(tracked_path) and tracked_path() == self._full_path
-
-        widget = self._find_descendant_widget(_matches)
-        if widget is None:
-            return None
-
-        return getattr(widget, "_on_load_tracked")
-
     def _layer_name(self) -> str:
         return Path(self._rel_path).with_suffix("").as_posix().replace("/", "_")
 
@@ -366,8 +284,6 @@ class _PipelineFileRow(QWidget):
             return "No project open."
         if missing:
             return "File is missing."
-        if self._loadable == "hypotheses":
-            return "Load the currently selected hypothesis stack into napari."
         if self._loadable in {"tracked", "labels"}:
             return "Load labels into napari."
         if self._loadable == "tiff":
@@ -377,8 +293,6 @@ class _PipelineFileRow(QWidget):
     @staticmethod
     def _infer_load_kind(rel_path: str) -> str | None:
         name = Path(rel_path).name
-        if name == "hypotheses.h5":
-            return "hypotheses"
         if name == "tracked_labels.tif":
             return "tracked"
         if name.endswith("_labels.tif") or ("labels" in name and name.endswith((".tif", ".tiff"))):
@@ -392,36 +306,6 @@ def _file_info(path: "Path") -> str:
     """Return a concise shape/dtype string for a pipeline output file."""
     if path.is_dir():
         return "Directory"
-    if path.name == "hypotheses.h5":
-        try:
-            import h5py
-
-            with h5py.File(path, "r") as h5:
-                root = h5.get("hypotheses")
-                if root is None:
-                    return "HDF5"
-
-                t_keys = sorted(k for k in root.keys() if k.startswith("t"))
-                if not t_keys:
-                    return "0×0"
-
-                first_t = root[t_keys[0]]
-                p_keys = sorted(k for k in first_t.keys() if k.startswith("p"))
-                if not p_keys:
-                    n_t = int(h5.attrs.get("n_t", len(t_keys)))
-                    return f"0×{n_t}"
-
-                p_name = p_keys[0]
-                ds = first_t[p_name]["labels"]
-                spatial_shape = tuple(int(d) for d in ds.shape)
-                if len(spatial_shape) == 3 and spatial_shape[0] == 1:
-                    spatial_shape = spatial_shape[1:]
-
-                n_p = int(h5.attrs.get("n_p", len(p_keys)))
-                n_t = int(h5.attrs.get("n_t", len(t_keys)))
-                return "×".join([str(n_p), str(n_t), *[str(d) for d in spatial_shape]])
-        except Exception:
-            pass
     suffix = path.suffix.lower()
     if suffix in (".tif", ".tiff"):
         try:

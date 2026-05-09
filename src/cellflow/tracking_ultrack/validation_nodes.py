@@ -123,6 +123,28 @@ def _intersects(
     return bool(np.logical_and(lhs_crop, rhs_crop).any())
 
 
+def _raw_iou(
+    lhs_bbox: tuple[int, int, int, int],
+    lhs_mask: np.ndarray,
+    rhs_bbox: tuple[int, int, int, int],
+    rhs_mask: np.ndarray,
+) -> float:
+    ly0, lx0, ly1, lx1 = lhs_bbox
+    ry0, rx0, ry1, rx1 = rhs_bbox
+    oy0, ox0 = max(ly0, ry0), max(lx0, rx0)
+    oy1, ox1 = min(ly1, ry1), min(lx1, rx1)
+    intersection = 0
+    if oy0 < oy1 and ox0 < ox1:
+        lhs_crop = lhs_mask[oy0 - ly0: oy1 - ly0, ox0 - lx0: ox1 - lx0]
+        rhs_crop = rhs_mask[oy0 - ry0: oy1 - ry0, ox0 - rx0: ox1 - rx0]
+        intersection = int(np.logical_and(lhs_crop, rhs_crop).sum())
+
+    union = int(lhs_mask.sum()) + int(rhs_mask.sum()) - intersection
+    if union <= 0:
+        return 0.0
+    return float(intersection) / float(union)
+
+
 def _overlap_pair(lhs_id: int, rhs_id: int) -> tuple[int, int]:
     return (max(lhs_id, rhs_id), min(lhs_id, rhs_id))
 
@@ -131,13 +153,63 @@ def _generate_node_id(index: int, time: int, max_segments: int) -> int:
     return index + (time + 1) * max_segments
 
 
-def _make_node_pickle(t: int, mask_2d: np.ndarray, bbox: np.ndarray, node_id: int) -> bytes:
+def _node_pickle_ndim(node) -> int:
+    if isinstance(node, (bytes, memoryview)):
+        node = pickle.loads(bytes(node))
+    bbox = np.asarray(node.bbox)
+    return len(bbox) // 2
+
+
+def _make_node_pickle(
+    t: int,
+    mask_2d: np.ndarray,
+    bbox: np.ndarray,
+    node_id: int,
+    *,
+    ndim: int = 2,
+) -> bytes:
     from ultrack.core.segmentation.node import Node
 
     min_y, min_x, max_y, max_x = bbox
-    bbox_2d = np.array([int(min_y), int(min_x), int(max_y), int(max_x)], dtype=np.int64)
-    node = Node.from_mask(time=t, mask=np.asarray(mask_2d, dtype=bool), bbox=bbox_2d, node_id=node_id)
+    if ndim == 3:
+        bbox_arr = np.array(
+            [0, int(min_y), int(min_x), 1, int(max_y), int(max_x)],
+            dtype=np.int64,
+        )
+        mask = np.asarray(mask_2d, dtype=bool)[np.newaxis]
+    else:
+        bbox_arr = np.array(
+            [int(min_y), int(min_x), int(max_y), int(max_x)],
+            dtype=np.int64,
+        )
+        mask = np.asarray(mask_2d, dtype=bool)
+    node = Node.from_mask(time=t, mask=mask, bbox=bbox_arr, node_id=node_id)
     return pickle.dumps(node)
+
+
+def _best_iou_assignments(
+    records: list[_MaskRecord],
+    candidates: dict[int, tuple[tuple[int, int, int, int], np.ndarray, int]],
+) -> dict[int, int]:
+    pairs: list[tuple[float, int, int, int, int]] = []
+    for record_index, record in enumerate(records):
+        for candidate_id, (candidate_bbox, candidate_mask, _ndim) in candidates.items():
+            iou = _raw_iou(record.bbox, record.mask, candidate_bbox, candidate_mask)
+            pairs.append((-iou, record_index, int(candidate_id), record.cell_id, record.t))
+
+    pairs.sort()
+    assigned_records: set[int] = set()
+    assigned_candidates: set[int] = set()
+    assignments: dict[int, int] = {}
+    for _neg_iou, record_index, candidate_id, _cell_id, _t in pairs:
+        if record_index in assigned_records or candidate_id in assigned_candidates:
+            continue
+        assignments[record_index] = candidate_id
+        assigned_records.add(record_index)
+        assigned_candidates.add(candidate_id)
+        if len(assigned_records) == min(len(records), len(candidates)):
+            break
+    return assignments
 
 
 def inject_validated_nodes(
@@ -146,10 +218,13 @@ def inject_validated_nodes(
     tracked_labels: np.ndarray,
     cfg: TrackingConfig,
 ) -> ValidationInjectionReport:
-    """Insert validated masks into Ultrack's DB as fixed REAL nodes.
+    """Replace best-matching candidates with validated masks as fixed REAL nodes.
 
-    Existing candidates in the same frame that overlap a validated mask are
-    marked FAKE and paired with the injected node in OverlapDB.
+    The best same-frame candidate by raw IoU is updated in place so its
+    hierarchy placement and temporal links are preserved. If no candidate is
+    available for a validated mask, a reserved REAL node is inserted instead.
+    Other candidates in the same frame that overlap a validated mask are marked
+    FAKE and paired with the REAL node in OverlapDB.
     """
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
@@ -170,8 +245,11 @@ def inject_validated_nodes(
     inserted = 0
     faked_ids: set[int] = set()
     overlap_pairs: set[tuple[int, int]] = set()
+    real_node_ids: set[int] = set()
 
     with Session(engine) as session:
+        sample_node = session.query(NodeDB.pickle).limit(1).scalar()
+        fallback_ndim = _node_pickle_ndim(sample_node) if sample_node is not None else 2
         next_t_node_id: dict[int, int] = {}
         for t in {record.t for record in records}:
             max_t_node_id = (
@@ -181,41 +259,110 @@ def inject_validated_nodes(
             )
             next_t_node_id[t] = int(max_t_node_id or 0) + 1
 
-        for record in records:
-            t_node_id = next_t_node_id[record.t]
-            next_t_node_id[record.t] += 1
-            node_id = _generate_node_id(t_node_id, record.t, cfg.max_segments_per_time)
-            bbox_arr = np.asarray(record.bbox, dtype=np.int32)
+        records_by_t: dict[int, list[tuple[int, _MaskRecord]]] = {}
+        for index, record in enumerate(records):
+            records_by_t.setdefault(record.t, []).append((index, record))
 
-            session.add(
-                NodeDB(
-                    id=node_id,
-                    t=record.t,
-                    t_node_id=t_node_id,
-                    t_hier_id=0,
-                    z=0,
-                    y=record.y,
-                    x=record.x,
-                    area=record.area,
-                    pickle=_make_node_pickle(record.t, record.mask, bbox_arr, node_id),
-                    node_prob=1.0,
-                    node_annot=VarAnnotation.REAL,
-                )
-            )
-            inserted += 1
-
-            candidates = (
+        for t, indexed_records in records_by_t.items():
+            candidate_rows = (
                 session.query(NodeDB.id, NodeDB.pickle)
-                .where(NodeDB.t == record.t)
+                .where(NodeDB.t == t)
                 .where(NodeDB.t_hier_id != 0)
                 .all()
             )
-            for candidate_id, candidate_node in candidates:
-                candidate_bbox, candidate_mask = _node_bbox_and_mask(candidate_id, candidate_node)
-                if not _intersects(record.bbox, record.mask, candidate_bbox, candidate_mask):
+            candidates: dict[int, tuple[tuple[int, int, int, int], np.ndarray, int]] = {}
+            for candidate_id, candidate_node in candidate_rows:
+                candidate_bbox, candidate_mask = _node_bbox_and_mask(
+                    int(candidate_id), candidate_node
+                )
+                candidates[int(candidate_id)] = (
+                    candidate_bbox,
+                    candidate_mask,
+                    _node_pickle_ndim(candidate_node),
+                )
+
+            frame_records = [record for _index, record in indexed_records]
+            local_assignments = _best_iou_assignments(frame_records, candidates)
+            real_node_by_local_index: dict[int, int] = {}
+            matched_candidate_ids: set[int] = set()
+
+            for local_index, record in enumerate(frame_records):
+                bbox_arr = np.asarray(record.bbox, dtype=np.int32)
+                candidate_id = local_assignments.get(local_index)
+                if candidate_id is None:
+                    node_ndim = next(
+                        (ndim for _bbox, _mask, ndim in candidates.values()),
+                        fallback_ndim,
+                    )
+                    t_node_id = next_t_node_id[record.t]
+                    next_t_node_id[record.t] += 1
+                    node_id = _generate_node_id(
+                        t_node_id, record.t, cfg.max_segments_per_time
+                    )
+                    session.add(
+                        NodeDB(
+                            id=node_id,
+                            t=record.t,
+                            t_node_id=t_node_id,
+                            t_hier_id=0,
+                            z=0,
+                            y=record.y,
+                            x=record.x,
+                            area=record.area,
+                            pickle=_make_node_pickle(
+                                record.t,
+                                record.mask,
+                                bbox_arr,
+                                node_id,
+                                ndim=node_ndim,
+                            ),
+                            node_prob=1.0,
+                            node_annot=VarAnnotation.REAL,
+                        )
+                    )
+                    inserted += 1
+                    real_node_ids.add(node_id)
+                    real_node_by_local_index[local_index] = node_id
                     continue
-                faked_ids.add(int(candidate_id))
-                overlap_pairs.add(_overlap_pair(node_id, int(candidate_id)))
+
+                node_ndim = candidates[candidate_id][2]
+                session.query(NodeDB).where(NodeDB.id == candidate_id).update(
+                    {
+                        NodeDB.y: record.y,
+                        NodeDB.x: record.x,
+                        NodeDB.area: record.area,
+                        NodeDB.pickle: _make_node_pickle(
+                            record.t,
+                            record.mask,
+                            bbox_arr,
+                            candidate_id,
+                            ndim=node_ndim,
+                        ),
+                        NodeDB.node_prob: 1.0,
+                        NodeDB.node_annot: VarAnnotation.REAL,
+                    },
+                    synchronize_session=False,
+                )
+                inserted += 1
+                real_node_ids.add(candidate_id)
+                matched_candidate_ids.add(candidate_id)
+                real_node_by_local_index[local_index] = candidate_id
+
+            for local_index, record in enumerate(frame_records):
+                real_node_id = real_node_by_local_index[local_index]
+                for candidate_id, (
+                    candidate_bbox,
+                    candidate_mask,
+                    _ndim,
+                ) in candidates.items():
+                    if candidate_id in matched_candidate_ids:
+                        continue
+                    if not _intersects(
+                        record.bbox, record.mask, candidate_bbox, candidate_mask
+                    ):
+                        continue
+                    faked_ids.add(candidate_id)
+                    overlap_pairs.add(_overlap_pair(real_node_id, candidate_id))
 
         if faked_ids:
             session.query(NodeDB).where(NodeDB.id.in_(faked_ids)).update(
@@ -224,6 +371,13 @@ def inject_validated_nodes(
             )
 
         existing_pairs: set[tuple[int, int]] = set()
+        if real_node_ids:
+            session.query(OverlapDB).where(
+                sqla.or_(
+                    OverlapDB.node_id.in_(real_node_ids),
+                    OverlapDB.ancestor_id.in_(real_node_ids),
+                )
+            ).delete(synchronize_session=False)
         if overlap_pairs:
             node_ids = {pair[0] for pair in overlap_pairs} | {pair[1] for pair in overlap_pairs}
             existing_pairs = {
