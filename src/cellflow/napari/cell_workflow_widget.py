@@ -20,7 +20,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.correction.labels import best_overlapping_label
+from cellflow.correction.labels import best_overlapping_label, expand_label_to_foreground
 from cellflow.database.tracked import read_full_tracked_stack
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
@@ -248,10 +248,12 @@ class CellWorkflowWidget(QWidget):
         self.load_cell_correction_btn = QPushButton("Load Cell Labels")
         self.save_cell_correction_btn = QPushButton("Save Cell Labels")
         self.reassign_cell_ids_btn = QPushButton("Reassign IDs")
+        self.expand_selected_cell_btn = QPushButton("Expand Selected Cell")
         for button in (
             self.load_cell_correction_btn,
             self.save_cell_correction_btn,
             self.reassign_cell_ids_btn,
+            self.expand_selected_cell_btn,
         ):
             button.setMinimumWidth(_FF_SPIN_MIN_WIDTH)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -264,6 +266,20 @@ class CellWorkflowWidget(QWidget):
         )
         add_block_button_row(correction_btn_row, 1, self.reassign_cell_ids_btn)
         correction_lay.addLayout(correction_btn_row)
+
+        expand_grid = _param_grid()
+        self.expand_cell_max_px_spin = _ispin(0, 999, 25)
+        add_parameter_grid_row(
+            expand_grid,
+            0,
+            0,
+            "Max expansion px:",
+            self.expand_cell_max_px_spin,
+        )
+        correction_lay.addLayout(expand_grid)
+        expand_btn_row = block_grid(horizontal_spacing=12)
+        add_block_button_row(expand_btn_row, 0, self.expand_selected_cell_btn)
+        correction_lay.addLayout(expand_btn_row)
 
         self.correction_status_lbl = _stage_status()
         correction_lay.addWidget(self.correction_status_lbl)
@@ -304,6 +320,7 @@ class CellWorkflowWidget(QWidget):
         self.load_cell_correction_btn.clicked.connect(self._on_load_cell_correction)
         self.save_cell_correction_btn.clicked.connect(self._on_save_cell_correction)
         self.reassign_cell_ids_btn.clicked.connect(self._on_reassign_cell_ids)
+        self.expand_selected_cell_btn.clicked.connect(self._on_expand_selected_cell)
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -589,6 +606,88 @@ class CellWorkflowWidget(QWidget):
         self.viewer.layers[_TRACKED_CELL_LAYER].data = lut[stack]
         self._set_correction_status(
             f"Reassigned {len(unique_ids)} cell IDs to contiguous range 1-{len(unique_ids)}. Unsaved."
+        )
+
+    def _foreground_stack_for_expansion(self) -> np.ndarray | None:
+        if _FOREGROUND_MASK_LAYER in self.viewer.layers:
+            return np.asarray(self.viewer.layers[_FOREGROUND_MASK_LAYER].data)
+        fg_path = self._foreground_path()
+        if fg_path is None or not fg_path.exists():
+            return None
+        foreground = np.asarray(tifffile.imread(str(fg_path)))
+        self._show_layer(_FOREGROUND_MASK_LAYER, foreground, {}, self.viewer.add_labels)
+        return foreground
+
+    def _on_expand_selected_cell(self) -> None:
+        if self._pos_dir is None:
+            self._set_correction_status("No project open.")
+            return
+        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+            self._set_correction_status("No tracked cell labels layer loaded.")
+            return
+        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
+        if self.correction_widget._layer is not layer:
+            self._set_correction_status("No active tracked cell labels layer.")
+            return
+        label_id = int(self.correction_widget._selected_label)
+        if label_id == 0:
+            self._set_correction_status("No cell selected.")
+            return
+
+        labels = np.asarray(layer.data)
+        if labels.ndim < 3:
+            self._set_correction_status("Tracked cell labels layer is not a 3D stack.")
+            return
+        t = self._current_time_index(labels.shape[0])
+        seg2d = self.correction_widget._frame_view(layer, t)
+        if not np.any(seg2d == label_id):
+            self._set_correction_status(f"Cell {label_id} not present at t={t}.")
+            return
+
+        foreground = self._foreground_stack_for_expansion()
+        if foreground is None:
+            self._set_correction_status("Foreground mask not found.")
+            return
+        if foreground.shape != labels.shape:
+            self._set_correction_status(
+                f"Foreground mask shape {foreground.shape} does not match labels shape {labels.shape}."
+            )
+            return
+        foreground2d = foreground[t]
+        while foreground2d.ndim > 2:
+            if foreground2d.shape[0] != 1:
+                self._set_correction_status(
+                    f"Foreground mask frame has unsupported shape {foreground2d.shape}."
+                )
+                return
+            foreground2d = foreground2d[0]
+
+        before = seg2d.copy()
+        try:
+            added = expand_label_to_foreground(
+                seg2d,
+                foreground2d,
+                label_id,
+                max_distance=int(self.expand_cell_max_px_spin.value()),
+            )
+        except ValueError as exc:
+            self._set_correction_status(str(exc))
+            return
+        if added == 0:
+            seed_touches_foreground = bool(np.any((foreground2d > 0) & (before == label_id)))
+            if not seed_touches_foreground:
+                self._set_correction_status(
+                    f"Cell {label_id} does not touch foreground at t={t}."
+                )
+            else:
+                self._set_correction_status(f"Expansion added no pixels for cell {label_id} at t={t}.")
+            return
+
+        self.correction_widget._record_history(layer, t, before)
+        layer.refresh()
+        self.correction_widget._update_highlight(t, label_id)
+        self._set_correction_status(
+            f"Expanded cell {label_id} at t={t} by {added} px. Unsaved."
         )
 
     # ------------------------------------------------------------------

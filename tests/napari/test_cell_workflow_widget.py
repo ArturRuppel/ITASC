@@ -15,7 +15,7 @@ import tifffile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel, QProgressBar, QPushButton, QScrollArea
+from qtpy.QtWidgets import QApplication, QLabel, QProgressBar, QPushButton, QScrollArea, QSpinBox
 
 
 class _LayerCollection(dict):
@@ -734,6 +734,133 @@ def test_widget_save_cell_correction_writes_cell_labels(monkeypatch, tmp_path):
     np.testing.assert_array_equal(saved, edited)
     assert saved.dtype == np.uint32
     assert "Saved 2 frame(s)" in widget.correction_status_lbl.text()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_cell_correction_section_exposes_expand_selected_cell_action(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    correction_button_texts = {
+        button.text()
+        for button in widget.correction_section.findChildren(QPushButton)
+    }
+    correction_label_texts = _label_texts(widget.correction_section)
+
+    assert "Expand Selected Cell" in correction_button_texts
+    assert "Max expansion px:" in correction_label_texts
+    assert isinstance(widget.expand_cell_max_px_spin, QSpinBox)
+    assert widget.expand_cell_max_px_spin.value() == 25
+    assert widget.expand_cell_max_px_spin.minimum() == 0
+    assert widget.expand_cell_max_px_spin.maximum() == 999
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_expand_selected_cell_expands_only_current_frame_from_loaded_foreground(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    viewer = _FakeViewer()
+    labels = np.zeros((2, 7, 7), dtype=np.uint32)
+    labels[0, 1, 1] = 4
+    labels[1, 3, 3] = 4
+    foreground = np.zeros_like(labels, dtype=np.uint8)
+    foreground[1, 2:5, 2:5] = 1
+    labels_layer = viewer.add_labels(labels.copy(), name="Tracked: Cell")
+    viewer.add_labels(foreground, name="Foreground Mask")
+    viewer.dims.current_step = (1,)
+
+    history = []
+    labels_layer._save_history = history.append
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(tmp_path / "pos00")
+    widget.correction_widget.activate_layer(labels_layer)
+    widget.correction_widget.select_label(1, 4)
+    widget.expand_cell_max_px_spin.setValue(1)
+
+    widget.expand_selected_cell_btn.click()
+
+    edited = viewer.layers["Tracked: Cell"].data
+    np.testing.assert_array_equal(edited[0], labels[0])
+    assert int(np.sum(edited[1] == 4)) == 5
+    assert len(history) == 1
+    assert "Expanded cell 4 at t=1 by 4 px" in widget.correction_status_lbl.text()
+    assert widget.correction_widget._selected_label == 4
+    assert widget.correction_widget._selected_t == 1
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_expand_selected_cell_falls_back_to_foreground_mask_file(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "3_cell").mkdir(parents=True)
+    labels = np.zeros((1, 5, 5), dtype=np.uint32)
+    labels[0, 2, 2] = 3
+    foreground = np.ones_like(labels, dtype=np.uint8)
+    tifffile.imwrite(pos_dir / "3_cell" / "foreground_masks.tif", foreground)
+
+    viewer = _FakeViewer()
+    labels_layer = viewer.add_labels(labels.copy(), name="Tracked: Cell")
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+    widget.correction_widget.activate_layer(labels_layer)
+    widget.correction_widget.select_label(0, 3)
+    widget.expand_cell_max_px_spin.setValue(0)
+
+    widget.expand_selected_cell_btn.click()
+
+    assert "Foreground Mask" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["Foreground Mask"].data, foreground)
+    assert np.all(viewer.layers["Tracked: Cell"].data == 3)
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_expand_selected_cell_reports_missing_selection(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    viewer = _FakeViewer()
+    viewer.add_labels(np.zeros((1, 5, 5), dtype=np.uint32), name="Tracked: Cell")
+    viewer.add_labels(np.ones((1, 5, 5), dtype=np.uint8), name="Foreground Mask")
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(tmp_path / "pos00")
+    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+
+    widget.expand_selected_cell_btn.click()
+
+    assert "No cell selected" in widget.correction_status_lbl.text()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_expand_selected_cell_reports_missing_foreground_mask(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    viewer = _FakeViewer()
+    labels = np.zeros((1, 5, 5), dtype=np.uint32)
+    labels[0, 2, 2] = 5
+    viewer.add_labels(labels, name="Tracked: Cell")
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(tmp_path / "pos00")
+    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.select_label(0, 5)
+
+    widget.expand_selected_cell_btn.click()
+
+    assert "Foreground mask not found" in widget.correction_status_lbl.text()
 
     widget.deleteLater()
     app.processEvents()

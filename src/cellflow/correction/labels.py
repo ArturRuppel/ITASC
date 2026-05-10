@@ -151,6 +151,49 @@ def best_overlapping_label(
 
 # ── public operations ─────────────────────────────────────────────────────────
 
+def expand_label_to_foreground(
+    seg: np.ndarray,
+    foreground: np.ndarray,
+    label: int,
+    *,
+    max_distance: int,
+) -> int:
+    """Expand ``label`` into connected foreground background pixels in-place.
+
+    Returns the number of newly labelled pixels. A ``max_distance`` of 0 means
+    no distance cap.
+    """
+    if foreground.shape != seg.shape:
+        raise ValueError("foreground and seg must have the same shape")
+
+    label = int(label)
+    if label == 0:
+        return 0
+    seed = seg == label
+    if not np.any(seed):
+        return 0
+
+    allowed = (foreground > 0) & ((seg == 0) | seed)
+    component_labels, _num_components = nd_label(
+        allowed,
+        structure=np.ones((3, 3), dtype=np.uint8),
+    )
+    touching_ids = np.unique(component_labels[seed])
+    touching_ids = touching_ids[touching_ids != 0]
+    if touching_ids.size == 0:
+        return 0
+
+    touching_component = np.isin(component_labels, touching_ids)
+    if max_distance > 0:
+        dist = distance_transform_edt(~seed)
+        touching_component &= dist <= int(max_distance)
+
+    added = touching_component & (seg == 0)
+    n_added = int(np.count_nonzero(added))
+    if n_added:
+        seg[added] = label
+    return n_added
+
 def erase_cell(seg: np.ndarray, pos: tuple | None = None, *, label: int | None = None) -> bool:
     """Set all pixels of the label under *pos* (or *label*) to 0."""
     if label is None:
