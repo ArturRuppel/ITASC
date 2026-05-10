@@ -83,6 +83,7 @@ class CellFlowMainWidget(QWidget):
         self.cell_section = CollapsibleSection(
             "4. Cell Segmentation", self.cell_workflow_widget, expanded=False
         )
+        self._connect_label_selection_sync()
 
         self.analysis_widget = AnalysisWidget(self.viewer)
         self.analysis_section = CollapsibleSection(
@@ -120,6 +121,17 @@ class CellFlowMainWidget(QWidget):
         
         self.refresh_btn.clicked.connect(lambda: self._refresh_all())
         self.pos_spin.valueChanged.connect(lambda: self._refresh_all())
+
+    def _connect_label_selection_sync(self) -> None:
+        """Synchronize selected cell/nucleus IDs across correction widgets."""
+        if hasattr(self.nucleus_workflow_widget, "set_selection_callback"):
+            self.nucleus_workflow_widget.set_selection_callback(
+                lambda t, label: self.cell_workflow_widget.select_matching_cell_label(t, label)
+            )
+        if hasattr(self.cell_workflow_widget, "set_selection_callback"):
+            self.cell_workflow_widget.set_selection_callback(
+                lambda t, label: self.nucleus_workflow_widget.select_matching_nucleus_label(t, label)
+            )
 
     def sizeHint(self) -> QSize:
         hint = super().sizeHint()

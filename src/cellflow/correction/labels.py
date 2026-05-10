@@ -110,6 +110,45 @@ def _label_at(seg: np.ndarray, pos: tuple) -> int:
     return int(seg[r, c])
 
 
+def frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:
+    """Return a 2D frame view from a time-indexed label stack."""
+    if arr.ndim < 3 or t < 0 or t >= arr.shape[0]:
+        return None
+    view = arr[t]
+    while view.ndim > 2:
+        if view.shape[0] != 1:
+            return None
+        view = view[0]
+    return view
+
+
+def best_overlapping_label(
+    target_labels: np.ndarray,
+    source_labels: np.ndarray,
+    t: int,
+    source_label: int,
+) -> int:
+    """Return the non-zero target label with most overlap against source_label."""
+    if source_label == 0:
+        return 0
+    target_frame = frame_view_2d(target_labels, t)
+    source_frame = frame_view_2d(source_labels, t)
+    if target_frame is None or source_frame is None or target_frame.shape != source_frame.shape:
+        return 0
+    source_mask = source_frame == int(source_label)
+    if not np.any(source_mask):
+        return 0
+    overlap_values, counts = np.unique(target_frame[source_mask], return_counts=True)
+    best_label = 0
+    best_count = 0
+    for label, count in zip(overlap_values, counts, strict=True):
+        label = int(label)
+        if label != 0 and int(count) > best_count:
+            best_label = label
+            best_count = int(count)
+    return best_label
+
+
 # ── public operations ─────────────────────────────────────────────────────────
 
 def erase_cell(seg: np.ndarray, pos: tuple | None = None, *, label: int | None = None) -> bool:
@@ -382,6 +421,45 @@ def relabel_cell(seg: np.ndarray, pos: tuple, new_label: int) -> bool:
     return True
 
 
+def fill_label_holes(labels: np.ndarray, radius: int = 5) -> np.ndarray:
+    """Fill enclosed background gaps by expanding neighboring labels.
+
+    Background connected to the image border is preserved.  Enclosed zero-valued
+    components are filled only as far as labels can expand within *radius*
+    pixels; use a large radius to fill all enclosed gaps.
+    """
+    from skimage.measure import label as _cc_label
+
+    if radius <= 0:
+        return labels
+
+    bg = labels == 0
+    if not np.any(bg):
+        return labels
+
+    bg_labeled = _cc_label(bg, connectivity=2)
+    open_ids: set[int] = set()
+    for edge in (
+        bg_labeled[0, :], bg_labeled[-1, :],
+        bg_labeled[:, 0], bg_labeled[:, -1],
+    ):
+        open_ids.update(int(v) for v in np.unique(edge))
+    open_ids.discard(0)
+
+    open_bg = bg & np.isin(bg_labeled, list(open_ids))
+    enclosed = bg & ~open_bg
+    if not np.any(enclosed):
+        return labels
+
+    sentinel = int(np.max(labels)) + 1
+    work = labels.copy()
+    work[open_bg] = sentinel
+    expanded = expand_labels(work, distance=int(radius))
+    expanded[open_bg] = 0
+    expanded[expanded == sentinel] = 0
+    return expanded.astype(labels.dtype, copy=False)
+
+
 def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
     """Remove isolated pixel groups too small to be valid cells."""
     from skimage.measure import label as _cc_label
@@ -425,6 +503,8 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
                 filled = expand_labels(seg, distance=n_px + 2)
                 seg[comp_mask] = filled[comp_mask]
                 cleared += n_px
+
+    return cleared
 
 
 from cellflow.segmentation import apply_gamma  # noqa: F401 — re-exported from here

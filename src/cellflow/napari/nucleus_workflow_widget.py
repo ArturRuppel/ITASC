@@ -37,6 +37,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.correction.labels import best_overlapping_label
 from cellflow.database.tracked import (
     read_full_tracked_stack,
     write_tracked_frame,
@@ -3104,6 +3105,28 @@ class NucleusWorkflowWidget(QWidget):
         layer = self.viewer.layers[_TRACKED_LAYER]
         self.correction_widget.activate_layer(layer)
         self.correction_section.expand()
+
+    def set_selection_callback(self, fn) -> None:
+        """Register a callback for nucleus correction label selection changes."""
+        self.correction_widget.set_selection_callback(fn)
+
+    def select_matching_nucleus_label(
+        self,
+        t: int,
+        source_label: int,
+        *,
+        source_labels: np.ndarray | None = None,
+    ) -> None:
+        """Highlight the nucleus label that best overlaps a selected cell label."""
+        if _TRACKED_LAYER not in self.viewer.layers:
+            return
+        if source_labels is None:
+            if "Tracked: Cell" not in self.viewer.layers:
+                return
+            source_labels = np.asarray(self.viewer.layers["Tracked: Cell"].data)
+        target_labels = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
+        matched_label = best_overlapping_label(target_labels, source_labels, t, source_label)
+        self.correction_widget.select_label(t, matched_label, notify=False)
 
     def _on_reassign_ids(self) -> None:
         if _TRACKED_LAYER not in self.viewer.layers:

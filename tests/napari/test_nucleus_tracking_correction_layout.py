@@ -116,6 +116,8 @@ def _install_main_widget_stubs() -> None:
             super().__init__()
             self.refreshed_pos_dir = None
             self.state_received = None
+            self.selection_callback = None
+            self.match_requests = []
 
         def refresh(self, pos_dir):
             self.refreshed_pos_dir = pos_dir
@@ -125,6 +127,15 @@ def _install_main_widget_stubs() -> None:
 
         def set_state(self, state):
             self.state_received = state
+
+        def set_selection_callback(self, fn):
+            self.selection_callback = fn
+
+        def select_matching_cell_label(self, t, source_label):
+            self.match_requests.append(("cell", t, source_label))
+
+        def select_matching_nucleus_label(self, t, source_label):
+            self.match_requests.append(("nucleus", t, source_label))
 
     class _StubCellposeWidget(_StubWidget):
         def __init__(self, *args, **kwargs):
@@ -237,6 +248,21 @@ def test_main_widget_sections_are_collapsed_by_default():
         widget.meta_section,
     )
     assert all(section.is_expanded is False for section in sections)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_main_widget_synchronizes_cell_and_nucleus_selection_callbacks():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    widget.nucleus_workflow_widget.selection_callback(2, 7)
+    widget.cell_workflow_widget.selection_callback(3, 11)
+
+    assert widget.cell_workflow_widget.match_requests == [("cell", 2, 7)]
+    assert widget.nucleus_workflow_widget.match_requests == [("nucleus", 3, 11)]
 
     widget.deleteLater()
     viewer.close()
@@ -428,6 +454,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
         button.text()
         for button in widget.correction_section.findChildren(QPushButton)
     }
+    correction_label_texts = _label_texts(widget.correction_section)
     ultrack_button_texts = {
         button.text()
         for button in widget.ultrack_section.findChildren(QPushButton)
@@ -439,6 +466,8 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert "Save Tracked Labels" in correction_button_texts
     assert "Load Tracked Labels" in correction_button_texts
     assert "Reassign IDs" in correction_button_texts
+    assert "Clean Holes / Islands" in correction_button_texts
+    assert "Hole radius:" in correction_label_texts
     assert "◀ Extend (A)" in correction_button_texts
     assert "Extend (D) ▶" in correction_button_texts
     assert "◀ Retrack (Q)" in correction_button_texts
@@ -1511,9 +1540,66 @@ def test_correction_widget_top_buttons_expand_horizontally():
         widget._activate_btn,
         widget._outline_btn,
         widget._reset_mode_btn,
+        widget._clean_btn,
         widget._goto_btn,
     ):
         assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_clean_holes_uses_configured_radius():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    labels = np.zeros((1, 12, 12), dtype=np.uint32)
+    labels[0, 1:11, 1:4] = 1
+    labels[0, 1:11, 8:11] = 2
+    labels[0, 1:3, 4:8] = 1
+    labels[0, 9:11, 4:8] = 2
+    labels[0, 3:9, 4:8] = 0
+    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
+
+    widget.activate_layer(layer)
+    widget._hole_radius_spin.setValue(1)
+    widget._clean_current_frame()
+
+    gap = np.asarray(layer.data)[0, 3:9, 4:8]
+    assert np.any(gap == 0)
+    assert np.any(gap == 1)
+    assert np.any(gap == 2)
+    np.testing.assert_array_equal(np.asarray(layer.data)[0, 0, :], np.zeros(12, dtype=np.uint32))
+
+    widget._hole_radius_spin.setValue(999)
+    widget._clean_current_frame()
+
+    assert not np.any(np.asarray(layer.data)[0, 3:9, 4:8] == 0)
+    np.testing.assert_array_equal(np.asarray(layer.data)[0, 0, :], np.zeros(12, dtype=np.uint32))
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_notifies_when_selected_label_changes():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    labels = np.zeros((1, 8, 8), dtype=np.uint32)
+    labels[0, 1:4, 1:4] = 7
+    labels[0, 4:7, 4:7] = 9
+    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
+    calls = []
+
+    widget.activate_layer(layer)
+    widget.set_selection_callback(lambda t, label: calls.append((t, label)))
+
+    widget._update_highlight(0, 7)
+    widget._update_highlight(0, 7)
+    widget._update_highlight(0, 9)
+    widget._update_highlight(0, 0)
+
+    assert calls == [(0, 7), (0, 9), (0, 0)]
 
     widget.deleteLater()
     viewer.close()
@@ -1587,6 +1673,27 @@ def test_correction_widget_spotlight_is_not_used_as_intensity_image():
     widget._update_highlight(0, 7)
 
     assert widget._image_frame(0) is None
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_workflow_selects_best_overlapping_nucleus_for_cell_selection():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    labels = np.zeros((2, 8, 8), dtype=np.uint32)
+    labels[1, 1:5, 1:5] = 3
+    labels[1, 5:7, 5:7] = 6
+    source = np.zeros((2, 8, 8), dtype=np.uint32)
+    source[1, 2:6, 2:6] = 10
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget.activate_layer(viewer.layers["Tracked: Nucleus"])
+
+    widget.select_matching_nucleus_label(1, 10, source_labels=source)
+
+    assert widget.correction_widget._selected_label == 3
+    assert widget.correction_widget._selected_t == 1
 
     widget.deleteLater()
     viewer.close()

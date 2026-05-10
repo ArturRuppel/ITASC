@@ -142,8 +142,13 @@ def test_build_position_artifact_rejects_cell_nucleus_identity_mismatch(tmp_path
     nucleus[nucleus == 1] = 7
     pos_dir = _write_position(tmp_path, cell, nucleus)
 
-    with pytest.raises(ValueError, match="cell_id == nucleus_id"):
+    with pytest.raises(ValueError) as exc_info:
         build_position_analysis_artifact(pos_dir, tmp_path / "bad.h5")
+
+    message = str(exc_info.value)
+    assert "frame 0" in message
+    assert "cell labels present only in cell stack: [1]" in message
+    assert "nucleus labels present only in nucleus stack: [7]" in message
 
 
 def test_extract_frame_cell_edges_splits_discontinuous_segments_for_same_cell_pair():

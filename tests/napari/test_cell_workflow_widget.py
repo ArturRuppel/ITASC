@@ -15,7 +15,7 @@ import tifffile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel, QProgressBar, QScrollArea
+from qtpy.QtWidgets import QApplication, QLabel, QProgressBar, QPushButton, QScrollArea
 
 
 class _LayerCollection(dict):
@@ -23,9 +23,54 @@ class _LayerCollection(dict):
         self.pop(layer.name, None)
 
 
+class _FakeEvent:
+    def connect(self, cb):
+        pass
+
+    def disconnect(self, cb):
+        pass
+
+
+class _FakeEvents:
+    def __init__(self) -> None:
+        self.data = _FakeEvent()
+        self.paint = _FakeEvent()
+        self.mode = _FakeEvent()
+        self.removed = _FakeEvent()
+
+
+class _FakeSelection:
+    def __init__(self) -> None:
+        self.active = None
+
+
+class _FakeLayer:
+    def __init__(self, data, name, **kwargs) -> None:
+        self.data = np.asarray(data)
+        self.name = name
+        self.mode = "pan_zoom"
+        self.contour = 0
+        self.visible = True
+        self.events = _FakeEvents()
+        self.mouse_drag_callbacks = []
+        self.kwargs = kwargs
+
+    def bind_key(self, key, fn, overwrite=False):
+        pass
+
+    def refresh(self):
+        pass
+
+    def _save_history(self, data):
+        pass
+
+
 class _FakeViewer:
     def __init__(self) -> None:
         self.layers = _LayerCollection()
+        self.layers.selection = _FakeSelection()
+        self.layers.events = _FakeEvents()
+        self.mouse_drag_callbacks = []
         self.dims = SimpleNamespace(
             current_step=(0,),
             events=SimpleNamespace(
@@ -34,12 +79,17 @@ class _FakeViewer:
         )
 
     def add_image(self, data, *, name, **kwargs):
-        layer = SimpleNamespace(data=np.asarray(data), name=name, **kwargs)
+        layer = _FakeLayer(data, name, **kwargs)
         self.layers[name] = layer
         return layer
 
     def add_labels(self, data, *, name, **kwargs):
-        layer = SimpleNamespace(data=np.asarray(data), name=name, **kwargs)
+        layer = _FakeLayer(data, name, **kwargs)
+        self.layers[name] = layer
+        return layer
+
+    def add_shapes(self, *, name, **kwargs):
+        layer = _FakeLayer([], name, **kwargs)
         self.layers[name] = layer
         return layer
 
@@ -101,12 +151,17 @@ def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     assert widget.filtered_flow_section.title == "Filtered Flow"
     assert widget.foreground_mask_section.title == "Foreground Mask"
     assert widget.tracked_labels_section.title == "Tracked Cell Labels"
+    assert widget.correction_section.title == "Correction"
     assert widget.filtered_flow_section.is_expanded is False
     assert widget.foreground_mask_section.is_expanded is False
     assert widget.tracked_labels_section.is_expanded is False
+    assert widget.correction_section.is_expanded is False
+    assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
+    assert widget.correction_shortcuts_section.is_expanded is False
     assert widget.findChildren(QScrollArea) == []
     assert widget.layout().indexOf(widget.filtered_flow_section) < widget.layout().indexOf(widget.foreground_mask_section)
     assert widget.layout().indexOf(widget.foreground_mask_section) < widget.layout().indexOf(widget.tracked_labels_section)
+    assert widget.layout().indexOf(widget.tracked_labels_section) < widget.layout().indexOf(widget.correction_section)
 
     assert not hasattr(widget, "input_files")
     assert not hasattr(widget, "ff_files")
@@ -175,6 +230,20 @@ def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     assert widget.ff_labels_btn.text() == "Create tracked_labels"
     assert widget.ff_cancel_btn.text() == "Cancel"
     assert widget.ff_cancel_btn.isEnabled() is False
+    correction_button_texts = {
+        button.text()
+        for button in widget.correction_section.findChildren(QPushButton)
+    }
+    correction_label_texts = _label_texts(widget.correction_section)
+    assert "Load Cell Labels" in correction_button_texts
+    assert "Save Cell Labels" in correction_button_texts
+    assert "Reassign IDs" in correction_button_texts
+    assert "Clean Holes / Islands" in correction_button_texts
+    assert "Hole radius:" in correction_label_texts
+    assert "◀ Extend (A)" not in correction_button_texts
+    assert "Extend (D) ▶" not in correction_button_texts
+    assert "◀ Retrack (Q)" not in correction_button_texts
+    assert "Retrack (E) ▶" not in correction_button_texts
 
     assert widget.ff_median_time_spin.parent() is widget.filtered_flow_params_widget
     assert widget.ff_median_space_spin.parent() is widget.filtered_flow_params_widget
@@ -247,11 +316,13 @@ def test_widget_stage_file_widgets_show_present_and_missing_files(monkeypatch, t
                      np.zeros((1, 4, 4), dtype=bool))
     tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif",
                      np.zeros((1, 4, 4), dtype=np.uint32))
+    tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif",
+                     np.zeros((1, 4, 4), dtype=np.uint32))
 
     widget.refresh(pos_dir)
 
     texts = _label_texts(widget)
-    assert texts.count("✓") >= 7
+    assert texts.count("✓") >= 8
     assert "missing" in texts
     assert widget.filtered_flow_input_files.parent() is widget.filtered_flow_params_widget
     assert widget.foreground_mask_output_files.parent() is widget.foreground_mask_params_widget
@@ -271,8 +342,8 @@ def test_widget_stage_file_widgets_show_missing_when_files_are_absent(monkeypatc
     widget.refresh(pos_dir)
 
     texts = _label_texts(widget)
-    assert texts.count("✗") >= 9
-    assert texts.count("missing") >= 9
+    assert texts.count("✗") >= 10
+    assert texts.count("missing") >= 10
 
     widget.deleteLater()
     app.processEvents()
@@ -566,6 +637,97 @@ def test_widget_section_file_load_buttons_load_files_into_viewer(monkeypatch, tm
     np.testing.assert_array_equal(viewer.layers["3_cell_filtered_flow_mag"].data, flow_mag)
     np.testing.assert_array_equal(viewer.layers["3_cell_foreground_masks"].data, foreground)
     np.testing.assert_array_equal(viewer.layers["3_cell_tracked_labels"].data, labels)
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_widget_load_cell_correction_loads_cell_labels_and_reference_images(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "0_input").mkdir(parents=True)
+    (pos_dir / "3_cell").mkdir()
+    labels = np.zeros((2, 4, 4), dtype=np.uint32)
+    labels[:, 1:3, 1:3] = 7
+    cell_zavg = np.ones((4, 4), dtype=np.float32)
+    nuc_zavg = np.full((4, 4), 2.0, dtype=np.float32)
+    tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
+    tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", cell_zavg)
+    tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", nuc_zavg)
+
+    viewer = _FakeViewer()
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+
+    widget._on_load_cell_correction()
+
+    assert "Tracked: Cell" in viewer.layers
+    assert "Cell z-avg" in viewer.layers
+    assert "Nucleus z-avg" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["Tracked: Cell"].data, labels)
+    np.testing.assert_array_equal(
+        viewer.layers["Cell z-avg"].data,
+        np.broadcast_to(cell_zavg[np.newaxis], labels.shape),
+    )
+    np.testing.assert_array_equal(
+        viewer.layers["Nucleus z-avg"].data,
+        np.broadcast_to(nuc_zavg[np.newaxis], labels.shape),
+    )
+    assert widget.correction_widget._layer is viewer.layers["Tracked: Cell"]
+    assert widget.correction_section.is_expanded is True
+    assert "Loaded cell label stack" in widget.correction_status_lbl.text()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_widget_selects_best_overlapping_cell_for_nucleus_selection(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    viewer = _FakeViewer()
+    labels = np.zeros((2, 8, 8), dtype=np.uint32)
+    labels[1, 1:5, 1:5] = 4
+    labels[1, 5:7, 5:7] = 8
+    source = np.zeros((2, 8, 8), dtype=np.uint32)
+    source[1, 2:6, 2:6] = 7
+    viewer.add_labels(labels, name="Tracked: Cell")
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+
+    widget.select_matching_cell_label(1, 7, source_labels=source)
+
+    assert widget.correction_widget._selected_label == 4
+    assert widget.correction_widget._selected_t == 1
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_widget_save_cell_correction_writes_cell_labels(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "3_cell").mkdir(parents=True)
+    initial = np.zeros((2, 4, 4), dtype=np.uint32)
+    tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", initial)
+
+    edited = initial.copy()
+    edited[0, 1:3, 1:3] = 4
+    viewer = _FakeViewer()
+    viewer.add_labels(edited, name="Tracked: Cell")
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+
+    widget._on_save_cell_correction()
+
+    saved = tifffile.imread(pos_dir / "3_cell" / "tracked_labels.tif")
+    np.testing.assert_array_equal(saved, edited)
+    assert saved.dtype == np.uint32
+    assert "Saved 2 frame(s)" in widget.correction_status_lbl.text()
 
     widget.deleteLater()
     app.processEvents()

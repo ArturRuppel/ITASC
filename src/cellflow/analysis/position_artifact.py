@@ -190,9 +190,12 @@ def _validate_cell_nucleus_identity(cell_stack: np.ndarray, nucleus_stack: np.nd
         cell_ids.discard(0)
         nucleus_ids.discard(0)
         if cell_ids != nucleus_ids:
+            cell_only = sorted(int(label) for label in cell_ids - nucleus_ids)
+            nucleus_only = sorted(int(label) for label in nucleus_ids - cell_ids)
             raise ValueError(
                 "cell_id == nucleus_id invariant failed for frame "
-                f"{frame_idx}: cell labels {sorted(cell_ids)} != nucleus labels {sorted(nucleus_ids)}"
+                f"{frame_idx}: cell labels present only in cell stack: {cell_only}; "
+                f"nucleus labels present only in nucleus stack: {nucleus_only}"
             )
 
 

@@ -27,6 +27,8 @@ from cellflow.correction.labels import (
     _label_at,
     draw_cell_path,
     erase_cell,
+    clean_stranded_pixels,
+    fill_label_holes,
     merge_cells,
     relabel_cell,
     split_across,
@@ -95,6 +97,7 @@ class CorrectionWidget(QWidget):
         self._saved_layer_contour: int = 0
 
         self._edit_callback: Callable[[int, set[int]], None] | None = None
+        self._selection_callback: Callable[[int, int], None] | None = None
 
         self._setup_ui()
 
@@ -129,6 +132,26 @@ class CorrectionWidget(QWidget):
         danger_button(self._reset_mode_btn)
         self._reset_mode_btn.clicked.connect(self._reset_tool_mode)
         root.addWidget(self._reset_mode_btn)
+
+        self._clean_btn = QPushButton("Clean Holes / Islands")
+        self._clean_btn.setEnabled(False)
+        self._clean_btn.setToolTip(
+            "Fill small enclosed background holes and reassign small stranded label islands in the current frame."
+        )
+        action_button(self._clean_btn, expand=True)
+        self._clean_btn.clicked.connect(self._clean_current_frame)
+        root.addWidget(self._clean_btn)
+
+        hole_row = QHBoxLayout()
+        hole_row.addWidget(QLabel("Hole radius:"))
+        self._hole_radius_spin = QSpinBox()
+        self._hole_radius_spin.setRange(0, 999)
+        self._hole_radius_spin.setValue(5)
+        self._hole_radius_spin.setToolTip(
+            "Maximum pixel distance for filling enclosed background gaps. Set to 0 to skip gap filling."
+        )
+        hole_row.addWidget(self._hole_radius_spin)
+        root.addLayout(hole_row)
 
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -270,6 +293,7 @@ class CorrectionWidget(QWidget):
         self._register_callbacks()
         self._activate_btn.setText("Deactivate")
         self._outline_btn.setEnabled(True)
+        self._clean_btn.setEnabled(True)
         self._outline_btn.setChecked(True)
         self._toggle_outline(True)
         self._goto_btn.setEnabled(True)
@@ -330,6 +354,7 @@ class CorrectionWidget(QWidget):
         self._activate_btn.setChecked(False)
         self._outline_btn.setChecked(False)
         self._outline_btn.setEnabled(False)
+        self._clean_btn.setEnabled(False)
         self._goto_btn.setEnabled(False)
         self._goto_cell_id.setValue(0)
         self._inspect_frames_label.setText("")
@@ -361,6 +386,45 @@ class CorrectionWidget(QWidget):
         Signature: fn(t: int, changed_ids: set[int]) -> None.
         Pass None to clear."""
         self._edit_callback = fn
+
+    def set_selection_callback(self, fn: Callable[[int, int], None] | None) -> None:
+        """Register a callback fired when the selected label changes.
+
+        Signature: fn(t: int, label: int) -> None.  ``label`` is 0 when the
+        selection is cleared.
+        """
+        self._selection_callback = fn
+
+    def select_label(self, t: int, label: int, *, notify: bool = True) -> None:
+        """Select and highlight *label* at frame *t*."""
+        self._update_highlight(t, label, notify=notify)
+
+    def _clean_current_frame(self) -> None:
+        if self._layer is None:
+            self._set_status("No active labels layer", error=True)
+            return
+        try:
+            t = int(self.viewer.dims.current_step[0])
+            seg2d = self._frame_view(self._layer, t)
+            before = seg2d.copy()
+            radius = int(self._hole_radius_spin.value())
+            if radius > 0:
+                filled = fill_label_holes(seg2d, radius=radius)
+                seg2d[...] = filled
+            clean_stranded_pixels(seg2d)
+            changed = int(np.sum(before != seg2d))
+            if changed:
+                self._record_history(self._layer, t, before)
+                self._layer.refresh()
+                if self._selected_label:
+                    self._update_highlight(t, self._selected_label)
+                self._set_status(
+                    f"Cleaned {changed} px — Active on '{self._layer.name}'"
+                )
+            else:
+                self._set_status(f"No holes or islands found — Active on '{self._layer.name}'")
+        except Exception as exc:
+            show_error(f"cleanup error: {exc}")
 
     @staticmethod
     def _frame_view(layer, t: int) -> np.ndarray:
@@ -457,27 +521,48 @@ class CorrectionWidget(QWidget):
             self.viewer.layers.selection.active = self._layer
         return spotlight
 
-    def _update_highlight(self, t: int, lab: int) -> None:
+    def _notify_selection_changed(self, t: int, lab: int, previous_label: int) -> None:
+        if lab == previous_label or self._selection_callback is None:
+            return
+        try:
+            self._selection_callback(t, lab)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger("cellflow.correction").exception("selection_callback failed")
+
+    def _update_highlight(self, t: int, lab: int, *, notify: bool = True) -> None:
         """Redraw the cyan boundary for *lab* at time *t*. Pass 0 to clear."""
+        previous_label = self._selected_label
         self._selected_label = lab
+        self._selected_t = t if lab != 0 else -1
         hl = self._get_highlight_layer()
         if lab == 0 or self._layer is None:
             hl.data = []
             hl.visible = False
             self._clear_spotlight()
+            if notify:
+                self._notify_selection_changed(t, lab, previous_label)
             return
         seg2d = self._frame_view(self._layer, t)
         if not np.any(seg2d == lab):
+            self._selected_label = 0
+            self._selected_t = -1
             hl.data = []
             hl.visible = False
             self._clear_spotlight()
+            if notify:
+                self._notify_selection_changed(t, 0, previous_label)
             return
         mask = (seg2d == lab).astype(np.uint8)
         contours = find_contours(mask, level=0.5)
         if not contours:
+            self._selected_label = 0
+            self._selected_t = -1
             hl.data = []
             hl.visible = False
             self._clear_spotlight()
+            if notify:
+                self._notify_selection_changed(t, 0, previous_label)
             return
         self._update_spotlight(mask.astype(bool))
         contour = max(contours, key=len)
@@ -485,6 +570,8 @@ class CorrectionWidget(QWidget):
         hl.shape_type = ["polygon"]
         hl.visible = True
         self.viewer.layers.selection.active = self._layer
+        if notify:
+            self._notify_selection_changed(t, lab, previous_label)
 
     def _cleanup_highlight_layer(self) -> None:
         if _HIGHLIGHT_LAYER in self.viewer.layers:

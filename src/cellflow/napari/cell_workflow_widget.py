@@ -20,6 +20,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.correction.labels import best_overlapping_label
+from cellflow.database.tracked import read_full_tracked_stack
+from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.napari.ui_style import (
     add_block_button_row,
@@ -34,6 +37,9 @@ _FILTERED_FLOW_LAYER = "Filtered Flow Magnitude"
 _FOREGROUND_MASK_LAYER = "Foreground Mask"
 _FOREGROUND_MASK_PREVIEW_LAYER = "Preview: Foreground Mask"
 _CELL_LABELS_LAYER = "Cell Labels"
+_TRACKED_CELL_LAYER = "Tracked: Cell"
+_CELL_ZAVG_LAYER = "Cell z-avg"
+_NUC_ZAVG_LAYER = "Nucleus z-avg"
 _FF_SPIN_WIDTH = 80
 _FF_SPIN_MIN_WIDTH = int(_FF_SPIN_WIDTH * 0.9)
 
@@ -227,6 +233,58 @@ class CellWorkflowWidget(QWidget):
         )
         layout.addWidget(self.tracked_labels_section)
 
+        self.correction_params_widget = QWidget()
+        correction_lay = QVBoxLayout(self.correction_params_widget)
+        correction_lay.setContentsMargins(0, 0, 0, 0)
+        correction_lay.setSpacing(4)
+        correction_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.correction_input_files = _stage_files("Inputs", [
+            ("3_cell/tracked_labels.tif", "Cell labels"),
+            ("0_input/cell_zavg.tif", "Cell z-avg"),
+            ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
+        ])
+        correction_lay.addWidget(self.correction_input_files)
+
+        self.load_cell_correction_btn = QPushButton("Load Cell Labels")
+        self.save_cell_correction_btn = QPushButton("Save Cell Labels")
+        self.reassign_cell_ids_btn = QPushButton("Reassign IDs")
+        for button in (
+            self.load_cell_correction_btn,
+            self.save_cell_correction_btn,
+            self.reassign_cell_ids_btn,
+        ):
+            button.setMinimumWidth(_FF_SPIN_MIN_WIDTH)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        correction_btn_row = block_grid(horizontal_spacing=12)
+        add_block_button_row(
+            correction_btn_row,
+            0,
+            self.load_cell_correction_btn,
+            self.save_cell_correction_btn,
+        )
+        add_block_button_row(correction_btn_row, 1, self.reassign_cell_ids_btn)
+        correction_lay.addLayout(correction_btn_row)
+
+        self.correction_status_lbl = _stage_status()
+        correction_lay.addWidget(self.correction_status_lbl)
+        self.correction_widget = CorrectionWidget(
+            self.viewer,
+            show_activate_btn=False,
+            show_shortcuts=False,
+            inspector_first=True,
+        )
+        correction_lay.addWidget(self.correction_widget)
+        self.correction_shortcuts_section = CollapsibleSection(
+            "Correction Shortcuts",
+            self.correction_widget.build_shortcuts_widget(),
+            expanded=False,
+        )
+        correction_lay.addWidget(self.correction_shortcuts_section)
+        self.correction_section = CollapsibleSection(
+            "Correction", self.correction_params_widget, expanded=False
+        )
+        layout.addWidget(self.correction_section)
+
         self.ff_cancel_btn = QPushButton("Cancel")
         self.ff_cancel_btn.setEnabled(False)
         self.ff_cancel_btn.setMinimumWidth(_FF_SPIN_MIN_WIDTH)
@@ -243,6 +301,9 @@ class CellWorkflowWidget(QWidget):
         self.fg_masks_btn.clicked.connect(self._on_create_foreground_masks)
         self.ff_labels_btn.clicked.connect(self._on_create_tracked_labels)
         self.ff_cancel_btn.clicked.connect(self._on_cancel_flow_following)
+        self.load_cell_correction_btn.clicked.connect(self._on_load_cell_correction)
+        self.save_cell_correction_btn.clicked.connect(self._on_save_cell_correction)
+        self.reassign_cell_ids_btn.clicked.connect(self._on_reassign_cell_ids)
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -268,6 +329,12 @@ class CellWorkflowWidget(QWidget):
     def _cell_labels_out_path(self) -> Path | None:
         return self._pos_dir / "3_cell" / "tracked_labels.tif" if self._pos_dir else None
 
+    def _cell_zavg_path(self) -> Path | None:
+        return self._pos_dir / "0_input" / "cell_zavg.tif" if self._pos_dir else None
+
+    def _nucleus_zavg_path(self) -> Path | None:
+        return self._pos_dir / "0_input" / "nucleus_zavg.tif" if self._pos_dir else None
+
     # ------------------------------------------------------------------
     # State + status
     # ------------------------------------------------------------------
@@ -285,8 +352,14 @@ class CellWorkflowWidget(QWidget):
             self.foreground_mask_output_files,
             self.tracked_labels_input_files,
             self.tracked_labels_output_files,
+            self.correction_input_files,
         ):
             files_widget.refresh(pos_dir)
+
+    def _set_correction_status(self, msg: str) -> None:
+        self.correction_status_lbl.setText(msg)
+        self.correction_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
 
     def get_state(self) -> dict:
         return {
@@ -394,6 +467,129 @@ class CellWorkflowWidget(QWidget):
         self._set_ff_buttons_running(False)
         self._set_stage_status(stage, f"Error: {exc}")
         logger.exception("Cell workflow worker error", exc_info=exc)
+
+    # ------------------------------------------------------------------
+    # Manual correction
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _broadcast_reference_image(image: np.ndarray | None, shape: tuple[int, ...]) -> np.ndarray | None:
+        if image is None:
+            return None
+        if image.ndim == 2 and len(shape) >= 3:
+            return np.broadcast_to(image[np.newaxis], (shape[0],) + image.shape).copy()
+        return image
+
+    def _on_load_cell_correction(self) -> None:
+        labels_path = self._cell_labels_out_path()
+        cell_zavg_path = self._cell_zavg_path()
+        nuc_zavg_path = self._nucleus_zavg_path()
+        if labels_path is None or not labels_path.exists():
+            self._set_correction_status("No cell labels file found.")
+            return
+        self._set_correction_status("Loading cell labels...")
+
+        @thread_worker(connect={
+            "returned": self._on_load_cell_correction_done,
+            "errored": lambda exc: self._set_correction_status(f"Error: {exc}"),
+        })
+        def _worker():
+            labels = read_full_tracked_stack(labels_path)
+            cell_zavg = (
+                np.asarray(tifffile.imread(str(cell_zavg_path)), dtype=np.float32)
+                if cell_zavg_path and cell_zavg_path.exists() else None
+            )
+            nuc_zavg = (
+                np.asarray(tifffile.imread(str(nuc_zavg_path)), dtype=np.float32)
+                if nuc_zavg_path and nuc_zavg_path.exists() else None
+            )
+            return labels, cell_zavg, nuc_zavg
+
+        _worker()
+
+    def _on_load_cell_correction_done(self, result: tuple) -> None:
+        labels, cell_zavg, nuc_zavg = result
+        if _TRACKED_CELL_LAYER in self.viewer.layers:
+            self.viewer.layers[_TRACKED_CELL_LAYER].data = labels
+        else:
+            self.viewer.add_labels(labels, name=_TRACKED_CELL_LAYER)
+
+        for image, layer_name, cmap in (
+            (self._broadcast_reference_image(cell_zavg, labels.shape), _CELL_ZAVG_LAYER, "gray"),
+            (self._broadcast_reference_image(nuc_zavg, labels.shape), _NUC_ZAVG_LAYER, "bop orange"),
+        ):
+            if image is None:
+                continue
+            if layer_name in self.viewer.layers:
+                self.viewer.layers[layer_name].data = image
+            else:
+                self.viewer.add_image(image, name=layer_name, colormap=cmap, blending="additive")
+
+        self._set_correction_status(f"Loaded cell label stack {labels.shape} into napari.")
+        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
+        self.correction_widget.activate_layer(layer)
+        self.correction_section.expand()
+
+    def set_selection_callback(self, fn) -> None:
+        """Register a callback for cell correction label selection changes."""
+        self.correction_widget.set_selection_callback(fn)
+
+    def select_matching_cell_label(
+        self,
+        t: int,
+        source_label: int,
+        *,
+        source_labels: np.ndarray | None = None,
+    ) -> None:
+        """Highlight the cell label that best overlaps a selected nucleus label."""
+        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+            return
+        if source_labels is None:
+            if "Tracked: Nucleus" not in self.viewer.layers:
+                return
+            source_labels = np.asarray(self.viewer.layers["Tracked: Nucleus"].data)
+        target_labels = np.asarray(self.viewer.layers[_TRACKED_CELL_LAYER].data)
+        matched_label = best_overlapping_label(target_labels, source_labels, t, source_label)
+        self.correction_widget.select_label(t, matched_label, notify=False)
+
+    def _on_save_cell_correction(self) -> None:
+        labels_path = self._cell_labels_out_path()
+        if labels_path is None:
+            self._set_correction_status("No project open.")
+            return
+        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+            self._set_correction_status("No cell labels layer to save.")
+            return
+        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
+        data = np.asarray(layer.data)
+        if data.ndim != 3:
+            self._set_correction_status("Cell labels layer is not a 3D stack.")
+            return
+        labels_path.parent.mkdir(parents=True, exist_ok=True)
+        tifffile.imwrite(
+            str(labels_path),
+            data.astype(np.uint32, copy=False),
+            compression="zlib",
+        )
+        self._refresh_stage_files(self._pos_dir)
+        self._set_correction_status(f"Saved {data.shape[0]} frame(s) to {labels_path.name}.")
+
+    def _on_reassign_cell_ids(self) -> None:
+        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+            self._set_correction_status("No cell labels layer loaded.")
+            return
+        stack = np.asarray(self.viewer.layers[_TRACKED_CELL_LAYER].data)
+        unique_ids = np.unique(stack)
+        unique_ids = unique_ids[unique_ids != 0]
+        if unique_ids.size == 0:
+            self._set_correction_status("No cell IDs to reassign.")
+            return
+        lut = np.zeros(int(unique_ids.max()) + 1, dtype=np.uint32)
+        for new_id, old_id in enumerate(unique_ids, start=1):
+            lut[int(old_id)] = new_id
+        self.viewer.layers[_TRACKED_CELL_LAYER].data = lut[stack]
+        self._set_correction_status(
+            f"Reassigned {len(unique_ids)} cell IDs to contiguous range 1-{len(unique_ids)}. Unsaved."
+        )
 
     # ------------------------------------------------------------------
     # Run / Cancel
