@@ -466,8 +466,14 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert "Save Tracked Labels" in correction_button_texts
     assert "Load Tracked Labels" in correction_button_texts
     assert "Reassign IDs" in correction_button_texts
-    assert "Clean Holes / Islands" in correction_button_texts
+    assert "Clean Holes / Islands" not in correction_button_texts
+    assert "Fill Holes" in correction_button_texts
+    assert "Fix Semiholes" in correction_button_texts
+    assert "Clean Fragments" in correction_button_texts
+    assert "Artifact cleanup" in correction_label_texts
+    assert "Scope:" in correction_label_texts
     assert "Hole radius:" in correction_label_texts
+    assert "Max opening:" in correction_label_texts
     assert "◀ Extend (A)" in correction_button_texts
     assert "Extend (D) ▶" in correction_button_texts
     assert "◀ Retrack (Q)" in correction_button_texts
@@ -1540,7 +1546,9 @@ def test_correction_widget_top_buttons_expand_horizontally():
         widget._activate_btn,
         widget._outline_btn,
         widget._reset_mode_btn,
-        widget._clean_btn,
+        widget._fill_holes_btn,
+        widget._fix_semiholes_btn,
+        widget._clean_fragments_btn,
         widget._goto_btn,
     ):
         assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
@@ -1549,7 +1557,7 @@ def test_correction_widget_top_buttons_expand_horizontally():
     viewer.close()
 
 
-def test_correction_widget_clean_holes_uses_configured_radius():
+def test_correction_widget_fill_holes_uses_configured_radius():
     _app, viewer = _make_viewer()
     widget_class = _load_correction_widget_class()
     widget = widget_class(viewer)
@@ -1563,7 +1571,7 @@ def test_correction_widget_clean_holes_uses_configured_radius():
 
     widget.activate_layer(layer)
     widget._hole_radius_spin.setValue(1)
-    widget._clean_current_frame()
+    widget._fill_holes()
 
     gap = np.asarray(layer.data)[0, 3:9, 4:8]
     assert np.any(gap == 0)
@@ -1572,10 +1580,59 @@ def test_correction_widget_clean_holes_uses_configured_radius():
     np.testing.assert_array_equal(np.asarray(layer.data)[0, 0, :], np.zeros(12, dtype=np.uint32))
 
     widget._hole_radius_spin.setValue(999)
-    widget._clean_current_frame()
+    widget._fill_holes()
 
     assert not np.any(np.asarray(layer.data)[0, 3:9, 4:8] == 0)
     np.testing.assert_array_equal(np.asarray(layer.data)[0, 0, :], np.zeros(12, dtype=np.uint32))
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_artifact_cleanup_current_frame_scope_only_changes_selected_frame():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    labels = np.ones((2, 6, 6), dtype=np.uint32)
+    labels[:, 2:4, 2:4] = 0
+    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
+
+    widget.activate_layer(layer)
+    viewer.dims.current_step = (1, 0, 0)
+    widget._cleanup_scope_combo.setCurrentText("Current frame")
+    widget._hole_radius_spin.setValue(999)
+    widget._fill_holes()
+
+    assert np.any(np.asarray(layer.data)[0] == 0)
+    assert not np.any(np.asarray(layer.data)[1] == 0)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_artifact_cleanup_all_frames_records_each_changed_frame():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    labels = np.ones((2, 6, 6), dtype=np.uint32)
+    labels[:, 2:4, 2:4] = 0
+    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
+    recorded = []
+    original_record_history = widget._record_history
+
+    def record_history(layer_arg, t, before):
+        recorded.append(t)
+        original_record_history(layer_arg, t, before)
+
+    widget.activate_layer(layer)
+    widget._record_history = record_history
+    widget._cleanup_scope_combo.setCurrentText("All frames")
+    widget._hole_radius_spin.setValue(999)
+    widget._fill_holes()
+
+    assert not np.any(np.asarray(layer.data) == 0)
+    assert recorded == [0, 1]
+    assert "Filled holes in 2 frame(s)" in widget._status.text()
 
     widget.deleteLater()
     viewer.close()

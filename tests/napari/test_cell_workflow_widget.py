@@ -238,8 +238,14 @@ def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
     assert "Load Cell Labels" in correction_button_texts
     assert "Save Cell Labels" in correction_button_texts
     assert "Reassign IDs" in correction_button_texts
-    assert "Clean Holes / Islands" in correction_button_texts
+    assert "Clean Holes / Islands" not in correction_button_texts
+    assert "Fill Holes" in correction_button_texts
+    assert "Fix Semiholes" in correction_button_texts
+    assert "Clean Fragments" in correction_button_texts
+    assert "Artifact cleanup" in correction_label_texts
+    assert "Scope:" in correction_label_texts
     assert "Hole radius:" in correction_label_texts
+    assert "Max opening:" in correction_label_texts
     assert "◀ Extend (A)" not in correction_button_texts
     assert "Extend (D) ▶" not in correction_button_texts
     assert "◀ Retrack (Q)" not in correction_button_texts

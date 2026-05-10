@@ -11,6 +11,7 @@ import numpy as np
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -29,6 +30,7 @@ from cellflow.correction.labels import (
     erase_cell,
     clean_stranded_pixels,
     fill_label_holes,
+    fix_label_semiholes,
     merge_cells,
     relabel_cell,
     split_across,
@@ -133,14 +135,19 @@ class CorrectionWidget(QWidget):
         self._reset_mode_btn.clicked.connect(self._reset_tool_mode)
         root.addWidget(self._reset_mode_btn)
 
-        self._clean_btn = QPushButton("Clean Holes / Islands")
-        self._clean_btn.setEnabled(False)
-        self._clean_btn.setToolTip(
-            "Fill small enclosed background holes and reassign small stranded label islands in the current frame."
+        cleanup_label = QLabel("Artifact cleanup")
+        muted_label(cleanup_label, size_pt=9)
+        root.addWidget(cleanup_label)
+
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel("Scope:"))
+        self._cleanup_scope_combo = QComboBox()
+        self._cleanup_scope_combo.addItems(["Current frame", "All frames"])
+        self._cleanup_scope_combo.setToolTip(
+            "Choose whether cleanup applies to the visible frame or the full label stack."
         )
-        action_button(self._clean_btn, expand=True)
-        self._clean_btn.clicked.connect(self._clean_current_frame)
-        root.addWidget(self._clean_btn)
+        scope_row.addWidget(self._cleanup_scope_combo)
+        root.addLayout(scope_row)
 
         hole_row = QHBoxLayout()
         hole_row.addWidget(QLabel("Hole radius:"))
@@ -152,6 +159,40 @@ class CorrectionWidget(QWidget):
         )
         hole_row.addWidget(self._hole_radius_spin)
         root.addLayout(hole_row)
+
+        semihole_row = QHBoxLayout()
+        semihole_row.addWidget(QLabel("Max opening:"))
+        self._semihole_opening_spin = QSpinBox()
+        self._semihole_opening_spin.setRange(0, 999)
+        self._semihole_opening_spin.setValue(3)
+        self._semihole_opening_spin.setToolTip(
+            "Maximum border contact, in pixels, for semihole repair. Set to 0 to skip semihole repair."
+        )
+        semihole_row.addWidget(self._semihole_opening_spin)
+        root.addLayout(semihole_row)
+
+        self._fill_holes_btn = QPushButton("Fill Holes")
+        self._fill_holes_btn.setEnabled(False)
+        self._fill_holes_btn.setToolTip("Fill enclosed background gaps using the configured hole radius.")
+        action_button(self._fill_holes_btn, expand=True)
+        self._fill_holes_btn.clicked.connect(self._fill_holes)
+        root.addWidget(self._fill_holes_btn)
+
+        self._fix_semiholes_btn = QPushButton("Fix Semiholes")
+        self._fix_semiholes_btn.setEnabled(False)
+        self._fix_semiholes_btn.setToolTip(
+            "Repair narrow border-connected gaps using the radius and max opening controls."
+        )
+        action_button(self._fix_semiholes_btn, expand=True)
+        self._fix_semiholes_btn.clicked.connect(self._fix_semiholes)
+        root.addWidget(self._fix_semiholes_btn)
+
+        self._clean_fragments_btn = QPushButton("Clean Fragments")
+        self._clean_fragments_btn.setEnabled(False)
+        self._clean_fragments_btn.setToolTip("Remove disconnected same-label fragments without filling background holes.")
+        action_button(self._clean_fragments_btn, expand=True)
+        self._clean_fragments_btn.clicked.connect(self._clean_fragments)
+        root.addWidget(self._clean_fragments_btn)
 
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -293,7 +334,7 @@ class CorrectionWidget(QWidget):
         self._register_callbacks()
         self._activate_btn.setText("Deactivate")
         self._outline_btn.setEnabled(True)
-        self._clean_btn.setEnabled(True)
+        self._set_cleanup_enabled(True)
         self._outline_btn.setChecked(True)
         self._toggle_outline(True)
         self._goto_btn.setEnabled(True)
@@ -354,7 +395,7 @@ class CorrectionWidget(QWidget):
         self._activate_btn.setChecked(False)
         self._outline_btn.setChecked(False)
         self._outline_btn.setEnabled(False)
-        self._clean_btn.setEnabled(False)
+        self._set_cleanup_enabled(False)
         self._goto_btn.setEnabled(False)
         self._goto_cell_id.setValue(0)
         self._inspect_frames_label.setText("")
@@ -381,6 +422,14 @@ class CorrectionWidget(QWidget):
         else:
             status_label(self._status, italic=True, muted=True)
 
+    def _set_cleanup_enabled(self, enabled: bool) -> None:
+        for button in (
+            self._fill_holes_btn,
+            self._fix_semiholes_btn,
+            self._clean_fragments_btn,
+        ):
+            button.setEnabled(enabled)
+
     def set_edit_callback(self, fn: Callable[[int, set[int]], None] | None) -> None:
         """Register a callback fired after every successful edit.
         Signature: fn(t: int, changed_ids: set[int]) -> None.
@@ -399,36 +448,87 @@ class CorrectionWidget(QWidget):
         """Select and highlight *label* at frame *t*."""
         self._update_highlight(t, label, notify=notify)
 
-    def _clean_current_frame(self) -> None:
+    def _cleanup_frame_indices(self) -> list[int]:
+        if self._layer is None:
+            return []
+        if self._layer.data.ndim < 3:
+            return [0]
+        if self._cleanup_scope_combo.currentText() == "All frames":
+            return list(range(int(self._layer.data.shape[0])))
+        return [int(self.viewer.dims.current_step[0])]
+
+    def _run_artifact_cleanup(
+        self,
+        operation_name: str,
+        no_change_message: str,
+        operation: Callable[[np.ndarray], None],
+    ) -> None:
         if self._layer is None:
             self._set_status("No active labels layer", error=True)
             return
         try:
-            t = int(self.viewer.dims.current_step[0])
-            seg2d = self._frame_view(self._layer, t)
-            before = seg2d.copy()
-            radius = int(self._hole_radius_spin.value())
-            if radius > 0:
-                filled = fill_label_holes(seg2d, radius=radius)
-                seg2d[...] = filled
-            clean_stranded_pixels(seg2d)
-            changed = int(np.sum(before != seg2d))
-            if changed:
+            changed_frames = 0
+            changed_pixels = 0
+            for t in self._cleanup_frame_indices():
+                seg2d = self._frame_view(self._layer, t)
+                before = seg2d.copy()
+                operation(seg2d)
+                changed = int(np.sum(before != seg2d))
+                if not changed:
+                    continue
+                changed_frames += 1
+                changed_pixels += changed
                 self._record_history(self._layer, t, before)
+
+            if changed_pixels:
                 self._layer.refresh()
+                current_t = (
+                    int(self.viewer.dims.current_step[0])
+                    if self._layer.data.ndim >= 3
+                    else 0
+                )
                 if self._selected_label:
-                    self._update_highlight(t, self._selected_label)
+                    self._update_highlight(current_t, self._selected_label)
                 self._set_status(
-                    f"Cleaned {changed} px — Active on '{self._layer.name}'"
+                    f"{operation_name} in {changed_frames} frame(s), {changed_pixels} px changed. Unsaved."
                 )
             else:
-                self._set_status(f"No holes or islands found — Active on '{self._layer.name}'")
+                self._set_status(no_change_message)
         except Exception as exc:
             show_error(f"cleanup error: {exc}")
+
+    def _fill_holes(self) -> None:
+        radius = int(self._hole_radius_spin.value())
+        self._run_artifact_cleanup(
+            "Filled holes",
+            "No holes found",
+            lambda seg2d: np.copyto(seg2d, fill_label_holes(seg2d, radius=radius)),
+        )
+
+    def _fix_semiholes(self) -> None:
+        radius = int(self._hole_radius_spin.value())
+        max_opening = int(self._semihole_opening_spin.value())
+        self._run_artifact_cleanup(
+            "Fixed semiholes",
+            "No semiholes found",
+            lambda seg2d: np.copyto(
+                seg2d,
+                fix_label_semiholes(seg2d, radius=radius, max_opening=max_opening),
+            ),
+        )
+
+    def _clean_fragments(self) -> None:
+        self._run_artifact_cleanup(
+            "Cleaned fragments",
+            "No fragments found",
+            lambda seg2d: clean_stranded_pixels(seg2d),
+        )
 
     @staticmethod
     def _frame_view(layer, t: int) -> np.ndarray:
         """Return a 2D writable view of frame *t* (squeezes singleton leading dims)."""
+        if layer.data.ndim == 2:
+            return layer.data
         v = layer.data[t]
         while v.ndim > 2:
             if v.shape[0] != 1:

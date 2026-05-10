@@ -460,8 +460,57 @@ def fill_label_holes(labels: np.ndarray, radius: int = 5) -> np.ndarray:
     return expanded.astype(labels.dtype, copy=False)
 
 
+def fix_label_semiholes(
+    labels: np.ndarray,
+    radius: int = 5,
+    max_opening: int = 3,
+) -> np.ndarray:
+    """Fill narrow border-connected background gaps by expanding labels.
+
+    Candidate zero-valued components must touch the image border with no more
+    than ``max_opening`` pixels.  Wider border-connected background regions are
+    preserved as open background.
+    """
+    from skimage.measure import label as _cc_label
+
+    if radius <= 0 or max_opening <= 0:
+        return labels
+
+    bg = labels == 0
+    if not np.any(bg):
+        return labels
+
+    bg_labeled = _cc_label(bg, connectivity=2)
+    border_mask = np.zeros(labels.shape, dtype=bool)
+    border_mask[0, :] = True
+    border_mask[-1, :] = True
+    border_mask[:, 0] = True
+    border_mask[:, -1] = True
+
+    candidate = np.zeros(labels.shape, dtype=bool)
+    for comp_id in np.unique(bg_labeled[border_mask & bg]):
+        comp_id = int(comp_id)
+        if comp_id == 0:
+            continue
+        comp_mask = bg_labeled == comp_id
+        opening = int(np.sum(comp_mask & border_mask))
+        if opening <= int(max_opening):
+            candidate |= comp_mask
+
+    if not np.any(candidate):
+        return labels
+
+    sentinel = int(np.max(labels)) + 1
+    work = labels.copy()
+    work[bg & ~candidate] = sentinel
+    expanded = expand_labels(work, distance=int(radius))
+    expanded[bg & ~candidate] = 0
+    expanded[expanded == sentinel] = 0
+    return expanded.astype(labels.dtype, copy=False)
+
+
 def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
-    """Remove isolated pixel groups too small to be valid cells."""
+    """Remove disconnected same-label fragments, keeping each label's largest component."""
     from skimage.measure import label as _cc_label
     cleared = 0
 
@@ -482,27 +531,6 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
             filled = expand_labels(seg, distance=n_px + 2)
             seg[comp_mask] = filled[comp_mask]
             cleared += n_px
-
-    bg = seg == 0
-    if np.any(bg):
-        bg_labeled, _ = _cc_label(bg, return_num=True, connectivity=2)
-        open_ids: set = set()
-        for edge in (
-            bg_labeled[0, :], bg_labeled[-1, :],
-            bg_labeled[:, 0], bg_labeled[:, -1],
-        ):
-            open_ids.update(np.unique(edge))
-        open_ids.discard(0)
-
-        for comp_id in np.unique(bg_labeled):
-            if comp_id == 0 or comp_id in open_ids:
-                continue
-            comp_mask = bg_labeled == comp_id
-            n_px = int(np.sum(comp_mask))
-            if n_px < min_size:
-                filled = expand_labels(seg, distance=n_px + 2)
-                seg[comp_mask] = filled[comp_mask]
-                cleared += n_px
 
     return cleared
 

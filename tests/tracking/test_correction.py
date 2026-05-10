@@ -4,6 +4,7 @@ from cellflow.correction.labels import (
     clean_stranded_pixels,
     draw_cell_path,
     fill_label_holes,
+    fix_label_semiholes,
     split_across,
 )
 import numpy as np
@@ -84,7 +85,7 @@ def test_draw_cell_path_uses_caller_supplied_fresh_label_for_new_cell():
     assert 6 not in stack[0]
 
 
-def test_clean_stranded_pixels_reports_filled_holes_and_border_islands():
+def test_clean_stranded_pixels_cleans_fragments_without_filling_background_holes():
     seg = np.ones((8, 8), dtype=np.uint32)
     seg[2:6, 2:6] = 2
     seg[3, 3] = 0
@@ -92,8 +93,8 @@ def test_clean_stranded_pixels_reports_filled_holes_and_border_islands():
 
     changed = clean_stranded_pixels(seg, min_size=4)
 
-    assert changed >= 2
-    assert seg[3, 3] != 0
+    assert changed == 1
+    assert seg[3, 3] == 0
     assert seg[0, 7] != 2
 
 
@@ -120,3 +121,55 @@ def test_fill_label_holes_zero_radius_is_noop():
     result = fill_label_holes(seg, radius=0)
 
     np.testing.assert_array_equal(result, seg)
+
+
+def test_fill_label_holes_leaves_open_background_unchanged():
+    seg = np.ones((8, 8), dtype=np.uint32)
+    seg[2:6, 2:6] = 0
+    seg[0:3, 3] = 0
+
+    result = fill_label_holes(seg, radius=999)
+
+    np.testing.assert_array_equal(result, seg)
+
+
+def test_fix_label_semiholes_repairs_narrow_border_connected_gap():
+    seg = np.ones((8, 8), dtype=np.uint32)
+    seg[1:7, 1:7] = 2
+    seg[2:6, 2:6] = 0
+    seg[0, 3] = 0
+    seg[1, 3] = 0
+
+    result = fix_label_semiholes(seg, radius=999, max_opening=1)
+
+    assert not np.any(result[2:6, 2:6] == 0)
+    assert result[0, 3] != 0
+
+
+def test_fix_label_semiholes_leaves_wide_border_opening_unchanged():
+    seg = np.ones((8, 8), dtype=np.uint32)
+    seg[1:7, 1:7] = 2
+    seg[2:6, 2:6] = 0
+    seg[0, 2:5] = 0
+    seg[1, 3] = 0
+
+    result = fix_label_semiholes(seg, radius=999, max_opening=1)
+
+    np.testing.assert_array_equal(result, seg)
+
+
+def test_fix_label_semiholes_zero_radius_or_opening_is_noop():
+    seg = np.ones((8, 8), dtype=np.uint32)
+    seg[1:7, 1:7] = 2
+    seg[2:6, 2:6] = 0
+    seg[0, 3] = 0
+    seg[1, 3] = 0
+
+    np.testing.assert_array_equal(
+        fix_label_semiholes(seg, radius=0, max_opening=1),
+        seg,
+    )
+    np.testing.assert_array_equal(
+        fix_label_semiholes(seg, radius=999, max_opening=0),
+        seg,
+    )
