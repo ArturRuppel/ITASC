@@ -6,6 +6,10 @@ from cellflow.segmentation.flow_following import (
     compute_filtered_flow_vectors,
     compute_flow_following_movie,
 )
+from cellflow.segmentation.cell_label_icm import (
+    CellLabelICMParams,
+    segment_cells_icm,
+)
 from cellflow.segmentation.contour_filtering import (
     ContourFilterParams,
     compute_filtered_contour_maps,
@@ -438,16 +442,17 @@ def build_consensus_boundary(
     cellprob_thresholds: list[float],
     gamma: float = 1.0,
     flow_threshold: float = 0.0,
+    reduction: str = "mean",
     *,
     mask_callback: Callable[[np.ndarray, int], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Average mask boundaries and occupancy over (threshold × z-slice).
+    """Reduce mask boundaries and occupancy over (threshold × z-slice).
 
     prob_3d: (Z, Y, X) logits  dp_3d: (Z, 2, Y, X)
+    reduction: "mean" averages across all (threshold × z-slice) combinations;
+               "max" takes the per-pixel maximum instead.
     mask_callback: optional sink called as mask_callback(masks_zyx, thresh_idx) after each threshold.
     Returns: (boundary, foreground) both (Y, X) float32.
-      boundary   — mean boundary density in [0, 1]
-      foreground — mean Cellpose label occupancy in [0, 1]
     """
     try:
         import torch
@@ -476,17 +481,86 @@ def build_consensus_boundary(
             )
             masks = result[0] if isinstance(result, tuple) else result
             masks_arr = np.asarray(masks)
-            accum += find_boundaries(masks_arr, mode="inner").astype(np.float32)
-            foreground_accum += (masks_arr > 0).astype(np.float32)
+            boundary_slice = find_boundaries(masks_arr, mode="inner").astype(np.float32)
+            fg_slice = (masks_arr > 0).astype(np.float32)
+            if reduction == "max":
+                np.maximum(accum, boundary_slice, out=accum)
+                np.maximum(foreground_accum, fg_slice, out=foreground_accum)
+            else:
+                accum += boundary_slice
+                foreground_accum += fg_slice
             n_total += 1
             if mask_callback is not None:
                 z_masks.append(np.asarray(masks_arr, dtype=np.uint32))
         if mask_callback is not None:
             mask_callback(np.stack(z_masks), i_thresh)
 
+    if reduction == "max":
+        return accum, foreground_accum
     boundary = accum / n_total if n_total > 0 else accum
     foreground = foreground_accum / n_total if n_total > 0 else foreground_accum
     return boundary, foreground
+
+
+def build_consensus_boundary_2d(
+    prob_yx: np.ndarray,
+    dp_cyx: np.ndarray,
+    cellprob_thresholds: list[float],
+    flow_threshold: float = 0.0,
+    reduction: str = "mean",
+    niter: int = 200,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build consensus boundary from a Z-averaged probability map and 2D flow vectors.
+
+    prob_yx:  (Y, X) Cellpose probability logits — already Z-projected and gamma-corrected.
+    dp_cyx:   (2, Y, X) flow vectors (e.g. from filtered_dp).
+    Returns:  (boundary, foreground) both (Y, X) float32.
+    """
+    try:
+        import torch
+        from cellpose.dynamics import compute_masks
+        from skimage.segmentation import find_boundaries
+    except ImportError as exc:
+        raise ImportError("cellpose, torch, and scikit-image required") from exc
+
+    prob_yx = np.asarray(prob_yx, dtype=np.float32)
+    dp_cyx = np.asarray(dp_cyx, dtype=np.float32)
+    if prob_yx.ndim != 2:
+        raise ValueError(f"Expected (Y, X) prob, got {prob_yx.shape}")
+    if dp_cyx.ndim != 3 or dp_cyx.shape[0] != 2:
+        raise ValueError(f"Expected (2, Y, X) dp, got {dp_cyx.shape}")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    accum = np.zeros(prob_yx.shape, dtype=np.float32)
+    foreground_accum = np.zeros(prob_yx.shape, dtype=np.float32)
+
+    for thresh in cellprob_thresholds:
+        result = compute_masks(
+            dp_cyx,
+            prob_yx,
+            cellprob_threshold=float(thresh),
+            flow_threshold=float(flow_threshold),
+            niter=int(niter),
+            do_3D=False,
+            device=device,
+        )
+        masks = result[0] if isinstance(result, tuple) else result
+        masks_arr = np.asarray(masks)
+        boundary_slice = find_boundaries(masks_arr, mode="inner").astype(np.float32)
+        fg_slice = (masks_arr > 0).astype(np.float32)
+        if reduction == "max":
+            np.maximum(accum, boundary_slice, out=accum)
+            np.maximum(foreground_accum, fg_slice, out=foreground_accum)
+        else:
+            accum += boundary_slice
+            foreground_accum += fg_slice
+
+    n = len(cellprob_thresholds)
+    if reduction != "max" and n > 0:
+        accum /= n
+        foreground_accum /= n
+
+    return accum, foreground_accum
 
 
 def compute_masks_for_threshold(

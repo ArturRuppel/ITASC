@@ -19,6 +19,8 @@ dependencies = [
     "pandas",
     "tifffile",
     "numba",
+    "matplotlib>=3.9.4",
+    "pymaxflow>=1.3.2",
 ]
 
 [project.entry-points."napari.manifest"]

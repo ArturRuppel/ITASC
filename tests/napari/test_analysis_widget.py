@@ -310,7 +310,8 @@ def test_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_path):
     app.processEvents()
 
 
-def test_analysis_widget_checkbox_changes_refresh_loaded_artifact(monkeypatch, tmp_path):
+def test_analysis_widget_checkbox_does_not_live_update_visualization(monkeypatch, tmp_path):
+    """Checkboxes no longer trigger automatic reloads; user must click Show Artifact."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
@@ -338,10 +339,17 @@ def test_analysis_widget_checkbox_changes_refresh_loaded_artifact(monkeypatch, t
 
     monkeypatch.setattr(mod, "add_artifact_layers", fake_add)
 
+    # First show with default settings
     widget.show_artifact_btn.click()
+    # Changing checkbox must NOT trigger a reload on its own
     widget.color_cells_by_label_cb.setChecked(True)
+    assert len(add_calls) == 1, "checkbox change must not auto-reload"
+    assert add_calls[0]["color_cells_by_label"] is False
 
-    assert [call["color_cells_by_label"] for call in add_calls] == [False, True]
+    # Clicking Show Artifact again picks up the updated checkbox state
+    widget.show_artifact_btn.click()
+    assert len(add_calls) == 2
+    assert add_calls[1]["color_cells_by_label"] is True
 
     widget.deleteLater()
     app.processEvents()

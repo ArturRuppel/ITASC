@@ -733,7 +733,13 @@ class CorrectionWidget(QWidget):
         t = int(step[0])
         if t >= self._layer.data.shape[0]:
             return
-        self._update_highlight(t, self._selected_label)
+        selected_label = self._selected_label
+        selected_pos = self._selected_pos
+        selected_t = self._selected_t
+        self._update_highlight(t, selected_label, notify=False)
+        self._selected_label = selected_label
+        self._selected_pos = selected_pos
+        self._selected_t = selected_t
 
     def _on_layer_data_changed(self, event=None) -> None:
         if not (self._selected_label and self._layer is not None):

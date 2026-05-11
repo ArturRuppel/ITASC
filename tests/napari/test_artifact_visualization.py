@@ -13,14 +13,44 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 class _LayerCollection(dict):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events = SimpleNamespace(removed=_FakeEvent())
+
     def remove(self, layer):
+        if isinstance(layer, str):
+            layer = self[layer]
         self.pop(layer.name, None)
+        self.events.removed.emit(layer)
+
+
+class _FakeEvent:
+    def __init__(self) -> None:
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+
+    def disconnect(self, callback):
+        self.callbacks.remove(callback)
+
+    def emit(self, value=None):
+        for callback in list(self.callbacks):
+            try:
+                callback(SimpleNamespace(value=value))
+            except TypeError:
+                callback()
 
 
 class _FakeViewer:
     def __init__(self) -> None:
         self.layers = _LayerCollection()
         self.calls = []
+        self.current_step_event = _FakeEvent()
+        self.dims = SimpleNamespace(
+            current_step=(0,),
+            events=SimpleNamespace(current_step=self.current_step_event),
+        )
 
     def add_points(self, data, *, name, **kwargs):
         layer = SimpleNamespace(data=np.asarray(data), name=name, **kwargs)
@@ -35,7 +65,13 @@ class _FakeViewer:
         return layer
 
     def add_shapes(self, data, *, name, shape_type, **kwargs):
-        layer = SimpleNamespace(data=list(data), name=name, shape_type=shape_type, **kwargs)
+        layer = SimpleNamespace(
+            data=list(data),
+            name=name,
+            shape_type=shape_type,
+            refresh=lambda: None,
+            **kwargs,
+        )
         self.layers[name] = layer
         self.calls.append(("shapes", name, list(data), {"shape_type": shape_type, **kwargs}))
         return layer
@@ -101,6 +137,35 @@ def _make_artifact_with_label_paths(tmp_path) -> dict[str, object]:
 
     cell_path = tmp_path / "cell_labels.tif"
     nucleus_path = tmp_path / "nucleus_labels.tif"
+    tifffile.imwrite(cell_path, cell_labels)
+    tifffile.imwrite(nucleus_path, nucleus_labels)
+    artifact["cell_tracked_labels_path"] = str(cell_path)
+    artifact["nucleus_tracked_labels_path"] = str(nucleus_path)
+    return artifact
+
+
+def _make_track_artifact_with_label_paths(tmp_path) -> dict[str, object]:
+    artifact = _make_artifact()
+    artifact["cells"] = {
+        "frame": np.asarray([0, 1, 2, 0, 1, 2], dtype=int),
+        "cell_id": np.asarray([11, 11, 11, 12, 12, 12], dtype=int),
+        "area": np.asarray([4, 4, 4, 4, 4, 4], dtype=float),
+        "centroid_y": np.asarray([1, 2, 3, 4, 5, 6], dtype=float),
+        "centroid_x": np.asarray([1, 2, 3, 4, 5, 6], dtype=float),
+        "class_label": np.asarray(["A", "A", "A", "B", "B", "B"], dtype=object),
+    }
+    cell_labels = np.zeros((3, 8, 8), dtype=np.uint16)
+    nucleus_labels = np.zeros((3, 8, 8), dtype=np.uint16)
+    for frame, offset in enumerate([1, 2, 3]):
+        cell_labels[frame, offset:offset + 2, offset:offset + 2] = 11
+        nucleus_labels[frame, offset, offset] = 11
+        cell_labels[frame, offset + 3:offset + 5, offset + 3:offset + 5] = 12
+        nucleus_labels[frame, offset + 3, offset + 3] = 12
+
+    import tifffile
+
+    cell_path = tmp_path / "track_cell_labels.tif"
+    nucleus_path = tmp_path / "track_nucleus_labels.tif"
     tifffile.imwrite(cell_path, cell_labels)
     tifffile.imwrite(nucleus_path, nucleus_labels)
     artifact["cell_tracked_labels_path"] = str(cell_path)
@@ -229,6 +294,64 @@ def test_add_artifact_layers_can_color_cells_by_class_label(monkeypatch, tmp_pat
     np.testing.assert_allclose(nucleus_color_map[12], color_map[12])
 
 
+def test_build_nucleus_track_shapes_follows_centroids_and_hides_future(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    nucleus_labels = mod._read_label_image(Path(artifact["nucleus_tracked_labels_path"]))
+
+    lines, colors, features = mod.build_nucleus_track_shapes(
+        artifact,
+        nucleus_labels,
+        current_frame=1,
+    )
+
+    assert len(lines) == 2
+    np.testing.assert_allclose(lines[0], [[1.0, 1.0, 1.0], [1.0, 2.0, 2.0]])
+    np.testing.assert_allclose(lines[1], [[1.0, 4.0, 4.0], [1.0, 5.0, 5.0]])
+    assert colors.shape == (2, 4)
+    assert np.all(colors[:, :3] > 0.0)
+    np.testing.assert_allclose(colors[:, 3], [1.0, 1.0])
+    np.testing.assert_array_equal(features["cell_id"], [11, 12])
+    np.testing.assert_array_equal(features["start_frame"], [0, 0])
+    np.testing.assert_array_equal(features["end_frame"], [1, 1])
+
+
+def test_build_nucleus_track_shapes_fades_more_distant_past_segments(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    nucleus_labels = mod._read_label_image(Path(artifact["nucleus_tracked_labels_path"]))
+
+    _lines, colors, features = mod.build_nucleus_track_shapes(
+        artifact,
+        nucleus_labels,
+        current_frame=2,
+    )
+
+    assert colors.shape == (4, 4)
+    for line in _lines:
+        np.testing.assert_allclose(line[:, 0], [2.0, 2.0])
+    older = colors[features["end_frame"] == 1]
+    current = colors[features["end_frame"] == 2]
+    assert np.all(older[:, 3] < current[:, 3])
+    assert np.all(older[:, 3] >= 0.12)
+
+
+def test_build_nucleus_track_shapes_uses_cell_class_colors_when_requested(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    artifact["cells"]["class_label"] = np.asarray(["same"] * 6, dtype=object)
+    nucleus_labels = mod._read_label_image(Path(artifact["nucleus_tracked_labels_path"]))
+
+    _lines, colors, _features = mod.build_nucleus_track_shapes(
+        artifact,
+        nucleus_labels,
+        current_frame=1,
+        color_cells_by_label=True,
+    )
+
+    np.testing.assert_allclose(colors[0], colors[1])
+
+
 def test_build_edge_shapes_filters_edges_with_fewer_than_two_coords(monkeypatch):
     mod = _load_module(monkeypatch)
     artifact = _make_artifact()
@@ -291,35 +414,277 @@ def test_add_artifact_layers_uses_fake_viewer_and_styles_t1_edges(monkeypatch, t
     artifact = _make_artifact_with_label_paths(tmp_path)
     _add_t1_edge_pair(artifact)
     viewer = _FakeViewer()
+    viewer.dims.current_step = (4, 0, 0)
 
     layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
 
     assert [layer.name for layer in layers] == [
         "[Artifact] Cell labels",
         "[Artifact] Nucleus labels",
+        "[Artifact] Nucleus tracks",
         "[Artifact] Edges",
         "[Artifact] T1 edges",
     ]
-    assert [call[0] for call in viewer.calls] == ["labels", "labels", "shapes", "shapes"]
+    assert [call[0] for call in viewer.calls] == ["labels", "labels", "shapes", "shapes", "shapes"]
     cell_call = viewer.calls[0]
     nucleus_call = viewer.calls[1]
     assert cell_call[2].shape == (2, 4, 4)
     assert nucleus_call[2].shape == (2, 4, 4)
-    t1_call = viewer.calls[3]
+    t1_call = viewer.calls[4]
     assert t1_call[3]["shape_type"] == "path"
+    assert t1_call[3]["ndim"] == 3
     assert t1_call[3]["edge_width"] == 1
     assert t1_call[3]["face_color"] == "transparent"
     np.testing.assert_allclose(
         np.asarray(t1_call[3]["edge_color"]),
-        [[0.0, 1.0, 0.9, 1.0], [0.0, 1.0, 0.9, 1.0]],
+        [[0.0, 1.0, 0.9, 1.0]],
     )
-    np.testing.assert_array_equal(t1_call[3]["features"]["transition_side"], ["before", "after"])
-    edge_call = viewer.calls[2]
+    np.testing.assert_array_equal(t1_call[3]["features"]["transition_side"], ["before"])
+    edge_call = viewer.calls[3]
     assert edge_call[3]["shape_type"] == "path"
+    assert edge_call[3]["ndim"] == 3
     assert edge_call[3]["edge_width"] == 1
     assert edge_call[3]["face_color"] == "transparent"
-    np.testing.assert_allclose(np.asarray(edge_call[3]["edge_color"])[1], [0.6, 0.6, 0.6, 1.0])
+    np.testing.assert_allclose(np.asarray(edge_call[3]["edge_color"])[0], [0.12156863, 0.46666667, 0.70588235, 1.0])
     assert "[Artifact] Cell labels" in viewer.layers
     assert "[Artifact] Nucleus labels" in viewer.layers
     assert "[Artifact] Edges" in viewer.layers
     assert "[Artifact] T1 edges" in viewer.layers
+
+
+def test_add_artifact_layers_adds_dynamic_nucleus_track_layer(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (2, 0, 0)
+
+    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+
+    assert [layer.name for layer in layers] == [
+        "[Artifact] Cell labels",
+        "[Artifact] Nucleus labels",
+        "[Artifact] Nucleus tracks",
+        "[Artifact] Edges",
+        "[Artifact] T1 edges",
+    ]
+    track_call = viewer.calls[2]
+    assert track_call[0] == "shapes"
+    assert track_call[1] == "[Artifact] Nucleus tracks"
+    assert track_call[3]["shape_type"] == "path"
+    assert track_call[3]["ndim"] == 3
+    assert track_call[3]["edge_width"] == 2
+    assert track_call[3]["face_color"] == "transparent"
+    assert len(track_call[2]) == 4
+
+
+def test_add_artifact_layers_adds_dynamic_edge_layer(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (0, 0, 0)
+
+    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    edge_layer = layers[3]
+
+    assert len(edge_layer.data) == 1
+    np.testing.assert_array_equal(edge_layer.features["edge_id"], [101])
+
+    viewer.dims.current_step = (1, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert len(edge_layer.data) == 1
+    np.testing.assert_array_equal(edge_layer.features["edge_id"], [102])
+    np.testing.assert_allclose(edge_layer.edge_color, [[0.6, 0.6, 0.6, 1.0]])
+
+
+def test_edge_layer_reuses_precomputed_shapes_when_current_frame_changes(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (0, 0, 0)
+    calls = 0
+    original = mod.build_edge_shapes
+
+    def _counting_edge_shapes(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "build_edge_shapes", _counting_edge_shapes)
+
+    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    viewer.dims.current_step = (1, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert calls == 1
+
+
+def test_add_artifact_layers_adds_dynamic_t1_edge_layer(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact_with_label_paths(tmp_path)
+    _add_t1_edge_pair(artifact)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (4, 0, 0)
+
+    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    t1_layer = layers[4]
+
+    assert len(t1_layer.data) == 1
+    np.testing.assert_array_equal(t1_layer.features["transition_side"], ["before"])
+
+    viewer.dims.current_step = (5, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert len(t1_layer.data) == 1
+    np.testing.assert_array_equal(t1_layer.features["transition_side"], ["after"])
+    np.testing.assert_allclose(t1_layer.edge_color, [[0.0, 1.0, 0.9, 1.0]])
+
+
+def test_t1_edge_layer_reuses_precomputed_shapes_when_current_frame_changes(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact_with_label_paths(tmp_path)
+    _add_t1_edge_pair(artifact)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (4, 0, 0)
+    calls = 0
+    original = mod.build_t1_edge_shapes
+
+    def _counting_t1_shapes(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "build_t1_edge_shapes", _counting_t1_shapes)
+
+    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    viewer.dims.current_step = (5, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert calls == 1
+
+
+def test_add_artifact_layers_omits_empty_shape_edge_colors(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact_with_label_paths(tmp_path)
+    artifact["edges"]["coord_count"] = np.asarray([1, 1], dtype=int)
+    viewer = _FakeViewer()
+
+    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+
+    for call in viewer.calls[2:]:
+        assert call[0] == "shapes"
+        assert call[3]["shape_type"] == "path"
+        assert "edge_color" not in call[3]
+
+
+def test_track_layer_reuses_centroids_when_current_frame_changes(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 0, 0)
+    calls = 0
+    original = mod._nucleus_centroids_by_track
+
+    def _counting_centroids(labels):
+        nonlocal calls
+        calls += 1
+        return original(labels)
+
+    monkeypatch.setattr(mod, "_nucleus_centroids_by_track", _counting_centroids)
+
+    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    viewer.dims.current_step = (2, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert calls == 1
+
+
+def test_track_layer_reuses_precomputed_shapes_when_current_frame_changes(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 0, 0)
+    calls = 0
+    original = mod._build_nucleus_track_shapes_from_centroids
+
+    def _counting_track_shapes(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "_build_nucleus_track_shapes_from_centroids", _counting_track_shapes)
+
+    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    calls_after_load = calls
+    viewer.dims.current_step = (2, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert calls == calls_after_load
+
+
+def test_track_layer_disconnects_when_removed(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 0, 0)
+    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    track_layer = layers[2]
+
+    viewer.layers.remove(track_layer)
+    viewer.dims.current_step = (2, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert len(viewer.current_step_event.callbacks) == 2
+    assert len(track_layer.data) == 2
+
+
+def test_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (0, 0, 0)
+    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    edge_layer = layers[3]
+
+    viewer.layers.remove(edge_layer)
+    viewer.dims.current_step = (1, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert len(viewer.current_step_event.callbacks) == 2
+    np.testing.assert_array_equal(edge_layer.features["edge_id"], [101])
+
+
+def test_t1_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_artifact_with_label_paths(tmp_path)
+    _add_t1_edge_pair(artifact)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (4, 0, 0)
+    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    t1_layer = layers[4]
+
+    viewer.layers.remove(t1_layer)
+    viewer.dims.current_step = (5, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert len(viewer.current_step_event.callbacks) == 2
+    np.testing.assert_array_equal(t1_layer.features["transition_side"], ["before"])
+
+
+def test_nucleus_track_layer_updates_when_current_frame_changes(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 0, 0)
+
+    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    track_layer = layers[2]
+
+    assert len(track_layer.data) == 2
+
+    viewer.dims.current_step = (2, 0, 0)
+    viewer.current_step_event.emit()
+
+    assert len(track_layer.data) == 4
+    np.testing.assert_array_equal(track_layer.features["end_frame"], [1, 2, 1, 2])
+    assert np.all(track_layer.edge_color[track_layer.features["end_frame"] == 1, 3] < 1.0)

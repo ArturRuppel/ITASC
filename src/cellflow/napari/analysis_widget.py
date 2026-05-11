@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
+
+import numpy as np
+import tifffile
 
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import QObject, Signal
@@ -18,9 +22,12 @@ except ImportError:  # pragma: no cover - tests monkeypatch this when absent
 
 
 try:  # pragma: no cover - local branch compatibility
-    from cellflow.napari.artifact_visualization import add_artifact_layers
+    from cellflow.napari.artifact_visualization import add_artifact_layers, _nucleus_centroids_by_track
 except ImportError:  # pragma: no cover - tests monkeypatch this when absent
     def add_artifact_layers(*_args, **_kwargs):  # type: ignore[no-redef]
+        raise ImportError("cellflow.napari.artifact_visualization is unavailable")
+
+    def _nucleus_centroids_by_track(*_args, **_kwargs):  # type: ignore[no-redef]
         raise ImportError("cellflow.napari.artifact_visualization is unavailable")
 
 
@@ -42,6 +49,11 @@ class AnalysisWidget(QWidget):
         self._build_error_pending = False
         self._progress_emitter = _ProgressEmitter(self)
         self._progress_emitter.progress.connect(self._on_build_progress)
+        self._cached_artifact_path: Path | None = None
+        self._cached_artifact: Any = None
+        self._cached_cell_labels: np.ndarray | None = None
+        self._cached_nucleus_labels: np.ndarray | None = None
+        self._cached_track_centroids: dict | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -104,10 +116,6 @@ class AnalysisWidget(QWidget):
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
         self.show_artifact_btn.clicked.connect(self._on_show_artifact)
         self.clear_artifact_btn.clicked.connect(self._on_clear_artifact_layers)
-        self.color_cells_by_label_cb.stateChanged.connect(self._on_visualizer_options_changed)
-        self.color_edges_by_id_cb.stateChanged.connect(self._on_visualizer_options_changed)
-        self.color_edges_by_label_cb.stateChanged.connect(self._on_visualizer_options_changed)
-        self.hide_border_edges_cb.stateChanged.connect(self._on_visualizer_options_changed)
         self.refresh(None)
 
     @property
@@ -123,7 +131,14 @@ class AnalysisWidget(QWidget):
         return self._pos_dir / "4_analysis" / "position_analysis.h5" if self._pos_dir else None
 
     def refresh(self, pos_dir: Path | str | None) -> None:
-        self._pos_dir = Path(pos_dir) if pos_dir is not None else None
+        new_pos_dir = Path(pos_dir) if pos_dir is not None else None
+        if new_pos_dir != self._pos_dir:
+            self._cached_artifact_path = None
+            self._cached_artifact = None
+            self._cached_cell_labels = None
+            self._cached_nucleus_labels = None
+            self._cached_track_centroids = None
+        self._pos_dir = new_pos_dir
         self._update_status()
 
     def _output_path_text(self) -> str:
@@ -270,24 +285,53 @@ class AnalysisWidget(QWidget):
             self._update_action_states()
             return
 
-        artifact = read_position_artifact(artifact_path)
+        # Cache artifact to avoid re-reading HDF5 on every Show click
+        if self._cached_artifact_path != artifact_path:
+            self._cached_artifact = read_position_artifact(artifact_path)
+            self._cached_artifact_path = artifact_path
+            self._cached_cell_labels = None
+            self._cached_nucleus_labels = None
+            self._cached_track_centroids = None
+
+        # Cache label TIFFs — these are large files whose repeated reading blocks
+        # the Qt main thread and causes freezes + ghost layer artifacts
+        if self._cached_cell_labels is None:
+            if self.cell_labels_path is not None and self.cell_labels_path.exists():
+                try:
+                    self._cached_cell_labels = np.asarray(tifffile.imread(self.cell_labels_path))
+                except Exception:
+                    pass
+        if self._cached_nucleus_labels is None:
+            if self.nucleus_labels_path is not None and self.nucleus_labels_path.exists():
+                try:
+                    self._cached_nucleus_labels = np.asarray(tifffile.imread(self.nucleus_labels_path))
+                except Exception:
+                    pass
+
+        # Cache nucleus track centroids — O(T*W*H*N) pixel iteration, very expensive
+        if self._cached_track_centroids is None and self._cached_nucleus_labels is not None:
+            try:
+                self._cached_track_centroids = _nucleus_centroids_by_track(self._cached_nucleus_labels)
+            except Exception:
+                pass
+
         self._clear_artifact_layers(set_status=False)
-        add_artifact_layers(
-            self.viewer,
-            artifact,
-            prefix=self._artifact_layer_prefix,
-            color_cells_by_label=self.color_cells_by_label_cb.isChecked(),
-            color_edges_by_id=self.color_edges_by_id_cb.isChecked(),
-            color_edges_by_label=self.color_edges_by_label_cb.isChecked(),
-            hide_border_edges=self.hide_border_edges_cb.isChecked(),
-        )
+        show_kwargs: dict[str, Any] = {
+            "prefix": self._artifact_layer_prefix,
+            "color_cells_by_label": self.color_cells_by_label_cb.isChecked(),
+            "color_edges_by_id": self.color_edges_by_id_cb.isChecked(),
+            "color_edges_by_label": self.color_edges_by_label_cb.isChecked(),
+            "hide_border_edges": self.hide_border_edges_cb.isChecked(),
+        }
+        if self._cached_cell_labels is not None:
+            show_kwargs["cell_labels"] = self._cached_cell_labels
+        if self._cached_nucleus_labels is not None:
+            show_kwargs["nucleus_labels"] = self._cached_nucleus_labels
+        if self._cached_track_centroids is not None:
+            show_kwargs["nucleus_track_centroids"] = self._cached_track_centroids
+        add_artifact_layers(self.viewer, self._cached_artifact, **show_kwargs)
         self._set_artifact_status(f"Status: loaded {artifact_path.name}")
         self._update_action_states()
-
-    def _on_visualizer_options_changed(self, _state: int) -> None:
-        if self.viewer is None or not self._artifact_layer_names():
-            return
-        self._on_show_artifact()
 
     def _artifact_layer_names(self) -> list[str]:
         if self.viewer is None:
@@ -321,6 +365,18 @@ class AnalysisWidget(QWidget):
                 layer = layers[name]
             except Exception:
                 layer = name
+            cleanup = getattr(layer, "_cellflow_frame_shape_cleanup", None)
+            if callable(cleanup):
+                try:
+                    cleanup()
+                except Exception:
+                    pass
+            # Hide before removal so napari clears the canvas visual first,
+            # preventing a ghost frame from persisting in the viewport
+            try:
+                layer.visible = False
+            except Exception:
+                pass
             try:
                 layers.remove(layer)
             except Exception:

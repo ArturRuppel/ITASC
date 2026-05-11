@@ -55,6 +55,7 @@ from cellflow.database.validation import (
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.napari.ui_style import (
+    action_button,
     add_block_button_row,
     add_block_checkbox_row,
     add_block_pair_row,
@@ -1049,6 +1050,14 @@ class NucleusWorkflowWidget(QWidget):
         self.validation_counter_lbl.setWordWrap(True)
         _corr_inner_lay.addWidget(self.validation_counter_lbl)
 
+        self.remove_unvalidated_btn = QPushButton("Remove Unvalidated Labels")
+        self.remove_unvalidated_btn.setToolTip(
+            "Remove nucleus label pixels that are not marked validated for their frame."
+        )
+        action_button(self.remove_unvalidated_btn, expand=True)
+        danger_button(self.remove_unvalidated_btn)
+        _corr_inner_lay.addWidget(self.remove_unvalidated_btn)
+
         self.correction_status_lbl = QLabel("")
         self.correction_status_lbl.setWordWrap(True)
         self.correction_status_lbl.setVisible(False)
@@ -1108,6 +1117,7 @@ class NucleusWorkflowWidget(QWidget):
         self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
         self.extend_back_btn.clicked.connect(self._on_extend_backward)
         self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
+        self.remove_unvalidated_btn.clicked.connect(self._on_remove_unvalidated_labels)
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)
         self.viewer.bind_key("V", self._kb_toggle_cell_validation, overwrite=True)
         self._install_correction_shortcuts()
@@ -3537,6 +3547,61 @@ class NucleusWorkflowWidget(QWidget):
             self._set_correction_status(f"Cell {sel} validated across {len(frames)} frame(s).")
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
+
+    def _on_remove_unvalidated_labels(self) -> None:
+        if self._pos_dir is None:
+            self._set_correction_status("No project open.")
+            return
+        if _TRACKED_LAYER not in self.viewer.layers:
+            self._set_correction_status("No tracked layer loaded.")
+            return
+
+        layer = self.viewer.layers[_TRACKED_LAYER]
+        data = np.asarray(layer.data)
+        if data.ndim < 2:
+            self._set_correction_status("Tracked layer has no image data.")
+            return
+
+        validated_tracks = read_validated_tracks(self._pos_dir)
+        frame_count = int(data.shape[0]) if data.ndim >= 3 else 1
+        changed_pixels = 0
+        changed_frames = 0
+
+        for t in range(frame_count):
+            frame = self._frame_view_2d(data, t) if data.ndim >= 3 else data
+            if frame is None:
+                self._set_correction_status("Tracked layer must be a time-first 2D/3D stack.")
+                return
+            validated_ids = {
+                cell_id
+                for cell_id, frames in validated_tracks.items()
+                if t in frames
+            }
+            remove_mask = frame != 0
+            if validated_ids:
+                remove_mask &= ~np.isin(frame, list(validated_ids))
+            n_remove = int(np.count_nonzero(remove_mask))
+            if not n_remove:
+                continue
+            frame[remove_mask] = 0
+            changed_pixels += n_remove
+            changed_frames += 1
+
+        if not changed_pixels:
+            self._set_correction_status("No unvalidated labels found.")
+            return
+
+        layer.refresh()
+        if self.correction_widget._selected_label:
+            current_t = self._current_t()
+            if self.correction_widget._selected_label not in self._current_cell_ids(current_t):
+                self.correction_widget.select_label(current_t, 0)
+        self._refresh_validated_overlay()
+        self._refresh_validation_counter()
+        self._set_correction_status(
+            f"Removed unvalidated labels in {changed_frames} frame(s), "
+            f"{changed_pixels} px changed. Unsaved."
+        )
 
     def _on_extend_backward(self) -> None:
         self._on_extend(direction="backward")

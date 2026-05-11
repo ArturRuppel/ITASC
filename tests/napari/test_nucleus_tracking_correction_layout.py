@@ -148,6 +148,9 @@ def _install_main_widget_stubs() -> None:
 
     stub_modules = {
         "cellflow.napari.analysis_widget": {"AnalysisWidget": _StubWidget},
+        "cellflow.napari.cell_boundary_workflow_widget": {
+            "CellBoundaryWorkflowWidget": _StubWidget,
+        },
         "cellflow.napari.cell_workflow_widget": {"CellWorkflowWidget": _StubWidget},
         "cellflow.napari.cellpose_widget": {"CellposeWidget": _StubCellposeWidget},
         "cellflow.napari.correction_widget": {"CorrectionWidget": _StubWidget},
@@ -178,6 +181,7 @@ def _load_main_widget_class():
     module = importlib.import_module("cellflow.napari.main_widget")
     for module_name in (
         "cellflow.napari.analysis_widget",
+        "cellflow.napari.cell_boundary_workflow_widget",
         "cellflow.napari.cell_workflow_widget",
         "cellflow.napari.cellpose_widget",
         "cellflow.napari.correction_widget",
@@ -243,6 +247,7 @@ def test_main_widget_sections_are_collapsed_by_default():
         widget.cellpose_section,
         widget.nucleus_section,
         widget.cell_section,
+        widget.cell_boundary_section,
         widget.analysis_section,
         widget.nls_classification_section,
         widget.meta_section,
@@ -397,12 +402,35 @@ def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_s
     assert widget.data_panel.refreshed_pos_dir == pos_dir
     assert widget.hpc_cellpose_widget.refreshed_pos_dir == pos_dir
     assert widget.cell_workflow_widget.refreshed_pos_dir == pos_dir
+    assert widget.cell_boundary_workflow_widget.refreshed_pos_dir == pos_dir
     assert widget.analysis_widget.refreshed_pos_dir == pos_dir
     assert widget.nls_classification_widget.refreshed_pos_dir == pos_dir
 
     widget.deleteLater()
     viewer.close()
     _app.processEvents()  # flush deferred deletion before next test
+
+
+def test_main_widget_includes_track_conditioned_cell_boundary_section():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.cell_boundary_section.title == "4b. Cell Segmentation"
+    assert widget.scroll_layout.indexOf(widget.cell_section) < widget.scroll_layout.indexOf(
+        widget.cell_boundary_section
+    )
+    assert widget.scroll_layout.indexOf(widget.cell_boundary_section) < widget.scroll_layout.indexOf(
+        widget.analysis_section
+    )
+
+    state = widget.get_state()
+    assert state["cell_boundary"] == {"widget": "_StubWidget"}
+    widget.set_state({"cell_boundary": {"mode": "track-conditioned"}})
+    assert widget.cell_boundary_workflow_widget.state_received == {"mode": "track-conditioned"}
+
+    widget.deleteLater()
+    viewer.close()
 
 
 def test_main_widget_persists_hpc_cellpose_state():
@@ -1537,6 +1565,35 @@ def test_validated_overlay_uses_green_fill_at_default_opacity_below_spotlight():
     viewer.close()
 
 
+def test_nucleus_correction_button_removes_unvalidated_label_instances(tmp_path):
+    from cellflow.database.validation import validate_track
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    pos_dir = tmp_path / "pos000"
+    labels = np.zeros((2, 5, 5), dtype=np.uint32)
+    labels[0, 1:3, 1:3] = 7
+    labels[0, 3:5, 3:5] = 9
+    labels[1, 1:3, 1:3] = 7
+    labels[1, 3:5, 3:5] = 11
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    validate_track(pos_dir, 7, [0])
+
+    widget.refresh(pos_dir)
+    widget.remove_unvalidated_btn.click()
+
+    edited = np.asarray(viewer.layers["Tracked: Nucleus"].data)
+    assert np.all(edited[0, 1:3, 1:3] == 7)
+    assert not np.any(edited[0, 3:5, 3:5] == 9)
+    assert not np.any(edited[1] == 7)
+    assert not np.any(edited[1] == 11)
+    assert "Removed unvalidated labels" in widget.correction_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_correction_widget_top_buttons_expand_horizontally():
     _app, viewer = _make_viewer()
     widget_class = _load_correction_widget_class()
@@ -1657,6 +1714,44 @@ def test_correction_widget_notifies_when_selected_label_changes():
     widget._update_highlight(0, 0)
 
     assert calls == [(0, 7), (0, 9), (0, 0)]
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_widget_preserves_selection_across_frame_change_for_relabel():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+    labels = np.zeros((2, 8, 8), dtype=np.uint32)
+    labels[0, 1:4, 1:4] = 7
+    labels[1, 4:7, 4:7] = 9
+    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
+
+    widget.activate_layer(layer)
+    widget.select_label(0, 7)
+    viewer.dims.current_step = (1, 0, 0)
+    widget._on_dims_change()
+
+    assert widget._selected_label == 7
+    assert widget._selected_t == 0
+
+    event = types.SimpleNamespace(
+        type="mouse_press",
+        button=2,
+        modifiers=(),
+        position=(1, 5, 5),
+    )
+    callback_result = layer.mouse_drag_callbacks[-1](layer, event)
+    if callback_result is not None:
+        try:
+            next(callback_result)
+        except StopIteration:
+            pass
+
+    edited = np.asarray(layer.data)
+    assert np.all(edited[1, 4:7, 4:7] == 7)
+    assert "Relabelled" in widget._status.text()
 
     widget.deleteLater()
     viewer.close()
