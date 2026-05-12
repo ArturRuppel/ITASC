@@ -572,7 +572,7 @@ class CellWorkflowWidget(QWidget):
     # Run / Cancel
     # ------------------------------------------------------------------
     def _read_dp_tcyx(self, prob_path: Path, dp_path: Path) -> np.ndarray:
-        from cellflow.database.hypotheses import normalize_seeded_watershed_dp_stack
+        from cellflow.segmentation._array_utils import normalize_seeded_watershed_dp_stack
 
         prob = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
         if prob.ndim == 3:

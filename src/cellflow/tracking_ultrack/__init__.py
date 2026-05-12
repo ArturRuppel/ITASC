@@ -1,7 +1,7 @@
 """Ultrack-based ILP tracker for CellFlow v2 hypotheses."""
 from __future__ import annotations
 
-__all__ = ["TrackingConfig", "ingest_hypotheses_to_db"]
+__all__ = ["TrackingConfig"]
 
 
 def __getattr__(name: str):
@@ -9,8 +9,4 @@ def __getattr__(name: str):
         from cellflow.tracking_ultrack.config import TrackingConfig
 
         return TrackingConfig
-    if name == "ingest_hypotheses_to_db":
-        from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db
-
-        return ingest_hypotheses_to_db
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

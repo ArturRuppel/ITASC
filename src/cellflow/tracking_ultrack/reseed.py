@@ -26,7 +26,6 @@ import numpy as np
 from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.db_build import build_ultrack_database
 from cellflow.tracking_ultrack.export import export_tracked_labels
-from cellflow.tracking_ultrack.ingest import ingest_hypotheses_to_db
 from cellflow.tracking_ultrack.linking import run_linking
 from cellflow.tracking_ultrack.seed_prior import boost_validated_edges, write_seed_prior_node_probs
 from cellflow.tracking_ultrack.solve import run_solve
@@ -502,76 +501,6 @@ def merge_validated_into_export(
                 )
 
     return exported_labels, id_map
-
-
-def resolve_with_validation(
-    hypotheses_path: str | Path,
-    validated_tracks: dict[int, set[int]],
-    tracked_labels: np.ndarray,
-    cfg: TrackingConfig,
-    progress_cb: Callable[[str], None] | None = None,
-    *,
-    intensity_image_path: str | Path,
-) -> tuple[np.ndarray, dict[int, int]]:
-    """Re-ingest hypotheses, inject validated nodes, solve with annotations."""
-    def _notify(msg: str) -> None:
-        if progress_cb is not None:
-            progress_cb(msg)
-
-    hypotheses_path = Path(hypotheses_path)
-    if not validated_tracks:
-        return np.asarray(tracked_labels, dtype=np.uint32).copy(), {}
-
-    with tempfile.TemporaryDirectory(prefix="cellflow_resolve_workdir_") as tmp_workdir:
-        working_dir = Path(tmp_workdir)
-
-        _notify("Ingesting hypotheses…")
-        ingest_hypotheses_to_db(hypotheses_path, working_dir, cfg, overwrite=True)
-
-        _notify("Injecting validated masks…")
-        injection = inject_validated_nodes(working_dir, validated_tracks, tracked_labels, cfg)
-        if injection.skipped_missing:
-            _notify(
-                f"Skipped {injection.skipped_missing} validated cell-frame(s) "
-                "missing from tracked labels."
-            )
-        if injection.inserted == 0:
-            raise ValueError("No validated masks could be injected; resolve aborted before solve.")
-
-        _notify("Scoring node probabilities…")
-        write_seed_prior_node_probs(working_dir, intensity_image_path, cfg)
-
-        _notify("Linking hypotheses…")
-        for _step, _total, label in run_linking(working_dir, cfg):
-            _notify(label)
-
-        _notify("Solving ILP with annotations…")
-        for _step, _total, label in run_solve(
-            working_dir,
-            cfg,
-            overwrite=True,
-            use_annotations=True,
-        ):
-            _notify(label)
-
-        _notify("Exporting tracks…")
-        with tempfile.TemporaryDirectory(prefix="cellflow_resolve_export_") as tmpdir:
-            out_path = Path(tmpdir) / "tracked_labels.tif"
-            exported = export_tracked_labels(
-                working_dir,
-                cfg,
-                out_path,
-                validated_tracks=validated_tracks,
-                tracked_labels=tracked_labels,
-            )
-
-    exported = np.asarray(exported, dtype=np.uint32)
-    exported, id_map = merge_validated_into_export(
-        exported,
-        validated_tracks,
-        tracked_labels,
-    )
-    return exported, id_map
 
 
 def resolve_with_canonical_segment(
