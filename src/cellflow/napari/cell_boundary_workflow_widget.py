@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from enum import Enum
 from pathlib import Path
 import os
 
@@ -24,6 +25,7 @@ from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
+    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -42,7 +44,12 @@ from cellflow.napari.ui_style import (
     compact_spinbox,
     status_label,
 )
-from cellflow.segmentation import apply_gamma, build_consensus_boundary_2d
+from cellflow.segmentation import (
+    apply_gamma,
+    build_consensus_boundary_2d,
+    build_consensus_boundary_flow_following,
+    FlowFollowingParams,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +58,13 @@ _CELL_CONTOUR_LAYER = "Contour Map: Cell"
 _CELL_FOREGROUND_SCORE_LAYER = "Foreground Score: Cell"
 _CELL_FOREGROUND_LAYER = "Foreground Mask: Cell"
 _CONTOUR_SWEEP_WIDTH = 60
+
+
+class ContourMethod(str, Enum):
+    """Selectable contour-map creation strategy."""
+
+    CELLPOSE = "Cellpose Native"
+    FLOW_FOLLOWING = "Flow-Following (EDT Gravity)"
 
 
 class CellBoundaryWorkflowWidget(QWidget):
@@ -138,6 +152,26 @@ class CellBoundaryWorkflowWidget(QWidget):
         ])
         contour_lay.addWidget(self.contour_input_files)
 
+        # ── Method selector ──────────────────────────────────────────────
+        method_row = QHBoxLayout()
+        method_row.addWidget(QLabel("Method:"))
+        self._contour_method_combo = QComboBox()
+        for m in ContourMethod:
+            self._contour_method_combo.addItem(m.value)
+        self._contour_method_combo.setCurrentText(ContourMethod.CELLPOSE.value)
+        self._contour_method_combo.currentTextChanged.connect(
+            self._on_contour_method_changed,
+        )
+        method_row.addWidget(self._contour_method_combo)
+        contour_lay.addLayout(method_row)
+
+        # ── Cellpose-specific parameter container ────────────────────────
+        # Wrap the EXISTING flow_threshold and niter spinboxes so they can
+        # be shown/hidden as a group.
+        self._cellpose_params_container = QWidget()
+        cp_lay = QHBoxLayout(self._cellpose_params_container)
+        cp_lay.setContentsMargins(0, 0, 0, 0)
+
         # Cellpose mask sweep params
         self.cp_min_spin = _spin_width(QDoubleSpinBox())
         self.cp_min_spin.setRange(-20.0, 20.0)
@@ -163,6 +197,7 @@ class CellBoundaryWorkflowWidget(QWidget):
         self.contour_niter_spin.setRange(0, 2000)
         self.contour_niter_spin.setValue(200)
 
+        # Build cellpose parameters container
         sweep_grid = block_grid(horizontal_spacing=12)
         add_block_pair_row(sweep_grid, 0,
             "Cellprob min:", compact_spinbox(self.cp_min_spin),
@@ -172,8 +207,65 @@ class CellBoundaryWorkflowWidget(QWidget):
             "Flow threshold:", compact_spinbox(self.contour_flow_threshold_spin))
         add_block_pair_row(sweep_grid, 2,
             "Niter:", compact_spinbox(self.contour_niter_spin))
-        contour_lay.addWidget(_param_group_label("Cellpose mask sweep"))
-        contour_lay.addLayout(sweep_grid)
+
+        cellpose_container = QWidget()
+        cellpose_lay = QVBoxLayout(cellpose_container)
+        cellpose_lay.setContentsMargins(0, 0, 0, 0)
+        cellpose_lay.setSpacing(4)
+        cellpose_lay.addWidget(_param_group_label("Cellpose mask sweep"))
+        cellpose_lay.addLayout(sweep_grid)
+
+        self._cellpose_params_container = cellpose_container
+        contour_lay.addWidget(self._cellpose_params_container)
+
+        # ── Flow-following parameter container ───────────────────────────
+        self._ff_params_container = QWidget()
+        ff_lay = QHBoxLayout(self._ff_params_container)
+        ff_lay.setContentsMargins(0, 0, 0, 0)
+
+        ff_lay.addWidget(QLabel("Flow weight:"))
+        self._ff_flow_weight_spin = QDoubleSpinBox()
+        self._ff_flow_weight_spin.setRange(0.0, 1.0)
+        self._ff_flow_weight_spin.setSingleStep(0.05)
+        self._ff_flow_weight_spin.setValue(0.5)
+        self._ff_flow_weight_spin.setToolTip(
+            "Blend between flow direction (1.0) and EDT gravity toward "
+            "nearest nucleus (0.0)."
+        )
+        ff_lay.addWidget(self._ff_flow_weight_spin)
+
+        ff_lay.addWidget(QLabel("Step scale:"))
+        self._ff_step_scale_spin = QDoubleSpinBox()
+        self._ff_step_scale_spin.setRange(0.01, 2.0)
+        self._ff_step_scale_spin.setSingleStep(0.05)
+        self._ff_step_scale_spin.setValue(0.2)
+        self._ff_step_scale_spin.setToolTip("Integration step-size multiplier.")
+        ff_lay.addWidget(self._ff_step_scale_spin)
+
+        ff_lay.addWidget(QLabel("Max iter:"))
+        self._ff_max_iter_spin = QSpinBox()
+        self._ff_max_iter_spin.setRange(10, 2000)
+        self._ff_max_iter_spin.setSingleStep(10)
+        self._ff_max_iter_spin.setValue(100)
+        self._ff_max_iter_spin.setToolTip(
+            "Maximum integration steps per pixel before giving up."
+        )
+        ff_lay.addWidget(self._ff_max_iter_spin)
+
+        ff_lay.addWidget(QLabel("Capture r:"))
+        self._ff_capture_radius_spin = QDoubleSpinBox()
+        self._ff_capture_radius_spin.setRange(0.0, 30.0)
+        self._ff_capture_radius_spin.setSingleStep(0.5)
+        self._ff_capture_radius_spin.setValue(0.0)
+        self._ff_capture_radius_spin.setToolTip(
+            "0 = progressive shell assignment (recommended).\n"
+            "> 0 = legacy fixed-radius capture at the given distance (px)."
+        )
+        ff_lay.addWidget(self._ff_capture_radius_spin)
+
+        # Starts hidden — shown only when Flow-Following is selected
+        self._ff_params_container.setVisible(False)
+        contour_lay.addWidget(self._ff_params_container)
 
         # Gamma averaging params
         self.cp_gamma_min_spin = _spin_width(QDoubleSpinBox())
@@ -562,6 +654,12 @@ class CellBoundaryWorkflowWidget(QWidget):
             "cp_gamma_max": self.cp_gamma_max_spin.value(),
             "cp_gamma_step": self.cp_gamma_step_spin.value(),
             "contour_fg_threshold": self.contour_fg_threshold_spin.value(),
+            # --- flow-following state ---
+            "contour_method": self._contour_method_combo.currentText(),
+            "ff_flow_weight": self._ff_flow_weight_spin.value(),
+            "ff_step_scale": self._ff_step_scale_spin.value(),
+            "ff_max_iter": self._ff_max_iter_spin.value(),
+            "ff_capture_radius": self._ff_capture_radius_spin.value(),
             # Initialize params
             "alpha_unary": self.alpha_unary_spin.value(),
             "lambda_s": self.lambda_s_spin.value(),
@@ -621,6 +719,18 @@ class CellBoundaryWorkflowWidget(QWidget):
                 widget.setValue(state[key])
         if "init_mode" in state:
             self.init_mode_combo.setCurrentText(str(state["init_mode"]))
+
+        # --- flow-following state ---
+        if "contour_method" in state:
+            self._contour_method_combo.setCurrentText(state["contour_method"])
+        if "ff_flow_weight" in state:
+            self._ff_flow_weight_spin.setValue(state["ff_flow_weight"])
+        if "ff_step_scale" in state:
+            self._ff_step_scale_spin.setValue(state["ff_step_scale"])
+        if "ff_max_iter" in state:
+            self._ff_max_iter_spin.setValue(state["ff_max_iter"])
+        if "ff_capture_radius" in state:
+            self._ff_capture_radius_spin.setValue(state["ff_capture_radius"])
 
     # ------------------------------------------------------------------
     # Stage enable/disable
@@ -718,11 +828,133 @@ class CellBoundaryWorkflowWidget(QWidget):
         if not running:
             self.contour_progress_bar.setValue(0)
 
-    def _on_build_contour_maps(self) -> None:
-        if self._pos_dir is None:
-            self._set_contour_status("No project open.")
-            return
+    # ------------------------------------------------------------------
+    # Contour method toggle
+    # ------------------------------------------------------------------
 
+    def _on_contour_method_changed(self, text: str) -> None:
+        """Show / hide parameter rows that belong to the selected method."""
+        is_ff = text == ContourMethod.FLOW_FOLLOWING.value
+        self._cellpose_params_container.setVisible(not is_ff)
+        self._ff_params_container.setVisible(is_ff)
+
+    # ------------------------------------------------------------------
+    # Flow-following helpers
+    # ------------------------------------------------------------------
+
+    def _load_prob_frame(self, t: int) -> np.ndarray:
+        """Load a single probability frame (Z, Y, X)."""
+        prob_path = self._prob_path()
+        if prob_path is None or not prob_path.exists():
+            raise FileNotFoundError(f"Probability file not found: {prob_path}")
+        prob_stack = tifffile.imread(str(prob_path))
+        if prob_stack.ndim == 3:
+            prob_stack = prob_stack[np.newaxis]
+        return prob_stack[t].astype(np.float32)
+
+    def _load_dp_frame(self, t: int) -> np.ndarray:
+        """Load a single DP flow frame (2, Y, X)."""
+        dp_path = self._filtered_dp_path()
+        if dp_path is None or not dp_path.exists():
+            raise FileNotFoundError(f"DP file not found: {dp_path}")
+        dp_stack = tifffile.imread(str(dp_path))
+        if dp_stack.ndim == 3:
+            dp_stack = dp_stack[np.newaxis]
+        return dp_stack[t].astype(np.float32)
+
+    def _show_error(self, title: str, message: str) -> None:
+        """Display an error dialog (simple text message for now)."""
+        self._set_contour_status(f"{title}: {message}")
+
+    def _current_ff_params(self) -> FlowFollowingParams:
+        """Read the flow-following spinboxes and return a frozen dataclass."""
+        return FlowFollowingParams(
+            median_kernel_time=1,
+            median_kernel_space=1,
+            gaussian_sigma_time=0.0,
+            gaussian_sigma_space=0.0,
+            flow_weight=self._ff_flow_weight_spin.value(),
+            flow_step_scale=self._ff_step_scale_spin.value(),
+            max_iterations=self._ff_max_iter_spin.value(),
+            capture_radius=self._ff_capture_radius_spin.value(),
+        )
+
+    def _build_consensus_boundary_ff_averaged(
+        self,
+        prob_3d: np.ndarray,
+        dp_2d: np.ndarray,
+        labels_yx: np.ndarray,
+        thresholds: list[float],
+        gammas: list[float],
+        *,
+        ff_params: FlowFollowingParams,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Gamma-averaged consensus boundary via flow-following.
+
+        Mirrors ``_build_consensus_boundary_averaged`` but dispatches to
+        :func:`build_consensus_boundary_flow_following` instead of
+        Cellpose's ``compute_masks``.
+        """
+        boundary_accum = None
+        foreground_accum = None
+        n = 0
+        for gamma in gammas:
+            prob_2d = apply_gamma(prob_3d, gamma).mean(axis=0)
+            b, fg = build_consensus_boundary_flow_following(
+                prob_2d,
+                dp_2d,
+                labels_yx,
+                thresholds,
+                params=ff_params,
+                reduction="mean",
+            )
+            if boundary_accum is None:
+                boundary_accum = b.copy()
+                foreground_accum = fg.copy()
+            else:
+                boundary_accum += b
+                foreground_accum += fg
+            n += 1
+        if n > 0:
+            boundary_accum /= n
+            foreground_accum /= n
+        return boundary_accum, foreground_accum
+
+    def _on_build_contour_maps(self) -> None:
+        """Launch the contour-map worker, dispatching by selected method."""
+        # ── shared parameter gathering ───────────────────
+        thresholds = self._cellprob_thresholds()
+        gammas = self._cp_gammas()
+        fg_threshold = self.contour_fg_threshold_spin.value()
+
+        method = self._contour_method_combo.currentText()
+
+        # ── method-specific gathering ────────────────────────────────
+        if method == ContourMethod.FLOW_FOLLOWING.value:
+            nuc_path = self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
+            if nuc_path is None or not nuc_path.exists():
+                self._show_error(
+                    "Nucleus tracked labels not found",
+                    f"Flow-following requires nucleus tracked labels at:\n"
+                    f"{nuc_path}\n\n"
+                    f"Run the Nucleus Segmentation & Tracking step first.",
+                )
+                return
+            nuc_labels = tifffile.imread(str(nuc_path))  # (T, Y, X)
+            ff_params = self._current_ff_params()
+            extra_kw = dict(
+                method="flow_following",
+                nuc_labels=nuc_labels,
+                ff_params=ff_params,
+            )
+        else:
+            extra_kw = dict(
+                method="cellpose",
+                flow_threshold=self.contour_flow_threshold_spin.value(),
+                niter=int(self.contour_niter_spin.value()),
+            )
+
+        # ── launch worker (napari thread worker) ─────────────────────
         prob_path = self._prob_path()
         filtered_dp_path = self._filtered_dp_path()
         contour_path = self._contour_maps_path()
@@ -740,12 +972,6 @@ class CellBoundaryWorkflowWidget(QWidget):
             return
 
         pos_dir = self._pos_dir
-        thresholds = self._cellprob_thresholds()
-        gammas = self._cp_gammas()
-        flow_threshold = self.contour_flow_threshold_spin.value()
-        niter = self.contour_niter_spin.value()
-        foreground_threshold = self.contour_fg_threshold_spin.value()
-        build_fn = self._build_consensus_boundary_averaged
 
         def _on_done(result):
             self._contour_worker = None
@@ -777,34 +1003,64 @@ class CellBoundaryWorkflowWidget(QWidget):
             "errored": lambda exc: self._on_contour_error(exc),
         })
         def _worker():
-            prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
-            dp_stack = np.asarray(tifffile.imread(str(filtered_dp_path)), dtype=np.float32)
+            prob_path = self._prob_path()
+            filtered_dp_path = self._filtered_dp_path()
+            contour_path = self._contour_maps_path()
+            score_path = self._foreground_scores_path()
+            foreground_path = self._foreground_masks_path()
+
+            prob_stack = tifffile.imread(str(prob_path))  # (T, Z, Y, X)
+            dp_stack = tifffile.imread(str(filtered_dp_path))  # (T, 2, Y, X)
             if prob_stack.ndim == 3:
                 prob_stack = prob_stack[np.newaxis]
             if dp_stack.ndim == 3:
                 dp_stack = dp_stack[np.newaxis]
+            T = prob_stack.shape[0]
 
-            n_t = min(prob_stack.shape[0], dp_stack.shape[0])
-            c_frames, s_frames, f_frames = [], [], []
-            for t in range(n_t):
-                yield (t + 1, n_t, f"Building contour maps: frame {t + 1}/{n_t}...")
-                contour, fg_score = build_fn(
-                    prob_stack[t], dp_stack[t], thresholds, gammas,
-                    flow_threshold=flow_threshold, niter=niter,
-                )
-                c_frames.append(contour.astype(np.float32, copy=False))
-                fg_score = fg_score.astype(np.float32, copy=False)
-                s_frames.append(fg_score)
-                f_frames.append((fg_score >= foreground_threshold).astype(np.uint8))
+            contour_maps = np.zeros((T, *prob_stack.shape[2:]), dtype=np.float32)
+            fg_scores = np.zeros_like(contour_maps)
+            fg_masks = np.zeros_like(contour_maps, dtype=bool)
 
-            contour_arr = np.stack(c_frames)
-            score_arr = np.stack(s_frames)
-            fg_arr = np.stack(f_frames)
+            method = extra_kw.get("method", "cellpose")
+            nuc_labels = extra_kw.get("nuc_labels", None)
+            ff_params = extra_kw.get("ff_params", None)
+            flow_threshold = extra_kw.get("flow_threshold", 0.0)
+            niter = extra_kw.get("niter", 200)
+
+            for t in range(T):
+                yield (t + 1, T, f"Building contour maps: frame {t + 1}/{T}...")
+                prob_3d = prob_stack[t]  # (Z, Y, X)
+                dp_2d = dp_stack[t]     # (2, Y, X)
+
+                if method == "flow_following":
+                    labels_t = nuc_labels[t]  # (Y, X)
+                    b, fg = self._build_consensus_boundary_ff_averaged(
+                        prob_3d,
+                        dp_2d,
+                        labels_t,
+                        thresholds,
+                        gammas,
+                        ff_params=ff_params,
+                    )
+                else:  # "cellpose"
+                    b, fg = self._build_consensus_boundary_averaged(
+                        prob_3d,
+                        dp_2d,
+                        thresholds,
+                        gammas,
+                        flow_threshold=flow_threshold,
+                        niter=niter,
+                    )
+
+                contour_maps[t] = b
+                fg_scores[t] = fg
+                fg_masks[t] = fg > fg_threshold
+
             contour_path.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(str(contour_path), contour_arr, compression="zlib")
-            tifffile.imwrite(str(score_path), score_arr, compression="zlib")
-            tifffile.imwrite(str(foreground_path), fg_arr, compression="zlib")
-            return contour_arr, score_arr, fg_arr
+            tifffile.imwrite(str(contour_path), contour_maps, compression="zlib")
+            tifffile.imwrite(str(score_path), fg_scores, compression="zlib")
+            tifffile.imwrite(str(foreground_path), fg_masks.astype(np.uint8), compression="zlib")
+            return contour_maps, fg_scores, fg_masks.astype(np.uint8)
 
         self._set_contour_status(
             f"Building contour maps ({len(thresholds)} thresholds, "
@@ -814,73 +1070,67 @@ class CellBoundaryWorkflowWidget(QWidget):
         self._contour_worker = _worker()
 
     def _on_preview_contour_maps(self) -> None:
-        if self._pos_dir is None:
-            self._set_contour_status("No project open.")
-            return
-
-        prob_path = self._prob_path()
-        filtered_dp_path = self._filtered_dp_path()
-        for path, name in [
-            (prob_path, "cell_prob_3dt.tif"),
-            (filtered_dp_path, "filtered_dp.tif"),
-        ]:
-            if path is None or not path.exists():
-                self._set_contour_status(f"Missing: {name}")
-                return
-
-        t_frame = self._current_t()
+        """Preview the contour map for the current frame only."""
+        t = self._current_t()
         thresholds = self._cellprob_thresholds()
         gammas = self._cp_gammas()
-        flow_threshold = self.contour_flow_threshold_spin.value()
-        niter = self.contour_niter_spin.value()
+        method = self._contour_method_combo.currentText()
+
+        prob_3d = self._load_prob_frame(t)  # (Z, Y, X)
+        dp_2d = self._load_dp_frame(t)     # (2, Y, X)
+
+        if method == ContourMethod.FLOW_FOLLOWING.value:
+            nuc_path = self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
+            if nuc_path is None or not nuc_path.exists():
+                self._show_error(
+                    "Nucleus tracked labels not found",
+                    f"Flow-following requires:\n{nuc_path}",
+                )
+                return
+            nuc_labels_t = tifffile.imread(str(nuc_path))[t]
+            ff_params = self._current_ff_params()
+            b, fg = self._build_consensus_boundary_ff_averaged(
+                prob_3d,
+                dp_2d,
+                nuc_labels_t,
+                thresholds,
+                gammas,
+                ff_params=ff_params,
+            )
+        else:
+            b, fg = self._build_consensus_boundary_averaged(
+                prob_3d,
+                dp_2d,
+                thresholds,
+                gammas,
+                flow_threshold=self.contour_flow_threshold_spin.value(),
+                niter=int(self.contour_niter_spin.value()),
+            )
+
+        # Display preview
         foreground_threshold = self.contour_fg_threshold_spin.value()
-        build_fn = self._build_consensus_boundary_averaged
 
-        def _on_preview_done(result):
-            self._contour_worker = None
-            self._set_contour_buttons_running(False)
-            contour, fg_score, n_t, t_idx = result
-            contour_data = np.zeros((n_t,) + contour.shape, dtype=np.float32)
-            contour_data[t_idx] = contour
-            score_data = np.zeros((n_t,) + fg_score.shape, dtype=np.float32)
-            score_data[t_idx] = fg_score
-            mask_data = (score_data >= foreground_threshold).astype(np.uint8)
-            self._show_layer(_CELL_CONTOUR_LAYER, contour_data,
-                             {"colormap": "magma", "visible": True}, self.viewer.add_image)
-            self._show_layer(_CELL_FOREGROUND_SCORE_LAYER, score_data,
-                             {"colormap": "viridis", "visible": True}, self.viewer.add_image)
-            self._show_layer(_CELL_FOREGROUND_LAYER, mask_data, {}, self.viewer.add_labels)
-            self._set_contour_status(
-                f"Preview t={t_idx} — {len(thresholds)} thresholds, "
-                f"{len(gammas)} gamma(s)"
-            )
+        # Load the full stack to get dimensions
+        prob_path = self._prob_path()
+        prob_stack = tifffile.imread(str(prob_path))
+        if prob_stack.ndim == 3:
+            prob_stack = prob_stack[np.newaxis]
+        n_t = prob_stack.shape[0]
 
-        @thread_worker(connect={
-            "returned": _on_preview_done,
-            "errored": lambda exc: self._on_contour_error(exc),
-        })
-        def _worker():
-            prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
-            dp_stack = np.asarray(tifffile.imread(str(filtered_dp_path)), dtype=np.float32)
-            if prob_stack.ndim == 3:
-                prob_stack = prob_stack[np.newaxis]
-            if dp_stack.ndim == 3:
-                dp_stack = dp_stack[np.newaxis]
-            n_t = min(prob_stack.shape[0], dp_stack.shape[0])
-            t_idx = min(max(t_frame, 0), n_t - 1)
-            contour, fg_score = build_fn(
-                prob_stack[t_idx], dp_stack[t_idx], thresholds, gammas,
-                flow_threshold=flow_threshold, niter=niter,
-            )
-            return (
-                contour.astype(np.float32, copy=False),
-                fg_score.astype(np.float32, copy=False),
-                n_t, t_idx,
-            )
-
-        self._set_contour_status(f"Previewing contour map for frame t={t_frame}...")
-        self._set_contour_buttons_running(True)
-        self._contour_worker = _worker()
+        contour_data = np.zeros((n_t,) + b.shape, dtype=np.float32)
+        contour_data[t] = b
+        score_data = np.zeros((n_t,) + fg.shape, dtype=np.float32)
+        score_data[t] = fg
+        mask_data = (score_data >= foreground_threshold).astype(np.uint8)
+        self._show_layer(_CELL_CONTOUR_LAYER, contour_data,
+                         {"colormap": "magma", "visible": True}, self.viewer.add_image)
+        self._show_layer(_CELL_FOREGROUND_SCORE_LAYER, score_data,
+                         {"colormap": "viridis", "visible": True}, self.viewer.add_image)
+        self._show_layer(_CELL_FOREGROUND_LAYER, mask_data, {}, self.viewer.add_labels)
+        self._set_contour_status(
+            f"Preview t={t} — {len(thresholds)} thresholds, "
+            f"{len(gammas)} gamma(s)"
+        )
 
     def _on_contour_error(self, exc: Exception) -> None:
         self._contour_worker = None

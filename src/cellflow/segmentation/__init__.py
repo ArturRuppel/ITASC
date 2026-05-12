@@ -5,6 +5,8 @@ from cellflow.segmentation.flow_following import (
     FlowFollowingParams,
     compute_filtered_flow_vectors,
     compute_flow_following_movie,
+    compute_flow_following_frame,
+    build_consensus_boundary_flow_following,
 )
 
 from cellflow.segmentation.contour_filtering import (
