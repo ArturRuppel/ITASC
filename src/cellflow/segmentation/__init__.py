@@ -6,13 +6,18 @@ from cellflow.segmentation.flow_following import (
     compute_filtered_flow_vectors,
     compute_flow_following_movie,
 )
-from cellflow.segmentation.cell_label_icm import (
-    CellLabelICMParams,
-    segment_cells_icm,
-)
+
 from cellflow.segmentation.contour_filtering import (
     ContourFilterParams,
     compute_filtered_contour_maps,
+)
+
+from cellflow.segmentation.cell_label_icm import (
+    CellICMState,
+    CellLabelICMParams,
+    commit_labels,
+    initialize_icm,
+    refine_icm,
 )
 
 import warnings

@@ -297,6 +297,7 @@ class CellWorkflowWidget(QWidget):
                 "gauss_time":   self.ff_gauss_time_spin.value(),
                 "gauss_space":  self.ff_gauss_space_spin.value(),
             },
+            "segmentation": self._seg_widget.get_state(),
         }
 
     def set_state(self, state: dict) -> None:
@@ -306,6 +307,9 @@ class CellWorkflowWidget(QWidget):
             if "median_space" in ff: self.ff_median_space_spin.setValue(ff["median_space"])
             if "gauss_time"   in ff: self.ff_gauss_time_spin.setValue(ff["gauss_time"])
             if "gauss_space"  in ff: self.ff_gauss_space_spin.setValue(ff["gauss_space"])
+            if "segmentation" in state: 
+                self._seg_widget.set_state(state["segmentation"])
+
 
     def _set_stage_status(self, stage: str, msg: str) -> None:
         label = self._stage_status_label(stage)
