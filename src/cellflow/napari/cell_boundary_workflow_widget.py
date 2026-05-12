@@ -50,6 +50,7 @@ from cellflow.segmentation import (
     build_consensus_boundary_flow_following,
     FlowFollowingParams,
 )
+from cellflow.segmentation.contour_filtering import contour_memory_filter
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ class CellBoundaryWorkflowWidget(QWidget):
 
         layout.addStretch()
 
-    # -- Contour Maps section (unchanged from original) -------------------
+    # -- Contour Maps section -------------------
 
     def _setup_contour_section(self, layout: QVBoxLayout) -> None:
         def _stage_files(group_label, entries):
@@ -166,8 +167,6 @@ class CellBoundaryWorkflowWidget(QWidget):
         contour_lay.addLayout(method_row)
 
         # ── Cellpose-specific parameter container ────────────────────────
-        # Wrap the EXISTING flow_threshold and niter spinboxes so they can
-        # be shown/hidden as a group.
         self._cellpose_params_container = QWidget()
         cp_lay = QHBoxLayout(self._cellpose_params_container)
         cp_lay.setContentsMargins(0, 0, 0, 0)
@@ -306,6 +305,36 @@ class CellBoundaryWorkflowWidget(QWidget):
         contour_lay.addWidget(_param_group_label("Foreground output"))
         contour_lay.addLayout(fg_grid)
 
+        # ── Temporal stabilization (contour memory filter) ───────────
+        self._memory_tau_spin = _spin_width(QDoubleSpinBox())
+        self._memory_tau_spin.setRange(0.0, 1.0)
+        self._memory_tau_spin.setValue(0.0)
+        self._memory_tau_spin.setDecimals(3)
+        self._memory_tau_spin.setSingleStep(0.01)
+        self._memory_tau_spin.setToolTip(
+            "Contour memory τ: signal threshold for the adaptive EMA.\n"
+            "0 = disabled.  Set to roughly the contour value you consider\n"
+            "'weak' (try the median of nonzero contour values).\n"
+            "Lower = more aggressive persistence of ridges across frames."
+        )
+
+        self._memory_floor_spin = _spin_width(QDoubleSpinBox())
+        self._memory_floor_spin.setRange(0.001, 0.5)
+        self._memory_floor_spin.setValue(0.01)
+        self._memory_floor_spin.setDecimals(3)
+        self._memory_floor_spin.setSingleStep(0.005)
+        self._memory_floor_spin.setToolTip(
+            "Minimum alpha per frame — prevents permanent ghosting.\n"
+            "At 0.01 a ghost halves in ~69 frames; at 0.05 ~14 frames."
+        )
+
+        memory_grid = block_grid(horizontal_spacing=12)
+        add_block_pair_row(memory_grid, 0,
+            "Memory τ:", compact_spinbox(self._memory_tau_spin),
+            "Memory floor:", compact_spinbox(self._memory_floor_spin))
+        contour_lay.addWidget(_param_group_label("Temporal stabilization"))
+        contour_lay.addLayout(memory_grid)
+
         # Output files
         self.contour_output_files = _stage_files("Outputs", [
             ("3_cell/contour_maps.tif", "Contour maps"),
@@ -318,7 +347,8 @@ class CellBoundaryWorkflowWidget(QWidget):
         contour_btn_row = block_grid(horizontal_spacing=12)
         self.preview_contour_btn = QPushButton("Preview")
         self.preview_contour_btn.setToolTip(
-            "Build contour maps for the current frame only and display in napari"
+            "Build contour maps for the current frame only and display in napari.\n"
+            "Note: temporal stabilization is not applied in single-frame preview."
         )
         self.preview_contour_btn.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -442,8 +472,6 @@ class CellBoundaryWorkflowWidget(QWidget):
         self.init_mode_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-
-        # In _setup_boundary_selection_section, after init_mode_combo:
 
         self.n_workers_spin = _int_spin(
             1, max(1, os.cpu_count() or 1), min(4, os.cpu_count() or 1),
@@ -660,6 +688,9 @@ class CellBoundaryWorkflowWidget(QWidget):
             "ff_step_scale": self._ff_step_scale_spin.value(),
             "ff_max_iter": self._ff_max_iter_spin.value(),
             "ff_capture_radius": self._ff_capture_radius_spin.value(),
+            # --- temporal stabilization ---
+            "memory_tau": self._memory_tau_spin.value(),
+            "memory_floor": self._memory_floor_spin.value(),
             # Initialize params
             "alpha_unary": self.alpha_unary_spin.value(),
             "lambda_s": self.lambda_s_spin.value(),
@@ -672,7 +703,6 @@ class CellBoundaryWorkflowWidget(QWidget):
             "min_round_flips": self.min_round_flips_spin.value(),
             "lambda_area": self.lambda_area_spin.value(),
             "n_workers": self.n_workers_spin.value(),
-
         }
 
     def set_state(self, state: dict) -> None:
@@ -697,8 +727,10 @@ class CellBoundaryWorkflowWidget(QWidget):
             "n_iters": self.n_iters_spin,
             "min_round_flips": self.min_round_flips_spin,
             "lambda_area": self.lambda_area_spin,
-            "n_workers": self.n_workers_spin.value(),
-
+            "n_workers": self.n_workers_spin,
+            # --- temporal stabilization ---
+            "memory_tau": self._memory_tau_spin,
+            "memory_floor": self._memory_floor_spin,
         }
         # Backward-compat: map old graphcut_* keys
         _legacy_map = {
@@ -889,12 +921,7 @@ class CellBoundaryWorkflowWidget(QWidget):
         *,
         ff_params: FlowFollowingParams,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Gamma-averaged consensus boundary via flow-following.
-
-        Mirrors ``_build_consensus_boundary_averaged`` but dispatches to
-        :func:`build_consensus_boundary_flow_following` instead of
-        Cellpose's ``compute_masks``.
-        """
+        """Gamma-averaged consensus boundary via flow-following."""
         boundary_accum = None
         foreground_accum = None
         n = 0
@@ -926,6 +953,8 @@ class CellBoundaryWorkflowWidget(QWidget):
         thresholds = self._cellprob_thresholds()
         gammas = self._cp_gammas()
         fg_threshold = self.contour_fg_threshold_spin.value()
+        memory_tau = self._memory_tau_spin.value()
+        memory_floor = self._memory_floor_spin.value()
 
         method = self._contour_method_combo.currentText()
 
@@ -1056,15 +1085,23 @@ class CellBoundaryWorkflowWidget(QWidget):
                 fg_scores[t] = fg
                 fg_masks[t] = fg > fg_threshold
 
+            # ── Temporal stabilization (contour memory filter) ────────
+            if memory_tau > 0.0 and T > 1:
+                yield (T, T, f"Applying contour memory filter (τ={memory_tau})...")
+                contour_maps = contour_memory_filter(
+                    contour_maps, tau=memory_tau, floor=memory_floor,
+                )
+
             contour_path.parent.mkdir(parents=True, exist_ok=True)
             tifffile.imwrite(str(contour_path), contour_maps, compression="zlib")
             tifffile.imwrite(str(score_path), fg_scores, compression="zlib")
             tifffile.imwrite(str(foreground_path), fg_masks.astype(np.uint8), compression="zlib")
             return contour_maps, fg_scores, fg_masks.astype(np.uint8)
 
+        mem_msg = f", τ={memory_tau}" if memory_tau > 0 else ""
         self._set_contour_status(
             f"Building contour maps ({len(thresholds)} thresholds, "
-            f"{len(gammas)} gamma value(s))..."
+            f"{len(gammas)} gamma value(s){mem_msg})..."
         )
         self._set_contour_buttons_running(True)
         self._contour_worker = _worker()
@@ -1127,9 +1164,13 @@ class CellBoundaryWorkflowWidget(QWidget):
         self._show_layer(_CELL_FOREGROUND_SCORE_LAYER, score_data,
                          {"colormap": "viridis", "visible": True}, self.viewer.add_image)
         self._show_layer(_CELL_FOREGROUND_LAYER, mask_data, {}, self.viewer.add_labels)
+
+        mem_note = ""
+        if self._memory_tau_spin.value() > 0:
+            mem_note = " (memory filter applied only on full build)"
         self._set_contour_status(
             f"Preview t={t} — {len(thresholds)} thresholds, "
-            f"{len(gammas)} gamma(s)"
+            f"{len(gammas)} gamma(s){mem_note}"
         )
 
     def _on_contour_error(self, exc: Exception) -> None:
@@ -1175,7 +1216,7 @@ class CellBoundaryWorkflowWidget(QWidget):
             lambda_t=self.lambda_t_spin.value(),
             gamma_unary=self.gamma_unary_spin.value(),
             init_mode=self.init_mode_combo.currentText(),
-            n_workers=self.n_workers_spin.value(),  # ← new
+            n_workers=self.n_workers_spin.value(),
         )
 
         def _on_done(result):
