@@ -25,7 +25,6 @@ class FlowFollowingParams:
     flow_weight: float = 0.5
     flow_step_scale: float = 0.2
     max_iterations: int = 100
-    capture_radius: float = 3.0
 
 
 # Progressive shell assignment defaults (not user-facing)
@@ -60,158 +59,6 @@ def compute_filtered_flow_vectors(
             ),
         )
     return np.asarray(filtered, dtype=np.float32)
-
-
-@numba.njit(parallel=True, cache=True)
-def _flow_integrate(
-    nuclear_labels: np.ndarray,    # (H, W) int32
-    flow: np.ndarray,              # (H, W, 2) float32 — channel 0 = dY, channel 1 = dX
-    grav_y: np.ndarray,            # (H, W) float32 — EDT-direction unit vector y
-    grav_x: np.ndarray,            # (H, W) float32 — EDT-direction unit vector x
-    dist_to_nucleus: np.ndarray,   # (H, W) float32 — EDT distance to nearest nuclear pixel
-    nearest_y: np.ndarray,         # (H, W) int32 — y-index of nearest nuclear pixel
-    nearest_x: np.ndarray,         # (H, W) int32
-    prob_mask: np.ndarray,         # (H, W) bool — foreground mask
-    n_steps: int,
-    flow_step_scale: float,
-    flow_weight: float,
-    capture_radius: float,
-) -> np.ndarray:
-    H, W = nuclear_labels.shape
-    result = nuclear_labels.copy()
-
-    for i in numba.prange(H):
-        for j in range(W):
-            if result[i, j] > 0:
-                continue
-            if not prob_mask[i, j]:
-                continue
-
-            py = float(i)
-            px = float(j)
-            label = 0
-
-            for _ in range(n_steps):
-                iy0 = int(py)
-                ix0 = int(px)
-                iy0 = max(0, min(H - 2, iy0))
-                ix0 = max(0, min(W - 2, ix0))
-
-                fy = py - float(iy0)
-                fx = px - float(ix0)
-
-                flow_y = (flow[iy0,     ix0,     0] * (1.0 - fy) * (1.0 - fx) +
-                          flow[iy0 + 1, ix0,     0] * fy          * (1.0 - fx) +
-                          flow[iy0,     ix0 + 1, 0] * (1.0 - fy) * fx          +
-                          flow[iy0 + 1, ix0 + 1, 0] * fy          * fx)
-
-                flow_x = (flow[iy0,     ix0,     1] * (1.0 - fy) * (1.0 - fx) +
-                          flow[iy0 + 1, ix0,     1] * fy          * (1.0 - fx) +
-                          flow[iy0,     ix0 + 1, 1] * (1.0 - fy) * fx          +
-                          flow[iy0 + 1, ix0 + 1, 1] * fy          * fx)
-
-                w = flow_weight
-
-                iy_nn = max(0, min(H - 1, int(py + 0.5)))
-                ix_nn = max(0, min(W - 1, int(px + 0.5)))
-
-                step_y = w * flow_y + (1.0 - w) * grav_y[iy_nn, ix_nn]
-                step_x = w * flow_x + (1.0 - w) * grav_x[iy_nn, ix_nn]
-
-                py = max(0.0, min(float(H - 1), py + step_y * flow_step_scale))
-                px = max(0.0, min(float(W - 1), px + step_x * flow_step_scale))
-
-                iy = max(0, min(H - 1, int(py + 0.5)))
-                ix = max(0, min(W - 1, int(px + 0.5)))
-
-                if dist_to_nucleus[iy, ix] <= capture_radius:
-                    L = nuclear_labels[nearest_y[iy, ix], nearest_x[iy, ix]]
-                    if L > 0:
-                        label = L
-                        break
-
-            result[i, j] = label
-
-    return result
-
-
-def compute_flow_following_movie(
-    foreground_tyx: np.ndarray,    # (T, Y, X) bool
-    dp_tcyx: np.ndarray,           # (T, 2, Y, X) float32
-    labels_tyx: np.ndarray,        # (T, Y, X) int32
-    params: FlowFollowingParams,
-    progress_cb: Callable[[int, int], None] | None = None,
-    *,
-    filter_vectors: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Per-frame flow-following segmentation with pre-integration filtering.
-
-    Returns
-    -------
-    filtered_dp_tcyx : (T, 2, Y, X) float32 — flow stack after median+Gaussian.
-    cell_labels_tyx  : (T, Y, X) int32      — same labelling as input nuclei.
-    """
-    foreground = np.asarray(foreground_tyx, dtype=bool)
-    dp = np.asarray(dp_tcyx, dtype=np.float32)
-    labels = np.asarray(labels_tyx, dtype=np.int32)
-
-    T = dp.shape[0]
-
-    filtered = compute_filtered_flow_vectors(dp, params) if filter_vectors else dp
-
-    out_labels = np.zeros_like(labels, dtype=np.int32)
-
-    for t in range(T):
-        prob_mask = foreground[t]
-        nuclear_labels = labels[t]
-
-        if not prob_mask.any() or not (nuclear_labels > 0).any():
-            if progress_cb is not None:
-                progress_cb(t + 1, T)
-            continue
-
-        flow_yx2 = np.stack(
-            [filtered[t, 0], filtered[t, 1]], axis=-1
-        ).astype(np.float32)
-        mags = np.hypot(flow_yx2[..., 0], flow_yx2[..., 1])
-        mean_mag = float(mags[prob_mask].mean()) if prob_mask.any() else 0.0
-        if mean_mag > 1e-6:
-            flow_yx2 = (flow_yx2 / mean_mag).astype(np.float32)
-
-        dist, (ny, nx) = distance_transform_edt(
-            nuclear_labels == 0, return_indices=True
-        )
-        H, W = nuclear_labels.shape
-        yi, xi = np.indices((H, W))
-        dy = (ny - yi).astype(np.float32)
-        dx = (nx - xi).astype(np.float32)
-        norm = np.hypot(dy, dx)
-        safe = np.where(norm > 0, norm, 1.0)
-        grav_y = (dy / safe).astype(np.float32)
-        grav_x = (dx / safe).astype(np.float32)
-        inside = nuclear_labels > 0
-        grav_y[inside] = 0.0
-        grav_x[inside] = 0.0
-
-        integrated = _flow_integrate(
-            nuclear_labels.astype(np.int32),
-            np.ascontiguousarray(flow_yx2, dtype=np.float32),
-            grav_y, grav_x,
-            dist.astype(np.float32),
-            ny.astype(np.int32), nx.astype(np.int32),
-            prob_mask,
-            int(params.max_iterations),
-            float(params.flow_step_scale),
-            float(params.flow_weight),
-            float(params.capture_radius),
-        )
-
-        out_labels[t] = integrated
-
-        if progress_cb is not None:
-            progress_cb(t + 1, T)
-
-    return filtered, out_labels
 
 
 # ---------------------------------------------------------------------------
@@ -508,22 +355,17 @@ def compute_flow_following_frame(
     labels_yx: np.ndarray,
     params: FlowFollowingParams,
 ) -> np.ndarray:
-    """Run flow-following segmentation on a **single frame**.
+    """Run flow-following segmentation on a single frame.
 
-    Dispatches between two strategies based on ``params.capture_radius``:
-
-    * ``capture_radius > 0`` — legacy behaviour: wraps
-      :func:`compute_flow_following_movie` with ``T=1``.  A pixel is
-      captured when it enters the fixed radius around a nucleus.
-    * ``capture_radius == 0`` — new two-phase algorithm:
-        1. Integrate every foreground pixel along the flow field
-           (blended with EDT gravity).  If a pixel lands directly on a
-           nucleus, assign immediately.
-        2. Grow labels outward in progressive shells: each iteration
-           assigns unassigned pixels whose *displaced* positions are
-           within a shell width of an already-labelled pixel's *original*
-           position.  This lets labels chain-propagate through the
-           displaced-position topology.
+    Two-phase algorithm:
+      1. Integrate every foreground pixel along the flow field
+         (blended with EDT gravity).  If a pixel lands directly on a
+         nucleus, assign immediately.
+      2. Grow labels outward in progressive shells: each iteration
+         assigns unassigned pixels whose *displaced* positions are
+         within a shell width of an already-labelled pixel's *original*
+         position.  This lets labels chain-propagate through the
+         displaced-position topology.
 
     Parameters
     ----------
@@ -541,22 +383,6 @@ def compute_flow_following_frame(
     if labels_yx.max() == 0:
         return np.zeros(foreground_yx.shape, dtype=np.int32)
 
-    # ------------------------------------------------------------------
-    # Legacy path (capture_radius > 0): delegate to existing movie fn
-    # ------------------------------------------------------------------
-    if params.capture_radius > 0:
-        fg_tyx = np.ascontiguousarray(foreground_yx[np.newaxis], dtype=bool)
-        dp_tcyx = np.ascontiguousarray(dp_cyx[np.newaxis], dtype=np.float32)
-        lab_tyx = np.ascontiguousarray(labels_yx[np.newaxis], dtype=np.int32)
-        _, cell_labels_tyx = compute_flow_following_movie(
-            fg_tyx, dp_tcyx, lab_tyx, params,
-            progress_cb=None, filter_vectors=False,
-        )
-        return cell_labels_tyx[0]
-
-    # ------------------------------------------------------------------
-    # New path (capture_radius == 0): two-phase progressive assignment
-    # ------------------------------------------------------------------
     result, _order = _flow_following_frame_core(
         foreground_yx, dp_cyx, labels_yx, params,
     )
@@ -573,21 +399,20 @@ def build_consensus_boundary_flow_following(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build a consensus contour map using flow-following + EDT gravity.
 
-    This mirrors :func:`build_consensus_boundary_2d` but replaces Cellpose's
+    This builds a consensus contour map by replacing Cellpose's
     ``compute_masks`` with :func:`compute_flow_following_frame`.  For every
     *cellprob_threshold* the probability map is binarised into a foreground
     mask; flow-following assigns each foreground pixel to the nearest nucleus;
     boundaries are extracted and accumulated across thresholds.
 
-    When ``params.capture_radius == 0`` (two-phase algorithm), the function
-    additionally sweeps **shell-confidence cutoffs**: for each threshold, the
-    full label map is progressively truncated to pixels assigned within the
-    first *k* shells.  Inter-cell boundaries are extracted at every cutoff
-    and averaged.  Boundaries between regions that are both assigned early
-    (high confidence) appear at all cutoffs and receive a high contour score.
-    Boundaries involving late-assigned (ambiguous) pixels appear only at high
-    cutoffs and receive a low score.  This naturally hardens stable boundaries
-    and weakens uncertain ones.
+    The function additionally sweeps **shell-confidence cutoffs**: for each
+    threshold, the full label map is progressively truncated to pixels
+    assigned within the first *k* shells.  Inter-cell boundaries are
+    extracted at every cutoff and averaged.  Boundaries between regions that
+    are both assigned early (high confidence) appear at all cutoffs and
+    receive a high contour score.  Boundaries involving late-assigned
+    (ambiguous) pixels appear only at high cutoffs and receive a low score.
+    This naturally hardens stable boundaries and weakens uncertain ones.
 
     Parameters
     ----------
@@ -611,62 +436,40 @@ def build_consensus_boundary_flow_following(
     foreground : ndarray, shape (Y, X), dtype float32
         Accumulated foreground score in [0, 1] (if *reduction* = "mean").
     """
-    from skimage.segmentation import find_boundaries
-
     H, W = prob_yx.shape
     boundary_accum = np.zeros((H, W), dtype=np.float32)
     foreground_accum = np.zeros((H, W), dtype=np.float32)
     n = 0
-
-    use_shell_sweep = params.capture_radius == 0
 
     for thresh in cellprob_thresholds:
         fg_mask = prob_yx > thresh
         if not fg_mask.any():
             continue
 
-        if use_shell_sweep:
-            # ----------------------------------------------------------
-            # Two-phase path: sweep shell-confidence cutoffs
-            # ----------------------------------------------------------
-            cell_labels, order = _flow_following_frame_core(
-                fg_mask, dp_cyx, labels_yx, params,
-            )
+        cell_labels, order = _flow_following_frame_core(
+            fg_mask, dp_cyx, labels_yx, params,
+        )
 
-            max_order = int(order.max())
+        max_order = int(order.max())
 
-            # Accumulate boundaries at each cutoff, then normalise
-            # within this threshold so each threshold contributes equally.
-            thresh_boundary = np.zeros((H, W), dtype=np.float32)
-            n_cutoffs = 0
+        # Accumulate boundaries at each cutoff, then normalise
+        # within this threshold so each threshold contributes equally.
+        thresh_boundary = np.zeros((H, W), dtype=np.float32)
+        n_cutoffs = 0
 
-            for cutoff in range(0, max_order + 1):
-                partial = np.where(order <= cutoff, cell_labels, 0)
-                bd = _inter_cell_boundaries(partial)
-                thresh_boundary += bd.astype(np.float32)
-                n_cutoffs += 1
+        for cutoff in range(0, max_order + 1):
+            partial = np.where(order <= cutoff, cell_labels, 0)
+            bd = _inter_cell_boundaries(partial)
+            thresh_boundary += bd.astype(np.float32)
+            n_cutoffs += 1
 
-            if n_cutoffs > 0:
-                thresh_boundary /= n_cutoffs
+        if n_cutoffs > 0:
+            thresh_boundary /= n_cutoffs
 
-            boundary_accum += thresh_boundary
-            # Foreground score: from the full label map (not truncated)
-            foreground_accum += (cell_labels > 0).astype(np.float32)
-            n += 1
-
-        else:
-            # ----------------------------------------------------------
-            # Legacy path: single boundary extraction per threshold
-            # ----------------------------------------------------------
-            cell_labels = compute_flow_following_frame(
-                fg_mask, dp_cyx, labels_yx, params,
-            )
-
-            boundary_accum += find_boundaries(
-                cell_labels, mode="inner",
-            ).astype(np.float32)
-            foreground_accum += (cell_labels > 0).astype(np.float32)
-            n += 1
+        boundary_accum += thresh_boundary
+        # Foreground score: from the full label map (not truncated)
+        foreground_accum += (cell_labels > 0).astype(np.float32)
+        n += 1
 
     if n > 0 and reduction == "mean":
         boundary_accum /= n

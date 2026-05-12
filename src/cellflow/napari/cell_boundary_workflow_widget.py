@@ -1,21 +1,21 @@
 """Track-conditioned cell boundary selection widget for CellFlow.
 
-Three-stage workflow:
-  1. **Initialize** — compute geodesic unary costs and pairwise weights,
-     build initial labels, display in the viewer.
-  2. **Refine** — run N ICM sweeps on the current viewer labels (repeatable,
-     interleaves with manual correction).
-  3. **Commit** — write the current viewer labels to disk.
+Four-stage workflow:
+  1. **Foreground Masks** — generate binary cell foreground masks
+     with Cellpose dynamics, using a single parameter set.
+  2. **Contour Maps** — build consensus contour maps via
+     flow-following boundary extraction.
+  3. **Initialize / Refine / Commit** — compute geodesic unary
+     costs and pairwise weights, run ICM sweeps, write labels.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
-from enum import Enum
 from pathlib import Path
-import os
 
 import napari
 import numpy as np
@@ -23,7 +23,6 @@ import tifffile
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -46,7 +45,6 @@ from cellflow.napari.ui_style import (
 )
 from cellflow.segmentation import (
     apply_gamma,
-    build_consensus_boundary_2d,
     build_consensus_boundary_flow_following,
     FlowFollowingParams,
 )
@@ -61,13 +59,6 @@ _CELL_FOREGROUND_LAYER = "Foreground Mask: Cell"
 _CONTOUR_SWEEP_WIDTH = 60
 
 
-class ContourMethod(str, Enum):
-    """Selectable contour-map creation strategy."""
-
-    CELLPOSE = "Cellpose Native"
-    FLOW_FOLLOWING = "Flow-Following (EDT Gravity)"
-
-
 class CellBoundaryWorkflowWidget(QWidget):
     """Track-conditioned cell boundary selection workflow."""
 
@@ -77,6 +68,7 @@ class CellBoundaryWorkflowWidget(QWidget):
         self._pos_dir: Path | None = None
 
         # Worker references
+        self._foreground_worker = None
         self._contour_worker = None
         self._initialize_worker = None
         self._refine_worker = None
@@ -95,18 +87,121 @@ class CellBoundaryWorkflowWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(8)
 
-        # ---- 1. Contour Maps ----
+        # ---- 1. Foreground Masks ----
+        self._setup_foreground_section(layout)
+
+        # ---- 2. Contour Maps ----
         self._setup_contour_section(layout)
 
-        # ---- 2. Boundary Selection (Initialize → Refine → Commit) ----
+        # ---- 3. Boundary Selection (Initialize → Refine → Commit) ----
         self._setup_boundary_selection_section(layout)
 
-        # ---- 3. Correction ----
+        # ---- 4. Correction ----
         self._setup_correction_section(layout)
 
         layout.addStretch()
 
-    # -- Contour Maps section -------------------
+    # -- Foreground Masks section -------------------------------------------
+
+    def _setup_foreground_section(self, layout: QVBoxLayout) -> None:
+        def _stage_files(group_label, entries):
+            return PipelineFilesWidget(
+                [(group_label, entries)], viewer=self.viewer
+            )
+
+        def _stage_status():
+            lbl = QLabel("")
+            lbl.setWordWrap(True)
+            lbl.setVisible(False)
+            status_label(lbl)
+            return lbl
+
+        def _stage_progress():
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setTextVisible(True)
+            bar.setVisible(False)
+            return bar
+
+        def _spin_width(widget, width=_CONTOUR_SWEEP_WIDTH):
+            widget.setMinimumWidth(width)
+            widget.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed,
+            )
+            return widget
+
+        fg_inner = QWidget()
+        fg_lay = QVBoxLayout(fg_inner)
+        fg_lay.setContentsMargins(0, 0, 0, 0)
+        fg_lay.setSpacing(4)
+        fg_lay.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self.foreground_input_files = _stage_files("Inputs", [
+            ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
+            ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
+        ])
+        fg_lay.addWidget(self.foreground_input_files)
+
+        # Parameters
+        fg_params_grid = block_grid(horizontal_spacing=12)
+
+        self.fg_cellprob_threshold_spin = _spin_width(QDoubleSpinBox())
+        # In _setup_foreground_section, change the spin range and default:
+        self.fg_cellprob_threshold_spin.setRange(0.0, 1.0)
+        self.fg_cellprob_threshold_spin.setValue(0.5)
+        self.fg_cellprob_threshold_spin.setDecimals(2)
+        self.fg_cellprob_threshold_spin.setSingleStep(0.01)
+
+        self.fg_flow_threshold_spin = _spin_width(QDoubleSpinBox())
+        self.fg_flow_threshold_spin.setRange(0.0, 10.0)
+        self.fg_flow_threshold_spin.setValue(0.0)
+        self.fg_flow_threshold_spin.setDecimals(1)
+        self.fg_flow_threshold_spin.setSingleStep(0.5)
+
+        self.fg_min_size_spin = _spin_width(QSpinBox())
+        self.fg_min_size_spin.setRange(0, 10000)
+        self.fg_min_size_spin.setValue(15)
+
+        self.fg_niter_spin = _spin_width(QSpinBox())
+        self.fg_niter_spin.setRange(0, 5000)
+        self.fg_niter_spin.setValue(200)
+
+        add_block_pair_row(fg_params_grid, 0,
+            "Cellprob threshold:", compact_spinbox(self.fg_cellprob_threshold_spin),
+            "Flow threshold:", compact_spinbox(self.fg_flow_threshold_spin))
+        add_block_pair_row(fg_params_grid, 1,
+            "Min size:", compact_spinbox(self.fg_min_size_spin),
+            "Niter:", compact_spinbox(self.fg_niter_spin))
+
+        fg_lay.addLayout(fg_params_grid)
+
+        # Output files
+        self.foreground_output_files = _stage_files("Outputs", [
+            ("3_cell/foreground_masks.tif", "Foreground masks"),
+        ])
+        fg_lay.addWidget(self.foreground_output_files)
+
+        # Button row
+        fg_btn_row = block_grid(horizontal_spacing=12)
+        self.build_foreground_btn = QPushButton("Build Foreground")
+        self.build_foreground_btn.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        add_block_button_row(fg_btn_row, 0, self.build_foreground_btn)
+        fg_lay.addLayout(fg_btn_row)
+
+        self.foreground_status_lbl = _stage_status()
+        fg_lay.addWidget(self.foreground_status_lbl)
+        self.foreground_progress_bar = _stage_progress()
+        fg_lay.addWidget(self.foreground_progress_bar)
+
+        self.foreground_section = CollapsibleSection(
+            "1. Foreground Masks", fg_inner, expanded=False
+        )
+        layout.addWidget(self.foreground_section)
+
+    # -- Contour Maps section -----------------------------------------------
 
     def _setup_contour_section(self, layout: QVBoxLayout) -> None:
         def _stage_files(group_label, entries):
@@ -153,25 +248,7 @@ class CellBoundaryWorkflowWidget(QWidget):
         ])
         contour_lay.addWidget(self.contour_input_files)
 
-        # ── Method selector ──────────────────────────────────────────────
-        method_row = QHBoxLayout()
-        method_row.addWidget(QLabel("Method:"))
-        self._contour_method_combo = QComboBox()
-        for m in ContourMethod:
-            self._contour_method_combo.addItem(m.value)
-        self._contour_method_combo.setCurrentText(ContourMethod.CELLPOSE.value)
-        self._contour_method_combo.currentTextChanged.connect(
-            self._on_contour_method_changed,
-        )
-        method_row.addWidget(self._contour_method_combo)
-        contour_lay.addLayout(method_row)
-
-        # ── Cellpose-specific parameter container ────────────────────────
-        self._cellpose_params_container = QWidget()
-        cp_lay = QHBoxLayout(self._cellpose_params_container)
-        cp_lay.setContentsMargins(0, 0, 0, 0)
-
-        # Cellpose mask sweep params
+        # ── Cellprob consensus sweep ─────────────────────────────────────
         self.cp_min_spin = _spin_width(QDoubleSpinBox())
         self.cp_min_spin.setRange(-20.0, 20.0)
         self.cp_min_spin.setValue(-3.0)
@@ -187,37 +264,18 @@ class CellBoundaryWorkflowWidget(QWidget):
         self.cp_step_spin.setValue(1.0)
         self.cp_step_spin.setDecimals(1)
         self.cp_step_spin.setSingleStep(0.5)
-        self.contour_flow_threshold_spin = _spin_width(QDoubleSpinBox())
-        self.contour_flow_threshold_spin.setRange(0.0, 10.0)
-        self.contour_flow_threshold_spin.setValue(0.0)
-        self.contour_flow_threshold_spin.setDecimals(2)
-        self.contour_flow_threshold_spin.setSingleStep(0.1)
-        self.contour_niter_spin = _spin_width(QSpinBox())
-        self.contour_niter_spin.setRange(0, 2000)
-        self.contour_niter_spin.setValue(200)
 
-        # Build cellpose parameters container
         sweep_grid = block_grid(horizontal_spacing=12)
         add_block_pair_row(sweep_grid, 0,
             "Cellprob min:", compact_spinbox(self.cp_min_spin),
             "Cellprob max:", compact_spinbox(self.cp_max_spin))
         add_block_pair_row(sweep_grid, 1,
-            "Cellprob step:", compact_spinbox(self.cp_step_spin),
-            "Flow threshold:", compact_spinbox(self.contour_flow_threshold_spin))
-        add_block_pair_row(sweep_grid, 2,
-            "Niter:", compact_spinbox(self.contour_niter_spin))
+            "Cellprob step:", compact_spinbox(self.cp_step_spin))
 
-        cellpose_container = QWidget()
-        cellpose_lay = QVBoxLayout(cellpose_container)
-        cellpose_lay.setContentsMargins(0, 0, 0, 0)
-        cellpose_lay.setSpacing(4)
-        cellpose_lay.addWidget(_param_group_label("Cellpose mask sweep"))
-        cellpose_lay.addLayout(sweep_grid)
+        contour_lay.addWidget(_param_group_label("Cellprob consensus sweep"))
+        contour_lay.addLayout(sweep_grid)
 
-        self._cellpose_params_container = cellpose_container
-        contour_lay.addWidget(self._cellpose_params_container)
-
-        # ── Flow-following parameter container ───────────────────────────
+        # ── Flow-following parameters ────────────────────────────────────
         self._ff_params_container = QWidget()
         ff_lay = QHBoxLayout(self._ff_params_container)
         ff_lay.setContentsMargins(0, 0, 0, 0)
@@ -251,22 +309,10 @@ class CellBoundaryWorkflowWidget(QWidget):
         )
         ff_lay.addWidget(self._ff_max_iter_spin)
 
-        ff_lay.addWidget(QLabel("Capture r:"))
-        self._ff_capture_radius_spin = QDoubleSpinBox()
-        self._ff_capture_radius_spin.setRange(0.0, 30.0)
-        self._ff_capture_radius_spin.setSingleStep(0.5)
-        self._ff_capture_radius_spin.setValue(0.0)
-        self._ff_capture_radius_spin.setToolTip(
-            "0 = progressive shell assignment (recommended).\n"
-            "> 0 = legacy fixed-radius capture at the given distance (px)."
-        )
-        ff_lay.addWidget(self._ff_capture_radius_spin)
-
-        # Starts hidden — shown only when Flow-Following is selected
-        self._ff_params_container.setVisible(False)
+        contour_lay.addWidget(_param_group_label("Flow-following"))
         contour_lay.addWidget(self._ff_params_container)
 
-        # Gamma averaging params
+        # ── Gamma averaging ──────────────────────────────────────────────
         self.cp_gamma_min_spin = _spin_width(QDoubleSpinBox())
         self.cp_gamma_min_spin.setRange(0.05, 5.0)
         self.cp_gamma_min_spin.setValue(1.0)
@@ -292,20 +338,7 @@ class CellBoundaryWorkflowWidget(QWidget):
         contour_lay.addWidget(_param_group_label("Gamma averaging"))
         contour_lay.addLayout(gamma_grid)
 
-        # Foreground output
-        self.contour_fg_threshold_spin = _spin_width(QDoubleSpinBox())
-        self.contour_fg_threshold_spin.setRange(0.0, 1.0)
-        self.contour_fg_threshold_spin.setValue(0.5)
-        self.contour_fg_threshold_spin.setDecimals(2)
-        self.contour_fg_threshold_spin.setSingleStep(0.01)
-
-        fg_grid = block_grid(horizontal_spacing=12)
-        add_block_pair_row(fg_grid, 0,
-            "FG threshold:", compact_spinbox(self.contour_fg_threshold_spin))
-        contour_lay.addWidget(_param_group_label("Foreground output"))
-        contour_lay.addLayout(fg_grid)
-
-        # ── Temporal stabilization (contour memory filter) ───────────
+        # ── Temporal stabilization (contour memory filter) ───────────────
         self._memory_tau_spin = _spin_width(QDoubleSpinBox())
         self._memory_tau_spin.setRange(0.0, 1.0)
         self._memory_tau_spin.setValue(0.0)
@@ -339,7 +372,6 @@ class CellBoundaryWorkflowWidget(QWidget):
         self.contour_output_files = _stage_files("Outputs", [
             ("3_cell/contour_maps.tif", "Contour maps"),
             ("3_cell/foreground_scores.tif", "Foreground scores"),
-            ("3_cell/foreground_masks.tif", "Foreground masks"),
         ])
         contour_lay.addWidget(self.contour_output_files)
 
@@ -368,11 +400,11 @@ class CellBoundaryWorkflowWidget(QWidget):
         contour_lay.addWidget(self.contour_progress_bar)
 
         self.contour_section = CollapsibleSection(
-            "1. Contour Maps", contour_inner, expanded=False
+            "2. Contour Maps", contour_inner, expanded=False
         )
         layout.addWidget(self.contour_section)
 
-    # -- Boundary Selection section (Initialize → Refine → Commit) --------
+    # -- Boundary Selection section (Initialize → Refine → Commit) ---------
 
     def _setup_boundary_selection_section(self, layout: QVBoxLayout) -> None:
         def _stage_files(group_label, entries):
@@ -461,18 +493,6 @@ class CellBoundaryWorkflowWidget(QWidget):
             "Weight for (1 − foreground_score) in the geodesic cost field. "
             "0 = contour-only (default).",
         )
-        self.init_mode_combo = QComboBox()
-        self.init_mode_combo.addItems(["nuclei", "unary", "watershed"])
-        self.init_mode_combo.setCurrentText("nuclei")
-        self.init_mode_combo.setToolTip(
-            "nuclei: only nucleus pixels labelled at init, cells grow via ICM.\n"
-            "unary: init from per-pixel argmin of geodesic cost.\n"
-            "watershed: seeded watershed on geodesic elevation."
-        )
-        self.init_mode_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-
         self.n_workers_spin = _int_spin(
             1, max(1, os.cpu_count() or 1), min(4, os.cpu_count() or 1),
             "Parallel workers for geodesic unary computation. "
@@ -480,9 +500,6 @@ class CellBoundaryWorkflowWidget(QWidget):
         )
 
         init_grid = block_grid(horizontal_spacing=12)
-        add_block_pair_row(init_grid, 3,
-            "n_workers:", compact_spinbox(self.n_workers_spin),
-            field_width=92)
         add_block_pair_row(init_grid, 0,
             "alpha_unary:", compact_spinbox(self.alpha_unary_spin),
             "lambda_s:", compact_spinbox(self.lambda_s_spin),
@@ -492,8 +509,8 @@ class CellBoundaryWorkflowWidget(QWidget):
             "lambda_t:", compact_spinbox(self.lambda_t_spin),
             field_width=92)
         add_block_pair_row(init_grid, 2,
-            "init_mode:", self.init_mode_combo,
             "gamma_unary:", compact_spinbox(self.gamma_unary_spin),
+            "n_workers:", compact_spinbox(self.n_workers_spin),
             field_width=92)
         sel_lay.addLayout(init_grid)
 
@@ -582,13 +599,13 @@ class CellBoundaryWorkflowWidget(QWidget):
         sel_lay.addWidget(self.boundary_selection_output_files)
 
         self.boundary_selection_section = CollapsibleSection(
-            "2. Track-Conditioned Boundary Selection",
+            "3. Boundary Selection",
             sel_inner,
             expanded=False,
         )
         layout.addWidget(self.boundary_selection_section)
 
-    # -- Correction section -----------------------------------------------
+    # -- Correction section -------------------------------------------------
 
     def _setup_correction_section(self, layout: QVBoxLayout) -> None:
         correction_inner = QWidget()
@@ -606,7 +623,7 @@ class CellBoundaryWorkflowWidget(QWidget):
         correction_lay.addWidget(self.correction_widget)
 
         self.correction_section = CollapsibleSection(
-            "3. Correction", correction_inner, expanded=False
+            "4. Correction", correction_inner, expanded=False
         )
         layout.addWidget(self.correction_section)
 
@@ -614,10 +631,9 @@ class CellBoundaryWorkflowWidget(QWidget):
     # Signal connections
     # ------------------------------------------------------------------
     def _connect_signals(self) -> None:
-        # Contour
+        self.build_foreground_btn.clicked.connect(self._on_build_foreground)
         self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
         self.build_contour_maps_btn.clicked.connect(self._on_build_contour_maps)
-        # Boundary selection stages
         self.initialize_btn.clicked.connect(self._on_initialize)
         self.refine_btn.clicked.connect(self._on_refine)
         self.commit_btn.clicked.connect(self._on_commit)
@@ -651,7 +667,6 @@ class CellBoundaryWorkflowWidget(QWidget):
     # ------------------------------------------------------------------
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
-        # Clear cached state when switching positions
         if self._icm_state is not None:
             self._icm_state = None
             self._update_stage_enabled()
@@ -663,6 +678,8 @@ class CellBoundaryWorkflowWidget(QWidget):
         if pos_dir is None:
             pos_dir = self._pos_dir
         for fw in (
+            self.foreground_input_files,
+            self.foreground_output_files,
             self.contour_input_files,
             self.contour_output_files,
             self.boundary_selection_input_files,
@@ -672,23 +689,21 @@ class CellBoundaryWorkflowWidget(QWidget):
 
     def get_state(self) -> dict:
         return {
+            # Foreground params
+            "fg_cellprob_threshold": self.fg_cellprob_threshold_spin.value(),
+            "fg_flow_threshold": self.fg_flow_threshold_spin.value(),
+            "fg_min_size": self.fg_min_size_spin.value(),
+            "fg_niter": self.fg_niter_spin.value(),
             # Contour params
             "cp_min": self.cp_min_spin.value(),
             "cp_max": self.cp_max_spin.value(),
             "cp_step": self.cp_step_spin.value(),
-            "contour_flow_threshold": self.contour_flow_threshold_spin.value(),
-            "contour_niter": self.contour_niter_spin.value(),
             "cp_gamma_min": self.cp_gamma_min_spin.value(),
             "cp_gamma_max": self.cp_gamma_max_spin.value(),
             "cp_gamma_step": self.cp_gamma_step_spin.value(),
-            "contour_fg_threshold": self.contour_fg_threshold_spin.value(),
-            # --- flow-following state ---
-            "contour_method": self._contour_method_combo.currentText(),
             "ff_flow_weight": self._ff_flow_weight_spin.value(),
             "ff_step_scale": self._ff_step_scale_spin.value(),
             "ff_max_iter": self._ff_max_iter_spin.value(),
-            "ff_capture_radius": self._ff_capture_radius_spin.value(),
-            # --- temporal stabilization ---
             "memory_tau": self._memory_tau_spin.value(),
             "memory_floor": self._memory_floor_spin.value(),
             # Initialize params
@@ -697,12 +712,11 @@ class CellBoundaryWorkflowWidget(QWidget):
             "beta_s": self.beta_s_spin.value(),
             "lambda_t": self.lambda_t_spin.value(),
             "gamma_unary": self.gamma_unary_spin.value(),
-            "init_mode": self.init_mode_combo.currentText(),
+            "n_workers": self.n_workers_spin.value(),
             # Refine params
             "n_iters": self.n_iters_spin.value(),
             "min_round_flips": self.min_round_flips_spin.value(),
             "lambda_area": self.lambda_area_spin.value(),
-            "n_workers": self.n_workers_spin.value(),
         }
 
     def set_state(self, state: dict) -> None:
@@ -710,72 +724,47 @@ class CellBoundaryWorkflowWidget(QWidget):
             return
 
         _spin_map = {
+            "fg_cellprob_threshold": self.fg_cellprob_threshold_spin,
+            "fg_flow_threshold": self.fg_flow_threshold_spin,
+            "fg_min_size": self.fg_min_size_spin,
+            "fg_niter": self.fg_niter_spin,
             "cp_min": self.cp_min_spin,
             "cp_max": self.cp_max_spin,
             "cp_step": self.cp_step_spin,
-            "contour_flow_threshold": self.contour_flow_threshold_spin,
-            "contour_niter": self.contour_niter_spin,
             "cp_gamma_min": self.cp_gamma_min_spin,
             "cp_gamma_max": self.cp_gamma_max_spin,
             "cp_gamma_step": self.cp_gamma_step_spin,
-            "contour_fg_threshold": self.contour_fg_threshold_spin,
+            "ff_flow_weight": self._ff_flow_weight_spin,
+            "ff_step_scale": self._ff_step_scale_spin,
+            "ff_max_iter": self._ff_max_iter_spin,
+            "memory_tau": self._memory_tau_spin,
+            "memory_floor": self._memory_floor_spin,
             "alpha_unary": self.alpha_unary_spin,
             "lambda_s": self.lambda_s_spin,
             "beta_s": self.beta_s_spin,
             "lambda_t": self.lambda_t_spin,
             "gamma_unary": self.gamma_unary_spin,
+            "n_workers": self.n_workers_spin,
             "n_iters": self.n_iters_spin,
             "min_round_flips": self.min_round_flips_spin,
             "lambda_area": self.lambda_area_spin,
-            "n_workers": self.n_workers_spin,
-            # --- temporal stabilization ---
-            "memory_tau": self._memory_tau_spin,
-            "memory_floor": self._memory_floor_spin,
         }
-        # Backward-compat: map old graphcut_* keys
-        _legacy_map = {
-            "graphcut_alpha_unary": "alpha_unary",
-            "graphcut_lambda_s": "lambda_s",
-            "graphcut_beta_s": "beta_s",
-            "graphcut_lambda_t": "lambda_t",
-            "graphcut_n_iters": "n_iters",
-            "graphcut_min_round_flips": "min_round_flips",
-            "graphcut_init_mode": "init_mode",
-        }
-        for old_key, new_key in _legacy_map.items():
-            if old_key in state and new_key not in state:
-                state[new_key] = state[old_key]
 
         for key, widget in _spin_map.items():
             if key in state:
                 widget.setValue(state[key])
-        if "init_mode" in state:
-            self.init_mode_combo.setCurrentText(str(state["init_mode"]))
 
-        # --- flow-following state ---
-        if "contour_method" in state:
-            self._contour_method_combo.setCurrentText(state["contour_method"])
-        if "ff_flow_weight" in state:
-            self._ff_flow_weight_spin.setValue(state["ff_flow_weight"])
-        if "ff_step_scale" in state:
-            self._ff_step_scale_spin.setValue(state["ff_step_scale"])
-        if "ff_max_iter" in state:
-            self._ff_max_iter_spin.setValue(state["ff_max_iter"])
-        if "ff_capture_radius" in state:
-            self._ff_capture_radius_spin.setValue(state["ff_capture_radius"])
-
-    # ------------------------------------------------------------------
-    # Stage enable/disable
     # ------------------------------------------------------------------
     def _update_stage_enabled(self) -> None:
-        """Enable/disable Refine and Commit based on whether Initialize has run."""
         has_state = self._icm_state is not None
         has_layer = _CELL_SEG_LAYER in self.viewer.layers
         self.refine_btn.setEnabled(has_state and has_layer)
         self.commit_btn.setEnabled(has_layer)
 
     def _set_all_buttons_enabled(self, enabled: bool) -> None:
-        """Disable all stage buttons during a long-running operation."""
+        self.build_foreground_btn.setEnabled(enabled)
+        self.build_contour_maps_btn.setEnabled(enabled)
+        self.preview_contour_btn.setEnabled(enabled)
         self.initialize_btn.setEnabled(enabled)
         self.refine_btn.setEnabled(enabled and self._icm_state is not None)
         self.commit_btn.setEnabled(enabled and _CELL_SEG_LAYER in self.viewer.layers)
@@ -783,6 +772,11 @@ class CellBoundaryWorkflowWidget(QWidget):
     # ------------------------------------------------------------------
     # Status / layer helpers
     # ------------------------------------------------------------------
+    def _set_foreground_status(self, msg: str) -> None:
+        self.foreground_status_lbl.setText(msg)
+        self.foreground_status_lbl.setVisible(bool(msg))
+        logger.info(msg)
+
     def _set_contour_status(self, msg: str) -> None:
         self.contour_status_lbl.setText(msg)
         self.contour_status_lbl.setVisible(bool(msg))
@@ -814,8 +808,106 @@ class CellBoundaryWorkflowWidget(QWidget):
         step = getattr(dims, "current_step", (0,))
         return int(step[0]) if len(step) >= 1 else 0
 
+    def _set_foreground_buttons_running(self, running: bool) -> None:
+        self.build_foreground_btn.setEnabled(not running)
+        self.foreground_progress_bar.setVisible(running)
+        if not running:
+            self.foreground_progress_bar.setValue(0)
+
+    def _set_contour_buttons_running(self, running: bool) -> None:
+        self.build_contour_maps_btn.setEnabled(not running)
+        self.preview_contour_btn.setEnabled(not running)
+        self.contour_progress_bar.setVisible(running)
+        if not running:
+            self.contour_progress_bar.setValue(0)
+
     # ------------------------------------------------------------------
-    # 1. Contour Maps (Preview / Build)
+    # 1. Foreground Masks
+    # ------------------------------------------------------------------
+    def _on_build_foreground(self) -> None:
+        if self._pos_dir is None:
+            self._set_foreground_status("No project open.")
+            return
+
+        prob_path = self._prob_path()
+        filtered_dp_path = self._filtered_dp_path()
+        foreground_masks_path = self._foreground_masks_path()
+
+        for path, name in [
+            (prob_path, "cell_prob_3dt.tif"),
+            (filtered_dp_path, "filtered_dp.tif"),
+        ]:
+            if path is None or not path.exists():
+                self._set_foreground_status(f"Missing: {name}")
+                return
+
+        cellprob_threshold = self.fg_cellprob_threshold_spin.value()
+        flow_threshold = self.fg_flow_threshold_spin.value()
+        min_size = self.fg_min_size_spin.value()
+        niter = self.fg_niter_spin.value()
+        pos_dir = self._pos_dir
+
+        def _on_done(result):
+            self._foreground_worker = None
+            self._set_foreground_buttons_running(False)
+            self._show_layer(_CELL_FOREGROUND_LAYER, result, {}, self.viewer.add_labels)
+            self._refresh_stage_files(pos_dir)
+            self._set_foreground_status("Foreground masks complete.")
+
+        def _on_progress(data):
+            step, total, msg = data
+            self.foreground_progress_bar.setRange(0, total)
+            self.foreground_progress_bar.setValue(step)
+            self._set_foreground_status(msg)
+
+        @thread_worker(connect={
+            "yielded": _on_progress,
+            "returned": _on_done,
+            "errored": lambda exc: self._on_foreground_error(exc),
+        })
+        def _worker():
+            from cellflow.segmentation.cell_foreground import compute_cellpose_foreground_masks
+
+            yield (0, 1, "Loading inputs...")
+            prob_stack = tifffile.imread(str(prob_path))
+            dp_stack = tifffile.imread(str(filtered_dp_path))
+            if prob_stack.ndim == 3:
+                prob_stack = prob_stack[np.newaxis]
+            if dp_stack.ndim == 3:
+                dp_stack = dp_stack[np.newaxis]
+
+            T = prob_stack.shape[0]
+
+            def _progress(done, total):
+                pass  # progress is yielded per-frame below
+
+            yield (0, T, f"Building foreground masks (T={T})...")
+            masks = compute_cellpose_foreground_masks(
+                prob_stack,
+                dp_stack,
+                cellprob_threshold=cellprob_threshold,
+                flow_threshold=flow_threshold,
+                min_size=min_size,
+                niter=niter,
+                progress_cb=lambda done, total: None,
+            )
+
+            foreground_masks_path.parent.mkdir(parents=True, exist_ok=True)
+            tifffile.imwrite(str(foreground_masks_path), masks, compression="zlib")
+            return masks
+
+        self._set_foreground_status("Building foreground masks...")
+        self._set_foreground_buttons_running(True)
+        self._foreground_worker = _worker()
+
+    def _on_foreground_error(self, exc: Exception) -> None:
+        self._foreground_worker = None
+        self._set_foreground_buttons_running(False)
+        self._set_foreground_status(f"Error: {exc}")
+        logger.exception("Foreground worker error", exc_info=exc)
+
+    # ------------------------------------------------------------------
+    # 2. Contour Maps
     # ------------------------------------------------------------------
     def _cellprob_thresholds(self) -> list[float]:
         step = self.cp_step_spin.value()
@@ -833,49 +925,18 @@ class CellBoundaryWorkflowWidget(QWidget):
             step,
         ))
 
-    def _build_consensus_boundary_averaged(
-        self, prob_3d, dp_2d, thresholds, gammas,
-        *, flow_threshold, niter,
-    ):
-        boundary_accum = foreground_accum = None
-        for gamma in gammas:
-            prob_2d = apply_gamma(prob_3d, gamma).mean(axis=0)
-            b, fg = build_consensus_boundary_2d(
-                prob_2d, dp_2d, thresholds,
-                flow_threshold=flow_threshold, reduction="mean", niter=niter,
-            )
-            if boundary_accum is None:
-                boundary_accum = b.copy()
-                foreground_accum = fg.copy()
-            else:
-                boundary_accum += b
-                foreground_accum += fg
-        n = len(gammas)
-        return boundary_accum / n, foreground_accum / n
-
-    def _set_contour_buttons_running(self, running: bool) -> None:
-        self.build_contour_maps_btn.setEnabled(not running)
-        self.preview_contour_btn.setEnabled(not running)
-        self.contour_progress_bar.setVisible(running)
-        if not running:
-            self.contour_progress_bar.setValue(0)
-
-    # ------------------------------------------------------------------
-    # Contour method toggle
-    # ------------------------------------------------------------------
-
-    def _on_contour_method_changed(self, text: str) -> None:
-        """Show / hide parameter rows that belong to the selected method."""
-        is_ff = text == ContourMethod.FLOW_FOLLOWING.value
-        self._cellpose_params_container.setVisible(not is_ff)
-        self._ff_params_container.setVisible(is_ff)
-
-    # ------------------------------------------------------------------
-    # Flow-following helpers
-    # ------------------------------------------------------------------
+    def _current_ff_params(self) -> FlowFollowingParams:
+        return FlowFollowingParams(
+            median_kernel_time=1,
+            median_kernel_space=1,
+            gaussian_sigma_time=0.0,
+            gaussian_sigma_space=0.0,
+            flow_weight=self._ff_flow_weight_spin.value(),
+            flow_step_scale=self._ff_step_scale_spin.value(),
+            max_iterations=self._ff_max_iter_spin.value(),
+        )
 
     def _load_prob_frame(self, t: int) -> np.ndarray:
-        """Load a single probability frame (Z, Y, X)."""
         prob_path = self._prob_path()
         if prob_path is None or not prob_path.exists():
             raise FileNotFoundError(f"Probability file not found: {prob_path}")
@@ -885,7 +946,6 @@ class CellBoundaryWorkflowWidget(QWidget):
         return prob_stack[t].astype(np.float32)
 
     def _load_dp_frame(self, t: int) -> np.ndarray:
-        """Load a single DP flow frame (2, Y, X)."""
         dp_path = self._filtered_dp_path()
         if dp_path is None or not dp_path.exists():
             raise FileNotFoundError(f"DP file not found: {dp_path}")
@@ -893,23 +953,6 @@ class CellBoundaryWorkflowWidget(QWidget):
         if dp_stack.ndim == 3:
             dp_stack = dp_stack[np.newaxis]
         return dp_stack[t].astype(np.float32)
-
-    def _show_error(self, title: str, message: str) -> None:
-        """Display an error dialog (simple text message for now)."""
-        self._set_contour_status(f"{title}: {message}")
-
-    def _current_ff_params(self) -> FlowFollowingParams:
-        """Read the flow-following spinboxes and return a frozen dataclass."""
-        return FlowFollowingParams(
-            median_kernel_time=1,
-            median_kernel_space=1,
-            gaussian_sigma_time=0.0,
-            gaussian_sigma_space=0.0,
-            flow_weight=self._ff_flow_weight_spin.value(),
-            flow_step_scale=self._ff_step_scale_spin.value(),
-            max_iterations=self._ff_max_iter_spin.value(),
-            capture_radius=self._ff_capture_radius_spin.value(),
-        )
 
     def _build_consensus_boundary_ff_averaged(
         self,
@@ -948,47 +991,26 @@ class CellBoundaryWorkflowWidget(QWidget):
         return boundary_accum, foreground_accum
 
     def _on_build_contour_maps(self) -> None:
-        """Launch the contour-map worker, dispatching by selected method."""
-        # ── shared parameter gathering ───────────────────
+        """Launch the contour-map worker (flow-following)."""
         thresholds = self._cellprob_thresholds()
         gammas = self._cp_gammas()
-        fg_threshold = self.contour_fg_threshold_spin.value()
         memory_tau = self._memory_tau_spin.value()
         memory_floor = self._memory_floor_spin.value()
 
-        method = self._contour_method_combo.currentText()
-
-        # ── method-specific gathering ────────────────────────────────
-        if method == ContourMethod.FLOW_FOLLOWING.value:
-            nuc_path = self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
-            if nuc_path is None or not nuc_path.exists():
-                self._show_error(
-                    "Nucleus tracked labels not found",
-                    f"Flow-following requires nucleus tracked labels at:\n"
-                    f"{nuc_path}\n\n"
-                    f"Run the Nucleus Segmentation & Tracking step first.",
-                )
-                return
-            nuc_labels = tifffile.imread(str(nuc_path))  # (T, Y, X)
-            ff_params = self._current_ff_params()
-            extra_kw = dict(
-                method="flow_following",
-                nuc_labels=nuc_labels,
-                ff_params=ff_params,
+        nuc_path = self._nucleus_labels_path()
+        if nuc_path is None or not nuc_path.exists():
+            self._set_contour_status(
+                "Nucleus tracked labels not found. "
+                "Run the Nucleus Segmentation & Tracking step first."
             )
-        else:
-            extra_kw = dict(
-                method="cellpose",
-                flow_threshold=self.contour_flow_threshold_spin.value(),
-                niter=int(self.contour_niter_spin.value()),
-            )
+            return
+        nuc_labels = tifffile.imread(str(nuc_path))
+        ff_params = self._current_ff_params()
 
-        # ── launch worker (napari thread worker) ─────────────────────
         prob_path = self._prob_path()
         filtered_dp_path = self._filtered_dp_path()
         contour_path = self._contour_maps_path()
         score_path = self._foreground_scores_path()
-        foreground_path = self._foreground_masks_path()
         for path, name in [
             (prob_path, "cell_prob_3dt.tif"),
             (filtered_dp_path, "filtered_dp.tif"),
@@ -996,7 +1018,7 @@ class CellBoundaryWorkflowWidget(QWidget):
             if path is None or not path.exists():
                 self._set_contour_status(f"Missing: {name}")
                 return
-        if contour_path is None or score_path is None or foreground_path is None:
+        if contour_path is None or score_path is None:
             self._set_contour_status("No project open.")
             return
 
@@ -1005,13 +1027,11 @@ class CellBoundaryWorkflowWidget(QWidget):
         def _on_done(result):
             self._contour_worker = None
             self._set_contour_buttons_running(False)
-            contours, scores, foreground = result
+            contours, scores = result
             self._show_layer(_CELL_CONTOUR_LAYER, contours,
                              {"colormap": "magma", "visible": True}, self.viewer.add_image)
             self._show_layer(_CELL_FOREGROUND_SCORE_LAYER, scores,
                              {"colormap": "viridis", "visible": True}, self.viewer.add_image)
-            self._show_layer(_CELL_FOREGROUND_LAYER, foreground,
-                             {}, self.viewer.add_labels)
             self._refresh_stage_files(pos_dir)
             self._set_contour_status("Contour maps complete.")
 
@@ -1032,12 +1052,6 @@ class CellBoundaryWorkflowWidget(QWidget):
             "errored": lambda exc: self._on_contour_error(exc),
         })
         def _worker():
-            prob_path = self._prob_path()
-            filtered_dp_path = self._filtered_dp_path()
-            contour_path = self._contour_maps_path()
-            score_path = self._foreground_scores_path()
-            foreground_path = self._foreground_masks_path()
-
             prob_stack = tifffile.imread(str(prob_path))  # (T, Z, Y, X)
             dp_stack = tifffile.imread(str(filtered_dp_path))  # (T, 2, Y, X)
             if prob_stack.ndim == 3:
@@ -1048,44 +1062,21 @@ class CellBoundaryWorkflowWidget(QWidget):
 
             contour_maps = np.zeros((T, *prob_stack.shape[2:]), dtype=np.float32)
             fg_scores = np.zeros_like(contour_maps)
-            fg_masks = np.zeros_like(contour_maps, dtype=bool)
-
-            method = extra_kw.get("method", "cellpose")
-            nuc_labels = extra_kw.get("nuc_labels", None)
-            ff_params = extra_kw.get("ff_params", None)
-            flow_threshold = extra_kw.get("flow_threshold", 0.0)
-            niter = extra_kw.get("niter", 200)
 
             for t in range(T):
                 yield (t + 1, T, f"Building contour maps: frame {t + 1}/{T}...")
-                prob_3d = prob_stack[t]  # (Z, Y, X)
-                dp_2d = dp_stack[t]     # (2, Y, X)
+                prob_3d = prob_stack[t]
+                dp_2d = dp_stack[t]
+                labels_t = nuc_labels[t]
 
-                if method == "flow_following":
-                    labels_t = nuc_labels[t]  # (Y, X)
-                    b, fg = self._build_consensus_boundary_ff_averaged(
-                        prob_3d,
-                        dp_2d,
-                        labels_t,
-                        thresholds,
-                        gammas,
-                        ff_params=ff_params,
-                    )
-                else:  # "cellpose"
-                    b, fg = self._build_consensus_boundary_averaged(
-                        prob_3d,
-                        dp_2d,
-                        thresholds,
-                        gammas,
-                        flow_threshold=flow_threshold,
-                        niter=niter,
-                    )
-
+                b, fg = self._build_consensus_boundary_ff_averaged(
+                    prob_3d, dp_2d, labels_t,
+                    thresholds, gammas,
+                    ff_params=ff_params,
+                )
                 contour_maps[t] = b
                 fg_scores[t] = fg
-                fg_masks[t] = fg > fg_threshold
 
-            # ── Temporal stabilization (contour memory filter) ────────
             if memory_tau > 0.0 and T > 1:
                 yield (T, T, f"Applying contour memory filter (τ={memory_tau})...")
                 contour_maps = contour_memory_filter(
@@ -1095,8 +1086,7 @@ class CellBoundaryWorkflowWidget(QWidget):
             contour_path.parent.mkdir(parents=True, exist_ok=True)
             tifffile.imwrite(str(contour_path), contour_maps, compression="zlib")
             tifffile.imwrite(str(score_path), fg_scores, compression="zlib")
-            tifffile.imwrite(str(foreground_path), fg_masks.astype(np.uint8), compression="zlib")
-            return contour_maps, fg_scores, fg_masks.astype(np.uint8)
+            return contour_maps, fg_scores
 
         mem_msg = f", τ={memory_tau}" if memory_tau > 0 else ""
         self._set_contour_status(
@@ -1111,43 +1101,31 @@ class CellBoundaryWorkflowWidget(QWidget):
         t = self._current_t()
         thresholds = self._cellprob_thresholds()
         gammas = self._cp_gammas()
-        method = self._contour_method_combo.currentText()
 
-        prob_3d = self._load_prob_frame(t)  # (Z, Y, X)
-        dp_2d = self._load_dp_frame(t)     # (2, Y, X)
+        try:
+            prob_3d = self._load_prob_frame(t)
+            dp_2d = self._load_dp_frame(t)
+        except FileNotFoundError as exc:
+            self._set_contour_status(str(exc))
+            return
 
-        if method == ContourMethod.FLOW_FOLLOWING.value:
-            nuc_path = self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
-            if nuc_path is None or not nuc_path.exists():
-                self._show_error(
-                    "Nucleus tracked labels not found",
-                    f"Flow-following requires:\n{nuc_path}",
-                )
-                return
-            nuc_labels_t = tifffile.imread(str(nuc_path))[t]
-            ff_params = self._current_ff_params()
-            b, fg = self._build_consensus_boundary_ff_averaged(
-                prob_3d,
-                dp_2d,
-                nuc_labels_t,
-                thresholds,
-                gammas,
-                ff_params=ff_params,
+        nuc_path = self._nucleus_labels_path()
+        if nuc_path is None or not nuc_path.exists():
+            self._set_contour_status(
+                "Nucleus tracked labels not found. "
+                "Run the Nucleus Segmentation & Tracking step first."
             )
-        else:
-            b, fg = self._build_consensus_boundary_averaged(
-                prob_3d,
-                dp_2d,
-                thresholds,
-                gammas,
-                flow_threshold=self.contour_flow_threshold_spin.value(),
-                niter=int(self.contour_niter_spin.value()),
-            )
+            return
+        nuc_labels_t = tifffile.imread(str(nuc_path))[t]
+        ff_params = self._current_ff_params()
 
-        # Display preview
-        foreground_threshold = self.contour_fg_threshold_spin.value()
+        b, fg = self._build_consensus_boundary_ff_averaged(
+            prob_3d, dp_2d, nuc_labels_t,
+            thresholds, gammas,
+            ff_params=ff_params,
+        )
 
-        # Load the full stack to get dimensions
+        # Embed single-frame result in a full-size stack for napari display
         prob_path = self._prob_path()
         prob_stack = tifffile.imread(str(prob_path))
         if prob_stack.ndim == 3:
@@ -1158,12 +1136,11 @@ class CellBoundaryWorkflowWidget(QWidget):
         contour_data[t] = b
         score_data = np.zeros((n_t,) + fg.shape, dtype=np.float32)
         score_data[t] = fg
-        mask_data = (score_data >= foreground_threshold).astype(np.uint8)
+
         self._show_layer(_CELL_CONTOUR_LAYER, contour_data,
                          {"colormap": "magma", "visible": True}, self.viewer.add_image)
         self._show_layer(_CELL_FOREGROUND_SCORE_LAYER, score_data,
                          {"colormap": "viridis", "visible": True}, self.viewer.add_image)
-        self._show_layer(_CELL_FOREGROUND_LAYER, mask_data, {}, self.viewer.add_labels)
 
         mem_note = ""
         if self._memory_tau_spin.value() > 0:
@@ -1180,7 +1157,7 @@ class CellBoundaryWorkflowWidget(QWidget):
         logger.exception("Cell contour worker error", exc_info=exc)
 
     # ------------------------------------------------------------------
-    # 2a. Initialize
+    # 3a. Initialize
     # ------------------------------------------------------------------
     def _on_initialize(self) -> None:
         if self._pos_dir is None:
@@ -1197,11 +1174,6 @@ class CellBoundaryWorkflowWidget(QWidget):
                 self._set_initialize_status(f"Missing: {name}")
                 return
 
-        # Collect paths and params before entering the thread
-        nuc_path = self._nucleus_labels_path()
-        fg_path = self._foreground_masks_path()
-        ct_path = self._contour_maps_path()
-        score_path = self._foreground_scores_path()
         pos_dir = self._pos_dir
 
         from cellflow.segmentation.cell_label_icm import (
@@ -1215,7 +1187,6 @@ class CellBoundaryWorkflowWidget(QWidget):
             beta_s=self.beta_s_spin.value(),
             lambda_t=self.lambda_t_spin.value(),
             gamma_unary=self.gamma_unary_spin.value(),
-            init_mode=self.init_mode_combo.currentText(),
             n_workers=self.n_workers_spin.value(),
         )
 
@@ -1284,13 +1255,13 @@ class CellBoundaryWorkflowWidget(QWidget):
             return result_holder[0]
 
         self._set_initialize_status("Initializing...")
-        self.initialize_progress_bar.setRange(0, 0)  # indeterminate
+        self.initialize_progress_bar.setRange(0, 0)
         self.initialize_progress_bar.setVisible(True)
         self._set_all_buttons_enabled(False)
         self._initialize_worker = _worker()
 
     # ------------------------------------------------------------------
-    # 2b. Refine
+    # 3b. Refine
     # ------------------------------------------------------------------
     def _on_refine(self) -> None:
         if self._icm_state is None:
@@ -1317,7 +1288,6 @@ class CellBoundaryWorkflowWidget(QWidget):
             self._set_all_buttons_enabled(True)
             self._update_stage_enabled()
 
-            # Summarise
             total_flips = sum(e["flips"] for e in energy_log)
             rounds = len(energy_log)
             detail = ", ".join(
@@ -1377,7 +1347,7 @@ class CellBoundaryWorkflowWidget(QWidget):
         self._refine_worker = _worker()
 
     # ------------------------------------------------------------------
-    # 2c. Commit
+    # 3c. Commit
     # ------------------------------------------------------------------
     def _on_commit(self) -> None:
         if _CELL_SEG_LAYER not in self.viewer.layers:

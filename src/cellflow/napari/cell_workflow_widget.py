@@ -151,6 +151,7 @@ class CellWorkflowWidget(QWidget):
         self._seg_widget = CellBoundaryWorkflowWidget(self.viewer, parent=None)
         self._seg_widget.correction_section.setVisible(False)
         self._seg_widget.boundary_selection_section.set_title("Segmentation")
+        self._seg_widget.foreground_section.set_title("Foreground Masks")
         self._seg_widget.contour_section.set_title("Contour Maps")
         # Remove the internal stretch so it doesn't create extra dead space
         seg_layout = self._seg_widget.layout()

@@ -66,7 +66,6 @@ from cellflow.napari.ui_style import (
     muted_label,
     status_label,
 )
-from cellflow.segmentation import ContourWatershedParams, compute_contour_watershed
 from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.db_build import build_ultrack_database

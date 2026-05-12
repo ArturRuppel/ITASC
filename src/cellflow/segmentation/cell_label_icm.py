@@ -45,8 +45,6 @@ __all__ = [
     "initialize_icm",
     "refine_icm",
     "commit_labels",
-    "segment_cells_icm",
-    "run_cell_icm_from_pos_dir",
 ]
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -84,9 +82,6 @@ class CellLabelICMParams:
 
     gamma_unary: float = 0.0
     """Weight for ``(1 - foreground_score)`` added to the geodesic cost field."""
-
-    init_mode: str = "nuclei"
-    """Label initialisation: ``"nuclei"`` | ``"unary"`` | ``"watershed"``."""
 
     n_workers: int = 1
     """Parallel worker processes for geodesic unary computation.
@@ -532,40 +527,6 @@ def _write_unary_cache(
 
 # ── Internal: initialisation helpers ─────────────────────────────────────────
 
-def _unary_elevation_from_dense(
-    unary_dense: np.ndarray,
-    fg_mask: np.ndarray,
-) -> np.ndarray:
-    T, Y, X = fg_mask.shape
-    elevation = np.min(unary_dense, axis=3)
-    for t in range(T):
-        finite_fg = fg_mask[t] & (elevation[t] < _INF)
-        if finite_fg.any():
-            cap = float(np.max(elevation[t][finite_fg]))
-            inf_fg = fg_mask[t] & (elevation[t] >= _INF)
-            elevation[t][inf_fg] = cap
-    return elevation
-
-
-def _watershed_init(
-    fg_mask: np.ndarray,
-    nuc_tracks: np.ndarray,
-    elevation: np.ndarray,
-) -> np.ndarray:
-    from skimage.segmentation import watershed
-
-    T, Y, X = fg_mask.shape
-    labels = np.zeros((T, Y, X), dtype=np.uint32)
-    for t in range(T):
-        markers = nuc_tracks[t].astype(np.int32)
-        labels[t] = watershed(
-            elevation[t].astype(np.float32),
-            markers=markers,
-            mask=fg_mask[t],
-        ).astype(np.uint32)
-    return labels
-
-
 def _argmin_init(
     unary_dense: np.ndarray,
     fg_mask: np.ndarray,
@@ -823,17 +784,8 @@ def initialize_icm(
     del unary_dict
 
     # ── Initial labels ────────────────────────────────────────────────
-    mode = params.init_mode
-    if mode == "unary":
-        _report("Initialising labels from unary argmin...")
-        init_labels = _argmin_init(unary_dense, fg_mask, label_ids)
-    elif mode == "watershed":
-        _report("Initialising labels via seeded watershed...")
-        elevation = _unary_elevation_from_dense(unary_dense, fg_mask)
-        init_labels = _watershed_init(fg_mask, nuc_tracks, elevation)
-    else:
-        _report("Initialising labels from nucleus pixels only...")
-        init_labels = np.zeros((T, Y, X), dtype=np.uint32)
+    _report("Initialising labels from unary argmin...")
+    init_labels = _argmin_init(unary_dense, fg_mask, label_ids)
 
     nuc_mask = nuc_tracks > 0
     init_labels[nuc_mask] = nuc_tracks[nuc_mask].astype(np.uint32)
@@ -921,47 +873,6 @@ def commit_labels(labels: np.ndarray, output_path: Path | str) -> None:
         str(output_path),
         labels.astype(np.uint16, copy=False),
         compression="zlib",
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Public API — Legacy monolithic wrappers
-# ══════════════════════════════════════════════════════════════════════════════
-
-def segment_cells_icm(
-    nuc_tracks: np.ndarray,
-    fg_mask: np.ndarray,
-    contours: np.ndarray,
-    params: CellLabelICMParams,
-    *,
-    foreground_scores: np.ndarray | None = None,
-) -> np.ndarray:
-    """Run the full pipeline on in-memory arrays."""
-    state, init_labels = initialize_icm(
-        nuc_tracks, fg_mask, contours, params,
-        foreground_scores=foreground_scores,
-        progress_cb=lambda msg: print(msg, flush=True),
-    )
-    labels, _ = refine_icm(
-        state, init_labels,
-        n_iters=params.n_iters,
-        min_round_flips=params.min_round_flips,
-        lambda_area=params.lambda_area,
-        progress_cb=lambda msg: print(msg, flush=True),
-    )
-    return labels
-
-
-def run_cell_icm_from_pos_dir(
-    pos_dir: Path | str,
-    params: CellLabelICMParams,
-) -> np.ndarray:
-    """Load TIFFs from disk, run full pipeline."""
-    pos_dir = Path(pos_dir)
-    nuc_tracks, fg_mask, contours, foreground_scores = _load_pos_dir_inputs(pos_dir)
-    return segment_cells_icm(
-        nuc_tracks, fg_mask, contours, params,
-        foreground_scores=foreground_scores,
     )
 
 
