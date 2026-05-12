@@ -465,42 +465,38 @@ def relabel_cell(seg: np.ndarray, pos: tuple, new_label: int) -> bool:
 
 
 def fill_label_holes(labels: np.ndarray, radius: int = 5) -> np.ndarray:
-    """Fill enclosed background gaps by expanding neighboring labels.
+    """Fill holes fully enclosed within individual labels.
 
-    Background connected to the image border is preserved.  Enclosed zero-valued
-    components are filled only as far as labels can expand within *radius*
-    pixels; use a large radius to fill all enclosed gaps.
+    Only background pixels completely surrounded by a *single* label are
+    filled — label boundaries are never shifted.  ``radius`` limits the
+    maximum hole size: holes with area > π·radius² are left open.
     """
-    from skimage.measure import label as _cc_label
-
     if radius <= 0:
         return labels
 
-    bg = labels == 0
-    if not np.any(bg):
-        return labels
+    max_area = int(np.pi * radius * radius)
+    result = labels.copy()
 
-    bg_labeled = _cc_label(bg, connectivity=2)
-    open_ids: set[int] = set()
-    for edge in (
-        bg_labeled[0, :], bg_labeled[-1, :],
-        bg_labeled[:, 0], bg_labeled[:, -1],
-    ):
-        open_ids.update(int(v) for v in np.unique(edge))
-    open_ids.discard(0)
+    for cell_id in np.unique(labels):
+        if cell_id == 0:
+            continue
+        mask = result == cell_id
+        filled = binary_fill_holes(mask)
+        holes = filled & ~mask
+        if not np.any(holes):
+            continue
+        # never steal from another label
+        holes &= result == 0
+        if not np.any(holes):
+            continue
+        # keep only small-enough connected components
+        hole_cc, n_cc = nd_label(holes)
+        for h_id in range(1, n_cc + 1):
+            comp = hole_cc == h_id
+            if int(np.count_nonzero(comp)) <= max_area:
+                result[comp] = cell_id
 
-    open_bg = bg & np.isin(bg_labeled, list(open_ids))
-    enclosed = bg & ~open_bg
-    if not np.any(enclosed):
-        return labels
-
-    sentinel = int(np.max(labels)) + 1
-    work = labels.copy()
-    work[open_bg] = sentinel
-    expanded = expand_labels(work, distance=int(radius))
-    expanded[open_bg] = 0
-    expanded[expanded == sentinel] = 0
-    return expanded.astype(labels.dtype, copy=False)
+    return result
 
 
 def fix_label_semiholes(
@@ -508,48 +504,88 @@ def fix_label_semiholes(
     radius: int = 5,
     max_opening: int = 3,
 ) -> np.ndarray:
-    """Fill narrow border-connected background gaps by expanding labels.
+    """Close narrow channels in label boundaries by bridging contour pinch-points.
 
-    Candidate zero-valued components must touch the image border with no more
-    than ``max_opening`` pixels.  Wider border-connected background regions are
-    preserved as open background.
+    For each label, the ordered contour is scanned for pairs of points whose
+    Euclidean distance is ≤ *max_opening* but whose arc-length along the
+    contour is much larger (indicating a narrow indentation).  Qualifying
+    pairs are connected with a 1-px-wide line and the resulting enclosed
+    region is filled (up to area π·*radius*²).  Only background pixels are
+    ever modified — existing label boundaries are untouched.
     """
-    from skimage.measure import label as _cc_label
+    from scipy.spatial import cKDTree
+    from skimage.draw import line as draw_line
+    from skimage.measure import find_contours
 
-    if radius <= 0 or max_opening <= 0:
+    if max_opening <= 0 or radius <= 0:
         return labels
 
-    bg = labels == 0
-    if not np.any(bg):
-        return labels
+    max_area = int(np.pi * radius * radius)
+    # contour-path distance must exceed this to qualify as a channel
+    min_path = max(2 * max_opening, 6)
+    result = labels.copy()
+    unique_ids = [int(v) for v in np.unique(result) if v != 0]
 
-    bg_labeled = _cc_label(bg, connectivity=2)
-    border_mask = np.zeros(labels.shape, dtype=bool)
-    border_mask[0, :] = True
-    border_mask[-1, :] = True
-    border_mask[:, 0] = True
-    border_mask[:, -1] = True
+    for cell_id in unique_ids:
+        bbox = _bbox_of_label(result, cell_id)
+        bbox = _extend_bbox(bbox, 1.5, result.shape, min_pad=max_opening + 2)
+        r0, c0, r1, c1 = bbox
+        crop = result[r0:r1, c0:c1]                       # writeable view
+        mask = (crop == cell_id).astype(np.uint8)
 
-    candidate = np.zeros(labels.shape, dtype=bool)
-    for comp_id in np.unique(bg_labeled[border_mask & bg]):
-        comp_id = int(comp_id)
-        if comp_id == 0:
+        contours = find_contours(mask, 0.5)
+        if not contours:
             continue
-        comp_mask = bg_labeled == comp_id
-        opening = int(np.sum(comp_mask & border_mask))
-        if opening <= int(max_opening):
-            candidate |= comp_mask
 
-    if not np.any(candidate):
-        return labels
+        bridged = False
+        for contour in contours:
+            pts = np.round(contour).astype(int)
+            pts[:, 0] = np.clip(pts[:, 0], 0, crop.shape[0] - 1)
+            pts[:, 1] = np.clip(pts[:, 1], 0, crop.shape[1] - 1)
 
-    sentinel = int(np.max(labels)) + 1
-    work = labels.copy()
-    work[bg & ~candidate] = sentinel
-    expanded = expand_labels(work, distance=int(radius))
-    expanded[bg & ~candidate] = 0
-    expanded[expanded == sentinel] = 0
-    return expanded.astype(labels.dtype, copy=False)
+            # deduplicate consecutive rounded pixels
+            if len(pts) > 1:
+                keep = np.ones(len(pts), dtype=bool)
+                keep[1:] = np.any(pts[1:] != pts[:-1], axis=1)
+                pts = pts[keep]
+            n = len(pts)
+            if n < min_path:
+                continue
+
+            tree = cKDTree(pts.astype(np.float64))
+            pairs = tree.query_pairs(r=float(max_opening))
+
+            for i, j in pairs:
+                path_dist = min(abs(i - j), n - abs(i - j))
+                if path_dist < min_path:
+                    continue                               # just neighbours
+                rr, cc = draw_line(
+                    int(pts[i, 0]), int(pts[i, 1]),
+                    int(pts[j, 0]), int(pts[j, 1]),
+                )
+                valid = (
+                    (rr >= 0) & (rr < crop.shape[0])
+                    & (cc >= 0) & (cc < crop.shape[1])
+                )
+                rr, cc = rr[valid], cc[valid]
+                bg = crop[rr, cc] == 0
+                if np.any(bg):
+                    crop[rr[bg], cc[bg]] = cell_id
+                    bridged = True
+
+        # fill the pocket that the bridge just enclosed
+        if bridged:
+            new_mask = crop == cell_id
+            filled = binary_fill_holes(new_mask)
+            holes = filled & ~new_mask & (crop == 0)
+            if np.any(holes):
+                hole_cc, n_cc = nd_label(holes)
+                for h_id in range(1, n_cc + 1):
+                    comp = hole_cc == h_id
+                    if int(np.count_nonzero(comp)) <= max_area:
+                        crop[comp] = cell_id
+
+    return result
 
 
 def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
@@ -576,6 +612,104 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
             cleared += n_px
 
     return cleared
+
+
+def cleanup_movie(
+    cell_labels: np.ndarray,
+    nuc_labels: np.ndarray,
+    *,
+    progress_cb=None,
+) -> dict:
+    """Clean and resynchronise a cell label movie against nuclear labels.
+
+    Operations, in order:
+
+    1. **Clean fragments** — for every frame, remove disconnected same-label
+       components (keep the largest per label).
+    2. **Resync IDs** — relabel each cell region to match the nucleus it
+       overlaps most.  Nuclear labels are the source of truth.
+    3. **Remove orphans** — erase cell regions that overlap no nucleus at all.
+
+    Parameters
+    ----------
+    cell_labels : (T, H, W) ndarray
+        Modified **in-place**.
+    nuc_labels : (T, H, W) ndarray
+        Read-only reference (nucleus tracked labels).
+    progress_cb : callable, optional
+        ``progress_cb(done: int, total: int, message: str)``
+
+    Returns
+    -------
+    dict
+        ``{"fragments_cleared": int, "cells_relabeled": int,
+        "orphans_removed": int}``
+    """
+    if cell_labels.shape != nuc_labels.shape:
+        raise ValueError(
+            f"Shape mismatch: cell {cell_labels.shape} "
+            f"vs nuclear {nuc_labels.shape}"
+        )
+
+    T = cell_labels.shape[0]
+    total_steps = 2 * T
+    stats = {
+        "fragments_cleared": 0,
+        "cells_relabeled": 0,
+        "orphans_removed": 0,
+    }
+
+    # ── pass 1: clean fragments ───────────────────────────────────────────
+    for t in range(T):
+        seg = frame_view_2d(cell_labels, t)
+        if seg is None:
+            continue
+        stats["fragments_cleared"] += clean_stranded_pixels(seg)
+        if progress_cb:
+            progress_cb(t + 1, total_steps, f"Cleaning fragments: {t + 1}/{T}")
+
+    # ── pass 2: resync with nuclear labels ────────────────────────────────
+    for t in range(T):
+        cell_frame = frame_view_2d(cell_labels, t)
+        nuc_frame = frame_view_2d(nuc_labels, t)
+        if cell_frame is None or nuc_frame is None:
+            if progress_cb:
+                progress_cb(T + t + 1, total_steps, f"Resyncing: {t + 1}/{T}")
+            continue
+
+        cell_ids = set(int(v) for v in np.unique(cell_frame)) - {0}
+        if not cell_ids:
+            if progress_cb:
+                progress_cb(T + t + 1, total_steps, f"Resyncing: {t + 1}/{T}")
+            continue
+
+        # map each cell → nucleus with largest overlap
+        cell_to_nuc: dict[int, int] = {}
+        for c in cell_ids:
+            c_mask = cell_frame == c
+            nuc_vals, counts = np.unique(nuc_frame[c_mask], return_counts=True)
+            best_n, best_cnt = 0, 0
+            for n, cnt in zip(nuc_vals, counts):
+                n_int = int(n)
+                if n_int != 0 and int(cnt) > best_cnt:
+                    best_n, best_cnt = n_int, int(cnt)
+            cell_to_nuc[c] = best_n
+
+        # rebuild the frame in-place
+        original = cell_frame.copy()
+        cell_frame[:] = 0
+        for c, n in cell_to_nuc.items():
+            if n == 0:
+                stats["orphans_removed"] += 1
+            else:
+                cell_frame[original == c] = n
+                if c != n:
+                    stats["cells_relabeled"] += 1
+
+        if progress_cb:
+            progress_cb(T + t + 1, total_steps, f"Resyncing: {t + 1}/{T}")
+
+    return stats
 
 
 from cellflow.segmentation import apply_gamma  # noqa: F401 — re-exported from here

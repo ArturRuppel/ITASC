@@ -71,12 +71,16 @@ class CorrectionWidget(QWidget):
         show_activate_btn: bool = True,
         show_shortcuts: bool = True,
         inspector_first: bool = False,
+        spotlight: bool = True,           # ← NEW
+        show_cleanup: bool = True,        # ← NEW
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self._show_activate_btn = show_activate_btn
         self._show_shortcuts = show_shortcuts
         self._inspector_first = inspector_first
+        self._spotlight = spotlight              # ← NEW
+        self._show_cleanup = show_cleanup        # ← NEW
 
         self._layer: napari.layers.Labels | None = None
 
@@ -135,9 +139,15 @@ class CorrectionWidget(QWidget):
         self._reset_mode_btn.clicked.connect(self._reset_tool_mode)
         root.addWidget(self._reset_mode_btn)
 
+        # ── cleanup section (wrapped in container) ────────────── # ← CHANGED
+        self._cleanup_container = QWidget()                        # ← NEW
+        _clay = QVBoxLayout(self._cleanup_container)               # ← NEW
+        _clay.setContentsMargins(0, 0, 0, 0)                      # ← NEW
+        _clay.setSpacing(6)                                        # ← NEW
+
         cleanup_label = QLabel("Artifact cleanup")
         muted_label(cleanup_label, size_pt=9)
-        root.addWidget(cleanup_label)
+        _clay.addWidget(cleanup_label)                             # ← CHANGED (was root)
 
         scope_row = QHBoxLayout()
         scope_row.addWidget(QLabel("Scope:"))
@@ -147,7 +157,7 @@ class CorrectionWidget(QWidget):
             "Choose whether cleanup applies to the visible frame or the full label stack."
         )
         scope_row.addWidget(self._cleanup_scope_combo)
-        root.addLayout(scope_row)
+        _clay.addLayout(scope_row)                                 # ← CHANGED
 
         hole_row = QHBoxLayout()
         hole_row.addWidget(QLabel("Hole radius:"))
@@ -158,7 +168,7 @@ class CorrectionWidget(QWidget):
             "Maximum pixel distance for filling enclosed background gaps. Set to 0 to skip gap filling."
         )
         hole_row.addWidget(self._hole_radius_spin)
-        root.addLayout(hole_row)
+        _clay.addLayout(hole_row)                                  # ← CHANGED
 
         semihole_row = QHBoxLayout()
         semihole_row.addWidget(QLabel("Max opening:"))
@@ -169,14 +179,14 @@ class CorrectionWidget(QWidget):
             "Maximum border contact, in pixels, for semihole repair. Set to 0 to skip semihole repair."
         )
         semihole_row.addWidget(self._semihole_opening_spin)
-        root.addLayout(semihole_row)
+        _clay.addLayout(semihole_row)                              # ← CHANGED
 
         self._fill_holes_btn = QPushButton("Fill Holes")
         self._fill_holes_btn.setEnabled(False)
         self._fill_holes_btn.setToolTip("Fill enclosed background gaps using the configured hole radius.")
         action_button(self._fill_holes_btn, expand=True)
         self._fill_holes_btn.clicked.connect(self._fill_holes)
-        root.addWidget(self._fill_holes_btn)
+        _clay.addWidget(self._fill_holes_btn)                      # ← CHANGED
 
         self._fix_semiholes_btn = QPushButton("Fix Semiholes")
         self._fix_semiholes_btn.setEnabled(False)
@@ -185,14 +195,18 @@ class CorrectionWidget(QWidget):
         )
         action_button(self._fix_semiholes_btn, expand=True)
         self._fix_semiholes_btn.clicked.connect(self._fix_semiholes)
-        root.addWidget(self._fix_semiholes_btn)
+        _clay.addWidget(self._fix_semiholes_btn)                   # ← CHANGED
 
         self._clean_fragments_btn = QPushButton("Clean Fragments")
         self._clean_fragments_btn.setEnabled(False)
         self._clean_fragments_btn.setToolTip("Remove disconnected same-label fragments without filling background holes.")
         action_button(self._clean_fragments_btn, expand=True)
         self._clean_fragments_btn.clicked.connect(self._clean_fragments)
-        root.addWidget(self._clean_fragments_btn)
+        _clay.addWidget(self._clean_fragments_btn)                 # ← CHANGED
+
+        root.addWidget(self._cleanup_container)                    # ← NEW
+        if not self._show_cleanup:                                 # ← NEW
+            self._cleanup_container.setVisible(False)              # ← NEW
 
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -322,7 +336,8 @@ class CorrectionWidget(QWidget):
 
         self.viewer.layers.selection.active = layer
         self._get_draw_layer()
-        self._get_spotlight_layer()
+        if self._spotlight:                                        # ← NEW
+            self._get_spotlight_layer()
         self._get_highlight_layer()
 
         self.viewer.dims.events.current_step.connect(self._on_dims_change)
@@ -402,7 +417,8 @@ class CorrectionWidget(QWidget):
         self._set_status("Inactive")
         self._cleanup_draw_layer()
         self._cleanup_highlight_layer()
-        self._cleanup_spotlight_layer()
+        if self._spotlight:                                        # ← NEW
+            self._cleanup_spotlight_layer()
 
     def activate_layer(self, layer: napari.layers.Labels) -> None:
         """Activate correction on a specific Labels layer (bypasses the UI button)."""
@@ -431,21 +447,12 @@ class CorrectionWidget(QWidget):
             button.setEnabled(enabled)
 
     def set_edit_callback(self, fn: Callable[[int, set[int]], None] | None) -> None:
-        """Register a callback fired after every successful edit.
-        Signature: fn(t: int, changed_ids: set[int]) -> None.
-        Pass None to clear."""
         self._edit_callback = fn
 
     def set_selection_callback(self, fn: Callable[[int, int], None] | None) -> None:
-        """Register a callback fired when the selected label changes.
-
-        Signature: fn(t: int, label: int) -> None.  ``label`` is 0 when the
-        selection is cleared.
-        """
         self._selection_callback = fn
 
     def select_label(self, t: int, label: int, *, notify: bool = True) -> None:
-        """Select and highlight *label* at frame *t*."""
         self._update_highlight(t, label, notify=notify)
 
     def _cleanup_frame_indices(self) -> list[int]:
@@ -526,7 +533,6 @@ class CorrectionWidget(QWidget):
 
     @staticmethod
     def _frame_view(layer, t: int) -> np.ndarray:
-        """Return a 2D writable view of frame *t* (squeezes singleton leading dims)."""
         if layer.data.ndim == 2:
             return layer.data
         v = layer.data[t]
@@ -537,23 +543,16 @@ class CorrectionWidget(QWidget):
         return v
 
     def _next_free_label(self) -> int:
-        """Return the next unused label across the full active stack."""
         if self._layer is None:
             return 1
         return int(np.max(self._layer.data)) + 1
 
     def _record_history(self, layer, t: int, before: np.ndarray) -> None:
-        """Push changed pixels in frame *t* onto napari's undo stack and fire edit callback.
-
-        ``before`` is a 2D snapshot of the frame; supports 3D and 4D underlying layers.
-        """
         after = self._frame_view(layer, t)
         changed = np.where(before != after)
         if not changed[0].size:
             return
         n = changed[0].size
-        # Build undo indices matching layer.data.ndim. Prepend t, fill any
-        # extra leading dims (e.g. Z=1) with zeros, then the 2D (y, x) coords.
         extra = layer.data.ndim - 1 - 2
         parts = [np.full(n, t, dtype=layer.data.dtype)]
         parts.extend(np.zeros(n, dtype=layer.data.dtype) for _ in range(extra))
@@ -631,7 +630,6 @@ class CorrectionWidget(QWidget):
             _logging.getLogger("cellflow.correction").exception("selection_callback failed")
 
     def _update_highlight(self, t: int, lab: int, *, notify: bool = True) -> None:
-        """Redraw the cyan boundary for *lab* at time *t*. Pass 0 to clear."""
         previous_label = self._selected_label
         self._selected_label = lab
         self._selected_t = t if lab != 0 else -1
@@ -639,7 +637,8 @@ class CorrectionWidget(QWidget):
         if lab == 0 or self._layer is None:
             hl.data = []
             hl.visible = False
-            self._clear_spotlight()
+            if self._spotlight:                                    # ← NEW
+                self._clear_spotlight()
             if notify:
                 self._notify_selection_changed(t, lab, previous_label)
             return
@@ -649,7 +648,8 @@ class CorrectionWidget(QWidget):
             self._selected_t = -1
             hl.data = []
             hl.visible = False
-            self._clear_spotlight()
+            if self._spotlight:                                    # ← NEW
+                self._clear_spotlight()
             if notify:
                 self._notify_selection_changed(t, 0, previous_label)
             return
@@ -660,11 +660,13 @@ class CorrectionWidget(QWidget):
             self._selected_t = -1
             hl.data = []
             hl.visible = False
-            self._clear_spotlight()
+            if self._spotlight:                                    # ← NEW
+                self._clear_spotlight()
             if notify:
                 self._notify_selection_changed(t, 0, previous_label)
             return
-        self._update_spotlight(mask.astype(bool))
+        if self._spotlight:                                        # ← NEW
+            self._update_spotlight(mask.astype(bool))
         contour = max(contours, key=len)
         hl.data = [contour]
         hl.shape_type = ["polygon"]
@@ -768,7 +770,10 @@ class CorrectionWidget(QWidget):
     def _on_layer_removed(self, event=None) -> None:
         removed = getattr(event, "value", None)
         removed_name = getattr(removed, "name", None)
-        if removed is self._layer or removed_name in (_DRAW_LAYER, _HIGHLIGHT_LAYER, _SPOTLIGHT_LAYER):
+        helper_names = {_DRAW_LAYER, _HIGHLIGHT_LAYER}             # ← CHANGED
+        if self._spotlight:                                        # ← NEW
+            helper_names.add(_SPOTLIGHT_LAYER)                     # ← NEW
+        if removed is self._layer or removed_name in helper_names: # ← CHANGED
             log.debug("_on_layer_removed: '%s' removed, deactivating", removed_name)
             self._deactivate()
 
@@ -879,7 +884,6 @@ class CorrectionWidget(QWidget):
                     btn, mods, t, self._selected_label,
                 )
 
-                # Middle-click: erase clicked cell
                 if btn == 3 and not mods:
                     lab = _label_at(seg2d, pos)
                     if lab == 0:
@@ -893,7 +897,6 @@ class CorrectionWidget(QWidget):
                         self._set_status(f"Erased — Active on '{_layer.name}'")
                     return
 
-                # Ctrl+Right-click: swap
                 if btn == 2 and mods == {"Control"}:
                     lab = _label_at(seg2d, pos)
                     if lab == 0:
@@ -922,7 +925,6 @@ class CorrectionWidget(QWidget):
                         self._set_status(f"Swap — label {lab} selected, right-click second cell")
                     return
 
-                # Plain Right-click: complete two-step swap, or pass label across frames
                 if btn == 2 and not mods:
                     if self._swap_first_pos is not None:
                         if t != self._swap_first_t:
@@ -945,12 +947,10 @@ class CorrectionWidget(QWidget):
                     elif self._selected_label != 0 and self._selected_t != -1:
                         before = seg2d.copy()
                         if t != self._selected_t:
-                            # Pass selected label to a cell in a different frame
                             ok = relabel_cell(seg2d, pos, self._selected_label)
                             msg_ok  = f"Relabelled → {self._selected_label} — Active on '{_layer.name}'"
                             msg_err = "Relabel failed — click on a different cell"
                         else:
-                            # Swap selected cell with right-clicked cell in same frame
                             ok = swap_labels(seg2d, self._selected_pos, pos)
                             msg_ok  = f"Swapped — Active on '{_layer.name}'"
                             msg_err = "Swap failed — click on a different cell"
@@ -962,7 +962,6 @@ class CorrectionWidget(QWidget):
                             self._set_status(msg_err)
                     return
 
-                # Ctrl+Left-click: merge or split
                 if btn == 1 and mods == {"Control"}:
                     lab = _label_at(seg2d, pos)
                     if lab == 0:
@@ -1031,7 +1030,6 @@ class CorrectionWidget(QWidget):
                             )
                     return
 
-                # Plain Left-click: select / highlight cell
                 if btn == 1 and not mods:
                     self._ctrl_click_first = None
                     self._ctrl_click_first_label = 0
@@ -1048,7 +1046,6 @@ class CorrectionWidget(QWidget):
                         self._set_status(f"Active on '{_layer.name}'")
                     return
 
-                # Shift+Right-drag: split by drawn line
                 if mods == {"Shift"} and btn == 2:
                     dl = self._get_draw_layer()
                     dl.data = []
@@ -1083,7 +1080,6 @@ class CorrectionWidget(QWidget):
                     self._update_highlight(t, self._selected_label)
                     return
 
-                # Shift+Left-drag: draw cell path
                 if mods == {"Shift"} and btn == 1:
                     dl = self._get_draw_layer()
                     dl.data = []
@@ -1149,9 +1145,6 @@ class CorrectionWidget(QWidget):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _image_frame(self, t: int) -> np.ndarray | None:
-        """Return the intensity image at frame *t* from the first Image layer found.
-
-        Squeezes singleton leading dims so the result is always 2D."""
         for lyr in self.viewer.layers:
             if getattr(lyr, "name", None) == _SPOTLIGHT_LAYER:
                 continue
