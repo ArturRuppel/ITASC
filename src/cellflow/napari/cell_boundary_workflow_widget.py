@@ -250,20 +250,20 @@ class CellBoundaryWorkflowWidget(QWidget):
 
         # ── Cellprob consensus sweep ─────────────────────────────────────
         self.cp_min_spin = _spin_width(QDoubleSpinBox())
-        self.cp_min_spin.setRange(-20.0, 20.0)
-        self.cp_min_spin.setValue(-3.0)
-        self.cp_min_spin.setDecimals(1)
-        self.cp_min_spin.setSingleStep(1.0)
+        self.cp_min_spin.setRange(0.0, 1.0)
+        self.cp_min_spin.setValue(0.05)
+        self.cp_min_spin.setDecimals(2)
+        self.cp_min_spin.setSingleStep(0.05)
         self.cp_max_spin = _spin_width(QDoubleSpinBox())
-        self.cp_max_spin.setRange(-20.0, 20.0)
-        self.cp_max_spin.setValue(0.0)
-        self.cp_max_spin.setDecimals(1)
-        self.cp_max_spin.setSingleStep(1.0)
+        self.cp_max_spin.setRange(0.0, 1.0)
+        self.cp_max_spin.setValue(0.50)
+        self.cp_max_spin.setDecimals(2)
+        self.cp_max_spin.setSingleStep(0.05)
         self.cp_step_spin = _spin_width(QDoubleSpinBox())
-        self.cp_step_spin.setRange(0.1, 10.0)
-        self.cp_step_spin.setValue(1.0)
-        self.cp_step_spin.setDecimals(1)
-        self.cp_step_spin.setSingleStep(0.5)
+        self.cp_step_spin.setRange(0.01, 1.0)
+        self.cp_step_spin.setValue(0.05)
+        self.cp_step_spin.setDecimals(2)
+        self.cp_step_spin.setSingleStep(0.01)
 
         sweep_grid = block_grid(horizontal_spacing=12)
         add_block_pair_row(sweep_grid, 0,
@@ -964,12 +964,19 @@ class CellBoundaryWorkflowWidget(QWidget):
         *,
         ff_params: FlowFollowingParams,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Gamma-averaged consensus boundary via flow-following."""
+        """Gamma-averaged consensus boundary via flow-following.
+
+        Applies sigmoid before Z-averaging (average probabilities, not logits).
+        Thresholds are expected in probability space [0, 1].
+        """
         boundary_accum = None
         foreground_accum = None
         n = 0
         for gamma in gammas:
-            prob_2d = apply_gamma(prob_3d, gamma).mean(axis=0)
+            logits_3d = apply_gamma(prob_3d, gamma)
+            probs_3d = 1.0 / (1.0 + np.exp(-logits_3d))
+            prob_2d = probs_3d.mean(axis=0).astype(np.float32)
+
             b, fg = build_consensus_boundary_flow_following(
                 prob_2d,
                 dp_2d,

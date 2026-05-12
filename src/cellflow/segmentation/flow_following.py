@@ -389,6 +389,54 @@ def compute_flow_following_frame(
     return result
 
 
+def _compute_boundary_weight_vectorized(
+    cell_labels: np.ndarray,   # (H, W) int32
+    order: np.ndarray,         # (H, W) int32  — shell assignment order
+) -> np.ndarray:
+    """Shell-confidence weighted boundary in O(H·W) instead of O(max_order·H·W).
+
+    Key insight: a pixel (i, j) first becomes a boundary at the cutoff
+    ``k_onset = min over qualifying 4-neighbours of max(order[i,j], order[n])``
+    and then *stays* a boundary for every subsequent cutoff (inclusion is
+    monotone).  Its weight is therefore
+    ``(max_order + 1 − k_onset) / (max_order + 1)``.
+    """
+    H, W = cell_labels.shape
+    max_order = int(order.max())
+    n_cutoffs = max_order + 1
+    if n_cutoffs == 0:
+        return np.zeros((H, W), dtype=np.float32)
+
+    fg = cell_labels > 0
+    SENTINEL = np.int32(max_order + 2)
+    k_onset = np.full((H, W), SENTINEL, dtype=np.int32)
+
+    # Pad so shifted indexing never goes out of bounds
+    lab_pad = np.pad(cell_labels, 1, constant_values=0)
+    ord_pad = np.pad(order, 1, constant_values=SENTINEL)
+
+    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        n_lab = lab_pad[1 + dr : H + 1 + dr, 1 + dc : W + 1 + dc]
+        n_ord = ord_pad[1 + dr : H + 1 + dr, 1 + dc : W + 1 + dc]
+
+        qualifies = fg & (n_lab > 0) & (cell_labels != n_lab)
+        onset = np.maximum(order, n_ord)
+
+        # Keep the earliest onset across all qualifying neighbours
+        np.minimum(
+            k_onset,
+            np.where(qualifies, onset, SENTINEL),
+            out=k_onset,
+        )
+
+    result = np.zeros((H, W), dtype=np.float32)
+    valid = k_onset <= max_order
+    result[valid] = (
+        (max_order + 1 - k_onset[valid]).astype(np.float32) / n_cutoffs
+    )
+    return result
+
+
 def build_consensus_boundary_flow_following(
     prob_yx: np.ndarray,
     dp_cyx: np.ndarray,
@@ -399,77 +447,45 @@ def build_consensus_boundary_flow_following(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build a consensus contour map using flow-following + EDT gravity.
 
-    This builds a consensus contour map by replacing Cellpose's
-    ``compute_masks`` with :func:`compute_flow_following_frame`.  For every
-    *cellprob_threshold* the probability map is binarised into a foreground
-    mask; flow-following assigns each foreground pixel to the nearest nucleus;
-    boundaries are extracted and accumulated across thresholds.
-
-    The function additionally sweeps **shell-confidence cutoffs**: for each
-    threshold, the full label map is progressively truncated to pixels
-    assigned within the first *k* shells.  Inter-cell boundaries are
-    extracted at every cutoff and averaged.  Boundaries between regions that
-    are both assigned early (high confidence) appear at all cutoffs and
-    receive a high contour score.  Boundaries involving late-assigned
-    (ambiguous) pixels appear only at high cutoffs and receive a low score.
-    This naturally hardens stable boundaries and weakens uncertain ones.
-
-    Parameters
-    ----------
-    prob_yx : ndarray, shape (Y, X), dtype float32
-        Z-averaged, gamma-corrected probability logits.
-    dp_cyx : ndarray, shape (2, Y, X), dtype float32
-        Pre-filtered 2-D flow vectors.
-    labels_yx : ndarray, shape (Y, X), dtype int32
-        Nucleus tracked labels for this frame.
-    cellprob_thresholds : list[float]
-        Thresholds swept for the consensus boundary.
-    params : FlowFollowingParams
-        Integration hyper-parameters.
-    reduction : {"mean", "sum"}
-        How to reduce across thresholds.
-
-    Returns
-    -------
-    boundary : ndarray, shape (Y, X), dtype float32
-        Accumulated boundary confidence in [0, 1] (if *reduction* = "mean").
-    foreground : ndarray, shape (Y, X), dtype float32
-        Accumulated foreground score in [0, 1] (if *reduction* = "mean").
+    Changes vs. the original implementation
+    ----------------------------------------
+    * The inner shell-cutoff sweep is replaced by a closed-form
+      vectorised computation (``_compute_boundary_weight_vectorized``),
+      reducing work from O(max_order · H · W) to O(H · W) per threshold.
+    * The outer threshold loop is executed in a
+      ``concurrent.futures.ThreadPoolExecutor``.  The heavy callees
+      (numba ``parallel=True``, scipy EDT) all release the GIL, so
+      real parallelism is achieved without process-spawn overhead.
     """
-    H, W = prob_yx.shape
-    boundary_accum = np.zeros((H, W), dtype=np.float32)
-    foreground_accum = np.zeros((H, W), dtype=np.float32)
-    n = 0
+    from concurrent.futures import ThreadPoolExecutor
 
-    for thresh in cellprob_thresholds:
+    H, W = prob_yx.shape
+
+    # -- worker executed once per threshold ---------------------------
+    def _process_threshold(thresh: float):
         fg_mask = prob_yx > thresh
         if not fg_mask.any():
-            continue
-
+            return None
         cell_labels, order = _flow_following_frame_core(
             fg_mask, dp_cyx, labels_yx, params,
         )
+        boundary = _compute_boundary_weight_vectorized(cell_labels, order)
+        foreground = (cell_labels > 0).astype(np.float32)
+        return boundary, foreground
 
-        max_order = int(order.max())
+    # -- fan out across threads ---------------------------------------
+    with ThreadPoolExecutor() as pool:
+        results = list(pool.map(_process_threshold, cellprob_thresholds))
 
-        # Accumulate boundaries at each cutoff, then normalise
-        # within this threshold so each threshold contributes equally.
-        thresh_boundary = np.zeros((H, W), dtype=np.float32)
-        n_cutoffs = 0
-
-        for cutoff in range(0, max_order + 1):
-            partial = np.where(order <= cutoff, cell_labels, 0)
-            bd = _inter_cell_boundaries(partial)
-            thresh_boundary += bd.astype(np.float32)
-            n_cutoffs += 1
-
-        if n_cutoffs > 0:
-            thresh_boundary /= n_cutoffs
-
-        boundary_accum += thresh_boundary
-        # Foreground score: from the full label map (not truncated)
-        foreground_accum += (cell_labels > 0).astype(np.float32)
-        n += 1
+    # -- reduce -------------------------------------------------------
+    boundary_accum = np.zeros((H, W), dtype=np.float32)
+    foreground_accum = np.zeros((H, W), dtype=np.float32)
+    n = 0
+    for r in results:
+        if r is not None:
+            boundary_accum += r[0]
+            foreground_accum += r[1]
+            n += 1
 
     if n > 0 and reduction == "mean":
         boundary_accum /= n
