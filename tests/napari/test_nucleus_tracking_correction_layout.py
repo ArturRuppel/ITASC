@@ -3059,6 +3059,47 @@ def test_ultrack_db_hierarchy_slider_states_eventually_show_equal_height_parent(
     viewer.close()
 
 
+def test_ultrack_db_hierarchy_states_treat_null_parent_as_root(tmp_path):
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import Base
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        _add_ultrack_node(
+            session,
+            node_id=100,
+            parent_id=None,
+            height=10.0,
+            bbox=(0, 0, 2, 4),
+        )
+        _add_ultrack_node(
+            session,
+            node_id=101,
+            parent_id=100,
+            height=1.0,
+            bbox=(0, 0, 2, 2),
+        )
+        session.commit()
+    engine.dispose()
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    states = widget._query_hierarchy_cut_states(
+        db_path, db_path.stat().st_mtime_ns, frame=0
+    )
+
+    assert [state.node_ids for state in states] == [(101,), (100,)]
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_db_hierarchy_slider_clamps_when_cut_states_shrink(tmp_path, monkeypatch):
     db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)

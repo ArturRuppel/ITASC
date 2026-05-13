@@ -35,6 +35,8 @@ from cellflow.tracking_ultrack.validation_nodes import inject_validated_nodes
 
 LOG = logging.getLogger(__name__)
 
+SOURCE_NODE_TABLE = "cellflow_ultrack_source_nodes"
+
 
 # ---------------------------------------------------------------------------
 # Merge report
@@ -93,6 +95,11 @@ def _read_nodes_and_overlaps(
                             if row.t_hier_id is not None
                             else None
                         ),
+                        "hier_parent_id": (
+                            int(row.hier_parent_id)
+                            if row.hier_parent_id is not None
+                            else None
+                        ),
                         "node_annot": row.node_annot,
                         "appear_annot": row.appear_annot,
                         "disappear_annot": row.disappear_annot,
@@ -134,6 +141,70 @@ def _remap_t_hier_ids(db_nodes: list[list[dict[str, Any]]]) -> None:
                 hierarchy_map[key] = next_global_id
                 next_global_id += 1
             node["global_t_hier_id"] = hierarchy_map[key]
+
+
+def _source_table_exists(conn) -> bool:
+    return (
+        conn.execute(
+            sqla.text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name=:table_name"
+            ),
+            {"table_name": SOURCE_NODE_TABLE},
+        ).first()
+        is not None
+    )
+
+
+def _create_source_node_table(engine: sqla.Engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            sqla.text(
+                f"""
+                CREATE TABLE IF NOT EXISTS {SOURCE_NODE_TABLE} (
+                    node_id INTEGER PRIMARY KEY,
+                    source_index INTEGER NOT NULL
+                )
+                """
+            )
+        )
+
+
+def query_source_indices(db_path: str | Path) -> tuple[int, ...]:
+    """Return source indices recorded by ``merge_ultrack_databases``."""
+    engine = sqla.create_engine(f"sqlite:///{Path(db_path)}")
+    try:
+        with engine.connect() as conn:
+            if not _source_table_exists(conn):
+                return ()
+            rows = conn.execute(
+                sqla.text(
+                    f"SELECT DISTINCT source_index FROM {SOURCE_NODE_TABLE} "
+                    "ORDER BY source_index"
+                )
+            ).all()
+            return tuple(int(row[0]) for row in rows)
+    finally:
+        engine.dispose()
+
+
+def query_source_node_ids(db_path: str | Path, source_index: int) -> tuple[int, ...]:
+    """Return merged node ids that originated from ``source_index``."""
+    engine = sqla.create_engine(f"sqlite:///{Path(db_path)}")
+    try:
+        with engine.connect() as conn:
+            if not _source_table_exists(conn):
+                return ()
+            rows = conn.execute(
+                sqla.text(
+                    f"SELECT node_id FROM {SOURCE_NODE_TABLE} "
+                    "WHERE source_index=:source_index ORDER BY node_id"
+                ),
+                {"source_index": int(source_index)},
+            ).all()
+            return tuple(int(row[0]) for row in rows)
+    finally:
+        engine.dispose()
 
 
 def _ndim_from_pickle(pickle: bytes) -> int:
@@ -211,6 +282,15 @@ def merge_ultrack_databases(
     src_paths = [Path(p) for p in source_db_paths]
     out_path = Path(output_db_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Copy metadata.toml from the first source that has one — Ultrack solve/export
+    # needs it (shape, properties). Without it we get KeyError: 'shape'.
+    for src in src_paths:
+        src_meta = src.parent / "metadata.toml"
+        if src_meta.exists():
+            shutil.copy2(str(src_meta), str(out_path.parent / "metadata.toml"))
+            break
+
     if out_path.exists():
         out_path.unlink()
 
@@ -233,8 +313,24 @@ def merge_ultrack_databases(
     # Remap t_hier_id to globally unique values per source database
     _remap_t_hier_ids(db_nodes)
 
+    # Remap hier_parent_id within each source database. Source-local node ids
+    # are reused across thresholds, so parent lookups must not cross sources.
+    from ultrack.utils.constants import NO_PARENT
+
+    for nds in db_nodes:
+        old_to_new = {row["old_id"]: row["new_id"] for row in nds}
+        for row in nds:
+            old_pid = row.get("hier_parent_id")
+            if old_pid is not None and old_pid in old_to_new:
+                row["hier_parent_id"] = old_to_new[old_pid]
+            elif old_pid == NO_PARENT:
+                row["hier_parent_id"] = NO_PARENT
+            else:
+                # Parent not in merged set (or NULL) - clear it.
+                row["hier_parent_id"] = None
+
     total_nodes = sum(len(nds) for nds in db_nodes)
-    _notify(progress_cb, f"Remapped {total_nodes} node ids …")
+    _notify(progress_cb, f"Remapped {total_nodes} node ids and hierarchy parents …")
 
     # Forward within-source overlaps using the new ID map.
     overlap_pairs: set[tuple[int, int]] = set()
@@ -292,6 +388,7 @@ def merge_ultrack_databases(
     engine = sqla.create_engine(f"sqlite:///{out_path}")
     try:
         Base.metadata.create_all(engine)
+        _create_source_node_table(engine)
         with Session(engine) as session:
             # Insert nodes with updated pickles.
             for nds in db_nodes:
@@ -326,6 +423,7 @@ def merge_ultrack_databases(
                             node_prob=row["node_prob"],
                             t_node_id=row["t_node_id"],
                             t_hier_id=row["global_t_hier_id"],
+                            hier_parent_id=row["hier_parent_id"],
                             node_annot=row["node_annot"],
                             appear_annot=row["appear_annot"],
                             disappear_annot=row["disappear_annot"],
@@ -339,6 +437,20 @@ def merge_ultrack_databases(
                 session.add(OverlapDB(node_id=pair[0], ancestor_id=pair[1]))
 
             session.commit()
+        source_rows = [
+            {"node_id": int(row["new_id"]), "source_index": int(source_idx)}
+            for source_idx, nds in enumerate(db_nodes)
+            for row in nds
+        ]
+        if source_rows:
+            with engine.begin() as conn:
+                conn.execute(
+                    sqla.text(
+                        f"INSERT INTO {SOURCE_NODE_TABLE} "
+                        "(node_id, source_index) VALUES (:node_id, :source_index)"
+                    ),
+                    source_rows,
+                )
     finally:
         engine.dispose()
 

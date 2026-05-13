@@ -465,36 +465,26 @@ def relabel_cell(seg: np.ndarray, pos: tuple, new_label: int) -> bool:
 
 
 def fill_label_holes(labels: np.ndarray, radius: int = 5) -> np.ndarray:
-    """Fill holes fully enclosed within individual labels.
-
-    Only background pixels completely surrounded by a *single* label are
-    filled — label boundaries are never shifted.  ``radius`` limits the
-    maximum hole size: holes with area > π·radius² are left open.
-    """
+    """Expand labels into fully enclosed background gaps up to ``radius`` pixels."""
     if radius <= 0:
         return labels
 
-    max_area = int(np.pi * radius * radius)
     result = labels.copy()
+    background = labels == 0
+    bg_cc, n_cc = nd_label(background)
+    expanded = expand_labels(labels, distance=int(radius))
 
-    for cell_id in np.unique(labels):
-        if cell_id == 0:
+    for comp_id in range(1, n_cc + 1):
+        comp = bg_cc == comp_id
+        if (
+            np.any(comp[0, :])
+            or np.any(comp[-1, :])
+            or np.any(comp[:, 0])
+            or np.any(comp[:, -1])
+        ):
             continue
-        mask = result == cell_id
-        filled = binary_fill_holes(mask)
-        holes = filled & ~mask
-        if not np.any(holes):
-            continue
-        # never steal from another label
-        holes &= result == 0
-        if not np.any(holes):
-            continue
-        # keep only small-enough connected components
-        hole_cc, n_cc = nd_label(holes)
-        for h_id in range(1, n_cc + 1):
-            comp = hole_cc == h_id
-            if int(np.count_nonzero(comp)) <= max_area:
-                result[comp] = cell_id
+        fill = comp & (expanded > 0)
+        result[fill] = expanded[fill]
 
     return result
 
@@ -504,92 +494,40 @@ def fix_label_semiholes(
     radius: int = 5,
     max_opening: int = 3,
 ) -> np.ndarray:
-    """Close narrow channels in label boundaries by bridging contour pinch-points.
-
-    For each label, the ordered contour is scanned for pairs of points whose
-    Euclidean distance is ≤ *max_opening* but whose arc-length along the
-    contour is much larger (indicating a narrow indentation).  Qualifying
-    pairs are connected with a 1-px-wide line and the resulting enclosed
-    region is filled (up to area π·*radius*²).  Only background pixels are
-    ever modified — existing label boundaries are untouched.
-    """
-    from scipy.spatial import cKDTree
-    from skimage.draw import line as draw_line
-    from skimage.measure import find_contours
-
+    """Repair border-connected background gaps with a narrow image-edge opening."""
     if max_opening <= 0 or radius <= 0:
         return labels
 
-    max_area = int(np.pi * radius * radius)
-    # contour-path distance must exceed this to qualify as a channel
-    min_path = max(2 * max_opening, 6)
     result = labels.copy()
-    unique_ids = [int(v) for v in np.unique(result) if v != 0]
+    background = labels == 0
+    bg_cc, n_cc = nd_label(background)
+    expanded = expand_labels(labels, distance=int(radius))
 
-    for cell_id in unique_ids:
-        bbox = _bbox_of_label(result, cell_id)
-        bbox = _extend_bbox(bbox, 1.5, result.shape, min_pad=max_opening + 2)
-        r0, c0, r1, c1 = bbox
-        crop = result[r0:r1, c0:c1]                       # writeable view
-        mask = (crop == cell_id).astype(np.uint8)
-
-        contours = find_contours(mask, 0.5)
-        if not contours:
+    for comp_id in range(1, n_cc + 1):
+        comp = bg_cc == comp_id
+        border_contact = (
+            int(np.count_nonzero(comp[0, :]))
+            + int(np.count_nonzero(comp[-1, :]))
+            + int(np.count_nonzero(comp[1:-1, 0]))
+            + int(np.count_nonzero(comp[1:-1, -1]))
+        )
+        if border_contact == 0 or border_contact > max_opening:
             continue
-
-        bridged = False
-        for contour in contours:
-            pts = np.round(contour).astype(int)
-            pts[:, 0] = np.clip(pts[:, 0], 0, crop.shape[0] - 1)
-            pts[:, 1] = np.clip(pts[:, 1], 0, crop.shape[1] - 1)
-
-            # deduplicate consecutive rounded pixels
-            if len(pts) > 1:
-                keep = np.ones(len(pts), dtype=bool)
-                keep[1:] = np.any(pts[1:] != pts[:-1], axis=1)
-                pts = pts[keep]
-            n = len(pts)
-            if n < min_path:
-                continue
-
-            tree = cKDTree(pts.astype(np.float64))
-            pairs = tree.query_pairs(r=float(max_opening))
-
-            for i, j in pairs:
-                path_dist = min(abs(i - j), n - abs(i - j))
-                if path_dist < min_path:
-                    continue                               # just neighbours
-                rr, cc = draw_line(
-                    int(pts[i, 0]), int(pts[i, 1]),
-                    int(pts[j, 0]), int(pts[j, 1]),
-                )
-                valid = (
-                    (rr >= 0) & (rr < crop.shape[0])
-                    & (cc >= 0) & (cc < crop.shape[1])
-                )
-                rr, cc = rr[valid], cc[valid]
-                bg = crop[rr, cc] == 0
-                if np.any(bg):
-                    crop[rr[bg], cc[bg]] = cell_id
-                    bridged = True
-
-        # fill the pocket that the bridge just enclosed
-        if bridged:
-            new_mask = crop == cell_id
-            filled = binary_fill_holes(new_mask)
-            holes = filled & ~new_mask & (crop == 0)
-            if np.any(holes):
-                hole_cc, n_cc = nd_label(holes)
-                for h_id in range(1, n_cc + 1):
-                    comp = hole_cc == h_id
-                    if int(np.count_nonzero(comp)) <= max_area:
-                        crop[comp] = cell_id
+        fill = comp & (expanded > 0)
+        result[fill] = expanded[fill]
 
     return result
 
 
 def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
-    """Remove disconnected same-label fragments, keeping each label's largest component."""
+    """Remove disconnected same-label fragments, keeping each label's largest component.
+
+    Fragments are cleared and then ``expand_labels`` is used to propose a new
+    label.  The proposal is only accepted (written back) when the reassigned
+    fragment pixels are 8-connected to an existing component of that same
+    label — this prevents ``expand_labels`` from recreating a disconnected
+    fragment.
+    """
     from skimage.measure import label as _cc_label
     cleared = 0
 
@@ -608,7 +546,20 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
             comp_mask = labeled == comp_id
             seg[comp_mask] = 0
             filled = expand_labels(seg, distance=n_px + 2)
-            seg[comp_mask] = filled[comp_mask]
+            new_labels = filled[comp_mask]
+            keep = np.zeros(new_labels.shape, dtype=bool)
+
+            for lbl in np.unique(new_labels):
+                if lbl == 0:
+                    continue
+                assigned_here = new_labels == lbl
+                assign_mask = np.zeros_like(seg, dtype=bool)
+                assign_mask[comp_mask] = assigned_here
+                dilated = binary_dilation(assign_mask, structure=np.ones((3, 3), dtype=bool))
+                if np.any((seg == lbl) & dilated):
+                    keep[assigned_here] = True
+
+            seg[comp_mask] = np.where(keep, new_labels, 0).astype(seg.dtype)
             cleared += n_px
 
     return cleared

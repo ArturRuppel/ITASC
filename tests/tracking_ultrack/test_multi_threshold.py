@@ -38,6 +38,20 @@ def _merged_hierarchy_ids(db_path):
         engine.dispose()
 
 
+def _merged_hierarchy_parent_ids(db_path):
+    from ultrack.core.database import NodeDB
+
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    try:
+        with Session(engine) as session:
+            return {
+                int(row.id): row.hier_parent_id
+                for row in session.query(NodeDB).order_by(NodeDB.id).all()
+            }
+    finally:
+        engine.dispose()
+
+
 def _merged_overlap_pairs(db_path):
     from ultrack.core.database import OverlapDB
 
@@ -103,6 +117,81 @@ def test_merge_cross_source_overlaps_include_hidden_same_source_nodes(tmp_path):
 
     assert report.cross_source_overlaps == 2
     assert _merged_overlap_pairs(output) == {(3, 1), (3, 2)}
+
+
+def test_merge_ultrack_databases_remaps_hierarchy_parents_per_source(tmp_path):
+    pytest.importorskip("ultrack")
+
+    from ultrack.utils.constants import NO_PARENT
+
+    from cellflow.tracking_ultrack.multi_threshold import merge_ultrack_databases
+
+    source_a = tmp_path / "source_a.db"
+    source_b = tmp_path / "source_b.db"
+    output = tmp_path / "merged.db"
+
+    _write_source_db(source_a, [1, 1])
+    _write_source_db(source_b, [1, 1])
+
+    for db_path in (source_a, source_b):
+        engine = sqla.create_engine(f"sqlite:///{db_path}")
+        try:
+            with Session(engine) as session:
+                from ultrack.core.database import NodeDB
+
+                root = session.query(NodeDB).filter(NodeDB.id == 1).one()
+                child = session.query(NodeDB).filter(NodeDB.id == 2).one()
+                root.hier_parent_id = NO_PARENT
+                child.hier_parent_id = 1
+                session.commit()
+        finally:
+            engine.dispose()
+
+    merge_ultrack_databases([source_a, source_b], output, frame_shape=(64, 64))
+
+    assert _merged_hierarchy_parent_ids(output) == {
+        1: NO_PARENT,
+        2: 1,
+        3: NO_PARENT,
+        4: 3,
+    }
+
+
+def test_merge_source_metadata_does_not_corrupt_segm_annotation_enum(tmp_path):
+    pytest.importorskip("ultrack")
+
+    from ultrack.core.database import NodeDB, NodeSegmAnnotation
+
+    from cellflow.tracking_ultrack.multi_threshold import (
+        merge_ultrack_databases,
+        query_source_indices,
+        query_source_node_ids,
+    )
+
+    source_a = tmp_path / "source_a.db"
+    source_b = tmp_path / "source_b.db"
+    output = tmp_path / "merged.db"
+
+    _write_source_db(source_a, [1])
+    _write_source_db(source_b, [1, 1])
+
+    merge_ultrack_databases([source_a, source_b], output, frame_shape=(64, 64))
+
+    engine = sqla.create_engine(f"sqlite:///{output}")
+    try:
+        with Session(engine) as session:
+            rows = session.query(NodeDB).order_by(NodeDB.id).all()
+            assert [row.segm_annot for row in rows] == [
+                NodeSegmAnnotation.UNKNOWN,
+                NodeSegmAnnotation.UNKNOWN,
+                NodeSegmAnnotation.UNKNOWN,
+            ]
+    finally:
+        engine.dispose()
+
+    assert query_source_indices(output) == (0, 1)
+    assert query_source_node_ids(output, 0) == (1,)
+    assert query_source_node_ids(output, 1) == (2, 3)
 
 
 def test_build_multithreshold_database_normalizes_globally_and_keeps_values(

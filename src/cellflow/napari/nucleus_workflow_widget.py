@@ -195,6 +195,7 @@ class NucleusWorkflowWidget(QWidget):
         self._ultrack_db_preview_cache: dict = {}
         self._ultrack_db_height_values_cache: dict[tuple, tuple[float, ...]] = {}
         self._ultrack_db_cut_state_cache: dict[tuple, tuple[_HierarchyCutState, ...]] = {}
+        self._ultrack_db_sources_cache: dict[tuple, tuple[int, ...]] = {}
         self._ultrack_db_browser_active: bool = False
         self._ultrack_db_frame_initialized: bool = False
         self._ultrack_db_selected_node_id: int | None = None
@@ -542,6 +543,23 @@ class NucleusWorkflowWidget(QWidget):
         )
         lay.addWidget(self.ultrack_db_info_lbl)
 
+        # ── Threshold source slider (for multi-threshold merged DBs) ─────
+        self.ultrack_db_source_slider = QSlider(Qt.Horizontal)
+        self.ultrack_db_source_slider.setRange(0, 0)
+        self.ultrack_db_source_slider.setValue(0)
+        self.ultrack_db_source_slider.setToolTip(
+            "Select threshold source: 0 = lowest threshold, higher = more stringent"
+        )
+        self.ultrack_db_source_slider.setEnabled(False)
+        self.ultrack_db_source_lbl = QLabel("all")
+        self.ultrack_db_source_lbl.setFixedWidth(48)
+        self._ultrack_db_source_slider_row = QWidget()
+        _source_slider_lay = QHBoxLayout(self._ultrack_db_source_slider_row)
+        _source_slider_lay.setContentsMargins(0, 0, 0, 0)
+        _source_slider_lay.addWidget(self.ultrack_db_source_slider)
+        _source_slider_lay.addWidget(self.ultrack_db_source_lbl)
+        lay.addWidget(self._ultrack_db_source_slider_row)
+
         self.ultrack_db_hierarchy_slider = QSlider(Qt.Horizontal)
         self.ultrack_db_hierarchy_slider.setRange(0, 100)
         self.ultrack_db_hierarchy_slider.setValue(50)
@@ -762,6 +780,9 @@ class NucleusWorkflowWidget(QWidget):
         # DB Browser
         self.ultrack_db_active_btn.toggled.connect(self._on_ultrack_db_activate)
         self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
+        self.ultrack_db_source_slider.valueChanged.connect(
+            self._on_ultrack_db_source_changed
+        )
         self.ultrack_db_hierarchy_slider.valueChanged.connect(
             self._on_ultrack_db_slider_changed
         )
@@ -1616,6 +1637,21 @@ class NucleusWorkflowWidget(QWidget):
     def _on_ultrack_db_browser_param_changed(self, *_args) -> None:
         self._ultrack_db_preview_cache.clear()
 
+    def _on_ultrack_db_source_changed(self, value: int) -> None:
+        """Handle threshold source slider change."""
+        if not self._ultrack_db_browser_active:
+            return
+        # Update label to show current source index
+        max_source = self.ultrack_db_source_slider.maximum()
+        if max_source > 0:
+            self.ultrack_db_source_lbl.setText(f"{value}/{max_source}")
+        else:
+            self.ultrack_db_source_lbl.setText("all")
+        # Clear cache and refresh to show selected source
+        self._ultrack_db_preview_cache.clear()
+        from qtpy.QtCore import QTimer
+        QTimer.singleShot(150, self._refresh_ultrack_db_browser)
+
     def _on_ultrack_db_slider_changed(self, value: int) -> None:
         if not self._ultrack_db_browser_active:
             return
@@ -1641,6 +1677,7 @@ class NucleusWorkflowWidget(QWidget):
         self._ultrack_db_browser_active = checked
         self.ultrack_db_active_btn.setText("Deactivate" if checked else "Activate")
         self.ultrack_db_refresh_btn.setEnabled(checked)
+        self.ultrack_db_source_slider.setEnabled(checked)
         self.ultrack_db_hierarchy_slider.setEnabled(checked)
         self.ultrack_db_prob_alpha_check.setEnabled(checked)
         self.ultrack_db_connected_focus_check.setEnabled(checked)
@@ -1700,6 +1737,9 @@ class NucleusWorkflowWidget(QWidget):
         try:
             self.ultrack_db_info_lbl.setText(self._ultrack_db_summary_text(db_path, frame))
             mtime_ns = db_path.stat().st_mtime_ns
+            # Configure source slider first
+            self._configure_ultrack_db_source_slider(db_path, mtime_ns)
+            # Then configure hierarchy slider (may depend on selected source)
             states = self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, frame)
             if not states:
                 labels = self._empty_ultrack_db_preview()
@@ -2131,23 +2171,36 @@ class NucleusWorkflowWidget(QWidget):
         return heights
 
     def _query_hierarchy_cut_states(self, db_path, mtime_ns, frame):
-        key = (str(db_path.resolve()), mtime_ns, frame)
+        source_idx = self.ultrack_db_source_slider.value()
+        max_source = self.ultrack_db_source_slider.maximum()
+        source_key = int(source_idx) if max_source > 0 else None
+        key = (str(db_path.resolve()), mtime_ns, frame, source_key)
         cached = self._ultrack_db_cut_state_cache.get(key)
         if cached is not None: return cached
         import sqlalchemy as sqla
         from sqlalchemy.orm import Session
         from ultrack.core.database import NodeDB
         from ultrack.utils.constants import NO_PARENT
+        source_node_ids: tuple[int, ...] = ()
+        if source_key is not None:
+            try:
+                from cellflow.tracking_ultrack.multi_threshold import query_source_node_ids
+                source_node_ids = query_source_node_ids(db_path, source_key)
+            except Exception:
+                source_node_ids = ()
         engine = sqla.create_engine(
             f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
         )
         try:
             with Session(engine) as session:
+                query = session.query(
+                    NodeDB.id, NodeDB.hier_parent_id, NodeDB.height
+                ).filter(NodeDB.t == frame).order_by(NodeDB.height, NodeDB.id)
+                if source_key is not None:
+                    query = query.filter(NodeDB.id.in_(source_node_ids))
                 rows = [
                     (int(nid), int(pid), float(h))
-                    for nid, pid, h in session.query(
-                        NodeDB.id, NodeDB.hier_parent_id, NodeDB.height
-                    ).filter(NodeDB.t == frame).order_by(NodeDB.height, NodeDB.id).all()
+                    for nid, pid, h in query.all()
                     if h is not None
                 ]
         except Exception:
@@ -2199,6 +2252,38 @@ class NucleusWorkflowWidget(QWidget):
         result = tuple(states)
         self._ultrack_db_cut_state_cache[key] = result
         return result
+
+    def _query_available_sources(self, db_path, mtime_ns):
+        """Query distinct source indices from merge metadata."""
+        key = (str(db_path.resolve()), mtime_ns, "sources")
+        cached = self._ultrack_db_sources_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            from cellflow.tracking_ultrack.multi_threshold import query_source_indices
+            sources = query_source_indices(db_path)
+        except Exception:
+            sources = ()
+        self._ultrack_db_sources_cache[key] = sources
+        return sources
+
+    def _configure_ultrack_db_source_slider(self, db_path, mtime_ns):
+        """Configure source slider based on available sources in DB."""
+        sources = self._query_available_sources(db_path, mtime_ns)
+        if not sources:
+            self.ultrack_db_source_slider.setRange(0, 0)
+            self.ultrack_db_source_lbl.setText("all")
+            return False  # Not a multi-source DB
+        max_source = max(sources)
+        current = min(max(int(self.ultrack_db_source_slider.value()), 0), max_source)
+        old = self.ultrack_db_source_slider.blockSignals(True)
+        try:
+            self.ultrack_db_source_slider.setRange(0, max_source)
+            self.ultrack_db_source_slider.setValue(current)
+        finally:
+            self.ultrack_db_source_slider.blockSignals(old)
+        self.ultrack_db_source_lbl.setText(f"{current}/{max_source}")
+        return len(sources) > 1  # Multi-source DB
 
     def _configure_ultrack_db_hierarchy_slider(self, db_path, mtime_ns, frame):
         states = self._query_hierarchy_cut_states(db_path, mtime_ns, frame)
