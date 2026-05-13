@@ -21,6 +21,7 @@ sys.modules["cellflow.napari"] = napari_pkg
 from cellflow.napari.ui_style import (
     DEFAULT_SPIN_WIDTH,
     SECTION_MARGIN,
+    SEMANTIC_COLORS,
     TIGHT_SPACING,
     TINY_MARGIN,
     action_button,
@@ -29,6 +30,8 @@ from cellflow.napari.ui_style import (
     danger_button,
     icon_button,
     muted_label,
+    parameter_heading,
+    semantic_color,
     status_label,
     tiny_button,
 )
@@ -77,6 +80,7 @@ def test_action_button_uses_fixed_or_expanding_horizontal_policy(_app):
     action_button(expanding, expand=True)
     assert expanding.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
     assert expanding.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
+    assert SEMANTIC_COLORS["actions"][0] in expanding.styleSheet()
 
 
 def test_tiny_button_sets_small_style_and_fixed_vertical_policy(_app):
@@ -122,6 +126,7 @@ def test_status_label_sets_font_size_and_optional_italic(_app):
 
     assert status_label(plain, size_pt=10) is plain
     assert "font-size: 10pt" in plain.styleSheet()
+    assert SEMANTIC_COLORS["indicators"][0] in plain.styleSheet()
     assert "font-style" not in plain.styleSheet()
 
     status_label(italic, italic=True)
@@ -131,6 +136,31 @@ def test_status_label_sets_font_size_and_optional_italic(_app):
     status_label(muted, italic=True, muted=True)
     assert "palette(mid)" in muted.styleSheet()
     assert "font-style: italic" in muted.styleSheet()
+
+
+def test_semantic_colors_have_role_shades():
+    assert SEMANTIC_COLORS == {
+        "stage": ("#94e2d5", "#89dceb", "#74c7ec"),
+        "params": ("#89b4fa", "#b4befe", "#cba6f7"),
+        "actions": ("#f38ba8", "#fab387", "#f9e2af"),
+        "indicators": ("#a6e3a1", "#94e2d5", "#89dceb"),
+    }
+    assert semantic_color("stage", 0) == SEMANTIC_COLORS["stage"][0]
+    assert semantic_color("stage", 1) == SEMANTIC_COLORS["stage"][1]
+    assert semantic_color("stage", 2) == SEMANTIC_COLORS["stage"][2]
+    assert semantic_color("stage", 10) == SEMANTIC_COLORS["stage"][2]
+    assert semantic_color("params", 0) != semantic_color("actions", 0)
+    assert semantic_color("actions", 0) != semantic_color("indicators", 0)
+
+
+def test_parameter_heading_uses_params_role_and_level(_app):
+    label = QLabel("Contour")
+
+    assert parameter_heading(label, level=1) is label
+
+    style = label.styleSheet()
+    assert "font-weight: 600" in style
+    assert SEMANTIC_COLORS["params"][1] in style
 
 
 def test_danger_button_uses_semantic_red_and_hover_style(_app):

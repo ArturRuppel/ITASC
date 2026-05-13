@@ -159,11 +159,19 @@ def _generate_inputs(
 
     contour_paths: dict[float | None, Path] = {}
     contour_paths[None] = inputs_dir / "contours_raw.tif"
-    if not contour_paths[None].exists():
+    if contour_paths[None].exists():
+        existing = tifffile.imread(contour_paths[None])
+        if existing.shape == contours.shape:
+            print(f"  Using existing {contour_paths[None].name}")
+        else:
+            print(
+                f"  Regenerating {contour_paths[None].name} — shape mismatch "
+                f"({existing.shape} vs {contours.shape})"
+            )
+            tifffile.imwrite(contour_paths[None], contours.astype(np.float32))
+    else:
         tifffile.imwrite(contour_paths[None], contours.astype(np.float32))
         print(f"  Saved {contour_paths[None].name}")
-    else:
-        print(f"  Using existing {contour_paths[None].name}")
 
     for thr in contour_thresholds:
         if thr is None:
@@ -171,8 +179,14 @@ def _generate_inputs(
         c_path = inputs_dir / f"contours_thr_{thr:.1f}.tif"
         contour_paths[thr] = c_path
         if c_path.exists():
-            print(f"  Using existing {c_path.name}")
-            continue
+            existing = tifffile.imread(c_path)
+            if existing.shape == contours.shape:
+                print(f"  Using existing {c_path.name}")
+                continue
+            print(
+                f"  Regenerating {c_path.name} — shape mismatch "
+                f"({existing.shape} vs {contours.shape})"
+            )
         c_thr = np.where(contours < thr, 0.0, contours).astype(np.float32)
         print(f"  Saving {c_path.name} — threshold={thr}, n_nonzero={int((c_thr > 0).sum())}")
         tifffile.imwrite(c_path, c_thr)
@@ -210,13 +224,25 @@ def _build_variant_db(
     """Run Ultrack segmentation for one variant.  Returns path to ``data.db``."""
     variant_dir.mkdir(parents=True, exist_ok=True)
     db_path = variant_dir / "data.db"
-
-    if db_path.exists():
-        print(f"    Skipping — {db_path} already exists")
-        return db_path
-
     fg = np.asarray(tifffile.imread(fg_path), dtype=np.float32)
     contours = np.asarray(tifffile.imread(contour_path), dtype=np.float32)
+
+    if db_path.exists():
+        import sqlalchemy as sqla
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+
+        engine = sqla.create_engine(f"sqlite:///{db_path}")
+        try:
+            with Session(engine) as session:
+                max_t = session.query(sqla.func.max(NodeDB.t)).scalar()
+        finally:
+            engine.dispose()
+        expected_t = fg.shape[0] - 1
+        if max_t == expected_t:
+            print(f"    Skipping — {db_path} already exists")
+            return db_path
+        print(f"    Rebuilding — frame count mismatch (DB t={max_t} vs input {expected_t})")
 
     ultrack_cfg = _build_ultrack_config(cfg, variant_dir)
     _run_ultrack_segment(fg, contours, ultrack_cfg, cfg)

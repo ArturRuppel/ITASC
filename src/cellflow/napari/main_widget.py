@@ -59,39 +59,67 @@ class CellFlowMainWidget(QWidget):
         # Add sections
         self.data_panel = ProjectStatusPanel(self.viewer)
         self.data_section = CollapsibleSection(
-            "Project Status", self.data_panel, expanded=False, title_color="#ADD8E6"
+            "Project Status",
+            self.data_panel,
+            expanded=False,
+            title_role="stage",
+            title_level=0,
         )
 
         self._data_prep_widget = DataPrepWidget(self.viewer, self)
         self.prep_section = CollapsibleSection(
-            "1. Data Preparation", self._data_prep_widget, expanded=False
+            "Data Preparation",
+            self._data_prep_widget,
+            expanded=False,
+            title_role="stage",
+            title_level=0,
         )
 
         self._cellpose_widget = CellposeWidget(self.viewer)
         self.cellpose_section = CollapsibleSection(
-            "2. Cellpose", self._cellpose_widget, expanded=False
+            "Cellpose",
+            self._cellpose_widget,
+            expanded=False,
+            title_role="stage",
+            title_level=0,
         )
         self.hpc_cellpose_widget = self._cellpose_widget.hpc_cellpose_widget
 
         self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
         self.nucleus_section = CollapsibleSection(
-            "3. Nucleus Segmentation & Tracking", self.nucleus_workflow_widget, expanded=False
+            "Nucleus Segmentation & Tracking",
+            self.nucleus_workflow_widget,
+            expanded=False,
+            title_role="stage",
+            title_level=0,
         )
 
         self.cell_workflow_widget = CellWorkflowWidget(self.viewer)
         self.cell_section = CollapsibleSection(
-            "4. Cell Segmentation", self.cell_workflow_widget, expanded=False
+            "Cell Segmentation",
+            self.cell_workflow_widget,
+            expanded=False,
+            title_role="stage",
+            title_level=0,
         )
         self._connect_label_selection_sync()
 
         self.analysis_widget = AnalysisWidget(self.viewer)
         self.analysis_section = CollapsibleSection(
-            "5. Analysis", self.analysis_widget, expanded=False
+            "Analysis",
+            self.analysis_widget,
+            expanded=False,
+            title_role="stage",
+            title_level=0,
         )
 
         self.meta_source_browser = MetaSourceBrowserWidget(self.viewer)
         self.meta_section = CollapsibleSection(
-            "6. Meta Analyzer", self.meta_source_browser, expanded=False
+            "Meta Analyzer",
+            self.meta_source_browser,
+            expanded=False,
+            title_role="stage",
+            title_level=0,
         )
 
         self.scroll_layout.addWidget(self.data_section)

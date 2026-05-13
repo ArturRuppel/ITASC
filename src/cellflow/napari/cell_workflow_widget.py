@@ -54,6 +54,8 @@ from cellflow.napari.ui_style import (
     add_parameter_grid_row,
     block_grid,
     compact_spinbox,
+    parameter_heading,
+    semantic_color,
     status_label,
 )
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
@@ -88,8 +90,7 @@ def _separator() -> QFrame:
 
 def _heading(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet("font-weight: 600;")
-    return lbl
+    return parameter_heading(lbl, level=1)
 
 
 def _make_status() -> QLabel:
@@ -196,7 +197,13 @@ class CellWorkflowWidget(QWidget):
             viewer=self.viewer,
         )
         root.addWidget(
-            CollapsibleSection("Pipeline Files", self._files_widget, expanded=False)
+            CollapsibleSection(
+                "Pipeline Files",
+                self._files_widget,
+                expanded=False,
+                title_role="stage",
+                title_level=1,
+            )
         )
 
         # ── Pipeline action buttons (2-column grid) ──────────────────
@@ -369,14 +376,24 @@ class CellWorkflowWidget(QWidget):
 
         # ── NOTE: "Correction" params removed from here ──────────── # ← CHANGED
 
-        root.addWidget(CollapsibleSection("Parameters", inner, expanded=False))
+        root.addWidget(
+            CollapsibleSection(
+                "Parameters",
+                inner,
+                expanded=False,
+                title_role="params",
+                title_level=1,
+            )
+        )
 
     # -- Correction --------------------------------------------------------  # ← REWRITTEN
 
     def _build_correction_section(self, root: QVBoxLayout) -> None:
         group = QGroupBox("Correction")
         group.setStyleSheet(
-            "QGroupBox { font-weight: 600; margin-top: 8px; padding-top: 14px; }"
+            "QGroupBox { "
+            f"font-weight: 600; color: {semantic_color('stage', 1)}; "
+            "margin-top: 8px; padding-top: 14px; }"
         )
         group_lay = QVBoxLayout(group)
         group_lay.setContentsMargins(8, 16, 8, 8)
@@ -460,6 +477,8 @@ class CellWorkflowWidget(QWidget):
             "Correction Shortcuts",
             self.correction_widget.build_shortcuts_widget(),
             expanded=False,
+            title_role="actions",
+            title_level=2,
         ))
 
         root.addWidget(group)

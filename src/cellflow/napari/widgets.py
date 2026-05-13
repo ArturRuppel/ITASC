@@ -21,6 +21,7 @@ from .ui_style import (
     TINY_MARGIN,
     icon_button,
     muted_label,
+    semantic_color,
     status_label,
 )
 
@@ -34,11 +35,15 @@ class CollapsibleSection(QWidget):
         inner: QWidget,
         expanded: bool = False,
         parent: QWidget | None = None,
-        title_color: str = "white",
+        title_color: str | None = None,
+        title_role: str = "stage",
+        title_level: int = 1,
     ) -> None:
         super().__init__(parent)
         self._inner = inner
         self._base_title = title
+        if title_color is None:
+            title_color = semantic_color(title_role, title_level)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, TINY_MARGIN, 0, TINY_MARGIN)

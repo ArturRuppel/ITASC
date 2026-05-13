@@ -69,6 +69,8 @@ from cellflow.napari.ui_style import (
     compact_spinbox,
     danger_button,
     muted_label,
+    parameter_heading,
+    semantic_color,
     status_label,
 )
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
@@ -116,8 +118,7 @@ def _separator() -> QFrame:
 
 def _heading(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet("font-weight: 600;")
-    return lbl
+    return parameter_heading(lbl, level=1)
 
 
 def _make_status() -> QLabel:
@@ -240,7 +241,13 @@ class NucleusWorkflowWidget(QWidget):
             viewer=self.viewer,
         )
         root.addWidget(
-            CollapsibleSection("Pipeline Files", self._files_widget, expanded=False)
+            CollapsibleSection(
+                "Pipeline Files",
+                self._files_widget,
+                expanded=False,
+                title_role="stage",
+                title_level=1,
+            )
         )
 
         # ── Pipeline action buttons (2-column grid) ──────────────────
@@ -525,7 +532,15 @@ class NucleusWorkflowWidget(QWidget):
         muted_label(ultrack_attrib, size_pt=9)
         lay.addWidget(ultrack_attrib)
 
-        root.addWidget(CollapsibleSection("Parameters", inner, expanded=False))
+        root.addWidget(
+            CollapsibleSection(
+                "Parameters",
+                inner,
+                expanded=False,
+                title_role="params",
+                title_level=1,
+            )
+        )
 
     # -- Ultrack Database Browser ------------------------------------------
 
@@ -613,7 +628,11 @@ class NucleusWorkflowWidget(QWidget):
         lay.addWidget(self.ultrack_db_section_status_lbl)
 
         self.ultrack_db_browser_section = CollapsibleSection(
-            "Ultrack Database Browser", _inner, expanded=False,
+            "Ultrack Database Browser",
+            _inner,
+            expanded=False,
+            title_role="indicators",
+            title_level=1,
         )
         root.addWidget(self.ultrack_db_browser_section)
 
@@ -622,7 +641,9 @@ class NucleusWorkflowWidget(QWidget):
     def _build_correction_section(self, root: QVBoxLayout) -> None:
         group = QGroupBox("Correction")
         group.setStyleSheet(
-            "QGroupBox { font-weight: 600; margin-top: 8px; padding-top: 14px; }"
+            "QGroupBox { "
+            f"font-weight: 600; color: {semantic_color('stage', 1)}; "
+            "margin-top: 8px; padding-top: 14px; }"
         )
         group_lay = QVBoxLayout(group)
         group_lay.setContentsMargins(8, 16, 8, 8)
@@ -686,7 +707,13 @@ class NucleusWorkflowWidget(QWidget):
         add_block_checkbox_row(g, 3, self.extend_greedy_overwrite_check)
         extend_lay.addLayout(g)
         group_lay.addWidget(
-            CollapsibleSection("Extend Parameters", extend_inner, expanded=False)
+            CollapsibleSection(
+                "Extend Parameters",
+                extend_inner,
+                expanded=False,
+                title_role="params",
+                title_level=2,
+            )
         )
 
         # ── Retrack parameters (collapsible) ──────────────────────
@@ -700,7 +727,13 @@ class NucleusWorkflowWidget(QWidget):
             "Max dist:", compact_spinbox(self.retrack_max_dist_spin))
         retrack_lay.addLayout(g)
         group_lay.addWidget(
-            CollapsibleSection("Retrack Parameters", retrack_inner, expanded=False)
+            CollapsibleSection(
+                "Retrack Parameters",
+                retrack_inner,
+                expanded=False,
+                title_role="params",
+                title_level=2,
+            )
         )
 
         # ── Inline CorrectionWidget ───────────────────────────────
@@ -717,6 +750,8 @@ class NucleusWorkflowWidget(QWidget):
             "Correction Shortcuts",
             self.correction_widget.build_shortcuts_widget(),
             expanded=False,
+            title_role="actions",
+            title_level=2,
         ))
 
         root.addWidget(group)

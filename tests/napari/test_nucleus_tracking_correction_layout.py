@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -229,8 +230,8 @@ def test_main_widget_labels_the_outer_nucleus_workflow_section():
     widget_class = _load_main_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.nucleus_section.title == "3. Nucleus Segmentation & Tracking"
-    assert widget.nucleus_section._toggle.text() == "3. Nucleus Segmentation && Tracking"
+    assert widget.nucleus_section.title == "Nucleus Segmentation & Tracking"
+    assert widget.nucleus_section._toggle.text() == "Nucleus Segmentation && Tracking"
 
     widget.deleteLater()
     viewer.close()
@@ -317,7 +318,7 @@ def test_main_widget_embeds_nls_classification_inside_analysis_stage():
 
     assert not hasattr(widget, "nls_classification_section")
     assert not hasattr(widget, "nls_classification_widget")
-    assert widget.analysis_section.title == "5. Analysis"
+    assert widget.analysis_section.title == "Analysis"
 
     widget.deleteLater()
     viewer.close()
@@ -334,7 +335,7 @@ def test_main_widget_includes_meta_source_browser_after_analysis(tmp_path):
     widget.pos_spin.setValue(3)
     widget._refresh_all()
 
-    assert widget.meta_section.title == "6. Meta Analyzer"
+    assert widget.meta_section.title == "Meta Analyzer"
     assert widget.meta_source_browser.refreshed_pos_dir == project_root
     assert widget.scroll_layout.indexOf(widget.analysis_section) < widget.scroll_layout.indexOf(
         widget.meta_section
@@ -443,6 +444,66 @@ def test_main_widget_persists_hpc_cellpose_state():
         "frames": "0,2",
         "remote_host": "maestro.pasteur.fr",
     }
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_main_widget_top_level_sections_use_unnumbered_mocha_titles():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    from cellflow.napari.ui_style import semantic_color
+
+    widget = widget_class(viewer)
+
+    expected = {
+        widget.data_section: "Project Status",
+        widget.prep_section: "Data Preparation",
+        widget.cellpose_section: "Cellpose",
+        widget.nucleus_section: "Nucleus Segmentation & Tracking",
+        widget.cell_section: "Cell Segmentation",
+        widget.analysis_section: "Analysis",
+        widget.meta_section: "Meta Analyzer",
+    }
+
+    for section, title in expected.items():
+        assert section.title == title
+        toggle = section.findChild(QToolButton)
+        assert toggle is not None
+        assert toggle.text() == title.replace("&", "&&")
+        assert f"color: {semantic_color('stage', 0)};" in toggle.styleSheet()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_workflow_uses_semantic_colors_by_role_and_level():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    from cellflow.napari.ui_style import semantic_color
+
+    widget = widget_class(viewer)
+
+    files_toggle = widget.findChild(QToolButton)
+    assert files_toggle is not None
+    assert f"color: {semantic_color('stage', 1)};" in files_toggle.styleSheet()
+
+    params_toggle = next(
+        toggle
+        for toggle in widget.findChildren(QToolButton)
+        if toggle.text() == "Parameters"
+    )
+    assert params_toggle is not None
+    assert f"color: {semantic_color('params', 1)};" in params_toggle.styleSheet()
+
+    heading_styles = [
+        label.styleSheet()
+        for label in widget.findChildren(QLabel)
+        if label.text() == "Contour — Cellprob Sweep"
+    ]
+    assert any(semantic_color("params", 1) in style for style in heading_styles)
+    assert semantic_color("actions", 0) in widget.run_db_gen_btn.styleSheet()
+    assert semantic_color("indicators", 0) in widget.pipeline_status_lbl.styleSheet()
 
     widget.deleteLater()
     viewer.close()

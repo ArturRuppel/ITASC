@@ -12,6 +12,19 @@ DEFAULT_ROW_SPACING = 4
 DEFAULT_SWEEP_SPIN_WIDTH = 62
 BLOCK_GRID_COLUMNS = 4
 
+SEMANTIC_COLORS = {
+    "stage": ("#89b4fa", "#74c7ec", "#89dceb"),
+    "params": ("#cba6f7", "#b4befe", "#f5c2e7"),
+    "actions": ("#fab387", "#f9e2af", "#eba0ac"),
+    "indicators": ("#94e2d5", "#89dceb", "#a6e3a1"),
+}
+
+
+def semantic_color(role: str, level: int = 0) -> str:
+    shades = SEMANTIC_COLORS[role]
+    index = min(max(level, 0), len(shades) - 1)
+    return shades[index]
+
 
 def _fixed_widget(widget, width=None):
     if width is not None:
@@ -29,6 +42,23 @@ def action_button(button, expand=False):
         QSizePolicy.Policy.Expanding if expand else QSizePolicy.Policy.Fixed
     )
     button.setSizePolicy(horizontal_policy, QSizePolicy.Policy.Fixed)
+    color = semantic_color("actions")
+    button.setStyleSheet(
+        f"""
+        QPushButton {{
+            border: 1px solid {color};
+            color: {color};
+            padding: 2px 6px;
+        }}
+        QPushButton:hover {{
+            background-color: rgba(250, 179, 135, 32);
+        }}
+        QPushButton:disabled {{
+            border-color: palette(mid);
+            color: palette(mid);
+        }}
+        """
+    )
     return button
 
 
@@ -56,9 +86,18 @@ def status_label(label, size_pt=8, italic=False, muted=False):
     style = f"font-size: {size_pt}pt;"
     if muted:
         style += " color: palette(mid);"
+    else:
+        style += f" color: {semantic_color('indicators')};"
     if italic:
         style += " font-style: italic;"
     label.setStyleSheet(style)
+    return label
+
+
+def parameter_heading(label, level=1):
+    label.setStyleSheet(
+        f"font-weight: 600; color: {semantic_color('params', level)};"
+    )
     return label
 
 
