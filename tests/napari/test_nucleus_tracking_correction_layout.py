@@ -249,7 +249,6 @@ def test_main_widget_sections_are_collapsed_by_default():
         widget.cell_section,
         widget.cell_boundary_section,
         widget.analysis_section,
-        widget.nls_classification_section,
         widget.meta_section,
     )
     assert all(section.is_expanded is False for section in sections)
@@ -311,21 +310,20 @@ def test_main_widget_embeds_hpc_cellpose_inside_cellpose_stage():
     viewer.close()
 
 
-def test_main_widget_includes_nls_classification_section_after_analysis():
+def test_main_widget_embeds_nls_classification_inside_analysis_stage():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.nls_classification_section.title == "5b. NLS Classification"
-    assert widget.scroll_layout.indexOf(widget.analysis_section) < widget.scroll_layout.indexOf(
-        widget.nls_classification_section
-    )
+    assert not hasattr(widget, "nls_classification_section")
+    assert not hasattr(widget, "nls_classification_widget")
+    assert widget.analysis_section.title == "5. Analysis"
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_main_widget_includes_meta_source_browser_after_nls_classification(tmp_path):
+def test_main_widget_includes_meta_source_browser_after_analysis(tmp_path):
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
     widget = widget_class(viewer)
@@ -338,7 +336,7 @@ def test_main_widget_includes_meta_source_browser_after_nls_classification(tmp_p
 
     assert widget.meta_section.title == "6. Meta Analyzer"
     assert widget.meta_source_browser.refreshed_pos_dir == project_root
-    assert widget.scroll_layout.indexOf(widget.nls_classification_section) < widget.scroll_layout.indexOf(
+    assert widget.scroll_layout.indexOf(widget.analysis_section) < widget.scroll_layout.indexOf(
         widget.meta_section
     )
 
@@ -404,7 +402,6 @@ def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_s
     assert widget.cell_workflow_widget.refreshed_pos_dir == pos_dir
     assert widget.cell_boundary_workflow_widget.refreshed_pos_dir == pos_dir
     assert widget.analysis_widget.refreshed_pos_dir == pos_dir
-    assert widget.nls_classification_widget.refreshed_pos_dir == pos_dir
 
     widget.deleteLater()
     viewer.close()
@@ -2841,7 +2838,7 @@ def test_extend_passes_weight_parameters_to_db_tracker(tmp_path, monkeypatch):
     viewer.close()
 
 
-def test_extend_greedy_overwrite_paints_combined_assignments(tmp_path, monkeypatch):
+def test_extend_greedy_overwrite_paints_source_and_overwrites_non_validated(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -2862,8 +2859,6 @@ def test_extend_greedy_overwrite_paints_combined_assignments(tmp_path, monkeypat
 
     source_mask = np.zeros((32, 32), dtype=bool)
     source_mask[6:11, 6:11] = True
-    displaced_mask = np.zeros((32, 32), dtype=bool)
-    displaced_mask[20:25, 20:25] = True
 
     result = types.SimpleNamespace(
         target_frame=1,
@@ -2875,19 +2870,65 @@ def test_extend_greedy_overwrite_paints_combined_assignments(tmp_path, monkeypat
         area_ratio=1.0,
         centroid_corrected_iou=1.0,
         existing_overlap=1.0,
-        assignments=(
-            types.SimpleNamespace(cell_id=7, mask_2d=source_mask),
-            types.SimpleNamespace(cell_id=9, mask_2d=displaced_mask),
-        ),
+        assignments=(types.SimpleNamespace(cell_id=7, mask_2d=source_mask),),
     )
     monkeypatch.setattr(module, "extend_track_from_db", lambda **_kwargs: result)
 
     widget._on_extend(direction="forward")
 
     frame = viewer.layers["Tracked: Nucleus"].data[1]
+    # Greedy overwrite paints source cell wherever it doesn't overlap validated cells
     assert np.all(frame[6:11, 6:11] == 7)
-    assert np.all(frame[20:25, 20:25] == 9)
-    assert "reassigned 1 conflict" in widget.correction_status_lbl.text()
+    # No reassigned conflict text in status
+    status = widget.correction_status_lbl.text()
+    assert "reassigned" not in status
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_extend_greedy_overwrite_preserves_validated_cells(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+
+    pos_dir = tmp_path / "pos00"
+    db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = pos_dir
+
+    labels = np.zeros((2, 32, 32), dtype=np.uint32)
+    labels[0, 5:10, 5:10] = 7
+    labels[1, 6:11, 6:11] = 9
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 7
+    widget.extend_greedy_overwrite_check.setChecked(True)
+
+    source_mask = np.zeros((32, 32), dtype=bool)
+    source_mask[6:11, 6:11] = True
+
+    result = types.SimpleNamespace(
+        target_frame=1,
+        candidate_label=101,
+        candidate_partition=0,
+        mask_2d=source_mask,
+        bbox=(6, 6, 11, 11),
+        centroid_distance=1.0,
+        area_ratio=1.0,
+        centroid_corrected_iou=1.0,
+        existing_overlap=1.0,
+        assignments=(types.SimpleNamespace(cell_id=7, mask_2d=source_mask),),
+    )
+    monkeypatch.setattr(module, "extend_track_from_db", lambda **_kwargs: result)
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {9: {1}})
+
+    widget._on_extend(direction="forward")
+
+    frame = viewer.layers["Tracked: Nucleus"].data[1]
+    # Cell 9 is validated at frame 1, so it should not be overwritten
+    assert np.all(frame[6:11, 6:11] == 9)
 
     widget.deleteLater()
     viewer.close()

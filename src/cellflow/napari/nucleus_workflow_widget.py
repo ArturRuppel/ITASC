@@ -2641,12 +2641,22 @@ class NucleusWorkflowWidget(QWidget):
             assignments = (SimpleNamespace(cell_id=source_id, mask_2d=result.mask_2d),)
 
         frame = layer.data[result.target_frame]
+
+        # Build a mask of all validated cells in the target frame
+        validated_ids_at_target = set()
+        for cell_id, frames in validated_tracks.items():
+            if result.target_frame in frames:
+                validated_ids_at_target.add(cell_id)
+        validated_mask = np.zeros_like(frame, dtype=bool)
+        for vid in validated_ids_at_target:
+            validated_mask |= (frame == vid)
+
         changed_ids = {int(a.cell_id) for a in assignments}
         for cid in changed_ids:
             frame[frame == cid] = 0
         if self.extend_greedy_overwrite_check.isChecked():
             for a in assignments:
-                frame[a.mask_2d] = int(a.cell_id)
+                frame[a.mask_2d & ~validated_mask] = int(a.cell_id)
         else:
             for a in assignments:
                 frame[a.mask_2d & (frame == 0)] = int(a.cell_id)
@@ -2656,12 +2666,8 @@ class NucleusWorkflowWidget(QWidget):
         step[0] = result.target_frame
         self.viewer.dims.current_step = tuple(step)
 
-        moved = (
-            f", reassigned {len(changed_ids) - 1} conflict(s)"
-            if len(changed_ids) > 1 else ""
-        )
         self._correction_status(
-            f"Extended cell {source_id} → t={result.target_frame}{moved} "
+            f"Extended cell {source_id} → t={result.target_frame} "
             f"(dist={result.centroid_distance:.1f}px, area={result.area_ratio:.2f}, "
             f"iou={result.centroid_corrected_iou:.2f}, overlap={result.existing_overlap:.2f})"
         )

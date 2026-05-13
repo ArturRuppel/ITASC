@@ -12,6 +12,7 @@ from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QCheckBox, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 from cellflow.analysis import build_position_analysis_artifact
+from cellflow.napari.nls_classification_widget import NLSClassificationWidget
 from cellflow.napari.ui_style import action_button, status_label
 
 try:  # pragma: no cover - local branch compatibility
@@ -110,6 +111,9 @@ class AnalysisWidget(QWidget):
         action_button(self.clear_artifact_btn, expand=True)
         layout.addWidget(self.clear_artifact_btn)
 
+        self.nls_classification_widget = NLSClassificationWidget(self.viewer, self)
+        layout.addWidget(self.nls_classification_widget)
+
         layout.addStretch()
 
         self.build_artifact_btn.clicked.connect(self._on_build_artifact)
@@ -139,6 +143,7 @@ class AnalysisWidget(QWidget):
             self._cached_nucleus_labels = None
             self._cached_track_centroids = None
         self._pos_dir = new_pos_dir
+        self.nls_classification_widget.refresh(new_pos_dir)
         self._update_status()
 
     def _output_path_text(self) -> str:

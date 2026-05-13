@@ -11,7 +11,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication
+from qtpy.QtWidgets import QApplication, QWidget
 
 
 class _LayerCollection(dict):
@@ -48,11 +48,25 @@ class _FakeWorker:
         self.quit_calls += 1
 
 
+class _StubNLSClassificationWidget(QWidget):
+    def __init__(self, viewer=None, parent=None):
+        super().__init__(parent)
+        self.viewer = viewer
+        self.parent_arg = parent
+        self.refreshed_pos_dir = None
+
+    def refresh(self, pos_dir):
+        self.refreshed_pos_dir = pos_dir
+
+
 def _load_module(monkeypatch):
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
     napari_pkg = types.ModuleType("cellflow.napari")
     napari_pkg.__path__ = [str(package_root)]
     monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
+    nls_module = types.ModuleType("cellflow.napari.nls_classification_widget")
+    nls_module.NLSClassificationWidget = _StubNLSClassificationWidget
+    monkeypatch.setitem(sys.modules, "cellflow.napari.nls_classification_widget", nls_module)
     sys.modules.pop("cellflow.napari.analysis_widget", None)
     return importlib.import_module("cellflow.napari.analysis_widget")
 
@@ -119,6 +133,24 @@ def test_analysis_widget_refresh_tracks_inputs_output_and_button_states(monkeypa
     widget.refresh(pos_dir)
 
     assert widget.build_artifact_btn.isEnabled() is True
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_analysis_widget_embeds_nls_classification_and_refreshes_it(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    viewer = _FakeViewer()
+    widget = mod.AnalysisWidget(viewer)
+
+    pos_dir = tmp_path / "pos04"
+    widget.refresh(pos_dir)
+
+    assert isinstance(widget.nls_classification_widget, _StubNLSClassificationWidget)
+    assert widget.nls_classification_widget.viewer is viewer
+    assert widget.nls_classification_widget.parent_arg is widget
+    assert widget.nls_classification_widget.refreshed_pos_dir == pos_dir
 
     widget.deleteLater()
     app.processEvents()

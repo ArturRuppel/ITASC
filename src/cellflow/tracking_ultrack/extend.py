@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import product
 from pathlib import Path
 from typing import Literal
 
@@ -169,53 +168,6 @@ def _result_from_assignment(
     )
 
 
-def _masks_are_disjoint(assignments: tuple[ExtendAssignment, ...]) -> bool:
-    occupied: np.ndarray | None = None
-    for assignment in assignments:
-        if occupied is None:
-            occupied = assignment.mask_2d.copy()
-            continue
-        if np.any(occupied & assignment.mask_2d):
-            return False
-        occupied |= assignment.mask_2d
-    return True
-
-
-def _plan_overwrites_only_assigned_cells(
-    assignments: tuple[ExtendAssignment, ...],
-    target_frame_labels: np.ndarray,
-    protected_ids: set[int],
-) -> bool:
-    assigned_ids = {int(assignment.cell_id) for assignment in assignments}
-    overwritten = np.zeros_like(target_frame_labels, dtype=bool)
-    for assignment in assignments:
-        overwritten |= assignment.mask_2d
-    overwritten_ids = {
-        int(v)
-        for v in np.unique(target_frame_labels[overwritten])
-        if int(v) != 0
-    }
-    return (overwritten_ids & protected_ids).issubset(assigned_ids)
-
-
-def _plan_preserves_locked_target_cells(
-    assignments: tuple[ExtendAssignment, ...],
-    target_frame_labels: np.ndarray,
-    locked_target_ids: set[int],
-) -> bool:
-    if not locked_target_ids:
-        return True
-    overwritten = np.zeros_like(target_frame_labels, dtype=bool)
-    for assignment in assignments:
-        overwritten |= assignment.mask_2d
-    overwritten_ids = {
-        int(v)
-        for v in np.unique(target_frame_labels[overwritten])
-        if int(v) != 0
-    }
-    return not (overwritten_ids & locked_target_ids)
-
-
 def _top_assignments_for_cell(
     *,
     cell_id: int,
@@ -246,115 +198,6 @@ def _top_assignments_for_cell(
             assignments.append(assignment)
     assignments.sort(key=lambda item: (item.score, -item.centroid_distance), reverse=True)
     return assignments[:limit]
-
-
-def _best_greedy_overwrite_plan(
-    *,
-    source_id: int,
-    source_mask: np.ndarray,
-    source_frame_labels: np.ndarray,
-    target_frame_labels: np.ndarray,
-    candidates: list[_DbCandidate],
-    d_max: float,
-    area_weight: float,
-    iou_weight: float,
-    distance_weight: float,
-    overlap_penalty: float,
-    locked_target_ids: set[int] | None = None,
-) -> tuple[ExtendAssignment, ...] | None:
-    locked_target_ids = set(locked_target_ids or set())
-    if source_id in locked_target_ids:
-        return None
-
-    source_assignments = _top_assignments_for_cell(
-        cell_id=source_id,
-        reference_mask=source_mask,
-        target_frame_labels=target_frame_labels,
-        candidates=candidates,
-        d_max=d_max,
-        area_weight=area_weight,
-        iou_weight=iou_weight,
-        distance_weight=distance_weight,
-        overlap_penalty=overlap_penalty,
-    )
-    if not source_assignments:
-        return None
-
-    best_plan: tuple[ExtendAssignment, ...] | None = None
-    best_score: tuple[float, float] | None = None
-    protected_ids = {int(v) for v in np.unique(source_frame_labels) if int(v) != 0}
-    protected_ids.discard(source_id)
-
-    for source_assignment in source_assignments:
-        if not _plan_preserves_locked_target_cells(
-            (source_assignment,),
-            target_frame_labels,
-            locked_target_ids,
-        ):
-            continue
-        conflict_labels = target_frame_labels[
-            source_assignment.mask_2d
-            & (target_frame_labels != 0)
-            & (target_frame_labels != source_id)
-        ]
-        conflicted_ids = sorted(
-            int(v)
-            for v in np.unique(conflict_labels)
-            if int(v) != 0 and int(v) in protected_ids
-        )
-        if not conflicted_ids:
-            plan = (source_assignment,)
-            score = (source_assignment.score, -source_assignment.centroid_distance)
-            if best_score is None or score > best_score:
-                best_plan = plan
-                best_score = score
-            continue
-
-        choices: list[list[ExtendAssignment]] = []
-        for cell_id in conflicted_ids:
-            reference_mask = source_frame_labels == cell_id
-            cell_choices = _top_assignments_for_cell(
-                cell_id=cell_id,
-                reference_mask=reference_mask,
-                target_frame_labels=target_frame_labels,
-                candidates=candidates,
-                d_max=d_max,
-                area_weight=area_weight,
-                iou_weight=iou_weight,
-                distance_weight=distance_weight,
-                overlap_penalty=overlap_penalty,
-            )
-            if not cell_choices:
-                choices = []
-                break
-            choices.append(cell_choices)
-        if not choices:
-            continue
-
-        for combo in product(*choices):
-            plan = (source_assignment, *combo)
-            if not _masks_are_disjoint(plan):
-                continue
-            if not _plan_preserves_locked_target_cells(
-                plan,
-                target_frame_labels,
-                locked_target_ids,
-            ):
-                continue
-            if not _plan_overwrites_only_assigned_cells(
-                plan,
-                target_frame_labels,
-                protected_ids,
-            ):
-                continue
-            total_score = sum(item.score for item in plan)
-            total_distance = sum(item.centroid_distance for item in plan)
-            score = (total_score, -total_distance)
-            if best_score is None or score > best_score:
-                best_plan = plan
-                best_score = score
-
-    return best_plan
 
 
 def extend_track(
@@ -485,13 +328,7 @@ def extend_track_from_db(
     if not source_mask.any():
         return None
 
-    source_frame_labels = tracked_labels[source_frame]
     target_frame_labels = tracked_labels[target_frame]
-    locked_target_ids = {
-        int(cell_id)
-        for cell_id, frames in (validated_tracks or {}).items()
-        if target_frame in frames
-    }
 
     engine = sqla.create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
     candidates: list[_DbCandidate] = []
@@ -524,10 +361,9 @@ def extend_track_from_db(
         return None
 
     if greedy_overwrite:
-        plan = _best_greedy_overwrite_plan(
-            source_id=source_id,
-            source_mask=source_mask,
-            source_frame_labels=source_frame_labels,
+        assignments = _top_assignments_for_cell(
+            cell_id=source_id,
+            reference_mask=source_mask,
             target_frame_labels=target_frame_labels,
             candidates=candidates,
             d_max=d_max,
@@ -535,11 +371,11 @@ def extend_track_from_db(
             iou_weight=iou_weight,
             distance_weight=distance_weight,
             overlap_penalty=overlap_penalty,
-            locked_target_ids=locked_target_ids,
+            limit=1,
         )
-        if not plan:
+        if not assignments:
             return None
-        return _result_from_assignment(plan[0], target_frame, plan)
+        return _result_from_assignment(assignments[0], target_frame)
 
     assignments = _top_assignments_for_cell(
         cell_id=source_id,
