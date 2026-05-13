@@ -25,14 +25,12 @@ from cellflow.tracking_ultrack.db_build import (
     _run_ultrack_segment,
     UltrackDatabaseBuildReport,
 )
-from cellflow.tracking_ultrack.ingest import _compute_overlaps_vectorized
 from cellflow.tracking_ultrack.validation_nodes import _make_node_pickle
 from cellflow.tracking_ultrack.linking import run_linking
 from cellflow.tracking_ultrack.seed_prior import (
     boost_validated_edges,
     write_seed_prior_node_probs,
 )
-from cellflow.tracking_ultrack.solve import run_solve
 from cellflow.tracking_ultrack.validation_nodes import inject_validated_nodes
 
 LOG = logging.getLogger(__name__)
@@ -124,10 +122,55 @@ def _infer_image_shape(nodes: list[dict[str, Any]]) -> tuple[int, int]:
     return max_y, max_x
 
 
+def _remap_t_hier_ids(db_nodes: list[list[dict[str, Any]]]) -> None:
+    """Remap source-local hierarchy ids to globally unique ids."""
+    hierarchy_map: dict[tuple[int, int | None], int] = {}
+    next_global_id = 1
+
+    for source_index, nodes_in_source in enumerate(db_nodes):
+        for node in nodes_in_source:
+            key = (source_index, node["t_hier_id"])
+            if key not in hierarchy_map:
+                hierarchy_map[key] = next_global_id
+                next_global_id += 1
+            node["global_t_hier_id"] = hierarchy_map[key]
+
+
 def _ndim_from_pickle(pickle: bytes) -> int:
     from cellflow.tracking_ultrack.validation_nodes import _node_pickle_ndim
 
     return _node_pickle_ndim(pickle)
+
+
+def _compute_cross_source_overlaps(
+    rows_by_source: list[list[dict[str, Any]]],
+) -> set[tuple[int, int]]:
+    """Compute overlaps between nodes from different sources at one timepoint."""
+    from cellflow.tracking_ultrack.validation_nodes import (
+        _intersects,
+        _node_bbox_and_mask,
+    )
+
+    decoded_by_source: list[list[tuple[int, tuple[int, int, int, int], np.ndarray]]] = []
+    for rows in rows_by_source:
+        decoded_by_source.append(
+            [
+                (
+                    row["new_id"],
+                    *_node_bbox_and_mask(row["old_id"], row["pickle"]),
+                )
+                for row in rows
+            ]
+        )
+
+    pairs: set[tuple[int, int]] = set()
+    for source_index, source_nodes in enumerate(decoded_by_source[:-1]):
+        for other_nodes in decoded_by_source[source_index + 1:]:
+            for node_id, bbox, mask in source_nodes:
+                for other_id, other_bbox, other_mask in other_nodes:
+                    if _intersects(bbox, mask, other_bbox, other_mask):
+                        pairs.add((max(node_id, other_id), min(node_id, other_id)))
+    return pairs
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +190,7 @@ def merge_ultrack_databases(
     Node IDs are globally remapped so they are unique across the merged
     result.  Original overlap pairs from each source are forwarded (after
     remapping), and *cross-source* overlapping mask pairs are detected by
-    reconstructing spatial labelmaps from the ``pickle`` blobs.
+    comparing decoded node masks from the ``pickle`` blobs.
 
     Parameters
     ----------
@@ -187,6 +230,9 @@ def merge_ultrack_databases(
             row["new_id"] = next_id
             next_id += 1
 
+    # Remap t_hier_id to globally unique values per source database
+    _remap_t_hier_ids(db_nodes)
+
     total_nodes = sum(len(nds) for nds in db_nodes)
     _notify(progress_cb, f"Remapped {total_nodes} node ids …")
 
@@ -206,7 +252,7 @@ def merge_ultrack_databases(
                     count += 1
         within_counts.append(count)
 
-    # Cross-source overlaps via vectorised labelmap reconstruction.
+    # Cross-source overlaps via pairwise decoded mask checks.
     if frame_shape is None:
         h, w = _infer_image_shape(
             [row for nds in db_nodes for row in nds]
@@ -227,23 +273,11 @@ def merge_ultrack_databases(
             nodes_by_db_time[db_idx].setdefault(t, []).append(row)
 
     for t in sorted(timepoints):
-        nid_lms: list[np.ndarray] = []
-        for db_idx in range(len(db_nodes)):
-            rows_t = nodes_by_db_time[db_idx].get(t, [])
-            lm = np.zeros((h, w), dtype=np.int64)
-            if rows_t:
-                from cellflow.tracking_ultrack.validation_nodes import (
-                    _node_bbox_and_mask,
-                )
-
-                for row in rows_t:
-                    bb, mask = _node_bbox_and_mask(row["old_id"], row["pickle"])
-                    y0, x0, y1, x1 = bb
-                    lm[y0:y1, x0:x1][mask] = row["new_id"]
-            nid_lms.append(lm)
-
-        cross = _compute_overlaps_vectorized(nid_lms)
-        overlap_pairs.update(cross)
+        rows_by_source = [
+            nodes_by_db_time[db_idx].get(t, [])
+            for db_idx in range(len(db_nodes))
+        ]
+        overlap_pairs.update(_compute_cross_source_overlaps(rows_by_source))
 
     cross_count = len(overlap_pairs) - sum(within_counts)
 
@@ -291,7 +325,7 @@ def merge_ultrack_databases(
                             pickle=new_pickle,
                             node_prob=row["node_prob"],
                             t_node_id=row["t_node_id"],
-                            t_hier_id=row["t_hier_id"],
+                            t_hier_id=row["global_t_hier_id"],
                             node_annot=row["node_annot"],
                             appear_annot=row["appear_annot"],
                             disappear_annot=row["disappear_annot"],
@@ -322,9 +356,28 @@ def merge_ultrack_databases(
 # ---------------------------------------------------------------------------
 
 
+def _normalize_full_stack(stack: np.ndarray) -> np.ndarray:
+    """Normalize one full movie stack to [0, 1] using its global min/max."""
+    arr = np.asarray(stack, dtype=np.float32)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return np.zeros(arr.shape, dtype=np.float32)
+    lo = float(finite.min())
+    hi = float(finite.max())
+    if hi <= lo:
+        return np.zeros(arr.shape, dtype=np.float32)
+    return ((arr - lo) / (hi - lo)).astype(np.float32, copy=False)
+
+
+def _threshold_normalized_stack(stack: np.ndarray, threshold: float) -> np.ndarray:
+    """Zero normalized values below threshold without binarizing kept values."""
+    normalized = np.asarray(stack, dtype=np.float32)
+    return np.where(normalized < threshold, 0.0, normalized).astype(np.float32)
+
+
 def build_multithreshold_database(
     contour_maps_path: str | Path,
-    foreground_masks_path: str | Path,
+    foreground_scores_path: str | Path,
     nucleus_prob_zavg_path: str | Path,
     working_dir: str | Path,
     cfg: TrackingConfig,
@@ -335,29 +388,32 @@ def build_multithreshold_database(
     use_validated: bool = False,
     progress_cb: Callable[[str], None] | None = None,
 ) -> UltrackDatabaseBuildReport:
-    """Build ``data.db`` from several thresholded contour maps.
+    """Build ``data.db`` from several globally normalized threshold levels.
 
-    For each threshold ``τ`` in *thresholds*:
-
-    1. ``contours_τ`` is created by flooring values below ``τ`` to 0.
-    2. ``ultrack.segment`` runs into a temporary working directory.
+    For each threshold ``τ`` in *thresholds*, both the full contour-map movie and
+    the full foreground-score movie are independently min/max-normalized over all
+    timepoints/pixels, then values below ``τ`` are set to zero.  Kept values stay
+    continuous rather than being binarized.
 
     After all thresholds are segmented, the temporary databases are merged
     (with cross-threshold overlaps computed) into the final
-    ``{working_dir}/data.db``.  The remainder of the canonical pipeline
-    (scoring, linking, optional injection / boosting, and solve) is then
-    run on the merged result.
+    ``{working_dir}/data.db``.  The remainder of the canonical DB-generation
+    pipeline (optional injection, scoring, linking, and optional boosting) is
+    then run on the merged result.
 
     Parameters
     ----------
-    contour_maps_path, foreground_masks_path, nucleus_prob_zavg_path
-        Standard inputs matching :func:`build_ultrack_database`.
+    contour_maps_path, foreground_scores_path
+        Inputs for the threshold-sweep database build. ``foreground_scores_path``
+        is also used as the node-quality signal after candidate merging.
+    nucleus_prob_zavg_path
+        Legacy argument retained for callers; no longer used for node scoring.
     working_dir
         Final working directory.  Merged ``data.db`` is written here.
     cfg
         Tracking configuration.
     thresholds
-        Ordered list of contour threshold values to sweep.
+        Ordered list of normalized threshold values to sweep.
     validated_tracks, tracked_labels, use_validated
         Same semantics as :func:`build_ultrack_database`.
     progress_cb
@@ -371,11 +427,21 @@ def build_multithreshold_database(
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
 
-    _notify(progress_cb, "Loading contour maps and foreground masks …")
+    _notify(progress_cb, "Loading contour maps and foreground scores …")
     contours, foreground = _load_ultrack_inputs(
-        contour_maps_path, foreground_masks_path
+        contour_maps_path, foreground_scores_path
     )
+    if contours.shape != foreground.shape:
+        raise ValueError(
+            "Contour maps and foreground scores must have the same shape."
+        )
+    if contours.ndim != 3:
+        raise ValueError(
+            "Contour maps and foreground scores must be 3D movies after loading."
+        )
     _, h, w = contours.shape
+    contours_norm = _normalize_full_stack(contours)
+    foreground_norm = _normalize_full_stack(foreground)
 
     temp_dirs: list[Path] = []
     temp_dbs: list[Path] = []
@@ -390,11 +456,10 @@ def build_multithreshold_database(
             tmp_dir.mkdir(parents=True, exist_ok=True)
             temp_dirs.append(tmp_dir)
 
-            contours_thr = np.where(contours < threshold, 0.0, contours).astype(
-                np.float32
-            )
+            contours_thr = _threshold_normalized_stack(contours_norm, threshold)
+            foreground_thr = _threshold_normalized_stack(foreground_norm, threshold)
             ultrack_cfg = _build_ultrack_config(cfg, tmp_dir)
-            _run_ultrack_segment(foreground, contours_thr, ultrack_cfg, cfg)
+            _run_ultrack_segment(foreground_thr, contours_thr, ultrack_cfg, cfg)
 
             db_path = tmp_dir / "data.db"
             if not db_path.exists():
@@ -441,7 +506,7 @@ def build_multithreshold_database(
 
         _notify(progress_cb, "Scoring node probabilities …")
         score_report = write_seed_prior_node_probs(
-            working_dir, nucleus_prob_zavg_path, cfg
+            working_dir, foreground_scores_path, cfg
         )
         scored_nodes = int(getattr(score_report, "scored", 0))
         seed_nodes = int(getattr(score_report, "seeds", 0))

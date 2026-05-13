@@ -38,7 +38,7 @@ class _NodeScoreRecord:
 def _load_signal_stack(path: str | Path) -> np.ndarray:
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"Nucleus zavg image not found: {path}")
+        raise FileNotFoundError(f"Quality signal image not found: {path}")
 
     arr = np.asarray(tifffile.imread(path), dtype=np.float32)
     if arr.ndim == 2:
@@ -48,7 +48,7 @@ def _load_signal_stack(path: str | Path) -> np.ndarray:
     if arr.ndim == 4 and arr.shape[1] == 1:
         return arr[:, 0]
     raise ValueError(
-        f"Expected nucleus zavg image to be 2D, 3D, or singleton-Z 4D, got {arr.shape}"
+        f"Expected quality signal image to be 2D, 3D, or singleton-Z 4D, got {arr.shape}"
     )
 
 
@@ -280,7 +280,7 @@ def write_seed_prior_node_probs(
         for record in records:
             if record.t >= signal.shape[0]:
                 raise ValueError(
-                    f"Nucleus zavg image has {signal.shape[0]} frame(s), "
+                    f"Quality signal image has {signal.shape[0]} frame(s), "
                     f"cannot score node at t={record.t}"
                 )
             drop_frac = compute_drop_frac(signal[record.t], record.bbox, record.mask)

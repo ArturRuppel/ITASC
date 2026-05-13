@@ -12,13 +12,18 @@ DEFAULT_ROW_SPACING = 4
 DEFAULT_SWEEP_SPIN_WIDTH = 62
 BLOCK_GRID_COLUMNS = 4
 
+# SEMANTIC_COLORS = {
+#     "stage": ("#94e2d5", "#89dceb", "#74c7ec"),
+#     "params": ("#89b4fa", "#b4befe", "#cba6f7"),
+#     "actions": ("#f38ba8", "#fab387", "#f9e2af"),
+#     "indicators": ("#a6e3a1", "#94e2d5", "#89dceb"),
+# }
 SEMANTIC_COLORS = {
-    "stage": ("#89b4fa", "#74c7ec", "#89dceb"),
-    "params": ("#cba6f7", "#b4befe", "#f5c2e7"),
-    "actions": ("#fab387", "#f9e2af", "#eba0ac"),
-    "indicators": ("#94e2d5", "#89dceb", "#a6e3a1"),
+    "stage": ("#ffffff", "#ffffff", "#ffffff"),
+    "params": ("#ffffff", "#ffffff", "#ffffff"),
+    "actions": ("#2e7a9e", "#2e7a9e", "#2e7a9e"),
+    "indicators": ("#ffffff", "#ffffff", "#ffffff"),
 }
-
 
 def semantic_color(role: str, level: int = 0) -> str:
     shades = SEMANTIC_COLORS[role]
@@ -42,23 +47,6 @@ def action_button(button, expand=False):
         QSizePolicy.Policy.Expanding if expand else QSizePolicy.Policy.Fixed
     )
     button.setSizePolicy(horizontal_policy, QSizePolicy.Policy.Fixed)
-    color = semantic_color("actions")
-    button.setStyleSheet(
-        f"""
-        QPushButton {{
-            border: 1px solid {color};
-            color: {color};
-            padding: 2px 6px;
-        }}
-        QPushButton:hover {{
-            background-color: rgba(250, 179, 135, 32);
-        }}
-        QPushButton:disabled {{
-            border-color: palette(mid);
-            color: palette(mid);
-        }}
-        """
-    )
     return button
 
 

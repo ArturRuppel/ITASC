@@ -16,6 +16,7 @@ def test_plain_db_build_segments_scores_and_links_without_validated_steps(
     contour_path = tmp_path / "contours.tif"
     foreground_path = tmp_path / "foreground.tif"
     intensity_path = tmp_path / "nucleus.tif"
+    score_paths: list[Path] = []
 
     monkeypatch.setattr(
         db_build,
@@ -39,8 +40,11 @@ def test_plain_db_build_segments_scores_and_links_without_validated_steps(
     monkeypatch.setattr(
         db_build,
         "write_seed_prior_node_probs",
-        lambda *_args, **_kwargs: calls.append("score")
-        or type("ScoreReport", (), {"scored": 3, "seeds": 0})(),
+        lambda _working_dir, image_path, _cfg: (
+            calls.append("score"),
+            score_paths.append(Path(image_path)),
+            type("ScoreReport", (), {"scored": 3, "seeds": 0})(),
+        )[2],
     )
     monkeypatch.setattr(
         db_build,
@@ -63,6 +67,7 @@ def test_plain_db_build_segments_scores_and_links_without_validated_steps(
     )
 
     assert calls == ["load", "segment", "score", "link"]
+    assert score_paths == [foreground_path]
     assert report.scored_nodes == 3
     assert report.real_nodes == 0
     assert report.fake_nodes == 0
@@ -75,6 +80,7 @@ def test_validated_db_build_injects_scores_links_and_boosts_in_order(
     from cellflow.tracking_ultrack import db_build
 
     calls: list[str] = []
+    score_paths: list[Path] = []
     tracked = np.zeros((1, 8, 8), dtype=np.uint32)
     tracked[0, 1:4, 1:4] = 7
 
@@ -105,8 +111,11 @@ def test_validated_db_build_injects_scores_links_and_boosts_in_order(
     monkeypatch.setattr(
         db_build,
         "write_seed_prior_node_probs",
-        lambda *_args, **_kwargs: calls.append("score")
-        or type("ScoreReport", (), {"scored": 5, "seeds": 1})(),
+        lambda _working_dir, image_path, _cfg: (
+            calls.append("score"),
+            score_paths.append(Path(image_path)),
+            type("ScoreReport", (), {"scored": 5, "seeds": 1})(),
+        )[2],
     )
     monkeypatch.setattr(
         db_build,
@@ -132,6 +141,7 @@ def test_validated_db_build_injects_scores_links_and_boosts_in_order(
     )
 
     assert calls == ["load", "segment", "inject", "score", "link", "boost"]
+    assert score_paths == [tmp_path / "foreground.tif"]
     assert report.real_nodes == 1
     assert report.skipped_validated == 2
     assert report.fake_nodes == 3

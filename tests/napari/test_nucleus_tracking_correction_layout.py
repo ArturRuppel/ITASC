@@ -60,6 +60,7 @@ def _install_import_stubs() -> None:
             self.appear_weight = -0.001
             self.disappear_weight = -0.001
             self.division_weight = -0.001
+            self.bias = 0.0
             self.solution_gap = 0.001
             self.time_limit = 36000
             self.window_size = 0
@@ -79,7 +80,9 @@ def _install_import_stubs() -> None:
             "_build_ultrack_config": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.linking": {"run_linking": lambda *args, **kwargs: iter(())},
-        "cellflow.tracking_ultrack.db_build": {"build_ultrack_database": lambda *args, **kwargs: None},
+        "cellflow.tracking_ultrack.multi_threshold": {
+            "build_multithreshold_database": lambda *args, **kwargs: None,
+        },
         "cellflow.tracking_ultrack.extend": {
             "extend_track": lambda *args, **kwargs: None,
             "extend_track_from_db": lambda *args, **kwargs: None,
@@ -345,43 +348,39 @@ def test_main_widget_includes_meta_source_browser_after_analysis(tmp_path):
     viewer.close()
 
 
-def test_nucleus_workflow_uses_stage_local_file_widgets():
+def test_nucleus_workflow_uses_unified_file_status_and_progress_widgets():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     assert not hasattr(widget, "input_files")
+    assert hasattr(widget, "_files_widget")
+    assert hasattr(widget, "pipeline_status_lbl")
+    assert hasattr(widget, "pipeline_progress_bar")
 
-    assert hasattr(widget, "contour_input_files")
-    assert hasattr(widget, "contour_output_files")
-    assert hasattr(widget, "contour_status_lbl")
-    assert hasattr(widget, "build_progress_bar")
+    removed_stage_attrs = {
+        "contour_input_files",
+        "contour_output_files",
+        "contour_status_lbl",
+        "build_progress_bar",
+        "db_gen_input_files",
+        "db_gen_output_files",
+        "db_gen_status_lbl",
+        "db_gen_progress_bar",
+        "ultrack_input_files",
+        "ultrack_output_files",
+        "ultrack_status_lbl",
+        "ultrack_progress_bar",
+    }
+    for attr in removed_stage_attrs:
+        assert not hasattr(widget, attr)
 
-    assert hasattr(widget, "db_gen_input_files")
-    assert hasattr(widget, "db_gen_output_files")
-    assert hasattr(widget, "db_gen_status_lbl")
-    assert hasattr(widget, "db_gen_progress_bar")
+    assert widget.pipeline_progress_bar.isVisible() is False
 
-    assert hasattr(widget, "ultrack_input_files")
-    assert hasattr(widget, "ultrack_output_files")
-    assert hasattr(widget, "ultrack_status_lbl")
-    assert hasattr(widget, "ultrack_progress_bar")
-
-    assert widget.contour_input_files in widget.contour_section.findChildren(type(widget.contour_input_files))
-    assert widget.contour_output_files in widget.contour_section.findChildren(type(widget.contour_output_files))
-    assert widget.db_gen_input_files in widget.db_gen_section.findChildren(type(widget.db_gen_input_files))
-    assert widget.db_gen_output_files in widget.db_gen_section.findChildren(type(widget.db_gen_output_files))
-    assert widget.ultrack_input_files in widget.ultrack_section.findChildren(type(widget.ultrack_input_files))
-    assert widget.ultrack_output_files in widget.ultrack_section.findChildren(type(widget.ultrack_output_files))
-
-    assert widget.build_progress_bar.isVisible() is False
-    assert widget.db_gen_progress_bar.isVisible() is False
-    assert widget.ultrack_progress_bar.isVisible() is False
-
-    texts = _label_texts(widget.contour_section)
-    assert "min" not in texts
-    assert "max" not in texts
-    assert "step" not in texts
+    texts = _label_texts(widget)
+    assert "Threshold min:" in texts
+    assert "Threshold max:" in texts
+    assert "Threshold step:" in texts
 
     widget.deleteLater()
     viewer.close()
@@ -602,40 +601,36 @@ def test_tracking_correction_action_buttons_expand_horizontally():
     viewer.close()
 
 
-def test_ultrack_section_has_no_legacy_resolve_route_and_keeps_local_status():
+def test_ultrack_section_has_no_legacy_resolve_route_and_uses_pipeline_status():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     assert not hasattr(widget, "ultrack_route_check")
-    assert widget.ultrack_status_lbl.text() == ""
-    assert widget.ultrack_progress_bar.isVisible() is False
+    assert widget.pipeline_status_lbl.text() == ""
+    assert widget.pipeline_progress_bar.isVisible() is False
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_nucleus_workflow_status_labels_are_section_local():
+def test_nucleus_workflow_status_labels_use_unified_pipeline_status():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     assert not hasattr(widget, "status_lbl")
+    assert hasattr(widget, "pipeline_status_lbl")
+    assert widget.pipeline_status_lbl.text() == ""
 
-    local_statuses = [
-        (widget.contour_section, widget.contour_status_lbl),
-        (widget.db_gen_section, widget.db_gen_status_lbl),
-        (widget.ultrack_db_browser_section, widget.ultrack_db_section_status_lbl),
-        (widget.ultrack_section, widget.ultrack_status_lbl),
-        (widget.correction_section, widget.correction_status_lbl),
-    ]
-    for section, label in local_statuses:
-        assert label.text() == ""
-        assert label in section.findChildren(QLabel)
+    assert widget.ultrack_db_section_status_lbl.text() == ""
+    assert widget.ultrack_db_section_status_lbl in widget.ultrack_db_browser_section.findChildren(QLabel)
+    assert not hasattr(widget, "correction_section")
+    assert widget.correction_status_lbl.text() == ""
 
-    widget._set_ultrack_status("Ultrack stayed local")
+    widget._status("Ultrack stayed local")
 
-    assert widget.ultrack_status_lbl.text() == "Ultrack stayed local"
+    assert widget.pipeline_status_lbl.text() == "Ultrack stayed local"
     assert not hasattr(widget, "status_lbl")
 
     widget.deleteLater()
@@ -654,6 +649,38 @@ def test_db_gen_section_exposes_quality_and_power_controls():
 
     widget.deleteLater()
     viewer.close()
+
+
+def test_db_gen_exposes_threshold_sweep_controls_and_ignores_progressive_state():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    try:
+        assert not hasattr(widget, "db_gen_progressive_check")
+        assert "Progressive inputs" not in {
+            checkbox.text() for checkbox in widget.findChildren(QCheckBox)
+        }
+        assert widget.db_gen_threshold_min_spin.value() == pytest.approx(0.1)
+        assert widget.db_gen_threshold_max_spin.value() == pytest.approx(0.5)
+        assert widget.db_gen_threshold_step_spin.value() == pytest.approx(0.1)
+        np.testing.assert_allclose(
+            widget._db_gen_thresholds_from_controls(),
+            np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
+        )
+
+        state = widget.get_state()
+        assert "progressive" not in state["db_generation"]
+        widget.set_state({"db_generation": {"progressive": True}})
+        assert "progressive" not in widget.get_state()["db_generation"]
+    finally:
+        widget.deleteLater()
+        viewer.close()
+        for module_name in tuple(sys.modules):
+            if module_name == "cellflow.tracking_ultrack" or module_name.startswith(
+                "cellflow.tracking_ultrack."
+            ):
+                sys.modules.pop(module_name, None)
 
 
 def test_db_gen_exposes_node_probability_weight_controls():
@@ -682,68 +709,43 @@ def test_db_gen_exposes_node_probability_weight_controls():
     viewer.close()
 
 
-def test_contour_maps_section_exposes_stage_files_and_foreground_threshold():
+def test_contour_maps_panel_exposes_foreground_scores_without_masks_or_fg_threshold():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     assert not hasattr(widget, "foreground_section")
-    assert widget.contour_fg_threshold_spin.minimum() == 0.0
-    assert widget.contour_fg_threshold_spin.maximum() == 1.0
-    assert widget.contour_fg_threshold_spin.value() == 0.5
-    assert widget.contour_fg_threshold_spin.singleStep() == 0.01
+    assert not hasattr(widget, "contour_fg_threshold_spin")
     assert widget.contour_flow_threshold_spin.minimum() == 0.0
     assert widget.contour_flow_threshold_spin.maximum() == 10.0
     assert widget.contour_flow_threshold_spin.value() == 0.0
     assert widget.contour_flow_threshold_spin.singleStep() == 0.1
 
-    input_text = " ".join(
-        label.text()
-        for label in widget.contour_input_files.findChildren(QLabel)
-    )
-    output_text = " ".join(
-        label.text()
-        for label in widget.contour_output_files.findChildren(QLabel)
-    )
-    assert "1_cellpose/nucleus_prob_3dt.tif" in input_text
-    assert "1_cellpose/nucleus_dp_3dt.tif" in input_text
-    assert "Flow threshold:" in _label_texts(widget.contour_section)
-    assert "2_nucleus/foreground_masks.tif" in output_text
-    assert "2_nucleus/foreground_scores.tif" in output_text
-    assert "2_nucleus/contour_maps.tif" in output_text
+    file_text = " ".join(label.text() for label in widget._files_widget.findChildren(QLabel))
+    assert "1_cellpose/nucleus_prob_3dt.tif" in file_text
+    assert "1_cellpose/nucleus_dp_3dt.tif" in file_text
+    assert "2_nucleus/foreground_scores.tif" in file_text
+    assert "2_nucleus/contour_maps.tif" in file_text
+    assert "2_nucleus/foreground_masks.tif" not in file_text
+    assert "Flow thr:" in _label_texts(widget)
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_nucleus_db_gen_and_ultrack_sections_expose_stage_file_rows():
+def test_nucleus_pipeline_files_expose_db_generation_and_ultrack_rows():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    db_input_text = " ".join(
-        label.text()
-        for label in widget.db_gen_input_files.findChildren(QLabel)
-    )
-    db_output_text = " ".join(
-        label.text()
-        for label in widget.db_gen_output_files.findChildren(QLabel)
-    )
-    ultrack_input_text = " ".join(
-        label.text()
-        for label in widget.ultrack_input_files.findChildren(QLabel)
-    )
-    ultrack_output_text = " ".join(
-        label.text()
-        for label in widget.ultrack_output_files.findChildren(QLabel)
-    )
+    file_text = " ".join(label.text() for label in widget._files_widget.findChildren(QLabel))
 
-    assert "2_nucleus/contour_maps.tif" in db_input_text
-    assert "2_nucleus/foreground_masks.tif" in db_input_text
-    assert "1_cellpose/nucleus_prob_zavg.tif" in db_input_text
-    assert "2_nucleus/ultrack_workdir/data.db" in db_output_text
-    assert "2_nucleus/ultrack_workdir/data.db" in ultrack_input_text
-    assert "2_nucleus/tracked_labels.tif" in ultrack_output_text
+    assert "2_nucleus/contour_maps.tif" in file_text
+    assert "2_nucleus/foreground_scores.tif" in file_text
+    assert "2_nucleus/foreground_masks.tif" not in file_text
+    assert "1_cellpose/nucleus_prob_zavg.tif" in file_text
+    assert "2_nucleus/ultrack_workdir/data.db" in file_text
+    assert "2_nucleus/tracked_labels.tif" in file_text
 
     widget.deleteLater()
     viewer.close()
@@ -763,18 +765,16 @@ def test_nucleus_stage_file_widgets_show_present_and_missing_files(tmp_path):
     tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif", np.zeros((1, 1, 2, 4, 4), dtype=np.float32))
     tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif", np.zeros((1, 4, 4), dtype=np.float32))
     tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", np.zeros((1, 4, 4), dtype=np.float32))
-    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_masks.tif", np.zeros((1, 4, 4), dtype=np.uint8))
+    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_scores.tif", np.zeros((1, 4, 4), dtype=np.float32))
     tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", np.zeros((1, 4, 4), dtype=np.uint32))
     (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(b"sqlite placeholder")
 
     widget.refresh(pos_dir)
 
     texts = _label_texts(widget)
-    assert texts.count("✓") >= 8
+    assert texts.count("✓") >= 7
     assert "missing" in texts
-    assert widget.contour_input_files in widget.contour_section.findChildren(type(widget.contour_input_files))
-    assert widget.db_gen_output_files in widget.db_gen_section.findChildren(type(widget.db_gen_output_files))
-    assert widget.ultrack_output_files in widget.ultrack_section.findChildren(type(widget.ultrack_output_files))
+    assert len(widget._files_widget._rows) == 9
 
     widget.deleteLater()
     viewer.close()
@@ -788,55 +788,51 @@ def test_nucleus_stage_file_load_buttons_load_files_into_viewer(tmp_path):
     pos_dir = tmp_path / "pos00"
     (pos_dir / "2_nucleus").mkdir(parents=True)
     contours = np.ones((2, 4, 4), dtype=np.float32)
-    masks = np.ones((2, 4, 4), dtype=np.uint8)
+    scores = np.ones((2, 4, 4), dtype=np.float32) * 0.5
     labels = np.ones((2, 4, 4), dtype=np.uint32)
     import tifffile
 
     tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", contours)
-    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_masks.tif", masks)
+    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_scores.tif", scores)
     tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", labels)
 
     widget.refresh(pos_dir)
 
-    for files_widget in (
-        widget.contour_output_files,
-        widget.ultrack_output_files,
-    ):
-        for row in files_widget._rows:
-            if row._full_path is not None:
-                row._on_load_clicked()
+    for row in widget._files_widget._rows:
+        if row._full_path is not None:
+            row._on_load_clicked()
 
     assert "2_nucleus_contour_maps" in viewer.layers
-    assert "2_nucleus_foreground_masks" in viewer.layers
+    assert "2_nucleus_foreground_scores" in viewer.layers
+    assert "2_nucleus_foreground_masks" not in viewer.layers
     assert "2_nucleus_tracked_labels" in viewer.layers
     np.testing.assert_array_equal(viewer.layers["2_nucleus_contour_maps"].data, contours)
-    np.testing.assert_array_equal(viewer.layers["2_nucleus_foreground_masks"].data, masks)
+    np.testing.assert_array_equal(viewer.layers["2_nucleus_foreground_scores"].data, scores)
     np.testing.assert_array_equal(viewer.layers["2_nucleus_tracked_labels"].data, labels)
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_contour_foreground_threshold_persists_without_old_foreground_state():
+def test_removed_foreground_threshold_state_is_not_persisted_or_restored():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.contour_fg_threshold_spin.setValue(0.42)
-
     state = widget.get_state()
+    assert not hasattr(widget, "contour_fg_threshold_spin")
     assert "foreground_mask" not in state
-    assert state["cellprob"]["foreground_threshold"] == pytest.approx(0.42)
-    widget.deleteLater()
+    assert "foreground_threshold" not in state["cellprob"]
 
-    widget = widget_class(viewer)
     widget.set_state({
         **state,
         "cellprob": {**state["cellprob"], "foreground_threshold": 0.73},
         "foreground_mask": {"threshold": 0.1, "gamma": 2.0, "niter": 50},
     })
 
-    assert widget.contour_fg_threshold_spin.value() == pytest.approx(0.73)
+    new_state = widget.get_state()
+    assert "foreground_threshold" not in new_state["cellprob"]
+    assert "foreground_mask" not in new_state
 
     widget.deleteLater()
     viewer.close()
@@ -911,6 +907,28 @@ def test_ultrack_parameters_are_grouped_by_workflow_stage():
     assert "Validated seed prior" in db_group_labels
     assert "Validated seed prior" not in ultrack_group_labels
     assert widget.ultrack_quality_exp_spin.parent() is None
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_solver_bias_control_updates_config_and_state():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert hasattr(widget, "ultrack_bias_spin")
+    assert widget.ultrack_bias_spin.value() == pytest.approx(0.0)
+
+    widget.ultrack_bias_spin.setValue(-0.5)
+    cfg = widget._ultrack_config_from_controls()
+
+    assert cfg.bias == pytest.approx(-0.5)
+    assert widget.get_state()["ultrack"]["bias"] == pytest.approx(-0.5)
+
+    widget.set_state({"ultrack": {"bias": -0.25}})
+
+    assert widget.ultrack_bias_spin.value() == pytest.approx(-0.25)
 
     widget.deleteLater()
     viewer.close()
@@ -1054,78 +1072,13 @@ def test_ultrack_terminal_script_includes_visible_config_controls(tmp_path, monk
     viewer.close()
 
 
-def test_db_generation_terminal_script_includes_validated_seed_prior_controls(tmp_path, monkeypatch):
+def test_db_generation_terminal_controls_are_removed():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
-    captured = _install_terminal_capture(monkeypatch)
-    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {12: {0, 1}})
 
-    pos_dir = tmp_path / "pos00"
-    cellpose_dir = pos_dir / "1_cellpose"
-    nucleus_dir = pos_dir / "2_nucleus"
-    cellpose_dir.mkdir(parents=True)
-    nucleus_dir.mkdir()
-    (nucleus_dir / "contour_maps.tif").touch()
-    (nucleus_dir / "foreground_masks.tif").touch()
-    (nucleus_dir / "tracked_labels.tif").touch()
-    (cellpose_dir / "nucleus_prob_zavg.tif").touch()
-    widget._pos_dir = pos_dir
-    widget.db_gen_quality_exp_spin.setValue(10.5)
-    widget.db_gen_use_validated_check.setChecked(True)
-    widget.ultrack_seed_weight_spin.setValue(0.9)
-    widget.ultrack_seed_space_spin.setValue(40.0)
-    widget.ultrack_seed_time_spin.setValue(4.5)
-    widget.ultrack_seed_window_spin.setValue(9)
-
-    widget._on_db_gen_terminal()
-    script = _read_launched_script(captured)
-
-    assert "quality_exponent=10.5" in script
-    assert "seed_weight=0.9" in script
-    assert "seed_sigma_space=40.0" in script
-    assert "seed_tau_time=4.5" in script
-    assert "seed_max_dt=9" in script
-
-    widget.deleteLater()
-    viewer.close()
-def test_db_generation_terminal_script_includes_seed_prior_and_nucleus_prob_zavg(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
-    captured = _install_terminal_capture(monkeypatch)
-    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {7: {0}})
-
-    pos_dir = tmp_path / "pos00"
-    cellpose_dir = pos_dir / "1_cellpose"
-    nucleus_dir = pos_dir / "2_nucleus"
-    cellpose_dir.mkdir(parents=True)
-    nucleus_dir.mkdir()
-    (nucleus_dir / "contour_maps.tif").touch()
-    (nucleus_dir / "foreground_masks.tif").touch()
-    (nucleus_dir / "tracked_labels.tif").touch()
-    (cellpose_dir / "nucleus_prob_zavg.tif").touch()
-    widget._pos_dir = pos_dir
-
-    widget.db_gen_quality_exp_spin.setValue(9.0)
-    widget.db_gen_use_validated_check.setChecked(True)
-    widget.ultrack_seed_weight_spin.setValue(0.75)
-    widget.ultrack_seed_space_spin.setValue(30.0)
-    widget.ultrack_seed_time_spin.setValue(3.0)
-    widget.ultrack_seed_window_spin.setValue(7)
-
-    widget._on_db_gen_terminal()
-    script = _read_launched_script(captured)
-
-    assert "nucleus_prob_zavg.tif" in script
-    assert "quality_exponent=9.0" in script
-    assert "seed_weight=0.75" in script
-    assert "seed_sigma_space=30.0" in script
-    assert "seed_tau_time=3.0" in script
-    assert "seed_max_dt=7" in script
-    assert "nucleus_prob_zavg_path=nucleus_prob_zavg_path" in script
+    assert not hasattr(widget, "db_gen_terminal_btn")
+    assert not hasattr(widget, "_on_db_gen_terminal")
 
     widget.deleteLater()
     viewer.close()
@@ -1237,7 +1190,7 @@ def test_contour_maps_parameters_expand_and_scroll_when_narrow():
     viewer.close()
 
 
-def test_contour_maps_build_writes_contour_scores_and_thresholded_masks(tmp_path, monkeypatch):
+def test_contour_maps_build_writes_contours_and_foreground_scores_only(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -1248,11 +1201,9 @@ def test_contour_maps_build_writes_contour_scores_and_thresholded_masks(tmp_path
     (pos_dir / "1_cellpose").mkdir(parents=True)
     (pos_dir / "2_nucleus").mkdir()
     widget._pos_dir = pos_dir
-    widget.contour_fg_threshold_spin.setValue(0.5)
 
     import tifffile
 
-    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif", np.zeros((2, 1, 3, 3), dtype=np.float32))
     tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif", np.zeros((2, 1, 2, 3, 3), dtype=np.float32))
 
     def fake_build(
@@ -1282,16 +1233,13 @@ def test_contour_maps_build_writes_contour_scores_and_thresholded_masks(tmp_path
 
     contours = tifffile.imread(pos_dir / "2_nucleus" / "contour_maps.tif")
     scores = tifffile.imread(pos_dir / "2_nucleus" / "foreground_scores.tif")
-    masks = tifffile.imread(pos_dir / "2_nucleus" / "foreground_masks.tif")
     assert contours.shape == (2, 3, 3)
     assert contours.dtype == np.float32
     assert scores.dtype == np.float32
-    assert masks.dtype == np.uint8
-    np.testing.assert_array_equal(masks, (scores >= 0.5).astype(np.uint8))
-    output_texts = _label_texts(widget.contour_output_files)
-    assert "✓" in output_texts
-    assert "Contour maps and foreground masks built." in widget.contour_status_lbl.text()
-    assert widget.build_progress_bar.isVisible() is False
+    assert not (pos_dir / "2_nucleus" / "foreground_masks.tif").exists()
+    assert "✓" in _label_texts(widget._files_widget)
+    assert "Contour maps and foreground scores built." in widget.pipeline_status_lbl.text()
+    assert widget.pipeline_progress_bar.isVisible() is False
 
     widget.deleteLater()
     viewer.close()
@@ -1347,138 +1295,45 @@ def test_contour_maps_build_passes_flow_threshold_to_builder(tmp_path, monkeypat
     viewer.close()
 
 
-def test_contour_terminal_script_includes_flow_threshold(tmp_path, monkeypatch):
+def test_contour_terminal_controls_are_removed():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    captured = _install_terminal_capture(monkeypatch)
 
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
-    widget._pos_dir = pos_dir
-    widget.contour_flow_threshold_spin.setValue(1.4)
-
-    import tifffile
-
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif",
-        np.zeros((1, 1, 3, 3), dtype=np.float32),
-    )
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif",
-        np.zeros((1, 1, 2, 3, 3), dtype=np.float32),
-    )
-
-    widget._on_run_contour_terminal()
-    script = _read_launched_script(captured)
-
-    assert "flow_threshold = 1.4" in script
-    assert "flow_threshold=flow_threshold" in script
+    assert not hasattr(widget, "contour_terminal_btn")
+    assert not hasattr(widget, "_on_run_contour_terminal")
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_contour_filter_preview_updates_layer_without_overwriting(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
-    _install_sync_thread_worker(monkeypatch, module)
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    widget._pos_dir = pos_dir
-
-    import tifffile
-
-    original = np.zeros((2, 4, 4), dtype=np.float32)
-    original[1, 2, 2] = 10.0
-    tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", original)
-
-    def fake_filter(contours, params):
-        assert params.median_kernel_time == 3
-        return np.asarray(contours, dtype=np.float32) + 1.0
-
-    monkeypatch.setattr("cellflow.segmentation.compute_filtered_contour_maps", fake_filter)
-    widget.contour_filter_median_time_spin.setValue(3)
-
-    widget._on_preview_contour_filter()
-
-    np.testing.assert_array_equal(
-        tifffile.imread(pos_dir / "2_nucleus" / "contour_maps.tif"),
-        original,
-    )
-    assert "Contour Map: Nucleus" in viewer.layers
-    np.testing.assert_array_equal(
-        viewer.layers["Contour Map: Nucleus"].data,
-        original + 1.0,
-    )
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_contour_filter_run_overwrites_contour_maps(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
-    _install_sync_thread_worker(monkeypatch, module)
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    widget._pos_dir = pos_dir
-
-    import tifffile
-
-    original = np.zeros((2, 4, 4), dtype=np.float32)
-    original[0, 1, 1] = 5.0
-    tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", original)
-
-    monkeypatch.setattr(
-        "cellflow.segmentation.compute_filtered_contour_maps",
-        lambda contours, params: np.asarray(contours, dtype=np.float32) + 2.0,
-    )
-
-    widget._on_run_contour_filter()
-
-    written = tifffile.imread(pos_dir / "2_nucleus" / "contour_maps.tif")
-    assert written.dtype == np.float32
-    np.testing.assert_array_equal(written, original + 2.0)
-    assert "Contour Map: Nucleus" in viewer.layers
-    np.testing.assert_array_equal(
-        viewer.layers["Contour Map: Nucleus"].data,
-        original + 2.0,
-    )
-    assert "Filtered contour maps written to contour_maps.tif." in widget.contour_status_lbl.text()
-    assert "✓" in _label_texts(widget.contour_output_files)
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_contour_filter_controls_persist_through_state():
+def test_contour_filter_controls_and_actions_are_removed_from_state():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.contour_filter_median_time_spin.setValue(3)
-    widget.contour_filter_median_space_spin.setValue(5)
-    widget.contour_filter_gauss_time_spin.setValue(1.5)
-    widget.contour_filter_gauss_space_spin.setValue(2.5)
+    removed_attrs = {
+        "contour_filter_median_time_spin",
+        "contour_filter_median_space_spin",
+        "contour_filter_gauss_time_spin",
+        "contour_filter_gauss_space_spin",
+        "preview_contour_filter_btn",
+        "run_contour_filter_btn",
+        "_on_preview_contour_filter",
+        "_on_run_contour_filter",
+    }
+    for attr in removed_attrs:
+        assert not hasattr(widget, attr)
 
-    state = widget.get_state()
-    widget.deleteLater()
-
-    widget = widget_class(viewer)
-    widget.set_state(state)
-
-    assert widget.contour_filter_median_time_spin.value() == 3
-    assert widget.contour_filter_median_space_spin.value() == 5
-    assert abs(widget.contour_filter_gauss_time_spin.value() - 1.5) < 0.01
-    assert abs(widget.contour_filter_gauss_space_spin.value() - 2.5) < 0.01
+    widget.set_state({
+        "contour_filter": {
+            "median_time": 3,
+            "median_space": 5,
+            "gauss_time": 1.5,
+            "gauss_space": 2.5,
+        }
+    })
+    assert "contour_filter" not in widget.get_state()
 
     widget.deleteLater()
     viewer.close()
@@ -1531,7 +1386,7 @@ def test_db_generation_spinboxes_expand_equally_in_the_top_grid():
     assert widget.db_gen_min_area_spin.x() < widget.db_gen_max_area_spin.x()
     assert widget.db_gen_max_dist_spin.y() == widget.db_gen_max_neighbors_spin.y()
     assert widget.run_db_gen_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
-    assert widget.db_gen_terminal_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert not hasattr(widget, "db_gen_terminal_btn")
 
     host.deleteLater()
     viewer.close()
@@ -2002,30 +1857,30 @@ def test_canonical_sections_expose_required_elements():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
+    assert hasattr(widget, "_files_widget")
+    assert hasattr(widget, "pipeline_status_lbl")
+    assert hasattr(widget, "pipeline_progress_bar")
+
     # Section 1: Contour Maps
-    assert hasattr(widget, "contour_input_files")
-    assert hasattr(widget, "contour_output_files")
     assert hasattr(widget, "build_btn")
-    assert hasattr(widget, "contour_terminal_btn")
-    assert hasattr(widget, "contour_status_lbl")
-    assert hasattr(widget, "build_progress_bar")
-    assert hasattr(widget, "contour_fg_threshold_spin")
     assert hasattr(widget, "contour_flow_threshold_spin")
-    assert hasattr(widget, "contour_filter_median_time_spin")
-    assert hasattr(widget, "contour_filter_median_space_spin")
-    assert hasattr(widget, "contour_filter_gauss_time_spin")
-    assert hasattr(widget, "contour_filter_gauss_space_spin")
-    assert hasattr(widget, "preview_contour_filter_btn")
-    assert hasattr(widget, "run_contour_filter_btn")
+    assert not hasattr(widget, "contour_terminal_btn")
+    assert not hasattr(widget, "contour_fg_threshold_spin")
+    assert not hasattr(widget, "contour_filter_median_time_spin")
+    assert not hasattr(widget, "contour_filter_median_space_spin")
+    assert not hasattr(widget, "contour_filter_gauss_time_spin")
+    assert not hasattr(widget, "contour_filter_gauss_space_spin")
+    assert not hasattr(widget, "preview_contour_filter_btn")
+    assert not hasattr(widget, "run_contour_filter_btn")
     assert not hasattr(widget, "fg_threshold_spin")
 
-    # Section 3: Ultrack Database Generation
-    assert hasattr(widget, "db_gen_input_files")
-    assert hasattr(widget, "db_gen_output_files")
+    # Section 2: Ultrack Database Generation
     assert hasattr(widget, "run_db_gen_btn")
-    assert hasattr(widget, "db_gen_terminal_btn")
-    assert hasattr(widget, "db_gen_status_lbl")
-    assert hasattr(widget, "db_gen_progress_bar")
+    assert hasattr(widget, "db_gen_threshold_min_spin")
+    assert hasattr(widget, "db_gen_threshold_max_spin")
+    assert hasattr(widget, "db_gen_threshold_step_spin")
+    assert not hasattr(widget, "db_gen_terminal_btn")
+    assert not hasattr(widget, "db_gen_fg_thr_spin")
 
     # Section 4: Ultrack Database Browser
     assert hasattr(widget, "ultrack_db_info_lbl")
@@ -2037,15 +1892,11 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "ultrack_db_section_status_lbl")
 
     # Section 5: Ultrack Tracking
-    assert hasattr(widget, "ultrack_input_files")
-    assert hasattr(widget, "ultrack_output_files")
     assert hasattr(widget, "run_ultrack_btn")
-    assert hasattr(widget, "ultrack_terminal_btn")
-    assert hasattr(widget, "ultrack_status_lbl")
-    assert hasattr(widget, "ultrack_progress_bar")
+    assert not hasattr(widget, "ultrack_terminal_btn")
 
-    # Correction has no Run button per spec.
     assert hasattr(widget, "correction_status_lbl")
+    assert not hasattr(widget, "correction_section")
 
     widget.deleteLater()
     viewer.close()
@@ -2146,7 +1997,7 @@ def _progress_bars(widget):
     return widget.findChildren(QProgressBar)
 
 
-def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
+def test_db_gen_section_calls_multithreshold_builder_on_run(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -2155,31 +2006,15 @@ def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
 
     calls = []
 
-    def fake_segment(foreground, contours, ultrack_cfg, **kwargs):
-        calls.append((foreground.shape, contours.shape, kwargs))
-
-    monkeypatch.setattr(module, "_ultrack_segment", fake_segment, raising=False)
     def fake_build_database(**kwargs):
-        foreground = np.asarray(tifffile.imread(kwargs["foreground_masks_path"]))
-        contours = np.asarray(tifffile.imread(kwargs["contour_maps_path"]))
-        if foreground.ndim == 4 and foreground.shape[1] == 1:
-            foreground = foreground[:, 0]
-        if contours.ndim == 4 and contours.shape[1] == 1:
-            contours = contours[:, 0]
-        module._ultrack_segment(
-            foreground,
-            contours,
-            kwargs["cfg"],
-            overwrite=True,
-            max_segments_per_time=1_000_000,
-        )
-        calls.append(("build", kwargs["use_validated"]))
+        calls.append(kwargs)
         data_db = kwargs["working_dir"] / "data.db"
         data_db.parent.mkdir(parents=True, exist_ok=True)
         data_db.write_bytes(b"sqlite placeholder")
         return {"database": str(data_db)}
 
-    monkeypatch.setattr(module, "build_ultrack_database", fake_build_database)
+    monkeypatch.setattr(module, "build_multithreshold_database", fake_build_database)
+    monkeypatch.setattr(module, "_ultrack_segment", object(), raising=False)
 
     pos_dir = tmp_path / "pos00"
     (pos_dir / "1_cellpose").mkdir(parents=True)
@@ -2188,59 +2023,41 @@ def test_db_gen_section_calls_ultrack_segment_on_run(tmp_path, monkeypatch):
     import tifffile
 
     tifffile.imwrite(str(pos_dir / "2_nucleus" / "contour_maps.tif"), dummy)
-    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_masks.tif"), dummy)
-    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif"), dummy)
+    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_scores.tif"), dummy)
     widget._pos_dir = pos_dir
 
     widget._on_run_db_generation()
 
-    assert calls[0][0] == (2, 4, 4)
-    assert calls[0][1] == (2, 4, 4)
-    assert calls[0][2]["overwrite"] is True
-    assert calls[0][2]["max_segments_per_time"] == 1_000_000
-    assert calls[1] == ("build", False)
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["contour_maps_path"] == pos_dir / "2_nucleus" / "contour_maps.tif"
+    assert call["foreground_scores_path"] == pos_dir / "2_nucleus" / "foreground_scores.tif"
+    assert call["nucleus_prob_zavg_path"] == pos_dir / "2_nucleus" / "foreground_scores.tif"
+    np.testing.assert_allclose(call["thresholds"], np.array([0.1, 0.2, 0.3, 0.4, 0.5]))
+    assert call["cfg"].seg_foreground_threshold == pytest.approx(0.0)
+    assert call["use_validated"] is False
     assert widget.run_db_gen_btn.isEnabled()
-    assert widget.db_gen_terminal_btn.isEnabled()
-    assert "complete" in widget.db_gen_status_lbl.text().lower()
-    assert widget.db_gen_progress_bar.isVisible() is False
-    assert "✓" in _label_texts(widget.db_gen_output_files)
+    assert "complete" in widget.pipeline_status_lbl.text().lower()
+    assert widget.pipeline_progress_bar.isVisible() is False
+    assert "✓" in _label_texts(widget._files_widget)
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_db_gen_section_terminal_script_includes_canonical_segment(tmp_path, monkeypatch):
+def test_db_gen_section_has_no_terminal_launcher():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    captured = _install_terminal_capture(monkeypatch)
 
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
-    (pos_dir / "2_nucleus" / "foreground_masks.tif").touch()
-    (pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif").touch()
-    widget._pos_dir = pos_dir
-
-    widget._on_db_gen_terminal()
-    script = _read_launched_script(captured)
-
-    assert "foreground_masks" in script
-    assert "contour_maps" in script
-    assert "nucleus_prob_zavg" in script
-    assert "quality_weight=" in script
-    assert "circularity_weight=" in script
-    assert "build_ultrack_database" in script
-    assert "write_seed_prior_node_probs" not in script
-    assert "run_linking" not in script
-    assert "if __name__ == '__main__':" in script
+    assert not hasattr(widget, "db_gen_terminal_btn")
+    assert not hasattr(widget, "_on_db_gen_terminal")
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_db_gen_section_fails_clearly_if_foreground_masks_missing(tmp_path):
+def test_db_gen_section_fails_clearly_if_foreground_scores_missing(tmp_path):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -2252,9 +2069,9 @@ def test_db_gen_section_fails_clearly_if_foreground_masks_missing(tmp_path):
 
     widget._on_run_db_generation()
 
-    text = widget.db_gen_status_lbl.text().lower()
-    assert "foreground_masks" in text or "missing" in text
-    assert "foreground mask" in text
+    text = widget.pipeline_status_lbl.text().lower()
+    assert "foreground_scores" in text
+    assert "missing" in text
     assert "run" in text
 
     widget.deleteLater()
@@ -2752,7 +2569,7 @@ def test_ultrack_db_browser_does_not_add_contour_or_foreground_layers(tmp_path, 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.write_bytes(b"sqlite placeholder")
     tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", np.zeros((1, 4, 4), dtype=np.float32))
-    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_masks.tif", np.zeros((1, 4, 4), dtype=np.uint8))
+    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_scores.tif", np.zeros((1, 4, 4), dtype=np.float32))
     widget._pos_dir = pos_dir
     widget._ultrack_db_browser_active = True
     widget._ultrack_db_frame_initialized = True
@@ -3004,7 +2821,9 @@ def test_db_gen_controls_persist_through_state():
 
     widget.db_gen_min_area_spin.setValue(500)
     widget.db_gen_max_area_spin.setValue(80_000)
-    widget.db_gen_fg_thr_spin.setValue(0.4)
+    widget.db_gen_threshold_min_spin.setValue(0.2)
+    widget.db_gen_threshold_max_spin.setValue(0.6)
+    widget.db_gen_threshold_step_spin.setValue(0.2)
     widget.db_gen_min_frontier_spin.setValue(0.05)
     widget.db_gen_ws_hierarchy_combo.setCurrentText("dynamics")
     widget.db_gen_max_dist_spin.setValue(20.0)
@@ -3025,7 +2844,9 @@ def test_db_gen_controls_persist_through_state():
 
     assert widget.db_gen_min_area_spin.value() == 500
     assert widget.db_gen_max_area_spin.value() == 80_000
-    assert abs(widget.db_gen_fg_thr_spin.value() - 0.4) < 0.01
+    assert widget.db_gen_threshold_min_spin.value() == pytest.approx(0.2)
+    assert widget.db_gen_threshold_max_spin.value() == pytest.approx(0.6)
+    assert widget.db_gen_threshold_step_spin.value() == pytest.approx(0.2)
     assert abs(widget.db_gen_min_frontier_spin.value() - 0.05) < 0.01
     assert widget.db_gen_ws_hierarchy_combo.currentText() == "dynamics"
     assert widget.db_gen_max_dist_spin.value() == 20.0

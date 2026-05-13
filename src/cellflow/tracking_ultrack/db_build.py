@@ -82,6 +82,10 @@ def build_ultrack_database(
 ) -> UltrackDatabaseBuildReport:
     """Build ``data.db`` from canonical Ultrack segmentation and linking.
 
+    The foreground input is used both for candidate segmentation and for the
+    image-quality term in node-probability scoring. ``nucleus_prob_zavg_path``
+    is retained for API compatibility.
+
     When ``use_validated`` is true, validated masks are injected as REAL nodes,
     conflicting canonical candidates are marked FAKE, node probabilities include
     seed affinity, and links incident to REAL nodes are boosted after linking.
@@ -125,7 +129,7 @@ def build_ultrack_database(
             raise ValueError("No validated masks could be injected; DB build aborted.")
 
     _notify(progress_cb, "Scoring node probabilities...")
-    score_report = write_seed_prior_node_probs(working_dir, nucleus_prob_zavg_path, cfg)
+    score_report = write_seed_prior_node_probs(working_dir, foreground_masks_path, cfg)
     scored_nodes = int(getattr(score_report, "scored", 0))
     seed_nodes = int(getattr(score_report, "seeds", 0))
     _notify(progress_cb, f"Scored {scored_nodes} node(s) using {seed_nodes} seed node(s).")
