@@ -56,6 +56,7 @@ from cellflow.database.validation import (
     read_validated_frames,
     read_validated_tracks,
     remap_validated_tracks,
+    write_corrections,
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.radial_refinement_widget import RadialRefinementWidget
@@ -2779,10 +2780,26 @@ class NucleusWorkflowWidget(QWidget):
         if target is None or self._pos_dir is None:
             return
         cell_id, t, y, x = target
+        corrections = read_corrections(self._pos_dir)
+        remaining = [
+            correction
+            for correction in corrections
+            if not (
+                int(correction.cell_id) == int(cell_id)
+                and int(correction.t) == int(t)
+                and correction.kind == "anchor"
+            )
+        ]
+        if len(remaining) != len(corrections):
+            write_corrections(self._pos_dir, remaining)
+            self._refresh_validated_overlay()
+            self._correction_status(f"Unanchored cell {cell_id} at t={t}.")
+            return
         add_correction(
             self._pos_dir,
             Correction(cell_id=cell_id, t=t, kind="anchor", y=y, x=x),
         )
+        self._refresh_validated_overlay()
         self._correction_status(f"Anchored cell {cell_id} at t={t}.")
 
     def _on_extend_backward(self) -> None:
@@ -2991,6 +3008,7 @@ class NucleusWorkflowWidget(QWidget):
             ("D", lambda: self._on_extend(direction="forward")),
             ("Q", self._on_retrack_backward),
             ("E", self._on_retrack_forward),
+            ("B", self._on_anchor_here),
         ]
         self._correction_shortcuts: list[QShortcut] = []
         for key, slot in specs:

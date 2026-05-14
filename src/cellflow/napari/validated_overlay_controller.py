@@ -9,12 +9,15 @@ from napari.utils.colormaps import direct_colormap
 
 from cellflow.database.validation import (
     invalidate_track,
+    read_corrections,
     read_validated_cells_at_frame,
     read_validated_tracks,
 )
 
 VALIDATED_OVERLAY = "[Correction] Validated: Nucleus"
 LEGACY_VALIDATED_OVERLAY = "Validated: Nucleus"
+ANCHOR_OVERLAY = "[Correction] Anchors: Nucleus"
+LEGACY_ANCHOR_OVERLAY = "Anchors: Nucleus"
 SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
 VALIDATED_OVERLAY_OPACITY = 0.4
 
@@ -38,6 +41,10 @@ class ValidatedOverlayController:
         self._owned_layers = owned_layers
 
     def refresh_overlay(self, frame_view_2d: Callable[[np.ndarray, int], np.ndarray | None]) -> None:
+        self.refresh_validated_overlay(frame_view_2d)
+        self.refresh_anchor_overlay(frame_view_2d)
+
+    def refresh_validated_overlay(self, frame_view_2d: Callable[[np.ndarray, int], np.ndarray | None]) -> None:
         tracked = self._tracked_layer_provider()
         pos_dir = self._pos_dir_provider()
         if pos_dir is None or tracked is None:
@@ -70,6 +77,43 @@ class ValidatedOverlayController:
 
             QTimer.singleShot(0, lambda data=full: self.add_overlay(data))
 
+    def refresh_anchor_overlay(self, frame_view_2d: Callable[[np.ndarray, int], np.ndarray | None]) -> None:
+        tracked = self._tracked_layer_provider()
+        pos_dir = self._pos_dir_provider()
+        if pos_dir is None or tracked is None:
+            self.remove_overlay_layers()
+            return
+        data = getattr(tracked, "data", None)
+        if data is None or data.ndim < 3:
+            return
+        t = self._current_t_provider()
+        if t >= data.shape[0]:
+            return
+        frame = frame_view_2d(data, t)
+        if frame is None:
+            return
+        anchor_ids = {
+            int(correction.cell_id)
+            for correction in read_corrections(pos_dir)
+            if correction.kind == "anchor" and int(correction.t) == int(t)
+        }
+        overlay_exists = ANCHOR_OVERLAY in self.viewer.layers
+        if not anchor_ids and not overlay_exists:
+            return
+        mask2d = (
+            np.isin(frame, list(anchor_ids)).astype(np.uint8)
+            if anchor_ids
+            else np.zeros(frame.shape, dtype=np.uint8)
+        )
+        full = np.zeros(data.shape, dtype=np.uint8)
+        full[t] = mask2d
+        if overlay_exists:
+            self.viewer.layers[ANCHOR_OVERLAY].data = full
+        else:
+            from qtpy.QtCore import QTimer
+
+            QTimer.singleShot(0, lambda data=full: self.add_anchor_overlay(data))
+
     def add_overlay(self, data: np.ndarray) -> None:
         if VALIDATED_OVERLAY in self.viewer.layers:
             layer = self.viewer.layers[VALIDATED_OVERLAY]
@@ -92,18 +136,46 @@ class ValidatedOverlayController:
         if tracked is not None:
             self.viewer.layers.selection.active = tracked
 
-    def place_below_spotlight(self) -> None:
-        if VALIDATED_OVERLAY not in self.viewer.layers:
+    def add_anchor_overlay(self, data: np.ndarray) -> None:
+        if ANCHOR_OVERLAY in self.viewer.layers:
+            layer = self.viewer.layers[ANCHOR_OVERLAY]
+            layer.data = data
+            layer.opacity = VALIDATED_OVERLAY_OPACITY
+            self._owned_layers.add(ANCHOR_OVERLAY)
+            self.place_below_spotlight()
             return
+        if LEGACY_ANCHOR_OVERLAY in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[LEGACY_ANCHOR_OVERLAY])
+        self.viewer.add_labels(
+            data,
+            name=ANCHOR_OVERLAY,
+            opacity=VALIDATED_OVERLAY_OPACITY,
+            colormap=direct_colormap({None: (0, 0, 0, 0), 1: "#ffff00"}),
+        )
+        self._owned_layers.add(ANCHOR_OVERLAY)
+        self.place_below_spotlight()
+        tracked = self._tracked_layer_provider()
+        if tracked is not None:
+            self.viewer.layers.selection.active = tracked
+
+    def place_below_spotlight(self) -> None:
         if SPOTLIGHT_LAYER not in self.viewer.layers:
             return
-        overlay_index = self.viewer.layers.index(VALIDATED_OVERLAY)
-        spotlight_index = self.viewer.layers.index(SPOTLIGHT_LAYER)
-        if overlay_index > spotlight_index:
-            self.viewer.layers.move(overlay_index, spotlight_index)
+        for name in (VALIDATED_OVERLAY, ANCHOR_OVERLAY):
+            if name not in self.viewer.layers:
+                continue
+            overlay_index = self.viewer.layers.index(name)
+            spotlight_index = self.viewer.layers.index(SPOTLIGHT_LAYER)
+            if overlay_index > spotlight_index:
+                self.viewer.layers.move(overlay_index, spotlight_index)
 
     def remove_overlay_layers(self) -> None:
-        for name in (VALIDATED_OVERLAY, LEGACY_VALIDATED_OVERLAY):
+        for name in (
+            VALIDATED_OVERLAY,
+            LEGACY_VALIDATED_OVERLAY,
+            ANCHOR_OVERLAY,
+            LEGACY_ANCHOR_OVERLAY,
+        ):
             if name in self.viewer.layers:
                 self.viewer.layers.remove(self.viewer.layers[name])
                 self._owned_layers.discard(name)

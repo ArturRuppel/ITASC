@@ -2009,7 +2009,7 @@ def test_validate_track_button_writes_validated_corrections_for_each_present_fra
 def test_anchor_here_button_writes_anchor_correction_at_selected_cell_centroid(tmp_path):
     from cellflow.database.validation import read_corrections
 
-    _app, viewer = _make_viewer()
+    app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
@@ -2023,12 +2023,88 @@ def test_anchor_here_button_writes_anchor_correction_at_selected_cell_centroid(t
     viewer.dims.current_step = (1, 0, 0)
 
     widget.anchor_here_btn.click()
+    app.processEvents()
 
     corrections = read_corrections(pos_dir)
     assert [(c.cell_id, c.t, c.kind) for c in corrections] == [(3, 1, "anchor")]
     assert corrections[0].y == pytest.approx(4.5)
     assert corrections[0].x == pytest.approx(2.0)
+    anchor_layer = viewer.layers["[Correction] Anchors: Nucleus"]
+    expected = np.zeros_like(labels, dtype=np.uint8)
+    expected[1, 4:6, 1:4] = 1
+    np.testing.assert_array_equal(anchor_layer.data, expected)
+    assert anchor_layer.opacity == 0.4
+    assert np.allclose(anchor_layer.get_color(1)[:3], [1.0, 1.0, 0.0], atol=1e-6)
     assert "anchor" in widget.correction_status_lbl.text().lower()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_b_shortcut_writes_anchor_correction_at_selected_cell_centroid(tmp_path):
+    from cellflow.database.validation import read_corrections
+
+    app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget._pos_dir = pos_dir
+    labels = np.zeros((2, 8, 8), dtype=np.uint32)
+    labels[1, 4:6, 1:4] = 3
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 3
+    viewer.dims.current_step = (1, 0, 0)
+    shortcut = next(
+        shortcut
+        for shortcut in widget.findChildren(QShortcut)
+        if shortcut.key().toString(QKeySequence.SequenceFormat.PortableText) == "B"
+    )
+
+    shortcut.activated.emit()
+    app.processEvents()
+
+    corrections = read_corrections(pos_dir)
+    assert [(c.cell_id, c.t, c.kind) for c in corrections] == [(3, 1, "anchor")]
+    assert corrections[0].y == pytest.approx(4.5)
+    assert corrections[0].x == pytest.approx(2.0)
+    assert "[Correction] Anchors: Nucleus" in viewer.layers
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_b_shortcut_toggles_existing_anchor_off(tmp_path):
+    from cellflow.database.validation import read_corrections
+
+    app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget._pos_dir = pos_dir
+    labels = np.zeros((2, 8, 8), dtype=np.uint32)
+    labels[1, 4:6, 1:4] = 3
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 3
+    viewer.dims.current_step = (1, 0, 0)
+    shortcut = next(
+        shortcut
+        for shortcut in widget.findChildren(QShortcut)
+        if shortcut.key().toString(QKeySequence.SequenceFormat.PortableText) == "B"
+    )
+
+    shortcut.activated.emit()
+    app.processEvents()
+    shortcut.activated.emit()
+    app.processEvents()
+
+    assert read_corrections(pos_dir) == []
+    anchor_layer = viewer.layers["[Correction] Anchors: Nucleus"]
+    np.testing.assert_array_equal(anchor_layer.data, np.zeros_like(labels, dtype=np.uint8))
+    assert "unanchored" in widget.correction_status_lbl.text().lower()
 
     widget.deleteLater()
     viewer.close()
@@ -2696,7 +2772,7 @@ def test_correction_shortcuts_are_still_installed():
         shortcut.key().toString(QKeySequence.SequenceFormat.PortableText)
         for shortcut in widget.findChildren(QShortcut)
     }
-    assert {"A", "D", "Q", "E"} <= shortcut_keys
+    assert {"A", "D", "Q", "E", "B"} <= shortcut_keys
 
     widget.deleteLater()
     viewer.close()

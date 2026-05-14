@@ -284,13 +284,30 @@ def apply_post_solve_corrections(
         else:
             unsatisfied_anchors.append(correction)
 
+    # solver_id → cell_id for matched anchors. After this disambiguation pass
+    # the only solver pixels carrying a reserved cell_id are those owned by
+    # the matched anchor (when solver_id == cell_id); every other collision
+    # is an unrelated solver track that happens to share the numeric ID, and
+    # gets relabeled to a fresh ID so that subsequent stamps/pastes do not
+    # produce two disjoint regions sharing the same cell_id.
+    matched_anchor_target_to_solver: dict[int, int] = {
+        int(corr.cell_id): int(sid)
+        for sid, (_d, _l, corr) in claims.items()
+    }
+    for cell_id in sorted(reserved_ids):
+        owning_solver = matched_anchor_target_to_solver.get(cell_id)
+        if owning_solver == cell_id:
+            # Solver already labeled the owning track with the correct ID;
+            # all pixels labeled cell_id belong to that one track.
+            continue
+        collision_mask = np.asarray(labels == cell_id)
+        if collision_mask.any():
+            labels[collision_mask] = _next_fresh_id(labels, reserved_ids, used_ids)
+
     remapped = 0
     for solver_id, (_dist, _neg_lifetime, correction) in sorted(claims.items()):
         target_id = int(correction.cell_id)
         if solver_id != target_id:
-            collision_mask = np.asarray(labels == target_id)
-            if collision_mask.any():
-                labels[collision_mask] = _next_fresh_id(labels, reserved_ids, used_ids)
             labels[labels == solver_id] = target_id
             remapped += 1
 

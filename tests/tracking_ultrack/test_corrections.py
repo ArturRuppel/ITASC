@@ -103,3 +103,85 @@ def test_apply_post_solve_corrections_remaps_anchor_track_stamps_missing_anchor_
     assert np.all(result[:, 10:14, 10:14] == 5)
     assert result[2, 32, 32] == 6
     assert np.all(result[1, 20:24, 20:24] == 7)
+
+
+def test_apply_post_solve_corrections_evicts_unrelated_solver_pixels_for_validated_paste():
+    """A validated cell_id that collides with an unrelated solver track must
+    not produce two disjoint regions sharing the same ID."""
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
+
+    exported = np.zeros((3, 40, 40), dtype=np.uint32)
+    # Solver independently used ID=7 for an unrelated track across all frames.
+    exported[:, 0:4, 0:4] = 7
+    # Tracked layer has cell_id=7 at a different location at t=1.
+    tracked = np.zeros_like(exported)
+    tracked[1, 20:24, 20:24] = 7
+
+    result, report = apply_post_solve_corrections(
+        exported,
+        [Correction(cell_id=7, t=1, kind="validated", y=22.0, x=22.0)],
+        tracked,
+        TrackingConfig(),
+    )
+
+    assert report.pasted_validated == 1
+    # Validated geometry is at the right place with the right ID.
+    assert np.all(result[1, 20:24, 20:24] == 7)
+    # The unrelated solver pixels MUST NOT still carry ID=7.
+    assert not (result[:, 0:4, 0:4] == 7).any()
+    # And the only pixels labeled 7 anywhere are the validated mask.
+    pixels_labeled_seven = (result == 7).sum()
+    assert pixels_labeled_seven == int((tracked == 7).sum())
+
+
+def test_apply_post_solve_corrections_evicts_unrelated_solver_pixels_for_anchor_stamp():
+    """An unmatched anchor with cell_id colliding with an unrelated solver
+    track must evict the solver pixels before stamping."""
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
+
+    exported = np.zeros((2, 40, 40), dtype=np.uint32)
+    # Solver used ID=5 for an unrelated track far from the anchor location.
+    exported[:, 0:4, 0:4] = 5
+    tracked = np.zeros_like(exported)
+
+    # Anchor at (30, 30) — no solver track within anchor_radius_px, so it
+    # falls through to _stamp_disk.
+    result, report = apply_post_solve_corrections(
+        exported,
+        [Correction(cell_id=5, t=0, kind="anchor", y=30.0, x=30.0)],
+        tracked,
+        TrackingConfig(anchor_radius_px=5.0, anchor_stamp_radius_px=2.0),
+    )
+
+    assert report.stamped_anchors == 1
+    assert report.remapped_anchor_tracks == 0
+    # Stamp must be present.
+    assert result[0, 30, 30] == 5
+    # The unrelated solver pixels MUST NOT still carry ID=5.
+    assert not (result[:, 0:4, 0:4] == 5).any()
+
+
+def test_apply_post_solve_corrections_preserves_matched_anchor_when_solver_id_equals_target():
+    """When the solver already labeled the matched anchor's track with the
+    correct ID, the track must be preserved untouched (no eviction)."""
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
+
+    exported = np.zeros((2, 40, 40), dtype=np.uint32)
+    # Solver track with ID=5 is at the anchor location.
+    exported[:, 20:24, 20:24] = 5
+    tracked = np.zeros_like(exported)
+
+    result, report = apply_post_solve_corrections(
+        exported,
+        [Correction(cell_id=5, t=0, kind="anchor", y=22.0, x=22.0)],
+        tracked,
+        TrackingConfig(anchor_radius_px=5.0, anchor_stamp_radius_px=2.0),
+    )
+
+    assert report.remapped_anchor_tracks == 0
+    assert report.stamped_anchors == 0
+    # Full track preserved.
+    assert np.all(result[:, 20:24, 20:24] == 5)

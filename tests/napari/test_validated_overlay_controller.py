@@ -48,3 +48,48 @@ def test_controller_adds_validated_overlay_below_spotlight():
     )
 
     viewer.close()
+
+
+def test_controller_refreshes_anchor_overlay_from_corrections(tmp_path):
+    from cellflow.database.validation import add_correction
+    from cellflow.napari.validated_overlay_controller import ValidatedOverlayController
+    from cellflow.tracking_ultrack.corrections import Correction
+
+    app, viewer = _make_viewer()
+    pos_dir = tmp_path / "pos00"
+    tracked_data = np.zeros((2, 5, 5), dtype=np.uint8)
+    tracked_data[1, 2:4, 1:4] = 7
+    tracked = viewer.add_labels(tracked_data, name="[Correction] Tracked: Nucleus")
+    viewer.add_image(
+        np.zeros((5, 5, 4), dtype=np.float32),
+        name="[Correction] CellSpotlight",
+        rgb=True,
+    )
+    add_correction(pos_dir, Correction(cell_id=7, t=1, kind="anchor", y=2.5, x=2.0))
+    owned_layers: set[str] = set()
+    controller = ValidatedOverlayController(
+        viewer,
+        tracked_layer_provider=lambda: tracked,
+        pos_dir_provider=lambda: pos_dir,
+        current_t_provider=lambda: 1,
+        owned_layers=owned_layers,
+    )
+
+    controller.refresh_anchor_overlay(lambda data, t: data[t])
+    app.processEvents()
+
+    layer = viewer.layers["[Correction] Anchors: Nucleus"]
+    color = layer.get_color(1)
+    expected = np.zeros_like(tracked_data, dtype=np.uint8)
+    expected[1, 2:4, 1:4] = 1
+
+    np.testing.assert_array_equal(layer.data, expected)
+    assert layer.opacity == 0.4
+    assert np.allclose(color[:3], [1.0, 1.0, 0.0], atol=1e-6)
+    assert color[3] == 1.0
+    assert "[Correction] Anchors: Nucleus" in owned_layers
+    assert viewer.layers.index("[Correction] Anchors: Nucleus") < viewer.layers.index(
+        "[Correction] CellSpotlight"
+    )
+
+    viewer.close()
