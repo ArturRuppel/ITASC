@@ -372,7 +372,7 @@ git commit -m "test: specify nucleus correction mode layer ownership"
 - Modify: `src/cellflow/napari/nucleus_workflow_widget.py`
 - Test: `tests/napari/test_nucleus_tracking_correction_layout.py`
 
-- [ ] **Step 1: Add correction constants**
+- [x] **Step 1: Add correction constants**
 
 Near the existing layer-name constants, add:
 
@@ -383,7 +383,7 @@ _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
 ```
 
-- [ ] **Step 2: Initialize correction mode state**
+- [x] **Step 2: Initialize correction mode state**
 
 In `NucleusWorkflowWidget.__init__`, before `_setup_ui()`, add:
 
@@ -392,7 +392,7 @@ In `NucleusWorkflowWidget.__init__`, before `_setup_ui()`, add:
         self._correction_view_state: dict | None = None
 ```
 
-- [ ] **Step 3: Add the NLS path helper**
+- [x] **Step 3: Add the NLS path helper**
 
 After `_nucleus_zavg_path`, add:
 
@@ -401,7 +401,7 @@ After `_nucleus_zavg_path`, add:
         return self._pos_dir / "0_input" / "NLS_zavg.tif" if self._pos_dir else None
 ```
 
-- [ ] **Step 4: Add contrast and layer helper methods**
+- [x] **Step 4: Add contrast and layer helper methods**
 
 Add these methods before `_on_save_tracked`:
 
@@ -467,7 +467,7 @@ Add these methods before `_on_save_tracked`:
         self._correction_owned_layers.add(name)
 ```
 
-- [ ] **Step 5: Implement synchronous correction layer loading**
+- [x] **Step 5: Implement synchronous correction layer loading**
 
 Replace `_on_load_tracked` and `_on_load_tracked_done` with a private loader that returns `True` on success:
 
@@ -507,7 +507,7 @@ Delete the old worker-based `_on_load_tracked_done` method. If any tests still c
         self._load_correction_layers_from_disk()
 ```
 
-- [ ] **Step 6: Rewrite activation and deactivation**
+- [x] **Step 6: Rewrite activation and deactivation**
 
 Replace `_on_correction_active_button_toggled` with:
 
@@ -542,7 +542,7 @@ Replace `_on_correction_active_button_toggled` with:
         self.correction_mode_section.collapse()
 ```
 
-- [ ] **Step 7: Keep embedded CorrectionWidget activation one-way**
+- [x] **Step 7: Keep embedded CorrectionWidget activation one-way**
 
 Remove this signal connection from `_connect_signals`:
 
@@ -554,7 +554,7 @@ Remove this signal connection from `_connect_signals`:
 
 Keep `_on_correction_mode_toggled` connected so shortcuts follow the embedded widget's active state.
 
-- [ ] **Step 8: Run the new activation tests**
+- [x] **Step 8: Run the new activation tests**
 
 Run:
 
@@ -564,7 +564,7 @@ pytest tests/napari/test_nucleus_tracking_correction_layout.py::test_correction_
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/cellflow/napari/nucleus_workflow_widget.py tests/napari/test_nucleus_tracking_correction_layout.py

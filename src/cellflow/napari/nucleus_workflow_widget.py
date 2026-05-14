@@ -22,7 +22,7 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
-from napari.utils.colormaps import direct_colormap
+from napari.utils.colormaps import Colormap, direct_colormap
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QIcon, QKeySequence
 from qtpy.QtWidgets import (
@@ -108,6 +108,12 @@ _NUC_ZAVG_LAYER = "Nucleus z-avg"
 _ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
 _ULTRACK_DB_SELECTION_LAYER = "Ultrack DB Selection"
 _ULTRACK_DB_ANNOTATION_LAYER = "Ultrack DB Annotations"
+
+# Correction-owned layer constants
+_CORRECTION_TRACKED_LAYER = "[Correction] Tracked: Nucleus"
+_CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
+_CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
+_CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
 
 
 # ── Tiny helpers ──────────────────────────────────────────────────────────────
@@ -210,6 +216,9 @@ class NucleusWorkflowWidget(QWidget):
         self._ultrack_db_node_annotations: dict[int, str] = {}
         self._ultrack_db_preview_labels: np.ndarray | None = None
         self._ultrack_db_preview_mouse_callback = None
+
+        self._correction_owned_layers: set[str] = set()
+        self._correction_view_state: dict | None = None
 
         self._setup_ui()
         self._connect_signals()
@@ -860,9 +869,6 @@ class NucleusWorkflowWidget(QWidget):
         self.correction_widget._activate_btn.toggled.connect(
             self._on_correction_mode_toggled
         )
-        self.correction_widget._activate_btn.toggled.connect(
-            self.correction_active_btn.setChecked
-        )
 
         # Initial state
         solver = _select_solver()
@@ -909,6 +915,9 @@ class NucleusWorkflowWidget(QWidget):
 
     def _nucleus_zavg_path(self) -> Path | None:
         return self._pos_dir / "0_input" / "nucleus_zavg.tif" if self._pos_dir else None
+
+    def _nls_zavg_path(self) -> Path | None:
+        return self._pos_dir / "0_input" / "NLS_zavg.tif" if self._pos_dir else None
 
     def _ultrack_workdir(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "ultrack_workdir" if self._pos_dir else None
@@ -2770,6 +2779,74 @@ class NucleusWorkflowWidget(QWidget):
         return (y0, x0, y1, x1), ma.astype(bool, copy=False)
 
     # ================================================================
+    # Correction mode helpers
+    # ================================================================
+    def _correction_tracked_layer(self):
+        if _CORRECTION_TRACKED_LAYER in self.viewer.layers:
+            return self.viewer.layers[_CORRECTION_TRACKED_LAYER]
+        if _TRACKED_LAYER in self.viewer.layers:
+            return self.viewer.layers[_TRACKED_LAYER]
+        return None
+
+    def _contrast_limits_for_image(self, data: np.ndarray):
+        arr = np.asarray(data, dtype=np.float32)
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None
+        lo, hi = np.percentile(finite, [0.05, 99.5])
+        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+            return (float(lo), float(hi))
+        data_min = float(np.min(finite))
+        data_max = float(np.max(finite))
+        if data_max > data_min:
+            return (data_min, data_max)
+        return None
+
+    def _capture_correction_view_state(self) -> None:
+        selected = [layer.name for layer in self.viewer.layers.selection]
+        active = self.viewer.layers.selection.active
+        self._correction_view_state = {
+            "visibility": {layer.name: bool(layer.visible) for layer in self.viewer.layers},
+            "active": active.name if active is not None else None,
+            "selected": selected,
+        }
+
+    def _restore_correction_view_state(self) -> None:
+        state = self._correction_view_state or {}
+        visibility = state.get("visibility", {})
+        for name, visible in visibility.items():
+            if name in self.viewer.layers:
+                self.viewer.layers[name].visible = bool(visible)
+        self.viewer.layers.selection.clear()
+        for name in state.get("selected", ()):
+            if name in self.viewer.layers:
+                self.viewer.layers.selection.add(self.viewer.layers[name])
+        active_name = state.get("active")
+        if active_name in self.viewer.layers:
+            self.viewer.layers.selection.active = self.viewer.layers[active_name]
+        self._correction_view_state = None
+
+    def _remove_correction_owned_layers(self) -> None:
+        for name in list(self._correction_owned_layers):
+            if name in self.viewer.layers:
+                self.viewer.layers.remove(self.viewer.layers[name])
+        self._correction_owned_layers.clear()
+
+    def _add_correction_image_layer(self, data: np.ndarray, name: str, colormap: str) -> None:
+        arr = np.asarray(data, dtype=np.float32)
+        if colormap == "bop_blue":
+            colormap = Colormap(
+                [[0.0, 0.0, 0.0, 1.0], [0.0, 0.25, 1.0, 1.0]],
+                name="bop_blue",
+            )
+        kwargs = {"name": name, "colormap": colormap, "blending": "additive"}
+        limits = self._contrast_limits_for_image(arr)
+        if limits is not None:
+            kwargs["contrast_limits"] = limits
+        self.viewer.add_image(arr, **kwargs)
+        self._correction_owned_layers.add(name)
+
+    # ================================================================
     # 4. Correction
     # ================================================================
     def _on_save_tracked(self) -> None:
@@ -2786,57 +2863,42 @@ class NucleusWorkflowWidget(QWidget):
             write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
         self._correction_status(f"Saved {n} frame(s) to {tracked_path.name}.")
 
-    def _on_load_tracked(self) -> None:
+    def _load_correction_layers_from_disk(self) -> bool:
         tracked_path = self._tracked_path()
-        cell_zavg_path = self._cell_zavg_path()
-        nuc_zavg_path = self._nucleus_zavg_path()
         if tracked_path is None or not tracked_path.exists():
-            self._correction_status("No tracked labels file found."); return
-        self._correction_status("Loading tracked labels…")
+            self._correction_status("No tracked labels file found.")
+            return False
 
-        @thread_worker(connect={
-            "returned": self._on_load_tracked_done,
-            "errored": self._on_correction_worker_error,
-        })
-        def _worker():
-            stack = read_full_tracked_stack(tracked_path)
-            cz = (
-                np.asarray(tifffile.imread(str(cell_zavg_path)), dtype=np.float32)
-                if cell_zavg_path and cell_zavg_path.exists() else None
-            )
-            nz = (
-                np.asarray(tifffile.imread(str(nuc_zavg_path)), dtype=np.float32)
-                if nuc_zavg_path and nuc_zavg_path.exists() else None
-            )
-            return stack, cz, nz
+        self._remove_correction_owned_layers()
+        self._remove_other_correction_prefix_layers()
+        stack = read_full_tracked_stack(tracked_path)
+        self.viewer.add_labels(stack, name=_CORRECTION_TRACKED_LAYER)
+        self._correction_owned_layers.add(_CORRECTION_TRACKED_LAYER)
 
-        _worker()
-
-    def _on_load_tracked_done(self, result: tuple) -> None:
-        stack, cell_zavg, nuc_zavg = result
-        nt = stack.shape[0]
-        if _TRACKED_LAYER in self.viewer.layers:
-            self.viewer.layers[_TRACKED_LAYER].data = stack
-        else:
-            self.viewer.add_labels(stack, name=_TRACKED_LAYER)
-
-        for zavg, name, cmap in (
-            (cell_zavg, _CELL_ZAVG_LAYER, "gray"),
-            (nuc_zavg, _NUC_ZAVG_LAYER, "bop orange"),
+        for path, name, cmap in (
+            (self._cell_zavg_path(), _CORRECTION_CELL_ZAVG_LAYER, "gray"),
+            (self._nucleus_zavg_path(), _CORRECTION_NUC_ZAVG_LAYER, "gray"),
+            (self._nls_zavg_path(), _CORRECTION_NLS_ZAVG_LAYER, "bop_blue"),
         ):
-            if zavg is None: continue
-            if zavg.ndim == 2:
-                bcast = np.broadcast_to(zavg[np.newaxis], (nt,) + zavg.shape).copy()
-            else:
-                bcast = zavg
-            if name in self.viewer.layers:
-                self.viewer.layers[name].data = bcast
-            else:
-                self.viewer.add_image(bcast, name=name, colormap=cmap, blending="additive")
+            if path is None or not path.exists():
+                continue
+            self._add_correction_image_layer(
+                np.asarray(tifffile.imread(str(path)), dtype=np.float32),
+                name,
+                cmap,
+            )
 
-        self._correction_status(f"Loaded tracked stack {stack.shape} into napari.")
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        self.correction_widget.activate_layer(layer)
+        self._correction_status(f"Loaded tracked stack {stack.shape} into correction mode.")
+        return True
+
+    def _remove_other_correction_prefix_layers(self) -> None:
+        for layer in list(self.viewer.layers):
+            if layer.name.startswith("[Correction]") and layer.name not in self._correction_owned_layers:
+                if isinstance(layer, napari.layers.Labels):
+                    self.viewer.layers.remove(layer)
+
+    def _on_load_tracked(self) -> None:
+        self._load_correction_layers_from_disk()
 
     def _on_reassign_ids(self) -> None:
         if _TRACKED_LAYER not in self.viewer.layers:
@@ -3108,32 +3170,32 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_correction_active_button_toggled(self, active: bool) -> None:
         if active:
-            self.correction_mode_section.expand()
-            if self.correction_widget._layer is not None:
-                return
-            layer = None
-            if _TRACKED_LAYER in self.viewer.layers:
-                layer = self.viewer.layers[_TRACKED_LAYER]
-            else:
-                selected = self.viewer.layers.selection.active
-                if isinstance(selected, napari.layers.Labels):
-                    layer = selected
-            if not isinstance(layer, napari.layers.Labels):
-                self._correction_status("Load or select a Labels layer before activating correction.")
+            self._capture_correction_view_state()
+            for layer in list(self.viewer.layers):
+                layer.visible = False
+
+            if not self._load_correction_layers_from_disk():
+                self._restore_correction_view_state()
                 old = self.correction_active_btn.blockSignals(True)
                 try:
                     self.correction_active_btn.setChecked(False)
                 finally:
                     self.correction_active_btn.blockSignals(old)
                 self.correction_widget.deactivate()
+                self.correction_mode_section.collapse()
                 return
+            layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
+            layer.visible = True
+            self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
+            self.correction_mode_section.expand()
             return
 
-        if self.correction_widget._layer is None:
-            self.correction_mode_section.collapse()
-            return
         self.correction_widget.deactivate()
+        for sc in getattr(self, "_correction_shortcuts", []):
+            sc.setEnabled(False)
+        self._remove_correction_owned_layers()
+        self._restore_correction_view_state()
         self.correction_mode_section.collapse()
 
     def _on_correction_mode_toggled(self, active: bool) -> None:
