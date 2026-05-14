@@ -555,22 +555,27 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
         checkbox.text() for checkbox in widget.tracking_ultrack_section.findChildren(QCheckBox)
     }
 
-    assert "Save Labels" in correction_button_texts
-    assert "Load Labels" in correction_button_texts
-    assert "Reassign IDs" in correction_button_texts
+    assert "Activate Correction" in correction_button_texts
+    assert "Save tracked" in correction_button_texts
+    assert "Load Labels" not in correction_button_texts
+    assert "Save Labels" not in correction_button_texts
+    assert "Extend selected" in correction_button_texts
+    assert "Retrack selected" in correction_button_texts
+    assert "Reassign ID" in correction_button_texts
+    assert "Remove unvalidated" in correction_button_texts
     assert "Clean Holes / Islands" not in correction_button_texts
-    assert "◀ Extend (A)" in correction_button_texts
-    assert "Extend (D) ▶" in correction_button_texts
-    assert "◀ Retrack (Q)" in correction_button_texts
-    assert "Retrack (E) ▶" in correction_button_texts
+    assert "◀ Extend (A)" not in correction_button_texts
+    assert "Extend (D) ▶" not in correction_button_texts
+    assert "◀ Retrack (Q)" not in correction_button_texts
+    assert "Retrack (E) ▶" not in correction_button_texts
     shortcut_keys = {
         shortcut.key().toString(QKeySequence.SequenceFormat.PortableText)
         for shortcut in widget.findChildren(QShortcut)
     }
     assert {"A", "D", "Q", "E"} <= shortcut_keys
-    assert "Save Labels" not in ultrack_button_texts
+    assert "Save tracked" not in ultrack_button_texts
     assert "Load Labels" not in ultrack_button_texts
-    assert "Reassign IDs" not in ultrack_button_texts
+    assert "Reassign ID" not in ultrack_button_texts
     assert "Resolve from validated" not in ultrack_checkbox_texts
 
     widget.deleteLater()
@@ -584,13 +589,11 @@ def test_tracking_correction_action_buttons_expand_horizontally():
 
     tracked_buttons = [
         widget.run_ultrack_btn,
-        widget.extend_back_btn,
-        widget.extend_fwd_btn,
-        widget.retrack_back_btn,
-        widget.retrack_fwd_btn,
+        widget.extend_selected_btn,
+        widget.retrack_selected_btn,
         widget.save_tracked_btn,
-        widget.load_tracked_btn,
         widget.reassign_ids_btn,
+        widget.remove_unvalidated_btn,
     ]
 
     for button in tracked_buttons:
@@ -1798,10 +1801,8 @@ def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
     assert widget.db_gen_min_area_spin.x() < widget.db_gen_max_area_spin.x()
 
     # Paired correction actions should also sit side-by-side
-    assert widget.extend_back_btn.y() == widget.extend_fwd_btn.y()
-    assert widget.extend_back_btn.x() < widget.extend_fwd_btn.x()
-    assert widget.retrack_back_btn.y() == widget.retrack_fwd_btn.y()
-    assert widget.save_tracked_btn.y() == widget.load_tracked_btn.y()
+    assert widget.extend_selected_btn.y() == widget.retrack_selected_btn.y()
+    assert widget.reassign_ids_btn.y() == widget.remove_unvalidated_btn.y()
 
     widget.deleteLater()
     viewer.close()
@@ -2361,12 +2362,10 @@ def test_correction_section_is_top_level():
         button.text()
         for button in widget.correction_mode_section.findChildren(QPushButton)
     }
-    assert "Save Labels" in correction_button_texts
-    assert "Load Labels" in correction_button_texts
-    assert "◀ Extend (A)" in correction_button_texts
-    assert "Extend (D) ▶" in correction_button_texts
-    assert "◀ Retrack (Q)" in correction_button_texts
-    assert "Retrack (E) ▶" in correction_button_texts
+    assert "Save tracked" in correction_button_texts
+    assert "Load Labels" not in correction_button_texts
+    assert "Extend selected" in correction_button_texts
+    assert "Retrack selected" in correction_button_texts
 
     widget.deleteLater()
     viewer.close()
