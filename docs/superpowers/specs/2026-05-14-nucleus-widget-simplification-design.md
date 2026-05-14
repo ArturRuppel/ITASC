@@ -270,26 +270,53 @@ Layers owned by this mode:
 
 ## Correction Mode
 
-Correction is inactive by default and controlled by a mode button.
+Correction is inactive by default and controlled by an `Activate Correction`
+action button. The button is the only entry point for loading tracked labels
+for manual correction; there is no separate `Load Labels` button and the
+embedded correction widget does not expose its own activation button.
 
 Inactive state:
 
 ```text
-Correction                        [ Activate ]
+Correction                        [ Activate Correction ]
 ```
 
 On activation:
 
-- The section expands.
-- Correction controls become visible.
-- Correction tools and layers are activated or loaded.
-- The embedded correction widget becomes available.
+- Capture the current viewer state for every existing layer: visibility,
+  active layer, and selected layers where feasible.
+- Hide all existing non-correction layers.
+- Remove any stale correction layers still registered from a previous
+  activation.
+- Load a fresh correction-owned layer set from disk every time.
+- Add every correction-owned layer with `[Correction]` in its display name.
+- Register each created layer internally as correction-owned.
+- Activate the correction widget against the newly loaded correction labels
+  layer.
+- Expand the correction controls only after activation succeeds.
+
+Required loaded layers:
+
+- `[Correction] Tracked: Nucleus` from `2_nucleus/tracked_labels.tif`.
+- `[Correction] Cell z-avg` from `0_input/cell_zavg.tif`, when present.
+- `[Correction] Nucleus z-avg` from `0_input/nucleus_zavg.tif`, when present.
+- `[Correction] NLS z-avg` from `0_input/NLS_zavg.tif`, when present.
+
+All z-avg image layers use additive blending. Their contrast limits are derived
+from image percentiles, with the 0.05 percentile mapped to the low contrast
+limit and the 99.5 percentile mapped to the high contrast limit. If those limits
+are not usable because the image is constant or invalid, fall back to data
+min/max or napari's default contrast handling. `[Correction] NLS z-avg` uses
+the `bop_blue` colormap.
+
+Layer cleanup is driven by the internal registry, not by prefix matching. The
+`[Correction]` tag is for user clarity only.
 
 Active state:
 
 ```text
-Correction                        [ Deactivate ]
-  [ Load tracked ] [ Save tracked ]
+Correction                        [ Deactivate Correction ]
+  [ Save tracked ]
   [ Extend selected ] [ Retrack selected ]
   [ Reassign ID ] [ Remove unvalidated ]
 
@@ -305,8 +332,13 @@ Correction                        [ Deactivate ]
 
 On deactivation:
 
+- Correction tools and shortcuts are deactivated.
+- Only internally registered correction-owned layers are removed.
+- The internal correction layer registry is cleared.
+- Pre-existing layers that still exist are restored to their previous visibility
+  state.
+- The previous active and selected layers are restored where feasible.
 - The section collapses.
-- Correction-only layers, callbacks, and tools are removed or disabled.
 - Persistent output artifacts are not deleted.
 
 Correction parameters that are frequently tuned should be elevated in the main
@@ -359,10 +391,20 @@ Widget tests:
   layers.
 - Assert Database Browser deactivation collapses the section and removes owned
   layers/callbacks.
-- Assert Correction activation expands the section and exposes elevated
-  correction controls.
-- Assert Correction deactivation collapses the section and removes or disables
-  correction-only layers/callbacks.
+- Assert the correction section exposes `Activate Correction` and no longer
+  exposes a separate `Load Labels` button.
+- Assert Correction activation hides pre-existing layers, loads fresh
+  `[Correction]` layers from disk, activates the correction widget against
+  `[Correction] Tracked: Nucleus`, and expands the section.
+- Assert Correction activation loads `cell_zavg.tif`, `nucleus_zavg.tif`, and
+  `NLS_zavg.tif` when present with additive blending and percentile-derived
+  contrast limits.
+- Assert `[Correction] NLS z-avg` uses the `bop_blue` colormap.
+- Assert Correction activation registers the created layers internally.
+- Assert Correction deactivation collapses the section, removes only internally
+  registered correction-owned layers, clears the registry, deactivates
+  correction-only tools/shortcuts, and restores the previous visibility state
+  for pre-existing layers.
 
 Compatibility tests:
 
