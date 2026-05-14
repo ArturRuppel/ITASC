@@ -355,7 +355,7 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_threshold_step_spin = self.source_contour_threshold_step_spin
 
         self.segmentation_inputs_parameters_section = CollapsibleSection(
-            "Segmentation Parameters",
+            "Segmentation Inputs",
             params_inner,
             expanded=True,
             title_role="params",
@@ -519,7 +519,7 @@ class NucleusWorkflowWidget(QWidget):
         lay.addLayout(g)
 
         self.tracking_ultrack_parameters_section = CollapsibleSection(
-            "Ultrack Parameters",
+            "Tracking / Ultrack",
             params_inner,
             expanded=False,
             title_role="params",
@@ -685,31 +685,28 @@ class NucleusWorkflowWidget(QWidget):
         )
         group_lay.addWidget(self.correction_active_btn)
 
-        # ── Action buttons — 2-column grid ────────────────────────
-        self.load_tracked_btn = _btn(
-            "Load Labels", "Load tracked nucleus labels from disk.")
+        # ── Action buttons — simplified stable set ────────────────────────
         self.save_tracked_btn = _btn(
-            "Save Labels", "Save tracked nucleus labels to disk.")
-        self.extend_back_btn = _btn(
-            "◀ Extend (A)", "Extend selected track one frame backward.")
-        self.extend_fwd_btn = _btn(
-            "Extend (D) ▶", "Extend selected track one frame forward.")
-        self.retrack_back_btn = _btn(
-            "◀ Retrack (Q)", "Retrack all labels backward from current frame.")
-        self.retrack_fwd_btn = _btn(
-            "Retrack (E) ▶", "Retrack all labels forward from current frame.")
+            "Save tracked", "Save corrected tracked nucleus labels to disk."
+        )
+        self.extend_selected_btn = _btn(
+            "Extend selected", "Extend the selected track before or after the current frame."
+        )
+        self.retrack_selected_btn = _btn(
+            "Retrack selected", "Retrack labels around the current frame."
+        )
         self.reassign_ids_btn = _btn(
-            "Reassign IDs", "Reassign cell IDs to contiguous range 1–N.")
+            "Reassign ID", "Reassign cell IDs to contiguous range 1-N."
+        )
         self.remove_unvalidated_btn = _btn(
-            "Remove Unvalidated",
+            "Remove unvalidated",
             "Remove nucleus label pixels not marked validated for their frame.",
         )
         danger_button(self.remove_unvalidated_btn)
 
         group_lay.addLayout(_button_grid(
-            (self.load_tracked_btn, self.save_tracked_btn),
-            (self.extend_back_btn, self.extend_fwd_btn),
-            (self.retrack_back_btn, self.retrack_fwd_btn),
+            (self.save_tracked_btn,),
+            (self.extend_selected_btn, self.retrack_selected_btn),
             (self.reassign_ids_btn, self.remove_unvalidated_btn),
         ))
 
@@ -720,18 +717,38 @@ class NucleusWorkflowWidget(QWidget):
         self.validation_counter_lbl.setWordWrap(True)
         group_lay.addWidget(self.validation_counter_lbl)
 
-        # ── Extend parameters (collapsible) ───────────────────────
-        extend_inner = QWidget()
-        extend_lay = QVBoxLayout(extend_inner)
-        extend_lay.setContentsMargins(0, 0, 0, 0)
-        extend_lay.setSpacing(4)
+        # ── Elevated common parameters ───────────────────────
+        main_params = block_grid(horizontal_spacing=12)
+        self.extend_before_spin = _ispin(0, 50, 0, 1, "Frames before the current frame to extend.")
+        self.extend_after_spin = _ispin(0, 50, 1, 1, "Frames after the current frame to extend.")
+        self.retrack_radius_spin = _dspin(0, 500, 20.0, 1.0, 1, "Maximum centroid distance for retracking.")
+        self.retrack_max_dist_spin = self.retrack_radius_spin
+        self.retrack_window_spin = _ispin(1, 100, 1, 1, "Frames before and after the current frame to retrack.")
+        self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
+        add_block_pair_row(
+            main_params, 0,
+            "Extend before/after:", compact_spinbox(self.extend_before_spin),
+            "", compact_spinbox(self.extend_after_spin),
+        )
+        add_block_pair_row(
+            main_params, 1,
+            "Retrack radius/window:", compact_spinbox(self.retrack_radius_spin),
+            "", compact_spinbox(self.retrack_window_spin),
+        )
+        add_block_checkbox_row(main_params, 2, self.extend_greedy_overwrite_check)
+        group_lay.addLayout(main_params)
+
+        # ── Advanced correction parameters (collapsible) ───────────────────────
+        advanced_inner = QWidget()
+        advanced_lay = QVBoxLayout(advanced_inner)
+        advanced_lay.setContentsMargins(0, 0, 0, 0)
+        advanced_lay.setSpacing(4)
         g = block_grid(horizontal_spacing=12)
         self.extend_max_dist_spin = _dspin(0, 500, 40.0, 1.0, 1)
         self.extend_area_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
         self.extend_iou_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
         self.extend_distance_weight_spin = _dspin(0, 10, 0.25, 0.05, 2)
         self.extend_overlap_penalty_spin = _dspin(0, 10, 1.0, 0.1, 2)
-        self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
         add_block_pair_row(g, 0,
             "Max dist:", compact_spinbox(self.extend_max_dist_spin),
             "Area wt:", compact_spinbox(self.extend_area_weight_spin))
@@ -740,35 +757,17 @@ class NucleusWorkflowWidget(QWidget):
             "Dist wt:", compact_spinbox(self.extend_distance_weight_spin))
         add_block_pair_row(g, 2,
             "Overlap pen:", compact_spinbox(self.extend_overlap_penalty_spin))
-        add_block_checkbox_row(g, 3, self.extend_greedy_overwrite_check)
-        extend_lay.addLayout(g)
-        self.extend_params_section = CollapsibleSection(
-            "Extend Parameters",
-            extend_inner,
+        advanced_lay.addLayout(g)
+        self.advanced_correction_params_section = CollapsibleSection(
+            "Advanced Correction Params",
+            advanced_inner,
             expanded=False,
             title_role="params",
             title_level=2,
         )
-        group_lay.addWidget(self.extend_params_section)
-
-        # ── Retrack parameters (collapsible) ──────────────────────
-        retrack_inner = QWidget()
-        retrack_lay = QVBoxLayout(retrack_inner)
-        retrack_lay.setContentsMargins(0, 0, 0, 0)
-        retrack_lay.setSpacing(4)
-        g = block_grid(horizontal_spacing=12)
-        self.retrack_max_dist_spin = _dspin(0, 500, 20.0, 1.0, 1)
-        add_block_pair_row(g, 0,
-            "Max dist:", compact_spinbox(self.retrack_max_dist_spin))
-        retrack_lay.addLayout(g)
-        self.retrack_params_section = CollapsibleSection(
-            "Retrack Parameters",
-            retrack_inner,
-            expanded=False,
-            title_role="params",
-            title_level=2,
-        )
-        group_lay.addWidget(self.retrack_params_section)
+        self.extend_params_section = self.advanced_correction_params_section
+        self.retrack_params_section = self.advanced_correction_params_section
+        group_lay.addWidget(self.advanced_correction_params_section)
 
         # ── Inline CorrectionWidget ───────────────────────────────
         self.correction_widget = CorrectionWidget(
@@ -843,13 +842,10 @@ class NucleusWorkflowWidget(QWidget):
         )
 
         # Correction
-        self.load_tracked_btn.clicked.connect(self._on_load_tracked)
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
-        self.extend_back_btn.clicked.connect(self._on_extend_backward)
-        self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
-        self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
-        self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
+        self.extend_selected_btn.clicked.connect(self._on_extend_selected)
+        self.retrack_selected_btn.clicked.connect(self._on_retrack_selected)
         self.remove_unvalidated_btn.clicked.connect(
             self._on_remove_unvalidated_labels
         )
@@ -2875,6 +2871,25 @@ class NucleusWorkflowWidget(QWidget):
         self._correction_status(
             f"Reassigned {n_cells} cell IDs to range 1–{n_cells}. Unsaved."
         )
+
+    def _on_extend_selected(self) -> None:
+        before = int(self.extend_before_spin.value())
+        after = int(self.extend_after_spin.value())
+        if before <= 0 and after <= 0:
+            self._correction_status("Choose at least one frame to extend.")
+            return
+        for _ in range(before):
+            self._on_extend(direction="backward")
+        for _ in range(after):
+            self._on_extend(direction="forward")
+
+    def _on_retrack_selected(self) -> None:
+        window = int(self.retrack_window_spin.value())
+        if window <= 0:
+            self._correction_status("Retrack window must be at least 1.")
+            return
+        self._on_retrack_backward()
+        self._on_retrack_forward()
 
     def _on_extend_backward(self) -> None:
         self._on_extend(direction="backward")

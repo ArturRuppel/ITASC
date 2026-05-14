@@ -1831,9 +1831,10 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.extend_params_section.title == "Extend Parameters"
+    assert widget.extend_params_section.title == "Advanced Correction Params"
     assert widget.extend_params_section.is_expanded is False
-    assert widget.retrack_params_section.title == "Retrack Parameters"
+    assert widget.retrack_params_section.title == "Advanced Correction Params"
+    assert widget.retrack_params_section is widget.extend_params_section
     assert widget.retrack_params_section.is_expanded is False
     assert widget.extend_max_dist_spin.value() == 40.0
     assert widget.extend_area_weight_spin.value() == 1.0
@@ -1841,6 +1842,7 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     assert widget.extend_distance_weight_spin.value() == 0.25
     assert widget.extend_overlap_penalty_spin.value() == 1.0
     assert widget.extend_greedy_overwrite_check.isChecked() is False
+    assert widget.retrack_radius_spin.value() == 20.0
     assert widget.retrack_max_dist_spin.value() == 20.0
 
     widget.deleteLater()
