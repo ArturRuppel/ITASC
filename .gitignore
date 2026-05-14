@@ -14,4 +14,8 @@ build/
 .claude/
 .worktrees/
 .deepseek/
+.qwen/
+.superpowers/
+notes/cellflow_source_concatenated.md
+docs/staging/segmentation_ui_redesign/all_source.py
 test_dupes.py
