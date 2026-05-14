@@ -356,14 +356,11 @@ def test_build_ultrack_database_from_sources_segments_sources_in_order(
     )
     contour_sources_path = tmp_path / "contour_sources.tif"
     foreground_sources_path = tmp_path / "foreground_sources.tif"
-    score_path = tmp_path / "foreground_scores.tif"
     tifffile.imwrite(contour_sources_path, contours)
     tifffile.imwrite(foreground_sources_path, foreground)
-    tifffile.imwrite(score_path, np.ones((2, 3, 4), dtype=np.float32))
 
     segmented: list[tuple[np.ndarray, np.ndarray, str]] = []
     merge_calls = []
-    score_calls = []
 
     def fake_build_config(cfg, tmp_dir):
         class DummyConfig:
@@ -386,14 +383,6 @@ def test_build_ultrack_database_from_sources_segments_sources_in_order(
     monkeypatch.setattr(mt, "_build_ultrack_config", fake_build_config)
     monkeypatch.setattr(mt, "_run_ultrack_segment", fake_segment)
     monkeypatch.setattr(mt, "merge_ultrack_databases", fake_merge)
-    monkeypatch.setattr(
-        mt,
-        "write_seed_prior_node_probs",
-        lambda working_dir, image_path, cfg: (
-            score_calls.append((working_dir, image_path)),
-            type("ScoreReport", (), {"scored": 2, "seeds": 1})(),
-        )[1],
-    )
     monkeypatch.setattr(mt, "run_linking", lambda working_dir, cfg: [])
 
     report = mt.build_ultrack_database_from_sources(
@@ -401,15 +390,13 @@ def test_build_ultrack_database_from_sources_segments_sources_in_order(
         foreground_sources_path,
         tmp_path / "work",
         TrackingConfig(),
-        score_signal_path=score_path,
     )
 
     assert [item[2] for item in segmented] == ["_source_tmp_0", "_source_tmp_1"]
     np.testing.assert_allclose(segmented[0][1], contours[0])
     np.testing.assert_array_equal(segmented[1][0], foreground[1].astype(np.float32))
     assert merge_calls[0][2] == (3, 4)
-    assert score_calls == [(tmp_path / "work", score_path)]
-    assert report == UltrackDatabaseBuildReport(scored_nodes=2, seed_nodes=1)
+    assert report == UltrackDatabaseBuildReport()
 
 
 def test_build_ultrack_database_from_sources_normalizes_single_source_input(
@@ -422,7 +409,6 @@ def test_build_ultrack_database_from_sources_normalizes_single_source_input(
         np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
     )
     tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((2, 3, 4), dtype=np.uint8))
-    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((2, 3, 4), dtype=np.float32))
     calls = []
 
     def fake_build_config(cfg, tmp_dir):
@@ -446,11 +432,6 @@ def test_build_ultrack_database_from_sources_normalizes_single_source_input(
             b"merged"
         ),
     )
-    monkeypatch.setattr(
-        mt,
-        "write_seed_prior_node_probs",
-        lambda *_: type("ScoreReport", (), {"scored": 0, "seeds": 0})(),
-    )
     monkeypatch.setattr(mt, "run_linking", lambda *_: [])
 
     mt.build_ultrack_database_from_sources(
@@ -458,28 +439,9 @@ def test_build_ultrack_database_from_sources_normalizes_single_source_input(
         tmp_path / "foreground_sources.tif",
         tmp_path / "work",
         TrackingConfig(),
-        score_signal_path=tmp_path / "foreground_scores.tif",
     )
 
     assert calls == [((2, 3, 4), (2, 3, 4))]
-
-
-def test_build_ultrack_database_from_sources_requires_score_signal_path(tmp_path):
-    from cellflow.tracking_ultrack.multi_threshold import build_ultrack_database_from_sources
-
-    tifffile.imwrite(
-        tmp_path / "contour_sources.tif",
-        np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
-    )
-    tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((2, 3, 4), dtype=np.uint8))
-
-    with pytest.raises(ValueError, match="score_signal_path"):
-        build_ultrack_database_from_sources(
-            tmp_path / "contour_sources.tif",
-            tmp_path / "foreground_sources.tif",
-            tmp_path / "work",
-            TrackingConfig(),
-        )
 
 
 def test_build_ultrack_database_from_sources_rejects_shape_mismatch(tmp_path):
@@ -490,7 +452,6 @@ def test_build_ultrack_database_from_sources_rejects_shape_mismatch(tmp_path):
         np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
     )
     tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((3, 3, 4), dtype=np.uint8))
-    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((2, 3, 4), dtype=np.float32))
 
     with pytest.raises(ValueError, match="same shape"):
         build_ultrack_database_from_sources(
@@ -498,7 +459,6 @@ def test_build_ultrack_database_from_sources_rejects_shape_mismatch(tmp_path):
             tmp_path / "foreground_sources.tif",
             tmp_path / "work",
             TrackingConfig(),
-            score_signal_path=tmp_path / "foreground_scores.tif",
         )
 
 
@@ -513,7 +473,6 @@ def test_build_ultrack_database_from_sources_rejects_nonbinary_foreground(tmp_pa
         tmp_path / "foreground_sources.tif",
         np.full((2, 3, 4), 0.5, dtype=np.float32),
     )
-    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((2, 3, 4), dtype=np.float32))
 
     with pytest.raises(ValueError, match="foreground_sources.*binary"):
         build_ultrack_database_from_sources(
@@ -521,7 +480,6 @@ def test_build_ultrack_database_from_sources_rejects_nonbinary_foreground(tmp_pa
             tmp_path / "foreground_sources.tif",
             tmp_path / "work",
             TrackingConfig(),
-            score_signal_path=tmp_path / "foreground_scores.tif",
         )
 
 
@@ -530,7 +488,6 @@ def test_build_ultrack_database_from_sources_rejects_empty_contours(tmp_path):
 
     tifffile.imwrite(tmp_path / "contour_sources.tif", np.zeros((2, 3, 4), dtype=np.float32))
     tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((2, 3, 4), dtype=np.uint8))
-    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((2, 3, 4), dtype=np.float32))
 
     with pytest.raises(ValueError, match="contour_sources.*nonzero"):
         build_ultrack_database_from_sources(
@@ -538,27 +495,6 @@ def test_build_ultrack_database_from_sources_rejects_empty_contours(tmp_path):
             tmp_path / "foreground_sources.tif",
             tmp_path / "work",
             TrackingConfig(),
-            score_signal_path=tmp_path / "foreground_scores.tif",
-        )
-
-
-def test_build_ultrack_database_from_sources_rejects_score_shape_mismatch(tmp_path):
-    from cellflow.tracking_ultrack.multi_threshold import build_ultrack_database_from_sources
-
-    tifffile.imwrite(
-        tmp_path / "contour_sources.tif",
-        np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
-    )
-    tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((2, 3, 4), dtype=np.uint8))
-    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((3, 3, 4), dtype=np.float32))
-
-    with pytest.raises(ValueError, match="score_signal.*same T.Y.X shape"):
-        build_ultrack_database_from_sources(
-            tmp_path / "contour_sources.tif",
-            tmp_path / "foreground_sources.tif",
-            tmp_path / "work",
-            TrackingConfig(),
-            score_signal_path=tmp_path / "foreground_scores.tif",
         )
 
 
@@ -610,23 +546,11 @@ def test_build_multithreshold_database_normalizes_globally_and_keeps_values(
         output_path.write_bytes(b"merged")
 
     monkeypatch.setattr(mt, "merge_ultrack_databases", fake_merge)
-    score_calls = []
-
-    def fake_write_seed_prior_node_probs(working_dir, intensity_image_path, cfg):
-        score_calls.append((working_dir, intensity_image_path))
-        return type("ScoreReport", (), {"scored": 1, "seeds": 1})()
-
-    monkeypatch.setattr(
-        mt,
-        "write_seed_prior_node_probs",
-        fake_write_seed_prior_node_probs,
-    )
     monkeypatch.setattr(mt, "run_linking", lambda working_dir, cfg: [])
 
     report = mt.build_multithreshold_database(
         tmp_path / "contours.tif",
         tmp_path / "foreground_scores.tif",
-        tmp_path / "nucleus_prob_zavg.tif",
         tmp_path / "work",
         TrackingConfig(),
         thresholds=[0.25, 0.75],
@@ -656,10 +580,7 @@ def test_build_multithreshold_database_normalizes_globally_and_keeps_values(
     assert contours_025[0, 1, 1] == pytest.approx(0.3)
     assert foreground_025[0, 1, 1] == pytest.approx(0.7)
     assert merge_calls[0][2] == (2, 2)
-    assert score_calls == [
-        (tmp_path / "work", tmp_path / "foreground_scores.tif")
-    ]
-    assert report == UltrackDatabaseBuildReport(scored_nodes=1, seed_nodes=1)
+    assert report == UltrackDatabaseBuildReport()
 
 
 def test_build_multithreshold_database_uses_threshold_order(tmp_path, monkeypatch):
@@ -691,17 +612,11 @@ def test_build_multithreshold_database_uses_threshold_order(tmp_path, monkeypatc
             b"merged"
         ),
     )
-    monkeypatch.setattr(
-        mt,
-        "write_seed_prior_node_probs",
-        lambda *_: type("ScoreReport", (), {"scored": 0, "seeds": 0})(),
-    )
     monkeypatch.setattr(mt, "run_linking", lambda *_: [])
 
     mt.build_multithreshold_database(
         tmp_path / "contours.tif",
         tmp_path / "foreground_scores.tif",
-        tmp_path / "nucleus_prob_zavg.tif",
         tmp_path / "work",
         TrackingConfig(),
         thresholds=[0.5, 0.1, 0.3],

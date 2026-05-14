@@ -24,7 +24,10 @@ from pathlib import Path
 import numpy as np
 
 from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.db_build import build_ultrack_database
+from cellflow.tracking_ultrack.db_build import (
+    apply_annotations_and_score,
+    build_ultrack_database,
+)
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.linking import run_linking
 from cellflow.tracking_ultrack.seed_prior import boost_validated_edges, write_seed_prior_node_probs
@@ -534,12 +537,17 @@ def resolve_with_canonical_segment(
         build_ultrack_database(
             contour_maps_path=contour_maps_path,
             foreground_masks_path=foreground_masks_path,
-            nucleus_prob_zavg_path=intensity_image_path,
             working_dir=working_dir,
             cfg=cfg,
+            progress_cb=_notify,
+        )
+
+        apply_annotations_and_score(
+            working_dir=working_dir,
+            cfg=cfg,
+            score_signal_path=intensity_image_path,
             validated_tracks=validated_tracks,
             tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
-            use_validated=True,
             progress_cb=_notify,
         )
 

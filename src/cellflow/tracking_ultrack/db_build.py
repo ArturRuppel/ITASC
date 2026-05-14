@@ -21,15 +21,103 @@ from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 
 @dataclass(frozen=True)
 class UltrackDatabaseBuildReport:
-    real_nodes: int = 0
-    skipped_validated: int = 0
+    """Result of candidate-building (segmentation + linking). No annotation state."""
+    pass
+
+
+@dataclass(frozen=True)
+class AnnotateAndScoreReport:
     fake_nodes: int = 0
-    overlaps_added: int = 0
     anchor_nodes: int = 0
     anchor_links: int = 0
     scored_nodes: int = 0
     seed_nodes: int = 0
-    boosted_edges: int = 0
+
+
+def _reset_annotations(working_dir: str | Path) -> None:
+    """Clear all NodeDB.node_annot and LinkDB.annotation back to UNKNOWN."""
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
+
+    engine = sqla.create_engine(f"sqlite:///{Path(working_dir) / 'data.db'}")
+    with Session(engine) as session:
+        session.query(NodeDB).update(
+            {NodeDB.node_annot: VarAnnotation.UNKNOWN},
+            synchronize_session=False,
+        )
+        session.query(LinkDB).update(
+            {LinkDB.annotation: VarAnnotation.UNKNOWN},
+            synchronize_session=False,
+        )
+        session.commit()
+
+
+def apply_annotations_and_score(
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    *,
+    score_signal_path: str | Path,
+    corrections: list[Correction] | None = None,
+    validated_tracks: dict[int, set[int]] | None = None,
+    tracked_labels: np.ndarray | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+) -> AnnotateAndScoreReport:
+    """Reset annotations on an existing ``data.db``, apply corrections, and rescore.
+
+    Runs after candidate-building (segmentation + linking) and before solve.
+    The candidate set itself is left untouched; only ``node_annot``,
+    ``link.annotation`` and ``node_prob`` change. Safe to call repeatedly when
+    the user toggles validations or anchors.
+    """
+    if corrections is None and validated_tracks:
+        if tracked_labels is None:
+            raise ValueError(
+                "validated_tracks requires tracked_labels for centroid derivation."
+            )
+        corrections = corrections_from_validated_tracks(
+            validated_tracks,
+            np.asarray(tracked_labels, dtype=np.uint32),
+        )
+    corrections = list(corrections or [])
+
+    _notify(progress_cb, "Resetting prior annotations...")
+    _reset_annotations(working_dir)
+
+    fake_nodes = anchor_nodes = anchor_links = 0
+    if corrections:
+        _notify(progress_cb, "Applying node annotations...")
+        pre = apply_corrections_to_database(
+            working_dir, corrections, cfg, annotate_anchor_links=False,
+        )
+        fake_nodes = int(pre.fake_nodes)
+        anchor_nodes = int(pre.anchor_nodes)
+        _notify(
+            progress_cb,
+            f"Marked {fake_nodes} FAKE node(s) and {anchor_nodes} anchor node(s).",
+        )
+
+    _notify(progress_cb, "Scoring node probabilities...")
+    score = write_seed_prior_node_probs(working_dir, score_signal_path, cfg)
+    scored_nodes = int(getattr(score, "scored", 0))
+    seed_nodes = int(getattr(score, "seeds", 0))
+    _notify(progress_cb, f"Scored {scored_nodes} node(s) using {seed_nodes} seed node(s).")
+
+    if corrections:
+        _notify(progress_cb, "Applying link annotations...")
+        post = apply_corrections_to_database(
+            working_dir, corrections, cfg, annotate_anchor_links=True,
+        )
+        anchor_links = int(post.anchor_links)
+        _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
+
+    return AnnotateAndScoreReport(
+        fake_nodes=fake_nodes,
+        anchor_nodes=anchor_nodes,
+        anchor_links=anchor_links,
+        scored_nodes=scored_nodes,
+        seed_nodes=seed_nodes,
+    )
 
 
 def _notify(progress_cb: Callable[[str], None] | None, message: str) -> None:
@@ -75,29 +163,16 @@ def _run_ultrack_segment(
 def build_ultrack_database(
     contour_maps_path: str | Path,
     foreground_masks_path: str | Path,
-    nucleus_prob_zavg_path: str | Path,
     working_dir: str | Path,
     cfg: TrackingConfig,
-    validated_tracks: dict[int, set[int]] | None = None,
-    tracked_labels: np.ndarray | None = None,
-    corrections: list[Correction] | None = None,
-    use_validated: bool = False,
     progress_cb: Callable[[str], None] | None = None,
 ) -> UltrackDatabaseBuildReport:
-    """Build ``data.db`` from canonical Ultrack segmentation and linking.
+    """Build candidate ``data.db`` from canonical Ultrack segmentation + linking.
 
-    The foreground input is used both for candidate segmentation and for the
-    image-quality term in node-probability scoring. ``nucleus_prob_zavg_path``
-    is retained for API compatibility.
-
-    Corrections annotate canonical candidates in place. Validated frames mark
-    nearby candidates ``FAKE``; anchor frames mark nearest candidates ``REAL``.
+    Produces NodeDB / LinkDB / OverlapDB rows with all annotations UNKNOWN and
+    no node-prob scores. Pair with ``apply_annotations_and_score`` before
+    ``run_solve`` to ingest validations/anchors.
     """
-    if use_validated and corrections is None and (not validated_tracks or tracked_labels is None):
-        raise ValueError(
-            "Validated-aware DB generation requires validated tracks and tracked labels."
-        )
-
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
 
@@ -108,59 +183,8 @@ def build_ultrack_database(
     _notify(progress_cb, "Segmenting candidates (ultrack hierarchy)...")
     _run_ultrack_segment(foreground, contours, ultrack_cfg, cfg)
 
-    if corrections is None and use_validated:
-        corrections = corrections_from_validated_tracks(
-            validated_tracks or {},
-            np.asarray(tracked_labels, dtype=np.uint32),
-        )
-
-    real_nodes = skipped_validated = overlaps_added = 0
-    fake_nodes = anchor_nodes = anchor_links = 0
-    if corrections:
-        _notify(progress_cb, "Applying correction annotations...")
-        correction_report = apply_corrections_to_database(
-            working_dir,
-            corrections,
-            cfg,
-            annotate_anchor_links=False,
-        )
-        fake_nodes = int(correction_report.fake_nodes)
-        anchor_nodes = int(correction_report.anchor_nodes)
-        _notify(
-            progress_cb,
-            f"Marked {fake_nodes} FAKE node(s) and {anchor_nodes} anchor node(s).",
-        )
-
-    _notify(progress_cb, "Scoring node probabilities...")
-    score_report = write_seed_prior_node_probs(working_dir, foreground_masks_path, cfg)
-    scored_nodes = int(getattr(score_report, "scored", 0))
-    seed_nodes = int(getattr(score_report, "seeds", 0))
-    _notify(progress_cb, f"Scored {scored_nodes} node(s) using {seed_nodes} seed node(s).")
-
     _notify(progress_cb, "Linking candidates...")
     for step, total, label in run_linking(working_dir, cfg):
         _notify(progress_cb, f"[link {step}/{total}] {label}")
 
-    boosted_edges = 0
-    if corrections:
-        _notify(progress_cb, "Applying correction link annotations...")
-        correction_report = apply_corrections_to_database(
-            working_dir,
-            corrections,
-            cfg,
-            annotate_anchor_links=True,
-        )
-        anchor_links = int(correction_report.anchor_links)
-        _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
-
-    return UltrackDatabaseBuildReport(
-        real_nodes=real_nodes,
-        skipped_validated=skipped_validated,
-        fake_nodes=fake_nodes,
-        overlaps_added=overlaps_added,
-        anchor_nodes=anchor_nodes,
-        anchor_links=anchor_links,
-        scored_nodes=scored_nodes,
-        seed_nodes=seed_nodes,
-        boosted_edges=boosted_edges,
-    )
+    return UltrackDatabaseBuildReport()

@@ -19,11 +19,6 @@ import tifffile
 from sqlalchemy.orm import Session
 
 from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.corrections import (
-    Correction,
-    apply_corrections_to_database,
-    corrections_from_validated_tracks,
-)
 from cellflow.tracking_ultrack.db_build import (
     _build_ultrack_config,
     _load_ultrack_inputs,
@@ -33,7 +28,6 @@ from cellflow.tracking_ultrack.db_build import (
 )
 from cellflow.tracking_ultrack.validation_nodes import _make_node_pickle
 from cellflow.tracking_ultrack.linking import run_linking
-from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 
 LOG = logging.getLogger(__name__)
 
@@ -683,45 +677,23 @@ def _load_ultrack_source_stacks(
     return contour_sources, foreground_sources
 
 
-def _load_score_signal(
-    score_signal_path: str | Path,
-    expected_shape: tuple[int, int, int],
-) -> Path:
-    score_signal_path = Path(score_signal_path)
-    score_signal = _as_3d_movie(
-        tifffile.imread(str(score_signal_path)),
-        "score_signal",
-    )
-    if score_signal.shape != expected_shape:
-        raise ValueError("score_signal must have the same T×Y×X shape as source frames.")
-    if not np.isfinite(score_signal).all():
-        raise ValueError("score_signal must contain only finite values.")
-    return score_signal_path
-
-
 def build_ultrack_database_from_sources(
     contour_sources_path: str | Path,
     foreground_sources_path: str | Path,
     working_dir: str | Path,
     cfg: TrackingConfig,
     *,
-    score_signal_path: str | Path | None = None,
-    corrections: list[Correction] | None = None,
-    validated_tracks: dict[int, set[int]] | None = None,
-    tracked_labels: np.ndarray | None = None,
-    use_validated: bool = False,
     progress_cb: Callable[[str], None] | None = None,
 ) -> UltrackDatabaseBuildReport:
-    """Build ``data.db`` from explicit Ultrack source-stack artifacts.
+    """Build candidate ``data.db`` from Ultrack source-stack artifacts.
+
+    Builds candidates (per-source segmentation + merge) and links them.
+    Pair with ``apply_annotations_and_score`` before ``run_solve`` to ingest
+    validations and anchors.
 
     ``T×Y×X`` inputs are treated as one source. ``P×T×Y×X`` inputs are segmented
     one source at a time and merged into a single candidate database.
     """
-    if use_validated and corrections is None and (not validated_tracks or tracked_labels is None):
-        raise ValueError(
-            "Validated-aware DB generation requires validated tracks and tracked labels."
-        )
-
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
 
@@ -730,10 +702,7 @@ def build_ultrack_database_from_sources(
         contour_sources_path,
         foreground_sources_path,
     )
-    source_count, frame_count, h, w = contour_sources.shape
-    if score_signal_path is None:
-        raise ValueError("score_signal_path is required for source-stack DB generation.")
-    scoring_path = _load_score_signal(score_signal_path, (frame_count, h, w))
+    source_count, _frame_count, h, w = contour_sources.shape
 
     temp_dirs: list[Path] = []
     temp_dbs: list[Path] = []
@@ -771,70 +740,16 @@ def build_ultrack_database_from_sources(
             progress_cb=progress_cb,
         )
 
-        if corrections is None and use_validated:
-            corrections = corrections_from_validated_tracks(
-                validated_tracks or {},
-                np.asarray(tracked_labels, dtype=np.uint32),
-            )
-
-        real_nodes = skipped_validated = overlaps_added = 0
-        fake_nodes = anchor_nodes = anchor_links = 0
-        if corrections:
-            _notify(progress_cb, "Applying correction annotations …")
-            correction_report = apply_corrections_to_database(
-                working_dir,
-                corrections,
-                cfg,
-                annotate_anchor_links=False,
-            )
-            fake_nodes = int(correction_report.fake_nodes)
-            anchor_nodes = int(correction_report.anchor_nodes)
-            _notify(
-                progress_cb,
-                f"Marked {fake_nodes} FAKE node(s) and {anchor_nodes} anchor node(s).",
-            )
-
-        _notify(progress_cb, "Scoring node probabilities …")
-        score_report = write_seed_prior_node_probs(working_dir, scoring_path, cfg)
-        scored_nodes = int(getattr(score_report, "scored", 0))
-        seed_nodes = int(getattr(score_report, "seeds", 0))
-        _notify(
-            progress_cb,
-            f"Scored {scored_nodes} node(s) using {seed_nodes} seed node(s).",
-        )
-
         _notify(progress_cb, "Linking candidates …")
         for step, total, label in run_linking(working_dir, cfg):
             _notify(progress_cb, f"[link {step}/{total}] {label}")
-
-        boosted_edges = 0
-        if corrections:
-            _notify(progress_cb, "Applying correction link annotations …")
-            correction_report = apply_corrections_to_database(
-                working_dir,
-                corrections,
-                cfg,
-                annotate_anchor_links=True,
-            )
-            anchor_links = int(correction_report.anchor_links)
-            _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
 
     finally:
         for td in temp_dirs:
             if td.exists():
                 shutil.rmtree(td, ignore_errors=True)
 
-    return UltrackDatabaseBuildReport(
-        real_nodes=real_nodes,
-        skipped_validated=skipped_validated,
-        fake_nodes=fake_nodes,
-        overlaps_added=overlaps_added,
-        anchor_nodes=anchor_nodes,
-        anchor_links=anchor_links,
-        scored_nodes=scored_nodes,
-        seed_nodes=seed_nodes,
-        boosted_edges=boosted_edges,
-    )
+    return UltrackDatabaseBuildReport()
 
 
 # ---------------------------------------------------------------------------
@@ -864,53 +779,24 @@ def _threshold_normalized_stack(stack: np.ndarray, threshold: float) -> np.ndarr
 def build_multithreshold_database(
     contour_maps_path: str | Path,
     foreground_scores_path: str | Path,
-    nucleus_prob_zavg_path: str | Path,
     working_dir: str | Path,
     cfg: TrackingConfig,
     thresholds: Sequence[float],
     *,
-    corrections: list[Correction] | None = None,
-    validated_tracks: dict[int, set[int]] | None = None,
-    tracked_labels: np.ndarray | None = None,
-    use_validated: bool = False,
     progress_cb: Callable[[str], None] | None = None,
 ) -> UltrackDatabaseBuildReport:
-    """Build ``data.db`` from several globally normalized threshold levels.
+    """Build candidate ``data.db`` from several globally normalized threshold levels.
 
     For each threshold ``τ`` in *thresholds*, both the full contour-map movie and
     the full foreground-score movie are independently min/max-normalized over all
-    timepoints/pixels, then values below ``τ`` are set to zero.  Kept values stay
+    timepoints/pixels, then values below ``τ`` are set to zero. Kept values stay
     continuous rather than being binarized.
 
     After all thresholds are segmented, the temporary databases are merged
     (with cross-threshold overlaps computed) into the final
-    ``{working_dir}/data.db``.  The remainder of the canonical DB-generation
-    pipeline (optional injection, scoring, linking, and optional boosting) is
-    then run on the merged result.
-
-    Parameters
-    ----------
-    contour_maps_path, foreground_scores_path
-        Inputs for the threshold-sweep database build. ``foreground_scores_path``
-        is also used as the node-quality signal after candidate merging.
-    nucleus_prob_zavg_path
-        Legacy argument retained for callers; no longer used for node scoring.
-    working_dir
-        Final working directory.  Merged ``data.db`` is written here.
-    cfg
-        Tracking configuration.
-    thresholds
-        Ordered list of normalized threshold values to sweep.
-    validated_tracks, tracked_labels, use_validated
-        Same semantics as :func:`build_ultrack_database`.
-    progress_cb
-        Optional callback ``(message) -> None`` for progress reporting.
+    ``{working_dir}/data.db`` and the candidates are linked. Annotations and
+    scoring are applied later via :func:`apply_annotations_and_score`.
     """
-    if use_validated and corrections is None and (not validated_tracks or tracked_labels is None):
-        raise ValueError(
-            "Validated-aware DB generation requires validated tracks and tracked labels."
-        )
-
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
 
@@ -963,72 +849,13 @@ def build_multithreshold_database(
             progress_cb=progress_cb,
         )
 
-        # -----------------------------------------------------------------
-        # Standard downstream pipeline on the merged database
-        # -----------------------------------------------------------------
-        if corrections is None and use_validated:
-            corrections = corrections_from_validated_tracks(
-                validated_tracks or {},
-                np.asarray(tracked_labels, dtype=np.uint32),
-            )
-
-        real_nodes = skipped_validated = overlaps_added = 0
-        fake_nodes = anchor_nodes = anchor_links = 0
-        if corrections:
-            _notify(progress_cb, "Applying correction annotations …")
-            correction_report = apply_corrections_to_database(
-                working_dir,
-                corrections,
-                cfg,
-                annotate_anchor_links=False,
-            )
-            fake_nodes = int(correction_report.fake_nodes)
-            anchor_nodes = int(correction_report.anchor_nodes)
-            _notify(
-                progress_cb,
-                f"Marked {fake_nodes} FAKE node(s) and {anchor_nodes} anchor node(s).",
-            )
-
-        _notify(progress_cb, "Scoring node probabilities …")
-        score_report = write_seed_prior_node_probs(
-            working_dir, foreground_scores_path, cfg
-        )
-        scored_nodes = int(getattr(score_report, "scored", 0))
-        seed_nodes = int(getattr(score_report, "seeds", 0))
-        _notify(
-            progress_cb,
-            f"Scored {scored_nodes} node(s) using {seed_nodes} seed node(s).",
-        )
-
         _notify(progress_cb, "Linking candidates …")
         for step, total, label in run_linking(working_dir, cfg):
             _notify(progress_cb, f"[link {step}/{total}] {label}")
-
-        boosted_edges = 0
-        if corrections:
-            _notify(progress_cb, "Applying correction link annotations …")
-            correction_report = apply_corrections_to_database(
-                working_dir,
-                corrections,
-                cfg,
-                annotate_anchor_links=True,
-            )
-            anchor_links = int(correction_report.anchor_links)
-            _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
 
     finally:
         for td in temp_dirs:
             if td.exists():
                 shutil.rmtree(td, ignore_errors=True)
 
-    return UltrackDatabaseBuildReport(
-        real_nodes=real_nodes,
-        skipped_validated=skipped_validated,
-        fake_nodes=fake_nodes,
-        overlaps_added=overlaps_added,
-        anchor_nodes=anchor_nodes,
-        anchor_links=anchor_links,
-        scored_nodes=scored_nodes,
-        seed_nodes=seed_nodes,
-        boosted_edges=boosted_edges,
-    )
+    return UltrackDatabaseBuildReport()

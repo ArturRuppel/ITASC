@@ -80,6 +80,9 @@ def _install_import_stubs() -> None:
                 fromlist=["Correction"],
             ).Correction,
         },
+        "cellflow.tracking_ultrack.db_build": {
+            "apply_annotations_and_score": lambda *args, **kwargs: None,
+        },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
             "ingest_hypotheses_to_db": lambda *args, **kwargs: None,
@@ -2877,7 +2880,6 @@ def test_db_gen_section_calls_source_stack_builder_on_run(tmp_path, monkeypatch)
 
     tifffile.imwrite(str(pos_dir / "2_nucleus" / "contour_sources.tif"), dummy)
     tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_sources.tif"), dummy.astype(np.uint8))
-    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_scores.tif"), np.zeros((1, 4, 4), dtype=np.float32))
     widget._pos_dir = pos_dir
 
     widget._on_run_db_generation()
@@ -2886,62 +2888,19 @@ def test_db_gen_section_calls_source_stack_builder_on_run(tmp_path, monkeypatch)
     call = calls[0]
     assert call["contour_sources_path"] == pos_dir / "2_nucleus" / "contour_sources.tif"
     assert call["foreground_sources_path"] == pos_dir / "2_nucleus" / "foreground_sources.tif"
-    assert call["score_signal_path"] == pos_dir / "2_nucleus" / "foreground_scores.tif"
-    assert "thresholds" not in call
+    # DB generation builds candidates only — no annotation/scoring inputs.
+    assert "score_signal_path" not in call
+    assert "corrections" not in call
+    assert "validated_tracks" not in call
+    assert "tracked_labels" not in call
+    assert "use_validated" not in call
     assert "nucleus_prob_zavg_path" not in call
+    assert "thresholds" not in call
     assert call["cfg"].seg_foreground_threshold == pytest.approx(0.0)
-    assert call["use_validated"] is False
     assert widget.run_db_gen_btn.isEnabled()
     assert "complete" in widget.pipeline_status_lbl.text().lower()
     assert widget.pipeline_progress_bar.isVisible() is False
     assert "✓" in _label_texts(widget._files_widget)
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_db_gen_passes_flat_corrections_when_enabled(tmp_path, monkeypatch):
-    from cellflow.database.validation import add_correction
-    from cellflow.tracking_ultrack.corrections import Correction
-
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
-    _install_sync_thread_worker(monkeypatch, module)
-
-    captured = {}
-
-    def fake_build_database(**kwargs):
-        captured.update(kwargs)
-        data_db = kwargs["working_dir"] / "data.db"
-        data_db.parent.mkdir(parents=True, exist_ok=True)
-        data_db.write_bytes(b"sqlite placeholder")
-        return {"database": str(data_db)}
-
-    monkeypatch.setattr(module, "build_ultrack_database_from_sources", fake_build_database)
-    monkeypatch.setattr(module, "_ultrack_segment", object(), raising=False)
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    dummy = np.zeros((2, 1, 4, 4), dtype=np.float32)
-    import tifffile
-
-    tifffile.imwrite(str(pos_dir / "2_nucleus" / "contour_sources.tif"), dummy)
-    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_sources.tif"), dummy.astype(np.uint8))
-    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_scores.tif"), np.zeros((1, 4, 4), dtype=np.float32))
-    widget._pos_dir = pos_dir
-    viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint32), name="Tracked: Nucleus")
-    add_correction(pos_dir, Correction(cell_id=9, t=0, kind="anchor", y=1.0, x=2.0))
-    widget.db_gen_use_validated_check.setChecked(True)
-
-    widget._on_run_db_generation()
-
-    assert [(c.cell_id, c.t, c.kind) for c in captured["corrections"]] == [
-        (9, 0, "anchor")
-    ]
-    assert captured["tracked_labels"].shape == (1, 4, 4)
-    assert captured["use_validated"] is True
 
     widget.deleteLater()
     viewer.close()
@@ -2954,28 +2913,6 @@ def test_db_gen_section_has_no_terminal_launcher():
 
     assert not hasattr(widget, "db_gen_terminal_btn")
     assert not hasattr(widget, "_on_db_gen_terminal")
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_db_gen_section_fails_clearly_if_foreground_scores_missing(tmp_path):
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "2_nucleus" / "contour_sources.tif").touch()
-    (pos_dir / "2_nucleus" / "foreground_sources.tif").touch()
-    widget._pos_dir = pos_dir
-
-    widget._on_run_db_generation()
-
-    text = widget.pipeline_status_lbl.text().lower()
-    assert "foreground_scores" in text
-    assert "missing" in text
-    assert "segmentation inputs" in text
 
     widget.deleteLater()
     viewer.close()
@@ -3532,18 +3469,23 @@ def test_ultrack_tracking_refreshes_stage_output_files(tmp_path, monkeypatch):
     pos_dir = tmp_path / "pos00"
     (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
     (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(b"sqlite placeholder")
+    import tifffile
+    tifffile.imwrite(
+        str(pos_dir / "2_nucleus" / "foreground_scores.tif"),
+        np.zeros((2, 4, 4), dtype=np.float32),
+    )
     widget._pos_dir = pos_dir
 
     labels = np.ones((2, 4, 4), dtype=np.uint32)
 
     def fake_export(_working_dir, _cfg, tracked_path, **_kwargs):
         tracked_path.parent.mkdir(parents=True, exist_ok=True)
-        import tifffile
         tifffile.imwrite(tracked_path, labels)
         return labels
 
     monkeypatch.setattr(module, "run_solve", lambda *a, **kw: iter([(1, 1, "solved")]))
     monkeypatch.setattr(module, "export_tracked_labels", fake_export)
+    monkeypatch.setattr(module, "apply_annotations_and_score", lambda **kwargs: None)
 
     widget._on_run_ultrack()
 
@@ -3569,11 +3511,18 @@ def test_ultrack_tracking_passes_corrections_to_export(tmp_path, monkeypatch):
     pos_dir = tmp_path / "pos00"
     (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
     (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(b"sqlite placeholder")
+    import tifffile
+    tifffile.imwrite(
+        str(pos_dir / "2_nucleus" / "foreground_scores.tif"),
+        np.zeros((2, 4, 4), dtype=np.float32),
+    )
     widget._pos_dir = pos_dir
     tracked = np.ones((2, 4, 4), dtype=np.uint32)
     viewer.add_labels(tracked, name="Tracked: Nucleus")
     add_correction(pos_dir, Correction(cell_id=2, t=1, kind="anchor", y=2.0, x=3.0))
+    widget.db_gen_use_validated_check.setChecked(True)
     captured = {}
+    annotate_calls = []
 
     def fake_export(_working_dir, _cfg, _tracked_path, **kwargs):
         captured.update(kwargs)
@@ -3581,6 +3530,11 @@ def test_ultrack_tracking_passes_corrections_to_export(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "run_solve", lambda *a, **kw: iter([(1, 1, "solved")]))
     monkeypatch.setattr(module, "export_tracked_labels", fake_export)
+    monkeypatch.setattr(
+        module,
+        "apply_annotations_and_score",
+        lambda **kwargs: annotate_calls.append(kwargs) or None,
+    )
 
     widget._on_run_ultrack()
 
@@ -3588,6 +3542,12 @@ def test_ultrack_tracking_passes_corrections_to_export(tmp_path, monkeypatch):
         (2, 1, "anchor")
     ]
     assert captured["tracked_labels"].shape == (2, 4, 4)
+    # apply_annotations_and_score must run before solve, receiving the same corrections.
+    assert len(annotate_calls) == 1
+    assert [(c.cell_id, c.t, c.kind) for c in annotate_calls[0]["corrections"]] == [
+        (2, 1, "anchor")
+    ]
+    assert annotate_calls[0]["score_signal_path"] == pos_dir / "2_nucleus" / "foreground_scores.tif"
 
     widget.deleteLater()
     viewer.close()

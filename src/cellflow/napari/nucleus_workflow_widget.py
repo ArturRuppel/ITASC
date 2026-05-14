@@ -97,6 +97,7 @@ from cellflow.tracking_ultrack.db_query import (
     render_hierarchy_cut_state as _render_hierarchy_cut_state,
     summary_text as _ultrack_db_summary_text,
 )
+from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.extend import extend_track_from_db
 from cellflow.tracking_ultrack.ingest import _select_solver
@@ -105,7 +106,7 @@ from cellflow.tracking_ultrack.multi_threshold import (
     preview_ultrack_source_stack_frame,
     write_ultrack_source_stacks,
 )
-from cellflow.tracking_ultrack.solve import database_has_annotations, run_solve
+from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
 
@@ -954,6 +955,21 @@ class NucleusWorkflowWidget(QWidget):
     def _tracked_path(self) -> Path | None:
         return self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
 
+    def _ensure_tracked_layer_data(self) -> np.ndarray | None:
+        """Return the tracked labelmap. If the layer is missing but the file
+        exists on disk, load it and add it to the viewer first."""
+        if _TRACKED_LAYER in self.viewer.layers:
+            return np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
+        tracked_path = self._tracked_path()
+        if tracked_path is None or not tracked_path.exists():
+            return None
+        self._status(f"Loading {tracked_path.name} from disk…")
+        labels = np.asarray(tifffile.imread(str(tracked_path)), dtype=np.uint32)
+        if labels.ndim == 4 and labels.shape[1] == 1:
+            labels = labels[:, 0]
+        self.viewer.add_labels(labels, name=_TRACKED_LAYER)
+        return labels
+
     def _prob_path(self) -> Path | None:
         return self._pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif" if self._pos_dir else None
 
@@ -1771,32 +1787,16 @@ class NucleusWorkflowWidget(QWidget):
             self._status("No project open."); return
         contour_sources_path = self._contour_sources_path()
         foreground_sources_path = self._foreground_sources_path()
-        score_path = self._foreground_scores_path()
         if contour_sources_path is None or not contour_sources_path.exists():
             self._status("Missing: contour_sources.tif — run Build Sources first."); return
         if foreground_sources_path is None or not foreground_sources_path.exists():
             self._status("Missing: foreground_sources.tif — run Build Sources first."); return
-        if score_path is None or not score_path.exists():
-            self._status("Missing: foreground_scores.tif — build segmentation inputs first."); return
         if _ultrack_segment is None:
             self._status("ultrack not installed — activate the cellflow conda environment."); return
 
         cfg = self._db_gen_config_from_controls()
         working_dir = self._ultrack_workdir()
         pos_dir = self._pos_dir
-        use_validated = self.db_gen_use_validated_check.isChecked()
-        validated_tracks: dict[int, set[int]] | None = None
-        tracked_labels: np.ndarray | None = None
-        corrections = None
-        if use_validated:
-            corrections = read_corrections(pos_dir)
-            if not corrections:
-                validated_tracks = read_validated_tracks(pos_dir)
-            if not corrections and not validated_tracks:
-                self._status("No corrections found — validate or anchor some cells first."); return
-            if _TRACKED_LAYER not in self.viewer.layers:
-                self._status("No tracked layer loaded for correction-aware DB generation."); return
-            tracked_labels = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
 
         self.pipeline_progress_bar.setRange(0, 0)
         self.pipeline_progress_bar.setVisible(True)
@@ -1827,11 +1827,6 @@ class NucleusWorkflowWidget(QWidget):
                             foreground_sources_path=foreground_sources_path,
                             working_dir=working_dir,
                             cfg=cfg,
-                            score_signal_path=score_path,
-                            corrections=corrections,
-                            validated_tracks=validated_tracks,
-                            tracked_labels=tracked_labels,
-                            use_validated=use_validated,
                             progress_cb=_progress_cb,
                         )
                     )
@@ -1897,25 +1892,28 @@ class NucleusWorkflowWidget(QWidget):
         db_path = self._ultrack_db_path()
         if db_path is None or not db_path.exists():
             self._status("data.db not found — run DB Generation first."); return
+        score_path = self._foreground_scores_path()
+        if score_path is None or not score_path.exists():
+            self._status("Missing: foreground_scores.tif — build segmentation inputs first."); return
         working_dir = self._ultrack_workdir()
         tracked_path = self._tracked_path()
 
         cfg = self._ultrack_config_from_controls()
-        corrections = read_corrections(self._pos_dir)
-        needs_validated_export = database_has_annotations(working_dir)
-        validated_tracks = None
+        use_corrections = self.db_gen_use_validated_check.isChecked()
+        corrections = read_corrections(self._pos_dir) if use_corrections else None
+        validated_tracks = (
+            read_validated_tracks(self._pos_dir)
+            if use_corrections and not corrections
+            else None
+        )
         tracked_labels = None
-        if corrections or needs_validated_export:
-            validated_tracks = read_validated_tracks(self._pos_dir)
-            if needs_validated_export and not corrections and not validated_tracks:
+        if corrections or validated_tracks:
+            tracked_labels = self._ensure_tracked_layer_data()
+            if tracked_labels is None:
                 self._status(
-                    "Annotated data.db requires validated tracks for ID-preserving export."
+                    "Correction-aware solve requires tracked_labels.tif "
+                    "(layer not loaded and file not on disk)."
                 ); return
-            if _TRACKED_LAYER not in self.viewer.layers:
-                self._status(
-                    "Correction-aware export requires the current tracked layer."
-                ); return
-            tracked_labels = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
 
         self.pipeline_progress_bar.setRange(0, 100)
         self.pipeline_progress_bar.setVisible(True)
@@ -1929,6 +1927,15 @@ class NucleusWorkflowWidget(QWidget):
             "errored": self._on_ultrack_worker_error,
         })
         def _worker():
+            yield "Applying annotations and scoring…"
+            apply_annotations_and_score(
+                working_dir=working_dir,
+                cfg=cfg,
+                score_signal_path=score_path,
+                corrections=corrections,
+                validated_tracks=validated_tracks,
+                tracked_labels=tracked_labels,
+            )
             for step, total, label in run_solve(working_dir, cfg, overwrite=True):
                 yield (step, total, f"[solve] {label}")
             yield "Exporting tracked labels…"
