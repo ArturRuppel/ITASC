@@ -2491,6 +2491,34 @@ def test_correction_deactivation_removes_registered_layers_and_restores_viewer_s
     viewer.close()
 
 
+def test_correction_save_writes_correction_owned_tracked_layer(tmp_path):
+    tifffile = pytest.importorskip("tifffile")
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "Position_1"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    original = np.zeros((2, 4, 4), dtype=np.uint32)
+    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", original)
+    widget.refresh(pos_dir)
+    widget.correction_active_btn.setChecked(True)
+
+    edited = np.zeros((2, 4, 4), dtype=np.uint32)
+    edited[1, 1:3, 1:3] = 9
+    viewer.layers["[Correction] Tracked: Nucleus"].data = edited
+    widget._on_save_tracked()
+
+    np.testing.assert_array_equal(
+        tifffile.imread(pos_dir / "2_nucleus" / "tracked_labels.tif"),
+        edited,
+    )
+    assert "Saved 2 frame(s)" in widget.correction_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_correction_shortcuts_are_still_installed():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()

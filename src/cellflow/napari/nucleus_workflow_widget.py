@@ -1259,9 +1259,9 @@ class NucleusWorkflowWidget(QWidget):
         return v
 
     def _current_cell_ids(self, t: int) -> set[int]:
-        if _TRACKED_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             return set()
-        layer = self.viewer.layers[_TRACKED_LAYER]
         frame = self._frame_view_2d(layer.data, t)
         if frame is None:
             return set()
@@ -2853,9 +2853,9 @@ class NucleusWorkflowWidget(QWidget):
         tracked_path = self._tracked_path()
         if tracked_path is None:
             self._correction_status("No project open."); return
-        if _TRACKED_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No tracked layer to save."); return
-        layer = self.viewer.layers[_TRACKED_LAYER]
         if layer.data.ndim != 3:
             self._correction_status("Tracked layer is not a 3D stack."); return
         n = layer.data.shape[0]
@@ -2901,9 +2901,10 @@ class NucleusWorkflowWidget(QWidget):
         self._load_correction_layers_from_disk()
 
     def _on_reassign_ids(self) -> None:
-        if _TRACKED_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No tracked layer loaded."); return
-        stack = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
+        stack = np.asarray(layer.data)
         self._correction_status("Reassigning cell IDs…")
 
         @thread_worker(connect={
@@ -2926,8 +2927,9 @@ class NucleusWorkflowWidget(QWidget):
 
     def _on_reassign_ids_done(self, result: tuple) -> None:
         remapped, n_cells, old_to_new = result
-        if _TRACKED_LAYER in self.viewer.layers:
-            self.viewer.layers[_TRACKED_LAYER].data = remapped
+        layer = self._correction_tracked_layer()
+        if layer is not None:
+            layer.data = remapped
         if self._pos_dir is not None and old_to_new:
             remap_validated_tracks(self._pos_dir, old_to_new)
         self._correction_status(
@@ -2960,7 +2962,8 @@ class NucleusWorkflowWidget(QWidget):
         self._on_extend(direction="forward")
 
     def _on_extend(self, direction: str) -> None:
-        if _TRACKED_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No tracked layer loaded."); return
         db_path = self._ultrack_db_path()
         if db_path is None or not db_path.exists():
@@ -2969,7 +2972,6 @@ class NucleusWorkflowWidget(QWidget):
         if not source_id:
             self._correction_status("Extend: no cell selected (left-click first)."); return
 
-        layer = self.viewer.layers[_TRACKED_LAYER]
         t = self._current_t()
         tracked = np.asarray(layer.data)
         T = tracked.shape[0]
@@ -3041,9 +3043,9 @@ class NucleusWorkflowWidget(QWidget):
     def _on_retrack_forward(self) -> None:
         if self._pos_dir is None:
             self._correction_status("No project open."); return
-        if _TRACKED_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No tracked layer loaded."); return
-        layer = self.viewer.layers[_TRACKED_LAYER]
         if layer.data.ndim != 3 or layer.data.shape[0] < 2:
             self._correction_status("Need ≥ 2 frames to retrack."); return
         t0 = int(self.viewer.dims.current_step[0])
@@ -3074,9 +3076,9 @@ class NucleusWorkflowWidget(QWidget):
     def _on_retrack_backward(self) -> None:
         if self._pos_dir is None:
             self._correction_status("No project open."); return
-        if _TRACKED_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No tracked layer loaded."); return
-        layer = self.viewer.layers[_TRACKED_LAYER]
         if layer.data.ndim != 3 or layer.data.shape[0] < 2:
             self._correction_status("Need ≥ 2 frames to retrack."); return
         t0 = int(self.viewer.dims.current_step[0])
@@ -3106,9 +3108,9 @@ class NucleusWorkflowWidget(QWidget):
     def _on_remove_unvalidated_labels(self) -> None:
         if self._pos_dir is None:
             self._correction_status("No project open."); return
-        if _TRACKED_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No tracked layer loaded."); return
-        layer = self.viewer.layers[_TRACKED_LAYER]
         data = np.asarray(layer.data)
         if data.ndim < 2:
             self._correction_status("Tracked layer has no image data."); return
@@ -3238,11 +3240,11 @@ class NucleusWorkflowWidget(QWidget):
             QTimer.singleShot(0, self._refresh_ultrack_db_browser)
 
     def _refresh_validated_overlay(self) -> None:
-        if self._pos_dir is None or _TRACKED_LAYER not in self.viewer.layers:
+        tracked = self._correction_tracked_layer()
+        if self._pos_dir is None or tracked is None:
             if _VALIDATED_OVERLAY in self.viewer.layers:
                 self.viewer.layers.remove(self.viewer.layers[_VALIDATED_OVERLAY])
             return
-        tracked = self.viewer.layers[_TRACKED_LAYER]
         if tracked.data.ndim < 3:
             return
         t = self._current_t()
@@ -3280,8 +3282,9 @@ class NucleusWorkflowWidget(QWidget):
             colormap=direct_colormap({None: (0, 0, 0, 0), 1: "#00ff00"}),
         )
         self._place_validated_overlay_below_spotlight()
-        if _TRACKED_LAYER in self.viewer.layers:
-            self.viewer.layers.selection.active = self.viewer.layers[_TRACKED_LAYER]
+        tracked = self._correction_tracked_layer()
+        if tracked is not None:
+            self.viewer.layers.selection.active = tracked
 
     def _place_validated_overlay_below_spotlight(self) -> None:
         if _VALIDATED_OVERLAY not in self.viewer.layers:
@@ -3294,7 +3297,7 @@ class NucleusWorkflowWidget(QWidget):
             self.viewer.layers.move(vi, si)
 
     def _refresh_validation_counter(self) -> None:
-        if self._pos_dir is None or _TRACKED_LAYER not in self.viewer.layers:
+        if self._pos_dir is None or self._correction_tracked_layer() is None:
             self.validation_counter_lbl.setText(""); return
         validated_tracks = read_validated_tracks(self._pos_dir)
         n_tracks = len(validated_tracks)
@@ -3312,9 +3315,9 @@ class NucleusWorkflowWidget(QWidget):
         self._refresh_validation_counter()
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
-        if cell_id == 0 or _TRACKED_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if cell_id == 0 or layer is None:
             return []
-        layer = self.viewer.layers[_TRACKED_LAYER]
         if layer.data.ndim < 3:
             return []
         spatial_axes = tuple(range(1, layer.data.ndim))

@@ -577,7 +577,7 @@ git commit -m "feat: load owned nucleus correction layers"
 - Modify: `src/cellflow/napari/nucleus_workflow_widget.py`
 - Test: `tests/napari/test_nucleus_tracking_correction_layout.py`
 
-- [ ] **Step 1: Replace direct `_TRACKED_LAYER` checks in correction actions**
+- [x] **Step 1: Replace direct `_TRACKED_LAYER` checks in correction actions**
 
 In `_on_save_tracked`, `_on_reassign_ids`, `_on_extend`, `_on_retrack_forward`, `_on_retrack_backward`, and `_on_remove_unvalidated_labels`, replace checks like:
 
@@ -606,7 +606,7 @@ In `_on_save_tracked`, keep the project-open check first, then use the helper:
             self._correction_status("No tracked layer to save."); return
 ```
 
-- [ ] **Step 2: Replace `_TRACKED_LAYER` updates in callbacks**
+- [x] **Step 2: Replace `_TRACKED_LAYER` updates in callbacks**
 
 In `_on_reassign_ids_done`, replace:
 
@@ -623,7 +623,7 @@ with:
             layer.data = remapped
 ```
 
-- [ ] **Step 3: Add a focused save test**
+- [x] **Step 3: Add a focused save test**
 
 Add this test:
 
@@ -656,7 +656,7 @@ def test_correction_save_writes_correction_owned_tracked_layer(tmp_path):
     viewer.close()
 ```
 
-- [ ] **Step 4: Run the save test**
+- [x] **Step 4: Run the save test**
 
 Run:
 
@@ -666,7 +666,7 @@ pytest tests/napari/test_nucleus_tracking_correction_layout.py::test_correction_
 
 Expected: PASS.
 
-- [ ] **Step 5: Run previous correction action tests**
+- [x] **Step 5: Run previous correction action tests**
 
 Run:
 
@@ -676,7 +676,7 @@ pytest tests/napari/test_nucleus_tracking_correction_layout.py::test_nucleus_cor
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/cellflow/napari/nucleus_workflow_widget.py tests/napari/test_nucleus_tracking_correction_layout.py
