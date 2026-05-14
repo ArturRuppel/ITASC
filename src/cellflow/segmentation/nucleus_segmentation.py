@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
+import tifffile
 
 def apply_gamma(logits: np.ndarray, gamma: float) -> np.ndarray:
     """Gamma-correct Cellpose probability logits: sigmoid → power → logit."""
@@ -33,6 +35,17 @@ class ContourWatershedParams:
 
     def to_dict(self) -> dict[str, object]:
         return {"method": "contour_watershed", **asdict(self)}
+
+
+@dataclass(frozen=True, slots=True)
+class NucleusAveragedMapsReport:
+    """Summary for simplified nucleus averaged-map generation."""
+
+    frames: int
+    z_indices: tuple[int, ...]
+    cellprob_thresholds: tuple[float, ...]
+    contours_path: Path
+    foreground_scores_path: Path
 
 
 def _remove_small_labels(labels: np.ndarray, min_size: int) -> np.ndarray:
@@ -158,6 +171,107 @@ def build_consensus_boundary(
     boundary = accum / n_total if n_total > 0 else accum
     foreground = foreground_accum / n_total if n_total > 0 else foreground_accum
     return boundary, foreground
+
+
+def _as_tzyx(stack: np.ndarray, name: str) -> np.ndarray:
+    arr = np.asarray(stack, dtype=np.float32)
+    if arr.ndim == 3:
+        arr = arr[np.newaxis, ...]
+    if arr.ndim != 4:
+        raise ValueError(f"{name} must be Z×Y×X or T×Z×Y×X.")
+    return arr
+
+
+def _as_tzcyx(stack: np.ndarray, name: str) -> np.ndarray:
+    arr = np.asarray(stack, dtype=np.float32)
+    if arr.ndim == 4:
+        arr = arr[np.newaxis, ...]
+    if arr.ndim != 5 or arr.shape[2] != 2:
+        raise ValueError(f"{name} must be Z×2×Y×X or T×Z×2×Y×X.")
+    return arr
+
+
+def _normalize_cellprob_thresholds(values: list[float] | tuple[float, ...]) -> tuple[float, ...]:
+    thresholds = tuple(float(v) for v in values)
+    if not thresholds:
+        raise ValueError("cellprob_thresholds must include at least one threshold.")
+    return thresholds
+
+
+def _normalize_z_indices(z_indices: list[int] | tuple[int, ...] | None, n_z: int) -> tuple[int, ...]:
+    if z_indices is None:
+        indices = tuple(range(n_z))
+    else:
+        indices = tuple(int(z) for z in z_indices)
+    if not indices:
+        raise ValueError("z_indices must include at least one z slice.")
+    bad = [z for z in indices if z < 0 or z >= n_z]
+    if bad:
+        raise ValueError(f"z_indices out of range for {n_z} z slices: {bad}")
+    return indices
+
+
+def build_nucleus_averaged_maps(
+    nucleus_prob_path: str | Path,
+    nucleus_dp_path: str | Path,
+    contours_path: str | Path,
+    foreground_scores_path: str | Path,
+    *,
+    cellprob_thresholds: list[float] | tuple[float, ...],
+    z_indices: list[int] | tuple[int, ...] | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+) -> NucleusAveragedMapsReport:
+    """Build ``contours.tif`` and ``foreground_scores.tif`` from Cellpose outputs.
+
+    This is the simplified Stage A nucleus pipeline: sweep Cellpose probability
+    thresholds and selected z-slices, average labels into continuous contour and
+    foreground-score maps, and write one ``T×Y×X`` stack for each signal.
+    """
+    prob_stack = _as_tzyx(tifffile.imread(str(nucleus_prob_path)), "nucleus_prob")
+    dp_stack = _as_tzcyx(tifffile.imread(str(nucleus_dp_path)), "nucleus_dp")
+    if prob_stack.shape[0] != dp_stack.shape[0]:
+        raise ValueError("nucleus_prob and nucleus_dp must have the same frame count.")
+    if prob_stack.shape[1] != dp_stack.shape[1]:
+        raise ValueError("nucleus_prob and nucleus_dp must have the same z count.")
+    if prob_stack.shape[2:] != dp_stack.shape[3:]:
+        raise ValueError("nucleus_prob and nucleus_dp must have the same Y×X shape.")
+
+    thresholds = _normalize_cellprob_thresholds(cellprob_thresholds)
+    z_sel = _normalize_z_indices(z_indices, prob_stack.shape[1])
+
+    contour_frames: list[np.ndarray] = []
+    foreground_frames: list[np.ndarray] = []
+    n_t = int(prob_stack.shape[0])
+    for t in range(n_t):
+        if progress_cb is not None:
+            progress_cb(t + 1, n_t, f"Building averaged maps: frame {t + 1}/{n_t}")
+        contours, foreground = build_consensus_boundary(
+            prob_stack[t, z_sel],
+            dp_stack[t, z_sel],
+            list(thresholds),
+            gamma=1.0,
+            flow_threshold=0.0,
+        )
+        contour_frames.append(np.asarray(contours, dtype=np.float32))
+        foreground_frames.append(np.asarray(foreground, dtype=np.float32))
+
+    contours_path = Path(contours_path)
+    foreground_scores_path = Path(foreground_scores_path)
+    contours_path.parent.mkdir(parents=True, exist_ok=True)
+    foreground_scores_path.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(str(contours_path), np.stack(contour_frames), compression="zlib")
+    tifffile.imwrite(
+        str(foreground_scores_path),
+        np.stack(foreground_frames),
+        compression="zlib",
+    )
+    return NucleusAveragedMapsReport(
+        frames=n_t,
+        z_indices=z_sel,
+        cellprob_thresholds=thresholds,
+        contours_path=contours_path,
+        foreground_scores_path=foreground_scores_path,
+    )
 
 
 def compute_contour_watershed(

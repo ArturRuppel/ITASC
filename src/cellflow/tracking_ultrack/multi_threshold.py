@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import sqlalchemy as sqla
+import tifffile
 from sqlalchemy.orm import Session
 
 from cellflow.tracking_ultrack.config import TrackingConfig
@@ -460,6 +461,375 @@ def merge_ultrack_databases(
         total_nodes=total_nodes,
         within_source_overlaps=within_counts,
         cross_source_overlaps=cross_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Explicit Ultrack source-stack generation
+# ---------------------------------------------------------------------------
+
+
+def _as_3d_movie(stack: np.ndarray, name: str) -> np.ndarray:
+    arr = np.asarray(stack)
+    if arr.ndim == 3:
+        return arr
+    if arr.ndim == 4 and arr.shape[1] == 1:
+        return arr[:, 0]
+    raise ValueError(f"{name} must be a 3D T×Y×X movie.")
+
+
+def _threshold_values(
+    values: Sequence[float],
+    *,
+    name: str,
+) -> tuple[float, ...]:
+    thresholds = tuple(float(v) for v in values)
+    if not thresholds:
+        raise ValueError(f"{name} must include at least one threshold.")
+    return thresholds
+
+
+def threshold_contour_sources(
+    contours: np.ndarray,
+    contour_thresholds: Sequence[float],
+) -> np.ndarray:
+    """Create dynamic-range-preserving contour source stack.
+
+    Values below each threshold are zeroed; values at or above the threshold are
+    kept unchanged. The output shape is ``P × T × Y × X``.
+    """
+    contour_movie = _as_3d_movie(contours, "contours").astype(np.float32, copy=False)
+    thresholds = _threshold_values(
+        contour_thresholds,
+        name="contour_thresholds",
+    )
+    return np.stack(
+        [
+            np.where(contour_movie >= threshold, contour_movie, 0.0).astype(
+                np.float32,
+                copy=False,
+            )
+            for threshold in thresholds
+        ],
+        axis=0,
+    )
+
+
+def threshold_foreground_sources(
+    foreground_scores: np.ndarray,
+    foreground_thresholds: Sequence[float],
+) -> np.ndarray:
+    """Create binary foreground source stack from continuous scores."""
+    foreground_movie = _as_3d_movie(
+        foreground_scores,
+        "foreground_scores",
+    ).astype(np.float32, copy=False)
+    thresholds = _threshold_values(
+        foreground_thresholds,
+        name="foreground_thresholds",
+    )
+    return np.stack(
+        [(foreground_movie >= threshold).astype(np.uint8) for threshold in thresholds],
+        axis=0,
+    )
+
+
+def build_ultrack_source_stacks(
+    contours: np.ndarray,
+    foreground_scores: np.ndarray,
+    contour_thresholds: Sequence[float],
+    foreground_thresholds: Sequence[float],
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, float]]]:
+    """Expand averaged maps into paired Ultrack input source stacks."""
+    contour_movie = _as_3d_movie(contours, "contours").astype(np.float32, copy=False)
+    foreground_movie = _as_3d_movie(
+        foreground_scores,
+        "foreground_scores",
+    ).astype(np.float32, copy=False)
+    if contour_movie.shape != foreground_movie.shape:
+        raise ValueError("contours and foreground_scores must have the same shape.")
+
+    contour_values = _threshold_values(
+        contour_thresholds,
+        name="contour_thresholds",
+    )
+    foreground_values = _threshold_values(
+        foreground_thresholds,
+        name="foreground_thresholds",
+    )
+
+    contour_sources: list[np.ndarray] = []
+    foreground_sources: list[np.ndarray] = []
+    metadata: list[dict[str, float]] = []
+    for contour_threshold in contour_values:
+        contour_source = np.where(
+            contour_movie >= contour_threshold,
+            contour_movie,
+            0.0,
+        ).astype(np.float32, copy=False)
+        for foreground_threshold in foreground_values:
+            contour_sources.append(contour_source)
+            foreground_sources.append(
+                (foreground_movie >= foreground_threshold).astype(np.uint8)
+            )
+            metadata.append(
+                {
+                    "contour_threshold": float(contour_threshold),
+                    "foreground_threshold": float(foreground_threshold),
+                }
+            )
+
+    return (
+        np.stack(contour_sources, axis=0),
+        np.stack(foreground_sources, axis=0),
+        metadata,
+    )
+
+
+def preview_ultrack_source_stack_frame(
+    contours: np.ndarray,
+    foreground_scores: np.ndarray,
+    contour_thresholds: Sequence[float],
+    foreground_thresholds: Sequence[float],
+    *,
+    frame_index: int,
+) -> tuple[np.ndarray, np.ndarray, int, list[dict[str, float]]]:
+    """Build one in-memory source-stack preview frame without writing artifacts."""
+    contour_sources, foreground_sources, metadata = build_ultrack_source_stacks(
+        contours,
+        foreground_scores,
+        contour_thresholds,
+        foreground_thresholds,
+    )
+    t_idx = min(max(int(frame_index), 0), contour_sources.shape[1] - 1)
+    return contour_sources[:, t_idx], foreground_sources[:, t_idx], t_idx, metadata
+
+
+def write_ultrack_source_stacks(
+    contours_path: str | Path,
+    foreground_scores_path: str | Path,
+    contour_sources_path: str | Path,
+    foreground_sources_path: str | Path,
+    contour_thresholds: Sequence[float],
+    foreground_thresholds: Sequence[float],
+) -> list[dict[str, float]]:
+    """Write thresholded Ultrack input source stacks to TIFF files."""
+    contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
+    foreground_scores = np.asarray(
+        tifffile.imread(str(foreground_scores_path)),
+        dtype=np.float32,
+    )
+    contour_sources, foreground_sources, metadata = build_ultrack_source_stacks(
+        contours,
+        foreground_scores,
+        contour_thresholds,
+        foreground_thresholds,
+    )
+    contour_sources_path = Path(contour_sources_path)
+    foreground_sources_path = Path(foreground_sources_path)
+    contour_sources_path.parent.mkdir(parents=True, exist_ok=True)
+    foreground_sources_path.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(str(contour_sources_path), contour_sources)
+    tifffile.imwrite(str(foreground_sources_path), foreground_sources)
+    return metadata
+
+
+def _normalize_source_stack(stack: np.ndarray, name: str) -> np.ndarray:
+    arr = np.asarray(stack)
+    if arr.ndim == 3:
+        arr = arr[np.newaxis, ...]
+    elif arr.ndim != 4:
+        raise ValueError(f"{name} must be T×Y×X or P×T×Y×X.")
+    if arr.shape[0] < 1 or arr.shape[1] < 1:
+        raise ValueError(f"{name} must include at least one source and one frame.")
+    return arr.astype(np.float32, copy=False)
+
+
+def _validate_source_stacks(
+    contour_sources: np.ndarray,
+    foreground_sources: np.ndarray,
+) -> None:
+    if not np.isfinite(contour_sources).all():
+        raise ValueError("contour_sources must contain only finite values.")
+    if not np.isfinite(foreground_sources).all():
+        raise ValueError("foreground_sources must contain only finite values.")
+
+    contour_ranges = np.ptp(contour_sources, axis=(1, 2, 3))
+    contour_maxima = np.max(contour_sources, axis=(1, 2, 3))
+    if np.any(contour_ranges <= 0) or np.any(contour_maxima <= 0):
+        raise ValueError("contour_sources must contain nonzero dynamic range per source.")
+
+    foreground_values = np.unique(foreground_sources)
+    if not np.isin(foreground_values, (0.0, 1.0)).all():
+        raise ValueError("foreground_sources must be binary with values 0 and 1.")
+
+
+def _load_ultrack_source_stacks(
+    contour_sources_path: str | Path,
+    foreground_sources_path: str | Path,
+) -> tuple[np.ndarray, np.ndarray]:
+    contour_sources = _normalize_source_stack(
+        tifffile.imread(str(contour_sources_path)),
+        "contour_sources",
+    )
+    foreground_sources = _normalize_source_stack(
+        tifffile.imread(str(foreground_sources_path)),
+        "foreground_sources",
+    )
+    if contour_sources.shape != foreground_sources.shape:
+        raise ValueError("contour_sources and foreground_sources must have the same shape.")
+    _validate_source_stacks(contour_sources, foreground_sources)
+    return contour_sources, foreground_sources
+
+
+def _load_score_signal(
+    score_signal_path: str | Path,
+    expected_shape: tuple[int, int, int],
+) -> Path:
+    score_signal_path = Path(score_signal_path)
+    score_signal = _as_3d_movie(
+        tifffile.imread(str(score_signal_path)),
+        "score_signal",
+    )
+    if score_signal.shape != expected_shape:
+        raise ValueError("score_signal must have the same T×Y×X shape as source frames.")
+    if not np.isfinite(score_signal).all():
+        raise ValueError("score_signal must contain only finite values.")
+    return score_signal_path
+
+
+def build_ultrack_database_from_sources(
+    contour_sources_path: str | Path,
+    foreground_sources_path: str | Path,
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    *,
+    score_signal_path: str | Path | None = None,
+    validated_tracks: dict[int, set[int]] | None = None,
+    tracked_labels: np.ndarray | None = None,
+    use_validated: bool = False,
+    progress_cb: Callable[[str], None] | None = None,
+) -> UltrackDatabaseBuildReport:
+    """Build ``data.db`` from explicit Ultrack source-stack artifacts.
+
+    ``T×Y×X`` inputs are treated as one source. ``P×T×Y×X`` inputs are segmented
+    one source at a time and merged into a single candidate database.
+    """
+    if use_validated and (not validated_tracks or tracked_labels is None):
+        raise ValueError(
+            "Validated-aware DB generation requires validated tracks and tracked labels."
+        )
+
+    working_dir = Path(working_dir)
+    working_dir.mkdir(parents=True, exist_ok=True)
+
+    _notify(progress_cb, "Loading Ultrack source stacks …")
+    contour_sources, foreground_sources = _load_ultrack_source_stacks(
+        contour_sources_path,
+        foreground_sources_path,
+    )
+    source_count, frame_count, h, w = contour_sources.shape
+    if score_signal_path is None:
+        raise ValueError("score_signal_path is required for source-stack DB generation.")
+    scoring_path = _load_score_signal(score_signal_path, (frame_count, h, w))
+
+    temp_dirs: list[Path] = []
+    temp_dbs: list[Path] = []
+
+    try:
+        for source_index in range(source_count):
+            _notify(
+                progress_cb,
+                f"Segmenting source {source_index + 1}/{source_count} …",
+            )
+            tmp_dir = working_dir / f"_source_tmp_{source_index}"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            temp_dirs.append(tmp_dir)
+
+            ultrack_cfg = _build_ultrack_config(cfg, tmp_dir)
+            _run_ultrack_segment(
+                foreground_sources[source_index],
+                contour_sources[source_index],
+                ultrack_cfg,
+                cfg,
+            )
+
+            db_path = tmp_dir / "data.db"
+            if not db_path.exists():
+                raise RuntimeError(
+                    f"Ultrack segment did not create {db_path} for source {source_index}"
+                )
+            temp_dbs.append(db_path)
+
+        _notify(progress_cb, "Merging source databases …")
+        merge_ultrack_databases(
+            temp_dbs,
+            working_dir / "data.db",
+            frame_shape=(int(h), int(w)),
+            progress_cb=progress_cb,
+        )
+
+        real_nodes = skipped_validated = fake_nodes = overlaps_added = 0
+        if use_validated:
+            _notify(progress_cb, "Injecting validated nodes …")
+            injection = inject_validated_nodes(
+                working_dir=working_dir,
+                validated_tracks=validated_tracks or {},
+                tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
+                cfg=cfg,
+            )
+            real_nodes = int(injection.inserted)
+            skipped_validated = int(injection.skipped_missing)
+            fake_nodes = int(injection.faked)
+            overlaps_added = int(injection.overlaps_added)
+            _notify(
+                progress_cb,
+                (
+                    f"Inserted {real_nodes} REAL node(s), marked {fake_nodes} FAKE "
+                    f"candidate(s), skipped {skipped_validated} validated cell-frame(s)."
+                ),
+            )
+            if real_nodes == 0:
+                raise ValueError(
+                    "No validated masks could be injected; DB build aborted."
+                )
+
+        _notify(progress_cb, "Scoring node probabilities …")
+        score_report = write_seed_prior_node_probs(working_dir, scoring_path, cfg)
+        scored_nodes = int(getattr(score_report, "scored", 0))
+        seed_nodes = int(getattr(score_report, "seeds", 0))
+        _notify(
+            progress_cb,
+            f"Scored {scored_nodes} node(s) using {seed_nodes} seed node(s).",
+        )
+
+        _notify(progress_cb, "Linking candidates …")
+        for step, total, label in run_linking(working_dir, cfg):
+            _notify(progress_cb, f"[link {step}/{total}] {label}")
+
+        boosted_edges = 0
+        if use_validated:
+            _notify(progress_cb, "Boosting edges incident to validated nodes …")
+            boost_report = boost_validated_edges(working_dir, cfg)
+            boosted_edges = int(getattr(boost_report, "boosted", 0))
+            _notify(
+                progress_cb,
+                f"Boosted {boosted_edges} link(s) incident to REAL nodes.",
+            )
+
+    finally:
+        for td in temp_dirs:
+            if td.exists():
+                shutil.rmtree(td, ignore_errors=True)
+
+    return UltrackDatabaseBuildReport(
+        real_nodes=real_nodes,
+        skipped_validated=skipped_validated,
+        fake_nodes=fake_nodes,
+        overlaps_added=overlaps_added,
+        scored_nodes=scored_nodes,
+        seed_nodes=seed_nodes,
+        boosted_edges=boosted_edges,
     )
 
 

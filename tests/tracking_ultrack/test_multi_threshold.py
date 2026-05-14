@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import sqlalchemy as sqla
+import tifffile
 from sqlalchemy.orm import Session
 
 from cellflow.tracking_ultrack.config import TrackingConfig
@@ -192,6 +193,373 @@ def test_merge_source_metadata_does_not_corrupt_segm_annotation_enum(tmp_path):
     assert query_source_indices(output) == (0, 1)
     assert query_source_node_ids(output, 0) == (1,)
     assert query_source_node_ids(output, 1) == (2, 3)
+
+
+def test_build_ultrack_source_stacks_preserves_contours_and_binarizes_foreground():
+    from cellflow.tracking_ultrack.multi_threshold import build_ultrack_source_stacks
+
+    contours = np.array(
+        [
+            [[0.1, 0.4], [0.6, 0.9]],
+            [[0.2, 0.5], [0.7, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+    foreground_scores = np.array(
+        [
+            [[0.2, 0.3], [0.8, 0.9]],
+            [[0.1, 0.5], [0.6, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    contour_sources, foreground_sources, metadata = build_ultrack_source_stacks(
+        contours,
+        foreground_scores,
+        contour_thresholds=[0.5, 0.8],
+        foreground_thresholds=[0.4, 0.7],
+    )
+
+    assert contour_sources.shape == (4, 2, 2, 2)
+    assert foreground_sources.shape == (4, 2, 2, 2)
+    assert contour_sources.dtype == np.float32
+    assert foreground_sources.dtype == np.uint8
+    np.testing.assert_allclose(
+        contour_sources[0],
+        np.where(contours >= 0.5, contours, 0.0),
+    )
+    np.testing.assert_array_equal(
+        foreground_sources[0],
+        (foreground_scores >= 0.4).astype(np.uint8),
+    )
+    assert set(np.unique(foreground_sources)) <= {0, 1}
+    assert metadata == [
+        {"contour_threshold": 0.5, "foreground_threshold": 0.4},
+        {"contour_threshold": 0.5, "foreground_threshold": 0.7},
+        {"contour_threshold": 0.8, "foreground_threshold": 0.4},
+        {"contour_threshold": 0.8, "foreground_threshold": 0.7},
+    ]
+
+
+def test_write_ultrack_source_stacks_writes_expected_tiffs(tmp_path):
+    from cellflow.tracking_ultrack.multi_threshold import write_ultrack_source_stacks
+
+    contours = np.array([[[0.1, 0.6]]], dtype=np.float32)
+    foreground_scores = np.array([[[0.2, 0.7]]], dtype=np.float32)
+    contours_path = tmp_path / "contours.tif"
+    scores_path = tmp_path / "foreground_scores.tif"
+    contour_sources_path = tmp_path / "contour_sources.tif"
+    foreground_sources_path = tmp_path / "foreground_sources.tif"
+    tifffile.imwrite(contours_path, contours)
+    tifffile.imwrite(scores_path, foreground_scores)
+
+    metadata = write_ultrack_source_stacks(
+        contours_path,
+        scores_path,
+        contour_sources_path,
+        foreground_sources_path,
+        contour_thresholds=[0.5],
+        foreground_thresholds=[0.5],
+    )
+
+    np.testing.assert_allclose(
+        tifffile.imread(contour_sources_path),
+        np.array([[[[0.0, 0.6]]]], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        tifffile.imread(foreground_sources_path),
+        np.array([[[[0, 1]]]], dtype=np.uint8),
+    )
+    assert metadata == [{"contour_threshold": 0.5, "foreground_threshold": 0.5}]
+
+
+def test_preview_ultrack_source_stack_frame_returns_one_frame_without_writing():
+    from cellflow.tracking_ultrack.multi_threshold import preview_ultrack_source_stack_frame
+
+    contours = np.array(
+        [
+            [[0.1, 0.6], [0.8, 0.2]],
+            [[0.4, 0.7], [0.3, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+    foreground_scores = np.array(
+        [
+            [[0.1, 0.9], [0.6, 0.2]],
+            [[0.8, 0.4], [0.7, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+
+    contour_frame, foreground_frame, frame_index, metadata = preview_ultrack_source_stack_frame(
+        contours,
+        foreground_scores,
+        contour_thresholds=[0.5, 0.75],
+        foreground_thresholds=[0.6],
+        frame_index=1,
+    )
+
+    assert contour_frame.shape == (2, 2, 2)
+    assert foreground_frame.shape == (2, 2, 2)
+    np.testing.assert_allclose(
+        contour_frame[0],
+        np.where(contours[1] >= 0.5, contours[1], 0.0),
+    )
+    np.testing.assert_array_equal(
+        foreground_frame[0],
+        (foreground_scores[1] >= 0.6).astype(np.uint8),
+    )
+    assert frame_index == 1
+    assert metadata == [
+        {"contour_threshold": 0.5, "foreground_threshold": 0.6},
+        {"contour_threshold": 0.75, "foreground_threshold": 0.6},
+    ]
+
+
+def test_preview_ultrack_source_stack_frame_returns_clamped_frame_index():
+    from cellflow.tracking_ultrack.multi_threshold import preview_ultrack_source_stack_frame
+
+    contours = np.ones((2, 2, 2), dtype=np.float32)
+    foreground_scores = np.ones((2, 2, 2), dtype=np.float32)
+
+    contour_frame, foreground_frame, frame_index, _metadata = preview_ultrack_source_stack_frame(
+        contours,
+        foreground_scores,
+        contour_thresholds=[0.5],
+        foreground_thresholds=[0.5],
+        frame_index=99,
+    )
+
+    assert frame_index == 1
+    assert contour_frame.shape == (1, 2, 2)
+    assert foreground_frame.shape == (1, 2, 2)
+
+
+def test_build_ultrack_database_from_sources_segments_sources_in_order(
+    tmp_path, monkeypatch
+):
+    import cellflow.tracking_ultrack.multi_threshold as mt
+
+    contours = np.stack(
+        [
+            np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
+            np.linspace(1.0, 2.0, 24, dtype=np.float32).reshape(2, 3, 4),
+        ],
+        axis=0,
+    )
+    foreground = np.stack(
+        [
+            np.zeros((2, 3, 4), dtype=np.uint8),
+            np.ones((2, 3, 4), dtype=np.uint8),
+        ],
+        axis=0,
+    )
+    contour_sources_path = tmp_path / "contour_sources.tif"
+    foreground_sources_path = tmp_path / "foreground_sources.tif"
+    score_path = tmp_path / "foreground_scores.tif"
+    tifffile.imwrite(contour_sources_path, contours)
+    tifffile.imwrite(foreground_sources_path, foreground)
+    tifffile.imwrite(score_path, np.ones((2, 3, 4), dtype=np.float32))
+
+    segmented: list[tuple[np.ndarray, np.ndarray, str]] = []
+    merge_calls = []
+    score_calls = []
+
+    def fake_build_config(cfg, tmp_dir):
+        class DummyConfig:
+            pass
+
+        dummy = DummyConfig()
+        dummy.tmp_dir = tmp_dir
+        return dummy
+
+    def fake_segment(foreground_source, contour_source, ultrack_cfg, cfg):
+        segmented.append(
+            (foreground_source.copy(), contour_source.copy(), ultrack_cfg.tmp_dir.name)
+        )
+        (ultrack_cfg.tmp_dir / "data.db").write_bytes(b"source")
+
+    def fake_merge(temp_dbs, output_path, frame_shape, progress_cb=None):
+        merge_calls.append((list(temp_dbs), output_path, frame_shape))
+        output_path.write_bytes(b"merged")
+
+    monkeypatch.setattr(mt, "_build_ultrack_config", fake_build_config)
+    monkeypatch.setattr(mt, "_run_ultrack_segment", fake_segment)
+    monkeypatch.setattr(mt, "merge_ultrack_databases", fake_merge)
+    monkeypatch.setattr(
+        mt,
+        "write_seed_prior_node_probs",
+        lambda working_dir, image_path, cfg: (
+            score_calls.append((working_dir, image_path)),
+            type("ScoreReport", (), {"scored": 2, "seeds": 1})(),
+        )[1],
+    )
+    monkeypatch.setattr(mt, "run_linking", lambda working_dir, cfg: [])
+
+    report = mt.build_ultrack_database_from_sources(
+        contour_sources_path,
+        foreground_sources_path,
+        tmp_path / "work",
+        TrackingConfig(),
+        score_signal_path=score_path,
+    )
+
+    assert [item[2] for item in segmented] == ["_source_tmp_0", "_source_tmp_1"]
+    np.testing.assert_allclose(segmented[0][1], contours[0])
+    np.testing.assert_array_equal(segmented[1][0], foreground[1].astype(np.float32))
+    assert merge_calls[0][2] == (3, 4)
+    assert score_calls == [(tmp_path / "work", score_path)]
+    assert report == UltrackDatabaseBuildReport(scored_nodes=2, seed_nodes=1)
+
+
+def test_build_ultrack_database_from_sources_normalizes_single_source_input(
+    tmp_path, monkeypatch
+):
+    import cellflow.tracking_ultrack.multi_threshold as mt
+
+    tifffile.imwrite(
+        tmp_path / "contour_sources.tif",
+        np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
+    )
+    tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((2, 3, 4), dtype=np.uint8))
+    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((2, 3, 4), dtype=np.float32))
+    calls = []
+
+    def fake_build_config(cfg, tmp_dir):
+        class DummyConfig:
+            pass
+
+        dummy = DummyConfig()
+        dummy.tmp_dir = tmp_dir
+        return dummy
+
+    def fake_segment(foreground_source, contour_source, ultrack_cfg, cfg):
+        calls.append((foreground_source.shape, contour_source.shape))
+        (ultrack_cfg.tmp_dir / "data.db").write_bytes(b"source")
+
+    monkeypatch.setattr(mt, "_build_ultrack_config", fake_build_config)
+    monkeypatch.setattr(mt, "_run_ultrack_segment", fake_segment)
+    monkeypatch.setattr(
+        mt,
+        "merge_ultrack_databases",
+        lambda temp_dbs, output_path, frame_shape, progress_cb=None: output_path.write_bytes(
+            b"merged"
+        ),
+    )
+    monkeypatch.setattr(
+        mt,
+        "write_seed_prior_node_probs",
+        lambda *_: type("ScoreReport", (), {"scored": 0, "seeds": 0})(),
+    )
+    monkeypatch.setattr(mt, "run_linking", lambda *_: [])
+
+    mt.build_ultrack_database_from_sources(
+        tmp_path / "contour_sources.tif",
+        tmp_path / "foreground_sources.tif",
+        tmp_path / "work",
+        TrackingConfig(),
+        score_signal_path=tmp_path / "foreground_scores.tif",
+    )
+
+    assert calls == [((2, 3, 4), (2, 3, 4))]
+
+
+def test_build_ultrack_database_from_sources_requires_score_signal_path(tmp_path):
+    from cellflow.tracking_ultrack.multi_threshold import build_ultrack_database_from_sources
+
+    tifffile.imwrite(
+        tmp_path / "contour_sources.tif",
+        np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
+    )
+    tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((2, 3, 4), dtype=np.uint8))
+
+    with pytest.raises(ValueError, match="score_signal_path"):
+        build_ultrack_database_from_sources(
+            tmp_path / "contour_sources.tif",
+            tmp_path / "foreground_sources.tif",
+            tmp_path / "work",
+            TrackingConfig(),
+        )
+
+
+def test_build_ultrack_database_from_sources_rejects_shape_mismatch(tmp_path):
+    from cellflow.tracking_ultrack.multi_threshold import build_ultrack_database_from_sources
+
+    tifffile.imwrite(
+        tmp_path / "contour_sources.tif",
+        np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
+    )
+    tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((3, 3, 4), dtype=np.uint8))
+    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((2, 3, 4), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="same shape"):
+        build_ultrack_database_from_sources(
+            tmp_path / "contour_sources.tif",
+            tmp_path / "foreground_sources.tif",
+            tmp_path / "work",
+            TrackingConfig(),
+            score_signal_path=tmp_path / "foreground_scores.tif",
+        )
+
+
+def test_build_ultrack_database_from_sources_rejects_nonbinary_foreground(tmp_path):
+    from cellflow.tracking_ultrack.multi_threshold import build_ultrack_database_from_sources
+
+    tifffile.imwrite(
+        tmp_path / "contour_sources.tif",
+        np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
+    )
+    tifffile.imwrite(
+        tmp_path / "foreground_sources.tif",
+        np.full((2, 3, 4), 0.5, dtype=np.float32),
+    )
+    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((2, 3, 4), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="foreground_sources.*binary"):
+        build_ultrack_database_from_sources(
+            tmp_path / "contour_sources.tif",
+            tmp_path / "foreground_sources.tif",
+            tmp_path / "work",
+            TrackingConfig(),
+            score_signal_path=tmp_path / "foreground_scores.tif",
+        )
+
+
+def test_build_ultrack_database_from_sources_rejects_empty_contours(tmp_path):
+    from cellflow.tracking_ultrack.multi_threshold import build_ultrack_database_from_sources
+
+    tifffile.imwrite(tmp_path / "contour_sources.tif", np.zeros((2, 3, 4), dtype=np.float32))
+    tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((2, 3, 4), dtype=np.uint8))
+    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((2, 3, 4), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="contour_sources.*nonzero"):
+        build_ultrack_database_from_sources(
+            tmp_path / "contour_sources.tif",
+            tmp_path / "foreground_sources.tif",
+            tmp_path / "work",
+            TrackingConfig(),
+            score_signal_path=tmp_path / "foreground_scores.tif",
+        )
+
+
+def test_build_ultrack_database_from_sources_rejects_score_shape_mismatch(tmp_path):
+    from cellflow.tracking_ultrack.multi_threshold import build_ultrack_database_from_sources
+
+    tifffile.imwrite(
+        tmp_path / "contour_sources.tif",
+        np.linspace(0.0, 1.0, 24, dtype=np.float32).reshape(2, 3, 4),
+    )
+    tifffile.imwrite(tmp_path / "foreground_sources.tif", np.ones((2, 3, 4), dtype=np.uint8))
+    tifffile.imwrite(tmp_path / "foreground_scores.tif", np.ones((3, 3, 4), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="score_signal.*same T.Y.X shape"):
+        build_ultrack_database_from_sources(
+            tmp_path / "contour_sources.tif",
+            tmp_path / "foreground_sources.tif",
+            tmp_path / "work",
+            TrackingConfig(),
+            score_signal_path=tmp_path / "foreground_scores.tif",
+        )
 
 
 def test_build_multithreshold_database_normalizes_globally_and_keeps_values(

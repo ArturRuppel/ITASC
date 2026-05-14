@@ -25,7 +25,9 @@ from cellflow.segmentation.cell_label_icm import (
 
 from cellflow.segmentation.nucleus_segmentation import (
     ContourWatershedParams,
+    NucleusAveragedMapsReport,
     build_consensus_boundary,
+    build_nucleus_averaged_maps,
     compute_contour_watershed,
 )
 
