@@ -253,7 +253,7 @@ git commit -m "feat: simplify nucleus correction controls"
 **Files:**
 - Modify: `tests/napari/test_nucleus_tracking_correction_layout.py`
 
-- [ ] **Step 1: Add a synchronous activation test**
+- [x] **Step 1: Add a synchronous activation test**
 
 Add this test near `test_correction_activate_button_expands_activates_and_deactivates_layers`:
 
@@ -309,7 +309,7 @@ def test_correction_activation_loads_owned_layers_from_disk(monkeypatch, tmp_pat
     viewer.close()
 ```
 
-- [ ] **Step 2: Add a deactivation and restore test**
+- [x] **Step 2: Add a deactivation and restore test**
 
 Add:
 
@@ -349,7 +349,7 @@ def test_correction_deactivation_removes_registered_layers_and_restores_viewer_s
     viewer.close()
 ```
 
-- [ ] **Step 3: Run the new tests and verify they fail**
+- [x] **Step 3: Run the new tests and verify they fail**
 
 Run:
 
@@ -359,7 +359,7 @@ pytest tests/napari/test_nucleus_tracking_correction_layout.py::test_correction_
 
 Expected: FAIL because activation still depends on a selected existing labels layer and has no owned-layer registry.
 
-- [ ] **Step 4: Commit the failing tests**
+- [x] **Step 4: Commit the failing tests**
 
 ```bash
 git add tests/napari/test_nucleus_tracking_correction_layout.py

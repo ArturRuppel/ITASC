@@ -2405,6 +2405,92 @@ def test_correction_activate_button_expands_activates_and_deactivates_layers():
     viewer.close()
 
 
+def test_correction_activation_loads_owned_layers_from_disk(monkeypatch, tmp_path):
+    tifffile = pytest.importorskip("tifffile")
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "Position_1"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    (pos_dir / "0_input").mkdir(parents=True)
+    tracked = np.zeros((2, 4, 5), dtype=np.uint32)
+    tracked[0, 1:3, 1:3] = 7
+    cell = np.arange(20, dtype=np.float32).reshape(4, 5)
+    nucleus = np.full((4, 5), 3, dtype=np.float32)
+    nls = np.linspace(0, 1, 20, dtype=np.float32).reshape(4, 5)
+    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", tracked)
+    tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", cell)
+    tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", nucleus)
+    tifffile.imwrite(pos_dir / "0_input" / "NLS_zavg.tif", nls)
+
+    stale = viewer.add_labels(np.ones((1, 2, 2), dtype=np.uint32), name="[Correction] stale")
+    stale.visible = True
+    existing = viewer.add_image(np.ones((4, 5), dtype=np.float32), name="Existing")
+    existing.visible = True
+    widget.refresh(pos_dir)
+
+    widget.correction_active_btn.setChecked(True)
+
+    assert "[Correction] stale" not in viewer.layers
+    assert "[Correction] Tracked: Nucleus" in viewer.layers
+    assert "[Correction] Cell z-avg" in viewer.layers
+    assert "[Correction] Nucleus z-avg" in viewer.layers
+    assert "[Correction] NLS z-avg" in viewer.layers
+    assert viewer.layers["Existing"].visible is False
+    assert widget.correction_widget._layer is viewer.layers["[Correction] Tracked: Nucleus"]
+    assert widget.correction_mode_section.is_expanded is True
+    assert set(widget._correction_owned_layers) == {
+        "[Correction] Tracked: Nucleus",
+        "[Correction] Cell z-avg",
+        "[Correction] Nucleus z-avg",
+        "[Correction] NLS z-avg",
+    }
+    np.testing.assert_array_equal(viewer.layers["[Correction] Tracked: Nucleus"].data, tracked)
+    assert viewer.layers["[Correction] Cell z-avg"].blending == "additive"
+    assert viewer.layers["[Correction] Nucleus z-avg"].blending == "additive"
+    assert viewer.layers["[Correction] NLS z-avg"].blending == "additive"
+    assert viewer.layers["[Correction] NLS z-avg"].colormap.name == "bop_blue"
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_deactivation_removes_registered_layers_and_restores_viewer_state(tmp_path):
+    tifffile = pytest.importorskip("tifffile")
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "Position_1"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    tracked = np.zeros((1, 4, 4), dtype=np.uint32)
+    tracked[0, 1:3, 1:3] = 5
+    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", tracked)
+
+    existing = viewer.add_image(np.ones((4, 4), dtype=np.float32), name="Existing")
+    unrelated_prefixed = viewer.add_image(np.ones((4, 4), dtype=np.float32), name="[Correction] User Layer")
+    existing.visible = True
+    unrelated_prefixed.visible = True
+    viewer.layers.selection.active = existing
+    widget.refresh(pos_dir)
+
+    widget.correction_active_btn.setChecked(True)
+    widget.correction_active_btn.setChecked(False)
+
+    assert "[Correction] Tracked: Nucleus" not in viewer.layers
+    assert "[Correction] User Layer" in viewer.layers
+    assert viewer.layers["Existing"].visible is True
+    assert viewer.layers["[Correction] User Layer"].visible is True
+    assert viewer.layers.selection.active is existing
+    assert widget._correction_owned_layers == set()
+    assert widget.correction_widget._layer is None
+    assert widget.correction_mode_section.is_expanded is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_correction_shortcuts_are_still_installed():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
