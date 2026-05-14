@@ -1,0 +1,534 @@
+"""Read-only Ultrack database helpers for napari preview tooling."""
+from __future__ import annotations
+
+import pickle
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class HierarchyCutState:
+    node_ids: tuple[int, ...]
+    height: float | None
+
+
+@dataclass(frozen=True)
+class UltrackDbPreview:
+    labels: np.ndarray
+    status: str
+    probabilities: dict[int, float]
+    label_to_node_id: dict[int, int]
+    node_id_to_label: dict[int, int]
+    node_annotations: dict[int, str]
+
+    def as_tuple(self):
+        return (
+            self.labels,
+            self.status,
+            self.probabilities,
+            self.label_to_node_id,
+            self.node_id_to_label,
+            self.node_annotations,
+        )
+
+
+def _engine(db_path: Path):
+    import sqlalchemy as sqla
+
+    return sqla.create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+
+
+def query_middle_frame(db_path: Path) -> int | None:
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            frames = sorted(int(r[0]) for r in session.query(NodeDB.t).distinct().all())
+    except Exception:
+        return None
+    finally:
+        engine.dispose()
+    return frames[len(frames) // 2] if frames else None
+
+
+def query_connected_nodes(
+    db_path: Path, selected_node_id: int
+) -> tuple[dict[int, float], dict[int, float]]:
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB
+
+    engine = _engine(db_path)
+    predecessors: dict[int, float] = {}
+    successors: dict[int, float] = {}
+    try:
+        with Session(engine) as session:
+            rows = (
+                session.query(LinkDB.source_id, LinkDB.target_id, LinkDB.weight)
+                .filter(
+                    (LinkDB.source_id == int(selected_node_id))
+                    | (LinkDB.target_id == int(selected_node_id))
+                )
+                .all()
+            )
+            for src, tgt, weight in rows:
+                wf = float(weight if weight is not None else 1.0)
+                if int(tgt) == int(selected_node_id):
+                    src_id = int(src)
+                    predecessors[src_id] = predecessors.get(src_id, 1.0) * wf
+                if int(src) == int(selected_node_id):
+                    tgt_id = int(tgt)
+                    successors[tgt_id] = successors.get(tgt_id, 1.0) * wf
+    finally:
+        engine.dispose()
+    return predecessors, successors
+
+
+def summary_text(db_path: Path, frame: int) -> str:
+    from sqlalchemy import func
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
+
+    try:
+        from ultrack.core.database import OverlapDB
+    except Exception:
+        OverlapDB = None
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            n_nodes = int(session.query(func.count(NodeDB.id)).scalar() or 0)
+            n_links = int(session.query(func.count(LinkDB.source_id)).scalar() or 0)
+            n_real = int(
+                session.query(func.count(NodeDB.id))
+                .filter(NodeDB.node_annot == VarAnnotation.REAL)
+                .scalar()
+                or 0
+            )
+            n_fake = int(
+                session.query(func.count(NodeDB.id))
+                .filter(NodeDB.node_annot == VarAnnotation.FAKE)
+                .scalar()
+                or 0
+            )
+            frame_nodes = session.query(NodeDB).filter(NodeDB.t == frame).all()
+            selected = sum(1 for n in frame_nodes if getattr(n, "selected", False))
+            node_ids = [int(n.id) for n in frame_nodes]
+            outgoing = incoming = overlaps = 0
+            if node_ids:
+                outgoing = int(
+                    session.query(func.count(LinkDB.source_id))
+                    .filter(LinkDB.source_id.in_(node_ids))
+                    .scalar()
+                    or 0
+                )
+                incoming = int(
+                    session.query(func.count(LinkDB.target_id))
+                    .filter(LinkDB.target_id.in_(node_ids))
+                    .scalar()
+                    or 0
+                )
+                if OverlapDB is not None:
+                    try:
+                        overlaps = int(
+                            session.query(func.count(OverlapDB.node_id))
+                            .filter(
+                                OverlapDB.node_id.in_(node_ids)
+                                | OverlapDB.ancestor_id.in_(node_ids)
+                            )
+                            .scalar()
+                            or 0
+                        )
+                    except Exception:
+                        overlaps = 0
+        return (
+            f"{n_nodes} nodes | {n_links} links | REAL {n_real} | FAKE {n_fake} | "
+            f"frame {frame}: {len(node_ids)} nodes, {selected} selected, "
+            f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
+        )
+    finally:
+        engine.dispose()
+
+
+def query_distinct_heights(db_path: Path) -> tuple[float, ...]:
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            return tuple(
+                float(r[0])
+                for r in session.query(NodeDB.height)
+                .distinct()
+                .order_by(NodeDB.height)
+                .all()
+                if r[0] is not None
+            )
+    finally:
+        engine.dispose()
+
+
+def query_hierarchy_cut_states(
+    db_path: Path, frame: int, *, source_index: int | None = None
+) -> tuple[HierarchyCutState, ...]:
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+    from ultrack.utils.constants import NO_PARENT
+
+    source_node_ids: tuple[int, ...] = ()
+    if source_index is not None:
+        try:
+            from cellflow.tracking_ultrack.multi_threshold import query_source_node_ids
+
+            source_node_ids = query_source_node_ids(db_path, int(source_index))
+        except Exception:
+            source_node_ids = ()
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            query = (
+                session.query(NodeDB.id, NodeDB.hier_parent_id, NodeDB.height)
+                .filter(NodeDB.t == frame)
+                .order_by(NodeDB.height, NodeDB.id)
+            )
+            if source_index is not None:
+                query = query.filter(NodeDB.id.in_(source_node_ids))
+            rows = []
+            for nid, pid, height in query.all():
+                if height is None:
+                    continue
+                parent_id = NO_PARENT if pid is None else int(pid)
+                rows.append((int(nid), parent_id, float(height)))
+    except Exception:
+        return tuple(HierarchyCutState((), float(h)) for h in query_distinct_heights(db_path))
+    finally:
+        engine.dispose()
+
+    if not rows:
+        return ()
+
+    node_ids = {nid for nid, _, _ in rows}
+    heights_by_id = {nid: height for nid, _, height in rows}
+    parent_by_id = {
+        nid: pid for nid, pid, _ in rows if pid != NO_PARENT and pid in node_ids
+    }
+    children: dict[int, set[int]] = {}
+    for child_id, parent_id in parent_by_id.items():
+        children.setdefault(parent_id, set()).add(child_id)
+
+    active = {nid for nid, _, _ in rows if nid not in children}
+    if not active:
+        active = set(node_ids)
+
+    states: list[HierarchyCutState] = []
+    seen: set[tuple[int, ...]] = set()
+
+    def append_state() -> None:
+        ordered = tuple(sorted(active, key=lambda n: (heights_by_id[n], n)))
+        if ordered in seen:
+            return
+        seen.add(ordered)
+        height = max((heights_by_id[n] for n in ordered), default=None)
+        states.append(HierarchyCutState(ordered, height))
+
+    append_state()
+    while True:
+        promotable = [
+            parent_id
+            for parent_id, child_ids in children.items()
+            if parent_id not in active and child_ids and child_ids.issubset(active)
+        ]
+        if not promotable:
+            break
+        min_height = min(heights_by_id[parent_id] for parent_id in promotable)
+        for parent_id in sorted(
+            p for p in promotable if heights_by_id[p] == min_height
+        ):
+            active.difference_update(children[parent_id])
+            active.add(parent_id)
+        append_state()
+
+    return tuple(states)
+
+
+def query_available_sources(db_path: Path) -> tuple[int, ...]:
+    try:
+        from cellflow.tracking_ultrack.multi_threshold import query_source_indices
+
+        return query_source_indices(db_path)
+    except Exception:
+        return ()
+
+
+def render_hierarchy_cut(
+    db_path: Path,
+    frame: int,
+    height: float,
+    *,
+    plane_shape: tuple[int, int],
+    show_validated: bool = True,
+    show_fake: bool = True,
+) -> UltrackDbPreview:
+    from sqlalchemy.orm import Session, aliased
+    from ultrack.core.database import NodeDB
+    from ultrack.utils.constants import NO_PARENT
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            parent = aliased(NodeDB)
+            child = aliased(NodeDB)
+            same_child = (
+                session.query(child.id)
+                .where(child.hier_parent_id == NodeDB.id)
+                .where(child.height == NodeDB.height)
+                .where(NodeDB.height == height)
+                .exists()
+            )
+            nodes = (
+                session.query(NodeDB)
+                .outerjoin(parent, NodeDB.hier_parent_id == parent.id)
+                .where(NodeDB.t == frame)
+                .where(NodeDB.height <= height)
+                .where(
+                    (NodeDB.hier_parent_id == NO_PARENT)
+                    | ((NodeDB.height < height) & (parent.height > height))
+                    | ((NodeDB.height == height) & (parent.height >= height))
+                )
+                .where(~same_child)
+                .all()
+            )
+    finally:
+        engine.dispose()
+    return finalize_hierarchy_nodes(
+        nodes,
+        frame,
+        plane_shape=plane_shape,
+        show_validated=show_validated,
+        show_fake=show_fake,
+        empty_msg=f"No segments at this threshold for frame {frame}.",
+        status_suffix=f"at h={height:.2f}",
+    )
+
+
+def render_hierarchy_cut_state(
+    db_path: Path,
+    frame: int,
+    state: HierarchyCutState,
+    *,
+    plane_shape: tuple[int, int],
+    show_validated: bool = True,
+    show_fake: bool = True,
+) -> UltrackDbPreview:
+    if not state.node_ids:
+        return render_hierarchy_cut(
+            db_path,
+            frame,
+            float(state.height or 0.0),
+            plane_shape=plane_shape,
+            show_validated=show_validated,
+            show_fake=show_fake,
+        )
+
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            rows = (
+                session.query(NodeDB)
+                .where(NodeDB.t == frame)
+                .where(NodeDB.id.in_(state.node_ids))
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    by_id = {int(n.id): n for n in rows}
+    nodes = [by_id[nid] for nid in state.node_ids if nid in by_id]
+    height = "—" if state.height is None else f"{state.height:.2f}"
+    return finalize_hierarchy_nodes(
+        nodes,
+        frame,
+        plane_shape=plane_shape,
+        show_validated=show_validated,
+        show_fake=show_fake,
+        empty_msg=f"No hierarchy state segments for frame {frame}.",
+        status_suffix=f"at cut state h={height}",
+    )
+
+
+def finalize_hierarchy_nodes(
+    nodes: Iterable,
+    frame: int,
+    *,
+    plane_shape: tuple[int, int],
+    show_validated: bool,
+    show_fake: bool,
+    empty_msg: str,
+    status_suffix: str,
+) -> UltrackDbPreview:
+    nodes = list(nodes)
+    if not nodes:
+        return _empty_preview(plane_shape, empty_msg)
+
+    filtered = []
+    hidden_real = hidden_fake = 0
+    for node in nodes:
+        annotation = annotation_name(getattr(node, "node_annot", None))
+        if annotation == "REAL" and not show_validated:
+            hidden_real += 1
+            continue
+        if annotation == "FAKE" and not show_fake:
+            hidden_fake += 1
+            continue
+        filtered.append(node)
+
+    if not filtered:
+        return _empty_preview(
+            plane_shape,
+            f"Frame {frame}: annotation filters hid all {len(nodes)} segment(s).",
+        )
+
+    labels = paint_nodes(filtered, plane_shape)
+    probabilities, label_to_node_id, node_id_to_label = node_preview_metadata(filtered)
+    annotations = node_annotation_metadata(filtered)
+    hidden = ""
+    if hidden_real or hidden_fake:
+        hidden = f" Hidden: REAL {hidden_real}, FAKE {hidden_fake}."
+    return UltrackDbPreview(
+        labels=labels,
+        status=f"Frame {frame}: {len(filtered)} segment(s) {status_suffix}.{hidden}",
+        probabilities=probabilities,
+        label_to_node_id=label_to_node_id,
+        node_id_to_label=node_id_to_label,
+        node_annotations=annotations,
+    )
+
+
+def _empty_preview(plane_shape: tuple[int, int], status: str) -> UltrackDbPreview:
+    return UltrackDbPreview(
+        labels=np.zeros(plane_shape, dtype=np.uint32),
+        status=status,
+        probabilities={},
+        label_to_node_id={},
+        node_id_to_label={},
+        node_annotations={},
+    )
+
+
+def annotation_name(value) -> str:
+    if value is None:
+        return "UNKNOWN"
+    raw = getattr(value, "value", value)
+    if raw is None:
+        return "UNKNOWN"
+    name = str(raw).split(".")[-1].upper()
+    return name if name in {"REAL", "FAKE"} else "UNKNOWN"
+
+
+def node_preview_metadata(nodes) -> tuple[dict[int, float], dict[int, int], dict[int, int]]:
+    probabilities: dict[int, float] = {}
+    label_to_node_id: dict[int, int] = {}
+    node_id_to_label: dict[int, int] = {}
+    for label, node in enumerate(nodes, start=1):
+        try:
+            probability = float(node.node_prob if node.node_prob is not None else 1.0)
+        except (TypeError, ValueError):
+            probability = 1.0
+        probabilities[label] = probability
+        try:
+            node_id = int(node.id)
+        except (TypeError, ValueError):
+            continue
+        label_to_node_id[label] = node_id
+        node_id_to_label[node_id] = label
+    return probabilities, label_to_node_id, node_id_to_label
+
+
+def node_annotation_metadata(nodes) -> dict[int, str]:
+    annotations: dict[int, str] = {}
+    for node in nodes:
+        try:
+            node_id = int(node.id)
+        except (TypeError, ValueError):
+            continue
+        annotations[node_id] = annotation_name(getattr(node, "node_annot", None))
+    return annotations
+
+
+def paint_nodes(nodes, plane_shape: tuple[int, int]) -> np.ndarray:
+    masks: list[tuple[int, tuple[int, int, int, int], np.ndarray]] = []
+    max_y = max_x = 0
+    for label, node in enumerate(nodes, start=1):
+        parsed = node_mask_and_bbox(node)
+        if parsed is None:
+            continue
+        bbox, mask = parsed
+        y0, x0, y1, x1 = bbox
+        max_y = max(max_y, y1)
+        max_x = max(max_x, x1)
+        masks.append((label, bbox, mask))
+
+    base_y, base_x = plane_shape
+    labels = np.zeros((max(base_y, max_y, 1), max(base_x, max_x, 1)), dtype=np.uint32)
+    for label, (y0, x0, y1, x1), mask in masks:
+        target = labels[y0:y1, x0:x1]
+        if target.shape != mask.shape:
+            continue
+        target[mask.astype(bool)] = label
+    return labels
+
+
+def node_mask_and_bbox(node):
+    try:
+        node_obj = node.pickle
+        if isinstance(node_obj, (bytes, memoryview)):
+            node_obj = pickle.loads(bytes(node_obj))
+        if node_obj is None:
+            return None
+    except Exception:
+        return None
+
+    if isinstance(node_obj, dict):
+        bbox, mask = node_obj.get("bbox"), node_obj.get("mask")
+    elif isinstance(node_obj, tuple) and len(node_obj) >= 2:
+        bbox, mask = node_obj[0], node_obj[1]
+    else:
+        bbox = getattr(node_obj, "bbox", None)
+        mask = getattr(node_obj, "mask", None)
+    if bbox is None or mask is None:
+        return None
+
+    bbox_array = np.asarray(bbox, dtype=int).ravel()
+    if bbox_array.size >= 6:
+        y0, x0, y1, x1 = (
+            int(bbox_array[1]),
+            int(bbox_array[2]),
+            int(bbox_array[4]),
+            int(bbox_array[5]),
+        )
+    elif bbox_array.size >= 4:
+        y0, x0, y1, x1 = (int(v) for v in bbox_array[:4])
+    else:
+        return None
+
+    mask_array = np.asarray(mask)
+    if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+        mask_array = mask_array[0]
+    elif mask_array.ndim > 2:
+        mask_array = np.squeeze(mask_array)
+    if mask_array.ndim != 2:
+        return None
+    if mask_array.shape != (y1 - y0, x1 - x0):
+        return None
+    return (y0, x0, y1, x1), mask_array.astype(bool, copy=False)

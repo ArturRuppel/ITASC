@@ -13,8 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import pickle
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,7 +20,7 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
-from napari.utils.colormaps import Colormap, direct_colormap
+from napari.utils.colormaps import Colormap
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QIcon, QKeySequence
 from qtpy.QtWidgets import (
@@ -72,10 +70,29 @@ from cellflow.napari.ui_style import (
     status_label,
     sweep_parameter_grid,
 )
+from cellflow.napari.validated_overlay_controller import (
+    ValidatedOverlayController,
+)
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import build_consensus_boundary, build_nucleus_averaged_maps
 from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
+from cellflow.tracking_ultrack.db_query import (
+    HierarchyCutState as _HierarchyCutState,
+    annotation_name as _ultrack_db_annotation_name,
+    node_annotation_metadata as _ultrack_db_node_annotation_metadata,
+    node_mask_and_bbox as _node_mask_and_bbox,
+    node_preview_metadata as _ultrack_db_node_preview_metadata,
+    paint_nodes as _paint_ultrack_db_nodes,
+    query_available_sources as _query_available_sources,
+    query_connected_nodes as _query_ultrack_db_connected_nodes,
+    query_distinct_heights as _query_distinct_heights,
+    query_hierarchy_cut_states as _query_hierarchy_cut_states,
+    query_middle_frame as _query_ultrack_db_middle_frame,
+    render_hierarchy_cut as _render_hierarchy_cut,
+    render_hierarchy_cut_state as _render_hierarchy_cut_state,
+    summary_text as _ultrack_db_summary_text,
+)
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.extend import extend_track_from_db
 from cellflow.tracking_ultrack.ingest import _select_solver
@@ -97,10 +114,6 @@ except ImportError:
 _PREVIEW_LAYER = "Preview: Nucleus"
 _HYP_LAYER = "Hypothesis: Nucleus"
 _TRACKED_LAYER = "Tracked: Nucleus"
-_VALIDATED_OVERLAY = "[Correction] Validated: Nucleus"
-_SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
-_LEGACY_VALIDATED_OVERLAY = "Validated: Nucleus"
-_VALIDATED_OVERLAY_OPACITY = 0.4
 _CONTOUR_LAYER = "Contour Map: Nucleus"
 _CELLPROB_LAYER = "Cellprob Map: Nucleus"
 _FOREGROUND_SCORE_LAYER = "Foreground Score: Nucleus"
@@ -182,12 +195,6 @@ def _button_grid(*rows: tuple[QPushButton, ...]) -> QGridLayout:
     return grid
 
 
-@dataclass(frozen=True)
-class _HierarchyCutState:
-    node_ids: tuple[int, ...]
-    height: float | None
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -220,6 +227,13 @@ class NucleusWorkflowWidget(QWidget):
 
         self._correction_owned_layers: set[str] = set()
         self._correction_view_state: dict | None = None
+        self._validated_overlay = ValidatedOverlayController(
+            self.viewer,
+            tracked_layer_provider=self._correction_tracked_layer,
+            pos_dir_provider=lambda: self._pos_dir,
+            current_t_provider=self._current_t,
+            owned_layers=self._correction_owned_layers,
+        )
 
         self._setup_ui()
         self._connect_signals()
@@ -1999,22 +2013,7 @@ class NucleusWorkflowWidget(QWidget):
         self._set_ultrack_db_status("")
 
     def _ultrack_db_middle_frame(self, db_path: Path) -> int | None:
-        import sqlalchemy as sqla
-        from sqlalchemy.orm import Session
-        from ultrack.core.database import NodeDB
-        engine = sqla.create_engine(
-            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-        )
-        try:
-            with Session(engine) as session:
-                frames = sorted(
-                    int(r[0]) for r in session.query(NodeDB.t).distinct().all()
-                )
-        except Exception:
-            return None
-        finally:
-            engine.dispose()
-        return frames[len(frames) // 2] if frames else None
+        return _query_ultrack_db_middle_frame(db_path)
 
     def _refresh_ultrack_db_browser(self) -> None:
         if not self._ultrack_db_browser_active:
@@ -2282,34 +2281,7 @@ class NucleusWorkflowWidget(QWidget):
         layer.data = []; layer.visible = False
 
     def _query_ultrack_db_connected_nodes(self, db_path, selected_node_id):
-        import sqlalchemy as sqla
-        from sqlalchemy.orm import Session
-        from ultrack.core.database import LinkDB
-        engine = sqla.create_engine(
-            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-        )
-        predecessors: dict[int, float] = {}
-        successors: dict[int, float] = {}
-        try:
-            with Session(engine) as session:
-                rows = (
-                    session.query(LinkDB.source_id, LinkDB.target_id, LinkDB.weight)
-                    .filter(
-                        (LinkDB.source_id == int(selected_node_id))
-                        | (LinkDB.target_id == int(selected_node_id))
-                    ).all()
-                )
-                for src, tgt, w in rows:
-                    wf = float(w if w is not None else 1.0)
-                    if int(tgt) == int(selected_node_id):
-                        si = int(src)
-                        predecessors[si] = predecessors.get(si, 1.0) * wf
-                    if int(src) == int(selected_node_id):
-                        ti = int(tgt)
-                        successors[ti] = successors.get(ti, 1.0) * wf
-        finally:
-            engine.dispose()
-        return predecessors, successors
+        return _query_ultrack_db_connected_nodes(db_path, selected_node_id)
 
     def _render_ultrack_db_connected_focus(
         self, db_path, frame, labels, status, prob_dict, label_to_node_id, node_id_to_label,
@@ -2391,80 +2363,13 @@ class NucleusWorkflowWidget(QWidget):
         return float(np.clip(alpha, 0.05, 1.0))
 
     def _ultrack_db_summary_text(self, db_path, frame):
-        import sqlalchemy as sqla
-        from sqlalchemy import func
-        from sqlalchemy.orm import Session
-        from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
-        try:
-            from ultrack.core.database import OverlapDB
-        except Exception:
-            OverlapDB = None
-        engine = sqla.create_engine(
-            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-        )
-        try:
-            with Session(engine) as session:
-                n_nodes = int(session.query(func.count(NodeDB.id)).scalar() or 0)
-                n_links = int(session.query(func.count(LinkDB.source_id)).scalar() or 0)
-                n_real = int(
-                    session.query(func.count(NodeDB.id))
-                    .filter(NodeDB.node_annot == VarAnnotation.REAL).scalar() or 0
-                )
-                n_fake = int(
-                    session.query(func.count(NodeDB.id))
-                    .filter(NodeDB.node_annot == VarAnnotation.FAKE).scalar() or 0
-                )
-                frame_nodes = session.query(NodeDB).filter(NodeDB.t == frame).all()
-                selected = sum(1 for n in frame_nodes if getattr(n, "selected", False))
-                node_ids = [int(n.id) for n in frame_nodes]
-                outgoing = incoming = overlaps = 0
-                if node_ids:
-                    outgoing = int(
-                        session.query(func.count(LinkDB.source_id))
-                        .filter(LinkDB.source_id.in_(node_ids)).scalar() or 0
-                    )
-                    incoming = int(
-                        session.query(func.count(LinkDB.target_id))
-                        .filter(LinkDB.target_id.in_(node_ids)).scalar() or 0
-                    )
-                    if OverlapDB is not None:
-                        try:
-                            overlaps = int(
-                                session.query(func.count(OverlapDB.node_id))
-                                .filter(
-                                    OverlapDB.node_id.in_(node_ids)
-                                    | OverlapDB.ancestor_id.in_(node_ids)
-                                ).scalar() or 0
-                            )
-                        except Exception:
-                            overlaps = 0
-            return (
-                f"{n_nodes} nodes | {n_links} links | REAL {n_real} | FAKE {n_fake} | "
-                f"frame {frame}: {len(node_ids)} nodes, {selected} selected, "
-                f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
-            )
-        finally:
-            engine.dispose()
+        return _ultrack_db_summary_text(db_path, frame)
 
     def _query_distinct_heights(self, db_path, mtime_ns):
         key = (str(db_path.resolve()), mtime_ns)
         cached = self._ultrack_db_height_values_cache.get(key)
         if cached is not None: return cached
-        import sqlalchemy as sqla
-        from sqlalchemy.orm import Session
-        from ultrack.core.database import NodeDB
-        engine = sqla.create_engine(
-            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-        )
-        try:
-            with Session(engine) as session:
-                heights = tuple(
-                    float(r[0]) for r in
-                    session.query(NodeDB.height).distinct().order_by(NodeDB.height).all()
-                    if r[0] is not None
-                )
-        finally:
-            engine.dispose()
+        heights = _query_distinct_heights(db_path)
         self._ultrack_db_height_values_cache[key] = heights
         return heights
 
@@ -2475,79 +2380,7 @@ class NucleusWorkflowWidget(QWidget):
         key = (str(db_path.resolve()), mtime_ns, frame, source_key)
         cached = self._ultrack_db_cut_state_cache.get(key)
         if cached is not None: return cached
-        import sqlalchemy as sqla
-        from sqlalchemy.orm import Session
-        from ultrack.core.database import NodeDB
-        from ultrack.utils.constants import NO_PARENT
-        source_node_ids: tuple[int, ...] = ()
-        if source_key is not None:
-            try:
-                from cellflow.tracking_ultrack.multi_threshold import query_source_node_ids
-                source_node_ids = query_source_node_ids(db_path, source_key)
-            except Exception:
-                source_node_ids = ()
-        engine = sqla.create_engine(
-            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-        )
-        try:
-            with Session(engine) as session:
-                query = session.query(
-                    NodeDB.id, NodeDB.hier_parent_id, NodeDB.height
-                ).filter(NodeDB.t == frame).order_by(NodeDB.height, NodeDB.id)
-                if source_key is not None:
-                    query = query.filter(NodeDB.id.in_(source_node_ids))
-                rows = [
-                    (int(nid), int(pid), float(h))
-                    for nid, pid, h in query.all()
-                    if h is not None
-                ]
-        except Exception:
-            heights = self._query_distinct_heights(db_path, mtime_ns)
-            return tuple(_HierarchyCutState((), float(h)) for h in heights)
-        finally:
-            engine.dispose()
-        if not rows:
-            self._ultrack_db_cut_state_cache[key] = ()
-            return ()
-
-        node_ids = {nid for nid, _, _ in rows}
-        heights_by_id = {nid: h for nid, _, h in rows}
-        parent_by_id = {
-            nid: pid for nid, pid, _ in rows
-            if pid != NO_PARENT and pid in node_ids
-        }
-        children: dict[int, set[int]] = {}
-        for cid, pid in parent_by_id.items():
-            children.setdefault(pid, set()).add(cid)
-
-        active = {nid for nid, _, _ in rows if nid not in children}
-        if not active:
-            active = set(node_ids)
-
-        states: list[_HierarchyCutState] = []
-        seen: set[tuple[int, ...]] = set()
-
-        def _append():
-            ordered = tuple(sorted(active, key=lambda n: (heights_by_id[n], n)))
-            if ordered in seen: return
-            seen.add(ordered)
-            h = max((heights_by_id[n] for n in ordered), default=None)
-            states.append(_HierarchyCutState(ordered, h))
-
-        _append()
-        while True:
-            promotable = [
-                pid for pid, cids in children.items()
-                if pid not in active and cids and cids.issubset(active)
-            ]
-            if not promotable: break
-            min_h = min(heights_by_id[pid] for pid in promotable)
-            for pid in sorted(p for p in promotable if heights_by_id[p] == min_h):
-                active.difference_update(children[pid])
-                active.add(pid)
-            _append()
-
-        result = tuple(states)
+        result = _query_hierarchy_cut_states(db_path, frame, source_index=source_key)
         self._ultrack_db_cut_state_cache[key] = result
         return result
 
@@ -2557,11 +2390,7 @@ class NucleusWorkflowWidget(QWidget):
         cached = self._ultrack_db_sources_cache.get(key)
         if cached is not None:
             return cached
-        try:
-            from cellflow.tracking_ultrack.multi_threshold import query_source_indices
-            sources = query_source_indices(db_path)
-        except Exception:
-            sources = ()
+        sources = _query_available_sources(db_path)
         self._ultrack_db_sources_cache[key] = sources
         return sources
 
@@ -2604,135 +2433,49 @@ class NucleusWorkflowWidget(QWidget):
         self.ultrack_db_height_lbl.setText(f"i={index} h={ht} ({index + 1}/{total})")
 
     def _render_hierarchy_cut(self, db_path, frame, h_actual):
-        import sqlalchemy as sqla
-        from sqlalchemy.orm import Session, aliased
-        from ultrack.core.database import NodeDB
-        from ultrack.utils.constants import NO_PARENT
-        engine = sqla.create_engine(
-            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-        )
-        try:
-            with Session(engine) as session:
-                P = aliased(NodeDB); C = aliased(NodeDB)
-                same_child = (
-                    session.query(C.id)
-                    .where(C.hier_parent_id == NodeDB.id)
-                    .where(C.height == NodeDB.height)
-                    .where(NodeDB.height == h_actual)
-                    .exists()
-                )
-                nodes = (
-                    session.query(NodeDB)
-                    .outerjoin(P, NodeDB.hier_parent_id == P.id)
-                    .where(NodeDB.t == frame)
-                    .where(NodeDB.height <= h_actual)
-                    .where(
-                        (NodeDB.hier_parent_id == NO_PARENT)
-                        | ((NodeDB.height < h_actual) & (P.height > h_actual))
-                        | ((NodeDB.height == h_actual) & (P.height >= h_actual))
-                    )
-                    .where(~same_child)
-                    .all()
-                )
-        finally:
-            engine.dispose()
-        return self._finalize_hierarchy_nodes(
-            nodes, frame,
-            empty_msg=f"No segments at this threshold for frame {frame}.",
-            status_suffix=f"at h={h_actual:.2f}",
-        )
+        return _render_hierarchy_cut(
+            db_path,
+            frame,
+            h_actual,
+            plane_shape=self._viewer_plane_shape(),
+            show_validated=self.ultrack_db_show_validated_check.isChecked(),
+            show_fake=self.ultrack_db_show_fake_check.isChecked(),
+        ).as_tuple()
 
     def _render_hierarchy_cut_state(self, db_path, frame, state):
-        if not state.node_ids:
-            return self._render_hierarchy_cut(db_path, frame, float(state.height or 0.0))
-        import sqlalchemy as sqla
-        from sqlalchemy.orm import Session
-        from ultrack.core.database import NodeDB
-        engine = sqla.create_engine(
-            f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
-        )
-        try:
-            with Session(engine) as session:
-                rows = (
-                    session.query(NodeDB)
-                    .where(NodeDB.t == frame)
-                    .where(NodeDB.id.in_(state.node_ids))
-                    .all()
-                )
-        finally:
-            engine.dispose()
-        by_id = {int(n.id): n for n in rows}
-        nodes = [by_id[nid] for nid in state.node_ids if nid in by_id]
-        ht = "—" if state.height is None else f"{state.height:.2f}"
-        return self._finalize_hierarchy_nodes(
-            nodes, frame,
-            empty_msg=f"No hierarchy state segments for frame {frame}.",
-            status_suffix=f"at cut state h={ht}",
-        )
+        return _render_hierarchy_cut_state(
+            db_path,
+            frame,
+            state,
+            plane_shape=self._viewer_plane_shape(),
+            show_validated=self.ultrack_db_show_validated_check.isChecked(),
+            show_fake=self.ultrack_db_show_fake_check.isChecked(),
+        ).as_tuple()
 
     def _finalize_hierarchy_nodes(self, nodes, frame, *, empty_msg, status_suffix):
-        if not nodes:
-            return self._empty_ultrack_db_preview(), empty_msg, {}, {}, {}, {}
-        show_val = self.ultrack_db_show_validated_check.isChecked()
-        show_fake = self.ultrack_db_show_fake_check.isChecked()
-        filtered, h_real, h_fake = [], 0, 0
-        for n in nodes:
-            a = self._ultrack_db_annotation_name(getattr(n, "node_annot", None))
-            if a == "REAL" and not show_val:
-                h_real += 1; continue
-            if a == "FAKE" and not show_fake:
-                h_fake += 1; continue
-            filtered.append(n)
-        if not filtered:
-            return self._empty_ultrack_db_preview(), (
-                f"Frame {frame}: annotation filters hid all {len(nodes)} segment(s)."
-            ), {}, {}, {}, {}
-        labels = self._paint_ultrack_db_nodes(filtered)
-        prob_dict, l2n, n2l = self._ultrack_db_node_preview_metadata(filtered)
-        annots = self._ultrack_db_node_annotation_metadata(filtered)
-        hidden = ""
-        if h_real or h_fake:
-            hidden = f" Hidden: REAL {h_real}, FAKE {h_fake}."
-        return labels, (
-            f"Frame {frame}: {len(filtered)} segment(s) {status_suffix}.{hidden}"
-        ), prob_dict, l2n, n2l, annots
+        from cellflow.tracking_ultrack.db_query import finalize_hierarchy_nodes
+
+        return finalize_hierarchy_nodes(
+            nodes,
+            frame,
+            plane_shape=self._viewer_plane_shape(),
+            show_validated=self.ultrack_db_show_validated_check.isChecked(),
+            show_fake=self.ultrack_db_show_fake_check.isChecked(),
+            empty_msg=empty_msg,
+            status_suffix=status_suffix,
+        ).as_tuple()
 
     @staticmethod
     def _ultrack_db_annotation_name(value):
-        if value is None: return "UNKNOWN"
-        raw = getattr(value, "value", value)
-        if raw is None: return "UNKNOWN"
-        name = str(raw).split(".")[-1].upper()
-        return name if name in {"REAL", "FAKE"} else "UNKNOWN"
+        return _ultrack_db_annotation_name(value)
 
     @staticmethod
     def _ultrack_db_node_preview_metadata(nodes):
-        prob_dict, l2n, n2l = {}, {}, {}
-        for label, node in enumerate(nodes, start=1):
-            try:
-                prob = float(node.node_prob if node.node_prob is not None else 1.0)
-            except (TypeError, ValueError):
-                prob = 1.0
-            prob_dict[label] = prob
-            try:
-                nid = int(node.id)
-            except (TypeError, ValueError):
-                continue
-            l2n[label] = nid; n2l[nid] = label
-        return prob_dict, l2n, n2l
+        return _ultrack_db_node_preview_metadata(nodes)
 
     @staticmethod
     def _ultrack_db_node_annotation_metadata(nodes):
-        annots: dict[int, str] = {}
-        for node in nodes:
-            try:
-                nid = int(node.id)
-            except (TypeError, ValueError):
-                continue
-            annots[nid] = NucleusWorkflowWidget._ultrack_db_annotation_name(
-                getattr(node, "node_annot", None)
-            )
-        return annots
+        return _ultrack_db_node_annotation_metadata(nodes)
 
     def _empty_ultrack_db_preview(self):
         return np.zeros(self._viewer_plane_shape(), dtype=np.uint32)
@@ -2745,55 +2488,11 @@ class NucleusWorkflowWidget(QWidget):
         return (1, 1)
 
     def _paint_ultrack_db_nodes(self, nodes):
-        masks: list[tuple[int, tuple[int, int, int, int], np.ndarray]] = []
-        max_y = max_x = 0
-        for label, node in enumerate(nodes, start=1):
-            parsed = self._node_mask_and_bbox(node)
-            if parsed is None: continue
-            bbox, mask = parsed
-            y0, x0, y1, x1 = bbox
-            max_y = max(max_y, y1); max_x = max(max_x, x1)
-            masks.append((label, bbox, mask))
-        base_y, base_x = self._viewer_plane_shape()
-        labels = np.zeros(
-            (max(base_y, max_y, 1), max(base_x, max_x, 1)), dtype=np.uint32,
-        )
-        for label, (y0, x0, y1, x1), mask in masks:
-            target = labels[y0:y1, x0:x1]
-            if target.shape != mask.shape: continue
-            target[mask.astype(bool)] = label
-        return labels
+        return _paint_ultrack_db_nodes(nodes, self._viewer_plane_shape())
 
     @staticmethod
     def _node_mask_and_bbox(node):
-        try:
-            node_obj = node.pickle
-            if isinstance(node_obj, (bytes, memoryview)):
-                node_obj = pickle.loads(bytes(node_obj))
-            if node_obj is None: return None
-        except Exception:
-            return None
-        if isinstance(node_obj, dict):
-            bbox, mask = node_obj.get("bbox"), node_obj.get("mask")
-        elif isinstance(node_obj, tuple) and len(node_obj) >= 2:
-            bbox, mask = node_obj[0], node_obj[1]
-        else:
-            bbox = getattr(node_obj, "bbox", None)
-            mask = getattr(node_obj, "mask", None)
-        if bbox is None or mask is None: return None
-        ba = np.asarray(bbox, dtype=int).ravel()
-        if ba.size >= 6:
-            y0, x0, y1, x1 = int(ba[1]), int(ba[2]), int(ba[4]), int(ba[5])
-        elif ba.size >= 4:
-            y0, x0, y1, x1 = (int(v) for v in ba[:4])
-        else:
-            return None
-        ma = np.asarray(mask)
-        if ma.ndim == 3 and ma.shape[0] == 1: ma = ma[0]
-        elif ma.ndim > 2: ma = np.squeeze(ma)
-        if ma.ndim != 2: return None
-        if ma.shape != (y1 - y0, x1 - x0): return None
-        return (y0, x0, y1, x1), ma.astype(bool, copy=False)
+        return _node_mask_and_bbox(node)
 
     # ================================================================
     # Correction mode helpers
@@ -3238,92 +2937,24 @@ class NucleusWorkflowWidget(QWidget):
             QTimer.singleShot(0, self._refresh_ultrack_db_browser)
 
     def _refresh_validated_overlay(self) -> None:
-        tracked = self._correction_tracked_layer()
-        if self._pos_dir is None or tracked is None:
-            for name in (_VALIDATED_OVERLAY, _LEGACY_VALIDATED_OVERLAY):
-                if name in self.viewer.layers:
-                    self.viewer.layers.remove(self.viewer.layers[name])
-                    self._correction_owned_layers.discard(name)
-            return
-        if tracked.data.ndim < 3:
-            return
-        t = self._current_t()
-        if t >= tracked.data.shape[0]:
-            return
-        frame = self._frame_view_2d(tracked.data, t)
-        if frame is None:
-            return
-        validated_ids = read_validated_cells_at_frame(self._pos_dir, t)
-        overlay_exists = _VALIDATED_OVERLAY in self.viewer.layers
-        if not validated_ids and not overlay_exists:
-            return
-        mask2d = (
-            np.isin(frame, list(validated_ids)).astype(np.uint8) if validated_ids
-            else np.zeros(frame.shape, dtype=np.uint8)
-        )
-        full = np.zeros(tracked.data.shape, dtype=np.uint8)
-        full[t] = mask2d
-        if overlay_exists:
-            self.viewer.layers[_VALIDATED_OVERLAY].data = full
-        else:
-            from qtpy.QtCore import QTimer
-            QTimer.singleShot(0, lambda data=full: self._add_validated_overlay(data))
+        self._validated_overlay.refresh_overlay(self._frame_view_2d)
 
     def _add_validated_overlay(self, data: np.ndarray) -> None:
-        if _VALIDATED_OVERLAY in self.viewer.layers:
-            layer = self.viewer.layers[_VALIDATED_OVERLAY]
-            layer.data = data
-            layer.opacity = _VALIDATED_OVERLAY_OPACITY
-            self._correction_owned_layers.add(_VALIDATED_OVERLAY)
-            self._place_validated_overlay_below_spotlight()
-            return
-        if _LEGACY_VALIDATED_OVERLAY in self.viewer.layers:
-            self.viewer.layers.remove(self.viewer.layers[_LEGACY_VALIDATED_OVERLAY])
-        self.viewer.add_labels(
-            data, name=_VALIDATED_OVERLAY,
-            opacity=_VALIDATED_OVERLAY_OPACITY,
-            colormap=direct_colormap({None: (0, 0, 0, 0), 1: "#00ff00"}),
-        )
-        self._correction_owned_layers.add(_VALIDATED_OVERLAY)
-        self._place_validated_overlay_below_spotlight()
-        tracked = self._correction_tracked_layer()
-        if tracked is not None:
-            self.viewer.layers.selection.active = tracked
+        self._validated_overlay.add_overlay(data)
 
     def _place_validated_overlay_below_spotlight(self) -> None:
-        if _VALIDATED_OVERLAY not in self.viewer.layers:
-            return
-        if _SPOTLIGHT_LAYER not in self.viewer.layers:
-            return
-        vi = self.viewer.layers.index(_VALIDATED_OVERLAY)
-        si = self.viewer.layers.index(_SPOTLIGHT_LAYER)
-        if vi > si:
-            self.viewer.layers.move(vi, si)
+        self._validated_overlay.place_below_spotlight()
 
     def _refresh_validation_counter(self) -> None:
-        if self._pos_dir is None or self._correction_tracked_layer() is None:
-            self.validation_counter_lbl.setText(""); return
-        validated_tracks = read_validated_tracks(self._pos_dir)
-        n_tracks = len(validated_tracks)
-        n_cf = sum(len(f) for f in validated_tracks.values())
-        self.validation_counter_lbl.setText(
-            f"{n_tracks} track(s) validated, {n_cf} cell-frame(s) covered"
-        )
+        self._validated_overlay.refresh_counter(self.validation_counter_lbl)
 
     def _on_cells_edited(self, t: int, changed_ids: set[int]) -> None:
-        if self._pos_dir is None:
-            return
-        for cid in changed_ids:
-            invalidate_track(self._pos_dir, cid)
-        self._refresh_validated_overlay()
-        self._refresh_validation_counter()
+        self._validated_overlay.on_cells_edited(
+            t,
+            changed_ids,
+            frame_view_2d=self._frame_view_2d,
+            counter_label=self.validation_counter_lbl,
+        )
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
-        layer = self._correction_tracked_layer()
-        if cell_id == 0 or layer is None:
-            return []
-        if layer.data.ndim < 3:
-            return []
-        spatial_axes = tuple(range(1, layer.data.ndim))
-        present = np.any(layer.data == cell_id, axis=spatial_axes)
-        return [int(t) for t in np.where(present)[0]]
+        return self._validated_overlay.frames_with_cell(cell_id)

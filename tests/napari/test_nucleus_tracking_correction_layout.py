@@ -36,14 +36,15 @@ def _make_viewer():
 
 
 def _install_import_stubs() -> None:
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    src_root = Path(__file__).resolve().parents[2] / "src" / "cellflow"
+    package_root = src_root / "napari"
 
     napari_pkg = types.ModuleType("cellflow.napari")
     napari_pkg.__path__ = [str(package_root)]
     sys.modules["cellflow.napari"] = napari_pkg
 
     tracking_pkg = types.ModuleType("cellflow.tracking_ultrack")
-    tracking_pkg.__path__ = []
+    tracking_pkg.__path__ = [str(src_root / "tracking_ultrack")]
     sys.modules["cellflow.tracking_ultrack"] = tracking_pkg
 
     class _StubTrackingConfig:
