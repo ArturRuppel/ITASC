@@ -2373,22 +2373,25 @@ def test_correction_section_is_top_level():
     viewer.close()
 
 
-def test_correction_activate_button_expands_activates_and_deactivates_layers():
+def test_correction_activate_button_expands_activates_and_deactivates_layers(tmp_path):
+    tifffile = pytest.importorskip("tifffile")
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    labels = np.zeros((1, 4, 4), dtype=np.uint32)
-    labels[0, 1:3, 1:3] = 1
-    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
-    viewer.layers.selection.active = layer
+    pos_dir = tmp_path / "Position_1"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    tracked = np.zeros((1, 4, 4), dtype=np.uint32)
+    tracked[0, 1:3, 1:3] = 1
+    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", tracked)
+    widget.refresh(pos_dir)
 
     assert widget.correction_mode_section.is_expanded is False
 
     widget.correction_active_btn.setChecked(True)
 
     assert widget.correction_mode_section.is_expanded is True
-    assert widget.correction_widget._layer is layer
+    assert widget.correction_widget._layer is viewer.layers["[Correction] Tracked: Nucleus"]
     assert "CorrectionDraw" in viewer.layers
     assert "CellHighlight" in viewer.layers
     assert "CellSpotlight" in viewer.layers
@@ -2400,6 +2403,7 @@ def test_correction_activate_button_expands_activates_and_deactivates_layers():
     assert "CorrectionDraw" not in viewer.layers
     assert "CellHighlight" not in viewer.layers
     assert "CellSpotlight" not in viewer.layers
+    assert "[Correction] Tracked: Nucleus" not in viewer.layers
 
     widget.deleteLater()
     viewer.close()
