@@ -54,3 +54,7 @@ class TrackingConfig(BaseModel):
     seed_tau_time: float = 2.0
     seed_max_dt: int = 5
     seed_sigma_area: float = 0.5
+
+    # Per-frame correction primitives
+    anchor_radius_px: float = 15.0
+    anchor_stamp_radius_px: float = 15.0

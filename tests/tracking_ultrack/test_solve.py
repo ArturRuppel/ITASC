@@ -6,7 +6,7 @@ import types
 from cellflow.tracking_ultrack.config import TrackingConfig
 
 
-def test_run_solve_auto_enables_annotations_when_db_contains_annotations(
+def test_run_solve_passes_annotations_true_by_default(
     monkeypatch, tmp_path
 ):
     from cellflow.tracking_ultrack import solve as solve_mod
@@ -14,7 +14,11 @@ def test_run_solve_auto_enables_annotations_when_db_contains_annotations(
     calls: list[dict] = []
 
     monkeypatch.setattr(solve_mod, "_build_ultrack_config", lambda *_args: object())
-    monkeypatch.setattr(solve_mod, "database_has_annotations", lambda _wd: True)
+    monkeypatch.setattr(
+        solve_mod,
+        "database_has_annotations",
+        lambda _wd: (_ for _ in ()).throw(AssertionError("should not inspect DB")),
+    )
 
     def fake_solve(_cfg, **kwargs):
         calls.append(kwargs)
@@ -28,13 +32,17 @@ def test_run_solve_auto_enables_annotations_when_db_contains_annotations(
     assert calls == [{"overwrite": True, "use_annotations": True}]
 
 
-def test_run_solve_keeps_plain_database_unannotated(monkeypatch, tmp_path):
+def test_run_solve_allows_annotations_override(monkeypatch, tmp_path):
     from cellflow.tracking_ultrack import solve as solve_mod
 
     calls: list[dict] = []
 
     monkeypatch.setattr(solve_mod, "_build_ultrack_config", lambda *_args: object())
-    monkeypatch.setattr(solve_mod, "database_has_annotations", lambda _wd: False)
+    monkeypatch.setattr(
+        solve_mod,
+        "database_has_annotations",
+        lambda _wd: (_ for _ in ()).throw(AssertionError("should not inspect DB")),
+    )
 
     def fake_solve(_cfg, **kwargs):
         calls.append(kwargs)
@@ -43,7 +51,7 @@ def test_run_solve_keeps_plain_database_unannotated(monkeypatch, tmp_path):
     processing.solve = fake_solve
     monkeypatch.setitem(sys.modules, "ultrack.core.solve.processing", processing)
 
-    list(solve_mod.run_solve(tmp_path, TrackingConfig(), overwrite=True))
+    list(solve_mod.run_solve(tmp_path, TrackingConfig(), overwrite=True, use_annotations=False))
 
     assert calls == [{"overwrite": True, "use_annotations": False}]
 
@@ -65,7 +73,11 @@ def test_run_solve_builds_ultrack_config_from_supplied_cfg(monkeypatch, tmp_path
         calls["solve_kwargs"] = kwargs
 
     monkeypatch.setattr(solve_mod, "_build_ultrack_config", fake_build_ultrack_config)
-    monkeypatch.setattr(solve_mod, "database_has_annotations", lambda _wd: False)
+    monkeypatch.setattr(
+        solve_mod,
+        "database_has_annotations",
+        lambda _wd: (_ for _ in ()).throw(AssertionError("should not inspect DB")),
+    )
 
     processing = types.ModuleType("ultrack.core.solve.processing")
     processing.solve = fake_solve
@@ -78,7 +90,7 @@ def test_run_solve_builds_ultrack_config_from_supplied_cfg(monkeypatch, tmp_path
     assert calls["solve_cfg"] is built_cfg
     assert calls["solve_kwargs"] == {
         "overwrite": False,
-        "use_annotations": False,
+        "use_annotations": True,
     }
     assert progress == [
         (0, 2, "Running ILP solver…"),

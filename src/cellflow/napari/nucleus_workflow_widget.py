@@ -47,16 +47,18 @@ from cellflow.database.tracked import (
     write_tracked_frame,
 )
 from cellflow.database.validation import (
+    add_correction,
     invalidate_track,
     is_track_validated,
     is_validated,
+    read_corrections,
     read_validated_cells_at_frame,
     read_validated_frames,
     read_validated_tracks,
     remap_validated_tracks,
-    validate_track,
 )
 from cellflow.napari.correction_widget import CorrectionWidget
+from cellflow.napari.radial_refinement_widget import RadialRefinementWidget
 from cellflow.napari.ui_style import (
     action_button,
     add_block_checkbox_row,
@@ -77,6 +79,7 @@ from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import build_consensus_boundary, build_nucleus_averaged_maps
 from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
+from cellflow.tracking_ultrack.corrections import Correction
 from cellflow.tracking_ultrack.db_query import (
     HierarchyCutState as _HierarchyCutState,
     annotation_name as _ultrack_db_annotation_name,
@@ -285,6 +288,9 @@ class NucleusWorkflowWidget(QWidget):
 
         # ── Ultrack Database Browser ─────────────────────────────────
         self._build_db_browser_section(root)
+
+        # ── Refinement ───────────────────────────────────────────────
+        self._build_refinement_section(root)
 
         # ── Correction (group box) ───────────────────────────────────
         self._build_correction_section(root)
@@ -693,6 +699,32 @@ class NucleusWorkflowWidget(QWidget):
         )
         root.addWidget(self.ultrack_db_browser_section)
 
+    # -- Refinement --------------------------------------------------------
+
+    def _build_refinement_section(self, root: QVBoxLayout) -> None:
+        self.refinement_widget = RadialRefinementWidget(
+            self.viewer,
+            pos_dir_provider=lambda: self._pos_dir,
+        )
+        self.refinement_widget.set_correction_active_provider(
+            lambda: self.correction_active_btn.isChecked()
+        )
+        self.refinement_widget.set_on_promoted_callback(
+            self._on_refinement_promoted
+        )
+        self.refinement_section = CollapsibleSection(
+            "Refinement",
+            self.refinement_widget,
+            expanded=False,
+            title_role="stage",
+            title_level=1,
+        )
+        root.addWidget(self.refinement_section)
+
+    def _on_refinement_promoted(self) -> None:
+        if self._pos_dir is not None:
+            self._files_widget.refresh(self._pos_dir)
+
     # -- Correction --------------------------------------------------------
 
     def _build_correction_section(self, root: QVBoxLayout) -> None:
@@ -726,6 +758,15 @@ class NucleusWorkflowWidget(QWidget):
         self.reassign_ids_btn = _btn(
             "Reassign ID", "Reassign cell IDs to contiguous range 1-N."
         )
+        self.validate_frame_btn = _btn(
+            "Validate frame", "Lock selected cell geometry at the current frame."
+        )
+        self.validate_track_btn = _btn(
+            "Validate track", "Lock selected cell geometry in every frame where it appears."
+        )
+        self.anchor_here_btn = _btn(
+            "Anchor here", "Anchor selected cell identity at the current frame."
+        )
         self.remove_unvalidated_btn = _btn(
             "Remove unvalidated",
             "Remove nucleus label pixels not marked validated for their frame.",
@@ -736,7 +777,9 @@ class NucleusWorkflowWidget(QWidget):
             (self.save_tracked_btn,),
             (self.extend_back_btn, self.extend_fwd_btn),
             (self.retrack_back_btn, self.retrack_fwd_btn),
-            (self.reassign_ids_btn, self.remove_unvalidated_btn),
+            (self.validate_frame_btn, self.anchor_here_btn),
+            (self.validate_track_btn, self.reassign_ids_btn),
+            (self.remove_unvalidated_btn,),
         ))
 
         self.correction_status_lbl = _make_status()
@@ -876,6 +919,9 @@ class NucleusWorkflowWidget(QWidget):
         # Correction
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
+        self.validate_frame_btn.clicked.connect(self._on_validate_frame)
+        self.validate_track_btn.clicked.connect(self._on_validate_track)
+        self.anchor_here_btn.clicked.connect(self._on_anchor_here)
         self.extend_back_btn.clicked.connect(self._on_extend_backward)
         self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
         self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
@@ -960,6 +1006,8 @@ class NucleusWorkflowWidget(QWidget):
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
         self._files_widget.refresh(pos_dir)
+        if hasattr(self, "refinement_widget"):
+            self.refinement_widget.refresh()
         if pos_dir is None:
             if self.correction_active_btn.isChecked():
                 self.correction_active_btn.setChecked(False)
@@ -1738,12 +1786,15 @@ class NucleusWorkflowWidget(QWidget):
         use_validated = self.db_gen_use_validated_check.isChecked()
         validated_tracks: dict[int, set[int]] | None = None
         tracked_labels: np.ndarray | None = None
+        corrections = None
         if use_validated:
-            validated_tracks = read_validated_tracks(pos_dir)
-            if not validated_tracks:
-                self._status("No validated tracks found — validate some cells first (press V)."); return
+            corrections = read_corrections(pos_dir)
+            if not corrections:
+                validated_tracks = read_validated_tracks(pos_dir)
+            if not corrections and not validated_tracks:
+                self._status("No corrections found — validate or anchor some cells first."); return
             if _TRACKED_LAYER not in self.viewer.layers:
-                self._status("No tracked layer loaded for validated DB generation."); return
+                self._status("No tracked layer loaded for correction-aware DB generation."); return
             tracked_labels = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
 
         self.pipeline_progress_bar.setRange(0, 0)
@@ -1776,6 +1827,7 @@ class NucleusWorkflowWidget(QWidget):
                             working_dir=working_dir,
                             cfg=cfg,
                             score_signal_path=score_path,
+                            corrections=corrections,
                             validated_tracks=validated_tracks,
                             tracked_labels=tracked_labels,
                             use_validated=use_validated,
@@ -1848,18 +1900,19 @@ class NucleusWorkflowWidget(QWidget):
         tracked_path = self._tracked_path()
 
         cfg = self._ultrack_config_from_controls()
+        corrections = read_corrections(self._pos_dir)
         needs_validated_export = database_has_annotations(working_dir)
         validated_tracks = None
         tracked_labels = None
-        if needs_validated_export:
+        if corrections or needs_validated_export:
             validated_tracks = read_validated_tracks(self._pos_dir)
-            if not validated_tracks:
+            if needs_validated_export and not corrections and not validated_tracks:
                 self._status(
                     "Annotated data.db requires validated tracks for ID-preserving export."
                 ); return
             if _TRACKED_LAYER not in self.viewer.layers:
                 self._status(
-                    "Annotated data.db requires the current tracked layer for export."
+                    "Correction-aware export requires the current tracked layer."
                 ); return
             tracked_labels = np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
 
@@ -1880,6 +1933,7 @@ class NucleusWorkflowWidget(QWidget):
             yield "Exporting tracked labels…"
             return export_tracked_labels(
                 working_dir, cfg, tracked_path,
+                corrections=corrections,
                 validated_tracks=validated_tracks,
                 tracked_labels=tracked_labels,
             )
@@ -2652,6 +2706,85 @@ class NucleusWorkflowWidget(QWidget):
             f"Reassigned {n_cells} cell IDs to range 1–{n_cells}. Unsaved."
         )
 
+    def _selected_correction_target(self) -> tuple[int, int, float, float] | None:
+        if self._pos_dir is None:
+            self._correction_status("No project open."); return None
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No tracked layer loaded."); return None
+        cell_id = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        if cell_id == 0:
+            self._correction_status("No cell selected (left-click first)."); return None
+        t = self._current_t()
+        data = np.asarray(layer.data)
+        frame = self._frame_view_2d(data, t) if data.ndim >= 3 else data
+        if frame is None or not np.any(frame == cell_id):
+            self._correction_status(f"Cell {cell_id} not present at t={t}."); return None
+        yy, xx = np.nonzero(frame == cell_id)
+        return cell_id, t, float(np.mean(yy)), float(np.mean(xx))
+
+    def _validated_correction_for_frame(
+        self, cell_id: int, t: int, data: np.ndarray
+    ) -> Correction | None:
+        frame = self._frame_view_2d(data, t) if data.ndim >= 3 else data
+        if frame is None or not np.any(frame == cell_id):
+            return None
+        yy, xx = np.nonzero(frame == cell_id)
+        return Correction(
+            cell_id=int(cell_id),
+            t=int(t),
+            kind="validated",
+            y=float(np.mean(yy)),
+            x=float(np.mean(xx)),
+        )
+
+    def _on_validate_frame(self) -> None:
+        target = self._selected_correction_target()
+        if target is None or self._pos_dir is None:
+            return
+        cell_id, t, y, x = target
+        add_correction(
+            self._pos_dir,
+            Correction(cell_id=cell_id, t=t, kind="validated", y=y, x=x),
+        )
+        self._refresh_validated_overlay()
+        self._refresh_validation_counter()
+        self._correction_status(f"Validated frame t={t} for cell {cell_id}.")
+
+    def _on_validate_track(self) -> None:
+        if self._pos_dir is None:
+            self._correction_status("No project open."); return
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No tracked layer loaded."); return
+        cell_id = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        if cell_id == 0:
+            self._correction_status("No cell selected (left-click first)."); return
+        data = np.asarray(layer.data)
+        frames = self._frames_with_cell(cell_id)
+        if not frames:
+            self._correction_status(f"Cell {cell_id} not present in tracked labels."); return
+        for t in frames:
+            correction = self._validated_correction_for_frame(cell_id, t, data)
+            if correction is not None:
+                add_correction(self._pos_dir, correction)
+        self._refresh_validated_overlay()
+        self._refresh_validation_counter()
+        self._correction_status(
+            f"Validated track {cell_id} across {len(frames)} frame(s)."
+        )
+
+    def _on_anchor_here(self) -> None:
+        target = self._selected_correction_target()
+        if target is None or self._pos_dir is None:
+            return
+        cell_id, t, y, x = target
+        add_correction(
+            self._pos_dir,
+            Correction(cell_id=cell_id, t=t, kind="anchor", y=y, x=x),
+        )
+        self._correction_status(f"Anchored cell {cell_id} at t={t}.")
+
     def _on_extend_backward(self) -> None:
         self._on_extend(direction="backward")
 
@@ -2882,12 +3015,16 @@ class NucleusWorkflowWidget(QWidget):
                     self.correction_active_btn.blockSignals(old)
                 self.correction_widget.deactivate()
                 self.correction_mode_section.collapse()
+                if hasattr(self, "refinement_widget"):
+                    self.refinement_widget.refresh()
                 return
             layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
             layer.visible = True
             self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
             self.correction_mode_section.expand()
+            if hasattr(self, "refinement_widget"):
+                self.refinement_widget.refresh()
             return
 
         self.correction_widget.deactivate()
@@ -2896,6 +3033,8 @@ class NucleusWorkflowWidget(QWidget):
         self._remove_correction_owned_layers()
         self._restore_correction_view_state()
         self.correction_mode_section.collapse()
+        if hasattr(self, "refinement_widget"):
+            self.refinement_widget.refresh()
 
     def _on_correction_mode_toggled(self, active: bool) -> None:
         for sc in self._correction_shortcuts:
@@ -2922,7 +3061,14 @@ class NucleusWorkflowWidget(QWidget):
                 f"Cell {sel} invalidated across {len(frames)} frame(s)."
             )
         else:
-            validate_track(self._pos_dir, sel, frames)
+            layer = self._correction_tracked_layer()
+            if layer is None:
+                return
+            data = np.asarray(layer.data)
+            for frame in frames:
+                correction = self._validated_correction_for_frame(sel, frame, data)
+                if correction is not None:
+                    add_correction(self._pos_dir, correction)
             self._correction_status(
                 f"Cell {sel} validated across {len(frames)} frame(s)."
             )

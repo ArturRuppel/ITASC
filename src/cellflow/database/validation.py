@@ -22,6 +22,8 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from cellflow.tracking_ultrack.corrections import Correction
+
 
 def _path(pos_dir: Path) -> Path:
     return pos_dir / "2_nucleus" / "validated_frames.json"
@@ -79,6 +81,20 @@ def read_validated_tracks(pos_dir: Path) -> dict[int, set[int]]:
     Empty dict if the file is missing or corrupt.
     JSON keys are cell ID strings; values are lists of frame ints.
     """
+    corrections = read_corrections(pos_dir)
+    if corrections:
+        data: dict[int, set[int]] = {}
+        for correction in corrections:
+            if correction.kind == "validated":
+                data.setdefault(int(correction.cell_id), set()).add(int(correction.t))
+        legacy = _read_legacy_validated_tracks(pos_dir)
+        for cell_id, frames in legacy.items():
+            data.setdefault(cell_id, set()).update(frames)
+        return data
+    return _read_legacy_validated_tracks(pos_dir)
+
+
+def _read_legacy_validated_tracks(pos_dir: Path) -> dict[int, set[int]]:
     p = _cells_path(pos_dir)
     if not p.exists():
         return {}
@@ -133,6 +149,16 @@ def invalidate_track(pos_dir: Path, cell_id: int) -> None:
 
     No-op if *cell_id* is not present.
     """
+    corrections = read_corrections(pos_dir)
+    if corrections:
+        write_corrections(
+            pos_dir,
+            [
+                c
+                for c in corrections
+                if not (int(c.cell_id) == int(cell_id) and c.kind == "validated")
+            ],
+        )
     data = read_validated_tracks(pos_dir)
     if cell_id in data:
         del data[cell_id]
@@ -144,6 +170,22 @@ def remap_validated_tracks(pos_dir: Path, old_to_new: dict[int, int]) -> None:
 
     IDs not present in the mapping are dropped.
     """
+    corrections = read_corrections(pos_dir)
+    if corrections:
+        write_corrections(
+            pos_dir,
+            [
+                Correction(
+                    cell_id=int(old_to_new[int(c.cell_id)]),
+                    t=int(c.t),
+                    kind=c.kind,
+                    y=float(c.y),
+                    x=float(c.x),
+                )
+                for c in corrections
+                if int(c.cell_id) in old_to_new
+            ],
+        )
     data = read_validated_tracks(pos_dir)
     remapped = {
         old_to_new[cell_id]: frames
@@ -151,3 +193,65 @@ def remap_validated_tracks(pos_dir: Path, old_to_new: dict[int, int]) -> None:
         if cell_id in old_to_new
     }
     _write_validated_tracks(pos_dir, remapped)
+
+
+# ---------------------------------------------------------------------------
+# Unified correction list (nucleus workflow)
+# ---------------------------------------------------------------------------
+
+def _corrections_path(pos_dir: Path) -> Path:
+    return pos_dir / "2_nucleus" / "corrections.json"
+
+
+def read_corrections(pos_dir: Path) -> list[Correction]:
+    """Return persisted per-frame corrections, or an empty list if unavailable."""
+    p = _corrections_path(pos_dir)
+    if not p.exists():
+        return []
+    try:
+        raw = json.loads(p.read_text())
+        corrections = [
+            Correction(
+                cell_id=int(item["cell_id"]),
+                t=int(item["t"]),
+                kind=item["kind"],
+                y=float(item["y"]),
+                x=float(item["x"]),
+            )
+            for item in raw
+        ]
+    except Exception:
+        return []
+    return sorted(corrections, key=lambda c: (c.t, c.cell_id, c.kind))
+
+
+def write_corrections(pos_dir: Path, corrections: Iterable[Correction]) -> None:
+    """Persist the full flat correction list to ``corrections.json``."""
+    p = _corrections_path(pos_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    serialisable = [
+        {
+            "cell_id": int(c.cell_id),
+            "t": int(c.t),
+            "kind": c.kind,
+            "y": float(c.y),
+            "x": float(c.x),
+        }
+        for c in sorted(corrections, key=lambda item: (item.t, item.cell_id, item.kind))
+    ]
+    p.write_text(json.dumps(serialisable))
+
+
+def add_correction(pos_dir: Path, correction: Correction) -> None:
+    """Add or replace a correction for the same cell, frame, and kind."""
+    existing = [
+        c
+        for c in read_corrections(pos_dir)
+        if not (
+            int(c.cell_id) == int(correction.cell_id)
+            and int(c.t) == int(correction.t)
+            and c.kind == correction.kind
+        )
+    ]
+    existing.append(correction)
+    write_corrections(pos_dir, existing)

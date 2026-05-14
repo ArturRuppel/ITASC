@@ -74,6 +74,12 @@ def _install_import_stubs() -> None:
 
     stub_exports = {
         "cellflow.tracking_ultrack.config": {"TrackingConfig": _StubTrackingConfig},
+        "cellflow.tracking_ultrack.corrections": {
+            "Correction": __import__(
+                "cellflow.tracking_ultrack.corrections",
+                fromlist=["Correction"],
+            ).Correction,
+        },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
             "ingest_hypotheses_to_db": lambda *args, **kwargs: None,
@@ -1839,7 +1845,8 @@ def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
     assert widget.extend_back_btn.y() == widget.extend_fwd_btn.y()
     assert widget.extend_back_btn.x() < widget.extend_fwd_btn.x()
     assert widget.retrack_back_btn.y() == widget.retrack_fwd_btn.y()
-    assert widget.reassign_ids_btn.y() == widget.remove_unvalidated_btn.y()
+    assert widget.validate_frame_btn.y() == widget.anchor_here_btn.y()
+    assert widget.validate_track_btn.y() == widget.reassign_ids_btn.y()
 
     widget.deleteLater()
     viewer.close()
@@ -1934,6 +1941,94 @@ def test_nucleus_correction_button_removes_unvalidated_label_instances(tmp_path)
     assert not np.any(edited[1] == 7)
     assert not np.any(edited[1] == 11)
     assert "Removed unvalidated labels" in widget.correction_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_validate_frame_button_writes_single_validated_correction(tmp_path):
+    from cellflow.database.validation import read_corrections, read_validated_tracks
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget._pos_dir = pos_dir
+    labels = np.zeros((3, 8, 8), dtype=np.uint32)
+    labels[1, 2:5, 3:6] = 7
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 7
+    viewer.dims.current_step = (1, 0, 0)
+
+    widget.validate_frame_btn.click()
+
+    corrections = read_corrections(pos_dir)
+    assert [(c.cell_id, c.t, c.kind) for c in corrections] == [(7, 1, "validated")]
+    assert corrections[0].y == pytest.approx(3.0)
+    assert corrections[0].x == pytest.approx(4.0)
+    assert read_validated_tracks(pos_dir) == {7: {1}}
+    assert "validated frame" in widget.correction_status_lbl.text().lower()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_validate_track_button_writes_validated_corrections_for_each_present_frame(tmp_path):
+    from cellflow.database.validation import read_corrections, read_validated_tracks
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget._pos_dir = pos_dir
+    labels = np.zeros((3, 8, 8), dtype=np.uint32)
+    labels[0, 1:3, 1:3] = 5
+    labels[2, 4:6, 4:6] = 5
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 5
+    viewer.dims.current_step = (0, 0, 0)
+
+    widget.validate_track_btn.click()
+
+    corrections = read_corrections(pos_dir)
+    assert [(c.cell_id, c.t, c.kind) for c in corrections] == [
+        (5, 0, "validated"),
+        (5, 2, "validated"),
+    ]
+    assert read_validated_tracks(pos_dir) == {5: {0, 2}}
+    assert "validated track" in widget.correction_status_lbl.text().lower()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_anchor_here_button_writes_anchor_correction_at_selected_cell_centroid(tmp_path):
+    from cellflow.database.validation import read_corrections
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget._pos_dir = pos_dir
+    labels = np.zeros((2, 8, 8), dtype=np.uint32)
+    labels[1, 4:6, 1:4] = 3
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 3
+    viewer.dims.current_step = (1, 0, 0)
+
+    widget.anchor_here_btn.click()
+
+    corrections = read_corrections(pos_dir)
+    assert [(c.cell_id, c.t, c.kind) for c in corrections] == [(3, 1, "anchor")]
+    assert corrections[0].y == pytest.approx(4.5)
+    assert corrections[0].x == pytest.approx(2.0)
+    assert "anchor" in widget.correction_status_lbl.text().lower()
 
     widget.deleteLater()
     viewer.close()
@@ -2729,6 +2824,53 @@ def test_db_gen_section_calls_source_stack_builder_on_run(tmp_path, monkeypatch)
     viewer.close()
 
 
+def test_db_gen_passes_flat_corrections_when_enabled(tmp_path, monkeypatch):
+    from cellflow.database.validation import add_correction
+    from cellflow.tracking_ultrack.corrections import Correction
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    captured = {}
+
+    def fake_build_database(**kwargs):
+        captured.update(kwargs)
+        data_db = kwargs["working_dir"] / "data.db"
+        data_db.parent.mkdir(parents=True, exist_ok=True)
+        data_db.write_bytes(b"sqlite placeholder")
+        return {"database": str(data_db)}
+
+    monkeypatch.setattr(module, "build_ultrack_database_from_sources", fake_build_database)
+    monkeypatch.setattr(module, "_ultrack_segment", object(), raising=False)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    dummy = np.zeros((2, 1, 4, 4), dtype=np.float32)
+    import tifffile
+
+    tifffile.imwrite(str(pos_dir / "2_nucleus" / "contour_sources.tif"), dummy)
+    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_sources.tif"), dummy.astype(np.uint8))
+    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_scores.tif"), np.zeros((1, 4, 4), dtype=np.float32))
+    widget._pos_dir = pos_dir
+    viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint32), name="Tracked: Nucleus")
+    add_correction(pos_dir, Correction(cell_id=9, t=0, kind="anchor", y=1.0, x=2.0))
+    widget.db_gen_use_validated_check.setChecked(True)
+
+    widget._on_run_db_generation()
+
+    assert [(c.cell_id, c.t, c.kind) for c in captured["corrections"]] == [
+        (9, 0, "anchor")
+    ]
+    assert captured["tracked_labels"].shape == (1, 4, 4)
+    assert captured["use_validated"] is True
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_db_gen_section_has_no_terminal_launcher():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
@@ -2788,6 +2930,11 @@ def _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, heights):
     module = sys.modules[widget_class.__module__]
     states = tuple(module._HierarchyCutState((), height) for height in heights)
     monkeypatch.setattr(widget, "_query_hierarchy_cut_states", lambda *a: states)
+    monkeypatch.setattr(
+        widget,
+        "_render_hierarchy_cut_state",
+        lambda path, frame, state: widget._render_hierarchy_cut(path, frame, state.height),
+    )
     return states
 
 
@@ -3328,6 +3475,43 @@ def test_ultrack_tracking_refreshes_stage_output_files(tmp_path, monkeypatch):
     assert (pos_dir / "2_nucleus" / "tracked_labels.tif").exists()
     assert "✓" in _label_texts(widget._files_widget)
     assert widget.pipeline_progress_bar.isVisible() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_tracking_passes_corrections_to_export(tmp_path, monkeypatch):
+    from cellflow.database.validation import add_correction
+    from cellflow.tracking_ultrack.corrections import Correction
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
+    (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(b"sqlite placeholder")
+    widget._pos_dir = pos_dir
+    tracked = np.ones((2, 4, 4), dtype=np.uint32)
+    viewer.add_labels(tracked, name="Tracked: Nucleus")
+    add_correction(pos_dir, Correction(cell_id=2, t=1, kind="anchor", y=2.0, x=3.0))
+    captured = {}
+
+    def fake_export(_working_dir, _cfg, _tracked_path, **kwargs):
+        captured.update(kwargs)
+        return tracked
+
+    monkeypatch.setattr(module, "run_solve", lambda *a, **kw: iter([(1, 1, "solved")]))
+    monkeypatch.setattr(module, "export_tracked_labels", fake_export)
+
+    widget._on_run_ultrack()
+
+    assert [(c.cell_id, c.t, c.kind) for c in captured["corrections"]] == [
+        (2, 1, "anchor")
+    ]
+    assert captured["tracked_labels"].shape == (2, 4, 4)
 
     widget.deleteLater()
     viewer.close()

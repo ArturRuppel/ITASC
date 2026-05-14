@@ -4,17 +4,22 @@ import json
 import pytest
 
 from cellflow.database.validation import (
+    add_correction,
     invalidate_frame,
     invalidate_track,
     is_track_validated,
     is_validated,
+    read_corrections,
     read_validated_cells_at_frame,
     read_validated_frames,
     read_validated_tracks,
+    remap_validated_tracks,
+    write_corrections,
     validate_frame,
     validate_track,
     write_validated_frames,
 )
+from cellflow.tracking_ultrack.corrections import Correction
 
 
 @pytest.fixture()
@@ -210,3 +215,76 @@ def test_read_write_roundtrip(pos_dir):
     validate_track(pos_dir, 82, [3, 4, 5])
     result = read_validated_tracks(pos_dir)
     assert result == {47: {10, 11, 12, 13, 14}, 82: {3, 4, 5}}
+
+
+def test_read_corrections_empty_by_default(pos_dir):
+    assert read_corrections(pos_dir) == []
+
+
+def test_write_corrections_roundtrip_flat_schema(pos_dir):
+    corrections = [
+        Correction(cell_id=7, t=0, kind="validated", y=12.5, x=20.25),
+        Correction(cell_id=9, t=1, kind="anchor", y=30.0, x=40.0),
+    ]
+
+    write_corrections(pos_dir, corrections)
+
+    assert read_corrections(pos_dir) == corrections
+    raw = json.loads((pos_dir / "2_nucleus" / "corrections.json").read_text())
+    assert raw == [
+        {"cell_id": 7, "t": 0, "kind": "validated", "y": 12.5, "x": 20.25},
+        {"cell_id": 9, "t": 1, "kind": "anchor", "y": 30.0, "x": 40.0},
+    ]
+
+
+def test_add_correction_replaces_same_cell_frame_kind(pos_dir):
+    add_correction(pos_dir, Correction(cell_id=7, t=0, kind="anchor", y=1.0, x=2.0))
+    add_correction(pos_dir, Correction(cell_id=7, t=0, kind="anchor", y=3.0, x=4.0))
+
+    assert read_corrections(pos_dir) == [
+        Correction(cell_id=7, t=0, kind="anchor", y=3.0, x=4.0)
+    ]
+
+
+def test_invalidate_track_removes_validated_corrections_only(pos_dir):
+    write_corrections(
+        pos_dir,
+        [
+            Correction(cell_id=7, t=0, kind="validated", y=1.0, x=2.0),
+            Correction(cell_id=7, t=1, kind="anchor", y=3.0, x=4.0),
+            Correction(cell_id=8, t=0, kind="validated", y=5.0, x=6.0),
+        ],
+    )
+
+    invalidate_track(pos_dir, 7)
+
+    assert [(c.cell_id, c.t, c.kind) for c in read_corrections(pos_dir)] == [
+        (8, 0, "validated"),
+        (7, 1, "anchor"),
+    ]
+
+
+def test_remap_validated_tracks_remaps_flat_corrections(pos_dir):
+    write_corrections(
+        pos_dir,
+        [
+            Correction(cell_id=7, t=0, kind="validated", y=1.0, x=2.0),
+            Correction(cell_id=8, t=1, kind="anchor", y=3.0, x=4.0),
+            Correction(cell_id=9, t=2, kind="validated", y=5.0, x=6.0),
+        ],
+    )
+
+    remap_validated_tracks(pos_dir, {7: 1, 8: 2})
+
+    assert [(c.cell_id, c.t, c.kind) for c in read_corrections(pos_dir)] == [
+        (1, 0, "validated"),
+        (2, 1, "anchor"),
+    ]
+
+
+def test_read_corrections_corrupt_json_returns_empty(pos_dir):
+    json_file = pos_dir / "2_nucleus" / "corrections.json"
+    json_file.parent.mkdir(parents=True, exist_ok=True)
+    json_file.write_text("not valid json")
+
+    assert read_corrections(pos_dir) == []

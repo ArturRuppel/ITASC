@@ -36,7 +36,7 @@ def run_solve(
     cfg: TrackingConfig,
     *,
     overwrite: bool = True,
-    use_annotations: bool | None = None,
+    use_annotations: bool | None = True,
 ) -> Generator[tuple[int, int, str], None, None]:
     """Run the ILP solver, yielding (step, total, label) progress tuples."""
     from ultrack.core.solve.processing import solve
@@ -45,7 +45,7 @@ def run_solve(
     wd = Path(working_dir)
     ultrack_cfg = _build_ultrack_config(cfg, wd)
     if use_annotations is None:
-        use_annotations = database_has_annotations(wd)
+        use_annotations = True
 
     yield (0, total, "Running ILP solver…")
     solve(ultrack_cfg, overwrite=overwrite, use_annotations=use_annotations)

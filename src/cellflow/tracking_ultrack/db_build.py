@@ -9,13 +9,14 @@ import numpy as np
 import tifffile
 
 from cellflow.tracking_ultrack.config import TrackingConfig
+from cellflow.tracking_ultrack.corrections import (
+    Correction,
+    apply_corrections_to_database,
+    corrections_from_validated_tracks,
+)
 from cellflow.tracking_ultrack.ingest import _build_ultrack_config
 from cellflow.tracking_ultrack.linking import run_linking
-from cellflow.tracking_ultrack.seed_prior import (
-    boost_validated_edges,
-    write_seed_prior_node_probs,
-)
-from cellflow.tracking_ultrack.validation_nodes import inject_validated_nodes
+from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,8 @@ class UltrackDatabaseBuildReport:
     skipped_validated: int = 0
     fake_nodes: int = 0
     overlaps_added: int = 0
+    anchor_nodes: int = 0
+    anchor_links: int = 0
     scored_nodes: int = 0
     seed_nodes: int = 0
     boosted_edges: int = 0
@@ -77,6 +80,7 @@ def build_ultrack_database(
     cfg: TrackingConfig,
     validated_tracks: dict[int, set[int]] | None = None,
     tracked_labels: np.ndarray | None = None,
+    corrections: list[Correction] | None = None,
     use_validated: bool = False,
     progress_cb: Callable[[str], None] | None = None,
 ) -> UltrackDatabaseBuildReport:
@@ -86,11 +90,10 @@ def build_ultrack_database(
     image-quality term in node-probability scoring. ``nucleus_prob_zavg_path``
     is retained for API compatibility.
 
-    When ``use_validated`` is true, validated masks are injected as REAL nodes,
-    conflicting canonical candidates are marked FAKE, node probabilities include
-    seed affinity, and links incident to REAL nodes are boosted after linking.
+    Corrections annotate canonical candidates in place. Validated frames mark
+    nearby candidates ``FAKE``; anchor frames mark nearest candidates ``REAL``.
     """
-    if use_validated and (not validated_tracks or tracked_labels is None):
+    if use_validated and corrections is None and (not validated_tracks or tracked_labels is None):
         raise ValueError(
             "Validated-aware DB generation requires validated tracks and tracked labels."
         )
@@ -105,28 +108,28 @@ def build_ultrack_database(
     _notify(progress_cb, "Segmenting candidates (ultrack hierarchy)...")
     _run_ultrack_segment(foreground, contours, ultrack_cfg, cfg)
 
-    real_nodes = skipped_validated = fake_nodes = overlaps_added = 0
-    if use_validated:
-        _notify(progress_cb, "Injecting validated nodes...")
-        injection = inject_validated_nodes(
-            working_dir=working_dir,
-            validated_tracks=validated_tracks or {},
-            tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
-            cfg=cfg,
+    if corrections is None and use_validated:
+        corrections = corrections_from_validated_tracks(
+            validated_tracks or {},
+            np.asarray(tracked_labels, dtype=np.uint32),
         )
-        real_nodes = int(injection.inserted)
-        skipped_validated = int(injection.skipped_missing)
-        fake_nodes = int(injection.faked)
-        overlaps_added = int(injection.overlaps_added)
+
+    real_nodes = skipped_validated = overlaps_added = 0
+    fake_nodes = anchor_nodes = anchor_links = 0
+    if corrections:
+        _notify(progress_cb, "Applying correction annotations...")
+        correction_report = apply_corrections_to_database(
+            working_dir,
+            corrections,
+            cfg,
+            annotate_anchor_links=False,
+        )
+        fake_nodes = int(correction_report.fake_nodes)
+        anchor_nodes = int(correction_report.anchor_nodes)
         _notify(
             progress_cb,
-            (
-                f"Inserted {real_nodes} REAL node(s), marked {fake_nodes} FAKE "
-                f"candidate(s), skipped {skipped_validated} validated cell-frame(s)."
-            ),
+            f"Marked {fake_nodes} FAKE node(s) and {anchor_nodes} anchor node(s).",
         )
-        if real_nodes == 0:
-            raise ValueError("No validated masks could be injected; DB build aborted.")
 
     _notify(progress_cb, "Scoring node probabilities...")
     score_report = write_seed_prior_node_probs(working_dir, foreground_masks_path, cfg)
@@ -139,17 +142,24 @@ def build_ultrack_database(
         _notify(progress_cb, f"[link {step}/{total}] {label}")
 
     boosted_edges = 0
-    if use_validated:
-        _notify(progress_cb, "Boosting edges incident to validated nodes...")
-        boost_report = boost_validated_edges(working_dir, cfg)
-        boosted_edges = int(getattr(boost_report, "boosted", 0))
-        _notify(progress_cb, f"Boosted {boosted_edges} link(s) incident to REAL nodes.")
+    if corrections:
+        _notify(progress_cb, "Applying correction link annotations...")
+        correction_report = apply_corrections_to_database(
+            working_dir,
+            corrections,
+            cfg,
+            annotate_anchor_links=True,
+        )
+        anchor_links = int(correction_report.anchor_links)
+        _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
 
     return UltrackDatabaseBuildReport(
         real_nodes=real_nodes,
         skipped_validated=skipped_validated,
         fake_nodes=fake_nodes,
         overlaps_added=overlaps_added,
+        anchor_nodes=anchor_nodes,
+        anchor_links=anchor_links,
         scored_nodes=scored_nodes,
         seed_nodes=seed_nodes,
         boosted_edges=boosted_edges,

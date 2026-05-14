@@ -9,6 +9,11 @@ import numpy as np
 import tifffile
 
 from cellflow.tracking_ultrack.config import TrackingConfig
+from cellflow.tracking_ultrack.corrections import (
+    Correction,
+    apply_post_solve_corrections,
+    corrections_from_validated_tracks,
+)
 from cellflow.tracking_ultrack.solve import database_has_annotations
 
 
@@ -32,6 +37,7 @@ def export_tracked_labels(
     cfg: TrackingConfig,
     output_path: str | Path,
     *,
+    corrections: list[Correction] | None = None,
     validated_tracks: dict[int, set[int]] | None = None,
     tracked_labels: np.ndarray | None = None,
     preserve_validated_ids: bool | None = None,
@@ -42,19 +48,27 @@ def export_tracked_labels(
     annotated_db = database_has_annotations(wd)
     if preserve_validated_ids is None:
         preserve_validated_ids = annotated_db
-    if preserve_validated_ids and (not validated_tracks or tracked_labels is None):
+    if corrections is None and validated_tracks and tracked_labels is not None:
+        corrections = corrections_from_validated_tracks(
+            validated_tracks,
+            np.asarray(tracked_labels, dtype=np.uint32),
+        )
+    if preserve_validated_ids and not corrections and (
+        not validated_tracks or tracked_labels is None
+    ):
         raise ValueError(
             "Validated-aware export requires validated tracks and tracked labels."
         )
 
     labels = _export_tracked_labels_raw(wd, cfg, output_path)
-    if preserve_validated_ids:
-        from cellflow.tracking_ultrack.reseed import merge_validated_into_export
-
-        labels, _id_map = merge_validated_into_export(
+    if corrections:
+        if tracked_labels is None:
+            tracked_labels = np.zeros_like(labels, dtype=np.uint32)
+        labels, _report = apply_post_solve_corrections(
             labels,
-            validated_tracks or {},
+            corrections,
             np.asarray(tracked_labels, dtype=np.uint32),
+            cfg,
         )
         tifffile.imwrite(str(output_path), labels, compression="zlib")
     return labels

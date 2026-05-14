@@ -34,11 +34,6 @@ def test_plain_db_build_segments_scores_and_links_without_validated_steps(
     )
     monkeypatch.setattr(
         db_build,
-        "inject_validated_nodes",
-        lambda *_args, **_kwargs: calls.append("inject"),
-    )
-    monkeypatch.setattr(
-        db_build,
         "write_seed_prior_node_probs",
         lambda _working_dir, image_path, _cfg: (
             calls.append("score"),
@@ -50,11 +45,6 @@ def test_plain_db_build_segments_scores_and_links_without_validated_steps(
         db_build,
         "run_linking",
         lambda *_args, **_kwargs: calls.append("link") or iter([(1, 1, "linked")]),
-    )
-    monkeypatch.setattr(
-        db_build,
-        "boost_validated_edges",
-        lambda *_args, **_kwargs: calls.append("boost"),
     )
 
     report = db_build.build_ultrack_database(
@@ -100,12 +90,14 @@ def test_validated_db_build_injects_scores_links_and_boosts_in_order(
     )
     monkeypatch.setattr(
         db_build,
-        "inject_validated_nodes",
-        lambda *_args, **_kwargs: calls.append("inject")
+        "apply_corrections_to_database",
+        lambda *_args, annotate_anchor_links=True, **_kwargs: calls.append(
+            "correction_links" if annotate_anchor_links else "correction_nodes"
+        )
         or type(
-            "InjectionReport",
+            "CorrectionReport",
             (),
-            {"inserted": 1, "skipped_missing": 2, "faked": 3, "overlaps_added": 4},
+            {"fake_nodes": 3, "anchor_nodes": 1, "anchor_links": 6},
         )(),
     )
     monkeypatch.setattr(
@@ -122,12 +114,6 @@ def test_validated_db_build_injects_scores_links_and_boosts_in_order(
         "run_linking",
         lambda *_args, **_kwargs: calls.append("link") or iter([(1, 1, "linked")]),
     )
-    monkeypatch.setattr(
-        db_build,
-        "boost_validated_edges",
-        lambda *_args, **_kwargs: calls.append("boost")
-        or type("BoostReport", (), {"boosted": 6, "seeds": 1})(),
-    )
 
     report = db_build.build_ultrack_database(
         tmp_path / "contours.tif",
@@ -140,14 +126,16 @@ def test_validated_db_build_injects_scores_links_and_boosts_in_order(
         use_validated=True,
     )
 
-    assert calls == ["load", "segment", "inject", "score", "link", "boost"]
+    assert calls == ["load", "segment", "correction_nodes", "score", "link", "correction_links"]
     assert score_paths == [tmp_path / "foreground.tif"]
-    assert report.real_nodes == 1
-    assert report.skipped_validated == 2
+    assert report.real_nodes == 0
+    assert report.skipped_validated == 0
     assert report.fake_nodes == 3
-    assert report.overlaps_added == 4
+    assert report.anchor_nodes == 1
+    assert report.anchor_links == 6
+    assert report.overlaps_added == 0
     assert report.scored_nodes == 5
-    assert report.boosted_edges == 6
+    assert report.boosted_edges == 0
 
 
 def test_validated_db_build_requires_validated_tracks_and_labels(tmp_path):

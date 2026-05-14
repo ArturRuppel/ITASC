@@ -19,6 +19,11 @@ import tifffile
 from sqlalchemy.orm import Session
 
 from cellflow.tracking_ultrack.config import TrackingConfig
+from cellflow.tracking_ultrack.corrections import (
+    Correction,
+    apply_corrections_to_database,
+    corrections_from_validated_tracks,
+)
 from cellflow.tracking_ultrack.db_build import (
     _build_ultrack_config,
     _load_ultrack_inputs,
@@ -28,11 +33,7 @@ from cellflow.tracking_ultrack.db_build import (
 )
 from cellflow.tracking_ultrack.validation_nodes import _make_node_pickle
 from cellflow.tracking_ultrack.linking import run_linking
-from cellflow.tracking_ultrack.seed_prior import (
-    boost_validated_edges,
-    write_seed_prior_node_probs,
-)
-from cellflow.tracking_ultrack.validation_nodes import inject_validated_nodes
+from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 
 LOG = logging.getLogger(__name__)
 
@@ -705,6 +706,7 @@ def build_ultrack_database_from_sources(
     cfg: TrackingConfig,
     *,
     score_signal_path: str | Path | None = None,
+    corrections: list[Correction] | None = None,
     validated_tracks: dict[int, set[int]] | None = None,
     tracked_labels: np.ndarray | None = None,
     use_validated: bool = False,
@@ -715,7 +717,7 @@ def build_ultrack_database_from_sources(
     ``T×Y×X`` inputs are treated as one source. ``P×T×Y×X`` inputs are segmented
     one source at a time and merged into a single candidate database.
     """
-    if use_validated and (not validated_tracks or tracked_labels is None):
+    if use_validated and corrections is None and (not validated_tracks or tracked_labels is None):
         raise ValueError(
             "Validated-aware DB generation requires validated tracks and tracked labels."
         )
@@ -769,30 +771,28 @@ def build_ultrack_database_from_sources(
             progress_cb=progress_cb,
         )
 
-        real_nodes = skipped_validated = fake_nodes = overlaps_added = 0
-        if use_validated:
-            _notify(progress_cb, "Injecting validated nodes …")
-            injection = inject_validated_nodes(
-                working_dir=working_dir,
-                validated_tracks=validated_tracks or {},
-                tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
-                cfg=cfg,
+        if corrections is None and use_validated:
+            corrections = corrections_from_validated_tracks(
+                validated_tracks or {},
+                np.asarray(tracked_labels, dtype=np.uint32),
             )
-            real_nodes = int(injection.inserted)
-            skipped_validated = int(injection.skipped_missing)
-            fake_nodes = int(injection.faked)
-            overlaps_added = int(injection.overlaps_added)
+
+        real_nodes = skipped_validated = overlaps_added = 0
+        fake_nodes = anchor_nodes = anchor_links = 0
+        if corrections:
+            _notify(progress_cb, "Applying correction annotations …")
+            correction_report = apply_corrections_to_database(
+                working_dir,
+                corrections,
+                cfg,
+                annotate_anchor_links=False,
+            )
+            fake_nodes = int(correction_report.fake_nodes)
+            anchor_nodes = int(correction_report.anchor_nodes)
             _notify(
                 progress_cb,
-                (
-                    f"Inserted {real_nodes} REAL node(s), marked {fake_nodes} FAKE "
-                    f"candidate(s), skipped {skipped_validated} validated cell-frame(s)."
-                ),
+                f"Marked {fake_nodes} FAKE node(s) and {anchor_nodes} anchor node(s).",
             )
-            if real_nodes == 0:
-                raise ValueError(
-                    "No validated masks could be injected; DB build aborted."
-                )
 
         _notify(progress_cb, "Scoring node probabilities …")
         score_report = write_seed_prior_node_probs(working_dir, scoring_path, cfg)
@@ -808,14 +808,16 @@ def build_ultrack_database_from_sources(
             _notify(progress_cb, f"[link {step}/{total}] {label}")
 
         boosted_edges = 0
-        if use_validated:
-            _notify(progress_cb, "Boosting edges incident to validated nodes …")
-            boost_report = boost_validated_edges(working_dir, cfg)
-            boosted_edges = int(getattr(boost_report, "boosted", 0))
-            _notify(
-                progress_cb,
-                f"Boosted {boosted_edges} link(s) incident to REAL nodes.",
+        if corrections:
+            _notify(progress_cb, "Applying correction link annotations …")
+            correction_report = apply_corrections_to_database(
+                working_dir,
+                corrections,
+                cfg,
+                annotate_anchor_links=True,
             )
+            anchor_links = int(correction_report.anchor_links)
+            _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
 
     finally:
         for td in temp_dirs:
@@ -827,6 +829,8 @@ def build_ultrack_database_from_sources(
         skipped_validated=skipped_validated,
         fake_nodes=fake_nodes,
         overlaps_added=overlaps_added,
+        anchor_nodes=anchor_nodes,
+        anchor_links=anchor_links,
         scored_nodes=scored_nodes,
         seed_nodes=seed_nodes,
         boosted_edges=boosted_edges,
@@ -865,6 +869,7 @@ def build_multithreshold_database(
     cfg: TrackingConfig,
     thresholds: Sequence[float],
     *,
+    corrections: list[Correction] | None = None,
     validated_tracks: dict[int, set[int]] | None = None,
     tracked_labels: np.ndarray | None = None,
     use_validated: bool = False,
@@ -901,7 +906,7 @@ def build_multithreshold_database(
     progress_cb
         Optional callback ``(message) -> None`` for progress reporting.
     """
-    if use_validated and (not validated_tracks or tracked_labels is None):
+    if use_validated and corrections is None and (not validated_tracks or tracked_labels is None):
         raise ValueError(
             "Validated-aware DB generation requires validated tracks and tracked labels."
         )
@@ -961,30 +966,28 @@ def build_multithreshold_database(
         # -----------------------------------------------------------------
         # Standard downstream pipeline on the merged database
         # -----------------------------------------------------------------
-        real_nodes = skipped_validated = fake_nodes = overlaps_added = 0
-        if use_validated:
-            _notify(progress_cb, "Injecting validated nodes …")
-            injection = inject_validated_nodes(
-                working_dir=working_dir,
-                validated_tracks=validated_tracks or {},
-                tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
-                cfg=cfg,
+        if corrections is None and use_validated:
+            corrections = corrections_from_validated_tracks(
+                validated_tracks or {},
+                np.asarray(tracked_labels, dtype=np.uint32),
             )
-            real_nodes = int(injection.inserted)
-            skipped_validated = int(injection.skipped_missing)
-            fake_nodes = int(injection.faked)
-            overlaps_added = int(injection.overlaps_added)
+
+        real_nodes = skipped_validated = overlaps_added = 0
+        fake_nodes = anchor_nodes = anchor_links = 0
+        if corrections:
+            _notify(progress_cb, "Applying correction annotations …")
+            correction_report = apply_corrections_to_database(
+                working_dir,
+                corrections,
+                cfg,
+                annotate_anchor_links=False,
+            )
+            fake_nodes = int(correction_report.fake_nodes)
+            anchor_nodes = int(correction_report.anchor_nodes)
             _notify(
                 progress_cb,
-                (
-                    f"Inserted {real_nodes} REAL node(s), marked {fake_nodes} FAKE "
-                    f"candidate(s), skipped {skipped_validated} validated cell-frame(s)."
-                ),
+                f"Marked {fake_nodes} FAKE node(s) and {anchor_nodes} anchor node(s).",
             )
-            if real_nodes == 0:
-                raise ValueError(
-                    "No validated masks could be injected; DB build aborted."
-                )
 
         _notify(progress_cb, "Scoring node probabilities …")
         score_report = write_seed_prior_node_probs(
@@ -1002,14 +1005,16 @@ def build_multithreshold_database(
             _notify(progress_cb, f"[link {step}/{total}] {label}")
 
         boosted_edges = 0
-        if use_validated:
-            _notify(progress_cb, "Boosting edges incident to validated nodes …")
-            boost_report = boost_validated_edges(working_dir, cfg)
-            boosted_edges = int(getattr(boost_report, "boosted", 0))
-            _notify(
-                progress_cb,
-                f"Boosted {boosted_edges} link(s) incident to REAL nodes.",
+        if corrections:
+            _notify(progress_cb, "Applying correction link annotations …")
+            correction_report = apply_corrections_to_database(
+                working_dir,
+                corrections,
+                cfg,
+                annotate_anchor_links=True,
             )
+            anchor_links = int(correction_report.anchor_links)
+            _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
 
     finally:
         for td in temp_dirs:
@@ -1021,6 +1026,8 @@ def build_multithreshold_database(
         skipped_validated=skipped_validated,
         fake_nodes=fake_nodes,
         overlaps_added=overlaps_added,
+        anchor_nodes=anchor_nodes,
+        anchor_links=anchor_links,
         scored_nodes=scored_nodes,
         seed_nodes=seed_nodes,
         boosted_edges=boosted_edges,
