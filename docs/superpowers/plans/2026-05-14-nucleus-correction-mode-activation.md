@@ -775,7 +775,7 @@ pytest tests/napari/test_nucleus_tracking_correction_layout.py -q
 
 Expected: PASS. If optional dependencies skip some tests, record the skip count and rerun in the project environment if available.
 
-- [ ] **Step 2: Compile touched production module**
+- [x] **Step 2: Compile touched production module**
 
 Run:
 
@@ -785,7 +785,7 @@ python -m py_compile src/cellflow/napari/nucleus_workflow_widget.py
 
 Expected: no output and exit code 0.
 
-- [ ] **Step 3: Inspect the diff**
+- [x] **Step 3: Inspect the diff**
 
 Run:
 
@@ -795,7 +795,7 @@ git diff -- src/cellflow/napari/nucleus_workflow_widget.py tests/napari/test_nuc
 
 Expected: diff is limited to the correction-mode behavior and tests described in this plan.
 
-- [ ] **Step 4: Final commit if any verification fixes were required**
+- [x] **Step 4: Final commit if any verification fixes were required**
 
 Only if Step 1 or Step 2 required additional edits:
 
