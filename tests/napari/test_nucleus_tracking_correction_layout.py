@@ -493,17 +493,13 @@ def test_nucleus_workflow_uses_semantic_colors_by_role_and_level():
     segmentation_toggle = next(
         toggle
         for toggle in widget.findChildren(QToolButton)
-        if toggle.text() == "Segmentation Inputs"
+        if toggle.text() == "Segmentation Input Parameters"
     )
     assert segmentation_toggle is not None
-    assert f"color: {semantic_color('stage', 1)};" in segmentation_toggle.styleSheet()
-
-    heading_styles = [
-        label.styleSheet()
-        for label in widget.findChildren(QLabel)
-        if label.text() == "Segmentation Inputs"
-    ]
-    assert any(semantic_color("params", 1) in style for style in heading_styles)
+    assert f"color: {semantic_color('params', 1)};" in segmentation_toggle.styleSheet()
+    assert "Segmentation Inputs" not in {
+        label.text() for label in widget.segmentation_inputs_section.findChildren(QLabel)
+    }
     assert widget.run_db_gen_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
     assert semantic_color("indicators", 0) in widget.pipeline_status_lbl.styleSheet()
 
@@ -518,8 +514,8 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
 
     # tracking_correction_section wrapper removed — sections are now top-level
     assert not hasattr(widget, "tracking_correction_section")
-    assert widget.segmentation_inputs_section.title == "Segmentation Inputs"
-    assert widget.tracking_ultrack_section.title == "Tracking / Ultrack"
+    assert widget.segmentation_inputs_section.title == "Segmentation Input Parameters"
+    assert widget.tracking_ultrack_section.title == "Ultrack Parameters"
     assert widget.correction_mode_section.title == "Correction"
     assert widget.ultrack_db_browser_section.title == "Database Browser"
     assert widget.layout().indexOf(widget.tracking_ultrack_section) < widget.layout().indexOf(
@@ -532,7 +528,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert widget.segmentation_inputs_section.is_expanded is True
     assert widget.tracking_ultrack_section.is_expanded is False
     assert widget.correction_mode_section.is_expanded is False
-    assert widget.correction_shortcuts_section.is_expanded is False
+    assert widget.correction_shortcuts_section.is_expanded is True
     assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
     correction_inner = widget.correction_mode_section._content_frame.layout().itemAt(0).widget()
     correction_layout = correction_inner.layout()
@@ -540,7 +536,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert correction_layout.indexOf(widget.correction_shortcuts_section) != -1
     assert (
         correction_layout.indexOf(widget.correction_shortcuts_section)
-        > correction_layout.indexOf(widget.correction_widget)
+        < correction_layout.indexOf(widget.correction_widget)
     )
 
     correction_button_texts = {
@@ -555,7 +551,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
         checkbox.text() for checkbox in widget.tracking_ultrack_section.findChildren(QCheckBox)
     }
 
-    assert "Activate Correction" in correction_button_texts
+    assert "Activate Correction" not in correction_button_texts
     assert "Save tracked" in correction_button_texts
     assert "Load Labels" not in correction_button_texts
     assert "Save Labels" not in correction_button_texts
@@ -600,6 +596,29 @@ def test_tracking_correction_action_buttons_expand_horizontally():
 
     for button in tracked_buttons:
         assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_activation_button_is_top_level_and_section_header_is_passive():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    top_level_layout = widget.layout()
+    assert top_level_layout.indexOf(widget.correction_active_btn) != -1
+    assert top_level_layout.indexOf(widget.correction_active_btn) < top_level_layout.indexOf(
+        widget.correction_mode_section
+    )
+    assert widget.correction_active_btn not in widget.correction_mode_section.findChildren(
+        QPushButton
+    )
+
+    assert widget.correction_mode_section.is_expanded is False
+    assert widget.correction_mode_section._content_frame.isVisible() is False
+    assert widget.correction_mode_section._toggle.isVisible() is False
+    assert widget.correction_mode_section._toggle.isEnabled() is False
 
     widget.deleteLater()
     viewer.close()
@@ -1182,7 +1201,7 @@ def test_contour_maps_parameters_expand_when_narrow():
     assert "Contour — Cellprob Sweep" not in texts
     assert "Contour — Gamma Averaging" not in texts
     assert "Contour — Output" not in texts
-    assert "Segmentation Inputs" in texts
+    assert "Segmentation Inputs" not in texts
 
     host.deleteLater()
     viewer.close()
@@ -1574,13 +1593,26 @@ def test_z_stop_minus_one_means_all_z_slices():
     viewer.close()
 
 
-def test_segmentation_inputs_section_contains_pipeline_status_bar():
+def test_pipeline_actions_and_status_are_top_level_not_in_parameter_sections():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.pipeline_status_lbl in widget.segmentation_inputs_section.findChildren(QLabel)
-    assert widget.pipeline_progress_bar in widget.segmentation_inputs_section.findChildren(QProgressBar)
+    assert widget.preview_contour_btn.parentWidget() is widget
+    assert widget.build_btn.parentWidget() is widget
+    assert widget.pipeline_status_lbl.parentWidget() is widget
+    assert widget.pipeline_progress_bar.parentWidget() is widget
+    assert widget.run_db_gen_btn.parentWidget() is widget
+    assert widget.run_ultrack_btn.parentWidget() is widget
+    assert widget.cancel_btn.parentWidget() is widget
+
+    assert widget.preview_contour_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
+    assert widget.build_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
+    assert widget.pipeline_status_lbl not in widget.segmentation_inputs_section.findChildren(QLabel)
+    assert widget.pipeline_progress_bar not in widget.segmentation_inputs_section.findChildren(QProgressBar)
+    assert widget.run_db_gen_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
+    assert widget.run_ultrack_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
+    assert widget.cancel_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
 
     widget.deleteLater()
     viewer.close()
@@ -1635,8 +1667,8 @@ def test_source_stack_actions_use_explicit_source_language():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.preview_contour_btn.text() == "Preview"
-    assert widget.build_btn.text() == "Build"
+    assert widget.preview_contour_btn.text() == "Preview Segmentation Inputs"
+    assert widget.build_btn.text() == "Build Segmentation Inputs"
     assert "segmentation input source sweep" in widget.preview_contour_btn.toolTip().lower()
     assert "averaged maps" in widget.build_btn.toolTip().lower()
     assert "source-stack" in widget.run_db_gen_btn.toolTip().lower()
@@ -1650,7 +1682,7 @@ def test_segmentation_inputs_expose_stage_a_map_builder_controls():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.build_maps_btn.text() == "Build"
+    assert widget.build_maps_btn.text() == "Build Segmentation Inputs"
     assert "averaged maps" in widget.build_maps_btn.toolTip()
     assert "source stacks" in widget.build_maps_btn.toolTip()
     assert widget.map_cellprob_min_spin.value() == -3.0
@@ -1659,8 +1691,8 @@ def test_segmentation_inputs_expose_stage_a_map_builder_controls():
     assert widget.map_z_start_spin.value() == 0
     assert widget.map_z_stop_spin.value() == -1
     assert widget.map_z_step_spin.value() == 1
-    assert widget.build_maps_btn in widget.segmentation_inputs_section.findChildren(QPushButton)
-    assert widget.build_btn in widget.segmentation_inputs_section.findChildren(QPushButton)
+    assert widget.build_maps_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
+    assert widget.build_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
 
     widget.deleteLater()
     viewer.close()
@@ -1835,10 +1867,10 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.extend_params_section.title == "Extend Parameters"
+    assert widget.extend_params_section.title == "Extend / Retrack Parameters"
     assert widget.extend_params_section.is_expanded is False
-    assert widget.retrack_params_section.title == "Retrack Parameters"
-    assert widget.retrack_params_section is not widget.extend_params_section
+    assert widget.retrack_params_section.title == "Extend / Retrack Parameters"
+    assert widget.retrack_params_section is widget.extend_params_section
     assert widget.retrack_params_section.is_expanded is False
     assert widget.extend_max_dist_spin.value() == 40.0
     assert widget.extend_area_weight_spin.value() == 1.0
@@ -1861,17 +1893,17 @@ def test_validated_overlay_uses_green_fill_at_default_opacity_below_spotlight():
     widget = widget_class(viewer)
 
     viewer.add_labels(np.array([[[0, 1], [1, 0]]], dtype=np.uint8), name="Tracked: Nucleus")
-    viewer.add_image(np.zeros((2, 2, 4), dtype=np.float32), name="CellSpotlight", rgb=True)
+    viewer.add_image(np.zeros((2, 2, 4), dtype=np.float32), name="[Correction] CellSpotlight", rgb=True)
     widget._add_validated_overlay(np.array([[[0, 1], [0, 0]]], dtype=np.uint8))
 
-    layer = viewer.layers["Validated: Nucleus"]
+    layer = viewer.layers["[Correction] Validated: Nucleus"]
     color = layer.get_color(1)
 
     assert layer.contour == 0
     assert layer.opacity == 0.4
     assert np.allclose(color[:3], [0.0, 1.0, 0.0], atol=1e-6)
     assert color[3] == 1.0
-    assert viewer.layers.index("Validated: Nucleus") < viewer.layers.index("CellSpotlight")
+    assert viewer.layers.index("[Correction] Validated: Nucleus") < viewer.layers.index("[Correction] CellSpotlight")
 
     widget.deleteLater()
     viewer.close()
@@ -2111,7 +2143,7 @@ def test_correction_widget_highlight_adds_soft_spotlight():
     widget.activate_layer(layer)
     widget._update_highlight(0, 7)
 
-    spotlight = viewer.layers["CellSpotlight"]
+    spotlight = viewer.layers["[Correction] CellSpotlight"]
     data = np.asarray(spotlight.data)
 
     assert spotlight.visible is True
@@ -2235,8 +2267,8 @@ def test_nucleus_workflow_uses_flat_source_stack_layout():
     assert widget.correction_mode_section.title == "Correction"
     toggles = {toggle.text() for toggle in widget.findChildren(QToolButton)}
     assert "Pipeline Files" in toggles
-    assert "Segmentation Inputs" in toggles
-    assert "Tracking / Ultrack" in toggles
+    assert "Segmentation Input Parameters" in toggles
+    assert "Ultrack Parameters" in toggles
     assert "Database Browser" in toggles
     assert "Correction Shortcuts" in toggles
 
@@ -2249,8 +2281,8 @@ def test_nucleus_workflow_uses_simplified_four_section_layout():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.segmentation_inputs_section.title == "Segmentation Inputs"
-    assert widget.tracking_ultrack_section.title == "Tracking / Ultrack"
+    assert widget.segmentation_inputs_section.title == "Segmentation Input Parameters"
+    assert widget.tracking_ultrack_section.title == "Ultrack Parameters"
     assert widget.ultrack_db_browser_section.title == "Database Browser"
     assert widget.correction_mode_section.title == "Correction"
 
@@ -2274,11 +2306,11 @@ def test_nucleus_workflow_uses_simplified_four_section_layout():
         widget.correction_mode_section
     )
 
-    assert widget.preview_contour_btn in widget.segmentation_inputs_section.findChildren(QPushButton)
-    assert widget.build_btn in widget.segmentation_inputs_section.findChildren(QPushButton)
-    assert widget.run_db_gen_btn in widget.tracking_ultrack_section.findChildren(QPushButton)
-    assert widget.run_ultrack_btn in widget.tracking_ultrack_section.findChildren(QPushButton)
-    assert widget.cancel_btn in widget.tracking_ultrack_section.findChildren(QPushButton)
+    assert widget.preview_contour_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
+    assert widget.build_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
+    assert widget.run_db_gen_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
+    assert widget.run_ultrack_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
+    assert widget.cancel_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
 
     widget.deleteLater()
     viewer.close()
@@ -2351,7 +2383,7 @@ def test_ultrack_section_is_top_level_without_legacy_route_selector():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.tracking_ultrack_section.title == "Tracking / Ultrack"
+    assert widget.tracking_ultrack_section.title == "Ultrack Parameters"
     assert not hasattr(widget, "ultrack_route_check")
     assert widget.pipeline_status_lbl.text() == ""
     assert widget.pipeline_progress_bar.isVisible() is False
@@ -2402,17 +2434,17 @@ def test_correction_activate_button_expands_activates_and_deactivates_layers(tmp
 
     assert widget.correction_mode_section.is_expanded is True
     assert widget.correction_widget._layer is viewer.layers["[Correction] Tracked: Nucleus"]
-    assert "CorrectionDraw" in viewer.layers
-    assert "CellHighlight" in viewer.layers
-    assert "CellSpotlight" in viewer.layers
+    assert "[Correction] CorrectionDraw" in viewer.layers
+    assert "[Correction] CellHighlight" in viewer.layers
+    assert "[Correction] CellSpotlight" in viewer.layers
 
     widget.correction_active_btn.setChecked(False)
 
     assert widget.correction_mode_section.is_expanded is False
     assert widget.correction_widget._layer is None
-    assert "CorrectionDraw" not in viewer.layers
-    assert "CellHighlight" not in viewer.layers
-    assert "CellSpotlight" not in viewer.layers
+    assert "[Correction] CorrectionDraw" not in viewer.layers
+    assert "[Correction] CellHighlight" not in viewer.layers
+    assert "[Correction] CellSpotlight" not in viewer.layers
     assert "[Correction] Tracked: Nucleus" not in viewer.layers
 
     widget.deleteLater()
@@ -2490,9 +2522,12 @@ def test_correction_deactivation_removes_registered_layers_and_restores_viewer_s
     widget.refresh(pos_dir)
 
     widget.correction_active_btn.setChecked(True)
+    widget._add_validated_overlay(np.ones_like(tracked, dtype=np.uint8))
+    assert "[Correction] Validated: Nucleus" in viewer.layers
     widget.correction_active_btn.setChecked(False)
 
     assert "[Correction] Tracked: Nucleus" not in viewer.layers
+    assert "[Correction] Validated: Nucleus" not in viewer.layers
     assert "[Correction] User Layer" in viewer.layers
     assert viewer.layers["Existing"].visible is True
     assert viewer.layers["[Correction] User Layer"].visible is True

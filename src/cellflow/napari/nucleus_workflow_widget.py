@@ -97,8 +97,9 @@ except ImportError:
 _PREVIEW_LAYER = "Preview: Nucleus"
 _HYP_LAYER = "Hypothesis: Nucleus"
 _TRACKED_LAYER = "Tracked: Nucleus"
-_VALIDATED_OVERLAY = "Validated: Nucleus"
-_SPOTLIGHT_LAYER = "CellSpotlight"
+_VALIDATED_OVERLAY = "[Correction] Validated: Nucleus"
+_SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
+_LEGACY_VALIDATED_OVERLAY = "Validated: Nucleus"
 _VALIDATED_OVERLAY_OPACITY = 0.4
 _CONTOUR_LAYER = "Contour Map: Nucleus"
 _CELLPROB_LAYER = "Cellprob Map: Nucleus"
@@ -284,7 +285,6 @@ class NucleusWorkflowWidget(QWidget):
         params_lay.setContentsMargins(0, 0, 0, 0)
         params_lay.setSpacing(6)
 
-        params_lay.addWidget(_heading("Segmentation Inputs"))
         g = sweep_parameter_grid(horizontal_spacing=12)
         self.map_cellprob_min_spin = _dspin(
             -20, 20, -3.0, 1.0, 1,
@@ -363,30 +363,27 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_threshold_max_spin = self.source_contour_threshold_max_spin
         self.db_gen_threshold_step_spin = self.source_contour_threshold_step_spin
 
-        self.preview_contour_btn = _btn(
-            "Preview",
-            "Build the current frame's segmentation input source sweep in memory and display it in napari.",
-        )
-        self.build_btn = _btn(
-            "Build",
-            "Build averaged maps, then contour and foreground source stacks from segmentation inputs.",
-        )
-        self.build_maps_btn = self.build_btn
-        params_lay.addLayout(_button_grid((self.preview_contour_btn, self.build_btn)))
-
-        self.pipeline_status_lbl = _make_status()
-        params_lay.addWidget(self.pipeline_status_lbl)
-        self.pipeline_progress_bar = _make_progress()
-        params_lay.addWidget(self.pipeline_progress_bar)
-
         self.segmentation_inputs_parameters_section = CollapsibleSection(
-            "Segmentation Inputs",
+            "Segmentation Input Parameters",
             params_inner,
             expanded=True,
             title_role="params",
             title_level=1,
         )
         self.segmentation_inputs_section = self.segmentation_inputs_parameters_section
+
+        self.preview_contour_btn = _btn(
+            "Preview Segmentation Inputs",
+            "Build the current frame's segmentation input source sweep in memory and display it in napari.",
+        )
+        self.build_btn = _btn(
+            "Build Segmentation Inputs",
+            "Build averaged maps, then contour and foreground source stacks from segmentation inputs.",
+        )
+        self.build_maps_btn = self.build_btn
+
+        self.pipeline_status_lbl = _make_status()
+        self.pipeline_progress_bar = _make_progress()
         root.addWidget(self.segmentation_inputs_parameters_section)
 
     def _build_tracking_ultrack_section(self, root: QVBoxLayout) -> None:
@@ -553,13 +550,9 @@ class NucleusWorkflowWidget(QWidget):
         )
         self.cancel_btn = _btn("Cancel", "Cancel the currently running pipeline step.")
         self.cancel_btn.setEnabled(False)
-        lay.addLayout(_button_grid(
-            (self.run_db_gen_btn, self.run_ultrack_btn),
-            (self.cancel_btn,),
-        ))
 
         self.tracking_ultrack_parameters_section = CollapsibleSection(
-            "Tracking / Ultrack",
+            "Ultrack Parameters",
             params_inner,
             expanded=False,
             title_role="params",
@@ -567,6 +560,13 @@ class NucleusWorkflowWidget(QWidget):
         )
         self.tracking_ultrack_section = self.tracking_ultrack_parameters_section
         root.addWidget(self.tracking_ultrack_parameters_section)
+        root.addLayout(_button_grid((self.preview_contour_btn, self.build_btn)))
+        root.addLayout(_button_grid(
+            (self.run_db_gen_btn, self.run_ultrack_btn),
+            (self.cancel_btn,),
+        ))
+        root.addWidget(self.pipeline_status_lbl)
+        root.addWidget(self.pipeline_progress_bar)
 
     # -- Ultrack Database Browser ------------------------------------------
 
@@ -692,7 +692,6 @@ class NucleusWorkflowWidget(QWidget):
         self.correction_active_btn.setToolTip(
             "Activate correction mode and show correction layers and controls."
         )
-        group_lay.addWidget(self.correction_active_btn)
 
         # ── Action buttons — 2-column grid ────────────────────────
         self.save_tracked_btn = _btn(
@@ -733,11 +732,13 @@ class NucleusWorkflowWidget(QWidget):
         self.validation_counter_lbl.setWordWrap(True)
         group_lay.addWidget(self.validation_counter_lbl)
 
-        # ── Extend parameters (collapsible) ───────────────────────
-        extend_inner = QWidget()
-        extend_lay = QVBoxLayout(extend_inner)
-        extend_lay.setContentsMargins(0, 0, 0, 0)
-        extend_lay.setSpacing(4)
+        # ── Extend / retrack parameters (collapsible) ─────────────
+        extend_retrack_inner = QWidget()
+        extend_retrack_lay = QVBoxLayout(extend_retrack_inner)
+        extend_retrack_lay.setContentsMargins(0, 0, 0, 0)
+        extend_retrack_lay.setSpacing(6)
+
+        extend_retrack_lay.addWidget(_heading("Extend"))
         g = block_grid(horizontal_spacing=12)
         self.extend_max_dist_spin = _dspin(0, 500, 40.0, 1.0, 1)
         self.extend_area_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
@@ -754,34 +755,24 @@ class NucleusWorkflowWidget(QWidget):
         add_block_pair_row(g, 2,
             "Overlap pen:", compact_spinbox(self.extend_overlap_penalty_spin))
         add_block_checkbox_row(g, 3, self.extend_greedy_overwrite_check)
-        extend_lay.addLayout(g)
-        self.extend_params_section = CollapsibleSection(
-            "Extend Parameters",
-            extend_inner,
-            expanded=False,
-            title_role="params",
-            title_level=2,
-        )
-        group_lay.addWidget(self.extend_params_section)
+        extend_retrack_lay.addLayout(g)
 
-        # ── Retrack parameters (collapsible) ──────────────────────
-        retrack_inner = QWidget()
-        retrack_lay = QVBoxLayout(retrack_inner)
-        retrack_lay.setContentsMargins(0, 0, 0, 0)
-        retrack_lay.setSpacing(4)
+        extend_retrack_lay.addWidget(_heading("Retrack"))
         g = block_grid(horizontal_spacing=12)
         self.retrack_max_dist_spin = _dspin(0, 500, 20.0, 1.0, 1)
         add_block_pair_row(g, 0,
             "Max dist:", compact_spinbox(self.retrack_max_dist_spin))
-        retrack_lay.addLayout(g)
-        self.retrack_params_section = CollapsibleSection(
-            "Retrack Parameters",
-            retrack_inner,
+        extend_retrack_lay.addLayout(g)
+        self.extend_retrack_params_section = CollapsibleSection(
+            "Extend / Retrack Parameters",
+            extend_retrack_inner,
             expanded=False,
             title_role="params",
             title_level=2,
         )
-        group_lay.addWidget(self.retrack_params_section)
+        self.extend_params_section = self.extend_retrack_params_section
+        self.retrack_params_section = self.extend_retrack_params_section
+        group_lay.addWidget(self.extend_retrack_params_section)
 
         # ── Inline CorrectionWidget ───────────────────────────────
         self.correction_widget = CorrectionWidget(
@@ -789,18 +780,28 @@ class NucleusWorkflowWidget(QWidget):
             show_activate_btn=False,
             show_shortcuts=False,
             inspector_first=True,
+            show_cleanup=False,
         )
         self.correction_widget.set_edit_callback(self._on_cells_edited)
-        group_lay.addWidget(self.correction_widget)
 
         self.correction_shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
             self.correction_widget.build_shortcuts_widget(),
-            expanded=False,
+            expanded=True,
             title_role="actions",
             title_level=2,
         )
         group_lay.addWidget(self.correction_shortcuts_section)
+
+        self.artifact_cleanup_section = CollapsibleSection(
+            "Artifact Cleanup",
+            self.correction_widget._cleanup_container,
+            expanded=False,
+            title_role="params",
+            title_level=2,
+        )
+        group_lay.addWidget(self.artifact_cleanup_section)
+        group_lay.addWidget(self.correction_widget)
 
         self.correction_mode_section = CollapsibleSection(
             "Correction",
@@ -809,6 +810,9 @@ class NucleusWorkflowWidget(QWidget):
             title_role="stage",
             title_level=1,
         )
+        self.correction_mode_section._toggle.setVisible(False)
+        self.correction_mode_section._toggle.setEnabled(False)
+        root.addWidget(self.correction_active_btn)
         root.addWidget(self.correction_mode_section)
 
     # ================================================================
@@ -3236,8 +3240,10 @@ class NucleusWorkflowWidget(QWidget):
     def _refresh_validated_overlay(self) -> None:
         tracked = self._correction_tracked_layer()
         if self._pos_dir is None or tracked is None:
-            if _VALIDATED_OVERLAY in self.viewer.layers:
-                self.viewer.layers.remove(self.viewer.layers[_VALIDATED_OVERLAY])
+            for name in (_VALIDATED_OVERLAY, _LEGACY_VALIDATED_OVERLAY):
+                if name in self.viewer.layers:
+                    self.viewer.layers.remove(self.viewer.layers[name])
+                    self._correction_owned_layers.discard(name)
             return
         if tracked.data.ndim < 3:
             return
@@ -3268,13 +3274,17 @@ class NucleusWorkflowWidget(QWidget):
             layer = self.viewer.layers[_VALIDATED_OVERLAY]
             layer.data = data
             layer.opacity = _VALIDATED_OVERLAY_OPACITY
+            self._correction_owned_layers.add(_VALIDATED_OVERLAY)
             self._place_validated_overlay_below_spotlight()
             return
+        if _LEGACY_VALIDATED_OVERLAY in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[_LEGACY_VALIDATED_OVERLAY])
         self.viewer.add_labels(
             data, name=_VALIDATED_OVERLAY,
             opacity=_VALIDATED_OVERLAY_OPACITY,
             colormap=direct_colormap({None: (0, 0, 0, 0), 1: "#00ff00"}),
         )
+        self._correction_owned_layers.add(_VALIDATED_OVERLAY)
         self._place_validated_overlay_below_spotlight()
         tracked = self._correction_tracked_layer()
         if tracked is not None:

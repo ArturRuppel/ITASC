@@ -53,9 +53,9 @@ if os.environ.get("CELLFLOW_DEBUG"):
         _h.setFormatter(logging.Formatter("[cellflow.correction] %(levelname)s %(message)s"))
         log.addHandler(_h)
 
-_DRAW_LAYER      = "CorrectionDraw"
-_HIGHLIGHT_LAYER = "CellHighlight"
-_SPOTLIGHT_LAYER = "CellSpotlight"
+_DRAW_LAYER      = "[Correction] CorrectionDraw"
+_HIGHLIGHT_LAYER = "[Correction] CellHighlight"
+_SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
 _SPOTLIGHT_OPACITY = 0.7
 _SPOTLIGHT_SCALE = 3.0
 
@@ -124,6 +124,18 @@ class CorrectionWidget(QWidget):
         self._activate_btn.clicked.connect(self._toggle_active)
         if self._show_activate_btn:
             root.addWidget(self._activate_btn)
+
+        attrib = QLabel(
+            "Correction tools adapted from "
+            '<a href="https://github.com/Image-Analysis-Hub/Epicure">Epicure</a>.'
+            "<br>If you use these tools, please cite:<br>"
+            '<a href="https://doi.org/10.64898/2026.03.27.714683">'
+            "doi:10.64898/2026.03.27.714683</a>"
+        )
+        attrib.setOpenExternalLinks(True)
+        attrib.setWordWrap(True)
+        muted_label(attrib, size_pt=9)
+        root.addWidget(attrib)
 
         self._outline_btn = QPushButton("Show outlines only")
         self._outline_btn.setCheckable(True)
@@ -204,9 +216,8 @@ class CorrectionWidget(QWidget):
         self._clean_fragments_btn.clicked.connect(self._clean_fragments)
         _clay.addWidget(self._clean_fragments_btn)                 # ← CHANGED
 
-        root.addWidget(self._cleanup_container)                    # ← NEW
-        if not self._show_cleanup:                                 # ← NEW
-            self._cleanup_container.setVisible(False)              # ← NEW
+        if self._show_cleanup:
+            root.addWidget(self._cleanup_container)
 
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -247,18 +258,6 @@ class CorrectionWidget(QWidget):
             root.addWidget(inspect_group)
 
         root.addStretch()
-
-        attrib = QLabel(
-            "Correction tools adapted from "
-            '<a href="https://github.com/Image-Analysis-Hub/Epicure">Epicure</a>.'
-            "<br>If you use these tools, please cite:<br>"
-            '<a href="https://doi.org/10.64898/2026.03.27.714683">'
-            "doi:10.64898/2026.03.27.714683</a>"
-        )
-        attrib.setOpenExternalLinks(True)
-        attrib.setWordWrap(True)
-        muted_label(attrib, size_pt=9)
-        root.addWidget(attrib)
 
     def build_shortcuts_widget(self) -> QWidget:
         group = QGroupBox("Correction shortcuts")
