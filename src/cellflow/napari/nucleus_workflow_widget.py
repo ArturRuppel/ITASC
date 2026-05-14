@@ -267,7 +267,6 @@ class NucleusWorkflowWidget(QWidget):
         # ── Workflow sections ────────────────────────────────────────
         self._build_segmentation_inputs_section(root)
         self._build_tracking_ultrack_section(root)
-        self._build_pipeline_actions_section(root)
 
         # ── Ultrack Database Browser ─────────────────────────────────
         self._build_db_browser_section(root)
@@ -285,6 +284,7 @@ class NucleusWorkflowWidget(QWidget):
         params_lay.setContentsMargins(0, 0, 0, 0)
         params_lay.setSpacing(6)
 
+        params_lay.addWidget(_heading("Segmentation Inputs"))
         g = sweep_parameter_grid(horizontal_spacing=12)
         self.map_cellprob_min_spin = _dspin(
             -20, 20, -3.0, 1.0, 1,
@@ -362,6 +362,22 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_threshold_min_spin = self.source_contour_threshold_min_spin
         self.db_gen_threshold_max_spin = self.source_contour_threshold_max_spin
         self.db_gen_threshold_step_spin = self.source_contour_threshold_step_spin
+
+        self.preview_contour_btn = _btn(
+            "Preview",
+            "Build the current frame's segmentation input source sweep in memory and display it in napari.",
+        )
+        self.build_btn = _btn(
+            "Build",
+            "Build averaged maps, then contour and foreground source stacks from segmentation inputs.",
+        )
+        self.build_maps_btn = self.build_btn
+        params_lay.addLayout(_button_grid((self.preview_contour_btn, self.build_btn)))
+
+        self.pipeline_status_lbl = _make_status()
+        params_lay.addWidget(self.pipeline_status_lbl)
+        self.pipeline_progress_bar = _make_progress()
+        params_lay.addWidget(self.pipeline_progress_bar)
 
         self.segmentation_inputs_parameters_section = CollapsibleSection(
             "Segmentation Inputs",
@@ -527,26 +543,6 @@ class NucleusWorkflowWidget(QWidget):
             "Bias:", compact_spinbox(self.ultrack_bias_spin))
         lay.addLayout(g)
 
-        self.tracking_ultrack_parameters_section = CollapsibleSection(
-            "Tracking / Ultrack",
-            params_inner,
-            expanded=False,
-            title_role="params",
-            title_level=1,
-        )
-        self.tracking_ultrack_section = self.tracking_ultrack_parameters_section
-        root.addWidget(self.tracking_ultrack_parameters_section)
-
-    def _build_pipeline_actions_section(self, root: QVBoxLayout) -> None:
-        self.preview_contour_btn = _btn(
-            "Preview Segmentation Inputs",
-            "Build the current frame's segmentation input source sweep in memory and display it in napari.",
-        )
-        self.build_btn = _btn(
-            "Build Segmentation Inputs",
-            "Build averaged maps, then contour and foreground source stacks from segmentation inputs.",
-        )
-        self.build_maps_btn = self.build_btn
         self.run_db_gen_btn = _btn(
             "Build Ultrack Database",
             "Build an Ultrack candidate database from explicit source-stack artifacts.",
@@ -557,16 +553,20 @@ class NucleusWorkflowWidget(QWidget):
         )
         self.cancel_btn = _btn("Cancel", "Cancel the currently running pipeline step.")
         self.cancel_btn.setEnabled(False)
-        root.addLayout(_button_grid(
-            (self.preview_contour_btn, self.build_btn),
+        lay.addLayout(_button_grid(
             (self.run_db_gen_btn, self.run_ultrack_btn),
             (self.cancel_btn,),
         ))
 
-        self.pipeline_status_lbl = _make_status()
-        root.addWidget(self.pipeline_status_lbl)
-        self.pipeline_progress_bar = _make_progress()
-        root.addWidget(self.pipeline_progress_bar)
+        self.tracking_ultrack_parameters_section = CollapsibleSection(
+            "Tracking / Ultrack",
+            params_inner,
+            expanded=False,
+            title_role="params",
+            title_level=1,
+        )
+        self.tracking_ultrack_section = self.tracking_ultrack_parameters_section
+        root.addWidget(self.tracking_ultrack_parameters_section)
 
     # -- Ultrack Database Browser ------------------------------------------
 
@@ -1663,6 +1663,8 @@ class NucleusWorkflowWidget(QWidget):
         if step <= 0:
             raise ValueError("Z step must be > 0.")
         if stop == -1:
+            if start == 0 and step == 1:
+                return None
             return slice(start, None, step)
         if start > stop:
             raise ValueError("Z start must be <= stop.")

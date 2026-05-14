@@ -765,7 +765,7 @@ git commit -m "fix: restore viewer when nucleus correction activation fails"
 **Files:**
 - No code edits unless verification exposes a regression.
 
-- [ ] **Step 1: Run the focused correction/layout suite**
+- [x] **Step 1: Run the focused correction/layout suite**
 
 Run:
 
