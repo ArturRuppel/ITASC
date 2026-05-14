@@ -689,7 +689,7 @@ git commit -m "fix: route nucleus correction actions through active layer"
 - Modify: `src/cellflow/napari/nucleus_workflow_widget.py`
 - Test: `tests/napari/test_nucleus_tracking_correction_layout.py`
 
-- [ ] **Step 1: Add missing-file test**
+- [x] **Step 1: Add missing-file test**
 
 Add:
 
@@ -717,7 +717,7 @@ def test_correction_activation_without_tracked_file_restores_button_and_viewer(t
     viewer.close()
 ```
 
-- [ ] **Step 2: Make `refresh(None)` leave correction mode cleanly**
+- [x] **Step 2: Make `refresh(None)` leave correction mode cleanly**
 
 In `refresh`, replace the `pos_dir is None` branch with:
 
@@ -731,7 +731,7 @@ In `refresh`, replace the `pos_dir is None` branch with:
             return
 ```
 
-- [ ] **Step 3: Ensure status label visibility**
+- [x] **Step 3: Ensure status label visibility**
 
 Confirm `_correction_status` still sets text and visibility:
 
@@ -743,7 +743,7 @@ Confirm `_correction_status` still sets text and visibility:
 
 No change is needed if the method already matches.
 
-- [ ] **Step 4: Run missing-file test**
+- [x] **Step 4: Run missing-file test**
 
 Run:
 
@@ -753,7 +753,7 @@ pytest tests/napari/test_nucleus_tracking_correction_layout.py::test_correction_
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/cellflow/napari/nucleus_workflow_widget.py tests/napari/test_nucleus_tracking_correction_layout.py

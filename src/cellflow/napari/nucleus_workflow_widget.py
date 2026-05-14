@@ -936,7 +936,11 @@ class NucleusWorkflowWidget(QWidget):
         self._pos_dir = pos_dir
         self._files_widget.refresh(pos_dir)
         if pos_dir is None:
-            self.correction_widget.deactivate()
+            if self.correction_active_btn.isChecked():
+                self.correction_active_btn.setChecked(False)
+            else:
+                self.correction_widget.deactivate()
+                self._remove_correction_owned_layers()
             return
         self._refresh_validated_overlay()
         self._refresh_validation_counter()

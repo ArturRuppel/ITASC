@@ -2491,6 +2491,29 @@ def test_correction_deactivation_removes_registered_layers_and_restores_viewer_s
     viewer.close()
 
 
+def test_correction_activation_without_tracked_file_restores_button_and_viewer(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    pos_dir = tmp_path / "Position_1"
+    pos_dir.mkdir()
+    existing = viewer.add_image(np.ones((4, 4), dtype=np.float32), name="Existing")
+    existing.visible = True
+    widget.refresh(pos_dir)
+
+    widget.correction_active_btn.setChecked(True)
+
+    assert widget.correction_active_btn.isChecked() is False
+    assert widget.correction_mode_section.is_expanded is False
+    assert viewer.layers["Existing"].visible is True
+    assert widget._correction_owned_layers == set()
+    assert "No tracked labels file found" in widget.correction_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_correction_save_writes_correction_owned_tracked_layer(tmp_path):
     tifffile = pytest.importorskip("tifffile")
     _app, viewer = _make_viewer()
