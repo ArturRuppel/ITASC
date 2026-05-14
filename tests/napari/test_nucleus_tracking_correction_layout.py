@@ -559,15 +559,15 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert "Save tracked" in correction_button_texts
     assert "Load Labels" not in correction_button_texts
     assert "Save Labels" not in correction_button_texts
-    assert "Extend selected" in correction_button_texts
-    assert "Retrack selected" in correction_button_texts
+    assert "Extend selected" not in correction_button_texts
+    assert "Retrack selected" not in correction_button_texts
     assert "Reassign ID" in correction_button_texts
     assert "Remove unvalidated" in correction_button_texts
     assert "Clean Holes / Islands" not in correction_button_texts
-    assert "◀ Extend (A)" not in correction_button_texts
-    assert "Extend (D) ▶" not in correction_button_texts
-    assert "◀ Retrack (Q)" not in correction_button_texts
-    assert "Retrack (E) ▶" not in correction_button_texts
+    assert "◀ Extend (A)" in correction_button_texts
+    assert "Extend (D) ▶" in correction_button_texts
+    assert "◀ Retrack (Q)" in correction_button_texts
+    assert "Retrack (E) ▶" in correction_button_texts
     shortcut_keys = {
         shortcut.key().toString(QKeySequence.SequenceFormat.PortableText)
         for shortcut in widget.findChildren(QShortcut)
@@ -589,8 +589,10 @@ def test_tracking_correction_action_buttons_expand_horizontally():
 
     tracked_buttons = [
         widget.run_ultrack_btn,
-        widget.extend_selected_btn,
-        widget.retrack_selected_btn,
+        widget.extend_back_btn,
+        widget.extend_fwd_btn,
+        widget.retrack_back_btn,
+        widget.retrack_fwd_btn,
         widget.save_tracked_btn,
         widget.reassign_ids_btn,
         widget.remove_unvalidated_btn,
@@ -1801,7 +1803,9 @@ def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
     assert widget.db_gen_min_area_spin.x() < widget.db_gen_max_area_spin.x()
 
     # Paired correction actions should also sit side-by-side
-    assert widget.extend_selected_btn.y() == widget.retrack_selected_btn.y()
+    assert widget.extend_back_btn.y() == widget.extend_fwd_btn.y()
+    assert widget.extend_back_btn.x() < widget.extend_fwd_btn.x()
+    assert widget.retrack_back_btn.y() == widget.retrack_fwd_btn.y()
     assert widget.reassign_ids_btn.y() == widget.remove_unvalidated_btn.y()
 
     widget.deleteLater()
@@ -1831,10 +1835,10 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.extend_params_section.title == "Advanced Correction Params"
+    assert widget.extend_params_section.title == "Extend Parameters"
     assert widget.extend_params_section.is_expanded is False
-    assert widget.retrack_params_section.title == "Advanced Correction Params"
-    assert widget.retrack_params_section is widget.extend_params_section
+    assert widget.retrack_params_section.title == "Retrack Parameters"
+    assert widget.retrack_params_section is not widget.extend_params_section
     assert widget.retrack_params_section.is_expanded is False
     assert widget.extend_max_dist_spin.value() == 40.0
     assert widget.extend_area_weight_spin.value() == 1.0
@@ -1842,8 +1846,10 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     assert widget.extend_distance_weight_spin.value() == 0.25
     assert widget.extend_overlap_penalty_spin.value() == 1.0
     assert widget.extend_greedy_overwrite_check.isChecked() is False
-    assert widget.retrack_radius_spin.value() == 20.0
     assert widget.retrack_max_dist_spin.value() == 20.0
+    assert not hasattr(widget, "extend_before_spin")
+    assert not hasattr(widget, "extend_after_spin")
+    assert not hasattr(widget, "retrack_window_spin")
 
     widget.deleteLater()
     viewer.close()
@@ -2366,8 +2372,12 @@ def test_correction_section_is_top_level():
     }
     assert "Save tracked" in correction_button_texts
     assert "Load Labels" not in correction_button_texts
-    assert "Extend selected" in correction_button_texts
-    assert "Retrack selected" in correction_button_texts
+    assert "Extend selected" not in correction_button_texts
+    assert "Retrack selected" not in correction_button_texts
+    assert "◀ Extend (A)" in correction_button_texts
+    assert "Extend (D) ▶" in correction_button_texts
+    assert "◀ Retrack (Q)" in correction_button_texts
+    assert "Retrack (E) ▶" in correction_button_texts
 
     widget.deleteLater()
     viewer.close()
