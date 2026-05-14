@@ -63,16 +63,17 @@ from cellflow.napari.ui_style import (
     action_button,
     add_block_checkbox_row,
     add_block_pair_row,
+    add_sweep_parameter_row,
     block_grid,
     compact_spinbox,
     danger_button,
-    muted_label,
     parameter_heading,
     semantic_color,
     status_label,
+    sweep_parameter_grid,
 )
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
-from cellflow.segmentation import build_nucleus_averaged_maps
+from cellflow.segmentation import build_consensus_boundary, build_nucleus_averaged_maps
 from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.export import export_tracked_labels
@@ -257,6 +258,7 @@ class NucleusWorkflowWidget(QWidget):
         # ── Workflow sections ────────────────────────────────────────
         self._build_segmentation_inputs_section(root)
         self._build_tracking_ultrack_section(root)
+        self._build_pipeline_actions_section(root)
 
         # ── Ultrack Database Browser ─────────────────────────────────
         self._build_db_browser_section(root)
@@ -269,14 +271,12 @@ class NucleusWorkflowWidget(QWidget):
     # -- Parameters --------------------------------------------------------
 
     def _build_segmentation_inputs_section(self, root: QVBoxLayout) -> None:
-        inner = QWidget()
-        lay = QVBoxLayout(inner)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
+        params_inner = QWidget()
+        params_lay = QVBoxLayout(params_inner)
+        params_lay.setContentsMargins(0, 0, 0, 0)
+        params_lay.setSpacing(6)
 
-        # Segmentation Inputs — Source Stack Sweep
-        lay.addWidget(_heading("Segmentation Inputs — Averaged Maps"))
-        g = block_grid(horizontal_spacing=12)
+        g = sweep_parameter_grid(horizontal_spacing=12)
         self.map_cellprob_min_spin = _dspin(
             -20, 20, -3.0, 1.0, 1,
             "Minimum Cellpose probability threshold for averaged-map generation.",
@@ -294,31 +294,13 @@ class NucleusWorkflowWidget(QWidget):
             tooltip="First z slice included in averaged-map generation.",
         )
         self.map_z_stop_spin = _ispin(
-            0, 999, 0,
-            tooltip="Last z slice included. 0 means all z slices.",
+            -1, 999, -1,
+            tooltip="Last z slice included. -1 means all z slices.",
         )
         self.map_z_step_spin = _ispin(
             1, 999, 1,
             tooltip="Z-slice step for averaged-map generation.",
         )
-        add_block_pair_row(g, 0,
-            "Cellprob min:", compact_spinbox(self.map_cellprob_min_spin),
-            "Cellprob max:", compact_spinbox(self.map_cellprob_max_spin))
-        add_block_pair_row(g, 1,
-            "Cellprob step:", compact_spinbox(self.map_cellprob_step_spin),
-            "Z start:", compact_spinbox(self.map_z_start_spin))
-        add_block_pair_row(g, 2,
-            "Z stop:", compact_spinbox(self.map_z_stop_spin),
-            "Z step:", compact_spinbox(self.map_z_step_spin))
-        lay.addLayout(g)
-        self.build_maps_btn = _btn(
-            "Build Maps",
-            "Build contours.tif and foreground_scores.tif from Cellpose probability and flow outputs.",
-        )
-        lay.addWidget(self.build_maps_btn)
-
-        lay.addWidget(_heading("Segmentation Inputs — Source Stack Sweep"))
-        g = block_grid(horizontal_spacing=12)
         self.source_contour_threshold_min_spin = _dspin(
             0, 1, 0.1, 0.05, 2,
             "Minimum normalized contour threshold for the source sweep.",
@@ -343,42 +325,48 @@ class NucleusWorkflowWidget(QWidget):
             0.001, 1, 0.1, 0.05, 3,
             "Step size for normalized foreground source thresholds.",
         )
-        add_block_pair_row(g, 0,
-            "Contour min:", compact_spinbox(self.source_contour_threshold_min_spin),
-            "Contour max:", compact_spinbox(self.source_contour_threshold_max_spin))
-        add_block_pair_row(g, 1,
-            "Contour step:", compact_spinbox(self.source_contour_threshold_step_spin),
-            "Foreground min:", compact_spinbox(self.source_foreground_threshold_min_spin))
-        add_block_pair_row(g, 2,
-            "Foreground max:", compact_spinbox(self.source_foreground_threshold_max_spin),
-            "Foreground step:", compact_spinbox(self.source_foreground_threshold_step_spin))
-        lay.addLayout(g)
+        add_sweep_parameter_row(
+            g, 1, "Cellprob:",
+            self.map_cellprob_min_spin,
+            self.map_cellprob_max_spin,
+            self.map_cellprob_step_spin,
+        )
+        add_sweep_parameter_row(
+            g, 2, "Z:",
+            self.map_z_start_spin,
+            self.map_z_stop_spin,
+            self.map_z_step_spin,
+        )
+        add_sweep_parameter_row(
+            g, 3, "Contour:",
+            self.source_contour_threshold_min_spin,
+            self.source_contour_threshold_max_spin,
+            self.source_contour_threshold_step_spin,
+        )
+        add_sweep_parameter_row(
+            g, 4, "Foreground:",
+            self.source_foreground_threshold_min_spin,
+            self.source_foreground_threshold_max_spin,
+            self.source_foreground_threshold_step_spin,
+        )
+        params_lay.addLayout(g)
         self.db_gen_threshold_min_spin = self.source_contour_threshold_min_spin
         self.db_gen_threshold_max_spin = self.source_contour_threshold_max_spin
         self.db_gen_threshold_step_spin = self.source_contour_threshold_step_spin
 
-        self.preview_contour_btn = _btn(
-            "Preview Sources",
-            "Build Ultrack source stacks and display the current frame in napari.",
-        )
-        self.build_btn = _btn(
-            "Build Sources",
-            "Build contour and foreground source stacks from segmentation inputs.",
-        )
-        lay.addLayout(_button_grid((self.preview_contour_btn, self.build_btn)))
-
-        self.segmentation_inputs_section = CollapsibleSection(
-            "Segmentation Inputs",
-            inner,
+        self.segmentation_inputs_parameters_section = CollapsibleSection(
+            "Segmentation Parameters",
+            params_inner,
             expanded=True,
-            title_role="stage",
+            title_role="params",
             title_level=1,
         )
-        root.addWidget(self.segmentation_inputs_section)
+        self.segmentation_inputs_section = self.segmentation_inputs_parameters_section
+        root.addWidget(self.segmentation_inputs_parameters_section)
 
     def _build_tracking_ultrack_section(self, root: QVBoxLayout) -> None:
-        inner = QWidget()
-        lay = QVBoxLayout(inner)
+        params_inner = QWidget()
+        lay = QVBoxLayout(params_inner)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
@@ -530,18 +518,28 @@ class NucleusWorkflowWidget(QWidget):
             "Bias:", compact_spinbox(self.ultrack_bias_spin))
         lay.addLayout(g)
 
-        # Attribution
-        ultrack_attrib = QLabel(
-            "Ultrack tracking is powered by the "
-            '<a href="https://github.com/royerlab/ultrack">Ultrack</a> project.'
+        self.tracking_ultrack_parameters_section = CollapsibleSection(
+            "Ultrack Parameters",
+            params_inner,
+            expanded=False,
+            title_role="params",
+            title_level=1,
         )
-        ultrack_attrib.setOpenExternalLinks(True)
-        ultrack_attrib.setWordWrap(True)
-        muted_label(ultrack_attrib, size_pt=9)
-        lay.addWidget(ultrack_attrib)
+        self.tracking_ultrack_section = self.tracking_ultrack_parameters_section
+        root.addWidget(self.tracking_ultrack_parameters_section)
 
+    def _build_pipeline_actions_section(self, root: QVBoxLayout) -> None:
+        self.preview_contour_btn = _btn(
+            "Preview Segmentation Inputs",
+            "Build the current frame's segmentation input source sweep in memory and display it in napari.",
+        )
+        self.build_btn = _btn(
+            "Build Segmentation Inputs",
+            "Build averaged maps, then contour and foreground source stacks from segmentation inputs.",
+        )
+        self.build_maps_btn = self.build_btn
         self.run_db_gen_btn = _btn(
-            "Run DB Generation",
+            "Build Ultrack Database",
             "Build an Ultrack candidate database from explicit source-stack artifacts.",
         )
         self.run_ultrack_btn = _btn(
@@ -550,24 +548,16 @@ class NucleusWorkflowWidget(QWidget):
         )
         self.cancel_btn = _btn("Cancel", "Cancel the currently running pipeline step.")
         self.cancel_btn.setEnabled(False)
-        lay.addLayout(_button_grid(
+        root.addLayout(_button_grid(
+            (self.preview_contour_btn, self.build_btn),
             (self.run_db_gen_btn, self.run_ultrack_btn),
             (self.cancel_btn,),
         ))
 
         self.pipeline_status_lbl = _make_status()
-        lay.addWidget(self.pipeline_status_lbl)
+        root.addWidget(self.pipeline_status_lbl)
         self.pipeline_progress_bar = _make_progress()
-        lay.addWidget(self.pipeline_progress_bar)
-
-        self.tracking_ultrack_section = CollapsibleSection(
-            "Tracking / Ultrack",
-            inner,
-            expanded=False,
-            title_role="stage",
-            title_level=1,
-        )
-        root.addWidget(self.tracking_ultrack_section)
+        root.addWidget(self.pipeline_progress_bar)
 
     # -- Ultrack Database Browser ------------------------------------------
 
@@ -813,9 +803,8 @@ class NucleusWorkflowWidget(QWidget):
     # ================================================================
     def _connect_signals(self) -> None:
         # Pipeline buttons
-        self.build_maps_btn.clicked.connect(self._on_build_nucleus_maps)
         self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
-        self.build_btn.clicked.connect(self._on_build_contour_maps)
+        self.build_btn.clicked.connect(self._on_build_segmentation_inputs)
         self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
         self.run_ultrack_btn.clicked.connect(self._on_run_ultrack)
         self.cancel_btn.clicked.connect(self._on_cancel)
@@ -1184,6 +1173,27 @@ class NucleusWorkflowWidget(QWidget):
         step = self.viewer.dims.current_step
         return int(step[0]) if len(step) >= 1 else 0
 
+    @staticmethod
+    def _preview_frame_from_step(
+        current_step: tuple[int, ...],
+        frame_count: int,
+        *,
+        source_time_axes: bool,
+    ) -> int:
+        axis = 1 if source_time_axes and len(current_step) >= 2 else 0
+        if not current_step:
+            return 0
+        return min(max(int(current_step[axis]), 0), frame_count - 1)
+
+    def _segmentation_preview_has_source_time_axes(self) -> bool:
+        for name in (_CONTOUR_LAYER, _FOREGROUND_SCORE_LAYER):
+            if name not in self.viewer.layers:
+                continue
+            data = np.asarray(self.viewer.layers[name].data)
+            if data.ndim == 4:
+                return True
+        return False
+
     def _update_tracked_display(
         self, labels: np.ndarray, t: int | None = None,
     ) -> None:
@@ -1205,6 +1215,20 @@ class NucleusWorkflowWidget(QWidget):
 
     def _update_layer(self, name: str, data: np.ndarray) -> None:
         self._update_labels_layer(name, data)
+
+    def _ensure_nucleus_zavg_layer(self) -> None:
+        if _NUC_ZAVG_LAYER in self.viewer.layers:
+            return
+        zavg_path = self._nucleus_zavg_path()
+        if zavg_path is None or not zavg_path.exists():
+            return
+        data = np.asarray(tifffile.imread(str(zavg_path)), dtype=np.float32)
+        self.viewer.add_image(
+            data,
+            name=_NUC_ZAVG_LAYER,
+            colormap="bop orange",
+            visible=True,
+        )
 
     def _set_viewer_frame(self, t: int) -> None:
         step = list(self.viewer.dims.current_step)
@@ -1241,6 +1265,103 @@ class NucleusWorkflowWidget(QWidget):
     # ================================================================
     # 1. Source Stacks
     # ================================================================
+    def _on_build_segmentation_inputs(self) -> None:
+        if self._pos_dir is None:
+            self._status("No project open."); return
+        prob_path = self._prob_path()
+        dp_path = self._dp_path()
+        contours_path = self._pos_dir / "2_nucleus" / "contours.tif"
+        score_path = self._foreground_scores_path()
+        contour_sources_path = self._contour_sources_path()
+        foreground_sources_path = self._foreground_sources_path()
+        if prob_path is None or not prob_path.exists():
+            self._status(f"Missing: {prob_path}"); return
+        if dp_path is None or not dp_path.exists():
+            self._status(f"Missing: {dp_path}"); return
+        if score_path is None or contour_sources_path is None or foreground_sources_path is None:
+            self._status("No project open."); return
+        try:
+            map_thresholds = self._map_cellprob_thresholds_from_controls()
+            z_indices = self._map_z_indices_from_controls()
+            contour_thresholds = self._source_contour_thresholds_from_controls()
+            foreground_thresholds = self._source_foreground_thresholds_from_controls()
+        except ValueError as exc:
+            self._status(str(exc)); return
+        pos_dir = self._pos_dir
+
+        def _done(result):
+            report, n_sources = result
+            self._contour_worker = None
+            self._set_pipeline_buttons_enabled(True)
+            self._clear_progress()
+            self._files_widget.refresh(pos_dir)
+            frames = int(getattr(report, "frames", 0))
+            self._status(f"Segmentation inputs built ({frames} frames, {n_sources} sources).")
+
+        @thread_worker(connect={
+            "yielded": self._on_progress,
+            "returned": _done,
+            "errored": self._on_contour_worker_error,
+        })
+        def _worker():
+            import queue as _queue
+            import threading
+
+            msg_queue: _queue.SimpleQueue = _queue.SimpleQueue()
+            result_holder: list = []
+            exc_holder: list = []
+
+            def _progress_cb(done: int, total: int, msg: str) -> None:
+                msg_queue.put((done, total + 1, msg))
+
+            def _run_maps() -> None:
+                try:
+                    result_holder.append(
+                        build_nucleus_averaged_maps(
+                            prob_path,
+                            dp_path,
+                            contours_path,
+                            score_path,
+                            cellprob_thresholds=map_thresholds,
+                            z_indices=z_indices,
+                            progress_cb=_progress_cb,
+                        )
+                    )
+                except Exception as e:
+                    exc_holder.append(e)
+
+            t = threading.Thread(target=_run_maps, daemon=True)
+            t.start()
+            yield (0, 1, "Starting averaged-map build...")
+            while t.is_alive() or not msg_queue.empty():
+                try:
+                    yield msg_queue.get_nowait()
+                except _queue.Empty:
+                    t.join(timeout=0.05)
+            if exc_holder:
+                raise exc_holder[0]
+            report = result_holder[0]
+            map_frames = max(1, int(getattr(report, "frames", 0)))
+            yield (map_frames, map_frames + 1, "Building Ultrack source stacks...")
+            metadata = write_ultrack_source_stacks(
+                contours_path,
+                score_path,
+                contour_sources_path,
+                foreground_sources_path,
+                contour_thresholds=contour_thresholds,
+                foreground_thresholds=foreground_thresholds,
+            )
+            yield (map_frames + 1, map_frames + 1, "Saved segmentation inputs.")
+            return report, len(metadata)
+
+        n_sources = len(contour_thresholds) * len(foreground_thresholds)
+        self._status(
+            f"Building segmentation inputs "
+            f"({len(map_thresholds)} cellprob thresholds, {n_sources} sources)..."
+        )
+        self._set_pipeline_buttons_enabled(False)
+        self._contour_worker = _worker()
+
     def _on_build_nucleus_maps(self) -> None:
         if self._pos_dir is None:
             self._status("No project open."); return
@@ -1345,17 +1466,18 @@ class NucleusWorkflowWidget(QWidget):
     def _on_preview_contour_maps(self) -> None:
         if self._pos_dir is None:
             self._status("No project open."); return
-        contours_path = self._contours_path()
-        score_path = self._foreground_scores_path()
-        if contours_path is None or score_path is None:
-            self._status("No project open."); return
-        if not contours_path.exists():
-            self._status("Missing: contours.tif (or legacy contour_maps.tif) — build segmentation inputs first."); return
-        if not score_path.exists():
-            self._status("Missing: foreground_scores.tif — build segmentation inputs first."); return
+        prob_path = self._prob_path()
+        dp_path = self._dp_path()
+        if prob_path is None or not prob_path.exists():
+            self._status(f"Missing: {prob_path}"); return
+        if dp_path is None or not dp_path.exists():
+            self._status(f"Missing: {dp_path}"); return
 
-        t_frame = self._current_t()
+        current_step = tuple(int(v) for v in self.viewer.dims.current_step)
+        self._ensure_nucleus_zavg_layer()
         try:
+            map_thresholds = self._map_cellprob_thresholds_from_controls()
+            z_indices = self._map_z_indices_from_controls()
             contour_thresholds = self._source_contour_thresholds_from_controls()
             foreground_thresholds = self._source_foreground_thresholds_from_controls()
         except ValueError as exc:
@@ -1365,37 +1487,95 @@ class NucleusWorkflowWidget(QWidget):
             self._contour_worker = None
             self._set_pipeline_buttons_enabled(True)
             self._clear_progress()
-            contour_data, foreground_data, t_idx, n_sources = result
+            contour_data, foreground_data, t_idx, frame_count, n_sources = result
+            contour_data = np.asarray(contour_data)
+            foreground_data = np.asarray(foreground_data)
+            if contour_data.ndim == 2:
+                contour_data = contour_data[np.newaxis, ...]
+            if foreground_data.ndim == 2:
+                foreground_data = foreground_data[np.newaxis, ...]
+            if contour_data.ndim != 3 or foreground_data.ndim != 3:
+                raise ValueError("Preview source frames must be PxYxX or YxX.")
+            contour_stack = np.zeros(
+                (contour_data.shape[0], frame_count) + contour_data.shape[1:],
+                dtype=contour_data.dtype,
+            )
+            foreground_stack = np.zeros(
+                (foreground_data.shape[0], frame_count) + foreground_data.shape[1:],
+                dtype=foreground_data.dtype,
+            )
+            contour_stack[:, t_idx] = contour_data
+            foreground_stack[:, t_idx] = foreground_data
             if _CONTOUR_LAYER in self.viewer.layers:
-                self.viewer.layers[_CONTOUR_LAYER].data = contour_data
+                self.viewer.layers[_CONTOUR_LAYER].data = contour_stack
             else:
-                self.viewer.add_image(contour_data, name=_CONTOUR_LAYER, colormap="magma", visible=True)
-            if _FOREGROUND_SCORE_LAYER in self.viewer.layers:
-                self.viewer.layers[_FOREGROUND_SCORE_LAYER].data = foreground_data
-            else:
-                self.viewer.add_image(
-                    foreground_data, name=_FOREGROUND_SCORE_LAYER,
-                    colormap="viridis", visible=True,
-                )
+                self.viewer.add_image(contour_stack, name=_CONTOUR_LAYER, colormap="magma", visible=True)
+            self._update_labels_layer(_FOREGROUND_SCORE_LAYER, foreground_stack)
             self._files_widget.refresh(self._pos_dir)
-            self._status(f"Preview Ultrack source stacks t={t_idx} — {n_sources} sources")
+            self._status(f"Preview segmentation inputs t={t_idx} — {n_sources} sources")
 
         @thread_worker(connect={
             "returned": _done, "errored": self._on_contour_worker_error,
         })
         def _worker():
-            contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
-            foreground_scores = np.asarray(tifffile.imread(str(score_path)), dtype=np.float32)
-            contour_frame, foreground_frame, preview_t, metadata = preview_ultrack_source_stack_frame(
-                contours,
-                foreground_scores,
+            prob_stack = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
+            dp_stack = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)
+            if prob_stack.ndim == 3:
+                prob_stack = prob_stack[np.newaxis, ...]
+            if dp_stack.ndim == 4:
+                dp_stack = dp_stack[np.newaxis, ...]
+            if prob_stack.ndim != 4:
+                raise ValueError("nucleus_prob must be ZxYxX or TxZxYxX.")
+            if dp_stack.ndim != 5 or dp_stack.shape[2] != 2:
+                raise ValueError("nucleus_dp must be Zx2xYxX or TxZx2xYxX.")
+            if prob_stack.shape[0] != dp_stack.shape[0]:
+                raise ValueError("nucleus_prob and nucleus_dp must have the same frame count.")
+            if prob_stack.shape[1] != dp_stack.shape[1]:
+                raise ValueError("nucleus_prob and nucleus_dp must have the same z count.")
+            if prob_stack.shape[2:] != dp_stack.shape[3:]:
+                raise ValueError("nucleus_prob and nucleus_dp must have the same YxX shape.")
+
+            preview_t = self._preview_frame_from_step(
+                current_step,
+                prob_stack.shape[0],
+                source_time_axes=preview_has_source_time_axes,
+            )
+            if z_indices is None:
+                z_sel = tuple(range(prob_stack.shape[1]))
+            elif isinstance(z_indices, slice):
+                start = 0 if z_indices.start is None else int(z_indices.start)
+                stop = prob_stack.shape[1] if z_indices.stop is None else int(z_indices.stop)
+                step = 1 if z_indices.step is None else int(z_indices.step)
+                z_sel = tuple(range(start, stop, step))
+            else:
+                z_sel = tuple(int(z) for z in z_indices)
+            bad_z = [z for z in z_sel if z < 0 or z >= prob_stack.shape[1]]
+            if bad_z:
+                raise ValueError(f"Z indices out of range for {prob_stack.shape[1]} z slices: {bad_z}")
+            contours, foreground_scores = build_consensus_boundary(
+                prob_stack[preview_t, z_sel],
+                dp_stack[preview_t, z_sel],
+                list(map_thresholds),
+                gamma=1.0,
+                flow_threshold=0.0,
+            )
+            contour_frame, foreground_frame, _, metadata = preview_ultrack_source_stack_frame(
+                contours[np.newaxis, ...],
+                foreground_scores[np.newaxis, ...],
                 contour_thresholds=contour_thresholds,
                 foreground_thresholds=foreground_thresholds,
-                frame_index=t_frame,
+                frame_index=0,
             )
-            return contour_frame, foreground_frame, preview_t, len(metadata)
+            return contour_frame, foreground_frame, preview_t, prob_stack.shape[0], len(metadata)
 
-        self._status(f"Previewing Ultrack source stacks for frame t={t_frame}…")
+        n_sources = len(contour_thresholds) * len(foreground_thresholds)
+        preview_has_source_time_axes = self._segmentation_preview_has_source_time_axes()
+        preview_axis = 1 if preview_has_source_time_axes and len(current_step) >= 2 else 0
+        t_frame = int(current_step[preview_axis]) if current_step else 0
+        self._status(
+            f"Previewing segmentation inputs for frame t={t_frame} "
+            f"({len(map_thresholds)} cellprob thresholds, {n_sources} sources)..."
+        )
         self._set_pipeline_buttons_enabled(False)
         self._contour_worker = _worker()
 
@@ -1467,14 +1647,14 @@ class NucleusWorkflowWidget(QWidget):
             raise ValueError("Cellprob threshold min must be <= max.")
         return np.arange(threshold_min, threshold_max + threshold_step / 2, threshold_step)
 
-    def _map_z_indices_from_controls(self) -> list[int] | None:
+    def _map_z_indices_from_controls(self) -> list[int] | slice | None:
         start = int(self.map_z_start_spin.value())
         stop = int(self.map_z_stop_spin.value())
         step = int(self.map_z_step_spin.value())
         if step <= 0:
             raise ValueError("Z step must be > 0.")
-        if stop == 0:
-            return None
+        if stop == -1:
+            return slice(start, None, step)
         if start > stop:
             raise ValueError("Z start must be <= stop.")
         return list(range(start, stop + 1, step))

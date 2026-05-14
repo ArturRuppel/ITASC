@@ -198,9 +198,17 @@ def _normalize_cellprob_thresholds(values: list[float] | tuple[float, ...]) -> t
     return thresholds
 
 
-def _normalize_z_indices(z_indices: list[int] | tuple[int, ...] | None, n_z: int) -> tuple[int, ...]:
+def _normalize_z_indices(
+    z_indices: list[int] | tuple[int, ...] | slice | None,
+    n_z: int,
+) -> tuple[int, ...]:
     if z_indices is None:
         indices = tuple(range(n_z))
+    elif isinstance(z_indices, slice):
+        start = 0 if z_indices.start is None else int(z_indices.start)
+        stop = n_z if z_indices.stop is None else int(z_indices.stop)
+        step = 1 if z_indices.step is None else int(z_indices.step)
+        indices = tuple(range(start, stop, step))
     else:
         indices = tuple(int(z) for z in z_indices)
     if not indices:
@@ -218,7 +226,7 @@ def build_nucleus_averaged_maps(
     foreground_scores_path: str | Path,
     *,
     cellprob_thresholds: list[float] | tuple[float, ...],
-    z_indices: list[int] | tuple[int, ...] | None = None,
+    z_indices: list[int] | tuple[int, ...] | slice | None = None,
     progress_cb: Callable[[int, int, str], None] | None = None,
 ) -> NucleusAveragedMapsReport:
     """Build ``contours.tif`` and ``foreground_scores.tif`` from Cellpose outputs.

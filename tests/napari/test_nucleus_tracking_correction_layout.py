@@ -104,6 +104,7 @@ def _install_import_stubs() -> None:
         "cellflow.segmentation": {
             "apply_gamma": lambda logits, gamma: logits,
             "build_nucleus_averaged_maps": lambda *args, **kwargs: None,
+            "build_consensus_boundary": lambda *args, **kwargs: (None, None),
         },
     }
 
@@ -383,12 +384,10 @@ def test_nucleus_workflow_uses_unified_file_status_and_progress_widgets():
     assert widget.pipeline_progress_bar.isVisible() is False
 
     texts = _label_texts(widget)
-    assert "Contour min:" in texts
-    assert "Contour max:" in texts
-    assert "Contour step:" in texts
-    assert "Foreground min:" in texts
-    assert "Foreground max:" in texts
-    assert "Foreground step:" in texts
+    assert "Cellprob:" in texts
+    assert "Z:" in texts
+    assert "Contour:" in texts
+    assert "Foreground:" in texts
 
     widget.deleteLater()
     viewer.close()
@@ -502,7 +501,7 @@ def test_nucleus_workflow_uses_semantic_colors_by_role_and_level():
     heading_styles = [
         label.styleSheet()
         for label in widget.findChildren(QLabel)
-        if label.text() == "Segmentation Inputs — Source Stack Sweep"
+        if label.text() == "Segmentation Inputs"
     ]
     assert any(semantic_color("params", 1) in style for style in heading_styles)
     assert widget.run_db_gen_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
@@ -1178,7 +1177,7 @@ def test_contour_maps_parameters_expand_when_narrow():
     assert "Contour — Cellprob Sweep" not in texts
     assert "Contour — Gamma Averaging" not in texts
     assert "Contour — Output" not in texts
-    assert "Segmentation Inputs — Source Stack Sweep" in texts
+    assert "Segmentation Inputs" in texts
 
     host.deleteLater()
     viewer.close()
@@ -1341,7 +1340,8 @@ def test_contour_maps_preview_displays_source_stack_planes(tmp_path, monkeypatch
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
     widget._pos_dir = pos_dir
     widget.db_gen_threshold_min_spin.setValue(0.2)
     widget.db_gen_threshold_max_spin.setValue(0.2)
@@ -1352,21 +1352,27 @@ def test_contour_maps_preview_displays_source_stack_planes(tmp_path, monkeypatch
 
     import tifffile
 
-    contours = np.zeros((2, 3, 3), dtype=np.float32)
-    scores = np.ones((2, 3, 3), dtype=np.float32)
+    prob = np.zeros((2, 1, 3, 3), dtype=np.float32)
+    dp = np.zeros((2, 1, 2, 3, 3), dtype=np.float32)
     contour_sources = np.arange(18, dtype=np.float32).reshape(1, 2, 3, 3)
     foreground_sources = (contour_sources > 8).astype(np.uint8)
-    tifffile.imwrite(pos_dir / "2_nucleus" / "contours.tif", contours)
-    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_scores.tif", scores)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif", prob)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif", dp)
     write_calls = []
 
     def fail_write(*args, **kwargs):
         write_calls.append((args, kwargs))
-        raise AssertionError("Preview Sources must not write source-stack TIFFs")
+        raise AssertionError("Preview must not write source-stack TIFFs")
+
+    def fake_build_consensus_boundary(prob_frame, dp_frame, thresholds, **kwargs):
+        assert prob_frame.shape == (1, 3, 3)
+        assert dp_frame.shape == (1, 2, 3, 3)
+        np.testing.assert_allclose(thresholds, [-3.0, -2.0, -1.0, 0.0])
+        return np.zeros((3, 3), dtype=np.float32), np.ones((3, 3), dtype=np.float32)
 
     def fake_preview(*args, **kwargs):
-        np.testing.assert_allclose(args[0], contours)
-        np.testing.assert_allclose(args[1], scores)
+        np.testing.assert_allclose(args[0], np.zeros((1, 3, 3), dtype=np.float32))
+        np.testing.assert_allclose(args[1], np.ones((1, 3, 3), dtype=np.float32))
         assert kwargs["frame_index"] == 0
         np.testing.assert_allclose(kwargs["contour_thresholds"], np.array([0.2]))
         np.testing.assert_allclose(kwargs["foreground_thresholds"], np.array([0.2]))
@@ -1375,22 +1381,201 @@ def test_contour_maps_preview_displays_source_stack_planes(tmp_path, monkeypatch
         ]
 
     monkeypatch.setattr(module, "write_ultrack_source_stacks", fail_write)
+    monkeypatch.setattr(module, "build_consensus_boundary", fake_build_consensus_boundary)
     monkeypatch.setattr(module, "preview_ultrack_source_stack_frame", fake_preview)
 
     widget._on_preview_contour_maps()
 
+    expected_contours = np.zeros_like(contour_sources)
+    expected_contours[:, 0] = contour_sources[:, 0]
+    expected_foreground = np.zeros_like(foreground_sources)
+    expected_foreground[:, 0] = foreground_sources[:, 0]
     np.testing.assert_allclose(
         viewer.layers["Contour Map: Nucleus"].data,
-        contour_sources[:, 0],
+        expected_contours,
     )
     np.testing.assert_array_equal(
         viewer.layers["Foreground Score: Nucleus"].data,
-        foreground_sources[:, 0],
+        expected_foreground,
     )
-    assert "Preview Ultrack source stacks" in widget.pipeline_status_lbl.text()
+    assert isinstance(viewer.layers["Foreground Score: Nucleus"], napari.layers.Labels)
+    assert "Preview segmentation inputs" in widget.pipeline_status_lbl.text()
     assert write_calls == []
     assert not (pos_dir / "2_nucleus" / "contour_sources.tif").exists()
     assert not (pos_dir / "2_nucleus" / "foreground_sources.tif").exists()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_preview_segmentation_inputs_uses_full_time_layers_and_loads_nucleus_zavg(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "0_input").mkdir(parents=True)
+    (pos_dir / "1_cellpose").mkdir()
+    (pos_dir / "2_nucleus").mkdir()
+    widget._pos_dir = pos_dir
+    widget.map_cellprob_min_spin.setValue(-2.0)
+    widget.map_cellprob_max_spin.setValue(-2.0)
+    widget.map_cellprob_step_spin.setValue(1.0)
+    widget.map_z_start_spin.setValue(0)
+    widget.map_z_stop_spin.setValue(-1)
+    widget.map_z_step_spin.setValue(1)
+    widget.source_contour_threshold_min_spin.setValue(0.2)
+    widget.source_contour_threshold_max_spin.setValue(0.2)
+    widget.source_contour_threshold_step_spin.setValue(0.2)
+    widget.source_foreground_threshold_min_spin.setValue(0.3)
+    widget.source_foreground_threshold_max_spin.setValue(0.3)
+    widget.source_foreground_threshold_step_spin.setValue(0.3)
+
+    import tifffile
+
+    prob = np.zeros((3, 2, 4, 5), dtype=np.float32)
+    dp = np.zeros((3, 2, 2, 4, 5), dtype=np.float32)
+    zavg = np.arange(60, dtype=np.float32).reshape(3, 4, 5)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif", prob)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif", dp)
+    tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", zavg)
+
+    viewer.add_image(np.zeros((3, 4, 5), dtype=np.float32), name="time scaffold")
+    viewer.dims.current_step = (1, 0, 0)
+
+    def fake_build_consensus_boundary(prob_frame, dp_frame, thresholds, **kwargs):
+        assert prob_frame.shape == (2, 4, 5)
+        assert dp_frame.shape == (2, 2, 4, 5)
+        np.testing.assert_allclose(thresholds, [-2.0])
+        return np.full((4, 5), 4.0, dtype=np.float32), np.full((4, 5), 5.0, dtype=np.float32)
+
+    def fake_preview(contours, foreground_scores, **kwargs):
+        np.testing.assert_allclose(contours, np.full((1, 4, 5), 4.0, dtype=np.float32))
+        np.testing.assert_allclose(foreground_scores, np.full((1, 4, 5), 5.0, dtype=np.float32))
+        assert kwargs["frame_index"] == 0
+        return (
+            np.full((1, 4, 5), 7.0, dtype=np.float32),
+            np.full((1, 4, 5), 1.0, dtype=np.uint8),
+            0,
+            [{"contour_threshold": 0.2, "foreground_threshold": 0.3}],
+        )
+
+    monkeypatch.setattr(module, "build_consensus_boundary", fake_build_consensus_boundary)
+    monkeypatch.setattr(module, "preview_ultrack_source_stack_frame", fake_preview)
+
+    widget._on_preview_contour_maps()
+
+    assert "Nucleus z-avg" in viewer.layers
+    np.testing.assert_allclose(viewer.layers["Nucleus z-avg"].data, zavg)
+    contour_layer = viewer.layers["Contour Map: Nucleus"].data
+    foreground_preview_layer = viewer.layers["Foreground Score: Nucleus"]
+    assert isinstance(foreground_preview_layer, napari.layers.Labels)
+    foreground_layer = foreground_preview_layer.data
+    assert contour_layer.shape == (1, 3, 4, 5)
+    assert foreground_layer.shape == (1, 3, 4, 5)
+    np.testing.assert_allclose(contour_layer[:, 0], 0)
+    np.testing.assert_allclose(contour_layer[:, 1], 7)
+    np.testing.assert_allclose(contour_layer[:, 2], 0)
+    np.testing.assert_array_equal(foreground_layer[:, 0], 0)
+    np.testing.assert_array_equal(foreground_layer[:, 1], 1)
+    np.testing.assert_array_equal(foreground_layer[:, 2], 0)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_preview_segmentation_inputs_reads_time_from_preview_time_axis(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    module = sys.modules[widget_class.__module__]
+    _install_sync_thread_worker(monkeypatch, module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus").mkdir()
+    widget._pos_dir = pos_dir
+    widget.map_cellprob_min_spin.setValue(-2.0)
+    widget.map_cellprob_max_spin.setValue(-2.0)
+    widget.map_cellprob_step_spin.setValue(1.0)
+    widget.map_z_start_spin.setValue(0)
+    widget.map_z_stop_spin.setValue(-1)
+    widget.map_z_step_spin.setValue(1)
+    widget.source_contour_threshold_min_spin.setValue(0.2)
+    widget.source_contour_threshold_max_spin.setValue(0.2)
+    widget.source_contour_threshold_step_spin.setValue(0.2)
+    widget.source_foreground_threshold_min_spin.setValue(0.3)
+    widget.source_foreground_threshold_max_spin.setValue(0.3)
+    widget.source_foreground_threshold_step_spin.setValue(0.3)
+
+    import tifffile
+
+    prob = np.zeros((3, 1, 4, 5), dtype=np.float32)
+    prob[2] = 2.0
+    dp = np.zeros((3, 1, 2, 4, 5), dtype=np.float32)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif", prob)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif", dp)
+
+    viewer.add_image(
+        np.zeros((2, 3, 4, 5), dtype=np.float32),
+        name="Contour Map: Nucleus",
+    )
+    viewer.add_labels(
+        np.zeros((2, 3, 4, 5), dtype=np.uint8),
+        name="Foreground Score: Nucleus",
+    )
+    viewer.dims.current_step = (1, 2, 0, 0)
+
+    def fake_build_consensus_boundary(prob_frame, dp_frame, thresholds, **kwargs):
+        np.testing.assert_allclose(prob_frame, np.full((1, 4, 5), 2.0, dtype=np.float32))
+        return np.full((4, 5), 4.0, dtype=np.float32), np.full((4, 5), 5.0, dtype=np.float32)
+
+    def fake_preview(contours, foreground_scores, **kwargs):
+        return (
+            np.full((1, 4, 5), 7.0, dtype=np.float32),
+            np.full((1, 4, 5), 1.0, dtype=np.uint8),
+            0,
+            [{"contour_threshold": 0.2, "foreground_threshold": 0.3}],
+        )
+
+    monkeypatch.setattr(module, "build_consensus_boundary", fake_build_consensus_boundary)
+    monkeypatch.setattr(module, "preview_ultrack_source_stack_frame", fake_preview)
+
+    widget._on_preview_contour_maps()
+
+    assert "t=2" in widget.pipeline_status_lbl.text()
+    np.testing.assert_allclose(viewer.layers["Contour Map: Nucleus"].data[:, 2], 7)
+    np.testing.assert_array_equal(viewer.layers["Foreground Score: Nucleus"].data[:, 2], 1)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_z_stop_minus_one_means_all_z_slices():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.map_z_start_spin.setValue(0)
+    widget.map_z_stop_spin.setValue(-1)
+    widget.map_z_step_spin.setValue(1)
+
+    assert widget.map_z_stop_spin.value() == -1
+    assert widget._map_z_indices_from_controls() is None
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_segmentation_inputs_section_contains_pipeline_status_bar():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.pipeline_status_lbl in widget.segmentation_inputs_section.findChildren(QLabel)
+    assert widget.pipeline_progress_bar in widget.segmentation_inputs_section.findChildren(QProgressBar)
 
     widget.deleteLater()
     viewer.close()
@@ -1445,10 +1630,10 @@ def test_source_stack_actions_use_explicit_source_language():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.preview_contour_btn.text() == "Preview Sources"
-    assert widget.build_btn.text() == "Build Sources"
-    assert "source stacks" in widget.preview_contour_btn.toolTip().lower()
-    assert "source stacks" in widget.build_btn.toolTip().lower()
+    assert widget.preview_contour_btn.text() == "Preview"
+    assert widget.build_btn.text() == "Build"
+    assert "segmentation input source sweep" in widget.preview_contour_btn.toolTip().lower()
+    assert "averaged maps" in widget.build_btn.toolTip().lower()
     assert "source-stack" in widget.run_db_gen_btn.toolTip().lower()
 
     widget.deleteLater()
@@ -1460,14 +1645,14 @@ def test_segmentation_inputs_expose_stage_a_map_builder_controls():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.build_maps_btn.text() == "Build Maps"
-    assert "contours.tif" in widget.build_maps_btn.toolTip()
-    assert "foreground_scores.tif" in widget.build_maps_btn.toolTip()
+    assert widget.build_maps_btn.text() == "Build"
+    assert "averaged maps" in widget.build_maps_btn.toolTip()
+    assert "source stacks" in widget.build_maps_btn.toolTip()
     assert widget.map_cellprob_min_spin.value() == -3.0
     assert widget.map_cellprob_max_spin.value() == 0.0
     assert widget.map_cellprob_step_spin.value() == 1.0
     assert widget.map_z_start_spin.value() == 0
-    assert widget.map_z_stop_spin.value() == 0
+    assert widget.map_z_stop_spin.value() == -1
     assert widget.map_z_step_spin.value() == 1
     assert widget.build_maps_btn in widget.segmentation_inputs_section.findChildren(QPushButton)
     assert widget.build_btn in widget.segmentation_inputs_section.findChildren(QPushButton)
