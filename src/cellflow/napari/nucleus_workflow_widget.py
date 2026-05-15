@@ -58,6 +58,11 @@ from cellflow.napari.radial_refinement_widget import RadialRefinementWidget
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._state import dump_state, load_state
 from cellflow.napari import _thresholds
+from cellflow.napari.artifact_visualization import (
+    _categorical_colors,
+    _nucleus_centroids_by_track,
+    _rasterize_track_image,
+)
 from cellflow.napari._widget_helpers import (
     btn as _btn,
     button_grid as _button_grid,
@@ -143,6 +148,7 @@ _ULTRACK_DB_ANNOTATION_LAYER = "Ultrack DB Annotations"
 
 # Correction-owned layer constants
 _CORRECTION_TRACKED_LAYER = "[Correction] Tracked: Nucleus"
+_CORRECTION_TRACK_LAYER = "[Correction] Nucleus tracks"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
@@ -2362,6 +2368,38 @@ class NucleusWorkflowWidget(QWidget):
         self.viewer.add_image(arr, **kwargs)
         self._correction_owned_layers.add(name)
 
+    def _add_correction_track_layer(self, labels: np.ndarray) -> None:
+        labels = np.asarray(labels)
+        label_ids = np.asarray(
+            sorted(int(v) for v in np.unique(labels) if int(v) != 0)
+        )
+        label_colors = _categorical_colors(label_ids)
+        color_map: dict[int | None, tuple[float, float, float, float] | str] = {
+            None: "transparent",
+            0: "transparent",
+        }
+        for label_id, color in zip(label_ids, label_colors, strict=True):
+            color_map[int(label_id)] = tuple(float(c) for c in color)
+
+        shape = (
+            (1, int(labels.shape[0]), int(labels.shape[1]))
+            if labels.ndim == 2
+            else tuple(int(v) for v in labels.shape[:3])
+        )
+        track_image = _rasterize_track_image(
+            _nucleus_centroids_by_track(labels),
+            color_map,
+            shape,
+        )
+        self.viewer.add_image(
+            track_image,
+            name=_CORRECTION_TRACK_LAYER,
+            rgb=True,
+            opacity=0.9,
+            blending="additive",
+        )
+        self._correction_owned_layers.add(_CORRECTION_TRACK_LAYER)
+
     # ================================================================
     # 4. Correction
     # ================================================================
@@ -2390,6 +2428,7 @@ class NucleusWorkflowWidget(QWidget):
         stack = read_full_tracked_stack(tracked_path)
         self.viewer.add_labels(stack, name=_CORRECTION_TRACKED_LAYER)
         self._correction_owned_layers.add(_CORRECTION_TRACKED_LAYER)
+        self._add_correction_track_layer(stack)
 
         for path, name, cmap in (
             (self._cell_zavg_path(), _CORRECTION_CELL_ZAVG_LAYER, "gray"),

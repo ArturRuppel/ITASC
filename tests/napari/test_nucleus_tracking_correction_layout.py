@@ -2532,6 +2532,7 @@ def test_correction_activation_loads_owned_layers_from_disk(monkeypatch, tmp_pat
     (pos_dir / "0_input").mkdir(parents=True)
     tracked = np.zeros((2, 4, 5), dtype=np.uint32)
     tracked[0, 1:3, 1:3] = 7
+    tracked[1, 2:4, 2:4] = 7
     cell = np.arange(20, dtype=np.float32).reshape(4, 5)
     nucleus = np.full((4, 5), 3, dtype=np.float32)
     nls = np.linspace(0, 1, 20, dtype=np.float32).reshape(4, 5)
@@ -2550,6 +2551,7 @@ def test_correction_activation_loads_owned_layers_from_disk(monkeypatch, tmp_pat
 
     assert "[Correction] stale" not in viewer.layers
     assert "[Correction] Tracked: Nucleus" in viewer.layers
+    assert "[Correction] Nucleus tracks" in viewer.layers
     assert "[Correction] Cell z-avg" in viewer.layers
     assert "[Correction] Nucleus z-avg" in viewer.layers
     assert "[Correction] NLS z-avg" in viewer.layers
@@ -2558,11 +2560,18 @@ def test_correction_activation_loads_owned_layers_from_disk(monkeypatch, tmp_pat
     assert widget.correction_mode_section.is_expanded is True
     assert set(widget._correction_owned_layers) == {
         "[Correction] Tracked: Nucleus",
+        "[Correction] Nucleus tracks",
         "[Correction] Cell z-avg",
         "[Correction] Nucleus z-avg",
         "[Correction] NLS z-avg",
     }
     np.testing.assert_array_equal(viewer.layers["[Correction] Tracked: Nucleus"].data, tracked)
+    track_layer = viewer.layers["[Correction] Nucleus tracks"]
+    assert track_layer.rgb is True
+    assert track_layer.blending == "additive"
+    assert track_layer.opacity == 0.9
+    assert track_layer.data.shape == (2, 4, 5, 4)
+    assert np.count_nonzero(track_layer.data[1, :, :, 3]) > 0
     assert viewer.layers["[Correction] Cell z-avg"].blending == "additive"
     assert viewer.layers["[Correction] Nucleus z-avg"].blending == "additive"
     assert viewer.layers["[Correction] NLS z-avg"].blending == "additive"
