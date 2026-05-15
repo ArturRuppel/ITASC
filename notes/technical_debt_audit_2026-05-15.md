@@ -6,8 +6,23 @@ _Status update: 2026-05-15 evening_
 - [DONE] Broken scripts named below were archived under `notes/archived_scripts/2026-05-15-dead-imports/`.
 - [DONE] `correction.apply_gamma` re-export, deprecated `db_gen_power_spin`, the test-only unconstrained `retrack_frame`, and the old `tracking/` source package were removed or folded into `tracking_ultrack`.
 - [DONE] Shared node geometry was extracted to `tracking_ultrack/_node_geometry.py`, and cross-module private imports from `validation_nodes._node_bbox_and_mask` were replaced.
-- [OPEN] `nucleus_workflow_widget.py` is still monolithic; it is now ~3032 LOC with the companion layout test still ~3975 LOC.
+- [PARTIAL] `nucleus_workflow_widget.py` is still large, but the Ultrack DB browser was extracted to `napari/nucleus_db_browser_widget.py`. The widget is now ~2333 LOC, the new browser module is ~762 LOC, and the companion layout test is still ~3994 LOC.
 - [DONE] Ruff/lint configuration was added to `pyproject.toml` with initial `F401`/`F811` checks; the baseline passes after unused-import cleanup. `E501` is deferred to avoid formatting churn.
+
+_Status update: 2026-05-15 late evening_
+- [DONE] First section split completed: `NucleusUltrackDbBrowserWidget` now owns the Ultrack database browser controls and behavior, while `NucleusWorkflowWidget` keeps compatibility aliases for existing tests/callers.
+- [DONE] Extraction seam test was added to prove `NucleusWorkflowWidget.ultrack_db_browser_widget` exists and owns the legacy DB-browser controls.
+- [VERIFIED] `python -m py_compile` and `python -m ruff check` passed for the touched Python files. Focused DB-browser tests passed: `18 passed, 2 skipped`.
+- [DONE] DB-browser tests were moved into `tests/napari/test_nucleus_db_browser_widget.py`; focused DB-browser suite passes in the default environment (`18 passed, 4 skipped`) and in the `cellflow` conda env (`22 passed`).
+- [DONE] Correction section behavior moved to `napari/nucleus_correction_widget.py`; `NucleusWorkflowWidget` now composes `NucleusCorrectionWidget`, keeps compatibility aliases for existing tests/callers, and only coordinates correction with the DB-browser dims refresh. The workflow widget is now ~1476 LOC and the correction widget is ~1024 LOC.
+- [DONE] Correction-focused behavior tests moved into `tests/napari/test_nucleus_correction_widget.py`; the new suite instantiates `NucleusCorrectionWidget` directly and passes (`16 passed`). Correction button signal wiring and default path/viewer providers now live in the child widget.
+- [VERIFIED] Full `tests/napari/test_nucleus_tracking_correction_layout.py -q` now passes (`82 passed, 2 skipped`) after moving/narrowing the grouped anchor tests and restoring tracked-label viewer refresh on Ultrack completion.
+
+_Status update: 2026-05-15 night_
+- [DONE] Correction/widget boundary tightened: `NucleusCorrectionWidget` now takes explicit `pos_dir_provider`, `refresh_refinement_callback`, and dependency callbacks instead of a broad workflow fallback.
+- [DONE] Next self-contained workflow section extracted: segmentation input parameter controls now live in `napari/nucleus_segmentation_inputs_widget.py`, with workflow aliases kept for existing callers/tests.
+- [VERIFIED] Focused correction suite passes (`17 passed`), focused workflow layout suite passes (`84 passed, 2 skipped`), and `python -m py_compile` / `python -m ruff check` pass for touched files.
+- [NEXT] Extract the Ultrack tracking/database-generation parameter section or split the remaining run/worker coordination out of `nucleus_workflow_widget.py`.
 
 ## Codebase shape
 - ~21k LOC across `src/cellflow/` (8 packages), ~14k LOC of tests, ~8.8k LOC of scripts.
@@ -36,7 +51,7 @@ Recommendation: delete (or move to `scripts/_archive/`) anything that doesn't im
 - **`tracking/__init__.py`** is empty save for a docstring, and the whole `tracking/` package contains one production-used function. The mismatch suggests the package was bigger before; the residual `__init__` could be folded into `tracking_ultrack` or the file moved.
 
 ## 3. Structural debt
-- **`napari/nucleus_workflow_widget.py` (2999 LOC, 164 methods, 1 class)** and **`cell_workflow_widget.py` (1344 LOC)** are giant god-widgets. The companion test file `tests/napari/test_nucleus_tracking_correction_layout.py` is 3966 LOC — implies the widget is hard to test in isolation. The `_state.py`/`_paths.py`/`_thresholds.py`/`_widget_helpers.py` private helpers are a step toward splitting, but only `nucleus_workflow_widget.py` consumes them; further extraction (per-section sub-widgets) is feasible.
+- **`napari/nucleus_workflow_widget.py` (~1452 LOC after DB-browser and correction extraction)** and **`cell_workflow_widget.py` (1344 LOC)** are still large god-widgets. The companion layout test is down to ~2629 LOC, with ~656 LOC of correction behavior coverage now isolated in `tests/napari/test_nucleus_correction_widget.py`. The `_state.py`/`_paths.py`/`_thresholds.py`/`_widget_helpers.py` helpers and the new `nucleus_db_browser_widget.py` / `nucleus_correction_widget.py` extractions show the split is feasible; the next cleanup should extract another self-contained section and keep its tests isolated.
 - **`napari/cellpose_widget.py`** is a 68-line passthrough that wraps `HpcCellposeWidget` plus two `PipelineFilesWidget`s. It looks like a leftover scaffold between when Cellpose ran in-process and now (when "Cellpose runs externally"). Could be merged into `main_widget` or `HpcCellposeWidget`.
 - **`tracking_ultrack/linking.py`** has two parallel pipelines (`"default"` and `"shape"` modes) with `compute_edge_weight` duplicating filter logic inline at lines 131–147 and 244–258. Worth pulling the per-pair gate into one function.
 - **`tracking_ultrack/multi_threshold.py` (861 LOC)** does **four** local `from cellflow.tracking_ultrack.validation_nodes import _node_*` inside function bodies — private-symbol traffic between siblings suggests the module boundary is wrong.
@@ -56,6 +71,6 @@ Recommendation: delete (or move to `scripts/_archive/`) anything that doesn't im
 1. [DONE] **Delete or archive broken scripts** (15+ files) — pure win, zero risk.
 2. [DONE] **Drop the `correction.apply_gamma` re-export** and the `_state` "power" round-trip — and remove the tests that only exist to keep them alive.
 3. [DONE] **Collapse `tracking/` into `tracking_ultrack/`** (or rename to `relabel/`), and drop the test-only `retrack_frame`.
-4. [OPEN] **Split `nucleus_workflow_widget.py`** by section (already partially done via `_widget_helpers`); the test file shrinks naturally.
+4. [PARTIAL] **Split `nucleus_workflow_widget.py`** by section. Ultrack DB browser, correction behavior, and correction tests are now extracted; next tighten the correction provider boundary and then extract another self-contained section.
 5. [DONE] **Extract a `tracking_ultrack/_node_geometry.py`** so `validation_nodes._node_bbox_and_mask` stops being privately imported across five modules.
 6. [DONE] **Add `ruff`** with `F401`/`F811` to catch the next round of import drift automatically; defer `E501` until line-length cleanup is worth the churn.
