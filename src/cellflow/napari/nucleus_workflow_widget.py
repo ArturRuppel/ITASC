@@ -399,7 +399,7 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_area_weight_spin.setEnabled(False)
         self.db_gen_iou_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
         self.db_gen_iou_weight_spin.setEnabled(False)
-        self.db_gen_distance_weight_spin = _dspin(0, 10, 0.25, 0.05, 2)
+        self.db_gen_distance_weight_spin = _dspin(0, 10, 0.05, 0.01, 3)
         self.db_gen_distance_weight_spin.setEnabled(False)
         add_block_pair_row(g, 0,
             "Max dist:", compact_spinbox(self.db_gen_max_dist_spin),
@@ -444,29 +444,7 @@ class NucleusWorkflowWidget(QWidget):
         lay.addWidget(_heading("DB Generation — Validated Seed Prior"))
         g = block_grid(horizontal_spacing=12)
         self.db_gen_use_validated_check = QCheckBox("Use validated corrections")
-        self.ultrack_seed_weight_spin = _dspin(
-            0, 10, 0.5, 0.1, 2,
-            "Additive reward for candidates similar to nearby validated cells. 0 disables.",
-        )
-        self.ultrack_seed_space_spin = _dspin(
-            1, 500, 25.0, 5.0, 1,
-            "Spatial decay scale for seed proximity.",
-        )
-        self.ultrack_seed_time_spin = _dspin(
-            0.1, 50, 2.0, 0.5, 1,
-            "Temporal decay scale in frames.",
-        )
-        self.ultrack_seed_window_spin = _ispin(
-            0, 100, 5,
-            tooltip="Max frame distance from a validated cell used for seed affinity.",
-        )
         add_block_checkbox_row(g, 0, self.db_gen_use_validated_check)
-        add_block_pair_row(g, 1,
-            "Seed weight:", compact_spinbox(self.ultrack_seed_weight_spin),
-            "Seed space:", compact_spinbox(self.ultrack_seed_space_spin))
-        add_block_pair_row(g, 2,
-            "Seed time:", compact_spinbox(self.ultrack_seed_time_spin),
-            "Seed window:", compact_spinbox(self.ultrack_seed_window_spin))
         lay.addLayout(g)
 
         lay.addWidget(_separator())
@@ -755,7 +733,7 @@ class NucleusWorkflowWidget(QWidget):
         self.extend_max_dist_spin = _dspin(0, 500, 40.0, 1.0, 1)
         self.extend_area_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
         self.extend_iou_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
-        self.extend_distance_weight_spin = _dspin(0, 10, 0.25, 0.05, 2)
+        self.extend_distance_weight_spin = _dspin(0, 10, 0.05, 0.01, 3)
         self.extend_overlap_penalty_spin = _dspin(0, 10, 1.0, 0.1, 2)
         self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
         add_block_pair_row(g, 0,
@@ -849,10 +827,6 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_linking_mode_combo.currentTextChanged.connect(
             self._on_db_gen_mode_changed
         )
-        self.db_gen_use_validated_check.toggled.connect(
-            self._set_resolve_prior_controls_enabled
-        )
-
         # DB Browser
         self.ultrack_db_active_btn.toggled.connect(self._on_ultrack_db_activate)
         self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
@@ -907,7 +881,6 @@ class NucleusWorkflowWidget(QWidget):
         solver = _select_solver()
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
         self.ultrack_solver_lbl.setText(solver_display)
-        self._set_resolve_prior_controls_enabled()
 
     # ================================================================
     # Path helpers
@@ -1489,16 +1462,6 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_iou_weight_spin.setEnabled(enabled)
         self.db_gen_distance_weight_spin.setEnabled(enabled)
 
-    def _set_resolve_prior_controls_enabled(self, _checked: bool | None = None) -> None:
-        enabled = self.db_gen_use_validated_check.isChecked()
-        for w in (
-            self.ultrack_seed_weight_spin,
-            self.ultrack_seed_space_spin,
-            self.ultrack_seed_time_spin,
-            self.ultrack_seed_window_spin,
-        ):
-            w.setEnabled(enabled)
-
     def _thresholds_from_controls(
         self,
         threshold_min: float,
@@ -1547,10 +1510,6 @@ class NucleusWorkflowWidget(QWidget):
             quality_exponent=self.db_gen_quality_exp_spin.value(),
             circularity_weight=self.db_gen_circularity_weight_spin.value(),
             link_n_workers=self.db_gen_n_workers_spin.value(),
-            seed_weight=self.ultrack_seed_weight_spin.value(),
-            seed_sigma_space=self.ultrack_seed_space_spin.value(),
-            seed_tau_time=self.ultrack_seed_time_spin.value(),
-            seed_max_dt=self.ultrack_seed_window_spin.value(),
         )
 
     def _on_run_db_generation(self) -> None:

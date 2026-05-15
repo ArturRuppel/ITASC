@@ -71,7 +71,7 @@ def test_shape_correct_candidate_wins_over_closer_wrong_shape(tmp_path):
         min_link_iou=0.05,
         area_weight=1.0,
         iou_weight=1.0,
-        distance_weight=0.25,
+        distance_weight=0.05,
     )
     list(run_linking(tmp_path, cfg))
 
@@ -112,7 +112,7 @@ def test_area_ratio_prefilter_removes_candidate(tmp_path):
         min_link_iou=0.05,
         area_weight=1.0,
         iou_weight=1.0,
-        distance_weight=0.25,
+        distance_weight=0.05,
     )
     list(run_linking(tmp_path, cfg))
 

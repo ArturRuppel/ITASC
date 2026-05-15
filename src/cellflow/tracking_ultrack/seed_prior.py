@@ -24,9 +24,6 @@ class _NodeScoreRecord:
     t: int
     bbox: tuple[int, int, int, int]
     mask: np.ndarray
-    area: int
-    y: float
-    x: float
 
 
 def _load_signal_stack(path: str | Path) -> np.ndarray:
@@ -101,21 +98,6 @@ def compute_mask_circularity(mask: np.ndarray) -> float:
     return float(np.clip(circularity, 0.0, 1.0))
 
 
-def _affinity(node: _NodeScoreRecord, seed: _NodeScoreRecord, cfg: TrackingConfig) -> float:
-    if node.area <= 0 or seed.area <= 0:
-        return 0.0
-    dt = abs(int(node.t) - int(seed.t))
-    if dt > cfg.seed_max_dt:
-        return 0.0
-
-    area_ratio = float(node.area) / float(seed.area)
-    size_similarity = np.exp(-abs(np.log(area_ratio)) / cfg.seed_sigma_area)
-    dist = float(np.hypot(node.y - seed.y, node.x - seed.x))
-    spatial_decay = np.exp(-((dist / cfg.seed_sigma_space) ** 2))
-    temporal_decay = np.exp(-(dt / cfg.seed_tau_time))
-    return float(size_similarity * spatial_decay * temporal_decay)
-
-
 def write_seed_prior_node_probs(
     working_dir: str | Path,
     intensity_image_path: str | Path,
@@ -133,47 +115,31 @@ def write_seed_prior_node_probs(
             NodeDB.id,
             NodeDB.t,
             NodeDB.pickle,
-            NodeDB.area,
-            NodeDB.y,
-            NodeDB.x,
             NodeDB.node_annot,
         ).all()
 
-        records: list[_NodeScoreRecord] = []
-        seed_records: list[_NodeScoreRecord] = []
-        for node_id, t, node, area, y, x, annot in rows:
+        anchor_ids: list[int] = []
+        scored = 0
+        for node_id, t, node, annot in rows:
+            if annot == VarAnnotation.REAL:
+                anchor_ids.append(int(node_id))
+                continue
             bbox, mask = _node_mask_record(int(node_id), node)
             record = _NodeScoreRecord(
                 node_id=int(node_id),
                 t=int(t),
                 bbox=bbox,
                 mask=mask,
-                area=int(area),
-                y=float(y),
-                x=float(x),
             )
-            if annot == VarAnnotation.REAL:
-                seed_records.append(record)
-            else:
-                records.append(record)
-
-        scored = 0
-        for record in records:
             if record.t >= signal.shape[0]:
                 raise ValueError(
                     f"Quality signal image has {signal.shape[0]} frame(s), "
                     f"cannot score node at t={record.t}"
                 )
             drop_frac = compute_drop_frac(signal[record.t], record.bbox, record.mask)
-            best_affinity = max(
-                (_affinity(record, seed, cfg) for seed in seed_records),
-                default=0.0,
-            )
             circularity = compute_mask_circularity(record.mask)
             node_prob = float(
-                cfg.quality_weight * (drop_frac ** cfg.quality_exponent)
-                + cfg.circularity_weight * circularity
-                + cfg.seed_weight * best_affinity
+                (cfg.quality_weight * drop_frac + cfg.circularity_weight * circularity) ** cfg.quality_exponent
             )
             session.query(NodeDB).where(NodeDB.id == record.node_id).update(
                 {NodeDB.node_prob: node_prob},
@@ -181,12 +147,12 @@ def write_seed_prior_node_probs(
             )
             scored += 1
 
-        for seed in seed_records:
-            session.query(NodeDB).where(NodeDB.id == seed.node_id).update(
+        if anchor_ids:
+            session.query(NodeDB).where(NodeDB.id.in_(anchor_ids)).update(
                 {NodeDB.node_prob: 1.0},
                 synchronize_session=False,
             )
         session.commit()
 
     engine.dispose()
-    return SeedPriorReport(scored=scored, seeds=len(seed_records))
+    return SeedPriorReport(scored=scored, seeds=len(anchor_ids))

@@ -68,10 +68,6 @@ def _install_import_stubs() -> None:
             self.solution_gap = 0.001
             self.time_limit = 36000
             self.window_size = 0
-            self.seed_weight = 0.5
-            self.seed_sigma_space = 25.0
-            self.seed_tau_time = 2.0
-            self.seed_max_dt = 5
             self.max_segments_per_time = 1_000_000
             self.__dict__.update(kwargs)
 
@@ -564,7 +560,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     }
 
     assert "Activate Correction" not in correction_button_texts
-    assert "Save tracked" in correction_button_texts
+    assert "Save tracked (S)" in correction_button_texts
     assert "Load Labels" not in correction_button_texts
     assert "Save Labels" not in correction_button_texts
     assert "Extend selected" not in correction_button_texts
@@ -905,21 +901,6 @@ def test_removed_segmentation_source_controls_are_not_persisted_or_restored():
     viewer.close()
 
 
-def test_ultrack_section_still_exposes_seed_prior_controls():
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    assert widget.ultrack_seed_weight_spin.value() == 0.5
-    assert widget.ultrack_seed_space_spin.value() == 25.0
-    assert widget.ultrack_seed_time_spin.value() == 2.0
-    assert widget.ultrack_seed_window_spin.value() == 5
-    assert "validated cells" in widget.ultrack_seed_weight_spin.toolTip()
-
-    widget.deleteLater()
-    viewer.close()
-
-
 def test_ultrack_tracker_hides_db_build_duplicate_controls():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
@@ -1001,41 +982,11 @@ def test_ultrack_solver_bias_control_updates_config_and_state():
     viewer.close()
 
 
-def test_validated_seed_prior_controls_follow_db_generation_checkbox():
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    controls = [
-        widget.ultrack_seed_weight_spin,
-        widget.ultrack_seed_space_spin,
-        widget.ultrack_seed_time_spin,
-        widget.ultrack_seed_window_spin,
-    ]
-
-    widget.db_gen_use_validated_check.setChecked(False)
-    _app.processEvents()
-    assert all(not control.isEnabled() for control in controls)
-
-    widget.db_gen_use_validated_check.setChecked(True)
-    _app.processEvents()
-    assert all(control.isEnabled() for control in controls)
-
-    widget.deleteLater()
-    viewer.close()
-
-
 def test_db_scoring_controls_stay_enabled_without_validation():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    seed_controls = [
-        widget.ultrack_seed_weight_spin,
-        widget.ultrack_seed_space_spin,
-        widget.ultrack_seed_time_spin,
-        widget.ultrack_seed_window_spin,
-    ]
     scoring_controls = [
         widget.db_gen_quality_weight_spin,
         widget.db_gen_quality_exp_spin,
@@ -1046,7 +997,6 @@ def test_db_scoring_controls_stay_enabled_without_validation():
     _app.processEvents()
 
     assert all(control.isEnabled() for control in scoring_controls)
-    assert all(not control.isEnabled() for control in seed_controls)
 
     widget.deleteLater()
     viewer.close()
@@ -1072,33 +1022,6 @@ def test_old_ultrack_linking_state_migrates_to_db_controls():
     assert widget.db_gen_max_neighbors_spin.value() == 9
     assert widget.db_gen_linking_mode_combo.currentText() == "shape"
     assert widget.db_gen_iou_weight_spin.value() == pytest.approx(0.65)
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_ultrack_seed_prior_controls_persist_through_state():
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    widget.db_gen_use_validated_check.setChecked(True)
-    widget.ultrack_seed_weight_spin.setValue(0.75)
-    widget.ultrack_seed_space_spin.setValue(30.0)
-    widget.ultrack_seed_time_spin.setValue(3.0)
-    widget.ultrack_seed_window_spin.setValue(7)
-
-    state = widget.get_state()
-    widget.deleteLater()
-
-    widget = widget_class(viewer)
-    widget.set_state(state)
-
-    assert widget.db_gen_use_validated_check.isChecked()
-    assert widget.ultrack_seed_weight_spin.value() == 0.75
-    assert widget.ultrack_seed_space_spin.value() == 30.0
-    assert widget.ultrack_seed_time_spin.value() == 3.0
-    assert widget.ultrack_seed_window_spin.value() == 7
 
     widget.deleteLater()
     viewer.close()
@@ -1887,7 +1810,7 @@ def test_correction_section_exposes_extend_and_retrack_parameters():
     assert widget.extend_max_dist_spin.value() == 40.0
     assert widget.extend_area_weight_spin.value() == 1.0
     assert widget.extend_iou_weight_spin.value() == 1.0
-    assert widget.extend_distance_weight_spin.value() == 0.25
+    assert widget.extend_distance_weight_spin.value() == 0.05
     assert widget.extend_overlap_penalty_spin.value() == 1.0
     assert widget.extend_greedy_overwrite_check.isChecked() is False
     assert widget.retrack_max_dist_spin.value() == 20.0
@@ -2549,7 +2472,7 @@ def test_correction_section_is_top_level():
         button.text()
         for button in widget.correction_mode_section.findChildren(QPushButton)
     }
-    assert "Save tracked" in correction_button_texts
+    assert "Save tracked (S)" in correction_button_texts
     assert "Load Labels" not in correction_button_texts
     assert "Extend selected" not in correction_button_texts
     assert "Retrack selected" not in correction_button_texts

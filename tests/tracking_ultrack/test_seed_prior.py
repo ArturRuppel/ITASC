@@ -39,7 +39,7 @@ def test_compute_mask_circularity_handles_empty_masks():
     assert compute_mask_circularity(np.zeros((5, 5), dtype=bool)) == 0.0
 
 
-def test_write_seed_prior_node_probs_uses_drop_quality_and_best_seed_affinity(tmp_path):
+def test_write_seed_prior_node_probs_scores_candidates_and_anchors(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import NodeDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
@@ -63,29 +63,20 @@ def test_write_seed_prior_node_probs_uses_drop_quality_and_best_seed_affinity(tm
         quality_weight=0.7,
         quality_exponent=2.0,
         circularity_weight=0.25,
-        seed_weight=0.5,
-        seed_sigma_space=25.0,
-        seed_tau_time=2.0,
-        seed_max_dt=5,
-        seed_sigma_area=0.5,
     )
 
     report = write_seed_prior_node_probs(tmp_path, image_path, cfg)
 
     assert report.scored == 1
+    assert report.seeds == 1
     with Session(engine) as session:
-        candidate = session.query(NodeDB).filter_by(t=0, id=1_000_001).one()
-        seed = session.query(NodeDB).filter_by(t=1, id=2_000_001).one()
+        candidate_row = session.query(NodeDB).filter_by(t=0, id=1_000_001).one()
+        seed_row = session.query(NodeDB).filter_by(t=1, id=2_000_001).one()
 
     circularity = compute_mask_circularity(np.ones((4, 4), dtype=bool))
-    expected_affinity = np.exp(-(1 / cfg.seed_tau_time))
-    expected = (
-        cfg.quality_weight * 1.0
-        + cfg.circularity_weight * circularity
-        + cfg.seed_weight * expected_affinity
-    )
-    assert candidate.node_prob == pytest.approx(expected)
-    assert seed.node_prob == 1.0
+    expected = (cfg.quality_weight * 1.0 + cfg.circularity_weight * circularity) ** cfg.quality_exponent
+    assert candidate_row.node_prob == pytest.approx(expected)
+    assert seed_row.node_prob == 1.0
 
 
 def test_write_seed_prior_node_probs_respects_zero_quality_and_circularity_weights(tmp_path):
@@ -108,7 +99,6 @@ def test_write_seed_prior_node_probs_respects_zero_quality_and_circularity_weigh
     cfg = TrackingConfig(
         quality_weight=0.0,
         circularity_weight=0.0,
-        seed_weight=0.0,
     )
 
     report = write_seed_prior_node_probs(tmp_path, image_path, cfg)

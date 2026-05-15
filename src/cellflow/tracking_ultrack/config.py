@@ -20,7 +20,7 @@ class TrackingConfig(BaseModel):
     # Default to min(cpu_count(), 8) for automatic parallelism up to 8 threads.
     max_distance: float = 15.0
     max_neighbors: int = 5
-    distance_weight: float = 0.25
+    distance_weight: float = 0.05
     link_n_workers: int = min(cpu_count(), 8)
     linking_mode: str = "default"  # "default" or "shape"
     area_weight: float = 1.0
@@ -51,11 +51,6 @@ class TrackingConfig(BaseModel):
     quality_weight: float = 1.0
     quality_exponent: float = 8.0
     circularity_weight: float = 0.25
-    seed_weight: float = 0.5
-    seed_sigma_space: float = 25.0
-    seed_tau_time: float = 2.0
-    seed_max_dt: int = 5
-    seed_sigma_area: float = 0.5
 
     # Per-frame correction primitives
     anchor_radius_px: float = 15.0

@@ -57,15 +57,18 @@ def similarity_score(
     area_ratio: float,
     centroid_corrected_iou: float,
     distance: float,
-    d_max: float,
     area_weight: float,
     iou_weight: float,
     distance_weight: float,
 ) -> float:
-    """Additive similarity score (higher = more preferred)."""
-    distance_score = 1.0 if d_max <= 0 else max(0.0, 1.0 - distance / d_max)
+    """Additive similarity score (higher = more preferred).
+
+    Shape terms are positive rewards in [0, 1]; distance is a raw penalty in
+    pixels. Result can go negative for far candidates, matching the default
+    Ultrack linker's convention so ILP appear/disappear weights stay calibrated.
+    """
     return (
         area_weight * area_ratio
         + iou_weight * centroid_corrected_iou
-        + distance_weight * distance_score
+        - distance_weight * distance
     )

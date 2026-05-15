@@ -52,10 +52,6 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "power": w.db_gen_power_spin.value(),
             "n_workers": w.db_gen_n_workers_spin.value(),
             "use_validated": w.db_gen_use_validated_check.isChecked(),
-            "seed_weight": w.ultrack_seed_weight_spin.value(),
-            "seed_sigma_space": w.ultrack_seed_space_spin.value(),
-            "seed_tau_time": w.ultrack_seed_time_spin.value(),
-            "seed_max_dt": w.ultrack_seed_window_spin.value(),
         },
         "extend": {
             "max_distance": w.extend_max_dist_spin.value(),
@@ -127,10 +123,6 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "power" in dbg: w.db_gen_power_spin.setValue(dbg["power"])
         if "n_workers" in dbg: w.db_gen_n_workers_spin.setValue(dbg["n_workers"])
         if "use_validated" in dbg: w.db_gen_use_validated_check.setChecked(dbg["use_validated"])
-        if "seed_weight" in dbg: w.ultrack_seed_weight_spin.setValue(dbg["seed_weight"])
-        if "seed_sigma_space" in dbg: w.ultrack_seed_space_spin.setValue(dbg["seed_sigma_space"])
-        if "seed_tau_time" in dbg: w.ultrack_seed_time_spin.setValue(dbg["seed_tau_time"])
-        if "seed_max_dt" in dbg: w.ultrack_seed_window_spin.setValue(dbg["seed_max_dt"])
     if "extend" in state:
         ext = state["extend"]
         if "max_distance" in ext: w.extend_max_dist_spin.setValue(ext["max_distance"])
@@ -167,11 +159,3 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
             w.db_gen_use_validated_check.setChecked(ul["resolve_from_validated"])
         if "quality_exponent" in ul and not (dbg_present and "quality_exponent" in state["db_generation"]):
             w.db_gen_quality_exp_spin.setValue(ul["quality_exponent"])
-        if "seed_weight" in ul and not (dbg_present and "seed_weight" in state["db_generation"]):
-            w.ultrack_seed_weight_spin.setValue(ul["seed_weight"])
-        if "seed_sigma_space" in ul and not (dbg_present and "seed_sigma_space" in state["db_generation"]):
-            w.ultrack_seed_space_spin.setValue(ul["seed_sigma_space"])
-        if "seed_tau_time" in ul and not (dbg_present and "seed_tau_time" in state["db_generation"]):
-            w.ultrack_seed_time_spin.setValue(ul["seed_tau_time"])
-        if "seed_max_dt" in ul and not (dbg_present and "seed_max_dt" in state["db_generation"]):
-            w.ultrack_seed_window_spin.setValue(ul["seed_max_dt"])

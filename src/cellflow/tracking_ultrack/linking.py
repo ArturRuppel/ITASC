@@ -141,7 +141,6 @@ def compute_edge_weight(
             area_ratio=area_ratio,
             centroid_corrected_iou=iou,
             distance=distance,
-            d_max=cfg.max_distance,
             area_weight=cfg.area_weight,
             iou_weight=cfg.iou_weight,
             distance_weight=cfg.distance_weight,
@@ -255,13 +254,10 @@ def _run_shape_linking(
                         area_ratio=area_ratio,
                         centroid_corrected_iou=iou,
                         distance=float(dist),
-                        d_max=cfg.max_distance,
                         area_weight=cfg.area_weight,
                         iou_weight=cfg.iou_weight,
                         distance_weight=cfg.distance_weight,
                     )
-                    if w <= 0:
-                        continue
                     candidates.append((w, sid, int(target.id)))
 
                 candidates.sort(reverse=True)
