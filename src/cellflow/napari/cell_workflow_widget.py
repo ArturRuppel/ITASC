@@ -13,7 +13,6 @@ Stages:
 from __future__ import annotations
 
 import logging
-import os
 import queue
 import threading
 from pathlib import Path
@@ -23,12 +22,9 @@ import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
-    QComboBox,                                                     # ← NEW
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
-    QGroupBox,                                                     # ← NEW
-    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -37,27 +33,16 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.correction.labels import (
-    best_overlapping_label,
-    cleanup_movie,                                                 # ← NEW
-    expand_label_to_foreground,
-    fill_label_holes,                                              # ← NEW
-    fix_label_semiholes,                                           # ← NEW
-)
-from cellflow.database.tracked import read_full_tracked_stack
-from cellflow.napari.correction_widget import CorrectionWidget
+from cellflow.correction.labels import best_overlapping_label
+from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+from cellflow.napari.cell_params_widget import CellParamsWidget
 from cellflow.napari.ui_style import (
     action_button,
-    add_block_pair_row,
-    block_grid,
-    compact_spinbox,
     parameter_heading,
-    semantic_color,
     status_label,
 )
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import (
-    FlowFollowingParams,
     apply_gamma,
     build_consensus_boundary_flow_following,
 )
@@ -236,249 +221,74 @@ class CellWorkflowWidget(QWidget):
         root.addWidget(self.pipeline_progress_bar)
 
         # ── Single collapsible parameter panel ───────────────────────
-        self._build_params_section(root)
+        self.cell_params_widget = CellParamsWidget(self)
+        root.addWidget(self.cell_params_widget.section)
+        self._install_params_aliases()
 
-        # ── Correction (group box for visual separation) ──────────── # ← CHANGED
-        self._build_correction_section(root)
+        # ── Correction section (child widget) ────────────────────────
+        self.cell_correction_widget = CellCorrectionWidget(
+            self.viewer,
+            pos_dir_provider=lambda: self._pos_dir,
+            files_widget_refresh_callback=lambda pd: self._files_widget.refresh(pd),
+        )
+        root.addWidget(self.cell_correction_widget)
+        self._install_correction_aliases()
 
         root.addStretch()
 
     # -- Parameters --------------------------------------------------------
 
-    def _build_params_section(self, root: QVBoxLayout) -> None:
-        inner = QWidget()
-        lay = QVBoxLayout(inner)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-
+    def _install_params_aliases(self) -> None:
+        """Install compatibility aliases for all controls owned by CellParamsWidget."""
+        p = self.cell_params_widget
         # Flow filtering
-        lay.addWidget(_heading("Flow Filtering"))
-        g = block_grid(horizontal_spacing=12)
-        self.ff_median_time_spin = _ispin(1, 15, 3)
-        self.ff_median_space_spin = _ispin(1, 15, 5)
-        self.ff_gauss_time_spin = _dspin(0, 10, 0, 0.1, 1)
-        self.ff_gauss_space_spin = _dspin(0, 10, 0, 0.1, 1)
-        add_block_pair_row(g, 0,
-            "Median t:", compact_spinbox(self.ff_median_time_spin),
-            "Median xy:", compact_spinbox(self.ff_median_space_spin))
-        add_block_pair_row(g, 1,
-            "Gauss t σ:", compact_spinbox(self.ff_gauss_time_spin),
-            "Gauss xy σ:", compact_spinbox(self.ff_gauss_space_spin))
-        lay.addLayout(g)
-
+        self.ff_median_time_spin = p.ff_median_time_spin
+        self.ff_median_space_spin = p.ff_median_space_spin
+        self.ff_gauss_time_spin = p.ff_gauss_time_spin
+        self.ff_gauss_space_spin = p.ff_gauss_space_spin
         # Foreground
-        lay.addWidget(_heading("Foreground"))
-        g = block_grid(horizontal_spacing=12)
-        self.fg_cellprob_threshold_spin = _dspin(
-            0, 1, 0.5, 0.01, 2,
-            "Cellpose probability threshold (sigmoid space).",
-        )
-        add_block_pair_row(g, 0,
-            "Cellprob thr:", compact_spinbox(self.fg_cellprob_threshold_spin))
-        lay.addLayout(g)
+        self.fg_cellprob_threshold_spin = p.fg_cellprob_threshold_spin
+        # Contour sweep
+        self.cp_min_spin = p.cp_min_spin
+        self.cp_max_spin = p.cp_max_spin
+        self.cp_step_spin = p.cp_step_spin
+        # Contour flow-following
+        self.ff_flow_weight_spin = p.ff_flow_weight_spin
+        self.ff_step_scale_spin = p.ff_step_scale_spin
+        self.ff_max_iter_spin = p.ff_max_iter_spin
+        # Gamma averaging
+        self.gamma_min_spin = p.gamma_min_spin
+        self.gamma_max_spin = p.gamma_max_spin
+        self.gamma_step_spin = p.gamma_step_spin
+        # Temporal stabilization
+        self.memory_tau_spin = p.memory_tau_spin
+        self.memory_floor_spin = p.memory_floor_spin
+        # Segmentation ICM
+        self.alpha_unary_spin = p.alpha_unary_spin
+        self.lambda_s_spin = p.lambda_s_spin
+        self.beta_s_spin = p.beta_s_spin
+        self.lambda_t_spin = p.lambda_t_spin
+        self.gamma_unary_spin = p.gamma_unary_spin
+        self.n_workers_spin = p.n_workers_spin
 
-        # Contour maps — consensus sweep
-        lay.addWidget(_heading("Contour — Cellprob Sweep"))
-        g = block_grid(horizontal_spacing=12)
-        self.cp_min_spin = _dspin(0, 1, 0.05, 0.05)
-        self.cp_max_spin = _dspin(0, 1, 0.50, 0.05)
-        self.cp_step_spin = _dspin(0.01, 1, 0.05, 0.01)
-        add_block_pair_row(g, 0,
-            "Min:", compact_spinbox(self.cp_min_spin),
-            "Max:", compact_spinbox(self.cp_max_spin))
-        add_block_pair_row(g, 1,
-            "Step:", compact_spinbox(self.cp_step_spin))
-        lay.addLayout(g)
+    # -- Correction aliases -----------------------------------------------
 
-        # Contour — flow-following
-        lay.addWidget(_heading("Contour — Flow-Following"))
-        g = block_grid(horizontal_spacing=12)
-        self.ff_flow_weight_spin = _dspin(
-            0, 1, 0.5, 0.05, 2,
-            "Blend: flow direction (1) vs EDT gravity (0).",
-        )
-        self.ff_step_scale_spin = _dspin(0.01, 2, 0.2, 0.05, 2, "Step-size multiplier.")
-        self.ff_max_iter_spin = _ispin(10, 2000, 100, 10, "Max integration steps.")
-        add_block_pair_row(g, 0,
-            "Flow weight:", compact_spinbox(self.ff_flow_weight_spin),
-            "Step scale:", compact_spinbox(self.ff_step_scale_spin))
-        add_block_pair_row(g, 1,
-            "Max iter:", compact_spinbox(self.ff_max_iter_spin))
-        lay.addLayout(g)
-
-        # Contour — gamma averaging
-        lay.addWidget(_heading("Contour — Gamma Averaging"))
-        g = block_grid(horizontal_spacing=12)
-        self.gamma_min_spin = _dspin(0.05, 5, 1.0, 0.05)
-        self.gamma_max_spin = _dspin(0.05, 5, 1.0, 0.05)
-        self.gamma_step_spin = _dspin(0.05, 2, 0.25, 0.05)
-        add_block_pair_row(g, 0,
-            "Min:", compact_spinbox(self.gamma_min_spin),
-            "Max:", compact_spinbox(self.gamma_max_spin))
-        add_block_pair_row(g, 1,
-            "Step:", compact_spinbox(self.gamma_step_spin))
-        lay.addLayout(g)
-
-        # Contour — temporal stabilization
-        lay.addWidget(_heading("Contour — Temporal Stabilization"))
-        g = block_grid(horizontal_spacing=12)
-        self.memory_tau_spin = _dspin(
-            0, 1, 0, 0.01, 3,
-            "Contour memory τ. 0 = disabled.",
-        )
-        self.memory_floor_spin = _dspin(
-            0.001, 0.5, 0.01, 0.005, 3,
-            "Minimum alpha — prevents permanent ghosting.",
-        )
-        add_block_pair_row(g, 0,
-            "Memory τ:", compact_spinbox(self.memory_tau_spin),
-            "Floor:", compact_spinbox(self.memory_floor_spin))
-        lay.addLayout(g)
-
-        # Segmentation — ICM
-        lay.addWidget(_heading("Segmentation"))
-        g = block_grid(horizontal_spacing=12)
-        self.alpha_unary_spin = _dspin(
-            0, 1000, 4.0, 0.1, 2,
-            "Contour weight: 1 + α·contour.",
-        )
-        self.lambda_s_spin = _dspin(0, 1000, 1.0, 0.1, 2, "Spatial Potts weight.")
-        self.beta_s_spin = _dspin(
-            0, 1000, 5.0, 0.1, 2,
-            "Contour sensitivity: exp(-β·avg_contour).",
-        )
-        self.lambda_t_spin = _dspin(0, 1000, 1.0, 0.1, 2, "Temporal Potts weight.")
-        self.gamma_unary_spin = _dspin(
-            0, 100, 0, 0.1, 2,
-            "(1 − foreground_score) weight. 0 = contour-only.",
-        )
-        self.n_workers_spin = _ispin(
-            1, max(1, os.cpu_count() or 1),
-            min(4, os.cpu_count() or 1),
-            tooltip="Parallel workers for geodesic computation.",
-        )
-        add_block_pair_row(g, 0,
-            "α unary:", compact_spinbox(self.alpha_unary_spin),
-            "λ spatial:", compact_spinbox(self.lambda_s_spin),
-            field_width=92)
-        add_block_pair_row(g, 1,
-            "β spatial:", compact_spinbox(self.beta_s_spin),
-            "λ temporal:", compact_spinbox(self.lambda_t_spin),
-            field_width=92)
-        add_block_pair_row(g, 2,
-            "γ unary:", compact_spinbox(self.gamma_unary_spin),
-            "Workers:", compact_spinbox(self.n_workers_spin),
-            field_width=92)
-        lay.addLayout(g)
-
-        # ── NOTE: "Correction" params removed from here ──────────── # ← CHANGED
-
-        root.addWidget(
-            CollapsibleSection(
-                "Parameters",
-                inner,
-                expanded=False,
-                title_role="params",
-                title_level=1,
-            )
-        )
-
-    # -- Correction --------------------------------------------------------  # ← REWRITTEN
-
-    def _build_correction_section(self, root: QVBoxLayout) -> None:
-        group = QGroupBox("Correction")
-        group.setStyleSheet(
-            "QGroupBox { "
-            f"font-weight: 600; color: {semantic_color('stage', 1)}; "
-            "margin-top: 8px; padding-top: 14px; }"
-        )
-        group_lay = QVBoxLayout(group)
-        group_lay.setContentsMargins(8, 16, 8, 8)
-        group_lay.setSpacing(6)
-
-        # ── Action buttons — 2-column grid ────────────────────────
-        self.load_labels_btn = _btn(
-            "Load Labels", "Load tracked cell labels from disk.")
-        self.save_labels_btn = _btn(
-            "Save Labels", "Save tracked cell labels to disk.")
-        self.fill_holes_btn = _btn(
-            "Fill Holes",
-            "Fill background holes fully enclosed within individual labels.",
-        )
-        self.fix_semiholes_btn = _btn(
-            "Fix Semi Holes",
-            "Bridge narrow channels in label boundaries and fill the pockets.",
-        )
-        self.cleanup_btn = _btn(
-            "Clean Up",
-            "All frames: clean fragments → resync to nuclear labels → remove orphans.",
-        )
-        self.expand_cell_btn = _btn(
-            "Expand Cell",
-            "Expand selected cell into adjacent foreground mask pixels.",
-        )
-        group_lay.addLayout(_button_grid(
-            (self.load_labels_btn, self.save_labels_btn),
-            (self.fill_holes_btn, self.fix_semiholes_btn),
-            (self.cleanup_btn, self.expand_cell_btn),
-        ))
-
-        self.correction_status_lbl = _make_status()
-        group_lay.addWidget(self.correction_status_lbl)
-
-        # ── Correction parameters ─────────────────────────────────
-        scope_row = QHBoxLayout()
-        scope_lbl = QLabel("Scope:")
-        scope_lbl.setToolTip("Applies to Fill Holes and Fix Semi Holes.")
-        scope_row.addWidget(scope_lbl)
-        self.correction_scope_combo = QComboBox()
-        self.correction_scope_combo.addItems(["Current frame", "All frames"])
-        self.correction_scope_combo.setToolTip(
-            "Applies to Fill Holes and Fix Semi Holes. Clean Up always processes all frames."
-        )
-        scope_row.addWidget(self.correction_scope_combo)
-        group_lay.addLayout(scope_row)
-
-        g = block_grid(horizontal_spacing=12)
-        self.hole_radius_spin = _ispin(
-            0, 999, 5,
-            tooltip="Max hole size (pixels) for fill / fix operations.",
-        )
-        self.semihole_opening_spin = _ispin(
-            0, 999, 3,
-            tooltip="Max channel width for semi-hole bridging.",
-        )
-        self.expand_max_px_spin = _ispin(
-            0, 999, 25,
-            tooltip="Max expansion distance in pixels.",
-        )
-        add_block_pair_row(g, 0,
-            "Hole radius:", compact_spinbox(self.hole_radius_spin),
-            "Max opening:", compact_spinbox(self.semihole_opening_spin))
-        add_block_pair_row(g, 1,
-            "Max expand px:", compact_spinbox(self.expand_max_px_spin))
-        group_lay.addLayout(g)
-
-        # ── Inline CorrectionWidget (no cleanup, no spotlight) ────
-        self.correction_widget = CorrectionWidget(
-            self.viewer,
-            show_activate_btn=False,
-            show_shortcuts=False,
-            inspector_first=True,
-            spotlight=False,                                       # ← NEW
-            show_cleanup=False,                                    # ← NEW
-        )
-        group_lay.addWidget(self.correction_widget)
-
-        group_lay.addWidget(CollapsibleSection(
-            "Correction Shortcuts",
-            self.correction_widget.build_shortcuts_widget(),
-            expanded=False,
-            title_role="actions",
-            title_level=2,
-        ))
-
-        root.addWidget(group)
+    def _install_correction_aliases(self) -> None:
+        """Install compatibility aliases for all controls owned by CellCorrectionWidget."""
+        c = self.cell_correction_widget
+        self.correction_widget = c.correction_widget
+        self.correction_status_lbl = c.correction_status_lbl
+        self.correction_shortcuts_section = c.correction_shortcuts_section
+        self.load_labels_btn = c.load_labels_btn
+        self.save_labels_btn = c.save_labels_btn
+        self.fill_holes_btn = c.fill_holes_btn
+        self.fix_semiholes_btn = c.fix_semiholes_btn
+        self.cleanup_btn = c.cleanup_btn
+        self.expand_cell_btn = c.expand_cell_btn
+        self.correction_scope_combo = c.correction_scope_combo
+        self.hole_radius_spin = c.hole_radius_spin
+        self.semihole_opening_spin = c.semihole_opening_spin
+        self.expand_max_px_spin = c.expand_max_px_spin
 
     # ================================================================
     # Signals
@@ -489,13 +299,6 @@ class CellWorkflowWidget(QWidget):
         self.preview_contour_btn.clicked.connect(self._on_preview_contours)
         self.build_contour_btn.clicked.connect(self._on_build_contours)
         self.segment_btn.clicked.connect(self._on_segment)
-        self.load_labels_btn.clicked.connect(self._on_load_labels)
-        self.save_labels_btn.clicked.connect(self._on_save_labels)
-        self.fill_holes_btn.clicked.connect(self._on_fill_holes)               # ← NEW
-        self.fix_semiholes_btn.clicked.connect(self._on_fix_semiholes)         # ← NEW
-        self.cleanup_btn.clicked.connect(self._on_cleanup)                     # ← NEW
-        self.expand_cell_btn.clicked.connect(self._on_expand_cell)
-        # NOTE: reassign_ids_btn removed                                       # ← CHANGED
 
     # ================================================================
     # Path helpers
@@ -679,10 +482,7 @@ class CellWorkflowWidget(QWidget):
             logger.info(msg)
 
     def _correction_status(self, msg: str) -> None:
-        self.correction_status_lbl.setText(msg)
-        self.correction_status_lbl.setVisible(bool(msg))
-        if msg:
-            logger.info(msg)
+        self.cell_correction_widget._correction_status(msg)
 
     def _progress(self, done: int, total: int, msg: str) -> None:
         self.pipeline_progress_bar.setVisible(True)
@@ -728,26 +528,10 @@ class CellWorkflowWidget(QWidget):
         return min(max(self._current_t(), 0), max(max_t - 1, 0))
 
     # ================================================================
-    # Correction — frame index helper
-    # ================================================================
-    def _correction_frame_indices(self, layer) -> list[int]:          # ← NEW
-        """Return frame indices based on the correction scope combo."""
-        if layer.data.ndim < 3:
-            return [0]
-        if self.correction_scope_combo.currentText() == "All frames":
-            return list(range(int(layer.data.shape[0])))
-        return [self._current_t()]
-
-    # ================================================================
     # 1. Flow Filtering
     # ================================================================
-    def _flow_filter_params(self) -> FlowFollowingParams:
-        return FlowFollowingParams(
-            median_kernel_time=int(self.ff_median_time_spin.value()),
-            median_kernel_space=int(self.ff_median_space_spin.value()),
-            gaussian_sigma_time=float(self.ff_gauss_time_spin.value()),
-            gaussian_sigma_space=float(self.ff_gauss_space_spin.value()),
-        )
+    def _flow_filter_params(self):
+        return self.cell_params_widget.flow_filter_params()
 
     def _read_dp_tcyx(self, prob_path: Path, dp_path: Path) -> np.ndarray:
         from cellflow.segmentation._array_utils import normalize_seeded_watershed_dp_stack
@@ -869,21 +653,13 @@ class CellWorkflowWidget(QWidget):
     # 3. Contour Maps
     # ================================================================
     def _cellprob_thresholds(self) -> list[float]:
-        step = self.cp_step_spin.value()
-        return list(np.arange(self.cp_min_spin.value(), self.cp_max_spin.value() + step / 2, step))
+        return self.cell_params_widget.cellprob_thresholds()
 
     def _gammas(self) -> list[float]:
-        step = self.gamma_step_spin.value()
-        return list(np.arange(self.gamma_min_spin.value(), self.gamma_max_spin.value() + step / 2, step))
+        return self.cell_params_widget.gammas()
 
-    def _contour_ff_params(self) -> FlowFollowingParams:
-        return FlowFollowingParams(
-            median_kernel_time=1, median_kernel_space=1,
-            gaussian_sigma_time=0.0, gaussian_sigma_space=0.0,
-            flow_weight=self.ff_flow_weight_spin.value(),
-            flow_step_scale=self.ff_step_scale_spin.value(),
-            max_iterations=self.ff_max_iter_spin.value(),
-        )
+    def _contour_ff_params(self):
+        return self.cell_params_widget.contour_ff_params()
 
     def _consensus_boundary_averaged(
         self, prob_3d, dp_2d, labels_yx, thresholds, gammas, *, ff_params,
@@ -1097,245 +873,3 @@ class CellWorkflowWidget(QWidget):
         self._set_pipeline_buttons_enabled(False)
         self._initialize_worker = _worker()
 
-    # ================================================================
-    # 5. Correction
-    # ================================================================
-    @staticmethod
-    def _broadcast_ref(image, shape):
-        if image is None:
-            return None
-        if image.ndim == 2 and len(shape) >= 3:
-            return np.broadcast_to(image[np.newaxis], (shape[0],) + image.shape).copy()
-        return image
-
-    def _on_load_labels(self) -> None:
-        lp = self._cell_labels_path()
-        if lp is None or not lp.exists():
-            self._correction_status("No cell labels file found."); return
-        self._correction_status("Loading...")
-        czp, nzp = self._cell_zavg_path(), self._nuc_zavg_path()
-
-        @thread_worker(connect={
-            "returned": self._on_labels_loaded,
-            "errored": lambda e: self._correction_status(f"Error: {e}"),
-        })
-        def _w():
-            labels = read_full_tracked_stack(lp)
-            cz = np.asarray(tifffile.imread(str(czp)), dtype=np.float32) if czp and czp.exists() else None
-            nz = np.asarray(tifffile.imread(str(nzp)), dtype=np.float32) if nzp and nzp.exists() else None
-            return labels, cz, nz
-        _w()
-
-    def _on_labels_loaded(self, result) -> None:
-        labels, cz, nz = result
-        self._show_layer(_TRACKED_CELL_LAYER, labels, {}, self.viewer.add_labels)
-        for img, name, cmap in (
-            (self._broadcast_ref(cz, labels.shape), _CELL_ZAVG_LAYER, "gray"),
-            (self._broadcast_ref(nz, labels.shape), _NUC_ZAVG_LAYER, "bop orange"),
-        ):
-            if img is None: continue
-            if name in self.viewer.layers:
-                self.viewer.layers[name].data = img
-            else:
-                self.viewer.add_image(img, name=name, colormap=cmap, blending="additive")
-        self._correction_status(f"Loaded {labels.shape}.")
-        self.correction_widget.activate_layer(self.viewer.layers[_TRACKED_CELL_LAYER])
-
-    def _on_save_labels(self) -> None:
-        lp = self._cell_labels_path()
-        if lp is None:
-            self._correction_status("No project open."); return
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
-            self._correction_status("No labels layer."); return
-        data = np.asarray(self.viewer.layers[_TRACKED_CELL_LAYER].data)
-        if data.ndim != 3:
-            self._correction_status("Labels not 3D."); return
-        lp.parent.mkdir(parents=True, exist_ok=True)
-        tifffile.imwrite(str(lp), data.astype(np.uint32, copy=False), compression="zlib")
-        self._files_widget.refresh(self._pos_dir)
-        self._correction_status(f"Saved {data.shape[0]} frames → {lp.name}.")
-
-    # ── Fill Holes ────────────────────────────────────────────────── # ← NEW
-
-    def _on_fill_holes(self) -> None:
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
-            self._correction_status("No cell labels loaded."); return
-        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
-        radius = int(self.hole_radius_spin.value())
-        frames = self._correction_frame_indices(layer)
-
-        changed_frames = 0
-        changed_pixels = 0
-        for t in frames:
-            seg2d = self.correction_widget._frame_view(layer, t)
-            before = seg2d.copy()
-            result = fill_label_holes(seg2d, radius=radius)
-            np.copyto(seg2d, result)
-            diff = int(np.sum(before != seg2d))
-            if diff:
-                changed_frames += 1
-                changed_pixels += diff
-                self.correction_widget._record_history(layer, t, before)
-
-        if changed_pixels:
-            layer.refresh()
-            if self.correction_widget._selected_label:
-                t_now = self._current_t()
-                self.correction_widget._update_highlight(
-                    t_now, self.correction_widget._selected_label,
-                )
-            self._correction_status(
-                f"Filled holes in {changed_frames} frame(s), "
-                f"{changed_pixels} px changed. Unsaved."
-            )
-        else:
-            self._correction_status("No interior holes found.")
-
-    # ── Fix Semi Holes ────────────────────────────────────────────── # ← NEW
-
-    def _on_fix_semiholes(self) -> None:
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
-            self._correction_status("No cell labels loaded."); return
-        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
-        radius = int(self.hole_radius_spin.value())
-        max_opening = int(self.semihole_opening_spin.value())
-        frames = self._correction_frame_indices(layer)
-
-        changed_frames = 0
-        changed_pixels = 0
-        for t in frames:
-            seg2d = self.correction_widget._frame_view(layer, t)
-            before = seg2d.copy()
-            result = fix_label_semiholes(
-                seg2d, radius=radius, max_opening=max_opening,
-            )
-            np.copyto(seg2d, result)
-            diff = int(np.sum(before != seg2d))
-            if diff:
-                changed_frames += 1
-                changed_pixels += diff
-                self.correction_widget._record_history(layer, t, before)
-
-        if changed_pixels:
-            layer.refresh()
-            if self.correction_widget._selected_label:
-                t_now = self._current_t()
-                self.correction_widget._update_highlight(
-                    t_now, self.correction_widget._selected_label,
-                )
-            self._correction_status(
-                f"Fixed semiholes in {changed_frames} frame(s), "
-                f"{changed_pixels} px changed. Unsaved."
-            )
-        else:
-            self._correction_status("No semiholes found.")
-
-    # ── Clean Up (movie-wide) ─────────────────────────────────────── # ← NEW
-
-    def _get_nuclear_labels(self) -> np.ndarray | None:
-        """Try viewer layer first, then fall back to disk."""
-        if "Tracked: Nucleus" in self.viewer.layers:
-            return np.asarray(self.viewer.layers["Tracked: Nucleus"].data)
-        nuc_path = self._nuc_labels_path()
-        if nuc_path is not None and nuc_path.exists():
-            return np.asarray(tifffile.imread(str(nuc_path)))
-        return None
-
-    def _on_cleanup(self) -> None:
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
-            self._correction_status("No cell labels loaded."); return
-        nuc_data = self._get_nuclear_labels()
-        if nuc_data is None:
-            self._correction_status(
-                "Nuclear labels not found (viewer or disk)."
-            ); return
-
-        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
-        cell_data = np.asarray(layer.data).copy()
-
-        try:
-            stats = cleanup_movie(cell_data, nuc_data)
-        except ValueError as exc:
-            self._correction_status(str(exc)); return
-
-        layer.data = cell_data
-
-        total = (
-            stats["fragments_cleared"]
-            + stats["cells_relabeled"]
-            + stats["orphans_removed"]
-        )
-        if total:
-            if self.correction_widget._selected_label:
-                t_now = self._current_t()
-                self.correction_widget._update_highlight(
-                    t_now, self.correction_widget._selected_label,
-                )
-            self._correction_status(
-                f"Cleanup: {stats['fragments_cleared']} fragment px, "
-                f"{stats['cells_relabeled']} relabeled, "
-                f"{stats['orphans_removed']} orphans removed. "
-                f"No undo — save or reload to revert. Unsaved."
-            )
-        else:
-            self._correction_status("Cleanup: nothing to change.")
-
-    # ── Expand Cell ───────────────────────────────────────────────────
-
-    def _foreground_for_expand(self) -> np.ndarray | None:
-        if _CELL_FOREGROUND_LAYER in self.viewer.layers:
-            return np.asarray(self.viewer.layers[_CELL_FOREGROUND_LAYER].data)
-        fp = self._foreground_path()
-        if fp is None or not fp.exists():
-            return None
-        fg = np.asarray(tifffile.imread(str(fp)))
-        self._show_layer(_CELL_FOREGROUND_LAYER, fg, {}, self.viewer.add_labels)
-        return fg
-
-    def _on_expand_cell(self) -> None:
-        if self._pos_dir is None:
-            self._correction_status("No project open."); return
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
-            self._correction_status("No labels loaded."); return
-        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
-        if self.correction_widget._layer is not layer:
-            self._correction_status("Labels not active for correction."); return
-        lid = int(self.correction_widget._selected_label)
-        if lid == 0:
-            self._correction_status("No cell selected."); return
-        labels = np.asarray(layer.data)
-        if labels.ndim < 3:
-            self._correction_status("Labels not 3D."); return
-        t = self._current_time_index(labels.shape[0])
-        seg2d = self.correction_widget._frame_view(layer, t)
-        if not np.any(seg2d == lid):
-            self._correction_status(f"Cell {lid} absent at t={t}."); return
-
-        fg = self._foreground_for_expand()
-        if fg is None:
-            self._correction_status("Foreground mask not found."); return
-        if fg.shape != labels.shape:
-            self._correction_status(f"Foreground shape mismatch."); return
-        fg2d = fg[t]
-        while fg2d.ndim > 2:
-            if fg2d.shape[0] != 1:
-                self._correction_status("Foreground frame shape unsupported."); return
-            fg2d = fg2d[0]
-
-        before = seg2d.copy()
-        try:
-            added = expand_label_to_foreground(
-                seg2d, fg2d, lid, max_distance=int(self.expand_max_px_spin.value()),
-            )
-        except ValueError as exc:
-            self._correction_status(str(exc)); return
-        if added == 0:
-            if not bool(np.any((fg2d > 0) & (before == lid))):
-                self._correction_status(f"Cell {lid} doesn't touch foreground at t={t}.")
-            else:
-                self._correction_status(f"No expansion for cell {lid} at t={t}.")
-            return
-        self.correction_widget._record_history(layer, t, before)
-        layer.refresh()
-        self.correction_widget._update_highlight(t, lid)
-        self._correction_status(f"Expanded cell {lid} at t={t} by {added} px. Unsaved.")
