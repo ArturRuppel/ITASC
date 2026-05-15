@@ -224,6 +224,10 @@ class CellWorkflowWidget(QWidget):
         self.cell_params_widget = CellParamsWidget(self)
         root.addWidget(self.cell_params_widget.section)
         self._install_params_aliases()
+        # CellParamsWidget acts as a controller here. Its visible section is
+        # reparented into this layout, so keep the owner widget hidden to avoid
+        # an unmanaged default rectangle intercepting header clicks.
+        self.cell_params_widget.hide()
 
         # ── Correction section (child widget) ────────────────────────
         self.cell_correction_widget = CellCorrectionWidget(
@@ -872,4 +876,3 @@ class CellWorkflowWidget(QWidget):
         self.pipeline_progress_bar.setVisible(True)
         self._set_pipeline_buttons_enabled(False)
         self._initialize_worker = _worker()
-

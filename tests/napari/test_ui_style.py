@@ -11,7 +11,16 @@ import tifffile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel, QPushButton, QSizePolicy, QSpinBox, QWidget
+from qtpy.QtWidgets import (
+    QApplication,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
 napari_pkg = types.ModuleType("cellflow.napari")
@@ -35,7 +44,7 @@ from cellflow.napari.ui_style import (
     status_label,
     tiny_button,
 )
-from cellflow.napari.widgets import PipelineFilesWidget
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 
 
 @pytest.fixture
@@ -185,6 +194,25 @@ def test_checked_success_button_styles_checked_state_green(_app):
     assert "background-color" in style
     assert "#2e7d32" in style
     assert "font-weight: bold" in style
+
+
+def test_collapsible_section_header_spans_available_width(_app):
+    wrapper = QWidget()
+    layout = QVBoxLayout(wrapper)
+    section = CollapsibleSection("Pipeline Files", QLabel("files"), expanded=False)
+    layout.addWidget(section)
+
+    wrapper.resize(360, 100)
+    wrapper.show()
+    _app.processEvents()
+
+    toggle = section.findChild(QToolButton, "collapsible_toggle")
+    assert toggle is not None
+    assert toggle.width() == section.width()
+    assert section.childAt(section.width() - 4, toggle.y() + toggle.height() // 2) is toggle
+    assert toggle.text() == "Pipeline Files"
+
+    wrapper.deleteLater()
 
 
 def test_pipeline_files_widget_reflects_present_and_missing_states(_app, tmp_path):

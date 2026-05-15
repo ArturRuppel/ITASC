@@ -51,14 +51,18 @@ class CollapsibleSection(QWidget):
 
         # Header toggle button
         self._toggle = QToolButton()
+        self._toggle.setObjectName("collapsible_toggle")
         self._toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self._toggle.setCheckable(True)
         self._toggle.setChecked(expanded)
         self._toggle.setText(self._qt_display_text(title))
         self._toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self._toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._toggle.setStyleSheet(
-            f"QToolButton {{ font-weight: bold; font-size: 10pt; border: none; "
-            f"padding: 2px; color: {title_color}; }}"
+            "QToolButton#collapsible_toggle { "
+            f"font-weight: bold; font-size: 10pt; border: none; "
+            f"padding: 2px; color: {title_color}; "
+            "}"
         )
         self._toggle.toggled.connect(self._on_toggled)
         layout.addWidget(self._toggle)

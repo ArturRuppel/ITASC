@@ -13,6 +13,7 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
+from qtpy.QtCore import QPoint
 from qtpy.QtGui import QKeySequence, QShortcut
 from qtpy.QtWidgets import (
     QApplication,
@@ -466,10 +467,29 @@ def test_main_widget_top_level_sections_use_unnumbered_mocha_titles():
 
     for section, title in expected.items():
         assert section.title == title
-        toggle = section.findChild(QToolButton)
+        toggle = section.findChild(QToolButton, "collapsible_toggle")
         assert toggle is not None
         assert toggle.text() == title.replace("&", "&&")
         assert f"color: {semantic_color('stage', 0)};" in toggle.styleSheet()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_main_widget_scroll_area_keeps_content_horizontally_aligned():
+    app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    widget = widget_class(viewer)
+    wide_child = QWidget()
+    wide_child.setMinimumWidth(800)
+    widget.scroll_layout.insertWidget(0, wide_child)
+
+    widget.resize(360, 500)
+    widget.show()
+    app.processEvents()
+
+    assert widget.scroll_widget.width() == widget.scroll.viewport().width()
+    assert widget.scroll.horizontalScrollBar().maximum() == 0
 
     widget.deleteLater()
     viewer.close()
@@ -482,13 +502,15 @@ def test_nucleus_workflow_uses_semantic_colors_by_role_and_level():
 
     widget = widget_class(viewer)
 
-    files_toggle = widget.findChild(QToolButton)
+    files_toggle = widget._pipeline_files_section.findChild(
+        QToolButton, "collapsible_toggle"
+    )
     assert files_toggle is not None
     assert f"color: {semantic_color('stage', 1)};" in files_toggle.styleSheet()
 
     segmentation_toggle = next(
         toggle
-        for toggle in widget.findChildren(QToolButton)
+        for toggle in widget.findChildren(QToolButton, "collapsible_toggle")
         if toggle.text() == "Segmentation Input Parameters"
     )
     assert segmentation_toggle is not None
@@ -498,6 +520,30 @@ def test_nucleus_workflow_uses_semantic_colors_by_role_and_level():
     }
     assert widget.run_db_gen_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
     assert semantic_color("indicators", 0) in widget.pipeline_status_lbl.styleSheet()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_correction_controller_does_not_cover_pipeline_header():
+    app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    widget.resize(360, 700)
+    widget.show()
+    app.processEvents()
+
+    toggle = widget._pipeline_files_section._toggle
+    header_point = toggle.mapTo(widget, QPoint(20, toggle.height() // 2))
+
+    assert widget.childAt(header_point) is toggle
+    assert not widget.nucleus_segmentation_inputs_widget.isVisible()
+    assert not widget.nucleus_tracking_inputs_widget.isVisible()
+    assert not widget.nucleus_pipeline_widget.isVisible()
+    assert not widget.nucleus_correction_widget.isVisible()
+    assert widget.correction_active_btn.isVisible()
+    assert widget.correction_mode_section.isVisible()
 
     widget.deleteLater()
     viewer.close()
@@ -2136,7 +2182,10 @@ def test_nucleus_workflow_uses_flat_source_stack_layout():
     assert not hasattr(widget, "tracking_correction_section")
     assert widget.ultrack_db_browser_section.title == "Database Browser"
     assert widget.correction_mode_section.title == "Correction"
-    toggles = {toggle.text() for toggle in widget.findChildren(QToolButton)}
+    toggles = {
+        toggle.text()
+        for toggle in widget.findChildren(QToolButton, "collapsible_toggle")
+    }
     assert "Pipeline Files" in toggles
     assert "Segmentation Input Parameters" in toggles
     assert "Ultrack Parameters" in toggles

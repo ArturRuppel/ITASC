@@ -93,15 +93,14 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             ],
             viewer=self.viewer,
         )
-        root.addWidget(
-            CollapsibleSection(
-                "Pipeline Files",
-                self._files_widget,
-                expanded=False,
-                title_role="stage",
-                title_level=1,
-            )
+        self._pipeline_files_section = CollapsibleSection(
+            "Pipeline Files",
+            self._files_widget,
+            expanded=False,
+            title_role="stage",
+            title_level=1,
         )
+        root.addWidget(self._pipeline_files_section)
 
         # ── Workflow sections ────────────────────────────────────────
         self._build_segmentation_inputs_section(root)
@@ -153,6 +152,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.db_gen_threshold_max_spin = self.source_contour_threshold_max_spin
         self.db_gen_threshold_step_spin = self.source_contour_threshold_step_spin
         root.addWidget(self.segmentation_inputs_section)
+        self.nucleus_segmentation_inputs_widget.hide()
 
     def _build_tracking_ultrack_section(self, root: QVBoxLayout) -> None:
         self.nucleus_tracking_inputs_widget = NucleusTrackingInputsWidget(self)
@@ -168,6 +168,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             parent=self,
         )
         self._alias_pipeline_controls()
+        self.nucleus_tracking_inputs_widget.hide()
+        self.nucleus_pipeline_widget.hide()
 
         root.addWidget(self.tracking_ultrack_parameters_section)
         btn_row1, btn_row2 = self.nucleus_pipeline_widget.button_rows()
@@ -274,6 +276,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             parent=self,
         )
         self._alias_correction_controls()
+        # NucleusCorrectionWidget acts as a controller here. Its visible controls
+        # are reparented into this layout below, so keep the owner widget hidden
+        # to prevent its default geometry from intercepting header clicks.
+        self.nucleus_correction_widget.hide()
         root.addWidget(self.correction_active_btn)
         root.addWidget(self.correction_mode_section)
 

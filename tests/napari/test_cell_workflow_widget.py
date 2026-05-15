@@ -15,7 +15,16 @@ import tifffile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel, QProgressBar, QPushButton, QScrollArea, QSpinBox
+from qtpy.QtCore import QPoint
+from qtpy.QtWidgets import (
+    QApplication,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QToolButton,
+)
 
 
 class _LayerCollection(dict):
@@ -140,6 +149,30 @@ def _label_texts(widget):
 
 def _progress_bars(widget):
     return widget.findChildren(QProgressBar)
+
+
+def test_cell_params_controller_does_not_cover_pipeline_header(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    widget.resize(360, 700)
+    widget.show()
+    app.processEvents()
+
+    toggle = next(
+        child
+        for child in widget.findChildren(QToolButton, "collapsible_toggle")
+        if child.text() == "Pipeline Files"
+    )
+    header_point = toggle.mapTo(widget, QPoint(20, toggle.height() // 2))
+
+    assert widget.childAt(header_point) is toggle
+    assert not widget.cell_params_widget.isVisible()
+    assert widget.cell_params_widget.section.isVisible()
+    assert widget.cell_correction_widget.isVisible()
+
+    widget.deleteLater()
 
 
 def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):

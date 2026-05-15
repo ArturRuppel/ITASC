@@ -13,6 +13,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -104,7 +105,10 @@ class CellFlowMainWidget(QWidget):
         # Main scroll area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_widget = QWidget()
+        self.scroll_widget.setMinimumWidth(0)
+        self.scroll_widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.scroll_layout = QVBoxLayout(self.scroll_widget)
         self.scroll_layout.setContentsMargins(2, 2, 2, 2)
         self.scroll_layout.setAlignment(Qt.AlignTop)
