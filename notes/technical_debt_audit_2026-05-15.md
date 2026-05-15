@@ -35,6 +35,12 @@ _Status update: 2026-05-16 morning_
 - [VERIFIED] `python -m py_compile` and `python -m ruff check` pass for all touched files. Combined suite: `100 passed` (`87 layout` + `13 pipeline`).
 - [NEXT] `NucleusWorkflowWidget` is now a thin compositor at ~529 LOC. The remaining structural candidate is to split `cell_workflow_widget.py` (still ~1344 LOC) following the same pattern, or to address the `tracking_ultrack/multi_threshold.py` / `linking.py` parallel-pipeline debt noted in section 3.
 
+_Status update: 2026-05-16 midday — §3 structural sweep_
+- [DONE] `napari/cellpose_widget.py` (68-line passthrough) folded into `main_widget.py` as a private `_CellposePanel` class. Public `_cellpose_widget` / `hpc_cellpose_widget` attributes on `CellFlowMainWidget` preserved. `cellpose_widget.py` deleted; `test_cellpose_file_contract.py` and `test_nucleus_tracking_correction_layout.py` (stub cleanup) updated. `95 passed` across affected tests.
+- [DONE] `tracking_ultrack/linking.py` — shared per-pair gate extracted as `_shape_pair_score(...)` and called from both `compute_edge_weight` (shape branch) and the `_run_shape_linking` inner loop. No behavior change; the only surface difference between the two original sites was `return None` vs `continue`, normalized in the helper. `2 passed` on linking tests.
+- [VERIFIED-AS-ALREADY-DONE] `tracking_ultrack/multi_threshold.py` private `_node_*` imports — already cleaned up in commit `f524612`. Shared geometry now lives in `_node_geometry` as public functions (`node_bbox_and_mask`, `node_pickle_ndim`, `make_node_pickle`, `intersects`, `raw_iou`); `multi_threshold.py`, `validation_nodes.py`, `swap_candidate.py`, `extend.py`, `seed_prior.py` all import them at module level. Remaining in-function imports are legitimate: lazy `ultrack` (heavy optional dep) and a real `db_query` ↔ `multi_threshold` cycle break. Smoke import + `96 passed, 1 pre-existing failure`. The audit's §3 line on this is now stale.
+- [NEXT] Split `cell_workflow_widget.py` (~1344 LOC) following the nucleus widget pattern, OR sweep the remaining §4 naming/organization items (`tracking` package merge, `scripts/test_*` rename, README pointer).
+
 ## Codebase shape
 - ~21k LOC across `src/cellflow/` (8 packages), ~14k LOC of tests, ~8.8k LOC of scripts.
 - Single napari entry point (`CellFlowWidget` → `CellFlowMainWidget`) wires together six sub-widgets.

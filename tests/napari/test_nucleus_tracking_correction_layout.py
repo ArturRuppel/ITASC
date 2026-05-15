@@ -155,22 +155,12 @@ def _install_main_widget_stubs() -> None:
         def select_matching_nucleus_label(self, t, source_label):
             self.match_requests.append(("nucleus", t, source_label))
 
-    class _StubCellposeWidget(_StubWidget):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.hpc_cellpose_widget = _StubWidget()
-
-        def refresh(self, pos_dir):
-            super().refresh(pos_dir)
-            self.hpc_cellpose_widget.refresh(pos_dir)
-
     stub_modules = {
         "cellflow.napari.analysis_widget": {"AnalysisWidget": _StubWidget},
         "cellflow.napari.cell_boundary_workflow_widget": {
             "CellBoundaryWorkflowWidget": _StubWidget,
         },
         "cellflow.napari.cell_workflow_widget": {"CellWorkflowWidget": _StubWidget},
-        "cellflow.napari.cellpose_widget": {"CellposeWidget": _StubCellposeWidget},
         "cellflow.napari.correction_widget": {"CorrectionWidget": _StubWidget},
         "cellflow.napari.data_panel_widget": {"ProjectStatusPanel": _StubWidget},
         "cellflow.napari.data_prep_widget": {"DataPrepWidget": _StubWidget},
@@ -201,7 +191,6 @@ def _load_main_widget_class():
         "cellflow.napari.analysis_widget",
         "cellflow.napari.cell_boundary_workflow_widget",
         "cellflow.napari.cell_workflow_widget",
-        "cellflow.napari.cellpose_widget",
         "cellflow.napari.correction_widget",
         "cellflow.napari.data_panel_widget",
         "cellflow.napari.data_prep_widget",

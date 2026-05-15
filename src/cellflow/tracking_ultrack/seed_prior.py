@@ -138,9 +138,10 @@ def write_seed_prior_node_probs(
                 )
             drop_frac = compute_drop_frac(signal[record.t], record.bbox, record.mask)
             circularity = compute_mask_circularity(record.mask)
-            node_prob = float(
-                (cfg.quality_weight * drop_frac + cfg.circularity_weight * circularity) ** cfg.quality_exponent
-            )
+            base = cfg.quality_weight * drop_frac + cfg.circularity_weight * circularity
+            max_base = cfg.quality_weight + cfg.circularity_weight
+            normalized_base = base / max_base if max_base > 0 else base
+            node_prob = float(normalized_base ** cfg.quality_exponent)
             session.query(NodeDB).where(NodeDB.id == record.node_id).update(
                 {NodeDB.node_prob: node_prob},
                 synchronize_session=False,

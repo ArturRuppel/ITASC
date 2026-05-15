@@ -654,15 +654,24 @@ class NucleusPipelineWidget(QWidget):
 
             def _run() -> None:
                 try:
-                    result_holder.append(
-                        build_ultrack_database_from_sources(
-                            contour_sources_path=contour_sources_path,
-                            foreground_sources_path=foreground_sources_path,
-                            working_dir=working_dir,
-                            cfg=cfg,
-                            progress_cb=_progress_cb,
-                        )
+                    build_ultrack_database_from_sources(
+                        contour_sources_path=contour_sources_path,
+                        foreground_sources_path=foreground_sources_path,
+                        working_dir=working_dir,
+                        cfg=cfg,
+                        progress_cb=_progress_cb,
                     )
+                    _progress_cb("Scoring node probabilities...")
+                    score_path = self._foreground_scores_path()
+                    apply_annotations_and_score(
+                        working_dir=working_dir,
+                        cfg=cfg,
+                        score_signal_path=score_path,
+                        corrections=None,
+                        validated_tracks=None,
+                        tracked_labels=None,
+                    )
+                    result_holder.append(pos_dir)
                 except Exception as e:
                     exc_holder.append(e)
 

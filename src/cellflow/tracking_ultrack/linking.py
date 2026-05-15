@@ -101,6 +101,41 @@ def _node_coords_centroid(node, ndim: int | None = None) -> tuple[np.ndarray, np
     return coords, centroid
 
 
+def _shape_pair_score(
+    src_coords: np.ndarray,
+    src_centroid: np.ndarray,
+    src_area: float,
+    tgt_coords: np.ndarray,
+    tgt_centroid: np.ndarray,
+    tgt_area: float,
+    distance: float,
+    cfg: TrackingConfig,
+) -> float | None:
+    """Gate and score one source→target pair under shape mode.
+
+    Returns None when the pair fails the area-ratio or IoU threshold,
+    otherwise returns the similarity score.
+    """
+    if src_area <= 0 or tgt_area <= 0:
+        return None
+    area_ratio = min(src_area, tgt_area) / max(src_area, tgt_area)
+    if area_ratio < cfg.min_area_ratio:
+        return None
+    iou = scoring.centroid_corrected_iou_from_coords(
+        src_coords, src_centroid, tgt_coords, tgt_centroid
+    )
+    if iou < cfg.min_link_iou:
+        return None
+    return scoring.similarity_score(
+        area_ratio=area_ratio,
+        centroid_corrected_iou=iou,
+        distance=distance,
+        area_weight=cfg.area_weight,
+        iou_weight=cfg.iou_weight,
+        distance_weight=cfg.distance_weight,
+    )
+
+
 def compute_edge_weight(
     source_node,
     target_node,
@@ -125,25 +160,10 @@ def compute_edge_weight(
 
         src_area = float(getattr(source_node, "area", len(src_coords)))
         tgt_area = float(getattr(target_node, "area", len(tgt_coords)))
-        if src_area <= 0 or tgt_area <= 0:
-            return None
-        area_ratio = min(src_area, tgt_area) / max(src_area, tgt_area)
-        if area_ratio < cfg.min_area_ratio:
-            return None
-
-        iou = scoring.centroid_corrected_iou_from_coords(
-            src_coords, src_centroid, tgt_coords, tgt_centroid
-        )
-        if iou < cfg.min_link_iou:
-            return None
-
-        return scoring.similarity_score(
-            area_ratio=area_ratio,
-            centroid_corrected_iou=iou,
-            distance=distance,
-            area_weight=cfg.area_weight,
-            iou_weight=cfg.iou_weight,
-            distance_weight=cfg.distance_weight,
+        return _shape_pair_score(
+            src_coords, src_centroid, src_area,
+            tgt_coords, tgt_centroid, tgt_area,
+            distance, cfg,
         )
 
     if cfg.linking_mode != "default":
@@ -238,26 +258,13 @@ def _run_shape_linking(
                     tgt_coords, tgt_centroid = tgt_result
                     tgt_area = float(getattr(target, "area", len(tgt_coords)))
 
-                    if src_area <= 0 or tgt_area <= 0:
-                        continue
-                    area_ratio = min(src_area, tgt_area) / max(src_area, tgt_area)
-                    if area_ratio < cfg.min_area_ratio:
-                        continue
-
-                    iou = scoring.centroid_corrected_iou_from_coords(
-                        src_coords, src_centroid, tgt_coords, tgt_centroid
+                    w = _shape_pair_score(
+                        src_coords, src_centroid, src_area,
+                        tgt_coords, tgt_centroid, tgt_area,
+                        float(dist), cfg,
                     )
-                    if iou < cfg.min_link_iou:
+                    if w is None:
                         continue
-
-                    w = scoring.similarity_score(
-                        area_ratio=area_ratio,
-                        centroid_corrected_iou=iou,
-                        distance=float(dist),
-                        area_weight=cfg.area_weight,
-                        iou_weight=cfg.iou_weight,
-                        distance_weight=cfg.distance_weight,
-                    )
                     candidates.append((w, sid, int(target.id)))
 
                 candidates.sort(reverse=True)

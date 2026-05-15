@@ -20,13 +20,69 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari.analysis_widget import AnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
-from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.data_prep_widget import DataPrepWidget
+from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
 from cellflow.napari.meta_widget import MetaSourceBrowserWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
-from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.napari.ui_style import icon_button, muted_label, tiny_button
+
+
+class _CellposePanel(QWidget):
+    """Informational panel for external Cellpose output."""
+
+    def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.viewer = viewer
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+
+        description = QLabel(
+            "Cellpose runs externally on the cluster. This panel only documents "
+            "the expected input/output files and loads them into napari."
+        )
+        description.setWordWrap(True)
+        muted_label(description)
+        layout.addWidget(description)
+
+        self.input_files_tracker = PipelineFilesWidget([
+            ("Inputs", [
+                ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
+                ("0_input/cell_zavg.tif", "Cell z-avg"),
+                ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
+                ("0_input/cell_3dt.tif", "Cell 3D+t"),
+            ]),
+        ], viewer=self.viewer)
+        layout.addWidget(self.input_files_tracker)
+
+        self.hpc_cellpose_widget = HpcCellposeWidget(self.viewer)
+        self.hpc_cellpose_section = CollapsibleSection(
+            "HPC Cellpose", self.hpc_cellpose_widget, expanded=False
+        )
+        layout.addWidget(self.hpc_cellpose_section)
+
+        self.output_files_tracker = PipelineFilesWidget([
+            ("Outputs", [
+                ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
+                ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
+                ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
+                ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
+                ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
+                ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
+            ]),
+        ], viewer=self.viewer)
+        layout.addWidget(self.output_files_tracker)
+
+        self._pos_dir: Path | None = None
+
+    def refresh(self, pos_dir: Path | None) -> None:
+        """Update file status display."""
+        self._pos_dir = pos_dir
+        self.input_files_tracker.refresh(pos_dir)
+        self.hpc_cellpose_widget.refresh(pos_dir)
+        self.output_files_tracker.refresh(pos_dir)
 
 
 class CellFlowMainWidget(QWidget):
@@ -75,7 +131,7 @@ class CellFlowMainWidget(QWidget):
             title_level=0,
         )
 
-        self._cellpose_widget = CellposeWidget(self.viewer)
+        self._cellpose_widget = _CellposePanel(self.viewer)
         self.cellpose_section = CollapsibleSection(
             "Cellpose",
             self._cellpose_widget,
