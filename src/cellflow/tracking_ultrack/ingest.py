@@ -16,7 +16,6 @@ from pathlib import Path
 import numpy as np
 from skimage.measure import regionprops
 
-from cellflow.database.hypotheses import read_hypothesis_labels
 from cellflow.tracking_ultrack.config import TrackingConfig
 
 LOG = logging.getLogger(__name__)

@@ -9,6 +9,7 @@ from skimage.measure import regionprops
 
 from cellflow.database.hypotheses import list_hypotheses, read_hypothesis_labels
 from cellflow.tracking_ultrack import scoring as _scoring
+from cellflow.tracking_ultrack._node_geometry import node_bbox_and_mask
 
 _D_MAX_DEFAULT = 40.0
 _GREEDY_CANDIDATE_LIMIT = 5
@@ -297,7 +298,6 @@ def extend_track_from_db(
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
     from ultrack.core.database import NodeDB
-    from cellflow.tracking_ultrack.validation_nodes import _node_bbox_and_mask
 
     if not db_path.exists():
         return None
@@ -320,7 +320,7 @@ def extend_track_from_db(
         rows = session.query(NodeDB).filter(NodeDB.t == target_frame).all()
         for node in rows:
             try:
-                (y0, x0, y1, x1), mask_2d = _node_bbox_and_mask(int(node.id), node.pickle)
+                (y0, x0, y1, x1), mask_2d = node_bbox_and_mask(int(node.id), node.pickle)
             except Exception:
                 continue
             if mask_2d.shape != (y1 - y0, x1 - x0):

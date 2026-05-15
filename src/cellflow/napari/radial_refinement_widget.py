@@ -13,7 +13,6 @@ promote).
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
@@ -21,7 +20,6 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,

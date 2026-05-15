@@ -1,11 +1,9 @@
 """Tests for the frame validation metadata module."""
 import json
 
-import numpy as np
 import pytest
 
 from cellflow.database.validation import (
-    add_anchor,
     add_correction,
     invalidate_frame,
     invalidate_track,

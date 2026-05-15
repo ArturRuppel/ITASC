@@ -661,6 +661,3 @@ def cleanup_movie(
             progress_cb(T + t + 1, total_steps, f"Resyncing: {t + 1}/{T}")
 
     return stats
-
-
-from cellflow.segmentation import apply_gamma  # noqa: F401 — re-exported from here

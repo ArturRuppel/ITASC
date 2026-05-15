@@ -49,7 +49,6 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "quality_weight": w.db_gen_quality_weight_spin.value(),
             "quality_exponent": w.db_gen_quality_exp_spin.value(),
             "circularity_weight": w.db_gen_circularity_weight_spin.value(),
-            "power": w.db_gen_power_spin.value(),
             "n_workers": w.db_gen_n_workers_spin.value(),
             "use_validated": w.db_gen_use_validated_check.isChecked(),
         },
@@ -120,7 +119,6 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "quality_weight" in dbg: w.db_gen_quality_weight_spin.setValue(dbg["quality_weight"])
         if "quality_exponent" in dbg: w.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
         if "circularity_weight" in dbg: w.db_gen_circularity_weight_spin.setValue(dbg["circularity_weight"])
-        if "power" in dbg: w.db_gen_power_spin.setValue(dbg["power"])
         if "n_workers" in dbg: w.db_gen_n_workers_spin.setValue(dbg["n_workers"])
         if "use_validated" in dbg: w.db_gen_use_validated_check.setChecked(dbg["use_validated"])
     if "extend" in state:

@@ -13,7 +13,6 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence, QShortcut
 from qtpy.QtWidgets import (
     QApplication,
@@ -668,14 +667,13 @@ def test_nucleus_workflow_status_labels_use_unified_pipeline_status():
     viewer.close()
 
 
-def test_db_gen_section_exposes_quality_and_power_controls():
+def test_db_gen_section_exposes_quality_controls_without_deprecated_power():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.db_gen_power_spin.value() == 4.0
+    assert not hasattr(widget, "db_gen_power_spin")
     assert widget.db_gen_quality_exp_spin.value() == 8.0
-    assert "solver transform" in widget.db_gen_power_spin.toolTip()
     assert "node_prob" in widget.db_gen_quality_exp_spin.toolTip()
 
     widget.deleteLater()
@@ -3647,13 +3645,14 @@ def test_db_gen_controls_persist_through_state():
     widget.db_gen_quality_weight_spin.setValue(0.8)
     widget.db_gen_quality_exp_spin.setValue(6.0)
     widget.db_gen_circularity_weight_spin.setValue(0.35)
-    widget.db_gen_power_spin.setValue(3.0)
     widget.db_gen_n_workers_spin.setValue(4)
 
     state = widget.get_state()
+    assert "power" not in state["db_generation"]
     widget.deleteLater()
 
     widget = widget_class(viewer)
+    state["db_generation"]["power"] = 3.0
     widget.set_state(state)
 
     assert widget.db_gen_min_area_spin.value() == 500
@@ -3675,7 +3674,7 @@ def test_db_gen_controls_persist_through_state():
     assert abs(widget.db_gen_quality_weight_spin.value() - 0.8) < 0.01
     assert abs(widget.db_gen_quality_exp_spin.value() - 6.0) < 0.01
     assert abs(widget.db_gen_circularity_weight_spin.value() - 0.35) < 0.01
-    assert abs(widget.db_gen_power_spin.value() - 3.0) < 0.01
+    assert not hasattr(widget, "db_gen_power_spin")
     assert widget.db_gen_n_workers_spin.value() == 4
 
     widget.deleteLater()

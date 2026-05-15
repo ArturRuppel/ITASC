@@ -3,11 +3,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import pickle
 
 import numpy as np
 
 from cellflow.tracking_ultrack.config import TrackingConfig
+from cellflow.tracking_ultrack._node_geometry import (
+    intersects,
+    make_node_pickle,
+    node_bbox_and_mask,
+    node_pickle_ndim,
+    raw_iou,
+)
 
 
 @dataclass(frozen=True)
@@ -81,110 +87,12 @@ def _validated_mask_records(
     return records, skipped
 
 
-def _node_bbox_and_mask(node_id: int, node) -> tuple[tuple[int, int, int, int], np.ndarray]:
-    if isinstance(node, (bytes, memoryview)):
-        node = pickle.loads(bytes(node))
-
-    bbox = np.asarray(node.bbox)
-    ndim = len(bbox) // 2
-    if ndim == 3:
-        y0, x0 = int(bbox[1]), int(bbox[2])
-        y1, x1 = int(bbox[4]), int(bbox[5])
-    elif ndim == 2:
-        y0, x0 = int(bbox[0]), int(bbox[1])
-        y1, x1 = int(bbox[2]), int(bbox[3])
-    else:
-        raise ValueError(f"Unexpected bbox for node {node_id}: {bbox}")
-
-    mask = np.asarray(node.mask, dtype=bool)
-    if mask.ndim == 3:
-        mask = mask[0] if mask.shape[0] == 1 else mask.any(axis=0)
-    elif mask.ndim != 2:
-        raise ValueError(f"Unexpected mask for node {node_id}: shape {mask.shape}")
-
-    return (y0, x0, y1, x1), np.ascontiguousarray(mask, dtype=bool)
-
-
-def _intersects(
-    lhs_bbox: tuple[int, int, int, int],
-    lhs_mask: np.ndarray,
-    rhs_bbox: tuple[int, int, int, int],
-    rhs_mask: np.ndarray,
-) -> bool:
-    ly0, lx0, ly1, lx1 = lhs_bbox
-    ry0, rx0, ry1, rx1 = rhs_bbox
-    oy0, ox0 = max(ly0, ry0), max(lx0, rx0)
-    oy1, ox1 = min(ly1, ry1), min(lx1, rx1)
-    if oy0 >= oy1 or ox0 >= ox1:
-        return False
-
-    lhs_crop = lhs_mask[oy0 - ly0: oy1 - ly0, ox0 - lx0: ox1 - lx0]
-    rhs_crop = rhs_mask[oy0 - ry0: oy1 - ry0, ox0 - rx0: ox1 - rx0]
-    return bool(np.logical_and(lhs_crop, rhs_crop).any())
-
-
-def _raw_iou(
-    lhs_bbox: tuple[int, int, int, int],
-    lhs_mask: np.ndarray,
-    rhs_bbox: tuple[int, int, int, int],
-    rhs_mask: np.ndarray,
-) -> float:
-    ly0, lx0, ly1, lx1 = lhs_bbox
-    ry0, rx0, ry1, rx1 = rhs_bbox
-    oy0, ox0 = max(ly0, ry0), max(lx0, rx0)
-    oy1, ox1 = min(ly1, ry1), min(lx1, rx1)
-    intersection = 0
-    if oy0 < oy1 and ox0 < ox1:
-        lhs_crop = lhs_mask[oy0 - ly0: oy1 - ly0, ox0 - lx0: ox1 - lx0]
-        rhs_crop = rhs_mask[oy0 - ry0: oy1 - ry0, ox0 - rx0: ox1 - rx0]
-        intersection = int(np.logical_and(lhs_crop, rhs_crop).sum())
-
-    union = int(lhs_mask.sum()) + int(rhs_mask.sum()) - intersection
-    if union <= 0:
-        return 0.0
-    return float(intersection) / float(union)
-
-
 def _overlap_pair(lhs_id: int, rhs_id: int) -> tuple[int, int]:
     return (max(lhs_id, rhs_id), min(lhs_id, rhs_id))
 
 
 def _generate_node_id(index: int, time: int, max_segments: int) -> int:
     return index + (time + 1) * max_segments
-
-
-def _node_pickle_ndim(node) -> int:
-    if isinstance(node, (bytes, memoryview)):
-        node = pickle.loads(bytes(node))
-    bbox = np.asarray(node.bbox)
-    return len(bbox) // 2
-
-
-def _make_node_pickle(
-    t: int,
-    mask_2d: np.ndarray,
-    bbox: np.ndarray,
-    node_id: int,
-    *,
-    ndim: int = 2,
-) -> bytes:
-    from ultrack.core.segmentation.node import Node
-
-    min_y, min_x, max_y, max_x = bbox
-    if ndim == 3:
-        bbox_arr = np.array(
-            [0, int(min_y), int(min_x), 1, int(max_y), int(max_x)],
-            dtype=np.int64,
-        )
-        mask = np.asarray(mask_2d, dtype=bool)[np.newaxis]
-    else:
-        bbox_arr = np.array(
-            [int(min_y), int(min_x), int(max_y), int(max_x)],
-            dtype=np.int64,
-        )
-        mask = np.asarray(mask_2d, dtype=bool)
-    node = Node.from_mask(time=t, mask=mask, bbox=bbox_arr, node_id=node_id)
-    return pickle.dumps(node)
 
 
 def _best_iou_assignments(
@@ -194,7 +102,7 @@ def _best_iou_assignments(
     pairs: list[tuple[float, int, int, int, int]] = []
     for record_index, record in enumerate(records):
         for candidate_id, (candidate_bbox, candidate_mask, _ndim) in candidates.items():
-            iou = _raw_iou(record.bbox, record.mask, candidate_bbox, candidate_mask)
+            iou = raw_iou(record.bbox, record.mask, candidate_bbox, candidate_mask)
             pairs.append((-iou, record_index, int(candidate_id), record.cell_id, record.t))
 
     pairs.sort()
@@ -249,7 +157,7 @@ def inject_validated_nodes(
 
     with Session(engine) as session:
         sample_node = session.query(NodeDB.pickle).limit(1).scalar()
-        fallback_ndim = _node_pickle_ndim(sample_node) if sample_node is not None else 2
+        fallback_ndim = node_pickle_ndim(sample_node) if sample_node is not None else 2
         next_t_node_id: dict[int, int] = {}
         for t in {record.t for record in records}:
             max_t_node_id = (
@@ -272,13 +180,13 @@ def inject_validated_nodes(
             )
             candidates: dict[int, tuple[tuple[int, int, int, int], np.ndarray, int]] = {}
             for candidate_id, candidate_node in candidate_rows:
-                candidate_bbox, candidate_mask = _node_bbox_and_mask(
+                candidate_bbox, candidate_mask = node_bbox_and_mask(
                     int(candidate_id), candidate_node
                 )
                 candidates[int(candidate_id)] = (
                     candidate_bbox,
                     candidate_mask,
-                    _node_pickle_ndim(candidate_node),
+                    node_pickle_ndim(candidate_node),
                 )
 
             frame_records = [record for _index, record in indexed_records]
@@ -309,7 +217,7 @@ def inject_validated_nodes(
                             y=record.y,
                             x=record.x,
                             area=record.area,
-                            pickle=_make_node_pickle(
+                            pickle=make_node_pickle(
                                 record.t,
                                 record.mask,
                                 bbox_arr,
@@ -331,7 +239,7 @@ def inject_validated_nodes(
                         NodeDB.y: record.y,
                         NodeDB.x: record.x,
                         NodeDB.area: record.area,
-                        NodeDB.pickle: _make_node_pickle(
+                        NodeDB.pickle: make_node_pickle(
                             record.t,
                             record.mask,
                             bbox_arr,
@@ -357,7 +265,7 @@ def inject_validated_nodes(
                 ) in candidates.items():
                     if candidate_id in matched_candidate_ids:
                         continue
-                    if not _intersects(
+                    if not intersects(
                         record.bbox, record.mask, candidate_bbox, candidate_mask
                     ):
                         continue

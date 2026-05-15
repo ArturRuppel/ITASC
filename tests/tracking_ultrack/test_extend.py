@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from cellflow.tracking_ultrack.extend import ExtendResult, extend_track
-from cellflow.tracking_ultrack.validation_nodes import _make_node_pickle
+from cellflow.tracking_ultrack._node_geometry import make_node_pickle
 
 
 def _write_hyp_h5(path, records: list[tuple[int, int, np.ndarray]]) -> None:
@@ -99,7 +99,7 @@ class TestExtendTrack:
         node_id = 101
         y0, x0, y1, x1 = 8, 9, 14, 15
         mask_2d = np.ones((y1 - y0, x1 - x0), dtype=bool)
-        node_pickle = _make_node_pickle(
+        node_pickle = make_node_pickle(
             1,
             mask_2d,
             np.array([y0, x0, y1, x1], dtype=np.int64),
@@ -193,7 +193,7 @@ class TestExtendTrack:
 
         def add_node(session, node_id, y0, x0, y1, x1):
             mask_2d = np.ones((y1 - y0, x1 - x0), dtype=bool)
-            node_pickle = _make_node_pickle(
+            node_pickle = make_node_pickle(
                 1,
                 mask_2d,
                 np.array([y0, x0, y1, x1], dtype=np.int64),

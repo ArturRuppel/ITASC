@@ -2,16 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
-    QFileDialog,
     QFrame,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )

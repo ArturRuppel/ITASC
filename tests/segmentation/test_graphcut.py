@@ -1,6 +1,5 @@
 # tests/segmentation/test_graphcut.py
 import importlib.util
-import sys
 from pathlib import Path
 
 import numpy as np

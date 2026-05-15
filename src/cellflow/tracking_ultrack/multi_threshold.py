@@ -26,7 +26,12 @@ from cellflow.tracking_ultrack.db_build import (
     _run_ultrack_segment,
     UltrackDatabaseBuildReport,
 )
-from cellflow.tracking_ultrack.validation_nodes import _make_node_pickle
+from cellflow.tracking_ultrack._node_geometry import (
+    intersects,
+    make_node_pickle,
+    node_bbox_and_mask,
+    node_pickle_ndim,
+)
 from cellflow.tracking_ultrack.linking import run_linking
 
 LOG = logging.getLogger(__name__)
@@ -115,11 +120,9 @@ def _read_nodes_and_overlaps(
 
 def _infer_image_shape(nodes: list[dict[str, Any]]) -> tuple[int, int]:
     """Infer frame dimensions from the largest bounding-box extent."""
-    from cellflow.tracking_ultrack.validation_nodes import _node_bbox_and_mask
-
     max_y = max_x = 0
     for row in nodes:
-        bb, _ = _node_bbox_and_mask(row["old_id"], row["pickle"])
+        bb, _ = node_bbox_and_mask(row["old_id"], row["pickle"])
         max_y = max(max_y, bb[2])
         max_x = max(max_x, bb[3])
     return max_y, max_x
@@ -204,27 +207,20 @@ def query_source_node_ids(db_path: str | Path, source_index: int) -> tuple[int, 
 
 
 def _ndim_from_pickle(pickle: bytes) -> int:
-    from cellflow.tracking_ultrack.validation_nodes import _node_pickle_ndim
-
-    return _node_pickle_ndim(pickle)
+    return node_pickle_ndim(pickle)
 
 
 def _compute_cross_source_overlaps(
     rows_by_source: list[list[dict[str, Any]]],
 ) -> set[tuple[int, int]]:
     """Compute overlaps between nodes from different sources at one timepoint."""
-    from cellflow.tracking_ultrack.validation_nodes import (
-        _intersects,
-        _node_bbox_and_mask,
-    )
-
     decoded_by_source: list[list[tuple[int, tuple[int, int, int, int], np.ndarray]]] = []
     for rows in rows_by_source:
         decoded_by_source.append(
             [
                 (
                     row["new_id"],
-                    *_node_bbox_and_mask(row["old_id"], row["pickle"]),
+                    *node_bbox_and_mask(row["old_id"], row["pickle"]),
                 )
                 for row in rows
             ]
@@ -235,7 +231,7 @@ def _compute_cross_source_overlaps(
         for other_nodes in decoded_by_source[source_index + 1:]:
             for node_id, bbox, mask in source_nodes:
                 for other_id, other_bbox, other_mask in other_nodes:
-                    if _intersects(bbox, mask, other_bbox, other_mask):
+                    if intersects(bbox, mask, other_bbox, other_mask):
                         pairs.add((max(node_id, other_id), min(node_id, other_id)))
     return pairs
 
@@ -391,13 +387,10 @@ def merge_ultrack_databases(
                 for row in nds:
                     new_id = row["new_id"]
                     t = row["t"]
-                    from cellflow.tracking_ultrack.validation_nodes import (
-                        _node_bbox_and_mask,
-                    )
 
-                    bb, mask = _node_bbox_and_mask(row["old_id"], row["pickle"])
+                    bb, mask = node_bbox_and_mask(row["old_id"], row["pickle"])
                     ndim = _ndim_from_pickle(row["pickle"])
-                    new_pickle = _make_node_pickle(
+                    new_pickle = make_node_pickle(
                         t,
                         mask,
                         np.asarray(bb, dtype=np.int32),

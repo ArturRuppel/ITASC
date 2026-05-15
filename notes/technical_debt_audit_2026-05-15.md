@@ -2,6 +2,13 @@
 
 _Date: 2026-05-15_
 
+_Status update: 2026-05-15 evening_
+- [DONE] Broken scripts named below were archived under `notes/archived_scripts/2026-05-15-dead-imports/`.
+- [DONE] `correction.apply_gamma` re-export, deprecated `db_gen_power_spin`, the test-only unconstrained `retrack_frame`, and the old `tracking/` source package were removed or folded into `tracking_ultrack`.
+- [DONE] Shared node geometry was extracted to `tracking_ultrack/_node_geometry.py`, and cross-module private imports from `validation_nodes._node_bbox_and_mask` were replaced.
+- [OPEN] `nucleus_workflow_widget.py` is still monolithic; it is now ~3032 LOC with the companion layout test still ~3975 LOC.
+- [DONE] Ruff/lint configuration was added to `pyproject.toml` with initial `F401`/`F811` checks; the baseline passes after unused-import cleanup. `E501` is deferred to avoid formatting churn.
+
 ## Codebase shape
 - ~21k LOC across `src/cellflow/` (8 packages), ~14k LOC of tests, ~8.8k LOC of scripts.
 - Single napari entry point (`CellFlowWidget` → `CellFlowMainWidget`) wires together six sub-widgets.
@@ -42,13 +49,13 @@ Recommendation: delete (or move to `scripts/_archive/`) anything that doesn't im
 
 ## 5. Lower-priority observations
 - `pyproject.toml` declares `requires-python = ">=3.9"` but the code uses `str | None` (PEP 604) and `from __future__ import annotations` selectively — actually fine, but pin to 3.10+ if any module forgoes the future import.
-- No `tool.ruff` / `tool.pytest` config, no linting. Adding `ruff check` would surface most of the unused-import dead code automatically.
+- `tool.ruff` now covers initial import-drift checks (`F401`/`F811`). `tool.pytest` config and broader Ruff rules remain future cleanup.
 - `napari/_napari_compat.py` patches private napari internals (`napari._qt.containers._layer_delegate`) — a known fragility that should be marked for periodic re-check when bumping napari.
 
 ## Suggested order to pay it down
-1. **Delete or archive broken scripts** (15+ files) — pure win, zero risk.
-2. **Drop the `correction.apply_gamma` re-export** and the `_state` "power" round-trip — and remove the tests that only exist to keep them alive.
-3. **Collapse `tracking/` into `tracking_ultrack/`** (or rename to `relabel/`), and drop the test-only `retrack_frame`.
-4. **Split `nucleus_workflow_widget.py`** by section (already partially done via `_widget_helpers`); the test file shrinks naturally.
-5. **Extract a `tracking_ultrack/_node_geometry.py`** so `validation_nodes._node_bbox_and_mask` stops being privately imported across five modules.
-6. **Add `ruff`** with `F401`/`F811`/`E501` to catch the next round of drift automatically.
+1. [DONE] **Delete or archive broken scripts** (15+ files) — pure win, zero risk.
+2. [DONE] **Drop the `correction.apply_gamma` re-export** and the `_state` "power" round-trip — and remove the tests that only exist to keep them alive.
+3. [DONE] **Collapse `tracking/` into `tracking_ultrack/`** (or rename to `relabel/`), and drop the test-only `retrack_frame`.
+4. [OPEN] **Split `nucleus_workflow_widget.py`** by section (already partially done via `_widget_helpers`); the test file shrinks naturally.
+5. [DONE] **Extract a `tracking_ultrack/_node_geometry.py`** so `validation_nodes._node_bbox_and_mask` stops being privately imported across five modules.
+6. [DONE] **Add `ruff`** with `F401`/`F811` to catch the next round of import drift automatically; defer `E501` until line-length cleanup is worth the churn.

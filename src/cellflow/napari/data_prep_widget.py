@@ -18,7 +18,7 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QSpinBox,
 )
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import QTimer
 from napari.qt.threading import thread_worker
 
 from cellflow.napari.widgets import PipelineFilesWidget

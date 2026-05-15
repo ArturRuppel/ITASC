@@ -2,7 +2,6 @@
 Cellpose flow field with an EDT-direction gravity blend toward tracked nuclei."""
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import numba
@@ -190,7 +189,6 @@ def _progressive_shell_assign(
         Fallback pixels receive ``last_shell + 1``.  Non-foreground
         pixels are 0 (ignored downstream).
     """
-    from scipy.ndimage import distance_transform_edt
 
     H, W = labels.shape
     result = labels.copy()
@@ -300,7 +298,6 @@ def _flow_following_frame_core(
     assignment_order : (Y, X) int32
         Shell index at which each pixel was assigned (0 = nucleus / phase-1).
     """
-    from scipy.ndimage import distance_transform_edt
 
     H, W = foreground_yx.shape
 

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
+from cellflow.tracking_ultrack._node_geometry import node_bbox_and_mask
+
 
 @dataclass(frozen=True)
 class SwapCandidate:
@@ -41,7 +43,6 @@ def list_swap_candidates(
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
     from ultrack.core.database import NodeDB
-    from cellflow.tracking_ultrack.validation_nodes import _node_bbox_and_mask
 
     engine = sqla.create_engine(
         f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
@@ -54,7 +55,7 @@ def list_swap_candidates(
             rows = session.query(NodeDB).filter(NodeDB.t == frame).all()
             for node in rows:
                 try:
-                    (y0, x0, y1, x1), mask_crop = _node_bbox_and_mask(
+                    (y0, x0, y1, x1), mask_crop = node_bbox_and_mask(
                         int(node.id), node.pickle
                     )
                 except Exception:

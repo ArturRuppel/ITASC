@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.tracking_ultrack import validation_nodes
 from cellflow.tracking_ultrack.config import TrackingConfig
+from cellflow.tracking_ultrack._node_geometry import node_bbox_and_mask, node_pickle_ndim
 from cellflow.tracking_ultrack.validation_nodes import inject_validated_nodes
 
 
@@ -41,8 +41,8 @@ def test_inject_validated_nodes_replaces_best_iou_candidate_and_preserves_hierar
     assert replaced.node_annot == VarAnnotation.REAL
     assert replaced.node_prob == 1.0
     assert replaced.area == 100
-    assert validation_nodes._node_pickle_ndim(replaced.pickle) == 3
-    bbox, mask = validation_nodes._node_bbox_and_mask(replaced.id, replaced.pickle)
+    assert node_pickle_ndim(replaced.pickle) == 3
+    bbox, mask = node_bbox_and_mask(replaced.id, replaced.pickle)
     assert bbox == (5, 7, 15, 17)
     assert mask.shape == (10, 10)
     assert mask.all()
@@ -132,10 +132,10 @@ def test_inject_validated_nodes_assigns_candidates_one_to_one_by_iou(tmp_path):
 
     assert rows[1_000_001].node_annot == VarAnnotation.REAL
     assert rows[1_000_002].node_annot == VarAnnotation.REAL
-    first_bbox, _first_mask = validation_nodes._node_bbox_and_mask(
+    first_bbox, _first_mask = node_bbox_and_mask(
         rows[1_000_001].id, rows[1_000_001].pickle
     )
-    second_bbox, _second_mask = validation_nodes._node_bbox_and_mask(
+    second_bbox, _second_mask = node_bbox_and_mask(
         rows[1_000_002].id, rows[1_000_002].pickle
     )
     assert first_bbox == (0, 0, 10, 10)
@@ -144,7 +144,7 @@ def test_inject_validated_nodes_assigns_candidates_one_to_one_by_iou(tmp_path):
 
 def test_inject_validated_nodes_replaces_stale_overlaps_for_replaced_candidate(tmp_path):
     from sqlalchemy.orm import Session
-    from ultrack.core.database import NodeDB, OverlapDB
+    from ultrack.core.database import OverlapDB
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
     engine = _make_engine(tmp_path / "data.db")

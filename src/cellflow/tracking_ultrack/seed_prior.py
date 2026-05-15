@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+from cellflow.tracking_ultrack._node_geometry import node_bbox_and_mask
 from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.validation_nodes import _node_bbox_and_mask as _node_mask_record
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,7 @@ def write_seed_prior_node_probs(
             if annot == VarAnnotation.REAL:
                 anchor_ids.append(int(node_id))
                 continue
-            bbox, mask = _node_mask_record(int(node_id), node)
+            bbox, mask = node_bbox_and_mask(int(node_id), node)
             record = _NodeScoreRecord(
                 node_id=int(node_id),
                 t=int(t),

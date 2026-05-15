@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Generator, Optional
 
 import numpy as np

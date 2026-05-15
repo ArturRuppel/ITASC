@@ -25,6 +25,11 @@ dependencies = [
     "sqlalchemy",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.11",
+]
+
 [project.entry-points."napari.manifest"]
 cellflow = "cellflow:napari.yaml"
 
@@ -36,3 +41,13 @@ packages = ["src/cellflow"]
 
 [tool.hatch.build.targets.wheel.shared-data]
 "src/cellflow/napari.yaml" = "cellflow/napari.yaml"
+
+[tool.ruff]
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "F401",
+    "F811",
+]

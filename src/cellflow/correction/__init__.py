@@ -1,5 +1,4 @@
 from cellflow.correction.labels import (
-    apply_gamma,
     clean_stranded_pixels,
     draw_cell_path,
     erase_cell,
@@ -13,7 +12,6 @@ from cellflow.correction.labels import (
 )
 
 __all__ = [
-    "apply_gamma",
     "clean_stranded_pixels",
     "draw_cell_path",
     "erase_cell",

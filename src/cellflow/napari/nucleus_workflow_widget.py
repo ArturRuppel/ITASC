@@ -81,7 +81,6 @@ from cellflow.napari.ui_style import (
     compact_spinbox,
     danger_button,
     muted_label,
-    semantic_color,
     sweep_parameter_grid,
 )
 from cellflow.napari.validated_overlay_controller import (
@@ -89,7 +88,6 @@ from cellflow.napari.validated_overlay_controller import (
 )
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.segmentation import build_consensus_boundary, build_nucleus_averaged_maps
-from cellflow.tracking.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.config import TrackingConfig as UltrackConfig
 from cellflow.tracking_ultrack.corrections import Correction
 from cellflow.tracking_ultrack.db_query import (
@@ -124,6 +122,7 @@ from cellflow.tracking_ultrack.multi_threshold import (
     preview_ultrack_source_stack_frame,
     write_ultrack_source_stacks,
 )
+from cellflow.tracking_ultrack.retracker import retrack_frame_constrained
 from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
@@ -439,12 +438,6 @@ class NucleusWorkflowWidget(QWidget):
         add_block_pair_row(g, 1,
             "Circularity wt:", compact_spinbox(self.db_gen_circularity_weight_spin))
         lay.addLayout(g)
-
-        # Hidden/deprecated — needed for state persistence only
-        self.db_gen_power_spin = _dspin(
-            0.1, 20, 4.0, 0.5, 2,
-            "Deprecated DB-generation solver transform kept for state compatibility.",
-        )
 
         # DB Generation — Validated Seed Prior
         lay.addWidget(_heading("DB Generation — Validated Seed Prior"))

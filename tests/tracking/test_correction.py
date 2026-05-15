@@ -1,6 +1,5 @@
 
 from cellflow.correction.labels import (
-    apply_gamma,
     clean_stranded_pixels,
     draw_cell_path,
     expand_label_to_foreground,
@@ -8,8 +7,16 @@ from cellflow.correction.labels import (
     fix_label_semiholes,
     split_across,
 )
+from cellflow.segmentation import apply_gamma
 import numpy as np
 import pytest
+
+
+def test_correction_package_does_not_reexport_apply_gamma():
+    import cellflow.correction as correction
+
+    assert not hasattr(correction, "apply_gamma")
+
 
 def test_gamma_identity():
     logits = np.array([-1.0, 0.0, 1.0])

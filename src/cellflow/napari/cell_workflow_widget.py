@@ -22,7 +22,6 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,                                                     # ← NEW
     QDoubleSpinBox,
@@ -33,7 +32,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
-    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -51,7 +49,6 @@ from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
     action_button,
     add_block_pair_row,
-    add_parameter_grid_row,
     block_grid,
     compact_spinbox,
     parameter_heading,
