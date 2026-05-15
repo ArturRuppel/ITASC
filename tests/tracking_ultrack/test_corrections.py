@@ -43,6 +43,57 @@ def test_apply_corrections_marks_validated_nodes_fake_and_anchor_nodes_real(tmp_
     assert rows[3].node_annot == VarAnnotation.UNKNOWN
 
 
+def test_apply_corrections_prunes_overlap_between_anchor_real_nodes(tmp_path):
+    """Two anchors at the same frame landing on hierarchical siblings must
+    not leave a contradicting OverlapDB row (REAL+REAL <= 1 is infeasible)."""
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB, OverlapDB, VarAnnotation
+    from tests.tracking_ultrack.test_reseed import (
+        _count_overlaps,
+        _insert_overlaps,
+        _make_engine,
+        _make_node_row,
+    )
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import Correction, apply_corrections_to_database
+
+    engine = _make_engine(tmp_path / "data.db")
+    with Session(engine) as session:
+        # Two hierarchy siblings at the same frame, plus an unrelated node
+        # that shares an OverlapDB row with one of them (must be preserved).
+        sibling_a = _make_node_row(1, 0, 10, 10, 14, 14)
+        sibling_b = _make_node_row(2, 0, 20, 20, 24, 24)
+        unrelated = _make_node_row(3, 0, 60, 60, 64, 64)
+        session.add_all([sibling_a, sibling_b, unrelated])
+        session.commit()
+    _insert_overlaps(engine, [(1, 2), (1, 3)])
+    assert _count_overlaps(engine) == 2
+
+    report = apply_corrections_to_database(
+        tmp_path,
+        [
+            Correction(cell_id=5, t=0, kind="anchor", y=12.0, x=12.0),
+            Correction(cell_id=6, t=0, kind="anchor", y=22.0, x=22.0),
+        ],
+        TrackingConfig(anchor_radius_px=5.0),
+    )
+
+    assert report.anchor_nodes == 2
+    assert report.anchor_overlaps_pruned == 1
+
+    with Session(engine) as session:
+        rows = {row.id: row for row in session.query(NodeDB).all()}
+        overlap_pairs = {
+            (row.node_id, row.ancestor_id) for row in session.query(OverlapDB).all()
+        }
+
+    assert rows[1].node_annot == VarAnnotation.REAL
+    assert rows[2].node_annot == VarAnnotation.REAL
+    # The REAL/REAL overlap row is gone; the REAL/unrelated row is kept.
+    assert overlap_pairs == {(1, 3)}
+
+
 def test_apply_corrections_marks_consecutive_anchor_link_real(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB, VarAnnotation

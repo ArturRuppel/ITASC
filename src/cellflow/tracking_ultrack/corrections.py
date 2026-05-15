@@ -31,6 +31,7 @@ class CorrectionDatabaseReport:
     fake_nodes: int = 0
     anchor_nodes: int = 0
     anchor_links: int = 0
+    anchor_overlaps_pruned: int = 0
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ def apply_corrections_to_database(
     """
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
-    from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
+    from ultrack.core.database import LinkDB, NodeDB, OverlapDB, VarAnnotation
 
     if not corrections:
         return CorrectionDatabaseReport()
@@ -92,6 +93,7 @@ def apply_corrections_to_database(
     resolved_anchor_nodes: dict[tuple[int, int], int] = {}
     anchor_nodes = 0
     anchor_links = 0
+    anchor_overlaps_pruned = 0
 
     with Session(engine) as session:
         for correction in corrections:
@@ -132,6 +134,20 @@ def apply_corrections_to_database(
             resolved_anchor_nodes[(int(correction.cell_id), int(correction.t))] = node_id
             anchor_nodes += 1
 
+        # Prune OverlapDB rows where both endpoints are anchor-forced REAL nodes.
+        # Two anchors at the same frame can land on hierarchical siblings; without
+        # this the ILP is infeasible (nodes_X + nodes_Y <= 1 vs both x >= 1).
+        anchor_real_ids = set(resolved_anchor_nodes.values())
+        if len(anchor_real_ids) >= 2:
+            anchor_overlaps_pruned = (
+                session.query(OverlapDB)
+                .where(
+                    OverlapDB.node_id.in_(anchor_real_ids),
+                    OverlapDB.ancestor_id.in_(anchor_real_ids),
+                )
+                .delete(synchronize_session=False)
+            )
+
         if annotate_anchor_links:
             for cell_id, t in sorted(resolved_anchor_nodes):
                 source_id = resolved_anchor_nodes[(cell_id, t)]
@@ -162,6 +178,7 @@ def apply_corrections_to_database(
         fake_nodes=len(fake_node_ids),
         anchor_nodes=anchor_nodes,
         anchor_links=anchor_links,
+        anchor_overlaps_pruned=int(anchor_overlaps_pruned or 0),
     )
 
 

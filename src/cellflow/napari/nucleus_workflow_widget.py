@@ -26,17 +26,12 @@ from qtpy.QtGui import QIcon, QKeySequence
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
-    QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
     QPushButton,
     QShortcut,
     QSizePolicy,
     QSlider,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -60,17 +55,27 @@ from cellflow.database.validation import (
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.radial_refinement_widget import RadialRefinementWidget
+from cellflow.napari._paths import NucleusArtifactPaths
+from cellflow.napari._state import dump_state, load_state
+from cellflow.napari import _thresholds
+from cellflow.napari._widget_helpers import (
+    btn as _btn,
+    button_grid as _button_grid,
+    dspin as _dspin,
+    heading as _heading,
+    ispin as _ispin,
+    make_progress as _make_progress,
+    make_status as _make_status,
+    separator as _separator,
+)
 from cellflow.napari.ui_style import (
-    action_button,
     add_block_checkbox_row,
     add_block_pair_row,
     add_sweep_parameter_row,
     block_grid,
     compact_spinbox,
     danger_button,
-    parameter_heading,
     semantic_color,
-    status_label,
     sweep_parameter_grid,
 )
 from cellflow.napari.validated_overlay_controller import (
@@ -133,71 +138,6 @@ _CORRECTION_TRACKED_LAYER = "[Correction] Tracked: Nucleus"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
-
-
-# ── Tiny helpers ──────────────────────────────────────────────────────────────
-
-def _separator() -> QFrame:
-    line = QFrame()
-    line.setFrameShape(QFrame.HLine)
-    line.setStyleSheet("color: #555;")
-    return line
-
-
-def _heading(text: str) -> QLabel:
-    lbl = QLabel(text)
-    return parameter_heading(lbl, level=1)
-
-
-def _make_status() -> QLabel:
-    lbl = QLabel("")
-    lbl.setWordWrap(True)
-    lbl.setVisible(False)
-    status_label(lbl)
-    return lbl
-
-
-def _make_progress() -> QProgressBar:
-    bar = QProgressBar()
-    bar.setRange(0, 100)
-    bar.setValue(0)
-    bar.setTextVisible(True)
-    bar.setVisible(False)
-    return bar
-
-
-def _dspin(lo, hi, val, step=0.1, decimals=2, tooltip=""):
-    s = QDoubleSpinBox()
-    s.setRange(lo, hi); s.setValue(val); s.setSingleStep(step)
-    s.setDecimals(decimals); s.setToolTip(tooltip)
-    return s
-
-
-def _ispin(lo, hi, val, step=1, tooltip=""):
-    s = QSpinBox()
-    s.setRange(lo, hi); s.setValue(val); s.setSingleStep(step)
-    s.setToolTip(tooltip)
-    return s
-
-
-def _btn(text, tooltip=""):
-    b = QPushButton(text)
-    b.setToolTip(tooltip)
-    action_button(b, expand=True)
-    return b
-
-
-def _button_grid(*rows: tuple[QPushButton, ...]) -> QGridLayout:
-    grid = QGridLayout()
-    grid.setHorizontalSpacing(8)
-    grid.setVerticalSpacing(4)
-    for r, buttons in enumerate(rows):
-        for c, btn in enumerate(buttons):
-            span = 2 - c if c == len(buttons) - 1 and len(buttons) == 1 else 1
-            grid.addWidget(btn, r, c, 1, span)
-    grid.setColumnStretch(0, 1)
-    grid.setColumnStretch(1, 1)
-    return grid
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -743,7 +683,7 @@ class NucleusWorkflowWidget(QWidget):
 
         # ── Action buttons — 2-column grid ────────────────────────
         self.save_tracked_btn = _btn(
-            "Save tracked", "Save corrected tracked nucleus labels to disk."
+            "Save tracked (S)", "Save corrected tracked nucleus labels to disk."
         )
         self.extend_back_btn = _btn(
             "◀ Extend (A)", "Extend selected track one frame backward."
@@ -948,70 +888,65 @@ class NucleusWorkflowWidget(QWidget):
     # ================================================================
     # Path helpers
     # ================================================================
+    @property
+    def _paths(self) -> NucleusArtifactPaths | None:
+        return NucleusArtifactPaths(self._pos_dir) if self._pos_dir else None
+
     def _tracked_path(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
+        return self._paths.tracked if self._paths else None
 
     def _ensure_tracked_layer_data(self) -> np.ndarray | None:
-        """Return the tracked labelmap. If the layer is missing but the file
-        exists on disk, load it and add it to the viewer first."""
+        """Return the tracked labelmap from the viewer layer if present, else
+        read it from disk. Does not add anything to the viewer."""
         if _TRACKED_LAYER in self.viewer.layers:
             return np.asarray(self.viewer.layers[_TRACKED_LAYER].data)
         tracked_path = self._tracked_path()
         if tracked_path is None or not tracked_path.exists():
             return None
-        self._status(f"Loading {tracked_path.name} from disk…")
+        self._status(f"Reading {tracked_path.name} from disk…")
         labels = np.asarray(tifffile.imread(str(tracked_path)), dtype=np.uint32)
         if labels.ndim == 4 and labels.shape[1] == 1:
             labels = labels[:, 0]
-        self.viewer.add_labels(labels, name=_TRACKED_LAYER)
         return labels
 
     def _prob_path(self) -> Path | None:
-        return self._pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif" if self._pos_dir else None
+        return self._paths.prob if self._paths else None
 
     def _dp_path(self) -> Path | None:
-        return self._pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif" if self._pos_dir else None
+        return self._paths.dp if self._paths else None
 
     def _contours_path(self) -> Path | None:
-        if self._pos_dir is None:
-            return None
-        nucleus_dir = self._pos_dir / "2_nucleus"
-        preferred = nucleus_dir / "contours.tif"
-        fallback = nucleus_dir / "contour_maps.tif"
-        if preferred.exists() or not fallback.exists():
-            return preferred
-        return fallback
+        return self._paths.contours if self._paths else None
 
     def _contour_maps_path(self) -> Path | None:
         return self._contours_path()
 
     def _contour_sources_path(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "contour_sources.tif" if self._pos_dir else None
+        return self._paths.contour_sources if self._paths else None
 
     def _foreground_sources_path(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "foreground_sources.tif" if self._pos_dir else None
+        return self._paths.foreground_sources if self._paths else None
 
     def _foreground_scores_path(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "foreground_scores.tif" if self._pos_dir else None
+        return self._paths.foreground_scores if self._paths else None
 
     def _cell_zavg_path(self) -> Path | None:
-        return self._pos_dir / "0_input" / "cell_zavg.tif" if self._pos_dir else None
+        return self._paths.cell_zavg if self._paths else None
 
     def _nucleus_zavg_path(self) -> Path | None:
-        return self._pos_dir / "0_input" / "nucleus_zavg.tif" if self._pos_dir else None
+        return self._paths.nucleus_zavg if self._paths else None
 
     def _nls_zavg_path(self) -> Path | None:
-        return self._pos_dir / "0_input" / "NLS_zavg.tif" if self._pos_dir else None
+        return self._paths.nls_zavg if self._paths else None
 
     def _ultrack_workdir(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "ultrack_workdir" if self._pos_dir else None
+        return self._paths.ultrack_workdir if self._paths else None
 
     def _ultrack_db_path(self) -> Path | None:
-        wd = self._ultrack_workdir()
-        return wd / "data.db" if wd else None
+        return self._paths.ultrack_db if self._paths else None
 
     def _nucleus_prob_zavg_path(self) -> Path | None:
-        return self._pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif" if self._pos_dir else None
+        return self._paths.nucleus_prob_zavg if self._paths else None
 
     # ================================================================
     # Public API
@@ -1032,175 +967,11 @@ class NucleusWorkflowWidget(QWidget):
         self._refresh_validation_counter()
 
     def get_state(self) -> dict:
-        return {
-            "map_generation": {
-                "cellprob_min": self.map_cellprob_min_spin.value(),
-                "cellprob_max": self.map_cellprob_max_spin.value(),
-                "cellprob_step": self.map_cellprob_step_spin.value(),
-                "z_start": self.map_z_start_spin.value(),
-                "z_stop": self.map_z_stop_spin.value(),
-                "z_step": self.map_z_step_spin.value(),
-            },
-            "db_generation": {
-                "min_area": self.db_gen_min_area_spin.value(),
-                "max_area": self.db_gen_max_area_spin.value(),
-                "threshold_min": self.source_contour_threshold_min_spin.value(),
-                "threshold_max": self.source_contour_threshold_max_spin.value(),
-                "threshold_step": self.source_contour_threshold_step_spin.value(),
-                "contour_threshold_min": self.source_contour_threshold_min_spin.value(),
-                "contour_threshold_max": self.source_contour_threshold_max_spin.value(),
-                "contour_threshold_step": self.source_contour_threshold_step_spin.value(),
-                "foreground_threshold_min": self.source_foreground_threshold_min_spin.value(),
-                "foreground_threshold_max": self.source_foreground_threshold_max_spin.value(),
-                "foreground_threshold_step": self.source_foreground_threshold_step_spin.value(),
-                "min_frontier": self.db_gen_min_frontier_spin.value(),
-                "ws_hierarchy": self.db_gen_ws_hierarchy_combo.currentText(),
-                "max_distance": self.db_gen_max_dist_spin.value(),
-                "max_neighbors": self.db_gen_max_neighbors_spin.value(),
-                "linking_mode": self.db_gen_linking_mode_combo.currentText(),
-                "iou_weight": self.db_gen_iou_weight_spin.value(),
-                "quality_weight": self.db_gen_quality_weight_spin.value(),
-                "quality_exponent": self.db_gen_quality_exp_spin.value(),
-                "circularity_weight": self.db_gen_circularity_weight_spin.value(),
-                "power": self.db_gen_power_spin.value(),
-                "n_workers": self.db_gen_n_workers_spin.value(),
-                "use_validated": self.db_gen_use_validated_check.isChecked(),
-                "seed_weight": self.ultrack_seed_weight_spin.value(),
-                "seed_sigma_space": self.ultrack_seed_space_spin.value(),
-                "seed_tau_time": self.ultrack_seed_time_spin.value(),
-                "seed_max_dt": self.ultrack_seed_window_spin.value(),
-            },
-            "extend": {
-                "max_distance": self.extend_max_dist_spin.value(),
-                "area_weight": self.extend_area_weight_spin.value(),
-                "iou_weight": self.extend_iou_weight_spin.value(),
-                "distance_weight": self.extend_distance_weight_spin.value(),
-                "overlap_penalty": self.extend_overlap_penalty_spin.value(),
-                "greedy_overwrite": self.extend_greedy_overwrite_check.isChecked(),
-            },
-            "ultrack": {
-                "max_partitions": self.ultrack_max_partitions_spin.value(),
-                "n_frames": self.ultrack_n_frames_spin.value(),
-                "appear_weight": self.ultrack_appear_spin.value(),
-                "disappear_weight": self.ultrack_disappear_spin.value(),
-                "division_weight": self.ultrack_division_spin.value(),
-                "power": self.ultrack_power_spin.value(),
-                "bias": self.ultrack_bias_spin.value(),
-            },
-        }
+        return dump_state(self)
 
     def set_state(self, state: dict) -> None:
-        if not isinstance(state, dict):
-            return
-        if "map_generation" in state:
-            maps = state["map_generation"]
-            if "cellprob_min" in maps: self.map_cellprob_min_spin.setValue(maps["cellprob_min"])
-            if "cellprob_max" in maps: self.map_cellprob_max_spin.setValue(maps["cellprob_max"])
-            if "cellprob_step" in maps: self.map_cellprob_step_spin.setValue(maps["cellprob_step"])
-            if "z_start" in maps: self.map_z_start_spin.setValue(maps["z_start"])
-            if "z_stop" in maps: self.map_z_stop_spin.setValue(maps["z_stop"])
-            if "z_step" in maps: self.map_z_step_spin.setValue(maps["z_step"])
-        if "db_generation" in state:
-            dbg = state["db_generation"]
-            if "min_area" in dbg: self.db_gen_min_area_spin.setValue(dbg["min_area"])
-            if "max_area" in dbg: self.db_gen_max_area_spin.setValue(dbg["max_area"])
-            if "threshold_min" in dbg:
-                self.source_contour_threshold_min_spin.setValue(dbg["threshold_min"])
-                self.source_foreground_threshold_min_spin.setValue(dbg["threshold_min"])
-            if "threshold_max" in dbg:
-                self.source_contour_threshold_max_spin.setValue(dbg["threshold_max"])
-                self.source_foreground_threshold_max_spin.setValue(dbg["threshold_max"])
-            if "threshold_step" in dbg:
-                self.source_contour_threshold_step_spin.setValue(dbg["threshold_step"])
-                self.source_foreground_threshold_step_spin.setValue(dbg["threshold_step"])
-            if "contour_threshold_min" in dbg: self.source_contour_threshold_min_spin.setValue(dbg["contour_threshold_min"])
-            if "contour_threshold_max" in dbg: self.source_contour_threshold_max_spin.setValue(dbg["contour_threshold_max"])
-            if "contour_threshold_step" in dbg: self.source_contour_threshold_step_spin.setValue(dbg["contour_threshold_step"])
-            if "foreground_threshold_min" in dbg: self.source_foreground_threshold_min_spin.setValue(dbg["foreground_threshold_min"])
-            if "foreground_threshold_max" in dbg: self.source_foreground_threshold_max_spin.setValue(dbg["foreground_threshold_max"])
-            if "foreground_threshold_step" in dbg: self.source_foreground_threshold_step_spin.setValue(dbg["foreground_threshold_step"])
-            if "min_frontier" in dbg: self.db_gen_min_frontier_spin.setValue(dbg["min_frontier"])
-            if "ws_hierarchy" in dbg:
-                idx = self.db_gen_ws_hierarchy_combo.findText(dbg["ws_hierarchy"])
-                if idx >= 0: self.db_gen_ws_hierarchy_combo.setCurrentIndex(idx)
-            if "max_distance" in dbg: self.db_gen_max_dist_spin.setValue(dbg["max_distance"])
-            if "max_neighbors" in dbg: self.db_gen_max_neighbors_spin.setValue(dbg["max_neighbors"])
-            if "linking_mode" in dbg:
-                idx = self.db_gen_linking_mode_combo.findText(dbg["linking_mode"])
-                if idx >= 0: self.db_gen_linking_mode_combo.setCurrentIndex(idx)
-            if "iou_weight" in dbg: self.db_gen_iou_weight_spin.setValue(dbg["iou_weight"])
-            if "quality_weight" in dbg: self.db_gen_quality_weight_spin.setValue(dbg["quality_weight"])
-            if "quality_exponent" in dbg: self.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
-            if "circularity_weight" in dbg: self.db_gen_circularity_weight_spin.setValue(dbg["circularity_weight"])
-            if "power" in dbg: self.db_gen_power_spin.setValue(dbg["power"])
-            if "n_workers" in dbg: self.db_gen_n_workers_spin.setValue(dbg["n_workers"])
-            if "use_validated" in dbg: self.db_gen_use_validated_check.setChecked(dbg["use_validated"])
-            if "seed_weight" in dbg: self.ultrack_seed_weight_spin.setValue(dbg["seed_weight"])
-            if "seed_sigma_space" in dbg: self.ultrack_seed_space_spin.setValue(dbg["seed_sigma_space"])
-            if "seed_tau_time" in dbg: self.ultrack_seed_time_spin.setValue(dbg["seed_tau_time"])
-            if "seed_max_dt" in dbg: self.ultrack_seed_window_spin.setValue(dbg["seed_max_dt"])
-        if "extend" in state:
-            ext = state["extend"]
-            if "max_distance" in ext: self.extend_max_dist_spin.setValue(ext["max_distance"])
-            if "area_weight" in ext: self.extend_area_weight_spin.setValue(ext["area_weight"])
-            if "iou_weight" in ext: self.extend_iou_weight_spin.setValue(ext["iou_weight"])
-            if "distance_weight" in ext: self.extend_distance_weight_spin.setValue(ext["distance_weight"])
-            if "overlap_penalty" in ext: self.extend_overlap_penalty_spin.setValue(ext["overlap_penalty"])
-            if "greedy_overwrite" in ext: self.extend_greedy_overwrite_check.setChecked(ext["greedy_overwrite"])
-        if "ultrack" in state:
-            ul = state["ultrack"]
-            if "min_area" in ul and (
-                "db_generation" not in state or "min_area" not in state["db_generation"]
-            ):
-                self.db_gen_min_area_spin.setValue(ul["min_area"])
-            if "max_partitions" in ul: self.ultrack_max_partitions_spin.setValue(ul["max_partitions"])
-            if "n_frames" in ul: self.ultrack_n_frames_spin.setValue(ul["n_frames"])
-            if "max_distance" in ul and (
-                "db_generation" not in state or "max_distance" not in state["db_generation"]
-            ):
-                self.db_gen_max_dist_spin.setValue(ul["max_distance"])
-            if "linking_mode" in ul and (
-                "db_generation" not in state or "linking_mode" not in state["db_generation"]
-            ):
-                idx = self.db_gen_linking_mode_combo.findText(ul["linking_mode"])
-                if idx >= 0: self.db_gen_linking_mode_combo.setCurrentIndex(idx)
-            if "iou_weight" in ul and (
-                "db_generation" not in state or "iou_weight" not in state["db_generation"]
-            ):
-                self.db_gen_iou_weight_spin.setValue(ul["iou_weight"])
-            if "appear_weight" in ul: self.ultrack_appear_spin.setValue(ul["appear_weight"])
-            if "disappear_weight" in ul: self.ultrack_disappear_spin.setValue(ul["disappear_weight"])
-            if "division_weight" in ul: self.ultrack_division_spin.setValue(ul["division_weight"])
-            if "max_neighbors" in ul and (
-                "db_generation" not in state or "max_neighbors" not in state["db_generation"]
-            ):
-                self.db_gen_max_neighbors_spin.setValue(ul["max_neighbors"])
-            if "power" in ul: self.ultrack_power_spin.setValue(ul["power"])
-            if "bias" in ul: self.ultrack_bias_spin.setValue(ul["bias"])
-            if "resolve_from_validated" in ul and (
-                "db_generation" not in state or "use_validated" not in state["db_generation"]
-            ):
-                self.db_gen_use_validated_check.setChecked(ul["resolve_from_validated"])
-            if "quality_exponent" in ul and (
-                "db_generation" not in state or "quality_exponent" not in state["db_generation"]
-            ):
-                self.db_gen_quality_exp_spin.setValue(ul["quality_exponent"])
-            if "seed_weight" in ul and (
-                "db_generation" not in state or "seed_weight" not in state["db_generation"]
-            ):
-                self.ultrack_seed_weight_spin.setValue(ul["seed_weight"])
-            if "seed_sigma_space" in ul and (
-                "db_generation" not in state or "seed_sigma_space" not in state["db_generation"]
-            ):
-                self.ultrack_seed_space_spin.setValue(ul["seed_sigma_space"])
-            if "seed_tau_time" in ul and (
-                "db_generation" not in state or "seed_tau_time" not in state["db_generation"]
-            ):
-                self.ultrack_seed_time_spin.setValue(ul["seed_tau_time"])
-            if "seed_max_dt" in ul and (
-                "db_generation" not in state or "seed_max_dt" not in state["db_generation"]
-            ):
-                self.ultrack_seed_window_spin.setValue(ul["seed_max_dt"])
+        load_state(self, state)
+
 
     def set_selection_callback(self, fn) -> None:
         self.correction_widget.set_selection_callback(fn)
@@ -1705,56 +1476,27 @@ class NucleusWorkflowWidget(QWidget):
         *,
         label: str,
     ) -> np.ndarray:
-        if threshold_step <= 0:
-            raise ValueError(f"{label} threshold step must be > 0.")
-        if threshold_min > threshold_max:
-            raise ValueError(f"{label} threshold min must be <= max.")
-        if threshold_min < 0 or threshold_max > 1:
-            raise ValueError(f"{label} thresholds must be between 0 and 1.")
-        return np.arange(threshold_min, threshold_max + threshold_step / 2, threshold_step)
+        return _thresholds.thresholds_from_values(
+            threshold_min,
+            threshold_max,
+            threshold_step,
+            label=label,
+        )
 
     def _source_contour_thresholds_from_controls(self) -> np.ndarray:
-        return self._thresholds_from_controls(
-            float(self.source_contour_threshold_min_spin.value()),
-            float(self.source_contour_threshold_max_spin.value()),
-            float(self.source_contour_threshold_step_spin.value()),
-            label="Contour",
-        )
+        return _thresholds.source_contour_thresholds(self)
 
     def _source_foreground_thresholds_from_controls(self) -> np.ndarray:
-        return self._thresholds_from_controls(
-            float(self.source_foreground_threshold_min_spin.value()),
-            float(self.source_foreground_threshold_max_spin.value()),
-            float(self.source_foreground_threshold_step_spin.value()),
-            label="Foreground",
-        )
+        return _thresholds.source_foreground_thresholds(self)
 
     def _db_gen_thresholds_from_controls(self) -> np.ndarray:
         return self._source_contour_thresholds_from_controls()
 
     def _map_cellprob_thresholds_from_controls(self) -> np.ndarray:
-        threshold_min = float(self.map_cellprob_min_spin.value())
-        threshold_max = float(self.map_cellprob_max_spin.value())
-        threshold_step = float(self.map_cellprob_step_spin.value())
-        if threshold_step <= 0:
-            raise ValueError("Cellprob threshold step must be > 0.")
-        if threshold_min > threshold_max:
-            raise ValueError("Cellprob threshold min must be <= max.")
-        return np.arange(threshold_min, threshold_max + threshold_step / 2, threshold_step)
+        return _thresholds.map_cellprob_thresholds(self)
 
     def _map_z_indices_from_controls(self) -> list[int] | slice | None:
-        start = int(self.map_z_start_spin.value())
-        stop = int(self.map_z_stop_spin.value())
-        step = int(self.map_z_step_spin.value())
-        if step <= 0:
-            raise ValueError("Z step must be > 0.")
-        if stop == -1:
-            if start == 0 and step == 1:
-                return None
-            return slice(start, None, step)
-        if start > stop:
-            raise ValueError("Z start must be <= stop.")
-        return list(range(start, stop + 1, step))
+        return _thresholds.map_z_indices(self)
 
     def _db_gen_config_from_controls(self) -> UltrackConfig:
         return UltrackConfig(
@@ -1963,14 +1705,8 @@ class NucleusWorkflowWidget(QWidget):
         if labels.ndim == 4 and labels.shape[1] == 1:
             labels = labels[:, 0]
         nt = labels.shape[0]
-        if _TRACKED_LAYER in self.viewer.layers:
-            self.viewer.layers[_TRACKED_LAYER].data = labels
-        else:
-            self.viewer.add_labels(labels, name=_TRACKED_LAYER)
-        layer = self.viewer.layers[_TRACKED_LAYER]
-        self.correction_widget.activate_layer(layer)
         self._files_widget.refresh(self._pos_dir)
-        self._status(f"Tracking done: {nt} frame(s). Unsaved.")
+        self._status(f"Tracking done: {nt} frame(s).")
 
     def _on_ultrack_worker_error(self, exc: Exception) -> None:
         self._ultrack_worker = None
@@ -2567,14 +2303,26 @@ class NucleusWorkflowWidget(QWidget):
         finite = arr[np.isfinite(arr)]
         if finite.size == 0:
             return None
-        lo, hi = np.percentile(finite, [0.05, 99.5])
-        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-            return (float(lo), float(hi))
-        data_min = float(np.min(finite))
-        data_max = float(np.max(finite))
-        if data_max > data_min:
-            return (data_min, data_max)
-        return None
+        p_lo, hi = np.percentile(finite, [0.05, 99.5])
+        if not (np.isfinite(p_lo) and np.isfinite(hi) and hi > p_lo):
+            data_min = float(np.min(finite))
+            data_max = float(np.max(finite))
+            if data_max > data_min:
+                return (data_min, data_max)
+            return None
+        # Background = mode of the histogram between the 0.05th and 99.5th
+        # percentiles. In fluorescence z-avg images this peak is the empty
+        # background; using it as the lower contrast limit visually removes
+        # it without mutating pixel data. Pad by 1 std of the sub-mode tail
+        # so residual background noise stays dark.
+        counts, edges = np.histogram(finite, bins=256, range=(float(p_lo), float(hi)))
+        mode = float(edges[int(np.argmax(counts))] + (edges[1] - edges[0]) * 0.5)
+        below = finite[finite <= mode]
+        pad = float(np.std(below)) if below.size > 1 else 0.0
+        lo = mode + pad
+        if not (np.isfinite(lo) and hi > lo):
+            lo = float(p_lo)
+        return (float(lo), float(hi))
 
     def _capture_correction_view_state(self) -> None:
         selected = [layer.name for layer in self.viewer.layers.selection]
@@ -2651,7 +2399,7 @@ class NucleusWorkflowWidget(QWidget):
 
         for path, name, cmap in (
             (self._cell_zavg_path(), _CORRECTION_CELL_ZAVG_LAYER, "gray"),
-            (self._nucleus_zavg_path(), _CORRECTION_NUC_ZAVG_LAYER, "gray"),
+            (self._nucleus_zavg_path(), _CORRECTION_NUC_ZAVG_LAYER, "bop orange"),
             (self._nls_zavg_path(), _CORRECTION_NLS_ZAVG_LAYER, "bop_blue"),
         ):
             if path is None or not path.exists():
@@ -2861,21 +2609,26 @@ class NucleusWorkflowWidget(QWidget):
 
         frame = layer.data[result.target_frame]
 
-        # Build a mask of all validated cells in the target frame
-        validated_ids_at_target = set()
+        # Build a mask of all validated *and* anchored cells in the target frame;
+        # greedy overwrite must respect both kinds of pin.
+        protected_ids_at_target: set[int] = set()
         for cell_id, frames in validated_tracks.items():
             if result.target_frame in frames:
-                validated_ids_at_target.add(cell_id)
-        validated_mask = np.zeros_like(frame, dtype=bool)
-        for vid in validated_ids_at_target:
-            validated_mask |= (frame == vid)
+                protected_ids_at_target.add(cell_id)
+        if self._pos_dir is not None:
+            for c in read_corrections(self._pos_dir):
+                if c.kind == "anchor" and int(c.t) == int(result.target_frame):
+                    protected_ids_at_target.add(int(c.cell_id))
+        protected_mask = np.zeros_like(frame, dtype=bool)
+        for pid in protected_ids_at_target:
+            protected_mask |= (frame == pid)
 
         changed_ids = {int(a.cell_id) for a in assignments}
         for cid in changed_ids:
             frame[frame == cid] = 0
         if self.extend_greedy_overwrite_check.isChecked():
             for a in assignments:
-                frame[a.mask_2d & ~validated_mask] = int(a.cell_id)
+                frame[a.mask_2d & ~protected_mask] = int(a.cell_id)
         else:
             for a in assignments:
                 frame[a.mask_2d & (frame == 0)] = int(a.cell_id)
@@ -3013,6 +2766,7 @@ class NucleusWorkflowWidget(QWidget):
             ("Q", self._on_retrack_backward),
             ("E", self._on_retrack_forward),
             ("B", self._on_anchor_here),
+            ("S", self._on_save_tracked),
         ]
         self._correction_shortcuts: list[QShortcut] = []
         for key, slot in specs:
