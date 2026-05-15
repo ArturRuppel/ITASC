@@ -8,6 +8,7 @@ import numpy as np
 from skimage.measure import regionprops
 
 from cellflow.database.hypotheses import list_hypotheses, read_hypothesis_labels
+from cellflow.tracking_ultrack import scoring as _scoring
 
 _D_MAX_DEFAULT = 40.0
 _GREEDY_CANDIDATE_LIMIT = 5
@@ -41,22 +42,6 @@ class ExtendResult:
     assignments: tuple[ExtendAssignment, ...] = ()
 
 
-def _centroid_corrected_iou(source_mask: np.ndarray, candidate_mask: np.ndarray) -> float:
-    """IoU after translating candidate pixels to the source centroid."""
-    src_y, src_x = np.nonzero(source_mask)
-    cand_y, cand_x = np.nonzero(candidate_mask)
-    if len(src_y) == 0 or len(cand_y) == 0:
-        return 0.0
-
-    dy = int(round(float(src_y.mean()) - float(cand_y.mean())))
-    dx = int(round(float(src_x.mean()) - float(cand_x.mean())))
-    src_pixels = set(zip(src_y.tolist(), src_x.tolist()))
-    cand_pixels = set(zip((cand_y + dy).tolist(), (cand_x + dx).tolist()))
-    intersection = len(src_pixels & cand_pixels)
-    union = len(src_pixels) + len(cand_pixels) - intersection
-    return intersection / union if union > 0 else 0.0
-
-
 def _extend_score(
     *,
     area_ratio: float,
@@ -69,13 +54,15 @@ def _extend_score(
     distance_weight: float,
     overlap_penalty: float,
 ) -> tuple[float, float]:
-    distance_score = 1.0 if d_max <= 0 else max(0.0, 1.0 - centroid_distance / d_max)
-    weighted_score = (
-        area_weight * area_ratio
-        + iou_weight * centroid_corrected_iou
-        + distance_weight * distance_score
-        - overlap_penalty * existing_overlap
-    )
+    weighted_score = _scoring.similarity_score(
+        area_ratio=area_ratio,
+        centroid_corrected_iou=centroid_corrected_iou,
+        distance=centroid_distance,
+        d_max=d_max,
+        area_weight=area_weight,
+        iou_weight=iou_weight,
+        distance_weight=distance_weight,
+    ) - overlap_penalty * existing_overlap
     return (weighted_score, -centroid_distance)
 
 
@@ -123,7 +110,7 @@ def _assignment_for_candidate(
     other_cells = (target_frame_labels != 0) & (target_frame_labels != cell_id)
     existing_overlap = float((candidate.mask_2d & other_cells).sum()) / cand_area
     area_ratio = min(src_area, cand_area) / max(src_area, cand_area)
-    shape_iou = _centroid_corrected_iou(reference_mask, candidate.mask_2d)
+    shape_iou = _scoring.centroid_corrected_iou(reference_mask, candidate.mask_2d)
     score = _extend_score(
         area_ratio=area_ratio,
         centroid_corrected_iou=shape_iou,
@@ -257,7 +244,7 @@ def extend_track(
             cand_mask = labels_2d == rp.label
             existing_overlap = float((cand_mask & other_cells).sum()) / cand_area
             area_ratio = min(src_area, cand_area) / max(src_area, cand_area)
-            shape_iou = _centroid_corrected_iou(source_mask, cand_mask)
+            shape_iou = _scoring.centroid_corrected_iou(source_mask, cand_mask)
             score = _extend_score(
                 area_ratio=area_ratio,
                 centroid_corrected_iou=shape_iou,

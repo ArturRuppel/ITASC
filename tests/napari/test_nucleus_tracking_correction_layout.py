@@ -53,7 +53,10 @@ def _install_import_stubs() -> None:
             self.max_distance = 15.0
             self.max_neighbors = 5
             self.linking_mode = "default"
+            self.area_weight = 1.0
             self.iou_weight = 1.0
+            self.distance_weight = 0.25
+            self.min_area_ratio = 0.3
             self.power = 4.0
             self.quality_weight = 1.0
             self.quality_exponent = 8.0
@@ -104,7 +107,6 @@ def _install_import_stubs() -> None:
             "resolve_with_canonical_segment": lambda *args, **kwargs: (None, {}),
         },
         "cellflow.tracking_ultrack.seed_prior": {
-            "boost_validated_edges": lambda *args, **kwargs: None,
             "write_seed_prior_node_probs": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.solve": {
@@ -1060,7 +1062,7 @@ def test_old_ultrack_linking_state_migrates_to_db_controls():
             "min_area": 700,
             "max_distance": 21.0,
             "max_neighbors": 9,
-            "linking_mode": "iou",
+            "linking_mode": "shape",
             "iou_weight": 0.65,
         }
     })
@@ -1068,7 +1070,7 @@ def test_old_ultrack_linking_state_migrates_to_db_controls():
     assert widget.db_gen_min_area_spin.value() == 700
     assert widget.db_gen_max_dist_spin.value() == pytest.approx(21.0)
     assert widget.db_gen_max_neighbors_spin.value() == 9
-    assert widget.db_gen_linking_mode_combo.currentText() == "iou"
+    assert widget.db_gen_linking_mode_combo.currentText() == "shape"
     assert widget.db_gen_iou_weight_spin.value() == pytest.approx(0.65)
 
     widget.deleteLater()
@@ -3706,8 +3708,10 @@ def test_db_gen_controls_persist_through_state():
     widget.db_gen_ws_hierarchy_combo.setCurrentText("dynamics")
     widget.db_gen_max_dist_spin.setValue(20.0)
     widget.db_gen_max_neighbors_spin.setValue(8)
-    widget.db_gen_linking_mode_combo.setCurrentText("iou")
+    widget.db_gen_linking_mode_combo.setCurrentText("shape")
+    widget.db_gen_area_weight_spin.setValue(0.5)
     widget.db_gen_iou_weight_spin.setValue(0.8)
+    widget.db_gen_distance_weight_spin.setValue(0.3)
     widget.db_gen_quality_weight_spin.setValue(0.8)
     widget.db_gen_quality_exp_spin.setValue(6.0)
     widget.db_gen_circularity_weight_spin.setValue(0.35)
@@ -3732,8 +3736,10 @@ def test_db_gen_controls_persist_through_state():
     assert widget.db_gen_ws_hierarchy_combo.currentText() == "dynamics"
     assert widget.db_gen_max_dist_spin.value() == 20.0
     assert widget.db_gen_max_neighbors_spin.value() == 8
-    assert widget.db_gen_linking_mode_combo.currentText() == "iou"
+    assert widget.db_gen_linking_mode_combo.currentText() == "shape"
+    assert abs(widget.db_gen_area_weight_spin.value() - 0.5) < 0.01
     assert abs(widget.db_gen_iou_weight_spin.value() - 0.8) < 0.01
+    assert abs(widget.db_gen_distance_weight_spin.value() - 0.3) < 0.01
     assert abs(widget.db_gen_quality_weight_spin.value() - 0.8) < 0.01
     assert abs(widget.db_gen_quality_exp_spin.value() - 6.0) < 0.01
     assert abs(widget.db_gen_circularity_weight_spin.value() - 0.35) < 0.01

@@ -20,11 +20,13 @@ class TrackingConfig(BaseModel):
     # Default to min(cpu_count(), 8) for automatic parallelism up to 8 threads.
     max_distance: float = 15.0
     max_neighbors: int = 5
-    distance_weight: float = 0.0
+    distance_weight: float = 0.25
     link_n_workers: int = min(cpu_count(), 8)
-    linking_mode: str = "default"  # "default" or "iou"
+    linking_mode: str = "default"  # "default" or "shape"
+    area_weight: float = 1.0
     iou_weight: float = 1.0
     min_link_iou: float = 0.1
+    min_area_ratio: float = 0.3
 
     # Solver / ILP
     appear_weight: float = -0.001

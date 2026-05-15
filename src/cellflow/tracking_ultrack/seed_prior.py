@@ -19,12 +19,6 @@ class SeedPriorReport:
 
 
 @dataclass(frozen=True)
-class EdgeBoostReport:
-    boosted: int
-    seeds: int
-
-
-@dataclass(frozen=True)
 class _NodeScoreRecord:
     node_id: int
     t: int
@@ -120,119 +114,6 @@ def _affinity(node: _NodeScoreRecord, seed: _NodeScoreRecord, cfg: TrackingConfi
     spatial_decay = np.exp(-((dist / cfg.seed_sigma_space) ** 2))
     temporal_decay = np.exp(-(dt / cfg.seed_tau_time))
     return float(size_similarity * spatial_decay * temporal_decay)
-
-
-def boost_validated_edges(
-    working_dir: str | Path,
-    cfg: TrackingConfig,
-) -> EdgeBoostReport:
-    import sqlalchemy as sqla
-    from sqlalchemy.orm import Session
-    from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
-
-    engine = sqla.create_engine(f"sqlite:///{Path(working_dir) / 'data.db'}")
-
-    with Session(engine) as session:
-        real_rows = session.query(
-            NodeDB.id,
-            NodeDB.t,
-            NodeDB.y,
-            NodeDB.x,
-            NodeDB.area,
-        ).where(NodeDB.node_annot == VarAnnotation.REAL).all()
-
-        if not real_rows:
-            return EdgeBoostReport(boosted=0, seeds=0)
-
-        seed_by_id: dict[int, _NodeScoreRecord] = {}
-        for node_id, t, y, x, area in real_rows:
-            seed_by_id[int(node_id)] = _NodeScoreRecord(
-                node_id=int(node_id),
-                t=int(t),
-                bbox=(0, 0, 1, 1),
-                mask=np.zeros((1, 1), dtype=bool),
-                area=int(area),
-                y=float(y),
-                x=float(x),
-            )
-
-        real_ids = list(seed_by_id.keys())
-
-        link_rows = session.query(
-            LinkDB.id,
-            LinkDB.source_id,
-            LinkDB.target_id,
-            LinkDB.weight,
-        ).where(
-            sqla.or_(
-                LinkDB.source_id.in_(real_ids),
-                LinkDB.target_id.in_(real_ids),
-            )
-        ).all()
-
-        if not link_rows:
-            return EdgeBoostReport(boosted=0, seeds=len(real_ids))
-
-        # Gather candidate (non-REAL-endpoint) node IDs for batched lookup
-        candidate_ids: set[int] = set()
-        for _link_id, source_id, target_id, _weight in link_rows:
-            source_id, target_id = int(source_id), int(target_id)
-            if source_id not in seed_by_id:
-                candidate_ids.add(source_id)
-            if target_id not in seed_by_id:
-                candidate_ids.add(target_id)
-
-        candidate_by_id: dict[int, _NodeScoreRecord] = {}
-        if candidate_ids:
-            cand_rows = session.query(
-                NodeDB.id,
-                NodeDB.t,
-                NodeDB.y,
-                NodeDB.x,
-                NodeDB.area,
-            ).where(NodeDB.id.in_(list(candidate_ids))).all()
-            for node_id, t, y, x, area in cand_rows:
-                candidate_by_id[int(node_id)] = _NodeScoreRecord(
-                    node_id=int(node_id),
-                    t=int(t),
-                    bbox=(0, 0, 1, 1),
-                    mask=np.zeros((1, 1), dtype=bool),
-                    area=int(area),
-                    y=float(y),
-                    x=float(x),
-                )
-
-        boosted = 0
-        for link_id, source_id, target_id, weight in link_rows:
-            link_id = int(link_id)
-            source_id, target_id = int(source_id), int(target_id)
-
-            # Determine which endpoint is the seed (REAL) and which is the candidate
-            if source_id in seed_by_id:
-                seed = seed_by_id[source_id]
-                candidate = seed_by_id.get(target_id) or candidate_by_id.get(target_id)
-            else:
-                seed = seed_by_id[target_id]
-                candidate = candidate_by_id.get(source_id)
-
-            if candidate is None:
-                continue
-
-            aff = _affinity(candidate, seed, cfg)
-            if aff == 0.0:
-                continue
-
-            new_weight = float(weight) + cfg.seed_weight * aff
-            session.query(LinkDB).where(LinkDB.id == link_id).update(
-                {LinkDB.weight: new_weight},
-                synchronize_session=False,
-            )
-            boosted += 1
-
-        session.commit()
-
-    engine.dispose()
-    return EdgeBoostReport(boosted=boosted, seeds=len(real_ids))
 
 
 def write_seed_prior_node_probs(

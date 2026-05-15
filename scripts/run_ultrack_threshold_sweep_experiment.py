@@ -317,7 +317,7 @@ def main() -> None:
     parser.add_argument("--max-area", type=int, default=1_000_000)
     parser.add_argument("--max-distance", type=float, default=15.0)
     parser.add_argument("--max-neighbors", type=int, default=5)
-    parser.add_argument("--linking-mode", choices=["default", "iou"], default="default")
+    parser.add_argument("--linking-mode", choices=["default", "shape"], default="default")
     parser.add_argument("--iou-weight", type=float, default=1.0)
     parser.add_argument("--min-link-iou", type=float, default=0.1)
     parser.add_argument("--link-n-workers", type=int, default=None)

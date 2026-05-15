@@ -274,7 +274,7 @@ class CorrectionWidget(QWidget):
             ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell (same frame)"),
             ("Ctrl+Right-click → Right-click",     "Swap (two-step, no selection)"),
             ("Ctrl-z",                             "Undo"),
-            ("Shift+Left / Shift+Right",           "Previous / next cell across all frames"),
+            ("Shift+Left / Shift+Right",           "Previous / next cell (current frame first, then other frames)"),
             ("Shift+Right-drag",                   "Split by drawn line"),
             ("Shift+Left-drag",                    "Draw cell path (extends or creates)"),
         ]:
@@ -815,20 +815,49 @@ class CorrectionWidget(QWidget):
         if self._layer is None:
             return
         data = self._layer.data
-        ids = sorted(set(int(v) for v in np.unique(data)) - {0})
-        if not ids:
+        all_ids = sorted(set(int(v) for v in np.unique(data)) - {0})
+        if not all_ids:
             self._set_status("No cells in any frame")
             return
-        cur = self._selected_label
-        if direction > 0:
-            nxt = next((i for i in ids if i > cur), ids[0])
+        step = self.viewer.dims.current_step
+        t = int(step[0]) if len(step) >= 1 else 0
+        if 0 <= t < data.shape[0]:
+            frame_ids = sorted(set(int(v) for v in np.unique(data[t])) - {0})
         else:
-            nxt = next((i for i in reversed(ids) if i < cur), ids[-1])
+            frame_ids = []
+        cur = self._selected_label
+
+        # Nothing selected: start on the current frame if it has any cells.
+        if cur == 0 and frame_ids:
+            nxt = frame_ids[0] if direction > 0 else frame_ids[-1]
+            self._goto_cell_id.setValue(nxt)
+            self._goto_cell()
+            return
+
+        # Cycle within the current frame first.
+        if direction > 0:
+            nxt = next((i for i in frame_ids if i > cur), None)
+        else:
+            nxt = next((i for i in reversed(frame_ids) if i < cur), None)
+        if nxt is not None:
+            self._goto_cell_id.setValue(nxt)
+            self._goto_cell()
+            return
+
+        # Current frame exhausted: fall back to IDs on other frames.
+        other_ids = [i for i in all_ids if i not in frame_ids]
+        if other_ids:
+            if direction > 0:
+                nxt = next((i for i in other_ids if i > cur), other_ids[0])
+            else:
+                nxt = next((i for i in reversed(other_ids) if i < cur), other_ids[-1])
+        else:
+            nxt = frame_ids[0] if direction > 0 else frame_ids[-1]
         frames = [i for i in range(data.shape[0]) if np.any(data[i] == nxt)]
         if frames:
-            step = list(self.viewer.dims.current_step)
-            step[0] = frames[0]
-            self.viewer.dims.current_step = tuple(step)
+            step_list = list(self.viewer.dims.current_step)
+            step_list[0] = frames[0]
+            self.viewer.dims.current_step = tuple(step_list)
         self._goto_cell_id.setValue(nxt)
         self._goto_cell()
 

@@ -43,7 +43,9 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "max_distance": w.db_gen_max_dist_spin.value(),
             "max_neighbors": w.db_gen_max_neighbors_spin.value(),
             "linking_mode": w.db_gen_linking_mode_combo.currentText(),
+            "area_weight": w.db_gen_area_weight_spin.value(),
             "iou_weight": w.db_gen_iou_weight_spin.value(),
+            "distance_weight": w.db_gen_distance_weight_spin.value(),
             "quality_weight": w.db_gen_quality_weight_spin.value(),
             "quality_exponent": w.db_gen_quality_exp_spin.value(),
             "circularity_weight": w.db_gen_circularity_weight_spin.value(),
@@ -116,7 +118,9 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "max_distance" in dbg: w.db_gen_max_dist_spin.setValue(dbg["max_distance"])
         if "max_neighbors" in dbg: w.db_gen_max_neighbors_spin.setValue(dbg["max_neighbors"])
         if "linking_mode" in dbg: _set_combo(w.db_gen_linking_mode_combo, dbg["linking_mode"])
+        if "area_weight" in dbg: w.db_gen_area_weight_spin.setValue(dbg["area_weight"])
         if "iou_weight" in dbg: w.db_gen_iou_weight_spin.setValue(dbg["iou_weight"])
+        if "distance_weight" in dbg: w.db_gen_distance_weight_spin.setValue(dbg["distance_weight"])
         if "quality_weight" in dbg: w.db_gen_quality_weight_spin.setValue(dbg["quality_weight"])
         if "quality_exponent" in dbg: w.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
         if "circularity_weight" in dbg: w.db_gen_circularity_weight_spin.setValue(dbg["circularity_weight"])
@@ -148,6 +152,10 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
             _set_combo(w.db_gen_linking_mode_combo, ul["linking_mode"])
         if "iou_weight" in ul and not (dbg_present and "iou_weight" in state["db_generation"]):
             w.db_gen_iou_weight_spin.setValue(ul["iou_weight"])
+        if "area_weight" in ul and not (dbg_present and "area_weight" in state["db_generation"]):
+            w.db_gen_area_weight_spin.setValue(ul["area_weight"])
+        if "distance_weight" in ul and not (dbg_present and "distance_weight" in state["db_generation"]):
+            w.db_gen_distance_weight_spin.setValue(ul["distance_weight"])
         if "appear_weight" in ul: w.ultrack_appear_spin.setValue(ul["appear_weight"])
         if "disappear_weight" in ul: w.ultrack_disappear_spin.setValue(ul["disappear_weight"])
         if "division_weight" in ul: w.ultrack_division_spin.setValue(ul["division_weight"])

@@ -408,7 +408,7 @@ def main() -> None:
     parser.add_argument("--n-frames", type=int, default=50)
     parser.add_argument("--results-dir", type=Path, default=None)
     parser.add_argument("--overwrite-results", action="store_true")
-    parser.add_argument("--linking-mode", choices=["default", "iou"], default="default")
+    parser.add_argument("--linking-mode", choices=["default", "shape"], default="default")
     parser.add_argument("--min-area", type=int, default=300)
     parser.add_argument("--max-area", type=int, default=1_000_000)
     parser.add_argument("--max-partitions", type=int, default=30, help="Direct ingest cap; 0 means all partitions.")

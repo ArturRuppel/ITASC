@@ -5,7 +5,7 @@ Runs ingest → link → solve → export on the first N frames of a real
 hypotheses.h5, then compares against a ground-truth tracked_labels.tif.
 
 Usage (from repo root, inside cellflow env):
-    python scripts/benchmark_ultrack_phase2.py [--n-frames 10] [--linking-mode default|iou]
+    python scripts/benchmark_ultrack_phase2.py [--n-frames 10] [--linking-mode default|shape]
 
 Outputs:
     <working_dir>/tracked_labels.tif       — new ILP-tracked labelmap
@@ -98,7 +98,7 @@ def _distribution_summary(lengths: dict[int, int]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--n-frames", type=int, default=10)
-    parser.add_argument("--linking-mode", choices=["default", "iou"], default="default")
+    parser.add_argument("--linking-mode", choices=["default", "shape"], default="default")
     parser.add_argument("--min-area", type=int, default=300)
     parser.add_argument("--max-partitions", type=int, default=30,
                         help="Cap partitions per frame (default: 30; use 0 for all 176)")

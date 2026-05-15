@@ -13,6 +13,7 @@ from cellflow.tracking_ultrack.corrections import (
     Correction,
     apply_corrections_to_database,
     corrections_from_validated_tracks,
+    ensure_anchor_incident_links,
 )
 from cellflow.tracking_ultrack.ingest import _build_ultrack_config
 from cellflow.tracking_ultrack.linking import run_linking
@@ -32,6 +33,7 @@ class AnnotateAndScoreReport:
     anchor_links: int = 0
     scored_nodes: int = 0
     seed_nodes: int = 0
+    anchor_incident_links_inserted: int = 0
 
 
 def _reset_annotations(working_dir: str | Path) -> None:
@@ -111,12 +113,22 @@ def apply_annotations_and_score(
         anchor_links = int(post.anchor_links)
         _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
 
+    _notify(progress_cb, "Filling anchor-incident links...")
+    incident = ensure_anchor_incident_links(working_dir, cfg)
+    anchor_incident_links_inserted = int(incident.inserted)
+    _notify(
+        progress_cb,
+        f"Inserted {anchor_incident_links_inserted} anchor-incident link(s) "
+        f"across {int(incident.anchors_processed)} anchor node(s).",
+    )
+
     return AnnotateAndScoreReport(
         fake_nodes=fake_nodes,
         anchor_nodes=anchor_nodes,
         anchor_links=anchor_links,
         scored_nodes=scored_nodes,
         seed_nodes=seed_nodes,
+        anchor_incident_links_inserted=anchor_incident_links_inserted,
     )
 
 

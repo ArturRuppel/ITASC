@@ -68,6 +68,12 @@ def test_apply_annotations_and_score_resets_then_applies_in_order(monkeypatch, t
         lambda *_a, **_kw: calls.append("score")
         or type("ScoreReport", (), {"scored": 5, "seeds": 1})(),
     )
+    monkeypatch.setattr(
+        db_build,
+        "ensure_anchor_incident_links",
+        lambda *_a, **_kw: calls.append("incident_links")
+        or type("IncidentReport", (), {"inserted": 4, "anchors_processed": 2})(),
+    )
 
     report = db_build.apply_annotations_and_score(
         working_dir=tmp_path / "work",
@@ -77,12 +83,13 @@ def test_apply_annotations_and_score_resets_then_applies_in_order(monkeypatch, t
         tracked_labels=tracked,
     )
 
-    assert calls == ["reset", "pre_link", "score", "post_link"]
+    assert calls == ["reset", "pre_link", "score", "post_link", "incident_links"]
     assert report.fake_nodes == 3
     assert report.anchor_nodes == 1
     assert report.anchor_links == 6
     assert report.scored_nodes == 5
     assert report.seed_nodes == 1
+    assert report.anchor_incident_links_inserted == 4
 
 
 def test_apply_annotations_and_score_without_corrections_just_resets_and_scores(
@@ -105,6 +112,12 @@ def test_apply_annotations_and_score_without_corrections_just_resets_and_scores(
         lambda *_a, **_kw: calls.append("score")
         or type("ScoreReport", (), {"scored": 0, "seeds": 0})(),
     )
+    monkeypatch.setattr(
+        db_build,
+        "ensure_anchor_incident_links",
+        lambda *_a, **_kw: calls.append("incident_links")
+        or type("IncidentReport", (), {"inserted": 0, "anchors_processed": 0})(),
+    )
 
     db_build.apply_annotations_and_score(
         working_dir=tmp_path / "work",
@@ -112,7 +125,7 @@ def test_apply_annotations_and_score_without_corrections_just_resets_and_scores(
         score_signal_path=tmp_path / "foreground.tif",
     )
 
-    assert calls == ["reset", "score"]
+    assert calls == ["reset", "score", "incident_links"]
 
 
 def test_apply_annotations_and_score_validated_without_tracked_labels_raises(tmp_path):

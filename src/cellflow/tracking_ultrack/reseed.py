@@ -30,7 +30,7 @@ from cellflow.tracking_ultrack.db_build import (
 )
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.linking import run_linking
-from cellflow.tracking_ultrack.seed_prior import boost_validated_edges, write_seed_prior_node_probs
+from cellflow.tracking_ultrack.seed_prior import write_seed_prior_node_probs
 from cellflow.tracking_ultrack.solve import run_solve
 from cellflow.tracking_ultrack.validation_nodes import inject_validated_nodes
 

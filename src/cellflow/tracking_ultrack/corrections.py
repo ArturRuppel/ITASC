@@ -35,6 +35,12 @@ class CorrectionDatabaseReport:
 
 
 @dataclass(frozen=True)
+class AnchorIncidentLinkReport:
+    inserted: int = 0
+    anchors_processed: int = 0
+
+
+@dataclass(frozen=True)
 class PostSolveCorrectionReport:
     remapped_anchor_tracks: int = 0
     stamped_anchors: int = 0
@@ -179,6 +185,100 @@ def apply_corrections_to_database(
         anchor_nodes=anchor_nodes,
         anchor_links=anchor_links,
         anchor_overlaps_pruned=int(anchor_overlaps_pruned or 0),
+    )
+
+
+def ensure_anchor_incident_links(
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+) -> AnchorIncidentLinkReport:
+    """Insert missing LinkDB rows for edges incident to anchor (REAL) nodes.
+
+    The linker keeps only the top ``cfg.max_neighbors`` source-side edges per
+    target. A node the user selects as an anchor after solving may have been
+    pruned out of LinkDB entirely for some — or all — adjacent-frame
+    candidates, leaving the solver no way to extend the track from it. This
+    fills those gaps for anchor-incident edges, using the same per-pair weight
+    formula as the active linker mode.
+    """
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
+
+    from cellflow.tracking_ultrack.linking import compute_edge_weight
+
+    engine = sqla.create_engine(f"sqlite:///{Path(working_dir) / 'data.db'}")
+
+    inserted = 0
+    anchors_processed = 0
+
+    with Session(engine) as session:
+        anchor_rows = session.query(
+            NodeDB.id, NodeDB.t, NodeDB.y, NodeDB.x, NodeDB.pickle,
+        ).where(NodeDB.node_annot == VarAnnotation.REAL).all()
+
+        if not anchor_rows:
+            engine.dispose()
+            return AnchorIncidentLinkReport()
+
+        max_distance = float(cfg.max_distance)
+        new_rows: list[LinkDB] = []
+
+        for anchor_id, anchor_t, anchor_y, anchor_x, anchor_pickle in anchor_rows:
+            anchor_id = int(anchor_id)
+            anchor_t = int(anchor_t)
+            anchor_node = anchor_pickle
+            anchors_processed += 1
+
+            for direction in (-1, +1):
+                neighbor_t = anchor_t + direction
+                neighbor_rows = session.query(
+                    NodeDB.id, NodeDB.y, NodeDB.x, NodeDB.pickle,
+                ).where(NodeDB.t == neighbor_t).all()
+                if not neighbor_rows:
+                    continue
+
+                for neigh_id, neigh_y, neigh_x, neigh_pickle in neighbor_rows:
+                    neigh_id = int(neigh_id)
+                    dist = _distance(anchor_y, anchor_x, neigh_y, neigh_x)
+                    if dist > max_distance:
+                        continue
+
+                    if direction == +1:
+                        source_id, target_id = anchor_id, neigh_id
+                        source_node, target_node = anchor_node, neigh_pickle
+                    else:
+                        source_id, target_id = neigh_id, anchor_id
+                        source_node, target_node = neigh_pickle, anchor_node
+
+                    exists = session.query(LinkDB.id).where(
+                        LinkDB.source_id == source_id,
+                        LinkDB.target_id == target_id,
+                    ).first()
+                    if exists is not None:
+                        continue
+
+                    weight = compute_edge_weight(source_node, target_node, dist, cfg)
+                    if weight is None:
+                        continue
+
+                    new_rows.append(
+                        LinkDB(
+                            source_id=source_id,
+                            target_id=target_id,
+                            weight=float(weight),
+                        )
+                    )
+
+        if new_rows:
+            session.add_all(new_rows)
+            session.commit()
+            inserted = len(new_rows)
+
+    engine.dispose()
+    return AnchorIncidentLinkReport(
+        inserted=inserted,
+        anchors_processed=anchors_processed,
     )
 
 

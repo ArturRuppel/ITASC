@@ -1,7 +1,7 @@
 """Linking step: wire NodeDB into LinkDB.
 
 Default mode uses Ultrack's built-in linker.
-IoU mode uses the custom IoU-weighted linker lifted from v1.
+Shape mode uses the custom shape-scoring linker.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Generator
 
 import numpy as np
 
+from cellflow.tracking_ultrack import scoring
 from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.ingest import _build_ultrack_config
 
@@ -22,8 +23,8 @@ def run_linking(
     overwrite: bool = True,
 ) -> Generator[tuple[int, int, str], None, None]:
     """Run the linking step, yielding (step, total, label) progress tuples."""
-    if cfg.linking_mode == "iou":
-        yield from _run_iou_linking(working_dir, cfg, overwrite=overwrite)
+    if cfg.linking_mode == "shape":
+        yield from _run_shape_linking(working_dir, cfg, overwrite=overwrite)
         return
     if cfg.linking_mode != "default":
         raise ValueError(f"Unknown linking_mode={cfg.linking_mode!r}")
@@ -48,98 +49,111 @@ def run_linking(
 
 
 # ---------------------------------------------------------------------------
-# IoU-aware linking (lifted from archive/v1/…/ultrack/linking.py)
+# Shape-scoring linking
 # ---------------------------------------------------------------------------
 
-def _node_mask(node) -> np.ndarray | None:
+def _node_coords_centroid(node, ndim: int | None = None) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return (absolute-pixel coords, centroid) for node, or None on failure.
+
+    ndim defaults to the mask's own dimensionality.
+    """
     mask = getattr(node, "mask", None)
     if mask is None:
         return None
     mask = np.asarray(mask, dtype=bool)
-    return mask if mask.ndim > 0 else None
+    if mask.ndim == 0 or not mask.any():
+        return None
+    if ndim is None:
+        ndim = int(mask.ndim)
 
-
-def _node_origin(node, ndim: int) -> np.ndarray | None:
+    # Resolve origin
+    origin = None
     for attr in ("origin", "offset", "bbox_start", "bbox_min", "start"):
         value = getattr(node, attr, None)
         if value is None:
             continue
         arr = np.asarray(value, dtype=np.float32).reshape(-1)
         if arr.size >= ndim:
-            return arr[-ndim:]
-    bbox = getattr(node, "bbox", None)
-    if bbox is None:
-        return None
-    if isinstance(bbox, tuple) and bbox and all(hasattr(item, "start") for item in bbox):
-        starts = [0.0 if item.start is None else float(item.start) for item in bbox]
-        arr = np.asarray(starts, dtype=np.float32).reshape(-1)
-        if arr.size >= ndim:
-            return arr[-ndim:]
-    arr = np.asarray(bbox, dtype=np.float32).reshape(-1)
-    if arr.size >= ndim:
-        return arr[-ndim:]
-    return None
+            origin = arr[-ndim:]
+            break
+    if origin is None:
+        bbox = getattr(node, "bbox", None)
+        if bbox is None:
+            return None
+        if isinstance(bbox, tuple) and bbox and all(hasattr(item, "start") for item in bbox):
+            starts = [0.0 if item.start is None else float(item.start) for item in bbox]
+            arr = np.asarray(starts, dtype=np.float32).reshape(-1)
+            if arr.size >= ndim:
+                origin = arr[-ndim:]
+        if origin is None:
+            arr = np.asarray(bbox, dtype=np.float32).reshape(-1)
+            # bbox is [min_0, ..., min_k, max_0, ..., max_k]; take first half for mins
+            if arr.size >= ndim * 2 and arr.size % 2 == 0:
+                half = arr.size // 2
+                origin = arr[:half][-ndim:]
+            elif arr.size >= ndim:
+                origin = arr[-ndim:]
+        if origin is None:
+            return None
+
+    coords = np.argwhere(mask).astype(np.float32) + origin
+    centroid = np.asarray(node.centroid, dtype=np.float32).reshape(-1)[-ndim:]
+    return coords, centroid
 
 
-def _centroid_tail(centroid: np.ndarray, ndim: int) -> np.ndarray:
-    centroid = np.asarray(centroid, dtype=np.float32).reshape(-1)
-    return centroid[-ndim:]
+def compute_edge_weight(
+    source_node,
+    target_node,
+    distance: float,
+    cfg: TrackingConfig,
+) -> float | None:
+    """Per-pair edge weight matching the active linker mode.
+
+    Returns None when shape mode filters the pair out. Default mode never
+    filters and always returns a float.
+    """
+    if cfg.linking_mode == "shape":
+        result = _node_coords_centroid(source_node)
+        if result is None:
+            return None
+        src_coords, src_centroid = result
+
+        result = _node_coords_centroid(target_node)
+        if result is None:
+            return None
+        tgt_coords, tgt_centroid = result
+
+        src_area = float(getattr(source_node, "area", len(src_coords)))
+        tgt_area = float(getattr(target_node, "area", len(tgt_coords)))
+        if src_area <= 0 or tgt_area <= 0:
+            return None
+        area_ratio = min(src_area, tgt_area) / max(src_area, tgt_area)
+        if area_ratio < cfg.min_area_ratio:
+            return None
+
+        iou = scoring.centroid_corrected_iou_from_coords(
+            src_coords, src_centroid, tgt_coords, tgt_centroid
+        )
+        if iou < cfg.min_link_iou:
+            return None
+
+        return scoring.similarity_score(
+            area_ratio=area_ratio,
+            centroid_corrected_iou=iou,
+            distance=distance,
+            d_max=cfg.max_distance,
+            area_weight=cfg.area_weight,
+            iou_weight=cfg.iou_weight,
+            distance_weight=cfg.distance_weight,
+        )
+
+    if cfg.linking_mode != "default":
+        raise ValueError(f"Unknown linking_mode={cfg.linking_mode!r}")
+    iou = float(source_node.IoU(target_node))
+    return iou - cfg.distance_weight * float(distance)
 
 
-def _aligned_mask_iou(source, target) -> float:
-    source_mask = _node_mask(source)
-    target_mask = _node_mask(target)
-    if source_mask is None or target_mask is None:
-        return float(source.IoU(target))
-    if source_mask.ndim != target_mask.ndim or source_mask.ndim == 0:
-        return float(source.IoU(target))
-    if not source_mask.any() or not target_mask.any():
-        return 0.0
-
-    ndim = int(source_mask.ndim)
-    source_origin = _node_origin(source, ndim)
-    target_origin = _node_origin(target, ndim)
-    if source_origin is None or target_origin is None:
-        return float(source.IoU(target))
-
-    source_coords = np.argwhere(source_mask).astype(np.float32) + source_origin
-    target_coords = np.argwhere(target_mask).astype(np.float32) + target_origin
-    centroid_shift = _centroid_tail(source.centroid, ndim) - _centroid_tail(target.centroid, ndim)
-    target_coords = target_coords + centroid_shift
-
-    all_coords = np.vstack([source_coords, target_coords])
-    mins = np.floor(all_coords.min(axis=0)).astype(int) - 1
-    maxs = np.ceil(all_coords.max(axis=0)).astype(int) + 1
-    shape = tuple((maxs - mins + 1).tolist())
-    if any(dim <= 0 for dim in shape):
-        return 0.0
-
-    def _rasterize(coords: np.ndarray) -> np.ndarray:
-        canvas = np.zeros(shape, dtype=bool)
-        idx = np.rint(coords - mins).astype(int)
-        valid = np.ones(len(idx), dtype=bool)
-        for axis, size in enumerate(shape):
-            valid &= (idx[:, axis] >= 0) & (idx[:, axis] < size)
-        idx = idx[valid]
-        if idx.size:
-            canvas[tuple(idx.T)] = True
-        return canvas
-
-    source_canvas = _rasterize(source_coords)
-    target_canvas = _rasterize(target_coords)
-    union = np.logical_or(source_canvas, target_canvas).sum()
-    if union == 0:
-        return 0.0
-    return float(np.logical_and(source_canvas, target_canvas).sum() / union)
-
-
-def _blend_score(iou: float, distance: float, max_distance: float, iou_weight: float) -> float:
-    iou_weight = float(np.clip(iou_weight, 0.0, 1.0))
-    distance_score = max(0.0, 1.0 - float(distance) / float(max_distance))
-    return (1.0 - iou_weight) * distance_score + float(np.clip(iou, 0.0, 1.0)) * iou_weight
-
-
-def _run_iou_linking(
+def _run_shape_linking(
     working_dir: str | Path,
     cfg: TrackingConfig,
     *,
@@ -165,10 +179,10 @@ def _run_iou_linking(
     engine = sqla.create_engine(ultrack_cfg.data_config.database_path)
     max_t = int(maximum_time_from_database(ultrack_cfg.data_config))
     if max_t <= 0:
-        yield (total, total, "No frames; skipping IoU linking.")
+        yield (total, total, "No frames; skipping shape linking.")
         return
 
-    yield (1, total, "Computing IoU-weighted links…")
+    yield (1, total, "Computing shape-weighted links…")
     total_links = 0
 
     with Session(engine) as session:
@@ -184,7 +198,6 @@ def _run_iou_linking(
 
             source_pos = np.array([n.centroid for n in source_nodes], dtype=np.float32)
             target_pos = np.array([n.centroid for n in target_nodes], dtype=np.float32)
-            # apply shift if non-zero
             for i, row in enumerate(target_rows):
                 shift = np.asarray(row[1:], dtype=np.float32)
                 target_pos[i] += shift[-target_pos.shape[1]:]
@@ -195,6 +208,9 @@ def _run_iou_linking(
             if dists.ndim == 1:
                 dists, neigh_idx = dists[:, None], neigh_idx[:, None]
 
+            # Cache (coords, centroid, area) per source node id
+            src_cache: dict[int, tuple[np.ndarray, np.ndarray, float] | None] = {}
+
             src_ids, tgt_ids, weights = [], [], []
             for ti, (dist_row, ni_row) in enumerate(zip(dists, neigh_idx)):
                 target = target_nodes[ti]
@@ -203,12 +219,51 @@ def _run_iou_linking(
                     if si >= len(source_nodes) or not np.isfinite(dist):
                         continue
                     source = source_nodes[si]
-                    iou = _aligned_mask_iou(source, target)
+                    sid = int(source.id)
+                    if sid not in src_cache:
+                        result = _node_coords_centroid(source)
+                        if result is None:
+                            src_cache[sid] = None
+                        else:
+                            src_coords, src_centroid = result
+                            src_area = float(getattr(source, "area", len(src_coords)))
+                            src_cache[sid] = (src_coords, src_centroid, src_area)
+                    cached = src_cache[sid]
+                    if cached is None:
+                        continue
+                    src_coords, src_centroid, src_area = cached
+
+                    tgt_result = _node_coords_centroid(target)
+                    if tgt_result is None:
+                        continue
+                    tgt_coords, tgt_centroid = tgt_result
+                    tgt_area = float(getattr(target, "area", len(tgt_coords)))
+
+                    if src_area <= 0 or tgt_area <= 0:
+                        continue
+                    area_ratio = min(src_area, tgt_area) / max(src_area, tgt_area)
+                    if area_ratio < cfg.min_area_ratio:
+                        continue
+
+                    iou = scoring.centroid_corrected_iou_from_coords(
+                        src_coords, src_centroid, tgt_coords, tgt_centroid
+                    )
                     if iou < cfg.min_link_iou:
                         continue
-                    w = _blend_score(iou, dist, cfg.max_distance, cfg.iou_weight)
-                    if w > 0:
-                        candidates.append((w, int(source.id), int(target.id)))
+
+                    w = scoring.similarity_score(
+                        area_ratio=area_ratio,
+                        centroid_corrected_iou=iou,
+                        distance=float(dist),
+                        d_max=cfg.max_distance,
+                        area_weight=cfg.area_weight,
+                        iou_weight=cfg.iou_weight,
+                        distance_weight=cfg.distance_weight,
+                    )
+                    if w <= 0:
+                        continue
+                    candidates.append((w, sid, int(target.id)))
+
                 candidates.sort(reverse=True)
                 for w, sid, tid in candidates[:cfg.max_neighbors]:
                     src_ids.append(sid)
@@ -225,4 +280,4 @@ def _run_iou_linking(
                 f"Linked t={time + 1}/{max_t} ({len(src_ids)} edges)",
             )
 
-    yield (total, total, f"IoU linking done ({total_links} total edges).")
+    yield (total, total, f"Shape linking done ({total_links} total edges).")

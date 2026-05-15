@@ -75,6 +75,7 @@ from cellflow.napari.ui_style import (
     block_grid,
     compact_spinbox,
     danger_button,
+    muted_label,
     semantic_color,
     sweep_parameter_grid,
 )
@@ -105,6 +106,13 @@ from cellflow.tracking_ultrack.db_query import (
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.extend import extend_track_from_db
+from cellflow.tracking_ultrack.swap_candidate import (
+    SwapCandidate as _SwapCandidate,
+    _SwapCursor,
+    list_swap_candidates,
+    step_smaller as _step_smaller,
+    step_larger as _step_larger,
+)
 from cellflow.tracking_ultrack.ingest import _select_solver
 from cellflow.tracking_ultrack.multi_threshold import (
     build_ultrack_database_from_sources,
@@ -172,6 +180,7 @@ class NucleusWorkflowWidget(QWidget):
 
         self._correction_owned_layers: set[str] = set()
         self._correction_view_state: dict | None = None
+        self._swap_cursor: _SwapCursor | None = None
         self._validated_overlay = ValidatedOverlayController(
             self.viewer,
             tracked_layer_provider=self._correction_tracked_layer,
@@ -385,15 +394,22 @@ class NucleusWorkflowWidget(QWidget):
         self.db_gen_max_dist_spin = _dspin(0, 500, 15.0, 1.0, 1)
         self.db_gen_max_neighbors_spin = _ispin(1, 50, 5)
         self.db_gen_linking_mode_combo = QComboBox()
-        self.db_gen_linking_mode_combo.addItems(["default", "iou"])
-        self.db_gen_iou_weight_spin = _dspin(0, 1, 1.0, 0.05, 2)
+        self.db_gen_linking_mode_combo.addItems(["default", "shape"])
+        self.db_gen_area_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
+        self.db_gen_area_weight_spin.setEnabled(False)
+        self.db_gen_iou_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
         self.db_gen_iou_weight_spin.setEnabled(False)
+        self.db_gen_distance_weight_spin = _dspin(0, 10, 0.25, 0.05, 2)
+        self.db_gen_distance_weight_spin.setEnabled(False)
         add_block_pair_row(g, 0,
             "Max dist:", compact_spinbox(self.db_gen_max_dist_spin),
             "Max neighbors:", compact_spinbox(self.db_gen_max_neighbors_spin))
         add_block_pair_row(g, 1,
             "Linking mode:", self.db_gen_linking_mode_combo,
-            "IoU weight:", compact_spinbox(self.db_gen_iou_weight_spin))
+            "Area wt:", compact_spinbox(self.db_gen_area_weight_spin))
+        add_block_pair_row(g, 2,
+            "IoU wt:", compact_spinbox(self.db_gen_iou_weight_spin),
+            "Dist wt:", compact_spinbox(self.db_gen_distance_weight_spin))
         lay.addLayout(g)
 
         # DB Generation — Scoring
@@ -748,10 +764,17 @@ class NucleusWorkflowWidget(QWidget):
         add_block_pair_row(g, 1,
             "IoU wt:", compact_spinbox(self.extend_iou_weight_spin),
             "Dist wt:", compact_spinbox(self.extend_distance_weight_spin))
+        self.swap_radius_spin = _dspin(0, 500, 40.0, 1.0, 1)
         add_block_pair_row(g, 2,
             "Overlap pen:", compact_spinbox(self.extend_overlap_penalty_spin))
-        add_block_checkbox_row(g, 3, self.extend_greedy_overwrite_check)
+        add_block_pair_row(g, 3,
+            "Swap radius:", compact_spinbox(self.swap_radius_spin))
+        add_block_checkbox_row(g, 4, self.extend_greedy_overwrite_check)
+        swap_hint = QLabel("Z / C — swap selection with smaller / larger hypothesis fragment.")
+        swap_hint.setWordWrap(True)
+        muted_label(swap_hint)
         extend_retrack_lay.addLayout(g)
+        extend_retrack_lay.addWidget(swap_hint)
 
         extend_retrack_lay.addWidget(_heading("Retrack"))
         g = block_grid(horizontal_spacing=12)
@@ -878,6 +901,7 @@ class NucleusWorkflowWidget(QWidget):
         self.correction_widget._activate_btn.toggled.connect(
             self._on_correction_mode_toggled
         )
+        self.set_selection_callback(None)
 
         # Initial state
         solver = _select_solver()
@@ -974,7 +998,11 @@ class NucleusWorkflowWidget(QWidget):
 
 
     def set_selection_callback(self, fn) -> None:
-        self.correction_widget.set_selection_callback(fn)
+        def composed(t, label):
+            self._swap_cursor = None
+            if fn is not None:
+                fn(t, label)
+        self.correction_widget.set_selection_callback(composed)
 
     def select_matching_nucleus_label(
         self, t: int, source_label: int,
@@ -1456,7 +1484,10 @@ class NucleusWorkflowWidget(QWidget):
     # 2. DB Generation
     # ================================================================
     def _on_db_gen_mode_changed(self, mode: str) -> None:
-        self.db_gen_iou_weight_spin.setEnabled(mode == "iou")
+        enabled = mode == "shape"
+        self.db_gen_area_weight_spin.setEnabled(enabled)
+        self.db_gen_iou_weight_spin.setEnabled(enabled)
+        self.db_gen_distance_weight_spin.setEnabled(enabled)
 
     def _set_resolve_prior_controls_enabled(self, _checked: bool | None = None) -> None:
         enabled = self.db_gen_use_validated_check.isChecked()
@@ -1509,7 +1540,9 @@ class NucleusWorkflowWidget(QWidget):
             max_distance=self.db_gen_max_dist_spin.value(),
             max_neighbors=self.db_gen_max_neighbors_spin.value(),
             linking_mode=self.db_gen_linking_mode_combo.currentText(),
+            area_weight=self.db_gen_area_weight_spin.value(),
             iou_weight=self.db_gen_iou_weight_spin.value(),
+            distance_weight=self.db_gen_distance_weight_spin.value(),
             quality_weight=self.db_gen_quality_weight_spin.value(),
             quality_exponent=self.db_gen_quality_exp_spin.value(),
             circularity_weight=self.db_gen_circularity_weight_spin.value(),
@@ -1613,7 +1646,9 @@ class NucleusWorkflowWidget(QWidget):
             max_distance=self.db_gen_max_dist_spin.value(),
             max_neighbors=self.db_gen_max_neighbors_spin.value(),
             linking_mode=self.db_gen_linking_mode_combo.currentText(),
+            area_weight=self.db_gen_area_weight_spin.value(),
             iou_weight=self.db_gen_iou_weight_spin.value(),
+            distance_weight=self.db_gen_distance_weight_spin.value(),
             quality_weight=self.db_gen_quality_weight_spin.value(),
             quality_exponent=self.db_gen_quality_exp_spin.value(),
             circularity_weight=self.db_gen_circularity_weight_spin.value(),
@@ -2644,6 +2679,124 @@ class NucleusWorkflowWidget(QWidget):
             f"iou={result.centroid_corrected_iou:.2f}, overlap={result.existing_overlap:.2f})"
         )
 
+    def _on_swap_step(self, direction: str) -> None:
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No tracked layer loaded."); return
+        db_path = self._ultrack_db_path()
+        if db_path is None or not db_path.exists():
+            self._correction_status("data.db not found — run DB Generation first."); return
+        source_id = self.correction_widget._selected_label
+        if not source_id:
+            self._correction_status("Swap: no cell selected (left-click first)."); return
+
+        t = self._current_t()
+        tracked = np.asarray(layer.data)
+        source_mask = tracked[t] == source_id
+        if not source_mask.any():
+            self._correction_status(f"Cell {source_id} not present at t={t}."); return
+
+        validated_tracks = (
+            read_validated_tracks(self._pos_dir) if self._pos_dir is not None else {}
+        )
+        if source_id in validated_tracks:
+            self._correction_status("Cannot swap a validated cell."); return
+
+        if self._swap_cursor is None:
+            from skimage.measure import regionprops as _regionprops
+            props = _regionprops(source_mask.astype(np.uint8))
+            if not props:
+                self._correction_status("Cannot compute centroid for source cell."); return
+            src_cy, src_cx = props[0].centroid
+            src_area = int(props[0].area)
+            source_centroid = (float(src_cy), float(src_cx))
+
+            protected_ids: set[int] = set()
+            for cell_id, frames in validated_tracks.items():
+                if t in frames and cell_id != source_id:
+                    protected_ids.add(cell_id)
+            if self._pos_dir is not None:
+                for c in read_corrections(self._pos_dir):
+                    if c.kind == "anchor" and int(c.t) == t and int(c.cell_id) != source_id:
+                        protected_ids.add(int(c.cell_id))
+            protected_mask = (
+                np.isin(tracked[t], list(protected_ids))
+                if protected_ids
+                else np.zeros(tracked.shape[1:], dtype=bool)
+            )
+
+            radius_px = float(self.swap_radius_spin.value())
+            candidates = list_swap_candidates(
+                db_path=db_path,
+                frame=t,
+                source_centroid=source_centroid,
+                radius_px=radius_px,
+                frame_shape=tuple(tracked.shape[1:]),
+                protected_mask=protected_mask,
+            )
+            if not candidates:
+                self._correction_status(
+                    f"No swap candidates within {radius_px:g}px."
+                ); return
+
+            self._swap_cursor = _SwapCursor(
+                source_id=source_id,
+                frame=t,
+                source_centroid=source_centroid,
+                source_area=src_area,
+                candidates=tuple(candidates),
+                displayed_area=src_area,
+                cursor=None,
+            )
+
+        cursor = self._swap_cursor
+        if direction == "smaller":
+            idx = _step_smaller(cursor.candidates, cursor.displayed_area)
+            no_move_msg = "No smaller candidate."
+        else:
+            idx = _step_larger(cursor.candidates, cursor.displayed_area)
+            no_move_msg = "No larger candidate."
+
+        if idx is None:
+            self._correction_status(no_move_msg); return
+
+        candidate = cursor.candidates[idx]
+        validated_tracks_full = (
+            read_validated_tracks(self._pos_dir) if self._pos_dir is not None else {}
+        )
+        self._apply_swap(layer, t, source_id, candidate, validated_tracks_full)
+        cursor.cursor = idx
+        cursor.displayed_area = candidate.area
+        self._correction_status(
+            f"Swapped cell {source_id} → candidate {idx + 1}/{len(cursor.candidates)}"
+            f" (area={candidate.area} px)"
+        )
+
+    def _apply_swap(self, layer, t: int, source_id: int, candidate: _SwapCandidate, validated_tracks: dict) -> None:
+        frame = layer.data[t]
+        before = frame.copy()
+
+        protected_ids: set[int] = set()
+        for cell_id, frames in validated_tracks.items():
+            if t in frames and cell_id != source_id:
+                protected_ids.add(cell_id)
+        if self._pos_dir is not None:
+            for c in read_corrections(self._pos_dir):
+                if c.kind == "anchor" and int(c.t) == t and int(c.cell_id) != source_id:
+                    protected_ids.add(int(c.cell_id))
+        protected_mask = (
+            np.isin(frame, list(protected_ids))
+            if protected_ids
+            else np.zeros_like(frame, dtype=bool)
+        )
+
+        frame[frame == source_id] = 0
+        paintable = candidate.mask_2d & ~protected_mask
+        frame[paintable] = source_id
+
+        self.correction_widget._record_history(layer, t, before)
+        layer.refresh()
+
     def _on_retrack_forward(self) -> None:
         if self._pos_dir is None:
             self._correction_status("No project open."); return
@@ -2767,6 +2920,8 @@ class NucleusWorkflowWidget(QWidget):
             ("E", self._on_retrack_forward),
             ("B", self._on_anchor_here),
             ("S", self._on_save_tracked),
+            ("Z", lambda: self._on_swap_step(direction="smaller")),
+            ("C", lambda: self._on_swap_step(direction="larger")),
         ]
         self._correction_shortcuts: list[QShortcut] = []
         for key, slot in specs:
@@ -2813,6 +2968,8 @@ class NucleusWorkflowWidget(QWidget):
             self.refinement_widget.refresh()
 
     def _on_correction_mode_toggled(self, active: bool) -> None:
+        if not active:
+            self._swap_cursor = None
         for sc in self._correction_shortcuts:
             sc.setEnabled(active)
         self.correction_mode_section.expand() if active else self.correction_mode_section.collapse()
@@ -2852,6 +3009,7 @@ class NucleusWorkflowWidget(QWidget):
         self._refresh_validation_counter()
 
     def _on_dims_step_changed(self, event=None) -> None:
+        self._swap_cursor = None
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
         if self.ultrack_db_browser_section.is_expanded:
