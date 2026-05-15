@@ -1848,8 +1848,7 @@ def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
     assert widget.extend_back_btn.y() == widget.extend_fwd_btn.y()
     assert widget.extend_back_btn.x() < widget.extend_fwd_btn.x()
     assert widget.retrack_back_btn.y() == widget.retrack_fwd_btn.y()
-    assert widget.validate_frame_btn.y() == widget.anchor_here_btn.y()
-    assert widget.validate_track_btn.y() == widget.reassign_ids_btn.y()
+    assert widget.validate_track_btn.y() == widget.anchor_here_btn.y()
 
     widget.deleteLater()
     viewer.close()
@@ -1944,35 +1943,6 @@ def test_nucleus_correction_button_removes_unvalidated_label_instances(tmp_path)
     assert not np.any(edited[1] == 7)
     assert not np.any(edited[1] == 11)
     assert "Removed unvalidated labels" in widget.correction_status_lbl.text()
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_validate_frame_button_writes_single_validated_correction(tmp_path):
-    from cellflow.database.validation import read_corrections, read_validated_tracks
-
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    pos_dir = tmp_path / "pos00"
-    pos_dir.mkdir()
-    widget._pos_dir = pos_dir
-    labels = np.zeros((3, 8, 8), dtype=np.uint32)
-    labels[1, 2:5, 3:6] = 7
-    viewer.add_labels(labels, name="Tracked: Nucleus")
-    widget.correction_widget._selected_label = 7
-    viewer.dims.current_step = (1, 0, 0)
-
-    widget.validate_frame_btn.click()
-
-    corrections = read_corrections(pos_dir)
-    assert [(c.cell_id, c.t, c.kind) for c in corrections] == [(7, 1, "validated")]
-    assert corrections[0].y == pytest.approx(3.0)
-    assert corrections[0].x == pytest.approx(4.0)
-    assert read_validated_tracks(pos_dir) == {7: {1}}
-    assert "validated frame" in widget.correction_status_lbl.text().lower()
 
     widget.deleteLater()
     viewer.close()

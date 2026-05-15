@@ -47,10 +47,10 @@ from cellflow.database.tracked import (
     write_tracked_frame,
 )
 from cellflow.database.validation import (
+    add_anchor,
     add_correction,
     invalidate_track,
     is_track_validated,
-    is_validated,
     read_corrections,
     read_validated_cells_at_frame,
     read_validated_frames,
@@ -760,9 +760,6 @@ class NucleusWorkflowWidget(QWidget):
         self.reassign_ids_btn = _btn(
             "Reassign ID", "Reassign cell IDs to contiguous range 1-N."
         )
-        self.validate_frame_btn = _btn(
-            "Validate frame", "Lock selected cell geometry at the current frame."
-        )
         self.validate_track_btn = _btn(
             "Validate track", "Lock selected cell geometry in every frame where it appears."
         )
@@ -779,8 +776,8 @@ class NucleusWorkflowWidget(QWidget):
             (self.save_tracked_btn,),
             (self.extend_back_btn, self.extend_fwd_btn),
             (self.retrack_back_btn, self.retrack_fwd_btn),
-            (self.validate_frame_btn, self.anchor_here_btn),
-            (self.validate_track_btn, self.reassign_ids_btn),
+            (self.validate_track_btn, self.anchor_here_btn),
+            (self.reassign_ids_btn,),
             (self.remove_unvalidated_btn,),
         ))
 
@@ -921,7 +918,6 @@ class NucleusWorkflowWidget(QWidget):
         # Correction
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
-        self.validate_frame_btn.clicked.connect(self._on_validate_frame)
         self.validate_track_btn.clicked.connect(self._on_validate_track)
         self.anchor_here_btn.clicked.connect(self._on_anchor_here)
         self.extend_back_btn.clicked.connect(self._on_extend_backward)
@@ -2746,19 +2742,6 @@ class NucleusWorkflowWidget(QWidget):
             x=float(np.mean(xx)),
         )
 
-    def _on_validate_frame(self) -> None:
-        target = self._selected_correction_target()
-        if target is None or self._pos_dir is None:
-            return
-        cell_id, t, y, x = target
-        add_correction(
-            self._pos_dir,
-            Correction(cell_id=cell_id, t=t, kind="validated", y=y, x=x),
-        )
-        self._refresh_validated_overlay()
-        self._refresh_validation_counter()
-        self._correction_status(f"Validated frame t={t} for cell {cell_id}.")
-
     def _on_validate_track(self) -> None:
         if self._pos_dir is None:
             self._correction_status("No project open."); return
@@ -2802,12 +2785,26 @@ class NucleusWorkflowWidget(QWidget):
             self._refresh_validated_overlay()
             self._correction_status(f"Unanchored cell {cell_id} at t={t}.")
             return
-        add_correction(
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            add_correction(
+                self._pos_dir,
+                Correction(cell_id=cell_id, t=t, kind="anchor", y=y, x=x),
+            )
+            self._refresh_validated_overlay()
+            self._correction_status(f"Anchored cell {cell_id} at t={t}.")
+            return
+        filled = add_anchor(
             self._pos_dir,
-            Correction(cell_id=cell_id, t=t, kind="anchor", y=y, x=x),
+            cell_id=cell_id,
+            t=t,
+            y=y,
+            x=x,
+            tracked_labels=np.asarray(layer.data),
         )
         self._refresh_validated_overlay()
-        self._correction_status(f"Anchored cell {cell_id} at t={t}.")
+        suffix = f" (gap-filled {filled} frame(s))" if filled else ""
+        self._correction_status(f"Anchored cell {cell_id} at t={t}.{suffix}")
 
     def _on_extend_backward(self) -> None:
         self._on_extend(direction="backward")

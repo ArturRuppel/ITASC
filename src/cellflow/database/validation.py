@@ -22,6 +22,8 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
+
 from cellflow.tracking_ultrack.corrections import Correction
 
 
@@ -133,7 +135,10 @@ def is_track_validated(pos_dir: Path, cell_id: int) -> bool:
 def validate_track(pos_dir: Path, cell_id: int, frames: Iterable[int]) -> None:
     """Add the given frames to *cell_id*'s validated set (idempotent, accumulates).
 
-    Creates an entry for *cell_id* if none exists yet.
+    Creates an entry for *cell_id* if none exists yet. Any existing per-frame
+    anchor corrections for the same cell are dropped — whole-track validation
+    supersedes them (the post-solve paste-back stamps the validated geometry,
+    so anchor pins on the same cell are redundant).
     """
     frames_set = set(frames)
     if not frames_set:
@@ -142,6 +147,17 @@ def validate_track(pos_dir: Path, cell_id: int, frames: Iterable[int]) -> None:
     existing = data.get(cell_id, set())
     data[cell_id] = existing | frames_set
     _write_validated_tracks(pos_dir, data)
+
+    corrections = read_corrections(pos_dir)
+    if corrections:
+        filtered = [
+            c
+            for c in corrections
+            if not (int(c.cell_id) == int(cell_id) and c.kind == "anchor")
+        ]
+        if len(filtered) != len(corrections):
+            write_corrections(pos_dir, filtered)
+
 
 
 def invalidate_track(pos_dir: Path, cell_id: int) -> None:
@@ -243,15 +259,97 @@ def write_corrections(pos_dir: Path, corrections: Iterable[Correction]) -> None:
 
 
 def add_correction(pos_dir: Path, correction: Correction) -> None:
-    """Add or replace a correction for the same cell, frame, and kind."""
-    existing = [
-        c
-        for c in read_corrections(pos_dir)
-        if not (
-            int(c.cell_id) == int(correction.cell_id)
-            and int(c.t) == int(correction.t)
-            and c.kind == correction.kind
-        )
-    ]
+    """Add or replace a correction for the same cell, frame, and kind.
+
+    Writing a ``validated`` correction for a cell additionally drops every
+    ``anchor`` correction for that cell — validation is whole-track and
+    supersedes any anchor pinning on the same cell.
+    """
+    cell_id = int(correction.cell_id)
+    t = int(correction.t)
+    kind = correction.kind
+
+    def _keep(c: Correction) -> bool:
+        if int(c.cell_id) == cell_id and int(c.t) == t and c.kind == kind:
+            return False
+        if kind == "validated" and int(c.cell_id) == cell_id and c.kind == "anchor":
+            return False
+        return True
+
+    existing = [c for c in read_corrections(pos_dir) if _keep(c)]
     existing.append(correction)
     write_corrections(pos_dir, existing)
+
+
+def _centroid_of(mask: np.ndarray) -> tuple[float, float] | None:
+    if mask.ndim == 3:
+        mask = mask.any(axis=0)
+    ys, xs = np.nonzero(mask)
+    if ys.size == 0:
+        return None
+    return float(ys.mean()), float(xs.mean())
+
+
+def add_anchor(
+    pos_dir: Path,
+    cell_id: int,
+    t: int,
+    y: float,
+    x: float,
+    tracked_labels: np.ndarray,
+) -> int:
+    """Add an anchor for *cell_id* at frame *t* and back-fill intermediate frames.
+
+    If another anchor for the same cell already exists at some frame ``A``,
+    find the nearest such ``A`` (smallest ``|A - t|``). If ``cell_id`` is
+    present in ``tracked_labels`` at *every* frame in ``[min(A, t), max(A, t)]``,
+    add an anchor correction for each intermediate frame using the cell's
+    centroid in ``tracked_labels`` at that frame.
+
+    Returns the number of intermediate anchors added (0 if no neighbor exists
+    or the track is not consecutive).
+
+    The strictness rule guarantees we never anchor onto a frame where the cell
+    isn't actually present in the corrected layer.
+    """
+    cell_id = int(cell_id)
+    t = int(t)
+
+    existing = read_corrections(pos_dir)
+    other_anchor_frames = sorted(
+        int(c.t)
+        for c in existing
+        if int(c.cell_id) == cell_id and c.kind == "anchor" and int(c.t) != t
+    )
+
+    add_correction(
+        pos_dir,
+        Correction(cell_id=cell_id, t=t, kind="anchor", y=float(y), x=float(x)),
+    )
+
+    if not other_anchor_frames:
+        return 0
+
+    neighbor = min(other_anchor_frames, key=lambda f: (abs(f - t), f))
+    lo, hi = (neighbor, t) if neighbor < t else (t, neighbor)
+    interior = list(range(lo + 1, hi))
+    if not interior:
+        return 0
+
+    n_frames = int(tracked_labels.shape[0])
+    centroids: dict[int, tuple[float, float]] = {}
+    for f in interior:
+        if f < 0 or f >= n_frames:
+            return 0
+        mask = np.asarray(tracked_labels[f] == cell_id)
+        c = _centroid_of(mask)
+        if c is None:
+            return 0
+        centroids[f] = c
+
+    for f, (cy, cx) in centroids.items():
+        add_correction(
+            pos_dir,
+            Correction(cell_id=cell_id, t=f, kind="anchor", y=cy, x=cx),
+        )
+    return len(centroids)

@@ -14,9 +14,7 @@ from multiprocessing import cpu_count
 from pathlib import Path
 
 import numpy as np
-import sqlalchemy as sqla
 from skimage.measure import regionprops
-from sqlalchemy.orm import Session
 
 from cellflow.database.hypotheses import read_hypothesis_labels
 from cellflow.tracking_ultrack.config import TrackingConfig

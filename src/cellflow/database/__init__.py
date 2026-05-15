@@ -6,6 +6,7 @@ from cellflow.database.tracked import (
     write_tracked_frame,
 )
 from cellflow.database.validation import (
+    add_anchor,
     add_correction,
     invalidate_track,
     is_track_validated,
@@ -24,6 +25,7 @@ __all__ = [
     "tracked_frame_exists",
     "tracked_n_frames",
     "write_tracked_frame",
+    "add_anchor",
     "add_correction",
     "invalidate_track",
     "is_track_validated",
