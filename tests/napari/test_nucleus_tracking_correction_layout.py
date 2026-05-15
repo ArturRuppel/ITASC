@@ -1195,7 +1195,7 @@ def test_contour_maps_build_writes_source_stacks_from_contours_and_foreground_sc
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
@@ -1245,7 +1245,7 @@ def test_source_stack_build_uses_independent_contour_and_foreground_thresholds(t
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
@@ -1293,7 +1293,7 @@ def test_contour_maps_preview_displays_source_stack_planes(tmp_path, monkeypatch
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
@@ -1369,7 +1369,7 @@ def test_preview_segmentation_inputs_uses_full_time_layers_and_loads_nucleus_zav
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
@@ -1447,7 +1447,7 @@ def test_preview_segmentation_inputs_reads_time_from_preview_time_axis(tmp_path,
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
@@ -1635,7 +1635,7 @@ def test_build_maps_calls_stage_a_backend_without_building_sources(tmp_path, mon
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
@@ -2309,6 +2309,35 @@ def test_nucleus_workflow_delegates_segmentation_inputs_to_child_widget():
     viewer.close()
 
 
+def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    tracking_module = importlib.import_module(
+        "cellflow.napari.nucleus_tracking_inputs_widget"
+    )
+
+    assert isinstance(
+        widget.nucleus_tracking_inputs_widget,
+        tracking_module.NucleusTrackingInputsWidget,
+    )
+    assert widget.tracking_ultrack_section is widget.nucleus_tracking_inputs_widget.section
+    assert widget.tracking_ultrack_parameters_section is (
+        widget.nucleus_tracking_inputs_widget.section
+    )
+    assert widget.db_gen_min_area_spin is (
+        widget.nucleus_tracking_inputs_widget.db_gen_min_area_spin
+    )
+    assert widget.db_gen_quality_weight_spin is (
+        widget.nucleus_tracking_inputs_widget.db_gen_quality_weight_spin
+    )
+    assert widget.ultrack_bias_spin is widget.nucleus_tracking_inputs_widget.ultrack_bias_spin
+    assert widget.ultrack_solver_lbl is widget.nucleus_tracking_inputs_widget.ultrack_solver_lbl
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_section_is_top_level_without_legacy_route_selector():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
@@ -2435,7 +2464,7 @@ def test_db_gen_section_calls_source_stack_builder_on_run(tmp_path, monkeypatch)
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     calls = []
@@ -2519,7 +2548,7 @@ def test_ultrack_tracking_refreshes_stage_output_files(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
@@ -2561,7 +2590,7 @@ def test_ultrack_tracking_passes_corrections_to_export(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
-    module = sys.modules[widget_class.__module__]
+    module = sys.modules["cellflow.napari.nucleus_pipeline_widget"]
     _install_sync_thread_worker(monkeypatch, module)
 
     pos_dir = tmp_path / "pos00"
