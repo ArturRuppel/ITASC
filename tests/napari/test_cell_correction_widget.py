@@ -150,19 +150,26 @@ def test_load_labels_shows_error_when_file_missing(tmp_path):
     viewer.close()
 
 
-def test_load_labels_loads_tracked_cell_layer_and_reference_images(tmp_path, monkeypatch):
+def test_load_labels_loads_tracked_cell_layer_and_precomputed_probability_zavgs(
+    tmp_path, monkeypatch
+):
     _app, viewer = _make_viewer()
     pos_dir = tmp_path / "pos00"
     (pos_dir / "0_input").mkdir(parents=True)
+    (pos_dir / "1_cellpose").mkdir()
     (pos_dir / "3_cell").mkdir()
 
     labels = np.zeros((2, 4, 4), dtype=np.uint32)
     labels[:, 1:3, 1:3] = 7
-    cell_zavg = np.ones((4, 4), dtype=np.float32)
-    nuc_zavg = np.full((4, 4), 2.0, dtype=np.float32)
+    raw_cell_zavg = np.ones((4, 4), dtype=np.float32)
+    raw_nuc_zavg = np.full((4, 4), 2.0, dtype=np.float32)
+    cell_prob_zavg = np.full((4, 4), 0.25, dtype=np.float32)
+    nuc_prob_zavg = np.full((4, 4), 0.75, dtype=np.float32)
     tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
-    tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", cell_zavg)
-    tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", nuc_zavg)
+    tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", raw_cell_zavg)
+    tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", raw_nuc_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_zavg.tif", cell_prob_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif", nuc_prob_zavg)
 
     widget_class, module = _load_widget_class()
 
@@ -192,11 +199,11 @@ def test_load_labels_loads_tracked_cell_layer_and_reference_images(tmp_path, mon
     np.testing.assert_array_equal(viewer.layers["Tracked: Cell"].data, labels)
     np.testing.assert_array_equal(
         viewer.layers["Cell z-avg"].data,
-        np.broadcast_to(cell_zavg[np.newaxis], labels.shape),
+        np.broadcast_to(cell_prob_zavg[np.newaxis], labels.shape),
     )
     np.testing.assert_array_equal(
         viewer.layers["Nucleus z-avg"].data,
-        np.broadcast_to(nuc_zavg[np.newaxis], labels.shape),
+        np.broadcast_to(nuc_prob_zavg[np.newaxis], labels.shape),
     )
     assert widget.correction_widget._layer is viewer.layers["Tracked: Cell"]
     assert "Loaded cell label stack" in widget.correction_status_lbl.text()

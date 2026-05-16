@@ -67,8 +67,10 @@ class _CellposePanel(QWidget):
         self.output_files_tracker = PipelineFilesWidget([
             ("Outputs", [
                 ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
+                ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
                 ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
                 ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
+                ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
                 ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
             ]),
         ], viewer=self.viewer)

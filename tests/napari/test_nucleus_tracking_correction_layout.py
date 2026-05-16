@@ -919,7 +919,7 @@ def test_nucleus_stage_file_widgets_show_present_and_missing_files(tmp_path):
     texts = _label_texts(widget)
     assert texts.count("✓") >= 9
     assert "missing" in texts
-    assert len(widget._files_widget._rows) == 11
+    assert len(widget._files_widget._rows) == 10
 
     widget.deleteLater()
     viewer.close()
