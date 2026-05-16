@@ -457,7 +457,7 @@ class NucleusCorrectionWidget(QWidget):
         self.viewer.add_image(arr, **kwargs)
         self._correction_owned_layers.add(name)
 
-    def _add_correction_track_layer(self, labels: np.ndarray) -> None:
+    def _add_correction_track_layer(self, labels: np.ndarray) -> dict:
         labels = np.asarray(labels)
         label_ids = np.asarray(
             sorted(int(v) for v in np.unique(labels) if int(v) != 0)
@@ -488,6 +488,7 @@ class NucleusCorrectionWidget(QWidget):
             blending="additive",
         )
         self._correction_owned_layers.add(_CORRECTION_TRACK_LAYER)
+        return color_map
 
     def _correction_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
@@ -531,9 +532,14 @@ class NucleusCorrectionWidget(QWidget):
         self._remove_correction_owned_layers()
         self._remove_other_correction_prefix_layers()
         stack = read_full_tracked_stack(tracked_path)
-        self.viewer.add_labels(stack, name=_CORRECTION_TRACKED_LAYER)
+        labels_layer = self.viewer.add_labels(stack, name=_CORRECTION_TRACKED_LAYER)
         self._correction_owned_layers.add(_CORRECTION_TRACKED_LAYER)
-        self._add_correction_track_layer(stack)
+        color_map = self._add_correction_track_layer(stack)
+        try:
+            from napari.utils.colormaps import DirectLabelColormap
+            labels_layer.colormap = DirectLabelColormap(color_dict=color_map)
+        except Exception:
+            pass
 
         for path, name, cmap in (
             (self._cell_zavg_path(), _CORRECTION_CELL_ZAVG_LAYER, "gray"),

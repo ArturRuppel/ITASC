@@ -33,7 +33,6 @@ from cellflow.napari.ui_style import (
     add_block_pair_row,
     block_grid,
     compact_spinbox,
-    semantic_color,
 )
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.napari._widget_helpers import ispin as _ispin
@@ -107,15 +106,9 @@ class CellCorrectionWidget(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        from qtpy.QtWidgets import QGroupBox
-        group = QGroupBox("Correction")
-        group.setStyleSheet(
-            "QGroupBox { "
-            f"font-weight: 600; color: {semantic_color('stage', 1)}; "
-            "margin-top: 8px; padding-top: 14px; }"
-        )
-        group_lay = QVBoxLayout(group)
-        group_lay.setContentsMargins(8, 16, 8, 8)
+        inner = QWidget(self)
+        group_lay = QVBoxLayout(inner)
+        group_lay.setContentsMargins(0, 0, 0, 0)
         group_lay.setSpacing(6)
 
         # ── Action buttons — 2-column grid ────────────────────────────
@@ -145,10 +138,12 @@ class CellCorrectionWidget(QWidget):
             (self.cleanup_btn, self.expand_cell_btn),
         ))
 
-        self.correction_status_lbl = _make_status()
-        group_lay.addWidget(self.correction_status_lbl)
+        # ── Correction parameters (collapsible) ───────────────────────
+        params_inner = QWidget(self)
+        params_lay = QVBoxLayout(params_inner)
+        params_lay.setContentsMargins(0, 0, 0, 0)
+        params_lay.setSpacing(6)
 
-        # ── Correction parameters ─────────────────────────────────────
         scope_row = QHBoxLayout()
         scope_lbl = QLabel("Scope:")
         scope_lbl.setToolTip("Applies to Fill Holes and Fix Semi Holes.")
@@ -159,7 +154,7 @@ class CellCorrectionWidget(QWidget):
             "Applies to Fill Holes and Fix Semi Holes. Clean Up always processes all frames."
         )
         scope_row.addWidget(self.correction_scope_combo)
-        group_lay.addLayout(scope_row)
+        params_lay.addLayout(scope_row)
 
         g = block_grid(horizontal_spacing=12)
         self.hole_radius_spin = _ispin(
@@ -179,7 +174,16 @@ class CellCorrectionWidget(QWidget):
             "Max opening:", compact_spinbox(self.semihole_opening_spin))
         add_block_pair_row(g, 1,
             "Max expand px:", compact_spinbox(self.expand_max_px_spin))
-        group_lay.addLayout(g)
+        params_lay.addLayout(g)
+
+        self.correction_params_section = CollapsibleSection(
+            "Correction Parameters",
+            params_inner,
+            expanded=False,
+            title_role="params",
+            title_level=2,
+        )
+        group_lay.addWidget(self.correction_params_section)
 
         # ── Inline CorrectionWidget ───────────────────────────────────
         self.correction_widget = CorrectionWidget(
@@ -190,7 +194,6 @@ class CellCorrectionWidget(QWidget):
             spotlight=False,
             show_cleanup=False,
         )
-        group_lay.addWidget(self.correction_widget)
 
         self.correction_shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
@@ -200,8 +203,19 @@ class CellCorrectionWidget(QWidget):
             title_level=2,
         )
         group_lay.addWidget(self.correction_shortcuts_section)
+        group_lay.addWidget(self.correction_widget)
 
-        root.addWidget(group)
+        self.correction_status_lbl = _make_status()
+        group_lay.addWidget(self.correction_status_lbl)
+
+        self.section = CollapsibleSection(
+            "Correction",
+            inner,
+            expanded=True,
+            title_role="stage",
+            title_level=1,
+        )
+        root.addWidget(self.section)
 
     # ------------------------------------------------------------------ #
     # Signal wiring                                                        #
