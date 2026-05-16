@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 _ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
 _ULTRACK_DB_SELECTION_LAYER = "Ultrack DB Selection"
 _ULTRACK_DB_ANNOTATION_LAYER = "Ultrack DB Annotations"
+_ULTRACK_DB_NUC_LAYER = "Nucleus z-avg"
 
 
 class NucleusUltrackDbBrowserWidget(QWidget):
@@ -257,6 +258,7 @@ class NucleusUltrackDbBrowserMixin:
         self._set_ultrack_db_controls_enabled(checked)
         if checked:
             self.ultrack_db_browser_section.expand()
+            self._load_db_browser_nucleus_image()
             self._ultrack_db_frame_initialized = False
             self._refresh_ultrack_db_browser()
         else:
@@ -283,8 +285,31 @@ class NucleusUltrackDbBrowserMixin:
                 self.viewer.layers.remove(name)
         if _ULTRACK_DB_SELECTION_LAYER in self.viewer.layers:
             self.viewer.layers.remove(_ULTRACK_DB_SELECTION_LAYER)
+        self._remove_db_browser_nucleus_image()
         self.ultrack_db_info_lbl.setText("—")
         self._set_ultrack_db_status("")
+
+    def _load_db_browser_nucleus_image(self) -> None:
+        if _ULTRACK_DB_NUC_LAYER in self.viewer.layers:
+            return
+        nuc_path = self._nucleus_zavg_path()
+        if nuc_path is None or not nuc_path.exists():
+            return
+        import tifffile
+        data = np.asarray(tifffile.imread(str(nuc_path)), dtype=np.float32)
+        limits = np.percentile(data, [0.05, 99.5]) if data.size > 0 else None
+        kwargs = {
+            "name": _ULTRACK_DB_NUC_LAYER,
+            "colormap": "bop orange",
+            "blending": "additive",
+        }
+        if limits is not None and limits[1] > limits[0]:
+            kwargs["contrast_limits"] = [float(limits[0]), float(limits[1])]
+        self.viewer.add_image(data, **kwargs)
+
+    def _remove_db_browser_nucleus_image(self) -> None:
+        if _ULTRACK_DB_NUC_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(_ULTRACK_DB_NUC_LAYER)
 
     def _ultrack_db_middle_frame(self, db_path: Path) -> int | None:
         return _query_ultrack_db_middle_frame(db_path)
@@ -360,6 +385,7 @@ class NucleusUltrackDbBrowserMixin:
             self._update_labels_layer(_ULTRACK_DB_PREVIEW_LAYER, stack)
             self._ultrack_db_preview_labels = stack[mid_frame] if mid_frame < n_frames else stack[0]
             self._install_ultrack_db_preview_selector()
+            self._restore_ultrack_db_preview_active()
             self._set_viewer_frame(mid_frame)
             self._set_ultrack_db_status(
                 f"Loaded {len(per_frame)}/{len(frames)} frames from database."
@@ -454,6 +480,7 @@ class NucleusUltrackDbBrowserMixin:
                 status = self._refresh_ultrack_db_selection_highlight(
                     self._ultrack_db_preview_labels, status, node_id_to_label, frame,
                 )
+            self._restore_ultrack_db_preview_active()
             self._set_ultrack_db_status(status)
         except Exception as e:
             self._set_ultrack_db_status(f"DB read error: {e}")
@@ -574,6 +601,8 @@ class NucleusUltrackDbBrowserMixin:
                 return
             display_label = int(labels[y, x])
             if display_label == 0:
+                self._deselect_ultrack_db_node()
+                yield
                 return
             self._select_ultrack_db_preview_label(display_label, frame=self._current_t())
             yield
@@ -609,6 +638,16 @@ class NucleusUltrackDbBrowserMixin:
         if self.ultrack_db_connected_focus_check.isChecked():
             self._refresh_ultrack_db_browser()
 
+    def _deselect_ultrack_db_node(self) -> None:
+        if self._ultrack_db_selected_node_id is None:
+            return
+        self._ultrack_db_selected_node_id = None
+        self._ultrack_db_selected_frame = None
+        self._clear_ultrack_db_highlight()
+        self._set_ultrack_db_status("")
+        if self.ultrack_db_connected_focus_check.isChecked():
+            self._refresh_ultrack_db_browser()
+
     def _refresh_ultrack_db_selection_highlight(self, labels, status, node_id_to_label, frame):
         sel = self._ultrack_db_selected_node_id
         if sel is None:
@@ -641,7 +680,19 @@ class NucleusUltrackDbBrowserMixin:
             edge_color="cyan", edge_width=2, face_color="transparent",
         )
         layer.visible = False
+        # Adding a layer makes it the active selection in napari, which
+        # would steal mouse events from the preview layer. Restore the
+        # preview layer as active so its mouse_drag_callbacks keep firing.
+        self._restore_ultrack_db_preview_active()
         return layer
+
+    def _restore_ultrack_db_preview_active(self) -> None:
+        if _ULTRACK_DB_PREVIEW_LAYER not in self.viewer.layers:
+            return
+        try:
+            self.viewer.layers.selection.active = self.viewer.layers[_ULTRACK_DB_PREVIEW_LAYER]
+        except Exception:
+            pass
 
     def _update_ultrack_db_highlight(self, labels, display_label):
         layer = self._get_ultrack_db_highlight_layer()

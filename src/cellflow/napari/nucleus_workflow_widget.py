@@ -416,6 +416,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         # Required by NucleusUltrackDbBrowserMixin.
         return self._paths.ultrack_db if self._paths else None
 
+    def _nucleus_zavg_path(self) -> Path | None:
+        # Required by NucleusUltrackDbBrowserMixin.
+        return self._paths.nucleus_zavg if self._paths else None
+
     # These delegate to the pipeline widget so that tests that call path helpers
     # on the workflow widget (legacy seam tests) continue to pass.
     def _contours_path(self) -> Path | None:
