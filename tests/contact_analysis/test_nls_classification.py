@@ -1,15 +1,23 @@
+from pathlib import Path
+
 import h5py
 import numpy as np
 import pytest
 import tifffile
 
-from cellflow.analysis.nls_classification import (
+from cellflow.contact_analysis.nls_classification import (
     NLSClassificationError,
     measure_track_nls_intensity,
-    patch_position_artifact_nls_classes,
+    patch_position_contact_analysis_nls_classes,
     split_tracks_two_clusters,
     split_tracks_otsu,
 )
+
+
+def test_console_script_entry_point_uses_contact_analysis_module():
+    pyproject_text = Path("pyproject.toml").read_text()
+
+    assert 'cellflow-classify-nls = "cellflow.contact_analysis.nls_classification:main"' in pyproject_text
 
 
 def _write_minimal_position_h5(path, cell_ids):
@@ -83,8 +91,8 @@ def test_split_tracks_two_clusters_keeps_faint_positive_cluster_high():
     }
 
 
-def test_patch_position_artifact_writes_classes_audit_columns_and_metadata(tmp_path):
-    h5_path = tmp_path / "position_analysis.h5"
+def test_patch_position_contact_analysis_writes_classes_audit_columns_and_metadata(tmp_path):
+    h5_path = tmp_path / "contact_analysis.h5"
     _write_minimal_position_h5(h5_path, [1, 2, 99])
     nls_path = tmp_path / "NLS_zavg.tif"
     labels_path = tmp_path / "tracked_labels.tif"
@@ -93,7 +101,7 @@ def test_patch_position_artifact_writes_classes_audit_columns_and_metadata(tmp_p
     tifffile.imwrite(nls_path, nls)
     tifffile.imwrite(labels_path, labels)
 
-    summary = patch_position_artifact_nls_classes(h5_path, nls_path, labels_path)
+    summary = patch_position_contact_analysis_nls_classes(h5_path, nls_path, labels_path)
 
     assert summary.h5_path == h5_path
     assert summary.track_count == 2
@@ -116,8 +124,8 @@ def test_patch_position_artifact_writes_classes_audit_columns_and_metadata(tmp_p
         assert meta["nucleus_tracked_labels_path"] == str(labels_path)
 
 
-def test_patch_position_artifact_classifies_faint_signal_above_background_as_ctrl(tmp_path):
-    h5_path = tmp_path / "position_analysis.h5"
+def test_patch_position_contact_analysis_classifies_faint_signal_above_background_as_ctrl(tmp_path):
+    h5_path = tmp_path / "contact_analysis.h5"
     _write_minimal_position_h5(h5_path, range(1, 13))
     nls_path = tmp_path / "NLS_zavg.tif"
     labels_path = tmp_path / "tracked_labels.tif"
@@ -144,7 +152,7 @@ def test_patch_position_artifact_classifies_faint_signal_above_background_as_ctr
     tifffile.imwrite(nls_path, nls)
     tifffile.imwrite(labels_path, labels)
 
-    summary = patch_position_artifact_nls_classes(h5_path, nls_path, labels_path)
+    summary = patch_position_contact_analysis_nls_classes(h5_path, nls_path, labels_path)
 
     assert summary.high_track_count == 4
     assert summary.low_track_count == 8
@@ -166,18 +174,18 @@ def test_patch_position_artifact_classifies_faint_signal_above_background_as_ctr
         ]
 
 
-def test_patch_position_artifact_replaces_existing_nls_columns_on_rerun(tmp_path):
-    h5_path = tmp_path / "position_analysis.h5"
+def test_patch_position_contact_analysis_replaces_existing_nls_columns_on_rerun(tmp_path):
+    h5_path = tmp_path / "contact_analysis.h5"
     _write_minimal_position_h5(h5_path, [1, 2])
     nls_path = tmp_path / "NLS_zavg.tif"
     labels_path = tmp_path / "tracked_labels.tif"
     labels = np.asarray([[[1, 2]]], dtype=np.uint16)
     tifffile.imwrite(labels_path, labels)
     tifffile.imwrite(nls_path, np.asarray([[[10.0, 100.0]]], dtype=np.float32))
-    patch_position_artifact_nls_classes(h5_path, nls_path, labels_path)
+    patch_position_contact_analysis_nls_classes(h5_path, nls_path, labels_path)
     tifffile.imwrite(nls_path, np.asarray([[[120.0, 10.0]]], dtype=np.float32))
 
-    patch_position_artifact_nls_classes(h5_path, nls_path, labels_path)
+    patch_position_contact_analysis_nls_classes(h5_path, nls_path, labels_path)
 
     with h5py.File(h5_path, "r") as h5:
         cells = h5["cells/table"]
@@ -185,8 +193,8 @@ def test_patch_position_artifact_replaces_existing_nls_columns_on_rerun(tmp_path
         np.testing.assert_allclose(cells["nls_track_median_intensity"][:], [120.0, 10.0])
 
 
-def test_patch_position_artifact_validates_before_mutating_h5(tmp_path):
-    h5_path = tmp_path / "position_analysis.h5"
+def test_patch_position_contact_analysis_validates_before_mutating_h5(tmp_path):
+    h5_path = tmp_path / "contact_analysis.h5"
     _write_minimal_position_h5(h5_path, [1, 2])
     nls_path = tmp_path / "NLS_zavg.tif"
     labels_path = tmp_path / "tracked_labels.tif"
@@ -194,7 +202,7 @@ def test_patch_position_artifact_validates_before_mutating_h5(tmp_path):
     tifffile.imwrite(labels_path, np.zeros((1, 3, 3), dtype=np.uint16))
 
     with pytest.raises(NLSClassificationError, match="shapes do not match"):
-        patch_position_artifact_nls_classes(h5_path, nls_path, labels_path)
+        patch_position_contact_analysis_nls_classes(h5_path, nls_path, labels_path)
 
     with h5py.File(h5_path, "r") as h5:
         assert set(h5["cells/table"].keys()) == {"frame", "cell_id", "class_label"}

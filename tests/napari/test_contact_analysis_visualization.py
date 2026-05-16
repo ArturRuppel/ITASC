@@ -64,6 +64,12 @@ class _FakeViewer:
         self.calls.append(("labels", name, np.asarray(data), kwargs))
         return layer
 
+    def add_image(self, data, *, name, **kwargs):
+        layer = SimpleNamespace(data=np.asarray(data), name=name, **kwargs)
+        self.layers[name] = layer
+        self.calls.append(("image", name, np.asarray(data), kwargs))
+        return layer
+
     def add_shapes(self, data, *, name, shape_type, **kwargs):
         layer = SimpleNamespace(
             data=list(data),
@@ -82,11 +88,11 @@ def _load_module(monkeypatch):
     napari_pkg = types.ModuleType("cellflow.napari")
     napari_pkg.__path__ = [str(package_root)]
     monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.artifact_visualization", None)
-    return importlib.import_module("cellflow.napari.artifact_visualization")
+    sys.modules.pop("cellflow.napari.contact_analysis_visualization", None)
+    return importlib.import_module("cellflow.napari.contact_analysis_visualization")
 
 
-def _make_artifact() -> dict[str, dict[str, np.ndarray]]:
+def _make_contact_analysis() -> dict[str, dict[str, np.ndarray]]:
     return {
         "cells": {
             "frame": np.asarray([0, 1], dtype=int),
@@ -124,8 +130,8 @@ def _make_artifact() -> dict[str, dict[str, np.ndarray]]:
     }
 
 
-def _make_artifact_with_label_paths(tmp_path) -> dict[str, object]:
-    artifact = _make_artifact()
+def _make_contact_analysis_with_label_paths(tmp_path) -> dict[str, object]:
+    contact_analysis = _make_contact_analysis()
     cell_labels = np.zeros((2, 4, 4), dtype=np.uint16)
     cell_labels[0, 1:3, 1:3] = 11
     cell_labels[1, 2:4, 2:4] = 12
@@ -139,14 +145,14 @@ def _make_artifact_with_label_paths(tmp_path) -> dict[str, object]:
     nucleus_path = tmp_path / "nucleus_labels.tif"
     tifffile.imwrite(cell_path, cell_labels)
     tifffile.imwrite(nucleus_path, nucleus_labels)
-    artifact["cell_tracked_labels_path"] = str(cell_path)
-    artifact["nucleus_tracked_labels_path"] = str(nucleus_path)
-    return artifact
+    contact_analysis["cell_tracked_labels_path"] = str(cell_path)
+    contact_analysis["nucleus_tracked_labels_path"] = str(nucleus_path)
+    return contact_analysis
 
 
-def _make_track_artifact_with_label_paths(tmp_path) -> dict[str, object]:
-    artifact = _make_artifact()
-    artifact["cells"] = {
+def _make_track_contact_analysis_with_label_paths(tmp_path) -> dict[str, object]:
+    contact_analysis = _make_contact_analysis()
+    contact_analysis["cells"] = {
         "frame": np.asarray([0, 1, 2, 0, 1, 2], dtype=int),
         "cell_id": np.asarray([11, 11, 11, 12, 12, 12], dtype=int),
         "area": np.asarray([4, 4, 4, 4, 4, 4], dtype=float),
@@ -168,13 +174,13 @@ def _make_track_artifact_with_label_paths(tmp_path) -> dict[str, object]:
     nucleus_path = tmp_path / "track_nucleus_labels.tif"
     tifffile.imwrite(cell_path, cell_labels)
     tifffile.imwrite(nucleus_path, nucleus_labels)
-    artifact["cell_tracked_labels_path"] = str(cell_path)
-    artifact["nucleus_tracked_labels_path"] = str(nucleus_path)
-    return artifact
+    contact_analysis["cell_tracked_labels_path"] = str(cell_path)
+    contact_analysis["nucleus_tracked_labels_path"] = str(nucleus_path)
+    return contact_analysis
 
 
-def _add_t1_edge_pair(artifact: dict[str, object]) -> None:
-    edges = artifact["edges"]
+def _add_t1_edge_pair(contact_analysis: dict[str, object]) -> None:
+    edges = contact_analysis["edges"]
     assert isinstance(edges, dict)
     edges["frame"] = np.asarray([0, 1, 4, 5], dtype=int)
     edges["edge_id"] = np.asarray([101, 103, 102, 102], dtype=int)
@@ -186,11 +192,11 @@ def _add_t1_edge_pair(artifact: dict[str, object]) -> None:
     edges["is_t1_frame"] = np.asarray([False, False, True, False], dtype=bool)
     edges["coord_offset"] = np.asarray([0, 3, 6, 9], dtype=int)
     edges["coord_count"] = np.asarray([3, 3, 3, 3], dtype=int)
-    artifact["coord_y"] = np.asarray(
+    contact_analysis["coord_y"] = np.asarray(
         [1.0, 1.0, 2.0, 0.0, 0.0, 0.0, 9.0, 9.0, 10.0, 8.0, 8.0, 9.0],
         dtype=float,
     )
-    artifact["coord_x"] = np.asarray(
+    contact_analysis["coord_x"] = np.asarray(
         [4.0, 5.0, 5.0, 0.0, 1.0, 2.0, 8.0, 9.0, 9.0, 8.5, 9.5, 9.5],
         dtype=float,
     )
@@ -198,9 +204,9 @@ def _add_t1_edge_pair(artifact: dict[str, object]) -> None:
 
 def test_build_cell_centroid_points_returns_frame_prefixed_points_and_features(monkeypatch):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
+    contact_analysis = _make_contact_analysis()
 
-    points, features = mod.build_cell_centroid_points(artifact)
+    points, features = mod.build_cell_centroid_points(contact_analysis)
 
     assert points.shape == (2, 3)
     np.testing.assert_allclose(points[:, 0], [0.0, 1.0])
@@ -212,9 +218,9 @@ def test_build_cell_centroid_points_returns_frame_prefixed_points_and_features(m
 
 def test_build_edge_shapes_returns_line_payloads_and_colored_border_edges(monkeypatch):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
+    contact_analysis = _make_contact_analysis()
 
-    lines, edge_colors, features = mod.build_edge_shapes(artifact)
+    lines, edge_colors, features = mod.build_edge_shapes(contact_analysis)
 
     assert len(lines) == 2
     assert lines[0].shape == (3, 3)
@@ -242,9 +248,9 @@ def test_build_edge_shapes_returns_line_payloads_and_colored_border_edges(monkey
 
 def test_build_edge_shapes_can_hide_border_edges(monkeypatch):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
+    contact_analysis = _make_contact_analysis()
 
-    lines, edge_colors, features = mod.build_edge_shapes(artifact, hide_border_edges=True)
+    lines, edge_colors, features = mod.build_edge_shapes(contact_analysis, hide_border_edges=True)
 
     assert len(lines) == 1
     assert edge_colors.shape == (1, 4)
@@ -254,9 +260,9 @@ def test_build_edge_shapes_can_hide_border_edges(monkeypatch):
 
 def test_build_edge_shapes_can_color_by_edge_id(monkeypatch):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
+    contact_analysis = _make_contact_analysis()
 
-    _lines, edge_colors, features = mod.build_edge_shapes(artifact, color_by_id=True)
+    _lines, edge_colors, features = mod.build_edge_shapes(contact_analysis, color_by_id=True)
 
     assert edge_colors.shape == (2, 4)
     assert not np.allclose(edge_colors[0], edge_colors[1])
@@ -265,23 +271,23 @@ def test_build_edge_shapes_can_color_by_edge_id(monkeypatch):
 
 def test_build_edge_shapes_can_color_by_edge_label(monkeypatch):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
-    artifact["edges"]["edge_label"] = np.asarray(["same_label", "same_label"], dtype=object)
+    contact_analysis = _make_contact_analysis()
+    contact_analysis["edges"]["edge_label"] = np.asarray(["same_label", "same_label"], dtype=object)
 
-    _lines, edge_colors, features = mod.build_edge_shapes(artifact, color_by_label=True, color_by_id=True)
+    _lines, edge_colors, features = mod.build_edge_shapes(contact_analysis, color_by_label=True, color_by_id=True)
 
     assert edge_colors.shape == (2, 4)
     np.testing.assert_allclose(edge_colors[0], edge_colors[1])
     np.testing.assert_array_equal(features["edge_label"], ["same_label", "same_label"])
 
 
-def test_add_artifact_layers_can_color_cells_by_class_label(monkeypatch, tmp_path):
+def test_add_contact_analysis_layers_can_color_cells_by_class_label(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
-    artifact["cells"]["class_label"] = np.asarray(["epithelial", "epithelial"], dtype=object)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    contact_analysis["cells"]["class_label"] = np.asarray(["epithelial", "epithelial"], dtype=object)
     viewer = _FakeViewer()
 
-    mod.add_artifact_layers(viewer, artifact, color_cells_by_label=True)
+    mod.add_contact_analysis_layers(viewer, contact_analysis, color_cells_by_label=True)
 
     cell_call = viewer.calls[0]
     color_map = cell_call[3]["colormap"].color_dict
@@ -296,11 +302,11 @@ def test_add_artifact_layers_can_color_cells_by_class_label(monkeypatch, tmp_pat
 
 def test_build_nucleus_track_shapes_follows_centroids_and_hides_future(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_track_artifact_with_label_paths(tmp_path)
-    nucleus_labels = mod._read_label_image(Path(artifact["nucleus_tracked_labels_path"]))
+    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
+    nucleus_labels = mod._read_label_image(Path(contact_analysis["nucleus_tracked_labels_path"]))
 
     lines, colors, features = mod.build_nucleus_track_shapes(
-        artifact,
+        contact_analysis,
         nucleus_labels,
         current_frame=1,
     )
@@ -318,11 +324,11 @@ def test_build_nucleus_track_shapes_follows_centroids_and_hides_future(monkeypat
 
 def test_build_nucleus_track_shapes_fades_more_distant_past_segments(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_track_artifact_with_label_paths(tmp_path)
-    nucleus_labels = mod._read_label_image(Path(artifact["nucleus_tracked_labels_path"]))
+    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
+    nucleus_labels = mod._read_label_image(Path(contact_analysis["nucleus_tracked_labels_path"]))
 
     _lines, colors, features = mod.build_nucleus_track_shapes(
-        artifact,
+        contact_analysis,
         nucleus_labels,
         current_frame=2,
     )
@@ -338,12 +344,12 @@ def test_build_nucleus_track_shapes_fades_more_distant_past_segments(monkeypatch
 
 def test_build_nucleus_track_shapes_uses_cell_class_colors_when_requested(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_track_artifact_with_label_paths(tmp_path)
-    artifact["cells"]["class_label"] = np.asarray(["same"] * 6, dtype=object)
-    nucleus_labels = mod._read_label_image(Path(artifact["nucleus_tracked_labels_path"]))
+    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
+    contact_analysis["cells"]["class_label"] = np.asarray(["same"] * 6, dtype=object)
+    nucleus_labels = mod._read_label_image(Path(contact_analysis["nucleus_tracked_labels_path"]))
 
     _lines, colors, _features = mod.build_nucleus_track_shapes(
-        artifact,
+        contact_analysis,
         nucleus_labels,
         current_frame=1,
         color_cells_by_label=True,
@@ -354,23 +360,23 @@ def test_build_nucleus_track_shapes_uses_cell_class_colors_when_requested(monkey
 
 def test_build_edge_shapes_filters_edges_with_fewer_than_two_coords(monkeypatch):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
+    contact_analysis = _make_contact_analysis()
     # Inject a degenerate edge with coord_count=1 before the valid edges
-    artifact["edges"]["frame"] = np.concatenate([[0], artifact["edges"]["frame"]])
-    artifact["edges"]["edge_id"] = np.concatenate([[999], artifact["edges"]["edge_id"]])
-    artifact["edges"]["cell_a"] = np.concatenate([[1], artifact["edges"]["cell_a"]])
-    artifact["edges"]["cell_b"] = np.concatenate([[2], artifact["edges"]["cell_b"]])
-    artifact["edges"]["kind"] = np.concatenate([["cell_cell"], artifact["edges"]["kind"]])
-    artifact["edges"]["edge_label"] = np.concatenate([[""], artifact["edges"]["edge_label"]])
-    artifact["edges"]["length"] = np.concatenate([[0.5], artifact["edges"]["length"]])
-    artifact["edges"]["is_t1_frame"] = np.concatenate([[False], artifact["edges"]["is_t1_frame"]])
+    contact_analysis["edges"]["frame"] = np.concatenate([[0], contact_analysis["edges"]["frame"]])
+    contact_analysis["edges"]["edge_id"] = np.concatenate([[999], contact_analysis["edges"]["edge_id"]])
+    contact_analysis["edges"]["cell_a"] = np.concatenate([[1], contact_analysis["edges"]["cell_a"]])
+    contact_analysis["edges"]["cell_b"] = np.concatenate([[2], contact_analysis["edges"]["cell_b"]])
+    contact_analysis["edges"]["kind"] = np.concatenate([["cell_cell"], contact_analysis["edges"]["kind"]])
+    contact_analysis["edges"]["edge_label"] = np.concatenate([[""], contact_analysis["edges"]["edge_label"]])
+    contact_analysis["edges"]["length"] = np.concatenate([[0.5], contact_analysis["edges"]["length"]])
+    contact_analysis["edges"]["is_t1_frame"] = np.concatenate([[False], contact_analysis["edges"]["is_t1_frame"]])
     # Prepend a single degenerate coord and shift existing offsets by 1
-    artifact["edges"]["coord_offset"] = np.concatenate([[0], artifact["edges"]["coord_offset"] + 1])
-    artifact["edges"]["coord_count"] = np.concatenate([[1], artifact["edges"]["coord_count"]])
-    artifact["coord_y"] = np.concatenate([[99.0], artifact["coord_y"]])
-    artifact["coord_x"] = np.concatenate([[99.0], artifact["coord_x"]])
+    contact_analysis["edges"]["coord_offset"] = np.concatenate([[0], contact_analysis["edges"]["coord_offset"] + 1])
+    contact_analysis["edges"]["coord_count"] = np.concatenate([[1], contact_analysis["edges"]["coord_count"]])
+    contact_analysis["coord_y"] = np.concatenate([[99.0], contact_analysis["coord_y"]])
+    contact_analysis["coord_x"] = np.concatenate([[99.0], contact_analysis["coord_x"]])
 
-    lines, edge_colors, features = mod.build_edge_shapes(artifact)
+    lines, edge_colors, features = mod.build_edge_shapes(contact_analysis)
 
     assert len(lines) == 2  # degenerate edge filtered out
     assert edge_colors.shape == (2, 4)
@@ -379,10 +385,10 @@ def test_build_edge_shapes_filters_edges_with_fewer_than_two_coords(monkeypatch)
 
 def test_build_t1_edge_shapes_returns_before_and_after_transition_edges(monkeypatch):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact()
-    _add_t1_edge_pair(artifact)
+    contact_analysis = _make_contact_analysis()
+    _add_t1_edge_pair(contact_analysis)
 
-    lines, colors, features = mod.build_t1_edge_shapes(artifact)
+    lines, colors, features = mod.build_t1_edge_shapes(contact_analysis)
 
     assert len(lines) == 2
     np.testing.assert_allclose(lines[0], [[4.0, 9.0, 8.0], [4.0, 9.0, 9.0], [4.0, 10.0, 9.0]])
@@ -409,179 +415,158 @@ def test_build_t1_edge_shapes_returns_before_and_after_transition_edges(monkeypa
     np.testing.assert_array_equal(features["edge_id"], [102, 102])
 
 
-def test_add_artifact_layers_uses_fake_viewer_and_styles_t1_edges(monkeypatch, tmp_path):
+def test_add_contact_analysis_layers_uses_fake_viewer_and_styles_t1_edges(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
-    _add_t1_edge_pair(artifact)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (4, 0, 0)
 
-    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
 
     assert [layer.name for layer in layers] == [
-        "[Artifact] Cell labels",
-        "[Artifact] Nucleus labels",
-        "[Artifact] Nucleus tracks",
-        "[Artifact] Edges",
-        "[Artifact] T1 edges",
+        "[Contact Analysis] Cell labels",
+        "[Contact Analysis] Nucleus labels",
+        "[Contact Analysis] Nucleus tracks",
+        "[Contact Analysis] Edges",
+        "[Contact Analysis] T1 edges",
     ]
-    assert [call[0] for call in viewer.calls] == ["labels", "labels", "shapes", "shapes", "shapes"]
+    assert [call[0] for call in viewer.calls] == ["labels", "labels", "image", "labels", "labels"]
     cell_call = viewer.calls[0]
     nucleus_call = viewer.calls[1]
     assert cell_call[2].shape == (2, 4, 4)
     assert nucleus_call[2].shape == (2, 4, 4)
-    t1_call = viewer.calls[4]
-    assert t1_call[3]["shape_type"] == "path"
-    assert t1_call[3]["ndim"] == 3
-    assert t1_call[3]["edge_width"] == 1
-    assert t1_call[3]["face_color"] == "transparent"
-    np.testing.assert_allclose(
-        np.asarray(t1_call[3]["edge_color"]),
-        [[0.0, 1.0, 0.9, 1.0]],
-    )
-    np.testing.assert_array_equal(t1_call[3]["features"]["transition_side"], ["before"])
+    track_call = viewer.calls[2]
+    assert track_call[3]["rgb"] is True
+    assert track_call[2].shape == (2, 4, 4, 4)
     edge_call = viewer.calls[3]
-    assert edge_call[3]["shape_type"] == "path"
-    assert edge_call[3]["ndim"] == 3
-    assert edge_call[3]["edge_width"] == 1
-    assert edge_call[3]["face_color"] == "transparent"
-    np.testing.assert_allclose(np.asarray(edge_call[3]["edge_color"])[0], [0.12156863, 0.46666667, 0.70588235, 1.0])
-    assert "[Artifact] Cell labels" in viewer.layers
-    assert "[Artifact] Nucleus labels" in viewer.layers
-    assert "[Artifact] Edges" in viewer.layers
-    assert "[Artifact] T1 edges" in viewer.layers
+    assert edge_call[2].shape == (2, 4, 4)
+    assert set(np.unique(edge_call[2])) == {0, 102}
+    assert viewer.calls[4][2].shape == (2, 4, 4)
+    assert "[Contact Analysis] Cell labels" in viewer.layers
+    assert "[Contact Analysis] Nucleus labels" in viewer.layers
+    assert "[Contact Analysis] Nucleus tracks" in viewer.layers
+    assert "[Contact Analysis] Edges" in viewer.layers
+    assert "[Contact Analysis] T1 edges" in viewer.layers
 
 
-def test_add_artifact_layers_adds_dynamic_nucleus_track_layer(monkeypatch, tmp_path):
+def test_add_contact_analysis_layers_adds_rasterized_nucleus_track_layer(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (2, 0, 0)
 
-    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
 
     assert [layer.name for layer in layers] == [
-        "[Artifact] Cell labels",
-        "[Artifact] Nucleus labels",
-        "[Artifact] Nucleus tracks",
-        "[Artifact] Edges",
-        "[Artifact] T1 edges",
+        "[Contact Analysis] Cell labels",
+        "[Contact Analysis] Nucleus labels",
+        "[Contact Analysis] Nucleus tracks",
+        "[Contact Analysis] Edges",
+        "[Contact Analysis] T1 edges",
     ]
     track_call = viewer.calls[2]
-    assert track_call[0] == "shapes"
-    assert track_call[1] == "[Artifact] Nucleus tracks"
-    assert track_call[3]["shape_type"] == "path"
-    assert track_call[3]["ndim"] == 3
-    assert track_call[3]["edge_width"] == 2
-    assert track_call[3]["face_color"] == "transparent"
-    assert len(track_call[2]) == 4
+    assert track_call[0] == "image"
+    assert track_call[1] == "[Contact Analysis] Nucleus tracks"
+    assert track_call[3]["rgb"] is True
+    assert track_call[2].shape == (3, 8, 8, 4)
+    assert np.count_nonzero(track_call[2][0]) == 0
+    assert np.count_nonzero(track_call[2][1]) > 0
+    assert np.count_nonzero(track_call[2][2]) > 0
 
 
-def test_add_artifact_layers_adds_dynamic_edge_layer(monkeypatch, tmp_path):
+def test_add_contact_analysis_layers_adds_rasterized_edge_layer(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (0, 0, 0)
 
-    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     edge_layer = layers[3]
 
-    assert len(edge_layer.data) == 1
-    np.testing.assert_array_equal(edge_layer.features["edge_id"], [101])
-
-    viewer.dims.current_step = (1, 0, 0)
-    viewer.current_step_event.emit()
-
-    assert len(edge_layer.data) == 1
-    np.testing.assert_array_equal(edge_layer.features["edge_id"], [102])
-    np.testing.assert_allclose(edge_layer.edge_color, [[0.6, 0.6, 0.6, 1.0]])
+    assert edge_layer.data.shape == (2, 4, 4)
+    assert 102 in edge_layer.data[1]
+    assert 102 not in edge_layer.data[0]
 
 
-def test_edge_layer_reuses_precomputed_shapes_when_current_frame_changes(monkeypatch, tmp_path):
+def test_edge_layer_is_rasterized_once_without_frame_callbacks(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (0, 0, 0)
     calls = 0
-    original = mod.build_edge_shapes
+    original = mod._rasterize_edge_labels
 
-    def _counting_edge_shapes(*args, **kwargs):
+    def _counting_edge_labels(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(mod, "build_edge_shapes", _counting_edge_shapes)
+    monkeypatch.setattr(mod, "_rasterize_edge_labels", _counting_edge_labels)
 
-    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     viewer.dims.current_step = (1, 0, 0)
     viewer.current_step_event.emit()
 
     assert calls == 1
+    assert viewer.current_step_event.callbacks == []
 
 
-def test_add_artifact_layers_adds_dynamic_t1_edge_layer(monkeypatch, tmp_path):
+def test_add_contact_analysis_layers_adds_rasterized_t1_edge_layer(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
-    _add_t1_edge_pair(artifact)
-    viewer = _FakeViewer()
-    viewer.dims.current_step = (4, 0, 0)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    _add_t1_edge_pair(contact_analysis)
+    cell_labels = np.zeros((6, 12, 12), dtype=np.uint16)
+    nucleus_labels = np.zeros((6, 12, 12), dtype=np.uint16)
+    import tifffile
 
-    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    tifffile.imwrite(contact_analysis["cell_tracked_labels_path"], cell_labels)
+    tifffile.imwrite(contact_analysis["nucleus_tracked_labels_path"], nucleus_labels)
+    viewer = _FakeViewer()
+
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     t1_layer = layers[4]
 
-    assert len(t1_layer.data) == 1
-    np.testing.assert_array_equal(t1_layer.features["transition_side"], ["before"])
-
-    viewer.dims.current_step = (5, 0, 0)
-    viewer.current_step_event.emit()
-
-    assert len(t1_layer.data) == 1
-    np.testing.assert_array_equal(t1_layer.features["transition_side"], ["after"])
-    np.testing.assert_allclose(t1_layer.edge_color, [[0.0, 1.0, 0.9, 1.0]])
+    assert t1_layer.data.shape == (6, 12, 12)
+    assert 7 in t1_layer.data[4]
+    assert 7 in t1_layer.data[5]
+    assert 7 not in t1_layer.data[3]
 
 
-def test_t1_edge_layer_reuses_precomputed_shapes_when_current_frame_changes(monkeypatch, tmp_path):
+def test_t1_edge_layer_is_rasterized_once_without_frame_callbacks(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
-    _add_t1_edge_pair(artifact)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    _add_t1_edge_pair(contact_analysis)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (4, 0, 0)
     calls = 0
-    original = mod.build_t1_edge_shapes
+    original = mod._rasterize_t1_edge_labels
 
-    def _counting_t1_shapes(*args, **kwargs):
+    def _counting_t1_labels(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(mod, "build_t1_edge_shapes", _counting_t1_shapes)
+    monkeypatch.setattr(mod, "_rasterize_t1_edge_labels", _counting_t1_labels)
 
-    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     viewer.dims.current_step = (5, 0, 0)
     viewer.current_step_event.emit()
 
     assert calls == 1
+    assert viewer.current_step_event.callbacks == []
 
 
-def test_add_artifact_layers_omits_empty_shape_edge_colors(monkeypatch, tmp_path):
+def test_add_contact_analysis_layers_omits_empty_rasterized_edge_labels(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
-    artifact["edges"]["coord_count"] = np.asarray([1, 1], dtype=int)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    contact_analysis["edges"]["coord_count"] = np.asarray([1, 1], dtype=int)
     viewer = _FakeViewer()
 
-    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
 
-    for call in viewer.calls[2:]:
-        assert call[0] == "shapes"
-        assert call[3]["shape_type"] == "path"
-        assert "edge_color" not in call[3]
+    edge_layer = viewer.layers["[Contact Analysis] Edges"]
+    assert np.count_nonzero(edge_layer.data) == 0
 
 
-def test_track_layer_reuses_centroids_when_current_frame_changes(monkeypatch, tmp_path):
+def test_track_layer_reuses_centroids_for_rasterized_stack(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (1, 0, 0)
     calls = 0
     original = mod._nucleus_centroids_by_track
 
@@ -592,99 +577,95 @@ def test_track_layer_reuses_centroids_when_current_frame_changes(monkeypatch, tm
 
     monkeypatch.setattr(mod, "_nucleus_centroids_by_track", _counting_centroids)
 
-    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
-    viewer.dims.current_step = (2, 0, 0)
-    viewer.current_step_event.emit()
+    mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
 
     assert calls == 1
 
 
-def test_track_layer_reuses_precomputed_shapes_when_current_frame_changes(monkeypatch, tmp_path):
+def test_track_layer_uses_precomputed_centroids_for_rasterized_stack(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (1, 0, 0)
     calls = 0
-    original = mod._build_nucleus_track_shapes_from_centroids
+    original = mod._nucleus_centroids_by_track
 
-    def _counting_track_shapes(*args, **kwargs):
+    def _counting_centroids(labels):
         nonlocal calls
         calls += 1
-        return original(*args, **kwargs)
+        return original(labels)
 
-    monkeypatch.setattr(mod, "_build_nucleus_track_shapes_from_centroids", _counting_track_shapes)
+    monkeypatch.setattr(mod, "_nucleus_centroids_by_track", _counting_centroids)
+    precomputed = original(np.asarray(__import__("tifffile").imread(contact_analysis["nucleus_tracked_labels_path"])))
 
-    mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
-    calls_after_load = calls
-    viewer.dims.current_step = (2, 0, 0)
-    viewer.current_step_event.emit()
+    mod.add_contact_analysis_layers(
+        viewer,
+        contact_analysis,
+        prefix="[Contact Analysis] ",
+        nucleus_track_centroids=precomputed,
+    )
 
-    assert calls == calls_after_load
+    assert calls == 0
 
 
 def test_track_layer_disconnects_when_removed(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
     viewer.dims.current_step = (1, 0, 0)
-    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     track_layer = layers[2]
 
     viewer.layers.remove(track_layer)
     viewer.dims.current_step = (2, 0, 0)
     viewer.current_step_event.emit()
 
-    assert len(viewer.current_step_event.callbacks) == 2
-    assert len(track_layer.data) == 2
+    assert viewer.current_step_event.callbacks == []
+    assert track_layer.name not in viewer.layers
 
 
 def test_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
     viewer.dims.current_step = (0, 0, 0)
-    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     edge_layer = layers[3]
 
     viewer.layers.remove(edge_layer)
     viewer.dims.current_step = (1, 0, 0)
     viewer.current_step_event.emit()
 
-    assert len(viewer.current_step_event.callbacks) == 2
-    np.testing.assert_array_equal(edge_layer.features["edge_id"], [101])
+    assert viewer.current_step_event.callbacks == []
+    assert edge_layer.name not in viewer.layers
 
 
 def test_t1_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_artifact_with_label_paths(tmp_path)
-    _add_t1_edge_pair(artifact)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    _add_t1_edge_pair(contact_analysis)
     viewer = _FakeViewer()
     viewer.dims.current_step = (4, 0, 0)
-    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     t1_layer = layers[4]
 
     viewer.layers.remove(t1_layer)
     viewer.dims.current_step = (5, 0, 0)
     viewer.current_step_event.emit()
 
-    assert len(viewer.current_step_event.callbacks) == 2
-    np.testing.assert_array_equal(t1_layer.features["transition_side"], ["before"])
+    assert viewer.current_step_event.callbacks == []
+    assert t1_layer.name not in viewer.layers
 
 
-def test_nucleus_track_layer_updates_when_current_frame_changes(monkeypatch, tmp_path):
+def test_nucleus_track_layer_contains_full_rasterized_time_stack(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    artifact = _make_track_artifact_with_label_paths(tmp_path)
+    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (1, 0, 0)
 
-    layers = mod.add_artifact_layers(viewer, artifact, prefix="[Artifact] ")
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     track_layer = layers[2]
 
-    assert len(track_layer.data) == 2
-
-    viewer.dims.current_step = (2, 0, 0)
-    viewer.current_step_event.emit()
-
-    assert len(track_layer.data) == 4
-    np.testing.assert_array_equal(track_layer.features["end_frame"], [1, 2, 1, 2])
-    assert np.all(track_layer.edge_color[track_layer.features["end_frame"] == 1, 3] < 1.0)
+    assert track_layer.data.shape == (3, 8, 8, 4)
+    assert np.count_nonzero(track_layer.data[0]) == 0
+    assert np.count_nonzero(track_layer.data[1]) > 0
+    assert np.count_nonzero(track_layer.data[2]) > 0
+    assert track_layer.data[2, :, :, 3].max() == 255

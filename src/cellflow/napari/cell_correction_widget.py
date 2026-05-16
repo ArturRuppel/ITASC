@@ -12,6 +12,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -111,7 +112,13 @@ class CellCorrectionWidget(QWidget):
         group_lay.setContentsMargins(0, 0, 0, 0)
         group_lay.setSpacing(6)
 
-        # ── Action buttons — 2-column grid ────────────────────────────
+        self.active_btn = QPushButton("Activate Correction")
+        self.active_btn.setCheckable(True)
+        self.active_btn.setToolTip(
+            "Activate correction mode and show correction controls."
+        )
+
+        # ── Action buttons (added later at bottom) ────────────────────
         self.load_labels_btn = _btn(
             "Load Labels", "Load tracked cell labels from disk.")
         self.save_labels_btn = _btn(
@@ -132,11 +139,6 @@ class CellCorrectionWidget(QWidget):
             "Expand Cell",
             "Expand selected cell into adjacent foreground mask pixels.",
         )
-        group_lay.addLayout(_button_grid(
-            (self.load_labels_btn, self.save_labels_btn),
-            (self.fill_holes_btn, self.fix_semiholes_btn),
-            (self.cleanup_btn, self.expand_cell_btn),
-        ))
 
         # ── Correction parameters (collapsible) ───────────────────────
         params_inner = QWidget(self)
@@ -208,13 +210,23 @@ class CellCorrectionWidget(QWidget):
         self.correction_status_lbl = _make_status()
         group_lay.addWidget(self.correction_status_lbl)
 
+        group_lay.addLayout(_button_grid(
+            (self.load_labels_btn, self.save_labels_btn),
+            (self.fill_holes_btn, self.fix_semiholes_btn),
+            (self.cleanup_btn, self.expand_cell_btn),
+        ))
+        group_lay.addWidget(self.correction_widget._attrib_lbl)
+
         self.section = CollapsibleSection(
             "Correction",
             inner,
-            expanded=True,
+            expanded=False,
             title_role="stage",
             title_level=1,
         )
+        self.section._toggle.setVisible(False)
+        self.section._toggle.setEnabled(False)
+        root.addWidget(self.active_btn)
         root.addWidget(self.section)
 
     # ------------------------------------------------------------------ #
@@ -228,6 +240,10 @@ class CellCorrectionWidget(QWidget):
         self.fix_semiholes_btn.clicked.connect(self._on_fix_semiholes)
         self.cleanup_btn.clicked.connect(self._on_cleanup)
         self.expand_cell_btn.clicked.connect(self._on_expand_cell)
+        self.active_btn.toggled.connect(self._on_active_button_toggled)
+
+    def _on_active_button_toggled(self, active: bool) -> None:
+        self.section.expand() if active else self.section.collapse()
 
     # ------------------------------------------------------------------ #
     # Status helper                                                        #

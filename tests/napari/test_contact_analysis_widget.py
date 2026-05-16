@@ -34,6 +34,11 @@ class _FakeViewer:
         self.layers[name] = layer
         return layer
 
+    def add_image(self, data, *, name, **kwargs):
+        layer = types.SimpleNamespace(data=data, name=name, **kwargs)
+        self.layers[name] = layer
+        return layer
+
     def add_shapes(self, data, *, name, **kwargs):
         layer = types.SimpleNamespace(data=data, name=name, **kwargs)
         self.layers[name] = layer
@@ -67,8 +72,8 @@ def _load_module(monkeypatch):
     nls_module = types.ModuleType("cellflow.napari.nls_classification_widget")
     nls_module.NLSClassificationWidget = _StubNLSClassificationWidget
     monkeypatch.setitem(sys.modules, "cellflow.napari.nls_classification_widget", nls_module)
-    sys.modules.pop("cellflow.napari.analysis_widget", None)
-    return importlib.import_module("cellflow.napari.analysis_widget")
+    sys.modules.pop("cellflow.napari.contact_analysis_widget", None)
+    return importlib.import_module("cellflow.napari.contact_analysis_widget")
 
 
 def _make_sync_thread_worker():
@@ -108,10 +113,10 @@ def _make_sync_thread_worker():
     return fake_thread_worker
 
 
-def test_analysis_widget_refresh_tracks_inputs_output_and_button_states(monkeypatch, tmp_path):
+def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    widget = mod.AnalysisWidget()
+    widget = mod.ContactAnalysisWidget()
 
     pos_dir = tmp_path / "pos00"
     (pos_dir / "2_nucleus").mkdir(parents=True)
@@ -121,28 +126,28 @@ def test_analysis_widget_refresh_tracks_inputs_output_and_button_states(monkeypa
     widget.refresh(pos_dir)
 
     assert widget._pos_dir == pos_dir
-    assert widget.artifact_out_path == pos_dir / "4_analysis" / "position_analysis.h5"
-    assert widget.artifact_path_lbl.text() == f"Output: {pos_dir / '4_analysis' / 'position_analysis.h5'}"
+    assert widget.contact_analysis_out_path == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
+    assert widget.contact_analysis_path_lbl.text() == f"Output: {pos_dir / '4_contact_analysis' / 'contact_analysis.h5'}"
     assert "cell labels" in widget.input_status_lbl.text()
     assert "nucleus labels" in widget.input_status_lbl.text()
-    assert widget.build_artifact_btn.isEnabled() is False
-    assert widget.show_artifact_btn.isEnabled() is False
-    assert widget.clear_artifact_btn.isEnabled() is False
+    assert widget.build_contact_analysis_btn.isEnabled() is False
+    assert widget.show_contact_analysis_btn.isEnabled() is False
+    assert widget.clear_contact_analysis_btn.isEnabled() is False
 
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
     widget.refresh(pos_dir)
 
-    assert widget.build_artifact_btn.isEnabled() is True
+    assert widget.build_contact_analysis_btn.isEnabled() is True
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_analysis_widget_embeds_nls_classification_and_refreshes_it(monkeypatch, tmp_path):
+def test_contact_analysis_widget_embeds_nls_classification_and_refreshes_it(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.AnalysisWidget(viewer)
+    widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = tmp_path / "pos04"
     widget.refresh(pos_dir)
@@ -156,7 +161,7 @@ def test_analysis_widget_embeds_nls_classification_and_refreshes_it(monkeypatch,
     app.processEvents()
 
 
-def test_analysis_widget_build_runs_in_worker_and_reports_progress(monkeypatch, tmp_path):
+def test_contact_analysis_widget_build_runs_in_worker_and_reports_progress(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
@@ -177,35 +182,35 @@ def test_analysis_widget_build_runs_in_worker_and_reports_progress(monkeypatch, 
         progress_cb = kwargs["progress_cb"]
         progress_cb(2, 5, "Indexing records")
         progress_events.append((2, 5, "Indexing records"))
-        assert widget.artifact_progress_bar.maximum() == 5
-        assert widget.artifact_progress_bar.value() == 2
+        assert widget.contact_analysis_progress_bar.maximum() == 5
+        assert widget.contact_analysis_progress_bar.value() == 2
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"h5")
         return output_path
 
-    monkeypatch.setattr(mod, "build_position_analysis_artifact", fake_build)
+    monkeypatch.setattr(mod, "build_position_contact_analysis", fake_build)
 
-    widget = mod.AnalysisWidget()
+    widget = mod.ContactAnalysisWidget()
     widget.refresh(pos_dir)
-    widget._on_build_artifact()
+    widget._on_build_contact_analysis()
 
     assert progress_events == [(2, 5, "Indexing records")]
     assert captured["position_path"] == pos_dir
-    assert captured["output_path"] == pos_dir / "4_analysis" / "position_analysis.h5"
+    assert captured["output_path"] == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     assert captured["kwargs"]["cell_tracked_labels_path"] == pos_dir / "3_cell" / "tracked_labels.tif"
     assert captured["kwargs"]["nucleus_tracked_labels_path"] == pos_dir / "2_nucleus" / "tracked_labels.tif"
     assert callable(captured["kwargs"]["progress_cb"])
-    assert "Wrote" in widget.artifact_status_lbl.text()
-    assert widget.artifact_out_path.exists()
+    assert "Wrote" in widget.contact_analysis_status_lbl.text()
+    assert widget.contact_analysis_out_path.exists()
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_analysis_widget_cancel_calls_worker_quit_when_active(monkeypatch):
+def test_contact_analysis_widget_cancel_calls_worker_quit_when_active(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    widget = mod.AnalysisWidget()
+    widget = mod.ContactAnalysisWidget()
 
     worker = _FakeWorker()
     widget._build_worker = worker
@@ -220,36 +225,36 @@ def test_analysis_widget_cancel_calls_worker_quit_when_active(monkeypatch):
     app.processEvents()
 
 
-def test_analysis_widget_shows_and_clears_artifact_layers(monkeypatch, tmp_path):
+def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.AnalysisWidget(viewer)
+    widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = tmp_path / "pos08"
     (pos_dir / "2_nucleus").mkdir(parents=True)
     (pos_dir / "3_cell").mkdir()
     (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-    artifact_path = pos_dir / "4_analysis" / "position_analysis.h5"
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_bytes(b"h5")
+    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
+    contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
+    contact_analysis_path.write_bytes(b"h5")
     widget.refresh(pos_dir)
 
-    assert widget.show_artifact_btn.isEnabled() is True
-    assert widget.clear_artifact_btn.isEnabled() is True
+    assert widget.show_contact_analysis_btn.isEnabled() is True
+    assert widget.clear_contact_analysis_btn.isEnabled() is True
 
-    artifact = {"cells": [1, 2, 3]}
+    contact_analysis = {"cells": [1, 2, 3]}
     read_calls = []
     add_calls = []
 
     def fake_read(path):
         read_calls.append(path)
-        return artifact
+        return contact_analysis
 
-    def fake_add(viewer_arg, artifact_arg, **kwargs):
+    def fake_add(viewer_arg, contact_analysis_arg, **kwargs):
         prefix = kwargs["prefix"]
-        add_calls.append((viewer_arg, artifact_arg, kwargs))
+        add_calls.append((viewer_arg, contact_analysis_arg, kwargs))
         viewer_arg.layers[f"{prefix}Cells"] = types.SimpleNamespace(
             name=f"{prefix}Cells"
         )
@@ -258,18 +263,18 @@ def test_analysis_widget_shows_and_clears_artifact_layers(monkeypatch, tmp_path)
         )
         viewer_arg.layers["Background"] = types.SimpleNamespace(name="Background")
 
-    monkeypatch.setattr(mod, "read_position_artifact", fake_read)
-    monkeypatch.setattr(mod, "add_artifact_layers", fake_add)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", fake_read)
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
-    widget.show_artifact_btn.click()
+    widget.show_contact_analysis_btn.click()
 
-    assert read_calls == [artifact_path]
+    assert read_calls == [contact_analysis_path]
     assert add_calls == [
         (
             viewer,
-            artifact,
+            contact_analysis,
             {
-                "prefix": "[Artifact] ",
+                "prefix": "[Contact Analysis] ",
                 "color_cells_by_label": False,
                 "color_edges_by_id": False,
                 "color_edges_by_label": False,
@@ -277,59 +282,59 @@ def test_analysis_widget_shows_and_clears_artifact_layers(monkeypatch, tmp_path)
             },
         )
     ]
-    assert f"[Artifact] Cells" in viewer.layers
+    assert f"[Contact Analysis] Cells" in viewer.layers
     assert "Background" in viewer.layers
 
-    widget.clear_artifact_btn.click()
+    widget.clear_contact_analysis_btn.click()
 
-    assert "[Artifact] Cells" not in viewer.layers
-    assert "[Artifact] Edges" not in viewer.layers
+    assert "[Contact Analysis] Cells" not in viewer.layers
+    assert "[Contact Analysis] Edges" not in viewer.layers
     assert "Background" in viewer.layers
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_path):
+def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.AnalysisWidget(viewer)
+    widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = tmp_path / "pos10"
     (pos_dir / "2_nucleus").mkdir(parents=True)
     (pos_dir / "3_cell").mkdir()
     (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-    artifact_path = pos_dir / "4_analysis" / "position_analysis.h5"
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_bytes(b"h5")
+    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
+    contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
+    contact_analysis_path.write_bytes(b"h5")
     widget.refresh(pos_dir)
 
-    artifact = {"cells": [1]}
+    contact_analysis = {"cells": [1]}
     add_calls = []
-    monkeypatch.setattr(mod, "read_position_artifact", lambda _path: artifact)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _path: contact_analysis)
 
-    def fake_add(viewer_arg, artifact_arg, **kwargs):
-        add_calls.append((viewer_arg, artifact_arg, kwargs))
+    def fake_add(viewer_arg, contact_analysis_arg, **kwargs):
+        add_calls.append((viewer_arg, contact_analysis_arg, kwargs))
         viewer_arg.layers[f"{kwargs['prefix']}Cells"] = types.SimpleNamespace(
             name=f"{kwargs['prefix']}Cells"
         )
 
-    monkeypatch.setattr(mod, "add_artifact_layers", fake_add)
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
     widget.color_cells_by_label_cb.setChecked(True)
     widget.color_edges_by_id_cb.setChecked(True)
     widget.color_edges_by_label_cb.setChecked(True)
     widget.hide_border_edges_cb.setChecked(True)
-    widget.show_artifact_btn.click()
+    widget.show_contact_analysis_btn.click()
 
     assert add_calls == [
         (
             viewer,
-            artifact,
+            contact_analysis,
             {
-                "prefix": "[Artifact] ",
+                "prefix": "[Contact Analysis] ",
                 "color_cells_by_label": True,
                 "color_edges_by_id": True,
                 "color_edges_by_label": True,
@@ -342,44 +347,44 @@ def test_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_path):
     app.processEvents()
 
 
-def test_analysis_widget_checkbox_does_not_live_update_visualization(monkeypatch, tmp_path):
-    """Checkboxes no longer trigger automatic reloads; user must click Show Artifact."""
+def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(monkeypatch, tmp_path):
+    """Checkboxes no longer trigger automatic reloads; user must click Show Contact Analysis."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.AnalysisWidget(viewer)
+    widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = tmp_path / "pos11"
     (pos_dir / "2_nucleus").mkdir(parents=True)
     (pos_dir / "3_cell").mkdir()
     (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-    artifact_path = pos_dir / "4_analysis" / "position_analysis.h5"
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_bytes(b"h5")
+    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
+    contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
+    contact_analysis_path.write_bytes(b"h5")
     widget.refresh(pos_dir)
 
-    artifact = {"cells": [1]}
-    monkeypatch.setattr(mod, "read_position_artifact", lambda _path: artifact)
+    contact_analysis = {"cells": [1]}
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _path: contact_analysis)
     add_calls = []
 
-    def fake_add(viewer_arg, artifact_arg, **kwargs):
+    def fake_add(viewer_arg, contact_analysis_arg, **kwargs):
         add_calls.append(kwargs)
         viewer_arg.layers[f"{kwargs['prefix']}Cells"] = types.SimpleNamespace(
             name=f"{kwargs['prefix']}Cells"
         )
 
-    monkeypatch.setattr(mod, "add_artifact_layers", fake_add)
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
     # First show with default settings
-    widget.show_artifact_btn.click()
+    widget.show_contact_analysis_btn.click()
     # Changing checkbox must NOT trigger a reload on its own
     widget.color_cells_by_label_cb.setChecked(True)
     assert len(add_calls) == 1, "checkbox change must not auto-reload"
     assert add_calls[0]["color_cells_by_label"] is False
 
-    # Clicking Show Artifact again picks up the updated checkbox state
-    widget.show_artifact_btn.click()
+    # Clicking Show Contact Analysis again picks up the updated checkbox state
+    widget.show_contact_analysis_btn.click()
     assert len(add_calls) == 2
     assert add_calls[1]["color_cells_by_label"] is True
 
@@ -387,11 +392,11 @@ def test_analysis_widget_checkbox_does_not_live_update_visualization(monkeypatch
     app.processEvents()
 
 
-def test_analysis_widget_show_artifact_uses_real_reader_and_visualizer(monkeypatch, tmp_path):
+def test_contact_analysis_widget_show_contact_analysis_uses_real_reader_and_visualizer(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.AnalysisWidget(viewer)
+    widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = tmp_path / "pos09"
     (pos_dir / "2_nucleus").mkdir(parents=True)
@@ -405,23 +410,23 @@ def test_analysis_widget_show_artifact_uses_real_reader_and_visualizer(monkeypat
     tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", labels)
     tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
     widget.refresh(pos_dir)
-    mod.build_position_analysis_artifact(
+    mod.build_position_contact_analysis(
         pos_dir,
-        widget.artifact_out_path,
+        widget.contact_analysis_out_path,
         cell_tracked_labels_path=pos_dir / "3_cell" / "tracked_labels.tif",
         nucleus_tracked_labels_path=pos_dir / "2_nucleus" / "tracked_labels.tif",
     )
     widget.refresh(pos_dir)
 
-    widget._on_show_artifact()
+    widget._on_show_contact_analysis()
 
-    assert "[Artifact] Cell labels" in viewer.layers
-    assert "[Artifact] Nucleus labels" in viewer.layers
-    assert "[Artifact] Edges" in viewer.layers
-    assert "[Artifact] T1 edges" in viewer.layers
-    assert viewer.layers["[Artifact] Cell labels"].data.shape == (1, 4, 4)
-    assert viewer.layers["[Artifact] Nucleus labels"].data.shape == (1, 4, 4)
-    assert len(viewer.layers["[Artifact] Edges"].data) >= 1
+    assert "[Contact Analysis] Cell labels" in viewer.layers
+    assert "[Contact Analysis] Nucleus labels" in viewer.layers
+    assert "[Contact Analysis] Edges" in viewer.layers
+    assert "[Contact Analysis] T1 edges" in viewer.layers
+    assert viewer.layers["[Contact Analysis] Cell labels"].data.shape == (1, 4, 4)
+    assert viewer.layers["[Contact Analysis] Nucleus labels"].data.shape == (1, 4, 4)
+    assert len(viewer.layers["[Contact Analysis] Edges"].data) >= 1
 
     widget.deleteLater()
     app.processEvents()

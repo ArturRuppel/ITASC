@@ -190,7 +190,7 @@ def _fit_high_intensity_gaussian_cluster(ordered_ids: list[int], values: np.ndar
     }
 
 
-def patch_position_artifact_nls_classes(
+def patch_position_contact_analysis_nls_classes(
     h5_path: str | Path,
     nls_zavg_path: str | Path | None = None,
     nucleus_labels_path: str | Path | None = None,
@@ -198,7 +198,7 @@ def patch_position_artifact_nls_classes(
     output_path: str | Path | None = None,
     overwrite_output: bool = False,
 ) -> NLSClassificationSummary:
-    """Patch a CellFlow position analysis H5 with NLS high/low track classes."""
+    """Patch a CellFlow position contact-analysis H5 with NLS high/low track classes."""
     source_h5_path = Path(h5_path)
     target_h5_path = Path(output_path) if output_path is not None else source_h5_path
     nls_path = _resolve_nls_path(source_h5_path, nls_zavg_path)
@@ -244,9 +244,9 @@ def patch_position_artifact_nls_classes(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Patch a CellFlow position analysis H5 with NLS-high/NLS-low track classifications."
+        description="Patch a CellFlow position contact-analysis H5 with NLS-high/NLS-low track classifications."
     )
-    parser.add_argument("h5_path", type=Path, help="Path to position_analysis.h5")
+    parser.add_argument("h5_path", type=Path, help="Path to contact_analysis.h5")
     parser.add_argument("--nls-zavg", type=Path, default=None, help="Path to 0_input/NLS_zavg.tif")
     parser.add_argument(
         "--nucleus-labels",
@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    summary = patch_position_artifact_nls_classes(
+    summary = patch_position_contact_analysis_nls_classes(
         args.h5_path,
         args.nls_zavg,
         args.nucleus_labels,

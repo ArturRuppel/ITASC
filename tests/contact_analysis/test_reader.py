@@ -1,8 +1,8 @@
 import numpy as np
 import tifffile
 
-from cellflow.analysis.artifact_reader import PositionArtifactData, read_position_artifact
-from cellflow.analysis.position_artifact import build_position_analysis_artifact
+from cellflow.contact_analysis.reader import PositionContactAnalysis, read_position_contact_analysis
+from cellflow.contact_analysis.build import build_position_contact_analysis
 
 
 def _write_position(tmp_path, cell_stack, nucleus_stack):
@@ -16,28 +16,28 @@ def _write_position(tmp_path, cell_stack, nucleus_stack):
     return pos_dir
 
 
-def test_read_position_artifact_reconstructs_edges_and_centroids(tmp_path):
+def test_read_position_contact_analysis_reconstructs_edges_and_centroids(tmp_path):
     frame = np.zeros((5, 6), dtype=np.uint16)
     frame[:, :3] = 1
     frame[:, 3:] = 2
     cell_stack = np.stack([frame, frame])
     pos_dir = _write_position(tmp_path, cell_stack, cell_stack.copy())
-    output_path = build_position_analysis_artifact(pos_dir, tmp_path / "analysis.h5")
+    output_path = build_position_contact_analysis(pos_dir, tmp_path / "contact_analysis.h5")
 
-    artifact = read_position_artifact(output_path)
+    contact_analysis = read_position_contact_analysis(output_path)
 
-    assert isinstance(artifact, PositionArtifactData)
-    assert set(artifact.cells) >= {"frame", "cell_id", "centroid_y", "centroid_x"}
-    assert set(artifact.edges) >= {"frame", "coord_offset", "coord_count", "kind"}
-    assert set(artifact.t1_events) >= {"t1_event_id", "frame", "edge_id"}
+    assert isinstance(contact_analysis, PositionContactAnalysis)
+    assert set(contact_analysis.cells) >= {"frame", "cell_id", "centroid_y", "centroid_x"}
+    assert set(contact_analysis.edges) >= {"frame", "coord_offset", "coord_count", "kind"}
+    assert set(contact_analysis.t1_events) >= {"t1_event_id", "frame", "edge_id"}
 
-    centroids = artifact.centroid_points()
+    centroids = contact_analysis.centroid_points()
     assert centroids.shape == (4, 3)
     np.testing.assert_allclose(centroids[:, 0], [0, 0, 1, 1])
-    assert artifact.cell_tracked_labels_path == str(pos_dir / "cell" / "tracked_labels.tif")
-    assert artifact.nucleus_tracked_labels_path == str(pos_dir / "nucleus" / "tracked_labels.tif")
+    assert contact_analysis.cell_tracked_labels_path == str(pos_dir / "cell" / "tracked_labels.tif")
+    assert contact_analysis.nucleus_tracked_labels_path == str(pos_dir / "nucleus" / "tracked_labels.tif")
 
-    lines = artifact.edge_lines()
-    assert len(lines) == len(artifact.edges["frame"])
+    lines = contact_analysis.edge_lines()
+    assert len(lines) == len(contact_analysis.edges["frame"])
     assert all(line.shape[1] == 3 for line in lines)
-    np.testing.assert_array_equal(lines[0][:, 0], np.full(len(lines[0]), artifact.edges["frame"][0]))
+    np.testing.assert_array_equal(lines[0][:, 0], np.full(len(lines[0]), contact_analysis.edges["frame"][0]))

@@ -13,7 +13,7 @@ __all__ = [
     "build_nucleus_track_shapes",
     "build_t1_edge_shapes",
     "build_t1_points",
-    "add_artifact_layers",
+    "add_contact_analysis_layers",
 ]
 
 _BORDER_EDGE_COLOR = np.array([0.6, 0.6, 0.6, 1.0], dtype=float)
@@ -32,9 +32,9 @@ _TRACK_ALPHA_FLOOR = 0.15
 
 
 def build_cell_centroid_points(
-    artifact: Any,
+    contact_analysis: Any,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    cells = _section(artifact, "cells")
+    cells = _section(contact_analysis, "cells")
     frame = _column(cells, "frame").astype(float, copy=False)
     y = _column(cells, "centroid_y").astype(float, copy=False)
     x = _column(cells, "centroid_x").astype(float, copy=False)
@@ -49,15 +49,15 @@ def build_cell_centroid_points(
 
 
 def build_edge_shapes(
-    artifact: Any,
+    contact_analysis: Any,
     *,
     hide_border_edges: bool = False,
     color_by_id: bool = False,
     color_by_label: bool = False,
 ) -> tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]:
-    edges = _section(artifact, "edges")
-    coord_y = np.asarray(_value(artifact, "coord_y"), dtype=float)
-    coord_x = np.asarray(_value(artifact, "coord_x"), dtype=float)
+    edges = _section(contact_analysis, "edges")
+    coord_y = np.asarray(_value(contact_analysis, "coord_y"), dtype=float)
+    coord_x = np.asarray(_value(contact_analysis, "coord_x"), dtype=float)
 
     frame = _column(edges, "frame")
     edge_id = _column(edges, "edge_id")
@@ -119,9 +119,9 @@ def build_edge_shapes(
 
 
 def build_t1_points(
-    artifact: Any,
+    contact_analysis: Any,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    t1_events = _section(artifact, "t1_events")
+    t1_events = _section(contact_analysis, "t1_events")
     frame = _column(t1_events, "frame").astype(float, copy=False)
     y = _column(t1_events, "location_y").astype(float, copy=False)
     x = _column(t1_events, "location_x").astype(float, copy=False)
@@ -141,12 +141,12 @@ def build_t1_points(
 
 
 def build_t1_edge_shapes(
-    artifact: Any,
+    contact_analysis: Any,
 ) -> tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]:
-    edges = _section(artifact, "edges")
-    t1_events = _section(artifact, "t1_events")
-    coord_y = np.asarray(_value(artifact, "coord_y"), dtype=float)
-    coord_x = np.asarray(_value(artifact, "coord_x"), dtype=float)
+    edges = _section(contact_analysis, "edges")
+    t1_events = _section(contact_analysis, "t1_events")
+    coord_y = np.asarray(_value(contact_analysis, "coord_y"), dtype=float)
+    coord_x = np.asarray(_value(contact_analysis, "coord_x"), dtype=float)
 
     edge_frame = _column(edges, "frame")
     edge_id = _column(edges, "edge_id")
@@ -223,7 +223,7 @@ def build_t1_edge_shapes(
 
 
 def build_nucleus_track_shapes(
-    artifact: Any,
+    contact_analysis: Any,
     nucleus_labels: np.ndarray,
     *,
     current_frame: int,
@@ -231,7 +231,7 @@ def build_nucleus_track_shapes(
 ) -> tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]:
     """Return past-only nucleus centroid track segments for one viewer frame."""
     centroids = _nucleus_centroids_by_track(nucleus_labels)
-    color_map = _cell_color_map(artifact, color_by_label=color_cells_by_label)
+    color_map = _cell_color_map(contact_analysis, color_by_label=color_cells_by_label)
     segments_by_end = _index_track_segments(centroids)
     return _build_track_shapes_for_frame(
         color_map,
@@ -241,14 +241,14 @@ def build_nucleus_track_shapes(
 
 
 # =====================================================================
-# add_artifact_layers — rasterised, zero callbacks
+# add_contact_analysis_layers — rasterised, zero callbacks
 # =====================================================================
 
 
-def add_artifact_layers(
+def add_contact_analysis_layers(
     viewer: Any,
-    artifact: Any,
-    prefix: str = "[Artifact] ",
+    contact_analysis: Any,
+    prefix: str = "[Contact Analysis] ",
     *,
     color_cells_by_label: bool = False,
     color_edges_by_id: bool = False,
@@ -261,11 +261,11 @@ def add_artifact_layers(
 ) -> list[Any]:
     if cell_labels is None:
         cell_labels = _read_label_image(
-            _artifact_label_path(artifact, "cell_tracked_labels_path")
+            _contact_analysis_label_path(contact_analysis, "cell_tracked_labels_path")
         )
     if nucleus_labels is None:
         nucleus_labels = _read_label_image(
-            _artifact_label_path(artifact, "nucleus_tracked_labels_path")
+            _contact_analysis_label_path(contact_analysis, "nucleus_tracked_labels_path")
         )
 
     shape = cell_labels.shape
@@ -274,7 +274,7 @@ def add_artifact_layers(
     T, H, W = shape[:3]
 
     edge_labels, edge_color_dict = _rasterize_edge_labels(
-        artifact,
+        contact_analysis,
         (T, H, W),
         hide_border_edges=hide_border_edges,
         color_by_id=color_edges_by_id,
@@ -282,7 +282,7 @@ def add_artifact_layers(
     )
 
     t1_labels, t1_color_dict = _rasterize_t1_edge_labels(
-        artifact, (T, H, W)
+        contact_analysis, (T, H, W)
     )
 
     track_centroids = (
@@ -291,7 +291,7 @@ def add_artifact_layers(
         else _nucleus_centroids_by_track(nucleus_labels)
     )
     track_color_map = _cell_color_map(
-        artifact, color_by_label=color_cells_by_label
+        contact_analysis, color_by_label=color_cells_by_label
     )
     track_image = _rasterize_track_image(
         track_centroids,
@@ -301,7 +301,7 @@ def add_artifact_layers(
     )
 
     cell_color_dict = _cell_color_map(
-        artifact, color_by_label=color_cells_by_label
+        contact_analysis, color_by_label=color_cells_by_label
     )
     cell_kwargs: dict[str, Any] = {}
     nucleus_kwargs: dict[str, Any] = {}
@@ -411,7 +411,7 @@ def _draw_polyline_label(
 
 
 def _rasterize_edge_labels(
-    artifact: Any,
+    contact_analysis: Any,
     shape: tuple[int, int, int],
     *,
     hide_border_edges: bool = False,
@@ -423,9 +423,9 @@ def _rasterize_edge_labels(
     Returns ``(labels, color_dict)`` ready for
     :class:`~napari.utils.colormaps.DirectLabelColormap`.
     """
-    edges = _section(artifact, "edges")
-    coord_y = np.asarray(_value(artifact, "coord_y"), dtype=float)
-    coord_x = np.asarray(_value(artifact, "coord_x"), dtype=float)
+    edges = _section(contact_analysis, "edges")
+    coord_y = np.asarray(_value(contact_analysis, "coord_y"), dtype=float)
+    coord_x = np.asarray(_value(contact_analysis, "coord_x"), dtype=float)
 
     frame_col = _column(edges, "frame")
     edge_id_col = _column(edges, "edge_id")
@@ -485,14 +485,14 @@ def _rasterize_edge_labels(
 
 
 def _rasterize_t1_edge_labels(
-    artifact: Any,
+    contact_analysis: Any,
     shape: tuple[int, int, int],
 ) -> tuple[np.ndarray, dict]:
     """Rasterise T1 transition edges into a ``(T, H, W)`` label array."""
-    edges = _section(artifact, "edges")
-    t1_events = _section(artifact, "t1_events")
-    coord_y = np.asarray(_value(artifact, "coord_y"), dtype=float)
-    coord_x = np.asarray(_value(artifact, "coord_x"), dtype=float)
+    edges = _section(contact_analysis, "edges")
+    t1_events = _section(contact_analysis, "t1_events")
+    coord_y = np.asarray(_value(contact_analysis, "coord_y"), dtype=float)
+    coord_x = np.asarray(_value(contact_analysis, "coord_x"), dtype=float)
 
     edge_frame = _column(edges, "frame")
     edge_id_col = _column(edges, "edge_id")
@@ -726,13 +726,13 @@ def _nucleus_centroids_by_track(
 
 
 def _cell_color_map(
-    artifact: Any,
+    contact_analysis: Any,
     *,
     color_by_label: bool,
 ) -> dict[int | None, tuple[float, float, float, float] | str]:
     if color_by_label:
-        return _cell_label_color_map(artifact)
-    cells = _section(artifact, "cells")
+        return _cell_label_color_map(contact_analysis)
+    cells = _section(contact_analysis, "cells")
     cell_ids = np.asarray(sorted(set(_column(cells, "cell_id").astype(int))))
     cell_colors = _categorical_colors(cell_ids)
     cmap: dict[int | None, tuple[float, float, float, float] | str] = {
@@ -745,9 +745,9 @@ def _cell_color_map(
 
 
 def _cell_label_color_map(
-    artifact: Any,
+    contact_analysis: Any,
 ) -> dict[int | None, tuple[float, float, float, float] | str]:
-    cells = _section(artifact, "cells")
+    cells = _section(contact_analysis, "cells")
     cell_ids = _column(cells, "cell_id")
     class_labels = _column(cells, "class_label")
     class_colors = _categorical_colors(class_labels)
@@ -767,20 +767,20 @@ def _cell_label_color_map(
 # =====================================================================
 
 
-def _section(artifact: Any, name: str) -> Any:
-    if isinstance(artifact, Mapping):
-        return artifact[name]
-    return getattr(artifact, name)
+def _section(contact_analysis: Any, name: str) -> Any:
+    if isinstance(contact_analysis, Mapping):
+        return contact_analysis[name]
+    return getattr(contact_analysis, name)
 
 
-def _value(artifact: Any, name: str) -> Any:
-    if isinstance(artifact, Mapping):
-        return artifact[name]
-    return getattr(artifact, name)
+def _value(contact_analysis: Any, name: str) -> Any:
+    if isinstance(contact_analysis, Mapping):
+        return contact_analysis[name]
+    return getattr(contact_analysis, name)
 
 
-def _artifact_label_path(artifact: Any, name: str) -> Path:
-    return Path(_value(artifact, name))
+def _contact_analysis_label_path(contact_analysis: Any, name: str) -> Path:
+    return Path(_value(contact_analysis, name))
 
 
 def _read_label_image(path: Path) -> np.ndarray:

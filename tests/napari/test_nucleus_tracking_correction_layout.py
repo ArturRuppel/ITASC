@@ -157,7 +157,7 @@ def _install_main_widget_stubs() -> None:
             self.match_requests.append(("nucleus", t, source_label))
 
     stub_modules = {
-        "cellflow.napari.analysis_widget": {"AnalysisWidget": _StubWidget},
+        "cellflow.napari.contact_analysis_widget": {"ContactAnalysisWidget": _StubWidget},
         "cellflow.napari.cell_boundary_workflow_widget": {
             "CellBoundaryWorkflowWidget": _StubWidget,
         },
@@ -189,7 +189,7 @@ def _load_main_widget_class():
     sys.modules.pop("cellflow.napari.main_widget", None)
     module = importlib.import_module("cellflow.napari.main_widget")
     for module_name in (
-        "cellflow.napari.analysis_widget",
+        "cellflow.napari.contact_analysis_widget",
         "cellflow.napari.cell_boundary_workflow_widget",
         "cellflow.napari.cell_workflow_widget",
         "cellflow.napari.correction_widget",
@@ -255,7 +255,7 @@ def test_main_widget_sections_are_collapsed_by_default():
         widget.cellpose_section,
         widget.nucleus_section,
         widget.cell_section,
-        widget.analysis_section,
+        widget.contact_analysis_section,
         widget.meta_section,
     )
     assert all(section.is_expanded is False for section in sections)
@@ -317,20 +317,20 @@ def test_main_widget_embeds_hpc_cellpose_inside_cellpose_stage():
     viewer.close()
 
 
-def test_main_widget_embeds_nls_classification_inside_analysis_stage():
+def test_main_widget_embeds_nls_classification_inside_contact_analysis_stage():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
     widget = widget_class(viewer)
 
     assert not hasattr(widget, "nls_classification_section")
     assert not hasattr(widget, "nls_classification_widget")
-    assert widget.analysis_section.title == "Analysis"
+    assert widget.contact_analysis_section.title == "Contact Analysis"
 
     widget.deleteLater()
     viewer.close()
 
 
-def test_main_widget_includes_meta_source_browser_after_analysis(tmp_path):
+def test_main_widget_includes_meta_source_browser_after_contact_analysis(tmp_path):
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
     widget = widget_class(viewer)
@@ -343,7 +343,7 @@ def test_main_widget_includes_meta_source_browser_after_analysis(tmp_path):
 
     assert widget.meta_section.title == "Meta Analyzer"
     assert widget.meta_source_browser.refreshed_pos_dir == project_root
-    assert widget.scroll_layout.indexOf(widget.analysis_section) < widget.scroll_layout.indexOf(
+    assert widget.scroll_layout.indexOf(widget.contact_analysis_section) < widget.scroll_layout.indexOf(
         widget.meta_section
     )
 
@@ -404,7 +404,7 @@ def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_s
     assert widget.data_panel.refreshed_pos_dir == pos_dir
     assert widget.hpc_cellpose_widget.refreshed_pos_dir == pos_dir
     assert widget.cell_workflow_widget.refreshed_pos_dir == pos_dir
-    assert widget.analysis_widget.refreshed_pos_dir == pos_dir
+    assert widget.contact_analysis_widget.refreshed_pos_dir == pos_dir
 
     widget.deleteLater()
     viewer.close()
@@ -419,7 +419,7 @@ def test_main_widget_no_longer_includes_track_conditioned_cell_boundary_section(
     assert not hasattr(widget, "cell_boundary_section")
     assert not hasattr(widget, "cell_boundary_workflow_widget")
     assert widget.scroll_layout.indexOf(widget.cell_section) < widget.scroll_layout.indexOf(
-        widget.analysis_section
+        widget.contact_analysis_section
     )
 
     state = widget.get_state()
@@ -461,7 +461,7 @@ def test_main_widget_top_level_sections_use_unnumbered_mocha_titles():
         widget.cellpose_section: "Cellpose",
         widget.nucleus_section: "Nucleus Segmentation & Tracking",
         widget.cell_section: "Cell Segmentation",
-        widget.analysis_section: "Analysis",
+        widget.contact_analysis_section: "Contact Analysis",
         widget.meta_section: "Meta Analyzer",
     }
 

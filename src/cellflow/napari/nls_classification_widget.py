@@ -1,4 +1,4 @@
-"""Napari widget for patching position artifacts with NLS classifications."""
+"""Napari widget for patching position contact-analysis files with NLS classifications."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,15 +6,15 @@ from pathlib import Path
 from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
-from cellflow.analysis.nls_classification import (
+from cellflow.contact_analysis.nls_classification import (
     NLSClassificationSummary,
-    patch_position_artifact_nls_classes,
+    patch_position_contact_analysis_nls_classes,
 )
 from cellflow.napari.ui_style import action_button, status_label
 
 
 class NLSClassificationWidget(QWidget):
-    """Run NLS-high/NLS-low classification for the active position artifact."""
+    """Run NLS-high/NLS-low classification for the active position contact-analysis file."""
 
     def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -51,8 +51,8 @@ class NLSClassificationWidget(QWidget):
         return self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
 
     @property
-    def artifact_path(self) -> Path | None:
-        return self._pos_dir / "4_analysis" / "position_analysis.h5" if self._pos_dir else None
+    def contact_analysis_path(self) -> Path | None:
+        return self._pos_dir / "4_contact_analysis" / "contact_analysis.h5" if self._pos_dir else None
 
     def refresh(self, pos_dir: Path | str | None) -> None:
         self._pos_dir = Path(pos_dir) if pos_dir is not None else None
@@ -64,8 +64,8 @@ class NLSClassificationWidget(QWidget):
             and self.nls_zavg_path.exists()
             and self.nucleus_labels_path is not None
             and self.nucleus_labels_path.exists()
-            and self.artifact_path is not None
-            and self.artifact_path.exists()
+            and self.contact_analysis_path is not None
+            and self.contact_analysis_path.exists()
         )
 
     def _update_status(self) -> None:
@@ -79,8 +79,8 @@ class NLSClassificationWidget(QWidget):
                 missing.append("NLS image")
             if self.nucleus_labels_path is None or not self.nucleus_labels_path.exists():
                 missing.append("nucleus labels")
-            if self.artifact_path is None or not self.artifact_path.exists():
-                missing.append("artifact")
+            if self.contact_analysis_path is None or not self.contact_analysis_path.exists():
+                missing.append("contact analysis")
             self._set_status(f"Status: missing {', '.join(missing)}.")
             return
         if not self.status_lbl.text() or self.status_lbl.text().startswith("Status: missing"):
@@ -122,10 +122,10 @@ class NLSClassificationWidget(QWidget):
             self._update_status()
             return
 
-        artifact_path = self.artifact_path
+        contact_analysis_path = self.contact_analysis_path
         nls_zavg_path = self.nls_zavg_path
         nucleus_labels_path = self.nucleus_labels_path
-        if artifact_path is None or nls_zavg_path is None or nucleus_labels_path is None:
+        if contact_analysis_path is None or nls_zavg_path is None or nucleus_labels_path is None:
             self._update_status()
             return
 
@@ -142,8 +142,8 @@ class NLSClassificationWidget(QWidget):
             }
         )
         def _worker():
-            return patch_position_artifact_nls_classes(
-                artifact_path,
+            return patch_position_contact_analysis_nls_classes(
+                contact_analysis_path,
                 nls_zavg_path,
                 nucleus_labels_path,
             )

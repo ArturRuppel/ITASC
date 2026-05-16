@@ -28,16 +28,16 @@ from cellflow.meta.catalog import (
 )
 
 try:  # pragma: no cover - local branch compatibility
-    from cellflow.analysis.artifact_reader import read_position_artifact
+    from cellflow.contact_analysis.reader import read_position_contact_analysis
 except ImportError:  # pragma: no cover - tests monkeypatch this when absent
-    def read_position_artifact(*_args, **_kwargs):  # type: ignore[no-redef]
-        raise ImportError("cellflow.analysis.artifact_reader is unavailable")
+    def read_position_contact_analysis(*_args, **_kwargs):  # type: ignore[no-redef]
+        raise ImportError("cellflow.contact_analysis.reader is unavailable")
 
 try:  # pragma: no cover - local branch compatibility
-    from cellflow.napari.artifact_visualization import add_artifact_layers
+    from cellflow.napari.contact_analysis_visualization import add_contact_analysis_layers
 except ImportError:  # pragma: no cover - tests monkeypatch this when absent
-    def add_artifact_layers(*_args, **_kwargs):  # type: ignore[no-redef]
-        raise ImportError("cellflow.napari.artifact_visualization is unavailable")
+    def add_contact_analysis_layers(*_args, **_kwargs):  # type: ignore[no-redef]
+        raise ImportError("cellflow.napari.contact_analysis_visualization is unavailable")
 
 
 class MetaSourceBrowserWidget(QWidget):
@@ -187,7 +187,7 @@ class MetaSourceBrowserWidget(QWidget):
         """Enable *Load Source* only when the selected record is ready."""
         record = self._current_record()
         self.load_source_btn.setEnabled(
-            record is not None and record.get("analysis_status") == "ready"
+            record is not None and record.get("contact_analysis_status") == "ready"
         )
 
     def _set_status(self, text: str) -> None:
@@ -427,10 +427,10 @@ class MetaSourceBrowserWidget(QWidget):
 
     def _on_load_source(self) -> None:
         record = self._current_record()
-        if record is None or record.get("analysis_status") != "ready":
+        if record is None or record.get("contact_analysis_status") != "ready":
             return
         if self.viewer is None:
             return
 
-        artifact = read_position_artifact(record["artifact_path"])
-        add_artifact_layers(self.viewer, artifact, prefix="[Meta] ")
+        contact_analysis = read_position_contact_analysis(record["contact_analysis_path"])
+        add_contact_analysis_layers(self.viewer, contact_analysis, prefix="[Meta] ")

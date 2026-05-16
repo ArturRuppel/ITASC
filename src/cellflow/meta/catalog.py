@@ -2,7 +2,7 @@
 
 Provides ``discover_study(root)`` which scans a root directory for
 condition/experiment/position trees and returns a sorted list of records
-describing each position and its analysis readiness.
+describing each position and its contact-analysis readiness.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-ARTIFACT_REL = Path("4_analysis") / "position_analysis.h5"
+CONTACT_ANALYSIS_REL = Path("4_contact_analysis") / "contact_analysis.h5"
 NUCLEUS_LABELS_REL = Path("2_nucleus") / "tracked_labels.tif"
 CELL_LABELS_REL = Path("3_cell") / "tracked_labels.tif"
 
@@ -32,10 +32,10 @@ def discover_study(root: Path) -> list[dict]:
     * ``experiment_id``
     * ``position_id``
     * ``position_path`` (:class:`~pathlib.Path`)
-    * ``artifact_path`` (:class:`~pathlib.Path`)
+    * ``contact_analysis_path`` (:class:`~pathlib.Path`)
     * ``nucleus_tracked_labels_path`` (:class:`~pathlib.Path`)
     * ``cell_tracked_labels_path`` (:class:`~pathlib.Path`)
-    * ``analysis_status`` --- ``"ready"`` when all three files exist,
+    * ``contact_analysis_status`` --- ``"ready"`` when all three files exist,
       otherwise ``"incomplete"``.
     """
     records: list[dict] = []
@@ -55,12 +55,12 @@ def discover_study(root: Path) -> list[dict]:
                 if not pos_path.is_dir():
                     continue
 
-                artifact_path = pos_path / ARTIFACT_REL
+                contact_analysis_path = pos_path / CONTACT_ANALYSIS_REL
                 nucleus_path = pos_path / NUCLEUS_LABELS_REL
                 cell_path = pos_path / CELL_LABELS_REL
 
                 all_exist = (
-                    artifact_path.is_file()
+                    contact_analysis_path.is_file()
                     and nucleus_path.is_file()
                     and cell_path.is_file()
                 )
@@ -70,10 +70,10 @@ def discover_study(root: Path) -> list[dict]:
                     "experiment_id": exp_path.name,
                     "position_id": pos_path.name,
                     "position_path": pos_path,
-                    "artifact_path": artifact_path,
+                    "contact_analysis_path": contact_analysis_path,
                     "nucleus_tracked_labels_path": nucleus_path,
                     "cell_tracked_labels_path": cell_path,
-                    "analysis_status": STATUS_READY if all_exist else STATUS_INCOMPLETE,
+                    "contact_analysis_status": STATUS_READY if all_exist else STATUS_INCOMPLETE,
                 })
 
     return records
@@ -109,7 +109,7 @@ def save_meta_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
         for record in records:
             normalized = _normalize_catalog_record(record, base_dir=catalog_path.parent)
             row = {
-                "path": _path_for_csv(normalized["artifact_path"], catalog_path.parent),
+                "path": _path_for_csv(normalized["contact_analysis_path"], catalog_path.parent),
                 "date": normalized["date"],
                 "condition": normalized["condition"],
                 "id": normalized["id"],
@@ -159,8 +159,8 @@ def merge_catalog_records(existing: Iterable[dict], incoming: Iterable[dict]) ->
 
     for record in list(existing) + list(incoming):
         normalized = _normalize_catalog_record(record)
-        artifact_path = normalized["artifact_path"]
-        resolved = _resolve_path(artifact_path)
+        contact_analysis_path = normalized["contact_analysis_path"]
+        resolved = _resolve_path(contact_analysis_path)
         if resolved in seen:
             continue
         seen.add(resolved)
@@ -173,21 +173,21 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
     """Return a record with required CSV fields and widget compatibility keys."""
     normalized = dict(record)
 
-    raw_path = normalized.get("path", normalized.get("artifact_path", ""))
-    artifact_path = Path(raw_path)
-    if base_dir is not None and not artifact_path.is_absolute():
-        artifact_path = base_dir / artifact_path
-    artifact_path = _resolve_path(artifact_path)
+    raw_path = normalized.get("path", normalized.get("contact_analysis_path", ""))
+    contact_analysis_path = Path(raw_path)
+    if base_dir is not None and not contact_analysis_path.is_absolute():
+        contact_analysis_path = base_dir / contact_analysis_path
+    contact_analysis_path = _resolve_path(contact_analysis_path)
 
     date = str(normalized.get("date", normalized.get("experiment_id", "unknown_date")))
     condition = str(
         normalized.get("condition", normalized.get("condition_id", "unknown_condition"))
     )
-    source_id = str(normalized.get("id", normalized.get("position_id", artifact_path.stem)))
+    source_id = str(normalized.get("id", normalized.get("position_id", contact_analysis_path.stem)))
     labels = str(normalized.get("labels", ""))
 
     normalized.update({
-        "path": artifact_path,
+        "path": contact_analysis_path,
         "date": date,
         "condition": condition,
         "id": source_id,
@@ -195,8 +195,8 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         "condition_id": condition,
         "experiment_id": date,
         "position_id": source_id,
-        "artifact_path": artifact_path,
-        "analysis_status": STATUS_READY if artifact_path.is_file() else STATUS_INCOMPLETE,
+        "contact_analysis_path": contact_analysis_path,
+        "contact_analysis_status": STATUS_READY if contact_analysis_path.is_file() else STATUS_INCOMPLETE,
     })
     return normalized
 
@@ -228,7 +228,7 @@ def _ids_for_h5_paths(paths: list[Path]) -> list[str]:
     for path in paths:
         parent_name = (
             path.parent.parent.name
-            if path.parent.name == "4_analysis"
+            if path.parent.name == "4_contact_analysis"
             else path.parent.name
         )
         source_id = (

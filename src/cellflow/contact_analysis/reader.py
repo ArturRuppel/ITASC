@@ -18,7 +18,7 @@ def _read_table(group: h5py.Group) -> dict[str, np.ndarray]:
 
 
 @dataclass(frozen=True)
-class PositionArtifactData:
+class PositionContactAnalysis:
     cells: dict[str, np.ndarray]
     edges: dict[str, np.ndarray]
     t1_events: dict[str, np.ndarray]
@@ -61,7 +61,7 @@ class PositionArtifactData:
         return np.column_stack([frames.astype(float, copy=False), ys.astype(float, copy=False), xs.astype(float, copy=False)])
 
 
-def read_position_artifact(path: str | Path) -> PositionArtifactData:
+def read_position_contact_analysis(path: str | Path) -> PositionContactAnalysis:
     path = Path(path)
     with h5py.File(path, "r") as h5:
         provenance = h5["provenance"].attrs
@@ -72,7 +72,7 @@ def read_position_artifact(path: str | Path) -> PositionArtifactData:
         t1_events = _read_table(h5["t1_events/table"])
         edge_coord_y = h5["edges/coordinates/y"][:]
         edge_coord_x = h5["edges/coordinates/x"][:]
-    return PositionArtifactData(
+    return PositionContactAnalysis(
         cells=cells,
         edges=edges,
         t1_events=t1_events,

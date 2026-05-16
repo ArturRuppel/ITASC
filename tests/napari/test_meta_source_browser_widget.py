@@ -14,7 +14,7 @@ from qtpy.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton, QTre
 
 
 # ---------------------------------------------------------------------------
-# fake viewer (mirrors tests/napari/test_analysis_widget.py pattern)
+# fake viewer (mirrors tests/napari/test_contact_analysis_widget.py pattern)
 # ---------------------------------------------------------------------------
 
 class _LayerCollection(dict):
@@ -63,17 +63,17 @@ def _load_module(monkeypatch):
 def _make_ready_position(root: Path, condition: str, experiment: str, position: str) -> Path:
     """Create a position with all required files and return its path."""
     pos_dir = root / condition / experiment / position
-    (pos_dir / "4_analysis").mkdir(parents=True)
+    (pos_dir / "4_contact_analysis").mkdir(parents=True)
     (pos_dir / "2_nucleus").mkdir()
     (pos_dir / "3_cell").mkdir()
-    (pos_dir / "4_analysis" / "position_analysis.h5").touch()
+    (pos_dir / "4_contact_analysis" / "contact_analysis.h5").touch()
     (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
     return pos_dir
 
 
-def _make_position_missing_artifact(root: Path, condition: str, experiment: str, position: str) -> Path:
-    """Create a position with labels but no artifact."""
+def _make_position_missing_contact_analysis(root: Path, condition: str, experiment: str, position: str) -> Path:
+    """Create a position with labels but no contact_analysis."""
     pos_dir = root / condition / experiment / position
     (pos_dir / "2_nucleus").mkdir(parents=True)
     (pos_dir / "3_cell").mkdir(parents=True)
@@ -358,7 +358,7 @@ def test_load_source_disabled_when_selected_record_is_not_ready(monkeypatch, tmp
     widget = mod.MetaSourceBrowserWidget()
 
     root = tmp_path / "study"
-    _make_position_missing_artifact(root, "c", "e", "pos00")
+    _make_position_missing_contact_analysis(root, "c", "e", "pos00")
 
     widget.refresh(root)
 
@@ -392,7 +392,7 @@ def test_load_source_enabled_updates_when_switching_to_ready_position(monkeypatc
 
     root = tmp_path / "study"
     _make_ready_position(root, "c", "e", "pos_ready")
-    _make_position_missing_artifact(root, "c", "e", "pos_bad")
+    _make_position_missing_contact_analysis(root, "c", "e", "pos_bad")
 
     widget.refresh(root)
 
@@ -411,8 +411,8 @@ def test_load_source_enabled_updates_when_switching_to_ready_position(monkeypatc
 # Load Source action
 # ---------------------------------------------------------------------------
 
-def test_load_source_reads_artifact_and_calls_add_artifact_layers(monkeypatch, tmp_path):
-    """Clicking Load Source reads the selected artifact and visualizes with '[Meta] ' prefix."""
+def test_load_source_reads_contact_analysis_and_calls_add_contact_analysis_layers(monkeypatch, tmp_path):
+    """Clicking Load Source reads the selected contact_analysis and visualizes with '[Meta] ' prefix."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
@@ -420,33 +420,33 @@ def test_load_source_reads_artifact_and_calls_add_artifact_layers(monkeypatch, t
 
     root = tmp_path / "study"
     pos_dir = _make_ready_position(root, "cond", "exp", "pos00")
-    artifact_path = pos_dir / "4_analysis" / "position_analysis.h5"
+    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
 
-    artifact = {"cells": [10, 20, 30]}
+    contact_analysis = {"cells": [10, 20, 30]}
     read_calls = []
     add_calls = []
 
     def fake_read(path):
         read_calls.append(path)
-        return artifact
+        return contact_analysis
 
-    def fake_add(viewer_arg, artifact_arg, **kwargs):
-        add_calls.append((viewer_arg, artifact_arg, kwargs))
+    def fake_add(viewer_arg, contact_analysis_arg, **kwargs):
+        add_calls.append((viewer_arg, contact_analysis_arg, kwargs))
         prefix = kwargs.get("prefix", "")
         viewer_arg.layers[f"{prefix}Cell labels"] = types.SimpleNamespace(
-            name=f"{prefix}Cell labels", data=artifact_arg["cells"]
+            name=f"{prefix}Cell labels", data=contact_analysis_arg["cells"]
         )
 
-    monkeypatch.setattr(mod, "read_position_artifact", fake_read)
-    monkeypatch.setattr(mod, "add_artifact_layers", fake_add)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", fake_read)
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
     widget.refresh(root)
     widget.load_source_btn.click()
 
-    assert read_calls == [artifact_path]
+    assert read_calls == [contact_analysis_path]
     assert len(add_calls) == 1
     assert add_calls[0][0] is viewer
-    assert add_calls[0][1] is artifact
+    assert add_calls[0][1] is contact_analysis
     assert add_calls[0][2]["prefix"] == "[Meta] "
     assert "[Meta] Cell labels" in viewer.layers
 
@@ -467,8 +467,8 @@ def test_load_source_does_nothing_when_disabled(monkeypatch, tmp_path):
     read_calls = []
     add_calls = []
 
-    monkeypatch.setattr(mod, "read_position_artifact", lambda p: read_calls.append(p))
-    monkeypatch.setattr(mod, "add_artifact_layers", lambda v, a, **kw: add_calls.append(True))
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda p: read_calls.append(p))
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", lambda v, a, **kw: add_calls.append(True))
 
     widget.refresh(root)
     assert widget.load_source_btn.isEnabled() is False
@@ -483,7 +483,7 @@ def test_load_source_does_nothing_when_disabled(monkeypatch, tmp_path):
 
 
 def test_load_source_uses_real_stored_record_paths(monkeypatch, tmp_path):
-    """The record's artifact_path and label paths are forwarded to read_position_artifact."""
+    """The record's contact_analysis_path and label paths are forwarded to read_position_contact_analysis."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
@@ -491,7 +491,7 @@ def test_load_source_uses_real_stored_record_paths(monkeypatch, tmp_path):
 
     root = tmp_path / "study"
     pos_dir = _make_ready_position(root, "c", "e", "p")
-    artifact_path = pos_dir / "4_analysis" / "position_analysis.h5"
+    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
 
     read_calls = []
 
@@ -499,13 +499,13 @@ def test_load_source_uses_real_stored_record_paths(monkeypatch, tmp_path):
         read_calls.append(path)
         return {"cells": []}
 
-    monkeypatch.setattr(mod, "read_position_artifact", fake_read)
-    monkeypatch.setattr(mod, "add_artifact_layers", lambda v, a, **kw: None)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", fake_read)
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", lambda v, a, **kw: None)
 
     widget.refresh(root)
     widget.load_source_btn.click()
 
-    assert read_calls == [artifact_path]
+    assert read_calls == [contact_analysis_path]
 
     widget.deleteLater()
     app.processEvents()
@@ -519,12 +519,12 @@ def test_open_catalog_loads_csv_and_populates_selectors(monkeypatch, tmp_path):
     """Opening a CSV catalog should populate the same cascading selectors."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    source = tmp_path / "position_analysis.h5"
+    source = tmp_path / "contact_analysis.h5"
     source.touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
         "path,date,condition,id,labels\n"
-        "position_analysis.h5,day1,treated,pos00,\n"
+        "contact_analysis.h5,day1,treated,pos00,\n"
     )
     widget = mod.MetaSourceBrowserWidget()
 
@@ -550,7 +550,7 @@ def test_add_h5_appends_ready_record(monkeypatch, tmp_path):
     """Adding one H5 file should append a generated ready catalog record."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    source = tmp_path / "position_analysis.h5"
+    source = tmp_path / "contact_analysis.h5"
     source.touch()
     widget = mod.MetaSourceBrowserWidget()
 
@@ -563,11 +563,11 @@ def test_add_h5_appends_ready_record(monkeypatch, tmp_path):
     widget.add_h5_btn.click()
 
     assert len(widget._records) == 1
-    assert widget._records[0]["artifact_path"] == source
-    assert widget._records[0]["analysis_status"] == "ready"
+    assert widget._records[0]["contact_analysis_path"] == source
+    assert widget._records[0]["contact_analysis_status"] == "ready"
     assert _combo_items(widget.condition_combo) == ["unknown_condition"]
     assert _combo_items(widget.experiment_combo) == ["unknown_date"]
-    assert _combo_items(widget.position_combo) == ["position_analysis"]
+    assert _combo_items(widget.position_combo) == ["contact_analysis"]
 
     widget.deleteLater()
     app.processEvents()
@@ -577,7 +577,7 @@ def test_add_h5_uses_typed_catalog_metadata(monkeypatch, tmp_path):
     """Adding one H5 should store the metadata currently typed into the form."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    source = tmp_path / "position_analysis.h5"
+    source = tmp_path / "contact_analysis.h5"
     source.touch()
     widget = mod.MetaSourceBrowserWidget()
     widget.condition_edit.setText("treated")
@@ -609,8 +609,8 @@ def test_autodiscover_folder_appends_multiple_h5_records_and_skips_duplicates(mo
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     root = tmp_path / "study"
-    first = root / "pos_a" / "position_analysis.h5"
-    second = root / "pos_b" / "position_analysis.h5"
+    first = root / "pos_a" / "contact_analysis.h5"
+    second = root / "pos_b" / "contact_analysis.h5"
     first.parent.mkdir(parents=True)
     second.parent.mkdir()
     first.touch()
@@ -626,7 +626,7 @@ def test_autodiscover_folder_appends_multiple_h5_records_and_skips_duplicates(mo
 
     widget.autodiscover_folder_btn.click()
 
-    assert [record["artifact_path"] for record in widget._records] == [first, second]
+    assert [record["contact_analysis_path"] for record in widget._records] == [first, second]
     assert _combo_items(widget.position_combo) == ["pos_a", "pos_b"]
 
     widget.deleteLater()
@@ -638,8 +638,8 @@ def test_autodiscover_folder_uses_typed_metadata_and_auto_positions(monkeypatch,
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     root = tmp_path / "project"
-    first = root / "pos_a" / "4_analysis" / "position_analysis.h5"
-    second = root / "pos_b" / "4_analysis" / "position_analysis.h5"
+    first = root / "pos_a" / "4_contact_analysis" / "contact_analysis.h5"
+    second = root / "pos_b" / "4_contact_analysis" / "contact_analysis.h5"
     first.parent.mkdir(parents=True)
     second.parent.mkdir(parents=True)
     first.touch()
@@ -672,7 +672,7 @@ def test_save_catalog_writes_current_records_to_active_csv(monkeypatch, tmp_path
     """Saving with an active CSV path should write through the backend helper."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    source = tmp_path / "position_analysis.h5"
+    source = tmp_path / "contact_analysis.h5"
     source.touch()
     csv_path = tmp_path / "catalog.csv"
     widget = mod.MetaSourceBrowserWidget()
@@ -682,7 +682,7 @@ def test_save_catalog_writes_current_records_to_active_csv(monkeypatch, tmp_path
     widget.save_catalog_btn.click()
 
     assert csv_path.exists()
-    assert "position_analysis.h5" in csv_path.read_text()
+    assert "contact_analysis.h5" in csv_path.read_text()
 
     widget.deleteLater()
     app.processEvents()
@@ -692,7 +692,7 @@ def test_save_catalog_prompts_for_path_when_no_active_csv(monkeypatch, tmp_path)
     """Saving a new catalog should ask for a destination path once."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    source = tmp_path / "position_analysis.h5"
+    source = tmp_path / "contact_analysis.h5"
     source.touch()
     csv_path = tmp_path / "new_catalog.csv"
     widget = mod.MetaSourceBrowserWidget()

@@ -1,5 +1,5 @@
-"""Analysis artifact generation for CellFlow."""
+"""Per-position contact analysis (cell-cell edges, T1 events, NLS classes)."""
 
-from .position_artifact import build_position_analysis_artifact
+from .build import build_position_contact_analysis
 
-__all__ = ["build_position_analysis_artifact"]
+__all__ = ["build_position_contact_analysis"]

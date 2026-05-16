@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
-from cellflow.analysis.nls_classification import NLSClassificationSummary
+from cellflow.contact_analysis.nls_classification import NLSClassificationSummary
 
 
 class _FakeWorker:
@@ -75,14 +75,14 @@ def test_nls_classification_widget_button_runs_classifier_with_position_paths(mo
             low_track_count=2,
         )
 
-    monkeypatch.setattr(mod, "patch_position_artifact_nls_classes", fake_patch)
+    monkeypatch.setattr(mod, "patch_position_contact_analysis_nls_classes", fake_patch)
     pos_dir = tmp_path / "pos00"
     (pos_dir / "0_input").mkdir(parents=True)
     (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "4_analysis").mkdir()
+    (pos_dir / "4_contact_analysis").mkdir()
     (pos_dir / "0_input" / "NLS_zavg.tif").touch()
     (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "4_analysis" / "position_analysis.h5").touch()
+    (pos_dir / "4_contact_analysis" / "contact_analysis.h5").touch()
 
     widget = mod.NLSClassificationWidget()
     widget.refresh(pos_dir)
@@ -90,7 +90,7 @@ def test_nls_classification_widget_button_runs_classifier_with_position_paths(mo
 
     assert calls == [
         (
-            pos_dir / "4_analysis" / "position_analysis.h5",
+            pos_dir / "4_contact_analysis" / "contact_analysis.h5",
             pos_dir / "0_input" / "NLS_zavg.tif",
             pos_dir / "2_nucleus" / "tracked_labels.tif",
         )
@@ -110,13 +110,13 @@ def test_nls_classification_widget_disables_button_until_required_files_exist(mo
     pos_dir = tmp_path / "pos01"
     (pos_dir / "0_input").mkdir(parents=True)
     (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "4_analysis").mkdir()
+    (pos_dir / "4_contact_analysis").mkdir()
 
     widget.refresh(pos_dir)
 
     assert widget.classify_btn.isEnabled() is False
     assert "NLS image" in widget.status_lbl.text()
-    assert "artifact" in widget.status_lbl.text()
+    assert "contact analysis" in widget.status_lbl.text()
 
     widget.deleteLater()
     app.processEvents()

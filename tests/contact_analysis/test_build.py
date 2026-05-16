@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.analysis.position_artifact import (
-    build_position_analysis_artifact,
+from cellflow.contact_analysis.build import (
+    build_position_contact_analysis,
     assign_persistent_edge_ids,
     _coordinate_segments,
     _extract_frame_cell_edges,
@@ -23,15 +23,15 @@ def _write_position(tmp_path, cell_stack, nucleus_stack):
     return pos_dir
 
 
-def test_build_position_artifact_writes_schema_and_references_label_paths(tmp_path):
+def test_build_position_contact_analysis_writes_schema_and_references_label_paths(tmp_path):
     frame = np.zeros((5, 6), dtype=np.uint16)
     frame[:, :3] = 1
     frame[:, 3:] = 2
     cell_stack = np.stack([frame, frame])
     pos_dir = _write_position(tmp_path, cell_stack, cell_stack.copy())
-    output_path = tmp_path / "position_analysis.h5"
+    output_path = tmp_path / "contact_analysis.h5"
 
-    build_position_analysis_artifact(pos_dir, output_path)
+    build_position_contact_analysis(pos_dir, output_path)
 
     with h5py.File(output_path, "r") as h5:
         assert h5["provenance"].attrs["source_position_path"] == str(pos_dir)
@@ -87,7 +87,7 @@ def test_build_position_artifact_writes_schema_and_references_label_paths(tmp_pa
         assert len(h5["t1_events/table/t1_event_id"]) == 0
 
 
-def test_build_position_artifact_accepts_cellflow_v2_label_paths(tmp_path):
+def test_build_position_contact_analysis_accepts_cellflow_v2_label_paths(tmp_path):
     pos_dir = tmp_path / "pos00"
     (pos_dir / "2_nucleus").mkdir(parents=True)
     (pos_dir / "3_cell").mkdir()
@@ -99,7 +99,7 @@ def test_build_position_artifact_accepts_cellflow_v2_label_paths(tmp_path):
     tifffile.imwrite(cell_path, labels)
     tifffile.imwrite(nucleus_path, labels)
 
-    output_path = build_position_analysis_artifact(
+    output_path = build_position_contact_analysis(
         pos_dir,
         tmp_path / "analysis.h5",
         cell_tracked_labels_path=cell_path,
@@ -111,7 +111,7 @@ def test_build_position_artifact_accepts_cellflow_v2_label_paths(tmp_path):
         assert h5["provenance"].attrs["nucleus_tracked_labels_path"] == str(nucleus_path)
 
 
-def test_build_position_artifact_reports_progress_in_order(tmp_path):
+def test_build_position_contact_analysis_reports_progress_in_order(tmp_path):
     frame = np.zeros((4, 5), dtype=np.uint16)
     frame[:, :2] = 1
     frame[:, 2:] = 2
@@ -123,7 +123,7 @@ def test_build_position_artifact_reports_progress_in_order(tmp_path):
     def record(done, total, message):
         progress.append((done, total, message))
 
-    build_position_analysis_artifact(pos_dir, output_path, progress_cb=record)
+    build_position_contact_analysis(pos_dir, output_path, progress_cb=record)
 
     assert progress == [
         (1, 6, "read labels"),
@@ -135,7 +135,7 @@ def test_build_position_artifact_reports_progress_in_order(tmp_path):
     ]
 
 
-def test_build_position_artifact_rejects_cell_nucleus_identity_mismatch(tmp_path):
+def test_build_position_contact_analysis_rejects_cell_nucleus_identity_mismatch(tmp_path):
     cell = np.zeros((1, 4, 4), dtype=np.uint16)
     cell[0, :, :2] = 1
     nucleus = cell.copy()
@@ -143,7 +143,7 @@ def test_build_position_artifact_rejects_cell_nucleus_identity_mismatch(tmp_path
     pos_dir = _write_position(tmp_path, cell, nucleus)
 
     with pytest.raises(ValueError) as exc_info:
-        build_position_analysis_artifact(pos_dir, tmp_path / "bad.h5")
+        build_position_contact_analysis(pos_dir, tmp_path / "bad.h5")
 
     message = str(exc_info.value)
     assert "frame 0" in message

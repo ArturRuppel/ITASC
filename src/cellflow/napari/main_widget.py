@@ -19,7 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari.analysis_widget import AnalysisWidget
+from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.data_prep_widget import DataPrepWidget
@@ -164,10 +164,10 @@ class CellFlowMainWidget(QWidget):
         )
         self._connect_label_selection_sync()
 
-        self.analysis_widget = AnalysisWidget(self.viewer)
-        self.analysis_section = CollapsibleSection(
-            "Analysis",
-            self.analysis_widget,
+        self.contact_analysis_widget = ContactAnalysisWidget(self.viewer)
+        self.contact_analysis_section = CollapsibleSection(
+            "Contact Analysis",
+            self.contact_analysis_widget,
             expanded=False,
             title_role="stage",
             title_level=0,
@@ -187,7 +187,7 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
-        self.scroll_layout.addWidget(self.analysis_section)
+        self.scroll_layout.addWidget(self.contact_analysis_section)
         self.scroll_layout.addWidget(self.meta_section)
 
         # Add stretch at the end
@@ -403,7 +403,7 @@ class CellFlowMainWidget(QWidget):
         self._cellpose_widget.refresh(pos_dir)
         self.nucleus_workflow_widget.refresh(pos_dir)
         self.cell_workflow_widget.refresh(pos_dir)
-        self.analysis_widget.refresh(pos_dir)
+        self.contact_analysis_widget.refresh(pos_dir)
         project_root = Path(path_text) if path_text and path_text != "[no project]" else None
         self.meta_source_browser.refresh(project_root)
         # Emit signal for other widgets

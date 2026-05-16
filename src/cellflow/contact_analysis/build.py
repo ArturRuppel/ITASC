@@ -54,7 +54,7 @@ class T1Record:
         return self.gaining_pair[1]
 
 
-def build_position_analysis_artifact(
+def build_position_contact_analysis(
     position_path: str | Path,
     output_path: str | Path,
     *,
@@ -63,7 +63,7 @@ def build_position_analysis_artifact(
     edge_extraction_params: dict | None = None,
     progress_cb: Callable[[int, int, str], None] | None = None,
 ) -> Path:
-    """Build the canonical per-position analysis HDF5 artifact."""
+    """Build the canonical per-position contact-analysis HDF5 file."""
     total = 6
     position_path = Path(position_path)
     output_path = Path(output_path)

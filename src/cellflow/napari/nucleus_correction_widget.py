@@ -24,7 +24,7 @@ from cellflow.napari._widget_helpers import (
 )
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari.correction_widget import CorrectionWidget
-from cellflow.napari.artifact_visualization import (
+from cellflow.napari.contact_analysis_visualization import (
     _categorical_colors,
     _nucleus_centroids_by_track,
     _rasterize_track_image,
