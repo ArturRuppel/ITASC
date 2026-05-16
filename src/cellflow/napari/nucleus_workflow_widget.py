@@ -359,6 +359,13 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         ):
             setattr(self, name, getattr(correction, name))
 
+        # Qt 5 skips shortcuts whose parent widget is hidden, even for
+        # ApplicationShortcut context.  Reparent them to this widget (which
+        # stays visible) so they continue to fire once correction mode is
+        # activated.
+        for sc in correction._correction_shortcuts:
+            sc.setParent(self)
+
     # ================================================================
     # Signals
     # ================================================================

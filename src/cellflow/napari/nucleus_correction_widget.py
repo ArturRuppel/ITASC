@@ -1078,7 +1078,7 @@ class NucleusCorrectionWidget(QWidget):
             ("Q", self._on_retrack_backward),
             ("E", self._on_retrack_forward),
             ("B", self._on_anchor_here),
-            ("V", self._on_validate_track),
+            ("V", lambda: self._kb_toggle_cell_validation(None)),
             ("S", self._on_save_tracked),
             ("Z", lambda: self._on_swap_step(direction="smaller")),
             ("C", lambda: self._on_swap_step(direction="larger")),
