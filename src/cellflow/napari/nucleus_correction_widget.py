@@ -315,7 +315,6 @@ class NucleusCorrectionWidget(QWidget):
             [
                 ("Middle-click or Delete", "Erase cell"),
                 ("Ctrl+Left-click", "Merge selected with clicked cell"),
-                ("Ctrl+Left-click twice", "Split by two seeds"),
                 ("Right-click variants", "Swap labels"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),

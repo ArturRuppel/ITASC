@@ -36,7 +36,6 @@ from cellflow.correction.labels import (
     fix_label_semiholes,
     merge_cells,
     relabel_cell,
-    split_across,
     split_draw,
     swap_labels,
 )
@@ -90,9 +89,6 @@ class CorrectionWidget(QWidget):
         self._selected_label: int = 0
         self._selected_pos = None
         self._selected_t: int = -1
-        self._ctrl_click_first = None
-        self._ctrl_click_first_label: int = 0
-        self._ctrl_click_first_t: int = -1
         self._swap_first_pos = None
         self._swap_first_t: int = -1
 
@@ -279,7 +275,6 @@ class CorrectionWidget(QWidget):
             [
                 ("Middle-click or Delete", "Erase cell"),
                 ("Ctrl+Left-click", "Merge selected with clicked cell"),
-                ("Ctrl+Left-click twice", "Split by two seeds"),
                 ("Right-click variants", "Swap labels"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
@@ -341,9 +336,6 @@ class CorrectionWidget(QWidget):
         self._selected_label = 0
         self._selected_pos = None
         self._selected_t = -1
-        self._ctrl_click_first = None
-        self._ctrl_click_first_label = 0
-        self._ctrl_click_first_t = -1
         self._swap_first_pos = None
         self._swap_first_t = -1
 
@@ -422,9 +414,6 @@ class CorrectionWidget(QWidget):
         self._selected_label = 0
         self._selected_pos = None
         self._selected_t = -1
-        self._ctrl_click_first = None
-        self._ctrl_click_first_label = 0
-        self._ctrl_click_first_t = -1
         self._swap_first_pos = None
         self._swap_first_t = -1
         self._saved_viewer_drag_cbs = []
@@ -1024,73 +1013,30 @@ class CorrectionWidget(QWidget):
                     if lab == 0:
                         self._set_status("Click on a cell, not background")
                         return
-
-                    if self._ctrl_click_first is not None:
-                        if t != self._ctrl_click_first_t:
-                            self._ctrl_click_first = pos
-                            self._ctrl_click_first_label = lab
-                            self._ctrl_click_first_t = t
-                            self._update_highlight(t, lab)
-                            self._set_status(f"Frame changed — restarted: label {lab} selected")
-                        elif lab == self._ctrl_click_first_label:
-                            before = seg2d.copy()
-                            ok = split_across(
-                                seg2d, self._image_frame(t),
-                                self._ctrl_click_first, pos,
-                                new_label=self._next_free_label(),
-                            )
-                            self._set_status(
-                                f"Split — Active on '{_layer.name}'"
-                                if ok else "Split failed — seeds too close or result too small"
-                            )
-                            if ok:
-                                self._record_history(_layer, t, before)
-                            _layer.refresh()
-                            self._ctrl_click_first = None
-                            self._ctrl_click_first_label = 0
-                            self._ctrl_click_first_t = -1
-                            self._update_highlight(t, _label_at(seg2d, pos))
-                        else:
-                            self._ctrl_click_first = None
-                            self._ctrl_click_first_label = 0
-                            self._ctrl_click_first_t = -1
-
-                    if self._ctrl_click_first is None:
-                        if (
-                            self._selected_label != 0
-                            and lab != self._selected_label
-                            and np.any(seg2d == self._selected_label)
-                        ):
-                            before = seg2d.copy()
-                            ok = merge_cells(
-                                seg2d, pos, pos,
-                                label_a=lab, label_b=self._selected_label,
-                            )
-                            self._set_status(
-                                f"Merged — Active on '{_layer.name}'"
-                                if ok else "Merge failed — labels not touching"
-                            )
-                            if ok:
-                                self._record_history(_layer, t, before)
-                            _layer.refresh()
-                            self._selected_label = 0
-                            self._selected_pos = None
-                            self._selected_t = -1
-                            self._update_highlight(t, _label_at(seg2d, pos))
-                        else:
-                            self._ctrl_click_first = pos
-                            self._ctrl_click_first_label = lab
-                            self._ctrl_click_first_t = t
-                            self._update_highlight(t, lab)
-                            self._set_status(
-                                f"Label {lab} — Ctrl+click same cell again for second split seed"
-                            )
+                    if (
+                        self._selected_label != 0
+                        and lab != self._selected_label
+                        and np.any(seg2d == self._selected_label)
+                    ):
+                        before = seg2d.copy()
+                        ok = merge_cells(
+                            seg2d, pos, pos,
+                            label_a=lab, label_b=self._selected_label,
+                        )
+                        self._set_status(
+                            f"Merged — Active on '{_layer.name}'"
+                            if ok else "Merge failed — labels not touching"
+                        )
+                        if ok:
+                            self._record_history(_layer, t, before)
+                        _layer.refresh()
+                        self._selected_label = 0
+                        self._selected_pos = None
+                        self._selected_t = -1
+                        self._update_highlight(t, _label_at(seg2d, pos))
                     return
 
                 if btn == 1 and not mods:
-                    self._ctrl_click_first = None
-                    self._ctrl_click_first_label = 0
-                    self._ctrl_click_first_t = -1
                     self._swap_first_pos = None
                     self._swap_first_t = -1
                     lab = _label_at(seg2d, pos)
