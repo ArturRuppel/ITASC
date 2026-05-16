@@ -280,6 +280,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         # are reparented into this layout below, so keep the owner widget hidden
         # to prevent its default geometry from intercepting header clicks.
         self.nucleus_correction_widget.hide()
+        root.addWidget(self.ultrack_db_active_btn)
+        root.addWidget(self.ultrack_db_browser_section)
         root.addWidget(self.correction_active_btn)
         root.addWidget(self.correction_mode_section)
 
@@ -295,6 +297,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.validate_track_btn = correction.validate_track_btn
         self.anchor_here_btn = correction.anchor_here_btn
         self.remove_unvalidated_btn = correction.remove_unvalidated_btn
+        self.commit_btn = correction.commit_btn
         self.correction_status_lbl = correction.status_lbl
         self.validation_counter_lbl = correction.validation_counter_lbl
         self.extend_max_dist_spin = correction.extend_max_dist_spin
@@ -310,7 +313,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.retrack_params_section = correction.retrack_params_section
         self.correction_widget = correction.correction_widget
         self.correction_shortcuts_section = correction.shortcuts_section
-        self.artifact_cleanup_section = correction.artifact_cleanup_section
         self.correction_mode_section = correction.section
         self._correction_owned_layers = correction._correction_owned_layers
         self._validated_overlay = correction._validated_overlay
@@ -328,6 +330,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             "_on_load_tracked",
             "_on_reassign_ids",
             "_on_reassign_ids_done",
+            "_commit_reassign_ids",
+            "_on_commit",
             "_selected_correction_target",
             "_validated_correction_for_frame",
             "_on_validate_track",
@@ -339,6 +343,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             "_apply_swap",
             "_on_retrack_forward",
             "_on_retrack_backward",
+            "_remove_unvalidated_from_layer",
             "_on_remove_unvalidated_labels",
             "_on_correction_worker_error",
             "_install_correction_shortcuts",

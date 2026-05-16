@@ -119,6 +119,8 @@ def test_database_browser_activate_button_expands_and_deactivation_removes_layer
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
+    widget._ultrack_db_path = lambda: Path(__file__)
+    widget._refresh_ultrack_db_browser = lambda: None
 
     viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint8), name="Ultrack DB Preview")
     viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint8), name="Ultrack DB Selection")
@@ -138,6 +140,25 @@ def test_database_browser_activate_button_expands_and_deactivation_removes_layer
     assert "Ultrack DB Preview" not in viewer.layers
     assert "Ultrack DB Selection" not in viewer.layers
     assert "Ultrack DB Annotations" not in viewer.layers
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_database_browser_activation_without_database_restores_button_and_section(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    widget._pos_dir = tmp_path / "Position_1"
+    widget._pos_dir.mkdir()
+
+    widget.ultrack_db_active_btn.setChecked(True)
+
+    assert widget.ultrack_db_active_btn.isChecked() is False
+    assert widget.ultrack_db_browser_section.is_expanded is False
+    assert widget._ultrack_db_browser_active is False
+    assert widget.ultrack_db_refresh_btn.isEnabled() is False
+    assert "data.db" in widget.ultrack_db_section_status_lbl.text()
 
     widget.deleteLater()
     viewer.close()

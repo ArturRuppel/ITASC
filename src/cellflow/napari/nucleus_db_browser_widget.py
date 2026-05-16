@@ -96,7 +96,7 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         db_btn_lay = QHBoxLayout(db_btn_row)
         db_btn_lay.setContentsMargins(0, 0, 0, 0)
         db_btn_lay.setSpacing(4)
-        self.active_btn = QPushButton("Activate")
+        self.active_btn = QPushButton("Activate Database Browser")
         self.active_btn.setCheckable(True)
         self.active_btn.setChecked(False)
         self.active_btn.setToolTip(
@@ -106,7 +106,6 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         self.refresh_btn.setToolTip("Refresh Ultrack database browser")
         self.refresh_btn.setIcon(QIcon.fromTheme("view-refresh"))
         self.refresh_btn.setEnabled(False)
-        db_btn_lay.addWidget(self.active_btn)
         db_btn_lay.addWidget(self.refresh_btn)
         lay.addWidget(db_btn_row)
 
@@ -173,8 +172,9 @@ class NucleusUltrackDbBrowserMixin:
             title_role="indicators",
             title_level=1,
         )
+        self.ultrack_db_browser_widget.section._toggle.setVisible(False)
+        self.ultrack_db_browser_widget.section._toggle.setEnabled(False)
         self._alias_ultrack_db_browser_controls()
-        root.addWidget(self.ultrack_db_browser_section)
 
     def _alias_ultrack_db_browser_controls(self) -> None:
         browser = self.ultrack_db_browser_widget
@@ -235,16 +235,24 @@ class NucleusUltrackDbBrowserMixin:
         QTimer.singleShot(150, self._refresh_ultrack_db_browser)
 
     def _on_ultrack_db_activate(self, checked: bool) -> None:
+        if checked:
+            db_path = self._ultrack_db_path()
+            if db_path is None or not db_path.exists():
+                self._ultrack_db_browser_active = False
+                old = self.ultrack_db_active_btn.blockSignals(True)
+                try:
+                    self.ultrack_db_active_btn.setChecked(False)
+                finally:
+                    self.ultrack_db_active_btn.blockSignals(old)
+                self._set_ultrack_db_controls_enabled(False)
+                self.ultrack_db_browser_section.collapse()
+                self._set_ultrack_db_status(
+                    "data.db not found — run DB Generation first."
+                )
+                return
+
         self._ultrack_db_browser_active = checked
-        self.ultrack_db_active_btn.setText("Deactivate" if checked else "Activate")
-        self.ultrack_db_refresh_btn.setEnabled(checked)
-        self.ultrack_db_source_slider.setEnabled(checked)
-        self.ultrack_db_hierarchy_slider.setEnabled(checked)
-        self.ultrack_db_prob_alpha_check.setEnabled(checked)
-        self.ultrack_db_connected_focus_check.setEnabled(checked)
-        self.ultrack_db_edge_alpha_check.setEnabled(checked)
-        self.ultrack_db_show_validated_check.setEnabled(checked)
-        self.ultrack_db_show_fake_check.setEnabled(checked)
+        self._set_ultrack_db_controls_enabled(checked)
         if checked:
             self.ultrack_db_browser_section.expand()
             self._ultrack_db_frame_initialized = False
@@ -252,6 +260,19 @@ class NucleusUltrackDbBrowserMixin:
         else:
             self._remove_ultrack_db_browser_layers()
             self.ultrack_db_browser_section.collapse()
+
+    def _set_ultrack_db_controls_enabled(self, enabled: bool) -> None:
+        self.ultrack_db_active_btn.setText(
+            "Deactivate Database Browser" if enabled else "Activate Database Browser"
+        )
+        self.ultrack_db_refresh_btn.setEnabled(enabled)
+        self.ultrack_db_source_slider.setEnabled(enabled)
+        self.ultrack_db_hierarchy_slider.setEnabled(enabled)
+        self.ultrack_db_prob_alpha_check.setEnabled(enabled)
+        self.ultrack_db_connected_focus_check.setEnabled(enabled)
+        self.ultrack_db_edge_alpha_check.setEnabled(enabled)
+        self.ultrack_db_show_validated_check.setEnabled(enabled)
+        self.ultrack_db_show_fake_check.setEnabled(enabled)
 
     def _remove_ultrack_db_browser_layers(self) -> None:
         self._remove_ultrack_db_preview_selector()

@@ -11,7 +11,10 @@ import numpy as np
 from napari.utils.notifications import show_error
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -135,13 +138,11 @@ class CorrectionWidget(QWidget):
         attrib.setOpenExternalLinks(True)
         attrib.setWordWrap(True)
         muted_label(attrib, size_pt=9)
-        root.addWidget(attrib)
 
-        self._outline_btn = QPushButton("Show outlines only")
-        self._outline_btn.setCheckable(True)
+        self._outline_btn = QCheckBox("Show outlines only")
         self._outline_btn.setEnabled(False)
         action_button(self._outline_btn, expand=True)
-        self._outline_btn.clicked.connect(self._toggle_outline)
+        self._outline_btn.toggled.connect(self._toggle_outline)
         root.addWidget(self._outline_btn)
 
         self._reset_mode_btn = QPushButton("⚠  Restore correction mode")
@@ -233,12 +234,9 @@ class CorrectionWidget(QWidget):
         self._goto_cell_id.setRange(0, 999_999)
         self._goto_cell_id.setValue(0)
         self._goto_cell_id.setSpecialValueText("—")
+        self._goto_cell_id.setEnabled(False)
+        self._goto_cell_id.valueChanged.connect(self._goto_cell)
         id_row.addWidget(self._goto_cell_id)
-        self._goto_btn = QPushButton("Go")
-        self._goto_btn.setEnabled(False)
-        action_button(self._goto_btn, expand=True)
-        self._goto_btn.clicked.connect(self._goto_cell)
-        id_row.addWidget(self._goto_btn)
         inspect_lay.addLayout(id_row)
 
         self._inspect_frames_label = QLabel("")
@@ -257,42 +255,68 @@ class CorrectionWidget(QWidget):
                 root.addWidget(ref_group)
             root.addWidget(inspect_group)
 
+        self._attrib_lbl = attrib
+        if self._show_activate_btn:
+            root.addWidget(self._attrib_lbl)
         root.addStretch()
 
     def build_shortcuts_widget(self) -> QWidget:
         group = QGroupBox("Correction shortcuts")
         lay = QVBoxLayout(group)
         lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(6)
-        for key, desc in [
-            ("Left-click",                         "Select / highlight cell"),
-            ("Middle-click",                       "Erase clicked cell"),
-            ("Delete",                             "Erase selected cell"),
-            ("Ctrl+Left-click (cell selected)",    "Merge with clicked cell"),
-            ("Ctrl+Left-click × 2 (same cell)",    "Split (watershed, 2 seeds)"),
-            ("Right-click (cell selected)",         "Swap with clicked cell (same or other frame)"),
-            ("Ctrl+Right-click (cell selected)",   "Swap with clicked cell (same frame)"),
-            ("Ctrl+Right-click → Right-click",     "Swap (two-step, no selection)"),
-            ("Ctrl-z",                             "Undo"),
-            ("Shift+Left / Shift+Right",           "Previous / next cell (current frame first, then other frames)"),
-            ("Shift+Right-drag",                   "Split by drawn line"),
-            ("Shift+Left-drag",                    "Draw cell path (extends or creates)"),
-        ]:
-            row = QWidget()
-            row_lay = QVBoxLayout(row)
-            row_lay.setContentsMargins(0, 0, 0, 0)
-            row_lay.setSpacing(1)
+        lay.setSpacing(8)
+        self._add_shortcut_group(
+            lay,
+            "Selection",
+            [
+                ("Left-click", "Select / highlight cell"),
+                ("Shift+Left / Shift+Right", "Previous / next cell"),
+            ],
+        )
+        self._add_shortcut_group(
+            lay,
+            "Manual Labels",
+            [
+                ("Middle-click or Delete", "Erase cell"),
+                ("Ctrl+Left-click", "Merge selected with clicked cell"),
+                ("Ctrl+Left-click twice", "Split by two seeds"),
+                ("Right-click variants", "Swap labels"),
+                ("Shift+Left-drag", "Draw / extend cell path"),
+                ("Shift+Right-drag", "Split by drawn line"),
+            ],
+        )
+        self._add_shortcut_group(lay, "History", [("Ctrl+Z", "Undo")])
+        return group
 
-            key_lbl = QLabel(f"<tt>{key}</tt>")
-            key_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+    @staticmethod
+    def _add_shortcut_group(
+        lay: QVBoxLayout,
+        title: str,
+        rows: list[tuple[str, str]],
+    ) -> None:
+        title_lbl = QLabel(title)
+        title_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        lay.addWidget(title_lbl)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Plain)
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background-color: rgba(255, 255, 255, 0.25); border: none;")
+        lay.addWidget(sep)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(2)
+        for row, (key, desc) in enumerate(rows):
+            key_lbl = QLabel(key)
+            key_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             desc_lbl = QLabel(desc)
             desc_lbl.setWordWrap(True)
             desc_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-
-            row_lay.addWidget(key_lbl)
-            row_lay.addWidget(desc_lbl)
-            lay.addWidget(row)
-        return group
+            grid.addWidget(key_lbl, row, 0)
+            grid.addWidget(desc_lbl, row, 1)
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
 
     # ── activation ────────────────────────────────────────────────────────────
 
@@ -351,7 +375,7 @@ class CorrectionWidget(QWidget):
         self._set_cleanup_enabled(True)
         self._outline_btn.setChecked(True)
         self._toggle_outline(True)
-        self._goto_btn.setEnabled(True)
+        self._goto_cell_id.setEnabled(True)
         self._set_status(f"Active on '{layer.name}'")
 
     def _deactivate(self) -> None:
@@ -410,7 +434,7 @@ class CorrectionWidget(QWidget):
         self._outline_btn.setChecked(False)
         self._outline_btn.setEnabled(False)
         self._set_cleanup_enabled(False)
-        self._goto_btn.setEnabled(False)
+        self._goto_cell_id.setEnabled(False)
         self._goto_cell_id.setValue(0)
         self._inspect_frames_label.setText("")
         self._set_status("Inactive")
@@ -632,6 +656,11 @@ class CorrectionWidget(QWidget):
         previous_label = self._selected_label
         self._selected_label = lab
         self._selected_t = t if lab != 0 else -1
+        old = self._goto_cell_id.blockSignals(True)
+        try:
+            self._goto_cell_id.setValue(int(lab))
+        finally:
+            self._goto_cell_id.blockSignals(old)
         hl = self._get_highlight_layer()
         if lab == 0 or self._layer is None:
             hl.data = []

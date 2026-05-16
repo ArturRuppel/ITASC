@@ -570,7 +570,7 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     assert widget.segmentation_inputs_section.is_expanded is True
     assert widget.tracking_ultrack_section.is_expanded is False
     assert widget.correction_mode_section.is_expanded is False
-    assert widget.correction_shortcuts_section.is_expanded is True
+    assert widget.correction_shortcuts_section.is_expanded is False
     assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
     correction_inner = widget.correction_mode_section._content_frame.layout().itemAt(0).widget()
     correction_layout = correction_inner.layout()
@@ -594,23 +594,26 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     }
 
     assert "Activate Correction" not in correction_button_texts
-    assert "Save tracked (S)" in correction_button_texts
+    assert "Save tracked (S)" not in correction_button_texts
     assert "Load Labels" not in correction_button_texts
     assert "Save Labels" not in correction_button_texts
     assert "Extend selected" not in correction_button_texts
     assert "Retrack selected" not in correction_button_texts
-    assert "Reassign ID" in correction_button_texts
-    assert "Remove unvalidated" in correction_button_texts
+    assert "Reassign ID" not in correction_button_texts
+    assert "Remove unvalidated" not in correction_button_texts
+    assert "Validate track" not in correction_button_texts
+    assert "Anchor here" not in correction_button_texts
+    assert "Commit" in correction_button_texts
     assert "Clean Holes / Islands" not in correction_button_texts
-    assert "◀ Extend (A)" in correction_button_texts
-    assert "Extend (D) ▶" in correction_button_texts
-    assert "◀ Retrack (Q)" in correction_button_texts
-    assert "Retrack (E) ▶" in correction_button_texts
+    assert "◀ Extend (A)" not in correction_button_texts
+    assert "Extend (D) ▶" not in correction_button_texts
+    assert "◀ Retrack (Q)" not in correction_button_texts
+    assert "Retrack (E) ▶" not in correction_button_texts
     shortcut_keys = {
         shortcut.key().toString(QKeySequence.SequenceFormat.PortableText)
         for shortcut in widget.findChildren(QShortcut)
     }
-    assert {"A", "D", "Q", "E"} <= shortcut_keys
+    assert {"A", "D", "Q", "E", "B", "S", "V", "Z", "C"} <= shortcut_keys
     assert "Save tracked" not in ultrack_button_texts
     assert "Load Labels" not in ultrack_button_texts
     assert "Reassign ID" not in ultrack_button_texts
@@ -627,17 +630,61 @@ def test_tracking_correction_action_buttons_expand_horizontally():
 
     tracked_buttons = [
         widget.run_ultrack_btn,
-        widget.extend_back_btn,
-        widget.extend_fwd_btn,
-        widget.retrack_back_btn,
-        widget.retrack_fwd_btn,
-        widget.save_tracked_btn,
-        widget.reassign_ids_btn,
-        widget.remove_unvalidated_btn,
+        widget.commit_btn,
     ]
 
     for button in tracked_buttons:
         assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_shortcuts_are_grouped_and_include_buttonless_actions():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    labels = _label_texts(widget.correction_shortcuts_section)
+
+    for heading in ("Track Workflow", "Selection", "Manual Labels", "History"):
+        assert heading in labels
+    assert "V" in labels
+    assert "Validate selected track" in labels
+    assert "B" in labels
+    assert "Anchor selected cell at current frame" in labels
+    assert "S" in labels
+    assert "Save tracked labels" in labels
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_correction_commit_reassigns_removes_unvalidated_and_saves(tmp_path):
+    from cellflow.database.validation import add_correction
+    from cellflow.tracking_ultrack.corrections import Correction
+    import tifffile
+
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    widget._pos_dir = pos_dir
+
+    labels = np.zeros((1, 5, 5), dtype=np.uint32)
+    labels[0, 1:3, 1:3] = 10
+    labels[0, 3:5, 3:5] = 99
+    viewer.add_labels(labels.copy(), name="Tracked: Nucleus")
+    add_correction(pos_dir, Correction(cell_id=10, t=0, kind="validated", y=1.5, x=1.5))
+
+    widget._on_commit()
+
+    saved = tifffile.imread(pos_dir / "2_nucleus" / "tracked_labels.tif")
+    assert set(np.unique(saved)) == {0, 1}
+    assert np.all(saved[0, 1:3, 1:3] == 1)
+    assert np.all(saved[0, 3:5, 3:5] == 0)
+    assert "Committed" in widget.correction_status_lbl.text()
 
     widget.deleteLater()
     viewer.close()
@@ -661,6 +708,39 @@ def test_correction_activation_button_is_top_level_and_section_header_is_passive
     assert widget.correction_mode_section._content_frame.isVisible() is False
     assert widget.correction_mode_section._toggle.isVisible() is False
     assert widget.correction_mode_section._toggle.isEnabled() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_database_browser_activation_button_matches_correction_activation_layout():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    widget._ultrack_db_path = lambda: Path(__file__)
+    widget._refresh_ultrack_db_browser = lambda: None
+
+    top_level_layout = widget.layout()
+    assert top_level_layout.indexOf(widget.ultrack_db_active_btn) != -1
+    assert top_level_layout.indexOf(widget.ultrack_db_active_btn) < top_level_layout.indexOf(
+        widget.correction_active_btn
+    )
+    assert widget.ultrack_db_active_btn not in widget.ultrack_db_browser_section.findChildren(
+        QPushButton
+    )
+
+    assert widget.ultrack_db_browser_section.is_expanded is False
+    assert widget.ultrack_db_browser_section._content_frame.isVisible() is False
+    assert widget.ultrack_db_browser_section._toggle.isVisible() is False
+    assert widget.ultrack_db_browser_section._toggle.isEnabled() is False
+
+    widget.ultrack_db_active_btn.setChecked(True)
+    assert widget.ultrack_db_browser_section.is_expanded is True
+    assert widget.ultrack_db_browser_section._content_frame.isHidden() is False
+
+    widget.ultrack_db_active_btn.setChecked(False)
+    assert widget.ultrack_db_browser_section.is_expanded is False
+    assert widget.ultrack_db_browser_section._content_frame.isVisible() is False
 
     widget.deleteLater()
     viewer.close()
@@ -1802,11 +1882,7 @@ def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
     assert widget.db_gen_min_area_spin.y() == widget.db_gen_max_area_spin.y()
     assert widget.db_gen_min_area_spin.x() < widget.db_gen_max_area_spin.x()
 
-    # Paired correction actions should also sit side-by-side
-    assert widget.extend_back_btn.y() == widget.extend_fwd_btn.y()
-    assert widget.extend_back_btn.x() < widget.extend_fwd_btn.x()
-    assert widget.retrack_back_btn.y() == widget.retrack_fwd_btn.y()
-    assert widget.validate_track_btn.y() == widget.anchor_here_btn.y()
+    assert widget.commit_btn.isVisible()
 
     widget.deleteLater()
     viewer.close()
@@ -1862,14 +1938,14 @@ def test_correction_widget_top_buttons_expand_horizontally():
 
     for button in (
         widget._activate_btn,
-        widget._outline_btn,
         widget._reset_mode_btn,
         widget._fill_holes_btn,
         widget._fix_semiholes_btn,
         widget._clean_fragments_btn,
-        widget._goto_btn,
     ):
         assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert isinstance(widget._outline_btn, QCheckBox)
+    assert not hasattr(widget, "_goto_btn")
 
     widget.deleteLater()
     viewer.close()
@@ -2400,14 +2476,17 @@ def test_correction_section_is_top_level():
         button.text()
         for button in widget.correction_mode_section.findChildren(QPushButton)
     }
-    assert "Save tracked (S)" in correction_button_texts
+    assert "Save tracked (S)" not in correction_button_texts
     assert "Load Labels" not in correction_button_texts
     assert "Extend selected" not in correction_button_texts
     assert "Retrack selected" not in correction_button_texts
-    assert "◀ Extend (A)" in correction_button_texts
-    assert "Extend (D) ▶" in correction_button_texts
-    assert "◀ Retrack (Q)" in correction_button_texts
-    assert "Retrack (E) ▶" in correction_button_texts
+    assert "Validate track" not in correction_button_texts
+    assert "Anchor here" not in correction_button_texts
+    assert "Commit" in correction_button_texts
+    assert "◀ Extend (A)" not in correction_button_texts
+    assert "Extend (D) ▶" not in correction_button_texts
+    assert "◀ Retrack (Q)" not in correction_button_texts
+    assert "Retrack (E) ▶" not in correction_button_texts
 
     widget.deleteLater()
     viewer.close()

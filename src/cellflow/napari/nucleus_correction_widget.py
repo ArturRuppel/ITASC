@@ -13,7 +13,7 @@ from napari.qt.threading import thread_worker as _thread_worker
 from napari.utils.colormaps import Colormap
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence
-from qtpy.QtWidgets import QLabel, QPushButton, QShortcut, QVBoxLayout, QWidget, QCheckBox
+from qtpy.QtWidgets import QLabel, QPushButton, QShortcut, QVBoxLayout, QWidget, QCheckBox, QGroupBox
 
 from cellflow.napari._widget_helpers import (
     btn as _btn,
@@ -51,7 +51,6 @@ from cellflow.napari.ui_style import (
     block_grid,
     compact_spinbox,
     danger_button,
-    muted_label,
 )
 from cellflow.napari.validated_overlay_controller import (
     ValidatedOverlayController,
@@ -181,21 +180,15 @@ class NucleusCorrectionWidget(QWidget):
         )
         danger_button(self.remove_unvalidated_btn)
 
-        group_lay.addLayout(_button_grid(
-            (self.save_tracked_btn,),
-            (self.extend_back_btn, self.extend_fwd_btn),
-            (self.retrack_back_btn, self.retrack_fwd_btn),
-            (self.validate_track_btn, self.anchor_here_btn),
-            (self.reassign_ids_btn,),
-            (self.remove_unvalidated_btn,),
-        ))
+        self.commit_btn = _btn(
+            "Commit",
+            "Reassign cell IDs, remove unvalidated labels, and save tracked labels.",
+        )
 
         self.status_lbl = _make_status()
-        group_lay.addWidget(self.status_lbl)
 
         self.validation_counter_lbl = QLabel("")
         self.validation_counter_lbl.setWordWrap(True)
-        group_lay.addWidget(self.validation_counter_lbl)
 
         extend_retrack_inner = QWidget(self)
         extend_retrack_lay = QVBoxLayout(extend_retrack_inner)
@@ -235,11 +228,7 @@ class NucleusCorrectionWidget(QWidget):
         )
         add_block_pair_row(g, 3, "Swap radius:", compact_spinbox(self.swap_radius_spin))
         add_block_checkbox_row(g, 4, self.extend_greedy_overwrite_check)
-        swap_hint = QLabel("Z / C — swap selection with smaller / larger hypothesis fragment.")
-        swap_hint.setWordWrap(True)
-        muted_label(swap_hint)
         extend_retrack_lay.addLayout(g)
-        extend_retrack_lay.addWidget(swap_hint)
 
         extend_retrack_lay.addWidget(_heading("Retrack"))
         g = block_grid(horizontal_spacing=12)
@@ -268,22 +257,17 @@ class NucleusCorrectionWidget(QWidget):
 
         self.shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
-            self.correction_widget.build_shortcuts_widget(),
-            expanded=True,
+            self._build_shortcuts_widget(),
+            expanded=False,
             title_role="actions",
             title_level=2,
         )
         group_lay.addWidget(self.shortcuts_section)
-
-        self.artifact_cleanup_section = CollapsibleSection(
-            "Artifact Cleanup",
-            self.correction_widget._cleanup_container,
-            expanded=False,
-            title_role="params",
-            title_level=2,
-        )
-        group_lay.addWidget(self.artifact_cleanup_section)
         group_lay.addWidget(self.correction_widget)
+        group_lay.addWidget(self.status_lbl)
+        group_lay.addWidget(self.validation_counter_lbl)
+        group_lay.addLayout(_button_grid((self.commit_btn,)))
+        group_lay.addWidget(self.correction_widget._attrib_lbl)
 
         self.section = CollapsibleSection(
             "Correction",
@@ -300,6 +284,46 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_mode_section = self.section
         self._connect_signals()
 
+    def _build_shortcuts_widget(self) -> QWidget:
+        group = QGroupBox("Correction shortcuts")
+        lay = QVBoxLayout(group)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(8)
+        CorrectionWidget._add_shortcut_group(
+            lay,
+            "Track Workflow",
+            [
+                ("V", "Validate selected track"),
+                ("B", "Anchor selected cell at current frame"),
+                ("A / D", "Extend selected track backward / forward"),
+                ("Q / E", "Retrack backward / forward"),
+                ("Z / C", "Swap with smaller / larger hypothesis fragment"),
+                ("S", "Save tracked labels"),
+            ],
+        )
+        CorrectionWidget._add_shortcut_group(
+            lay,
+            "Selection",
+            [
+                ("Left-click", "Select / highlight cell"),
+                ("Shift+Left / Shift+Right", "Previous / next cell"),
+            ],
+        )
+        CorrectionWidget._add_shortcut_group(
+            lay,
+            "Manual Labels",
+            [
+                ("Middle-click or Delete", "Erase cell"),
+                ("Ctrl+Left-click", "Merge selected with clicked cell"),
+                ("Ctrl+Left-click twice", "Split by two seeds"),
+                ("Right-click variants", "Swap labels"),
+                ("Shift+Left-drag", "Draw / extend cell path"),
+                ("Shift+Right-drag", "Split by drawn line"),
+            ],
+        )
+        CorrectionWidget._add_shortcut_group(lay, "History", [("Ctrl+Z", "Undo")])
+        return group
+
     def _connect_signals(self) -> None:
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
@@ -312,6 +336,7 @@ class NucleusCorrectionWidget(QWidget):
         self.remove_unvalidated_btn.clicked.connect(
             self._on_remove_unvalidated_labels
         )
+        self.commit_btn.clicked.connect(self._on_commit)
         self.active_btn.toggled.connect(self._on_correction_active_button_toggled)
         self.correction_widget._activate_btn.toggled.connect(
             self._on_correction_mode_toggled
@@ -485,6 +510,19 @@ class NucleusCorrectionWidget(QWidget):
             write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
         self._correction_status(f"Saved {n} frame(s) to {tracked_path.name}.")
 
+    @staticmethod
+    def _reassign_ids_stack(stack: np.ndarray) -> tuple[np.ndarray, int, dict[int, int]]:
+        unique_ids = np.unique(stack)
+        unique_ids = unique_ids[unique_ids != 0]
+        if unique_ids.size == 0:
+            return stack, 0, {}
+        lut = np.zeros(int(unique_ids.max()) + 1, dtype=np.uint32)
+        old_to_new: dict[int, int] = {}
+        for new_id, old_id in enumerate(unique_ids, start=1):
+            lut[old_id] = new_id
+            old_to_new[int(old_id)] = new_id
+        return lut[stack], len(unique_ids), old_to_new
+
     def _load_correction_layers_from_disk(self) -> bool:
         tracked_path = self._tracked_path()
         if tracked_path is None or not tracked_path.exists():
@@ -535,16 +573,7 @@ class NucleusCorrectionWidget(QWidget):
             "errored": self._on_correction_worker_error,
         })
         def _worker():
-            unique_ids = np.unique(stack)
-            unique_ids = unique_ids[unique_ids != 0]
-            if unique_ids.size == 0:
-                return stack, 0, {}
-            lut = np.zeros(int(unique_ids.max()) + 1, dtype=np.uint32)
-            old_to_new: dict[int, int] = {}
-            for new_id, old_id in enumerate(unique_ids, start=1):
-                lut[old_id] = new_id
-                old_to_new[int(old_id)] = new_id
-            return lut[stack], len(unique_ids), old_to_new
+            return self._reassign_ids_stack(stack)
 
         _worker()
 
@@ -558,6 +587,13 @@ class NucleusCorrectionWidget(QWidget):
         self._correction_status(
             f"Reassigned {n_cells} cell IDs to range 1-{n_cells}. Unsaved."
         )
+
+    def _commit_reassign_ids(self, layer) -> int:
+        remapped, n_cells, old_to_new = self._reassign_ids_stack(np.asarray(layer.data))
+        layer.data = remapped
+        if self._pos_dir is not None and old_to_new:
+            remap_validated_tracks(self._pos_dir, old_to_new)
+        return int(n_cells)
 
     def _selected_correction_target(self) -> tuple[int, int, float, float] | None:
         if self._pos_dir is None:
@@ -971,6 +1007,61 @@ class NucleusCorrectionWidget(QWidget):
             f"{changed_pixels} px changed. Unsaved."
         )
 
+    def _remove_unvalidated_from_layer(self, layer) -> tuple[int, int]:
+        if self._pos_dir is None:
+            return 0, 0
+        data = np.asarray(layer.data)
+        validated_tracks = read_validated_tracks(self._pos_dir)
+        frame_count = int(data.shape[0]) if data.ndim >= 3 else 1
+        changed_pixels = changed_frames = 0
+        for t in range(frame_count):
+            frame = self._frame_view_2d(data, t) if data.ndim >= 3 else data
+            if frame is None:
+                raise ValueError("Tracked layer must be a time-first stack.")
+            validated_ids = {
+                cid for cid, frames in validated_tracks.items() if t in frames
+            }
+            remove_mask = frame != 0
+            if validated_ids:
+                remove_mask &= ~np.isin(frame, list(validated_ids))
+            n_remove = int(np.count_nonzero(remove_mask))
+            if not n_remove:
+                continue
+            frame[remove_mask] = 0
+            changed_pixels += n_remove
+            changed_frames += 1
+        if changed_pixels:
+            layer.refresh()
+            if self.correction_widget._selected_label:
+                ct = self._current_t()
+                if self.correction_widget._selected_label not in self._current_cell_ids(ct):
+                    self.correction_widget.select_label(ct, 0)
+            self._refresh_validated_overlay()
+            self._refresh_validation_counter()
+        return changed_frames, changed_pixels
+
+    def _on_commit(self) -> None:
+        tracked_path = self._tracked_path()
+        if tracked_path is None:
+            self._correction_status("No project open."); return
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No tracked layer to commit."); return
+        if layer.data.ndim != 3:
+            self._correction_status("Tracked layer is not a 3D stack."); return
+        try:
+            n_cells = self._commit_reassign_ids(layer)
+            changed_frames, changed_pixels = self._remove_unvalidated_from_layer(layer)
+        except Exception as exc:
+            self._on_correction_worker_error(exc)
+            return
+        for t in range(int(layer.data.shape[0])):
+            write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
+        self._correction_status(
+            f"Committed {n_cells} cell(s); removed {changed_pixels} px in "
+            f"{changed_frames} frame(s); saved to {tracked_path.name}."
+        )
+
     def _on_correction_worker_error(self, exc: Exception) -> None:
         self._correction_status(f"Error: {exc}")
         logger.exception("Correction worker error", exc_info=exc)
@@ -982,6 +1073,7 @@ class NucleusCorrectionWidget(QWidget):
             ("Q", self._on_retrack_backward),
             ("E", self._on_retrack_forward),
             ("B", self._on_anchor_here),
+            ("V", self._on_validate_track),
             ("S", self._on_save_tracked),
             ("Z", lambda: self._on_swap_step(direction="smaller")),
             ("C", lambda: self._on_swap_step(direction="larger")),
