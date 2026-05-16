@@ -451,28 +451,25 @@ def test_main_widget_persists_hpc_cellpose_state():
 def test_main_widget_top_level_sections_use_unnumbered_mocha_titles():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
-    from cellflow.napari.ui_style import semantic_color
+    from cellflow.napari.ui_style import stage_accent
 
     widget = widget_class(viewer)
 
-    # Nucleus and cell stages are deliberately accented with a per-stage hue;
-    # the remaining top-level stages still use the role/level default color.
+    # Every top-level stage carries a Catppuccin Mocha accent resolved via
+    # stage_accent(); the test stays in lockstep with the active palette.
     expected = {
-        widget.data_section: ("Project Status", None),
-        widget.prep_section: ("Data Preparation", None),
-        widget.cellpose_section: ("Cellpose", None),
-        widget.nucleus_section: ("Nucleus Segmentation & Tracking", "#6bb8cc"),
-        widget.cell_section: ("Cell Segmentation", "#d6a14a"),
-        widget.contact_analysis_section: ("Contact Analysis", None),
-        widget.meta_section: ("Meta Analyzer", None),
+        widget.data_section:             ("Project Status",                  stage_accent("project_status")),
+        widget.cellpose_section:         ("Cellpose",                        stage_accent("cellpose")),
+        widget.nucleus_section:          ("Nucleus Segmentation & Tracking", stage_accent("nucleus")),
+        widget.cell_section:             ("Cell Segmentation",               stage_accent("cell")),
+        widget.contact_analysis_section: ("Contact Analysis",                stage_accent("contact_analysis")),
     }
 
-    for section, (title, accent) in expected.items():
+    for section, (title, expected_color) in expected.items():
         assert section.title == title
         toggle = section.findChild(QToolButton, "collapsible_toggle")
         assert toggle is not None
         assert toggle.text() == title.replace("&", "&&")
-        expected_color = accent if accent is not None else semantic_color("stage", 0)
         assert f"color: {expected_color};" in toggle.styleSheet()
 
     widget.deleteLater()

@@ -25,7 +25,7 @@ from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
-from cellflow.napari.ui_style import icon_button, muted_label, tiny_button
+from cellflow.napari.ui_style import icon_button, muted_label, stage_accent, tiny_button
 
 
 class _CellposePanel(QWidget):
@@ -118,6 +118,7 @@ class CellFlowMainWidget(QWidget):
             expanded=False,
             title_role="stage",
             title_level=0,
+            accent_color=stage_accent("project_status"),
         )
 
         self._cellpose_widget = _CellposePanel(self.viewer)
@@ -127,6 +128,7 @@ class CellFlowMainWidget(QWidget):
             expanded=False,
             title_role="stage",
             title_level=0,
+            accent_color=stage_accent("cellpose"),
         )
         self.hpc_cellpose_widget = self._cellpose_widget.hpc_cellpose_widget
 
@@ -137,7 +139,7 @@ class CellFlowMainWidget(QWidget):
             expanded=False,
             title_role="stage",
             title_level=0,
-            accent_color="#6bb8cc",
+            accent_color=stage_accent("nucleus"),
         )
 
         self.cell_workflow_widget = CellWorkflowWidget(self.viewer)
@@ -147,7 +149,7 @@ class CellFlowMainWidget(QWidget):
             expanded=False,
             title_role="stage",
             title_level=0,
-            accent_color="#d6a14a",
+            accent_color=stage_accent("cell"),
         )
         self._connect_label_selection_sync()
 
@@ -158,6 +160,7 @@ class CellFlowMainWidget(QWidget):
             expanded=False,
             title_role="stage",
             title_level=0,
+            accent_color=stage_accent("contact_analysis"),
         )
 
         self.scroll_layout.addWidget(self.data_section)

@@ -104,20 +104,15 @@ class CollapsibleSection(QWidget):
                 "border-radius: 4px; margin: 0px 2px 2px 2px; }"
             )
         else:
-            if self._is_outer_accent:
-                title_color = accent
-                stripe_width = 4
-            else:
-                title_color = self._muted_accent(accent)
-                stripe_width = 2
-            # Thin border on top/right/bottom + thick coloured stripe on the left.
-            # Left corners are squared so the stripe meets the edge cleanly.
+            title_color = accent if self._is_outer_accent else self._muted_accent(accent)
+            # Stripe matches the header text colour; width is uniform across
+            # outer and inner sections.
             frame_qss = (
                 "QFrame#collapsible_content { "
                 "border-top: 1px solid #666666; "
                 "border-right: 1px solid #666666; "
                 "border-bottom: 1px solid #666666; "
-                f"border-left: {stripe_width}px solid {accent}; "
+                f"border-left: 2px solid {title_color}; "
                 "border-top-left-radius: 0px; "
                 "border-bottom-left-radius: 0px; "
                 "border-top-right-radius: 4px; "

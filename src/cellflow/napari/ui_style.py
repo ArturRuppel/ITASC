@@ -12,12 +12,6 @@ DEFAULT_ROW_SPACING = 4
 DEFAULT_SWEEP_SPIN_WIDTH = 62
 BLOCK_GRID_COLUMNS = 4
 
-# SEMANTIC_COLORS = {
-#     "stage": ("#94e2d5", "#89dceb", "#74c7ec"),
-#     "params": ("#89b4fa", "#b4befe", "#cba6f7"),
-#     "actions": ("#f38ba8", "#fab387", "#f9e2af"),
-#     "indicators": ("#a6e3a1", "#94e2d5", "#89dceb"),
-# }
 SEMANTIC_COLORS = {
     "stage": ("#ffffff", "#ffffff", "#ffffff"),
     "params": ("#ffffff", "#ffffff", "#ffffff"),
@@ -29,6 +23,35 @@ def semantic_color(role: str, level: int = 0) -> str:
     shades = SEMANTIC_COLORS[role]
     index = min(max(level, 0), len(shades) - 1)
     return shades[index]
+
+
+# ── Theme palette ────────────────────────────────────────────────────────
+# Catppuccin Mocha accent palette. To add another flavor later, define a
+# parallel dict (e.g. CATPPUCCIN_LATTE) with the same keys and reassign
+# ACTIVE_PALETTE. Call sites should reference accents via stage_accent()
+# so theme changes propagate automatically.
+CATPPUCCIN_MOCHA = {
+    "rosewater": "#f5e0dc", "flamingo": "#f2cdcd", "pink":      "#f5c2e7",
+    "mauve":     "#cba6f7", "red":      "#f38ba8", "maroon":    "#eba0ac",
+    "peach":     "#fab387", "yellow":   "#f9e2af", "green":     "#a6e3a1",
+    "teal":      "#94e2d5", "sky":      "#89dceb", "sapphire":  "#74c7ec",
+    "blue":      "#89b4fa", "lavender": "#b4befe",
+}
+
+ACTIVE_PALETTE = CATPPUCCIN_MOCHA
+
+STAGE_ACCENTS = {
+    "project_status":   "sapphire",
+    "cellpose":         "peach",
+    "nucleus":          "green",
+    "cell":             "lavender",
+    "contact_analysis": "mauve",
+}
+
+
+def stage_accent(stage_key: str) -> str:
+    """Resolve a stage key to its accent hex via the active palette."""
+    return ACTIVE_PALETTE[STAGE_ACCENTS[stage_key]]
 
 
 def _fixed_widget(widget, width=None):
