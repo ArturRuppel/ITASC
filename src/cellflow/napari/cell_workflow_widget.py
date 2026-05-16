@@ -167,7 +167,6 @@ class CellWorkflowWidget(QWidget):
                 ]),
                 ("Intermediates", [
                     ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
-                    ("3_cell/filtered_flow_mag.tif", "Filtered flow magnitude"),
                     ("3_cell/foreground_masks.tif", "Foreground masks"),
                     ("3_cell/contour_maps.tif", "Contour maps"),
                     ("3_cell/foreground_scores.tif", "Foreground scores"),
@@ -313,7 +312,6 @@ class CellWorkflowWidget(QWidget):
     def _prob_path(self):          return self._p("1_cellpose", "cell_prob_3dt.tif")
     def _dp_path(self):            return self._p("1_cellpose", "cell_dp_3dt.tif")
     def _filtered_dp_path(self):   return self._p("3_cell", "filtered_dp.tif")
-    def _flow_mag_path(self):      return self._p("3_cell", "filtered_flow_mag.tif")
     def _foreground_path(self):    return self._p("3_cell", "foreground_masks.tif")
     def _contour_path(self):       return self._p("3_cell", "contour_maps.tif")
     def _fg_scores_path(self):     return self._p("3_cell", "foreground_scores.tif")
@@ -550,7 +548,7 @@ class CellWorkflowWidget(QWidget):
         if self._pos_dir is None:
             self._status("No project open."); return
         prob_path, dp_path = self._prob_path(), self._dp_path()
-        fdp, fmag = self._filtered_dp_path(), self._flow_mag_path()
+        fdp = self._filtered_dp_path()
         if not self._require(
             (prob_path, "cell_prob_3dt.tif"),
             (dp_path, "cell_dp_3dt.tif"),
@@ -591,7 +589,6 @@ class CellWorkflowWidget(QWidget):
             yield (3, 4, "Saving...")
             fdp.parent.mkdir(parents=True, exist_ok=True)
             tifffile.imwrite(str(fdp), filtered_dp, compression="zlib")
-            tifffile.imwrite(str(fmag), mag, compression="zlib")
             return mag
 
         self._status("Filtering flow...")

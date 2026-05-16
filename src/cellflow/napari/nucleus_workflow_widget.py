@@ -76,7 +76,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
                 ("Inputs", [
                     ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
                     ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
-                    ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
                     ("0_input/cell_zavg.tif", "Cell z-avg"),
                     ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
                 ]),

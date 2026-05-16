@@ -11,7 +11,8 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari.widgets import PipelineFilesWidget
 
-# Define tracked files for the project-wide status view
+# Canonical file groups for the project-wide status view.
+# Paths match the authoritative contracts in cellflow.napari._paths.
 _TRACKED_FILE_GROUPS = [
     ("Input Data", [
         ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
@@ -26,20 +27,24 @@ _TRACKED_FILE_GROUPS = [
         ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
         ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
         ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
-        ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
-        ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
     ]),
     ("Nucleus Workflow", [
-        ("2_nucleus/contour_maps.tif", "Contour maps"),
-        ("2_nucleus/foreground_masks.tif", "Foreground masks (external)"),
+        ("2_nucleus/contours.tif", "Contours"),
+        ("2_nucleus/foreground_scores.tif", "Foreground scores"),
+        ("2_nucleus/contour_sources.tif", "Contour sources"),
+        ("2_nucleus/foreground_sources.tif", "Foreground sources"),
         ("2_nucleus/ultrack_workdir/data.db", "Ultrack DB"),
         ("2_nucleus/tracked_labels.tif", "Tracked labels"),
     ]),
     ("Cell Workflow", [
-        ("3_cell/foreground_masks.tif", "Foreground masks (external)"),
         ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
-        ("3_cell/filtered_flow_mag.tif", "Filtered flow magnitude"),
+        ("3_cell/foreground_masks.tif", "Foreground masks"),
+        ("3_cell/contour_maps.tif", "Contour maps"),
+        ("3_cell/foreground_scores.tif", "Foreground scores"),
         ("3_cell/tracked_labels.tif", "Tracked labels"),
+    ]),
+    ("Contact Analysis", [
+        ("4_contact_analysis/contact_analysis.h5", "Contact analysis"),
     ]),
 ]
 
@@ -55,7 +60,7 @@ class ProjectStatusPanel(QWidget):
 
         # ── File Tracker (Scrollable) ─────────
         self.file_tracker = PipelineFilesWidget(_TRACKED_FILE_GROUPS, viewer=viewer)
-        
+
         scroll = QScrollArea()
         scroll.setWidget(self.file_tracker)
         scroll.setWidgetResizable(True)

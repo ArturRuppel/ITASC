@@ -70,8 +70,6 @@ class _CellposePanel(QWidget):
                 ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
                 ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
                 ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
-                ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
-                ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
             ]),
         ], viewer=self.viewer)
         layout.addWidget(self.output_files_tracker)

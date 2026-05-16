@@ -146,9 +146,11 @@ class _PipelineFileRow(QWidget):
         display_name: str,
         loadable: str | None = None,
         viewer=None,
+        legacy_rel_path: str | None = None,
     ):
         super().__init__()
         self._rel_path = rel_path
+        self._legacy_rel_path = legacy_rel_path
         self._loadable = loadable or self._infer_load_kind(rel_path)
         self._full_path: "Path | None" = None
         self._viewer = viewer
@@ -266,10 +268,7 @@ class _PipelineFileRow(QWidget):
             return "gray"
         if (
             rel.startswith("1_cellpose/")
-            or rel in (
-                "2_nucleus/contour_maps.tif",
-                "3_cell/filtered_flow_mag.tif",
-            )
+            or rel == "2_nucleus/contours.tif"
             or (rel.startswith("2_nucleus/") and name.startswith("foreground_"))
             or (rel.startswith("3_cell/") and name.startswith("foreground_"))
         ):
@@ -367,8 +366,10 @@ class PipelineFilesWidget(QWidget):
                     " background: palette(alternateBase); color: palette(mid);"
                 )
                 lay.addWidget(hdr)
-            for rel_path, display_name in entries:
-                row = _PipelineFileRow(rel_path, display_name, loadable=None, viewer=viewer)
+            for entry in entries:
+                rel_path, display_name = entry[0], entry[1]
+                legacy = entry[2] if len(entry) > 2 else None
+                row = _PipelineFileRow(rel_path, display_name, loadable=None, viewer=viewer, legacy_rel_path=legacy)
                 self._rows.append(row)
                 lay.addWidget(row)
 
@@ -380,6 +381,10 @@ class PipelineFilesWidget(QWidget):
             return
         for row in self._rows:
             full_path = pos_dir / row._rel_path
+            if not full_path.exists() and row._legacy_rel_path is not None:
+                legacy_path = pos_dir / row._legacy_rel_path
+                if legacy_path.exists():
+                    full_path = legacy_path
             if full_path.exists():
                 row._full_path = full_path
                 row.set_present(_file_info(full_path))
