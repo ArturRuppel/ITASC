@@ -472,6 +472,18 @@ def test_add_contact_analysis_layers_adds_rasterized_nucleus_track_layer(monkeyp
     assert np.count_nonzero(track_call[2][2]) > 0
 
 
+def test_rasterized_nucleus_tracks_use_one_pixel_lines(monkeypatch):
+    mod = _load_module(monkeypatch)
+
+    image = mod._rasterize_track_image(
+        {1: [(0, 1.0, 1.0), (1, 1.0, 3.0)]},
+        {1: (1.0, 0.0, 0.0, 1.0)},
+        (2, 5, 5),
+    )
+
+    assert np.count_nonzero(image[1, :, :, 3]) == 3
+
+
 def test_add_contact_analysis_layers_adds_rasterized_edge_layer(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)

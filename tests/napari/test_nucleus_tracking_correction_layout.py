@@ -2074,7 +2074,7 @@ def test_correction_widget_preserves_selection_across_frame_change_for_relabel()
     viewer.close()
 
 
-def test_correction_widget_defaults_to_one_pixel_outlines():
+def test_correction_widget_defaults_to_two_pixel_outlines():
     _app, viewer = _make_viewer()
     widget_class = _load_correction_widget_class()
     widget = widget_class(viewer)
@@ -2083,7 +2083,7 @@ def test_correction_widget_defaults_to_one_pixel_outlines():
     widget.activate_layer(layer)
 
     assert widget._outline_btn.isChecked() is True
-    assert layer.contour == 1
+    assert layer.contour == 2
 
     widget.deleteLater()
     viewer.close()

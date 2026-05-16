@@ -364,12 +364,14 @@ def add_contact_analysis_layers(
 
 
 def _line_pixels(
-    y0: int, x0: int, y1: int, x1: int,
+    y0: int, x0: int, y1: int, x1: int, *, width: int = 2,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return integer (ys, xs) along a 2px-wide line from (y0,x0) to (y1,x1)."""
+    """Return integer (ys, xs) along a line from (y0,x0) to (y1,x1)."""
     n = max(abs(y1 - y0), abs(x1 - x0), 1) + 1
     center_ys = np.rint(np.linspace(y0, y1, n)).astype(np.intp)
     center_xs = np.rint(np.linspace(x0, x1, n)).astype(np.intp)
+    if int(width) <= 1:
+        return center_ys, center_xs
 
     # expand perpendicular to the line direction
     dy = y1 - y0
@@ -551,6 +553,7 @@ def _rasterize_track_image(
     shape: tuple[int, int, int],
     *,
     tail_length: int = _DEFAULT_TRACK_TAIL,
+    line_width: int = 1,
 ) -> np.ndarray:
     """Rasterise nucleus tracks into a ``(T, H, W, 4)`` uint8 RGBA stack.
 
@@ -590,7 +593,11 @@ def _rasterize_track_image(
                 if color is None:
                     continue
                 py, px = _line_pixels(
-                    int(round(sy)), int(round(sx)), int(round(ey)), int(round(ex))
+                    int(round(sy)),
+                    int(round(sx)),
+                    int(round(ey)),
+                    int(round(ex)),
+                    width=line_width,
                 )
                 valid = (py >= 0) & (py < H) & (px >= 0) & (px < W)
                 current[py[valid], px[valid]] = color

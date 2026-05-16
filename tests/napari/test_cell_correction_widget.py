@@ -205,6 +205,9 @@ def test_load_labels_loads_tracked_cell_layer_and_precomputed_probability_zavgs(
         viewer.layers["Nucleus z-avg"].data,
         np.broadcast_to(nuc_prob_zavg[np.newaxis], labels.shape),
     )
+    assert viewer.layers["Cell z-avg"].blending == "minimum"
+    assert viewer.layers["Nucleus z-avg"].blending == "minimum"
+    assert viewer.layers["Nucleus z-avg"].colormap.name == "I Orange"
     assert widget.correction_widget._layer is viewer.layers["Tracked: Cell"]
     assert "Loaded cell label stack" in widget.correction_status_lbl.text()
 

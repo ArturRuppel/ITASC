@@ -439,10 +439,12 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     assert track_layer.opacity == 0.9
     assert track_layer.data.shape == (2, 4, 5, 4)
     assert np.count_nonzero(track_layer.data[1, :, :, 3]) > 0
-    assert viewer.layers["[Correction] Cell z-avg"].blending == "additive"
-    assert viewer.layers["[Correction] Nucleus z-avg"].blending == "additive"
-    assert viewer.layers["[Correction] NLS z-avg"].blending == "additive"
-    assert viewer.layers["[Correction] NLS z-avg"].colormap.name == "bop_blue"
+    assert np.max(track_layer.data[..., :3]) < 255
+    assert viewer.layers["[Correction] Cell z-avg"].blending == "minimum"
+    assert viewer.layers["[Correction] Nucleus z-avg"].blending == "minimum"
+    assert viewer.layers["[Correction] NLS z-avg"].blending == "minimum"
+    assert viewer.layers["[Correction] Nucleus z-avg"].colormap.name == "I Orange"
+    assert viewer.layers["[Correction] NLS z-avg"].colormap.name == "I Blue"
     np.testing.assert_allclose(
         viewer.layers["[Correction] Cell z-avg"].data,
         cell_prob_zavg,

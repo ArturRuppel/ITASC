@@ -1143,7 +1143,7 @@ class CorrectionWidget(QWidget):
         if self._layer is None:
             self._outline_btn.setChecked(False)
             return
-        self._layer.contour = 1 if checked else 0
+        self._layer.contour = 2 if checked else 0
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

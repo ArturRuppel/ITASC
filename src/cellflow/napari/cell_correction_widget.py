@@ -341,14 +341,16 @@ class CellCorrectionWidget(QWidget):
         self._show_layer(_TRACKED_CELL_LAYER, labels, {}, self.viewer.add_labels)
         for img, name, cmap in (
             (self._broadcast_ref(cz, labels.shape), _CELL_ZAVG_LAYER, "gray"),
-            (self._broadcast_ref(nz, labels.shape), _NUC_ZAVG_LAYER, "bop orange"),
+            (self._broadcast_ref(nz, labels.shape), _NUC_ZAVG_LAYER, "I Orange"),
         ):
             if img is None:
                 continue
             if name in self.viewer.layers:
                 self.viewer.layers[name].data = img
+                self.viewer.layers[name].colormap = cmap
+                self.viewer.layers[name].blending = "minimum"
             else:
-                self.viewer.add_image(img, name=name, colormap=cmap, blending="additive")
+                self.viewer.add_image(img, name=name, colormap=cmap, blending="minimum")
         self._correction_status(f"Loaded cell label stack {labels.shape}.")
         self.correction_widget.activate_layer(self.viewer.layers[_TRACKED_CELL_LAYER])
 

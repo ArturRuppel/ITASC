@@ -1,4 +1,4 @@
-"""Tests for the cell workflow widget — Flow-Following Segmentation section."""
+"""Tests for the cell workflow widget — flat action-button layout."""
 from __future__ import annotations
 
 import importlib
@@ -175,162 +175,77 @@ def test_cell_params_controller_does_not_cover_pipeline_header(monkeypatch):
     widget.deleteLater()
 
 
-def test_widget_exposes_flow_following_section_with_default_params(monkeypatch):
+def test_widget_exposes_flat_layout_with_pipeline_buttons_and_params(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.CellWorkflowWidget(_FakeViewer())
 
-    assert not hasattr(widget, "flow_section")
-    assert widget.filtered_flow_section.title == "Filtered Flow"
-    assert widget.foreground_mask_section.title == "Foreground Mask"
-    assert widget.tracked_labels_section.title == "Tracked Cell Labels"
-    assert widget.correction_section.title == "Correction"
-    assert widget.filtered_flow_section.is_expanded is False
-    assert widget.foreground_mask_section.is_expanded is False
-    assert widget.tracked_labels_section.is_expanded is False
-    assert widget.correction_section.is_expanded is False
-    assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
-    assert widget.correction_shortcuts_section.is_expanded is False
+    # Flat action buttons exist
+    assert isinstance(widget.filter_flow_btn, QPushButton)
+    assert isinstance(widget.build_foreground_btn, QPushButton)
+    assert isinstance(widget.preview_contour_btn, QPushButton)
+    assert isinstance(widget.build_contour_btn, QPushButton)
+    assert isinstance(widget.segment_btn, QPushButton)
+
+    # Single shared status/progress (not per-section)
+    assert isinstance(widget.pipeline_status_lbl, QLabel)
+    assert isinstance(widget.pipeline_progress_bar, QProgressBar)
+    assert widget.pipeline_progress_bar.isVisible() is False
+
+    # No per-section layout sections
+    assert not hasattr(widget, "filtered_flow_section")
+    assert not hasattr(widget, "foreground_mask_section")
+    assert not hasattr(widget, "tracked_labels_section")
+
+    # No scroll areas
     assert widget.findChildren(QScrollArea) == []
-    assert widget.layout().indexOf(widget.filtered_flow_section) < widget.layout().indexOf(widget.foreground_mask_section)
-    assert widget.layout().indexOf(widget.foreground_mask_section) < widget.layout().indexOf(widget.tracked_labels_section)
-    assert widget.layout().indexOf(widget.tracked_labels_section) < widget.layout().indexOf(widget.correction_section)
 
-    assert not hasattr(widget, "input_files")
-    assert not hasattr(widget, "ff_files")
-    assert not hasattr(widget, "ff_input_lbl")
-    assert not hasattr(widget, "ff_status_lbl")
-    assert not hasattr(widget, "ff_progress_bar")
-
-    assert hasattr(widget, "filtered_flow_input_files")
-    assert hasattr(widget, "filtered_flow_output_files")
-    assert hasattr(widget, "filtered_flow_status_lbl")
-    assert hasattr(widget, "filtered_flow_progress_bar")
-
-    assert hasattr(widget, "foreground_mask_input_files")
-    assert hasattr(widget, "foreground_mask_output_files")
-    assert hasattr(widget, "foreground_mask_status_lbl")
-    assert hasattr(widget, "foreground_mask_progress_bar")
-
-    assert hasattr(widget, "tracked_labels_input_files")
-    assert hasattr(widget, "tracked_labels_output_files")
-    assert hasattr(widget, "tracked_labels_status_lbl")
-    assert hasattr(widget, "tracked_labels_progress_bar")
-
-    assert widget.filtered_flow_input_files.parent() is widget.filtered_flow_params_widget
-    assert widget.filtered_flow_output_files.parent() is widget.filtered_flow_params_widget
-    assert widget.filtered_flow_status_lbl.parent() is widget.filtered_flow_params_widget
-    assert widget.filtered_flow_progress_bar.parent() is widget.filtered_flow_params_widget
-
-    assert widget.foreground_mask_input_files.parent() is widget.foreground_mask_params_widget
-    assert widget.foreground_mask_output_files.parent() is widget.foreground_mask_params_widget
-    assert widget.foreground_mask_status_lbl.parent() is widget.foreground_mask_params_widget
-    assert widget.foreground_mask_progress_bar.parent() is widget.foreground_mask_params_widget
-
-    assert widget.tracked_labels_input_files.parent() is widget.tracked_labels_params_widget
-    assert widget.tracked_labels_output_files.parent() is widget.tracked_labels_params_widget
-    assert widget.tracked_labels_status_lbl.parent() is widget.tracked_labels_params_widget
-    assert widget.tracked_labels_progress_bar.parent() is widget.tracked_labels_params_widget
-
-    assert widget.filtered_flow_progress_bar.isVisible() is False
-    assert widget.foreground_mask_progress_bar.isVisible() is False
-    assert widget.tracked_labels_progress_bar.isVisible() is False
-
-    texts = _label_texts(widget)
-    assert "min" not in texts
-    assert "max" not in texts
-    assert "step" not in texts
-
+    # Parameter spin boxes (aliased from CellParamsWidget)
     assert widget.ff_median_time_spin.value() == 3
     assert widget.ff_median_space_spin.value() == 5
     assert widget.ff_gauss_time_spin.value() == 0.0
     assert widget.ff_gauss_space_spin.value() == 0.0
-    assert widget.fg_cellprob_threshold_spin.value() == 0.0
-    assert widget.fg_flow_threshold_spin.value() == 0.0
-    assert widget.fg_min_size_spin.value() == 15
-    assert widget.fg_niter_spin.value() == 200
+    assert widget.fg_cellprob_threshold_spin.value() == 0.5
 
-    assert widget.ff_flow_weight_spin.value() == 0.5
-    assert widget.ff_step_scale_spin.value() == 0.2
-    assert widget.ff_max_iter_spin.value() == 100
-    assert widget.ff_max_iter_spin.maximum() == 5000
-    assert widget.ff_capture_radius_spin.value() == 3.0
-    assert widget.ff_capture_radius_spin.maximum() == 100.0
+    # Correction shortcuts still exist
+    assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
+    assert widget.correction_shortcuts_section.is_expanded is False
 
-    assert widget.ff_flow_mag_btn.text() == "Create filtered_dp"
-    assert widget.preview_fg_masks_btn.text() == "Preview"
-    assert widget.fg_masks_btn.text() == "Create foreground_masks"
-    assert widget.ff_labels_btn.text() == "Create tracked_labels"
-    assert widget.ff_cancel_btn.text() == "Cancel"
-    assert widget.ff_cancel_btn.isEnabled() is False
+    # Correction buttons
     correction_button_texts = {
         button.text()
-        for button in widget.correction_section.findChildren(QPushButton)
+        for button in widget.cell_correction_widget.findChildren(QPushButton)
     }
-    correction_label_texts = _label_texts(widget.correction_section)
-    assert "Load Cell Labels" in correction_button_texts
-    assert "Save Cell Labels" in correction_button_texts
-    assert "Reassign IDs" in correction_button_texts
-    assert "Clean Holes / Islands" not in correction_button_texts
+    assert "Load Labels" in correction_button_texts
+    assert "Save Labels" in correction_button_texts
     assert "Fill Holes" in correction_button_texts
-    assert "Fix Semiholes" in correction_button_texts
-    assert "Clean Fragments" in correction_button_texts
-    assert "Artifact cleanup" in correction_label_texts
-    assert "Scope:" in correction_label_texts
-    assert "Hole radius:" in correction_label_texts
-    assert "Max opening:" in correction_label_texts
-    assert "◀ Extend (A)" not in correction_button_texts
-    assert "Extend (D) ▶" not in correction_button_texts
-    assert "◀ Retrack (Q)" not in correction_button_texts
-    assert "Retrack (E) ▶" not in correction_button_texts
-
-    assert widget.ff_median_time_spin.parent() is widget.filtered_flow_params_widget
-    assert widget.ff_median_space_spin.parent() is widget.filtered_flow_params_widget
-    assert widget.ff_gauss_time_spin.parent() is widget.filtered_flow_params_widget
-    assert widget.ff_gauss_space_spin.parent() is widget.filtered_flow_params_widget
-    assert widget.ff_flow_mag_btn.parent() is widget.filtered_flow_params_widget
-
-    assert widget.fg_cellprob_threshold_spin.parent() is widget.foreground_mask_params_widget
-    assert widget.fg_flow_threshold_spin.parent() is widget.foreground_mask_params_widget
-    assert widget.fg_min_size_spin.parent() is widget.foreground_mask_params_widget
-    assert widget.fg_niter_spin.parent() is widget.foreground_mask_params_widget
-    assert widget.preview_fg_masks_btn.parent() is widget.foreground_mask_params_widget
-    assert widget.fg_masks_btn.parent() is widget.foreground_mask_params_widget
-
-    assert widget.ff_flow_weight_spin.parent() is widget.tracked_labels_params_widget
-    assert widget.ff_step_scale_spin.parent() is widget.tracked_labels_params_widget
-    assert widget.ff_max_iter_spin.parent() is widget.tracked_labels_params_widget
-    assert widget.ff_capture_radius_spin.parent() is widget.tracked_labels_params_widget
-    assert widget.ff_labels_btn.parent() is widget.tracked_labels_params_widget
+    assert "Fix Semi Holes" in correction_button_texts
+    assert "Clean Up" in correction_button_texts
+    assert "Expand Cell" in correction_button_texts
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_widget_get_set_state_round_trips_flow_following_params(monkeypatch):
+def test_widget_get_set_state_round_trips_flow_filtering_params(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.CellWorkflowWidget(_FakeViewer())
 
     state = {
-        "flow_following": {
+        "flow_filtering": {
             "median_time": 5, "median_space": 7,
             "gauss_time": 1.5, "gauss_space": 2.0,
-            "flow_weight": 0.7, "step_scale": 0.3,
-            "max_iter": 200, "capture_radius": 5.0,
         },
-        "foreground_mask": {
-            "cellprob_threshold": -1.2,
-            "flow_threshold": 0.8,
-            "min_size": 25,
-            "niter": 150,
+        "foreground": {
+            "cellprob_threshold": 0.8,
         }
     }
     widget.set_state(state)
     got = widget.get_state()
 
-    assert got["flow_following"] == state["flow_following"]
-    assert got["foreground_mask"] == state["foreground_mask"]
+    assert got["flow_filtering"] == state["flow_filtering"]
+    assert got["foreground"]["cellprob_threshold"] == state["foreground"]["cellprob_threshold"]
 
     widget.deleteLater()
     app.processEvents()
@@ -361,11 +276,8 @@ def test_widget_stage_file_widgets_show_present_and_missing_files(monkeypatch, t
     widget.refresh(pos_dir)
 
     texts = _label_texts(widget)
-    assert texts.count("✓") >= 8
+    assert texts.count("✓") >= 5
     assert "missing" in texts
-    assert widget.filtered_flow_input_files.parent() is widget.filtered_flow_params_widget
-    assert widget.foreground_mask_output_files.parent() is widget.foreground_mask_params_widget
-    assert widget.tracked_labels_input_files.parent() is widget.tracked_labels_params_widget
 
     widget.deleteLater()
     app.processEvents()
@@ -388,7 +300,7 @@ def test_widget_stage_file_widgets_show_missing_when_files_are_absent(monkeypatc
     app.processEvents()
 
 
-def test_widget_create_flow_mag_writes_filtered_dp_and_flow_mag(monkeypatch, tmp_path):
+def test_widget_filter_flow_writes_filtered_dp_and_shows_magnitude_layer(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
@@ -410,30 +322,23 @@ def test_widget_create_flow_mag_writes_filtered_dp_and_flow_mag(monkeypatch, tmp
     widget.ff_median_time_spin.setValue(1)
     widget.ff_median_space_spin.setValue(1)
 
-    widget._on_create_flow_mag()
+    widget._on_filter_flow()
 
     assert (pos_dir / "3_cell" / "filtered_dp.tif").exists()
-    assert (pos_dir / "3_cell" / "filtered_flow_mag.tif").exists()
     assert not (pos_dir / "3_cell" / "tracked_labels.tif").exists()
     filtered_dp = tifffile.imread(str(pos_dir / "3_cell" / "filtered_dp.tif"))
     assert filtered_dp.shape == (T, 2, H, W)
     assert filtered_dp.dtype == np.float32
-    np.testing.assert_allclose(filtered_dp[:, 0], 3.0)
-    np.testing.assert_allclose(filtered_dp[:, 1], 4.0)
-    mag = tifffile.imread(str(pos_dir / "3_cell" / "filtered_flow_mag.tif"))
-    assert mag.shape == (T, H, W)
-    assert mag.dtype == np.float32
-    np.testing.assert_allclose(mag, 5.0)
     assert "Filtered Flow Magnitude" in widget.viewer.layers
     assert "Cell Labels" not in widget.viewer.layers
-    assert "Flow magnitude complete." in widget.filtered_flow_status_lbl.text()
-    assert widget.filtered_flow_progress_bar.isVisible() is False
+    assert "Flow filtering complete." in widget.pipeline_status_lbl.text()
+    assert widget.pipeline_progress_bar.isVisible() is False
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_widget_create_foreground_masks_uses_cellprob_and_filtered_dp(monkeypatch, tmp_path):
+def test_widget_build_foreground_uses_cellprob_and_filtered_dp(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
@@ -466,149 +371,30 @@ def test_widget_create_foreground_masks_uses_cellprob_and_filtered_dp(monkeypatc
     viewer = _FakeViewer()
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
-    widget.fg_cellprob_threshold_spin.setValue(-0.4)
-    widget.fg_flow_threshold_spin.setValue(1.2)
-    widget.fg_min_size_spin.setValue(31)
-    widget.fg_niter_spin.setValue(123)
+    widget.fg_cellprob_threshold_spin.setValue(0.7)
 
     with patch(
-        "cellflow.segmentation.compute_cellpose_foreground_masks",
+        "cellflow.segmentation.cell_foreground.compute_cellpose_foreground_masks",
         fake_foreground,
     ):
-        widget._on_create_foreground_masks()
+        widget._on_build_foreground()
 
     np.testing.assert_array_equal(captured["prob"], prob)
     np.testing.assert_array_equal(captured["dp"], filtered_dp)
-    assert captured["cellprob_threshold"] == -0.4
-    assert captured["flow_threshold"] == 1.2
-    assert captured["min_size"] == 31
-    assert captured["niter"] == 123
+    assert captured["cellprob_threshold"] == 0.7
+    assert captured["flow_threshold"] == 0.0
+    assert captured["min_size"] == 15
+    assert captured["niter"] == 200
 
     fg_path = pos_dir / "3_cell" / "foreground_masks.tif"
     assert fg_path.exists()
     foreground_out = tifffile.imread(str(fg_path))
     np.testing.assert_array_equal(foreground_out, expected_fg)
     assert foreground_out.dtype == np.uint8
-    assert "Foreground Mask" in viewer.layers
-    np.testing.assert_array_equal(viewer.layers["Foreground Mask"].data, expected_fg)
-    assert "Foreground masks complete." in widget.foreground_mask_status_lbl.text()
-    assert widget.foreground_mask_progress_bar.isVisible() is False
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_widget_preview_foreground_masks_uses_current_frame_without_writing(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "3_cell").mkdir()
-
-    T, Z, H, W = 3, 2, 5, 5
-    prob = np.arange(T * Z * H * W, dtype=np.float32).reshape(T, Z, H, W)
-    filtered_dp = np.zeros((T, 2, H, W), dtype=np.float32)
-    expected_preview = np.zeros((1, H, W), dtype=np.uint8)
-    expected_preview[:, 2:4, 1:4] = 1
-
-    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_3dt.tif", prob)
-    tifffile.imwrite(pos_dir / "3_cell" / "filtered_dp.tif", filtered_dp)
-
-    viewer = _FakeViewer()
-    viewer.dims.current_step = (2,)
-    widget = mod.CellWorkflowWidget(viewer)
-    widget.refresh(pos_dir)
-
-    captured: dict[str, object] = {}
-
-    def fake_foreground(prob_arg, dp_arg, **kwargs):
-        captured["prob"] = np.asarray(prob_arg).copy()
-        captured["dp"] = np.asarray(dp_arg).copy()
-        captured.update(kwargs)
-        return expected_preview
-
-    with patch("cellflow.segmentation.compute_cellpose_foreground_masks", fake_foreground):
-        widget._on_preview_foreground_masks()
-
-    np.testing.assert_array_equal(captured["prob"], prob[2:3])
-    np.testing.assert_array_equal(captured["dp"], filtered_dp[2:3])
-    assert captured["progress_cb"] is None
-    assert not (pos_dir / "3_cell" / "foreground_masks.tif").exists()
-    assert "Preview: Foreground Mask" in viewer.layers
-    np.testing.assert_array_equal(viewer.layers["Preview: Foreground Mask"].data, expected_preview[0])
-    assert "Previewed foreground mask at t=2." in widget.foreground_mask_status_lbl.text()
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_widget_create_tracked_labels_calls_compute_flow_following_movie_and_writes_only_labels(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "3_cell").mkdir()
-
-    T, H, W = 2, 6, 6
-    filtered_dp = np.zeros((T, 2, H, W), dtype=np.float32)
-    filtered_dp[:, 0] = 7.0
-    filtered_dp[:, 1] = 8.0
-    fg = np.ones((T, H, W), dtype=bool)
-    nuc = np.zeros((T, H, W), dtype=np.uint32)
-    nuc[:, 3, 3] = 5
-
-    tifffile.imwrite(pos_dir / "3_cell" / "filtered_dp.tif", filtered_dp)
-    tifffile.imwrite(pos_dir / "3_cell" / "foreground_masks.tif", fg)
-    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", nuc)
-
-    fake_filtered = np.full((T, 2, H, W), 0.5, dtype=np.float32)
-    fake_labels = np.full((T, H, W), 5, dtype=np.int32)
-
-    captured: dict[str, object] = {}
-
-    def fake_compute(foreground, dp_tcyx, labels, params, progress_cb=None,
-                     filter_vectors=True):
-        captured["foreground_shape"] = foreground.shape
-        captured["dp_shape"] = dp_tcyx.shape
-        captured["dp"] = dp_tcyx.copy()
-        captured["labels_shape"] = labels.shape
-        captured["params"] = params
-        captured["filter_vectors"] = filter_vectors
-        if progress_cb is not None:
-            progress_cb(T, T)
-        return fake_filtered, fake_labels
-
-    viewer = _FakeViewer()
-    widget = mod.CellWorkflowWidget(viewer)
-    widget.refresh(pos_dir)
-
-    with patch(
-        "cellflow.segmentation.compute_flow_following_movie",
-        fake_compute,
-    ):
-        widget._on_create_tracked_labels()
-
-    assert captured["foreground_shape"] == (T, H, W)
-    assert captured["dp_shape"] == (T, 2, H, W)
-    np.testing.assert_array_equal(captured["dp"], filtered_dp)
-    assert captured["labels_shape"] == (T, H, W)
-    assert captured["params"].capture_radius == 3.0
-    assert captured["filter_vectors"] is False
-
-    assert (pos_dir / "3_cell" / "tracked_labels.tif").exists()
-    assert (pos_dir / "3_cell" / "filtered_dp.tif").exists()
-    assert not (pos_dir / "3_cell" / "filtered_flow_mag.tif").exists()
-    labels_out = tifffile.imread(str(pos_dir / "3_cell" / "tracked_labels.tif"))
-    assert labels_out.dtype == np.uint32
-
-    assert "Filtered Flow Magnitude" not in viewer.layers
-    assert "Cell Labels" in viewer.layers
-    assert "Tracked labels complete." in widget.tracked_labels_status_lbl.text()
-    assert widget.tracked_labels_progress_bar.isVisible() is False
+    assert "Foreground Mask: Cell" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["Foreground Mask: Cell"].data, expected_fg)
+    assert "Foreground masks complete." in widget.pipeline_status_lbl.text()
+    assert widget.pipeline_progress_bar.isVisible() is False
 
     widget.deleteLater()
     app.processEvents()
@@ -624,36 +410,24 @@ def test_widget_run_aborts_when_input_file_missing(monkeypatch, tmp_path):
     widget = mod.CellWorkflowWidget(_FakeViewer())
     widget.refresh(pos_dir)
 
-    called = False
+    widget._on_segment()
 
-    def fake_compute(*args, **kwargs):
-        nonlocal called
-        called = True
-        return None, None
-
-    with patch(
-        "cellflow.segmentation.compute_flow_following_movie",
-        fake_compute,
-    ):
-        widget._on_create_tracked_labels()
-
-    assert called is False
-    assert "Missing" in widget.tracked_labels_status_lbl.text()
+    assert "Missing" in widget.pipeline_status_lbl.text()
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_widget_section_file_load_buttons_load_files_into_viewer(monkeypatch, tmp_path):
+def test_widget_files_widget_load_buttons_load_files_into_viewer(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
 
     pos_dir = tmp_path / "pos00"
     (pos_dir / "3_cell").mkdir(parents=True)
-    flow_mag = np.ones((2, 4, 4), dtype=np.float32)
+    filtered_dp = np.ones((2, 2, 4, 4), dtype=np.float32)
     foreground = np.ones((2, 4, 4), dtype=np.uint8)
     labels = np.ones((2, 4, 4), dtype=np.uint32)
-    tifffile.imwrite(pos_dir / "3_cell" / "filtered_flow_mag.tif", flow_mag)
+    tifffile.imwrite(pos_dir / "3_cell" / "filtered_dp.tif", filtered_dp)
     tifffile.imwrite(pos_dir / "3_cell" / "foreground_masks.tif", foreground)
     tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
 
@@ -661,19 +435,14 @@ def test_widget_section_file_load_buttons_load_files_into_viewer(monkeypatch, tm
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
 
-    for files_widget in (
-        widget.filtered_flow_output_files,
-        widget.foreground_mask_output_files,
-        widget.tracked_labels_output_files,
-    ):
-        for row in files_widget._rows:
-            if row._full_path is not None:
-                row._on_load_clicked()
+    for row in widget._files_widget._rows:
+        if row._full_path is not None and row._full_path.exists():
+            row._on_load_clicked()
 
-    assert "3_cell_filtered_flow_mag" in viewer.layers
+    assert "3_cell_filtered_dp" in viewer.layers
     assert "3_cell_foreground_masks" in viewer.layers
     assert "3_cell_tracked_labels" in viewer.layers
-    np.testing.assert_array_equal(viewer.layers["3_cell_filtered_flow_mag"].data, flow_mag)
+    np.testing.assert_array_equal(viewer.layers["3_cell_filtered_dp"].data, filtered_dp)
     np.testing.assert_array_equal(viewer.layers["3_cell_foreground_masks"].data, foreground)
     np.testing.assert_array_equal(viewer.layers["3_cell_tracked_labels"].data, labels)
 
@@ -687,21 +456,24 @@ def test_widget_load_cell_correction_loads_cell_labels_and_reference_images(monk
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
 
     pos_dir = tmp_path / "pos00"
-    (pos_dir / "0_input").mkdir(parents=True)
+    (pos_dir / "1_cellpose").mkdir(parents=True)
     (pos_dir / "3_cell").mkdir()
     labels = np.zeros((2, 4, 4), dtype=np.uint32)
     labels[:, 1:3, 1:3] = 7
-    cell_zavg = np.ones((4, 4), dtype=np.float32)
-    nuc_zavg = np.full((4, 4), 2.0, dtype=np.float32)
+    cell_prob_zavg = np.ones((4, 4), dtype=np.float32)
+    nuc_prob_zavg = np.full((4, 4), 2.0, dtype=np.float32)
     tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
-    tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", cell_zavg)
-    tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", nuc_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_zavg.tif", cell_prob_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif", nuc_prob_zavg)
 
     viewer = _FakeViewer()
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
 
-    widget._on_load_cell_correction()
+    correction_mod = sys.modules["cellflow.napari.cell_correction_widget"]
+    monkeypatch.setattr(correction_mod, "_thread_worker", _make_sync_thread_worker())
+
+    widget.cell_correction_widget._on_load_labels()
 
     assert "Tracked: Cell" in viewer.layers
     assert "Cell z-avg" in viewer.layers
@@ -709,14 +481,13 @@ def test_widget_load_cell_correction_loads_cell_labels_and_reference_images(monk
     np.testing.assert_array_equal(viewer.layers["Tracked: Cell"].data, labels)
     np.testing.assert_array_equal(
         viewer.layers["Cell z-avg"].data,
-        np.broadcast_to(cell_zavg[np.newaxis], labels.shape),
+        np.broadcast_to(cell_prob_zavg[np.newaxis], labels.shape),
     )
     np.testing.assert_array_equal(
         viewer.layers["Nucleus z-avg"].data,
-        np.broadcast_to(nuc_zavg[np.newaxis], labels.shape),
+        np.broadcast_to(nuc_prob_zavg[np.newaxis], labels.shape),
     )
     assert widget.correction_widget._layer is viewer.layers["Tracked: Cell"]
-    assert widget.correction_section.is_expanded is True
     assert "Loaded cell label stack" in widget.correction_status_lbl.text()
 
     widget.deleteLater()
@@ -761,40 +532,40 @@ def test_widget_save_cell_correction_writes_cell_labels(monkeypatch, tmp_path):
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
 
-    widget._on_save_cell_correction()
+    widget.cell_correction_widget._on_save_labels()
 
     saved = tifffile.imread(pos_dir / "3_cell" / "tracked_labels.tif")
     np.testing.assert_array_equal(saved, edited)
     assert saved.dtype == np.uint32
-    assert "Saved 2 frame(s)" in widget.correction_status_lbl.text()
+    assert "Saved 2 frames" in widget.correction_status_lbl.text()
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_cell_correction_section_exposes_expand_selected_cell_action(monkeypatch):
+def test_cell_correction_widget_exposes_expand_cell_action(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.CellWorkflowWidget(_FakeViewer())
 
     correction_button_texts = {
         button.text()
-        for button in widget.correction_section.findChildren(QPushButton)
+        for button in widget.cell_correction_widget.findChildren(QPushButton)
     }
-    correction_label_texts = _label_texts(widget.correction_section)
+    correction_label_texts = _label_texts(widget.cell_correction_widget)
 
-    assert "Expand Selected Cell" in correction_button_texts
-    assert "Max expansion px:" in correction_label_texts
-    assert isinstance(widget.expand_cell_max_px_spin, QSpinBox)
-    assert widget.expand_cell_max_px_spin.value() == 25
-    assert widget.expand_cell_max_px_spin.minimum() == 0
-    assert widget.expand_cell_max_px_spin.maximum() == 999
+    assert "Expand Cell" in correction_button_texts
+    assert "Max expand px:" in correction_label_texts
+    assert isinstance(widget.expand_max_px_spin, QSpinBox)
+    assert widget.expand_max_px_spin.value() == 25
+    assert widget.expand_max_px_spin.minimum() == 0
+    assert widget.expand_max_px_spin.maximum() == 999
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_expand_selected_cell_expands_only_current_frame_from_loaded_foreground(monkeypatch, tmp_path):
+def test_expand_cell_expands_only_current_frame_from_loaded_foreground(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
 
@@ -805,7 +576,7 @@ def test_expand_selected_cell_expands_only_current_frame_from_loaded_foreground(
     foreground = np.zeros_like(labels, dtype=np.uint8)
     foreground[1, 2:5, 2:5] = 1
     labels_layer = viewer.add_labels(labels.copy(), name="Tracked: Cell")
-    viewer.add_labels(foreground, name="Foreground Mask")
+    viewer.add_labels(foreground, name="Foreground Mask: Cell")
     viewer.dims.current_step = (1,)
 
     history = []
@@ -814,9 +585,9 @@ def test_expand_selected_cell_expands_only_current_frame_from_loaded_foreground(
     widget.refresh(tmp_path / "pos00")
     widget.correction_widget.activate_layer(labels_layer)
     widget.correction_widget.select_label(1, 4)
-    widget.expand_cell_max_px_spin.setValue(1)
+    widget.expand_max_px_spin.setValue(1)
 
-    widget.expand_selected_cell_btn.click()
+    widget.expand_cell_btn.click()
 
     edited = viewer.layers["Tracked: Cell"].data
     np.testing.assert_array_equal(edited[0], labels[0])
@@ -830,7 +601,7 @@ def test_expand_selected_cell_expands_only_current_frame_from_loaded_foreground(
     app.processEvents()
 
 
-def test_expand_selected_cell_falls_back_to_foreground_mask_file(monkeypatch, tmp_path):
+def test_expand_cell_falls_back_to_foreground_mask_file(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
 
@@ -847,19 +618,19 @@ def test_expand_selected_cell_falls_back_to_foreground_mask_file(monkeypatch, tm
     widget.refresh(pos_dir)
     widget.correction_widget.activate_layer(labels_layer)
     widget.correction_widget.select_label(0, 3)
-    widget.expand_cell_max_px_spin.setValue(0)
+    widget.expand_max_px_spin.setValue(0)
 
-    widget.expand_selected_cell_btn.click()
+    widget.expand_cell_btn.click()
 
-    assert "Foreground Mask" in viewer.layers
-    np.testing.assert_array_equal(viewer.layers["Foreground Mask"].data, foreground)
+    assert "Foreground Mask: Cell" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["Foreground Mask: Cell"].data, foreground)
     assert np.all(viewer.layers["Tracked: Cell"].data == 3)
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_expand_selected_cell_reports_missing_selection(monkeypatch, tmp_path):
+def test_expand_cell_reports_missing_selection(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
 
@@ -870,7 +641,7 @@ def test_expand_selected_cell_reports_missing_selection(monkeypatch, tmp_path):
     widget.refresh(tmp_path / "pos00")
     widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
 
-    widget.expand_selected_cell_btn.click()
+    widget.expand_cell_btn.click()
 
     assert "No cell selected" in widget.correction_status_lbl.text()
 
@@ -878,7 +649,7 @@ def test_expand_selected_cell_reports_missing_selection(monkeypatch, tmp_path):
     app.processEvents()
 
 
-def test_expand_selected_cell_reports_missing_foreground_mask(monkeypatch, tmp_path):
+def test_expand_cell_reports_missing_foreground_mask(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
 
@@ -891,7 +662,7 @@ def test_expand_selected_cell_reports_missing_foreground_mask(monkeypatch, tmp_p
     widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
     widget.correction_widget.select_label(0, 5)
 
-    widget.expand_selected_cell_btn.click()
+    widget.expand_cell_btn.click()
 
     assert "Foreground mask not found" in widget.correction_status_lbl.text()
 

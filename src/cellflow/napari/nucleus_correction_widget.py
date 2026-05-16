@@ -75,6 +75,7 @@ _CORRECTION_TRACK_LAYER = "[Correction] Nucleus tracks"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
+_NUCLEUS_TRACK_COLOR_SCALE = 0.65
 
 _DEFAULT_DEPENDENCIES = {
     "extend_track_from_db": _extend_track_from_db,
@@ -456,7 +457,7 @@ class NucleusCorrectionWidget(QWidget):
                 [[0.0, 0.0, 0.0, 1.0], [0.0, 0.25, 1.0, 1.0]],
                 name="bop_blue",
             )
-        kwargs = {"name": name, "colormap": colormap, "blending": "additive"}
+        kwargs = {"name": name, "colormap": colormap, "blending": "minimum"}
         limits = self._contrast_limits_for_image(arr)
         if limits is not None:
             kwargs["contrast_limits"] = limits
@@ -474,7 +475,9 @@ class NucleusCorrectionWidget(QWidget):
             0: "transparent",
         }
         for label_id, color in zip(label_ids, label_colors, strict=True):
-            color_map[int(label_id)] = tuple(float(c) for c in color)
+            rgba = np.asarray(color, dtype=np.float32).copy()
+            rgba[:3] *= _NUCLEUS_TRACK_COLOR_SCALE
+            color_map[int(label_id)] = tuple(float(c) for c in rgba)
 
         shape = (
             (1, int(labels.shape[0]), int(labels.shape[1]))
@@ -556,7 +559,7 @@ class NucleusCorrectionWidget(QWidget):
             (
                 self._nucleus_prob_zavg_path(),
                 _CORRECTION_NUC_ZAVG_LAYER,
-                "bop orange",
+                "I Orange",
             ),
         ):
             if data is not None and data.exists():
@@ -571,7 +574,7 @@ class NucleusCorrectionWidget(QWidget):
             self._add_correction_image_layer(
                 np.asarray(tifffile.imread(str(nls_path)), dtype=np.float32),
                 _CORRECTION_NLS_ZAVG_LAYER,
-                "bop_blue",
+                "I Blue",
             )
 
         self._correction_status(f"Loaded tracked stack {stack.shape} into correction mode.")
