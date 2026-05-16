@@ -12,19 +12,6 @@ DEFAULT_ROW_SPACING = 4
 DEFAULT_SWEEP_SPIN_WIDTH = 62
 BLOCK_GRID_COLUMNS = 4
 
-SEMANTIC_COLORS = {
-    "stage": ("#ffffff", "#ffffff", "#ffffff"),
-    "params": ("#ffffff", "#ffffff", "#ffffff"),
-    "actions": ("#2e7a9e", "#2e7a9e", "#2e7a9e"),
-    "indicators": ("#ffffff", "#ffffff", "#ffffff"),
-}
-
-def semantic_color(role: str, level: int = 0) -> str:
-    shades = SEMANTIC_COLORS[role]
-    index = min(max(level, 0), len(shades) - 1)
-    return shades[index]
-
-
 # ── Theme palette ────────────────────────────────────────────────────────
 # Catppuccin Mocha accent palette. To add another flavor later, define a
 # parallel dict (e.g. CATPPUCCIN_LATTE) with the same keys and reassign
@@ -138,18 +125,14 @@ def status_label(label, size_pt=8, italic=False, muted=False):
     style = f"font-size: {size_pt}pt;"
     if muted:
         style += " color: palette(mid);"
-    else:
-        style += f" color: {semantic_color('indicators')};"
     if italic:
         style += " font-style: italic;"
     label.setStyleSheet(style)
     return label
 
 
-def parameter_heading(label, level=1):
-    label.setStyleSheet(
-        f"font-weight: 600; color: {semantic_color('params', level)};"
-    )
+def parameter_heading(label):
+    label.setStyleSheet("font-weight: 600;")
     return label
 
 

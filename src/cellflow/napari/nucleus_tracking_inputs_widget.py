@@ -159,8 +159,6 @@ class NucleusTrackingInputsWidget(QWidget):
             "Ultrack Parameters",
             params_inner,
             expanded=False,
-            title_role="params",
-            title_level=1,
         )
 
         self.db_gen_linking_mode_combo.currentTextChanged.connect(

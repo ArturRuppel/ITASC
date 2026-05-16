@@ -159,8 +159,6 @@ class CellParamsWidget(QWidget):
             "Parameters",
             inner,
             expanded=False,
-            title_role="params",
-            title_level=1,
         )
 
     # ── Config-builder methods ────────────────────────────────────────────────

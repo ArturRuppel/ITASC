@@ -23,7 +23,7 @@ def separator() -> QFrame:
 
 def heading(text: str) -> QLabel:
     lbl = QLabel(text)
-    return parameter_heading(lbl, level=1)
+    return parameter_heading(lbl)
 
 
 def make_status() -> QLabel:

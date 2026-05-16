@@ -122,8 +122,7 @@ class CellFlowMainWidget(QWidget):
             "Project Status",
             self.data_panel,
             expanded=False,
-            title_role="stage",
-            title_level=0,
+
             accent_color=stage_accent("project_status"),
         )
 
@@ -132,8 +131,7 @@ class CellFlowMainWidget(QWidget):
             "Cellpose",
             self._cellpose_widget,
             expanded=False,
-            title_role="stage",
-            title_level=0,
+
             accent_color=stage_accent("cellpose"),
         )
         self.hpc_cellpose_widget = self._cellpose_widget.hpc_cellpose_widget
@@ -143,8 +141,7 @@ class CellFlowMainWidget(QWidget):
             "Nucleus Segmentation & Tracking",
             self.nucleus_workflow_widget,
             expanded=False,
-            title_role="stage",
-            title_level=0,
+
             accent_color=stage_accent("nucleus"),
         )
 
@@ -153,8 +150,7 @@ class CellFlowMainWidget(QWidget):
             "Cell Segmentation",
             self.cell_workflow_widget,
             expanded=False,
-            title_role="stage",
-            title_level=0,
+
             accent_color=stage_accent("cell"),
         )
         self._connect_label_selection_sync()
@@ -164,8 +160,7 @@ class CellFlowMainWidget(QWidget):
             "Contact Analysis",
             self.contact_analysis_widget,
             expanded=False,
-            title_role="stage",
-            title_level=0,
+
             accent_color=stage_accent("contact_analysis"),
         )
 

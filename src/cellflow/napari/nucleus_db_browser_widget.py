@@ -172,8 +172,6 @@ class NucleusUltrackDbBrowserMixin:
             "Database Browser",
             self.ultrack_db_browser_widget,
             expanded=False,
-            title_role="indicators",
-            title_level=1,
         )
         self.ultrack_db_browser_widget.section._toggle.setVisible(False)
         self.ultrack_db_browser_widget.section._toggle.setEnabled(False)

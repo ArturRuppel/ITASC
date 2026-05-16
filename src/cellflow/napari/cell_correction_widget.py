@@ -182,8 +182,7 @@ class CellCorrectionWidget(QWidget):
             "Correction Parameters",
             params_inner,
             expanded=False,
-            title_role="params",
-            title_level=2,
+
         )
         group_lay.addWidget(self.correction_params_section)
 
@@ -201,8 +200,7 @@ class CellCorrectionWidget(QWidget):
             "Correction Shortcuts",
             self.correction_widget.build_shortcuts_widget(),
             expanded=False,
-            title_role="actions",
-            title_level=2,
+
         )
         group_lay.addWidget(self.correction_shortcuts_section)
         group_lay.addWidget(self.correction_widget)
@@ -221,8 +219,7 @@ class CellCorrectionWidget(QWidget):
             "Correction",
             inner,
             expanded=False,
-            title_role="stage",
-            title_level=1,
+
         )
         self.section._toggle.setVisible(False)
         self.section._toggle.setEnabled(False)

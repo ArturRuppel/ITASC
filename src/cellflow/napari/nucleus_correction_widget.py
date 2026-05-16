@@ -240,8 +240,7 @@ class NucleusCorrectionWidget(QWidget):
             "Extend / Retrack Parameters",
             extend_retrack_inner,
             expanded=False,
-            title_role="params",
-            title_level=2,
+
         )
         self.extend_params_section = self.extend_retrack_params_section
         self.retrack_params_section = self.extend_retrack_params_section
@@ -260,8 +259,7 @@ class NucleusCorrectionWidget(QWidget):
             "Correction Shortcuts",
             self._build_shortcuts_widget(),
             expanded=False,
-            title_role="actions",
-            title_level=2,
+
         )
         group_lay.addWidget(self.shortcuts_section)
         group_lay.addWidget(self.correction_widget)
@@ -274,8 +272,7 @@ class NucleusCorrectionWidget(QWidget):
             "Correction",
             inner,
             expanded=False,
-            title_role="stage",
-            title_level=1,
+
         )
         self.section._toggle.setVisible(False)
         self.section._toggle.setEnabled(False)

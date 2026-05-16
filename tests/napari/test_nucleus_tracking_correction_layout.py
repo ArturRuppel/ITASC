@@ -495,10 +495,9 @@ def test_main_widget_scroll_area_keeps_content_horizontally_aligned():
     viewer.close()
 
 
-def test_nucleus_workflow_uses_semantic_colors_by_role_and_level():
+def test_nucleus_workflow_layout_section_titles():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
-    from cellflow.napari.ui_style import semantic_color
 
     widget = widget_class(viewer)
 
@@ -506,7 +505,7 @@ def test_nucleus_workflow_uses_semantic_colors_by_role_and_level():
         QToolButton, "collapsible_toggle"
     )
     assert files_toggle is not None
-    assert f"color: {semantic_color('stage', 1)};" in files_toggle.styleSheet()
+    assert "color" not in files_toggle.styleSheet()
 
     segmentation_toggle = next(
         toggle
@@ -514,12 +513,12 @@ def test_nucleus_workflow_uses_semantic_colors_by_role_and_level():
         if toggle.text() == "Segmentation Input Parameters"
     )
     assert segmentation_toggle is not None
-    assert f"color: {semantic_color('params', 1)};" in segmentation_toggle.styleSheet()
+    assert "color" not in segmentation_toggle.styleSheet()
     assert "Segmentation Inputs" not in {
         label.text() for label in widget.segmentation_inputs_section.findChildren(QLabel)
     }
     assert widget.run_db_gen_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
-    assert semantic_color("indicators", 0) in widget.pipeline_status_lbl.styleSheet()
+    assert "color" not in widget.pipeline_status_lbl.styleSheet()
 
     widget.deleteLater()
     viewer.close()

@@ -30,7 +30,6 @@ sys.modules["cellflow.napari"] = napari_pkg
 from cellflow.napari.ui_style import (
     DEFAULT_SPIN_WIDTH,
     SECTION_MARGIN,
-    SEMANTIC_COLORS,
     TIGHT_SPACING,
     TINY_MARGIN,
     action_button,
@@ -40,7 +39,6 @@ from cellflow.napari.ui_style import (
     icon_button,
     muted_label,
     parameter_heading,
-    semantic_color,
     status_label,
     tiny_button,
 )
@@ -135,7 +133,7 @@ def test_status_label_sets_font_size_and_optional_italic(_app):
 
     assert status_label(plain, size_pt=10) is plain
     assert "font-size: 10pt" in plain.styleSheet()
-    assert SEMANTIC_COLORS["indicators"][0] in plain.styleSheet()
+    assert "color" not in plain.styleSheet()
     assert "font-style" not in plain.styleSheet()
 
     status_label(italic, italic=True)
@@ -147,28 +145,15 @@ def test_status_label_sets_font_size_and_optional_italic(_app):
     assert "font-style: italic" in muted.styleSheet()
 
 
-def test_semantic_colors_have_role_shades():
-    assert SEMANTIC_COLORS == {
-        "stage": ("#ffffff", "#ffffff", "#ffffff"),
-        "params": ("#ffffff", "#ffffff", "#ffffff"),
-        "actions": ("#2e7a9e", "#2e7a9e", "#2e7a9e"),
-        "indicators": ("#ffffff", "#ffffff", "#ffffff"),
-    }
-    assert semantic_color("stage", 0) == SEMANTIC_COLORS["stage"][0]
-    assert semantic_color("stage", 1) == SEMANTIC_COLORS["stage"][1]
-    assert semantic_color("stage", 2) == SEMANTIC_COLORS["stage"][2]
-    assert semantic_color("stage", 10) == SEMANTIC_COLORS["stage"][2]
-    assert semantic_color("params", 0) == semantic_color("indicators", 0)
-
 
 def test_parameter_heading_uses_params_role_and_level(_app):
     label = QLabel("Contour")
 
-    assert parameter_heading(label, level=1) is label
+    assert parameter_heading(label) is label
 
     style = label.styleSheet()
     assert "font-weight: 600" in style
-    assert SEMANTIC_COLORS["params"][1] in style
+    assert "color" not in style
 
 
 def test_danger_button_keeps_native_button_style(_app):

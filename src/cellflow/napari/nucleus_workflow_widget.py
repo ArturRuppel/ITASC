@@ -96,8 +96,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             "Pipeline Files",
             self._files_widget,
             expanded=False,
-            title_role="stage",
-            title_level=1,
+
         )
         root.addWidget(self._pipeline_files_section)
 
@@ -256,8 +255,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             "Refinement",
             self.refinement_widget,
             expanded=False,
-            title_role="stage",
-            title_level=1,
+
         )
         root.addWidget(self.refinement_section)
 

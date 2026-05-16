@@ -81,8 +81,6 @@ class ContactAnalysisWidget(QWidget):
                 "Pipeline Files",
                 self._files_widget,
                 expanded=False,
-                title_role="stage",
-                title_level=1,
             )
         )
 

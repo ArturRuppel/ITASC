@@ -22,7 +22,6 @@ from .ui_style import (
     TINY_MARGIN,
     icon_button,
     muted_label,
-    semantic_color,
     stage_status_color,
     status_label,
 )
@@ -38,16 +37,12 @@ class CollapsibleSection(QWidget):
         expanded: bool = False,
         parent: QWidget | None = None,
         title_color: str | None = None,
-        title_role: str = "stage",
-        title_level: int = 1,
         accent_color: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._inner = inner
         self._base_title = title
-        if title_color is None:
-            title_color = semantic_color(title_role, title_level)
-        self._default_title_color = title_color
+        self._default_title_color: str | None = title_color
         # An explicit accent_color marks this as the OUTER stage anchor: stripe
         # is thicker and the header text uses the full accent hue. Inner sections
         # leave accent_color=None and inherit a muted variant via parent walk.
@@ -137,10 +132,11 @@ class CollapsibleSection(QWidget):
                 "margin: 0px 2px 2px 2px; "
                 "}"
             )
+        color_rule = f"color: {title_color}; " if title_color else ""
         self._toggle.setStyleSheet(
             "QToolButton#collapsible_toggle { "
             f"font-weight: bold; font-size: {font_size_pt}pt; border: none; "
-            f"padding: 2px; color: {title_color}; "
+            f"padding: 2px; {color_rule}"
             "}"
         )
         self._content_frame.setStyleSheet(frame_qss)

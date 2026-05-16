@@ -101,7 +101,7 @@ def _btn(text: str, tooltip: str = "") -> QPushButton:
 
 
 def _heading(text: str) -> QLabel:
-    return parameter_heading(QLabel(text), level=1)
+    return parameter_heading(QLabel(text))
 
 
 def _make_status() -> QLabel:
@@ -270,8 +270,6 @@ class RadialRefinementWidget(QWidget):
             "Refinement Parameters",
             params_inner,
             expanded=True,
-            title_role="params",
-            title_level=2,
         )
         outer.addWidget(self.params_section)
 

@@ -69,7 +69,7 @@ def _separator() -> QFrame:
 
 def _heading(text: str) -> QLabel:
     lbl = QLabel(text)
-    return parameter_heading(lbl, level=1)
+    return parameter_heading(lbl)
 
 
 def _make_status() -> QLabel:
@@ -179,8 +179,6 @@ class CellWorkflowWidget(QWidget):
                 "Pipeline Files",
                 self._files_widget,
                 expanded=False,
-                title_role="stage",
-                title_level=1,
             )
         )
 

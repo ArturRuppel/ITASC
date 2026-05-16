@@ -98,6 +98,4 @@ class NucleusSegmentationInputsWidget(QWidget):
             "Segmentation Input Parameters",
             inner,
             expanded=True,
-            title_role="params",
-            title_level=1,
         )
