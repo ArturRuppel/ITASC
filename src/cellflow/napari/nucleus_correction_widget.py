@@ -832,6 +832,12 @@ class NucleusCorrectionWidget(QWidget):
         if source_id in validated_tracks:
             self._correction_status("Cannot swap a validated cell."); return
 
+        if self._swap_cursor is not None and (
+            self._swap_cursor.source_id != source_id
+            or self._swap_cursor.frame != t
+        ):
+            self._swap_cursor = None
+
         if self._swap_cursor is None:
             from skimage.measure import regionprops as _regionprops
             props = _regionprops(source_mask.astype(np.uint8))
@@ -877,6 +883,7 @@ class NucleusCorrectionWidget(QWidget):
                 candidates=tuple(candidates),
                 displayed_area=src_area,
                 cursor=None,
+                baseline_frame=tracked[t].copy(),
             )
 
         cursor = self._swap_cursor
@@ -905,6 +912,16 @@ class NucleusCorrectionWidget(QWidget):
     def _apply_swap(self, layer, t: int, source_id: int, candidate: _SwapCandidate, validated_tracks: dict) -> None:
         frame = layer.data[t]
         before = frame.copy()
+
+        cursor = self._swap_cursor
+        if (
+            cursor is not None
+            and cursor.baseline_frame is not None
+            and cursor.source_id == source_id
+            and cursor.frame == t
+            and cursor.baseline_frame.shape == frame.shape
+        ):
+            frame[:] = cursor.baseline_frame
 
         protected_ids: set[int] = set()
         for cell_id, frames in validated_tracks.items():

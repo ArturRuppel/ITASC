@@ -26,6 +26,7 @@ class _SwapCursor:
     candidates: tuple[SwapCandidate, ...]
     displayed_area: int
     cursor: int | None
+    baseline_frame: np.ndarray | None = None
 
 
 def list_swap_candidates(
