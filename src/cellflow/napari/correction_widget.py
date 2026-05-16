@@ -9,8 +9,10 @@ import napari
 import napari.layers
 import numpy as np
 from napari.utils.notifications import show_error
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QEvent, QObject, Qt, QTimer
 from qtpy.QtWidgets import (
+    QAbstractButton,
+    QApplication,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -62,6 +64,24 @@ _SPOTLIGHT_OPACITY = 0.7
 _SPOTLIGHT_SCALE = 3.0
 
 
+class _ClickOutsideGuard(QObject):
+    """Deactivates the correction widget when a button outside it is clicked."""
+
+    def __init__(self, widget: "CorrectionWidget") -> None:
+        super().__init__(widget)
+        self._widget = widget
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.MouseButtonPress and isinstance(obj, QAbstractButton):
+            parent = obj
+            while parent is not None:
+                if parent is self._widget:
+                    return False
+                parent = parent.parent()
+            QTimer.singleShot(0, self._widget._deactivate)
+        return False
+
+
 class CorrectionWidget(QWidget):
     """Dock widget for interactive label correction."""
 
@@ -96,6 +116,7 @@ class CorrectionWidget(QWidget):
         self._bound_keys: list = []
 
         self._in_deactivate: bool = False
+        self._click_guard: _ClickOutsideGuard | None = None
 
         self._saved_viewer_drag_cbs: list = []
         self._saved_layer_mode: str = "pan_zoom"
@@ -369,6 +390,8 @@ class CorrectionWidget(QWidget):
         self._toggle_outline(True)
         self._goto_cell_id.setEnabled(True)
         self._set_status(f"Active on '{layer.name}'")
+        self._click_guard = _ClickOutsideGuard(self)
+        QApplication.instance().installEventFilter(self._click_guard)
 
     def _deactivate(self) -> None:
         if self._in_deactivate:
@@ -381,6 +404,9 @@ class CorrectionWidget(QWidget):
 
     def _deactivate_impl(self) -> None:
         log.debug("deactivate: layer='%s'", self._layer.name if self._layer else None)
+        if self._click_guard is not None:
+            QApplication.instance().removeEventFilter(self._click_guard)
+            self._click_guard = None
         if self._layer is not None:
             self._remove_callbacks()
 

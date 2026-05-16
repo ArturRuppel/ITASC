@@ -59,8 +59,13 @@ def test_apply_annotations_and_score_resets_then_applies_in_order(monkeypatch, t
         or type(
             "CorrectionReport",
             (),
-            {"fake_nodes": 3, "anchor_nodes": 1, "anchor_links": 6},
+            {"fake_nodes": 3, "anchor_nodes": 1, "anchor_links": 6, "unmatched_anchors": ()},
         )(),
+    )
+    monkeypatch.setattr(
+        db_build,
+        "inject_unmatched_anchor_nodes",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("should not be called")),
     )
     monkeypatch.setattr(
         db_build,

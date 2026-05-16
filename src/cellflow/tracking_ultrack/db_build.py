@@ -14,6 +14,7 @@ from cellflow.tracking_ultrack.corrections import (
     apply_corrections_to_database,
     corrections_from_validated_tracks,
     ensure_anchor_incident_links,
+    inject_unmatched_anchor_nodes,
 )
 from cellflow.tracking_ultrack.ingest import _build_ultrack_config
 from cellflow.tracking_ultrack.linking import run_linking
@@ -34,6 +35,7 @@ class AnnotateAndScoreReport:
     scored_nodes: int = 0
     seed_nodes: int = 0
     anchor_incident_links_inserted: int = 0
+    injected_homemade_anchors: int = 0
 
 
 def _reset_annotations(working_dir: str | Path) -> None:
@@ -87,10 +89,13 @@ def apply_annotations_and_score(
     _reset_annotations(working_dir)
 
     fake_nodes = anchor_nodes = anchor_links = 0
+    injected_homemade_anchors = 0
     if corrections:
         _notify(progress_cb, "Applying node annotations...")
         pre = apply_corrections_to_database(
-            working_dir, corrections, cfg, annotate_anchor_links=False,
+            working_dir, corrections, cfg,
+            annotate_anchor_links=False,
+            tracked_labels=tracked_labels,
         )
         fake_nodes = int(pre.fake_nodes)
         anchor_nodes = int(pre.anchor_nodes)
@@ -99,6 +104,31 @@ def apply_annotations_and_score(
             f"Marked {fake_nodes} FAKE node(s) and {anchor_nodes} anchor node(s).",
         )
 
+        if pre.unmatched_anchors and tracked_labels is not None:
+            # Some anchor corrections had no NodeDB candidate — the user is
+            # anchoring a manually-drawn cell. Inject synthetic REAL nodes so
+            # the ILP is forced to include them.
+            _notify(
+                progress_cb,
+                f"Injecting {len(pre.unmatched_anchors)} homemade anchor node(s) into DB...",
+            )
+            inj = inject_unmatched_anchor_nodes(
+                working_dir, pre.unmatched_anchors, tracked_labels, cfg,
+            )
+            injected_homemade_anchors = inj.injected
+            _notify(
+                progress_cb,
+                f"Injected {inj.injected} homemade anchor node(s) "
+                f"({inj.skipped_no_mask} skipped: no mask in tracked_labels).",
+            )
+        elif pre.unmatched_anchors:
+            _notify(
+                progress_cb,
+                f"Warning: {len(pre.unmatched_anchors)} anchor correction(s) matched no "
+                f"NodeDB candidate and tracked_labels was not provided — these anchors "
+                f"will not affect the ILP solve.",
+            )
+
     _notify(progress_cb, "Scoring node probabilities...")
     score = write_seed_prior_node_probs(working_dir, score_signal_path, cfg)
     scored_nodes = int(getattr(score, "scored", 0))
@@ -106,9 +136,14 @@ def apply_annotations_and_score(
     _notify(progress_cb, f"Scored {scored_nodes} node(s) using {seed_nodes} seed node(s).")
 
     if corrections:
+        # Second pass: re-mark REAL anchor nodes (now including any injected
+        # homemade nodes that were inserted above) and add link annotations
+        # between consecutive REAL anchor nodes.
         _notify(progress_cb, "Applying link annotations...")
         post = apply_corrections_to_database(
-            working_dir, corrections, cfg, annotate_anchor_links=True,
+            working_dir, corrections, cfg,
+            annotate_anchor_links=True,
+            tracked_labels=tracked_labels,
         )
         anchor_links = int(post.anchor_links)
         _notify(progress_cb, f"Marked {anchor_links} anchor link(s).")
@@ -129,6 +164,7 @@ def apply_annotations_and_score(
         scored_nodes=scored_nodes,
         seed_nodes=seed_nodes,
         anchor_incident_links_inserted=anchor_incident_links_inserted,
+        injected_homemade_anchors=injected_homemade_anchors,
     )
 
 

@@ -507,6 +507,25 @@ class NucleusCorrectionWidget(QWidget):
             old_to_new[int(old_id)] = new_id
         return lut[stack], len(unique_ids), old_to_new
 
+    def _refresh_tracked_layer_from_disk(self) -> None:
+        """Overwrite the 'Tracked: Nucleus' layer data from the saved TIFF.
+
+        Called when correction mode is deactivated so the pipeline widget's
+        re-solve reads the latest saved state rather than stale in-memory data.
+        Does nothing if the file does not exist or if the layer is absent.
+        """
+        tracked_path = self._tracked_path()
+        if tracked_path is None or not tracked_path.exists():
+            return
+        if _TRACKED_LAYER not in self.viewer.layers:
+            return
+        try:
+            from cellflow.database.tracked import read_full_tracked_stack
+            data = np.asarray(read_full_tracked_stack(tracked_path), dtype=np.uint32)
+            self.viewer.layers[_TRACKED_LAYER].data = data
+        except Exception:
+            pass
+
     def _load_correction_layers_from_disk(self) -> bool:
         tracked_path = self._tracked_path()
         if tracked_path is None or not tracked_path.exists():
@@ -1123,6 +1142,9 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_widget.deactivate()
         for sc in getattr(self, "_correction_shortcuts", []):
             sc.setEnabled(False)
+        # Refresh the main Tracked layer from disk so a subsequent re-solve
+        # picks up any corrections the user saved during this session.
+        self._refresh_tracked_layer_from_disk()
         self._remove_correction_owned_layers()
         self._restore_correction_view_state()
         self.section.collapse()

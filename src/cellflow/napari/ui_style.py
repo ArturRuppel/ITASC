@@ -65,7 +65,8 @@ NORD = {
     "blue":      "#5e81ac", "lavender":  "#b48ead",
 }
 
-ACTIVE_PALETTE = CATPPUCCIN_MOCHA
+# ACTIVE_PALETTE = CATPPUCCIN_MOCHA
+ACTIVE_PALETTE = NORD
 
 STAGE_ACCENTS = {
     "project_status":   "sapphire",

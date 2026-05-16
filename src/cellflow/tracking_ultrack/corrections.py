@@ -32,6 +32,7 @@ class CorrectionDatabaseReport:
     anchor_nodes: int = 0
     anchor_links: int = 0
     anchor_overlaps_pruned: int = 0
+    unmatched_anchors: tuple[Correction, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ def apply_corrections_to_database(
     cfg: TrackingConfig,
     *,
     annotate_anchor_links: bool = True,
+    tracked_labels: np.ndarray | None = None,
 ) -> CorrectionDatabaseReport:
     """Apply solve-time correction annotations to ``data.db``.
 
@@ -85,6 +87,14 @@ def apply_corrections_to_database(
     surviving candidate ``REAL`` and mark consecutive anchor links ``REAL``.
     In Ultrack 0.6.x these are hard annotations when solve uses
     ``use_annotations=True``.
+
+    ``tracked_labels`` enables IoU-based candidate matching for anchors. When
+    provided, the mask of the anchored cell in ``tracked_labels`` is compared
+    against NodeDB candidate masks, and the candidate with the highest IoU is
+    chosen. This correctly identifies the intended hypothesis even when two
+    hierarchical candidates (e.g. parent vs child) have nearly identical
+    centroids. Falls back to centroid-distance matching when no IoU > 0 is
+    found.
     """
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
@@ -97,6 +107,7 @@ def apply_corrections_to_database(
     engine = sqla.create_engine(f"sqlite:///{Path(working_dir) / 'data.db'}")
     fake_node_ids: set[int] = set()
     resolved_anchor_nodes: dict[tuple[int, int], int] = {}
+    unmatched_anchor_list: list[Correction] = []
     anchor_nodes = 0
     anchor_links = 0
     anchor_overlaps_pruned = 0
@@ -118,19 +129,71 @@ def apply_corrections_to_database(
                 synchronize_session=False,
             )
 
+        labels_arr = np.asarray(tracked_labels) if tracked_labels is not None else None
+
         for correction in corrections:
             if correction.kind != "anchor":
                 continue
-            rows = session.query(NodeDB.id, NodeDB.y, NodeDB.x).where(
-                NodeDB.t == int(correction.t),
-                NodeDB.node_annot != VarAnnotation.FAKE,
-            )
+
             nearest: tuple[float, int] | None = None
-            for node_id, y, x in rows:
-                dist = _distance(y, x, correction.y, correction.x)
-                if dist <= radius and (nearest is None or dist < nearest[0]):
-                    nearest = (dist, int(node_id))
+
+            # IoU-based matching: find the candidate whose mask best overlaps
+            # the cell the user currently has in tracked_labels. This is the
+            # correct approach when two hierarchical hypotheses (e.g. parent
+            # mask vs smaller child mask) share nearly the same centroid —
+            # centroid distance cannot distinguish them, but IoU can.
+            if labels_arr is not None:
+                t_idx = int(correction.t)
+                if 0 <= t_idx < labels_arr.shape[0]:
+                    t_frame = labels_arr[t_idx]
+                    raw_mask = (
+                        (t_frame == int(correction.cell_id)).any(axis=0)
+                        if t_frame.ndim == 3
+                        else (t_frame == int(correction.cell_id))
+                    )
+                    if raw_mask.any():
+                        from cellflow.tracking_ultrack._node_geometry import (
+                            node_bbox_and_mask as _nbm,
+                            raw_iou as _raw_iou,
+                        )
+                        rows_nz = np.flatnonzero(raw_mask.any(axis=1))
+                        cols_nz = np.flatnonzero(raw_mask.any(axis=0))
+                        y0, y1 = int(rows_nz[0]), int(rows_nz[-1]) + 1
+                        x0, x1 = int(cols_nz[0]), int(cols_nz[-1]) + 1
+                        anchor_bbox = (y0, x0, y1, x1)
+                        anchor_crop = np.ascontiguousarray(raw_mask[y0:y1, x0:x1], dtype=bool)
+                        broad = radius * 4
+                        best_iou = 0.0
+                        best_iou_node: int | None = None
+                        for node_id, y, x, node_pickle in session.query(
+                            NodeDB.id, NodeDB.y, NodeDB.x, NodeDB.pickle
+                        ).where(
+                            NodeDB.t == t_idx,
+                            NodeDB.node_annot != VarAnnotation.FAKE,
+                        ):
+                            if _distance(y, x, correction.y, correction.x) > broad:
+                                continue
+                            cand_bbox, cand_mask = _nbm(int(node_id), node_pickle)
+                            iou = _raw_iou(anchor_bbox, anchor_crop, cand_bbox, cand_mask)
+                            if iou > best_iou:
+                                best_iou = iou
+                                best_iou_node = int(node_id)
+                        if best_iou_node is not None:
+                            nearest = (0.0, best_iou_node)
+
+            # Centroid-distance fallback (used when tracked_labels unavailable
+            # or the cell has no mask at this frame in tracked_labels).
             if nearest is None:
+                for node_id, y, x in session.query(NodeDB.id, NodeDB.y, NodeDB.x).where(
+                    NodeDB.t == int(correction.t),
+                    NodeDB.node_annot != VarAnnotation.FAKE,
+                ):
+                    dist = _distance(y, x, correction.y, correction.x)
+                    if dist <= radius and (nearest is None or dist < nearest[0]):
+                        nearest = (dist, int(node_id))
+
+            if nearest is None:
+                unmatched_anchor_list.append(correction)
                 continue
             _dist, node_id = nearest
             session.query(NodeDB).where(NodeDB.id == node_id).update(
@@ -185,6 +248,7 @@ def apply_corrections_to_database(
         anchor_nodes=anchor_nodes,
         anchor_links=anchor_links,
         anchor_overlaps_pruned=int(anchor_overlaps_pruned or 0),
+        unmatched_anchors=tuple(unmatched_anchor_list),
     )
 
 
@@ -279,6 +343,155 @@ def ensure_anchor_incident_links(
     return AnchorIncidentLinkReport(
         inserted=inserted,
         anchors_processed=anchors_processed,
+    )
+
+
+@dataclass(frozen=True)
+class HomemadeAnchorInjectionReport:
+    injected: int = 0
+    skipped_no_mask: int = 0
+    skipped_overflow: int = 0
+
+
+def inject_unmatched_anchor_nodes(
+    working_dir: str | Path,
+    unmatched_anchors: tuple[Correction, ...],
+    tracked_labels: np.ndarray,
+    cfg: TrackingConfig,
+) -> HomemadeAnchorInjectionReport:
+    """Insert REAL NodeDB rows for anchor corrections that had no existing candidate.
+
+    Called when ``apply_corrections_to_database`` found no NodeDB node within
+    ``anchor_radius_px`` for one or more anchor corrections. This happens when
+    the user anchors a manually-drawn cell that the segmenter never produced a
+    candidate for. We extract the cell's mask from ``tracked_labels`` and
+    insert a synthetic NodeDB row marked REAL so the ILP is forced to include
+    it, then add OverlapDB rows with any spatially overlapping existing nodes
+    so the ILP cannot simultaneously select conflicting candidates.
+    """
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB, OverlapDB, VarAnnotation
+
+    from cellflow.tracking_ultrack._node_geometry import (
+        intersects as _intersects,
+        make_node_pickle,
+        node_bbox_and_mask,
+        node_pickle_ndim,
+    )
+
+    if not unmatched_anchors:
+        return HomemadeAnchorInjectionReport()
+
+    labels = np.asarray(tracked_labels)
+    engine = sqla.create_engine(f"sqlite:///{Path(working_dir) / 'data.db'}")
+    injected = 0
+    skipped_no_mask = 0
+    skipped_overflow = 0
+
+    with Session(engine) as session:
+        sample = session.query(NodeDB.pickle).limit(1).scalar()
+        ndim = node_pickle_ndim(sample) if sample is not None else 2
+
+        # Track per-frame next t_node_id so multiple injections at the same
+        # frame don't collide.
+        next_t_node_id: dict[int, int] = {}
+
+        new_nodes: list[tuple[int, int, int, int, int, int, int]] = []
+        new_nodes_crop: dict[int, tuple[tuple[int, int, int, int], np.ndarray]] = {}
+
+        for correction in unmatched_anchors:
+            t = int(correction.t)
+            cell_id = int(correction.cell_id)
+
+            if t < 0 or t >= labels.shape[0]:
+                skipped_no_mask += 1
+                continue
+
+            frame = np.asarray(labels[t])
+            mask_2d = (frame == cell_id).any(axis=0) if frame.ndim == 3 else (frame == cell_id)
+            if not mask_2d.any():
+                skipped_no_mask += 1
+                continue
+
+            rows_nz = np.flatnonzero(mask_2d.any(axis=1))
+            cols_nz = np.flatnonzero(mask_2d.any(axis=0))
+            y0, y1 = int(rows_nz[0]), int(rows_nz[-1]) + 1
+            x0, x1 = int(cols_nz[0]), int(cols_nz[-1]) + 1
+            crop = np.ascontiguousarray(mask_2d[y0:y1, x0:x1], dtype=bool)
+            ys, xs = np.nonzero(crop)
+            area = int(crop.sum())
+            y_centroid = float(y0 + ys.mean())
+            x_centroid = float(x0 + xs.mean())
+            bbox_arr = np.array([y0, x0, y1, x1], dtype=np.int32)
+
+            if t not in next_t_node_id:
+                max_id = session.query(sqla.func.max(NodeDB.t_node_id)).where(NodeDB.t == t).scalar()
+                next_t_node_id[t] = int(max_id or 0) + 1
+
+            t_node_id = next_t_node_id[t]
+            if t_node_id >= cfg.max_segments_per_time:
+                skipped_overflow += 1
+                continue
+            next_t_node_id[t] += 1
+
+            node_id = t_node_id + (t + 1) * cfg.max_segments_per_time
+            node_pickle = make_node_pickle(t, crop, bbox_arr, node_id, ndim=ndim)
+
+            session.add(
+                NodeDB(
+                    id=node_id,
+                    t=t,
+                    t_node_id=t_node_id,
+                    t_hier_id=0,
+                    z=0,
+                    y=y_centroid,
+                    x=x_centroid,
+                    area=area,
+                    pickle=node_pickle,
+                    node_prob=1.0,
+                    node_annot=VarAnnotation.REAL,
+                )
+            )
+            new_nodes.append((node_id, t, y0, x0, y1, x1))
+            new_nodes_crop[node_id] = ((y0, x0, y1, x1), crop)
+            injected += 1
+
+        session.flush()
+
+        # For each injected node add OverlapDB rows with spatially conflicting
+        # existing nodes so the ILP cannot select both.
+        for node_id, t, y0, x0, y1, x1 in new_nodes:
+            bbox_new = (y0, x0, y1, x1)
+            _, crop_new = new_nodes_crop.get(node_id, (None, None))
+            if crop_new is None:
+                continue
+            candidate_rows = (
+                session.query(NodeDB.id, NodeDB.pickle)
+                .where(NodeDB.t == t, NodeDB.id != node_id)
+                .all()
+            )
+            for cand_id, cand_pickle in candidate_rows:
+                cand_id = int(cand_id)
+                cand_bbox, cand_mask = node_bbox_and_mask(cand_id, cand_pickle)
+                if not _intersects(bbox_new, crop_new, cand_bbox, cand_mask):
+                    continue
+                pair_node = max(node_id, cand_id)
+                pair_anc = min(node_id, cand_id)
+                exists = session.query(OverlapDB.node_id).where(
+                    OverlapDB.node_id == pair_node,
+                    OverlapDB.ancestor_id == pair_anc,
+                ).first()
+                if exists is None:
+                    session.add(OverlapDB(node_id=pair_node, ancestor_id=pair_anc))
+
+        session.commit()
+
+    engine.dispose()
+    return HomemadeAnchorInjectionReport(
+        injected=injected,
+        skipped_no_mask=skipped_no_mask,
+        skipped_overflow=skipped_overflow,
     )
 
 
