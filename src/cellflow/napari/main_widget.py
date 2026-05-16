@@ -397,28 +397,32 @@ class CellFlowMainWidget(QWidget):
 
     def _update_section_statuses(self) -> None:
         """Refresh stage-status dots from on-disk file presence."""
-        self.data_section.set_status(
-            pipeline_status_from_files(
-                self.data_panel.file_tracker, done_group="Input Data"
-            )
+        cellpose = pipeline_status_from_files(
+            self._cellpose_widget.output_files_tracker, done_group="Outputs"
         )
-        self.cellpose_section.set_status(
-            pipeline_status_from_files(
-                self._cellpose_widget.output_files_tracker, done_group="Outputs"
-            )
+        nucleus = pipeline_status_from_files(
+            self.nucleus_workflow_widget._files_widget, done_group="Output"
         )
-        self.nucleus_section.set_status(
-            pipeline_status_from_files(
-                self.nucleus_workflow_widget._files_widget, done_group="Output"
-            )
+        cell = pipeline_status_from_files(
+            self.cell_workflow_widget._files_widget, done_group="Output"
         )
-        self.cell_section.set_status(
-            pipeline_status_from_files(
-                self.cell_workflow_widget._files_widget, done_group="Output"
-            )
+        contact = pipeline_status_from_files(
+            self.contact_analysis_widget._files_widget, done_group="Output"
         )
-        self.contact_analysis_section.set_status(
-            pipeline_status_from_files(
-                self.contact_analysis_widget._files_widget, done_group="Output"
-            )
-        )
+
+        self.cellpose_section.set_status(cellpose)
+        self.nucleus_section.set_status(nucleus)
+        self.cell_section.set_status(cell)
+        self.contact_analysis_section.set_status(contact)
+
+        # Project Status rolls up the three essential pipeline outputs
+        # (nucleus labels, cell labels, contact analysis). Cellpose counts
+        # toward "in progress" but not toward "done" — it's an intermediate.
+        essentials = (nucleus, cell, contact)
+        if all(s == "done" for s in essentials):
+            project_status = "done"
+        elif any(s != "not_started" for s in (cellpose, *essentials)):
+            project_status = "in_progress"
+        else:
+            project_status = "not_started"
+        self.data_section.set_status(project_status)

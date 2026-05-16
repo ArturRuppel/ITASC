@@ -44,6 +44,18 @@ class NucleusArtifactPaths:
         return self.pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif"
 
     @property
+    def cell_prob(self) -> Path:
+        return self.pos_dir / "1_cellpose" / "cell_prob_3dt.tif"
+
+    @property
+    def cell_prob_zavg(self) -> Path:
+        return self.pos_dir / "1_cellpose" / "cell_prob_zavg.tif"
+
+    @property
+    def nucleus_prob_zavg(self) -> Path:
+        return self.pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif"
+
+    @property
     def dp(self) -> Path:
         return self.pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif"
 

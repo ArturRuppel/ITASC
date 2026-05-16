@@ -126,30 +126,10 @@ def parameter_heading(label, level=1):
 
 
 def danger_button(button):
-    button.setStyleSheet(
-        """
-        QPushButton {
-            background-color: #b00020;
-            color: white;
-        }
-        QPushButton:hover {
-            background-color: #c62828;
-        }
-        """
-    )
     return button
 
 
 def checked_success_button(button):
-    button.setStyleSheet(
-        """
-        QPushButton:checked {
-            background-color: #2e7d32;
-            color: white;
-            font-weight: bold;
-        }
-        """
-    )
     return button
 
 

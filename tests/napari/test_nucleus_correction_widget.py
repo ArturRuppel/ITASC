@@ -138,6 +138,8 @@ def _make_widget(viewer, pos_dir: Path | None = None):
     widget._tracked_path = lambda: _path("2_nucleus", "tracked_labels.tif")
     widget._cell_zavg_path = lambda: _path("0_input", "cell_zavg.tif")
     widget._nucleus_zavg_path = lambda: _path("0_input", "nucleus_zavg.tif")
+    widget._cell_prob_zavg_path = lambda: _path("1_cellpose", "cell_prob_zavg.tif")
+    widget._nucleus_prob_zavg_path = lambda: _path("1_cellpose", "nucleus_prob_zavg.tif")
     widget._nls_zavg_path = lambda: _path("0_input", "NLS_zavg.tif")
     widget._ultrack_db_path = lambda: _path("2_nucleus", "ultrack_workdir", "data.db")
     widget._current_t = lambda: int(viewer.dims.current_step[0])
@@ -378,15 +380,32 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     pos_dir = tmp_path / "Position_1"
     (pos_dir / "2_nucleus").mkdir(parents=True)
     (pos_dir / "0_input").mkdir(parents=True)
+    (pos_dir / "1_cellpose").mkdir(parents=True)
     tracked = np.zeros((2, 4, 5), dtype=np.uint32)
     tracked[0, 1:3, 1:3] = 7
     tracked[1, 2:4, 2:4] = 7
-    cell = np.arange(20, dtype=np.float32).reshape(4, 5)
-    nucleus = np.full((4, 5), 3, dtype=np.float32)
+    cell_raw_zavg = np.full((2, 4, 5), -99, dtype=np.float32)
+    nucleus_raw_zavg = np.full((2, 4, 5), -77, dtype=np.float32)
+    cell_prob_zavg = np.array(
+        [
+            np.full((4, 5), 0.25, dtype=np.float32),
+            np.full((4, 5), 0.75, dtype=np.float32),
+        ],
+        dtype=np.float32,
+    )
+    nucleus_prob_zavg = np.array(
+        [
+            np.full((4, 5), 0.35, dtype=np.float32),
+            np.full((4, 5), 0.65, dtype=np.float32),
+        ],
+        dtype=np.float32,
+    )
     nls = np.linspace(0, 1, 20, dtype=np.float32).reshape(4, 5)
     tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", tracked)
-    tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", cell)
-    tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", nucleus)
+    tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", cell_raw_zavg)
+    tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", nucleus_raw_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_zavg.tif", cell_prob_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif", nucleus_prob_zavg)
     tifffile.imwrite(pos_dir / "0_input" / "NLS_zavg.tif", nls)
 
     stale = viewer.add_labels(np.ones((1, 2, 2), dtype=np.uint32), name="[Correction] stale")
@@ -424,6 +443,19 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     assert viewer.layers["[Correction] Nucleus z-avg"].blending == "additive"
     assert viewer.layers["[Correction] NLS z-avg"].blending == "additive"
     assert viewer.layers["[Correction] NLS z-avg"].colormap.name == "bop_blue"
+    np.testing.assert_allclose(
+        viewer.layers["[Correction] Cell z-avg"].data,
+        cell_prob_zavg,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        viewer.layers["[Correction] Nucleus z-avg"].data,
+        nucleus_prob_zavg,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_array_equal(viewer.layers["[Correction] NLS z-avg"].data, nls)
 
     widget.deleteLater()
     viewer.close()

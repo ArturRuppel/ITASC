@@ -89,7 +89,7 @@ def test_action_button_uses_fixed_or_expanding_horizontal_policy(_app):
     action_button(expanding, expand=True)
     assert expanding.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
     assert expanding.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
-    assert SEMANTIC_COLORS["actions"][0] in expanding.styleSheet()
+    assert expanding.styleSheet() == ""
 
 
 def test_tiny_button_sets_small_style_and_fixed_vertical_policy(_app):
@@ -149,17 +149,16 @@ def test_status_label_sets_font_size_and_optional_italic(_app):
 
 def test_semantic_colors_have_role_shades():
     assert SEMANTIC_COLORS == {
-        "stage": ("#94e2d5", "#89dceb", "#74c7ec"),
-        "params": ("#89b4fa", "#b4befe", "#cba6f7"),
-        "actions": ("#f38ba8", "#fab387", "#f9e2af"),
-        "indicators": ("#a6e3a1", "#94e2d5", "#89dceb"),
+        "stage": ("#ffffff", "#ffffff", "#ffffff"),
+        "params": ("#ffffff", "#ffffff", "#ffffff"),
+        "actions": ("#2e7a9e", "#2e7a9e", "#2e7a9e"),
+        "indicators": ("#ffffff", "#ffffff", "#ffffff"),
     }
     assert semantic_color("stage", 0) == SEMANTIC_COLORS["stage"][0]
     assert semantic_color("stage", 1) == SEMANTIC_COLORS["stage"][1]
     assert semantic_color("stage", 2) == SEMANTIC_COLORS["stage"][2]
     assert semantic_color("stage", 10) == SEMANTIC_COLORS["stage"][2]
-    assert semantic_color("params", 0) != semantic_color("actions", 0)
-    assert semantic_color("actions", 0) != semantic_color("indicators", 0)
+    assert semantic_color("params", 0) == semantic_color("indicators", 0)
 
 
 def test_parameter_heading_uses_params_role_and_level(_app):
@@ -172,28 +171,41 @@ def test_parameter_heading_uses_params_role_and_level(_app):
     assert SEMANTIC_COLORS["params"][1] in style
 
 
-def test_danger_button_uses_semantic_red_and_hover_style(_app):
+def test_danger_button_keeps_native_button_style(_app):
     button = QPushButton("Delete")
 
     assert danger_button(button) is button
 
-    style = button.styleSheet()
-    assert "QPushButton" in style
-    assert "background-color" in style
-    assert "#b00020" in style
-    assert "QPushButton:hover" in style
+    assert button.styleSheet() == ""
 
 
-def test_checked_success_button_styles_checked_state_green(_app):
+def test_checked_success_button_keeps_native_button_style(_app):
     button = QPushButton("Activate")
 
     assert checked_success_button(button) is button
 
-    style = button.styleSheet()
-    assert "QPushButton:checked" in style
-    assert "background-color" in style
-    assert "#2e7d32" in style
-    assert "font-weight: bold" in style
+    assert button.styleSheet() == ""
+
+
+def test_collapsible_section_does_not_tint_action_buttons(_app):
+    inner = QWidget()
+    layout = QVBoxLayout(inner)
+    button = QPushButton("Run")
+    action_button(button, expand=True)
+    layout.addWidget(button)
+
+    section = CollapsibleSection(
+        "Pipeline",
+        inner,
+        expanded=True,
+        accent_color="#89b4fa",
+    )
+    section.show()
+    _app.processEvents()
+
+    assert button.styleSheet() == ""
+
+    section.deleteLater()
 
 
 def test_collapsible_section_header_spans_available_width(_app):

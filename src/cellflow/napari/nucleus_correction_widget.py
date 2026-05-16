@@ -355,6 +355,12 @@ class NucleusCorrectionWidget(QWidget):
     def _nucleus_zavg_path(self):
         return self._paths.nucleus_zavg if self._paths else None
 
+    def _cell_prob_zavg_path(self):
+        return self._paths.cell_prob_zavg if self._paths else None
+
+    def _nucleus_prob_zavg_path(self):
+        return self._paths.nucleus_prob_zavg if self._paths else None
+
     def _nls_zavg_path(self):
         return self._paths.nls_zavg if self._paths else None
 
@@ -541,17 +547,31 @@ class NucleusCorrectionWidget(QWidget):
         except Exception:
             pass
 
-        for path, name, cmap in (
-            (self._cell_zavg_path(), _CORRECTION_CELL_ZAVG_LAYER, "gray"),
-            (self._nucleus_zavg_path(), _CORRECTION_NUC_ZAVG_LAYER, "bop orange"),
-            (self._nls_zavg_path(), _CORRECTION_NLS_ZAVG_LAYER, "bop_blue"),
+        for data, name, cmap in (
+            (
+                self._cell_prob_zavg_path(),
+                _CORRECTION_CELL_ZAVG_LAYER,
+                "gray",
+            ),
+            (
+                self._nucleus_prob_zavg_path(),
+                _CORRECTION_NUC_ZAVG_LAYER,
+                "bop orange",
+            ),
         ):
-            if path is None or not path.exists():
-                continue
+            if data is not None and data.exists():
+                self._add_correction_image_layer(
+                    np.asarray(tifffile.imread(str(data)), dtype=np.float32),
+                    name,
+                    cmap,
+                )
+
+        nls_path = self._nls_zavg_path()
+        if nls_path is not None and nls_path.exists():
             self._add_correction_image_layer(
-                np.asarray(tifffile.imread(str(path)), dtype=np.float32),
-                name,
-                cmap,
+                np.asarray(tifffile.imread(str(nls_path)), dtype=np.float32),
+                _CORRECTION_NLS_ZAVG_LAYER,
+                "bop_blue",
             )
 
         self._correction_status(f"Loaded tracked stack {stack.shape} into correction mode.")
