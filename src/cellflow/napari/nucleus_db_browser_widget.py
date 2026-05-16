@@ -29,6 +29,7 @@ from cellflow.tracking_ultrack.db_query import (
     query_available_sources as _query_available_sources,
     query_connected_nodes as _query_ultrack_db_connected_nodes,
     query_distinct_heights as _query_distinct_heights,
+    query_frame_range as _query_db_frame_range,
     query_hierarchy_cut_states as _query_hierarchy_cut_states,
     query_middle_frame as _query_ultrack_db_middle_frame,
     render_hierarchy_cut as _render_hierarchy_cut,
@@ -153,6 +154,7 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_height_values_cache: dict[tuple, tuple[float, ...]] = {}
         self._ultrack_db_cut_state_cache: dict[tuple, tuple[_HierarchyCutState, ...]] = {}
         self._ultrack_db_sources_cache: dict[tuple, tuple[int, ...]] = {}
+        self._ultrack_db_frames_cache: dict[tuple, tuple[int, ...]] = {}
         self._ultrack_db_browser_active: bool = False
         self._ultrack_db_frame_initialized: bool = False
         self._ultrack_db_selected_node_id: int | None = None
@@ -287,6 +289,104 @@ class NucleusUltrackDbBrowserMixin:
     def _ultrack_db_middle_frame(self, db_path: Path) -> int | None:
         return _query_ultrack_db_middle_frame(db_path)
 
+    def _viewer_has_time_axis(self) -> bool:
+        for layer in self.viewer.layers:
+            data = getattr(layer, "data", None)
+            if isinstance(data, np.ndarray) and data.ndim >= 3:
+                return True
+        return False
+
+    def _query_db_frames(self, db_path: Path, mtime_ns: int) -> tuple[int, ...]:
+        key = (str(db_path.resolve()), mtime_ns, "frames")
+        cached = self._ultrack_db_frames_cache.get(key)
+        if cached is not None:
+            return cached
+        result = _query_db_frame_range(db_path)
+        self._ultrack_db_frames_cache[key] = result
+        return result
+
+    def _load_full_db_stack(self, db_path: Path) -> None:
+        """Render all DB frames into a 3D (T, H, W) stack when no movie is open."""
+        try:
+            mtime_ns = db_path.stat().st_mtime_ns
+            self._configure_ultrack_db_source_slider(db_path, mtime_ns)
+
+            frames = self._query_db_frames(db_path, mtime_ns)
+            if not frames:
+                self._set_ultrack_db_status("No frames in database.")
+                return
+
+            mid_frame = frames[len(frames) // 2]
+            self.ultrack_db_info_lbl.setText(self._ultrack_db_summary_text(db_path, mid_frame))
+            self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, mid_frame)
+            slider_int = int(self.ultrack_db_hierarchy_slider.value())
+
+            max_h = max_w = 1
+            per_frame: dict[int, np.ndarray] = {}
+            for frame in frames:
+                states = self._query_hierarchy_cut_states(db_path, mtime_ns, frame)
+                if not states:
+                    continue
+                idx = min(slider_int, len(states) - 1)
+                state = states[idx]
+                key = (
+                    str(db_path.resolve()), mtime_ns, frame, idx, state,
+                    self.ultrack_db_show_validated_check.isChecked(),
+                    self.ultrack_db_show_fake_check.isChecked(),
+                )
+                cached = self._ultrack_db_preview_cache.get(key)
+                if cached is None:
+                    cached = self._render_hierarchy_cut_state(db_path, frame, state)
+                    self._ultrack_db_preview_cache[key] = cached
+                labels, _, _, l2n, n2l, annots = self._normalize_ultrack_db_preview(cached)
+                per_frame[frame] = labels
+                max_h = max(max_h, labels.shape[0])
+                max_w = max(max_w, labels.shape[1])
+                if frame == mid_frame:
+                    self._ultrack_db_label_to_node_id = l2n
+                    self._ultrack_db_node_id_to_label = n2l
+                    self._ultrack_db_node_annotations = annots
+
+            if not per_frame:
+                self._set_ultrack_db_status("No hierarchy states in database.")
+                return
+
+            n_frames = frames[-1] + 1
+            stack = np.zeros((n_frames, max_h, max_w), dtype=np.uint32)
+            for frame, frame_labels in per_frame.items():
+                h, w = frame_labels.shape
+                stack[frame, :h, :w] = frame_labels
+
+            self._update_labels_layer(_ULTRACK_DB_PREVIEW_LAYER, stack)
+            self._ultrack_db_preview_labels = stack[mid_frame] if mid_frame < n_frames else stack[0]
+            self._install_ultrack_db_preview_selector()
+            self._set_viewer_frame(mid_frame)
+            self._set_ultrack_db_status(
+                f"Loaded {len(per_frame)}/{len(frames)} frames from database."
+            )
+        except Exception as e:
+            self._set_ultrack_db_status(f"DB read error: {e}")
+            logger.warning("DB browser stack load error: %s", e)
+
+    def _update_ultrack_db_stack_frame(self, frame: int, labels: np.ndarray) -> bool:
+        """Update a single frame slice in a 3D preview stack. Returns True if stack mode is active."""
+        if _ULTRACK_DB_PREVIEW_LAYER not in self.viewer.layers:
+            return False
+        from napari.layers import Labels
+        layer = self.viewer.layers[_ULTRACK_DB_PREVIEW_LAYER]
+        if not isinstance(layer, Labels) or layer.data.ndim != 3:
+            return False
+        stack = layer.data
+        t = int(frame)
+        if t < 0 or t >= stack.shape[0]:
+            return False
+        lh = min(labels.shape[0], stack.shape[1])
+        lw = min(labels.shape[1], stack.shape[2])
+        stack[t] = 0
+        stack[t, :lh, :lw] = labels[:lh, :lw]
+        layer.data = stack
+        return True
+
     def _refresh_ultrack_db_browser(self) -> None:
         if not self._ultrack_db_browser_active:
             return
@@ -298,6 +398,11 @@ class NucleusUltrackDbBrowserMixin:
         frame = self._current_t()
         if not self._ultrack_db_frame_initialized:
             self._ultrack_db_frame_initialized = True
+            if not self._viewer_has_time_axis():
+                # No movie open — load the whole database stack so napari gets
+                # a time dimension and the user can navigate all frames.
+                self._load_full_db_stack(db_path)
+                return
             if frame == 0:
                 mid = self._ultrack_db_middle_frame(db_path)
                 if mid is not None and mid > 0:
@@ -310,7 +415,7 @@ class NucleusUltrackDbBrowserMixin:
             states = self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, frame)
             if not states:
                 labels = self._empty_ultrack_db_preview()
-                self._update_layer(_ULTRACK_DB_PREVIEW_LAYER, labels)
+                self._update_labels_layer(_ULTRACK_DB_PREVIEW_LAYER, labels)
                 self._set_ultrack_db_status(f"No hierarchy states for frame {frame}.")
                 return
             slider_int = int(self.ultrack_db_hierarchy_slider.value())
@@ -337,9 +442,10 @@ class NucleusUltrackDbBrowserMixin:
                     label_to_node_id, node_id_to_label,
                 )
             self._ultrack_db_preview_labels = labels.astype(np.uint32, copy=False)
-            self._update_ultrack_db_preview_layer(
-                self._ultrack_db_preview_labels, prob_dict, alpha_dict,
-            )
+            if not self._update_ultrack_db_stack_frame(frame, self._ultrack_db_preview_labels):
+                self._update_ultrack_db_preview_layer(
+                    self._ultrack_db_preview_labels, prob_dict, alpha_dict,
+                )
             self._update_ultrack_db_annotation_layer(
                 self._ultrack_db_preview_labels, label_to_node_id, node_annotations,
             )

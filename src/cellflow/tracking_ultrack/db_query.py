@@ -58,6 +58,22 @@ def query_middle_frame(db_path: Path) -> int | None:
     return frames[len(frames) // 2] if frames else None
 
 
+def query_frame_range(db_path: Path) -> tuple[int, ...]:
+    """Return sorted distinct frame indices present in the database."""
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            frames = sorted(int(r[0]) for r in session.query(NodeDB.t).distinct().all())
+    except Exception:
+        return ()
+    finally:
+        engine.dispose()
+    return tuple(frames)
+
+
 def query_connected_nodes(
     db_path: Path, selected_node_id: int
 ) -> tuple[dict[int, float], dict[int, float]]:
