@@ -9,7 +9,7 @@ Canonical file layout under ``<pos_dir>/``:
                             foreground_sources.tif, foreground_scores.tif,
                             tracked_labels.tif, ultrack_workdir/data.db
     3_cell/               — filtered_dp.tif, foreground_masks.tif,
-                            contour_maps.tif, foreground_scores.tif,
+                            contours.tif, foreground_scores.tif,
                             tracked_labels.tif
     4_contact_analysis/   — contact_analysis.h5
 """
@@ -100,8 +100,8 @@ class CellArtifactPaths:
         return self.cell_dir / "foreground_masks.tif"
 
     @property
-    def contour_maps(self) -> Path:
-        return self.cell_dir / "contour_maps.tif"
+    def contours(self) -> Path:
+        return self.cell_dir / "contours.tif"
 
     @property
     def foreground_scores(self) -> Path:

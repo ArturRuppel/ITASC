@@ -117,7 +117,7 @@ class TestRunCellIcmFromPosDir:
 
         tifffile.imwrite(pos / "2_nucleus" / "tracked_labels.tif", nuc)
         tifffile.imwrite(pos / "3_cell" / "foreground_masks.tif", fg)
-        tifffile.imwrite(pos / "3_cell" / "contour_maps.tif", ct)
+        tifffile.imwrite(pos / "3_cell" / "contours.tif", ct)
         return pos
 
     def test_returns_correct_shape_and_dtype(self, pos_dir):

@@ -446,7 +446,7 @@ class NucleusPipelineWidget(QWidget):
         if contours_path is None or score_path is None:
             self._status("No project open."); return
         if not contours_path.exists():
-            self._status("Missing: contours.tif (or legacy contour_maps.tif) — build segmentation inputs first."); return
+            self._status("Missing: contours.tif — build segmentation inputs first."); return
         if not score_path.exists():
             self._status("Missing: foreground_scores.tif — build segmentation inputs first."); return
         if contour_sources_path is None or foreground_sources_path is None:

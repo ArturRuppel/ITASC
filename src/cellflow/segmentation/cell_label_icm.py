@@ -888,7 +888,7 @@ def _load_pos_dir_inputs(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     nuc = _read_tiff(pos_dir / "2_nucleus" / "tracked_labels.tif", np.uint32)
     fg = _read_tiff(pos_dir / "3_cell" / "foreground_masks.tif", np.uint8) > 0
-    ct = _read_tiff(pos_dir / "3_cell" / "contour_maps.tif", np.float32)
+    ct = _read_tiff(pos_dir / "3_cell" / "contours.tif", np.float32)
     fg = fg | (nuc > 0)
     fg_score_path = pos_dir / "3_cell" / "foreground_scores.tif"
     fg_scores = (

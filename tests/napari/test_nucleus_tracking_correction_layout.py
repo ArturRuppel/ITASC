@@ -1255,35 +1255,15 @@ def test_contour_maps_parameters_expand_when_narrow():
     viewer.close()
 
 
-def test_nucleus_contours_path_prefers_contours_tif_over_contour_maps_tif(tmp_path):
+def test_nucleus_contours_path_points_to_contours_tif(tmp_path):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "2_nucleus" / "contours.tif").touch()
-    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
     widget._pos_dir = pos_dir
 
     assert widget._contours_path() == pos_dir / "2_nucleus" / "contours.tif"
-    assert widget._contour_maps_path() == pos_dir / "2_nucleus" / "contours.tif"
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_nucleus_contours_path_falls_back_to_contour_maps_tif(tmp_path):
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "2_nucleus" / "contour_maps.tif").touch()
-    widget._pos_dir = pos_dir
-
-    assert widget._contours_path() == pos_dir / "2_nucleus" / "contour_maps.tif"
 
     widget.deleteLater()
     viewer.close()

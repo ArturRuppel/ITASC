@@ -6,7 +6,7 @@ parameter panel, correction section at bottom.
 Stages:
   1. Flow Filtering → ``filtered_dp.tif``
   2. Foreground Masks → ``foreground_masks.tif``
-  3. Contour Maps → ``contour_maps.tif``, ``foreground_scores.tif``
+  3. Contours → ``contours.tif``, ``foreground_scores.tif``
   4. Segmentation → ``tracked_labels.tif`` (initialize + auto-commit)
   5. Correction (load / save / fill holes / fix semiholes / cleanup / expand)
 """
@@ -57,9 +57,6 @@ _CELL_FOREGROUND_SCORE_LAYER = "Foreground Score: Cell"
 _CELL_CONTOUR_LAYER = "Contour Map: Cell"
 _CELL_SEG_LAYER = "Cell Segmentation"
 _TRACKED_CELL_LAYER = "Tracked: Cell"
-_CELL_ZAVG_LAYER = "Cell z-avg"
-_NUC_ZAVG_LAYER = "Nucleus z-avg"
-
 
 # ── Tiny helpers ──────────────────────────────────────────────────────────────
 
@@ -162,13 +159,11 @@ class CellWorkflowWidget(QWidget):
                     ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
                     ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
                     ("2_nucleus/tracked_labels.tif", "Nucleus tracked labels"),
-                    ("0_input/cell_zavg.tif", "Cell z-avg"),
-                    ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
                 ]),
                 ("Intermediates", [
                     ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
                     ("3_cell/foreground_masks.tif", "Foreground masks"),
-                    ("3_cell/contour_maps.tif", "Contour maps"),
+                    ("3_cell/contours.tif", "Contours"),
                     ("3_cell/foreground_scores.tif", "Foreground scores"),
                 ]),
                 ("Output", [
@@ -313,12 +308,10 @@ class CellWorkflowWidget(QWidget):
     def _dp_path(self):            return self._p("1_cellpose", "cell_dp_3dt.tif")
     def _filtered_dp_path(self):   return self._p("3_cell", "filtered_dp.tif")
     def _foreground_path(self):    return self._p("3_cell", "foreground_masks.tif")
-    def _contour_path(self):       return self._p("3_cell", "contour_maps.tif")
+    def _contours_path(self):      return self._p("3_cell", "contours.tif")
     def _fg_scores_path(self):     return self._p("3_cell", "foreground_scores.tif")
     def _nuc_labels_path(self):    return self._p("2_nucleus", "tracked_labels.tif")
     def _cell_labels_path(self):   return self._p("3_cell", "tracked_labels.tif")
-    def _cell_zavg_path(self):     return self._p("0_input", "cell_zavg.tif")
-    def _nuc_zavg_path(self):      return self._p("0_input", "nucleus_zavg.tif")
 
     def _require(self, *pairs: tuple[Path | None, str]) -> bool:
         for path, name in pairs:
@@ -689,7 +682,7 @@ class CellWorkflowWidget(QWidget):
             self._status("No project open."); return
         prob_path, fdp = self._prob_path(), self._filtered_dp_path()
         nuc_path = self._nuc_labels_path()
-        ct_path, sc_path = self._contour_path(), self._fg_scores_path()
+        ct_path, sc_path = self._contours_path(), self._fg_scores_path()
         if not self._require(
             (prob_path, "cell_prob_3dt.tif"),
             (fdp, "filtered_dp.tif"),
@@ -795,7 +788,7 @@ class CellWorkflowWidget(QWidget):
             self._status("No project open."); return
         if not self._require(
             (self._nuc_labels_path(), "tracked_labels.tif (nucleus)"),
-            (self._contour_path(), "contour_maps.tif"),
+            (self._contours_path(), "contours.tif"),
             (self._foreground_path(), "foreground_masks.tif"),
         ):
             return

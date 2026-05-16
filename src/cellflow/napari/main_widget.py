@@ -50,8 +50,6 @@ class _CellposePanel(QWidget):
 
         self.input_files_tracker = PipelineFilesWidget([
             ("Inputs", [
-                ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
-                ("0_input/cell_zavg.tif", "Cell z-avg"),
                 ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
                 ("0_input/cell_3dt.tif", "Cell 3D+t"),
             ]),

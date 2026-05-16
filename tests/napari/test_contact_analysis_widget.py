@@ -127,9 +127,7 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
 
     assert widget._pos_dir == pos_dir
     assert widget.contact_analysis_out_path == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
-    assert widget.contact_analysis_path_lbl.text() == f"Output: {pos_dir / '4_contact_analysis' / 'contact_analysis.h5'}"
-    assert "cell labels" in widget.input_status_lbl.text()
-    assert "nucleus labels" in widget.input_status_lbl.text()
+    assert hasattr(widget, "_files_widget")
     assert widget.build_contact_analysis_btn.isEnabled() is False
     assert widget.show_contact_analysis_btn.isEnabled() is False
     assert widget.clear_contact_analysis_btn.isEnabled() is False

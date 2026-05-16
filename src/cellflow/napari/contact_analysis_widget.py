@@ -14,6 +14,7 @@ from qtpy.QtWidgets import QCheckBox, QLabel, QProgressBar, QPushButton, QVBoxLa
 from cellflow.contact_analysis import build_position_contact_analysis
 from cellflow.napari.nls_classification_widget import NLSClassificationWidget
 from cellflow.napari.ui_style import action_button, status_label
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 
 try:  # pragma: no cover - local branch compatibility
     from cellflow.contact_analysis.reader import read_position_contact_analysis
@@ -63,15 +64,27 @@ class ContactAnalysisWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6)
 
-        self.input_status_lbl = QLabel("")
-        self.input_status_lbl.setWordWrap(True)
-        status_label(self.input_status_lbl)
-        layout.addWidget(self.input_status_lbl)
-
-        self.contact_analysis_path_lbl = QLabel("")
-        self.contact_analysis_path_lbl.setWordWrap(True)
-        status_label(self.contact_analysis_path_lbl)
-        layout.addWidget(self.contact_analysis_path_lbl)
+        self._files_widget = PipelineFilesWidget(
+            [
+                ("Inputs", [
+                    ("2_nucleus/tracked_labels.tif", "Nucleus tracked labels"),
+                    ("3_cell/tracked_labels.tif", "Cell tracked labels"),
+                ]),
+                ("Output", [
+                    ("4_contact_analysis/contact_analysis.h5", "Contact analysis"),
+                ]),
+            ],
+            viewer=self.viewer,
+        )
+        layout.addWidget(
+            CollapsibleSection(
+                "Pipeline Files",
+                self._files_widget,
+                expanded=False,
+                title_role="stage",
+                title_level=1,
+            )
+        )
 
         self.contact_analysis_status_lbl = QLabel("")
         self.contact_analysis_status_lbl.setWordWrap(True)
@@ -146,38 +159,16 @@ class ContactAnalysisWidget(QWidget):
             self._cached_nucleus_labels = None
             self._cached_track_centroids = None
         self._pos_dir = new_pos_dir
+        self._files_widget.refresh(new_pos_dir)
         self.nls_classification_widget.refresh(new_pos_dir)
         self._update_status()
 
-    def _output_path_text(self) -> str:
-        if self.contact_analysis_out_path is None:
-            return "Output: no project open."
-        return f"Output: {self.contact_analysis_out_path}"
-
     def _update_status(self) -> None:
-        self.contact_analysis_path_lbl.setText(self._output_path_text())
-        self._update_input_status()
         self._update_action_states()
         if self._pos_dir is None:
             self._set_contact_analysis_status("Status: no project open.")
         elif not self.contact_analysis_status_lbl.text():
             self._set_contact_analysis_status("Status: ready.")
-
-    def _update_input_status(self) -> None:
-        if self._pos_dir is None:
-            self.input_status_lbl.setText("Inputs: no project open.")
-            return
-
-        cell_ok = self.cell_labels_path is not None and self.cell_labels_path.exists()
-        nucleus_ok = self.nucleus_labels_path is not None and self.nucleus_labels_path.exists()
-        contact_analysis_ok = self.contact_analysis_out_path is not None and self.contact_analysis_out_path.exists()
-        check = "✓"
-        cross = "✗"
-        self.input_status_lbl.setText(
-            f"Inputs: {check if cell_ok else cross} cell labels  "
-            f"{check if nucleus_ok else cross} nucleus labels  "
-            f"{check if contact_analysis_ok else cross} contact analysis"
-        )
 
     def _update_action_states(self) -> None:
         inputs_ready = (

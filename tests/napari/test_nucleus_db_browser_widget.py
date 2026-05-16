@@ -658,7 +658,7 @@ def test_ultrack_db_browser_does_not_add_contour_or_foreground_layers(tmp_path, 
     db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.write_bytes(b"sqlite placeholder")
-    tifffile.imwrite(pos_dir / "2_nucleus" / "contour_maps.tif", np.zeros((1, 4, 4), dtype=np.float32))
+    tifffile.imwrite(pos_dir / "2_nucleus" / "contours.tif", np.zeros((1, 4, 4), dtype=np.float32))
     tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_scores.tif", np.zeros((1, 4, 4), dtype=np.float32))
     widget._pos_dir = pos_dir
     widget._ultrack_db_browser_active = True

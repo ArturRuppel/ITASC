@@ -39,7 +39,7 @@ _TRACKED_FILE_GROUPS = [
     ("Cell Workflow", [
         ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
         ("3_cell/foreground_masks.tif", "Foreground masks"),
-        ("3_cell/contour_maps.tif", "Contour maps"),
+        ("3_cell/contours.tif", "Contours"),
         ("3_cell/foreground_scores.tif", "Foreground scores"),
         ("3_cell/tracked_labels.tif", "Tracked labels"),
     ]),
