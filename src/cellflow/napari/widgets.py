@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from qtpy.QtCore import Qt, QTimer
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -38,12 +39,20 @@ class CollapsibleSection(QWidget):
         title_color: str | None = None,
         title_role: str = "stage",
         title_level: int = 1,
+        accent_color: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._inner = inner
         self._base_title = title
         if title_color is None:
             title_color = semantic_color(title_role, title_level)
+        self._default_title_color = title_color
+        # An explicit accent_color marks this as the OUTER stage anchor: stripe
+        # is thicker and the header text uses the full accent hue. Inner sections
+        # leave accent_color=None and inherit a muted variant via parent walk.
+        self._explicit_accent: str | None = accent_color
+        self._effective_accent: str | None = accent_color
+        self._is_outer_accent: bool = accent_color is not None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, TINY_MARGIN, 0, TINY_MARGIN)
@@ -58,23 +67,12 @@ class CollapsibleSection(QWidget):
         self._toggle.setText(self._qt_display_text(title))
         self._toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         self._toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._toggle.setStyleSheet(
-            "QToolButton#collapsible_toggle { "
-            f"font-weight: bold; font-size: 10pt; border: none; "
-            f"padding: 2px; color: {title_color}; "
-            "}"
-        )
         self._toggle.toggled.connect(self._on_toggled)
         layout.addWidget(self._toggle)
 
-        # White-bordered frame that wraps inner content when expanded
         self._content_frame = QFrame()
         self._content_frame.setObjectName("collapsible_content")
         self._content_frame.setFrameShape(QFrame.NoFrame)
-        self._content_frame.setStyleSheet(
-            "QFrame#collapsible_content { border: 1px solid #666666; "
-            "border-radius: 4px; margin: 0px 2px 2px 2px; }"
-        )
         frame_layout = QVBoxLayout(self._content_frame)
         frame_layout.setContentsMargins(
             SECTION_MARGIN, SECTION_MARGIN, SECTION_MARGIN, SECTION_MARGIN
@@ -88,8 +86,84 @@ class CollapsibleSection(QWidget):
         # Always Preferred policy — height is driven by scroll area's minimumHeight
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
 
+        self._apply_accent_styles()
+        # If no explicit accent, defer a parent walk to inherit one if present.
+        if self._explicit_accent is None:
+            QTimer.singleShot(0, self._maybe_inherit_accent)
+
         if expanded:
             QTimer.singleShot(0, self._notify_layout_change)
+
+    def _apply_accent_styles(self) -> None:
+        """(Re)apply header + content-frame stylesheets from current accent state."""
+        accent = self._effective_accent
+        if accent is None:
+            title_color = self._default_title_color
+            frame_qss = (
+                "QFrame#collapsible_content { border: 1px solid #666666; "
+                "border-radius: 4px; margin: 0px 2px 2px 2px; }"
+            )
+        else:
+            if self._is_outer_accent:
+                title_color = accent
+                stripe_width = 4
+            else:
+                title_color = self._muted_accent(accent)
+                stripe_width = 2
+            # Thin border on top/right/bottom + thick coloured stripe on the left.
+            # Left corners are squared so the stripe meets the edge cleanly.
+            frame_qss = (
+                "QFrame#collapsible_content { "
+                "border-top: 1px solid #666666; "
+                "border-right: 1px solid #666666; "
+                "border-bottom: 1px solid #666666; "
+                f"border-left: {stripe_width}px solid {accent}; "
+                "border-top-left-radius: 0px; "
+                "border-bottom-left-radius: 0px; "
+                "border-top-right-radius: 4px; "
+                "border-bottom-right-radius: 4px; "
+                "margin: 0px 2px 2px 2px; "
+                "}"
+            )
+        self._toggle.setStyleSheet(
+            "QToolButton#collapsible_toggle { "
+            f"font-weight: bold; font-size: 10pt; border: none; "
+            f"padding: 2px; color: {title_color}; "
+            "}"
+        )
+        self._content_frame.setStyleSheet(frame_qss)
+
+    def _maybe_inherit_accent(self) -> None:
+        """Walk up the parent chain and pick up the nearest ancestor's accent."""
+        if self._explicit_accent is not None:
+            return
+        ancestor_color = self._find_ancestor_accent_color()
+        if ancestor_color is None or ancestor_color == self._effective_accent:
+            return
+        self._effective_accent = ancestor_color
+        self._is_outer_accent = False
+        self._apply_accent_styles()
+
+    def _find_ancestor_accent_color(self) -> str | None:
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, CollapsibleSection):
+                if parent._effective_accent is not None:
+                    return parent._effective_accent
+            parent = parent.parent()
+        return None
+
+    @staticmethod
+    def _muted_accent(hex_str: str) -> str:
+        """Desaturate and flatten lightness so inner headers read as 'same hue,
+        quieter' rather than as a separate color."""
+        c = QColor(hex_str)
+        h, s, l, a = c.getHslF()
+        new_s = max(0.0, s * 0.35)
+        new_l = 0.55 + (l - 0.55) * 0.3
+        new_l = max(0.0, min(1.0, new_l))
+        c.setHslF(h, new_s, new_l, a)
+        return c.name()
 
     def set_title(self, title: str) -> None:
         """Update the header text."""

@@ -455,22 +455,25 @@ def test_main_widget_top_level_sections_use_unnumbered_mocha_titles():
 
     widget = widget_class(viewer)
 
+    # Nucleus and cell stages are deliberately accented with a per-stage hue;
+    # the remaining top-level stages still use the role/level default color.
     expected = {
-        widget.data_section: "Project Status",
-        widget.prep_section: "Data Preparation",
-        widget.cellpose_section: "Cellpose",
-        widget.nucleus_section: "Nucleus Segmentation & Tracking",
-        widget.cell_section: "Cell Segmentation",
-        widget.contact_analysis_section: "Contact Analysis",
-        widget.meta_section: "Meta Analyzer",
+        widget.data_section: ("Project Status", None),
+        widget.prep_section: ("Data Preparation", None),
+        widget.cellpose_section: ("Cellpose", None),
+        widget.nucleus_section: ("Nucleus Segmentation & Tracking", "#6bb8cc"),
+        widget.cell_section: ("Cell Segmentation", "#d6a14a"),
+        widget.contact_analysis_section: ("Contact Analysis", None),
+        widget.meta_section: ("Meta Analyzer", None),
     }
 
-    for section, title in expected.items():
+    for section, (title, accent) in expected.items():
         assert section.title == title
         toggle = section.findChild(QToolButton, "collapsible_toggle")
         assert toggle is not None
         assert toggle.text() == title.replace("&", "&&")
-        assert f"color: {semantic_color('stage', 0)};" in toggle.styleSheet()
+        expected_color = accent if accent is not None else semantic_color("stage", 0)
+        assert f"color: {expected_color};" in toggle.styleSheet()
 
     widget.deleteLater()
     viewer.close()

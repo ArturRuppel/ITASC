@@ -5,6 +5,11 @@ contributions:
     - id: cellflow.main_widget
       title: "CellFlow"
       python_name: cellflow.napari:CellFlowWidget
+    - id: cellflow.data_prep_widget
+      title: "CellFlow: Data Preparation"
+      python_name: cellflow.napari:DataPrepStandaloneWidget
   widgets:
     - command: cellflow.main_widget
       display_name: "CellFlow"
+    - command: cellflow.data_prep_widget
+      display_name: "CellFlow: Data Preparation"

@@ -22,9 +22,7 @@ from qtpy.QtWidgets import (
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
-from cellflow.napari.data_prep_widget import DataPrepWidget
 from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
-from cellflow.napari.meta_widget import MetaSourceBrowserWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 from cellflow.napari.ui_style import icon_button, muted_label, tiny_button
@@ -122,15 +120,6 @@ class CellFlowMainWidget(QWidget):
             title_level=0,
         )
 
-        self._data_prep_widget = DataPrepWidget(self.viewer, self)
-        self.prep_section = CollapsibleSection(
-            "Data Preparation",
-            self._data_prep_widget,
-            expanded=False,
-            title_role="stage",
-            title_level=0,
-        )
-
         self._cellpose_widget = _CellposePanel(self.viewer)
         self.cellpose_section = CollapsibleSection(
             "Cellpose",
@@ -148,6 +137,7 @@ class CellFlowMainWidget(QWidget):
             expanded=False,
             title_role="stage",
             title_level=0,
+            accent_color="#6bb8cc",
         )
 
         self.cell_workflow_widget = CellWorkflowWidget(self.viewer)
@@ -157,6 +147,7 @@ class CellFlowMainWidget(QWidget):
             expanded=False,
             title_role="stage",
             title_level=0,
+            accent_color="#d6a14a",
         )
         self._connect_label_selection_sync()
 
@@ -169,22 +160,11 @@ class CellFlowMainWidget(QWidget):
             title_level=0,
         )
 
-        self.meta_source_browser = MetaSourceBrowserWidget(self.viewer)
-        self.meta_section = CollapsibleSection(
-            "Meta Analyzer",
-            self.meta_source_browser,
-            expanded=False,
-            title_role="stage",
-            title_level=0,
-        )
-
         self.scroll_layout.addWidget(self.data_section)
-        self.scroll_layout.addWidget(self.prep_section)
         self.scroll_layout.addWidget(self.cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.contact_analysis_section)
-        self.scroll_layout.addWidget(self.meta_section)
 
         # Add stretch at the end
         self.scroll_layout.addStretch()
@@ -305,7 +285,6 @@ class CellFlowMainWidget(QWidget):
                 "condition": self.cond_edit.text(),
                 "position": self.pos_spin.value(),
             },
-            "data_prep": self._data_prep_widget.get_state(),
             "hpc_cellpose": self.hpc_cellpose_widget.get_state(),
             "nucleus": self.nucleus_workflow_widget.get_state(),
             "cell": self.cell_workflow_widget.get_state(),
@@ -319,9 +298,6 @@ class CellFlowMainWidget(QWidget):
             if "time_interval_s" in m: self.dt_edit.setText(str(m["time_interval_s"]))
             if "condition" in m: self.cond_edit.setText(str(m["condition"]))
             if "position" in m: self.pos_spin.setValue(int(m["position"]))
-
-        if "data_prep" in state:
-            self._data_prep_widget.set_state(state["data_prep"])
 
         if "hpc_cellpose" in state:
             self.hpc_cellpose_widget.set_state(state["hpc_cellpose"])
@@ -395,12 +371,9 @@ class CellFlowMainWidget(QWidget):
             pos_dir = None
 
         self.data_panel.refresh(pos_dir)
-        self._data_prep_widget.refresh(pos_dir)
         self._cellpose_widget.refresh(pos_dir)
         self.nucleus_workflow_widget.refresh(pos_dir)
         self.cell_workflow_widget.refresh(pos_dir)
         self.contact_analysis_widget.refresh(pos_dir)
-        project_root = Path(path_text) if path_text and path_text != "[no project]" else None
-        self.meta_source_browser.refresh(project_root)
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)
