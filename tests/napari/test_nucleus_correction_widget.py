@@ -356,7 +356,7 @@ def test_correction_activate_button_expands_activates_and_deactivates_layers(tmp
     widget.correction_active_btn.setChecked(True)
 
     assert widget.correction_mode_section.is_expanded is True
-    assert widget.correction_widget._layer is viewer.layers["[Correction] Tracked: Nucleus"]
+    assert widget.correction_widget._layer is viewer.layers["[Correction] Nucleus Labels"]
     assert "[Correction] CorrectionDraw" in viewer.layers
     assert "[Correction] CellHighlight" in viewer.layers
     assert "[Correction] CellSpotlight" in viewer.layers
@@ -368,7 +368,7 @@ def test_correction_activate_button_expands_activates_and_deactivates_layers(tmp
     assert "[Correction] CorrectionDraw" not in viewer.layers
     assert "[Correction] CellHighlight" not in viewer.layers
     assert "[Correction] CellSpotlight" not in viewer.layers
-    assert "[Correction] Tracked: Nucleus" not in viewer.layers
+    assert "[Correction] Nucleus Labels" not in viewer.layers
 
     widget.deleteLater()
     viewer.close()
@@ -417,22 +417,24 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     widget.correction_active_btn.setChecked(True)
 
     assert "[Correction] stale" not in viewer.layers
-    assert "[Correction] Tracked: Nucleus" in viewer.layers
+    assert "[Correction] Nucleus Labels" in viewer.layers
     assert "[Correction] Nucleus tracks" in viewer.layers
     assert "[Correction] Cell z-avg" in viewer.layers
     assert "[Correction] Nucleus z-avg" in viewer.layers
     assert "[Correction] NLS z-avg" in viewer.layers
     assert viewer.layers["Existing"].visible is False
-    assert widget.correction_widget._layer is viewer.layers["[Correction] Tracked: Nucleus"]
+    assert widget.correction_widget._layer is viewer.layers["[Correction] Nucleus Labels"]
     assert widget.correction_mode_section.is_expanded is True
     assert set(widget._correction_owned_layers) == {
-        "[Correction] Tracked: Nucleus",
+        "[Correction] Nucleus Labels",
         "[Correction] Nucleus tracks",
         "[Correction] Cell z-avg",
         "[Correction] Nucleus z-avg",
         "[Correction] NLS z-avg",
     }
-    np.testing.assert_array_equal(viewer.layers["[Correction] Tracked: Nucleus"].data, tracked)
+    label_layer = viewer.layers["[Correction] Nucleus Labels"]
+    np.testing.assert_array_equal(label_layer.data, tracked)
+    assert label_layer.blending == "additive"
     track_layer = viewer.layers["[Correction] Nucleus tracks"]
     assert track_layer.rgb is True
     assert track_layer.blending == "additive"
@@ -445,6 +447,13 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     assert viewer.layers["[Correction] NLS z-avg"].blending == "minimum"
     assert viewer.layers["[Correction] Nucleus z-avg"].colormap.name == "I Orange"
     assert viewer.layers["[Correction] NLS z-avg"].colormap.name == "I Blue"
+    image_indices = [
+        viewer.layers.index("[Correction] Cell z-avg"),
+        viewer.layers.index("[Correction] Nucleus z-avg"),
+        viewer.layers.index("[Correction] NLS z-avg"),
+    ]
+    assert max(image_indices) < viewer.layers.index("[Correction] Nucleus Labels")
+    assert max(image_indices) < viewer.layers.index("[Correction] Nucleus tracks")
     np.testing.assert_allclose(
         viewer.layers["[Correction] Cell z-avg"].data,
         cell_prob_zavg,
@@ -484,7 +493,7 @@ def test_correction_deactivation_removes_registered_layers_and_restores_viewer_s
     assert "[Correction] Validated: Nucleus" in viewer.layers
     widget.correction_active_btn.setChecked(False)
 
-    assert "[Correction] Tracked: Nucleus" not in viewer.layers
+    assert "[Correction] Nucleus Labels" not in viewer.layers
     assert "[Correction] Validated: Nucleus" not in viewer.layers
     assert "[Correction] User Layer" in viewer.layers
     assert viewer.layers["Existing"].visible is True
@@ -530,7 +539,7 @@ def test_correction_save_writes_correction_owned_tracked_layer(tmp_path):
 
     edited = np.zeros((2, 4, 4), dtype=np.uint32)
     edited[1, 1:3, 1:3] = 9
-    viewer.layers["[Correction] Tracked: Nucleus"].data = edited
+    viewer.layers["[Correction] Nucleus Labels"].data = edited
     widget.save_tracked_btn.click()
 
     np.testing.assert_array_equal(

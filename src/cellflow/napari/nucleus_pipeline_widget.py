@@ -250,7 +250,8 @@ class NucleusPipelineWidget(QWidget):
         self.viewer.add_image(
             data,
             name=_NUC_ZAVG_LAYER,
-            colormap="bop orange",
+            colormap="I Orange",
+            blending="minimum",
             visible=True,
         )
 

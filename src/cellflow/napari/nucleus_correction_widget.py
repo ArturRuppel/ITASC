@@ -70,7 +70,7 @@ from cellflow.tracking_ultrack.retracker import retrack_frame_constrained
 logger = logging.getLogger(__name__)
 
 _TRACKED_LAYER = "Tracked: Nucleus"
-_CORRECTION_TRACKED_LAYER = "[Correction] Tracked: Nucleus"
+_CORRECTION_TRACKED_LAYER = "[Correction] Nucleus Labels"
 _CORRECTION_TRACK_LAYER = "[Correction] Nucleus tracks"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
@@ -399,27 +399,6 @@ class NucleusCorrectionWidget(QWidget):
             return self.viewer.layers[_TRACKED_LAYER]
         return None
 
-    def _contrast_limits_for_image(self, data: np.ndarray):
-        arr = np.asarray(data, dtype=np.float32)
-        finite = arr[np.isfinite(arr)]
-        if finite.size == 0:
-            return None
-        p_lo, hi = np.percentile(finite, [0.05, 99.5])
-        if not (np.isfinite(p_lo) and np.isfinite(hi) and hi > p_lo):
-            data_min = float(np.min(finite))
-            data_max = float(np.max(finite))
-            if data_max > data_min:
-                return (data_min, data_max)
-            return None
-        counts, edges = np.histogram(finite, bins=256, range=(float(p_lo), float(hi)))
-        mode = float(edges[int(np.argmax(counts))] + (edges[1] - edges[0]) * 0.5)
-        below = finite[finite <= mode]
-        pad = float(np.std(below)) if below.size > 1 else 0.0
-        lo = mode + pad
-        if not (np.isfinite(lo) and hi > lo):
-            lo = float(p_lo)
-        return (float(lo), float(hi))
-
     def _capture_correction_view_state(self) -> None:
         selected = [layer.name for layer in self.viewer.layers.selection]
         active = self.viewer.layers.selection.active
@@ -457,11 +436,7 @@ class NucleusCorrectionWidget(QWidget):
                 [[0.0, 0.0, 0.0, 1.0], [0.0, 0.25, 1.0, 1.0]],
                 name="bop_blue",
             )
-        kwargs = {"name": name, "colormap": colormap, "blending": "minimum"}
-        limits = self._contrast_limits_for_image(arr)
-        if limits is not None:
-            kwargs["contrast_limits"] = limits
-        self.viewer.add_image(arr, **kwargs)
+        self.viewer.add_image(arr, name=name, colormap=colormap, blending="minimum")
         self._correction_owned_layers.add(name)
 
     def _add_correction_track_layer(self, labels: np.ndarray) -> dict:
@@ -541,14 +516,6 @@ class NucleusCorrectionWidget(QWidget):
         self._remove_correction_owned_layers()
         self._remove_other_correction_prefix_layers()
         stack = read_full_tracked_stack(tracked_path)
-        labels_layer = self.viewer.add_labels(stack, name=_CORRECTION_TRACKED_LAYER)
-        self._correction_owned_layers.add(_CORRECTION_TRACKED_LAYER)
-        color_map = self._add_correction_track_layer(stack)
-        try:
-            from napari.utils.colormaps import DirectLabelColormap
-            labels_layer.colormap = DirectLabelColormap(color_dict=color_map)
-        except Exception:
-            pass
 
         for data, name, cmap in (
             (
@@ -559,7 +526,7 @@ class NucleusCorrectionWidget(QWidget):
             (
                 self._nucleus_prob_zavg_path(),
                 _CORRECTION_NUC_ZAVG_LAYER,
-                "I Orange",
+                "I Purple",
             ),
         ):
             if data is not None and data.exists():
@@ -574,8 +541,22 @@ class NucleusCorrectionWidget(QWidget):
             self._add_correction_image_layer(
                 np.asarray(tifffile.imread(str(nls_path)), dtype=np.float32),
                 _CORRECTION_NLS_ZAVG_LAYER,
-                "I Blue",
+                "I Orange",
             )
+
+        labels_layer = self.viewer.add_labels(
+            stack,
+            name=_CORRECTION_TRACKED_LAYER,
+            blending="additive",
+        )
+        labels_layer.blending = "additive"
+        self._correction_owned_layers.add(_CORRECTION_TRACKED_LAYER)
+        color_map = self._add_correction_track_layer(stack)
+        try:
+            from napari.utils.colormaps import DirectLabelColormap
+            labels_layer.colormap = DirectLabelColormap(color_dict=color_map)
+        except Exception:
+            pass
 
         self._correction_status(f"Loaded tracked stack {stack.shape} into correction mode.")
         return True

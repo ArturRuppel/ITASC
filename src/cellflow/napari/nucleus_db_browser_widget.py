@@ -300,8 +300,8 @@ class NucleusUltrackDbBrowserMixin:
         limits = np.percentile(data, [0.05, 99.5]) if data.size > 0 else None
         kwargs = {
             "name": _ULTRACK_DB_NUC_LAYER,
-            "colormap": "bop orange",
-            "blending": "additive",
+            "colormap": "I Orange",
+            "blending": "minimum",
         }
         if limits is not None and limits[1] > limits[0]:
             kwargs["contrast_limits"] = [float(limits[0]), float(limits[1])]

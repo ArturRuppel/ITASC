@@ -19,7 +19,9 @@ LEGACY_VALIDATED_OVERLAY = "Validated: Nucleus"
 ANCHOR_OVERLAY = "[Correction] Anchors: Nucleus"
 LEGACY_ANCHOR_OVERLAY = "Anchors: Nucleus"
 SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
-VALIDATED_OVERLAY_OPACITY = 0.4
+VALIDATED_OVERLAY_OPACITY = 0.75
+VALIDATED_OVERLAY_COLOR = "#007300"
+ANCHOR_OVERLAY_COLOR = "#b39400"
 
 
 class ValidatedOverlayController:
@@ -119,6 +121,9 @@ class ValidatedOverlayController:
             layer = self.viewer.layers[VALIDATED_OVERLAY]
             layer.data = data
             layer.opacity = VALIDATED_OVERLAY_OPACITY
+            layer.colormap = direct_colormap(
+                {None: (0, 0, 0, 0), 1: VALIDATED_OVERLAY_COLOR}
+            )
             self._owned_layers.add(VALIDATED_OVERLAY)
             self.place_below_spotlight()
             return
@@ -128,7 +133,9 @@ class ValidatedOverlayController:
             data,
             name=VALIDATED_OVERLAY,
             opacity=VALIDATED_OVERLAY_OPACITY,
-            colormap=direct_colormap({None: (0, 0, 0, 0), 1: "#00ff00"}),
+            colormap=direct_colormap(
+                {None: (0, 0, 0, 0), 1: VALIDATED_OVERLAY_COLOR}
+            ),
         )
         self._owned_layers.add(VALIDATED_OVERLAY)
         self.place_below_spotlight()
@@ -141,6 +148,9 @@ class ValidatedOverlayController:
             layer = self.viewer.layers[ANCHOR_OVERLAY]
             layer.data = data
             layer.opacity = VALIDATED_OVERLAY_OPACITY
+            layer.colormap = direct_colormap(
+                {None: (0, 0, 0, 0), 1: ANCHOR_OVERLAY_COLOR}
+            )
             self._owned_layers.add(ANCHOR_OVERLAY)
             self.place_below_spotlight()
             return
@@ -150,7 +160,7 @@ class ValidatedOverlayController:
             data,
             name=ANCHOR_OVERLAY,
             opacity=VALIDATED_OVERLAY_OPACITY,
-            colormap=direct_colormap({None: (0, 0, 0, 0), 1: "#ffff00"}),
+            colormap=direct_colormap({None: (0, 0, 0, 0), 1: ANCHOR_OVERLAY_COLOR}),
         )
         self._owned_layers.add(ANCHOR_OVERLAY)
         self.place_below_spotlight()

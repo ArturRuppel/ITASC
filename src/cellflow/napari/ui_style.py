@@ -38,6 +38,33 @@ CATPPUCCIN_MOCHA = {
     "blue":      "#89b4fa", "lavender": "#b4befe",
 }
 
+# Dracula — https://draculatheme.com/contribute
+DRACULA = {
+    "rosewater": "#ffb86c", "flamingo":  "#ff79c6", "pink":     "#ff79c6",
+    "mauve":     "#bd93f9", "red":       "#ff5555", "maroon":   "#ff5555",
+    "peach":     "#ffb86c", "yellow":    "#f1fa8c", "green":    "#50fa7b",
+    "teal":      "#8be9fd", "sky":       "#8be9fd", "sapphire": "#8be9fd",
+    "blue":      "#6272a4", "lavender":  "#bd93f9",
+}
+
+# Tokyo Night — https://github.com/enkia/tokyo-night-vscode-theme
+TOKYO_NIGHT = {
+    "rosewater": "#f7768e", "flamingo":  "#f7768e", "pink":     "#f7768e",
+    "mauve":     "#9d7cd8", "red":       "#f7768e", "maroon":   "#db4b4b",
+    "peach":     "#ff9e64", "yellow":    "#e0af68", "green":    "#9ece6a",
+    "teal":      "#73daca", "sky":       "#7dcfff", "sapphire": "#7aa2f7",
+    "blue":      "#7aa2f7", "lavender":  "#bb9af7",
+}
+
+# Nord — https://www.nordtheme.com/docs/colors-and-palettes
+NORD = {
+    "rosewater": "#bf616a", "flamingo":  "#bf616a", "pink":     "#b48ead",
+    "mauve":     "#b48ead", "red":       "#bf616a", "maroon":   "#bf616a",
+    "peach":     "#d08770", "yellow":    "#ebcb8b", "green":    "#a3be8c",
+    "teal":      "#8fbcbb", "sky":       "#88c0d0", "sapphire": "#81a1c1",
+    "blue":      "#5e81ac", "lavender":  "#b48ead",
+}
+
 ACTIVE_PALETTE = CATPPUCCIN_MOCHA
 
 STAGE_ACCENTS = {

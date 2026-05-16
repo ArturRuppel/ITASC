@@ -41,7 +41,11 @@ def test_controller_adds_validated_overlay_below_spotlight():
     controller.add_overlay(np.array([[[0, 1], [0, 0]]], dtype=np.uint8))
 
     layer = viewer.layers["[Correction] Validated: Nucleus"]
-    assert layer.opacity == 0.4
+    color = layer.get_color(1)
+
+    assert layer.opacity == 0.75
+    assert np.allclose(color[:3], [0.0, 115 / 255, 0.0], atol=1e-6)
+    assert color[3] == 1.0
     assert "[Correction] Validated: Nucleus" in owned_layers
     assert viewer.layers.index("[Correction] Validated: Nucleus") < viewer.layers.index(
         "[Correction] CellSpotlight"
@@ -84,8 +88,8 @@ def test_controller_refreshes_anchor_overlay_from_corrections(tmp_path):
     expected[1, 2:4, 1:4] = 1
 
     np.testing.assert_array_equal(layer.data, expected)
-    assert layer.opacity == 0.4
-    assert np.allclose(color[:3], [1.0, 1.0, 0.0], atol=1e-6)
+    assert layer.opacity == 0.75
+    assert np.allclose(color[:3], [179 / 255, 148 / 255, 0.0], atol=1e-6)
     assert color[3] == 1.0
     assert "[Correction] Anchors: Nucleus" in owned_layers
     assert viewer.layers.index("[Correction] Anchors: Nucleus") < viewer.layers.index(

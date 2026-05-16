@@ -914,7 +914,10 @@ class CorrectionWidget(QWidget):
             layer.bind_key(key, fn, overwrite=True)
             self._bound_keys.append(key)
 
-        def on_drag(_layer, event):
+        def on_drag(_caller, event):
+            _layer = self._layer
+            if _layer is None:
+                return
             try:
                 if event.type != "mouse_press":
                     return
@@ -1121,15 +1124,14 @@ class CorrectionWidget(QWidget):
                 import traceback
                 show_error(f"Correction error: {exc}\n{traceback.format_exc()}")
 
-        layer.mouse_drag_callbacks.append(on_drag)
+        self.viewer.mouse_drag_callbacks.append(on_drag)
         self._drag_callbacks.append(on_drag)
 
     def _remove_callbacks(self) -> None:
-        layer = self._layer
         for fn in self._drag_callbacks:
             try:
-                layer.mouse_drag_callbacks.remove(fn)
-            except ValueError:
+                self.viewer.mouse_drag_callbacks.remove(fn)
+            except (ValueError, AttributeError):
                 pass
         self._drag_callbacks.clear()
         for key in self._bound_keys:
