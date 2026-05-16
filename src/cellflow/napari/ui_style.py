@@ -54,6 +54,19 @@ def stage_accent(stage_key: str) -> str:
     return ACTIVE_PALETTE[STAGE_ACCENTS[stage_key]]
 
 
+# Stage status indicator colors. Keyed by status name so call sites stay
+# decoupled from specific hexes.
+STAGE_STATUS_COLORS = {
+    "not_started": "#6c7086",  # Catppuccin overlay0 — muted gray
+    "in_progress": CATPPUCCIN_MOCHA["yellow"],
+    "done":        CATPPUCCIN_MOCHA["green"],
+}
+
+
+def stage_status_color(status: str) -> str:
+    return STAGE_STATUS_COLORS[status]
+
+
 def _fixed_widget(widget, width=None):
     if width is not None:
         widget.setMaximumWidth(width)

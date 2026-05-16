@@ -24,7 +24,11 @@ from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
-from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+from cellflow.napari.widgets import (
+    CollapsibleSection,
+    PipelineFilesWidget,
+    pipeline_status_from_files,
+)
 from cellflow.napari.ui_style import icon_button, muted_label, stage_accent, tiny_button
 
 
@@ -168,6 +172,15 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.contact_analysis_section)
+
+        for section in (
+            self.data_section,
+            self.cellpose_section,
+            self.nucleus_section,
+            self.cell_section,
+            self.contact_analysis_section,
+        ):
+            section.set_status("not_started")
 
         # Add stretch at the end
         self.scroll_layout.addStretch()
@@ -378,5 +391,34 @@ class CellFlowMainWidget(QWidget):
         self.nucleus_workflow_widget.refresh(pos_dir)
         self.cell_workflow_widget.refresh(pos_dir)
         self.contact_analysis_widget.refresh(pos_dir)
+        self._update_section_statuses()
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)
+
+    def _update_section_statuses(self) -> None:
+        """Refresh stage-status dots from on-disk file presence."""
+        self.data_section.set_status(
+            pipeline_status_from_files(
+                self.data_panel.file_tracker, done_group="Input Data"
+            )
+        )
+        self.cellpose_section.set_status(
+            pipeline_status_from_files(
+                self._cellpose_widget.output_files_tracker, done_group="Outputs"
+            )
+        )
+        self.nucleus_section.set_status(
+            pipeline_status_from_files(
+                self.nucleus_workflow_widget._files_widget, done_group="Output"
+            )
+        )
+        self.cell_section.set_status(
+            pipeline_status_from_files(
+                self.cell_workflow_widget._files_widget, done_group="Output"
+            )
+        )
+        self.contact_analysis_section.set_status(
+            pipeline_status_from_files(
+                self.contact_analysis_widget._files_widget, done_group="Output"
+            )
+        )

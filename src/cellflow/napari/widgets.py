@@ -23,6 +23,7 @@ from .ui_style import (
     icon_button,
     muted_label,
     semantic_color,
+    stage_status_color,
     status_label,
 )
 
@@ -68,7 +69,22 @@ class CollapsibleSection(QWidget):
         self._toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
         self._toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._toggle.toggled.connect(self._on_toggled)
-        layout.addWidget(self._toggle)
+
+        # Status dot lives to the right of the toggle. Hidden until a caller
+        # invokes set_status(); when hidden it claims no layout space so the
+        # toggle continues to span the full section width.
+        self._status: str | None = None
+        self._status_dot = QLabel()
+        self._status_dot.setObjectName("collapsible_status_dot")
+        self._status_dot.setFixedSize(10, 10)
+        self._status_dot.setVisible(False)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(4)
+        header_row.addWidget(self._toggle, 1)
+        header_row.addWidget(self._status_dot, 0, Qt.AlignVCenter)
+        layout.addLayout(header_row)
 
         self._content_frame = QFrame()
         self._content_frame.setObjectName("collapsible_content")
@@ -99,30 +115,31 @@ class CollapsibleSection(QWidget):
         accent = self._effective_accent
         if accent is None:
             title_color = self._default_title_color
+            font_size_pt = 10
             frame_qss = (
                 "QFrame#collapsible_content { border: 1px solid #666666; "
                 "border-radius: 4px; margin: 0px 2px 2px 2px; }"
             )
         else:
-            title_color = accent if self._is_outer_accent else self._muted_accent(accent)
-            # Stripe matches the header text colour; width is uniform across
-            # outer and inner sections.
+            if self._is_outer_accent:
+                title_color = accent
+                font_size_pt = 11
+            else:
+                title_color = self._muted_accent(accent)
+                font_size_pt = 9
+            # Only the coloured left stripe — no gray frame around the content,
+            # since the stripe alone is enough to delimit the section.
             frame_qss = (
                 "QFrame#collapsible_content { "
-                "border-top: 1px solid #666666; "
-                "border-right: 1px solid #666666; "
-                "border-bottom: 1px solid #666666; "
+                "border: none; "
                 f"border-left: 2px solid {title_color}; "
-                "border-top-left-radius: 0px; "
-                "border-bottom-left-radius: 0px; "
-                "border-top-right-radius: 4px; "
-                "border-bottom-right-radius: 4px; "
+                "border-radius: 0px; "
                 "margin: 0px 2px 2px 2px; "
                 "}"
             )
         self._toggle.setStyleSheet(
             "QToolButton#collapsible_toggle { "
-            f"font-weight: bold; font-size: 10pt; border: none; "
+            f"font-weight: bold; font-size: {font_size_pt}pt; border: none; "
             f"padding: 2px; color: {title_color}; "
             "}"
         )
@@ -164,6 +181,26 @@ class CollapsibleSection(QWidget):
         """Update the header text."""
         self._base_title = title
         self._toggle.setText(self._qt_display_text(title))
+
+    def set_status(self, status: str | None) -> None:
+        """Show / update / clear the status dot on the right of the header.
+
+        Pass one of "not_started", "in_progress", "done" to display the dot
+        in that state, or None to hide it entirely.
+        """
+        self._status = status
+        if status is None:
+            self._status_dot.setVisible(False)
+            return
+        color = stage_status_color(status)
+        self._status_dot.setStyleSheet(
+            f"background-color: {color}; border-radius: 5px;"
+        )
+        self._status_dot.setVisible(True)
+
+    @property
+    def status(self) -> str | None:
+        return self._status
 
     @property
     def title(self) -> str:
@@ -426,6 +463,7 @@ class PipelineFilesWidget(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         self._rows: list[_PipelineFileRow] = []
+        self._rows_by_group: dict[str, list[_PipelineFileRow]] = {}
 
         for group_label, entries in groups:
             if group_label:
@@ -435,12 +473,16 @@ class PipelineFilesWidget(QWidget):
                     " background: palette(alternateBase); color: palette(mid);"
                 )
                 lay.addWidget(hdr)
+            group_rows: list[_PipelineFileRow] = []
             for entry in entries:
                 rel_path, display_name = entry[0], entry[1]
                 legacy = entry[2] if len(entry) > 2 else None
                 row = _PipelineFileRow(rel_path, display_name, loadable=None, viewer=viewer, legacy_rel_path=legacy)
                 self._rows.append(row)
+                group_rows.append(row)
                 lay.addWidget(row)
+            if group_label:
+                self._rows_by_group[group_label] = group_rows
 
     def refresh(self, pos_dir: "Path" | None) -> None:
         """Update all rows to reflect current on-disk state."""
@@ -459,3 +501,32 @@ class PipelineFilesWidget(QWidget):
                 row.set_present(_file_info(full_path))
             else:
                 row.set_missing()
+
+    def presence_count_by_group(self) -> dict[str, tuple[int, int]]:
+        """Per-group (n_present, n_total) snapshot of current file state."""
+        return {
+            label: (
+                sum(1 for r in rows if r._full_path is not None),
+                len(rows),
+            )
+            for label, rows in self._rows_by_group.items()
+        }
+
+
+def pipeline_status_from_files(
+    tracker: PipelineFilesWidget, *, done_group: str
+) -> str:
+    """Derive a "not_started" / "in_progress" / "done" status from on-disk files.
+
+    `done` when ``done_group`` is fully present. `in_progress` when any file in
+    an "Intermediates" group is present, or when ``done_group`` is partially
+    populated. Otherwise `not_started`.
+    """
+    counts = tracker.presence_count_by_group()
+    done_present, done_total = counts.get(done_group, (0, 0))
+    if done_total > 0 and done_present == done_total:
+        return "done"
+    intermediates_present = counts.get("Intermediates", (0, 0))[0]
+    if intermediates_present > 0 or done_present > 0:
+        return "in_progress"
+    return "not_started"
