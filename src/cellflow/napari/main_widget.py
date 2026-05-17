@@ -23,7 +23,6 @@ from cellflow.napari.cellpose_zavg_viz_widget import CellposeZavgVizWidget
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
-from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import (
     CollapsibleSection,
@@ -77,12 +76,6 @@ class _CellposePanel(QWidget):
         )
         layout.addWidget(self._pipeline_files_section)
 
-        self.hpc_cellpose_widget = HpcCellposeWidget(self.viewer)
-        self.hpc_cellpose_section = CollapsibleSection(
-            "HPC Cellpose", self.hpc_cellpose_widget, expanded=False
-        )
-        layout.addWidget(self.hpc_cellpose_section)
-
         self.zavg_viz_widget = CellposeZavgVizWidget()
         layout.addWidget(self.zavg_viz_widget)
 
@@ -92,7 +85,6 @@ class _CellposePanel(QWidget):
         """Update file status display."""
         self._pos_dir = pos_dir
         self._files_widget.refresh(pos_dir)
-        self.hpc_cellpose_widget.refresh(pos_dir)
         self.zavg_viz_widget.refresh(pos_dir)
 
 
@@ -144,7 +136,6 @@ class CellFlowMainWidget(QWidget):
 
             accent_color=stage_accent("cellpose"),
         )
-        self.hpc_cellpose_widget = self._cellpose_widget.hpc_cellpose_widget
 
         self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
         self.nucleus_section = CollapsibleSection(
@@ -308,7 +299,6 @@ class CellFlowMainWidget(QWidget):
                 "condition": self.cond_edit.text(),
                 "position": self.pos_spin.value(),
             },
-            "hpc_cellpose": self.hpc_cellpose_widget.get_state(),
             "nucleus": self.nucleus_workflow_widget.get_state(),
             "cell": self.cell_workflow_widget.get_state(),
         }
@@ -322,9 +312,6 @@ class CellFlowMainWidget(QWidget):
             if "condition" in m: self.cond_edit.setText(str(m["condition"]))
             if "position" in m: self.pos_spin.setValue(int(m["position"]))
 
-        if "hpc_cellpose" in state:
-            self.hpc_cellpose_widget.set_state(state["hpc_cellpose"])
-        
         if "nucleus" in state:
             self.nucleus_workflow_widget.set_state(state["nucleus"])
         

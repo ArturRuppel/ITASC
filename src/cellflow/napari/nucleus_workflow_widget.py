@@ -179,15 +179,16 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.nucleus_tracking_inputs_widget.hide()
         self.nucleus_pipeline_widget.hide()
 
-        root.addWidget(self.tracking_ultrack_parameters_section)
+        root.addWidget(self.tracking_db_section)
+        root.addWidget(self.tracking_solve_section)
         root.addWidget(self.nucleus_pipeline_widget.build_pipeline_block())
         root.addWidget(self.pipeline_status_lbl)
         root.addWidget(self.pipeline_progress_bar)
 
     def _alias_tracking_inputs_controls(self) -> None:
         ti = self.nucleus_tracking_inputs_widget
-        self.tracking_ultrack_parameters_section = ti.section
-        self.tracking_ultrack_section = ti.section
+        self.tracking_db_section = ti.db_section
+        self.tracking_solve_section = ti.solve_section
         self.db_gen_min_area_spin = ti.db_gen_min_area_spin
         self.db_gen_max_area_spin = ti.db_gen_max_area_spin
         self.db_gen_min_frontier_spin = ti.db_gen_min_frontier_spin

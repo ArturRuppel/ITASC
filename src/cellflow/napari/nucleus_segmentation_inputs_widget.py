@@ -106,7 +106,7 @@ class NucleusSegmentationInputsWidget(QWidget):
         add_section_header(grid, row, _heading("Z Slices")); row += 1
         add_section_pair_row(
             grid, row,
-            "Z range:", self.map_z_range,
+            "Z\nrange:", self.map_z_range,
             "Step:", self.map_z_step_spin,
         ); row += 1
 

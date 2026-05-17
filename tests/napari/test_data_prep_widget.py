@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel, QLineEdit
+from qtpy.QtWidgets import QApplication, QLabel, QLineEdit, QWidget
 
 
 class _FakeSignal:
@@ -51,6 +51,27 @@ def _make_widget(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     widget = mod.DataPrepWidget(_FakeViewer(), _FakeMainWidget(tmp_path))
     return app, mod, widget
+
+
+def _load_standalone_module(monkeypatch):
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    napari_pkg = types.ModuleType("cellflow.napari")
+    napari_pkg.__path__ = [str(package_root)]
+    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
+
+    class _StubHpcCellposeWidget(QWidget):
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+            self.refreshed_pos_dir = None
+
+        def refresh(self, pos_dir):
+            self.refreshed_pos_dir = pos_dir
+
+    hpc_module = types.ModuleType("cellflow.napari.hpc_cellpose_widget")
+    hpc_module.HpcCellposeWidget = _StubHpcCellposeWidget
+    monkeypatch.setitem(sys.modules, "cellflow.napari.hpc_cellpose_widget", hpc_module)
+    sys.modules.pop("cellflow.napari.data_prep_standalone_widget", None)
+    return importlib.import_module("cellflow.napari.data_prep_standalone_widget")
 
 
 def _sync_thread_worker(connect=None):
@@ -134,6 +155,33 @@ def test_run_in_terminal_includes_frame_range(monkeypatch, tmp_path):
     assert len(launched) == 1
     assert "frame_start=5" in launched[0]
     assert "frame_end=12" in launched[0]
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_standalone_data_prep_embeds_hpc_cellpose_section(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_standalone_module(monkeypatch)
+    widget = mod.DataPrepStandaloneWidget(_FakeViewer())
+
+    assert widget.hpc_cellpose_section.title == "HPC Cellpose"
+    assert widget.hpc_cellpose_section.is_expanded is False
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_standalone_data_prep_refreshes_hpc_cellpose(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_standalone_module(monkeypatch)
+    widget = mod.DataPrepStandaloneWidget(_FakeViewer())
+    widget.path_label.setText(str(tmp_path))
+    widget.pos_spin.setValue(2)
+
+    widget._refresh()
+
+    assert widget.hpc_cellpose_widget.refreshed_pos_dir == tmp_path / "pos02"
 
     widget.deleteLater()
     app.processEvents()

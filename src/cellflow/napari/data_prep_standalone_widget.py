@@ -19,7 +19,9 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.napari.data_prep_widget import DataPrepWidget
+from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
 from cellflow.napari.ui_style import icon_button, muted_label, tiny_button
+from cellflow.napari.widgets import CollapsibleSection
 
 
 class DataPrepStandaloneWidget(QWidget):
@@ -94,6 +96,14 @@ class DataPrepStandaloneWidget(QWidget):
 
         self._data_prep = DataPrepWidget(napari_viewer, self)
         scroll_layout.addWidget(self._data_prep)
+
+        self.hpc_cellpose_widget = HpcCellposeWidget(napari_viewer, self)
+        self.hpc_cellpose_section = CollapsibleSection(
+            "HPC Cellpose",
+            self.hpc_cellpose_widget,
+            expanded=False,
+        )
+        scroll_layout.addWidget(self.hpc_cellpose_section)
         scroll_layout.addStretch()
         scroll.setWidget(scroll_widget)
         main_layout.addWidget(scroll)
@@ -119,3 +129,4 @@ class DataPrepStandaloneWidget(QWidget):
             pos_dir = None
         self.refresh_requested.emit(pos_dir)
         self._data_prep.refresh(pos_dir)
+        self.hpc_cellpose_widget.refresh(pos_dir)

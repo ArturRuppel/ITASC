@@ -9,7 +9,6 @@ from cellflow.napari._widget_helpers import (
     dslider as _dslider,
     heading as _heading,
     islider as _islider,
-    separator as _separator,
 )
 from cellflow.napari.ui_style import (
     add_section_full_row,
@@ -27,10 +26,15 @@ class NucleusTrackingInputsWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
-        params_inner = QWidget(self)
-        grid = section_grid()
-        grid.setContentsMargins(0, 0, 0, 0)
-        params_inner.setLayout(grid)
+        db_inner = QWidget(self)
+        db_grid = section_grid()
+        db_grid.setContentsMargins(0, 0, 0, 0)
+        db_inner.setLayout(db_grid)
+
+        solve_inner = QWidget(self)
+        solve_grid = section_grid()
+        solve_grid.setContentsMargins(0, 0, 0, 0)
+        solve_inner.setLayout(solve_grid)
 
         # ─── DB Generation — Candidates ─────────────────────────────
         self.db_gen_min_area_spin = _islider(
@@ -108,81 +112,87 @@ class NucleusTrackingInputsWidget(QWidget):
         )
         self.ultrack_solver_lbl = QLabel("—")
 
-        # ─── Pack everything into the unified grid ──────────────────
+        # ─── Pack DB Generation controls ────────────────────────────
         row = 0
 
-        add_section_header(grid, row, _heading("DB Generation — Candidates")); row += 1
+        add_section_header(db_grid, row, _heading("Candidates")); row += 1
         add_section_pair_row(
-            grid, row,
-            "Min area:", self.db_gen_min_area_spin,
-            "Max area:", self.db_gen_max_area_spin,
+            db_grid, row,
+            "Min\narea:", self.db_gen_min_area_spin,
+            "Max\narea:", self.db_gen_max_area_spin,
         ); row += 1
         add_section_pair_row(
-            grid, row,
-            "Min frontier:", self.db_gen_min_frontier_spin,
-            "WS hierarchy:", self.db_gen_ws_hierarchy_combo,
+            db_grid, row,
+            "Min\nfrontier:", self.db_gen_min_frontier_spin,
+            "WS\nhierarchy:", self.db_gen_ws_hierarchy_combo,
         ); row += 1
-        add_section_pair_row(grid, row, "Workers:", self.db_gen_n_workers_spin); row += 1
+        add_section_pair_row(db_grid, row, "Workers:", self.db_gen_n_workers_spin); row += 1
 
-        add_section_header(grid, row, _heading("DB Generation — Linking")); row += 1
+        add_section_header(db_grid, row, _heading("Linking")); row += 1
         add_section_pair_row(
-            grid, row,
-            "Max dist:", self.db_gen_max_dist_spin,
-            "Max neighbors:", self.db_gen_max_neighbors_spin,
+            db_grid, row,
+            "Max\ndistance:", self.db_gen_max_dist_spin,
+            "Max\nneighbors:", self.db_gen_max_neighbors_spin,
         ); row += 1
         add_section_pair_row(
-            grid, row,
-            "Linking mode:", self.db_gen_linking_mode_combo,
-            "Area wt:", self.db_gen_area_weight_spin,
+            db_grid, row,
+            "Linking\nmode:", self.db_gen_linking_mode_combo,
+            "Area\nweight:", self.db_gen_area_weight_spin,
         ); row += 1
         add_section_pair_row(
-            grid, row,
-            "IoU wt:", self.db_gen_iou_weight_spin,
-            "Dist wt:", self.db_gen_distance_weight_spin,
-        ); row += 1
-
-        add_section_header(grid, row, _heading("DB Generation — Scoring")); row += 1
-        add_section_pair_row(
-            grid, row,
-            "Quality wt:", self.db_gen_quality_weight_spin,
-            "Quality exp:", self.db_gen_quality_exp_spin,
-        ); row += 1
-        add_section_pair_row(
-            grid, row,
-            "Circularity wt:", self.db_gen_circularity_weight_spin,
+            db_grid, row,
+            "IoU\nweight:", self.db_gen_iou_weight_spin,
+            "Distance\nweight:", self.db_gen_distance_weight_spin,
         ); row += 1
 
-        add_section_header(grid, row, _heading("DB Generation — Validated Seed Prior")); row += 1
-        add_section_full_row(grid, row, self.db_gen_use_validated_check); row += 1
-
-        add_section_full_row(grid, row, _separator()); row += 1
-
-        add_section_header(grid, row, _heading("Ultrack — Track Scope")); row += 1
+        add_section_header(db_grid, row, _heading("Scoring")); row += 1
         add_section_pair_row(
-            grid, row,
-            "Max partitions:", self.ultrack_max_partitions_spin,
-            "N frames:", self.ultrack_n_frames_spin,
+            db_grid, row,
+            "Quality\nweight:", self.db_gen_quality_weight_spin,
+            "Quality\nexponent:", self.db_gen_quality_exp_spin,
+        ); row += 1
+        add_section_pair_row(
+            db_grid, row,
+            "Circularity\nweight:", self.db_gen_circularity_weight_spin,
         ); row += 1
 
-        add_section_header(grid, row, _heading("Ultrack — Event Penalties")); row += 1
+        add_section_header(db_grid, row, _heading("Validated Seed Prior")); row += 1
+        add_section_full_row(db_grid, row, self.db_gen_use_validated_check); row += 1
+
+        # ─── Pack Ultrack solver controls ───────────────────────────
+        row = 0
+
+        add_section_header(solve_grid, row, _heading("Track Scope")); row += 1
         add_section_pair_row(
-            grid, row,
+            solve_grid, row,
+            "Max\npartitions:", self.ultrack_max_partitions_spin,
+            "N\nframes:", self.ultrack_n_frames_spin,
+        ); row += 1
+
+        add_section_header(solve_grid, row, _heading("Event Penalties")); row += 1
+        add_section_pair_row(
+            solve_grid, row,
             "Appear:", self.ultrack_appear_spin,
             "Disappear:", self.ultrack_disappear_spin,
         ); row += 1
-        add_section_pair_row(grid, row, "Division:", self.ultrack_division_spin); row += 1
+        add_section_pair_row(solve_grid, row, "Division:", self.ultrack_division_spin); row += 1
 
-        add_section_header(grid, row, _heading("Ultrack — Solver")); row += 1
+        add_section_header(solve_grid, row, _heading("Solver")); row += 1
         add_section_pair_row(
-            grid, row,
+            solve_grid, row,
             "Power:", self.ultrack_power_spin,
             "Bias:", self.ultrack_bias_spin,
         ); row += 1
-        add_section_pair_row(grid, row, "Solver:", self.ultrack_solver_lbl); row += 1
+        add_section_pair_row(solve_grid, row, "Solver:", self.ultrack_solver_lbl); row += 1
 
-        self.section = CollapsibleSection(
-            "Ultrack Parameters",
-            params_inner,
+        self.db_section = CollapsibleSection(
+            "Database Generation Parameters",
+            db_inner,
+            expanded=False,
+        )
+        self.solve_section = CollapsibleSection(
+            "Ultrack Solver Parameters",
+            solve_inner,
             expanded=False,
         )
 

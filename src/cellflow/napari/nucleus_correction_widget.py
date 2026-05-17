@@ -218,34 +218,34 @@ class NucleusCorrectionWidget(QWidget):
         add_block_pair_row(
             g,
             0,
-            "Max dist:",
+            "Max\ndistance:",
             compact_spinbox(self.extend_max_dist_spin),
-            "Area wt:",
+            "Area\nweight:",
             compact_spinbox(self.extend_area_weight_spin),
         )
         add_block_pair_row(
             g,
             1,
-            "IoU wt:",
+            "IoU\nweight:",
             compact_spinbox(self.extend_iou_weight_spin),
-            "Dist wt:",
+            "Distance\nweight:",
             compact_spinbox(self.extend_distance_weight_spin),
         )
         self.swap_radius_spin = _dspin(0, 500, 40.0, 1.0, 1)
         add_block_pair_row(
             g,
             2,
-            "Overlap pen:",
+            "Overlap\npenalty:",
             compact_spinbox(self.extend_overlap_penalty_spin),
         )
-        add_block_pair_row(g, 3, "Swap radius:", compact_spinbox(self.swap_radius_spin))
+        add_block_pair_row(g, 3, "Swap\nradius:", compact_spinbox(self.swap_radius_spin))
         add_block_checkbox_row(g, 4, self.extend_greedy_overwrite_check)
         extend_retrack_lay.addLayout(g)
 
         extend_retrack_lay.addWidget(_heading("Retrack"))
         g = block_grid(horizontal_spacing=12)
         self.retrack_max_dist_spin = _dspin(0, 500, 20.0, 1.0, 1)
-        add_block_pair_row(g, 0, "Max dist:", compact_spinbox(self.retrack_max_dist_spin))
+        add_block_pair_row(g, 0, "Max\ndistance:", compact_spinbox(self.retrack_max_dist_spin))
         extend_retrack_lay.addLayout(g)
         self.extend_retrack_params_section = CollapsibleSection(
             "Extend / Retrack Parameters",

@@ -137,6 +137,9 @@ def _install_main_widget_stubs() -> None:
             self.state_received = None
             self.selection_callback = None
             self.match_requests = []
+            self._files_widget = types.SimpleNamespace(
+                presence_count_by_group=lambda: {"Output": (0, 1)}
+            )
 
         def refresh(self, pos_dir):
             self.refreshed_pos_dir = pos_dir
@@ -302,13 +305,14 @@ def test_main_widget_project_header_uses_compact_action_controls():
     viewer.close()
 
 
-def test_main_widget_embeds_hpc_cellpose_inside_cellpose_stage():
+def test_main_widget_does_not_embed_hpc_cellpose_inside_cellpose_stage():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
     widget = widget_class(viewer)
 
     assert not hasattr(widget, "hpc_cellpose_section")
-    assert widget.hpc_cellpose_widget is widget._cellpose_widget.hpc_cellpose_widget
+    assert not hasattr(widget, "hpc_cellpose_widget")
+    assert not hasattr(widget._cellpose_widget, "hpc_cellpose_widget")
     assert widget.scroll_layout.indexOf(widget.cellpose_section) < widget.scroll_layout.indexOf(
         widget.nucleus_section
     )
@@ -336,7 +340,7 @@ def test_main_widget_cellpose_stage_groups_pipeline_files_like_workflow():
         for toggle in cellpose.findChildren(QToolButton, "collapsible_toggle")
     }
     assert "Pipeline Files" in toggles
-    assert "HPC Cellpose" in toggles
+    assert "HPC Cellpose" not in toggles
 
     counts = cellpose._files_widget.presence_count_by_group()
     assert counts["Inputs"] == (0, 2)
@@ -431,7 +435,6 @@ def test_main_widget_refreshes_cell_workflow_with_same_position_dir_as_project_s
     widget._refresh_all()
 
     assert widget.data_panel.refreshed_pos_dir == pos_dir
-    assert widget.hpc_cellpose_widget.refreshed_pos_dir == pos_dir
     assert widget.cell_workflow_widget.refreshed_pos_dir == pos_dir
     assert widget.contact_analysis_widget.refreshed_pos_dir == pos_dir
 
@@ -459,19 +462,15 @@ def test_main_widget_no_longer_includes_track_conditioned_cell_boundary_section(
     viewer.close()
 
 
-def test_main_widget_persists_hpc_cellpose_state():
+def test_main_widget_no_longer_persists_hpc_cellpose_state():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()
     widget = widget_class(viewer)
 
     state = widget.get_state()
-    assert state["hpc_cellpose"] == {"widget": "_StubWidget"}
+    assert "hpc_cellpose" not in state
 
     widget.set_state({"hpc_cellpose": {"frames": "0,2", "remote_host": "maestro.pasteur.fr"}})
-    assert widget.hpc_cellpose_widget.state_received == {
-        "frames": "0,2",
-        "remote_host": "maestro.pasteur.fr",
-    }
 
     widget.deleteLater()
     viewer.close()
