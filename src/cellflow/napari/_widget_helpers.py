@@ -16,7 +16,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from superqt import QLabeledDoubleSlider, QLabeledSlider
+from superqt import QLabeledDoubleRangeSlider, QLabeledDoubleSlider, QLabeledSlider
 
 from cellflow.napari.ui_style import action_button, parameter_heading, status_label
 
@@ -133,6 +133,89 @@ def islider(lo, hi, val, step=1, tooltip=""):
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     _stack_slider_label_above(s)
     return s
+
+
+def _stack_range_labels_above(slider) -> None:
+    """Repack a QLabeledDoubleRangeSlider (in LabelIsValue mode) so the
+    two editable thumb-value labels sit at the left/right edges above the
+    track instead of beside it."""
+    min_label = slider._min_label
+    max_label = slider._max_label
+    track = slider._slider
+
+    decimals = getattr(min_label, "decimals", lambda: 0)()
+    lo, hi = slider.minimum(), slider.maximum()
+
+    def _fmt(v):
+        return f"{v:.{decimals}f}" if decimals else f"{int(v)}"
+    sample = max((_fmt(lo), _fmt(hi)), key=len)
+
+    for lbl in (min_label, max_label):
+        lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        fm = lbl.fontMetrics()
+        lbl.setMinimumWidth(fm.horizontalAdvance(sample) + 12)
+
+    old_layout = slider.layout()
+    if old_layout is not None:
+        for child in (min_label, max_label, track):
+            old_layout.removeWidget(child)
+        QWidget().setLayout(old_layout)
+    for child in (min_label, max_label, track):
+        child.setParent(slider)
+
+    hbox = QHBoxLayout()
+    hbox.setContentsMargins(0, 0, 0, 0)
+    hbox.setSpacing(0)
+    hbox.addWidget(min_label, alignment=Qt.AlignmentFlag.AlignLeft)
+    hbox.addStretch()
+    hbox.addWidget(max_label, alignment=Qt.AlignmentFlag.AlignRight)
+
+    vbox = QVBoxLayout()
+    vbox.setContentsMargins(0, 0, 0, 0)
+    vbox.setSpacing(0)
+    vbox.addLayout(hbox)
+    vbox.addWidget(track)
+    slider.setLayout(vbox)
+
+
+def drslider(lo, hi, lo_val, hi_val, step=0.1, decimals=2, tooltip=""):
+    """A horizontal QLabeledDoubleRangeSlider with the two editable thumb
+    values rendered as edge labels stacked above the track."""
+    s = QLabeledDoubleRangeSlider(Qt.Orientation.Horizontal)
+    s.setRange(lo, hi)
+    s.setValue((lo_val, hi_val))
+    s.setSingleStep(step)
+    s.setDecimals(decimals)
+    s.setToolTip(tooltip)
+    s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    s.setEdgeLabelMode(s.EdgeLabelMode.LabelIsValue)
+    _stack_range_labels_above(s)
+    return s
+
+
+class RangeThumbProxy:
+    """A spinbox-like proxy (.value() / .setValue()) that reads and writes
+    one thumb of a range slider, so existing call sites that used a
+    standalone QSpinBox/QDoubleSpinBox per thumb keep working."""
+    __slots__ = ("_slider", "_index")
+
+    def __init__(self, slider, index: int) -> None:
+        self._slider = slider
+        self._index = index
+
+    def value(self):
+        return self._slider.value()[self._index]
+
+    def setValue(self, v) -> None:
+        vals = list(self._slider.value())
+        vals[self._index] = v
+        # Range sliders enforce min<=max; nudge the other thumb if needed.
+        if self._index == 0 and v > vals[1]:
+            vals[1] = v
+        elif self._index == 1 and v < vals[0]:
+            vals[0] = v
+        self._slider.setValue(tuple(vals))
 
 
 def tool_btn(glyph: str, tooltip: str = "", *, checkable: bool = False) -> QToolButton:

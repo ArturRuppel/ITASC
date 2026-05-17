@@ -107,8 +107,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         # ── Ultrack Database Browser ─────────────────────────────────
         self._build_db_browser_section(root)
 
-        # ── Refinement ───────────────────────────────────────────────
-        self._build_refinement_section(root)
+        # ── Refinement (deprecated; widget no longer rendered) ───────
+        # self._build_refinement_section(root)
 
         # ── Correction (group box) ───────────────────────────────────
         self._build_correction_section(root)
@@ -149,6 +149,15 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.db_gen_threshold_min_spin = self.source_contour_threshold_min_spin
         self.db_gen_threshold_max_spin = self.source_contour_threshold_max_spin
         self.db_gen_threshold_step_spin = self.source_contour_threshold_step_spin
+        # Range-slider widgets (used by tests/state when the underlying widget
+        # itself is needed rather than a per-thumb proxy).
+        self.map_cellprob_range = segmentation_inputs.map_cellprob_range
+        self.source_contour_threshold_range = (
+            segmentation_inputs.source_contour_threshold_range
+        )
+        self.source_foreground_threshold_range = (
+            segmentation_inputs.source_foreground_threshold_range
+        )
         root.addWidget(self.segmentation_inputs_section)
         self.nucleus_segmentation_inputs_widget.hide()
 
@@ -268,7 +277,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.nucleus_correction_widget = NucleusCorrectionWidget(
             self.viewer,
             pos_dir_provider=lambda: self._pos_dir,
-            refresh_refinement_callback=lambda: self.refinement_widget.refresh(),
+            refresh_refinement_callback=lambda: None,
             parent=self,
         )
         self._alias_correction_controls()

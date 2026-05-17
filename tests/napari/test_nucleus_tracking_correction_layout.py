@@ -1223,12 +1223,16 @@ def test_contour_maps_parameters_expand_when_narrow():
 
     assert params_section.findChildren(QScrollArea) == []
 
-    for spin in (
-        widget.db_gen_threshold_min_spin,
-        widget.db_gen_threshold_max_spin,
-        widget.db_gen_threshold_step_spin,
-    ):
-        assert spin.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+    # Threshold min/max are now exposed as proxies onto a single range slider;
+    # the underlying slider and the step slider should expand to fill the row.
+    assert (
+        widget.source_contour_threshold_range.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Policy.Expanding
+    )
+    assert (
+        widget.db_gen_threshold_step_spin.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Policy.Expanding
+    )
 
     host = QWidget()
     host_layout = QVBoxLayout(host)
