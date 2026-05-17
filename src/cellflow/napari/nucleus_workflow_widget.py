@@ -35,7 +35,11 @@ from cellflow.napari.nucleus_tracking_inputs_widget import NucleusTrackingInputs
 from cellflow.napari.radial_refinement_widget import RadialRefinementWidget
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._state import dump_state, load_state
-from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+from cellflow.napari.widgets import (
+    CollapsibleSection,
+    PipelineFilesWidget,
+    make_pipeline_files_header,
+)
 from cellflow.tracking_ultrack.extend import extend_track_from_db  # noqa: F401
 from cellflow.tracking_ultrack.ingest import _select_solver
 
@@ -96,8 +100,17 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             "Pipeline Files",
             self._files_widget,
             expanded=False,
-
         )
+        (
+            self.pipeline_files_header,
+            self.pipeline_files_header_lbl,
+            self.pipeline_files_toggle_btn,
+        ) = make_pipeline_files_header(
+            self._pipeline_files_section,
+            stage_key="nucleus",
+            parent=self,
+        )
+        root.addWidget(self.pipeline_files_header)
         root.addWidget(self._pipeline_files_section)
 
         # ── Workflow sections ────────────────────────────────────────

@@ -160,12 +160,14 @@ def test_cell_params_controller_does_not_cover_pipeline_header(monkeypatch):
     widget.show()
     app.processEvents()
 
-    toggle = next(
-        child
-        for child in widget.findChildren(QToolButton, "collapsible_toggle")
-        if child.text() == "Pipeline Files"
+    toggle = widget.pipeline_files_toggle_btn
+    assert widget.pipeline_files_header_lbl.text() == "Pipeline Files"
+    assert toggle.text() == "🔍"
+    assert not widget._pipeline_files_section._toggle.isVisible()
+    header_point = toggle.mapTo(
+        widget,
+        QPoint(toggle.width() // 2, toggle.height() // 2),
     )
-    header_point = toggle.mapTo(widget, QPoint(20, toggle.height() // 2))
 
     assert widget.childAt(header_point) is toggle
     assert not widget.cell_params_widget.isVisible()

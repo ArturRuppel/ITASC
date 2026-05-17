@@ -13,7 +13,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtWidgets import QApplication, QProgressBar
+from qtpy.QtWidgets import QApplication, QProgressBar, QToolButton
 
 
 def _make_viewer():
@@ -167,6 +167,26 @@ def test_nucleus_workflow_composes_pipeline_widget():
     assert widget.solve_params_btn is widget.nucleus_pipeline_widget.solve_params_btn
     assert widget.pipeline_status_lbl is widget.nucleus_pipeline_widget.pipeline_status_lbl
     assert widget.pipeline_progress_bar is widget.nucleus_pipeline_widget.pipeline_progress_bar
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_pipeline_files_header_uses_magnifier_button():
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+
+    assert widget.pipeline_files_header_lbl.text() == "Pipeline Files"
+    assert isinstance(widget.pipeline_files_toggle_btn, QToolButton)
+    assert widget.pipeline_files_toggle_btn.text() == "🔍"
+    assert not widget._pipeline_files_section._toggle.isVisible()
+
+    assert widget._pipeline_files_section.is_expanded is False
+    widget.pipeline_files_toggle_btn.click()
+    assert widget._pipeline_files_section.is_expanded is True
+    widget.pipeline_files_toggle_btn.click()
+    assert widget._pipeline_files_section.is_expanded is False
 
     widget.deleteLater()
     viewer.close()

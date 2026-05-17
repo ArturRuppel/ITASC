@@ -27,6 +27,7 @@ from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import (
     CollapsibleSection,
     PipelineFilesWidget,
+    make_pipeline_files_header,
     pipeline_status_from_files,
 )
 from cellflow.napari.ui_style import icon_button, muted_label, stage_accent, tiny_button
@@ -74,6 +75,16 @@ class _CellposePanel(QWidget):
             self._files_widget,
             expanded=False,
         )
+        (
+            self.pipeline_files_header,
+            self.pipeline_files_header_lbl,
+            self.pipeline_files_toggle_btn,
+        ) = make_pipeline_files_header(
+            self._pipeline_files_section,
+            stage_key="cellpose",
+            parent=self,
+        )
+        layout.addWidget(self.pipeline_files_header)
         layout.addWidget(self._pipeline_files_section)
 
         self.zavg_viz_widget = CellposeZavgVizWidget()

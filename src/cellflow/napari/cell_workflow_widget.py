@@ -41,7 +41,11 @@ from cellflow.napari.ui_style import (
     parameter_heading,
     status_label,
 )
-from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+from cellflow.napari.widgets import (
+    CollapsibleSection,
+    PipelineFilesWidget,
+    make_pipeline_files_header,
+)
 from cellflow.segmentation import (
     apply_gamma,
     build_consensus_boundary_flow_following,
@@ -174,13 +178,22 @@ class CellWorkflowWidget(QWidget):
             ],
             viewer=self.viewer,
         )
-        root.addWidget(
-            CollapsibleSection(
-                "Pipeline Files",
-                self._files_widget,
-                expanded=False,
-            )
+        self._pipeline_files_section = CollapsibleSection(
+            "Pipeline Files",
+            self._files_widget,
+            expanded=False,
         )
+        (
+            self.pipeline_files_header,
+            self.pipeline_files_header_lbl,
+            self.pipeline_files_toggle_btn,
+        ) = make_pipeline_files_header(
+            self._pipeline_files_section,
+            stage_key="cell",
+            parent=self,
+        )
+        root.addWidget(self.pipeline_files_header)
+        root.addWidget(self._pipeline_files_section)
 
         # ── Pipeline action buttons (2-column grid) ──────────────────
         self.filter_flow_btn = _btn(

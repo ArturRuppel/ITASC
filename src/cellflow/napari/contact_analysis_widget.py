@@ -14,7 +14,11 @@ from qtpy.QtWidgets import QCheckBox, QLabel, QProgressBar, QPushButton, QVBoxLa
 from cellflow.contact_analysis import build_position_contact_analysis
 from cellflow.napari.nls_classification_widget import NLSClassificationWidget
 from cellflow.napari.ui_style import action_button, status_label
-from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+from cellflow.napari.widgets import (
+    CollapsibleSection,
+    PipelineFilesWidget,
+    make_pipeline_files_header,
+)
 
 try:  # pragma: no cover - local branch compatibility
     from cellflow.contact_analysis.reader import read_position_contact_analysis
@@ -76,13 +80,22 @@ class ContactAnalysisWidget(QWidget):
             ],
             viewer=self.viewer,
         )
-        layout.addWidget(
-            CollapsibleSection(
-                "Pipeline Files",
-                self._files_widget,
-                expanded=False,
-            )
+        self._pipeline_files_section = CollapsibleSection(
+            "Pipeline Files",
+            self._files_widget,
+            expanded=False,
         )
+        (
+            self.pipeline_files_header,
+            self.pipeline_files_header_lbl,
+            self.pipeline_files_toggle_btn,
+        ) = make_pipeline_files_header(
+            self._pipeline_files_section,
+            stage_key="contact_analysis",
+            parent=self,
+        )
+        layout.addWidget(self.pipeline_files_header)
+        layout.addWidget(self._pipeline_files_section)
 
         self.contact_analysis_status_lbl = QLabel("")
         self.contact_analysis_status_lbl.setWordWrap(True)

@@ -22,9 +22,11 @@ from .ui_style import (
     TINY_MARGIN,
     icon_button,
     muted_label,
+    stage_accent,
     stage_status_color,
     status_label,
 )
+from ._widget_helpers import tool_btn
 
 
 class CollapsibleSection(QWidget):
@@ -238,6 +240,46 @@ class CollapsibleSection(QWidget):
                 return
             parent.updateGeometry()
             parent = parent.parent()
+
+
+def make_pipeline_files_header(
+    section: CollapsibleSection,
+    *,
+    stage_key: str,
+    parent: QWidget | None = None,
+) -> tuple[QWidget, QLabel, QToolButton]:
+    """Create a compact external header for a pipeline files section."""
+    section.set_header_visible(False)
+
+    header = QWidget(parent)
+    layout = QHBoxLayout(header)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+
+    label = QLabel("Pipeline Files")
+    label.setStyleSheet(
+        f"font-weight: bold; font-size: 11pt; color: {stage_accent(stage_key)};"
+    )
+
+    button = tool_btn("🔍", "Show pipeline files.", checkable=True)
+    button.setChecked(section.is_expanded)
+
+    def _set_expanded(checked: bool) -> None:
+        if checked:
+            section.expand()
+        else:
+            section.collapse()
+        button.setToolTip(
+            "Hide pipeline files." if checked else "Show pipeline files."
+        )
+
+    button.toggled.connect(_set_expanded)
+    section._toggle.toggled.connect(button.setChecked)
+
+    layout.addWidget(label)
+    layout.addStretch(1)
+    layout.addWidget(button)
+    return header, label, button
 
 
 # ---------------------------------------------------------------------------
