@@ -43,10 +43,14 @@ H5 = POS / "4_contact_analysis" / "contact_analysis.h5"
 OUT_DIR = Path(__file__).resolve().parent
 OUT_CHANNELS = OUT_DIR / "pos08_channels.mp4"
 OUT_ANALYSIS = OUT_DIR / "pos08_analysis.mp4"
+OUT_ANALYSIS_T1 = OUT_DIR / "pos08_analysis_t1.mp4"
 
 FPS = 10
 SUPER = 2  # supersampling factor for the analysis movie (anti-aliasing)
 TRACK_TAIL = 40
+FADE_ALPHA = 0.20  # opacity of the faded base for the T1 movie
+T1_LOSING_COLOR = np.array([1.00, 0.05, 0.10])   # red — edge about to disappear
+T1_GAINING_COLOR = np.array([0.05, 0.85, 0.20])  # green — newly formed edge
 
 # Class / tint colours (RGB 0–1)
 COL_CTRL = np.array([1.00, 0.55, 0.00])          # orange
@@ -159,8 +163,21 @@ def read_h5_tables() -> tuple[dict, dict]:
             "coord_count": f["edges/table/coord_count"][:],
             "coord_y": f["edges/coordinates/y"][:],
             "coord_x": f["edges/coordinates/x"][:],
+            "t1_event_id": f["edges/table/t1_event_id"][:],
         }
     return cells, edges
+
+
+def read_t1_events() -> dict:
+    with h5py.File(H5, "r") as f:
+        return {
+            "frame": f["t1_events/table/frame"][:],
+            "t1_event_id": f["t1_events/table/t1_event_id"][:],
+            "losing_cell_a": f["t1_events/table/losing_cell_a"][:],
+            "losing_cell_b": f["t1_events/table/losing_cell_b"][:],
+            "gaining_cell_a": f["t1_events/table/gaining_cell_a"][:],
+            "gaining_cell_b": f["t1_events/table/gaining_cell_b"][:],
+        }
 
 
 def build_class_map(cells: dict) -> dict[int, str]:
@@ -174,14 +191,15 @@ def build_class_map(cells: dict) -> dict[int, str]:
 
 
 def class_color(label: str) -> np.ndarray:
-    return COL_CTRL if label == "ctrl" else COL_VIM if label == "vimentin_ko" else np.array([0.6, 0.6, 0.6])
+    # Class colours are swapped vs the channels-movie palette: ctrl → blue, vimentin_ko → orange.
+    return COL_VIM if label == "ctrl" else COL_CTRL if label == "vimentin_ko" else np.array([0.6, 0.6, 0.6])
 
 
 def contour_color(label_a: str, label_b: str) -> np.ndarray:
     if label_a == label_b == "ctrl":
-        return COL_HOMO_CTRL
-    if label_a == label_b == "vimentin_ko":
         return COL_HOMO_VIM
+    if label_a == label_b == "vimentin_ko":
+        return COL_HOMO_CTRL
     return COL_HETERO
 
 
@@ -376,6 +394,164 @@ def render_analysis_movie() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Movie 3 — faded analysis with T1 edge highlights
+# ---------------------------------------------------------------------------
+
+
+def render_analysis_t1_movie() -> None:
+    cells_tbl, edges_tbl = read_h5_tables()
+    t1_tbl = read_t1_events()
+    class_map = build_class_map(cells_tbl)
+
+    nuc_labels = tifffile.imread(NUC_LABELS)
+    cell_labels = tifffile.imread(CELL_LABELS)
+    T, H, W = nuc_labels.shape
+    Hs, Ws = H * SUPER, W * SUPER
+
+    max_nuc = int(nuc_labels.max())
+    max_cell = int(cell_labels.max())
+    nuc_color_lut = np.zeros((max_nuc + 1, 3), dtype=np.float32)
+    nuc_alpha_lut = np.zeros((max_nuc + 1,), dtype=np.float32)
+    for cid, lbl in class_map.items():
+        if cid <= max_nuc:
+            nuc_color_lut[cid] = class_color(lbl)
+            nuc_alpha_lut[cid] = 0.65
+    cell_color_lut = np.zeros((max_cell + 1, 3), dtype=np.float32)
+    cell_alpha_lut = np.zeros((max_cell + 1,), dtype=np.float32)
+    for cid, lbl in class_map.items():
+        if cid <= max_cell:
+            cell_color_lut[cid] = class_color(lbl)
+            cell_alpha_lut[cid] = 0.18
+
+    centroids = nucleus_track_centroids(nuc_labels)
+    seg_by_end: dict[int, list[tuple[int, float, float, float, float]]] = defaultdict(list)
+    for cid, rows in centroids.items():
+        for prev, curr in zip(rows[:-1], rows[1:]):
+            sf, sy, sx = prev
+            ef, ey, ex = curr
+            if ef != sf + 1:
+                continue
+            seg_by_end[ef].append((cid, sy, sx, ey, ex))
+
+    frames_e = edges_tbl["frame"].astype(int)
+    edges_by_frame: dict[int, list[int]] = defaultdict(list)
+    for idx, f in enumerate(frames_e):
+        edges_by_frame[int(f)].append(idx)
+
+    # T1 highlights: a transition between frames F and F+1 — at frame F the
+    # losing edge has its last appearance; at frame F+1 the gaining edge first
+    # appears. Index edges by (frame, sorted cell pair) so we can fetch each.
+    edge_a = edges_tbl["cell_a"]
+    edge_b = edges_tbl["cell_b"]
+    pair_to_edge_idx: dict[tuple[int, int, int], int] = {}
+    for idx in range(len(frames_e)):
+        a, b = int(edge_a[idx]), int(edge_b[idx])
+        if a > b:
+            a, b = b, a
+        pair_to_edge_idx[(int(frames_e[idx]), a, b)] = idx
+
+    # frame -> [(edge_idx, color), ...]
+    t1_highlight: dict[int, list[tuple[int, np.ndarray]]] = defaultdict(list)
+    for k in range(len(t1_tbl["frame"])):
+        F = int(t1_tbl["frame"][k])
+        la, lb = int(t1_tbl["losing_cell_a"][k]), int(t1_tbl["losing_cell_b"][k])
+        ga, gb = int(t1_tbl["gaining_cell_a"][k]), int(t1_tbl["gaining_cell_b"][k])
+        if la > lb:
+            la, lb = lb, la
+        if ga > gb:
+            ga, gb = gb, ga
+        if 0 <= F < T:
+            li = pair_to_edge_idx.get((F, la, lb))
+            if li is not None:
+                t1_highlight[F].append((li, T1_LOSING_COLOR))
+        if 0 <= F + 1 < T:
+            gi = pair_to_edge_idx.get((F + 1, ga, gb))
+            if gi is not None:
+                t1_highlight[F + 1].append((gi, T1_GAINING_COLOR))
+
+    out = np.empty((T, H, W, 3), dtype=np.uint8)
+
+    for t in range(T):
+        base = np.ones((H, W, 3), dtype=np.float32)
+        cell_rgb, cell_a = label_color_image(cell_labels[t], cell_color_lut, cell_alpha_lut)
+        base = composite_over(base, cell_rgb, cell_a)
+        nuc_rgb, nuc_a = label_color_image(nuc_labels[t], nuc_color_lut, nuc_alpha_lut)
+        base = composite_over(base, nuc_rgb, nuc_a)
+
+        base_img = Image.fromarray((base * 255.0 + 0.5).astype(np.uint8))
+        base_hi = np.asarray(
+            base_img.resize((Ws, Hs), Image.BILINEAR), dtype=np.float32
+        ) / 255.0
+
+        line_alpha = np.zeros((Hs, Ws), dtype=np.float32)
+        kinds = edges_tbl["kind"]
+        for idx in edges_by_frame.get(t, []):
+            if kinds[idx] != "cell_cell":
+                continue
+            ca = int(edges_tbl["cell_a"][idx])
+            cb = int(edges_tbl["cell_b"][idx])
+            la = class_map.get(ca, "")
+            lb = class_map.get(cb, "")
+            col = contour_color(la, lb)
+            o = int(edges_tbl["coord_offset"][idx])
+            n = int(edges_tbl["coord_count"][idx])
+            if n < 2:
+                continue
+            ys = edges_tbl["coord_y"][o:o + n] * SUPER
+            xs = edges_tbl["coord_x"][o:o + n] * SUPER
+            draw_aa_polyline(base_hi, line_alpha, ys, xs, col, width=2 * SUPER)
+
+        track_alpha = np.zeros((Hs, Ws), dtype=np.float32)
+        start = max(0, t - TRACK_TAIL)
+        for end_frame in range(start + 1, t + 1):
+            age = t - end_frame
+            tail_alpha = max(0.0, 1.0 - age / TRACK_TAIL)
+            if tail_alpha <= 0.0:
+                continue
+            for cid, sy, sx, ey, ex in seg_by_end.get(end_frame, []):
+                col = class_color(class_map.get(cid, ""))
+                ys = np.array([sy, ey]) * SUPER
+                xs = np.array([sx, ex]) * SUPER
+                draw_aa_polyline(
+                    base_hi,
+                    track_alpha,
+                    ys,
+                    xs,
+                    col,
+                    width=max(1, SUPER // 2),
+                    alpha_scale=tail_alpha,
+                )
+
+        # Fade everything to FADE_ALPHA over a white background.
+        base_hi = 1.0 - FADE_ALPHA * (1.0 - base_hi)
+
+        # Overlay T1 edges at full opacity: red = losing, green = gaining.
+        for idx, col in t1_highlight.get(t, []):
+            o = int(edges_tbl["coord_offset"][idx])
+            n = int(edges_tbl["coord_count"][idx])
+            if n < 2:
+                continue
+            ys = edges_tbl["coord_y"][o:o + n] * SUPER
+            xs = edges_tbl["coord_x"][o:o + n] * SUPER
+            draw_aa_polyline(
+                base_hi,
+                line_alpha,
+                ys,
+                xs,
+                col,
+                width=3 * SUPER,
+            )
+
+        frame_rgb = downsample(base_hi, SUPER)
+        out[t] = (np.clip(frame_rgb, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+        if (t + 1) % 5 == 0 or t == T - 1:
+            print(f"  analysis-t1 frame {t + 1}/{T}")
+
+    encode_mp4(out, OUT_ANALYSIS_T1, FPS)
+    print(f"wrote {OUT_ANALYSIS_T1}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -385,3 +561,5 @@ if __name__ == "__main__":
     render_channels_movie()
     print("rendering analysis movie …")
     render_analysis_movie()
+    print("rendering analysis-t1 movie …")
+    render_analysis_t1_movie()
