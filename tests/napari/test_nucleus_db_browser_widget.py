@@ -12,7 +12,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtWidgets import QApplication, QSizePolicy
+from qtpy.QtWidgets import QApplication, QSizePolicy, QToolButton
 
 
 def _make_viewer():
@@ -140,6 +140,22 @@ def test_database_browser_activate_button_expands_and_deactivation_removes_layer
     assert "Ultrack DB Preview" not in viewer.layers
     assert "Ultrack DB Selection" not in viewer.layers
     assert "Ultrack DB Annotations" not in viewer.layers
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_database_browser_header_uses_icon_activate_button_distinct_from_run():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    assert isinstance(widget.ultrack_db_active_btn, QToolButton)
+    assert widget.ultrack_db_active_btn.text() == "⏻"
+    assert widget.ultrack_db_active_btn.text() != widget.db_run_btn.text()
+    assert widget.ultrack_db_browser_header_lbl.text() == "Database Browser"
+    assert not widget.ultrack_db_browser_header_lbl.isHidden()
+    assert not widget.ultrack_db_browser_section._toggle.isVisible()
 
     widget.deleteLater()
     viewer.close()

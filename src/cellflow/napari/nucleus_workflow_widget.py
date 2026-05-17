@@ -302,7 +302,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         # are reparented into this layout below, so keep the owner widget hidden
         # to prevent its default geometry from intercepting header clicks.
         self.nucleus_correction_widget.hide()
-        root.addWidget(self.ultrack_db_active_btn)
+        root.addWidget(self.ultrack_db_browser_header)
         root.addWidget(self.ultrack_db_browser_section)
         root.addWidget(self.correction_active_btn)
         root.addWidget(self.correction_mode_section)

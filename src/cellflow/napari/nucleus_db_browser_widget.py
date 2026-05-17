@@ -6,18 +6,18 @@ from pathlib import Path
 
 import numpy as np
 from qtpy.QtCore import Qt, QTimer
-from qtpy.QtGui import QIcon
 from qtpy.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
+from cellflow.napari._widget_helpers import tool_btn as _tool_btn
+from cellflow.napari.ui_style import stage_accent as _stage_accent
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.tracking_ultrack.db_query import (
     HierarchyCutState as _HierarchyCutState,
@@ -50,6 +50,29 @@ class NucleusUltrackDbBrowserWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+
+        self.header = QWidget(parent)
+        header_lay = QHBoxLayout(self.header)
+        header_lay.setContentsMargins(0, 0, 0, 0)
+        header_lay.setSpacing(4)
+        accent = _stage_accent("nucleus")
+        self.header_lbl = QLabel("Database Browser")
+        self.header_lbl.setStyleSheet(
+            f"font-weight: bold; font-size: 11pt; color: {accent};"
+        )
+        self.refresh_btn = _tool_btn("↻", "Refresh Ultrack database browser")
+        self.refresh_btn.setEnabled(False)
+        self.active_btn = _tool_btn(
+            "⏻",
+            "Activate database browser.",
+            checkable=True,
+        )
+        self.active_btn.setChecked(False)
+        header_lay.addWidget(self.header_lbl)
+        header_lay.addStretch(1)
+        header_lay.addWidget(self.refresh_btn)
+        header_lay.addWidget(self.active_btn)
+
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
@@ -93,23 +116,6 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         slider_lay.addWidget(self.hierarchy_slider)
         slider_lay.addWidget(self.height_lbl)
         lay.addWidget(self.slider_row)
-
-        db_btn_row = QWidget()
-        db_btn_lay = QHBoxLayout(db_btn_row)
-        db_btn_lay.setContentsMargins(0, 0, 0, 0)
-        db_btn_lay.setSpacing(4)
-        self.active_btn = QPushButton("Activate Database Browser")
-        self.active_btn.setCheckable(True)
-        self.active_btn.setChecked(False)
-        self.active_btn.setToolTip(
-            "Load contour maps and foreground masks into viewer and enable DB preview"
-        )
-        self.refresh_btn = QPushButton()
-        self.refresh_btn.setToolTip("Refresh Ultrack database browser")
-        self.refresh_btn.setIcon(QIcon.fromTheme("view-refresh"))
-        self.refresh_btn.setEnabled(False)
-        db_btn_lay.addWidget(self.refresh_btn)
-        lay.addWidget(db_btn_row)
 
         self.prob_alpha_check = QCheckBox("Node prob transparency")
         self.prob_alpha_check.setToolTip("Modulate label opacity by node probability")
@@ -179,6 +185,8 @@ class NucleusUltrackDbBrowserMixin:
 
     def _alias_ultrack_db_browser_controls(self) -> None:
         browser = self.ultrack_db_browser_widget
+        self.ultrack_db_browser_header = browser.header
+        self.ultrack_db_browser_header_lbl = browser.header_lbl
         self.ultrack_db_browser_section = browser.section
         self.ultrack_db_info_lbl = browser.info_lbl
         self.ultrack_db_source_slider = browser.source_slider
@@ -264,8 +272,8 @@ class NucleusUltrackDbBrowserMixin:
             self.ultrack_db_browser_section.collapse()
 
     def _set_ultrack_db_controls_enabled(self, enabled: bool) -> None:
-        self.ultrack_db_active_btn.setText(
-            "Deactivate Database Browser" if enabled else "Activate Database Browser"
+        self.ultrack_db_active_btn.setToolTip(
+            "Deactivate database browser." if enabled else "Activate database browser."
         )
         self.ultrack_db_refresh_btn.setEnabled(enabled)
         self.ultrack_db_source_slider.setEnabled(enabled)
