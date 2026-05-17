@@ -584,10 +584,14 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     # tracking_correction_section wrapper removed — sections are now top-level
     assert not hasattr(widget, "tracking_correction_section")
     assert widget.segmentation_inputs_section.title == "Segmentation Input Parameters"
-    assert widget.tracking_ultrack_section.title == "Ultrack Parameters"
+    assert widget.tracking_db_section.title == "Database Generation Parameters"
+    assert widget.tracking_solve_section.title == "Ultrack Solver Parameters"
     assert widget.correction_mode_section.title == "Correction"
     assert widget.ultrack_db_browser_section.title == "Database Browser"
-    assert widget.layout().indexOf(widget.tracking_ultrack_section) < widget.layout().indexOf(
+    assert widget.layout().indexOf(widget.tracking_db_section) < widget.layout().indexOf(
+        widget.tracking_solve_section
+    )
+    assert widget.layout().indexOf(widget.tracking_solve_section) < widget.layout().indexOf(
         widget.ultrack_db_browser_section
     )
     assert widget.layout().indexOf(widget.ultrack_db_browser_section) < widget.layout().indexOf(
@@ -595,7 +599,8 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     )
     assert widget.correction_shortcuts_section.title == "Correction Shortcuts"
     assert widget.segmentation_inputs_section.is_expanded is True
-    assert widget.tracking_ultrack_section.is_expanded is False
+    assert widget.tracking_db_section.is_expanded is False
+    assert widget.tracking_solve_section.is_expanded is False
     assert widget.correction_mode_section.is_expanded is False
     assert widget.correction_shortcuts_section.is_expanded is False
     assert widget.correction_shortcuts_section.findChildren(QScrollArea) == []
@@ -614,10 +619,13 @@ def test_tracking_correction_shell_exposes_stable_section_attributes():
     }
     ultrack_button_texts = {
         button.text()
-        for button in widget.tracking_ultrack_section.findChildren(QPushButton)
+        for section in (widget.tracking_db_section, widget.tracking_solve_section)
+        for button in section.findChildren(QPushButton)
     }
     ultrack_checkbox_texts = {
-        checkbox.text() for checkbox in widget.tracking_ultrack_section.findChildren(QCheckBox)
+        checkbox.text()
+        for section in (widget.tracking_db_section, widget.tracking_solve_section)
+        for checkbox in section.findChildren(QCheckBox)
     }
 
     assert "Activate Correction" not in correction_button_texts
@@ -1057,7 +1065,8 @@ def test_ultrack_tracker_hides_db_build_duplicate_controls():
 
     ultrack_labels = {
         label.text()
-        for label in widget.tracking_ultrack_section.findChildren(QLabel)
+        for section in (widget.tracking_db_section, widget.tracking_solve_section)
+        for label in section.findChildren(QLabel)
     }
     assert "Min Area (px):" not in ultrack_labels
     assert "Max Distance (px):" not in ultrack_labels
@@ -1071,30 +1080,6 @@ def test_ultrack_tracker_hides_db_build_duplicate_controls():
         "linking_mode",
         "iou_weight",
     }.isdisjoint(widget.get_state()["ultrack"])
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_ultrack_parameters_are_grouped_by_workflow_stage():
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    tracking_labels = {
-        label.text()
-        for label in widget.tracking_ultrack_section.findChildren(QLabel)
-    }
-
-    assert {
-        "DB Generation — Candidates",
-        "DB Generation — Linking",
-        "DB Generation — Scoring",
-        "DB Generation — Validated Seed Prior",
-        "Ultrack — Track Scope",
-        "Ultrack — Event Penalties",
-        "Ultrack — Solver",
-    } <= tracking_labels
 
     widget.deleteLater()
     viewer.close()
@@ -1196,7 +1181,8 @@ def test_tracking_correction_widget_allows_horizontal_scrolling_when_narrow():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
     widget.segmentation_inputs_section.expand()
-    widget.tracking_ultrack_section.expand()
+    widget.tracking_db_section.expand()
+    widget.tracking_solve_section.expand()
     widget.correction_mode_section.expand()
     _app.processEvents()
 
@@ -1225,7 +1211,8 @@ def test_tracking_correction_widget_minimum_width_stays_compact():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.tracking_ultrack_section.expand()
+    widget.tracking_db_section.expand()
+    widget.tracking_solve_section.expand()
     widget.correction_mode_section.expand()
     widget.correction_shortcuts_section.expand()
     _app.processEvents()
@@ -1689,10 +1676,9 @@ def test_pipeline_actions_and_status_are_top_level_not_in_parameter_sections():
     assert widget.pipeline_status_lbl not in widget.segmentation_inputs_section.findChildren(QLabel)
     assert widget.pipeline_progress_bar not in widget.segmentation_inputs_section.findChildren(QProgressBar)
 
-    ultrack_pushbuttons = widget.tracking_ultrack_section.findChildren(QPushButton)
-    ultrack_toolbuttons = widget.tracking_ultrack_section.findChildren(QToolButton)
-    assert widget.run_btn not in ultrack_pushbuttons
-    assert widget.cancel_btn not in ultrack_toolbuttons
+    for section in (widget.tracking_db_section, widget.tracking_solve_section):
+        assert widget.run_btn not in section.findChildren(QPushButton)
+        assert widget.cancel_btn not in section.findChildren(QToolButton)
 
     widget.deleteLater()
     viewer.close()
@@ -1871,7 +1857,7 @@ def test_db_generation_sliders_fill_row_width_in_two_column_grid():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.tracking_ultrack_section.expand()
+    widget.tracking_db_section.expand()
     _app.processEvents()
 
     host = QWidget()
@@ -1912,7 +1898,8 @@ def test_tracking_correction_db_gen_parameters_use_two_column_grid():
     widget = widget_class(viewer)
 
     widget.segmentation_inputs_section.expand()
-    widget.tracking_ultrack_section.expand()
+    widget.tracking_db_section.expand()
+    widget.tracking_solve_section.expand()
     widget.correction_mode_section.expand()
     widget.show()
     _app.processEvents()
@@ -2317,12 +2304,14 @@ def test_nucleus_workflow_uses_simplified_four_section_layout():
     widget = widget_class(viewer)
 
     assert widget.segmentation_inputs_section.title == "Segmentation Input Parameters"
-    assert widget.tracking_ultrack_section.title == "Ultrack Parameters"
+    assert widget.tracking_db_section.title == "Database Generation Parameters"
+    assert widget.tracking_solve_section.title == "Ultrack Solver Parameters"
     assert widget.ultrack_db_browser_section.title == "Database Browser"
     assert widget.correction_mode_section.title == "Correction"
 
     assert widget.segmentation_inputs_section.is_expanded is True
-    assert widget.tracking_ultrack_section.is_expanded is False
+    assert widget.tracking_db_section.is_expanded is False
+    assert widget.tracking_solve_section.is_expanded is False
     assert widget.ultrack_db_browser_section.is_expanded is False
     assert widget.correction_mode_section.is_expanded is False
 
@@ -2332,9 +2321,12 @@ def test_nucleus_workflow_uses_simplified_four_section_layout():
         if widget.layout().itemAt(index).widget() is not None
     ]
     assert top_level_widgets.index(widget.segmentation_inputs_section) < top_level_widgets.index(
-        widget.tracking_ultrack_section
+        widget.tracking_db_section
     )
-    assert top_level_widgets.index(widget.tracking_ultrack_section) < top_level_widgets.index(
+    assert top_level_widgets.index(widget.tracking_db_section) < top_level_widgets.index(
+        widget.tracking_solve_section
+    )
+    assert top_level_widgets.index(widget.tracking_solve_section) < top_level_widgets.index(
         widget.ultrack_db_browser_section
     )
     assert top_level_widgets.index(widget.ultrack_db_browser_section) < top_level_widgets.index(
@@ -2343,8 +2335,9 @@ def test_nucleus_workflow_uses_simplified_four_section_layout():
 
     assert widget.preview_contour_btn not in widget.segmentation_inputs_section.findChildren(QToolButton)
     assert widget.stage_seg_check not in widget.segmentation_inputs_section.findChildren(QCheckBox)
-    assert widget.run_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
-    assert widget.cancel_btn not in widget.tracking_ultrack_section.findChildren(QToolButton)
+    for section in (widget.tracking_db_section, widget.tracking_solve_section):
+        assert widget.run_btn not in section.findChildren(QPushButton)
+        assert widget.cancel_btn not in section.findChildren(QToolButton)
 
     widget.deleteLater()
     viewer.close()
@@ -2475,10 +2468,8 @@ def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
         widget.nucleus_tracking_inputs_widget,
         tracking_module.NucleusTrackingInputsWidget,
     )
-    assert widget.tracking_ultrack_section is widget.nucleus_tracking_inputs_widget.section
-    assert widget.tracking_ultrack_parameters_section is (
-        widget.nucleus_tracking_inputs_widget.section
-    )
+    assert widget.tracking_db_section is widget.nucleus_tracking_inputs_widget.db_section
+    assert widget.tracking_solve_section is widget.nucleus_tracking_inputs_widget.solve_section
     assert widget.db_gen_min_area_spin is (
         widget.nucleus_tracking_inputs_widget.db_gen_min_area_spin
     )
@@ -2497,7 +2488,8 @@ def test_ultrack_section_is_top_level_without_legacy_route_selector():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.tracking_ultrack_section.title == "Ultrack Parameters"
+    assert widget.tracking_db_section.title == "Database Generation Parameters"
+    assert widget.tracking_solve_section.title == "Ultrack Solver Parameters"
     assert not hasattr(widget, "ultrack_route_check")
     assert widget.pipeline_status_lbl.text() == ""
     assert widget.pipeline_progress_bar.isVisible() is False

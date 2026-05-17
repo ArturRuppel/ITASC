@@ -159,7 +159,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.source_foreground_threshold_range = (
             segmentation_inputs.source_foreground_threshold_range
         )
-        root.addWidget(self.segmentation_inputs_section)
         self.nucleus_segmentation_inputs_widget.hide()
 
     def _build_tracking_ultrack_section(self, root: QVBoxLayout) -> None:
@@ -179,9 +178,23 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.nucleus_tracking_inputs_widget.hide()
         self.nucleus_pipeline_widget.hide()
 
-        root.addWidget(self.tracking_db_section)
-        root.addWidget(self.tracking_solve_section)
-        root.addWidget(self.nucleus_pipeline_widget.build_pipeline_block())
+        # Hide the built-in section headers — the stage-row ⚙ buttons drive
+        # expand/collapse instead.
+        self.segmentation_inputs_section.set_header_visible(False)
+        self.tracking_db_section.set_header_visible(False)
+        self.tracking_solve_section.set_header_visible(False)
+
+        # Collapse all three inline params blocks by default.
+        self.segmentation_inputs_section.collapse()
+        self.tracking_db_section.collapse()
+        self.tracking_solve_section.collapse()
+
+        pipeline_block = self.nucleus_pipeline_widget.build_pipeline_block(
+            seg_section=self.segmentation_inputs_section,
+            db_section=self.tracking_db_section,
+            solve_section=self.tracking_solve_section,
+        )
+        root.addWidget(pipeline_block)
         root.addWidget(self.pipeline_status_lbl)
         root.addWidget(self.pipeline_progress_bar)
 
@@ -216,11 +229,13 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     def _alias_pipeline_controls(self) -> None:
         pl = self.nucleus_pipeline_widget
         self.preview_contour_btn = pl.preview_contour_btn
-        self.run_btn = pl.run_btn
-        self.cancel_btn = pl.cancel_btn
-        self.stage_seg_check = pl.stage_seg_check
-        self.stage_db_check = pl.stage_db_check
-        self.stage_ultrack_check = pl.stage_ultrack_check
+        self.seg_preview_btn = pl.seg_preview_btn
+        self.seg_params_btn = pl.seg_params_btn
+        self.seg_run_btn = pl.seg_run_btn
+        self.db_params_btn = pl.db_params_btn
+        self.db_run_btn = pl.db_run_btn
+        self.solve_params_btn = pl.solve_params_btn
+        self.solve_run_btn = pl.solve_run_btn
         self.pipeline_status_lbl = pl.pipeline_status_lbl
         self.pipeline_progress_bar = pl.pipeline_progress_bar
         for name in (
@@ -236,13 +251,13 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             "_on_ultrack_progress",
             "_on_run_ultrack_done",
             "_on_ultrack_worker_error",
-            "_on_run_chain",
             "_on_cancel",
             "_status",
             "_progress",
             "_on_progress",
             "_clear_progress",
             "_set_pipeline_buttons_enabled",
+            "_set_running_stage",
         ):
             setattr(self, name, getattr(pl, name))
 

@@ -10,10 +10,9 @@ import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
-    QCheckBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -24,7 +23,7 @@ from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
-from cellflow.napari.ui_style import action_button as _action_button
+from cellflow.napari.ui_style import stage_accent as _stage_accent
 from cellflow.database.validation import read_corrections, read_validated_tracks
 from cellflow.segmentation import build_consensus_boundary, build_nucleus_averaged_maps
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
@@ -75,122 +74,105 @@ class NucleusPipelineWidget(QWidget):
         self._contour_worker = None
         self._db_gen_worker = None
         self._ultrack_worker = None
-        self._chain_remaining: list[str] = []
+        self._running_stage: str | None = None
 
-        self.stage_seg_check = QCheckBox("Segmentation inputs")
-        self.stage_seg_check.setChecked(True)
-        self.stage_seg_check.setToolTip(
-            "Build averaged maps, contour and foreground source stacks."
-        )
-        self.stage_db_check = QCheckBox("Ultrack database")
-        self.stage_db_check.setChecked(True)
-        self.stage_db_check.setToolTip(
-            "Build the Ultrack candidate database from source-stack artifacts."
-        )
-        self.stage_ultrack_check = QCheckBox("Ultrack solve")
-        self.stage_ultrack_check.setChecked(True)
-        self.stage_ultrack_check.setToolTip(
-            "Solve ILP tracking and export tracked_labels.tif."
-        )
-
-        self.preview_contour_btn = _tool_btn(
-            "\U0001F50D",
+        # ── Per-stage buttons ──────────────────────────────────────────
+        self.seg_params_btn = _tool_btn("⚙", "Show parameters for this stage.", checkable=True)
+        self.seg_preview_btn = _tool_btn(
+            "▷",
             "Preview the current frame's segmentation input source sweep "
             "without writing artifacts.",
         )
+        self.seg_run_btn = _tool_btn("▶", "Run segmentation inputs.")
 
-        self.run_btn = QPushButton("▶  Run")
-        self.run_btn.setToolTip("Run the checked stages in order.")
-        _action_button(self.run_btn, expand=True)
-        self.cancel_btn = _tool_btn(
-            "✕", "Cancel the currently running pipeline step."
-        )
-        self.cancel_btn.setEnabled(False)
-        self.cancel_btn.setVisible(False)
+        self.db_params_btn = _tool_btn("⚙", "Show parameters for this stage.", checkable=True)
+        self.db_run_btn = _tool_btn("▶", "Run Ultrack database build.")
+
+        self.solve_params_btn = _tool_btn("⚙", "Show parameters for this stage.", checkable=True)
+        self.solve_run_btn = _tool_btn("▶", "Run Ultrack solve.")
+
+        # Alias for backward compat
+        self.preview_contour_btn = self.seg_preview_btn
 
         self.pipeline_status_lbl = _make_status()
         self.pipeline_progress_bar = _make_progress()
 
-        self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
-        self.run_btn.clicked.connect(self._on_run_chain)
-        self.cancel_btn.clicked.connect(self._on_cancel)
+        self.seg_preview_btn.clicked.connect(self._on_preview_contour_maps)
+        self.seg_run_btn.clicked.connect(self._on_build_segmentation_inputs)
+        self.db_run_btn.clicked.connect(self._on_run_db_generation)
+        self.solve_run_btn.clicked.connect(self._on_run_ultrack)
 
     # ── Layout helpers ────────────────────────────────────────────────────────
 
-    def build_pipeline_block(self) -> QWidget:
-        """Build the visible pipeline UI: stage checkboxes + Run / Cancel."""
+    def build_pipeline_block(
+        self,
+        seg_section=None,
+        db_section=None,
+        solve_section=None,
+    ) -> QWidget:
+        """Build the three per-stage rows with inline params blocks."""
         block = QWidget(self)
         lay = QVBoxLayout(block)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
 
-        def _stage_row(checkbox: QCheckBox, *trailing: QWidget) -> QHBoxLayout:
+        accent = _stage_accent("nucleus")
+
+        def _stage_label(text: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setStyleSheet(
+                f"font-weight: bold; font-size: 11pt; color: {accent};"
+            )
+            return lbl
+
+        def _stage_row(label: QLabel, *trailing: QWidget) -> QHBoxLayout:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(4)
-            row.addWidget(checkbox)
+            row.addWidget(label)
             row.addStretch(1)
             for w in trailing:
                 row.addWidget(w)
             return row
 
-        lay.addLayout(_stage_row(self.stage_seg_check, self.preview_contour_btn))
-        lay.addLayout(_stage_row(self.stage_db_check))
-        lay.addLayout(_stage_row(self.stage_ultrack_check))
+        # ── Segmentation inputs ──────────────────────────────────────
+        lay.addLayout(_stage_row(
+            _stage_label("Segmentation inputs"),
+            self.seg_params_btn,
+            self.seg_preview_btn,
+            self.seg_run_btn,
+        ))
+        if seg_section is not None:
+            self.seg_params_btn.toggled.connect(
+                lambda checked: seg_section._toggle.setChecked(checked)
+            )
+            lay.addWidget(seg_section)
 
-        run_row = QHBoxLayout()
-        run_row.setContentsMargins(0, 4, 0, 0)
-        run_row.setSpacing(4)
-        run_row.addWidget(self.run_btn, 1)
-        run_row.addWidget(self.cancel_btn)
-        lay.addLayout(run_row)
+        # ── Ultrack database ─────────────────────────────────────────
+        lay.addLayout(_stage_row(
+            _stage_label("Ultrack database"),
+            self.db_params_btn,
+            self.db_run_btn,
+        ))
+        if db_section is not None:
+            self.db_params_btn.toggled.connect(
+                lambda checked: db_section._toggle.setChecked(checked)
+            )
+            lay.addWidget(db_section)
+
+        # ── Ultrack solve ────────────────────────────────────────────
+        lay.addLayout(_stage_row(
+            _stage_label("Ultrack solve"),
+            self.solve_params_btn,
+            self.solve_run_btn,
+        ))
+        if solve_section is not None:
+            self.solve_params_btn.toggled.connect(
+                lambda checked: solve_section._toggle.setChecked(checked)
+            )
+            lay.addWidget(solve_section)
 
         return block
-
-    # ── Chained run orchestration ────────────────────────────────────────────
-
-    def _on_run_chain(self) -> None:
-        queue: list[str] = []
-        if self.stage_seg_check.isChecked():
-            queue.append("seg")
-        if self.stage_db_check.isChecked():
-            queue.append("db")
-        if self.stage_ultrack_check.isChecked():
-            queue.append("ultrack")
-        if not queue:
-            self._status("No stages selected.")
-            return
-        self._chain_remaining = queue
-        self._run_next_chain_step()
-
-    _STAGE_DISPATCH = {
-        "seg": ("_on_build_segmentation_inputs", "_contour_worker"),
-        "db":  ("_on_run_db_generation",         "_db_gen_worker"),
-        "ultrack": ("_on_run_ultrack",           "_ultrack_worker"),
-    }
-
-    def _run_next_chain_step(self) -> None:
-        if not self._chain_remaining:
-            self._set_pipeline_buttons_enabled(True)
-            return
-        stage = self._chain_remaining.pop(0)
-        handler_name, worker_attr = self._STAGE_DISPATCH[stage]
-        getattr(self, handler_name)()
-        # If the handler early-returned (missing inputs, etc.) no worker is
-        # in flight — stop chaining and restore button state.
-        if getattr(self, worker_attr) is None:
-            self._abort_chain()
-            self._set_pipeline_buttons_enabled(True)
-
-    def _chain_continue_or_finish(self) -> None:
-        """Called by stage _done handlers; advances the chain if active."""
-        if self._chain_remaining:
-            self._run_next_chain_step()
-        else:
-            self._set_pipeline_buttons_enabled(True)
-
-    def _abort_chain(self) -> None:
-        self._chain_remaining = []
 
     # ── Path helpers ──────────────────────────────────────────────────────────
 
@@ -257,17 +239,92 @@ class NucleusPipelineWidget(QWidget):
         self.pipeline_progress_bar.setValue(0)
         self.pipeline_progress_bar.setVisible(False)
 
+    def _set_running_stage(self, stage_key: str | None) -> None:
+        """Update run/cancel button states based on which stage is running.
+
+        ``None`` means idle: all ▶ enabled, no ✕.
+        ``"seg" | "db" | "ultrack"`` means that stage shows ✕, others disabled.
+        """
+        self._running_stage = stage_key
+        _rows = {
+            "seg":    (self.seg_params_btn,   self.seg_run_btn),
+            "db":     (self.db_params_btn,    self.db_run_btn),
+            "ultrack":(self.solve_params_btn, self.solve_run_btn),
+        }
+        if stage_key is None:
+            for params_btn, run_btn in _rows.values():
+                params_btn.setEnabled(True)
+                run_btn.setText("▶")
+                run_btn.setToolTip(run_btn.toolTip().replace("Cancel.", "").strip() or run_btn.toolTip())
+                run_btn.setEnabled(True)
+            # Restore canonical run tooltips
+            self.seg_run_btn.setToolTip("Run segmentation inputs.")
+            self.db_run_btn.setToolTip("Run Ultrack database build.")
+            self.solve_run_btn.setToolTip("Run Ultrack solve.")
+            # Disconnect cancel handlers
+            try:
+                self.seg_run_btn.clicked.disconnect(self._on_cancel)
+            except RuntimeError:
+                pass
+            try:
+                self.db_run_btn.clicked.disconnect(self._on_cancel)
+            except RuntimeError:
+                pass
+            try:
+                self.solve_run_btn.clicked.disconnect(self._on_cancel)
+            except RuntimeError:
+                pass
+            # Reconnect run handlers
+            try:
+                self.seg_run_btn.clicked.disconnect(self._on_build_segmentation_inputs)
+            except RuntimeError:
+                pass
+            self.seg_run_btn.clicked.connect(self._on_build_segmentation_inputs)
+            try:
+                self.db_run_btn.clicked.disconnect(self._on_run_db_generation)
+            except RuntimeError:
+                pass
+            self.db_run_btn.clicked.connect(self._on_run_db_generation)
+            try:
+                self.solve_run_btn.clicked.disconnect(self._on_run_ultrack)
+            except RuntimeError:
+                pass
+            self.solve_run_btn.clicked.connect(self._on_run_ultrack)
+        else:
+            for key, (params_btn, run_btn) in _rows.items():
+                if key == stage_key:
+                    run_btn.setText("✕")
+                    run_btn.setToolTip("Cancel.")
+                    run_btn.setEnabled(True)
+                    params_btn.setEnabled(True)
+                    # Swap signal: disconnect run, connect cancel
+                    try:
+                        if key == "seg":
+                            run_btn.clicked.disconnect(self._on_build_segmentation_inputs)
+                        elif key == "db":
+                            run_btn.clicked.disconnect(self._on_run_db_generation)
+                        elif key == "ultrack":
+                            run_btn.clicked.disconnect(self._on_run_ultrack)
+                    except RuntimeError:
+                        pass
+                    try:
+                        run_btn.clicked.disconnect(self._on_cancel)
+                    except RuntimeError:
+                        pass
+                    run_btn.clicked.connect(self._on_cancel)
+                else:
+                    params_btn.setEnabled(False)
+                    run_btn.setEnabled(False)
+
     def _set_pipeline_buttons_enabled(self, enabled: bool) -> None:
-        for widget in (
-            self.preview_contour_btn,
-            self.run_btn,
-            self.stage_seg_check,
-            self.stage_db_check,
-            self.stage_ultrack_check,
-        ):
-            widget.setEnabled(enabled)
-        self.cancel_btn.setEnabled(not enabled)
-        self.cancel_btn.setVisible(not enabled)
+        """Backward-compat shim — delegates to _set_running_stage."""
+        if enabled:
+            self._set_running_stage(None)
+        else:
+            # Disable all run buttons without showing any ✕
+            for btn in (self.seg_run_btn, self.db_run_btn, self.solve_run_btn,
+                        self.seg_params_btn, self.db_params_btn, self.solve_params_btn):
+                btn.setEnabled(False)
 
     # ── Threshold / config delegation ─────────────────────────────────────────
 
@@ -406,7 +463,7 @@ class NucleusPipelineWidget(QWidget):
             self._refresh_files_callback(pos_dir)
             frames = int(getattr(report, "frames", 0))
             self._status(f"Segmentation inputs built ({frames} frames, {n_sources} sources).")
-            self._chain_continue_or_finish()
+            self._set_running_stage(None)
 
         @thread_worker(connect={
             "yielded": self._on_progress,
@@ -469,7 +526,7 @@ class NucleusPipelineWidget(QWidget):
             f"Building segmentation inputs "
             f"({len(map_thresholds)} cellprob thresholds, {n_sources} sources)..."
         )
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("seg")
         self._contour_worker = _worker()
 
     def _on_build_nucleus_maps(self) -> None:
@@ -494,7 +551,7 @@ class NucleusPipelineWidget(QWidget):
 
         def _done(report):
             self._contour_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._refresh_files_callback(pos_dir)
             frames = int(getattr(report, "frames", 0))
@@ -516,7 +573,7 @@ class NucleusPipelineWidget(QWidget):
             )
 
         self._status(f"Building averaged maps ({len(thresholds)} cellprob thresholds)…")
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("seg")
         self._contour_worker = _worker()
 
     def _on_build_contour_maps(self) -> None:
@@ -545,7 +602,7 @@ class NucleusPipelineWidget(QWidget):
         def _done(result):
             pos_dir_result, n_sources = result
             self._contour_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._refresh_files_callback(pos_dir_result)
             self._status(f"Ultrack source stacks built ({n_sources} sources).")
@@ -570,7 +627,7 @@ class NucleusPipelineWidget(QWidget):
 
         n_sources = len(contour_thresholds) * len(foreground_thresholds)
         self._status(f"Building Ultrack source stacks ({n_sources} sources)…")
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("seg")
         self._contour_worker = _worker()
 
     def _on_preview_contour_maps(self) -> None:
@@ -596,7 +653,7 @@ class NucleusPipelineWidget(QWidget):
 
         def _done(result):
             self._contour_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             contour_data, foreground_data, t_idx, frame_count, n_sources = result
             contour_data = np.asarray(contour_data)
@@ -687,13 +744,12 @@ class NucleusPipelineWidget(QWidget):
             f"Previewing segmentation inputs for frame t={t_frame} "
             f"({len(map_thresholds)} cellprob thresholds, {n_sources} sources)..."
         )
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("seg")
         self._contour_worker = _worker()
 
     def _on_contour_worker_error(self, exc: Exception) -> None:
         self._contour_worker = None
-        self._abort_chain()
-        self._set_pipeline_buttons_enabled(True)
+        self._set_running_stage(None)
         self._clear_progress()
         self._status(f"Error: {exc}")
         logger.exception("Contour worker error", exc_info=exc)
@@ -719,7 +775,7 @@ class NucleusPipelineWidget(QWidget):
         self.pipeline_progress_bar.setRange(0, 0)
         self.pipeline_progress_bar.setVisible(True)
         self._status("Starting DB generation…")
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("db")
 
         @thread_worker(connect={
             "yielded": self._on_progress,
@@ -779,12 +835,11 @@ class NucleusPipelineWidget(QWidget):
         self._status("DB generation complete.")
         self._refresh_files_callback(pos_dir)
         self._refresh_db_browser_callback()
-        self._chain_continue_or_finish()
+        self._set_running_stage(None)
 
     def _on_db_gen_worker_error(self, exc: Exception) -> None:
         self._db_gen_worker = None
-        self._abort_chain()
-        self._set_pipeline_buttons_enabled(True)
+        self._set_running_stage(None)
         self._clear_progress()
         self._status(f"Error: {exc}")
         logger.exception("DB generation worker error", exc_info=exc)
@@ -825,7 +880,7 @@ class NucleusPipelineWidget(QWidget):
         self.pipeline_progress_bar.setVisible(True)
         self.pipeline_progress_bar.setValue(0)
         self._status("Starting Ultrack solve…")
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("ultrack")
 
         @thread_worker(connect={
             "yielded": self._on_ultrack_progress,
@@ -868,8 +923,7 @@ class NucleusPipelineWidget(QWidget):
         self._ultrack_worker = None
         self._clear_progress()
         if labels is None:
-            self._abort_chain()
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._status("Ultrack tracking failed (no output).")
             return
         if labels.ndim == 4 and labels.shape[1] == 1:
@@ -878,12 +932,11 @@ class NucleusPipelineWidget(QWidget):
         self._update_tracked_display(labels)
         self._refresh_files_callback(self._pos_dir)
         self._status(f"Tracking done: {nt} frame(s).")
-        self._chain_continue_or_finish()
+        self._set_running_stage(None)
 
     def _on_ultrack_worker_error(self, exc: Exception) -> None:
         self._ultrack_worker = None
-        self._abort_chain()
-        self._set_pipeline_buttons_enabled(True)
+        self._set_running_stage(None)
         self._clear_progress()
         self._status(f"Error: {exc}")
         logger.exception("Ultrack worker error", exc_info=exc)
@@ -898,7 +951,6 @@ class NucleusPipelineWidget(QWidget):
                 worker.quit()
                 setattr(self, attr, None)
                 cancelled = True
-        self._abort_chain()
-        self._set_pipeline_buttons_enabled(True)
+        self._set_running_stage(None)
         self._clear_progress()
         self._status("Cancelled." if cancelled else "Nothing running.")

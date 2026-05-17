@@ -173,6 +173,11 @@ class CollapsibleSection(QWidget):
         c.setHslF(h, new_s, new_l, a)
         return c.name()
 
+    def set_header_visible(self, visible: bool) -> None:
+        """Show or hide the built-in toggle header row."""
+        self._toggle.setVisible(visible)
+        self._status_dot.setVisible(visible and self._status is not None)
+
     def set_title(self, title: str) -> None:
         """Update the header text."""
         self._base_title = title

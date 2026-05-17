@@ -12,7 +12,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtWidgets import QApplication, QLabel
+from qtpy.QtWidgets import QApplication
 
 
 def _make_viewer():
@@ -75,40 +75,6 @@ def _load_widget_class():
 
 
 # ── Structure tests ───────────────────────────────────────────────────────────
-
-
-def test_tracking_inputs_widget_has_correct_section_title():
-    _app = QApplication.instance() or QApplication([])
-    widget_class, _module = _load_widget_class()
-    widget = widget_class()
-
-    assert widget.section.title == "Ultrack Parameters"
-    assert widget.section.is_expanded is False
-
-    widget.deleteLater()
-
-
-def test_tracking_inputs_widget_groups_parameters_by_workflow_stage():
-    _app = QApplication.instance() or QApplication([])
-    widget_class, _module = _load_widget_class()
-    widget = widget_class()
-
-    section_labels = {
-        label.text()
-        for label in widget.section.findChildren(QLabel)
-    }
-
-    assert {
-        "DB Generation — Candidates",
-        "DB Generation — Linking",
-        "DB Generation — Scoring",
-        "DB Generation — Validated Seed Prior",
-        "Ultrack — Track Scope",
-        "Ultrack — Event Penalties",
-        "Ultrack — Solver",
-    } <= section_labels
-
-    widget.deleteLater()
 
 
 def test_tracking_inputs_widget_exposes_quality_controls_without_deprecated_power():
@@ -298,8 +264,8 @@ def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
         widget.nucleus_tracking_inputs_widget,
         tracking_module.NucleusTrackingInputsWidget,
     )
-    assert widget.tracking_ultrack_section is widget.nucleus_tracking_inputs_widget.section
-    assert widget.tracking_ultrack_parameters_section is widget.nucleus_tracking_inputs_widget.section
+    assert widget.tracking_db_section is widget.nucleus_tracking_inputs_widget.db_section
+    assert widget.tracking_solve_section is widget.nucleus_tracking_inputs_widget.solve_section
     assert widget.db_gen_min_area_spin is widget.nucleus_tracking_inputs_widget.db_gen_min_area_spin
     assert widget.db_gen_quality_weight_spin is widget.nucleus_tracking_inputs_widget.db_gen_quality_weight_spin
     assert widget.ultrack_bias_spin is widget.nucleus_tracking_inputs_widget.ultrack_bias_spin

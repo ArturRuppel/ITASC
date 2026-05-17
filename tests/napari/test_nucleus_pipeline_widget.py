@@ -159,10 +159,12 @@ def test_nucleus_workflow_composes_pipeline_widget():
         pipeline_module.NucleusPipelineWidget,
     )
     assert widget.preview_contour_btn is widget.nucleus_pipeline_widget.preview_contour_btn
-    assert widget.build_btn is widget.nucleus_pipeline_widget.build_btn
-    assert widget.run_db_gen_btn is widget.nucleus_pipeline_widget.run_db_gen_btn
-    assert widget.run_ultrack_btn is widget.nucleus_pipeline_widget.run_ultrack_btn
-    assert widget.cancel_btn is widget.nucleus_pipeline_widget.cancel_btn
+    assert widget.seg_run_btn is widget.nucleus_pipeline_widget.seg_run_btn
+    assert widget.db_run_btn is widget.nucleus_pipeline_widget.db_run_btn
+    assert widget.solve_run_btn is widget.nucleus_pipeline_widget.solve_run_btn
+    assert widget.seg_params_btn is widget.nucleus_pipeline_widget.seg_params_btn
+    assert widget.db_params_btn is widget.nucleus_pipeline_widget.db_params_btn
+    assert widget.solve_params_btn is widget.nucleus_pipeline_widget.solve_params_btn
     assert widget.pipeline_status_lbl is widget.nucleus_pipeline_widget.pipeline_status_lbl
     assert widget.pipeline_progress_bar is widget.nucleus_pipeline_widget.pipeline_progress_bar
 
@@ -186,13 +188,10 @@ def test_pipeline_widget_handler_methods_aliased_on_workflow():
         "_on_run_ultrack",
         "_on_cancel",
         "_status",
-        "_set_pipeline_buttons_enabled",
+        "_set_running_stage",
     ):
         widget_method = getattr(widget, method_name)
         pl_method = getattr(pl, method_name)
-        # Instance aliases set via setattr store bound methods; compare via
-        # __func__/__self__ rather than identity because each getattr on a
-        # class creates a new bound-method wrapper.
         assert getattr(widget_method, "__func__", widget_method) is getattr(pl_method, "__func__", pl_method), (
             f"{method_name} not aliased to pipeline widget"
         )
@@ -204,14 +203,17 @@ def test_pipeline_widget_handler_methods_aliased_on_workflow():
 # ── Structure tests ───────────────────────────────────────────────────────────
 
 
-def test_pipeline_widget_initial_cancel_button_disabled():
+def test_pipeline_widget_initial_run_buttons_enabled():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
 
-    assert not widget.cancel_btn.isEnabled()
-    assert widget.run_db_gen_btn.isEnabled()
-    assert widget.run_ultrack_btn.isEnabled()
+    assert widget.seg_run_btn.isEnabled()
+    assert widget.db_run_btn.isEnabled()
+    assert widget.solve_run_btn.isEnabled()
+    assert widget.seg_run_btn.text() == "▶"
+    assert widget.db_run_btn.text() == "▶"
+    assert widget.solve_run_btn.text() == "▶"
 
     widget.deleteLater()
     viewer.close()
@@ -250,8 +252,6 @@ def test_pipeline_status_method_updates_label():
 
     widget._status("hello pipeline")
     assert widget.pipeline_status_lbl.text() == "hello pipeline"
-    # isVisible() returns False for unshown top-level widgets even after
-    # setVisible(True); use isHidden() to check the widget's own visibility flag.
     assert not widget.pipeline_status_lbl.isHidden()
 
     widget._status("")
@@ -274,20 +274,62 @@ def test_pipeline_clear_progress_hides_bar():
     viewer.close()
 
 
-def test_set_pipeline_buttons_enabled_toggles_cancel():
+def test_set_running_stage_disables_other_rows():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
+    pl = widget.nucleus_pipeline_widget
 
-    widget._set_pipeline_buttons_enabled(False)
-    assert not widget.build_btn.isEnabled()
-    assert not widget.run_db_gen_btn.isEnabled()
-    assert widget.cancel_btn.isEnabled()
+    pl._set_running_stage("seg")
+    assert widget.seg_run_btn.text() == "✕"
+    assert widget.seg_run_btn.isEnabled()
+    assert not widget.db_run_btn.isEnabled()
+    assert not widget.solve_run_btn.isEnabled()
+    assert not widget.db_params_btn.isEnabled()
+    assert not widget.solve_params_btn.isEnabled()
 
-    widget._set_pipeline_buttons_enabled(True)
-    assert widget.build_btn.isEnabled()
-    assert widget.run_db_gen_btn.isEnabled()
-    assert not widget.cancel_btn.isEnabled()
+    pl._set_running_stage("db")
+    assert widget.db_run_btn.text() == "✕"
+    assert widget.db_run_btn.isEnabled()
+    assert not widget.seg_run_btn.isEnabled()
+    assert not widget.solve_run_btn.isEnabled()
+
+    pl._set_running_stage("ultrack")
+    assert widget.solve_run_btn.text() == "✕"
+    assert widget.solve_run_btn.isEnabled()
+    assert not widget.seg_run_btn.isEnabled()
+    assert not widget.db_run_btn.isEnabled()
+
+    pl._set_running_stage(None)
+    assert widget.seg_run_btn.text() == "▶"
+    assert widget.db_run_btn.text() == "▶"
+    assert widget.solve_run_btn.text() == "▶"
+    assert widget.seg_run_btn.isEnabled()
+    assert widget.db_run_btn.isEnabled()
+    assert widget.solve_run_btn.isEnabled()
+    assert widget.seg_params_btn.isEnabled()
+    assert widget.db_params_btn.isEnabled()
+    assert widget.solve_params_btn.isEnabled()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_running_stage_params_btn_stays_enabled():
+    """While a stage is running, its own ⚙ button stays enabled."""
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pl = widget.nucleus_pipeline_widget
+
+    pl._set_running_stage("seg")
+    assert widget.seg_params_btn.isEnabled()
+
+    pl._set_running_stage("db")
+    assert widget.db_params_btn.isEnabled()
+
+    pl._set_running_stage("ultrack")
+    assert widget.solve_params_btn.isEnabled()
 
     widget.deleteLater()
     viewer.close()
@@ -381,7 +423,8 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
     assert call["foreground_sources_path"] == pos_dir / "2_nucleus" / "foreground_sources.tif"
     assert "score_signal_path" not in call
     assert call["cfg"].seg_foreground_threshold == pytest.approx(0.0)
-    assert widget.run_db_gen_btn.isEnabled()
+    assert widget.db_run_btn.isEnabled()
+    assert widget.db_run_btn.text() == "▶"
     assert "complete" in widget.pipeline_status_lbl.text().lower()
     assert not widget.pipeline_progress_bar.isVisible()
 
@@ -453,7 +496,7 @@ def test_cancel_stops_workers():
     pl = widget.nucleus_pipeline_widget
 
     widget._status("running")
-    widget.cancel_btn.setEnabled(True)
+    pl._set_running_stage("db")
 
     class _FakeWorker:
         def __init__(self):
@@ -469,9 +512,140 @@ def test_cancel_stops_workers():
 
     assert fake_worker.quit_called
     assert pl._db_gen_worker is None
-    assert widget.run_db_gen_btn.isEnabled()
-    assert not widget.cancel_btn.isEnabled()
+    assert widget.db_run_btn.isEnabled()
+    assert widget.db_run_btn.text() == "▶"
     assert "Cancelled" in widget.pipeline_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+# ── New tests: per-stage rows ─────────────────────────────────────────────────
+
+
+def test_params_btn_toggles_section_expansion():
+    """Clicking each ⚙ button toggles its inline params section."""
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pl = widget.nucleus_pipeline_widget
+
+    seg_section = widget.segmentation_inputs_section
+    db_section = widget.tracking_db_section
+    solve_section = widget.tracking_solve_section
+
+    # All collapsed by default
+    assert not seg_section.is_expanded
+    assert not db_section.is_expanded
+    assert not solve_section.is_expanded
+
+    # Toggle seg params open
+    widget.seg_params_btn.setChecked(True)
+    assert seg_section.is_expanded
+
+    # Toggle seg params closed
+    widget.seg_params_btn.setChecked(False)
+    assert not seg_section.is_expanded
+
+    # Toggle db params
+    widget.db_params_btn.setChecked(True)
+    assert db_section.is_expanded
+    widget.db_params_btn.setChecked(False)
+    assert not db_section.is_expanded
+
+    # Toggle solve params
+    widget.solve_params_btn.setChecked(True)
+    assert solve_section.is_expanded
+    widget.solve_params_btn.setChecked(False)
+    assert not solve_section.is_expanded
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_seg_run_btn_invokes_build_segmentation_inputs(monkeypatch):
+    """Clicking ▶ on the segmentation row calls _on_build_segmentation_inputs."""
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pl = widget.nucleus_pipeline_widget
+
+    called = []
+    monkeypatch.setattr(pl, "_on_build_segmentation_inputs", lambda: called.append("seg"))
+
+    widget.seg_run_btn.click()
+
+    assert called == ["seg"]
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_db_run_btn_invokes_run_db_generation(monkeypatch):
+    """Clicking ▶ on the DB row calls _on_run_db_generation."""
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pl = widget.nucleus_pipeline_widget
+
+    called = []
+    monkeypatch.setattr(pl, "_on_run_db_generation", lambda: called.append("db"))
+
+    widget.db_run_btn.click()
+
+    assert called == ["db"]
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_solve_run_btn_invokes_run_ultrack(monkeypatch):
+    """Clicking ▶ on the solve row calls _on_run_ultrack."""
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pl = widget.nucleus_pipeline_widget
+
+    called = []
+    monkeypatch.setattr(pl, "_on_run_ultrack", lambda: called.append("ultrack"))
+
+    widget.solve_run_btn.click()
+
+    assert called == ["ultrack"]
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_running_row_shows_cancel_icon_others_disabled():
+    """While seg is running, its row shows ✕ and the other rows are disabled."""
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pl = widget.nucleus_pipeline_widget
+
+    pl._set_running_stage("seg")
+
+    assert widget.seg_run_btn.text() == "✕"
+    assert widget.seg_run_btn.isEnabled()
+    assert not widget.db_run_btn.isEnabled()
+    assert not widget.solve_run_btn.isEnabled()
+    assert not widget.db_params_btn.isEnabled()
+    assert not widget.solve_params_btn.isEnabled()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_preview_contour_btn_is_alias_of_seg_preview_btn():
+    """preview_contour_btn is an alias of seg_preview_btn."""
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pl = widget.nucleus_pipeline_widget
+
+    assert pl.preview_contour_btn is pl.seg_preview_btn
+    assert widget.preview_contour_btn is widget.seg_preview_btn
 
     widget.deleteLater()
     viewer.close()
