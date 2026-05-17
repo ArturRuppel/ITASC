@@ -22,23 +22,19 @@ import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
-    QDoubleSpinBox,
-    QFrame,
-    QGridLayout,
+    QHBoxLayout,
     QLabel,
     QProgressBar,
-    QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from cellflow.napari._widget_helpers import tool_btn as _tool_btn
 from cellflow.correction.labels import best_overlapping_label
 from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.napari.cell_params_widget import CellParamsWidget
 from cellflow.napari.ui_style import (
-    action_button,
-    parameter_heading,
+    stage_header_label,
     status_label,
 )
 from cellflow.napari.widgets import (
@@ -62,20 +58,6 @@ _CELL_CONTOUR_LAYER = "Contour Map: Cell"
 _CELL_SEG_LAYER = "Cell Segmentation"
 _TRACKED_CELL_LAYER = "Tracked: Cell"
 
-# ── Tiny helpers ──────────────────────────────────────────────────────────────
-
-def _separator() -> QFrame:
-    line = QFrame()
-    line.setFrameShape(QFrame.HLine)
-    line.setStyleSheet("color: #555;")
-    return line
-
-
-def _heading(text: str) -> QLabel:
-    lbl = QLabel(text)
-    return parameter_heading(lbl)
-
-
 def _make_status() -> QLabel:
     lbl = QLabel("")
     lbl.setWordWrap(True)
@@ -91,40 +73,6 @@ def _make_progress() -> QProgressBar:
     bar.setTextVisible(True)
     bar.setVisible(False)
     return bar
-
-
-def _dspin(lo, hi, val, step=0.1, decimals=2, tooltip=""):
-    s = QDoubleSpinBox()
-    s.setRange(lo, hi); s.setValue(val); s.setSingleStep(step)
-    s.setDecimals(decimals); s.setToolTip(tooltip)
-    return s
-
-
-def _ispin(lo, hi, val, step=1, tooltip=""):
-    s = QSpinBox()
-    s.setRange(lo, hi); s.setValue(val); s.setSingleStep(step)
-    s.setToolTip(tooltip)
-    return s
-
-
-def _btn(text, tooltip=""):
-    b = QPushButton(text)
-    b.setToolTip(tooltip)
-    action_button(b, expand=True)
-    return b
-
-
-def _button_grid(*rows: tuple[QPushButton, ...]) -> QGridLayout:
-    grid = QGridLayout()
-    grid.setHorizontalSpacing(8)
-    grid.setVerticalSpacing(4)
-    for r, buttons in enumerate(rows):
-        for c, btn in enumerate(buttons):
-            span = 2 - c if c == len(buttons) - 1 and len(buttons) == 1 else 1
-            grid.addWidget(btn, r, c, 1, span)
-    grid.setColumnStretch(0, 1)
-    grid.setColumnStretch(1, 1)
-    return grid
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -144,6 +92,7 @@ class CellWorkflowWidget(QWidget):
         self._initialize_worker = None
 
         self._icm_state = None
+        self._running_stage: str | None = None
 
         self._setup_ui()
         self._connect_signals()
@@ -195,46 +144,20 @@ class CellWorkflowWidget(QWidget):
         root.addWidget(self.pipeline_files_header)
         root.addWidget(self._pipeline_files_section)
 
-        # ── Pipeline action buttons (2-column grid) ──────────────────
-        self.filter_flow_btn = _btn(
-            "Filter Flow",
-            "Apply median + Gaussian filtering to raw Cellpose flow vectors.",
-        )
-        self.build_foreground_btn = _btn(
-            "Build Foreground",
-            "Generate binary cell foreground masks with Cellpose dynamics.",
-        )
-        self.preview_contour_btn = _btn(
-            "Preview Contours",
-            "Build contour map for the current frame only (no temporal filter).",
-        )
-        self.build_contour_btn = _btn(
-            "Build Contours",
-            "Build consensus contour maps for all frames.",
-        )
-        self.segment_btn = _btn(
-            "Segment",
-            "Initialize geodesic ICM, solve, and save tracked_labels.tif.",
-        )
-        root.addLayout(_button_grid(
-            (self.filter_flow_btn, self.build_foreground_btn),
-            (self.preview_contour_btn, self.build_contour_btn),
-            (self.segment_btn,),
-        ))
-
-        self.pipeline_status_lbl = _make_status()
-        root.addWidget(self.pipeline_status_lbl)
-        self.pipeline_progress_bar = _make_progress()
-        root.addWidget(self.pipeline_progress_bar)
-
-        # ── Single collapsible parameter panel ───────────────────────
+        # ── Pipeline parameters and per-stage rows ───────────────────
         self.cell_params_widget = CellParamsWidget(self)
-        root.addWidget(self.cell_params_widget.section)
         self._install_params_aliases()
         # CellParamsWidget acts as a controller here. Its visible section is
         # reparented into this layout, so keep the owner widget hidden to avoid
         # an unmanaged default rectangle intercepting header clicks.
         self.cell_params_widget.hide()
+
+        self._build_pipeline_stage_rows(root)
+
+        self.pipeline_status_lbl = _make_status()
+        root.addWidget(self.pipeline_status_lbl)
+        self.pipeline_progress_bar = _make_progress()
+        root.addWidget(self.pipeline_progress_bar)
 
         # ── Correction section (child widget) ────────────────────────
         self.cell_correction_widget = CellCorrectionWidget(
@@ -242,16 +165,113 @@ class CellWorkflowWidget(QWidget):
             pos_dir_provider=lambda: self._pos_dir,
             files_widget_refresh_callback=lambda pd: self._files_widget.refresh(pd),
         )
-        root.addWidget(self.cell_correction_widget)
         self._install_correction_aliases()
+        # CellCorrectionWidget owns behavior; visible pieces are reparented
+        # here to mirror the nucleus workflow structure.
+        self.cell_correction_widget.hide()
+        root.addWidget(self.correction_header)
+        root.addWidget(self.correction_mode_section)
 
         root.addStretch()
 
     # -- Parameters --------------------------------------------------------
 
+    def _build_pipeline_stage_rows(self, root: QVBoxLayout) -> None:
+        """Build nucleus-style pipeline stage rows with inline params."""
+        self.flow_params_btn = _tool_btn(
+            "⚙", "Show parameters for this stage.", checkable=True
+        )
+        self.flow_run_btn = _tool_btn("▶", "Run flow filtering.")
+        self.foreground_params_btn = _tool_btn(
+            "⚙", "Show parameters for this stage.", checkable=True
+        )
+        self.foreground_run_btn = _tool_btn("▶", "Run foreground mask generation.")
+        self.contour_params_btn = _tool_btn(
+            "⚙", "Show parameters for this stage.", checkable=True
+        )
+        self.contour_preview_btn = _tool_btn(
+            "▷", "Preview contours for the current frame."
+        )
+        self.contour_run_btn = _tool_btn("▶", "Run contour map generation.")
+        self.segmentation_params_btn = _tool_btn(
+            "⚙", "Show parameters for this stage.", checkable=True
+        )
+        self.segmentation_run_btn = _tool_btn("▶", "Run cell segmentation.")
+
+        # Backward-compatible preferred alias for existing callers.
+        self.filter_flow_btn = self.flow_run_btn
+        self.build_foreground_btn = self.foreground_run_btn
+        self.preview_contour_btn = self.contour_preview_btn
+        self.build_contour_btn = self.contour_run_btn
+        self.segment_btn = self.segmentation_run_btn
+
+        for section in (
+            self.flow_filter_section,
+            self.foreground_section,
+            self.contour_section,
+            self.segmentation_section,
+        ):
+            section.set_header_visible(False)
+            section.collapse()
+
+        for params_btn, section in (
+            (self.flow_params_btn, self.flow_filter_section),
+            (self.foreground_params_btn, self.foreground_section),
+            (self.contour_params_btn, self.contour_section),
+            (self.segmentation_params_btn, self.segmentation_section),
+        ):
+            params_btn.toggled.connect(
+                lambda checked, section=section: section._toggle.setChecked(checked)
+            )
+
+        root.addLayout(self._stage_row(
+            self._stage_label("Flow filtering"),
+            self.flow_params_btn,
+            self.flow_run_btn,
+        ))
+        root.addWidget(self.flow_filter_section)
+        root.addLayout(self._stage_row(
+            self._stage_label("Foreground masks"),
+            self.foreground_params_btn,
+            self.foreground_run_btn,
+        ))
+        root.addWidget(self.foreground_section)
+        root.addLayout(self._stage_row(
+            self._stage_label("Contours"),
+            self.contour_params_btn,
+            self.contour_preview_btn,
+            self.contour_run_btn,
+        ))
+        root.addWidget(self.contour_section)
+        root.addLayout(self._stage_row(
+            self._stage_label("Segmentation"),
+            self.segmentation_params_btn,
+            self.segmentation_run_btn,
+        ))
+        root.addWidget(self.segmentation_section)
+
+    @staticmethod
+    def _stage_label(text: str) -> QLabel:
+        return stage_header_label(QLabel(text), "cell")
+
+    @staticmethod
+    def _stage_row(label: QLabel, *trailing: QWidget) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(label)
+        row.addStretch(1)
+        for widget in trailing:
+            row.addWidget(widget)
+        return row
+
     def _install_params_aliases(self) -> None:
         """Install compatibility aliases for all controls owned by CellParamsWidget."""
         p = self.cell_params_widget
+        self.flow_filter_section = p.flow_filter_section
+        self.foreground_section = p.foreground_section
+        self.contour_section = p.contour_section
+        self.segmentation_section = p.segmentation_section
         # Flow filtering
         self.ff_median_time_spin = p.ff_median_time_spin
         self.ff_median_space_spin = p.ff_median_space_spin
@@ -287,6 +307,12 @@ class CellWorkflowWidget(QWidget):
     def _install_correction_aliases(self) -> None:
         """Install compatibility aliases for all controls owned by CellCorrectionWidget."""
         c = self.cell_correction_widget
+        self.correction_header = c.header
+        self.correction_header_lbl = c.header_lbl
+        self.correction_shortcuts_btn = c.shortcuts_btn
+        self.correction_params_btn = c.params_btn
+        self.correction_active_btn = c.active_btn
+        self.correction_mode_section = c.section
         self.correction_widget = c.correction_widget
         self.correction_status_lbl = c.correction_status_lbl
         self.correction_shortcuts_section = c.correction_shortcuts_section
@@ -305,11 +331,37 @@ class CellWorkflowWidget(QWidget):
     # Signals
     # ================================================================
     def _connect_signals(self) -> None:
-        self.filter_flow_btn.clicked.connect(self._on_filter_flow)
-        self.build_foreground_btn.clicked.connect(self._on_build_foreground)
-        self.preview_contour_btn.clicked.connect(self._on_preview_contours)
-        self.build_contour_btn.clicked.connect(self._on_build_contours)
-        self.segment_btn.clicked.connect(self._on_segment)
+        self.flow_run_btn.clicked.connect(self._on_flow_run_btn_clicked)
+        self.foreground_run_btn.clicked.connect(self._on_foreground_run_btn_clicked)
+        self.contour_preview_btn.clicked.connect(self._on_preview_contours)
+        self.contour_run_btn.clicked.connect(self._on_contour_run_btn_clicked)
+        self.segmentation_run_btn.clicked.connect(
+            self._on_segmentation_run_btn_clicked
+        )
+
+    def _on_flow_run_btn_clicked(self) -> None:
+        if self._running_stage is not None:
+            self._on_cancel()
+        else:
+            self._on_filter_flow()
+
+    def _on_foreground_run_btn_clicked(self) -> None:
+        if self._running_stage is not None:
+            self._on_cancel()
+        else:
+            self._on_build_foreground()
+
+    def _on_contour_run_btn_clicked(self) -> None:
+        if self._running_stage is not None:
+            self._on_cancel()
+        else:
+            self._on_build_contours()
+
+    def _on_segmentation_run_btn_clicked(self) -> None:
+        if self._running_stage is not None:
+            self._on_cancel()
+        else:
+            self._on_segment()
 
     # ================================================================
     # Path helpers
@@ -508,15 +560,96 @@ class CellWorkflowWidget(QWidget):
         self.pipeline_progress_bar.setValue(0)
         self.pipeline_progress_bar.setVisible(False)
 
+    def _set_running_stage(self, stage_key: str | None) -> None:
+        """Update per-stage run/cancel state.
+
+        ``None`` means idle.  Any stage key means that row owns cancellation
+        and the other rows are disabled until the worker returns or errors.
+        """
+        self._running_stage = stage_key
+        rows = {
+            "flow": (
+                self.flow_params_btn,
+                self.flow_run_btn,
+                "Run flow filtering.",
+            ),
+            "foreground": (
+                self.foreground_params_btn,
+                self.foreground_run_btn,
+                "Run foreground mask generation.",
+            ),
+            "contour": (
+                self.contour_params_btn,
+                self.contour_run_btn,
+                "Run contour map generation.",
+            ),
+            "segmentation": (
+                self.segmentation_params_btn,
+                self.segmentation_run_btn,
+                "Run cell segmentation.",
+            ),
+        }
+        if stage_key is None:
+            for params_btn, run_btn, tooltip in rows.values():
+                params_btn.setEnabled(True)
+                run_btn.setEnabled(True)
+                run_btn.setText("▶")
+                run_btn.setToolTip(tooltip)
+            self.contour_preview_btn.setEnabled(True)
+            return
+
+        for key, (params_btn, run_btn, _tooltip) in rows.items():
+            if key == stage_key:
+                params_btn.setEnabled(True)
+                run_btn.setEnabled(True)
+                run_btn.setText("✕")
+                run_btn.setToolTip("Cancel.")
+            else:
+                params_btn.setEnabled(False)
+                run_btn.setEnabled(False)
+        self.contour_preview_btn.setEnabled(False)
+
     def _set_pipeline_buttons_enabled(self, enabled: bool) -> None:
+        """Backward-compatible shim for older tests/callers."""
+        if enabled:
+            self._set_running_stage(None)
+            return
         for btn in (
-            self.filter_flow_btn,
-            self.build_foreground_btn,
-            self.preview_contour_btn,
-            self.build_contour_btn,
-            self.segment_btn,
+            self.flow_params_btn,
+            self.flow_run_btn,
+            self.foreground_params_btn,
+            self.foreground_run_btn,
+            self.contour_params_btn,
+            self.contour_preview_btn,
+            self.contour_run_btn,
+            self.segmentation_params_btn,
+            self.segmentation_run_btn,
         ):
-            btn.setEnabled(enabled)
+            btn.setEnabled(False)
+
+    def _on_cancel(self) -> None:
+        stage_to_worker = {
+            "flow": self._ff_worker,
+            "foreground": self._foreground_worker,
+            "contour": self._contour_worker,
+            "segmentation": self._initialize_worker,
+        }
+        worker = stage_to_worker.get(self._running_stage)
+        if worker is not None and hasattr(worker, "quit"):
+            worker.quit()
+        self._ff_worker = None if self._running_stage == "flow" else self._ff_worker
+        self._foreground_worker = (
+            None if self._running_stage == "foreground" else self._foreground_worker
+        )
+        self._contour_worker = (
+            None if self._running_stage == "contour" else self._contour_worker
+        )
+        self._initialize_worker = (
+            None if self._running_stage == "segmentation" else self._initialize_worker
+        )
+        self._clear_progress()
+        self._set_running_stage(None)
+        self._status("Cancelled.")
 
     def _show_layer(self, name, data, kwargs, adder):
         if name in self.viewer.layers:
@@ -566,7 +699,7 @@ class CellWorkflowWidget(QWidget):
 
         def _done(result):
             self._ff_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._show_layer(
                 _FILTERED_FLOW_LAYER, result,
@@ -578,7 +711,7 @@ class CellWorkflowWidget(QWidget):
 
         def _error(exc):
             self._ff_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._status(f"Error: {exc}")
             logger.exception("Flow filter error", exc_info=exc)
@@ -598,7 +731,7 @@ class CellWorkflowWidget(QWidget):
             return mag
 
         self._status("Filtering flow...")
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("flow")
         self._ff_worker = _worker()
 
     # ================================================================
@@ -620,7 +753,7 @@ class CellWorkflowWidget(QWidget):
 
         def _done(result):
             self._foreground_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._show_layer(_CELL_FOREGROUND_LAYER, result, {}, self.viewer.add_labels)
             self._files_widget.refresh(pos_dir)
@@ -628,7 +761,7 @@ class CellWorkflowWidget(QWidget):
 
         def _error(exc):
             self._foreground_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._status(f"Error: {exc}")
             logger.exception("Foreground error", exc_info=exc)
@@ -653,7 +786,7 @@ class CellWorkflowWidget(QWidget):
             return masks
 
         self._status("Building foreground...")
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("foreground")
         self._foreground_worker = _worker()
 
     # ================================================================
@@ -713,7 +846,7 @@ class CellWorkflowWidget(QWidget):
 
         def _done(result):
             self._contour_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             contours, scores = result
             self._show_layer(_CELL_CONTOUR_LAYER, contours,
@@ -725,7 +858,7 @@ class CellWorkflowWidget(QWidget):
 
         def _error(exc):
             self._contour_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._status(f"Error: {exc}")
             logger.exception("Contour error", exc_info=exc)
@@ -756,7 +889,7 @@ class CellWorkflowWidget(QWidget):
 
         tau_msg = f", τ={tau}" if tau > 0 else ""
         self._status(f"Building contours ({len(thresholds)} thr, {len(gammas)} γ{tau_msg})...")
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("contour")
         self._contour_worker = _worker()
 
     def _on_preview_contours(self) -> None:
@@ -827,7 +960,7 @@ class CellWorkflowWidget(QWidget):
             self._icm_state = state
             self._show_layer(_CELL_SEG_LAYER, labels, {"visible": True}, self.viewer.add_labels)
             commit_labels(labels, output_path)
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._files_widget.refresh(pos_dir)
             self._status(
@@ -837,7 +970,7 @@ class CellWorkflowWidget(QWidget):
 
         def _error(exc):
             self._initialize_worker = None
-            self._set_pipeline_buttons_enabled(True)
+            self._set_running_stage(None)
             self._clear_progress()
             self._status(f"Error: {exc}")
             logger.exception("Segment error", exc_info=exc)
@@ -877,5 +1010,5 @@ class CellWorkflowWidget(QWidget):
         self._status("Segmenting...")
         self.pipeline_progress_bar.setRange(0, 0)
         self.pipeline_progress_bar.setVisible(True)
-        self._set_pipeline_buttons_enabled(False)
+        self._set_running_stage("segmentation")
         self._initialize_worker = _worker()

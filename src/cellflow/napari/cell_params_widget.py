@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import QVBoxLayout, QWidget
 
 from cellflow.napari._widget_helpers import (
     dslider as _dslider,
@@ -24,11 +24,6 @@ class CellParamsWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-
-        inner = QWidget(self)
-        grid = section_grid()
-        grid.setContentsMargins(0, 0, 0, 0)
-        inner.setLayout(grid)
 
         # ─── Build all sliders up front ─────────────────────────────
         # Flow filtering
@@ -92,75 +87,129 @@ class CellParamsWidget(QWidget):
             tooltip="Parallel workers for geodesic computation.",
         )
 
-        # ─── Pack into the unified grid ─────────────────────────────
+        # ─── Pack into stage-specific grids ─────────────────────────
+        flow_inner = QWidget(self)
+        flow_grid = section_grid()
+        flow_grid.setContentsMargins(0, 0, 0, 0)
+        flow_inner.setLayout(flow_grid)
         row = 0
-
-        add_section_header(grid, row, _heading("Flow Filtering")); row += 1
+        add_section_header(flow_grid, row, _heading("Flow Filtering")); row += 1
         add_section_pair_row(
-            grid, row,
+            flow_grid, row,
             "Median t:", self.ff_median_time_spin,
             "Median xy:", self.ff_median_space_spin,
         ); row += 1
         add_section_pair_row(
-            grid, row,
+            flow_grid, row,
             "Gauss t σ:", self.ff_gauss_time_spin,
             "Gauss xy σ:", self.ff_gauss_space_spin,
         ); row += 1
 
-        add_section_header(grid, row, _heading("Foreground")); row += 1
-        add_section_pair_row(grid, row, "Cellprob thr:", self.fg_cellprob_threshold_spin); row += 1
-
-        add_section_header(grid, row, _heading("Contour — Cellprob Sweep")); row += 1
+        foreground_inner = QWidget(self)
+        foreground_grid = section_grid()
+        foreground_grid.setContentsMargins(0, 0, 0, 0)
+        foreground_inner.setLayout(foreground_grid)
+        row = 0
+        add_section_header(foreground_grid, row, _heading("Foreground")); row += 1
         add_section_pair_row(
-            grid, row,
+            foreground_grid, row,
+            "Cellprob thr:", self.fg_cellprob_threshold_spin,
+        ); row += 1
+
+        contour_inner = QWidget(self)
+        contour_grid = section_grid()
+        contour_grid.setContentsMargins(0, 0, 0, 0)
+        contour_inner.setLayout(contour_grid)
+        row = 0
+        add_section_header(contour_grid, row, _heading("Contour — Cellprob Sweep")); row += 1
+        add_section_pair_row(
+            contour_grid, row,
             "Min:", self.cp_min_spin,
             "Max:", self.cp_max_spin,
         ); row += 1
-        add_section_pair_row(grid, row, "Step:", self.cp_step_spin); row += 1
+        add_section_pair_row(contour_grid, row, "Step:", self.cp_step_spin); row += 1
 
-        add_section_header(grid, row, _heading("Contour — Flow-Following")); row += 1
+        add_section_header(contour_grid, row, _heading("Contour — Flow-Following")); row += 1
         add_section_pair_row(
-            grid, row,
+            contour_grid, row,
             "Flow weight:", self.ff_flow_weight_spin,
             "Step scale:", self.ff_step_scale_spin,
         ); row += 1
-        add_section_pair_row(grid, row, "Max iter:", self.ff_max_iter_spin); row += 1
+        add_section_pair_row(contour_grid, row, "Max iter:", self.ff_max_iter_spin); row += 1
 
-        add_section_header(grid, row, _heading("Contour — Gamma Averaging")); row += 1
+        add_section_header(contour_grid, row, _heading("Contour — Gamma Averaging")); row += 1
         add_section_pair_row(
-            grid, row,
+            contour_grid, row,
             "Min:", self.gamma_min_spin,
             "Max:", self.gamma_max_spin,
         ); row += 1
-        add_section_pair_row(grid, row, "Step:", self.gamma_step_spin); row += 1
+        add_section_pair_row(contour_grid, row, "Step:", self.gamma_step_spin); row += 1
 
-        add_section_header(grid, row, _heading("Contour — Temporal Stabilization")); row += 1
+        add_section_header(contour_grid, row, _heading("Contour — Temporal Stabilization")); row += 1
         add_section_pair_row(
-            grid, row,
+            contour_grid, row,
             "Memory τ:", self.memory_tau_spin,
             "Floor:", self.memory_floor_spin,
         ); row += 1
 
-        add_section_header(grid, row, _heading("Segmentation")); row += 1
+        segmentation_inner = QWidget(self)
+        segmentation_grid = section_grid()
+        segmentation_grid.setContentsMargins(0, 0, 0, 0)
+        segmentation_inner.setLayout(segmentation_grid)
+        row = 0
+        add_section_header(segmentation_grid, row, _heading("Segmentation")); row += 1
         add_section_pair_row(
-            grid, row,
+            segmentation_grid, row,
             "α unary:", self.alpha_unary_spin,
             "λ spatial:", self.lambda_s_spin,
         ); row += 1
         add_section_pair_row(
-            grid, row,
+            segmentation_grid, row,
             "β spatial:", self.beta_s_spin,
             "λ temporal:", self.lambda_t_spin,
         ); row += 1
         add_section_pair_row(
-            grid, row,
+            segmentation_grid, row,
             "γ unary:", self.gamma_unary_spin,
             "Workers:", self.n_workers_spin,
         ); row += 1
 
+        self.flow_filter_section = CollapsibleSection(
+            "Flow Filtering",
+            flow_inner,
+            expanded=False,
+        )
+        self.foreground_section = CollapsibleSection(
+            "Foreground Masks",
+            foreground_inner,
+            expanded=False,
+        )
+        self.contour_section = CollapsibleSection(
+            "Contours",
+            contour_inner,
+            expanded=False,
+        )
+        self.segmentation_section = CollapsibleSection(
+            "Segmentation",
+            segmentation_inner,
+            expanded=False,
+        )
+
+        container = QWidget(self)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        for section in (
+            self.flow_filter_section,
+            self.foreground_section,
+            self.contour_section,
+            self.segmentation_section,
+        ):
+            lay.addWidget(section)
+
         self.section = CollapsibleSection(
             "Parameters",
-            inner,
+            container,
             expanded=False,
         )
 

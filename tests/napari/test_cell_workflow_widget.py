@@ -171,33 +171,53 @@ def test_cell_params_controller_does_not_cover_pipeline_header(monkeypatch):
 
     assert widget.childAt(header_point) is toggle
     assert not widget.cell_params_widget.isVisible()
-    assert widget.cell_params_widget.section.isVisible()
-    assert widget.cell_correction_widget.isVisible()
+    assert widget.flow_filter_section.isVisible()
+    assert widget.foreground_section.isVisible()
+    assert widget.contour_section.isVisible()
+    assert widget.segmentation_section.isVisible()
+    assert not widget.cell_correction_widget.isVisible()
+    assert widget.correction_header.isVisible()
+    assert widget.correction_mode_section.isVisible()
 
     widget.deleteLater()
 
 
-def test_widget_exposes_flat_layout_with_pipeline_buttons_and_params(monkeypatch):
+def test_widget_exposes_stage_rows_with_inline_params(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.CellWorkflowWidget(_FakeViewer())
 
-    # Flat action buttons exist
-    assert isinstance(widget.filter_flow_btn, QPushButton)
-    assert isinstance(widget.build_foreground_btn, QPushButton)
-    assert isinstance(widget.preview_contour_btn, QPushButton)
-    assert isinstance(widget.build_contour_btn, QPushButton)
-    assert isinstance(widget.segment_btn, QPushButton)
+    for name in (
+        "flow_params_btn",
+        "flow_run_btn",
+        "foreground_params_btn",
+        "foreground_run_btn",
+        "contour_params_btn",
+        "contour_preview_btn",
+        "contour_run_btn",
+        "segmentation_params_btn",
+        "segmentation_run_btn",
+    ):
+        assert isinstance(getattr(widget, name), QToolButton)
+    assert widget.preview_contour_btn is widget.contour_preview_btn
 
     # Single shared status/progress (not per-section)
     assert isinstance(widget.pipeline_status_lbl, QLabel)
     assert isinstance(widget.pipeline_progress_bar, QProgressBar)
     assert widget.pipeline_progress_bar.isVisible() is False
 
-    # No per-section layout sections
-    assert not hasattr(widget, "filtered_flow_section")
-    assert not hasattr(widget, "foreground_mask_section")
-    assert not hasattr(widget, "tracked_labels_section")
+    # Inline stage params start collapsed and toggle independently.
+    assert widget.flow_filter_section.is_expanded is False
+    assert widget.foreground_section.is_expanded is False
+    assert widget.contour_section.is_expanded is False
+    assert widget.segmentation_section.is_expanded is False
+
+    widget.flow_params_btn.setChecked(True)
+    assert widget.flow_filter_section.is_expanded is True
+    assert widget.foreground_section.is_expanded is False
+    widget.contour_params_btn.setChecked(True)
+    assert widget.contour_section.is_expanded is True
+    assert widget.segmentation_section.is_expanded is False
 
     # No scroll areas
     assert widget.findChildren(QScrollArea) == []
@@ -214,16 +234,59 @@ def test_widget_exposes_flat_layout_with_pipeline_buttons_and_params(monkeypatch
     assert widget.correction_shortcuts_section.is_expanded is False
 
     # Correction buttons
-    correction_button_texts = {
-        button.text()
-        for button in widget.cell_correction_widget.findChildren(QPushButton)
-    }
-    assert "Load Labels" in correction_button_texts
-    assert "Save Labels" in correction_button_texts
-    assert "Fill Holes" in correction_button_texts
-    assert "Fix Semi Holes" in correction_button_texts
-    assert "Clean Up" in correction_button_texts
-    assert "Expand Cell" in correction_button_texts
+    assert widget.load_labels_btn.text() == "Load Labels"
+    assert widget.save_labels_btn.text() == "Save Labels"
+    assert widget.fill_holes_btn.text() == "Fill Holes"
+    assert widget.fix_semiholes_btn.text() == "Fix Semi Holes"
+    assert widget.cleanup_btn.text() == "Clean Up"
+    assert widget.expand_cell_btn.text() == "Expand Cell"
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_cell_stage_running_state_disables_other_rows(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    widget._set_running_stage("contour")
+
+    assert widget.contour_run_btn.text() == "✕"
+    assert widget.contour_run_btn.isEnabled() is True
+    assert widget.contour_params_btn.isEnabled() is True
+    assert widget.flow_run_btn.isEnabled() is False
+    assert widget.foreground_params_btn.isEnabled() is False
+    assert widget.segmentation_run_btn.isEnabled() is False
+    assert widget.contour_preview_btn.isEnabled() is False
+
+    widget._set_running_stage(None)
+    assert widget.contour_run_btn.text() == "▶"
+    assert widget.flow_run_btn.isEnabled() is True
+    assert widget.contour_preview_btn.isEnabled() is True
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_cell_correction_uses_stage_style_header(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    assert widget.correction_header_lbl.text() == "Correction"
+    assert widget.correction_shortcuts_btn.text() == "📖"
+    assert widget.correction_params_btn.text() == "⚙"
+    assert widget.correction_active_btn.text() == "⏻"
+    assert isinstance(widget.correction_shortcuts_btn, QToolButton)
+    assert isinstance(widget.correction_params_btn, QToolButton)
+    assert isinstance(widget.correction_active_btn, QToolButton)
+    assert widget.cell_correction_widget.isVisible() is False
+
+    widget.correction_params_btn.setChecked(True)
+    assert widget.correction_mode_section.is_expanded is True
+    widget.correction_params_btn.setChecked(False)
+    assert widget.correction_mode_section.is_expanded is False
 
     widget.deleteLater()
     app.processEvents()
@@ -552,9 +615,9 @@ def test_cell_correction_widget_exposes_expand_cell_action(monkeypatch):
 
     correction_button_texts = {
         button.text()
-        for button in widget.cell_correction_widget.findChildren(QPushButton)
+        for button in widget.correction_mode_section.findChildren(QPushButton)
     }
-    correction_label_texts = _label_texts(widget.cell_correction_widget)
+    correction_label_texts = _label_texts(widget.correction_mode_section)
 
     assert "Expand Cell" in correction_button_texts
     assert "Max expand px:" in correction_label_texts

@@ -467,10 +467,12 @@ def test_cell_workflow_widget_delegates_correction_to_child_widget(monkeypatch):
     assert widget.expand_max_px_spin is widget.cell_correction_widget.expand_max_px_spin
     assert widget.correction_scope_combo is widget.cell_correction_widget.correction_scope_combo
 
-    child_buttons = set(widget.cell_correction_widget.findChildren(QPushButton))
-    assert widget.load_labels_btn in child_buttons
-    assert widget.save_labels_btn in child_buttons
-    assert widget.expand_cell_btn in child_buttons
+    correction_section_buttons = set(
+        widget.correction_mode_section.findChildren(QPushButton)
+    )
+    assert widget.load_labels_btn in correction_section_buttons
+    assert widget.save_labels_btn in correction_section_buttons
+    assert widget.expand_cell_btn in correction_section_buttons
 
     widget.deleteLater()
     viewer.close()

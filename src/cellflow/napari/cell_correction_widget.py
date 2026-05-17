@@ -28,12 +28,14 @@ from cellflow.napari._widget_helpers import (
     btn as _btn,
     button_grid as _button_grid,
     make_status as _make_status,
+    tool_btn as _tool_btn,
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
     add_block_pair_row,
     block_grid,
     compact_spinbox,
+    stage_header_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.napari._widget_helpers import ispin as _ispin
@@ -112,10 +114,19 @@ class CellCorrectionWidget(QWidget):
         group_lay.setContentsMargins(0, 0, 0, 0)
         group_lay.setSpacing(6)
 
-        self.active_btn = QPushButton("Activate Correction")
-        self.active_btn.setCheckable(True)
+        self.active_btn = _tool_btn(
+            "⏻",
+            "Activate correction mode and show correction controls.",
+            checkable=True,
+        )
         self.active_btn.setToolTip(
             "Activate correction mode and show correction controls."
+        )
+        self.params_btn = _tool_btn(
+            "⚙", "Show correction parameters.", checkable=True
+        )
+        self.shortcuts_btn = _tool_btn(
+            "📖", "Show correction shortcuts.", checkable=True
         )
 
         # ── Action buttons (added later at bottom) ────────────────────
@@ -184,6 +195,8 @@ class CellCorrectionWidget(QWidget):
             expanded=False,
 
         )
+        self.correction_params_section.set_header_visible(False)
+        self.correction_params_section.setVisible(False)
         group_lay.addWidget(self.correction_params_section)
 
         # ── Inline CorrectionWidget ───────────────────────────────────
@@ -202,18 +215,29 @@ class CellCorrectionWidget(QWidget):
             expanded=False,
 
         )
+        self.correction_shortcuts_section.set_header_visible(False)
+        self.correction_shortcuts_section.setVisible(False)
         group_lay.addWidget(self.correction_shortcuts_section)
-        group_lay.addWidget(self.correction_widget)
+
+        self.active_content = QWidget(self)
+        active_lay = QVBoxLayout(self.active_content)
+        active_lay.setContentsMargins(0, 0, 0, 0)
+        active_lay.setSpacing(6)
+        active_lay.addWidget(self.correction_widget)
 
         self.correction_status_lbl = _make_status()
-        group_lay.addWidget(self.correction_status_lbl)
+        active_lay.addWidget(self.correction_status_lbl)
 
-        group_lay.addLayout(_button_grid(
+        active_lay.addLayout(_button_grid(
             (self.load_labels_btn, self.save_labels_btn),
             (self.fill_holes_btn, self.fix_semiholes_btn),
             (self.cleanup_btn, self.expand_cell_btn),
         ))
-        group_lay.addWidget(self.correction_widget._attrib_lbl)
+        active_lay.addWidget(self.correction_widget._attrib_lbl)
+        self.active_content.setVisible(False)
+        group_lay.addWidget(self.active_content)
+
+        self.header = self._build_correction_header()
 
         self.section = CollapsibleSection(
             "Correction",
@@ -221,10 +245,31 @@ class CellCorrectionWidget(QWidget):
             expanded=False,
 
         )
-        self.section._toggle.setVisible(False)
+        self.section.set_header_visible(False)
         self.section._toggle.setEnabled(False)
-        root.addWidget(self.active_btn)
+        root.addWidget(self.header)
         root.addWidget(self.section)
+
+        self.header_lbl = self.correction_header_lbl
+        self.correction_active_btn = self.active_btn
+        self.correction_params_btn = self.params_btn
+        self.correction_shortcuts_btn = self.shortcuts_btn
+        self.correction_mode_section = self.section
+
+    def _build_correction_header(self) -> QWidget:
+        header = QWidget(self)
+        row = QHBoxLayout(header)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+
+        self.correction_header_lbl = QLabel("Correction")
+        stage_header_label(self.correction_header_lbl, "cell")
+        row.addWidget(self.correction_header_lbl)
+        row.addStretch(1)
+        row.addWidget(self.shortcuts_btn)
+        row.addWidget(self.params_btn)
+        row.addWidget(self.active_btn)
+        return header
 
     # ------------------------------------------------------------------ #
     # Signal wiring                                                        #
@@ -238,9 +283,47 @@ class CellCorrectionWidget(QWidget):
         self.cleanup_btn.clicked.connect(self._on_cleanup)
         self.expand_cell_btn.clicked.connect(self._on_expand_cell)
         self.active_btn.toggled.connect(self._on_active_button_toggled)
+        self.params_btn.toggled.connect(self._on_params_button_toggled)
+        self.shortcuts_btn.toggled.connect(self._on_shortcuts_button_toggled)
+
+    @staticmethod
+    def _set_checked_without_signal(button, checked: bool) -> None:
+        old = button.blockSignals(True)
+        try:
+            button.setChecked(checked)
+        finally:
+            button.blockSignals(old)
+
+    def _sync_correction_panel_visibility(self) -> None:
+        show_params = self.params_btn.isChecked()
+        show_shortcuts = self.shortcuts_btn.isChecked()
+        show_active = self.active_btn.isChecked()
+
+        self.correction_params_section.setVisible(show_params)
+        self.correction_shortcuts_section.setVisible(show_shortcuts)
+        self.active_content.setVisible(show_active)
+
+        if show_params or show_shortcuts or show_active:
+            self.section.expand()
+        else:
+            self.section.collapse()
 
     def _on_active_button_toggled(self, active: bool) -> None:
-        self.section.expand() if active else self.section.collapse()
+        self._sync_correction_panel_visibility()
+
+    def _on_params_button_toggled(self, checked: bool) -> None:
+        self.correction_params_section._toggle.setChecked(checked)
+        if checked:
+            self._set_checked_without_signal(self.shortcuts_btn, False)
+            self.correction_shortcuts_section._toggle.setChecked(False)
+        self._sync_correction_panel_visibility()
+
+    def _on_shortcuts_button_toggled(self, checked: bool) -> None:
+        self.correction_shortcuts_section._toggle.setChecked(checked)
+        if checked:
+            self._set_checked_without_signal(self.params_btn, False)
+            self.correction_params_section._toggle.setChecked(False)
+        self._sync_correction_panel_visibility()
 
     # ------------------------------------------------------------------ #
     # Status helper                                                        #
