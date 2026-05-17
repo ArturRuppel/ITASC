@@ -317,12 +317,16 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.nucleus_correction_widget.hide()
         root.addWidget(self.ultrack_db_browser_header)
         root.addWidget(self.ultrack_db_browser_section)
-        root.addWidget(self.correction_active_btn)
+        root.addWidget(self.correction_header)
         root.addWidget(self.correction_mode_section)
 
     def _alias_correction_controls(self) -> None:
         correction = self.nucleus_correction_widget
+        self.correction_header = correction.header
+        self.correction_header_lbl = correction.header_lbl
+        self.correction_params_btn = correction.params_btn
         self.correction_active_btn = correction.active_btn
+        self.correction_toolbar = correction.toolbar
         self.save_tracked_btn = correction.save_tracked_btn
         self.extend_back_btn = correction.extend_back_btn
         self.extend_fwd_btn = correction.extend_fwd_btn

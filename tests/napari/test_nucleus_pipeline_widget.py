@@ -16,6 +16,30 @@ import napari
 from qtpy.QtWidgets import QApplication, QProgressBar, QToolButton
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _restore_import_stubs_after_module():
+    """Keep this module's synthetic imports from leaking into later tests."""
+    tracked_prefixes = ("cellflow.napari.", "cellflow.tracking_ultrack.")
+    tracked_modules = {
+        name
+        for name in sys.modules
+        if name in {"cellflow.napari", "cellflow.tracking_ultrack", "cellflow.segmentation"}
+        or name.startswith(tracked_prefixes)
+    }
+    originals = {name: sys.modules[name] for name in tracked_modules}
+
+    yield
+
+    for name in list(sys.modules):
+        if (
+            name in {"cellflow.napari", "cellflow.tracking_ultrack", "cellflow.segmentation"}
+            or name.startswith(tracked_prefixes)
+        ) and name not in originals:
+            sys.modules.pop(name, None)
+    for name, module in originals.items():
+        sys.modules[name] = module
+
+
 def _make_viewer():
     app = QApplication.instance() or QApplication([])
     viewer = napari.Viewer(show=False)

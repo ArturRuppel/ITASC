@@ -19,7 +19,6 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QShortcut,
     QVBoxLayout,
     QWidget,
@@ -27,7 +26,6 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari._widget_helpers import (
     btn as _btn,
-    button_grid as _button_grid,
     dspin as _dspin,
     heading as _heading,
     make_status as _make_status,
@@ -62,6 +60,7 @@ from cellflow.napari.ui_style import (
     block_grid,
     compact_spinbox,
     danger_button,
+    stage_accent,
 )
 from cellflow.napari.validated_overlay_controller import (
     ValidatedOverlayController,
@@ -156,10 +155,16 @@ class NucleusCorrectionWidget(QWidget):
         group_lay.setContentsMargins(0, 0, 0, 0)
         group_lay.setSpacing(6)
 
-        self.active_btn = QPushButton("Activate Correction")
-        self.active_btn.setCheckable(True)
+        self.active_btn = _tool_btn(
+            "⏻",
+            "Activate correction mode and show correction layers and controls.",
+            checkable=True,
+        )
         self.active_btn.setToolTip(
             "Activate correction mode and show correction layers and controls."
+        )
+        self.params_btn = _tool_btn(
+            "⚙", "Show correction parameters.", checkable=True
         )
 
         self.save_tracked_btn = _tool_btn(
@@ -202,10 +207,21 @@ class NucleusCorrectionWidget(QWidget):
         self.validation_counter_lbl = QLabel("")
         self.validation_counter_lbl.setWordWrap(True)
 
+        self.correction_widget = CorrectionWidget(
+            self.viewer,
+            show_activate_btn=False,
+            show_shortcuts=False,
+            inspector_first=True,
+            show_cleanup=False,
+        )
+        self.correction_widget.set_edit_callback(self._edit_callback)
+        self.correction_widget._status.setVisible(False)
+
         extend_retrack_inner = QWidget(self)
         extend_retrack_lay = QVBoxLayout(extend_retrack_inner)
         extend_retrack_lay.setContentsMargins(0, 0, 0, 0)
         extend_retrack_lay.setSpacing(6)
+        extend_retrack_lay.addWidget(self.correction_widget._outline_btn)
 
         extend_retrack_lay.addWidget(_heading("Extend"))
         g = block_grid(horizontal_spacing=12)
@@ -257,15 +273,6 @@ class NucleusCorrectionWidget(QWidget):
         self.retrack_params_section = self.extend_retrack_params_section
         group_lay.addWidget(self.extend_retrack_params_section)
 
-        self.correction_widget = CorrectionWidget(
-            self.viewer,
-            show_activate_btn=False,
-            show_shortcuts=False,
-            inspector_first=True,
-            show_cleanup=False,
-        )
-        self.correction_widget.set_edit_callback(self._edit_callback)
-
         self.shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
             self._build_shortcuts_widget(),
@@ -274,11 +281,14 @@ class NucleusCorrectionWidget(QWidget):
         )
         group_lay.addWidget(self.shortcuts_section)
         group_lay.addWidget(self.correction_widget)
-        group_lay.addLayout(self._build_correction_toolbar())
+        self.toolbar = self._build_correction_toolbar()
+        self.toolbar.setVisible(False)
+        group_lay.addWidget(self.toolbar)
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
-        group_lay.addLayout(_button_grid((self.commit_btn,)))
         group_lay.addWidget(self.correction_widget._attrib_lbl)
+
+        self.header = self._build_correction_header()
 
         self.section = CollapsibleSection(
             "Correction",
@@ -294,12 +304,28 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_mode_section = self.section
         self._connect_signals()
 
-    def _build_correction_toolbar(self) -> QHBoxLayout:
-        """Visible icon-only action strip for the correction tools.
+    def _build_correction_header(self) -> QWidget:
+        """Build the stage-style correction header with top-level controls."""
+        header = QWidget(self)
+        row = QHBoxLayout(header)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
 
-        Groups: persist | extend ◀▶ | retrack ↶↷ | validate/anchor | clean.
-        """
-        row = QHBoxLayout()
+        accent = stage_accent("nucleus")
+        self.header_lbl = QLabel("Correction")
+        self.header_lbl.setStyleSheet(
+            f"font-weight: bold; font-size: 11pt; color: {accent};"
+        )
+        row.addWidget(self.header_lbl)
+        row.addStretch(1)
+        row.addWidget(self.params_btn)
+        row.addWidget(self.active_btn)
+        return header
+
+    def _build_correction_toolbar(self) -> QWidget:
+        """Build the active-only correction action toolbar."""
+        toolbar = QWidget(self)
+        row = QHBoxLayout(toolbar)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
 
@@ -322,7 +348,7 @@ class NucleusCorrectionWidget(QWidget):
             for b in group:
                 row.addWidget(b)
         row.addStretch(1)
-        return row
+        return toolbar
 
     def _build_shortcuts_widget(self) -> QWidget:
         group = QGroupBox("Correction shortcuts")
@@ -376,11 +402,21 @@ class NucleusCorrectionWidget(QWidget):
             self._on_remove_unvalidated_labels
         )
         self.commit_btn.clicked.connect(self._on_commit)
+        self.params_btn.toggled.connect(
+            self._on_correction_params_button_toggled
+        )
         self.active_btn.toggled.connect(self._on_correction_active_button_toggled)
         self.correction_widget._activate_btn.toggled.connect(
             self._on_correction_mode_toggled
         )
         self._install_correction_shortcuts()
+
+    def _on_correction_params_button_toggled(self, checked: bool) -> None:
+        self.extend_retrack_params_section._toggle.setChecked(checked)
+        if checked:
+            self.section.expand()
+        elif not self.active_btn.isChecked():
+            self.section.collapse()
 
     @property
     def _paths(self) -> NucleusArtifactPaths | None:
@@ -1191,10 +1227,12 @@ class NucleusCorrectionWidget(QWidget):
             layer.visible = True
             self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
+            self.toolbar.setVisible(True)
             self.section.expand()
             self._refresh_refinement_widget()
             return
 
+        self.toolbar.setVisible(False)
         self.correction_widget.deactivate()
         for sc in getattr(self, "_correction_shortcuts", []):
             sc.setEnabled(False)
@@ -1204,6 +1242,7 @@ class NucleusCorrectionWidget(QWidget):
         self._remove_correction_owned_layers()
         self._restore_correction_view_state()
         self.section.collapse()
+        self.params_btn.setChecked(False)
         self._refresh_refinement_widget()
 
     def _refresh_refinement_widget(self) -> None:

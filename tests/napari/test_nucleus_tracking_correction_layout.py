@@ -420,6 +420,52 @@ def test_deprecated_sections_are_removed():
     viewer.close()
 
 
+def test_correction_section_uses_stage_header_params_activate_and_active_toolbar():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    header_layout = widget.correction_header.layout()
+    header_widgets = [
+        header_layout.itemAt(i).widget()
+        for i in range(header_layout.count())
+        if header_layout.itemAt(i).widget() is not None
+    ]
+
+    assert widget.correction_header_lbl.text() == "Correction"
+    assert widget.correction_params_btn.text() == "⚙"
+    assert widget.correction_active_btn.text() == "⏻"
+    assert isinstance(widget.correction_params_btn, QToolButton)
+    assert isinstance(widget.correction_active_btn, QToolButton)
+    assert header_widgets == [
+        widget.correction_header_lbl,
+        widget.correction_params_btn,
+        widget.correction_active_btn,
+    ]
+    assert widget.correction_params_btn in header_widgets
+    assert widget.correction_active_btn in header_widgets
+    assert widget.save_tracked_btn not in header_widgets
+    assert widget.remove_unvalidated_btn not in header_widgets
+
+    assert widget.correction_widget._outline_btn.parent() is widget.extend_retrack_params_section._inner
+    assert widget.correction_widget._status.isVisible() is False
+    assert widget.commit_btn.parent() is None
+    assert widget.correction_toolbar.isHidden() is True
+    assert widget.save_tracked_btn.parent() is widget.correction_toolbar
+    assert widget.remove_unvalidated_btn.parent() is widget.correction_toolbar
+
+    assert widget.extend_retrack_params_section.is_expanded is False
+    widget.correction_params_btn.setChecked(True)
+    assert widget.extend_retrack_params_section.is_expanded is True
+    assert widget.correction_mode_section.is_expanded is True
+    assert widget.correction_toolbar.isHidden() is True
+    widget.correction_params_btn.setChecked(False)
+    assert widget.extend_retrack_params_section.is_expanded is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
 # ── Task 6: DB generation run + terminal ─────────────────────────────────────
 
 def _install_sync_thread_worker(monkeypatch, module):
@@ -481,4 +527,3 @@ def test_db_gen_section_has_no_terminal_launcher():
 
 
 # ── Task 10: DB generation state persistence ─────────────────────────────────
-

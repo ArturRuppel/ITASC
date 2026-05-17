@@ -352,10 +352,12 @@ def test_correction_activate_button_expands_activates_and_deactivates_layers(tmp
     widget, _module = _make_widget(viewer, pos_dir)
 
     assert widget.correction_mode_section.is_expanded is False
+    assert widget.toolbar.isHidden() is True
 
     widget.correction_active_btn.setChecked(True)
 
     assert widget.correction_mode_section.is_expanded is True
+    assert widget.toolbar.isHidden() is False
     assert widget.correction_widget._layer is viewer.layers["[Correction] Nucleus Labels"]
     assert "[Correction] CorrectionDraw" in viewer.layers
     assert "[Correction] CellHighlight" in viewer.layers
@@ -364,6 +366,7 @@ def test_correction_activate_button_expands_activates_and_deactivates_layers(tmp
     widget.correction_active_btn.setChecked(False)
 
     assert widget.correction_mode_section.is_expanded is False
+    assert widget.toolbar.isHidden() is True
     assert widget.correction_widget._layer is None
     assert "[Correction] CorrectionDraw" not in viewer.layers
     assert "[Correction] CellHighlight" not in viewer.layers
@@ -519,6 +522,7 @@ def test_correction_activation_without_tracked_file_restores_button_and_viewer(t
 
     assert widget.correction_active_btn.isChecked() is False
     assert widget.correction_mode_section.is_expanded is False
+    assert widget.toolbar.isHidden() is True
     assert viewer.layers["Existing"].visible is True
     assert widget._correction_owned_layers == set()
     assert "No tracked labels file found" in widget.correction_status_lbl.text()
