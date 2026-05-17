@@ -60,7 +60,7 @@ from cellflow.napari.ui_style import (
     block_grid,
     compact_spinbox,
     danger_button,
-    stage_accent,
+    stage_header_label,
 )
 from cellflow.napari.validated_overlay_controller import (
     ValidatedOverlayController,
@@ -166,6 +166,9 @@ class NucleusCorrectionWidget(QWidget):
         self.params_btn = _tool_btn(
             "⚙", "Show correction parameters.", checkable=True
         )
+        self.shortcuts_btn = _tool_btn(
+            "📖", "Show correction shortcuts.", checkable=True
+        )
 
         self.save_tracked_btn = _tool_btn(
             "💾", "Save corrected tracked nucleus labels to disk (S)."
@@ -269,6 +272,8 @@ class NucleusCorrectionWidget(QWidget):
             expanded=False,
 
         )
+        self._flatten_embedded_correction_section(self.extend_retrack_params_section)
+        self.extend_retrack_params_section.setVisible(False)
         self.extend_params_section = self.extend_retrack_params_section
         self.retrack_params_section = self.extend_retrack_params_section
         group_lay.addWidget(self.extend_retrack_params_section)
@@ -279,14 +284,19 @@ class NucleusCorrectionWidget(QWidget):
             expanded=False,
 
         )
+        self._flatten_embedded_correction_section(self.shortcuts_section)
+        self.shortcuts_section.setVisible(False)
         group_lay.addWidget(self.shortcuts_section)
         group_lay.addWidget(self.correction_widget)
+        self.correction_widget.setVisible(False)
         self.toolbar = self._build_correction_toolbar()
         self.toolbar.setVisible(False)
         group_lay.addWidget(self.toolbar)
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
         group_lay.addWidget(self.correction_widget._attrib_lbl)
+        self.validation_counter_lbl.setVisible(False)
+        self.correction_widget._attrib_lbl.setVisible(False)
 
         self.header = self._build_correction_header()
 
@@ -300,9 +310,20 @@ class NucleusCorrectionWidget(QWidget):
         self.section._toggle.setEnabled(False)
 
         self.correction_active_btn = self.active_btn
+        self.correction_shortcuts_btn = self.shortcuts_btn
         self.correction_status_lbl = self.status_lbl
         self.correction_mode_section = self.section
+        self._correction_active_content_visible = False
         self._connect_signals()
+
+    @staticmethod
+    def _flatten_embedded_correction_section(section: CollapsibleSection) -> None:
+        section.set_header_visible(False)
+        section.layout().setContentsMargins(0, 0, 0, 0)
+        section._content_frame.layout().setContentsMargins(0, 0, 0, 0)
+        section._content_frame.setStyleSheet(
+            "QFrame#collapsible_content { border: none; margin: 0px; }"
+        )
 
     def _build_correction_header(self) -> QWidget:
         """Build the stage-style correction header with top-level controls."""
@@ -311,13 +332,11 @@ class NucleusCorrectionWidget(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
 
-        accent = stage_accent("nucleus")
         self.header_lbl = QLabel("Correction")
-        self.header_lbl.setStyleSheet(
-            f"font-weight: bold; font-size: 11pt; color: {accent};"
-        )
+        stage_header_label(self.header_lbl, "nucleus")
         row.addWidget(self.header_lbl)
         row.addStretch(1)
+        row.addWidget(self.shortcuts_btn)
         row.addWidget(self.params_btn)
         row.addWidget(self.active_btn)
         return header
@@ -405,18 +424,53 @@ class NucleusCorrectionWidget(QWidget):
         self.params_btn.toggled.connect(
             self._on_correction_params_button_toggled
         )
+        self.shortcuts_btn.toggled.connect(
+            self._on_correction_shortcuts_button_toggled
+        )
         self.active_btn.toggled.connect(self._on_correction_active_button_toggled)
         self.correction_widget._activate_btn.toggled.connect(
             self._on_correction_mode_toggled
         )
         self._install_correction_shortcuts()
 
+    @staticmethod
+    def _set_checked_without_signal(button, checked: bool) -> None:
+        old = button.blockSignals(True)
+        try:
+            button.setChecked(checked)
+        finally:
+            button.blockSignals(old)
+
+    def _sync_correction_panel_visibility(self) -> None:
+        show_params = self.params_btn.isChecked()
+        show_shortcuts = self.shortcuts_btn.isChecked()
+        show_active = self._correction_active_content_visible
+
+        self.extend_retrack_params_section.setVisible(show_params)
+        self.shortcuts_section.setVisible(show_shortcuts)
+        self.correction_widget.setVisible(show_active)
+        self.toolbar.setVisible(show_active)
+        self.validation_counter_lbl.setVisible(show_active)
+        self.correction_widget._attrib_lbl.setVisible(show_active)
+
+        if show_params or show_shortcuts or show_active:
+            self.section.expand()
+        else:
+            self.section.collapse()
+
     def _on_correction_params_button_toggled(self, checked: bool) -> None:
         self.extend_retrack_params_section._toggle.setChecked(checked)
         if checked:
-            self.section.expand()
-        elif not self.active_btn.isChecked():
-            self.section.collapse()
+            self._set_checked_without_signal(self.shortcuts_btn, False)
+            self.shortcuts_section._toggle.setChecked(False)
+        self._sync_correction_panel_visibility()
+
+    def _on_correction_shortcuts_button_toggled(self, checked: bool) -> None:
+        self.shortcuts_section._toggle.setChecked(checked)
+        if checked:
+            self._set_checked_without_signal(self.params_btn, False)
+            self.extend_retrack_params_section._toggle.setChecked(False)
+        self._sync_correction_panel_visibility()
 
     @property
     def _paths(self) -> NucleusArtifactPaths | None:
@@ -1220,19 +1274,24 @@ class NucleusCorrectionWidget(QWidget):
                 finally:
                     self.active_btn.blockSignals(old)
                 self.correction_widget.deactivate()
-                self.section.collapse()
+                self._correction_active_content_visible = False
+                self._sync_correction_panel_visibility()
                 self._refresh_refinement_widget()
                 return
             layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
             layer.visible = True
             self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
-            self.toolbar.setVisible(True)
-            self.section.expand()
+            self._set_checked_without_signal(self.params_btn, False)
+            self._set_checked_without_signal(self.shortcuts_btn, False)
+            self.extend_retrack_params_section._toggle.setChecked(False)
+            self.shortcuts_section._toggle.setChecked(False)
+            self._correction_active_content_visible = True
+            self._sync_correction_panel_visibility()
             self._refresh_refinement_widget()
             return
 
-        self.toolbar.setVisible(False)
+        self._correction_active_content_visible = False
         self.correction_widget.deactivate()
         for sc in getattr(self, "_correction_shortcuts", []):
             sc.setEnabled(False)
@@ -1241,8 +1300,11 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_tracked_layer_from_disk()
         self._remove_correction_owned_layers()
         self._restore_correction_view_state()
-        self.section.collapse()
-        self.params_btn.setChecked(False)
+        self._set_checked_without_signal(self.params_btn, False)
+        self._set_checked_without_signal(self.shortcuts_btn, False)
+        self.extend_retrack_params_section._toggle.setChecked(False)
+        self.shortcuts_section._toggle.setChecked(False)
+        self._sync_correction_panel_visibility()
         self._refresh_refinement_widget()
 
     def _refresh_refinement_widget(self) -> None:
@@ -1253,7 +1315,6 @@ class NucleusCorrectionWidget(QWidget):
             self._swap_cursor = None
         for sc in self._correction_shortcuts:
             sc.setEnabled(active)
-        self.section.expand() if active else self.section.collapse()
 
     def _kb_toggle_cell_validation(self, _viewer) -> None:
         if self._pos_dir is None:

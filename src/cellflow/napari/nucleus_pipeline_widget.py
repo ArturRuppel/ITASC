@@ -23,7 +23,7 @@ from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
-from cellflow.napari.ui_style import stage_accent as _stage_accent
+from cellflow.napari.ui_style import stage_header_label as _stage_header_label
 from cellflow.database.validation import read_corrections, read_validated_tracks
 from cellflow.segmentation import build_consensus_boundary, build_nucleus_averaged_maps
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
@@ -134,16 +134,11 @@ class NucleusPipelineWidget(QWidget):
         block = QWidget(self)
         lay = QVBoxLayout(block)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(2)
-
-        accent = _stage_accent("nucleus")
+        lay.setSpacing(6)
 
         def _stage_label(text: str) -> QLabel:
             lbl = QLabel(text)
-            lbl.setStyleSheet(
-                f"font-weight: bold; font-size: 11pt; color: {accent};"
-            )
-            return lbl
+            return _stage_header_label(lbl, "nucleus")
 
         def _stage_row(label: QLabel, *trailing: QWidget) -> QHBoxLayout:
             row = QHBoxLayout()

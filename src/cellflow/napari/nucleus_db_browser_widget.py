@@ -17,7 +17,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.napari._widget_helpers import tool_btn as _tool_btn
-from cellflow.napari.ui_style import stage_accent as _stage_accent
+from cellflow.napari.ui_style import stage_header_label as _stage_header_label
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.tracking_ultrack.db_query import (
     HierarchyCutState as _HierarchyCutState,
@@ -55,11 +55,8 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         header_lay = QHBoxLayout(self.header)
         header_lay.setContentsMargins(0, 0, 0, 0)
         header_lay.setSpacing(4)
-        accent = _stage_accent("nucleus")
         self.header_lbl = QLabel("Database Browser")
-        self.header_lbl.setStyleSheet(
-            f"font-weight: bold; font-size: 11pt; color: {accent};"
-        )
+        _stage_header_label(self.header_lbl, "nucleus")
         self.refresh_btn = _tool_btn("↻", "Refresh Ultrack database browser")
         self.refresh_btn.setEnabled(False)
         self.active_btn = _tool_btn(

@@ -433,15 +433,19 @@ def test_correction_section_uses_stage_header_params_activate_and_active_toolbar
     ]
 
     assert widget.correction_header_lbl.text() == "Correction"
+    assert widget.correction_shortcuts_btn.text() == "📖"
     assert widget.correction_params_btn.text() == "⚙"
     assert widget.correction_active_btn.text() == "⏻"
+    assert isinstance(widget.correction_shortcuts_btn, QToolButton)
     assert isinstance(widget.correction_params_btn, QToolButton)
     assert isinstance(widget.correction_active_btn, QToolButton)
     assert header_widgets == [
         widget.correction_header_lbl,
+        widget.correction_shortcuts_btn,
         widget.correction_params_btn,
         widget.correction_active_btn,
     ]
+    assert widget.correction_shortcuts_btn in header_widgets
     assert widget.correction_params_btn in header_widgets
     assert widget.correction_active_btn in header_widgets
     assert widget.save_tracked_btn not in header_widgets
@@ -454,13 +458,90 @@ def test_correction_section_uses_stage_header_params_activate_and_active_toolbar
     assert widget.save_tracked_btn.parent() is widget.correction_toolbar
     assert widget.remove_unvalidated_btn.parent() is widget.correction_toolbar
 
+    for section in (
+        widget.extend_retrack_params_section,
+        widget.correction_shortcuts_section,
+    ):
+        assert section._toggle.isHidden() is True
+        assert "border: none" in section._content_frame.styleSheet()
+        assert section._content_frame.layout().contentsMargins().left() == 0
+        assert section.layout().contentsMargins().top() == 0
+
     assert widget.extend_retrack_params_section.is_expanded is False
+    assert widget.correction_shortcuts_section.is_expanded is False
     widget.correction_params_btn.setChecked(True)
     assert widget.extend_retrack_params_section.is_expanded is True
+    assert widget.correction_shortcuts_section.is_expanded is False
     assert widget.correction_mode_section.is_expanded is True
+    assert widget.correction_widget.isHidden() is True
     assert widget.correction_toolbar.isHidden() is True
     widget.correction_params_btn.setChecked(False)
     assert widget.extend_retrack_params_section.is_expanded is False
+    assert widget.correction_mode_section.is_expanded is False
+
+    widget.correction_shortcuts_btn.setChecked(True)
+    assert widget.correction_shortcuts_section.is_expanded is True
+    assert widget.extend_retrack_params_section.is_expanded is False
+    assert widget.correction_mode_section.is_expanded is True
+    assert widget.correction_widget.isHidden() is True
+    assert widget.correction_toolbar.isHidden() is True
+    widget.correction_shortcuts_btn.setChecked(False)
+    assert widget.correction_shortcuts_section.is_expanded is False
+    assert widget.correction_mode_section.is_expanded is False
+
+    correction = widget.nucleus_correction_widget
+    viewer.add_labels(
+        np.zeros((1, 2, 2), dtype=np.uint8),
+        name="[Correction] Nucleus Labels",
+    )
+    correction._capture_correction_view_state = lambda: None
+    correction._restore_correction_view_state = lambda: None
+    correction._load_correction_layers_from_disk = lambda: True
+    correction._refresh_refinement_widget = lambda: None
+    correction._refresh_tracked_layer_from_disk = lambda: None
+    correction._remove_correction_owned_layers = lambda: None
+
+    widget.correction_params_btn.setChecked(True)
+    assert widget.extend_retrack_params_section.is_expanded is True
+    widget.correction_active_btn.setChecked(True)
+    assert widget.correction_active_btn.isChecked() is True
+    assert widget.extend_retrack_params_section.is_expanded is False
+    assert widget.correction_shortcuts_section.is_expanded is False
+    assert widget.correction_mode_section.is_expanded is True
+    assert widget.correction_widget.isHidden() is False
+    assert widget.correction_toolbar.isHidden() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_workflow_stage_headers_are_compact_and_evenly_spaced():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    from cellflow.napari.ui_style import stage_accent
+
+    nucleus_accent = stage_accent("nucleus")
+    for text in (
+        "Pipeline Files",
+        "Segmentation inputs",
+        "Ultrack database",
+        "Ultrack solve",
+        "Database Browser",
+        "Correction",
+    ):
+        label = next(child for child in widget.findChildren(QLabel) if child.text() == text)
+        style = label.styleSheet()
+        assert "font-size: 9pt" in style
+        assert f"color: {nucleus_accent}" not in style
+
+    pipeline_layout = widget.segmentation_inputs_section.parentWidget().layout()
+    assert pipeline_layout.spacing() == widget.layout().spacing()
+
+    assert widget.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Maximum
+    root_layout = widget.layout()
+    assert root_layout.itemAt(root_layout.count() - 1).spacerItem() is None
 
     widget.deleteLater()
     viewer.close()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from qtpy.QtCore import Qt
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QFormLayout, QGridLayout, QLabel, QSizePolicy
 
 TINY_MARGIN = 2
@@ -69,6 +70,21 @@ def stage_accent(stage_key: str) -> str:
     return ACTIVE_PALETTE[STAGE_ACCENTS[stage_key]]
 
 
+def muted_accent(hex_str: str) -> str:
+    """Return a quieter variant of an accent color for nested or compact labels."""
+    c = QColor(hex_str)
+    h, s, l, a = c.getHslF()
+    new_s = max(0.0, s * 0.35)
+    new_l = 0.55 + (l - 0.55) * 0.3
+    new_l = max(0.0, min(1.0, new_l))
+    c.setHslF(h, new_s, new_l, a)
+    return c.name()
+
+
+def muted_stage_accent(stage_key: str) -> str:
+    return muted_accent(stage_accent(stage_key))
+
+
 # Stage status indicator colors. Keyed by status name so call sites stay
 # decoupled from specific hexes.
 STAGE_STATUS_COLORS = {
@@ -133,6 +149,15 @@ def status_label(label, size_pt=8, italic=False, muted=False):
 
 def parameter_heading(label):
     label.setStyleSheet("font-weight: 600;")
+    return label
+
+
+def stage_header_label(label, stage_key: str, size_pt: int = 9):
+    label.setStyleSheet(
+        "font-weight: bold; "
+        f"font-size: {size_pt}pt; "
+        f"color: {muted_stage_accent(stage_key)};"
+    )
     return label
 
 

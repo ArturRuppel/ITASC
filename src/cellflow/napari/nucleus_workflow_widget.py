@@ -18,6 +18,7 @@ import napari
 import numpy as np
 from qtpy.QtWidgets import (
     QVBoxLayout,
+    QSizePolicy,
     QWidget,
 )
 
@@ -73,6 +74,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(6)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         # ── Pipeline files (single deduplicated panel) ────────────────
         self._files_widget = PipelineFilesWidget(
@@ -125,8 +127,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
 
         # ── Correction (group box) ───────────────────────────────────
         self._build_correction_section(root)
-
-        root.addStretch()
 
     # -- Parameters --------------------------------------------------------
 
@@ -324,6 +324,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         correction = self.nucleus_correction_widget
         self.correction_header = correction.header
         self.correction_header_lbl = correction.header_lbl
+        self.correction_shortcuts_btn = correction.shortcuts_btn
         self.correction_params_btn = correction.params_btn
         self.correction_active_btn = correction.active_btn
         self.correction_toolbar = correction.toolbar

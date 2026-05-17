@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from qtpy.QtCore import Qt, QTimer
-from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -21,8 +20,10 @@ from .ui_style import (
     TIGHT_SPACING,
     TINY_MARGIN,
     icon_button,
+    muted_accent,
     muted_label,
     stage_accent,
+    stage_header_label,
     stage_status_color,
     status_label,
 )
@@ -167,13 +168,7 @@ class CollapsibleSection(QWidget):
     def _muted_accent(hex_str: str) -> str:
         """Desaturate and flatten lightness so inner headers read as 'same hue,
         quieter' rather than as a separate color."""
-        c = QColor(hex_str)
-        h, s, l, a = c.getHslF()
-        new_s = max(0.0, s * 0.35)
-        new_l = 0.55 + (l - 0.55) * 0.3
-        new_l = max(0.0, min(1.0, new_l))
-        c.setHslF(h, new_s, new_l, a)
-        return c.name()
+        return muted_accent(hex_str)
 
     def set_header_visible(self, visible: bool) -> None:
         """Show or hide the built-in toggle header row."""
@@ -257,9 +252,7 @@ def make_pipeline_files_header(
     layout.setSpacing(4)
 
     label = QLabel("Pipeline Files")
-    label.setStyleSheet(
-        f"font-weight: bold; font-size: 11pt; color: {stage_accent(stage_key)};"
-    )
+    stage_header_label(label, stage_key)
 
     button = tool_btn("🔍", "Show pipeline files.", checkable=True)
     button.setChecked(section.is_expanded)
