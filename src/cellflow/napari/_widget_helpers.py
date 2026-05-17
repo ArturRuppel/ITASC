@@ -1,7 +1,7 @@
 """Small Qt widget factory helpers shared across napari workflow widgets."""
 from __future__ import annotations
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
@@ -11,6 +11,8 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyleOption,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -75,6 +77,47 @@ def btn(text, tooltip=""):
     return b
 
 
+def _patch_label_autosize(label) -> None:
+    """Override the superqt SliderLabel's internal size calculation so it
+    fits the widest value it can display, formatted with the configured
+    decimals.
+
+    superqt's stock ``_get_size`` widths labels from ``str(minimum())`` /
+    ``str(maximum())`` — which drops trailing zeros (``str(1.0) == "1.0"``)
+    and ignores decimals, so e.g. a (-10, 10) range with 1 decimal sizes
+    the label for ``"-10.0"`` but then ``str(-10.0) == "-10.0"``... fine
+    in that case, while a (0, 1) range with 2 decimals sizes for ``"1.0"``
+    (3 chars) and clips the displayed ``"1.00"``. Style padding/font
+    tweaks compound this. We replace ``_get_size`` on the instance so
+    that every subsequent ``_update_size`` (rangeChanged, showEvent…)
+    re-derives the size from the actual format width plus headroom for
+    chrome and a possible minus sign.
+    """
+    def _get_size():
+        dec = label.decimals() if hasattr(label, "decimals") else 0
+
+        def _fmt(v):
+            return f"{v:.{dec}f}" if dec else f"{int(v)}"
+        lo, hi = label.minimum(), label.maximum()
+        sample = max((_fmt(lo), _fmt(hi)), key=len)
+        # ensure room for a minus sign even if both ends are non-negative
+        # (the user may type one into the editable label).
+        if not sample.startswith("-"):
+            sample = "-" + sample
+        fm = label.fontMetrics()
+        prefix = label.prefix() or ""
+        suffix = label.suffix() or ""
+        w = fm.horizontalAdvance(prefix + sample + suffix) + 18
+        h = label.sizeHint().height()
+        opt = QStyleOption()
+        return label.style().sizeFromContents(
+            QStyle.ContentsType.CT_LineEdit, opt, QSize(w, h), label
+        )
+
+    label._get_size = _get_size
+    label._update_size()
+
+
 def _stack_slider_label_above(slider) -> None:
     """Repack a QLabeledSlider / QLabeledDoubleSlider so the editable value
     label sits centered above the slider track instead of beside it."""
@@ -82,17 +125,7 @@ def _stack_slider_label_above(slider) -> None:
     track = slider._slider
     label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
     label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-
-    # Force the editable label to be wide enough for the longest value
-    # in the slider's range (including a minus sign and decimal places).
-    decimals = getattr(label, "decimals", lambda: 0)()
-    lo, hi = slider.minimum(), slider.maximum()
-
-    def _fmt(v):
-        return f"{v:.{decimals}f}" if decimals else f"{int(v)}"
-    sample = max((_fmt(lo), _fmt(hi)), key=len)
-    fm = label.fontMetrics()
-    label.setMinimumWidth(fm.horizontalAdvance(sample) + 12)
+    _patch_label_autosize(label)
 
     old_layout = slider.layout()
     if old_layout is not None:
@@ -151,27 +184,11 @@ def _hide_range_edge_labels(slider) -> None:
             lbl.hide()
 
 
-def _force_handle_label_width(slider, decimals: int) -> None:
+def _force_handle_label_width(slider) -> None:
     """Resize the handle labels of a range slider to fit the widest value
-    they may display.
-
-    superqt's SliderLabel auto-sizes from ``str(minimum())``/``str(maximum())``
-    which ignores the configured decimals, so e.g. ``-10.0`` overflows the
-    24-px box reserved for an integer ``-20``. We measure the widest
-    formatted value ourselves and pin the labels to that fixed width."""
-    lo, hi = slider.minimum(), slider.maximum()
-
-    def _fmt(v):
-        return f"{v:.{decimals}f}" if decimals else f"{int(v)}"
-    sample = max((_fmt(lo), _fmt(hi)), key=len)
-    labels = list(getattr(slider, "_handle_labels", []) or [])
-    if not labels:
-        return
-    fm = labels[0].fontMetrics()
-    width = fm.horizontalAdvance(sample) + 10  # padding for cursor + frame
-    height = labels[0].sizeHint().height()
-    for lbl in labels:
-        lbl.setFixedSize(width, height)
+    they may display, robust to later rangeChanged/showEvent re-sizes."""
+    for lbl in getattr(slider, "_handle_labels", []) or []:
+        _patch_label_autosize(lbl)
 
 
 def drslider(lo, hi, lo_val, hi_val, step=0.1, decimals=2, tooltip=""):
@@ -185,7 +202,7 @@ def drslider(lo, hi, lo_val, hi_val, step=0.1, decimals=2, tooltip=""):
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     _hide_range_edge_labels(s)
-    _force_handle_label_width(s, decimals)
+    _force_handle_label_width(s)
     return s
 
 
@@ -200,7 +217,7 @@ def irslider(lo, hi, lo_val, hi_val, step=1, tooltip=""):
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     _hide_range_edge_labels(s)
-    _force_handle_label_width(s, 0)
+    _force_handle_label_width(s)
     return s
 
 

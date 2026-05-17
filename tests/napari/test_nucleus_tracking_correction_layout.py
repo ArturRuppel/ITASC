@@ -317,6 +317,35 @@ def test_main_widget_embeds_hpc_cellpose_inside_cellpose_stage():
     viewer.close()
 
 
+def test_main_widget_cellpose_stage_groups_pipeline_files_like_workflow():
+    _app, viewer = _make_viewer()
+    widget_class = _load_main_widget_class()
+    from cellflow.napari.widgets import PipelineFilesWidget
+
+    widget = widget_class(viewer)
+    cellpose = widget._cellpose_widget
+
+    assert cellpose._pipeline_files_section.title == "Pipeline Files"
+    assert cellpose._pipeline_files_section.is_expanded is False
+    assert cellpose.input_files_tracker is cellpose._files_widget
+    assert cellpose.output_files_tracker is cellpose._files_widget
+    assert cellpose.findChildren(PipelineFilesWidget) == [cellpose._files_widget]
+
+    toggles = {
+        toggle.text()
+        for toggle in cellpose.findChildren(QToolButton, "collapsible_toggle")
+    }
+    assert "Pipeline Files" in toggles
+    assert "HPC Cellpose" in toggles
+
+    counts = cellpose._files_widget.presence_count_by_group()
+    assert counts["Inputs"] == (0, 2)
+    assert counts["Outputs"] == (0, 6)
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_main_widget_embeds_nls_classification_inside_contact_analysis_stage():
     _app, viewer = _make_viewer()
     widget_class = _load_main_widget_class()

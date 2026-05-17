@@ -152,5 +152,5 @@ class NucleusSegmentationInputsWidget(QWidget):
                 max(0, min(int(cur_lo), new_max)),
                 max(0, min(int(cur_hi), new_max)),
             ))
-        _force_handle_label_width(self.map_z_range, 0)
+        _force_handle_label_width(self.map_z_range)
         self.map_z_step_spin.setRange(1, max(1, new_max))

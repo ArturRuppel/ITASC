@@ -35,14 +35,15 @@ def test_segmentation_widgets_use_probability_zavgs_as_inputs():
         assert "1_cellpose/nucleus_prob_zavg.tif" in source
 
 
-def test_cellpose_stage_places_hpc_controls_between_inputs_and_outputs():
+def test_cellpose_stage_groups_pipeline_files_before_hpc_controls():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
 
     cellpose_source = (package_root / "main_widget.py").read_text()
 
-    inputs_index = cellpose_source.index('"Inputs"')
+    pipeline_files_index = cellpose_source.index('"Pipeline Files"')
     hpc_index = cellpose_source.index('"HPC Cellpose"')
-    outputs_index = cellpose_source.index('"Outputs"')
 
-    assert inputs_index < hpc_index < outputs_index
+    assert pipeline_files_index < hpc_index
+    assert '("Inputs", [' in cellpose_source
+    assert '("Outputs", [' in cellpose_source
     assert "2b. HPC Cellpose" not in cellpose_source
