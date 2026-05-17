@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.napari.cellpose_zavg_viz_widget import CellposeZavgVizWidget
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
@@ -64,6 +65,9 @@ class _CellposePanel(QWidget):
         )
         layout.addWidget(self.hpc_cellpose_section)
 
+        self.zavg_viz_widget = CellposeZavgVizWidget()
+        layout.addWidget(self.zavg_viz_widget)
+
         self.output_files_tracker = PipelineFilesWidget([
             ("Outputs", [
                 ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
@@ -83,6 +87,7 @@ class _CellposePanel(QWidget):
         self._pos_dir = pos_dir
         self.input_files_tracker.refresh(pos_dir)
         self.hpc_cellpose_widget.refresh(pos_dir)
+        self.zavg_viz_widget.refresh(pos_dir)
         self.output_files_tracker.refresh(pos_dir)
 
 

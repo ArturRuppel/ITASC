@@ -54,16 +54,12 @@ def map_cellprob_thresholds(w: NucleusWorkflowWidget) -> np.ndarray:
     return np.arange(threshold_min, threshold_max + threshold_step / 2, threshold_step)
 
 
-def map_z_indices(w: NucleusWorkflowWidget) -> list[int] | slice | None:
+def map_z_indices(w: NucleusWorkflowWidget) -> list[int]:
     start = int(w.map_z_start_spin.value())
     stop = int(w.map_z_stop_spin.value())
     step = int(w.map_z_step_spin.value())
     if step <= 0:
         raise ValueError("Z step must be > 0.")
-    if stop == -1:
-        if start == 0 and step == 1:
-            return None
-        return slice(start, None, step)
     if start > stop:
         raise ValueError("Z start must be <= stop.")
     return list(range(start, stop + 1, step))

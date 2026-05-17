@@ -6,7 +6,6 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
-    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -16,7 +15,12 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from superqt import QLabeledDoubleRangeSlider, QLabeledDoubleSlider, QLabeledSlider
+from superqt import (
+    QLabeledDoubleRangeSlider,
+    QLabeledDoubleSlider,
+    QLabeledRangeSlider,
+    QLabeledSlider,
+)
 
 from cellflow.napari.ui_style import action_button, parameter_heading, status_label
 
@@ -135,53 +139,44 @@ def islider(lo, hi, val, step=1, tooltip=""):
     return s
 
 
-def _stack_range_labels_above(slider) -> None:
-    """Repack a QLabeledDoubleRangeSlider (in LabelIsValue mode) so the
-    two editable thumb-value labels sit at the left/right edges above the
-    track instead of beside it."""
-    min_label = slider._min_label
-    max_label = slider._max_label
-    track = slider._slider
+def _hide_range_edge_labels(slider) -> None:
+    """Hide the edge labels of a QLabeled[Double]RangeSlider.
 
-    decimals = getattr(min_label, "decimals", lambda: 0)()
+    The slider already renders an editable value label above each thumb
+    (HandleLabelPosition.LabelsAbove, the superqt default), so the edge
+    labels would just duplicate the same numbers at the track ends."""
+    for name in ("_min_label", "_max_label"):
+        lbl = getattr(slider, name, None)
+        if lbl is not None:
+            lbl.hide()
+
+
+def _force_handle_label_width(slider, decimals: int) -> None:
+    """Resize the handle labels of a range slider to fit the widest value
+    they may display.
+
+    superqt's SliderLabel auto-sizes from ``str(minimum())``/``str(maximum())``
+    which ignores the configured decimals, so e.g. ``-10.0`` overflows the
+    24-px box reserved for an integer ``-20``. We measure the widest
+    formatted value ourselves and pin the labels to that fixed width."""
     lo, hi = slider.minimum(), slider.maximum()
 
     def _fmt(v):
         return f"{v:.{decimals}f}" if decimals else f"{int(v)}"
     sample = max((_fmt(lo), _fmt(hi)), key=len)
-
-    for lbl in (min_label, max_label):
-        lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        lbl.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        fm = lbl.fontMetrics()
-        lbl.setMinimumWidth(fm.horizontalAdvance(sample) + 12)
-
-    old_layout = slider.layout()
-    if old_layout is not None:
-        for child in (min_label, max_label, track):
-            old_layout.removeWidget(child)
-        QWidget().setLayout(old_layout)
-    for child in (min_label, max_label, track):
-        child.setParent(slider)
-
-    hbox = QHBoxLayout()
-    hbox.setContentsMargins(0, 0, 0, 0)
-    hbox.setSpacing(0)
-    hbox.addWidget(min_label, alignment=Qt.AlignmentFlag.AlignLeft)
-    hbox.addStretch()
-    hbox.addWidget(max_label, alignment=Qt.AlignmentFlag.AlignRight)
-
-    vbox = QVBoxLayout()
-    vbox.setContentsMargins(0, 0, 0, 0)
-    vbox.setSpacing(0)
-    vbox.addLayout(hbox)
-    vbox.addWidget(track)
-    slider.setLayout(vbox)
+    labels = list(getattr(slider, "_handle_labels", []) or [])
+    if not labels:
+        return
+    fm = labels[0].fontMetrics()
+    width = fm.horizontalAdvance(sample) + 10  # padding for cursor + frame
+    height = labels[0].sizeHint().height()
+    for lbl in labels:
+        lbl.setFixedSize(width, height)
 
 
 def drslider(lo, hi, lo_val, hi_val, step=0.1, decimals=2, tooltip=""):
-    """A horizontal QLabeledDoubleRangeSlider with the two editable thumb
-    values rendered as edge labels stacked above the track."""
+    """A horizontal QLabeledDoubleRangeSlider with one editable label above
+    each thumb. Edge labels are hidden to avoid duplicating those values."""
     s = QLabeledDoubleRangeSlider(Qt.Orientation.Horizontal)
     s.setRange(lo, hi)
     s.setValue((lo_val, hi_val))
@@ -189,8 +184,23 @@ def drslider(lo, hi, lo_val, hi_val, step=0.1, decimals=2, tooltip=""):
     s.setDecimals(decimals)
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    s.setEdgeLabelMode(s.EdgeLabelMode.LabelIsValue)
-    _stack_range_labels_above(s)
+    _hide_range_edge_labels(s)
+    _force_handle_label_width(s, decimals)
+    return s
+
+
+def irslider(lo, hi, lo_val, hi_val, step=1, tooltip=""):
+    """A horizontal QLabeledRangeSlider (integer) with one editable label
+    above each thumb. Edge labels are hidden to avoid duplicating those
+    values."""
+    s = QLabeledRangeSlider(Qt.Orientation.Horizontal)
+    s.setRange(lo, hi)
+    s.setValue((lo_val, hi_val))
+    s.setSingleStep(step)
+    s.setToolTip(tooltip)
+    s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    _hide_range_edge_labels(s)
+    _force_handle_label_width(s, 0)
     return s
 
 

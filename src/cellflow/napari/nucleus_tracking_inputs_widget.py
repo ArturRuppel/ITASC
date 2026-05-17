@@ -38,7 +38,7 @@ class NucleusTrackingInputsWidget(QWidget):
         self.db_gen_max_area_spin = _islider(
             0, 10_000_000, 100_000, tooltip="Maximum segment area in pixels.")
         self.db_gen_min_frontier_spin = _dslider(
-            0, 1, 0.0, 0.01, 3,
+            0, 1, 0.0, 0.01, 2,
             "Minimum boundary fraction to keep a candidate.",
         )
         self.db_gen_ws_hierarchy_combo = QComboBox()
@@ -57,7 +57,7 @@ class NucleusTrackingInputsWidget(QWidget):
         self.db_gen_area_weight_spin.setEnabled(False)
         self.db_gen_iou_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.db_gen_iou_weight_spin.setEnabled(False)
-        self.db_gen_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 3)
+        self.db_gen_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 2)
         self.db_gen_distance_weight_spin.setEnabled(False)
 
         # ─── DB Generation — Scoring ────────────────────────────────
@@ -85,15 +85,15 @@ class NucleusTrackingInputsWidget(QWidget):
 
         # ─── Ultrack — Event Penalties ──────────────────────────────
         self.ultrack_appear_spin = _dslider(
-            -10, 0, -0.1, 0.05, 3,
+            -10, 0, -0.1, 0.05, 2,
             "ILP penalty for cells appearing. More negative = fewer appearances.",
         )
         self.ultrack_disappear_spin = _dslider(
-            -10, 0, -0.1, 0.05, 3,
+            -10, 0, -0.1, 0.05, 2,
             "ILP penalty for cells disappearing. More negative = fewer disappearances.",
         )
         self.ultrack_division_spin = _dslider(
-            -10, 0, -0.001, 0.05, 3,
+            -10, 0, -0.01, 0.05, 2,
             "ILP penalty for divisions. More negative = fewer divisions.",
         )
 
@@ -103,7 +103,7 @@ class NucleusTrackingInputsWidget(QWidget):
             "Solver transform for node_prob and link weights (link_function=power).",
         )
         self.ultrack_bias_spin = _dslider(
-            -10, 10, 0.0, 0.05, 3,
+            -10, 10, 0.0, 0.05, 2,
             "Constant offset applied by Ultrack tracking_config.bias.",
         )
         self.ultrack_solver_lbl = QLabel("—")

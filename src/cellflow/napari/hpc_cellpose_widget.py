@@ -13,7 +13,6 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,7 +22,6 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari.cellpose_visualization import add_cellpose_viz_layers
 from cellflow.napari.ui_style import action_button, compact_spinbox, status_label
 from cellflow.napari.utils import launch_in_terminal
 
@@ -123,80 +121,6 @@ class HpcCellposeWidget(QWidget):
         status_label(self.status_lbl)
         layout.addWidget(self.status_lbl)
 
-        # --- Nuclei visualization ---
-        nuclei_viz_box = QGroupBox("Nuclei visualization")
-        nuclei_viz_layout = QVBoxLayout(nuclei_viz_box)
-        nuclei_viz_layout.setContentsMargins(4, 4, 4, 4)
-        nuclei_viz_layout.setSpacing(4)
-
-        nuclei_params_row = QWidget()
-        nuclei_params_layout = QHBoxLayout(nuclei_params_row)
-        nuclei_params_layout.setContentsMargins(0, 0, 0, 0)
-        nuclei_params_layout.setSpacing(8)
-        nuclei_params_layout.addWidget(QLabel("Stride:"))
-        self.nuclei_viz_stride_spin = self._int_spin(1, 256, 16)
-        nuclei_params_layout.addWidget(self.nuclei_viz_stride_spin)
-        nuclei_params_layout.addWidget(QLabel("Vector scale:"))
-        self.nuclei_viz_scale_spin = self._double_spin(0.01, 100.0, 1.0, 2)
-        nuclei_params_layout.addWidget(self.nuclei_viz_scale_spin)
-        nuclei_params_layout.addStretch()
-        nuclei_viz_layout.addWidget(nuclei_params_row)
-
-        nuclei_btn_row = QWidget()
-        nuclei_btn_layout = QHBoxLayout(nuclei_btn_row)
-        nuclei_btn_layout.setContentsMargins(0, 0, 0, 0)
-        nuclei_btn_layout.setSpacing(4)
-        self.nuclei_viz_zavg_btn = QPushButton("Load z-avg")
-        action_button(self.nuclei_viz_zavg_btn, expand=True)
-        self.nuclei_viz_3dt_btn = QPushButton("Load 3D+t")
-        action_button(self.nuclei_viz_3dt_btn, expand=True)
-        nuclei_btn_layout.addWidget(self.nuclei_viz_zavg_btn)
-        nuclei_btn_layout.addWidget(self.nuclei_viz_3dt_btn)
-        nuclei_viz_layout.addWidget(nuclei_btn_row)
-
-        self.nuclei_viz_status_lbl = QLabel("")
-        status_label(self.nuclei_viz_status_lbl, muted=True)
-        nuclei_viz_layout.addWidget(self.nuclei_viz_status_lbl)
-
-        layout.addWidget(nuclei_viz_box)
-
-        # --- Cells visualization ---
-        cells_viz_box = QGroupBox("Cells visualization")
-        cells_viz_layout = QVBoxLayout(cells_viz_box)
-        cells_viz_layout.setContentsMargins(4, 4, 4, 4)
-        cells_viz_layout.setSpacing(4)
-
-        cells_params_row = QWidget()
-        cells_params_layout = QHBoxLayout(cells_params_row)
-        cells_params_layout.setContentsMargins(0, 0, 0, 0)
-        cells_params_layout.setSpacing(8)
-        cells_params_layout.addWidget(QLabel("Stride:"))
-        self.cells_viz_stride_spin = self._int_spin(1, 256, 16)
-        cells_params_layout.addWidget(self.cells_viz_stride_spin)
-        cells_params_layout.addWidget(QLabel("Vector scale:"))
-        self.cells_viz_scale_spin = self._double_spin(0.01, 100.0, 1.0, 2)
-        cells_params_layout.addWidget(self.cells_viz_scale_spin)
-        cells_params_layout.addStretch()
-        cells_viz_layout.addWidget(cells_params_row)
-
-        cells_btn_row = QWidget()
-        cells_btn_layout = QHBoxLayout(cells_btn_row)
-        cells_btn_layout.setContentsMargins(0, 0, 0, 0)
-        cells_btn_layout.setSpacing(4)
-        self.cells_viz_zavg_btn = QPushButton("Load z-avg")
-        action_button(self.cells_viz_zavg_btn, expand=True)
-        self.cells_viz_3dt_btn = QPushButton("Load 3D+t")
-        action_button(self.cells_viz_3dt_btn, expand=True)
-        cells_btn_layout.addWidget(self.cells_viz_zavg_btn)
-        cells_btn_layout.addWidget(self.cells_viz_3dt_btn)
-        cells_viz_layout.addWidget(cells_btn_row)
-
-        self.cells_viz_status_lbl = QLabel("")
-        status_label(self.cells_viz_status_lbl, muted=True)
-        cells_viz_layout.addWidget(self.cells_viz_status_lbl)
-
-        layout.addWidget(cells_viz_box)
-
         self.input_dir_browse_btn.clicked.connect(self._browse_input_dir)
         self.output_dir_browse_btn.clicked.connect(self._browse_output_dir)
         self.config_path_browse_btn.clicked.connect(self._browse_config_path)
@@ -209,23 +133,7 @@ class HpcCellposeWidget(QWidget):
         ):
             field.textChanged.connect(self._update_input_status)
 
-        self.nuclei_viz_zavg_btn.clicked.connect(
-            lambda: self._on_load_viz("nucleus", "zavg")
-        )
-        self.nuclei_viz_3dt_btn.clicked.connect(
-            lambda: self._on_load_viz("nucleus", "3dt")
-        )
-        self.cells_viz_zavg_btn.clicked.connect(
-            lambda: self._on_load_viz("cell", "zavg")
-        )
-        self.cells_viz_3dt_btn.clicked.connect(
-            lambda: self._on_load_viz("cell", "3dt")
-        )
-
-        self.output_dir_edit.textChanged.connect(self._update_viz_status)
-
         self._update_input_status()
-        self._update_viz_status()
 
     def refresh(self, pos_dir: Path | str | None) -> None:
         """Derive default local pipeline paths from a selected position directory."""
@@ -261,10 +169,6 @@ class HpcCellposeWidget(QWidget):
             "max_concurrent_jobs": self.max_concurrent_jobs_spin.value(),
             "remote_user": self.remote_user_edit.text(),
             "remote_host": self.remote_host_edit.text(),
-            "nuclei_viz_stride": self.nuclei_viz_stride_spin.value(),
-            "nuclei_viz_scale": self.nuclei_viz_scale_spin.value(),
-            "cells_viz_stride": self.cells_viz_stride_spin.value(),
-            "cells_viz_scale": self.cells_viz_scale_spin.value(),
         }
 
     def set_state(self, state: dict[str, Any]) -> None:
@@ -301,14 +205,6 @@ class HpcCellposeWidget(QWidget):
             self.remote_user_edit.setText(str(state["remote_user"]))
         if "remote_host" in state:
             self.remote_host_edit.setText(str(state["remote_host"]))
-        if "nuclei_viz_stride" in state:
-            self.nuclei_viz_stride_spin.setValue(int(state["nuclei_viz_stride"]))
-        if "nuclei_viz_scale" in state:
-            self.nuclei_viz_scale_spin.setValue(float(state["nuclei_viz_scale"]))
-        if "cells_viz_stride" in state:
-            self.cells_viz_stride_spin.setValue(int(state["cells_viz_stride"]))
-        if "cells_viz_scale" in state:
-            self.cells_viz_scale_spin.setValue(float(state["cells_viz_scale"]))
         self._update_input_status()
 
     def build_runtime_config(self) -> dict[str, Any]:
@@ -415,100 +311,6 @@ class HpcCellposeWidget(QWidget):
         cells_status = "ok" if cells_path.is_file() else "missing"
         self.input_status_lbl.setText(
             f"Inputs: nuclei {nuclei_status}; cells {cells_status}."
-        )
-
-    def _update_viz_status(self) -> None:
-        output_dir_text = self.output_dir_edit.text().strip()
-        if not output_dir_text:
-            for btn in (
-                self.nuclei_viz_zavg_btn,
-                self.nuclei_viz_3dt_btn,
-                self.cells_viz_zavg_btn,
-                self.cells_viz_3dt_btn,
-            ):
-                btn.setEnabled(False)
-            self.nuclei_viz_status_lbl.setText("no output directory selected")
-            self.cells_viz_status_lbl.setText("no output directory selected")
-            return
-
-        output_dir = Path(output_dir_text)
-        for channel, zavg_btn, dt_btn, status_lbl in (
-            (
-                "nucleus",
-                self.nuclei_viz_zavg_btn,
-                self.nuclei_viz_3dt_btn,
-                self.nuclei_viz_status_lbl,
-            ),
-            (
-                "cell",
-                self.cells_viz_zavg_btn,
-                self.cells_viz_3dt_btn,
-                self.cells_viz_status_lbl,
-            ),
-        ):
-            prob_ok = (output_dir / f"{channel}_prob_3dt.tif").is_file()
-            dp_ok = (output_dir / f"{channel}_dp_3dt.tif").is_file()
-            enabled = prob_ok and dp_ok
-            zavg_btn.setEnabled(enabled)
-            dt_btn.setEnabled(enabled)
-            if not enabled:
-                missing = []
-                if not prob_ok:
-                    missing.append(f"{channel}_prob_3dt.tif")
-                if not dp_ok:
-                    missing.append(f"{channel}_dp_3dt.tif")
-                status_lbl.setText(f"missing: {', '.join(missing)}")
-            else:
-                status_lbl.setText("")
-
-    def _on_load_viz(self, channel: str, mode: str) -> None:
-        output_dir_text = self.output_dir_edit.text().strip()
-        if not output_dir_text:
-            return
-        output_dir = Path(output_dir_text)
-        status_lbl = (
-            self.nuclei_viz_status_lbl
-            if channel == "nucleus"
-            else self.cells_viz_status_lbl
-        )
-        stride = (
-            self.nuclei_viz_stride_spin.value()
-            if channel == "nucleus"
-            else self.cells_viz_stride_spin.value()
-        )
-        scale = (
-            self.nuclei_viz_scale_spin.value()
-            if channel == "nucleus"
-            else self.cells_viz_scale_spin.value()
-        )
-        try:
-            layers = add_cellpose_viz_layers(
-                self.viewer,
-                output_dir,
-                channel,
-                mode,
-                stride=stride,
-                scale=scale,
-            )
-        except Exception as exc:
-            status_lbl.setText(f"error: {exc}")
-            return
-
-        if not layers:
-            prob_name = f"{channel}_prob_3dt.tif"
-            dp_name = f"{channel}_dp_3dt.tif"
-            missing = [
-                n
-                for n in (prob_name, dp_name)
-                if not (output_dir / n).is_file()
-            ]
-            status_lbl.setText(f"missing: {', '.join(missing)}")
-            return
-
-        mode_label = "z-avg" if mode == "zavg" else "3D+t"
-        n_vectors = len(layers[-1].data) if hasattr(layers[-1], "data") else "?"
-        status_lbl.setText(
-            f"loaded {channel} {mode_label} ({n_vectors} vectors)"
         )
 
     def _browse_input_dir(self) -> None:

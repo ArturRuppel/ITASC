@@ -5,9 +5,11 @@ from qtpy.QtWidgets import QWidget
 
 from cellflow.napari._widget_helpers import (
     RangeThumbProxy as _RangeThumbProxy,
+    _force_handle_label_width,
     drslider as _drslider,
     dslider as _dslider,
     heading as _heading,
+    irslider as _irslider,
     islider as _islider,
 )
 from cellflow.napari.ui_style import (
@@ -60,15 +62,11 @@ class NucleusSegmentationInputsWidget(QWidget):
             "Step size for normalized foreground source thresholds.",
         )
 
-        # ─── Z slices — kept as 3 separate sliders to preserve the
-        # `-1 = all` stop sentinel that callers depend on. ───────────
-        self.map_z_start_spin = _islider(
-            0, 999, 0,
-            tooltip="First z slice included in averaged-map generation.",
-        )
-        self.map_z_stop_spin = _islider(
-            -1, 999, -1,
-            tooltip="Last z slice included. -1 means all z slices.",
+        # ─── Z slices: a range slider whose limits are set from the
+        # loaded input file's z dimension via `set_z_extent`. ────────
+        self.map_z_range = _irslider(
+            0, 999, 0, 999, 1,
+            "Z slice range (inclusive) for averaged-map generation.",
         )
         self.map_z_step_spin = _islider(
             1, 999, 1,
@@ -81,6 +79,8 @@ class NucleusSegmentationInputsWidget(QWidget):
         # expose those names by wrapping each thumb of the range sliders.
         self.map_cellprob_min_spin = _RangeThumbProxy(self.map_cellprob_range, 0)
         self.map_cellprob_max_spin = _RangeThumbProxy(self.map_cellprob_range, 1)
+        self.map_z_start_spin = _RangeThumbProxy(self.map_z_range, 0)
+        self.map_z_stop_spin = _RangeThumbProxy(self.map_z_range, 1)
         self.source_contour_threshold_min_spin = _RangeThumbProxy(
             self.source_contour_threshold_range, 0
         )
@@ -106,10 +106,9 @@ class NucleusSegmentationInputsWidget(QWidget):
         add_section_header(grid, row, _heading("Z Slices")); row += 1
         add_section_pair_row(
             grid, row,
-            "Z start:", self.map_z_start_spin,
-            "Z stop:", self.map_z_stop_spin,
+            "Z range:", self.map_z_range,
+            "Step:", self.map_z_step_spin,
         ); row += 1
-        add_section_pair_row(grid, row, "Z step:", self.map_z_step_spin); row += 1
 
         add_section_header(grid, row, _heading("Source Sweep")); row += 1
         add_section_pair_row(
@@ -128,3 +127,30 @@ class NucleusSegmentationInputsWidget(QWidget):
             inner,
             expanded=True,
         )
+
+    def set_z_extent(self, z_size: int | None) -> None:
+        """Update the z range slider's limits to match the input volume.
+
+        ``z_size`` is the number of z slices (so valid indices are
+        ``[0, z_size - 1]``). Pass ``None`` to leave the current range
+        unchanged. The thumbs are snapped into the new range while
+        preserving the user's selection where possible; a fresh slider
+        (still at its default open range) is collapsed onto the full
+        extent."""
+        if z_size is None or z_size <= 0:
+            return
+        new_max = int(z_size) - 1
+        cur_lo, cur_hi = self.map_z_range.value()
+        cur_min = self.map_z_range.minimum()
+        cur_max = self.map_z_range.maximum()
+        at_default = (cur_lo == cur_min and cur_hi == cur_max)
+        self.map_z_range.setRange(0, new_max)
+        if at_default:
+            self.map_z_range.setValue((0, new_max))
+        else:
+            self.map_z_range.setValue((
+                max(0, min(int(cur_lo), new_max)),
+                max(0, min(int(cur_hi), new_max)),
+            ))
+        _force_handle_label_width(self.map_z_range, 0)
+        self.map_z_step_spin.setRange(1, max(1, new_max))

@@ -1476,8 +1476,8 @@ def test_preview_segmentation_inputs_uses_full_time_layers_and_loads_nucleus_zav
     widget.map_cellprob_min_spin.setValue(-2.0)
     widget.map_cellprob_max_spin.setValue(-2.0)
     widget.map_cellprob_step_spin.setValue(1.0)
-    widget.map_z_start_spin.setValue(0)
-    widget.map_z_stop_spin.setValue(-1)
+    widget.map_z_range.setRange(0, 1)
+    widget.map_z_range.setValue((0, 1))
     widget.map_z_step_spin.setValue(1)
     widget.source_contour_threshold_min_spin.setValue(0.2)
     widget.source_contour_threshold_max_spin.setValue(0.2)
@@ -1553,8 +1553,8 @@ def test_preview_segmentation_inputs_reads_time_from_preview_time_axis(tmp_path,
     widget.map_cellprob_min_spin.setValue(-2.0)
     widget.map_cellprob_max_spin.setValue(-2.0)
     widget.map_cellprob_step_spin.setValue(1.0)
-    widget.map_z_start_spin.setValue(0)
-    widget.map_z_stop_spin.setValue(-1)
+    widget.map_z_range.setRange(0, 0)
+    widget.map_z_range.setValue((0, 0))
     widget.map_z_step_spin.setValue(1)
     widget.source_contour_threshold_min_spin.setValue(0.2)
     widget.source_contour_threshold_max_spin.setValue(0.2)
@@ -1606,17 +1606,26 @@ def test_preview_segmentation_inputs_reads_time_from_preview_time_axis(tmp_path,
     viewer.close()
 
 
-def test_z_stop_minus_one_means_all_z_slices():
+def test_z_range_picks_full_extent_after_input_load(tmp_path):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    widget.map_z_start_spin.setValue(0)
-    widget.map_z_stop_spin.setValue(-1)
-    widget.map_z_step_spin.setValue(1)
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    import tifffile
 
-    assert widget.map_z_stop_spin.value() == -1
-    assert widget._map_z_indices_from_controls() is None
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif",
+        np.zeros((3, 5, 4, 4), dtype=np.float32),
+    )
+    widget.refresh(pos_dir)
+
+    assert widget.map_z_range.maximum() == 4
+    assert widget.map_z_start_spin.value() == 0
+    assert widget.map_z_stop_spin.value() == 4
+    assert widget.map_z_step_spin.value() == 1
+    assert widget._map_z_indices_from_controls() == [0, 1, 2, 3, 4]
 
     widget.deleteLater()
     viewer.close()
@@ -1733,7 +1742,7 @@ def test_segmentation_inputs_expose_stage_a_map_builder_controls():
     assert widget.map_cellprob_max_spin.value() == 0.0
     assert widget.map_cellprob_step_spin.value() == 1.0
     assert widget.map_z_start_spin.value() == 0
-    assert widget.map_z_stop_spin.value() == -1
+    assert widget.map_z_stop_spin.value() == widget.map_z_range.maximum()
     assert widget.map_z_step_spin.value() == 1
     assert widget.stage_seg_check not in widget.segmentation_inputs_section.findChildren(QCheckBox)
     assert widget.run_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)

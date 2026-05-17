@@ -133,10 +133,6 @@ def test_get_set_state_round_trips_hpc_cellpose_controls(monkeypatch, tmp_path):
         "max_concurrent_jobs": 6,
         "remote_user": "science-user",
         "remote_host": "maestro.example.org",
-        "nuclei_viz_stride": 16,
-        "nuclei_viz_scale": 1.0,
-        "cells_viz_stride": 16,
-        "cells_viz_scale": 1.0,
     }
 
     widget.set_state(state)
@@ -248,98 +244,6 @@ def test_successful_launch_writes_runtime_json_and_calls_terminal(monkeypatch, t
             "gamma": 0.7,
         },
     }
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_viz_buttons_disabled_when_output_dir_empty(monkeypatch):
-    app, _mod, widget = _make_widget(monkeypatch)
-
-    widget.output_dir_edit.clear()
-    widget._update_viz_status()
-
-    assert not widget.nuclei_viz_zavg_btn.isEnabled()
-    assert not widget.nuclei_viz_3dt_btn.isEnabled()
-    assert not widget.cells_viz_zavg_btn.isEnabled()
-    assert not widget.cells_viz_3dt_btn.isEnabled()
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_viz_buttons_disabled_when_tifs_missing(monkeypatch, tmp_path):
-    app, _mod, widget = _make_widget(monkeypatch)
-
-    output_dir = tmp_path / "1_cellpose"
-    output_dir.mkdir()
-    widget.output_dir_edit.setText(str(output_dir))
-    widget._update_viz_status()
-
-    assert not widget.nuclei_viz_zavg_btn.isEnabled()
-    assert not widget.nuclei_viz_3dt_btn.isEnabled()
-    assert not widget.cells_viz_zavg_btn.isEnabled()
-    assert not widget.cells_viz_3dt_btn.isEnabled()
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_viz_buttons_enabled_when_tifs_present(monkeypatch, tmp_path):
-    app, _mod, widget = _make_widget(monkeypatch)
-
-    output_dir = tmp_path / "1_cellpose"
-    output_dir.mkdir()
-    (output_dir / "nucleus_prob_3dt.tif").write_bytes(b"x")
-    (output_dir / "nucleus_dp_3dt.tif").write_bytes(b"x")
-    (output_dir / "cell_prob_3dt.tif").write_bytes(b"x")
-    (output_dir / "cell_dp_3dt.tif").write_bytes(b"x")
-
-    widget.output_dir_edit.setText(str(output_dir))
-    widget._update_viz_status()
-
-    assert widget.nuclei_viz_zavg_btn.isEnabled()
-    assert widget.nuclei_viz_3dt_btn.isEnabled()
-    assert widget.cells_viz_zavg_btn.isEnabled()
-    assert widget.cells_viz_3dt_btn.isEnabled()
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_get_set_state_includes_viz_params(monkeypatch, tmp_path):
-    app, _mod, widget = _make_widget(monkeypatch)
-
-    state = {
-        "input_dir": "",
-        "output_dir": "",
-        "config_path": str(DEFAULT_CONFIG),
-        "nuclei_input": "nucleus_3dt.tif",
-        "cells_input": "cell_3dt.tif",
-        "frames": "all",
-        "nuclei_do_3d": False,
-        "nuclei_anisotropy": 1.5,
-        "nuclei_diameter": 25,
-        "nuclei_size": 0,
-        "nuclei_gamma": 1.0,
-        "cells_size": 0,
-        "cells_gamma": 1.0,
-        "max_concurrent_jobs": 4,
-        "remote_user": "aruppel",
-        "remote_host": "maestro.pasteur.fr",
-        "nuclei_viz_stride": 8,
-        "nuclei_viz_scale": 2.5,
-        "cells_viz_stride": 32,
-        "cells_viz_scale": 0.5,
-    }
-
-    widget.set_state(state)
-    result = widget.get_state()
-
-    assert result["nuclei_viz_stride"] == 8
-    assert result["nuclei_viz_scale"] == 2.5
-    assert result["cells_viz_stride"] == 32
-    assert result["cells_viz_scale"] == 0.5
 
     widget.deleteLater()
     app.processEvents()
