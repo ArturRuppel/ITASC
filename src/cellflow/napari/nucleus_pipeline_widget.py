@@ -98,11 +98,31 @@ class NucleusPipelineWidget(QWidget):
         self.pipeline_progress_bar = _make_progress()
 
         self.seg_preview_btn.clicked.connect(self._on_preview_contour_maps)
-        self.seg_run_btn.clicked.connect(self._on_build_segmentation_inputs)
-        self.db_run_btn.clicked.connect(self._on_run_db_generation)
-        self.solve_run_btn.clicked.connect(self._on_run_ultrack)
+        self.seg_run_btn.clicked.connect(self._on_seg_run_btn_clicked)
+        self.db_run_btn.clicked.connect(self._on_db_run_btn_clicked)
+        self.solve_run_btn.clicked.connect(self._on_solve_run_btn_clicked)
 
     # ── Layout helpers ────────────────────────────────────────────────────────
+
+    # ── Per-row run/cancel dispatchers ───────────────────────────────────────
+
+    def _on_seg_run_btn_clicked(self) -> None:
+        if self._running_stage is not None:
+            self._on_cancel()
+        else:
+            self._on_build_segmentation_inputs()
+
+    def _on_db_run_btn_clicked(self) -> None:
+        if self._running_stage is not None:
+            self._on_cancel()
+        else:
+            self._on_run_db_generation()
+
+    def _on_solve_run_btn_clicked(self) -> None:
+        if self._running_stage is not None:
+            self._on_cancel()
+        else:
+            self._on_run_ultrack()
 
     def build_pipeline_block(
         self,
@@ -254,42 +274,13 @@ class NucleusPipelineWidget(QWidget):
         if stage_key is None:
             for params_btn, run_btn in _rows.values():
                 params_btn.setEnabled(True)
-                run_btn.setText("▶")
-                run_btn.setToolTip(run_btn.toolTip().replace("Cancel.", "").strip() or run_btn.toolTip())
                 run_btn.setEnabled(True)
-            # Restore canonical run tooltips
+            self.seg_run_btn.setText("▶")
             self.seg_run_btn.setToolTip("Run segmentation inputs.")
+            self.db_run_btn.setText("▶")
             self.db_run_btn.setToolTip("Run Ultrack database build.")
+            self.solve_run_btn.setText("▶")
             self.solve_run_btn.setToolTip("Run Ultrack solve.")
-            # Disconnect cancel handlers
-            try:
-                self.seg_run_btn.clicked.disconnect(self._on_cancel)
-            except RuntimeError:
-                pass
-            try:
-                self.db_run_btn.clicked.disconnect(self._on_cancel)
-            except RuntimeError:
-                pass
-            try:
-                self.solve_run_btn.clicked.disconnect(self._on_cancel)
-            except RuntimeError:
-                pass
-            # Reconnect run handlers
-            try:
-                self.seg_run_btn.clicked.disconnect(self._on_build_segmentation_inputs)
-            except RuntimeError:
-                pass
-            self.seg_run_btn.clicked.connect(self._on_build_segmentation_inputs)
-            try:
-                self.db_run_btn.clicked.disconnect(self._on_run_db_generation)
-            except RuntimeError:
-                pass
-            self.db_run_btn.clicked.connect(self._on_run_db_generation)
-            try:
-                self.solve_run_btn.clicked.disconnect(self._on_run_ultrack)
-            except RuntimeError:
-                pass
-            self.solve_run_btn.clicked.connect(self._on_run_ultrack)
         else:
             for key, (params_btn, run_btn) in _rows.items():
                 if key == stage_key:
@@ -297,21 +288,6 @@ class NucleusPipelineWidget(QWidget):
                     run_btn.setToolTip("Cancel.")
                     run_btn.setEnabled(True)
                     params_btn.setEnabled(True)
-                    # Swap signal: disconnect run, connect cancel
-                    try:
-                        if key == "seg":
-                            run_btn.clicked.disconnect(self._on_build_segmentation_inputs)
-                        elif key == "db":
-                            run_btn.clicked.disconnect(self._on_run_db_generation)
-                        elif key == "ultrack":
-                            run_btn.clicked.disconnect(self._on_run_ultrack)
-                    except RuntimeError:
-                        pass
-                    try:
-                        run_btn.clicked.disconnect(self._on_cancel)
-                    except RuntimeError:
-                        pass
-                    run_btn.clicked.connect(self._on_cancel)
                 else:
                     params_btn.setEnabled(False)
                     run_btn.setEnabled(False)
