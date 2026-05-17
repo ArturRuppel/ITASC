@@ -517,7 +517,7 @@ def test_nucleus_workflow_layout_section_titles():
     assert "Segmentation Inputs" not in {
         label.text() for label in widget.segmentation_inputs_section.findChildren(QLabel)
     }
-    assert widget.run_db_gen_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert widget.run_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
     assert "color" not in widget.pipeline_status_lbl.styleSheet()
 
     widget.deleteLater()
@@ -628,7 +628,7 @@ def test_tracking_correction_action_buttons_expand_horizontally():
     widget = widget_class(viewer)
 
     tracked_buttons = [
-        widget.run_ultrack_btn,
+        widget.run_btn,
         widget.commit_btn,
     ]
 
@@ -1238,11 +1238,9 @@ def test_contour_maps_parameters_expand_when_narrow():
     host.show()
     _app.processEvents()
 
-    for button in (
-        widget.preview_contour_btn,
-        widget.build_btn,
-    ):
-        assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert widget.run_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    # The preview icon is intentionally compact (fixed width).
+    assert widget.preview_contour_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
 
     texts = _label_texts(params_section)
     assert "Contour — Cellprob Sweep" not in texts
@@ -1625,21 +1623,35 @@ def test_pipeline_actions_and_status_are_top_level_not_in_parameter_sections():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.preview_contour_btn.parentWidget() is widget
-    assert widget.build_btn.parentWidget() is widget
+    # The pipeline block lives at the workflow widget's top level (descendant
+    # via the wrapping QWidget), never nested inside the parameter sections.
+    for ctl in (
+        widget.preview_contour_btn,
+        widget.run_btn,
+        widget.cancel_btn,
+        widget.stage_seg_check,
+        widget.stage_db_check,
+        widget.stage_ultrack_check,
+    ):
+        assert widget.isAncestorOf(ctl)
+
     assert widget.pipeline_status_lbl.parentWidget() is widget
     assert widget.pipeline_progress_bar.parentWidget() is widget
-    assert widget.run_db_gen_btn.parentWidget() is widget
-    assert widget.run_ultrack_btn.parentWidget() is widget
-    assert widget.cancel_btn.parentWidget() is widget
 
-    assert widget.preview_contour_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
-    assert widget.build_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
+    seg_pushbuttons = widget.segmentation_inputs_section.findChildren(QPushButton)
+    seg_toolbuttons = widget.segmentation_inputs_section.findChildren(QToolButton)
+    seg_checkboxes = widget.segmentation_inputs_section.findChildren(QCheckBox)
+    assert widget.preview_contour_btn not in seg_toolbuttons
+    assert widget.run_btn not in seg_pushbuttons
+    assert widget.stage_seg_check not in seg_checkboxes
+
     assert widget.pipeline_status_lbl not in widget.segmentation_inputs_section.findChildren(QLabel)
     assert widget.pipeline_progress_bar not in widget.segmentation_inputs_section.findChildren(QProgressBar)
-    assert widget.run_db_gen_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
-    assert widget.run_ultrack_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
-    assert widget.cancel_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
+
+    ultrack_pushbuttons = widget.tracking_ultrack_section.findChildren(QPushButton)
+    ultrack_toolbuttons = widget.tracking_ultrack_section.findChildren(QToolButton)
+    assert widget.run_btn not in ultrack_pushbuttons
+    assert widget.cancel_btn not in ultrack_toolbuttons
 
     widget.deleteLater()
     viewer.close()
@@ -1694,11 +1706,12 @@ def test_source_stack_actions_use_explicit_source_language():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.preview_contour_btn.text() == "Preview Segmentation Inputs"
-    assert widget.build_btn.text() == "Build Segmentation Inputs"
+    assert widget.stage_seg_check.text() == "Segmentation inputs"
+    assert widget.stage_db_check.text() == "Ultrack database"
+    assert widget.stage_ultrack_check.text() == "Ultrack solve"
     assert "segmentation input source sweep" in widget.preview_contour_btn.toolTip().lower()
-    assert "averaged maps" in widget.build_btn.toolTip().lower()
-    assert "source-stack" in widget.run_db_gen_btn.toolTip().lower()
+    assert "averaged maps" in widget.stage_seg_check.toolTip().lower()
+    assert "source-stack" in widget.stage_db_check.toolTip().lower()
 
     widget.deleteLater()
     viewer.close()
@@ -1709,17 +1722,17 @@ def test_segmentation_inputs_expose_stage_a_map_builder_controls():
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
-    assert widget.build_maps_btn.text() == "Build Segmentation Inputs"
-    assert "averaged maps" in widget.build_maps_btn.toolTip()
-    assert "source stacks" in widget.build_maps_btn.toolTip()
+    assert widget.stage_seg_check.text() == "Segmentation inputs"
+    assert "averaged maps" in widget.stage_seg_check.toolTip()
+    assert "source stacks" in widget.stage_seg_check.toolTip()
     assert widget.map_cellprob_min_spin.value() == -3.0
     assert widget.map_cellprob_max_spin.value() == 0.0
     assert widget.map_cellprob_step_spin.value() == 1.0
     assert widget.map_z_start_spin.value() == 0
     assert widget.map_z_stop_spin.value() == -1
     assert widget.map_z_step_spin.value() == 1
-    assert widget.build_maps_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
-    assert widget.build_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
+    assert widget.stage_seg_check not in widget.segmentation_inputs_section.findChildren(QCheckBox)
+    assert widget.run_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
 
     widget.deleteLater()
     viewer.close()
@@ -1812,7 +1825,7 @@ def test_stage_a_map_controls_round_trip_through_state():
     viewer.close()
 
 
-def test_db_generation_spinboxes_expand_equally_in_the_top_grid():
+def test_db_generation_sliders_fill_row_width_in_two_column_grid():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -1824,29 +1837,35 @@ def test_db_generation_spinboxes_expand_equally_in_the_top_grid():
     host_layout = QVBoxLayout(host)
     host_layout.setContentsMargins(0, 0, 0, 0)
     host_layout.addWidget(widget)
-    host.resize(220, 280)
+    host.resize(420, 280)
     host.show()
     _app.processEvents()
 
-    for spin in (
+    for slider in (
         widget.db_gen_min_area_spin,
         widget.db_gen_max_area_spin,
         widget.db_gen_max_dist_spin,
         widget.db_gen_max_neighbors_spin,
     ):
-        assert spin.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+        assert slider.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
 
+    # Paired sliders sit in the same row (same y) at distinct x positions.
     assert widget.db_gen_min_area_spin.y() == widget.db_gen_max_area_spin.y()
     assert widget.db_gen_min_area_spin.x() < widget.db_gen_max_area_spin.x()
     assert widget.db_gen_max_dist_spin.y() == widget.db_gen_max_neighbors_spin.y()
-    assert widget.run_db_gen_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+    assert widget.db_gen_max_dist_spin.x() < widget.db_gen_max_neighbors_spin.x()
+
+    # Successive paired rows stack vertically.
+    assert widget.db_gen_min_area_spin.y() < widget.db_gen_min_frontier_spin.y()
+
+    assert widget.run_btn.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
     assert not hasattr(widget, "db_gen_terminal_btn")
 
     host.deleteLater()
     viewer.close()
 
 
-def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
+def test_tracking_correction_db_gen_parameters_use_two_column_grid():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -1857,7 +1876,7 @@ def test_tracking_correction_restores_two_column_button_and_parameter_layouts():
     widget.show()
     _app.processEvents()
 
-    # DB gen parameters should present as two side-by-side columns
+    # Min / Max area share a row in the unified 2-column grid.
     assert widget.db_gen_min_area_spin.y() == widget.db_gen_max_area_spin.y()
     assert widget.db_gen_min_area_spin.x() < widget.db_gen_max_area_spin.x()
 
@@ -2281,11 +2300,10 @@ def test_nucleus_workflow_uses_simplified_four_section_layout():
         widget.correction_mode_section
     )
 
-    assert widget.preview_contour_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
-    assert widget.build_btn not in widget.segmentation_inputs_section.findChildren(QPushButton)
-    assert widget.run_db_gen_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
-    assert widget.run_ultrack_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
-    assert widget.cancel_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
+    assert widget.preview_contour_btn not in widget.segmentation_inputs_section.findChildren(QToolButton)
+    assert widget.stage_seg_check not in widget.segmentation_inputs_section.findChildren(QCheckBox)
+    assert widget.run_btn not in widget.tracking_ultrack_section.findChildren(QPushButton)
+    assert widget.cancel_btn not in widget.tracking_ultrack_section.findChildren(QToolButton)
 
     widget.deleteLater()
     viewer.close()
@@ -2313,7 +2331,8 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "pipeline_progress_bar")
 
     # Section 1: Segmentation Inputs / Source Stacks
-    assert hasattr(widget, "build_btn")
+    assert hasattr(widget, "stage_seg_check")
+    assert hasattr(widget, "preview_contour_btn")
     assert not hasattr(widget, "contour_flow_threshold_spin")
     assert not hasattr(widget, "contour_terminal_btn")
     assert not hasattr(widget, "contour_fg_threshold_spin")
@@ -2326,7 +2345,8 @@ def test_canonical_sections_expose_required_elements():
     assert not hasattr(widget, "fg_threshold_spin")
 
     # Section 2: Ultrack Database Generation
-    assert hasattr(widget, "run_db_gen_btn")
+    assert hasattr(widget, "stage_db_check")
+    assert hasattr(widget, "run_btn")
     assert hasattr(widget, "db_gen_threshold_min_spin")
     assert hasattr(widget, "db_gen_threshold_max_spin")
     assert hasattr(widget, "db_gen_threshold_step_spin")
@@ -2343,7 +2363,7 @@ def test_canonical_sections_expose_required_elements():
     assert hasattr(widget, "ultrack_db_section_status_lbl")
 
     # Section 5: Ultrack Tracking
-    assert hasattr(widget, "run_ultrack_btn")
+    assert hasattr(widget, "stage_ultrack_check")
     assert not hasattr(widget, "ultrack_terminal_btn")
 
     assert hasattr(widget, "correction_status_lbl")
@@ -2599,7 +2619,7 @@ def test_db_gen_section_calls_source_stack_builder_on_run(tmp_path, monkeypatch)
     assert "nucleus_prob_zavg_path" not in call
     assert "thresholds" not in call
     assert call["cfg"].seg_foreground_threshold == pytest.approx(0.0)
-    assert widget.run_db_gen_btn.isEnabled()
+    assert widget.run_btn.isEnabled()
     assert "complete" in widget.pipeline_status_lbl.text().lower()
     assert widget.pipeline_progress_bar.isVisible() is False
     assert "✓" in _label_texts(widget._files_widget)

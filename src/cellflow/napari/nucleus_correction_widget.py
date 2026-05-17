@@ -13,7 +13,17 @@ from napari.qt.threading import thread_worker as _thread_worker
 from napari.utils.colormaps import Colormap
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence
-from qtpy.QtWidgets import QLabel, QPushButton, QShortcut, QVBoxLayout, QWidget, QCheckBox, QGroupBox
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QShortcut,
+    QVBoxLayout,
+    QWidget,
+)
 
 from cellflow.napari._widget_helpers import (
     btn as _btn,
@@ -21,6 +31,7 @@ from cellflow.napari._widget_helpers import (
     dspin as _dspin,
     heading as _heading,
     make_status as _make_status,
+    tool_btn as _tool_btn,
 )
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari.correction_widget import CorrectionWidget
@@ -151,32 +162,32 @@ class NucleusCorrectionWidget(QWidget):
             "Activate correction mode and show correction layers and controls."
         )
 
-        self.save_tracked_btn = _btn(
-            "Save tracked (S)", "Save corrected tracked nucleus labels to disk."
+        self.save_tracked_btn = _tool_btn(
+            "💾", "Save corrected tracked nucleus labels to disk (S)."
         )
-        self.extend_back_btn = _btn(
-            "◀ Extend (A)", "Extend selected track one frame backward."
+        self.extend_back_btn = _tool_btn(
+            "◀", "Extend selected track one frame backward (A)."
         )
-        self.extend_fwd_btn = _btn(
-            "Extend (D) ▶", "Extend selected track one frame forward."
+        self.extend_fwd_btn = _tool_btn(
+            "▶", "Extend selected track one frame forward (D)."
         )
-        self.retrack_back_btn = _btn(
-            "◀ Retrack (Q)", "Retrack all labels backward from current frame."
+        self.retrack_back_btn = _tool_btn(
+            "↶", "Retrack all labels backward from current frame (Q)."
         )
-        self.retrack_fwd_btn = _btn(
-            "Retrack (E) ▶", "Retrack all labels forward from current frame."
+        self.retrack_fwd_btn = _tool_btn(
+            "↷", "Retrack all labels forward from current frame (E)."
         )
-        self.reassign_ids_btn = _btn(
-            "Reassign ID", "Reassign cell IDs to contiguous range 1-N."
+        self.reassign_ids_btn = _tool_btn(
+            "#", "Reassign cell IDs to contiguous range 1-N."
         )
-        self.validate_track_btn = _btn(
-            "Validate track", "Lock selected cell geometry in every frame where it appears."
+        self.validate_track_btn = _tool_btn(
+            "✓", "Lock selected cell geometry in every frame where it appears (V)."
         )
-        self.anchor_here_btn = _btn(
-            "Anchor here", "Anchor selected cell identity at the current frame."
+        self.anchor_here_btn = _tool_btn(
+            "⚓", "Anchor selected cell identity at the current frame (B)."
         )
-        self.remove_unvalidated_btn = _btn(
-            "Remove unvalidated",
+        self.remove_unvalidated_btn = _tool_btn(
+            "🗑",
             "Remove nucleus label pixels not marked validated for their frame.",
         )
         danger_button(self.remove_unvalidated_btn)
@@ -263,6 +274,7 @@ class NucleusCorrectionWidget(QWidget):
         )
         group_lay.addWidget(self.shortcuts_section)
         group_lay.addWidget(self.correction_widget)
+        group_lay.addLayout(self._build_correction_toolbar())
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
         group_lay.addLayout(_button_grid((self.commit_btn,)))
@@ -281,6 +293,36 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_status_lbl = self.status_lbl
         self.correction_mode_section = self.section
         self._connect_signals()
+
+    def _build_correction_toolbar(self) -> QHBoxLayout:
+        """Visible icon-only action strip for the correction tools.
+
+        Groups: persist | extend ◀▶ | retrack ↶↷ | validate/anchor | clean.
+        """
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+
+        def _sep() -> QFrame:
+            line = QFrame()
+            line.setFrameShape(QFrame.VLine)
+            line.setFrameShadow(QFrame.Sunken)
+            return line
+
+        groups: list[tuple] = [
+            (self.save_tracked_btn,),
+            (self.extend_back_btn, self.extend_fwd_btn),
+            (self.retrack_back_btn, self.retrack_fwd_btn),
+            (self.validate_track_btn, self.anchor_here_btn),
+            (self.reassign_ids_btn, self.remove_unvalidated_btn),
+        ]
+        for i, group in enumerate(groups):
+            if i > 0:
+                row.addWidget(_sep())
+            for b in group:
+                row.addWidget(b)
+        row.addStretch(1)
+        return row
 
     def _build_shortcuts_widget(self) -> QWidget:
         group = QGroupBox("Correction shortcuts")

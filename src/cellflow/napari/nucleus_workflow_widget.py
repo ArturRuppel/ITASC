@@ -170,9 +170,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.nucleus_pipeline_widget.hide()
 
         root.addWidget(self.tracking_ultrack_parameters_section)
-        btn_row1, btn_row2 = self.nucleus_pipeline_widget.button_rows()
-        root.addLayout(btn_row1)
-        root.addLayout(btn_row2)
+        root.addWidget(self.nucleus_pipeline_widget.build_pipeline_block())
         root.addWidget(self.pipeline_status_lbl)
         root.addWidget(self.pipeline_progress_bar)
 
@@ -207,11 +205,11 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     def _alias_pipeline_controls(self) -> None:
         pl = self.nucleus_pipeline_widget
         self.preview_contour_btn = pl.preview_contour_btn
-        self.build_btn = pl.build_btn
-        self.build_maps_btn = pl.build_maps_btn
-        self.run_db_gen_btn = pl.run_db_gen_btn
-        self.run_ultrack_btn = pl.run_ultrack_btn
+        self.run_btn = pl.run_btn
         self.cancel_btn = pl.cancel_btn
+        self.stage_seg_check = pl.stage_seg_check
+        self.stage_db_check = pl.stage_db_check
+        self.stage_ultrack_check = pl.stage_ultrack_check
         self.pipeline_status_lbl = pl.pipeline_status_lbl
         self.pipeline_progress_bar = pl.pipeline_progress_bar
         for name in (
@@ -227,6 +225,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             "_on_ultrack_progress",
             "_on_run_ultrack_done",
             "_on_ultrack_worker_error",
+            "_on_run_chain",
             "_on_cancel",
             "_status",
             "_progress",

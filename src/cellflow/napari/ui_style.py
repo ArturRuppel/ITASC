@@ -166,6 +166,51 @@ def two_column_parameter_grid(horizontal_spacing=12, vertical_spacing=4):
     return block_grid(horizontal_spacing, vertical_spacing)
 
 
+def section_grid():
+    """A 4-column grid (label, field, label, field) where field columns
+    stretch — so sliders, combos, and labels fill the available width and
+    label columns stay aligned across all sections that share the grid."""
+    layout = QGridLayout()
+    layout.setHorizontalSpacing(DEFAULT_FIELD_SPACING)
+    layout.setVerticalSpacing(DEFAULT_ROW_SPACING)
+    layout.setColumnStretch(0, 0)
+    layout.setColumnStretch(1, 1)
+    layout.setColumnStretch(2, 0)
+    layout.setColumnStretch(3, 1)
+    return layout
+
+
+def add_section_header(grid, row, widget):
+    """Add a heading widget spanning all 4 columns of a section_grid."""
+    grid.addWidget(widget, row, 0, 1, 4)
+    return widget
+
+
+def add_section_full_row(grid, row, widget):
+    """Add a widget (separator, checkbox, …) spanning all 4 columns."""
+    grid.addWidget(widget, row, 0, 1, 4)
+    return widget
+
+
+def add_section_pair_row(
+    grid, row,
+    left_label, left_widget,
+    right_label=None, right_widget=None,
+):
+    """Add a row with up to two [label][widget] pairs. Widgets keep their
+    natural size policy (no fixed-width wrap) so sliders/combos can stretch."""
+    left_label_widget = _block_label(left_label)
+    grid.addWidget(left_label_widget, row, 0)
+    grid.addWidget(left_widget, row, 1)
+
+    right_label_widget = None
+    if right_widget is not None:
+        right_label_widget = _block_label(right_label or "")
+        grid.addWidget(right_label_widget, row, 2)
+        grid.addWidget(right_widget, row, 3)
+    return left_label_widget, left_widget, right_label_widget, right_widget
+
+
 def _block_label(text):
     label = QLabel(text)
     label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)

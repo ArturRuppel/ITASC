@@ -9,15 +9,22 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
-from qtpy.QtWidgets import QWidget
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._widget_helpers import (
-    btn as _btn,
-    button_grid as _button_grid,
     make_progress as _make_progress,
     make_status as _make_status,
+    tool_btn as _tool_btn,
 )
+from cellflow.napari.ui_style import action_button as _action_button
 from cellflow.database.validation import read_corrections, read_validated_tracks
 from cellflow.segmentation import build_consensus_boundary, build_nucleus_averaged_maps
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
@@ -68,47 +75,122 @@ class NucleusPipelineWidget(QWidget):
         self._contour_worker = None
         self._db_gen_worker = None
         self._ultrack_worker = None
+        self._chain_remaining: list[str] = []
 
-        self.preview_contour_btn = _btn(
-            "Preview Segmentation Inputs",
-            "Build the current frame's segmentation input source sweep in memory and display it in napari.",
+        self.stage_seg_check = QCheckBox("Segmentation inputs")
+        self.stage_seg_check.setChecked(True)
+        self.stage_seg_check.setToolTip(
+            "Build averaged maps, contour and foreground source stacks."
         )
-        self.build_btn = _btn(
-            "Build Segmentation Inputs",
-            "Build averaged maps, then contour and foreground source stacks from segmentation inputs.",
+        self.stage_db_check = QCheckBox("Ultrack database")
+        self.stage_db_check.setChecked(True)
+        self.stage_db_check.setToolTip(
+            "Build the Ultrack candidate database from source-stack artifacts."
         )
-        self.build_maps_btn = self.build_btn
+        self.stage_ultrack_check = QCheckBox("Ultrack solve")
+        self.stage_ultrack_check.setChecked(True)
+        self.stage_ultrack_check.setToolTip(
+            "Solve ILP tracking and export tracked_labels.tif."
+        )
 
-        self.run_db_gen_btn = _btn(
-            "Build Ultrack Database",
-            "Build an Ultrack candidate database from explicit source-stack artifacts.",
+        self.preview_contour_btn = _tool_btn(
+            "\U0001F50D",
+            "Preview the current frame's segmentation input source sweep "
+            "without writing artifacts.",
         )
-        self.run_ultrack_btn = _btn(
-            "Run Ultrack",
-            "Solve ILP tracking and export tracked_labels.tif.",
+
+        self.run_btn = QPushButton("▶  Run")
+        self.run_btn.setToolTip("Run the checked stages in order.")
+        _action_button(self.run_btn, expand=True)
+        self.cancel_btn = _tool_btn(
+            "✕", "Cancel the currently running pipeline step."
         )
-        self.cancel_btn = _btn("Cancel", "Cancel the currently running pipeline step.")
         self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setVisible(False)
 
         self.pipeline_status_lbl = _make_status()
         self.pipeline_progress_bar = _make_progress()
 
         self.preview_contour_btn.clicked.connect(self._on_preview_contour_maps)
-        self.build_btn.clicked.connect(self._on_build_segmentation_inputs)
-        self.run_db_gen_btn.clicked.connect(self._on_run_db_generation)
-        self.run_ultrack_btn.clicked.connect(self._on_run_ultrack)
+        self.run_btn.clicked.connect(self._on_run_chain)
         self.cancel_btn.clicked.connect(self._on_cancel)
 
     # ── Layout helpers ────────────────────────────────────────────────────────
 
-    def button_rows(self):
-        """Return a pair of button-grid layouts for insertion into the parent layout."""
-        row1 = _button_grid((self.preview_contour_btn, self.build_btn))
-        row2 = _button_grid(
-            (self.run_db_gen_btn, self.run_ultrack_btn),
-            (self.cancel_btn,),
-        )
-        return row1, row2
+    def build_pipeline_block(self) -> QWidget:
+        """Build the visible pipeline UI: stage checkboxes + Run / Cancel."""
+        block = QWidget(self)
+        lay = QVBoxLayout(block)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        def _stage_row(checkbox: QCheckBox, *trailing: QWidget) -> QHBoxLayout:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            row.addWidget(checkbox)
+            row.addStretch(1)
+            for w in trailing:
+                row.addWidget(w)
+            return row
+
+        lay.addLayout(_stage_row(self.stage_seg_check, self.preview_contour_btn))
+        lay.addLayout(_stage_row(self.stage_db_check))
+        lay.addLayout(_stage_row(self.stage_ultrack_check))
+
+        run_row = QHBoxLayout()
+        run_row.setContentsMargins(0, 4, 0, 0)
+        run_row.setSpacing(4)
+        run_row.addWidget(self.run_btn, 1)
+        run_row.addWidget(self.cancel_btn)
+        lay.addLayout(run_row)
+
+        return block
+
+    # ── Chained run orchestration ────────────────────────────────────────────
+
+    def _on_run_chain(self) -> None:
+        queue: list[str] = []
+        if self.stage_seg_check.isChecked():
+            queue.append("seg")
+        if self.stage_db_check.isChecked():
+            queue.append("db")
+        if self.stage_ultrack_check.isChecked():
+            queue.append("ultrack")
+        if not queue:
+            self._status("No stages selected.")
+            return
+        self._chain_remaining = queue
+        self._run_next_chain_step()
+
+    _STAGE_DISPATCH = {
+        "seg": ("_on_build_segmentation_inputs", "_contour_worker"),
+        "db":  ("_on_run_db_generation",         "_db_gen_worker"),
+        "ultrack": ("_on_run_ultrack",           "_ultrack_worker"),
+    }
+
+    def _run_next_chain_step(self) -> None:
+        if not self._chain_remaining:
+            self._set_pipeline_buttons_enabled(True)
+            return
+        stage = self._chain_remaining.pop(0)
+        handler_name, worker_attr = self._STAGE_DISPATCH[stage]
+        getattr(self, handler_name)()
+        # If the handler early-returned (missing inputs, etc.) no worker is
+        # in flight — stop chaining and restore button state.
+        if getattr(self, worker_attr) is None:
+            self._abort_chain()
+            self._set_pipeline_buttons_enabled(True)
+
+    def _chain_continue_or_finish(self) -> None:
+        """Called by stage _done handlers; advances the chain if active."""
+        if self._chain_remaining:
+            self._run_next_chain_step()
+        else:
+            self._set_pipeline_buttons_enabled(True)
+
+    def _abort_chain(self) -> None:
+        self._chain_remaining = []
 
     # ── Path helpers ──────────────────────────────────────────────────────────
 
@@ -176,15 +258,16 @@ class NucleusPipelineWidget(QWidget):
         self.pipeline_progress_bar.setVisible(False)
 
     def _set_pipeline_buttons_enabled(self, enabled: bool) -> None:
-        for btn in (
-            self.build_maps_btn,
+        for widget in (
             self.preview_contour_btn,
-            self.build_btn,
-            self.run_db_gen_btn,
-            self.run_ultrack_btn,
+            self.run_btn,
+            self.stage_seg_check,
+            self.stage_db_check,
+            self.stage_ultrack_check,
         ):
-            btn.setEnabled(enabled)
+            widget.setEnabled(enabled)
         self.cancel_btn.setEnabled(not enabled)
+        self.cancel_btn.setVisible(not enabled)
 
     # ── Threshold / config delegation ─────────────────────────────────────────
 
@@ -319,11 +402,11 @@ class NucleusPipelineWidget(QWidget):
         def _done(result):
             report, n_sources = result
             self._contour_worker = None
-            self._set_pipeline_buttons_enabled(True)
             self._clear_progress()
             self._refresh_files_callback(pos_dir)
             frames = int(getattr(report, "frames", 0))
             self._status(f"Segmentation inputs built ({frames} frames, {n_sources} sources).")
+            self._chain_continue_or_finish()
 
         @thread_worker(connect={
             "yielded": self._on_progress,
@@ -609,6 +692,7 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_contour_worker_error(self, exc: Exception) -> None:
         self._contour_worker = None
+        self._abort_chain()
         self._set_pipeline_buttons_enabled(True)
         self._clear_progress()
         self._status(f"Error: {exc}")
@@ -691,14 +775,15 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_db_gen_done(self, pos_dir: Path) -> None:
         self._db_gen_worker = None
-        self._set_pipeline_buttons_enabled(True)
         self._clear_progress()
         self._status("DB generation complete.")
         self._refresh_files_callback(pos_dir)
         self._refresh_db_browser_callback()
+        self._chain_continue_or_finish()
 
     def _on_db_gen_worker_error(self, exc: Exception) -> None:
         self._db_gen_worker = None
+        self._abort_chain()
         self._set_pipeline_buttons_enabled(True)
         self._clear_progress()
         self._status(f"Error: {exc}")
@@ -781,19 +866,23 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_run_ultrack_done(self, labels: np.ndarray | None) -> None:
         self._ultrack_worker = None
-        self._set_pipeline_buttons_enabled(True)
         self._clear_progress()
         if labels is None:
-            self._status("Ultrack tracking failed (no output)."); return
+            self._abort_chain()
+            self._set_pipeline_buttons_enabled(True)
+            self._status("Ultrack tracking failed (no output).")
+            return
         if labels.ndim == 4 and labels.shape[1] == 1:
             labels = labels[:, 0]
         nt = labels.shape[0]
         self._update_tracked_display(labels)
         self._refresh_files_callback(self._pos_dir)
         self._status(f"Tracking done: {nt} frame(s).")
+        self._chain_continue_or_finish()
 
     def _on_ultrack_worker_error(self, exc: Exception) -> None:
         self._ultrack_worker = None
+        self._abort_chain()
         self._set_pipeline_buttons_enabled(True)
         self._clear_progress()
         self._status(f"Error: {exc}")
@@ -809,6 +898,7 @@ class NucleusPipelineWidget(QWidget):
                 worker.quit()
                 setattr(self, attr, None)
                 cancelled = True
+        self._abort_chain()
         self._set_pipeline_buttons_enabled(True)
         self._clear_progress()
         self._status("Cancelled." if cancelled else "Nothing running.")
