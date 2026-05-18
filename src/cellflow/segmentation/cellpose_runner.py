@@ -120,6 +120,15 @@ def run_nucleus_frame(
     return prob, dp
 
 
+class CancelledError(RuntimeError):
+    """Raised by run_*_stack when cancel_cb returns True between frames."""
+
+
+def _check_cancel(cancel_cb: Callable[[], bool] | None) -> None:
+    if cancel_cb is not None and cancel_cb():
+        raise CancelledError("cellpose run cancelled")
+
+
 def run_cell_frame(
     frame: np.ndarray,
     z: int,
@@ -138,3 +147,75 @@ def run_cell_frame(
     dp = np.asarray(flows[1], dtype=np.float32)
     prob = np.asarray(flows[2], dtype=np.float32)
     return prob, dp
+
+
+def run_nucleus_stack(
+    stack: np.ndarray,
+    params: NucleusParams,
+    *,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    cancel_cb: Callable[[], bool] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Process a (T, Z, Y, X) stack frame-by-frame.
+
+    Returns (prob_3dt, dp_3dt). For do_3d=True dp has shape (T, 3, Z, Y, X);
+    for do_3d=False dp has shape (T, Z, 2, Y, X).
+    """
+    if stack.ndim != 4:
+        raise ValueError(f"expected (T, Z, Y, X), got shape {stack.shape}")
+    T = stack.shape[0]
+    prob_frames: list[np.ndarray] = []
+    dp_frames: list[np.ndarray] = []
+    for t in range(T):
+        _check_cancel(cancel_cb)
+        if progress_cb is not None:
+            progress_cb(t, T, f"Nucleus: frame {t + 1}/{T}...")
+        if params.do_3d:
+            prob, dp = run_nucleus_frame(stack[t], z=None, params=params)
+        else:
+            slice_probs: list[np.ndarray] = []
+            slice_dps: list[np.ndarray] = []
+            for z in range(stack.shape[1]):
+                p, d = run_nucleus_frame(stack[t], z=z, params=params)
+                slice_probs.append(p)
+                slice_dps.append(d)
+            prob = np.stack(slice_probs, axis=0)
+            dp = np.stack(slice_dps, axis=0)
+        prob_frames.append(prob)
+        dp_frames.append(dp)
+        if progress_cb is not None:
+            progress_cb(t + 1, T, f"Nucleus: frame {t + 1}/{T}...")
+    return np.stack(prob_frames, axis=0), np.stack(dp_frames, axis=0)
+
+
+def run_cell_stack(
+    stack: np.ndarray,
+    params: CellParams,
+    *,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    cancel_cb: Callable[[], bool] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Process a (T, Z, Y, X) stack slice-by-slice in 2D.
+
+    Returns (prob_3dt (T, Z, Y, X), dp_3dt (T, Z, 2, Y, X)).
+    """
+    if stack.ndim != 4:
+        raise ValueError(f"expected (T, Z, Y, X), got shape {stack.shape}")
+    T, Z = stack.shape[:2]
+    prob_frames: list[np.ndarray] = []
+    dp_frames: list[np.ndarray] = []
+    for t in range(T):
+        _check_cancel(cancel_cb)
+        if progress_cb is not None:
+            progress_cb(t, T, f"Cell: frame {t + 1}/{T}...")
+        slice_probs: list[np.ndarray] = []
+        slice_dps: list[np.ndarray] = []
+        for z in range(Z):
+            p, d = run_cell_frame(stack[t], z=z, params=params)
+            slice_probs.append(p)
+            slice_dps.append(d)
+        prob_frames.append(np.stack(slice_probs, axis=0))
+        dp_frames.append(np.stack(slice_dps, axis=0))
+        if progress_cb is not None:
+            progress_cb(t + 1, T, f"Cell: frame {t + 1}/{T}...")
+    return np.stack(prob_frames, axis=0), np.stack(dp_frames, axis=0)

@@ -240,3 +240,79 @@ def test_run_nucleus_frame_applies_gamma(monkeypatch):
     r.run_nucleus_frame(frame, z=None, params=params)
     expected = r._apply_gamma(frame, 2.0)
     np.testing.assert_allclose(received["img"], expected, atol=1e-6)
+
+
+def test_run_nucleus_stack_3d_iterates_frames_and_reports_progress(monkeypatch):
+    r = _runner()
+    _install_recording_model(monkeypatch, r)
+    stack = np.zeros((3, 4, 6, 6), dtype=np.float32)
+    params = r.NucleusParams(do_3d=True, anisotropy=1.5, diameter=0.0, min_size=0, gamma=1.0)
+    progress = []
+    prob, dp = r.run_nucleus_stack(
+        stack, params,
+        progress_cb=lambda d, t, msg: progress.append((d, t, msg)),
+    )
+    assert prob.shape == (3, 4, 6, 6)
+    assert dp.shape == (3, 3, 4, 6, 6)
+    assert progress[0] == (0, 3, "Nucleus: frame 1/3...")
+    assert progress[-1] == (3, 3, "Nucleus: frame 3/3...")
+
+
+def test_run_nucleus_stack_2d_returns_per_slice_outputs(monkeypatch):
+    r = _runner()
+    _install_recording_model(monkeypatch, r)
+    stack = np.zeros((2, 3, 6, 6), dtype=np.float32)
+    params = r.NucleusParams(do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0)
+    prob, dp = r.run_nucleus_stack(stack, params)
+    assert prob.shape == (2, 3, 6, 6)
+    assert dp.shape == (2, 3, 2, 6, 6)
+
+
+def test_run_cell_stack_iterates_t_then_z(monkeypatch):
+    r = _runner()
+    calls = _install_recording_model(monkeypatch, r)
+    stack = np.zeros((2, 3, 6, 6), dtype=np.float32)
+    params = r.CellParams(diameter=0.0, min_size=0, gamma=1.0)
+    progress = []
+    prob, dp = r.run_cell_stack(
+        stack, params,
+        progress_cb=lambda d, t, msg: progress.append((d, t, msg)),
+    )
+    assert prob.shape == (2, 3, 6, 6)
+    assert dp.shape == (2, 3, 2, 6, 6)
+    assert len(calls) == 2 * 3
+    assert progress[0] == (0, 2, "Cell: frame 1/2...")
+
+
+def test_run_nucleus_stack_respects_cancel_between_frames(monkeypatch):
+    r = _runner()
+    _install_recording_model(monkeypatch, r)
+    stack = np.zeros((5, 2, 4, 4), dtype=np.float32)
+    params = r.NucleusParams(do_3d=True, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0)
+    seen_frames = []
+
+    def _cancel():
+        return len(seen_frames) >= 2
+
+    def _record(done, total, msg):
+        seen_frames.append(done)
+
+    with pytest.raises(r.CancelledError):
+        r.run_nucleus_stack(stack, params, progress_cb=_record, cancel_cb=_cancel)
+
+
+def test_run_cell_stack_respects_cancel_between_frames(monkeypatch):
+    r = _runner()
+    _install_recording_model(monkeypatch, r)
+    stack = np.zeros((5, 2, 4, 4), dtype=np.float32)
+    params = r.CellParams(diameter=0.0, min_size=0, gamma=1.0)
+    seen = []
+
+    def _cancel():
+        return len(seen) >= 1
+
+    def _record(done, total, msg):
+        seen.append(done)
+
+    with pytest.raises(r.CancelledError):
+        r.run_cell_stack(stack, params, progress_cb=_record, cancel_cb=_cancel)
