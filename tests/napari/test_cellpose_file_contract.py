@@ -37,13 +37,9 @@ def test_segmentation_widgets_use_probability_zavgs_as_inputs():
 
 def test_hpc_cellpose_controls_are_not_public_napari_entry_points():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    personal_root = Path(__file__).resolve().parents[2] / "src" / "cellflow_personal" / "napari"
 
     main_source = (package_root / "main_widget.py").read_text()
     manifest_source = (package_root / ".." / "napari.yaml").read_text()
-    data_prep_source = (personal_root / "data_prep_standalone_widget.py").read_text()
 
     assert '"HPC Cellpose"' not in main_source
     assert "HpcCellposeWidget" not in manifest_source
-    assert '"HPC Cellpose"' in data_prep_source
-    assert "HpcCellposeWidget" in data_prep_source

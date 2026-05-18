@@ -42,10 +42,19 @@ from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
 
-try:
-    from ultrack.core.segmentation.processing import segment as _ultrack_segment
-except ImportError:
-    _ultrack_segment = None  # type: ignore[assignment]
+
+def _ultrack_available() -> bool:
+    """Return True if the ultrack package is importable.
+
+    Kept as a function so the (slow) ultrack import only happens when an
+    action actually needs it, not at widget construction time.
+    """
+    try:
+        import ultrack.core.segmentation.processing  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
 
 # ── Layer name constants ──────────────────────────────────────────────────────
 _TRACKED_LAYER = "Tracked: Nucleus"
@@ -756,7 +765,7 @@ class NucleusPipelineWidget(QWidget):
             self._status("Missing: contour_sources.tif — run Build Sources first."); return
         if foreground_sources_path is None or not foreground_sources_path.exists():
             self._status("Missing: foreground_sources.tif — run Build Sources first."); return
-        if _ultrack_segment is None:
+        if not _ultrack_available():
             self._status("ultrack not installed — activate the cellflow conda environment."); return
 
         cfg = self._db_gen_config_from_controls()
