@@ -16,6 +16,7 @@ from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
     QCheckBox,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -371,11 +372,13 @@ class NucleusCorrectionWidget(QWidget):
 
     def _build_shortcuts_widget(self) -> QWidget:
         group = QGroupBox("Correction shortcuts")
-        lay = QVBoxLayout(group)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(8)
-        CorrectionWidget._add_shortcut_group(
-            lay,
+        grid = QGridLayout(group)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(2)
+        row = 0
+        row = CorrectionWidget._add_shortcut_group(
+            grid,
             "Track Workflow",
             [
                 ("V", "Validate selected track"),
@@ -385,17 +388,20 @@ class NucleusCorrectionWidget(QWidget):
                 ("Z / C", "Swap with smaller / larger hypothesis fragment"),
                 ("S", "Save tracked labels"),
             ],
+            start_row=row,
+            is_first=True,
         )
-        CorrectionWidget._add_shortcut_group(
-            lay,
+        row = CorrectionWidget._add_shortcut_group(
+            grid,
             "Selection",
             [
                 ("Left-click", "Select / highlight cell"),
                 ("Shift+Left / Shift+Right", "Previous / next cell"),
             ],
+            start_row=row,
         )
-        CorrectionWidget._add_shortcut_group(
-            lay,
+        row = CorrectionWidget._add_shortcut_group(
+            grid,
             "Manual Labels",
             [
                 ("Middle-click or Delete", "Erase cell"),
@@ -404,8 +410,12 @@ class NucleusCorrectionWidget(QWidget):
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
             ],
+            start_row=row,
         )
-        CorrectionWidget._add_shortcut_group(lay, "History", [("Ctrl+Z", "Undo")])
+        row = CorrectionWidget._add_shortcut_group(
+            grid, "History", [("Ctrl+Z", "Undo")], start_row=row
+        )
+        grid.setColumnStretch(1, 1)
         return group
 
     def _connect_signals(self) -> None:
@@ -674,7 +684,7 @@ class NucleusCorrectionWidget(QWidget):
             (
                 self._nucleus_prob_zavg_path(),
                 _CORRECTION_NUC_ZAVG_LAYER,
-                "I Purple",
+                "I Orange",
             ),
         ):
             if data is not None and data.exists():

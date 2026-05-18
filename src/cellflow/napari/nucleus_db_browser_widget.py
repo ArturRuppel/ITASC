@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 _ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
 _ULTRACK_DB_SELECTION_LAYER = "Ultrack DB Selection"
 _ULTRACK_DB_ANNOTATION_LAYER = "Ultrack DB Annotations"
-_ULTRACK_DB_NUC_LAYER = "Nucleus z-avg"
+_ULTRACK_DB_NUC_LAYER = "Cellpose nucleus prob"
 
 
 class NucleusUltrackDbBrowserWidget(QWidget):
@@ -295,7 +295,7 @@ class NucleusUltrackDbBrowserMixin:
     def _load_db_browser_nucleus_image(self) -> None:
         if _ULTRACK_DB_NUC_LAYER in self.viewer.layers:
             return
-        nuc_path = self._nucleus_zavg_path()
+        nuc_path = self._nucleus_prob_zavg_path()
         if nuc_path is None or not nuc_path.exists():
             return
         import tifffile
@@ -303,7 +303,7 @@ class NucleusUltrackDbBrowserMixin:
         limits = np.percentile(data, [0.05, 99.5]) if data.size > 0 else None
         kwargs = {
             "name": _ULTRACK_DB_NUC_LAYER,
-            "colormap": "I Orange",
+            "colormap": "bop orange",
             "blending": "minimum",
         }
         if limits is not None and limits[1] > limits[0]:

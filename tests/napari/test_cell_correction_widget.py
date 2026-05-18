@@ -71,7 +71,7 @@ def test_cell_correction_widget_files_widget_refresh_callback_is_called_on_save(
     (pos_dir / "3_cell").mkdir(parents=True)
     labels = np.zeros((2, 4, 4), dtype=np.uint32)
     labels[:, 1:3, 1:3] = 7
-    viewer.add_labels(labels, name="Tracked: Cell")
+    viewer.add_labels(labels, name="[Correction] Cell Labels")
 
     refresh_calls = []
     widget = widget_class(
@@ -193,22 +193,22 @@ def test_load_labels_loads_tracked_cell_layer_and_precomputed_probability_zavgs(
 
     widget.load_labels_btn.click()
 
-    assert "Tracked: Cell" in viewer.layers
-    assert "Cell z-avg" in viewer.layers
-    assert "Nucleus z-avg" in viewer.layers
-    np.testing.assert_array_equal(viewer.layers["Tracked: Cell"].data, labels)
+    assert "[Correction] Cell Labels" in viewer.layers
+    assert "[Correction] Cell z-avg" in viewer.layers
+    assert "[Correction] Nucleus z-avg" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["[Correction] Cell Labels"].data, labels)
     np.testing.assert_array_equal(
-        viewer.layers["Cell z-avg"].data,
+        viewer.layers["[Correction] Cell z-avg"].data,
         np.broadcast_to(cell_prob_zavg[np.newaxis], labels.shape),
     )
     np.testing.assert_array_equal(
-        viewer.layers["Nucleus z-avg"].data,
+        viewer.layers["[Correction] Nucleus z-avg"].data,
         np.broadcast_to(nuc_prob_zavg[np.newaxis], labels.shape),
     )
-    assert viewer.layers["Cell z-avg"].blending == "minimum"
-    assert viewer.layers["Nucleus z-avg"].blending == "minimum"
-    assert viewer.layers["Nucleus z-avg"].colormap.name == "I Orange"
-    assert widget.correction_widget._layer is viewer.layers["Tracked: Cell"]
+    assert viewer.layers["[Correction] Cell z-avg"].blending == "minimum"
+    assert viewer.layers["[Correction] Nucleus z-avg"].blending == "minimum"
+    assert viewer.layers["[Correction] Nucleus z-avg"].colormap.name == "I Orange"
+    assert widget.correction_widget._layer is viewer.layers["[Correction] Cell Labels"]
     assert "Loaded cell label stack" in widget.correction_status_lbl.text()
 
     widget.deleteLater()
@@ -227,7 +227,7 @@ def test_save_labels_writes_tracked_cell_labels_to_disk(tmp_path):
 
     edited = initial.copy()
     edited[0, 1:3, 1:3] = 4
-    viewer.add_labels(edited, name="Tracked: Cell")
+    viewer.add_labels(edited, name="[Correction] Cell Labels")
     widget, _module = _make_widget(viewer, pos_dir)
 
     widget.save_labels_btn.click()
@@ -267,15 +267,15 @@ def test_fill_holes_modifies_enclosed_background_pixels(tmp_path):
     labels = np.zeros((1, 7, 7), dtype=np.uint32)
     labels[0, 1:6, 1:6] = 3
     labels[0, 3, 3] = 0  # hole
-    viewer.add_labels(labels.copy(), name="Tracked: Cell")
+    viewer.add_labels(labels.copy(), name="[Correction] Cell Labels")
     widget, _module = _make_widget(viewer, pos_dir)
-    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.activate_layer(viewer.layers["[Correction] Cell Labels"])
     widget.correction_scope_combo.setCurrentText("Current frame")
     widget.hole_radius_spin.setValue(5)
 
     widget.fill_holes_btn.click()
 
-    result = np.asarray(viewer.layers["Tracked: Cell"].data)
+    result = np.asarray(viewer.layers["[Correction] Cell Labels"].data)
     assert result[0, 3, 3] == 3
     assert "Filled holes" in widget.correction_status_lbl.text()
 
@@ -290,9 +290,9 @@ def test_fill_holes_reports_no_holes_when_none_found(tmp_path):
 
     labels = np.zeros((1, 4, 4), dtype=np.uint32)
     labels[0, 1:3, 1:3] = 5
-    viewer.add_labels(labels.copy(), name="Tracked: Cell")
+    viewer.add_labels(labels.copy(), name="[Correction] Cell Labels")
     widget, _module = _make_widget(viewer, pos_dir)
-    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.activate_layer(viewer.layers["[Correction] Cell Labels"])
 
     widget.fill_holes_btn.click()
 
@@ -312,7 +312,7 @@ def test_cleanup_requires_nuclear_labels(tmp_path):
 
     labels = np.zeros((1, 4, 4), dtype=np.uint32)
     labels[0, 1:3, 1:3] = 2
-    viewer.add_labels(labels.copy(), name="Tracked: Cell")
+    viewer.add_labels(labels.copy(), name="[Correction] Cell Labels")
     widget, _module = _make_widget(viewer, pos_dir)
 
     widget.cleanup_btn.click()
@@ -332,7 +332,7 @@ def test_cleanup_uses_nuclear_labels_from_viewer_layer(tmp_path):
     cell_labels[0, 1:3, 1:3] = 2
     nuc_labels = np.zeros((1, 5, 5), dtype=np.uint32)
     nuc_labels[0, 1:3, 1:3] = 1
-    viewer.add_labels(cell_labels.copy(), name="Tracked: Cell")
+    viewer.add_labels(cell_labels.copy(), name="[Correction] Cell Labels")
     viewer.add_labels(nuc_labels.copy(), name="Tracked: Nucleus")
     widget, _module = _make_widget(viewer, pos_dir)
 
@@ -356,11 +356,11 @@ def test_expand_cell_shows_error_when_no_cell_selected(tmp_path):
 
     labels = np.zeros((1, 5, 5), dtype=np.uint32)
     labels[0, 2, 2] = 5
-    viewer.add_labels(labels, name="Tracked: Cell")
+    viewer.add_labels(labels, name="[Correction] Cell Labels")
     foreground = np.ones((1, 5, 5), dtype=np.uint8)
-    viewer.add_labels(foreground, name="Foreground Mask: Cell")
+    viewer.add_labels(foreground, name="[Correction] Foreground Mask: Cell")
     widget, _module = _make_widget(viewer, pos_dir)
-    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.activate_layer(viewer.layers["[Correction] Cell Labels"])
 
     widget.expand_cell_btn.click()
 
@@ -377,9 +377,9 @@ def test_expand_cell_shows_error_when_foreground_missing(tmp_path):
 
     labels = np.zeros((1, 5, 5), dtype=np.uint32)
     labels[0, 2, 2] = 5
-    viewer.add_labels(labels, name="Tracked: Cell")
+    viewer.add_labels(labels, name="[Correction] Cell Labels")
     widget, _module = _make_widget(viewer, pos_dir)
-    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.activate_layer(viewer.layers["[Correction] Cell Labels"])
     widget.correction_widget.select_label(0, 5)
 
     widget.expand_cell_btn.click()
@@ -399,16 +399,16 @@ def test_expand_cell_expands_label_into_foreground_pixels(tmp_path):
     labels[0, 3, 3] = 4
     foreground = np.zeros((1, 7, 7), dtype=np.uint8)
     foreground[0, 2:5, 2:5] = 1
-    viewer.add_labels(labels.copy(), name="Tracked: Cell")
-    viewer.add_labels(foreground, name="Foreground Mask: Cell")
+    viewer.add_labels(labels.copy(), name="[Correction] Cell Labels")
+    viewer.add_labels(foreground, name="[Correction] Foreground Mask: Cell")
     widget, _module = _make_widget(viewer, pos_dir)
-    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.activate_layer(viewer.layers["[Correction] Cell Labels"])
     widget.correction_widget.select_label(0, 4)
     widget.expand_max_px_spin.setValue(10)
 
     widget.expand_cell_btn.click()
 
-    result = np.asarray(viewer.layers["Tracked: Cell"].data)
+    result = np.asarray(viewer.layers["[Correction] Cell Labels"].data)
     assert int(np.sum(result[0] == 4)) > 1
     assert "Expanded cell 4" in widget.correction_status_lbl.text()
 

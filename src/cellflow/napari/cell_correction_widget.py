@@ -42,10 +42,18 @@ from cellflow.napari._widget_helpers import ispin as _ispin
 
 logger = logging.getLogger(__name__)
 
-_TRACKED_CELL_LAYER = "Tracked: Cell"
-_CELL_ZAVG_LAYER = "Cell z-avg"
-_NUC_ZAVG_LAYER = "Nucleus z-avg"
-_CELL_FOREGROUND_LAYER = "Foreground Mask: Cell"
+# Layers created by the cell correction widget itself carry a [Correction]
+# prefix so they can be cleanly removed on deactivate without clobbering the
+# regular pipeline layers (Tracked: Cell, Cell z-avg, …) shown elsewhere.
+_TRACKED_CELL_LAYER = "[Correction] Cell Labels"
+_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
+_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
+_CELL_FOREGROUND_LAYER = "[Correction] Foreground Mask: Cell"
+
+# Pipeline-side (non-correction) layer names — used as fallbacks where the
+# user may have loaded layers manually, and as the target for the on-disk
+# Tracked: Cell refresh when correction mode is exited.
+_PIPELINE_TRACKED_CELL_LAYER = "Tracked: Cell"
 
 
 class CellCorrectionWidget(QWidget):
@@ -83,6 +91,8 @@ class CellCorrectionWidget(QWidget):
         self._pos_dir_provider = pos_dir_provider
         self._local_pos_dir: Path | None = None
         self._files_widget_refresh = files_widget_refresh_callback or (lambda _pd: None)
+        self._correction_view_state: dict | None = None
+        self._correction_owned_layers: set[str] = set()
         self._setup_ui()
         self._connect_signals()
 
@@ -200,12 +210,15 @@ class CellCorrectionWidget(QWidget):
         group_lay.addWidget(self.correction_params_section)
 
         # ── Inline CorrectionWidget ───────────────────────────────────
+        # Nucleus correction uses the default spotlight_scale (3.0). For cells
+        # we want a noticeably larger spotlight halo (≈3× nucleus radius).
         self.correction_widget = CorrectionWidget(
             self.viewer,
             show_activate_btn=False,
             show_shortcuts=False,
             inspector_first=True,
-            spotlight=False,
+            spotlight=True,
+            spotlight_scale=9.0,
             show_cleanup=False,
         )
 
@@ -309,7 +322,115 @@ class CellCorrectionWidget(QWidget):
             self.section.collapse()
 
     def _on_active_button_toggled(self, active: bool) -> None:
+        if active:
+            self._capture_correction_view_state()
+            for layer in list(self.viewer.layers):
+                layer.visible = False
+
+            if not self._load_correction_layers_from_disk():
+                self._restore_correction_view_state()
+                self._set_checked_without_signal(self.active_btn, False)
+                self._sync_correction_panel_visibility()
+                return
+
+            layer = self.viewer.layers[_TRACKED_CELL_LAYER]
+            layer.visible = True
+            for name in (_CELL_ZAVG_LAYER, _NUC_ZAVG_LAYER):
+                if name in self.viewer.layers:
+                    self.viewer.layers[name].visible = True
+            self.viewer.layers.selection.active = layer
+            self.correction_widget.activate_layer(layer)
+            self._sync_correction_panel_visibility()
+            return
+
+        self.correction_widget.deactivate()
+        self._refresh_tracked_layer_from_disk()
+        self._remove_correction_owned_layers()
+        self._restore_correction_view_state()
         self._sync_correction_panel_visibility()
+
+    def _remove_correction_owned_layers(self) -> None:
+        for name in list(self._correction_owned_layers):
+            if name in self.viewer.layers:
+                self.viewer.layers.remove(self.viewer.layers[name])
+        self._correction_owned_layers.clear()
+
+    def _correction_tracked_layer(self):
+        """Return the [Correction] Cell Labels layer, or None if absent."""
+        if _TRACKED_CELL_LAYER in self.viewer.layers:
+            return self.viewer.layers[_TRACKED_CELL_LAYER]
+        return None
+
+    # ------------------------------------------------------------------ #
+    # View state capture / restore (mirrors NucleusCorrectionWidget)     #
+    # ------------------------------------------------------------------ #
+
+    def _capture_correction_view_state(self) -> None:
+        selected = [layer.name for layer in self.viewer.layers.selection]
+        active = self.viewer.layers.selection.active
+        self._correction_view_state = {
+            "visibility": {
+                layer.name: bool(layer.visible) for layer in self.viewer.layers
+            },
+            "active": active.name if active is not None else None,
+            "selected": selected,
+        }
+
+    def _restore_correction_view_state(self) -> None:
+        state = self._correction_view_state or {}
+        for name, visible in state.get("visibility", {}).items():
+            if name in self.viewer.layers:
+                self.viewer.layers[name].visible = bool(visible)
+        self.viewer.layers.selection.clear()
+        for name in state.get("selected", ()):
+            if name in self.viewer.layers:
+                self.viewer.layers.selection.add(self.viewer.layers[name])
+        active_name = state.get("active")
+        if active_name in self.viewer.layers:
+            self.viewer.layers.selection.active = self.viewer.layers[active_name]
+        self._correction_view_state = None
+
+    def _load_correction_layers_from_disk(self) -> bool:
+        lp = self._cell_labels_path()
+        if lp is None or not lp.exists():
+            self._correction_status("No cell labels file found.")
+            return False
+        try:
+            labels = read_full_tracked_stack(lp)
+        except Exception as exc:
+            self._correction_status(f"Error reading cell labels: {exc}")
+            return False
+        czp, nzp = self._cell_prob_zavg_path(), self._nuc_prob_zavg_path()
+        cz = (
+            np.asarray(tifffile.imread(str(czp)), dtype=np.float32)
+            if czp and czp.exists() else None
+        )
+        nz = (
+            np.asarray(tifffile.imread(str(nzp)), dtype=np.float32)
+            if nzp and nzp.exists() else None
+        )
+        self._apply_loaded_layers(labels, cz, nz)
+        self._correction_status(f"Loaded cell label stack {labels.shape}.")
+        return True
+
+    def _refresh_tracked_layer_from_disk(self) -> None:
+        """Reload the pipeline-side Tracked: Cell layer from disk on deactivate.
+
+        Mirrors NucleusCorrectionWidget so a subsequent re-solve picks up any
+        corrections saved during the session. The in-correction layer
+        (``[Correction] Cell Labels``) is torn down separately via
+        ``_remove_correction_owned_layers``.
+        """
+        lp = self._cell_labels_path()
+        if lp is None or not lp.exists():
+            return
+        if _PIPELINE_TRACKED_CELL_LAYER not in self.viewer.layers:
+            return
+        try:
+            data = np.asarray(read_full_tracked_stack(lp), dtype=np.uint32)
+            self.viewer.layers[_PIPELINE_TRACKED_CELL_LAYER].data = data
+        except Exception:
+            pass
 
     def _on_params_button_toggled(self, checked: bool) -> None:
         self.correction_params_section._toggle.setChecked(checked)
@@ -416,9 +537,9 @@ class CellCorrectionWidget(QWidget):
             return labels, cz, nz
         _w()
 
-    def _on_labels_loaded(self, result) -> None:
-        labels, cz, nz = result
-        self._show_layer(_TRACKED_CELL_LAYER, labels, {}, self.viewer.add_labels)
+    def _apply_loaded_layers(self, labels, cz, nz) -> None:
+        # Add the reference images first so the labels layer ends up at the
+        # top of the layer stack (otherwise the z-avg images render over it).
         for img, name, cmap in (
             (self._broadcast_ref(cz, labels.shape), _CELL_ZAVG_LAYER, "gray"),
             (self._broadcast_ref(nz, labels.shape), _NUC_ZAVG_LAYER, "I Orange"),
@@ -431,6 +552,13 @@ class CellCorrectionWidget(QWidget):
                 self.viewer.layers[name].blending = "minimum"
             else:
                 self.viewer.add_image(img, name=name, colormap=cmap, blending="minimum")
+            self._correction_owned_layers.add(name)
+        self._show_layer(_TRACKED_CELL_LAYER, labels, {}, self.viewer.add_labels)
+        self._correction_owned_layers.add(_TRACKED_CELL_LAYER)
+
+    def _on_labels_loaded(self, result) -> None:
+        labels, cz, nz = result
+        self._apply_loaded_layers(labels, cz, nz)
         self._correction_status(f"Loaded cell label stack {labels.shape}.")
         self.correction_widget.activate_layer(self.viewer.layers[_TRACKED_CELL_LAYER])
 
@@ -442,9 +570,10 @@ class CellCorrectionWidget(QWidget):
         lp = self._cell_labels_path()
         if lp is None:
             self._correction_status("No project open."); return
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No labels layer."); return
-        data = np.asarray(self.viewer.layers[_TRACKED_CELL_LAYER].data)
+        data = np.asarray(layer.data)
         if data.ndim != 3:
             self._correction_status("Labels not 3D."); return
         lp.parent.mkdir(parents=True, exist_ok=True)
@@ -457,9 +586,9 @@ class CellCorrectionWidget(QWidget):
     # ------------------------------------------------------------------ #
 
     def _on_fill_holes(self) -> None:
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No cell labels loaded."); return
-        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
         radius = int(self.hole_radius_spin.value())
         frames = self._correction_frame_indices(layer)
 
@@ -495,9 +624,9 @@ class CellCorrectionWidget(QWidget):
     # ------------------------------------------------------------------ #
 
     def _on_fix_semiholes(self) -> None:
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No cell labels loaded."); return
-        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
         radius = int(self.hole_radius_spin.value())
         max_opening = int(self.semihole_opening_spin.value())
         frames = self._correction_frame_indices(layer)
@@ -545,7 +674,8 @@ class CellCorrectionWidget(QWidget):
         return None
 
     def _on_cleanup(self) -> None:
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No cell labels loaded."); return
         nuc_data = self._get_nuclear_labels()
         if nuc_data is None:
@@ -553,7 +683,6 @@ class CellCorrectionWidget(QWidget):
                 "Nuclear labels not found (viewer or disk)."
             ); return
 
-        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
         cell_data = np.asarray(layer.data).copy()
 
         try:
@@ -595,14 +724,15 @@ class CellCorrectionWidget(QWidget):
             return None
         fg = np.asarray(tifffile.imread(str(fp)))
         self._show_layer(_CELL_FOREGROUND_LAYER, fg, {}, self.viewer.add_labels)
+        self._correction_owned_layers.add(_CELL_FOREGROUND_LAYER)
         return fg
 
     def _on_expand_cell(self) -> None:
         if self._pos_dir is None:
             self._correction_status("No project open."); return
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+        layer = self._correction_tracked_layer()
+        if layer is None:
             self._correction_status("No labels loaded."); return
-        layer = self.viewer.layers[_TRACKED_CELL_LAYER]
         if self.correction_widget._layer is not layer:
             self._correction_status("Labels not active for correction."); return
         lid = int(self.correction_widget._selected_label)

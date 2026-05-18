@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QProgressBar,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -104,6 +105,9 @@ class CellWorkflowWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(6)
+        # Shrink to content height so collapsed sections don't leave a tall
+        # empty strip below the last row. Matches nucleus_workflow_widget.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         # ── Pipeline files (single deduplicated panel) ────────────────
         self._files_widget = PipelineFilesWidget(
@@ -171,8 +175,6 @@ class CellWorkflowWidget(QWidget):
         self.cell_correction_widget.hide()
         root.addWidget(self.correction_header)
         root.addWidget(self.correction_mode_section)
-
-        root.addStretch()
 
     # -- Parameters --------------------------------------------------------
 
@@ -522,13 +524,19 @@ class CellWorkflowWidget(QWidget):
         self, t: int, source_label: int,
         *, source_labels: np.ndarray | None = None,
     ) -> None:
-        if _TRACKED_CELL_LAYER not in self.viewer.layers:
+        # Prefer the [Correction] layer (active when correction mode is on);
+        # fall back to the pipeline-side Tracked: Cell.
+        if "[Correction] Cell Labels" in self.viewer.layers:
+            target_layer = self.viewer.layers["[Correction] Cell Labels"]
+        elif _TRACKED_CELL_LAYER in self.viewer.layers:
+            target_layer = self.viewer.layers[_TRACKED_CELL_LAYER]
+        else:
             return
         if source_labels is None:
             if "Tracked: Nucleus" not in self.viewer.layers:
                 return
             source_labels = np.asarray(self.viewer.layers["Tracked: Nucleus"].data)
-        target = np.asarray(self.viewer.layers[_TRACKED_CELL_LAYER].data)
+        target = np.asarray(target_layer.data)
         matched = best_overlapping_label(target, source_labels, t, source_label)
         self.correction_widget.select_label(t, matched, notify=False)
 

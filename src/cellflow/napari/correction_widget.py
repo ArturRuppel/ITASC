@@ -73,16 +73,18 @@ class CorrectionWidget(QWidget):
         show_activate_btn: bool = True,
         show_shortcuts: bool = True,
         inspector_first: bool = False,
-        spotlight: bool = True,           # ← NEW
-        show_cleanup: bool = True,        # ← NEW
+        spotlight: bool = True,
+        spotlight_scale: float = _SPOTLIGHT_SCALE,
+        show_cleanup: bool = True,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self._show_activate_btn = show_activate_btn
         self._show_shortcuts = show_shortcuts
         self._inspector_first = inspector_first
-        self._spotlight = spotlight              # ← NEW
-        self._show_cleanup = show_cleanup        # ← NEW
+        self._spotlight = spotlight
+        self._spotlight_scale = float(spotlight_scale)
+        self._show_cleanup = show_cleanup
 
         self._layer: napari.layers.Labels | None = None
 
@@ -258,19 +260,23 @@ class CorrectionWidget(QWidget):
 
     def build_shortcuts_widget(self) -> QWidget:
         group = QGroupBox("Correction shortcuts")
-        lay = QVBoxLayout(group)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(8)
-        self._add_shortcut_group(
-            lay,
+        grid = QGridLayout(group)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(2)
+        row = 0
+        row = self._add_shortcut_group(
+            grid,
             "Selection",
             [
                 ("Left-click", "Select / highlight cell"),
                 ("Shift+Left / Shift+Right", "Previous / next cell"),
             ],
+            start_row=row,
+            is_first=True,
         )
-        self._add_shortcut_group(
-            lay,
+        row = self._add_shortcut_group(
+            grid,
             "Manual Labels",
             [
                 ("Middle-click or Delete", "Erase cell"),
@@ -279,39 +285,54 @@ class CorrectionWidget(QWidget):
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
             ],
+            start_row=row,
         )
-        self._add_shortcut_group(lay, "History", [("Ctrl+Z", "Undo")])
+        row = self._add_shortcut_group(
+            grid, "History", [("Ctrl+Z", "Undo")], start_row=row
+        )
+        grid.setColumnStretch(1, 1)
         return group
 
     @staticmethod
     def _add_shortcut_group(
-        lay: QVBoxLayout,
+        grid: QGridLayout,
         title: str,
         rows: list[tuple[str, str]],
-    ) -> None:
+        *,
+        start_row: int = 0,
+        is_first: bool = False,
+    ) -> int:
+        row = start_row
+        if not is_first:
+            grid.setRowMinimumHeight(row, 6)
+            row += 1
         title_lbl = QLabel(title)
         title_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        lay.addWidget(title_lbl)
+        grid.addWidget(title_lbl, row, 0, 1, 2)
+        row += 1
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setFrameShadow(QFrame.Shadow.Plain)
         sep.setFixedHeight(1)
         sep.setStyleSheet("background-color: rgba(255, 255, 255, 0.25); border: none;")
-        lay.addWidget(sep)
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(2)
-        for row, (key, desc) in enumerate(rows):
+        grid.addWidget(sep, row, 0, 1, 2)
+        row += 1
+        for key, desc in rows:
             key_lbl = QLabel(key)
-            key_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            key_lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+            key_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             desc_lbl = QLabel(desc)
             desc_lbl.setWordWrap(True)
-            desc_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+            desc_lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            sp = QSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding
+            )
+            sp.setHeightForWidth(True)
+            desc_lbl.setSizePolicy(sp)
             grid.addWidget(key_lbl, row, 0)
             grid.addWidget(desc_lbl, row, 1)
-        grid.setColumnStretch(1, 1)
-        lay.addLayout(grid)
+            row += 1
+        return row
 
     # ── activation ────────────────────────────────────────────────────────────
 
@@ -698,7 +719,7 @@ class CorrectionWidget(QWidget):
 
     def _update_spotlight(self, mask: np.ndarray) -> None:
         spotlight = self._get_spotlight_layer()
-        outer_mask = self._scaled_mask(mask, scale=_SPOTLIGHT_SCALE)
+        outer_mask = self._scaled_mask(mask, scale=self._spotlight_scale)
         ring = outer_mask & ~mask
         alpha = np.full(mask.shape, _SPOTLIGHT_OPACITY, dtype=np.float32)
         if np.any(ring):

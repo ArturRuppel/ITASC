@@ -445,6 +445,8 @@ class _PipelineFileRow(QWidget):
         name = Path(rel_path).name
         if name == "tracked_labels.tif":
             return "tracked"
+        if name == "foreground_masks.tif":
+            return "labels"
         if name.endswith("_labels.tif") or ("labels" in name and name.endswith((".tif", ".tiff"))):
             return "labels"
         if name.endswith((".tif", ".tiff")):

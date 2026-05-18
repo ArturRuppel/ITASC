@@ -540,19 +540,19 @@ def test_widget_load_cell_correction_loads_cell_labels_and_reference_images(monk
 
     widget.cell_correction_widget._on_load_labels()
 
-    assert "Tracked: Cell" in viewer.layers
-    assert "Cell z-avg" in viewer.layers
-    assert "Nucleus z-avg" in viewer.layers
-    np.testing.assert_array_equal(viewer.layers["Tracked: Cell"].data, labels)
+    assert "[Correction] Cell Labels" in viewer.layers
+    assert "[Correction] Cell z-avg" in viewer.layers
+    assert "[Correction] Nucleus z-avg" in viewer.layers
+    np.testing.assert_array_equal(viewer.layers["[Correction] Cell Labels"].data, labels)
     np.testing.assert_array_equal(
-        viewer.layers["Cell z-avg"].data,
+        viewer.layers["[Correction] Cell z-avg"].data,
         np.broadcast_to(cell_prob_zavg[np.newaxis], labels.shape),
     )
     np.testing.assert_array_equal(
-        viewer.layers["Nucleus z-avg"].data,
+        viewer.layers["[Correction] Nucleus z-avg"].data,
         np.broadcast_to(nuc_prob_zavg[np.newaxis], labels.shape),
     )
-    assert widget.correction_widget._layer is viewer.layers["Tracked: Cell"]
+    assert widget.correction_widget._layer is viewer.layers["[Correction] Cell Labels"]
     assert "Loaded cell label stack" in widget.correction_status_lbl.text()
 
     widget.deleteLater()
@@ -568,9 +568,9 @@ def test_widget_selects_best_overlapping_cell_for_nucleus_selection(monkeypatch)
     labels[1, 5:7, 5:7] = 8
     source = np.zeros((2, 8, 8), dtype=np.uint32)
     source[1, 2:6, 2:6] = 7
-    viewer.add_labels(labels, name="Tracked: Cell")
+    viewer.add_labels(labels, name="[Correction] Cell Labels")
     widget = mod.CellWorkflowWidget(viewer)
-    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.activate_layer(viewer.layers["[Correction] Cell Labels"])
 
     widget.select_matching_cell_label(1, 7, source_labels=source)
 
@@ -593,7 +593,7 @@ def test_widget_save_cell_correction_writes_cell_labels(monkeypatch, tmp_path):
     edited = initial.copy()
     edited[0, 1:3, 1:3] = 4
     viewer = _FakeViewer()
-    viewer.add_labels(edited, name="Tracked: Cell")
+    viewer.add_labels(edited, name="[Correction] Cell Labels")
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
 
@@ -640,8 +640,8 @@ def test_expand_cell_expands_only_current_frame_from_loaded_foreground(monkeypat
     labels[1, 3, 3] = 4
     foreground = np.zeros_like(labels, dtype=np.uint8)
     foreground[1, 2:5, 2:5] = 1
-    labels_layer = viewer.add_labels(labels.copy(), name="Tracked: Cell")
-    viewer.add_labels(foreground, name="Foreground Mask: Cell")
+    labels_layer = viewer.add_labels(labels.copy(), name="[Correction] Cell Labels")
+    viewer.add_labels(foreground, name="[Correction] Foreground Mask: Cell")
     viewer.dims.current_step = (1,)
 
     history = []
@@ -654,7 +654,7 @@ def test_expand_cell_expands_only_current_frame_from_loaded_foreground(monkeypat
 
     widget.expand_cell_btn.click()
 
-    edited = viewer.layers["Tracked: Cell"].data
+    edited = viewer.layers["[Correction] Cell Labels"].data
     np.testing.assert_array_equal(edited[0], labels[0])
     assert int(np.sum(edited[1] == 4)) == 5
     assert len(history) == 1
@@ -678,7 +678,7 @@ def test_expand_cell_falls_back_to_foreground_mask_file(monkeypatch, tmp_path):
     tifffile.imwrite(pos_dir / "3_cell" / "foreground_masks.tif", foreground)
 
     viewer = _FakeViewer()
-    labels_layer = viewer.add_labels(labels.copy(), name="Tracked: Cell")
+    labels_layer = viewer.add_labels(labels.copy(), name="[Correction] Cell Labels")
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
     widget.correction_widget.activate_layer(labels_layer)
@@ -687,9 +687,11 @@ def test_expand_cell_falls_back_to_foreground_mask_file(monkeypatch, tmp_path):
 
     widget.expand_cell_btn.click()
 
-    assert "Foreground Mask: Cell" in viewer.layers
-    np.testing.assert_array_equal(viewer.layers["Foreground Mask: Cell"].data, foreground)
-    assert np.all(viewer.layers["Tracked: Cell"].data == 3)
+    assert "[Correction] Foreground Mask: Cell" in viewer.layers
+    np.testing.assert_array_equal(
+        viewer.layers["[Correction] Foreground Mask: Cell"].data, foreground
+    )
+    assert np.all(viewer.layers["[Correction] Cell Labels"].data == 3)
 
     widget.deleteLater()
     app.processEvents()
@@ -700,11 +702,11 @@ def test_expand_cell_reports_missing_selection(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
 
     viewer = _FakeViewer()
-    viewer.add_labels(np.zeros((1, 5, 5), dtype=np.uint32), name="Tracked: Cell")
+    viewer.add_labels(np.zeros((1, 5, 5), dtype=np.uint32), name="[Correction] Cell Labels")
     viewer.add_labels(np.ones((1, 5, 5), dtype=np.uint8), name="Foreground Mask")
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(tmp_path / "pos00")
-    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.activate_layer(viewer.layers["[Correction] Cell Labels"])
 
     widget.expand_cell_btn.click()
 
@@ -721,10 +723,10 @@ def test_expand_cell_reports_missing_foreground_mask(monkeypatch, tmp_path):
     viewer = _FakeViewer()
     labels = np.zeros((1, 5, 5), dtype=np.uint32)
     labels[0, 2, 2] = 5
-    viewer.add_labels(labels, name="Tracked: Cell")
+    viewer.add_labels(labels, name="[Correction] Cell Labels")
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(tmp_path / "pos00")
-    widget.correction_widget.activate_layer(viewer.layers["Tracked: Cell"])
+    widget.correction_widget.activate_layer(viewer.layers["[Correction] Cell Labels"])
     widget.correction_widget.select_label(0, 5)
 
     widget.expand_cell_btn.click()
