@@ -96,6 +96,8 @@ def _install_import_stubs() -> None:
             "run_solve": lambda *args, **kwargs: iter(()),
         },
         "cellflow.segmentation": {
+            "apply_gamma": lambda logits, gamma: logits,
+            "build_consensus_boundary_flow_following": lambda *args, **kwargs: (None, None),
             "CancelledError": type("CancelledError", (Exception,), {}),
         },
     }

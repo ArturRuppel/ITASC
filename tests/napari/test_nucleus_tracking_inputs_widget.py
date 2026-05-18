@@ -248,6 +248,8 @@ def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
             "run_solve": lambda *args, **kwargs: iter(()),
         },
         "cellflow.segmentation": {
+            "apply_gamma": lambda logits, gamma: logits,
+            "build_consensus_boundary_flow_following": lambda *args, **kwargs: (None, None),
             "CancelledError": type("CancelledError", (Exception,), {}),
         },
     }

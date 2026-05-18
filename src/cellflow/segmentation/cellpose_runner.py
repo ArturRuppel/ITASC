@@ -231,10 +231,9 @@ def write_outputs(
     output_dir: Path,
     channel: Literal["nucleus", "cell"],
 ) -> None:
-    """Write the three canonical TIFFs under output_dir.
+    """Write the two canonical TIFFs under output_dir.
 
-    Writes ``{channel}_prob_3dt.tif``, ``{channel}_dp_3dt.tif``, and the
-    z-averaged probability ``{channel}_prob_zavg.tif``.
+    Writes ``{channel}_prob_3dt.tif`` and ``{channel}_dp_3dt.tif``.
     """
     if channel not in ("nucleus", "cell"):
         raise ValueError(f"channel must be 'nucleus' or 'cell', got {channel!r}")
@@ -244,8 +243,5 @@ def write_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     prob_path = output_dir / f"{channel}_prob_3dt.tif"
     dp_path = output_dir / f"{channel}_dp_3dt.tif"
-    zavg_path = output_dir / f"{channel}_prob_zavg.tif"
     tifffile.imwrite(str(prob_path), prob_3dt.astype(np.float32), compression="zlib")
     tifffile.imwrite(str(dp_path), dp_3dt.astype(np.float32), compression="zlib")
-    zavg = prob_3dt.mean(axis=1, dtype=np.float32).astype(np.float32)
-    tifffile.imwrite(str(zavg_path), zavg, compression="zlib")
