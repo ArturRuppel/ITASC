@@ -297,6 +297,7 @@ def test_run_with_no_project_reports_status(_mock_cellpose, monkeypatch):
 def test_nucleus_preview_2d_creates_layers(_mock_cellpose, monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
     viewer = _FakeViewer()
     viewer.dims.current_step = (1, 2)  # t=1, z=2
     w = mod.CellposeWidget(viewer)
@@ -307,14 +308,48 @@ def test_nucleus_preview_2d_creates_layers(_mock_cellpose, monkeypatch, tmp_path
     assert "Preview: Nucleus prob" in viewer.layers
     assert "Preview: Nucleus flow" in viewer.layers
     prob = viewer.layers["Preview: Nucleus prob"].data
-    assert prob.shape == (3, 6, 6)
-    assert np.all(prob[0] == 0) and np.all(prob[2] == 0)  # only t=1 populated
+    flow = viewer.layers["Preview: Nucleus flow"].data
+    assert prob.shape == (3, 4, 6, 6)
+    assert flow.shape == (3, 4, 6, 6)
+    w.deleteLater()
+
+
+def test_nucleus_preview_2d_keeps_reference_time_and_z_axes(
+    _mock_cellpose, monkeypatch, tmp_path
+):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 2)
+    w = mod.CellposeWidget(viewer)
+    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (3, 4, 6, 6))
+    w.refresh(tmp_path)
+    w.nuc_3d_chk.setChecked(False)
+
+    monkeypatch.setattr(
+        mod.cellpose_runner,
+        "run_nucleus_frame",
+        lambda frame, z, params: (
+            np.ones(frame.shape[-2:], dtype=np.float32),
+            np.ones((2, *frame.shape[-2:]), dtype=np.float32),
+        ),
+    )
+
+    w.nucleus_preview_btn.click()
+
+    reference = viewer.layers["Reference: Nucleus 3D+t"].data
+    prob = viewer.layers["Preview: Nucleus prob"].data
+    assert prob.shape == reference.shape
+    assert np.count_nonzero(prob) == 6 * 6
+    assert np.all(prob[1, 2] > 0)
     w.deleteLater()
 
 
 def test_nucleus_preview_3d_creates_volume_layers(_mock_cellpose, monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
     viewer = _FakeViewer()
     viewer.dims.current_step = (1, 0)
     w = mod.CellposeWidget(viewer)
@@ -329,9 +364,42 @@ def test_nucleus_preview_3d_creates_volume_layers(_mock_cellpose, monkeypatch, t
     w.deleteLater()
 
 
+def test_nucleus_preview_3d_reports_status_before_inference(
+    _mock_cellpose, monkeypatch, tmp_path
+):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 0)
+    w = mod.CellposeWidget(viewer)
+    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (3, 4, 6, 6))
+    w.refresh(tmp_path)
+    w.nuc_3d_chk.setChecked(True)
+
+    seen = {}
+
+    def _slow_preview(frame, z, params):
+        seen["status"] = w.status_lbl.text()
+        seen["progress_hidden"] = w.progress_bar.isHidden()
+        seen["progress_range"] = (w.progress_bar.minimum(), w.progress_bar.maximum())
+        prob = np.zeros(frame.shape, dtype=np.float32)
+        dp = np.zeros((3, *frame.shape), dtype=np.float32)
+        return prob, dp
+
+    monkeypatch.setattr(mod.cellpose_runner, "run_nucleus_frame", _slow_preview)
+    w.nucleus_preview_btn.click()
+
+    assert seen["status"].startswith("Previewing nucleus 3D")
+    assert seen["progress_hidden"] is False
+    assert seen["progress_range"] == (0, 0)
+    w.deleteLater()
+
+
 def test_cell_preview_creates_2d_layers(_mock_cellpose, monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
     viewer = _FakeViewer()
     viewer.dims.current_step = (2, 1)
     w = mod.CellposeWidget(viewer)
@@ -340,8 +408,79 @@ def test_cell_preview_creates_2d_layers(_mock_cellpose, monkeypatch, tmp_path):
     w.cell_preview_btn.click()
     prob = viewer.layers["Preview: Cell prob"].data
     flow = viewer.layers["Preview: Cell flow"].data
-    assert prob.shape == (3, 5, 5)
-    assert flow.shape == (3, 5, 5)
+    assert prob.shape == (3, 4, 5, 5)
+    assert flow.shape == (3, 4, 5, 5)
+    w.deleteLater()
+
+
+def test_cell_preview_loads_reference_stack_before_selecting_slice(
+    _mock_cellpose, monkeypatch, tmp_path
+):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    class _MiddleSliceViewer(_FakeViewer):
+        def add_image(self, data, *, name, **kwargs):
+            layer = super().add_image(data, name=name, **kwargs)
+            if name == "Reference: Cell 3D+t":
+                arr = np.asarray(data)
+                self.dims.current_step = (0, arr.shape[1] // 2)
+            return layer
+
+    viewer = _MiddleSliceViewer()
+    viewer.dims.current_step = (0, 0)
+    w = mod.CellposeWidget(viewer)
+    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (1, 5, 6, 6))
+    w.refresh(tmp_path)
+
+    seen = {}
+
+    def _record_preview(frame, z, params):
+        seen["shape"] = frame.shape
+        seen["z"] = z
+        return (
+            np.zeros(frame.shape[-2:], dtype=np.float32),
+            np.zeros((2, *frame.shape[-2:]), dtype=np.float32),
+        )
+
+    monkeypatch.setattr(mod.cellpose_runner, "run_cell_frame", _record_preview)
+    w.cell_preview_btn.click()
+
+    assert "Reference: Cell 3D+t" in viewer.layers
+    assert viewer.layers["Reference: Cell 3D+t"].data.shape == (1, 5, 6, 6)
+    assert seen == {"shape": (5, 6, 6), "z": 2}
+    w.deleteLater()
+
+
+def test_cell_preview_keeps_reference_time_and_z_axes(
+    _mock_cellpose, monkeypatch, tmp_path
+):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (2, 1)
+    w = mod.CellposeWidget(viewer)
+    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (3, 4, 5, 5))
+    w.refresh(tmp_path)
+
+    monkeypatch.setattr(
+        mod.cellpose_runner,
+        "run_cell_frame",
+        lambda frame, z, params: (
+            np.ones(frame.shape[-2:], dtype=np.float32),
+            np.ones((2, *frame.shape[-2:]), dtype=np.float32),
+        ),
+    )
+
+    w.cell_preview_btn.click()
+
+    reference = viewer.layers["Reference: Cell 3D+t"].data
+    prob = viewer.layers["Preview: Cell prob"].data
+    assert prob.shape == reference.shape
+    assert np.count_nonzero(prob) == 5 * 5
+    assert np.all(prob[2, 1] > 0)
     w.deleteLater()
 
 

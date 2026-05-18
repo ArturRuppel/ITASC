@@ -50,6 +50,12 @@ _PIPELINE_FILES = [
 ]
 
 
+_REFERENCE_LAYER_NAMES = {
+    "nucleus": "Reference: Nucleus 3D+t",
+    "cell": "Reference: Cell 3D+t",
+}
+
+
 def _make_status() -> QLabel:
     lbl = QLabel("")
     lbl.setWordWrap(True)
@@ -388,6 +394,9 @@ class CellposeWidget(QWidget):
         return (1.0 / (1.0 + np.exp(-x))).astype(np.float32)
 
     def _preview_channel(self, channel: str) -> None:
+        if self._running_stage is not None:
+            self._status("Cellpose task already running.")
+            return
         if self._pos_dir is None:
             self._status("No project open.")
             return
@@ -396,75 +405,145 @@ class CellposeWidget(QWidget):
             self._status(f"Missing: {in_path.name if in_path else '(no path)'}")
             return
 
-        t, z = self._current_tz()
-        stack = np.asarray(tifffile.imread(str(in_path)))
-        if stack.ndim != 4:
-            self._status(f"Expected 4D input (T,Z,Y,X), got {stack.shape}")
-            return
-        T, Z = stack.shape[:2]
-        t = min(max(t, 0), T - 1)
-        z = min(max(z, 0), Z - 1)
-
-        if channel == "nucleus":
-            params = self._build_nucleus_params()
-            if params.do_3d:
-                prob_logits, dp = cellpose_runner.run_nucleus_frame(
-                    stack[t], z=None, params=params,
+        params = (
+            self._build_nucleus_params() if channel == "nucleus"
+            else self._build_cell_params()
+        )
+        self._cancel_requested = False
+        self._set_running_stage(channel)
+        self._progress(0, 0, f"Loading {channel} reference stack for preview...")
+        try:
+            stack = np.asarray(tifffile.imread(str(in_path)))
+            if stack.ndim != 4:
+                raise ValueError(
+                    f"expected 4D input (T,Z,Y,X), got {stack.shape}"
                 )
-                prob = self._sigmoid(prob_logits)
-                flow = self._flow_magnitude(dp)  # (Z, Y, X)
-                prob_full = np.zeros((T, Z, *prob.shape[-2:]), dtype=np.float32)
-                flow_full = np.zeros_like(prob_full)
-                prob_full[t] = prob
-                flow_full[t] = flow
-                self._status(
-                    f"Preview: nucleus 3D t={t} (Z={Z}, anisotropy={params.anisotropy})"
-                )
-            else:
-                prob_logits, dp = cellpose_runner.run_nucleus_frame(
-                    stack[t], z=z, params=params,
-                )
-                prob = self._sigmoid(prob_logits)
-                flow = self._flow_magnitude(dp)  # (Y, X)
-                prob_full = np.zeros((T, *prob.shape), dtype=np.float32)
-                flow_full = np.zeros_like(prob_full)
-                prob_full[t] = prob
-                flow_full[t] = flow
-                self._status(
-                    f"Preview: nucleus 2D t={t} z={z} (diameter={params.diameter})"
-                )
-            self._show_layer(
-                "Preview: Nucleus prob", prob_full,
-                {"colormap": "viridis", "blending": "additive"},
-                self.viewer.add_image,
-            )
-            self._show_layer(
-                "Preview: Nucleus flow", flow_full,
-                {"colormap": "inferno", "blending": "additive"},
-                self.viewer.add_image,
-            )
+            self._show_reference_stack(channel, stack)
+            t, z = self._current_tz()
+        except Exception as exc:
+            self._set_running_stage(None)
+            self._clear_progress()
+            self._status(f"Error: {exc}")
+            logger.exception("Cellpose preview load error", exc_info=exc)
             return
 
-        # Cell preview — always 2D
-        params = self._build_cell_params()
-        prob_logits, dp = cellpose_runner.run_cell_frame(stack[t], z=z, params=params)
-        prob = self._sigmoid(prob_logits)
-        flow = self._flow_magnitude(dp)
-        prob_full = np.zeros((T, *prob.shape), dtype=np.float32)
-        flow_full = np.zeros_like(prob_full)
-        prob_full[t] = prob
-        flow_full[t] = flow
-        self._status(
-            f"Preview: cell t={t} z={z} (diameter={params.diameter})"
-        )
+        def _done(result):
+            self._worker = None
+            self._set_running_stage(None)
+            self._clear_progress()
+            status_msg, layers = result
+            for name, data, kwargs in layers:
+                self._show_layer(name, data, kwargs, self.viewer.add_image)
+            self._status(status_msg)
+
+        def _error(exc):
+            self._worker = None
+            self._set_running_stage(None)
+            self._clear_progress()
+            self._status(f"Error: {exc}")
+            logger.exception("Cellpose preview error", exc_info=exc)
+
+        @thread_worker(connect={
+            "yielded": self._on_progress,
+            "returned": _done,
+            "errored": _error,
+        })
+        def _worker():
+            T, Z = stack.shape[:2]
+            t_clamped = min(max(t, 0), T - 1)
+            z_clamped = min(max(z, 0), Z - 1)
+
+            if channel == "nucleus":
+                if params.do_3d:
+                    yield (
+                        0, 0,
+                        f"Previewing nucleus 3D t={t_clamped} "
+                        f"on {cellpose_runner.device_label()} "
+                        f"(Z={Z}, anisotropy={params.anisotropy})...",
+                    )
+                    prob_logits, dp = cellpose_runner.run_nucleus_frame(
+                        stack[t_clamped], z=None, params=params,
+                    )
+                    prob = self._sigmoid(prob_logits)
+                    flow = self._flow_magnitude(dp)  # (Z, Y, X)
+                    prob_full = np.zeros((T, Z, *prob.shape[-2:]), dtype=np.float32)
+                    flow_full = np.zeros_like(prob_full)
+                    prob_full[t_clamped] = prob
+                    flow_full[t_clamped] = flow
+                    status_msg = (
+                        f"Preview: nucleus 3D t={t_clamped} "
+                        f"(Z={Z}, anisotropy={params.anisotropy})"
+                    )
+                else:
+                    yield (
+                        0, 0,
+                        f"Previewing nucleus 2D t={t_clamped} z={z_clamped} "
+                        f"on {cellpose_runner.device_label()}...",
+                    )
+                    prob_logits, dp = cellpose_runner.run_nucleus_frame(
+                        stack[t_clamped], z=z_clamped, params=params,
+                    )
+                    prob = self._sigmoid(prob_logits)
+                    flow = self._flow_magnitude(dp)  # (Y, X)
+                    prob_full = np.zeros((T, Z, *prob.shape), dtype=np.float32)
+                    flow_full = np.zeros_like(prob_full)
+                    prob_full[t_clamped, z_clamped] = prob
+                    flow_full[t_clamped, z_clamped] = flow
+                    status_msg = (
+                        f"Preview: nucleus 2D t={t_clamped} z={z_clamped} "
+                        f"(diameter={params.diameter})"
+                    )
+                return status_msg, [
+                    (
+                        "Preview: Nucleus prob",
+                        prob_full,
+                        {"colormap": "viridis", "blending": "additive"},
+                    ),
+                    (
+                        "Preview: Nucleus flow",
+                        flow_full,
+                        {"colormap": "inferno", "blending": "additive"},
+                    ),
+                ]
+
+            yield (
+                0, 0,
+                f"Previewing cell 2D t={t_clamped} z={z_clamped} "
+                f"on {cellpose_runner.device_label()}...",
+            )
+            prob_logits, dp = cellpose_runner.run_cell_frame(
+                stack[t_clamped], z=z_clamped, params=params,
+            )
+            prob = self._sigmoid(prob_logits)
+            flow = self._flow_magnitude(dp)
+            prob_full = np.zeros((T, Z, *prob.shape), dtype=np.float32)
+            flow_full = np.zeros_like(prob_full)
+            prob_full[t_clamped, z_clamped] = prob
+            flow_full[t_clamped, z_clamped] = flow
+            return (
+                f"Preview: cell t={t_clamped} z={z_clamped} "
+                f"(diameter={params.diameter})",
+                [
+                    (
+                        "Preview: Cell prob",
+                        prob_full,
+                        {"colormap": "viridis", "blending": "additive"},
+                    ),
+                    (
+                        "Preview: Cell flow",
+                        flow_full,
+                        {"colormap": "inferno", "blending": "additive"},
+                    ),
+                ],
+            )
+
+        self._worker = _worker()
+
+    def _show_reference_stack(self, channel: str, stack: np.ndarray) -> None:
+        name = _REFERENCE_LAYER_NAMES[channel]
         self._show_layer(
-            "Preview: Cell prob", prob_full,
-            {"colormap": "viridis", "blending": "additive"},
-            self.viewer.add_image,
-        )
-        self._show_layer(
-            "Preview: Cell flow", flow_full,
-            {"colormap": "inferno", "blending": "additive"},
+            name, stack,
+            {"colormap": "gray", "blending": "additive"},
             self.viewer.add_image,
         )
 
