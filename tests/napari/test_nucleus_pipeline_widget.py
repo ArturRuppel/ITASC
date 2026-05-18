@@ -100,7 +100,6 @@ def _install_import_stubs() -> None:
         },
         "cellflow.tracking_ultrack.multi_threshold": {
             "build_ultrack_database_from_sources": lambda *args, **kwargs: None,
-            "preview_ultrack_source_stack_frame": lambda *args, **kwargs: (None, None, 0, []),
             "write_ultrack_source_stacks": lambda *args, **kwargs: [],
         },
         "cellflow.tracking_ultrack.extend": {
@@ -110,9 +109,6 @@ def _install_import_stubs() -> None:
             "run_solve": lambda *args, **kwargs: iter(()),
         },
         "cellflow.segmentation": {
-            "apply_gamma": lambda logits, gamma: logits,
-            "build_nucleus_averaged_maps": lambda *args, **kwargs: None,
-            "build_consensus_boundary": lambda *args, **kwargs: (None, None),
             "CancelledError": type("CancelledError", (Exception,), {}),
         },
     }
@@ -183,7 +179,6 @@ def test_nucleus_workflow_composes_pipeline_widget():
         widget.nucleus_pipeline_widget,
         pipeline_module.NucleusPipelineWidget,
     )
-    assert widget.preview_contour_btn is widget.nucleus_pipeline_widget.preview_contour_btn
     assert widget.seg_run_btn is widget.nucleus_pipeline_widget.seg_run_btn
     assert widget.db_run_btn is widget.nucleus_pipeline_widget.db_run_btn
     assert widget.solve_run_btn is widget.nucleus_pipeline_widget.solve_run_btn
@@ -227,8 +222,6 @@ def test_pipeline_widget_handler_methods_aliased_on_workflow():
 
     for method_name in (
         "_on_build_segmentation_inputs",
-        "_on_build_contour_maps",
-        "_on_preview_contour_maps",
         "_on_run_db_generation",
         "_on_run_ultrack",
         "_on_cancel",
@@ -383,7 +376,9 @@ def test_running_stage_params_btn_stays_enabled():
 # ── Handler tests ─────────────────────────────────────────────────────────────
 
 
-def test_build_contour_maps_calls_write_source_stacks(tmp_path, monkeypatch):
+def test_build_segmentation_inputs_calls_write_source_stacks_from_divergence_maps(
+    tmp_path, monkeypatch
+):
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
@@ -401,8 +396,15 @@ def test_build_contour_maps_calls_write_source_stacks(tmp_path, monkeypatch):
     widget.source_foreground_threshold_step_spin.setValue(0.2)
 
     import tifffile
-    tifffile.imwrite(pos_dir / "2_nucleus" / "contours.tif", np.zeros((2, 3, 3), dtype=np.float32))
-    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_scores.tif", np.ones((2, 3, 3), dtype=np.float32))
+    (pos_dir / "1_cellpose").mkdir()
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_contours.tif",
+        np.zeros((2, 3, 3), dtype=np.float32),
+    )
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
+        np.ones((2, 3, 3), dtype=np.float32),
+    )
 
     calls = []
 
@@ -414,13 +416,13 @@ def test_build_contour_maps_calls_write_source_stacks(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline_module, "write_ultrack_source_stacks", fake_write)
 
-    widget._on_build_contour_maps()
+    widget._on_build_segmentation_inputs()
 
     assert len(calls) == 1
     args, kwargs = calls[0]
     assert args[:4] == (
-        pos_dir / "2_nucleus" / "contours.tif",
-        pos_dir / "2_nucleus" / "foreground_scores.tif",
+        pos_dir / "1_cellpose" / "nucleus_contours.tif",
+        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
         pos_dir / "2_nucleus" / "contour_sources.tif",
         pos_dir / "2_nucleus" / "foreground_sources.tif",
     )
@@ -450,6 +452,7 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
         return {"database": str(data_db)}
 
     monkeypatch.setattr(pipeline_module, "build_ultrack_database_from_sources", fake_build_database)
+    monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
     monkeypatch.setattr(pipeline_module, "_ultrack_segment", object(), raising=False)
 
     pos_dir = tmp_path / "pos00"
@@ -504,10 +507,11 @@ def test_run_ultrack_updates_tracked_layer(tmp_path, monkeypatch):
 
     pos_dir = tmp_path / "pos00"
     (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
+    (pos_dir / "1_cellpose").mkdir()
     (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(b"sqlite placeholder")
     import tifffile
     tifffile.imwrite(
-        str(pos_dir / "2_nucleus" / "foreground_scores.tif"),
+        str(pos_dir / "1_cellpose" / "nucleus_foreground.tif"),
         np.zeros((2, 4, 4), dtype=np.float32),
     )
     widget._pos_dir = pos_dir
@@ -677,20 +681,6 @@ def test_running_row_shows_cancel_icon_others_disabled():
     assert not widget.solve_run_btn.isEnabled()
     assert not widget.db_params_btn.isEnabled()
     assert not widget.solve_params_btn.isEnabled()
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_preview_contour_btn_is_alias_of_seg_preview_btn():
-    """preview_contour_btn is an alias of seg_preview_btn."""
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-    pl = widget.nucleus_pipeline_widget
-
-    assert pl.preview_contour_btn is pl.seg_preview_btn
-    assert widget.preview_contour_btn is widget.seg_preview_btn
 
     widget.deleteLater()
     viewer.close()

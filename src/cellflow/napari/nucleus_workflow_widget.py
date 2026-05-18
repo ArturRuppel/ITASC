@@ -241,8 +241,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
 
     def _alias_pipeline_controls(self) -> None:
         pl = self.nucleus_pipeline_widget
-        self.preview_contour_btn = pl.preview_contour_btn
-        self.seg_preview_btn = pl.seg_preview_btn
         self.seg_params_btn = pl.seg_params_btn
         self.seg_run_btn = pl.seg_run_btn
         self.db_params_btn = pl.db_params_btn
@@ -253,9 +251,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.pipeline_progress_bar = pl.pipeline_progress_bar
         for name in (
             "_on_build_segmentation_inputs",
-            "_on_build_nucleus_maps",
-            "_on_build_contour_maps",
-            "_on_preview_contour_maps",
             "_on_contour_worker_error",
             "_on_run_db_generation",
             "_on_db_gen_done",
