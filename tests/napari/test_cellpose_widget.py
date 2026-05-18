@@ -292,3 +292,64 @@ def test_run_with_no_project_reports_status(_mock_cellpose, monkeypatch):
     w.nucleus_run_btn.click()
     assert "no project" in w.status_lbl.text().lower()
     w.deleteLater()
+
+
+def test_nucleus_preview_2d_creates_layers(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 2)  # t=1, z=2
+    w = mod.CellposeWidget(viewer)
+    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (3, 4, 6, 6))
+    w.refresh(tmp_path)
+    w.nuc_3d_chk.setChecked(False)
+    w.nucleus_preview_btn.click()
+    assert "Preview: Nucleus prob" in viewer.layers
+    assert "Preview: Nucleus flow" in viewer.layers
+    prob = viewer.layers["Preview: Nucleus prob"].data
+    assert prob.shape == (3, 6, 6)
+    assert np.all(prob[0] == 0) and np.all(prob[2] == 0)  # only t=1 populated
+    w.deleteLater()
+
+
+def test_nucleus_preview_3d_creates_volume_layers(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (1, 0)
+    w = mod.CellposeWidget(viewer)
+    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (3, 4, 6, 6))
+    w.refresh(tmp_path)
+    w.nuc_3d_chk.setChecked(True)
+    w.nucleus_preview_btn.click()
+    prob = viewer.layers["Preview: Nucleus prob"].data
+    flow = viewer.layers["Preview: Nucleus flow"].data
+    assert prob.shape == (3, 4, 6, 6)
+    assert flow.shape == (3, 4, 6, 6)
+    w.deleteLater()
+
+
+def test_cell_preview_creates_2d_layers(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (2, 1)
+    w = mod.CellposeWidget(viewer)
+    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (3, 4, 5, 5))
+    w.refresh(tmp_path)
+    w.cell_preview_btn.click()
+    prob = viewer.layers["Preview: Cell prob"].data
+    flow = viewer.layers["Preview: Cell flow"].data
+    assert prob.shape == (3, 5, 5)
+    assert flow.shape == (3, 5, 5)
+    w.deleteLater()
+
+
+def test_preview_reports_missing_input(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer())
+    w.refresh(tmp_path)
+    w.nucleus_preview_btn.click()
+    assert "missing" in w.status_lbl.text().lower()
+    w.deleteLater()

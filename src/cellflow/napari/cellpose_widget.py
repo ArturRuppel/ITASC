@@ -247,10 +247,10 @@ class CellposeWidget(QWidget):
         self._run_channel("cell")
 
     def _on_nucleus_preview(self) -> None:
-        pass
+        self._preview_channel("nucleus")
 
     def _on_cell_preview(self) -> None:
-        pass
+        self._preview_channel("cell")
 
     def _on_cancel(self) -> None:
         self._cancel_requested = True
@@ -367,6 +367,106 @@ class CellposeWidget(QWidget):
             else f"Running {channel} Cellpose..."
         )
         self._worker = _worker()
+
+    # ------------------------------------------------------------------
+    # Preview flow
+    # ------------------------------------------------------------------
+    def _current_tz(self) -> tuple[int, int]:
+        step = getattr(getattr(self.viewer, "dims", None), "current_step", (0, 0))
+        t = int(step[0]) if len(step) >= 1 else 0
+        z = int(step[1]) if len(step) >= 2 else 0
+        return t, z
+
+    @staticmethod
+    def _flow_magnitude(dp: np.ndarray) -> np.ndarray:
+        # dp has shape (C, ...) — sum-of-squares over the channel axis.
+        return np.sqrt(np.sum(np.asarray(dp, dtype=np.float32) ** 2, axis=0))
+
+    @staticmethod
+    def _sigmoid(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float32)
+        return (1.0 / (1.0 + np.exp(-x))).astype(np.float32)
+
+    def _preview_channel(self, channel: str) -> None:
+        if self._pos_dir is None:
+            self._status("No project open.")
+            return
+        in_path = self._input_path(channel)
+        if in_path is None or not in_path.exists():
+            self._status(f"Missing: {in_path.name if in_path else '(no path)'}")
+            return
+
+        t, z = self._current_tz()
+        stack = np.asarray(tifffile.imread(str(in_path)))
+        if stack.ndim != 4:
+            self._status(f"Expected 4D input (T,Z,Y,X), got {stack.shape}")
+            return
+        T, Z = stack.shape[:2]
+        t = min(max(t, 0), T - 1)
+        z = min(max(z, 0), Z - 1)
+
+        if channel == "nucleus":
+            params = self._build_nucleus_params()
+            if params.do_3d:
+                prob_logits, dp = cellpose_runner.run_nucleus_frame(
+                    stack[t], z=None, params=params,
+                )
+                prob = self._sigmoid(prob_logits)
+                flow = self._flow_magnitude(dp)  # (Z, Y, X)
+                prob_full = np.zeros((T, Z, *prob.shape[-2:]), dtype=np.float32)
+                flow_full = np.zeros_like(prob_full)
+                prob_full[t] = prob
+                flow_full[t] = flow
+                self._status(
+                    f"Preview: nucleus 3D t={t} (Z={Z}, anisotropy={params.anisotropy})"
+                )
+            else:
+                prob_logits, dp = cellpose_runner.run_nucleus_frame(
+                    stack[t], z=z, params=params,
+                )
+                prob = self._sigmoid(prob_logits)
+                flow = self._flow_magnitude(dp)  # (Y, X)
+                prob_full = np.zeros((T, *prob.shape), dtype=np.float32)
+                flow_full = np.zeros_like(prob_full)
+                prob_full[t] = prob
+                flow_full[t] = flow
+                self._status(
+                    f"Preview: nucleus 2D t={t} z={z} (diameter={params.diameter})"
+                )
+            self._show_layer(
+                "Preview: Nucleus prob", prob_full,
+                {"colormap": "viridis", "blending": "additive"},
+                self.viewer.add_image,
+            )
+            self._show_layer(
+                "Preview: Nucleus flow", flow_full,
+                {"colormap": "inferno", "blending": "additive"},
+                self.viewer.add_image,
+            )
+            return
+
+        # Cell preview — always 2D
+        params = self._build_cell_params()
+        prob_logits, dp = cellpose_runner.run_cell_frame(stack[t], z=z, params=params)
+        prob = self._sigmoid(prob_logits)
+        flow = self._flow_magnitude(dp)
+        prob_full = np.zeros((T, *prob.shape), dtype=np.float32)
+        flow_full = np.zeros_like(prob_full)
+        prob_full[t] = prob
+        flow_full[t] = flow
+        self._status(
+            f"Preview: cell t={t} z={z} (diameter={params.diameter})"
+        )
+        self._show_layer(
+            "Preview: Cell prob", prob_full,
+            {"colormap": "viridis", "blending": "additive"},
+            self.viewer.add_image,
+        )
+        self._show_layer(
+            "Preview: Cell flow", flow_full,
+            {"colormap": "inferno", "blending": "additive"},
+            self.viewer.add_image,
+        )
 
     # ------------------------------------------------------------------
     # Public API
