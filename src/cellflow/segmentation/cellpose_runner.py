@@ -80,3 +80,61 @@ def get_model():
         use_bfloat16=use_gpu,
     )
     return _MODEL
+
+
+def run_nucleus_frame(
+    frame: np.ndarray,
+    z: int | None,
+    params: NucleusParams,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Single-frame nucleus inference.
+
+    If ``z`` is None, runs full 3D over (Z, Y, X) and returns
+    prob with shape (Z, Y, X) and dp with shape (3, Z, Y, X).
+    If ``z`` is an integer, runs 2D on frame[z] and returns
+    prob with shape (Y, X) and dp with shape (2, Y, X).
+    """
+    model = get_model()
+    diameter = _diameter_kwarg(params.diameter)
+    if z is None:
+        volume = _apply_gamma(frame, params.gamma)
+        _, flows, _ = model.eval(
+            volume,
+            do_3D=True,
+            z_axis=0,
+            diameter=diameter,
+            anisotropy=params.anisotropy,
+            min_size=params.min_size,
+            normalize=_NORMALIZE,
+        )
+    else:
+        slice_2d = _apply_gamma(frame[z], params.gamma)
+        _, flows, _ = model.eval(
+            slice_2d,
+            diameter=diameter,
+            min_size=params.min_size,
+            normalize=_NORMALIZE,
+        )
+    dp = np.asarray(flows[1], dtype=np.float32)
+    prob = np.asarray(flows[2], dtype=np.float32)
+    return prob, dp
+
+
+def run_cell_frame(
+    frame: np.ndarray,
+    z: int,
+    params: CellParams,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Single 2D-slice cell inference. Returns (prob (Y,X), dp (2,Y,X))."""
+    model = get_model()
+    diameter = _diameter_kwarg(params.diameter)
+    slice_2d = _apply_gamma(frame[z], params.gamma)
+    _, flows, _ = model.eval(
+        slice_2d,
+        diameter=diameter,
+        min_size=params.min_size,
+        normalize=_NORMALIZE,
+    )
+    dp = np.asarray(flows[1], dtype=np.float32)
+    prob = np.asarray(flows[2], dtype=np.float32)
+    return prob, dp

@@ -158,3 +158,85 @@ def test_device_label_reflects_cuda(monkeypatch):
     assert r.device_label() == "cuda:0"
     monkeypatch.setattr(r, "_cuda_available", lambda: False)
     assert r.device_label() == "cpu"
+
+
+def _install_recording_model(monkeypatch, r):
+    """Replace the runner's model with one that records eval kwargs."""
+    calls = []
+
+    class _Recorder:
+        def eval(self, img, **kwargs):
+            calls.append({"shape": np.asarray(img).shape, **kwargs})
+            arr = np.asarray(img, dtype=np.float32)
+            if arr.ndim == 2:
+                dp = np.ones((2, *arr.shape), dtype=np.float32)
+                prob = np.full(arr.shape, 0.5, dtype=np.float32)
+            else:
+                dp = np.ones((3, *arr.shape), dtype=np.float32)
+                prob = np.full(arr.shape, 0.5, dtype=np.float32)
+            return None, (None, dp, prob), None
+
+    monkeypatch.setattr(r, "_MODEL", _Recorder())
+    return calls
+
+
+def test_run_nucleus_frame_3d_passes_do_3d_and_anisotropy(monkeypatch):
+    r = _runner()
+    calls = _install_recording_model(monkeypatch, r)
+    frame = np.zeros((4, 8, 8), dtype=np.float32)
+    params = r.NucleusParams(do_3d=True, anisotropy=1.5, diameter=25.0, min_size=15, gamma=1.0)
+    prob, dp = r.run_nucleus_frame(frame, z=None, params=params)
+    assert prob.shape == (4, 8, 8)
+    assert dp.shape == (3, 4, 8, 8)
+    assert len(calls) == 1
+    assert calls[0]["do_3D"] is True
+    assert calls[0]["z_axis"] == 0
+    assert calls[0]["anisotropy"] == 1.5
+    assert calls[0]["diameter"] == 25.0
+    assert calls[0]["min_size"] == 15
+
+
+def test_run_nucleus_frame_2d_slices_z(monkeypatch):
+    r = _runner()
+    calls = _install_recording_model(monkeypatch, r)
+    frame = np.zeros((4, 8, 8), dtype=np.float32)
+    params = r.NucleusParams(do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0)
+    prob, dp = r.run_nucleus_frame(frame, z=2, params=params)
+    assert prob.shape == (8, 8)
+    assert dp.shape == (2, 8, 8)
+    assert len(calls) == 1
+    assert calls[0]["shape"] == (8, 8)
+    assert calls[0].get("do_3D", False) is False
+    assert calls[0]["diameter"] is None
+
+
+def test_run_cell_frame_runs_2d_slice(monkeypatch):
+    r = _runner()
+    calls = _install_recording_model(monkeypatch, r)
+    frame = np.zeros((4, 8, 8), dtype=np.float32)
+    params = r.CellParams(diameter=30.0, min_size=10, gamma=1.0)
+    prob, dp = r.run_cell_frame(frame, z=1, params=params)
+    assert prob.shape == (8, 8)
+    assert dp.shape == (2, 8, 8)
+    assert len(calls) == 1
+    assert calls[0]["shape"] == (8, 8)
+    assert calls[0]["diameter"] == 30.0
+    assert calls[0]["min_size"] == 10
+
+
+def test_run_nucleus_frame_applies_gamma(monkeypatch):
+    r = _runner()
+    received = {}
+
+    class _Sniffer:
+        def eval(self, img, **kwargs):
+            received["img"] = np.asarray(img).copy()
+            arr = np.asarray(img, dtype=np.float32)
+            return None, (None, np.zeros((3, *arr.shape), dtype=np.float32), np.zeros(arr.shape, dtype=np.float32)), None
+
+    monkeypatch.setattr(r, "_MODEL", _Sniffer())
+    frame = np.linspace(0.0, 1.0, num=2 * 4 * 4, dtype=np.float32).reshape(2, 4, 4)
+    params = r.NucleusParams(do_3d=True, anisotropy=1.0, diameter=0.0, min_size=0, gamma=2.0)
+    r.run_nucleus_frame(frame, z=None, params=params)
+    expected = r._apply_gamma(frame, 2.0)
+    np.testing.assert_allclose(received["img"], expected, atol=1e-6)
