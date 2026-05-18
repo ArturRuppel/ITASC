@@ -4,7 +4,7 @@ Simplified workflow layout with action buttons grouped into their owning
 sections: segmentation inputs, tracking/Ultrack, database browser, correction.
 
 Stages:
-  1. Segmentation inputs → ``contours.tif`` / ``foreground_scores.tif``
+  1. Cellpose maps → ``nucleus_contours.tif`` / ``nucleus_foreground.tif``
   2. Source stacks → ``contour_sources.tif`` / ``foreground_sources.tif``
   3. Ultrack database + solve → ``data.db`` / ``tracked_labels.tif``
   4. Correction (load / save / extend / retrack / reassign / remove unvalidated)
@@ -81,13 +81,11 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             [
                 ("Inputs", [
                     ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-                    ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
                     ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
-                    ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
+                    ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
+                    ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
                 ]),
                 ("Intermediates", [
-                    ("2_nucleus/contours.tif", "Contours"),
-                    ("2_nucleus/foreground_scores.tif", "Foreground scores"),
                     ("2_nucleus/contour_sources.tif", "Contour sources"),
                     ("2_nucleus/foreground_sources.tif", "Foreground sources"),
                     ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
@@ -443,9 +441,9 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         # Required by NucleusUltrackDbBrowserMixin.
         return self._paths.ultrack_db if self._paths else None
 
-    def _nucleus_prob_zavg_path(self) -> Path | None:
+    def _nucleus_foreground_path(self) -> Path | None:
         # Required by NucleusUltrackDbBrowserMixin.
-        return self._paths.nucleus_prob_zavg if self._paths else None
+        return self._paths.nucleus_foreground if self._paths else None
 
     # These delegate to the pipeline widget so that tests that call path helpers
     # on the workflow widget (legacy seam tests) continue to pass.
@@ -462,7 +460,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         return self.nucleus_pipeline_widget._foreground_sources_path()
 
     def _foreground_scores_path(self) -> Path | None:
-        return self.nucleus_pipeline_widget._foreground_scores_path()
+        return self.nucleus_pipeline_widget._foreground_path()
 
     # ================================================================
     # Public API

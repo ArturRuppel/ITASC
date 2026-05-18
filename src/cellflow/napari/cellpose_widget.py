@@ -23,7 +23,6 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.napari._widget_helpers import tool_btn as _tool_btn
-from cellflow.napari.cellpose_zavg_viz_widget import CellposeZavgVizWidget
 from cellflow.napari.divergence_maps_widget import DivergenceMapsWidget
 from cellflow.napari.ui_style import stage_header_label, status_label
 from cellflow.napari.widgets import (
@@ -43,10 +42,8 @@ _PIPELINE_FILES = [
     ]),
     ("Outputs", [
         ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-        ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
         ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
         ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
-        ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
         ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
     ]),
 ]
@@ -167,10 +164,6 @@ class CellposeWidget(QWidget):
         # ── Divergence maps from Cellpose prob/dp outputs ─────────────
         self.divergence_maps_widget = DivergenceMapsWidget(self.viewer)
         root.addWidget(self.divergence_maps_widget)
-
-        # ── Z-avg viz (unchanged) ──────────────────────────────────────
-        self.zavg_viz_widget = CellposeZavgVizWidget()
-        root.addWidget(self.zavg_viz_widget)
 
     def _build_nucleus_params_section(self) -> CollapsibleSection:
         body = QWidget(self)
@@ -588,7 +581,6 @@ class CellposeWidget(QWidget):
         self._pos_dir = pos_dir
         self._files_widget.refresh(pos_dir)
         self.divergence_maps_widget.refresh(pos_dir)
-        self.zavg_viz_widget.refresh(pos_dir)
 
     def get_state(self) -> dict:
         return {

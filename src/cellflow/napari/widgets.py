@@ -22,7 +22,6 @@ from .ui_style import (
     icon_button,
     muted_accent,
     muted_label,
-    stage_accent,
     stage_header_label,
     stage_status_color,
     status_label,
@@ -410,7 +409,6 @@ class _PipelineFileRow(QWidget):
             return "gray"
         if (
             rel.startswith("1_cellpose/")
-            or rel == "2_nucleus/contours.tif"
             or (rel.startswith("2_nucleus/") and name.startswith("foreground_"))
             or (rel.startswith("3_cell/") and name.startswith("foreground_"))
         ):

@@ -97,15 +97,17 @@ def _install_import_stubs() -> None:
             "run_solve": lambda *args, **kwargs: iter(()),
         },
         "cellflow.segmentation": {
-            "apply_gamma": lambda logits, gamma: logits,
-            "build_nucleus_averaged_maps": lambda *args, **kwargs: None,
-            "build_consensus_boundary": lambda *args, **kwargs: (None, None),
             "CancelledError": type("CancelledError", (Exception,), {}),
         },
     }
 
     for module_name, attrs in stub_exports.items():
         module = types.ModuleType(module_name)
+        if module_name == "cellflow.segmentation":
+            segmentation_dir = (
+                Path(__file__).resolve().parents[2] / "src" / "cellflow" / "segmentation"
+            )
+            module.__path__ = [str(segmentation_dir)]
         for attr_name, value in attrs.items():
             setattr(module, attr_name, value)
         sys.modules[module_name] = module
@@ -139,8 +141,8 @@ def _make_widget(viewer, pos_dir: Path | None = None):
     widget._tracked_path = lambda: _path("2_nucleus", "tracked_labels.tif")
     widget._cell_zavg_path = lambda: _path("0_input", "cell_zavg.tif")
     widget._nucleus_zavg_path = lambda: _path("0_input", "nucleus_zavg.tif")
-    widget._cell_prob_zavg_path = lambda: _path("1_cellpose", "cell_prob_zavg.tif")
-    widget._nucleus_prob_zavg_path = lambda: _path("1_cellpose", "nucleus_prob_zavg.tif")
+    widget._cell_foreground_path = lambda: _path("1_cellpose", "cell_foreground.tif")
+    widget._nucleus_foreground_path = lambda: _path("1_cellpose", "nucleus_foreground.tif")
     widget._nls_zavg_path = lambda: _path("0_input", "NLS_zavg.tif")
     widget._ultrack_db_path = lambda: _path("2_nucleus", "ultrack_workdir", "data.db")
     widget._current_t = lambda: int(viewer.dims.current_step[0])
@@ -390,14 +392,14 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     tracked[1, 2:4, 2:4] = 7
     cell_raw_zavg = np.full((2, 4, 5), -99, dtype=np.float32)
     nucleus_raw_zavg = np.full((2, 4, 5), -77, dtype=np.float32)
-    cell_prob_zavg = np.array(
+    cell_foreground = np.array(
         [
             np.full((4, 5), 0.25, dtype=np.float32),
             np.full((4, 5), 0.75, dtype=np.float32),
         ],
         dtype=np.float32,
     )
-    nucleus_prob_zavg = np.array(
+    nucleus_foreground = np.array(
         [
             np.full((4, 5), 0.35, dtype=np.float32),
             np.full((4, 5), 0.65, dtype=np.float32),
@@ -408,8 +410,8 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", tracked)
     tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", cell_raw_zavg)
     tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", nucleus_raw_zavg)
-    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_zavg.tif", cell_prob_zavg)
-    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif", nucleus_prob_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_foreground.tif", cell_foreground)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_foreground.tif", nucleus_foreground)
     tifffile.imwrite(pos_dir / "0_input" / "NLS_zavg.tif", nls)
 
     stale = viewer.add_labels(np.ones((1, 2, 2), dtype=np.uint32), name="[Correction] stale")
@@ -460,13 +462,13 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     assert max(image_indices) < viewer.layers.index("[Correction] Nucleus tracks")
     np.testing.assert_allclose(
         viewer.layers["[Correction] Cell z-avg"].data,
-        cell_prob_zavg,
+        cell_foreground,
         rtol=1e-6,
         atol=1e-6,
     )
     np.testing.assert_allclose(
         viewer.layers["[Correction] Nucleus z-avg"].data,
-        nucleus_prob_zavg,
+        nucleus_foreground,
         rtol=1e-6,
         atol=1e-6,
     )

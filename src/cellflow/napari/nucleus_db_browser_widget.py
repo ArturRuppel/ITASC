@@ -295,7 +295,7 @@ class NucleusUltrackDbBrowserMixin:
     def _load_db_browser_nucleus_image(self) -> None:
         if _ULTRACK_DB_NUC_LAYER in self.viewer.layers:
             return
-        nuc_path = self._nucleus_prob_zavg_path()
+        nuc_path = self._nucleus_foreground_path()
         if nuc_path is None or not nuc_path.exists():
             return
         import tifffile

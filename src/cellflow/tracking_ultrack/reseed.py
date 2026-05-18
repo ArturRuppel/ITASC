@@ -517,7 +517,7 @@ def resolve_with_canonical_segment(
 
     Replaces the old resolve_with_validation() call chain:
       old: hypotheses.h5 → ingest_hypotheses_to_db → inject → score → link → solve
-      new: foreground_masks + contour_maps → ultrack.segment → inject → score → link → solve
+      new: foreground_masks + contours → ultrack.segment → inject → score → link → solve
     """
     def _notify(msg: str) -> None:
         if progress_cb is not None:

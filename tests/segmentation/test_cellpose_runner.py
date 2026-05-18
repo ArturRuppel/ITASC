@@ -8,7 +8,6 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -48,9 +47,12 @@ def _mock_cellpose(monkeypatch):
 def _runner():
     import importlib
 
-    import cellflow.segmentation.cellpose_runner as runner
-    importlib.reload(runner)
-    return runner
+    parent = sys.modules.get("cellflow.segmentation")
+    if parent is not None and hasattr(parent, "cellpose_runner"):
+        delattr(parent, "cellpose_runner")
+    sys.modules.pop("cellflow.segmentation.cellpose_runner", None)
+    runner = importlib.import_module("cellflow.segmentation.cellpose_runner")
+    return importlib.reload(runner)
 
 
 def test_dataclasses_have_expected_fields():
@@ -344,14 +346,9 @@ def test_write_outputs_nucleus(tmp_path: Path):
     r.write_outputs(prob, dp, tmp_path, "nucleus")
     prob_3dt = tmp_path / "nucleus_prob_3dt.tif"
     dp_3dt = tmp_path / "nucleus_dp_3dt.tif"
-    zavg = tmp_path / "nucleus_prob_zavg.tif"
-    assert prob_3dt.exists() and dp_3dt.exists() and zavg.exists()
+    assert prob_3dt.exists() and dp_3dt.exists()
     written_prob = tifffile.imread(str(prob_3dt))
-    written_zavg = tifffile.imread(str(zavg))
     np.testing.assert_allclose(written_prob, prob)
-    np.testing.assert_allclose(written_zavg, prob.mean(axis=1), rtol=1e-6)
-    assert written_zavg.shape == (2, 4, 5)
-    assert written_zavg.dtype == np.float32
 
 
 def test_write_outputs_cell(tmp_path: Path):
@@ -361,7 +358,6 @@ def test_write_outputs_cell(tmp_path: Path):
     r.write_outputs(prob, dp, tmp_path, "cell")
     assert (tmp_path / "cell_prob_3dt.tif").exists()
     assert (tmp_path / "cell_dp_3dt.tif").exists()
-    assert (tmp_path / "cell_prob_zavg.tif").exists()
 
 
 def test_write_outputs_creates_missing_dir(tmp_path: Path):

@@ -495,11 +495,11 @@ class NucleusCorrectionWidget(QWidget):
     def _nucleus_zavg_path(self):
         return self._paths.nucleus_zavg if self._paths else None
 
-    def _cell_prob_zavg_path(self):
-        return self._paths.cell_prob_zavg if self._paths else None
+    def _cell_foreground_path(self):
+        return self._paths.cell_foreground if self._paths else None
 
-    def _nucleus_prob_zavg_path(self):
-        return self._paths.nucleus_prob_zavg if self._paths else None
+    def _nucleus_foreground_path(self):
+        return self._paths.nucleus_foreground if self._paths else None
 
     def _nls_zavg_path(self):
         return self._paths.nls_zavg if self._paths else None
@@ -677,12 +677,12 @@ class NucleusCorrectionWidget(QWidget):
 
         for data, name, cmap in (
             (
-                self._cell_prob_zavg_path(),
+                self._cell_foreground_path(),
                 _CORRECTION_CELL_ZAVG_LAYER,
                 "gray",
             ),
             (
-                self._nucleus_prob_zavg_path(),
+                self._nucleus_foreground_path(),
                 _CORRECTION_NUC_ZAVG_LAYER,
                 "I Orange",
             ),
@@ -699,7 +699,7 @@ class NucleusCorrectionWidget(QWidget):
             self._add_correction_image_layer(
                 np.asarray(tifffile.imread(str(nls_path)), dtype=np.float32),
                 _CORRECTION_NLS_ZAVG_LAYER,
-                "I Orange",
+                "I Blue",
             )
 
         labels_layer = self.viewer.add_labels(

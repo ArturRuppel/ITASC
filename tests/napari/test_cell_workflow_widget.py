@@ -525,11 +525,11 @@ def test_widget_load_cell_correction_loads_cell_labels_and_reference_images(monk
     (pos_dir / "3_cell").mkdir()
     labels = np.zeros((2, 4, 4), dtype=np.uint32)
     labels[:, 1:3, 1:3] = 7
-    cell_prob_zavg = np.ones((4, 4), dtype=np.float32)
-    nuc_prob_zavg = np.full((4, 4), 2.0, dtype=np.float32)
+    cell_foreground = np.ones((4, 4), dtype=np.float32)
+    nuc_foreground = np.full((4, 4), 2.0, dtype=np.float32)
     tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
-    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_zavg.tif", cell_prob_zavg)
-    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif", nuc_prob_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_foreground.tif", cell_foreground)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_foreground.tif", nuc_foreground)
 
     viewer = _FakeViewer()
     widget = mod.CellWorkflowWidget(viewer)
@@ -546,11 +546,11 @@ def test_widget_load_cell_correction_loads_cell_labels_and_reference_images(monk
     np.testing.assert_array_equal(viewer.layers["[Correction] Cell Labels"].data, labels)
     np.testing.assert_array_equal(
         viewer.layers["[Correction] Cell z-avg"].data,
-        np.broadcast_to(cell_prob_zavg[np.newaxis], labels.shape),
+        np.broadcast_to(cell_foreground[np.newaxis], labels.shape),
     )
     np.testing.assert_array_equal(
         viewer.layers["[Correction] Nucleus z-avg"].data,
-        np.broadcast_to(nuc_prob_zavg[np.newaxis], labels.shape),
+        np.broadcast_to(nuc_foreground[np.newaxis], labels.shape),
     )
     assert widget.correction_widget._layer is viewer.layers["[Correction] Cell Labels"]
     assert "Loaded cell label stack" in widget.correction_status_lbl.text()

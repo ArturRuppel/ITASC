@@ -415,11 +415,11 @@ class RadialRefinementWidget(QWidget):
 
     def _contours_path(self) -> Path | None:
         d = self._pos_dir()
-        return d / "2_nucleus" / "contours.tif" if d else None
+        return d / "1_cellpose" / "nucleus_contours.tif" if d else None
 
     def _fg_path(self) -> Path | None:
         d = self._pos_dir()
-        return d / "2_nucleus" / "foreground_scores.tif" if d else None
+        return d / "1_cellpose" / "nucleus_foreground.tif" if d else None
 
     def _refinement_dir(self) -> Path | None:
         d = self._pos_dir()
@@ -525,7 +525,7 @@ class RadialRefinementWidget(QWidget):
             self._status(
                 "Input shape mismatch: "
                 f"tracked={labels.shape} contours={contours_arr.shape} "
-                f"foreground_scores={fg_arr.shape}"
+                f"foreground={fg_arr.shape}"
             )
             return None
         return labels.astype(np.uint32, copy=False), contours_arr, fg_arr

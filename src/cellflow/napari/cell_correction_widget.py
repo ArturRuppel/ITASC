@@ -12,7 +12,6 @@ from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -400,7 +399,7 @@ class CellCorrectionWidget(QWidget):
         except Exception as exc:
             self._correction_status(f"Error reading cell labels: {exc}")
             return False
-        czp, nzp = self._cell_prob_zavg_path(), self._nuc_prob_zavg_path()
+        czp, nzp = self._cell_foreground_path(), self._nuc_foreground_path()
         cz = (
             np.asarray(tifffile.imread(str(czp)), dtype=np.float32)
             if czp and czp.exists() else None
@@ -466,11 +465,11 @@ class CellCorrectionWidget(QWidget):
     def _cell_labels_path(self) -> Path | None:
         return self._p("3_cell", "tracked_labels.tif")
 
-    def _cell_prob_zavg_path(self) -> Path | None:
-        return self._p("1_cellpose", "cell_prob_zavg.tif")
+    def _cell_foreground_path(self) -> Path | None:
+        return self._p("1_cellpose", "cell_foreground.tif")
 
-    def _nuc_prob_zavg_path(self) -> Path | None:
-        return self._p("1_cellpose", "nucleus_prob_zavg.tif")
+    def _nuc_foreground_path(self) -> Path | None:
+        return self._p("1_cellpose", "nucleus_foreground.tif")
 
     def _nuc_labels_path(self) -> Path | None:
         return self._p("2_nucleus", "tracked_labels.tif")
@@ -524,7 +523,7 @@ class CellCorrectionWidget(QWidget):
         if lp is None or not lp.exists():
             self._correction_status("No cell labels file found."); return
         self._correction_status("Loading...")
-        czp, nzp = self._cell_prob_zavg_path(), self._nuc_prob_zavg_path()
+        czp, nzp = self._cell_foreground_path(), self._nuc_foreground_path()
 
         @_thread_worker(connect={
             "returned": self._on_labels_loaded,

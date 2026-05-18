@@ -114,9 +114,9 @@ class CellWorkflowWidget(QWidget):
             [
                 ("Inputs", [
                     ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
-                    ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
                     ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
-                    ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
+                    ("1_cellpose/cell_foreground.tif", "Cell foreground"),
+                    ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
                     ("2_nucleus/tracked_labels.tif", "Nucleus tracked labels"),
                 ]),
                 ("Intermediates", [

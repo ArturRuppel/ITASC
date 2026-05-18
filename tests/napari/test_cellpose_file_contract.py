@@ -13,26 +13,27 @@ def test_cellpose_status_panels_track_cell_flow_vectors():
     assert "1_cellpose/cell_dp_3dt.tif" in data_panel_source
 
 
-def test_cellpose_status_panels_track_probability_zavgs():
+def test_cellpose_status_panels_do_not_track_probability_zavgs():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
 
     cellpose_source = (package_root / "cellpose_widget.py").read_text()
     data_panel_source = (package_root / "data_panel_widget.py").read_text()
 
-    for source in (cellpose_source, data_panel_source):
-        assert "1_cellpose/cell_prob_zavg.tif" in source
-        assert "1_cellpose/nucleus_prob_zavg.tif" in source
+    assert "1_cellpose/cell_prob_zavg.tif" not in cellpose_source
+    assert "1_cellpose/nucleus_prob_zavg.tif" not in cellpose_source
+    assert "1_cellpose/cell_foreground.tif" in data_panel_source
+    assert "1_cellpose/nucleus_foreground.tif" in data_panel_source
 
 
-def test_segmentation_widgets_use_probability_zavgs_as_inputs():
+def test_segmentation_widgets_use_cellpose_foregrounds_as_inputs():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
 
     nucleus_source = (package_root / "nucleus_workflow_widget.py").read_text()
     cell_source = (package_root / "cell_workflow_widget.py").read_text()
 
-    for source in (nucleus_source, cell_source):
-        assert "1_cellpose/cell_prob_zavg.tif" in source
-        assert "1_cellpose/nucleus_prob_zavg.tif" in source
+    assert "1_cellpose/nucleus_foreground.tif" in nucleus_source
+    assert "1_cellpose/cell_foreground.tif" in cell_source
+    assert "1_cellpose/nucleus_foreground.tif" in cell_source
 
 
 def test_hpc_cellpose_controls_are_not_public_napari_entry_points():

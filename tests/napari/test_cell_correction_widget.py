@@ -150,7 +150,7 @@ def test_load_labels_shows_error_when_file_missing(tmp_path):
     viewer.close()
 
 
-def test_load_labels_loads_tracked_cell_layer_and_precomputed_probability_zavgs(
+def test_load_labels_loads_tracked_cell_layer_and_cellpose_foregrounds(
     tmp_path, monkeypatch
 ):
     _app, viewer = _make_viewer()
@@ -163,13 +163,13 @@ def test_load_labels_loads_tracked_cell_layer_and_precomputed_probability_zavgs(
     labels[:, 1:3, 1:3] = 7
     raw_cell_zavg = np.ones((4, 4), dtype=np.float32)
     raw_nuc_zavg = np.full((4, 4), 2.0, dtype=np.float32)
-    cell_prob_zavg = np.full((4, 4), 0.25, dtype=np.float32)
-    nuc_prob_zavg = np.full((4, 4), 0.75, dtype=np.float32)
+    cell_foreground = np.full((4, 4), 0.25, dtype=np.float32)
+    nuc_foreground = np.full((4, 4), 0.75, dtype=np.float32)
     tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
     tifffile.imwrite(pos_dir / "0_input" / "cell_zavg.tif", raw_cell_zavg)
     tifffile.imwrite(pos_dir / "0_input" / "nucleus_zavg.tif", raw_nuc_zavg)
-    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_prob_zavg.tif", cell_prob_zavg)
-    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_prob_zavg.tif", nuc_prob_zavg)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_foreground.tif", cell_foreground)
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_foreground.tif", nuc_foreground)
 
     widget_class, module = _load_widget_class()
 
@@ -199,11 +199,11 @@ def test_load_labels_loads_tracked_cell_layer_and_precomputed_probability_zavgs(
     np.testing.assert_array_equal(viewer.layers["[Correction] Cell Labels"].data, labels)
     np.testing.assert_array_equal(
         viewer.layers["[Correction] Cell z-avg"].data,
-        np.broadcast_to(cell_prob_zavg[np.newaxis], labels.shape),
+        np.broadcast_to(cell_foreground[np.newaxis], labels.shape),
     )
     np.testing.assert_array_equal(
         viewer.layers["[Correction] Nucleus z-avg"].data,
-        np.broadcast_to(nuc_prob_zavg[np.newaxis], labels.shape),
+        np.broadcast_to(nuc_foreground[np.newaxis], labels.shape),
     )
     assert viewer.layers["[Correction] Cell z-avg"].blending == "minimum"
     assert viewer.layers["[Correction] Nucleus z-avg"].blending == "minimum"

@@ -190,6 +190,8 @@ def test_exposes_output_files_tracker(_mock_cellpose, monkeypatch):
     assert hasattr(w, "output_files_tracker")
     # Same attribute name kept for main_widget.pipeline_status_from_files.
     assert w.output_files_tracker is w._files_widget
+    assert not hasattr(w, "zavg_viz_widget")
+    assert all("prob_zavg" not in row._rel_path for row in w._files_widget._rows)
     w.deleteLater()
 
 
@@ -326,7 +328,6 @@ def test_run_nucleus_writes_outputs_and_updates_status(_mock_cellpose, monkeypat
     out = tmp_path / "1_cellpose"
     assert (out / "nucleus_prob_3dt.tif").exists()
     assert (out / "nucleus_dp_3dt.tif").exists()
-    assert (out / "nucleus_prob_zavg.tif").exists()
     assert "complete" in w.status_lbl.text().lower()
     assert w.nucleus_run_btn.text() == "▶"
     w.deleteLater()
@@ -343,7 +344,6 @@ def test_run_cell_writes_outputs(_mock_cellpose, monkeypatch, tmp_path):
     out = tmp_path / "1_cellpose"
     assert (out / "cell_prob_3dt.tif").exists()
     assert (out / "cell_dp_3dt.tif").exists()
-    assert (out / "cell_prob_zavg.tif").exists()
     w.deleteLater()
 
 

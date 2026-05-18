@@ -13,18 +13,12 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtCore import QPoint
-from qtpy.QtGui import QKeySequence, QShortcut
 from qtpy.QtWidgets import (
     QApplication,
     QLabel,
     QProgressBar,
-    QPushButton,
-    QCheckBox,
-    QScrollArea,
     QSizePolicy,
     QToolButton,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -110,15 +104,17 @@ def _install_import_stubs() -> None:
             "run_solve": lambda *args, **kwargs: iter(()),
         },
         "cellflow.segmentation": {
-            "apply_gamma": lambda logits, gamma: logits,
-            "build_nucleus_averaged_maps": lambda *args, **kwargs: None,
-            "build_consensus_boundary": lambda *args, **kwargs: (None, None),
             "CancelledError": type("CancelledError", (Exception,), {}),
         },
     }
 
     for module_name, attrs in stub_exports.items():
         module = types.ModuleType(module_name)
+        if module_name == "cellflow.segmentation":
+            segmentation_dir = (
+                Path(__file__).resolve().parents[2] / "src" / "cellflow" / "segmentation"
+            )
+            module.__path__ = [str(segmentation_dir)]
         for attr_name, value in attrs.items():
             setattr(module, attr_name, value)
         sys.modules[module_name] = module

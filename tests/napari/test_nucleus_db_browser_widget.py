@@ -96,15 +96,17 @@ def _install_import_stubs() -> None:
             "run_solve": lambda *args, **kwargs: iter(()),
         },
         "cellflow.segmentation": {
-            "apply_gamma": lambda logits, gamma: logits,
-            "build_nucleus_averaged_maps": lambda *args, **kwargs: None,
-            "build_consensus_boundary": lambda *args, **kwargs: (None, None),
             "CancelledError": type("CancelledError", (Exception,), {}),
         },
     }
 
     for module_name, attrs in stub_exports.items():
         module = types.ModuleType(module_name)
+        if module_name == "cellflow.segmentation":
+            segmentation_dir = (
+                Path(__file__).resolve().parents[2] / "src" / "cellflow" / "segmentation"
+            )
+            module.__path__ = [str(segmentation_dir)]
         for attr_name, value in attrs.items():
             setattr(module, attr_name, value)
         sys.modules[module_name] = module
@@ -675,8 +677,10 @@ def test_ultrack_db_browser_does_not_add_contour_or_foreground_layers(tmp_path, 
     db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.write_bytes(b"sqlite placeholder")
-    tifffile.imwrite(pos_dir / "2_nucleus" / "contours.tif", np.zeros((1, 4, 4), dtype=np.float32))
-    tifffile.imwrite(pos_dir / "2_nucleus" / "foreground_scores.tif", np.zeros((1, 4, 4), dtype=np.float32))
+    cellpose_dir = pos_dir / "1_cellpose"
+    cellpose_dir.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(cellpose_dir / "nucleus_contours.tif", np.zeros((1, 4, 4), dtype=np.float32))
+    tifffile.imwrite(cellpose_dir / "nucleus_foreground.tif", np.zeros((1, 4, 4), dtype=np.float32))
     widget._pos_dir = pos_dir
     widget._ultrack_db_browser_active = True
     widget._ultrack_db_frame_initialized = True
