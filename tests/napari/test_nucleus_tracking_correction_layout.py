@@ -113,6 +113,7 @@ def _install_import_stubs() -> None:
             "apply_gamma": lambda logits, gamma: logits,
             "build_nucleus_averaged_maps": lambda *args, **kwargs: None,
             "build_consensus_boundary": lambda *args, **kwargs: (None, None),
+            "CancelledError": type("CancelledError", (Exception,), {}),
         },
     }
 
@@ -525,7 +526,7 @@ def test_nucleus_workflow_stage_headers_are_compact_and_evenly_spaced():
     nucleus_accent = stage_accent("nucleus")
     for text in (
         "Pipeline Files",
-        "Segmentation inputs",
+        "Ultrack Inputs",
         "Ultrack database",
         "Ultrack solve",
         "Database Browser",

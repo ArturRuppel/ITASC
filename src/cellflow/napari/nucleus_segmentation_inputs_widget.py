@@ -123,7 +123,7 @@ class NucleusSegmentationInputsWidget(QWidget):
         ); row += 1
 
         self.section = CollapsibleSection(
-            "Segmentation Input Parameters",
+            "Ultrack Input Parameters",
             inner,
             expanded=True,
         )

@@ -9,6 +9,16 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 import tifffile
 
+
+class CancelledError(Exception):
+    """Raised when a cooperative cancel signal is observed mid-computation."""
+
+
+def _check_cancel(cancel: Callable[[], bool] | None) -> None:
+    if cancel is not None and cancel():
+        raise CancelledError("Operation cancelled.")
+
+
 def apply_gamma(logits: np.ndarray, gamma: float) -> np.ndarray:
     """Gamma-correct Cellpose probability logits: sigmoid → power → logit."""
     if gamma == 1.0:
@@ -228,6 +238,7 @@ def build_nucleus_averaged_maps(
     cellprob_thresholds: list[float] | tuple[float, ...],
     z_indices: list[int] | tuple[int, ...] | slice | None = None,
     progress_cb: Callable[[int, int, str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> NucleusAveragedMapsReport:
     """Build ``contours.tif`` and ``foreground_scores.tif`` from Cellpose outputs.
 
@@ -251,6 +262,7 @@ def build_nucleus_averaged_maps(
     foreground_frames: list[np.ndarray] = []
     n_t = int(prob_stack.shape[0])
     for t in range(n_t):
+        _check_cancel(cancel)
         if progress_cb is not None:
             progress_cb(t + 1, n_t, f"Building averaged maps: frame {t + 1}/{n_t}")
         contours, foreground = build_consensus_boundary(
@@ -263,6 +275,7 @@ def build_nucleus_averaged_maps(
         contour_frames.append(np.asarray(contours, dtype=np.float32))
         foreground_frames.append(np.asarray(foreground, dtype=np.float32))
 
+    _check_cancel(cancel)
     contours_path = Path(contours_path)
     foreground_scores_path = Path(foreground_scores_path)
     contours_path.parent.mkdir(parents=True, exist_ok=True)

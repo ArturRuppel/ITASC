@@ -24,6 +24,7 @@ from cellflow.segmentation.cell_label_icm import (
 )
 
 from cellflow.segmentation.nucleus_segmentation import (
+    CancelledError,
     ContourWatershedParams,
     NucleusAveragedMapsReport,
     build_consensus_boundary,
@@ -36,6 +37,7 @@ from cellflow.segmentation.cell_foreground import (
 )
 
 __all__ = [
+    "CancelledError",
     "CellICMState",
     "CellLabelICMParams",
     "ContourFilterParams",

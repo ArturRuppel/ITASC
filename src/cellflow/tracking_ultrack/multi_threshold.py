@@ -600,24 +600,33 @@ def write_ultrack_source_stacks(
     foreground_sources_path: str | Path,
     contour_thresholds: Sequence[float],
     foreground_thresholds: Sequence[float],
+    *,
+    cancel: Callable[[], bool] | None = None,
 ) -> list[dict[str, float]]:
     """Write thresholded Ultrack input source stacks to TIFF files."""
+    from cellflow.segmentation.nucleus_segmentation import _check_cancel
+
+    _check_cancel(cancel)
     contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
+    _check_cancel(cancel)
     foreground_scores = np.asarray(
         tifffile.imread(str(foreground_scores_path)),
         dtype=np.float32,
     )
+    _check_cancel(cancel)
     contour_sources, foreground_sources, metadata = build_ultrack_source_stacks(
         contours,
         foreground_scores,
         contour_thresholds,
         foreground_thresholds,
     )
+    _check_cancel(cancel)
     contour_sources_path = Path(contour_sources_path)
     foreground_sources_path = Path(foreground_sources_path)
     contour_sources_path.parent.mkdir(parents=True, exist_ok=True)
     foreground_sources_path.parent.mkdir(parents=True, exist_ok=True)
     tifffile.imwrite(str(contour_sources_path), contour_sources)
+    _check_cancel(cancel)
     tifffile.imwrite(str(foreground_sources_path), foreground_sources)
     return metadata
 

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from qtpy.QtWidgets import (
-    QFrame,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -60,15 +58,8 @@ class ProjectStatusPanel(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
 
-        # ── File Tracker (Scrollable) ─────────
         self.file_tracker = PipelineFilesWidget(_TRACKED_FILE_GROUPS, viewer=viewer)
-
-        scroll = QScrollArea()
-        scroll.setWidget(self.file_tracker)
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumHeight(150)
-        scroll.setFrameShape(QFrame.NoFrame)
-        layout.addWidget(scroll)
+        layout.addWidget(self.file_tracker)
 
     def refresh(self, pos_dir: Path | None) -> None:
         """Update file status display."""

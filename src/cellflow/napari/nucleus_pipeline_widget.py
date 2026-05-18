@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -25,7 +26,11 @@ from cellflow.napari._widget_helpers import (
 )
 from cellflow.napari.ui_style import stage_header_label as _stage_header_label
 from cellflow.database.validation import read_corrections, read_validated_tracks
-from cellflow.segmentation import build_consensus_boundary, build_nucleus_averaged_maps
+from cellflow.segmentation import (
+    CancelledError,
+    build_consensus_boundary,
+    build_nucleus_averaged_maps,
+)
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.multi_threshold import (
@@ -46,7 +51,7 @@ except ImportError:
 _TRACKED_LAYER = "Tracked: Nucleus"
 _CONTOUR_LAYER = "Contour Map: Nucleus"
 _FOREGROUND_SCORE_LAYER = "Foreground Score: Nucleus"
-_NUC_ZAVG_LAYER = "Nucleus z-avg"
+_NUC_ZAVG_LAYER = "Nucleus prob z-avg"
 
 
 class NucleusPipelineWidget(QWidget):
@@ -74,6 +79,7 @@ class NucleusPipelineWidget(QWidget):
         self._contour_worker = None
         self._db_gen_worker = None
         self._ultrack_worker = None
+        self._contour_cancel: threading.Event | None = None
         self._running_stage: str | None = None
 
         # ── Per-stage buttons ──────────────────────────────────────────
@@ -152,7 +158,7 @@ class NucleusPipelineWidget(QWidget):
 
         # ── Segmentation inputs ──────────────────────────────────────
         lay.addLayout(_stage_row(
-            _stage_label("Segmentation inputs"),
+            _stage_label("Ultrack Inputs"),
             self.seg_params_btn,
             self.seg_preview_btn,
             self.seg_run_btn,
@@ -228,7 +234,7 @@ class NucleusPipelineWidget(QWidget):
         return self._paths.tracked if self._paths else None
 
     def _nucleus_zavg_path(self) -> Path | None:
-        return self._paths.nucleus_zavg if self._paths else None
+        return self._paths.nucleus_prob_zavg if self._paths else None
 
     # ── Status / progress helpers ─────────────────────────────────────────────
 
@@ -245,6 +251,8 @@ class NucleusPipelineWidget(QWidget):
         self._status(msg)
 
     def _on_progress(self, data) -> None:
+        if self._running_stage is None:
+            return
         if isinstance(data, tuple):
             self._progress(*data)
         else:
@@ -361,7 +369,7 @@ class NucleusPipelineWidget(QWidget):
         self.viewer.add_image(
             data,
             name=_NUC_ZAVG_LAYER,
-            colormap="I Orange",
+            colormap="bop orange",
             blending="minimum",
             visible=True,
         )
@@ -427,9 +435,13 @@ class NucleusPipelineWidget(QWidget):
         except ValueError as exc:
             self._status(str(exc)); return
 
+        cancel_event = threading.Event()
+        self._contour_cancel = cancel_event
+
         def _done(result):
             report, n_sources = result
             self._contour_worker = None
+            self._contour_cancel = None
             self._clear_progress()
             self._refresh_files_callback(pos_dir)
             frames = int(getattr(report, "frames", 0))
@@ -443,7 +455,6 @@ class NucleusPipelineWidget(QWidget):
         })
         def _worker():
             import queue as _queue
-            import threading
 
             msg_queue: _queue.SimpleQueue = _queue.SimpleQueue()
             result_holder: list = []
@@ -463,6 +474,7 @@ class NucleusPipelineWidget(QWidget):
                             cellprob_thresholds=map_thresholds,
                             z_indices=z_indices,
                             progress_cb=_progress_cb,
+                            cancel=cancel_event.is_set,
                         )
                     )
                 except Exception as e:
@@ -478,6 +490,8 @@ class NucleusPipelineWidget(QWidget):
                     t.join(timeout=0.05)
             if exc_holder:
                 raise exc_holder[0]
+            if cancel_event.is_set():
+                raise CancelledError("Operation cancelled.")
             report = result_holder[0]
             map_frames = max(1, int(getattr(report, "frames", 0)))
             yield (map_frames, map_frames + 1, "Building Ultrack source stacks...")
@@ -488,6 +502,7 @@ class NucleusPipelineWidget(QWidget):
                 foreground_sources_path,
                 contour_thresholds=contour_thresholds,
                 foreground_thresholds=foreground_thresholds,
+                cancel=cancel_event.is_set,
             )
             yield (map_frames + 1, map_frames + 1, "Saved segmentation inputs.")
             return report, len(metadata)
@@ -720,8 +735,12 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_contour_worker_error(self, exc: Exception) -> None:
         self._contour_worker = None
+        self._contour_cancel = None
         self._set_running_stage(None)
         self._clear_progress()
+        if isinstance(exc, CancelledError):
+            self._status("Cancelled.")
+            return
         self._status(f"Error: {exc}")
         logger.exception("Contour worker error", exc_info=exc)
 
@@ -881,6 +900,8 @@ class NucleusPipelineWidget(QWidget):
         self._ultrack_worker = _worker()
 
     def _on_ultrack_progress(self, data) -> None:
+        if self._running_stage is None:
+            return
         if isinstance(data, tuple):
             step, total, msg = data
             self._status(msg)
@@ -916,12 +937,15 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_cancel(self) -> None:
         cancelled = False
+        if self._contour_cancel is not None:
+            self._contour_cancel.set()
         for attr in ("_contour_worker", "_db_gen_worker", "_ultrack_worker"):
             worker = getattr(self, attr, None)
             if worker is not None:
                 worker.quit()
                 setattr(self, attr, None)
                 cancelled = True
+        self._contour_cancel = None
         self._set_running_stage(None)
         self._clear_progress()
         self._status("Cancelled." if cancelled else "Nothing running.")

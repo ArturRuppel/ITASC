@@ -100,6 +100,7 @@ def _install_import_stubs() -> None:
             "apply_gamma": lambda logits, gamma: logits,
             "build_nucleus_averaged_maps": lambda *args, **kwargs: None,
             "build_consensus_boundary": lambda *args, **kwargs: (None, None),
+            "CancelledError": type("CancelledError", (Exception,), {}),
         },
     }
 
