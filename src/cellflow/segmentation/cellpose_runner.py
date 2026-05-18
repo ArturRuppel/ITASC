@@ -45,3 +45,38 @@ def _apply_gamma(img: np.ndarray, gamma: float) -> np.ndarray:
 
 def _diameter_kwarg(diameter: float) -> float | None:
     return None if diameter == 0 else float(diameter)
+
+
+_MODEL = None
+
+
+def _cuda_available() -> bool:
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available())
+
+
+def device_label() -> str:
+    return "cuda:0" if _cuda_available() else "cpu"
+
+
+def is_model_loaded() -> bool:
+    return _MODEL is not None
+
+
+def get_model():
+    """Lazy-load the cpsam model once per process; cached at module level."""
+    global _MODEL
+    if _MODEL is not None:
+        return _MODEL
+    from cellpose.models import CellposeModel
+
+    use_gpu = _cuda_available()
+    _MODEL = CellposeModel(
+        gpu=use_gpu,
+        pretrained_model="cpsam",
+        use_bfloat16=use_gpu,
+    )
+    return _MODEL

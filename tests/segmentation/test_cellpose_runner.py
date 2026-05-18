@@ -93,3 +93,68 @@ def test_apply_gamma_warps_dynamic_range():
     out = r._apply_gamma(img, 2.0)
     expected = img ** 2.0
     np.testing.assert_allclose(out, expected, atol=1e-6)
+
+
+def test_is_model_loaded_false_initially():
+    r = _runner()
+    assert r.is_model_loaded() is False
+
+
+def test_get_model_caches_across_calls(monkeypatch):
+    r = _runner()
+    calls = {"n": 0}
+    import cellpose.models as models
+
+    real = models.CellposeModel
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(models, "CellposeModel", _counting)
+    a = r.get_model()
+    b = r.get_model()
+    assert a is b
+    assert calls["n"] == 1
+    assert r.is_model_loaded() is True
+
+
+def test_get_model_uses_cpu_when_cuda_unavailable(monkeypatch):
+    r = _runner()
+    received_kwargs = {}
+    import cellpose.models as models
+
+    class _Probe:
+        def __init__(self, **kwargs):
+            received_kwargs.update(kwargs)
+
+    monkeypatch.setattr(models, "CellposeModel", _Probe)
+    monkeypatch.setattr(r, "_cuda_available", lambda: False)
+    r.get_model()
+    assert received_kwargs["gpu"] is False
+    assert received_kwargs["pretrained_model"] == "cpsam"
+    assert received_kwargs["use_bfloat16"] is False
+
+
+def test_get_model_uses_gpu_when_cuda_available(monkeypatch):
+    r = _runner()
+    received_kwargs = {}
+    import cellpose.models as models
+
+    class _Probe:
+        def __init__(self, **kwargs):
+            received_kwargs.update(kwargs)
+
+    monkeypatch.setattr(models, "CellposeModel", _Probe)
+    monkeypatch.setattr(r, "_cuda_available", lambda: True)
+    r.get_model()
+    assert received_kwargs["gpu"] is True
+    assert received_kwargs["use_bfloat16"] is True
+
+
+def test_device_label_reflects_cuda(monkeypatch):
+    r = _runner()
+    monkeypatch.setattr(r, "_cuda_available", lambda: True)
+    assert r.device_label() == "cuda:0"
+    monkeypatch.setattr(r, "_cuda_available", lambda: False)
+    assert r.device_label() == "cpu"
