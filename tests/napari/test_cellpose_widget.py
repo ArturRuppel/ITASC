@@ -197,3 +197,98 @@ def test_refresh_with_none_does_not_raise(_mock_cellpose, monkeypatch):
     w = mod.CellposeWidget(_FakeViewer())
     w.refresh(None)
     w.deleteLater()
+
+
+def _make_sync_thread_worker():
+    """Patch thread_worker so workers execute synchronously."""
+    import inspect
+
+    def fake_thread_worker(connect=None):
+        def decorator(fn):
+            def wrapper(*args, **kwargs):
+                try:
+                    result = fn(*args, **kwargs)
+                except Exception as exc:
+                    if connect and "errored" in connect:
+                        connect["errored"](exc)
+                    return None
+                if inspect.isgenerator(result):
+                    return_value = None
+                    while True:
+                        try:
+                            yielded = next(result)
+                        except StopIteration as exc:
+                            return_value = exc.value
+                            break
+                        if connect and "yielded" in connect:
+                            connect["yielded"](yielded)
+                    if connect and "returned" in connect:
+                        connect["returned"](return_value)
+                else:
+                    if connect and "returned" in connect:
+                        connect["returned"](result)
+                return None
+            return wrapper
+        return decorator
+    return fake_thread_worker
+
+
+def _write_test_stack(path: Path, shape):
+    arr = np.zeros(shape, dtype=np.uint16)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import tifffile as tf
+
+    tf.imwrite(str(path), arr)
+
+
+def test_run_nucleus_writes_outputs_and_updates_status(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    w = mod.CellposeWidget(_FakeViewer())
+    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (2, 3, 6, 6))
+    w.refresh(tmp_path)
+    w.nucleus_run_btn.click()
+    out = tmp_path / "1_cellpose"
+    assert (out / "nucleus_prob_3dt.tif").exists()
+    assert (out / "nucleus_dp_3dt.tif").exists()
+    assert (out / "nucleus_prob_zavg.tif").exists()
+    assert "complete" in w.status_lbl.text().lower()
+    assert w.nucleus_run_btn.text() == "▶"
+    w.deleteLater()
+
+
+def test_run_cell_writes_outputs(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    w = mod.CellposeWidget(_FakeViewer())
+    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (2, 3, 6, 6))
+    w.refresh(tmp_path)
+    w.cell_run_btn.click()
+    out = tmp_path / "1_cellpose"
+    assert (out / "cell_prob_3dt.tif").exists()
+    assert (out / "cell_dp_3dt.tif").exists()
+    assert (out / "cell_prob_zavg.tif").exists()
+    w.deleteLater()
+
+
+def test_run_reports_missing_input(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    w = mod.CellposeWidget(_FakeViewer())
+    w.refresh(tmp_path)  # no input tif written
+    w.nucleus_run_btn.click()
+    assert "missing" in w.status_lbl.text().lower()
+    w.deleteLater()
+
+
+def test_run_with_no_project_reports_status(_mock_cellpose, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    w = mod.CellposeWidget(_FakeViewer())
+    w.nucleus_run_btn.click()
+    assert "no project" in w.status_lbl.text().lower()
+    w.deleteLater()

@@ -237,10 +237,14 @@ class CellposeWidget(QWidget):
     def _on_nucleus_run_clicked(self) -> None:
         if self._running_stage is not None:
             self._on_cancel()
+            return
+        self._run_channel("nucleus")
 
     def _on_cell_run_clicked(self) -> None:
         if self._running_stage is not None:
             self._on_cancel()
+            return
+        self._run_channel("cell")
 
     def _on_nucleus_preview(self) -> None:
         pass
@@ -253,6 +257,116 @@ class CellposeWidget(QWidget):
         worker = self._worker
         if worker is not None and hasattr(worker, "quit"):
             worker.quit()
+
+    # ------------------------------------------------------------------
+    # Path helpers
+    # ------------------------------------------------------------------
+    def _input_path(self, channel: str) -> Path | None:
+        if self._pos_dir is None:
+            return None
+        name = "nucleus_3dt.tif" if channel == "nucleus" else "cell_3dt.tif"
+        return self._pos_dir / "0_input" / name
+
+    def _output_dir(self) -> Path | None:
+        return None if self._pos_dir is None else self._pos_dir / "1_cellpose"
+
+    # ------------------------------------------------------------------
+    # Run flow
+    # ------------------------------------------------------------------
+    def _build_nucleus_params(self) -> "cellpose_runner.NucleusParams":
+        return cellpose_runner.NucleusParams(
+            do_3d=self.nuc_3d_chk.isChecked(),
+            anisotropy=float(self.nuc_anisotropy_spin.value()),
+            diameter=float(self.nuc_diameter_spin.value()),
+            min_size=int(self.nuc_min_size_spin.value()),
+            gamma=float(self.nuc_gamma_spin.value()),
+        )
+
+    def _build_cell_params(self) -> "cellpose_runner.CellParams":
+        return cellpose_runner.CellParams(
+            diameter=float(self.cell_diameter_spin.value()),
+            min_size=int(self.cell_min_size_spin.value()),
+            gamma=float(self.cell_gamma_spin.value()),
+        )
+
+    def _run_channel(self, channel: str) -> None:
+        if self._pos_dir is None:
+            self._status("No project open.")
+            return
+        in_path = self._input_path(channel)
+        if in_path is None or not in_path.exists():
+            self._status(f"Missing: {in_path.name if in_path else '(no path)'}")
+            return
+        out_dir = self._output_dir()
+        params = (
+            self._build_nucleus_params() if channel == "nucleus"
+            else self._build_cell_params()
+        )
+        pos_dir = self._pos_dir
+        self._cancel_requested = False
+
+        def _done(result):
+            self._worker = None
+            self._set_running_stage(None)
+            self._clear_progress()
+            self._files_widget.refresh(pos_dir)
+            label = "Nucleus" if channel == "nucleus" else "Cell"
+            self._status(f"{label} Cellpose complete — wrote {channel}_*_3dt.tif")
+
+        def _error(exc):
+            self._worker = None
+            self._set_running_stage(None)
+            self._clear_progress()
+            if isinstance(exc, cellpose_runner.CancelledError):
+                self._status("Cancelled.")
+            else:
+                self._status(f"Error: {exc}")
+                logger.exception("Cellpose run error", exc_info=exc)
+
+        @thread_worker(connect={
+            "yielded": self._on_progress,
+            "returned": _done,
+            "errored": _error,
+        })
+        def _worker():
+            yield (0, 1, "Loading input...")
+            stack = np.asarray(tifffile.imread(str(in_path)))
+            if stack.ndim != 4:
+                raise ValueError(
+                    f"expected 4D (T,Z,Y,X) input, got shape {stack.shape}"
+                )
+
+            _progress_queue: list[tuple[int, int, str]] = []
+
+            def _cb_progress(done, total, msg):
+                _progress_queue.append((done, total, msg))
+
+            def _cb_cancel():
+                return self._cancel_requested
+
+            if channel == "nucleus":
+                prob, dp = cellpose_runner.run_nucleus_stack(
+                    stack, params,
+                    progress_cb=_cb_progress, cancel_cb=_cb_cancel,
+                )
+            else:
+                prob, dp = cellpose_runner.run_cell_stack(
+                    stack, params,
+                    progress_cb=_cb_progress, cancel_cb=_cb_cancel,
+                )
+            for item in _progress_queue:
+                yield item
+            yield (1, 1, "Writing outputs...")
+            cellpose_runner.write_outputs(prob, dp, out_dir, channel)
+            return None
+
+        self._set_running_stage(channel)
+        self._status(
+            f"Loading Cellpose-SAM model on {cellpose_runner.device_label()} "
+            f"(~10s on first run)..." if not cellpose_runner.is_model_loaded()
+            else f"Running {channel} Cellpose..."
+        )
+        self._worker = _worker()
 
     # ------------------------------------------------------------------
     # Public API
