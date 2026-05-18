@@ -76,29 +76,33 @@ def test_main_widget_constructs_new_cellpose_widget():
     w.deleteLater()
 
 
-def test_main_widget_wires_divergence_maps_widget(tmp_path):
+def test_main_widget_keeps_divergence_maps_inside_cellpose(tmp_path):
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")
     divergence_mod = importlib.import_module("cellflow.napari.divergence_maps_widget")
     w = main_mod.CellFlowMainWidget(_fake_viewer())
 
-    assert isinstance(w._divergence_maps_widget, divergence_mod.DivergenceMapsWidget)
-    assert w.divergence_maps_section is not None
+    assert not hasattr(w, "_divergence_maps_widget")
+    assert not hasattr(w, "divergence_maps_section")
+    assert isinstance(
+        w._cellpose_widget.divergence_maps_widget,
+        divergence_mod.DivergenceMapsWidget,
+    )
 
     state = {
         "nucleus": {"smoothing_sigma": 2.5, "median_radius": 2},
         "cell": {"foreground_z_reduction": "max"},
     }
-    w.set_state({"divergence_maps": state})
+    w.set_state({"cellpose": {"divergence_maps": state}})
     got = w.get_state()
-    assert got["divergence_maps"]["nucleus"]["smoothing_sigma"] == pytest.approx(2.5)
-    assert got["divergence_maps"]["nucleus"]["median_radius"] == 2
-    assert got["divergence_maps"]["cell"]["foreground_z_reduction"] == "max"
+    assert got["cellpose"]["divergence_maps"]["nucleus"]["smoothing_sigma"] == pytest.approx(2.5)
+    assert got["cellpose"]["divergence_maps"]["nucleus"]["median_radius"] == 2
+    assert got["cellpose"]["divergence_maps"]["cell"]["foreground_z_reduction"] == "max"
 
     w.path_label.setText(str(tmp_path))
     w.pos_spin.setValue(0)
     w._refresh_all()
-    assert w._divergence_maps_widget._pos_dir == tmp_path / "pos00"
+    assert w._cellpose_widget.divergence_maps_widget._pos_dir == tmp_path / "pos00"
     w.deleteLater()
 
 
@@ -119,7 +123,9 @@ def test_main_widget_state_round_trips_cellpose():
     w.set_state({"cellpose": cellpose_state})
     got = w.get_state()
     assert "cellpose" in got
-    assert got["cellpose"] == cellpose_state
+    assert got["cellpose"]["nucleus"] == cellpose_state["nucleus"]
+    assert got["cellpose"]["cell"] == cellpose_state["cell"]
+    assert "divergence_maps" in got["cellpose"]
     w.deleteLater()
 
 
