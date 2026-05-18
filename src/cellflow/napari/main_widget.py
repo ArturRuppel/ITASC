@@ -21,7 +21,7 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
-from cellflow.napari.divergence_maps_widget import DivergenceMapsWidget  # noqa: F401  (wired in Task 8)
+from cellflow.napari.divergence_maps_widget import DivergenceMapsWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
@@ -81,6 +81,15 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("cellpose"),
         )
 
+        self._divergence_maps_widget = DivergenceMapsWidget(self.viewer)
+        self.divergence_maps_section = CollapsibleSection(
+            "Divergence Maps",
+            self._divergence_maps_widget,
+            expanded=False,
+
+            accent_color=stage_accent("cellpose"),
+        )
+
         self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
         self.nucleus_section = CollapsibleSection(
             "Nucleus Segmentation & Tracking",
@@ -111,6 +120,7 @@ class CellFlowMainWidget(QWidget):
 
         self.scroll_layout.addWidget(self.data_section)
         self.scroll_layout.addWidget(self.cellpose_section)
+        self.scroll_layout.addWidget(self.divergence_maps_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.contact_analysis_section)
@@ -118,6 +128,7 @@ class CellFlowMainWidget(QWidget):
         for section in (
             self.data_section,
             self.cellpose_section,
+            self.divergence_maps_section,
             self.nucleus_section,
             self.cell_section,
             self.contact_analysis_section,
@@ -240,6 +251,7 @@ class CellFlowMainWidget(QWidget):
                 "position": self.pos_spin.value(),
             },
             "cellpose": self._cellpose_widget.get_state(),
+            "divergence_maps": self._divergence_maps_widget.get_state(),
             "nucleus": self.nucleus_workflow_widget.get_state(),
             "cell": self.cell_workflow_widget.get_state(),
         }
@@ -255,6 +267,9 @@ class CellFlowMainWidget(QWidget):
 
         if "cellpose" in state:
             self._cellpose_widget.set_state(state["cellpose"])
+
+        if "divergence_maps" in state:
+            self._divergence_maps_widget.set_state(state["divergence_maps"])
 
         if "nucleus" in state:
             self.nucleus_workflow_widget.set_state(state["nucleus"])
@@ -326,6 +341,7 @@ class CellFlowMainWidget(QWidget):
 
         self.data_panel.refresh(pos_dir)
         self._cellpose_widget.refresh(pos_dir)
+        self._divergence_maps_widget.refresh(pos_dir)
         self.nucleus_workflow_widget.refresh(pos_dir)
         self.cell_workflow_widget.refresh(pos_dir)
         self.contact_analysis_widget.refresh(pos_dir)
@@ -338,6 +354,9 @@ class CellFlowMainWidget(QWidget):
         cellpose = pipeline_status_from_files(
             self._cellpose_widget.output_files_tracker, done_group="Outputs"
         )
+        divergence_maps = pipeline_status_from_files(
+            self._divergence_maps_widget.output_files_tracker, done_group="Outputs"
+        )
         nucleus = pipeline_status_from_files(
             self.nucleus_workflow_widget._files_widget, done_group="Output"
         )
@@ -349,6 +368,7 @@ class CellFlowMainWidget(QWidget):
         )
 
         self.cellpose_section.set_status(cellpose)
+        self.divergence_maps_section.set_status(divergence_maps)
         self.nucleus_section.set_status(nucleus)
         self.cell_section.set_status(cell)
         self.contact_analysis_section.set_status(contact)
@@ -359,7 +379,7 @@ class CellFlowMainWidget(QWidget):
         essentials = (nucleus, cell, contact)
         if all(s == "done" for s in essentials):
             project_status = "done"
-        elif any(s != "not_started" for s in (cellpose, *essentials)):
+        elif any(s != "not_started" for s in (cellpose, divergence_maps, *essentials)):
             project_status = "in_progress"
         else:
             project_status = "not_started"
