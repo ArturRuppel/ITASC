@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
+from cellflow.napari.divergence_maps_widget import DivergenceMapsWidget  # noqa: F401  (wired in Task 8)
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
