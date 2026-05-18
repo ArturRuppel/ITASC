@@ -8,7 +8,7 @@ import types
 import numpy as np
 import tifffile
 
-from cellflow.core.data_prep import DatasetConfig, run
+from cellflow_personal.core.data_prep import DatasetConfig, run
 
 
 class _FakeNDTiffDataset:

@@ -1,7 +1,4 @@
-"""Local Cellpose-SAM runner — Qt-free, used by the napari Cellpose widget.
-
-Vendored and adapted from /home/aruppel/Projects/HPC/cellpose_full/cellpose_full.py.
-"""
+"""Local Cellpose-SAM runner, Qt-free, used by the napari Cellpose widget."""
 from __future__ import annotations
 
 from dataclasses import dataclass

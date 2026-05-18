@@ -18,8 +18,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari.data_prep_widget import DataPrepWidget
-from cellflow.napari.hpc_cellpose_widget import HpcCellposeWidget
+from cellflow_personal.napari.data_prep_widget import DataPrepWidget
+from cellflow_personal.napari.hpc_cellpose_widget import HpcCellposeWidget
 from cellflow.napari.ui_style import icon_button, muted_label, tiny_button
 from cellflow.napari.widgets import CollapsibleSection
 

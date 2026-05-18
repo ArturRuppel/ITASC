@@ -53,26 +53,13 @@ class _FakeWorker:
         self.quit_calls += 1
 
 
-class _StubNLSClassificationWidget(QWidget):
-    def __init__(self, viewer=None, parent=None):
-        super().__init__(parent)
-        self.viewer = viewer
-        self.parent_arg = parent
-        self.refreshed_pos_dir = None
-
-    def refresh(self, pos_dir):
-        self.refreshed_pos_dir = pos_dir
-
-
 def _load_module(monkeypatch):
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
     napari_pkg = types.ModuleType("cellflow.napari")
     napari_pkg.__path__ = [str(package_root)]
     monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    nls_module = types.ModuleType("cellflow.napari.nls_classification_widget")
-    nls_module.NLSClassificationWidget = _StubNLSClassificationWidget
-    monkeypatch.setitem(sys.modules, "cellflow.napari.nls_classification_widget", nls_module)
     sys.modules.pop("cellflow.napari.contact_analysis_widget", None)
+    sys.modules.pop("cellflow.napari.nls_classification_widget", None)
     return importlib.import_module("cellflow.napari.contact_analysis_widget")
 
 
@@ -141,7 +128,7 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
     app.processEvents()
 
 
-def test_contact_analysis_widget_embeds_nls_classification_and_refreshes_it(monkeypatch, tmp_path):
+def test_contact_analysis_widget_does_not_embed_personal_nls_classification(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
@@ -150,10 +137,8 @@ def test_contact_analysis_widget_embeds_nls_classification_and_refreshes_it(monk
     pos_dir = tmp_path / "pos04"
     widget.refresh(pos_dir)
 
-    assert isinstance(widget.nls_classification_widget, _StubNLSClassificationWidget)
-    assert widget.nls_classification_widget.viewer is viewer
-    assert widget.nls_classification_widget.parent_arg is widget
-    assert widget.nls_classification_widget.refreshed_pos_dir == pos_dir
+    assert not hasattr(widget, "nls_classification_widget")
+    assert "cellflow.napari.nls_classification_widget" not in sys.modules
 
     widget.deleteLater()
     app.processEvents()

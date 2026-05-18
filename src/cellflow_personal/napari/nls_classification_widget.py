@@ -6,7 +6,7 @@ from pathlib import Path
 from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
-from cellflow.contact_analysis.nls_classification import (
+from cellflow_personal.contact_analysis.nls_classification import (
     NLSClassificationSummary,
     patch_position_contact_analysis_nls_classes,
 )

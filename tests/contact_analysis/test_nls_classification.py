@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.contact_analysis.nls_classification import (
+from cellflow_personal.contact_analysis.nls_classification import (
     NLSClassificationError,
     measure_track_nls_intensity,
     patch_position_contact_analysis_nls_classes,
@@ -14,10 +14,10 @@ from cellflow.contact_analysis.nls_classification import (
 )
 
 
-def test_console_script_entry_point_uses_contact_analysis_module():
+def test_nls_classifier_is_not_published_as_a_cellflow_console_script():
     pyproject_text = Path("pyproject.toml").read_text()
 
-    assert 'cellflow-classify-nls = "cellflow.contact_analysis.nls_classification:main"' in pyproject_text
+    assert "cellflow-classify-nls" not in pyproject_text
 
 
 def _write_minimal_position_h5(path, cell_ids):

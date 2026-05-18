@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
-from cellflow.contact_analysis.nls_classification import NLSClassificationSummary
+from cellflow_personal.contact_analysis.nls_classification import NLSClassificationSummary
 
 
 class _FakeWorker:
@@ -20,12 +20,12 @@ class _FakeWorker:
 
 
 def _load_module(monkeypatch):
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow_personal" / "napari"
+    napari_pkg = types.ModuleType("cellflow_personal.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.nls_classification_widget", None)
-    return importlib.import_module("cellflow.napari.nls_classification_widget")
+    monkeypatch.setitem(sys.modules, "cellflow_personal.napari", napari_pkg)
+    sys.modules.pop("cellflow_personal.napari.nls_classification_widget", None)
+    return importlib.import_module("cellflow_personal.napari.nls_classification_widget")
 
 
 def _make_sync_thread_worker():

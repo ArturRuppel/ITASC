@@ -6,7 +6,7 @@ from pathlib import Path
 def test_cellpose_status_panels_track_cell_flow_vectors():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
 
-    cellpose_source = (package_root / "main_widget.py").read_text()
+    cellpose_source = (package_root / "cellpose_widget.py").read_text()
     data_panel_source = (package_root / "data_panel_widget.py").read_text()
 
     assert "1_cellpose/cell_dp_3dt.tif" in cellpose_source
@@ -16,7 +16,7 @@ def test_cellpose_status_panels_track_cell_flow_vectors():
 def test_cellpose_status_panels_track_probability_zavgs():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
 
-    cellpose_source = (package_root / "main_widget.py").read_text()
+    cellpose_source = (package_root / "cellpose_widget.py").read_text()
     data_panel_source = (package_root / "data_panel_widget.py").read_text()
 
     for source in (cellpose_source, data_panel_source):
@@ -35,12 +35,15 @@ def test_segmentation_widgets_use_probability_zavgs_as_inputs():
         assert "1_cellpose/nucleus_prob_zavg.tif" in source
 
 
-def test_hpc_cellpose_controls_live_in_data_preparation_entry_point():
+def test_hpc_cellpose_controls_are_not_public_napari_entry_points():
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    personal_root = Path(__file__).resolve().parents[2] / "src" / "cellflow_personal" / "napari"
 
     main_source = (package_root / "main_widget.py").read_text()
-    data_prep_source = (package_root / "data_prep_standalone_widget.py").read_text()
+    manifest_source = (package_root / ".." / "napari.yaml").read_text()
+    data_prep_source = (personal_root / "data_prep_standalone_widget.py").read_text()
 
     assert '"HPC Cellpose"' not in main_source
+    assert "HpcCellposeWidget" not in manifest_source
     assert '"HPC Cellpose"' in data_prep_source
     assert "HpcCellposeWidget" in data_prep_source

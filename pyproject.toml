@@ -34,9 +34,6 @@ dev = [
 [project.entry-points."napari.manifest"]
 cellflow = "cellflow:napari.yaml"
 
-[project.scripts]
-cellflow-classify-nls = "cellflow.contact_analysis.nls_classification:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/cellflow"]
 

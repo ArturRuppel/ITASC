@@ -12,7 +12,6 @@ from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QCheckBox, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 from cellflow.contact_analysis import build_position_contact_analysis
-from cellflow.napari.nls_classification_widget import NLSClassificationWidget
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import (
     CollapsibleSection,
@@ -138,9 +137,6 @@ class ContactAnalysisWidget(QWidget):
         action_button(self.clear_contact_analysis_btn, expand=True)
         layout.addWidget(self.clear_contact_analysis_btn)
 
-        self.nls_classification_widget = NLSClassificationWidget(self.viewer, self)
-        layout.addWidget(self.nls_classification_widget)
-
         layout.addStretch()
 
         self.build_contact_analysis_btn.clicked.connect(self._on_build_contact_analysis)
@@ -171,7 +167,6 @@ class ContactAnalysisWidget(QWidget):
             self._cached_track_centroids = None
         self._pos_dir = new_pos_dir
         self._files_widget.refresh(new_pos_dir)
-        self.nls_classification_widget.refresh(new_pos_dir)
         self._update_status()
 
     def _update_status(self) -> None:

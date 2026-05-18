@@ -13,11 +13,6 @@ installation details, and public API should still be treated as provisional.
 Claims in this README are descriptive only; no benchmarking or performance
 superiority is claimed here.
 
-Some repository modules are personal or site-specific utilities rather than the
-intended public CellFlow surface. In particular, the current data-preparation
-widget, external/HPC Cellpose launcher, and NLS classification tools need to be
-separated or clearly marked before public release.
-
 ## Main Capabilities
 
 - napari plugin UI with a unified `CellFlow` workflow widget.
@@ -86,9 +81,6 @@ pymaxflow, pydantic, numba, and `cellpose>=4.0`.
 - **Ultrack**: The nucleus-tracking stages import Ultrack for candidate
   segmentation, database construction, linking, and solving. Install Ultrack in
   the working environment before using those stages.
-Personal utility modules in this repository currently reference additional
-tools such as NDTiff readers and site-specific HPC scripts. Those utilities are
-not described as part of the public workflow here.
 
 ## Basic Usage in napari
 
@@ -137,7 +129,7 @@ python -m pytest tests/contact_analysis
 ```
 
 Some tests or workflow stages may require optional packages such as Ultrack,
-Cellpose, napari/Qt, or NDTiff.
+Cellpose, or napari/Qt.
 
 ## AI Usage Disclosure
 

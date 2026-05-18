@@ -168,11 +168,8 @@ def _install_main_widget_stubs() -> None:
         "cellflow.napari.cell_workflow_widget": {"CellWorkflowWidget": _StubWidget},
         "cellflow.napari.correction_widget": {"CorrectionWidget": _StubWidget},
         "cellflow.napari.data_panel_widget": {"ProjectStatusPanel": _StubWidget},
-        "cellflow.napari.data_prep_widget": {"DataPrepWidget": _StubWidget},
-        "cellflow.napari.hpc_cellpose_widget": {"HpcCellposeWidget": _StubWidget},
         "cellflow.napari.meta_widget": {"MetaSourceBrowserWidget": _StubWidget},
         "cellflow.napari.nucleus_workflow_widget": {"NucleusWorkflowWidget": _StubWidget},
-        "cellflow.napari.nls_classification_widget": {"NLSClassificationWidget": _StubWidget},
     }
 
     for module_name, attrs in stub_modules.items():
@@ -198,11 +195,8 @@ def _load_main_widget_class():
         "cellflow.napari.cell_workflow_widget",
         "cellflow.napari.correction_widget",
         "cellflow.napari.data_panel_widget",
-        "cellflow.napari.data_prep_widget",
-        "cellflow.napari.hpc_cellpose_widget",
         "cellflow.napari.meta_widget",
         "cellflow.napari.nucleus_workflow_widget",
-        "cellflow.napari.nls_classification_widget",
     ):
         sys.modules.pop(module_name, None)
     return module.CellFlowMainWidget

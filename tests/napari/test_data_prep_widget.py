@@ -38,12 +38,12 @@ class _FakeWorker:
 
 
 def _load_module(monkeypatch):
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow_personal" / "napari"
+    napari_pkg = types.ModuleType("cellflow_personal.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.data_prep_widget", None)
-    return importlib.import_module("cellflow.napari.data_prep_widget")
+    monkeypatch.setitem(sys.modules, "cellflow_personal.napari", napari_pkg)
+    sys.modules.pop("cellflow_personal.napari.data_prep_widget", None)
+    return importlib.import_module("cellflow_personal.napari.data_prep_widget")
 
 
 def _make_widget(monkeypatch, tmp_path):
@@ -54,10 +54,10 @@ def _make_widget(monkeypatch, tmp_path):
 
 
 def _load_standalone_module(monkeypatch):
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow_personal" / "napari"
+    napari_pkg = types.ModuleType("cellflow_personal.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
+    monkeypatch.setitem(sys.modules, "cellflow_personal.napari", napari_pkg)
 
     class _StubHpcCellposeWidget(QWidget):
         def __init__(self, *_args, **_kwargs):
@@ -67,11 +67,11 @@ def _load_standalone_module(monkeypatch):
         def refresh(self, pos_dir):
             self.refreshed_pos_dir = pos_dir
 
-    hpc_module = types.ModuleType("cellflow.napari.hpc_cellpose_widget")
+    hpc_module = types.ModuleType("cellflow_personal.napari.hpc_cellpose_widget")
     hpc_module.HpcCellposeWidget = _StubHpcCellposeWidget
-    monkeypatch.setitem(sys.modules, "cellflow.napari.hpc_cellpose_widget", hpc_module)
-    sys.modules.pop("cellflow.napari.data_prep_standalone_widget", None)
-    return importlib.import_module("cellflow.napari.data_prep_standalone_widget")
+    monkeypatch.setitem(sys.modules, "cellflow_personal.napari.hpc_cellpose_widget", hpc_module)
+    sys.modules.pop("cellflow_personal.napari.data_prep_standalone_widget", None)
+    return importlib.import_module("cellflow_personal.napari.data_prep_standalone_widget")
 
 
 def _sync_thread_worker(connect=None):

@@ -23,7 +23,7 @@ from napari.qt.threading import thread_worker
 
 from cellflow.napari.widgets import PipelineFilesWidget
 from cellflow.napari.ui_style import muted_label, status_label
-from cellflow.core.data_prep import DatasetConfig, discover_metadata, run as run_prep
+from cellflow_personal.core.data_prep import DatasetConfig, discover_metadata, run as run_prep
 from cellflow.napari.utils import launch_in_terminal
 
 if TYPE_CHECKING:
@@ -279,7 +279,7 @@ class DataPrepWidget(QWidget):
         frame_end = self.frame_end_spin.value()
 
         python_code = (
-            "from cellflow.core.data_prep import DatasetConfig, run\n"
+            "from cellflow_personal.core.data_prep import DatasetConfig, run\n"
             f"config = DatasetConfig(ndtiff_path={ndtiff_path!r}, root_dir={root_dir!r}, "
             f"positions=[{positions}], xy_downsample={ds}, "
             f"frame_start={frame_start}, frame_end={frame_end})\n"

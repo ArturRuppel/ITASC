@@ -35,12 +35,12 @@ class _FakeViewer:
 
 
 def _load_module(monkeypatch):
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow_personal" / "napari"
+    napari_pkg = types.ModuleType("cellflow_personal.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.hpc_cellpose_widget", None)
-    return importlib.import_module("cellflow.napari.hpc_cellpose_widget")
+    monkeypatch.setitem(sys.modules, "cellflow_personal.napari", napari_pkg)
+    sys.modules.pop("cellflow_personal.napari.hpc_cellpose_widget", None)
+    return importlib.import_module("cellflow_personal.napari.hpc_cellpose_widget")
 
 
 def _make_widget(monkeypatch):
