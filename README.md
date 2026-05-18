@@ -1,0 +1,166 @@
+# CellFlow
+
+CellFlow is a napari-based research software project for time-lapse cell
+microscopy. It brings together Cellpose-derived probability and flow outputs,
+Ultrack-based nucleus tracking, interactive correction, cell-label propagation,
+validation-aware resolving, and downstream contact analysis.
+
+## Status
+
+CellFlow is under active research development. The repository is being prepared
+for eventual public release and possible JOSS submission, but the workflow,
+installation details, and public API should still be treated as provisional.
+Claims in this README are descriptive only; no benchmarking or performance
+superiority is claimed here.
+
+Some repository modules are personal or site-specific utilities rather than the
+intended public CellFlow surface. In particular, the current data-preparation
+widget, external/HPC Cellpose launcher, and NLS classification tools need to be
+separated or clearly marked before public release.
+
+## Main Capabilities
+
+- napari plugin UI with a unified `CellFlow` workflow widget.
+- Local Cellpose-SAM runner for nucleus and cell channels.
+- Nucleus segmentation-input generation, Ultrack database building, solving,
+  database browsing, and interactive correction.
+- Cell segmentation workflow using Cellpose-derived probabilities, flow
+  filtering, foreground masks, contour maps, and tracked label output.
+- Interactive nucleus/cell correction tools with synchronized label selection.
+- Validation/anchor-aware resolving for corrected tracks.
+- Contact-analysis export to HDF5 and napari visualization of cell contacts,
+  edges, and T1 events.
+
+## High-Level Workflow
+
+CellFlow expects a project directory containing one directory per position, for
+example `pos00`, `pos01`, and so on. The current workflow uses staged
+subdirectories inside each position:
+
+```text
+pos00/
+  0_input/             raw prepared input stacks
+  1_cellpose/          Cellpose probability and flow outputs
+  2_nucleus/           nucleus segmentation, Ultrack database, tracked labels
+  3_cell/              cell segmentation and tracked labels
+  4_contact_analysis/  contact-analysis HDF5 output
+```
+
+Typical use is:
+
+1. Provide input stacks under `0_input/`.
+2. Run Cellpose for nucleus and cell channels to create probability, flow, and
+   z-average TIFFs under `1_cellpose/`.
+3. Build nucleus contour/foreground sources, create an Ultrack database, solve
+   tracks, and correct/validate nucleus labels under `2_nucleus/`.
+4. Generate cell foregrounds/contours and tracked cell labels under `3_cell/`.
+5. Build contact analysis under `4_contact_analysis/` and inspect the results
+   in napari.
+
+## Installation
+
+CellFlow is packaged with `pyproject.toml` and currently requires Python 3.9 or
+newer.
+
+For development from a local checkout:
+
+```bash
+python -m pip install -e .
+```
+
+For linting support declared by the project:
+
+```bash
+python -m pip install -e .[dev]
+```
+
+The core declared dependencies include napari, Qt support through `qtpy`,
+NumPy/SciPy/scikit-image, pandas, tifffile, h5py, SQLAlchemy, matplotlib,
+pymaxflow, pydantic, numba, and `cellpose>=4.0`.
+
+## External and Optional Tools
+
+- **Cellpose / Cellpose-SAM**: CellFlow includes a local runner based on
+  `cellpose>=4.0`. GPU use is detected through PyTorch when available; CPU use
+  is the fallback.
+- **Ultrack**: The nucleus-tracking stages import Ultrack for candidate
+  segmentation, database construction, linking, and solving. Install Ultrack in
+  the working environment before using those stages.
+Personal utility modules in this repository currently reference additional
+tools such as NDTiff readers and site-specific HPC scripts. Those utilities are
+not described as part of the public workflow here.
+
+## Basic Usage in napari
+
+After installation, start napari:
+
+```bash
+napari
+```
+
+Then open the main plugin widget from the napari plugin menu:
+
+- `Plugins > CellFlow > CellFlow`
+
+In the main `CellFlow` widget:
+
+1. Select a project directory.
+2. Set or load project metadata such as pixel size, time interval, condition,
+   and position.
+3. Expand the workflow sections in order: project status, Cellpose, nucleus
+   segmentation/tracking, cell segmentation, and contact analysis.
+
+The widget can save and load `cellflow_config.json` files in the selected
+project directory.
+
+## Testing
+
+Install the package in an environment with the test dependencies available, then
+run:
+
+```bash
+python -m pytest
+```
+
+For headless systems, set Qt to offscreen before running napari/Qt tests:
+
+```bash
+QT_QPA_PLATFORM=offscreen python -m pytest tests/napari
+```
+
+Focused test examples:
+
+```bash
+python -m pytest tests/segmentation
+python -m pytest tests/tracking_ultrack
+python -m pytest tests/contact_analysis
+```
+
+Some tests or workflow stages may require optional packages such as Ultrack,
+Cellpose, napari/Qt, or NDTiff.
+
+## AI Usage Disclosure
+
+Generative AI tools were used during CellFlow development and documentation
+preparation. The tools included OpenAI GPT-5.5 and Anthropic Claude Opus 4.7,
+Claude Opus 4.6, and Claude Sonnet 4.6.
+
+AI assistance was used for software-development support, including code
+drafting, refactoring suggestions, test scaffolding, debugging assistance,
+documentation drafting, and editorial review. Human authors made the core
+scientific, architectural, and design decisions. Human authors reviewed,
+modified, and validated AI-assisted outputs before incorporating them into the
+repository and remain responsible for the accuracy, originality, licensing, and
+ethical/legal compliance of the submitted work.
+
+## Citation
+
+A formal citation and publication information will be added when the public
+release and associated manuscript are ready. If you use CellFlow before then,
+please contact the authors for the appropriate citation guidance.
+
+## License
+
+The package metadata declares CellFlow as GPL-3.0 licensed. A repository-level
+`LICENSE` file should be added before public release so the license terms are
+unambiguous to users and reviewers.
