@@ -36,17 +36,24 @@ from cellflow.segmentation.cell_foreground import (
     compute_cellpose_foreground_masks,
 )
 
+from cellflow.segmentation.divergence_maps import (
+    DivergenceMapsReport,
+    build_divergence_maps,
+)
+
 __all__ = [
     "CancelledError",
     "CellICMState",
     "CellLabelICMParams",
     "ContourFilterParams",
     "ContourWatershedParams",
+    "DivergenceMapsReport",
     "FlowFollowingParams",
     "NucleusAveragedMapsReport",
     "apply_gamma",
     "build_consensus_boundary",
     "build_consensus_boundary_flow_following",
+    "build_divergence_maps",
     "build_nucleus_averaged_maps",
     "commit_labels",
     "compute_cellpose_foreground_masks",
