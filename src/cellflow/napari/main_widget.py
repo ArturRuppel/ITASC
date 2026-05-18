@@ -19,84 +19,16 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari.cellpose_zavg_viz_widget import CellposeZavgVizWidget
+from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import (
     CollapsibleSection,
-    PipelineFilesWidget,
-    make_pipeline_files_header,
     pipeline_status_from_files,
 )
 from cellflow.napari.ui_style import icon_button, muted_label, stage_accent, tiny_button
-
-
-class _CellposePanel(QWidget):
-    """Informational panel for external Cellpose output."""
-
-    def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.viewer = viewer
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(4)
-
-        description = QLabel(
-            "Cellpose runs externally on the cluster. This panel only documents "
-            "the expected input/output files and loads them into napari."
-        )
-        description.setWordWrap(True)
-        muted_label(description)
-        layout.addWidget(description)
-
-        self._files_widget = PipelineFilesWidget(
-            [
-                ("Inputs", [
-                    ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
-                    ("0_input/cell_3dt.tif", "Cell 3D+t"),
-                ]),
-                ("Outputs", [
-                    ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-                    ("1_cellpose/nucleus_prob_zavg.tif", "Nucleus prob z-avg"),
-                    ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
-                    ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
-                    ("1_cellpose/cell_prob_zavg.tif", "Cell prob z-avg"),
-                    ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
-                ]),
-            ],
-            viewer=self.viewer,
-        )
-        self.input_files_tracker = self._files_widget
-        self.output_files_tracker = self._files_widget
-        self._pipeline_files_section = CollapsibleSection(
-            "Pipeline Files",
-            self._files_widget,
-            expanded=False,
-        )
-        (
-            self.pipeline_files_header,
-            self.pipeline_files_header_lbl,
-            self.pipeline_files_toggle_btn,
-        ) = make_pipeline_files_header(
-            self._pipeline_files_section,
-            stage_key="cellpose",
-            parent=self,
-        )
-        layout.addWidget(self.pipeline_files_header)
-        layout.addWidget(self._pipeline_files_section)
-
-        self.zavg_viz_widget = CellposeZavgVizWidget()
-        layout.addWidget(self.zavg_viz_widget)
-
-        self._pos_dir: Path | None = None
-
-    def refresh(self, pos_dir: Path | None) -> None:
-        """Update file status display."""
-        self._pos_dir = pos_dir
-        self._files_widget.refresh(pos_dir)
-        self.zavg_viz_widget.refresh(pos_dir)
 
 
 class CellFlowMainWidget(QWidget):
@@ -139,7 +71,7 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("project_status"),
         )
 
-        self._cellpose_widget = _CellposePanel(self.viewer)
+        self._cellpose_widget = CellposeWidget(self.viewer)
         self.cellpose_section = CollapsibleSection(
             "Cellpose",
             self._cellpose_widget,
@@ -306,6 +238,7 @@ class CellFlowMainWidget(QWidget):
                 "condition": self.cond_edit.text(),
                 "position": self.pos_spin.value(),
             },
+            "cellpose": self._cellpose_widget.get_state(),
             "nucleus": self.nucleus_workflow_widget.get_state(),
             "cell": self.cell_workflow_widget.get_state(),
         }
@@ -319,9 +252,12 @@ class CellFlowMainWidget(QWidget):
             if "condition" in m: self.cond_edit.setText(str(m["condition"]))
             if "position" in m: self.pos_spin.setValue(int(m["position"]))
 
+        if "cellpose" in state:
+            self._cellpose_widget.set_state(state["cellpose"])
+
         if "nucleus" in state:
             self.nucleus_workflow_widget.set_state(state["nucleus"])
-        
+
         if "cell" in state:
             self.cell_workflow_widget.set_state(state["cell"])
 
