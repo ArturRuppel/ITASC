@@ -8,6 +8,7 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -76,6 +77,8 @@ def _make_progress() -> QProgressBar:
 class CellposeWidget(QWidget):
     """Local Cellpose-SAM runner — two rows (Nucleus, Cell)."""
 
+    _progress_signal = Signal(int, int, str)
+
     def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = viewer
@@ -86,6 +89,7 @@ class CellposeWidget(QWidget):
 
         self._setup_ui()
         self._connect_signals()
+        self._progress_signal.connect(self._progress)
 
     # ------------------------------------------------------------------
     # UI
@@ -329,6 +333,8 @@ class CellposeWidget(QWidget):
                 self._status(f"Error: {exc}")
                 logger.exception("Cellpose run error", exc_info=exc)
 
+        progress_signal = self._progress_signal
+
         @thread_worker(connect={
             "yielded": self._on_progress,
             "returned": _done,
@@ -342,10 +348,8 @@ class CellposeWidget(QWidget):
                     f"expected 4D (T,Z,Y,X) input, got shape {stack.shape}"
                 )
 
-            _progress_queue: list[tuple[int, int, str]] = []
-
             def _cb_progress(done, total, msg):
-                _progress_queue.append((done, total, msg))
+                progress_signal.emit(int(done), int(total), str(msg))
 
             def _cb_cancel():
                 return self._cancel_requested
@@ -360,8 +364,6 @@ class CellposeWidget(QWidget):
                     stack, params,
                     progress_cb=_cb_progress, cancel_cb=_cb_cancel,
                 )
-            for item in _progress_queue:
-                yield item
             yield (1, 1, "Writing outputs...")
             cellpose_runner.write_outputs(prob, dp, out_dir, channel)
             return None
@@ -392,6 +394,13 @@ class CellposeWidget(QWidget):
     def _sigmoid(x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=np.float32)
         return (1.0 / (1.0 + np.exp(-x))).astype(np.float32)
+
+    @staticmethod
+    def _flow_contrast_limits(flow: np.ndarray) -> tuple[float, float]:
+        # Derive limits from the populated frame only — flow_full is mostly
+        # zeros, so napari's auto-contrast undersamples and clips the peaks.
+        hi = float(np.asarray(flow, dtype=np.float32).max())
+        return 0.0, max(hi, 1e-6)
 
     def _preview_channel(self, channel: str) -> None:
         if self._running_stage is not None:
@@ -470,6 +479,7 @@ class CellposeWidget(QWidget):
                     flow_full = np.zeros_like(prob_full)
                     prob_full[t_clamped] = prob
                     flow_full[t_clamped] = flow
+                    flow_clim = self._flow_contrast_limits(flow)
                     status_msg = (
                         f"Preview: nucleus 3D t={t_clamped} "
                         f"(Z={Z}, anisotropy={params.anisotropy})"
@@ -489,6 +499,7 @@ class CellposeWidget(QWidget):
                     flow_full = np.zeros_like(prob_full)
                     prob_full[t_clamped, z_clamped] = prob
                     flow_full[t_clamped, z_clamped] = flow
+                    flow_clim = self._flow_contrast_limits(flow)
                     status_msg = (
                         f"Preview: nucleus 2D t={t_clamped} z={z_clamped} "
                         f"(diameter={params.diameter})"
@@ -497,12 +508,20 @@ class CellposeWidget(QWidget):
                     (
                         "Preview: Nucleus prob",
                         prob_full,
-                        {"colormap": "viridis", "blending": "additive"},
+                        {
+                            "colormap": "viridis",
+                            "blending": "additive",
+                            "contrast_limits": (0.0, 1.0),
+                        },
                     ),
                     (
                         "Preview: Nucleus flow",
                         flow_full,
-                        {"colormap": "inferno", "blending": "additive"},
+                        {
+                            "colormap": "inferno",
+                            "blending": "additive",
+                            "contrast_limits": flow_clim,
+                        },
                     ),
                 ]
 
@@ -520,6 +539,7 @@ class CellposeWidget(QWidget):
             flow_full = np.zeros_like(prob_full)
             prob_full[t_clamped, z_clamped] = prob
             flow_full[t_clamped, z_clamped] = flow
+            flow_clim = self._flow_contrast_limits(flow)
             return (
                 f"Preview: cell t={t_clamped} z={z_clamped} "
                 f"(diameter={params.diameter})",
@@ -527,12 +547,20 @@ class CellposeWidget(QWidget):
                     (
                         "Preview: Cell prob",
                         prob_full,
-                        {"colormap": "viridis", "blending": "additive"},
+                        {
+                            "colormap": "viridis",
+                            "blending": "additive",
+                            "contrast_limits": (0.0, 1.0),
+                        },
                     ),
                     (
                         "Preview: Cell flow",
                         flow_full,
-                        {"colormap": "inferno", "blending": "additive"},
+                        {
+                            "colormap": "inferno",
+                            "blending": "additive",
+                            "contrast_limits": flow_clim,
+                        },
                     ),
                 ],
             )
@@ -664,7 +692,12 @@ class CellposeWidget(QWidget):
     def _show_layer(self, name, data, kwargs, adder):
         if name in self.viewer.layers:
             try:
-                self.viewer.layers[name].data = data
+                layer = self.viewer.layers[name]
+                layer.data = data
+                clim = kwargs.get("contrast_limits")
+                if clim is not None:
+                    layer.contrast_limits = clim
+                return
             except Exception:
                 self.viewer.layers.remove(self.viewer.layers[name])
                 adder(data, name=name, **kwargs)
