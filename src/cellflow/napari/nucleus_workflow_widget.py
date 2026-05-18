@@ -135,13 +135,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         segmentation_inputs = self.nucleus_segmentation_inputs_widget
         self.segmentation_inputs_parameters_section = segmentation_inputs.section
         self.segmentation_inputs_section = segmentation_inputs.section
-        self.map_cellprob_min_spin = segmentation_inputs.map_cellprob_min_spin
-        self.map_cellprob_max_spin = segmentation_inputs.map_cellprob_max_spin
-        self.map_cellprob_step_spin = segmentation_inputs.map_cellprob_step_spin
-        self.map_z_range = segmentation_inputs.map_z_range
-        self.map_z_start_spin = segmentation_inputs.map_z_start_spin
-        self.map_z_stop_spin = segmentation_inputs.map_z_stop_spin
-        self.map_z_step_spin = segmentation_inputs.map_z_step_spin
         self.source_contour_threshold_min_spin = (
             segmentation_inputs.source_contour_threshold_min_spin
         )
@@ -165,7 +158,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.db_gen_threshold_step_spin = self.source_contour_threshold_step_spin
         # Range-slider widgets (used by tests/state when the underlying widget
         # itself is needed rather than a per-thumb proxy).
-        self.map_cellprob_range = segmentation_inputs.map_cellprob_range
         self.source_contour_threshold_range = (
             segmentation_inputs.source_contour_threshold_range
         )
@@ -478,7 +470,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
         self._files_widget.refresh(pos_dir)
-        self._refresh_z_extent_from_inputs(pos_dir)
         if hasattr(self, "refinement_widget"):
             self.refinement_widget.refresh()
         if pos_dir is None:
@@ -490,27 +481,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             return
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
-
-    def _refresh_z_extent_from_inputs(self, pos_dir: Path | None) -> None:
-        """Read the z dimension of the 3D+t cellpose probability stack
-        and update the segmentation widget's z range slider accordingly."""
-        if pos_dir is None:
-            return
-        prob_path = pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif"
-        if not prob_path.exists():
-            return
-        try:
-            import tifffile
-            with tifffile.TiffFile(prob_path) as tf:
-                shape = tf.series[0].shape
-        except Exception:
-            logger.debug("Failed to read z extent from %s", prob_path, exc_info=True)
-            return
-        # nucleus_prob_3dt is (T, Z, Y, X) so z size is shape[-3].
-        if len(shape) < 3:
-            return
-        z_size = int(shape[-3])
-        self.nucleus_segmentation_inputs_widget.set_z_extent(z_size)
 
     def get_state(self) -> dict:
         return dump_state(self)
@@ -590,9 +560,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
 
     def _ultrack_config_from_controls(self):
         return self.nucleus_pipeline_widget._ultrack_config_from_controls()
-
-    def _map_z_indices_from_controls(self):
-        return self.nucleus_pipeline_widget._map_z_indices_from_controls()
 
     # Pipeline handler methods are owned by NucleusPipelineWidget and aliased
     # onto this instance by _alias_pipeline_controls() during __init__.

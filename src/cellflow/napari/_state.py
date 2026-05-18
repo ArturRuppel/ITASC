@@ -18,14 +18,6 @@ if TYPE_CHECKING:
 
 def dump_state(w: NucleusWorkflowWidget) -> dict:
     return {
-        "map_generation": {
-            "cellprob_min": w.map_cellprob_min_spin.value(),
-            "cellprob_max": w.map_cellprob_max_spin.value(),
-            "cellprob_step": w.map_cellprob_step_spin.value(),
-            "z_start": w.map_z_start_spin.value(),
-            "z_stop": w.map_z_stop_spin.value(),
-            "z_step": w.map_z_step_spin.value(),
-        },
         "db_generation": {
             "min_area": w.db_gen_min_area_spin.value(),
             "max_area": w.db_gen_max_area_spin.value(),
@@ -81,14 +73,6 @@ def _set_combo(combo, text: str) -> None:
 def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
     if not isinstance(state, dict):
         return
-    if "map_generation" in state:
-        maps = state["map_generation"]
-        if "cellprob_min" in maps: w.map_cellprob_min_spin.setValue(maps["cellprob_min"])
-        if "cellprob_max" in maps: w.map_cellprob_max_spin.setValue(maps["cellprob_max"])
-        if "cellprob_step" in maps: w.map_cellprob_step_spin.setValue(maps["cellprob_step"])
-        if "z_start" in maps: w.map_z_start_spin.setValue(maps["z_start"])
-        if "z_stop" in maps: w.map_z_stop_spin.setValue(maps["z_stop"])
-        if "z_step" in maps: w.map_z_step_spin.setValue(maps["z_step"])
     if "db_generation" in state:
         dbg = state["db_generation"]
         if "min_area" in dbg: w.db_gen_min_area_spin.setValue(dbg["min_area"])

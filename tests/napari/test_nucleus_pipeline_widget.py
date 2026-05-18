@@ -257,6 +257,32 @@ def test_pipeline_widget_initial_run_buttons_enabled():
     viewer.close()
 
 
+def test_nucleus_workflow_exposes_only_source_sweep_segmentation_controls():
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+
+    for name in (
+        "map_cellprob_min_spin",
+        "map_cellprob_max_spin",
+        "map_cellprob_step_spin",
+        "map_cellprob_range",
+        "map_z_range",
+        "map_z_start_spin",
+        "map_z_stop_spin",
+        "map_z_step_spin",
+    ):
+        assert not hasattr(widget, name)
+        assert not hasattr(widget.nucleus_segmentation_inputs_widget, name)
+
+    assert hasattr(widget, "source_contour_threshold_min_spin")
+    assert hasattr(widget, "source_foreground_threshold_min_spin")
+    assert "map_generation" not in widget.get_state()
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_pipeline_widget_status_label_starts_empty():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()

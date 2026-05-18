@@ -41,25 +41,3 @@ def source_foreground_thresholds(w: NucleusWorkflowWidget) -> np.ndarray:
         float(w.source_foreground_threshold_step_spin.value()),
         label="Foreground",
     )
-
-
-def map_cellprob_thresholds(w: NucleusWorkflowWidget) -> np.ndarray:
-    threshold_min = float(w.map_cellprob_min_spin.value())
-    threshold_max = float(w.map_cellprob_max_spin.value())
-    threshold_step = float(w.map_cellprob_step_spin.value())
-    if threshold_step <= 0:
-        raise ValueError("Cellprob threshold step must be > 0.")
-    if threshold_min > threshold_max:
-        raise ValueError("Cellprob threshold min must be <= max.")
-    return np.arange(threshold_min, threshold_max + threshold_step / 2, threshold_step)
-
-
-def map_z_indices(w: NucleusWorkflowWidget) -> list[int]:
-    start = int(w.map_z_start_spin.value())
-    stop = int(w.map_z_stop_spin.value())
-    step = int(w.map_z_step_spin.value())
-    if step <= 0:
-        raise ValueError("Z step must be > 0.")
-    if start > stop:
-        raise ValueError("Z start must be <= stop.")
-    return list(range(start, stop + 1, step))
