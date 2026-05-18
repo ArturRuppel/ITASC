@@ -15,6 +15,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
+_APP = None
+
 
 class _FakeViewer:
     def __init__(self):
@@ -37,8 +39,14 @@ def _load_widget(monkeypatch):
     return importlib.import_module("cellflow.napari.divergence_maps_widget")
 
 
+def _qapp():
+    global _APP
+    _APP = QApplication.instance() or QApplication([])
+    return _APP
+
+
 def test_widget_constructs_and_exposes_public_api(monkeypatch):
-    QApplication.instance() or QApplication([])
+    _qapp()
     mod = _load_widget(monkeypatch)
 
     w = mod.DivergenceMapsWidget(_FakeViewer())
@@ -66,7 +74,7 @@ def test_widget_constructs_and_exposes_public_api(monkeypatch):
 
 
 def test_widget_state_roundtrip(monkeypatch):
-    QApplication.instance() or QApplication([])
+    _qapp()
     mod = _load_widget(monkeypatch)
 
     w = mod.DivergenceMapsWidget(_FakeViewer())
@@ -85,3 +93,69 @@ def test_widget_state_roundtrip(monkeypatch):
     assert w2.cell_fg_reduction.currentText() == "max"
     w.deleteLater()
     w2.deleteLater()
+
+
+def test_run_invokes_build_divergence_maps(tmp_path, monkeypatch):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+    from cellflow.segmentation.divergence_maps import DivergenceMapsReport
+    import tifffile
+
+    pos = tmp_path / "pos00"
+    cell = pos / "1_cellpose"
+    cell.mkdir(parents=True)
+    tifffile.imwrite(cell / "nucleus_prob_3dt.tif", np.zeros((1, 1, 2, 2), dtype=np.float32))
+    tifffile.imwrite(cell / "nucleus_dp_3dt.tif", np.zeros((1, 1, 2, 2, 2), dtype=np.float32))
+
+    captured: dict = {}
+
+    def _fake_build(
+        prob_path,
+        dp_path,
+        contours_out,
+        foreground_out,
+        *,
+        foreground_z_reduction,
+        contour_z_reduction,
+        smoothing_sigma,
+        median_radius,
+        progress_cb=None,
+        cancel=None,
+    ):
+        captured.update(dict(
+            prob_path=str(prob_path),
+            dp_path=str(dp_path),
+            contours_out=str(contours_out),
+            foreground_out=str(foreground_out),
+            foreground_z_reduction=foreground_z_reduction,
+            contour_z_reduction=contour_z_reduction,
+            smoothing_sigma=smoothing_sigma,
+            median_radius=median_radius,
+        ))
+        return DivergenceMapsReport(
+            frames=1,
+            foreground_z_reduction=foreground_z_reduction,
+            contour_z_reduction=contour_z_reduction,
+            smoothing_sigma=smoothing_sigma,
+            median_radius=median_radius,
+            contours_path=contours_out,
+            foreground_path=foreground_out,
+        )
+
+    monkeypatch.setattr(mod, "build_divergence_maps", _fake_build)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer())
+    w.refresh(pos)
+    w.nuc_smoothing_spin.setValue(2.0)
+    w.nuc_median_spin.setValue(1)
+    w._run_blocking("nucleus")
+
+    assert captured["prob_path"].endswith("nucleus_prob_3dt.tif")
+    assert captured["dp_path"].endswith("nucleus_dp_3dt.tif")
+    assert captured["contours_out"].endswith("nucleus_contours.tif")
+    assert captured["foreground_out"].endswith("nucleus_foreground.tif")
+    assert captured["smoothing_sigma"] == 2.0
+    assert captured["median_radius"] == 1
+    assert captured["foreground_z_reduction"] == "mean"
+    assert captured["contour_z_reduction"] == "mean"
+    w.deleteLater()

@@ -7,10 +7,12 @@ Mirrors :class:`CellposeWidget` layout (one row per channel with
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Literal
 
 import napari
+from napari.qt.threading import thread_worker
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QComboBox,
@@ -33,6 +35,8 @@ from cellflow.napari.widgets import (
     PipelineFilesWidget,
     make_pipeline_files_header,
 )
+from cellflow.segmentation import CancelledError
+from cellflow.segmentation.divergence_maps import build_divergence_maps
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +85,7 @@ class DivergenceMapsWidget(QWidget):
         self._pos_dir: Path | None = None
         self._running_stage: str | None = None
         self._worker = None
-        self._cancel_requested = False
+        self._cancel_event: threading.Event | None = None
 
         self._setup_ui()
         self._connect_signals()
@@ -207,10 +211,160 @@ class DivergenceMapsWidget(QWidget):
         self.nucleus_run_btn.clicked.connect(lambda: self._on_run("nucleus"))
         self.cell_run_btn.clicked.connect(lambda: self._on_run("cell"))
 
-    # ── Stubs filled in by Task 7 ───────────────────────────────────
     def _on_run(self, channel: Literal["nucleus", "cell"]) -> None:  # noqa: D401
-        """Run/cancel dispatch — implemented in Task 7."""
-        raise NotImplementedError("Wired in Task 7")
+        if self._running_stage is not None:
+            self._on_cancel()
+            return
+        self._start_worker(channel)
+
+    def _start_worker(self, channel: Literal["nucleus", "cell"]) -> None:
+        prob_path, dp_path, contours_out, fg_out = self._channel_paths(channel)
+        if prob_path is None:
+            self._set_status("No project open.")
+            return
+        for p in (prob_path, dp_path):
+            if p is None or not p.exists():
+                self._set_status(f"Missing: {p}")
+                return
+        params = self._channel_state("nuc" if channel == "nucleus" else "cell")
+        cancel_event = threading.Event()
+        self._cancel_event = cancel_event
+        self._running_stage = channel
+        self._set_button_running(channel)
+
+        def _done(report) -> None:
+            self._worker = None
+            self._cancel_event = None
+            self._running_stage = None
+            self._set_button_idle()
+            self._progress_bar_hide()
+            self._set_status(
+                f"{channel.title()} divergence maps built ({report.frames} frames)."
+            )
+            self._files_widget.refresh(self._pos_dir)
+
+        @thread_worker(
+            connect={
+                "yielded": self._on_yield,
+                "returned": _done,
+                "errored": self._on_errored,
+            },
+        )
+        def _worker():
+            import queue as _queue
+
+            msg_queue: _queue.SimpleQueue = _queue.SimpleQueue()
+            result_holder: list = []
+            exc_holder: list[Exception] = []
+
+            def _progress_cb(done: int, total: int, msg: str) -> None:
+                msg_queue.put((done, total, msg))
+
+            def _run() -> None:
+                try:
+                    result_holder.append(build_divergence_maps(
+                        prob_path,
+                        dp_path,
+                        contours_out,
+                        fg_out,
+                        foreground_z_reduction=params["foreground_z_reduction"],
+                        contour_z_reduction=params["contour_z_reduction"],
+                        smoothing_sigma=params["smoothing_sigma"],
+                        median_radius=params["median_radius"],
+                        progress_cb=_progress_cb,
+                        cancel=cancel_event.is_set,
+                    ))
+                except Exception as exc:  # pragma: no cover - reported via worker
+                    exc_holder.append(exc)
+
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+            yield (0, 1, f"Starting {channel} divergence maps...")
+            while thread.is_alive() or not msg_queue.empty():
+                try:
+                    yield msg_queue.get_nowait()
+                except _queue.Empty:
+                    thread.join(timeout=0.05)
+            if exc_holder:
+                raise exc_holder[0]
+            return result_holder[0]
+
+        self._worker = _worker()
+
+    def _run_blocking(self, channel: Literal["nucleus", "cell"]) -> None:
+        """Synchronous test helper: runs build_divergence_maps in this thread."""
+        prob_path, dp_path, contours_out, fg_out = self._channel_paths(channel)
+        if prob_path is None or dp_path is None:
+            raise RuntimeError("No project open.")
+        params = self._channel_state("nuc" if channel == "nucleus" else "cell")
+        contours_out.parent.mkdir(parents=True, exist_ok=True)
+        build_divergence_maps(
+            prob_path,
+            dp_path,
+            contours_out,
+            fg_out,
+            foreground_z_reduction=params["foreground_z_reduction"],
+            contour_z_reduction=params["contour_z_reduction"],
+            smoothing_sigma=params["smoothing_sigma"],
+            median_radius=params["median_radius"],
+        )
+
+    def _channel_paths(self, channel: Literal["nucleus", "cell"]):
+        paths = self._paths()
+        if paths is None:
+            return None, None, None, None
+        if channel == "nucleus":
+            return paths.prob, paths.dp, paths.nucleus_contours, paths.nucleus_foreground
+        return paths.cell_prob, paths.cell_dp, paths.cell_contours, paths.cell_foreground
+
+    def _set_status(self, msg: str) -> None:
+        self.status_lbl.setText(msg)
+        self.status_lbl.setVisible(bool(msg))
+
+    def _progress_bar_hide(self) -> None:
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+
+    def _set_button_running(self, channel: Literal["nucleus", "cell"]) -> None:
+        run_btn = self.nucleus_run_btn if channel == "nucleus" else self.cell_run_btn
+        other_btn = self.cell_run_btn if channel == "nucleus" else self.nucleus_run_btn
+        run_btn.setText("✕")
+        run_btn.setToolTip("Cancel.")
+        other_btn.setEnabled(False)
+
+    def _set_button_idle(self) -> None:
+        for btn, tip in (
+            (self.nucleus_run_btn, "Build nucleus divergence maps."),
+            (self.cell_run_btn, "Build cell divergence maps."),
+        ):
+            btn.setText("▶")
+            btn.setToolTip(tip)
+            btn.setEnabled(self._pos_dir is not None)
+
+    def _on_yield(self, payload) -> None:
+        if not isinstance(payload, tuple):
+            self._set_status(str(payload))
+            return
+        done, total, msg = payload
+        self._progress(done, total, msg)
+
+    def _on_errored(self, exc: Exception) -> None:
+        self._worker = None
+        self._cancel_event = None
+        self._running_stage = None
+        self._set_button_idle()
+        self._progress_bar_hide()
+        if isinstance(exc, CancelledError):
+            self._set_status("Cancelled.")
+            return
+        logger.exception("Divergence-maps worker error", exc_info=exc)
+        self._set_status(f"Error: {exc}")
+
+    def _on_cancel(self) -> None:
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+        if self._worker is not None and hasattr(self._worker, "quit"):
+            self._worker.quit()
 
     def _progress(self, done: int, total: int, msg: str) -> None:
         self.progress_bar.setVisible(True)
