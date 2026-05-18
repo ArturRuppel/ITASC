@@ -269,6 +269,24 @@ def test_run_nucleus_stack_2d_returns_per_slice_outputs(monkeypatch):
     assert dp.shape == (2, 3, 2, 6, 6)
 
 
+def test_run_nucleus_stack_2d_reports_current_z_slice(monkeypatch):
+    r = _runner()
+    _install_recording_model(monkeypatch, r)
+    stack = np.zeros((2, 3, 6, 6), dtype=np.float32)
+    params = r.NucleusParams(do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0)
+    progress = []
+
+    r.run_nucleus_stack(
+        stack, params,
+        progress_cb=lambda d, t, msg: progress.append((d, t, msg)),
+    )
+
+    assert "z 1/3" in progress[1][2]
+    assert "z 2/3" in progress[2][2]
+    assert "z 3/3" in progress[3][2]
+    assert all("z " not in msg for _, _, msg in (progress[0], progress[-1]))
+
+
 def test_run_cell_stack_iterates_t_then_z(monkeypatch):
     r = _runner()
     calls = _install_recording_model(monkeypatch, r)

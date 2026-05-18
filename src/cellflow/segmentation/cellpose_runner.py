@@ -170,9 +170,16 @@ def run_nucleus_stack(
         if params.do_3d:
             prob, dp = run_nucleus_frame(stack[t], z=None, params=params)
         else:
+            Z = stack.shape[1]
             slice_probs: list[np.ndarray] = []
             slice_dps: list[np.ndarray] = []
-            for z in range(stack.shape[1]):
+            for z in range(Z):
+                if progress_cb is not None:
+                    progress_cb(
+                        t,
+                        T,
+                        f"Nucleus: frame {t + 1}/{T}, z {z + 1}/{Z}...",
+                    )
                 p, d = run_nucleus_frame(stack[t], z=z, params=params)
                 slice_probs.append(p)
                 slice_dps.append(d)
