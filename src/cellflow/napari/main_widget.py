@@ -11,10 +11,12 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,7 +30,16 @@ from cellflow.napari.widgets import (
     CollapsibleSection,
     pipeline_status_from_files,
 )
-from cellflow.napari.ui_style import icon_button, muted_label, stage_accent, tiny_button
+from cellflow.napari._widget_helpers import tool_btn
+from cellflow.napari.ui_style import (
+    active_theme_name,
+    icon_button,
+    muted_label,
+    set_active_theme,
+    stage_accent,
+    theme_names,
+    tiny_button,
+)
 
 
 class CellFlowMainWidget(QWidget):
@@ -125,6 +136,7 @@ class CellFlowMainWidget(QWidget):
 
         # Add stretch at the end
         self.scroll_layout.addStretch()
+        self._setup_theme_selector(main_layout)
 
         # Connect signals
         self.project_btn.clicked.connect(lambda: self._on_set_project_directory())
@@ -146,6 +158,52 @@ class CellFlowMainWidget(QWidget):
             self.cell_workflow_widget.set_selection_callback(
                 lambda t, label: self.nucleus_workflow_widget.select_matching_nucleus_label(t, label)
             )
+
+    def _setup_theme_selector(self, layout: QVBoxLayout) -> None:
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.addStretch()
+
+        self.theme_btn = tool_btn("◐", "Theme")
+        self.theme_btn.setObjectName("theme_selector_button")
+        self.theme_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+
+        self.theme_menu = QMenu(self.theme_btn)
+        self._theme_actions = {}
+        for name in theme_names():
+            action = self.theme_menu.addAction(name)
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, theme_name=name: self._on_theme_selected(theme_name)
+            )
+            self._theme_actions[name] = action
+        self.theme_btn.setMenu(self.theme_menu)
+        self._sync_theme_menu_state()
+
+        footer.addWidget(self.theme_btn)
+        layout.addLayout(footer)
+
+    def _on_theme_selected(self, name: str) -> None:
+        set_active_theme(name)
+        self._apply_theme_accents()
+        self._sync_theme_menu_state()
+
+    def _apply_theme_accents(self) -> None:
+        section_stage_keys = (
+            (self.data_section, "project_status"),
+            (self.cellpose_section, "cellpose"),
+            (self.nucleus_section, "nucleus"),
+            (self.cell_section, "cell"),
+            (self.contact_analysis_section, "contact_analysis"),
+        )
+        for section, stage_key in section_stage_keys:
+            section.set_accent_color(stage_accent(stage_key))
+
+    def _sync_theme_menu_state(self) -> None:
+        current = active_theme_name()
+        for name, action in self._theme_actions.items():
+            action.setChecked(name == current)
+        self.theme_btn.setToolTip(f"Theme: {current}")
 
     def _setup_project_ui(self, layout: QVBoxLayout) -> None:
         """Create the top-level project metadata and buttons."""

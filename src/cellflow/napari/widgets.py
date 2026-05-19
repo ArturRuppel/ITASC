@@ -154,6 +154,23 @@ class CollapsibleSection(QWidget):
         self._is_outer_accent = False
         self._apply_accent_styles()
 
+    def set_accent_color(self, accent_color: str | None) -> None:
+        """Set this section's explicit accent and refresh inherited child accents."""
+        self._explicit_accent = accent_color
+        self._effective_accent = accent_color
+        self._is_outer_accent = accent_color is not None
+        self._apply_accent_styles()
+        self._refresh_descendant_inherited_accents()
+
+    def _refresh_descendant_inherited_accents(self) -> None:
+        for child in self.findChildren(CollapsibleSection):
+            if child._explicit_accent is not None:
+                continue
+            ancestor_color = child._find_ancestor_accent_color()
+            child._effective_accent = ancestor_color
+            child._is_outer_accent = False
+            child._apply_accent_styles()
+
     def _find_ancestor_accent_color(self) -> str | None:
         parent = self.parent()
         while parent is not None:

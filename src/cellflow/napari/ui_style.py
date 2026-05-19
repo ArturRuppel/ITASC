@@ -53,8 +53,133 @@ NORD = {
     "blue":      "#5e81ac", "lavender":  "#b48ead",
 }
 
+# Solarized Dark — https://ethanschoonover.com/solarized/
+SOLARIZED_DARK = {
+    "rosewater": "#cb4b16", "flamingo":  "#dc322f", "pink":     "#d33682",
+    "mauve":     "#6c71c4", "red":       "#dc322f", "maroon":   "#cb4b16",
+    "peach":     "#cb4b16", "yellow":    "#b58900", "green":    "#859900",
+    "teal":      "#2aa198", "sky":       "#2aa198", "sapphire": "#268bd2",
+    "blue":      "#268bd2", "lavender":  "#6c71c4",
+}
+
+# CellFlow Field Notes. Earlier second choice after Nord: a quiet custom
+# palette with softer workbench-style accents for the visible stages.
+FIELD_NOTES = {
+    "rosewater": "#c9b7a2", "flamingo":  "#b98175", "pink":     "#b4838f",
+    "mauve":     "#6f9f95", "red":       "#a05f55", "maroon":   "#8a5d4f",
+    "peach":     "#b88a63", "yellow":    "#b7a56a", "green":    "#8fa77a",
+    "teal":      "#6f9f95", "sky":       "#789ca8", "sapphire": "#7f8c8d",
+    "blue":      "#6d8aa0", "lavender":  "#9a879d",
+}
+
+# CellFlow Museum Label. Muted, warmer, and more material than Nord while
+# keeping enough separation between workflow stage accents.
+MUSEUM_LABEL = {
+    "rosewater": "#d7c6b2", "flamingo":  "#b98276", "pink":     "#a87582",
+    "mauve":     "#8f8a6f", "red":       "#a65f4f", "maroon":   "#7f5648",
+    "peach":     "#b8794f", "yellow":    "#b69b5e", "green":    "#78906f",
+    "teal":      "#6f9388", "sky":       "#7d95a0", "sapphire": "#737a7c",
+    "blue":      "#687f91", "lavender":  "#8b7b8f",
+}
+
+# CellFlow Dusk Gradient. Previous first choice: based on a compact
+# teal-to-plum reference palette with five ordered workflow accents.
+DUSK_GRADIENT = {
+    "rosewater": "#b48aa4", "flamingo":  "#a3739c", "pink":     "#8c5ca6",
+    "mauve":     "#483a5e", "red":       "#9b5d86", "maroon":   "#6f4790",
+    "peach":     "#98d2d4", "yellow":    "#b9c5c8", "green":    "#8c5ca6",
+    "teal":      "#608a9a", "sky":       "#7eabba", "sapphire": "#608a9a",
+    "blue":      "#6f8eaa", "lavender":  "#6f4790",
+}
+
+# CellFlow Sunset. Current second choice: warm reference palette mapped
+# left-to-right across the visible workflow accents.
+SUNSET = {
+    "rosewater": "#fccc73", "flamingo":  "#fd9d5d", "pink":     "#d04e6c",
+    "mauve":     "#8a5687", "red":       "#fd6b5d", "maroon":   "#d04e6c",
+    "peach":     "#fd9d5d", "yellow":    "#fccc73", "green":    "#fd6b5d",
+    "teal":      "#d98f71", "sky":       "#c66d78", "sapphire": "#fccc73",
+    "blue":      "#b66b83", "lavender":  "#d04e6c",
+}
+
+# CellFlow Retro. Saturated green-to-red reference palette mapped left-to-right
+# across the visible workflow accents for comparison.
+RETRO = {
+    "rosewater": "#f5c783", "flamingo":  "#d98872", "pink":     "#8c0027",
+    "mauve":     "#8c0027", "red":       "#dd4111", "maroon":   "#8c0027",
+    "peach":     "#a1d4b1", "yellow":    "#f1a512", "green":    "#f1a512",
+    "teal":      "#2baf90", "sky":       "#7fc7a8", "sapphire": "#2baf90",
+    "blue":      "#4ca99a", "lavender":  "#dd4111",
+}
+
+# CellFlow Signal Archive. Previous first choice: muted red, parchment, sage,
+# teal, and charcoal reference palette mapped across the workflow accents.
+SIGNAL_ARCHIVE = {
+    "rosewater": "#d7b2a7", "flamingo":  "#c94b4b", "pink":     "#a55b62",
+    "mauve":     "#414643", "red":       "#c94b4b", "maroon":   "#8b4447",
+    "peach":     "#eae3c3", "yellow":    "#eae3c3", "green":    "#9bb6a1",
+    "teal":      "#3b7b7a", "sky":       "#6f9a95", "sapphire": "#c94b4b",
+    "blue":      "#3b7b7a", "lavender":  "#3b7b7a",
+}
+
+# CellFlow Parent Four. Four-color supplied palette expanded with a darker
+# teal companion for the fifth visible workflow accent.
+PARENT_FOUR = {
+    "rosewater": "#e3b4a6", "flamingo":  "#d96248", "pink":     "#b95058",
+    "mauve":     "#01454f", "red":       "#d96248", "maroon":   "#9b493d",
+    "peach":     "#d96248", "yellow":    "#e3cc69", "green":    "#77c8a6",
+    "teal":      "#026473", "sky":       "#5ca99d", "sapphire": "#e3cc69",
+    "blue":      "#2f7d86", "lavender":  "#d96248",
+}
+
+# CellFlow Viridis. Five-stop scientific colormap palette sampled from the
+# inverted interior 15%-85% range to avoid the darkest and brightest endpoints.
+VIRIDIS = {
+    "rosewater": "#9bd93c", "flamingo":  "#38b977", "pink":     "#31668e",
+    "mauve":     "#463480", "red":       "#31668e", "maroon":   "#463480",
+    "peach":     "#38b977", "yellow":    "#9bd93c", "green":    "#21918c",
+    "teal":      "#21918c", "sky":       "#31668e", "sapphire": "#9bd93c",
+    "blue":      "#31668e", "lavender":  "#31668e",
+}
+
+# CellFlow Cividis. Current default: five-stop color-vision-friendly scientific
+# colormap sampled from the inverted interior 15%-85% range.
+CIVIDIS = {
+    "rosewater": "#d6c35d", "flamingo":  "#a79d73", "pink":     "#555c6d",
+    "mauve":     "#243c6e", "red":       "#555c6d", "maroon":   "#243c6e",
+    "peach":     "#a79d73", "yellow":    "#d6c35d", "green":    "#7d7c78",
+    "teal":      "#7d7c78", "sky":       "#555c6d", "sapphire": "#d6c35d",
+    "blue":      "#555c6d", "lavender":  "#555c6d",
+}
+
 # ACTIVE_PALETTE = CATPPUCCIN_MOCHA
-ACTIVE_PALETTE = NORD
+THEME_PALETTES = {
+    "Cividis": CIVIDIS,
+    "Viridis": VIRIDIS,
+    "Signal Archive": SIGNAL_ARCHIVE,
+    "Dusk Gradient": DUSK_GRADIENT,
+    "Sunset": SUNSET,
+    "Nord": NORD,
+    "Field Notes": FIELD_NOTES,
+    "Museum Label": MUSEUM_LABEL,
+}
+ACTIVE_THEME_NAME = "Cividis"
+ACTIVE_PALETTE = THEME_PALETTES[ACTIVE_THEME_NAME]
+
+
+def theme_names() -> tuple[str, ...]:
+    return tuple(THEME_PALETTES)
+
+
+def active_theme_name() -> str:
+    return ACTIVE_THEME_NAME
+
+
+def set_active_theme(name: str) -> None:
+    global ACTIVE_PALETTE, ACTIVE_THEME_NAME
+
+    ACTIVE_THEME_NAME = name
+    ACTIVE_PALETTE = THEME_PALETTES[name]
 
 STAGE_ACCENTS = {
     "project_status":   "sapphire",

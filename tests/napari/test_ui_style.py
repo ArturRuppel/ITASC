@@ -29,7 +29,9 @@ sys.modules["cellflow.napari"] = napari_pkg
 
 from cellflow.napari.ui_style import (
     DEFAULT_SPIN_WIDTH,
+    FIELD_NOTES,
     SECTION_MARGIN,
+    SOLARIZED_DARK,
     TIGHT_SPACING,
     TINY_MARGIN,
     action_button,
@@ -55,6 +57,28 @@ def test_layout_constants_are_compact():
     assert SECTION_MARGIN == 4
     assert TIGHT_SPACING == 4
     assert DEFAULT_SPIN_WIDTH == 70
+
+
+def test_theme_palettes_have_required_accent_keys():
+    required_keys = {
+        "rosewater",
+        "flamingo",
+        "pink",
+        "mauve",
+        "red",
+        "maroon",
+        "peach",
+        "yellow",
+        "green",
+        "teal",
+        "sky",
+        "sapphire",
+        "blue",
+        "lavender",
+    }
+
+    assert set(SOLARIZED_DARK) == required_keys
+    assert set(FIELD_NOTES) == required_keys
 
 
 def test_compact_spinbox_sets_width_and_fixed_policy(_app):
