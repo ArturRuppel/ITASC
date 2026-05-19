@@ -538,6 +538,7 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
     call = calls[0]
     assert call["contours_path"] == pos_dir / "1_cellpose" / "nucleus_contours.tif"
     assert call["foreground_scores_path"] == pos_dir / "1_cellpose" / "nucleus_foreground.tif"
+    assert call["working_dir"] == pos_dir / "2_nucleus" / "ultrack_workdir"
     np.testing.assert_allclose(call["contour_thresholds"], np.array([0.2]))
     np.testing.assert_allclose(call["foreground_thresholds"], np.array([0.2]))
     assert "score_signal_path" not in call
@@ -546,6 +547,49 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
     assert widget.db_run_btn.text() == "▶"
     assert "complete" in widget.pipeline_status_lbl.text().lower()
     assert not widget.pipeline_progress_bar.isVisible()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_run_db_generation_reports_missing_canonical_contours(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    widget._pos_dir = pos_dir
+
+    widget._on_run_db_generation()
+
+    assert "nucleus_contours.tif" in widget.pipeline_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_run_db_generation_reports_missing_canonical_foreground(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    import tifffile
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_contours.tif",
+        np.ones((2, 4, 4), dtype=np.float32),
+    )
+    widget._pos_dir = pos_dir
+
+    widget._on_run_db_generation()
+
+    assert "nucleus_foreground.tif" in widget.pipeline_status_lbl.text()
 
     widget.deleteLater()
     viewer.close()
