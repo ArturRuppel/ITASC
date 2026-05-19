@@ -105,7 +105,13 @@ def _install_import_stubs() -> None:
         "cellflow.tracking_ultrack.multi_threshold": {
             "build_ultrack_database_from_sources": lambda *args, **kwargs: None,
             "build_ultrack_database_from_thresholds": lambda *args, **kwargs: None,
+            "build_ultrack_database_from_threshold_pairs": lambda *args, **kwargs: None,
             "build_ultrack_source_stacks": lambda *args, **kwargs: (
+                np.zeros((1, 1, 1, 1), dtype=np.float32),
+                np.zeros((1, 1, 1, 1), dtype=np.uint8),
+                [],
+            ),
+            "build_ultrack_source_stacks_from_pairs": lambda *args, **kwargs: (
                 np.zeros((1, 1, 1, 1), dtype=np.float32),
                 np.zeros((1, 1, 1, 1), dtype=np.uint8),
                 [],
@@ -302,7 +308,7 @@ def test_pipeline_widget_initial_run_buttons_enabled():
     viewer.close()
 
 
-def test_nucleus_workflow_exposes_only_source_sweep_segmentation_controls():
+def test_nucleus_workflow_exposes_threshold_pair_controls_in_db_parameters():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
@@ -320,8 +326,22 @@ def test_nucleus_workflow_exposes_only_source_sweep_segmentation_controls():
         assert not hasattr(widget, name)
         assert not hasattr(widget.nucleus_segmentation_inputs_widget, name)
 
-    assert hasattr(widget, "source_contour_threshold_min_spin")
-    assert hasattr(widget, "source_foreground_threshold_min_spin")
+    for name in (
+        "source_contour_threshold_min_spin",
+        "source_contour_threshold_max_spin",
+        "source_contour_threshold_step_spin",
+        "source_foreground_threshold_min_spin",
+        "source_foreground_threshold_max_spin",
+        "source_foreground_threshold_step_spin",
+        "source_contour_threshold_range",
+        "source_foreground_threshold_range",
+    ):
+        assert not hasattr(widget, name)
+        assert not hasattr(widget.nucleus_segmentation_inputs_widget, name)
+
+    assert hasattr(widget, "source_contour_threshold_spin")
+    assert hasattr(widget, "source_foreground_threshold_spin")
+    assert widget.threshold_pairs() == []
     assert "map_generation" not in widget.get_state()
 
     widget.deleteLater()
@@ -365,6 +385,62 @@ def test_pipeline_status_method_updates_label():
 
     widget._status("")
     assert widget.pipeline_status_lbl.isHidden()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_state_persists_explicit_threshold_pairs():
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+
+    widget.set_threshold_pairs(
+        [
+            {"contour_threshold": 0.2, "foreground_threshold": 0.7},
+            {"contour_threshold": 0.4, "foreground_threshold": 0.8},
+        ]
+    )
+
+    state = widget.get_state()
+    db_state = state["db_generation"]
+
+    assert db_state["threshold_pairs"] == [
+        {"contour_threshold": 0.2, "foreground_threshold": 0.7},
+        {"contour_threshold": 0.4, "foreground_threshold": 0.8},
+    ]
+    assert "threshold_min" not in db_state
+    assert "contour_threshold_min" not in db_state
+    assert "foreground_threshold_min" not in db_state
+
+    restored = widget_class(viewer)
+    restored.set_state(state)
+
+    assert restored.threshold_pairs() == db_state["threshold_pairs"]
+
+    restored.deleteLater()
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_state_loads_legacy_sweep_state_as_empty_threshold_pairs():
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+
+    widget.set_state(
+        {
+            "db_generation": {
+                "threshold_min": 0.1,
+                "threshold_max": 0.5,
+                "threshold_step": 0.1,
+                "contour_threshold_min": 0.2,
+                "foreground_threshold_min": 0.3,
+            }
+        }
+    )
+
+    assert widget.threshold_pairs() == []
 
     widget.deleteLater()
     viewer.close()
@@ -447,7 +523,7 @@ def test_running_stage_params_btn_stays_enabled():
 # ── Handler tests ─────────────────────────────────────────────────────────────
 
 
-def test_build_segmentation_inputs_previews_source_sweep_without_writing(
+def test_preview_threshold_pair_updates_layers_without_mutating_pair_list(
     tmp_path, monkeypatch
 ):
     _app, viewer = _make_viewer()
@@ -458,12 +534,8 @@ def test_build_segmentation_inputs_previews_source_sweep_without_writing(
 
     pos_dir = tmp_path / "pos00"
     widget._pos_dir = pos_dir
-    widget.db_gen_threshold_min_spin.setValue(0.2)
-    widget.db_gen_threshold_max_spin.setValue(0.4)
-    widget.db_gen_threshold_step_spin.setValue(0.2)
-    widget.source_foreground_threshold_min_spin.setValue(0.3)
-    widget.source_foreground_threshold_max_spin.setValue(0.5)
-    widget.source_foreground_threshold_step_spin.setValue(0.2)
+    widget.source_contour_threshold_spin.setValue(0.2)
+    widget.source_foreground_threshold_spin.setValue(0.6)
 
     import tifffile
     (pos_dir / "1_cellpose").mkdir(parents=True)
@@ -477,14 +549,9 @@ def test_build_segmentation_inputs_previews_source_sweep_without_writing(
     )
 
     calls = []
-    contour_preview = np.full((4, 2, 3, 3), 0.75, dtype=np.float32)
-    foreground_preview = np.ones((4, 2, 3, 3), dtype=np.uint8)
-    metadata = [
-        {"contour_threshold": 0.2, "foreground_threshold": 0.3},
-        {"contour_threshold": 0.2, "foreground_threshold": 0.5},
-        {"contour_threshold": 0.4, "foreground_threshold": 0.3},
-        {"contour_threshold": 0.4, "foreground_threshold": 0.5},
-    ]
+    contour_preview = np.full((1, 2, 3, 3), 0.75, dtype=np.float32)
+    foreground_preview = np.ones((1, 2, 3, 3), dtype=np.uint8)
+    metadata = [{"contour_threshold": 0.2, "foreground_threshold": 0.6}]
 
     def fake_build(contours, foreground_scores, **kwargs):
         calls.append((contours.copy(), foreground_scores.copy(), kwargs))
@@ -493,7 +560,11 @@ def test_build_segmentation_inputs_previews_source_sweep_without_writing(
     def fail_write(*args, **kwargs):
         raise AssertionError("source-stack TIFF writer should not be called")
 
-    monkeypatch.setattr(pipeline_module, "build_ultrack_source_stacks", fake_build)
+    monkeypatch.setattr(
+        pipeline_module,
+        "build_ultrack_source_stacks_from_pairs",
+        fake_build,
+    )
     monkeypatch.setattr(
         pipeline_module,
         "write_ultrack_source_stacks",
@@ -501,18 +572,17 @@ def test_build_segmentation_inputs_previews_source_sweep_without_writing(
         raising=False,
     )
 
-    widget._on_build_segmentation_inputs()
+    widget._on_preview_threshold_pair()
 
     assert len(calls) == 1
     _contours, _foreground_scores, kwargs = calls[0]
-    np.testing.assert_allclose(kwargs["contour_thresholds"], np.array([0.2, 0.4]))
-    np.testing.assert_allclose(kwargs["foreground_thresholds"], np.array([0.3, 0.5]))
-    assert "Ultrack Sweep: Contours" in viewer.layers
-    assert "Ultrack Sweep: Foreground" in viewer.layers
-    contour_layer = viewer.layers["Ultrack Sweep: Contours"]
-    foreground_layer = viewer.layers["Ultrack Sweep: Foreground"]
-    assert contour_layer.data.shape[:2] == (2, 4)
-    assert foreground_layer.data.shape[:2] == (2, 4)
+    assert kwargs["threshold_pairs"] == metadata
+    assert "Ultrack Preview: Contours" in viewer.layers
+    assert "Ultrack Preview: Foreground" in viewer.layers
+    contour_layer = viewer.layers["Ultrack Preview: Contours"]
+    foreground_layer = viewer.layers["Ultrack Preview: Foreground"]
+    assert contour_layer.data.shape[:2] == (2, 1)
+    assert foreground_layer.data.shape[:2] == (2, 1)
     np.testing.assert_allclose(contour_layer.data, np.moveaxis(contour_preview, 0, 1))
     np.testing.assert_array_equal(
         foreground_layer.data,
@@ -523,8 +593,9 @@ def test_build_segmentation_inputs_previews_source_sweep_without_writing(
     assert contour_layer.metadata["axis_order"] == ("time", "source", "y", "x")
     assert foreground_layer.metadata["axis_order"] == ("time", "source", "y", "x")
     viewer.dims.set_current_step(0, 1)
-    viewer.dims.set_current_step(1, 3)
+    viewer.dims.set_current_step(1, 0)
     assert widget._current_t() == 1
+    assert widget.threshold_pairs() == []
     assert not (pos_dir / "2_nucleus" / "contour_sources.tif").exists()
     assert "preview" in widget.pipeline_status_lbl.text().lower()
     assert not widget.pipeline_progress_bar.isVisible()
@@ -539,12 +610,12 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
     widget = widget_class(viewer)
     pipeline_module = _get_pipeline_module()
     _install_sync_thread_worker(monkeypatch, pipeline_module)
-    widget.db_gen_threshold_min_spin.setValue(0.2)
-    widget.db_gen_threshold_max_spin.setValue(0.2)
-    widget.db_gen_threshold_step_spin.setValue(0.1)
-    widget.source_foreground_threshold_min_spin.setValue(0.2)
-    widget.source_foreground_threshold_max_spin.setValue(0.2)
-    widget.source_foreground_threshold_step_spin.setValue(0.1)
+    widget.set_threshold_pairs(
+        [
+            {"contour_threshold": 0.4, "foreground_threshold": 0.8},
+            {"contour_threshold": 0.2, "foreground_threshold": 0.6},
+        ]
+    )
 
     calls = []
 
@@ -557,7 +628,7 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         pipeline_module,
-        "build_ultrack_database_from_thresholds",
+        "build_ultrack_database_from_threshold_pairs",
         fake_build_database,
     )
     monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
@@ -578,14 +649,41 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
     assert call["contours_path"] == pos_dir / "1_cellpose" / "nucleus_contours.tif"
     assert call["foreground_scores_path"] == pos_dir / "1_cellpose" / "nucleus_foreground.tif"
     assert call["working_dir"] == pos_dir / "2_nucleus" / "ultrack_workdir"
-    np.testing.assert_allclose(call["contour_thresholds"], np.array([0.2]))
-    np.testing.assert_allclose(call["foreground_thresholds"], np.array([0.2]))
+    assert call["threshold_pairs"] == [
+        {"contour_threshold": 0.4, "foreground_threshold": 0.8},
+        {"contour_threshold": 0.2, "foreground_threshold": 0.6},
+    ]
     assert "score_signal_path" not in call
     assert call["cfg"].seg_foreground_threshold == pytest.approx(0.0)
     assert widget.db_run_btn.isEnabled()
     assert widget.db_run_btn.text() == "▶"
     assert "complete" in widget.pipeline_status_lbl.text().lower()
     assert not widget.pipeline_progress_bar.isVisible()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_run_db_generation_reports_empty_threshold_pair_list(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    dummy = np.zeros((2, 4, 4), dtype=np.float32)
+    import tifffile
+    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_contours.tif"), dummy)
+    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_foreground.tif"), dummy)
+    widget._pos_dir = pos_dir
+
+    widget._on_run_db_generation()
+
+    assert widget.pipeline_status_lbl.text() == (
+        "Add at least one threshold pair before DB generation."
+    )
 
     widget.deleteLater()
     viewer.close()
@@ -731,24 +829,13 @@ def test_params_btn_toggles_section_expansion():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
-    pl = widget.nucleus_pipeline_widget
 
-    seg_section = widget.segmentation_inputs_section
     db_section = widget.tracking_db_section
     solve_section = widget.tracking_solve_section
 
-    # All collapsed by default
-    assert not seg_section.is_expanded
+    # DB and solve parameter blocks are collapsed by default.
     assert not db_section.is_expanded
     assert not solve_section.is_expanded
-
-    # Toggle seg params open
-    widget.seg_params_btn.setChecked(True)
-    assert seg_section.is_expanded
-
-    # Toggle seg params closed
-    widget.seg_params_btn.setChecked(False)
-    assert not seg_section.is_expanded
 
     # Toggle db params
     widget.db_params_btn.setChecked(True)

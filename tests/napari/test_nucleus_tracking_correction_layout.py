@@ -85,8 +85,14 @@ def _install_import_stubs() -> None:
         "cellflow.tracking_ultrack.linking": {"run_linking": lambda *args, **kwargs: iter(())},
         "cellflow.tracking_ultrack.multi_threshold": {
             "build_ultrack_database_from_thresholds": lambda *args, **kwargs: None,
+            "build_ultrack_database_from_threshold_pairs": lambda *args, **kwargs: None,
             "build_ultrack_database_from_sources": lambda *args, **kwargs: None,
             "build_ultrack_source_stacks": lambda *args, **kwargs: (
+                np.zeros((1, 1, 1, 1), dtype=np.float32),
+                np.zeros((1, 1, 1, 1), dtype=np.uint8),
+                [],
+            ),
+            "build_ultrack_source_stacks_from_pairs": lambda *args, **kwargs: (
                 np.zeros((1, 1, 1, 1), dtype=np.float32),
                 np.zeros((1, 1, 1, 1), dtype=np.uint8),
                 [],
@@ -524,7 +530,6 @@ def test_nucleus_workflow_stage_headers_are_compact_and_evenly_spaced():
     nucleus_accent = stage_accent("nucleus")
     for text in (
         "Pipeline Files",
-        "Ultrack Inputs",
         "Ultrack database",
         "Ultrack solve",
         "Database Browser",
@@ -535,7 +540,7 @@ def test_nucleus_workflow_stage_headers_are_compact_and_evenly_spaced():
         assert "font-size: 9pt" in style
         assert f"color: {nucleus_accent}" not in style
 
-    pipeline_layout = widget.segmentation_inputs_section.parentWidget().layout()
+    pipeline_layout = widget.tracking_db_section.parentWidget().layout()
     assert pipeline_layout.spacing() == widget.layout().spacing()
 
     assert widget.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Maximum

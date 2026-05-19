@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import shutil
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -477,6 +477,39 @@ def _threshold_values(
     return thresholds
 
 
+def normalize_threshold_pairs(
+    threshold_pairs: Sequence[Mapping[str, float]],
+) -> list[dict[str, float]]:
+    """Validate and normalize ordered contour/foreground threshold pairs."""
+    pairs: list[dict[str, float]] = []
+    for idx, pair in enumerate(threshold_pairs):
+        try:
+            contour_threshold = float(pair["contour_threshold"])
+            foreground_threshold = float(pair["foreground_threshold"])
+        except KeyError as exc:
+            raise ValueError(
+                "threshold_pairs entries must include contour_threshold and "
+                "foreground_threshold."
+            ) from exc
+        except TypeError as exc:
+            raise ValueError(
+                f"threshold_pairs entry {idx} must be a mapping."
+            ) from exc
+        if not 0.0 <= contour_threshold <= 1.0:
+            raise ValueError("contour_threshold values must be between 0 and 1.")
+        if not 0.0 <= foreground_threshold <= 1.0:
+            raise ValueError("foreground_threshold values must be between 0 and 1.")
+        pairs.append(
+            {
+                "contour_threshold": contour_threshold,
+                "foreground_threshold": foreground_threshold,
+            }
+        )
+    if not pairs:
+        raise ValueError("threshold_pairs must include at least one pair.")
+    return pairs
+
+
 def threshold_contour_sources(
     contours: np.ndarray,
     contour_thresholds: Sequence[float],
@@ -529,14 +562,6 @@ def build_ultrack_source_stacks(
     foreground_thresholds: Sequence[float],
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, float]]]:
     """Expand averaged maps into paired Ultrack input source stacks."""
-    contour_movie = _as_3d_movie(contours, "contours").astype(np.float32, copy=False)
-    foreground_movie = _as_3d_movie(
-        foreground_scores,
-        "foreground_scores",
-    ).astype(np.float32, copy=False)
-    if contour_movie.shape != foreground_movie.shape:
-        raise ValueError("contours and foreground_scores must have the same shape.")
-
     contour_values = _threshold_values(
         contour_thresholds,
         name="contour_thresholds",
@@ -545,27 +570,52 @@ def build_ultrack_source_stacks(
         foreground_thresholds,
         name="foreground_thresholds",
     )
+    return build_ultrack_source_stacks_from_pairs(
+        contours,
+        foreground_scores,
+        [
+            {
+                "contour_threshold": contour_threshold,
+                "foreground_threshold": foreground_threshold,
+            }
+            for contour_threshold in contour_values
+            for foreground_threshold in foreground_values
+        ],
+    )
+
+
+def build_ultrack_source_stacks_from_pairs(
+    contours: np.ndarray,
+    foreground_scores: np.ndarray,
+    threshold_pairs: Sequence[Mapping[str, float]],
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, float]]]:
+    """Build Ultrack source stacks from explicit ordered threshold pairs."""
+    contour_movie = _as_3d_movie(contours, "contours").astype(np.float32, copy=False)
+    foreground_movie = _as_3d_movie(
+        foreground_scores,
+        "foreground_scores",
+    ).astype(np.float32, copy=False)
+    if contour_movie.shape != foreground_movie.shape:
+        raise ValueError("contours and foreground_scores must have the same shape.")
+
+    pairs = normalize_threshold_pairs(threshold_pairs)
 
     contour_sources: list[np.ndarray] = []
     foreground_sources: list[np.ndarray] = []
     metadata: list[dict[str, float]] = []
-    for contour_threshold in contour_values:
+    for pair in pairs:
+        contour_threshold = pair["contour_threshold"]
+        foreground_threshold = pair["foreground_threshold"]
         contour_source = np.where(
             contour_movie >= contour_threshold,
             contour_movie,
             0.0,
         ).astype(np.float32, copy=False)
-        for foreground_threshold in foreground_values:
-            contour_sources.append(contour_source)
-            foreground_sources.append(
-                (foreground_movie >= foreground_threshold).astype(np.uint8)
-            )
-            metadata.append(
-                {
-                    "contour_threshold": float(contour_threshold),
-                    "foreground_threshold": float(foreground_threshold),
-                }
-            )
+        contour_sources.append(contour_source)
+        foreground_sources.append(
+            (foreground_movie >= foreground_threshold).astype(np.uint8)
+        )
+        metadata.append(pair)
 
     return (
         np.stack(contour_sources, axis=0),
@@ -809,6 +859,40 @@ def build_ultrack_database_from_thresholds(
         foreground_scores,
         contour_thresholds=contour_thresholds,
         foreground_thresholds=foreground_thresholds,
+    )
+    return _build_ultrack_database_from_source_arrays(
+        contour_sources,
+        foreground_sources,
+        working_dir,
+        cfg,
+        progress_cb=progress_cb,
+    )
+
+
+def build_ultrack_database_from_threshold_pairs(
+    contours_path: str | Path,
+    foreground_scores_path: str | Path,
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    *,
+    threshold_pairs: Sequence[Mapping[str, float]],
+    progress_cb: Callable[[str], None] | None = None,
+) -> UltrackDatabaseBuildReport:
+    """Build candidate ``data.db`` from explicit threshold pairs."""
+    _notify(progress_cb, "Loading contour maps and foreground scores …")
+    contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
+    foreground_scores = np.asarray(
+        tifffile.imread(str(foreground_scores_path)),
+        dtype=np.float32,
+    )
+
+    _notify(progress_cb, "Building threshold source list …")
+    contour_sources, foreground_sources, _metadata = (
+        build_ultrack_source_stacks_from_pairs(
+            contours,
+            foreground_scores,
+            threshold_pairs,
+        )
     )
     return _build_ultrack_database_from_source_arrays(
         contour_sources,

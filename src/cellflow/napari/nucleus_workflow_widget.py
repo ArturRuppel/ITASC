@@ -133,35 +133,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         segmentation_inputs = self.nucleus_segmentation_inputs_widget
         self.segmentation_inputs_parameters_section = segmentation_inputs.section
         self.segmentation_inputs_section = segmentation_inputs.section
-        self.source_contour_threshold_min_spin = (
-            segmentation_inputs.source_contour_threshold_min_spin
-        )
-        self.source_contour_threshold_max_spin = (
-            segmentation_inputs.source_contour_threshold_max_spin
-        )
-        self.source_contour_threshold_step_spin = (
-            segmentation_inputs.source_contour_threshold_step_spin
-        )
-        self.source_foreground_threshold_min_spin = (
-            segmentation_inputs.source_foreground_threshold_min_spin
-        )
-        self.source_foreground_threshold_max_spin = (
-            segmentation_inputs.source_foreground_threshold_max_spin
-        )
-        self.source_foreground_threshold_step_spin = (
-            segmentation_inputs.source_foreground_threshold_step_spin
-        )
-        self.db_gen_threshold_min_spin = self.source_contour_threshold_min_spin
-        self.db_gen_threshold_max_spin = self.source_contour_threshold_max_spin
-        self.db_gen_threshold_step_spin = self.source_contour_threshold_step_spin
-        # Range-slider widgets (used by tests/state when the underlying widget
-        # itself is needed rather than a per-thumb proxy).
-        self.source_contour_threshold_range = (
-            segmentation_inputs.source_contour_threshold_range
-        )
-        self.source_foreground_threshold_range = (
-            segmentation_inputs.source_foreground_threshold_range
-        )
         self.nucleus_segmentation_inputs_widget.hide()
 
     def _build_tracking_ultrack_section(self, root: QVBoxLayout) -> None:
@@ -183,17 +154,14 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
 
         # Hide the built-in section headers — the stage-row ⚙ buttons drive
         # expand/collapse instead.
-        self.segmentation_inputs_section.set_header_visible(False)
         self.tracking_db_section.set_header_visible(False)
         self.tracking_solve_section.set_header_visible(False)
 
-        # Collapse all three inline params blocks by default.
-        self.segmentation_inputs_section.collapse()
+        # Collapse inline params blocks by default.
         self.tracking_db_section.collapse()
         self.tracking_solve_section.collapse()
 
         pipeline_block = self.nucleus_pipeline_widget.build_pipeline_block(
-            seg_section=self.segmentation_inputs_section,
             db_section=self.tracking_db_section,
             solve_section=self.tracking_solve_section,
         )
@@ -219,6 +187,20 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.db_gen_quality_weight_spin = ti.db_gen_quality_weight_spin
         self.db_gen_quality_exp_spin = ti.db_gen_quality_exp_spin
         self.db_gen_circularity_weight_spin = ti.db_gen_circularity_weight_spin
+        self.source_contour_threshold_spin = ti.source_contour_threshold_spin
+        self.source_foreground_threshold_spin = ti.source_foreground_threshold_spin
+        self.source_threshold_preview_btn = ti.source_threshold_preview_btn
+        self.source_threshold_add_btn = ti.source_threshold_add_btn
+        self.source_threshold_remove_btn = ti.source_threshold_remove_btn
+        self.source_threshold_clear_btn = ti.source_threshold_clear_btn
+        self.source_threshold_pairs_table = ti.source_threshold_pairs_table
+        self.source_threshold_status_lbl = ti.source_threshold_status_lbl
+        self.current_threshold_pair = ti.current_threshold_pair
+        self.threshold_pairs = ti.threshold_pairs
+        self.set_threshold_pairs = ti.set_threshold_pairs
+        self.add_threshold_pair = ti.add_threshold_pair
+        self.remove_selected_threshold_pair = ti.remove_selected_threshold_pair
+        self.clear_threshold_pairs = ti.clear_threshold_pairs
         self.db_gen_use_validated_check = ti.db_gen_use_validated_check
         self.ultrack_max_partitions_spin = ti.ultrack_max_partitions_spin
         self.ultrack_n_frames_spin = ti.ultrack_n_frames_spin
@@ -241,6 +223,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.pipeline_progress_bar = pl.pipeline_progress_bar
         for name in (
             "_on_build_segmentation_inputs",
+            "_on_preview_threshold_pair",
             "_on_contour_worker_error",
             "_on_run_db_generation",
             "_on_db_gen_done",
@@ -396,6 +379,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     # ================================================================
     def _connect_signals(self) -> None:
         # DB Browser
+        self.source_threshold_preview_btn.clicked.connect(self._on_preview_threshold_pair)
         self.ultrack_db_active_btn.toggled.connect(self._on_ultrack_db_activate)
         self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_source_slider.valueChanged.connect(
@@ -540,7 +524,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     # Backward-compat delegates (tests call these on the workflow widget)
     # ================================================================
     def _db_gen_thresholds_from_controls(self):
-        return self.nucleus_pipeline_widget._source_contour_thresholds_from_controls()
+        return self.nucleus_pipeline_widget._threshold_pairs_from_controls()
 
     def _db_gen_config_from_controls(self):
         return self.nucleus_pipeline_widget._db_gen_config_from_controls()

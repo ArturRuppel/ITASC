@@ -78,8 +78,14 @@ def _install_import_stubs() -> None:
         "cellflow.tracking_ultrack.linking": {"run_linking": lambda *args, **kwargs: iter(())},
         "cellflow.tracking_ultrack.multi_threshold": {
             "build_ultrack_database_from_thresholds": lambda *args, **kwargs: None,
+            "build_ultrack_database_from_threshold_pairs": lambda *args, **kwargs: None,
             "build_ultrack_database_from_sources": lambda *args, **kwargs: None,
             "build_ultrack_source_stacks": lambda *args, **kwargs: (
+                np.zeros((1, 1, 1, 1), dtype=np.float32),
+                np.zeros((1, 1, 1, 1), dtype=np.uint8),
+                [],
+            ),
+            "build_ultrack_source_stacks_from_pairs": lambda *args, **kwargs: (
                 np.zeros((1, 1, 1, 1), dtype=np.float32),
                 np.zeros((1, 1, 1, 1), dtype=np.uint8),
                 [],

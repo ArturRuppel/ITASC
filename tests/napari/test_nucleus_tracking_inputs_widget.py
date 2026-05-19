@@ -192,6 +192,74 @@ def test_tracking_inputs_widget_scoring_controls_always_enabled():
     widget.deleteLater()
 
 
+def test_tracking_inputs_widget_threshold_pair_list_starts_empty_and_adds_pairs():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    assert widget.threshold_pairs() == []
+
+    widget.source_contour_threshold_spin.setValue(0.2)
+    widget.source_foreground_threshold_spin.setValue(0.7)
+
+    assert widget.current_threshold_pair() == {
+        "contour_threshold": pytest.approx(0.2),
+        "foreground_threshold": pytest.approx(0.7),
+    }
+
+    assert widget.add_threshold_pair()
+    pairs = widget.threshold_pairs()
+    assert len(pairs) == 1
+    assert pairs[0]["contour_threshold"] == pytest.approx(0.2)
+    assert pairs[0]["foreground_threshold"] == pytest.approx(0.7)
+    assert widget.source_threshold_pairs_table.rowCount() == 1
+
+    widget.deleteLater()
+
+
+def test_tracking_inputs_widget_threshold_pair_list_rejects_duplicates():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    widget.source_contour_threshold_spin.setValue(0.2)
+    widget.source_foreground_threshold_spin.setValue(0.7)
+
+    assert widget.add_threshold_pair()
+    assert not widget.add_threshold_pair()
+
+    assert len(widget.threshold_pairs()) == 1
+    assert widget.source_threshold_status_lbl.text()
+
+    widget.deleteLater()
+
+
+def test_tracking_inputs_widget_removes_and_clears_threshold_pairs():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    widget.set_threshold_pairs(
+        [
+            {"contour_threshold": 0.2, "foreground_threshold": 0.7},
+            {"contour_threshold": 0.4, "foreground_threshold": 0.8},
+        ]
+    )
+    widget.source_threshold_pairs_table.selectRow(0)
+
+    assert widget.remove_selected_threshold_pair()
+    pairs = widget.threshold_pairs()
+    assert len(pairs) == 1
+    assert pairs[0]["contour_threshold"] == pytest.approx(0.4)
+
+    widget.clear_threshold_pairs()
+
+    assert widget.threshold_pairs() == []
+    assert widget.source_threshold_pairs_table.rowCount() == 0
+
+    widget.deleteLater()
+
+
 # ── Delegation seam test ──────────────────────────────────────────────────────
 
 
@@ -230,8 +298,14 @@ def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
         "cellflow.tracking_ultrack.linking": {"run_linking": lambda *args, **kwargs: iter(())},
         "cellflow.tracking_ultrack.multi_threshold": {
             "build_ultrack_database_from_thresholds": lambda *args, **kwargs: None,
+            "build_ultrack_database_from_threshold_pairs": lambda *args, **kwargs: None,
             "build_ultrack_database_from_sources": lambda *args, **kwargs: None,
             "build_ultrack_source_stacks": lambda *args, **kwargs: (
+                np.zeros((1, 1, 1, 1), dtype=np.float32),
+                np.zeros((1, 1, 1, 1), dtype=np.uint8),
+                [],
+            ),
+            "build_ultrack_source_stacks_from_pairs": lambda *args, **kwargs: (
                 np.zeros((1, 1, 1, 1), dtype=np.float32),
                 np.zeros((1, 1, 1, 1), dtype=np.uint8),
                 [],

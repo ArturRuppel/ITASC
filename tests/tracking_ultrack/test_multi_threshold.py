@@ -241,6 +241,41 @@ def test_build_ultrack_source_stacks_preserves_contours_and_binarizes_foreground
     ]
 
 
+def test_build_ultrack_source_stacks_from_pairs_preserves_pair_order():
+    from cellflow.tracking_ultrack.multi_threshold import (
+        build_ultrack_source_stacks_from_pairs,
+    )
+
+    contours = np.array([[[0.1, 0.6], [0.8, 0.2]]], dtype=np.float32)
+    foreground_scores = np.array([[[0.1, 0.9], [0.6, 0.2]]], dtype=np.float32)
+    pairs = [
+        {"contour_threshold": 0.75, "foreground_threshold": 0.5},
+        {"contour_threshold": 0.25, "foreground_threshold": 0.8},
+    ]
+
+    contour_sources, foreground_sources, metadata = (
+        build_ultrack_source_stacks_from_pairs(contours, foreground_scores, pairs)
+    )
+
+    assert metadata == pairs
+    np.testing.assert_allclose(
+        contour_sources[0],
+        np.where(contours >= 0.75, contours, 0.0),
+    )
+    np.testing.assert_allclose(
+        contour_sources[1],
+        np.where(contours >= 0.25, contours, 0.0),
+    )
+    np.testing.assert_array_equal(
+        foreground_sources[0],
+        (foreground_scores >= 0.5).astype(np.uint8),
+    )
+    np.testing.assert_array_equal(
+        foreground_sources[1],
+        (foreground_scores >= 0.8).astype(np.uint8),
+    )
+
+
 def test_write_ultrack_source_stacks_writes_expected_tiffs(tmp_path):
     from cellflow.tracking_ultrack.multi_threshold import write_ultrack_source_stacks
 

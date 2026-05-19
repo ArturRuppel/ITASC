@@ -21,15 +21,7 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
         "db_generation": {
             "min_area": w.db_gen_min_area_spin.value(),
             "max_area": w.db_gen_max_area_spin.value(),
-            "threshold_min": w.source_contour_threshold_min_spin.value(),
-            "threshold_max": w.source_contour_threshold_max_spin.value(),
-            "threshold_step": w.source_contour_threshold_step_spin.value(),
-            "contour_threshold_min": w.source_contour_threshold_min_spin.value(),
-            "contour_threshold_max": w.source_contour_threshold_max_spin.value(),
-            "contour_threshold_step": w.source_contour_threshold_step_spin.value(),
-            "foreground_threshold_min": w.source_foreground_threshold_min_spin.value(),
-            "foreground_threshold_max": w.source_foreground_threshold_max_spin.value(),
-            "foreground_threshold_step": w.source_foreground_threshold_step_spin.value(),
+            "threshold_pairs": w.threshold_pairs(),
             "min_frontier": w.db_gen_min_frontier_spin.value(),
             "ws_hierarchy": w.db_gen_ws_hierarchy_combo.currentText(),
             "max_distance": w.db_gen_max_dist_spin.value(),
@@ -77,21 +69,8 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         dbg = state["db_generation"]
         if "min_area" in dbg: w.db_gen_min_area_spin.setValue(dbg["min_area"])
         if "max_area" in dbg: w.db_gen_max_area_spin.setValue(dbg["max_area"])
-        if "threshold_min" in dbg:
-            w.source_contour_threshold_min_spin.setValue(dbg["threshold_min"])
-            w.source_foreground_threshold_min_spin.setValue(dbg["threshold_min"])
-        if "threshold_max" in dbg:
-            w.source_contour_threshold_max_spin.setValue(dbg["threshold_max"])
-            w.source_foreground_threshold_max_spin.setValue(dbg["threshold_max"])
-        if "threshold_step" in dbg:
-            w.source_contour_threshold_step_spin.setValue(dbg["threshold_step"])
-            w.source_foreground_threshold_step_spin.setValue(dbg["threshold_step"])
-        if "contour_threshold_min" in dbg: w.source_contour_threshold_min_spin.setValue(dbg["contour_threshold_min"])
-        if "contour_threshold_max" in dbg: w.source_contour_threshold_max_spin.setValue(dbg["contour_threshold_max"])
-        if "contour_threshold_step" in dbg: w.source_contour_threshold_step_spin.setValue(dbg["contour_threshold_step"])
-        if "foreground_threshold_min" in dbg: w.source_foreground_threshold_min_spin.setValue(dbg["foreground_threshold_min"])
-        if "foreground_threshold_max" in dbg: w.source_foreground_threshold_max_spin.setValue(dbg["foreground_threshold_max"])
-        if "foreground_threshold_step" in dbg: w.source_foreground_threshold_step_spin.setValue(dbg["foreground_threshold_step"])
+        if "threshold_pairs" in dbg:
+            w.set_threshold_pairs(list(dbg["threshold_pairs"]))
         if "min_frontier" in dbg: w.db_gen_min_frontier_spin.setValue(dbg["min_frontier"])
         if "ws_hierarchy" in dbg: _set_combo(w.db_gen_ws_hierarchy_combo, dbg["ws_hierarchy"])
         if "max_distance" in dbg: w.db_gen_max_dist_spin.setValue(dbg["max_distance"])

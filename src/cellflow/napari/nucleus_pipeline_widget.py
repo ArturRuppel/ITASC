@@ -29,8 +29,8 @@ from cellflow.segmentation import CancelledError
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.multi_threshold import (
-    build_ultrack_database_from_thresholds,
-    build_ultrack_source_stacks,
+    build_ultrack_database_from_threshold_pairs,
+    build_ultrack_source_stacks_from_pairs,
 )
 from cellflow.tracking_ultrack.solve import run_solve
 
@@ -52,8 +52,8 @@ def _ultrack_available() -> bool:
 
 # ── Layer name constants ──────────────────────────────────────────────────────
 _TRACKED_LAYER = "Tracked: Nucleus"
-_SWEEP_CONTOURS_LAYER = "Ultrack Sweep: Contours"
-_SWEEP_FOREGROUND_LAYER = "Ultrack Sweep: Foreground"
+_PREVIEW_CONTOURS_LAYER = "Ultrack Preview: Contours"
+_PREVIEW_FOREGROUND_LAYER = "Ultrack Preview: Foreground"
 
 
 class NucleusPipelineWidget(QWidget):
@@ -148,18 +148,6 @@ class NucleusPipelineWidget(QWidget):
             for w in trailing:
                 row.addWidget(w)
             return row
-
-        # ── Segmentation inputs ──────────────────────────────────────
-        lay.addLayout(_stage_row(
-            _stage_label("Ultrack Inputs"),
-            self.seg_params_btn,
-            self.seg_run_btn,
-        ))
-        if seg_section is not None:
-            self.seg_params_btn.toggled.connect(
-                lambda checked: seg_section._toggle.setChecked(checked)
-            )
-            lay.addWidget(seg_section)
 
         # ── Ultrack database ─────────────────────────────────────────
         lay.addLayout(_stage_row(
@@ -296,13 +284,11 @@ class NucleusPipelineWidget(QWidget):
 
     # ── Threshold / config delegation ─────────────────────────────────────────
 
-    def _source_contour_thresholds_from_controls(self):
-        from cellflow.napari import _thresholds
-        return _thresholds.source_contour_thresholds(self._seg_inputs_provider())
+    def _current_threshold_pair_from_controls(self):
+        return self._tracking_inputs_provider().current_threshold_pair()
 
-    def _source_foreground_thresholds_from_controls(self):
-        from cellflow.napari import _thresholds
-        return _thresholds.source_foreground_thresholds(self._seg_inputs_provider())
+    def _threshold_pairs_from_controls(self):
+        return self._tracking_inputs_provider().threshold_pairs()
 
     def _db_gen_config_from_controls(self):
         return self._tracking_inputs_provider().db_gen_config()
@@ -375,6 +361,9 @@ class NucleusPipelineWidget(QWidget):
     # ── Pipeline handlers — segmentation inputs ───────────────────────────────
 
     def _on_build_segmentation_inputs(self) -> None:
+        self._on_preview_threshold_pair()
+
+    def _on_preview_threshold_pair(self) -> None:
         pos_dir = self._pos_dir
         if pos_dir is None:
             self._status("No project open."); return
@@ -391,11 +380,7 @@ class NucleusPipelineWidget(QWidget):
             self._status(
                 "Missing: nucleus_foreground.tif — build divergence maps first."
             ); return
-        try:
-            contour_thresholds = self._source_contour_thresholds_from_controls()
-            foreground_thresholds = self._source_foreground_thresholds_from_controls()
-        except ValueError as exc:
-            self._status(str(exc)); return
+        threshold_pair = self._current_threshold_pair_from_controls()
 
         cancel_event = threading.Event()
         self._contour_cancel = cancel_event
@@ -415,16 +400,16 @@ class NucleusPipelineWidget(QWidget):
                 "axis_order": ("time", "source", "y", "x"),
             }
             self._update_image_layer(
-                _SWEEP_CONTOURS_LAYER,
+                _PREVIEW_CONTOURS_LAYER,
                 contour_display,
                 metadata=layer_metadata,
             )
             self._update_image_layer(
-                _SWEEP_FOREGROUND_LAYER,
+                _PREVIEW_FOREGROUND_LAYER,
                 foreground_display,
                 metadata=layer_metadata,
             )
-            self._status(f"Ultrack source sweep preview ready ({len(metadata)} sources).")
+            self._status(f"Ultrack threshold preview ready ({len(metadata)} source).")
             self._set_running_stage(None)
 
         @thread_worker(connect={
@@ -443,19 +428,19 @@ class NucleusPipelineWidget(QWidget):
                 dtype=np.float32,
             )
             _check_cancel(cancel_event.is_set)
-            yield (1, 3, "Building Ultrack source sweep preview...")
-            contour_preview, foreground_preview, metadata = build_ultrack_source_stacks(
-                contours,
-                foreground_scores,
-                contour_thresholds=contour_thresholds,
-                foreground_thresholds=foreground_thresholds,
+            yield (1, 3, "Building Ultrack threshold preview...")
+            contour_preview, foreground_preview, metadata = (
+                build_ultrack_source_stacks_from_pairs(
+                    contours,
+                    foreground_scores,
+                    threshold_pairs=[threshold_pair],
+                )
             )
             _check_cancel(cancel_event.is_set)
-            yield (3, 3, "Loaded Ultrack source sweep preview.")
+            yield (3, 3, "Loaded Ultrack threshold preview.")
             return contour_preview, foreground_preview, metadata
 
-        n_sources = len(contour_thresholds) * len(foreground_thresholds)
-        self._status(f"Building Ultrack source sweep preview ({n_sources} sources)...")
+        self._status("Building Ultrack threshold preview...")
         self._set_running_stage("seg")
         self._contour_worker = _worker()
 
@@ -492,11 +477,10 @@ class NucleusPipelineWidget(QWidget):
         if not _ultrack_available():
             self._status("ultrack not installed — activate the cellflow conda environment."); return
 
-        try:
-            contour_thresholds = self._source_contour_thresholds_from_controls()
-            foreground_thresholds = self._source_foreground_thresholds_from_controls()
-        except ValueError as exc:
-            self._status(str(exc)); return
+        threshold_pairs = self._threshold_pairs_from_controls()
+        if not threshold_pairs:
+            self._status("Add at least one threshold pair before DB generation.")
+            return
 
         cfg = self._db_gen_config_from_controls()
         working_dir = self._ultrack_workdir()
@@ -524,13 +508,12 @@ class NucleusPipelineWidget(QWidget):
 
             def _run() -> None:
                 try:
-                    build_ultrack_database_from_thresholds(
+                    build_ultrack_database_from_threshold_pairs(
                         contours_path=contours_path,
                         foreground_scores_path=score_path,
                         working_dir=working_dir,
                         cfg=cfg,
-                        contour_thresholds=contour_thresholds,
-                        foreground_thresholds=foreground_thresholds,
+                        threshold_pairs=threshold_pairs,
                         progress_cb=_progress_cb,
                     )
                     _progress_cb("Scoring node probabilities...")
