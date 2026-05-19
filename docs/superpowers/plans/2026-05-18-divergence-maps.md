@@ -4,7 +4,7 @@
 
 **Goal:** Replace the Cellpose-mask sweep that builds `2_nucleus/contours.tif` and `2_nucleus/foreground_scores.tif` (plus the `*_prob_zavg.tif` files) with a direct, per-channel computation from `prob_3dt` and `dp_3dt`: `foreground = reduce_z(sigmoid(prob))`, `contours = reduce_z(clip(div(filter(dp)), 0, ∞))`. New outputs live in `1_cellpose/`.
 
-**Architecture:** A Qt-free compute module (`segmentation/divergence_maps.py`) exposes `build_divergence_maps(prob_path, dp_path, contours_out, foreground_out, …)`. A new Qt widget (`napari/divergence_maps_widget.py`) wraps it with the same two-row (Nucleus, Cell) pattern as `CellposeWidget`, runs work in `thread_worker`s with progress/cancel, and is embedded as a top-level section in `main_widget.py` between Cellpose and Nucleus. The threshold-sweep that produces `*_sources.tif` for Ultrack is unchanged but reads the new locations.
+**Architecture:** A Qt-free compute module (`segmentation/divergence_maps.py`) exposes `build_divergence_maps(prob_path, dp_path, contours_out, foreground_out, …)`. A single Qt subwidget (`napari/divergence_maps_widget.py`) wraps it with nucleus and cell rows, runs work in `thread_worker`s with progress/cancel, and is embedded inside `CellposeWidget` without a duplicate pipeline-files panel. The threshold-sweep that produces `*_sources.tif` for Ultrack is unchanged but reads the new locations.
 
 **Tech Stack:** Python 3.10+, NumPy, SciPy (`gaussian_filter`, `median_filter`), tifffile, napari `thread_worker`, qtpy.
 
@@ -22,7 +22,7 @@
 
 ### Modified
 - `src/cellflow/napari/_paths.py` — `NucleusArtifactPaths`: `contours` → `1_cellpose/nucleus_contours.tif`, rename `foreground_scores` → `foreground` (path `1_cellpose/nucleus_foreground.tif`), add `nucleus_contours`/`nucleus_foreground` aliases, add `cell_contours`/`cell_foreground` (`1_cellpose/cell_*.tif`), drop `nucleus_prob_zavg`/`cell_prob_zavg`.
-- `src/cellflow/napari/main_widget.py` — import + instantiate `DivergenceMapsWidget`, insert a section between Cellpose and Nucleus, wire state save/load and refresh.
+- `src/cellflow/napari/main_widget.py` — keep divergence maps under the Cellpose section; main widget state/refresh reaches it through `CellposeWidget`.
 - `src/cellflow/napari/nucleus_pipeline_widget.py` — drop `_on_build_nucleus_maps`, `_on_preview_contour_maps`, and the `build_nucleus_averaged_maps` branch of `_on_build_segmentation_inputs`. The remaining `_on_build_segmentation_inputs` reads contours/foreground from new locations and only runs `write_ultrack_source_stacks`. Remove `seg_preview_btn` (▷) since there's nothing left to preview from this widget — the new sources sweep is fast enough to just run.
 - `src/cellflow/napari/nucleus_segmentation_inputs_widget.py` — drop the cellprob-range / cellprob-step / z-range / z-step controls (and their `RangeThumbProxy` aliases). Source-sweep controls remain.
 - `src/cellflow/napari/_thresholds.py` — drop `map_cellprob_thresholds`/`map_z_indices` helpers (no longer referenced).
@@ -1574,7 +1574,7 @@ Expected: `ok`.
 - [ ] **Step 7: Run main widget tests**
 
 Run: `pytest tests/napari/test_main_widget_cellpose_integration.py -v`
-Expected: pass (or update those tests in Task 13 if they assert the section list).
+Expected: pass (or update those tests in Task 14 if they assert the section list).
 
 - [ ] **Step 8: Commit**
 
@@ -1941,7 +1941,236 @@ git commit -m "refactor: point all consumers at 1_cellpose/{channel}_{contours,f
 
 ---
 
-## Task 12: Drop dead legacy code
+## Task 12: Consolidate Cellpose + divergence-map widget UI
+
+**Files:**
+- Modify: `src/cellflow/napari/cellpose_widget.py`
+- Modify: `src/cellflow/napari/divergence_maps_widget.py`
+- Modify: `tests/napari/test_cellpose_widget.py`
+- Modify: `tests/napari/test_divergence_maps_widget.py`
+- Modify: `tests/napari/test_main_widget_cellpose_integration.py`
+
+**Goal:** keep divergence maps as one subwidget inside `CellposeWidget`, but remove the duplicate nested pipeline-files panel and prove no probability-average/z-avg UI remains.
+
+- [ ] **Step 1: Write failing Cellpose consolidation tests**
+
+In `tests/napari/test_cellpose_widget.py`, add or extend a focused test so it asserts all of the following:
+
+```python
+def test_cellpose_embeds_single_divergence_subwidget_without_duplicate_file_panel(
+    _mock_cellpose, monkeypatch
+):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    divergence_mod = importlib.import_module("cellflow.napari.divergence_maps_widget")
+
+    w = mod.CellposeWidget(_FakeViewer())
+
+    assert isinstance(w.divergence_maps_widget, divergence_mod.DivergenceMapsWidget)
+    assert not hasattr(w, "nucleus_divergence_maps_widget")
+    assert not hasattr(w, "cell_divergence_maps_widget")
+    assert not hasattr(w.divergence_maps_widget, "output_files_tracker")
+    assert not hasattr(w.divergence_maps_widget, "pipeline_files_header")
+    assert not hasattr(w, "zavg_viz_widget")
+    assert all("prob_zavg" not in row._rel_path for row in w._files_widget._rows)
+    assert {row._rel_path for row in w._files_widget._rows} >= {
+        "1_cellpose/nucleus_prob_3dt.tif",
+        "1_cellpose/nucleus_dp_3dt.tif",
+        "1_cellpose/nucleus_contours.tif",
+        "1_cellpose/nucleus_foreground.tif",
+        "1_cellpose/cell_prob_3dt.tif",
+        "1_cellpose/cell_dp_3dt.tif",
+        "1_cellpose/cell_contours.tif",
+        "1_cellpose/cell_foreground.tif",
+    }
+    w.deleteLater()
+    app.processEvents()
+```
+
+If `test_exposes_output_files_tracker` already checks some of these conditions, keep that test narrow and put the full no-duplicate assertions in this new test.
+
+- [ ] **Step 2: Run the failing test**
+
+Run:
+
+```bash
+pytest tests/napari/test_cellpose_widget.py::test_cellpose_embeds_single_divergence_subwidget_without_duplicate_file_panel -q
+```
+
+Expected: fail because `DivergenceMapsWidget` still exposes its own nested pipeline file tracker/header, and Cellpose's `_PIPELINE_FILES` does not yet include the divergence-map outputs.
+
+- [ ] **Step 3: Add the divergence outputs to the Cellpose file tracker**
+
+In `src/cellflow/napari/cellpose_widget.py`, replace `_PIPELINE_FILES` with one consolidated tracker:
+
+```python
+_PIPELINE_FILES = [
+    ("Inputs", [
+        ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
+        ("0_input/cell_3dt.tif", "Cell 3D+t"),
+    ]),
+    ("Cellpose Outputs", [
+        ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
+        ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
+        ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
+        ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
+    ]),
+    ("Divergence Maps", [
+        ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
+        ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
+        ("1_cellpose/cell_contours.tif", "Cell contours"),
+        ("1_cellpose/cell_foreground.tif", "Cell foreground"),
+    ]),
+]
+```
+
+Do not add any `*_prob_zavg.tif` entries.
+
+- [ ] **Step 4: Make the divergence subwidget optionally file-panel-free**
+
+In `src/cellflow/napari/divergence_maps_widget.py`, change the constructor signature to:
+
+```python
+    def __init__(
+        self,
+        viewer: napari.Viewer,
+        parent: QWidget | None = None,
+        *,
+        show_pipeline_files: bool = True,
+    ) -> None:
+```
+
+Store `self._show_pipeline_files = bool(show_pipeline_files)`.
+
+In `_setup_ui`, wrap the current `PipelineFilesWidget` construction in:
+
+```python
+        if self._show_pipeline_files:
+            self._files_widget = PipelineFilesWidget(_PIPELINE_FILES, viewer=self.viewer)
+            self.output_files_tracker = self._files_widget
+            self.input_files_tracker = self._files_widget
+            self._pipeline_files_section = CollapsibleSection(
+                "Pipeline Files", self._files_widget, expanded=False,
+            )
+            (
+                self.pipeline_files_header,
+                self.pipeline_files_header_lbl,
+                self.pipeline_files_toggle_btn,
+            ) = make_pipeline_files_header(
+                self._pipeline_files_section, stage_key="cellpose", parent=self,
+            )
+            root.addWidget(self.pipeline_files_header)
+            root.addWidget(self._pipeline_files_section)
+        else:
+            self._files_widget = None
+```
+
+Update every `_files_widget` use to guard `None`:
+
+```python
+        if self._files_widget is not None:
+            self._files_widget.refresh(self._pos_dir)
+```
+
+The affected methods are `refresh()` and the `_done()` callback inside `_start_worker()`.
+
+- [ ] **Step 5: Instantiate the embedded subwidget without its own file tracker**
+
+In `src/cellflow/napari/cellpose_widget.py`, change:
+
+```python
+        self.divergence_maps_widget = DivergenceMapsWidget(self.viewer)
+```
+
+to:
+
+```python
+        self.divergence_maps_widget = DivergenceMapsWidget(
+            self.viewer,
+            show_pipeline_files=False,
+        )
+```
+
+Keep `refresh()`, Cellpose run completion, `get_state()`, and `set_state()` wiring through `self.divergence_maps_widget`.
+
+- [ ] **Step 6: Keep standalone divergence widget tests explicit**
+
+In `tests/napari/test_divergence_maps_widget.py`, add a test that the standalone widget still exposes a file tracker by default:
+
+```python
+def test_standalone_widget_exposes_pipeline_files_by_default(monkeypatch):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer())
+
+    assert hasattr(w, "output_files_tracker")
+    assert hasattr(w, "pipeline_files_header")
+    w.deleteLater()
+```
+
+Also add a test for the embedded mode:
+
+```python
+def test_embedded_widget_can_hide_pipeline_files(monkeypatch):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer(), show_pipeline_files=False)
+
+    assert not hasattr(w, "output_files_tracker")
+    assert not hasattr(w, "pipeline_files_header")
+    assert w._files_widget is None
+    w.deleteLater()
+```
+
+- [ ] **Step 7: Update main-widget integration expectations**
+
+In `tests/napari/test_main_widget_cellpose_integration.py`, keep the current corrected design:
+
+```python
+assert not hasattr(w, "_divergence_maps_widget")
+assert not hasattr(w, "divergence_maps_section")
+assert isinstance(w._cellpose_widget.divergence_maps_widget, divergence_mod.DivergenceMapsWidget)
+```
+
+Add assertions that the embedded divergence subwidget has no file tracker/header:
+
+```python
+assert not hasattr(w._cellpose_widget.divergence_maps_widget, "output_files_tracker")
+assert not hasattr(w._cellpose_widget.divergence_maps_widget, "pipeline_files_header")
+```
+
+- [ ] **Step 8: Verify no compute-probability-average UI remains**
+
+Run:
+
+```bash
+rg -n "prob avg|probability avg|compute.*avg|zavg_viz_widget|CellposeZavgVizWidget|prob_zavg" src/cellflow/napari tests/napari
+```
+
+Expected: no production `src/cellflow/napari` matches for the removed z-avg/prob-avg UI. Test matches are allowed only when they are negative assertions proving the old UI/artifacts are absent.
+
+- [ ] **Step 9: Run focused tests**
+
+Run:
+
+```bash
+pytest tests/napari/test_cellpose_widget.py tests/napari/test_divergence_maps_widget.py tests/napari/test_main_widget_cellpose_integration.py -q
+```
+
+Expected: all pass.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add src/cellflow/napari/cellpose_widget.py src/cellflow/napari/divergence_maps_widget.py tests/napari/test_cellpose_widget.py tests/napari/test_divergence_maps_widget.py tests/napari/test_main_widget_cellpose_integration.py
+git commit -m "refactor(napari): consolidate cellpose divergence map UI"
+```
+
+---
+
+## Task 13: Drop dead legacy code
 
 **Files:**
 - Modify: `src/cellflow/segmentation/nucleus_segmentation.py`
@@ -2050,7 +2279,7 @@ git commit -m "refactor: drop legacy zavg + consensus-boundary code paths"
 
 ---
 
-## Task 13: Update integration tests + smoke-test in napari
+## Task 14: Update integration tests + smoke-test in napari
 
 **Files:**
 - Modify: `tests/napari/test_main_widget_cellpose_integration.py` (if it references the cellpose zavg viz widget or the section list)
@@ -2060,7 +2289,7 @@ git commit -m "refactor: drop legacy zavg + consensus-boundary code paths"
 
 Run: `pytest tests/napari/test_main_widget_cellpose_integration.py -v`
 
-If a test asserts that `_divergence_maps_widget` does *not* exist, or hard-codes the section count, update it to include the new section. Add a positive assertion that `main.divergence_maps_section` exists and that `main._divergence_maps_widget` has the `refresh` method.
+Keep the corrected embedded design: the main widget must not expose a top-level `_divergence_maps_widget` or `divergence_maps_section`. Add or keep positive assertions that `main._cellpose_widget.divergence_maps_widget` exists, has `refresh`, and is embedded without its own duplicate pipeline-files header/tracker.
 
 - [ ] **Step 2: Run the full suite**
 
@@ -2077,14 +2306,15 @@ python -m napari --with cellflow
 
 Walk through:
 
-1. Project Status panel shows the new `Divergence Maps` group; old `Nucleus prob z-avg` rows are gone.
-2. Cellpose section has no z-avg button.
-3. New `Divergence Maps` section is collapsed by default. Expanding shows nucleus + cell rows with ⚙ / ▶.
-4. ⚙ on the nucleus row reveals four params: foreground z-reduction (default `mean`), contour z-reduction (default `mean`), smoothing sigma (`1.00`), median radius (`0`).
-5. Clicking ▶ on the nucleus row writes `1_cellpose/nucleus_contours.tif` and `nucleus_foreground.tif`; status bar reports `(N frames)` on completion. The button toggles to ✕ during the run.
-6. Same on the cell row.
-7. In Nucleus Segmentation & Tracking, the Ultrack Inputs row has no ▷ preview button; clicking ▶ builds source stacks from the new files.
-8. Solve and tracking still complete end-to-end.
+1. Project Status panel shows `1_cellpose/{nucleus,cell}_{contours,foreground}.tif`; old `Nucleus prob z-avg` rows are gone.
+2. Cellpose section has one pipeline-files panel. It includes raw Cellpose outputs and divergence-map outputs; no nested pipeline-files panel appears under the divergence controls.
+3. Cellpose section has no z-avg/probability-average button or subwidget.
+4. The embedded divergence-map controls show one nucleus row and one cell row, each with ⚙ / ▶.
+5. ⚙ on the nucleus row reveals four params: foreground z-reduction (default `mean`), contour z-reduction (default `mean`), smoothing sigma (`1.00`), median radius (`0`).
+6. Clicking ▶ on the nucleus row writes `1_cellpose/nucleus_contours.tif` and `nucleus_foreground.tif`; status bar reports `(N frames)` on completion. The button toggles to ✕ during the run.
+7. Same on the cell row; it still runs if only cell prob/dp files are available.
+8. In Nucleus Segmentation & Tracking, the Ultrack Inputs row has no ▷ preview button; clicking ▶ builds source stacks from the new nucleus divergence files.
+9. Solve and tracking still complete end-to-end.
 
 Document anything that broke in a follow-up TODO.
 
@@ -2107,11 +2337,12 @@ Before declaring the plan complete, verify the spec is fully covered:
 - [x] **Outputs**: `1_cellpose/{nucleus,cell}_{contours,foreground}.tif` — Tasks 4, 5, 7.
 - [x] **UI**: nucleus + cell rows, sequential, same progress pattern as Cellpose — Tasks 6–8.
 - [x] **UI params**: `foreground_z_reduction`, `contour_z_reduction`, `smoothing_sigma`, `median_radius` per channel with the spec's defaults and ranges — Task 6.
-- [x] **Dropped artifacts**: `*_prob_zavg.tif`, `2_nucleus/contours.tif`, `2_nucleus/foreground_scores.tif`, legacy `2_nucleus/contour_maps.tif` — Tasks 5, 11, 12.
-- [x] **Dropped code**: `build_nucleus_averaged_maps`, `build_consensus_boundary`, `apply_gamma` (the copy inside `nucleus_segmentation.py`) — Task 12.
-- [x] **Dropped widgets/scripts**: `cellpose_zavg_viz_widget`, `cellpose_probability_zavg`, `precompute_cellpose_probability_zavgs.py` — Task 12.
+- [x] **Dropped artifacts**: `*_prob_zavg.tif`, `2_nucleus/contours.tif`, `2_nucleus/foreground_scores.tif`, legacy `2_nucleus/contour_maps.tif` — Tasks 5, 11, 13.
+- [ ] **Consolidated UI**: one embedded Cellpose divergence subwidget, no duplicate pipeline-files panel, no probability-average/z-avg UI — Task 12.
+- [x] **Dropped code**: `build_nucleus_averaged_maps`, `build_consensus_boundary`, `apply_gamma` (the copy inside `nucleus_segmentation.py`) — Task 13.
+- [x] **Dropped widgets/scripts**: `cellpose_zavg_viz_widget`, `cellpose_probability_zavg`, `precompute_cellpose_probability_zavgs.py` — Task 13.
 - [x] **Updated**: `_paths.py`, `data_panel_widget`, `radial_refinement_widget`, `reseed.py` — Tasks 5, 11.
-- [x] **Grep sweep**: surfaces all `foreground_scores|contour_maps|prob_zavg` call sites — Task 12 step 5.
+- [x] **Grep sweep**: surfaces all `foreground_scores|contour_maps|prob_zavg` call sites — Task 13 step 5.
 - [x] **Deferred**: foreground gating; cell-workflow swap. Explicitly out of scope (spec).
 
 Type consistency: `ZReduction` and `DivergenceMapsReport.frames` are consistent across Tasks 1–7; `_paths.NucleusArtifactPaths` exposes `nucleus_contours`, `nucleus_foreground`, `cell_contours`, `cell_foreground` (and the no-prefix aliases `contours`/`foreground`) consumed by Tasks 6–11.
