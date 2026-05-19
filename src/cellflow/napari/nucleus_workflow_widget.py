@@ -453,12 +453,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     def _contour_maps_path(self) -> Path | None:
         return self._contours_path()
 
-    def _contour_sources_path(self) -> Path | None:
-        return self.nucleus_pipeline_widget._contour_sources_path()
-
-    def _foreground_sources_path(self) -> Path | None:
-        return self.nucleus_pipeline_widget._foreground_sources_path()
-
     def _foreground_scores_path(self) -> Path | None:
         return self.nucleus_pipeline_widget._foreground_path()
 
