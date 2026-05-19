@@ -516,11 +516,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         return int(step[0]) if len(step) >= 1 else 0
 
     @staticmethod
-    def _sigmoid_zavg(stack: np.ndarray) -> np.ndarray:
-        zavg_logits = np.asarray(stack, dtype=np.float32).mean(axis=1)
-        return (1.0 / (1.0 + np.exp(-zavg_logits))).astype(np.float32)
-
-    @staticmethod
     def _frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:
         if arr.ndim < 3 or t < 0 or t >= arr.shape[0]:
             return None

@@ -40,11 +40,17 @@ _PIPELINE_FILES = [
         ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
         ("0_input/cell_3dt.tif", "Cell 3D+t"),
     ]),
-    ("Outputs", [
+    ("Cellpose Outputs", [
         ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
         ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
         ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
         ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
+    ]),
+    ("Divergence Maps", [
+        ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
+        ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
+        ("1_cellpose/cell_contours.tif", "Cell contours"),
+        ("1_cellpose/cell_foreground.tif", "Cell foreground"),
     ]),
 ]
 
@@ -162,7 +168,10 @@ class CellposeWidget(QWidget):
         root.addWidget(self.progress_bar)
 
         # ── Divergence maps from Cellpose prob/dp outputs ─────────────
-        self.divergence_maps_widget = DivergenceMapsWidget(self.viewer)
+        self.divergence_maps_widget = DivergenceMapsWidget(
+            self.viewer,
+            show_pipeline_files=False,
+        )
         root.addWidget(self.divergence_maps_widget)
 
     def _build_nucleus_params_section(self) -> CollapsibleSection:

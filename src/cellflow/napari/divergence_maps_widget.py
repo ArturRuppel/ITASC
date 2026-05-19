@@ -79,13 +79,20 @@ class DivergenceMapsWidget(QWidget):
 
     _progress_signal = Signal(int, int, str)
 
-    def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        viewer: napari.Viewer,
+        parent: QWidget | None = None,
+        *,
+        show_pipeline_files: bool = True,
+    ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self._pos_dir: Path | None = None
         self._running_stage: str | None = None
         self._worker = None
         self._cancel_event: threading.Event | None = None
+        self._show_pipeline_files = bool(show_pipeline_files)
 
         self._setup_ui()
         self._connect_signals()
@@ -98,21 +105,24 @@ class DivergenceMapsWidget(QWidget):
         root.setSpacing(6)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        self._files_widget = PipelineFilesWidget(_PIPELINE_FILES, viewer=self.viewer)
-        self.output_files_tracker = self._files_widget
-        self.input_files_tracker = self._files_widget
-        self._pipeline_files_section = CollapsibleSection(
-            "Pipeline Files", self._files_widget, expanded=False,
-        )
-        (
-            self.pipeline_files_header,
-            self.pipeline_files_header_lbl,
-            self.pipeline_files_toggle_btn,
-        ) = make_pipeline_files_header(
-            self._pipeline_files_section, stage_key="cellpose", parent=self,
-        )
-        root.addWidget(self.pipeline_files_header)
-        root.addWidget(self._pipeline_files_section)
+        if self._show_pipeline_files:
+            self._files_widget = PipelineFilesWidget(_PIPELINE_FILES, viewer=self.viewer)
+            self.output_files_tracker = self._files_widget
+            self.input_files_tracker = self._files_widget
+            self._pipeline_files_section = CollapsibleSection(
+                "Pipeline Files", self._files_widget, expanded=False,
+            )
+            (
+                self.pipeline_files_header,
+                self.pipeline_files_header_lbl,
+                self.pipeline_files_toggle_btn,
+            ) = make_pipeline_files_header(
+                self._pipeline_files_section, stage_key="cellpose", parent=self,
+            )
+            root.addWidget(self.pipeline_files_header)
+            root.addWidget(self._pipeline_files_section)
+        else:
+            self._files_widget = None
 
         # Nucleus row
         self.nucleus_params_btn = _tool_btn(
@@ -241,7 +251,8 @@ class DivergenceMapsWidget(QWidget):
             self._set_status(
                 f"{channel.title()} divergence maps built ({report.frames} frames)."
             )
-            self._files_widget.refresh(self._pos_dir)
+            if self._files_widget is not None:
+                self._files_widget.refresh(self._pos_dir)
 
         @thread_worker(
             connect={
@@ -376,7 +387,8 @@ class DivergenceMapsWidget(QWidget):
     # ── Public API ───────────────────────────────────────────────────
     def refresh(self, pos_dir: Path | str | None) -> None:
         self._pos_dir = None if pos_dir is None or str(pos_dir) == "[no project]" else Path(pos_dir)
-        self._files_widget.refresh(self._pos_dir)
+        if self._files_widget is not None:
+            self._files_widget.refresh(self._pos_dir)
         self._update_enabled()
 
     def _update_enabled(self) -> None:

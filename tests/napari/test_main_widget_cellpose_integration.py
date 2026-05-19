@@ -88,6 +88,8 @@ def test_main_widget_keeps_divergence_maps_inside_cellpose(tmp_path):
         w._cellpose_widget.divergence_maps_widget,
         divergence_mod.DivergenceMapsWidget,
     )
+    assert not hasattr(w._cellpose_widget.divergence_maps_widget, "output_files_tracker")
+    assert not hasattr(w._cellpose_widget.divergence_maps_widget, "pipeline_files_header")
 
     state = {
         "nucleus": {"smoothing_sigma": 2.5, "median_radius": 2},

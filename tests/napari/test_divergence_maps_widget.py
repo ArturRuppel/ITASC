@@ -73,6 +73,29 @@ def test_widget_constructs_and_exposes_public_api(monkeypatch):
     w.deleteLater()
 
 
+def test_standalone_widget_exposes_pipeline_files_by_default(monkeypatch):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer())
+
+    assert hasattr(w, "output_files_tracker")
+    assert hasattr(w, "pipeline_files_header")
+    w.deleteLater()
+
+
+def test_embedded_widget_can_hide_pipeline_files(monkeypatch):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer(), show_pipeline_files=False)
+
+    assert not hasattr(w, "output_files_tracker")
+    assert not hasattr(w, "pipeline_files_header")
+    assert w._files_widget is None
+    w.deleteLater()
+
+
 def test_widget_state_roundtrip(monkeypatch):
     _qapp()
     mod = _load_widget(monkeypatch)

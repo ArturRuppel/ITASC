@@ -195,6 +195,36 @@ def test_exposes_output_files_tracker(_mock_cellpose, monkeypatch):
     w.deleteLater()
 
 
+def test_cellpose_embeds_single_divergence_subwidget_without_duplicate_file_panel(
+    _mock_cellpose, monkeypatch
+):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    divergence_mod = importlib.import_module("cellflow.napari.divergence_maps_widget")
+
+    w = mod.CellposeWidget(_FakeViewer())
+
+    assert isinstance(w.divergence_maps_widget, divergence_mod.DivergenceMapsWidget)
+    assert not hasattr(w, "nucleus_divergence_maps_widget")
+    assert not hasattr(w, "cell_divergence_maps_widget")
+    assert not hasattr(w.divergence_maps_widget, "output_files_tracker")
+    assert not hasattr(w.divergence_maps_widget, "pipeline_files_header")
+    assert not hasattr(w, "zavg_viz_widget")
+    assert all("prob_zavg" not in row._rel_path for row in w._files_widget._rows)
+    assert {row._rel_path for row in w._files_widget._rows} >= {
+        "1_cellpose/nucleus_prob_3dt.tif",
+        "1_cellpose/nucleus_dp_3dt.tif",
+        "1_cellpose/nucleus_contours.tif",
+        "1_cellpose/nucleus_foreground.tif",
+        "1_cellpose/cell_prob_3dt.tif",
+        "1_cellpose/cell_dp_3dt.tif",
+        "1_cellpose/cell_contours.tif",
+        "1_cellpose/cell_foreground.tif",
+    }
+    w.deleteLater()
+    app.processEvents()
+
+
 def test_embeds_divergence_maps_subwidget_and_state(_mock_cellpose, monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
