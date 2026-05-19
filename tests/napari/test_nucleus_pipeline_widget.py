@@ -19,7 +19,11 @@ from qtpy.QtWidgets import QApplication, QProgressBar, QToolButton
 @pytest.fixture(scope="module", autouse=True)
 def _restore_import_stubs_after_module():
     """Keep this module's synthetic imports from leaking into later tests."""
-    tracked_prefixes = ("cellflow.napari.", "cellflow.tracking_ultrack.")
+    tracked_prefixes = (
+        "cellflow.napari.",
+        "cellflow.tracking_ultrack.",
+        "cellflow.segmentation.",
+    )
     tracked_modules = {
         name
         for name in sys.modules
