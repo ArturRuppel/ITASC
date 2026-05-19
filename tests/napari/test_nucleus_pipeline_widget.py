@@ -19,7 +19,11 @@ from qtpy.QtWidgets import QApplication, QProgressBar, QToolButton
 @pytest.fixture(scope="module", autouse=True)
 def _restore_import_stubs_after_module():
     """Keep this module's synthetic imports from leaking into later tests."""
-    tracked_prefixes = ("cellflow.napari.", "cellflow.tracking_ultrack.")
+    tracked_prefixes = (
+        "cellflow.napari.",
+        "cellflow.tracking_ultrack.",
+        "cellflow.segmentation.",
+    )
     tracked_modules = {
         name
         for name in sys.modules
@@ -100,6 +104,12 @@ def _install_import_stubs() -> None:
         },
         "cellflow.tracking_ultrack.multi_threshold": {
             "build_ultrack_database_from_sources": lambda *args, **kwargs: None,
+            "build_ultrack_database_from_thresholds": lambda *args, **kwargs: None,
+            "build_ultrack_source_stacks": lambda *args, **kwargs: (
+                np.zeros((1, 1, 1, 1), dtype=np.float32),
+                np.zeros((1, 1, 1, 1), dtype=np.uint8),
+                [],
+            ),
             "write_ultrack_source_stacks": lambda *args, **kwargs: [],
         },
         "cellflow.tracking_ultrack.extend": {
@@ -111,10 +121,15 @@ def _install_import_stubs() -> None:
         "cellflow.segmentation": {
             "CancelledError": type("CancelledError", (Exception,), {}),
         },
+        "cellflow.segmentation.nucleus_segmentation": {
+            "_check_cancel": lambda is_cancelled: None,
+        },
     }
 
     for module_name, attrs in stub_exports.items():
         mod = types.ModuleType(module_name)
+        if module_name == "cellflow.segmentation":
+            mod.__path__ = []
         for attr_name, value in attrs.items():
             setattr(mod, attr_name, value)
         sys.modules[module_name] = mod
@@ -210,6 +225,36 @@ def test_nucleus_pipeline_files_header_uses_magnifier_button():
 
     widget.deleteLater()
     viewer.close()
+
+
+def test_nucleus_pipeline_files_omit_source_stack_artifacts():
+    _install_import_stubs()
+    workflow_module = importlib.import_module("cellflow.napari.nucleus_workflow_widget")
+
+    tracked_paths = [
+        path
+        for group in workflow_module._NUCLEUS_PIPELINE_FILE_GROUPS
+        for path, _label in group[1]
+    ]
+
+    assert "2_nucleus/contour_sources.tif" not in tracked_paths
+    assert "2_nucleus/foreground_sources.tif" not in tracked_paths
+    assert "2_nucleus/ultrack_workdir/data.db" in tracked_paths
+
+
+def test_project_status_panel_omits_source_stack_artifacts():
+    _install_import_stubs()
+    data_panel_module = importlib.import_module("cellflow.napari.data_panel_widget")
+
+    tracked_paths = [
+        path
+        for group in data_panel_module._TRACKED_FILE_GROUPS
+        for path, _label in group[1]
+    ]
+
+    assert "2_nucleus/contour_sources.tif" not in tracked_paths
+    assert "2_nucleus/foreground_sources.tif" not in tracked_paths
+    assert "2_nucleus/ultrack_workdir/data.db" in tracked_paths
 
 
 def test_pipeline_widget_handler_methods_aliased_on_workflow():
@@ -402,7 +447,7 @@ def test_running_stage_params_btn_stays_enabled():
 # ── Handler tests ─────────────────────────────────────────────────────────────
 
 
-def test_build_segmentation_inputs_calls_write_source_stacks_from_divergence_maps(
+def test_build_segmentation_inputs_previews_source_sweep_without_writing(
     tmp_path, monkeypatch
 ):
     _app, viewer = _make_viewer()
@@ -412,20 +457,19 @@ def test_build_segmentation_inputs_calls_write_source_stacks_from_divergence_map
     _install_sync_thread_worker(monkeypatch, pipeline_module)
 
     pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
     widget._pos_dir = pos_dir
     widget.db_gen_threshold_min_spin.setValue(0.2)
     widget.db_gen_threshold_max_spin.setValue(0.4)
     widget.db_gen_threshold_step_spin.setValue(0.2)
-    widget.source_foreground_threshold_min_spin.setValue(0.2)
-    widget.source_foreground_threshold_max_spin.setValue(0.4)
+    widget.source_foreground_threshold_min_spin.setValue(0.3)
+    widget.source_foreground_threshold_max_spin.setValue(0.5)
     widget.source_foreground_threshold_step_spin.setValue(0.2)
 
     import tifffile
-    (pos_dir / "1_cellpose").mkdir()
+    (pos_dir / "1_cellpose").mkdir(parents=True)
     tifffile.imwrite(
         pos_dir / "1_cellpose" / "nucleus_contours.tif",
-        np.zeros((2, 3, 3), dtype=np.float32),
+        np.ones((2, 3, 3), dtype=np.float32),
     )
     tifffile.imwrite(
         pos_dir / "1_cellpose" / "nucleus_foreground.tif",
@@ -433,28 +477,56 @@ def test_build_segmentation_inputs_calls_write_source_stacks_from_divergence_map
     )
 
     calls = []
+    contour_preview = np.full((4, 2, 3, 3), 0.75, dtype=np.float32)
+    foreground_preview = np.ones((4, 2, 3, 3), dtype=np.uint8)
+    metadata = [
+        {"contour_threshold": 0.2, "foreground_threshold": 0.3},
+        {"contour_threshold": 0.2, "foreground_threshold": 0.5},
+        {"contour_threshold": 0.4, "foreground_threshold": 0.3},
+        {"contour_threshold": 0.4, "foreground_threshold": 0.5},
+    ]
 
-    def fake_write(*args, **kwargs):
-        calls.append((args, kwargs))
-        (pos_dir / "2_nucleus" / "contour_sources.tif").touch()
-        (pos_dir / "2_nucleus" / "foreground_sources.tif").touch()
-        return [{"contour_threshold": 0.2, "foreground_threshold": 0.2}]
+    def fake_build(contours, foreground_scores, **kwargs):
+        calls.append((contours.copy(), foreground_scores.copy(), kwargs))
+        return contour_preview, foreground_preview, metadata
 
-    monkeypatch.setattr(pipeline_module, "write_ultrack_source_stacks", fake_write)
+    def fail_write(*args, **kwargs):
+        raise AssertionError("source-stack TIFF writer should not be called")
+
+    monkeypatch.setattr(pipeline_module, "build_ultrack_source_stacks", fake_build)
+    monkeypatch.setattr(
+        pipeline_module,
+        "write_ultrack_source_stacks",
+        fail_write,
+        raising=False,
+    )
 
     widget._on_build_segmentation_inputs()
 
     assert len(calls) == 1
-    args, kwargs = calls[0]
-    assert args[:4] == (
-        pos_dir / "1_cellpose" / "nucleus_contours.tif",
-        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
-        pos_dir / "2_nucleus" / "contour_sources.tif",
-        pos_dir / "2_nucleus" / "foreground_sources.tif",
-    )
+    _contours, _foreground_scores, kwargs = calls[0]
     np.testing.assert_allclose(kwargs["contour_thresholds"], np.array([0.2, 0.4]))
-    np.testing.assert_allclose(kwargs["foreground_thresholds"], np.array([0.2, 0.4]))
-    assert "Ultrack source stacks built" in widget.pipeline_status_lbl.text()
+    np.testing.assert_allclose(kwargs["foreground_thresholds"], np.array([0.3, 0.5]))
+    assert "Ultrack Sweep: Contours" in viewer.layers
+    assert "Ultrack Sweep: Foreground" in viewer.layers
+    contour_layer = viewer.layers["Ultrack Sweep: Contours"]
+    foreground_layer = viewer.layers["Ultrack Sweep: Foreground"]
+    assert contour_layer.data.shape[:2] == (2, 4)
+    assert foreground_layer.data.shape[:2] == (2, 4)
+    np.testing.assert_allclose(contour_layer.data, np.moveaxis(contour_preview, 0, 1))
+    np.testing.assert_array_equal(
+        foreground_layer.data,
+        np.moveaxis(foreground_preview, 0, 1),
+    )
+    assert contour_layer.metadata["thresholds"] == metadata
+    assert foreground_layer.metadata["thresholds"] == metadata
+    assert contour_layer.metadata["axis_order"] == ("time", "source", "y", "x")
+    assert foreground_layer.metadata["axis_order"] == ("time", "source", "y", "x")
+    viewer.dims.set_current_step(0, 1)
+    viewer.dims.set_current_step(1, 3)
+    assert widget._current_t() == 1
+    assert not (pos_dir / "2_nucleus" / "contour_sources.tif").exists()
+    assert "preview" in widget.pipeline_status_lbl.text().lower()
     assert not widget.pipeline_progress_bar.isVisible()
 
     widget.deleteLater()
@@ -467,6 +539,12 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
     widget = widget_class(viewer)
     pipeline_module = _get_pipeline_module()
     _install_sync_thread_worker(monkeypatch, pipeline_module)
+    widget.db_gen_threshold_min_spin.setValue(0.2)
+    widget.db_gen_threshold_max_spin.setValue(0.2)
+    widget.db_gen_threshold_step_spin.setValue(0.1)
+    widget.source_foreground_threshold_min_spin.setValue(0.2)
+    widget.source_foreground_threshold_max_spin.setValue(0.2)
+    widget.source_foreground_threshold_step_spin.setValue(0.1)
 
     calls = []
 
@@ -477,30 +555,80 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
         data_db.write_bytes(b"sqlite placeholder")
         return {"database": str(data_db)}
 
-    monkeypatch.setattr(pipeline_module, "build_ultrack_database_from_sources", fake_build_database)
+    monkeypatch.setattr(
+        pipeline_module,
+        "build_ultrack_database_from_thresholds",
+        fake_build_database,
+    )
     monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
     monkeypatch.setattr(pipeline_module, "_ultrack_segment", object(), raising=False)
 
     pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
+    (pos_dir / "1_cellpose").mkdir(parents=True)
     dummy = np.zeros((2, 1, 4, 4), dtype=np.float32)
     import tifffile
-    tifffile.imwrite(str(pos_dir / "2_nucleus" / "contour_sources.tif"), dummy)
-    tifffile.imwrite(str(pos_dir / "2_nucleus" / "foreground_sources.tif"), dummy.astype(np.uint8))
+    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_contours.tif"), dummy)
+    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_foreground.tif"), dummy)
     widget._pos_dir = pos_dir
 
     widget._on_run_db_generation()
 
     assert len(calls) == 1
     call = calls[0]
-    assert call["contour_sources_path"] == pos_dir / "2_nucleus" / "contour_sources.tif"
-    assert call["foreground_sources_path"] == pos_dir / "2_nucleus" / "foreground_sources.tif"
+    assert call["contours_path"] == pos_dir / "1_cellpose" / "nucleus_contours.tif"
+    assert call["foreground_scores_path"] == pos_dir / "1_cellpose" / "nucleus_foreground.tif"
+    assert call["working_dir"] == pos_dir / "2_nucleus" / "ultrack_workdir"
+    np.testing.assert_allclose(call["contour_thresholds"], np.array([0.2]))
+    np.testing.assert_allclose(call["foreground_thresholds"], np.array([0.2]))
     assert "score_signal_path" not in call
     assert call["cfg"].seg_foreground_threshold == pytest.approx(0.0)
     assert widget.db_run_btn.isEnabled()
     assert widget.db_run_btn.text() == "▶"
     assert "complete" in widget.pipeline_status_lbl.text().lower()
     assert not widget.pipeline_progress_bar.isVisible()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_run_db_generation_reports_missing_canonical_contours(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    widget._pos_dir = pos_dir
+
+    widget._on_run_db_generation()
+
+    assert "nucleus_contours.tif" in widget.pipeline_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_run_db_generation_reports_missing_canonical_foreground(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    import tifffile
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_contours.tif",
+        np.ones((2, 4, 4), dtype=np.float32),
+    )
+    widget._pos_dir = pos_dir
+
+    widget._on_run_db_generation()
+
+    assert "nucleus_foreground.tif" in widget.pipeline_status_lbl.text()
 
     widget.deleteLater()
     viewer.close()

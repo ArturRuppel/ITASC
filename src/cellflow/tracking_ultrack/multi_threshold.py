@@ -679,31 +679,25 @@ def _load_ultrack_source_stacks(
     return contour_sources, foreground_sources
 
 
-def build_ultrack_database_from_sources(
-    contour_sources_path: str | Path,
-    foreground_sources_path: str | Path,
+def _build_ultrack_database_from_source_arrays(
+    contour_sources: np.ndarray,
+    foreground_sources: np.ndarray,
     working_dir: str | Path,
     cfg: TrackingConfig,
     *,
     progress_cb: Callable[[str], None] | None = None,
 ) -> UltrackDatabaseBuildReport:
-    """Build candidate ``data.db`` from Ultrack source-stack artifacts.
+    contour_sources = _normalize_source_stack(contour_sources, "contour_sources")
+    foreground_sources = _normalize_source_stack(
+        foreground_sources,
+        "foreground_sources",
+    )
+    if contour_sources.shape != foreground_sources.shape:
+        raise ValueError("contour_sources and foreground_sources must have the same shape.")
+    _validate_source_stacks(contour_sources, foreground_sources)
 
-    Builds candidates (per-source segmentation + merge) and links them.
-    Pair with ``apply_annotations_and_score`` before ``run_solve`` to ingest
-    validations and anchors.
-
-    ``T×Y×X`` inputs are treated as one source. ``P×T×Y×X`` inputs are segmented
-    one source at a time and merged into a single candidate database.
-    """
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
-
-    _notify(progress_cb, "Loading Ultrack source stacks …")
-    contour_sources, foreground_sources = _load_ultrack_source_stacks(
-        contour_sources_path,
-        foreground_sources_path,
-    )
     source_count, _frame_count, h, w = contour_sources.shape
 
     temp_dirs: list[Path] = []
@@ -752,6 +746,77 @@ def build_ultrack_database_from_sources(
                 shutil.rmtree(td, ignore_errors=True)
 
     return UltrackDatabaseBuildReport()
+
+
+def build_ultrack_database_from_sources(
+    contour_sources_path: str | Path,
+    foreground_sources_path: str | Path,
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    *,
+    progress_cb: Callable[[str], None] | None = None,
+) -> UltrackDatabaseBuildReport:
+    """Build candidate ``data.db`` from Ultrack source-stack artifacts.
+
+    Builds candidates (per-source segmentation + merge) and links them.
+    Pair with ``apply_annotations_and_score`` before ``run_solve`` to ingest
+    validations and anchors.
+
+    ``T×Y×X`` inputs are treated as one source. ``P×T×Y×X`` inputs are segmented
+    one source at a time and merged into a single candidate database.
+    """
+    _notify(progress_cb, "Loading Ultrack source stacks …")
+    contour_sources, foreground_sources = _load_ultrack_source_stacks(
+        contour_sources_path,
+        foreground_sources_path,
+    )
+    return _build_ultrack_database_from_source_arrays(
+        contour_sources,
+        foreground_sources,
+        working_dir,
+        cfg,
+        progress_cb=progress_cb,
+    )
+
+
+def build_ultrack_database_from_thresholds(
+    contours_path: str | Path,
+    foreground_scores_path: str | Path,
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    *,
+    contour_thresholds: Sequence[float],
+    foreground_thresholds: Sequence[float],
+    progress_cb: Callable[[str], None] | None = None,
+) -> UltrackDatabaseBuildReport:
+    """Build candidate ``data.db`` from canonical maps and threshold controls.
+
+    Unlike :func:`build_ultrack_database_from_sources`, this does not read or
+    write threshold-expanded source-stack TIFFs. It loads the canonical
+    contour/foreground maps, builds the full source sweep in memory, segments
+    each source, merges candidates, and links them.
+    """
+    _notify(progress_cb, "Loading contour maps and foreground scores …")
+    contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
+    foreground_scores = np.asarray(
+        tifffile.imread(str(foreground_scores_path)),
+        dtype=np.float32,
+    )
+
+    _notify(progress_cb, "Building threshold source sweep …")
+    contour_sources, foreground_sources, _metadata = build_ultrack_source_stacks(
+        contours,
+        foreground_scores,
+        contour_thresholds=contour_thresholds,
+        foreground_thresholds=foreground_thresholds,
+    )
+    return _build_ultrack_database_from_source_arrays(
+        contour_sources,
+        foreground_sources,
+        working_dir,
+        cfg,
+        progress_cb=progress_cb,
+    )
 
 
 # ---------------------------------------------------------------------------

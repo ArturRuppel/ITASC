@@ -399,6 +399,87 @@ def test_build_ultrack_database_from_sources_segments_sources_in_order(
     assert report == UltrackDatabaseBuildReport()
 
 
+def test_build_ultrack_database_from_thresholds_segments_generated_sources(
+    tmp_path, monkeypatch
+):
+    import cellflow.tracking_ultrack.multi_threshold as mt
+
+    contours = np.array(
+        [
+            [[0.1, 0.6], [0.8, 0.2]],
+            [[0.4, 0.7], [0.3, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+    foreground_scores = np.array(
+        [
+            [[0.1, 0.9], [0.6, 0.2]],
+            [[0.8, 0.4], [0.7, 1.0]],
+        ],
+        dtype=np.float32,
+    )
+    contours_path = tmp_path / "nucleus_contours.tif"
+    foreground_path = tmp_path / "nucleus_foreground.tif"
+    tifffile.imwrite(contours_path, contours)
+    tifffile.imwrite(foreground_path, foreground_scores)
+
+    segmented: list[tuple[np.ndarray, np.ndarray, str]] = []
+    merge_calls = []
+    progress_messages = []
+
+    def fake_build_config(cfg, tmp_dir):
+        class DummyConfig:
+            pass
+
+        dummy = DummyConfig()
+        dummy.tmp_dir = tmp_dir
+        return dummy
+
+    def fake_segment(foreground_source, contour_source, ultrack_cfg, cfg):
+        segmented.append(
+            (foreground_source.copy(), contour_source.copy(), ultrack_cfg.tmp_dir.name)
+        )
+        (ultrack_cfg.tmp_dir / "data.db").write_bytes(b"source")
+
+    def fake_merge(temp_dbs, output_path, frame_shape, progress_cb=None):
+        merge_calls.append((list(temp_dbs), output_path, frame_shape))
+        output_path.write_bytes(b"merged")
+
+    monkeypatch.setattr(mt, "_build_ultrack_config", fake_build_config)
+    monkeypatch.setattr(mt, "_run_ultrack_segment", fake_segment)
+    monkeypatch.setattr(mt, "merge_ultrack_databases", fake_merge)
+    monkeypatch.setattr(mt, "run_linking", lambda working_dir, cfg: [])
+
+    report = mt.build_ultrack_database_from_thresholds(
+        contours_path,
+        foreground_path,
+        tmp_path / "work",
+        TrackingConfig(),
+        contour_thresholds=[0.5, 0.75],
+        foreground_thresholds=[0.6],
+        progress_cb=progress_messages.append,
+    )
+
+    assert report == UltrackDatabaseBuildReport()
+    assert [item[2] for item in segmented] == ["_source_tmp_0", "_source_tmp_1"]
+    np.testing.assert_allclose(
+        segmented[0][1],
+        np.where(contours >= 0.5, contours, 0.0),
+    )
+    np.testing.assert_array_equal(
+        segmented[0][0],
+        (foreground_scores >= 0.6).astype(np.float32),
+    )
+    np.testing.assert_allclose(
+        segmented[1][1],
+        np.where(contours >= 0.75, contours, 0.0),
+    )
+    assert merge_calls[0][2] == (2, 2)
+    assert any("Building threshold source sweep" in msg for msg in progress_messages)
+    assert not (tmp_path / "contour_sources.tif").exists()
+    assert not (tmp_path / "foreground_sources.tif").exists()
+
+
 def test_build_ultrack_database_from_sources_normalizes_single_source_input(
     tmp_path, monkeypatch
 ):

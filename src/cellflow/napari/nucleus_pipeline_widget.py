@@ -29,8 +29,8 @@ from cellflow.segmentation import CancelledError
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.multi_threshold import (
-    build_ultrack_database_from_sources,
-    write_ultrack_source_stacks,
+    build_ultrack_database_from_thresholds,
+    build_ultrack_source_stacks,
 )
 from cellflow.tracking_ultrack.solve import run_solve
 
@@ -52,6 +52,8 @@ def _ultrack_available() -> bool:
 
 # ── Layer name constants ──────────────────────────────────────────────────────
 _TRACKED_LAYER = "Tracked: Nucleus"
+_SWEEP_CONTOURS_LAYER = "Ultrack Sweep: Contours"
+_SWEEP_FOREGROUND_LAYER = "Ultrack Sweep: Foreground"
 
 
 class NucleusPipelineWidget(QWidget):
@@ -319,6 +321,24 @@ class NucleusPipelineWidget(QWidget):
             self.viewer.layers.remove(name)
         self.viewer.add_labels(data, name=name)
 
+    def _update_image_layer(
+        self,
+        name: str,
+        data: np.ndarray,
+        *,
+        metadata: dict | None = None,
+    ) -> None:
+        from napari.layers import Image
+
+        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Image):
+            layer = self.viewer.layers[name]
+            layer.data = data
+            layer.metadata = dict(metadata or {})
+            return
+        if name in self.viewer.layers:
+            self.viewer.layers.remove(name)
+        self.viewer.add_image(data, name=name, metadata=dict(metadata or {}))
+
     def _update_tracked_display(
         self, labels: np.ndarray, t: int | None = None,
     ) -> None:
@@ -371,10 +391,6 @@ class NucleusPipelineWidget(QWidget):
             self._status(
                 "Missing: nucleus_foreground.tif — build divergence maps first."
             ); return
-        contour_sources_path = self._contour_sources_path()
-        foreground_sources_path = self._foreground_sources_path()
-        if contour_sources_path is None or foreground_sources_path is None:
-            self._status("No project open."); return
         try:
             contour_thresholds = self._source_contour_thresholds_from_controls()
             foreground_thresholds = self._source_foreground_thresholds_from_controls()
@@ -385,12 +401,30 @@ class NucleusPipelineWidget(QWidget):
         self._contour_cancel = cancel_event
 
         def _done(result):
-            n_sources = result
+            contour_preview, foreground_preview, metadata = result
             self._contour_worker = None
             self._contour_cancel = None
             self._clear_progress()
-            self._refresh_files_callback(pos_dir)
-            self._status(f"Ultrack source stacks built ({n_sources} sources).")
+            # Core source stacks are P x T x Y x X. Display them as
+            # T x P x Y x X so the viewer's leading axis remains time for
+            # DB browser and correction actions that read current_step[0].
+            contour_display = np.moveaxis(contour_preview, 0, 1)
+            foreground_display = np.moveaxis(foreground_preview, 0, 1)
+            layer_metadata = {
+                "thresholds": metadata,
+                "axis_order": ("time", "source", "y", "x"),
+            }
+            self._update_image_layer(
+                _SWEEP_CONTOURS_LAYER,
+                contour_display,
+                metadata=layer_metadata,
+            )
+            self._update_image_layer(
+                _SWEEP_FOREGROUND_LAYER,
+                foreground_display,
+                metadata=layer_metadata,
+            )
+            self._status(f"Ultrack source sweep preview ready ({len(metadata)} sources).")
             self._set_running_stage(None)
 
         @thread_worker(connect={
@@ -399,21 +433,29 @@ class NucleusPipelineWidget(QWidget):
             "errored": self._on_contour_worker_error,
         })
         def _worker():
-            yield (0, 1, "Building Ultrack source stacks...")
-            metadata = write_ultrack_source_stacks(
-                contours_path,
-                score_path,
-                contour_sources_path,
-                foreground_sources_path,
+            from cellflow.segmentation.nucleus_segmentation import _check_cancel
+
+            yield (0, 3, "Loading Ultrack input maps...")
+            contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
+            _check_cancel(cancel_event.is_set)
+            foreground_scores = np.asarray(
+                tifffile.imread(str(score_path)),
+                dtype=np.float32,
+            )
+            _check_cancel(cancel_event.is_set)
+            yield (1, 3, "Building Ultrack source sweep preview...")
+            contour_preview, foreground_preview, metadata = build_ultrack_source_stacks(
+                contours,
+                foreground_scores,
                 contour_thresholds=contour_thresholds,
                 foreground_thresholds=foreground_thresholds,
-                cancel=cancel_event.is_set,
             )
-            yield (1, 1, "Saved Ultrack source stacks.")
-            return len(metadata)
+            _check_cancel(cancel_event.is_set)
+            yield (3, 3, "Loaded Ultrack source sweep preview.")
+            return contour_preview, foreground_preview, metadata
 
         n_sources = len(contour_thresholds) * len(foreground_thresholds)
-        self._status(f"Building Ultrack source stacks ({n_sources} sources)...")
+        self._status(f"Building Ultrack source sweep preview ({n_sources} sources)...")
         self._set_running_stage("seg")
         self._contour_worker = _worker()
 
@@ -434,14 +476,27 @@ class NucleusPipelineWidget(QWidget):
         pos_dir = self._pos_dir
         if pos_dir is None:
             self._status("No project open."); return
-        contour_sources_path = self._contour_sources_path()
-        foreground_sources_path = self._foreground_sources_path()
-        if contour_sources_path is None or not contour_sources_path.exists():
-            self._status("Missing: contour_sources.tif — run Build Sources first."); return
-        if foreground_sources_path is None or not foreground_sources_path.exists():
-            self._status("Missing: foreground_sources.tif — run Build Sources first."); return
+        paths = self._paths
+        if paths is None:
+            self._status("No project open."); return
+        contours_path = paths.nucleus_contours
+        score_path = paths.nucleus_foreground
+        if not contours_path.exists():
+            self._status(
+                "Missing: nucleus_contours.tif — build divergence maps first."
+            ); return
+        if not score_path.exists():
+            self._status(
+                "Missing: nucleus_foreground.tif — build divergence maps first."
+            ); return
         if not _ultrack_available():
             self._status("ultrack not installed — activate the cellflow conda environment."); return
+
+        try:
+            contour_thresholds = self._source_contour_thresholds_from_controls()
+            foreground_thresholds = self._source_foreground_thresholds_from_controls()
+        except ValueError as exc:
+            self._status(str(exc)); return
 
         cfg = self._db_gen_config_from_controls()
         working_dir = self._ultrack_workdir()
@@ -469,19 +524,21 @@ class NucleusPipelineWidget(QWidget):
 
             def _run() -> None:
                 try:
-                    build_ultrack_database_from_sources(
-                        contour_sources_path=contour_sources_path,
-                        foreground_sources_path=foreground_sources_path,
+                    build_ultrack_database_from_thresholds(
+                        contours_path=contours_path,
+                        foreground_scores_path=score_path,
                         working_dir=working_dir,
                         cfg=cfg,
+                        contour_thresholds=contour_thresholds,
+                        foreground_thresholds=foreground_thresholds,
                         progress_cb=_progress_cb,
                     )
                     _progress_cb("Scoring node probabilities...")
-                    score_path = self._foreground_path()
+                    score_signal_path = self._foreground_path()
                     apply_annotations_and_score(
                         working_dir=working_dir,
                         cfg=cfg,
-                        score_signal_path=score_path,
+                        score_signal_path=score_signal_path,
                         corrections=None,
                         validated_tracks=None,
                         tracked_labels=None,

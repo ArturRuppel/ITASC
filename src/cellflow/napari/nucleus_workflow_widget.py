@@ -5,7 +5,7 @@ sections: segmentation inputs, tracking/Ultrack, database browser, correction.
 
 Stages:
   1. Cellpose maps → ``nucleus_contours.tif`` / ``nucleus_foreground.tif``
-  2. Source stacks → ``contour_sources.tif`` / ``foreground_sources.tif``
+  2. Source sweep preview → in-memory napari layers
   3. Ultrack database + solve → ``data.db`` / ``tracked_labels.tif``
   4. Correction (load / save / extend / retrack / reassign / remove unvalidated)
 """
@@ -49,6 +49,21 @@ logger = logging.getLogger(__name__)
 # ── Layer name constants ──────────────────────────────────────────────────────
 _TRACKED_LAYER = "Tracked: Nucleus"
 
+_NUCLEUS_PIPELINE_FILE_GROUPS = [
+    ("Inputs", [
+        ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
+        ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
+        ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
+        ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
+    ]),
+    ("Intermediates", [
+        ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
+    ]),
+    ("Output", [
+        ("2_nucleus/tracked_labels.tif", "Tracked labels"),
+    ]),
+]
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -78,22 +93,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
 
         # ── Pipeline files (single deduplicated panel) ────────────────
         self._files_widget = PipelineFilesWidget(
-            [
-                ("Inputs", [
-                    ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-                    ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
-                    ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
-                    ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
-                ]),
-                ("Intermediates", [
-                    ("2_nucleus/contour_sources.tif", "Contour sources"),
-                    ("2_nucleus/foreground_sources.tif", "Foreground sources"),
-                    ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
-                ]),
-                ("Output", [
-                    ("2_nucleus/tracked_labels.tif", "Tracked labels"),
-                ]),
-            ],
+            _NUCLEUS_PIPELINE_FILE_GROUPS,
             viewer=self.viewer,
         )
         self._pipeline_files_section = CollapsibleSection(
@@ -452,12 +452,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
 
     def _contour_maps_path(self) -> Path | None:
         return self._contours_path()
-
-    def _contour_sources_path(self) -> Path | None:
-        return self.nucleus_pipeline_widget._contour_sources_path()
-
-    def _foreground_sources_path(self) -> Path | None:
-        return self.nucleus_pipeline_widget._foreground_sources_path()
 
     def _foreground_scores_path(self) -> Path | None:
         return self.nucleus_pipeline_widget._foreground_path()
