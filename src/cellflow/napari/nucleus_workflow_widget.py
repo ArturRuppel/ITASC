@@ -49,6 +49,21 @@ logger = logging.getLogger(__name__)
 # ── Layer name constants ──────────────────────────────────────────────────────
 _TRACKED_LAYER = "Tracked: Nucleus"
 
+_NUCLEUS_PIPELINE_FILE_GROUPS = [
+    ("Inputs", [
+        ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
+        ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
+        ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
+        ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
+    ]),
+    ("Intermediates", [
+        ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
+    ]),
+    ("Output", [
+        ("2_nucleus/tracked_labels.tif", "Tracked labels"),
+    ]),
+]
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -77,25 +92,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         # ── Pipeline files (single deduplicated panel) ────────────────
-        file_groups = [
-            ("Inputs", [
-                ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-                ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
-                ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
-                ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
-            ]),
-            ("Intermediates", [
-                ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
-            ]),
-            ("Output", [
-                ("2_nucleus/tracked_labels.tif", "Tracked labels"),
-            ]),
-        ]
         self._files_widget = PipelineFilesWidget(
-            file_groups,
+            _NUCLEUS_PIPELINE_FILE_GROUPS,
             viewer=self.viewer,
         )
-        self._files_widget._groups = file_groups
         self._pipeline_files_section = CollapsibleSection(
             "Pipeline Files",
             self._files_widget,

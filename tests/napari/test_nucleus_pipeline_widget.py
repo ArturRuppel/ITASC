@@ -228,13 +228,12 @@ def test_nucleus_pipeline_files_header_uses_magnifier_button():
 
 
 def test_nucleus_pipeline_files_omit_source_stack_artifacts():
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
+    _install_import_stubs()
+    workflow_module = importlib.import_module("cellflow.napari.nucleus_workflow_widget")
 
     tracked_paths = [
         path
-        for group in widget._files_widget._groups
+        for group in workflow_module._NUCLEUS_PIPELINE_FILE_GROUPS
         for path, _label in group[1]
     ]
 
@@ -242,8 +241,20 @@ def test_nucleus_pipeline_files_omit_source_stack_artifacts():
     assert "2_nucleus/foreground_sources.tif" not in tracked_paths
     assert "2_nucleus/ultrack_workdir/data.db" in tracked_paths
 
-    widget.deleteLater()
-    viewer.close()
+
+def test_project_status_panel_omits_source_stack_artifacts():
+    _install_import_stubs()
+    data_panel_module = importlib.import_module("cellflow.napari.data_panel_widget")
+
+    tracked_paths = [
+        path
+        for group in data_panel_module._TRACKED_FILE_GROUPS
+        for path, _label in group[1]
+    ]
+
+    assert "2_nucleus/contour_sources.tif" not in tracked_paths
+    assert "2_nucleus/foreground_sources.tif" not in tracked_paths
+    assert "2_nucleus/ultrack_workdir/data.db" in tracked_paths
 
 
 def test_pipeline_widget_handler_methods_aliased_on_workflow():
