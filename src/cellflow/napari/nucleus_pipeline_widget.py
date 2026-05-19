@@ -298,14 +298,22 @@ class NucleusPipelineWidget(QWidget):
 
     # ── Viewer helpers ────────────────────────────────────────────────────────
 
-    def _update_labels_layer(self, name: str, data: np.ndarray) -> None:
+    def _update_labels_layer(
+        self,
+        name: str,
+        data: np.ndarray,
+        *,
+        metadata: dict | None = None,
+    ) -> None:
         from napari.layers import Labels
         if name in self.viewer.layers and isinstance(self.viewer.layers[name], Labels):
-            self.viewer.layers[name].data = data
+            layer = self.viewer.layers[name]
+            layer.data = data
+            layer.metadata = dict(metadata or {})
             return
         if name in self.viewer.layers:
             self.viewer.layers.remove(name)
-        self.viewer.add_labels(data, name=name)
+        self.viewer.add_labels(data, name=name, metadata=dict(metadata or {}))
 
     def _update_image_layer(
         self,
@@ -404,9 +412,9 @@ class NucleusPipelineWidget(QWidget):
                 contour_display,
                 metadata=layer_metadata,
             )
-            self._update_image_layer(
+            self._update_labels_layer(
                 _PREVIEW_FOREGROUND_LAYER,
-                foreground_display,
+                foreground_display.astype(np.uint8, copy=False),
                 metadata=layer_metadata,
             )
             self._status(f"Ultrack threshold preview ready ({len(metadata)} source).")
@@ -443,6 +451,14 @@ class NucleusPipelineWidget(QWidget):
         self._status("Building Ultrack threshold preview...")
         self._set_running_stage("seg")
         self._contour_worker = _worker()
+
+    def _on_threshold_preview_toggled(self, checked: bool) -> None:
+        if checked:
+            self._on_preview_threshold_pair()
+
+    def _on_threshold_preview_params_changed(self, *args) -> None:
+        if self._tracking_inputs_provider().source_threshold_preview_check.isChecked():
+            self._on_preview_threshold_pair()
 
     def _on_contour_worker_error(self, exc: Exception) -> None:
         self._contour_worker = None

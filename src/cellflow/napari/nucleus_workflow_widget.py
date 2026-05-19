@@ -189,7 +189,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.db_gen_circularity_weight_spin = ti.db_gen_circularity_weight_spin
         self.source_contour_threshold_spin = ti.source_contour_threshold_spin
         self.source_foreground_threshold_spin = ti.source_foreground_threshold_spin
-        self.source_threshold_preview_btn = ti.source_threshold_preview_btn
+        self.source_threshold_preview_check = ti.source_threshold_preview_check
         self.source_threshold_add_btn = ti.source_threshold_add_btn
         self.source_threshold_remove_btn = ti.source_threshold_remove_btn
         self.source_threshold_clear_btn = ti.source_threshold_clear_btn
@@ -224,6 +224,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         for name in (
             "_on_build_segmentation_inputs",
             "_on_preview_threshold_pair",
+            "_on_threshold_preview_toggled",
+            "_on_threshold_preview_params_changed",
             "_on_contour_worker_error",
             "_on_run_db_generation",
             "_on_db_gen_done",
@@ -379,7 +381,15 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     # ================================================================
     def _connect_signals(self) -> None:
         # DB Browser
-        self.source_threshold_preview_btn.clicked.connect(self._on_preview_threshold_pair)
+        self.source_threshold_preview_check.toggled.connect(
+            self._on_threshold_preview_toggled
+        )
+        self.source_contour_threshold_spin.valueChanged.connect(
+            self._on_threshold_preview_params_changed
+        )
+        self.source_foreground_threshold_spin.valueChanged.connect(
+            self._on_threshold_preview_params_changed
+        )
         self.ultrack_db_active_btn.toggled.connect(self._on_ultrack_db_activate)
         self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
         self.ultrack_db_source_slider.valueChanged.connect(

@@ -13,6 +13,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
+from napari.layers import Labels
 from qtpy.QtWidgets import QApplication, QProgressBar, QToolButton
 
 
@@ -581,6 +582,7 @@ def test_preview_threshold_pair_updates_layers_without_mutating_pair_list(
     assert "Ultrack Preview: Foreground" in viewer.layers
     contour_layer = viewer.layers["Ultrack Preview: Contours"]
     foreground_layer = viewer.layers["Ultrack Preview: Foreground"]
+    assert isinstance(foreground_layer, Labels)
     assert contour_layer.data.shape[:2] == (2, 1)
     assert foreground_layer.data.shape[:2] == (2, 1)
     np.testing.assert_allclose(contour_layer.data, np.moveaxis(contour_preview, 0, 1))
@@ -599,6 +601,59 @@ def test_preview_threshold_pair_updates_layers_without_mutating_pair_list(
     assert not (pos_dir / "2_nucleus" / "contour_sources.tif").exists()
     assert "preview" in widget.pipeline_status_lbl.text().lower()
     assert not widget.pipeline_progress_bar.isVisible()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_preview_checkbox_auto_updates_when_threshold_changes(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    _install_sync_thread_worker(monkeypatch, pipeline_module)
+
+    pos_dir = tmp_path / "pos00"
+    widget._pos_dir = pos_dir
+
+    import tifffile
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_contours.tif",
+        np.ones((2, 3, 3), dtype=np.float32),
+    )
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
+        np.ones((2, 3, 3), dtype=np.float32),
+    )
+
+    calls = []
+
+    def fake_build(contours, foreground_scores, **kwargs):
+        calls.append(kwargs["threshold_pairs"][0])
+        return (
+            np.ones((1, 2, 3, 3), dtype=np.float32),
+            np.ones((1, 2, 3, 3), dtype=np.uint8),
+            kwargs["threshold_pairs"],
+        )
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "build_ultrack_source_stacks_from_pairs",
+        fake_build,
+    )
+
+    widget.source_threshold_preview_check.setChecked(True)
+    calls.clear()
+    widget.source_contour_threshold_spin.setValue(0.35)
+
+    assert calls[-1]["contour_threshold"] == pytest.approx(0.35)
+
+    widget.source_threshold_preview_check.setChecked(False)
+    calls.clear()
+    widget.source_foreground_threshold_spin.setValue(0.75)
+
+    assert calls == []
 
     widget.deleteLater()
     viewer.close()

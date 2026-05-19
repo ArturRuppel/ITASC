@@ -13,7 +13,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtWidgets import QApplication
+from qtpy.QtWidgets import QApplication, QCheckBox
 
 
 def _make_viewer():
@@ -213,6 +213,18 @@ def test_tracking_inputs_widget_threshold_pair_list_starts_empty_and_adds_pairs(
     assert pairs[0]["contour_threshold"] == pytest.approx(0.2)
     assert pairs[0]["foreground_threshold"] == pytest.approx(0.7)
     assert widget.source_threshold_pairs_table.rowCount() == 1
+
+    widget.deleteLater()
+
+
+def test_tracking_inputs_widget_preview_control_is_checkbox():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    assert isinstance(widget.source_threshold_preview_check, QCheckBox)
+    assert widget.source_threshold_preview_check.text() == "Preview"
+    assert not hasattr(widget, "source_threshold_preview_btn")
 
     widget.deleteLater()
 

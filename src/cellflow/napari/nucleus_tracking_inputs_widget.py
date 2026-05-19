@@ -55,9 +55,9 @@ class NucleusTrackingInputsWidget(QWidget):
             0, 1, 0.1, 0.01, 3,
             "Foreground threshold for the current Ultrack source.",
         )
-        self.source_threshold_preview_btn = QPushButton("Preview")
-        self.source_threshold_preview_btn.setToolTip(
-            "Preview the current threshold pair without adding it."
+        self.source_threshold_preview_check = QCheckBox("Preview")
+        self.source_threshold_preview_check.setToolTip(
+            "Preview the current threshold pair and update when thresholds change."
         )
         self.source_threshold_add_btn = QPushButton("Add")
         self.source_threshold_add_btn.setToolTip("Add the current threshold pair.")
@@ -88,7 +88,7 @@ class NucleusTrackingInputsWidget(QWidget):
         threshold_button_layout = QHBoxLayout(threshold_button_row)
         threshold_button_layout.setContentsMargins(0, 0, 0, 0)
         threshold_button_layout.setSpacing(4)
-        threshold_button_layout.addWidget(self.source_threshold_preview_btn)
+        threshold_button_layout.addWidget(self.source_threshold_preview_check)
         threshold_button_layout.addWidget(self.source_threshold_add_btn)
         threshold_button_layout.addWidget(self.source_threshold_remove_btn)
         threshold_button_layout.addWidget(self.source_threshold_clear_btn)
