@@ -31,8 +31,6 @@ _TRACKED_FILE_GROUPS = [
         ("1_cellpose/cell_foreground.tif", "Cell foreground"),
     ]),
     ("Nucleus Workflow", [
-        ("2_nucleus/contour_sources.tif", "Contour sources"),
-        ("2_nucleus/foreground_sources.tif", "Foreground sources"),
         ("2_nucleus/ultrack_workdir/data.db", "Ultrack DB"),
         ("2_nucleus/tracked_labels.tif", "Tracked labels"),
     ]),

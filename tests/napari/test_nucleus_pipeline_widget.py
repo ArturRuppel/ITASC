@@ -227,6 +227,25 @@ def test_nucleus_pipeline_files_header_uses_magnifier_button():
     viewer.close()
 
 
+def test_nucleus_pipeline_files_omit_source_stack_artifacts():
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+
+    tracked_paths = [
+        path
+        for group in widget._files_widget._groups
+        for path, _label in group[1]
+    ]
+
+    assert "2_nucleus/contour_sources.tif" not in tracked_paths
+    assert "2_nucleus/foreground_sources.tif" not in tracked_paths
+    assert "2_nucleus/ultrack_workdir/data.db" in tracked_paths
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_pipeline_widget_handler_methods_aliased_on_workflow():
     """Pipeline handler methods are reachable on the workflow widget via instance aliases."""
     _app, viewer = _make_viewer()

@@ -5,7 +5,7 @@ sections: segmentation inputs, tracking/Ultrack, database browser, correction.
 
 Stages:
   1. Cellpose maps → ``nucleus_contours.tif`` / ``nucleus_foreground.tif``
-  2. Source stacks → ``contour_sources.tif`` / ``foreground_sources.tif``
+  2. Source sweep preview → in-memory napari layers
   3. Ultrack database + solve → ``data.db`` / ``tracked_labels.tif``
   4. Correction (load / save / extend / retrack / reassign / remove unvalidated)
 """
@@ -77,25 +77,25 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         # ── Pipeline files (single deduplicated panel) ────────────────
+        file_groups = [
+            ("Inputs", [
+                ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
+                ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
+                ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
+                ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
+            ]),
+            ("Intermediates", [
+                ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
+            ]),
+            ("Output", [
+                ("2_nucleus/tracked_labels.tif", "Tracked labels"),
+            ]),
+        ]
         self._files_widget = PipelineFilesWidget(
-            [
-                ("Inputs", [
-                    ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-                    ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
-                    ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
-                    ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
-                ]),
-                ("Intermediates", [
-                    ("2_nucleus/contour_sources.tif", "Contour sources"),
-                    ("2_nucleus/foreground_sources.tif", "Foreground sources"),
-                    ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
-                ]),
-                ("Output", [
-                    ("2_nucleus/tracked_labels.tif", "Tracked labels"),
-                ]),
-            ],
+            file_groups,
             viewer=self.viewer,
         )
+        self._files_widget._groups = file_groups
         self._pipeline_files_section = CollapsibleSection(
             "Pipeline Files",
             self._files_widget,
