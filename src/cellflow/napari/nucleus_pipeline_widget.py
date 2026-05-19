@@ -405,15 +405,23 @@ class NucleusPipelineWidget(QWidget):
             self._contour_worker = None
             self._contour_cancel = None
             self._clear_progress()
-            layer_metadata = {"thresholds": metadata}
+            # Core source stacks are P x T x Y x X. Display them as
+            # T x P x Y x X so the viewer's leading axis remains time for
+            # DB browser and correction actions that read current_step[0].
+            contour_display = np.moveaxis(contour_preview, 0, 1)
+            foreground_display = np.moveaxis(foreground_preview, 0, 1)
+            layer_metadata = {
+                "thresholds": metadata,
+                "axis_order": ("time", "source", "y", "x"),
+            }
             self._update_image_layer(
                 _SWEEP_CONTOURS_LAYER,
-                contour_preview,
+                contour_display,
                 metadata=layer_metadata,
             )
             self._update_image_layer(
                 _SWEEP_FOREGROUND_LAYER,
-                foreground_preview,
+                foreground_display,
                 metadata=layer_metadata,
             )
             self._status(f"Ultrack source sweep preview ready ({len(metadata)} sources).")

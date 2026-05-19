@@ -509,13 +509,22 @@ def test_build_segmentation_inputs_previews_source_sweep_without_writing(
     np.testing.assert_allclose(kwargs["foreground_thresholds"], np.array([0.3, 0.5]))
     assert "Ultrack Sweep: Contours" in viewer.layers
     assert "Ultrack Sweep: Foreground" in viewer.layers
-    np.testing.assert_allclose(viewer.layers["Ultrack Sweep: Contours"].data, contour_preview)
+    contour_layer = viewer.layers["Ultrack Sweep: Contours"]
+    foreground_layer = viewer.layers["Ultrack Sweep: Foreground"]
+    assert contour_layer.data.shape[:2] == (2, 4)
+    assert foreground_layer.data.shape[:2] == (2, 4)
+    np.testing.assert_allclose(contour_layer.data, np.moveaxis(contour_preview, 0, 1))
     np.testing.assert_array_equal(
-        viewer.layers["Ultrack Sweep: Foreground"].data,
-        foreground_preview,
+        foreground_layer.data,
+        np.moveaxis(foreground_preview, 0, 1),
     )
-    assert viewer.layers["Ultrack Sweep: Contours"].metadata["thresholds"] == metadata
-    assert viewer.layers["Ultrack Sweep: Foreground"].metadata["thresholds"] == metadata
+    assert contour_layer.metadata["thresholds"] == metadata
+    assert foreground_layer.metadata["thresholds"] == metadata
+    assert contour_layer.metadata["axis_order"] == ("time", "source", "y", "x")
+    assert foreground_layer.metadata["axis_order"] == ("time", "source", "y", "x")
+    viewer.dims.set_current_step(0, 1)
+    viewer.dims.set_current_step(1, 3)
+    assert widget._current_t() == 1
     assert not (pos_dir / "2_nucleus" / "contour_sources.tif").exists()
     assert "preview" in widget.pipeline_status_lbl.text().lower()
     assert not widget.pipeline_progress_bar.isVisible()
