@@ -42,6 +42,7 @@ from cellflow.napari.ui_style import (
     muted_label,
     muted_stage_accent,
     parameter_heading,
+    stage_header_action_button,
     stage_header_label,
     stage_header_pill_background,
     status_label,
@@ -195,6 +196,24 @@ def test_stage_header_label_uses_accent_pill_style(_app):
     assert f"background-color: {stage_header_pill_background('cellpose')};" in style
     assert "border-radius: 4px" in style
     assert "padding: 1px 6px" in style
+
+
+def test_stage_header_action_button_uses_matching_pill_style(_app):
+    button = QToolButton()
+    button.setText("⚙")
+    button.setCheckable(True)
+
+    assert stage_header_action_button(button, "nucleus") is button
+
+    style = button.styleSheet()
+    assert f"color: {muted_stage_accent('nucleus')};" in style
+    assert f"background-color: {stage_header_pill_background('nucleus')};" in style
+    assert "QToolButton:checked" in style
+    assert "border-radius: 4px" in style
+    assert button.property("cellflow_stage_key") == "nucleus"
+    assert button.property("cellflow_stage_header_action") is True
+    assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
+    assert button.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
 
 
 def test_danger_button_keeps_native_button_style(_app):

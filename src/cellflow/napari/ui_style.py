@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import QFormLayout, QGridLayout, QLabel, QSizePolicy
+from qtpy.QtWidgets import QFormLayout, QGridLayout, QLabel, QSizePolicy, QToolButton
 
 TINY_MARGIN = 2
 SECTION_MARGIN = 4
@@ -210,10 +210,10 @@ def muted_stage_accent(stage_key: str) -> str:
     return muted_accent(stage_accent(stage_key))
 
 
-def stage_header_pill_background(stage_key: str) -> str:
+def stage_header_pill_background(stage_key: str, alpha: int = 38) -> str:
     color = QColor(muted_stage_accent(stage_key))
     red, green, blue, _ = color.getRgb()
-    return f"rgba({red}, {green}, {blue}, 38)"
+    return f"rgba({red}, {green}, {blue}, {alpha})"
 
 
 # Stage status indicator colors. Keyed by status name so call sites stay
@@ -288,6 +288,39 @@ def stage_header_label(label, stage_key: str, size_pt: int = 9):
     label.setProperty("cellflow_stage_header_size_pt", size_pt)
     apply_stage_header_label_style(label)
     return label
+
+
+def stage_header_action_button(button: QToolButton, stage_key: str, size_px: int = 22):
+    button.setProperty("cellflow_stage_key", stage_key)
+    button.setProperty("cellflow_stage_header_action", True)
+    button.setFixedSize(size_px, size_px)
+    button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    color = muted_stage_accent(stage_key)
+    background = stage_header_pill_background(stage_key)
+    button.setStyleSheet(
+        "QToolButton { "
+        "font-weight: bold; "
+        "font-size: 9pt; "
+        f"color: {color}; "
+        f"background-color: {background}; "
+        f"border: 1px solid {color}; "
+        "border-radius: 4px; "
+        "padding: 1px 4px; "
+        "} "
+        "QToolButton:hover { "
+        f"background-color: {stage_header_pill_background(stage_key, alpha=58)}; "
+        "} "
+        "QToolButton:checked { "
+        f"background-color: {stage_header_pill_background(stage_key, alpha=82)}; "
+        f"border: 1px solid {stage_accent(stage_key)}; "
+        "} "
+        "QToolButton:disabled { "
+        "color: palette(mid); "
+        "border-color: palette(mid); "
+        "background-color: transparent; "
+        "}"
+    )
+    return button
 
 
 def apply_stage_header_label_style(label):
