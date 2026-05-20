@@ -161,18 +161,27 @@ def _layout_widgets(layout):
     ]
 
 
-def _layout_for_row_containing(root, *widgets):
+def _layout_items(layout):
+    return [layout.itemAt(i) for i in range(layout.count())]
+
+
+def _layout_for_row_layout_containing(root, *widgets):
     wanted = set(widgets)
     for layout in root.findChildren(QVBoxLayout):
         for i in range(layout.count()):
-            item = layout.itemAt(i)
-            row = item.layout()
+            row = layout.itemAt(i).layout()
             if row is None:
                 continue
             row_widgets = _layout_widgets(row)
             if wanted <= set(row_widgets):
-                return row_widgets
+                return row
     raise AssertionError("No layout row contained all requested widgets")
+
+
+def _assert_cluster_then_spacer(layout, *widgets):
+    items = _layout_items(layout)
+    assert [items[i].widget() for i in range(len(widgets))] == list(widgets)
+    assert items[len(widgets)].spacerItem() is not None
 
 
 def test_cell_params_controller_does_not_cover_pipeline_header(monkeypatch):
@@ -283,32 +292,44 @@ def test_cell_stage_row_buttons_are_clustered_next_to_title(monkeypatch):
         if child.text() == "Contours"
     )
 
-    flow_widgets = _layout_for_row_containing(
+    flow_row = _layout_for_row_layout_containing(
         widget,
         flow_label,
         widget.flow_params_btn,
         widget.flow_run_btn,
     )
-    assert flow_widgets[:3] == [flow_label, widget.flow_params_btn, widget.flow_run_btn]
+    _assert_cluster_then_spacer(
+        flow_row,
+        flow_label,
+        widget.flow_params_btn,
+        widget.flow_run_btn,
+    )
 
-    contour_widgets = _layout_for_row_containing(
+    contour_row = _layout_for_row_layout_containing(
         widget,
         contour_label,
         widget.contour_params_btn,
         widget.contour_preview_btn,
         widget.contour_run_btn,
     )
-    assert contour_widgets[:4] == [
+    _assert_cluster_then_spacer(
+        contour_row,
         contour_label,
         widget.contour_params_btn,
         widget.contour_preview_btn,
         widget.contour_run_btn,
-    ]
+    )
 
     for button in (
         widget.flow_params_btn,
         widget.flow_run_btn,
+        widget.foreground_params_btn,
+        widget.foreground_run_btn,
+        widget.contour_params_btn,
         widget.contour_preview_btn,
+        widget.contour_run_btn,
+        widget.segmentation_params_btn,
+        widget.segmentation_run_btn,
     ):
         assert button.property("cellflow_stage_header_action") is True
         assert "border-radius: 4px" in button.styleSheet()
@@ -353,13 +374,13 @@ def test_cell_correction_uses_stage_style_header(monkeypatch):
     assert isinstance(widget.correction_shortcuts_btn, QToolButton)
     assert isinstance(widget.correction_params_btn, QToolButton)
     assert isinstance(widget.correction_active_btn, QToolButton)
-    header_widgets = _layout_widgets(widget.correction_header.layout())
-    assert header_widgets[:4] == [
+    _assert_cluster_then_spacer(
+        widget.correction_header.layout(),
         widget.correction_header_lbl,
         widget.correction_shortcuts_btn,
         widget.correction_params_btn,
         widget.correction_active_btn,
-    ]
+    )
     for button in (
         widget.correction_shortcuts_btn,
         widget.correction_params_btn,
