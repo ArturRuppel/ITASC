@@ -114,14 +114,33 @@ def contour_from_dp(
     n_t, n_z, _, n_y, n_x = arr.shape
     pos = np.empty((n_t, n_z, n_y, n_x), dtype=np.float32)
     for t in range(n_t):
-        for z in range(n_z):
-            filt = _filter_flow(
-                arr[t, z], smoothing_sigma=smoothing_sigma, median_radius=median_radius,
-            )
-            div = divergence_2d(filt)
-            np.clip(div, 0.0, None, out=div)
-            pos[t, z] = div
+        pos[t] = _positive_divergence_z_stack(
+            arr[t],
+            smoothing_sigma=smoothing_sigma,
+            median_radius=median_radius,
+        )
     return _reduce_z(pos, reduction)
+
+
+def _positive_divergence_z_stack(
+    dp_zcyx: np.ndarray,
+    *,
+    smoothing_sigma: float,
+    median_radius: int,
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> np.ndarray:
+    n_z, _, n_y, n_x = dp_zcyx.shape
+    pos = np.empty((n_z, n_y, n_x), dtype=np.float32)
+    for z in range(n_z):
+        filt = _filter_flow(
+            dp_zcyx[z], smoothing_sigma=smoothing_sigma, median_radius=median_radius,
+        )
+        div = divergence_2d(filt)
+        np.clip(div, 0.0, None, out=div)
+        pos[z] = div
+        if progress_cb is not None:
+            progress_cb(z + 1, n_z)
+    return pos
 
 
 def _as_tzyx(stack: np.ndarray, name: str) -> np.ndarray:
@@ -157,7 +176,8 @@ def build_divergence_maps(
 ) -> DivergenceMapsReport:
     """Compute and write ``contours`` and ``foreground`` from Cellpose prob/dp.
 
-    Output stacks are ``T x Y x X`` float32. ``progress_cb`` is called per frame.
+    Output stacks are ``T x Y x X`` float32. ``progress_cb`` is called for each
+    foreground frame, contour z-slice, and output write.
     """
     prob_stack = _as_tzyx(tifffile.imread(str(prob_path)), "prob")
     dp_stack = _as_tzcyx(tifffile.imread(str(dp_path)), "dp")
@@ -169,23 +189,49 @@ def build_divergence_maps(
         raise ValueError("prob and dp must have the same Y×X shape.")
 
     n_t = int(prob_stack.shape[0])
+    n_z = int(prob_stack.shape[1])
+    total_steps = n_t + (n_t * n_z) + 2
+    progress_done = 0
     contour_frames: list[np.ndarray] = []
     foreground_frames: list[np.ndarray] = []
     for t in range(n_t):
         _check_cancel(cancel)
-        if progress_cb is not None:
-            progress_cb(t, n_t, f"Divergence maps: frame {t + 1}/{n_t}")
         fg = foreground_from_prob(
             prob_stack[t : t + 1], reduction=foreground_z_reduction,
         )
-        contour = contour_from_dp(
-            dp_stack[t : t + 1],
+        foreground_frames.append(fg[0])
+        progress_done += 1
+        if progress_cb is not None:
+            progress_cb(
+                progress_done,
+                total_steps,
+                f"Divergence maps: foreground frame {t + 1}/{n_t}",
+            )
+
+        def _progress_z(z_done: int, z_total: int) -> None:
+            nonlocal progress_done
+
+            _check_cancel(cancel)
+            progress_done += 1
+            if progress_cb is not None:
+                progress_cb(
+                    progress_done,
+                    total_steps,
+                    (
+                        f"Divergence maps: contours frame {t + 1}/{n_t} "
+                        f"z {z_done}/{z_total}"
+                    ),
+                )
+
+        pos_div = _positive_divergence_z_stack(
+            dp_stack[t],
             smoothing_sigma=smoothing_sigma,
             median_radius=median_radius,
-            reduction=contour_z_reduction,
+            progress_cb=_progress_z,
         )
-        foreground_frames.append(fg[0])
-        contour_frames.append(contour[0])
+        contour_frames.append(
+            _reduce_z(pos_div[np.newaxis, ...], contour_z_reduction)[0]
+        )
 
     _check_cancel(cancel)
     contours_out = Path(contours_out)
@@ -196,12 +242,16 @@ def build_divergence_maps(
         str(contours_out), np.stack(contour_frames).astype(np.float32),
         compression="zlib",
     )
+    progress_done += 1
+    if progress_cb is not None:
+        progress_cb(progress_done, total_steps, "Divergence maps: writing contours")
     tifffile.imwrite(
         str(foreground_out), np.stack(foreground_frames).astype(np.float32),
         compression="zlib",
     )
+    progress_done += 1
     if progress_cb is not None:
-        progress_cb(n_t, n_t, f"Divergence maps: wrote {n_t} frames")
+        progress_cb(progress_done, total_steps, "Divergence maps: writing foreground")
     return DivergenceMapsReport(
         frames=n_t,
         foreground_z_reduction=foreground_z_reduction,

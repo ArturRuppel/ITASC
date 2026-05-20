@@ -76,6 +76,50 @@ def test_main_widget_constructs_new_cellpose_widget():
     w.deleteLater()
 
 
+def test_main_widget_theme_picker_restyles_stage_subheaders():
+    app = QApplication.instance() or QApplication([])
+    ui_style = importlib.import_module("cellflow.napari.ui_style")
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    ui_style.set_active_theme("Cividis")
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+
+    w._on_theme_selected("Sunset")
+
+    assert (
+        f"color: {ui_style.muted_stage_accent('cellpose')};"
+        in w._cellpose_widget.pipeline_files_header_lbl.styleSheet()
+    )
+    assert (
+        f"background-color: {ui_style.stage_header_pill_background('cellpose')};"
+        in w._cellpose_widget.pipeline_files_header_lbl.styleSheet()
+    )
+    assert (
+        f"color: {ui_style.muted_stage_accent('nucleus')};"
+        in w.nucleus_workflow_widget.correction_header_lbl.styleSheet()
+    )
+    assert (
+        f"background-color: {ui_style.stage_header_pill_background('nucleus')};"
+        in w.nucleus_workflow_widget.correction_header_lbl.styleSheet()
+    )
+    assert (
+        f"color: {ui_style.muted_stage_accent('cell')};"
+        in w.cell_workflow_widget.correction_header_lbl.styleSheet()
+    )
+    assert (
+        f"background-color: {ui_style.stage_header_pill_background('cell')};"
+        in w.cell_workflow_widget.correction_header_lbl.styleSheet()
+    )
+    assert (
+        f"color: {ui_style.muted_stage_accent('contact_analysis')};"
+        in w.contact_analysis_widget.pipeline_files_header_lbl.styleSheet()
+    )
+    assert (
+        f"background-color: {ui_style.stage_header_pill_background('contact_analysis')};"
+        in w.contact_analysis_widget.pipeline_files_header_lbl.styleSheet()
+    )
+    w.deleteLater()
+
+
 def test_main_widget_keeps_divergence_maps_inside_cellpose(tmp_path):
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")

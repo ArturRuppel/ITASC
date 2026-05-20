@@ -204,6 +204,41 @@ def test_build_divergence_maps_writes_and_reports(tmp_path):
     assert calls[-1][0] == calls[-1][1]  # final report has done==total
 
 
+def test_build_divergence_maps_reports_per_z_contour_progress(tmp_path):
+    import tifffile
+    from cellflow.segmentation.divergence_maps import build_divergence_maps
+
+    prob = np.zeros((1, 3, 4, 4), dtype=np.float32)
+    dp = np.zeros((1, 3, 2, 4, 4), dtype=np.float32)
+    prob_path = tmp_path / "prob.tif"
+    dp_path = tmp_path / "dp.tif"
+    tifffile.imwrite(str(prob_path), prob)
+    tifffile.imwrite(str(dp_path), dp)
+
+    calls: list[tuple[int, int, str]] = []
+    build_divergence_maps(
+        prob_path,
+        dp_path,
+        tmp_path / "out_contours.tif",
+        tmp_path / "out_foreground.tif",
+        foreground_z_reduction="mean",
+        contour_z_reduction="mean",
+        smoothing_sigma=0.0,
+        median_radius=0,
+        progress_cb=lambda d, n, m: calls.append((d, n, m)),
+    )
+
+    compute_calls = [call for call in calls if call[1] == 6]
+    assert compute_calls == [
+        (1, 6, "Divergence maps: foreground frame 1/1"),
+        (2, 6, "Divergence maps: contours frame 1/1 z 1/3"),
+        (3, 6, "Divergence maps: contours frame 1/1 z 2/3"),
+        (4, 6, "Divergence maps: contours frame 1/1 z 3/3"),
+        (5, 6, "Divergence maps: writing contours"),
+        (6, 6, "Divergence maps: writing foreground"),
+    ]
+
+
 def test_build_divergence_maps_respects_cancel(tmp_path):
     import tifffile
     from cellflow.segmentation.divergence_maps import build_divergence_maps

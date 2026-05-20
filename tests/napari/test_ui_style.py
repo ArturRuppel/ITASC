@@ -40,7 +40,10 @@ from cellflow.napari.ui_style import (
     danger_button,
     icon_button,
     muted_label,
+    muted_stage_accent,
     parameter_heading,
+    stage_header_label,
+    stage_header_pill_background,
     status_label,
     tiny_button,
 )
@@ -178,6 +181,20 @@ def test_parameter_heading_uses_params_role_and_level(_app):
     style = label.styleSheet()
     assert "font-weight: 600" in style
     assert "color" not in style
+
+
+def test_stage_header_label_uses_accent_pill_style(_app):
+    label = QLabel("Pipeline Files")
+
+    assert stage_header_label(label, "cellpose") is label
+
+    style = label.styleSheet()
+    assert "font-weight: bold" in style
+    assert "font-size: 9pt" in style
+    assert f"color: {muted_stage_accent('cellpose')};" in style
+    assert f"background-color: {stage_header_pill_background('cellpose')};" in style
+    assert "border-radius: 4px" in style
+    assert "padding: 1px 6px" in style
 
 
 def test_danger_button_keeps_native_button_style(_app):

@@ -465,8 +465,8 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     assert viewer.layers["[Correction] Cell z-avg"].blending == "minimum"
     assert viewer.layers["[Correction] Nucleus z-avg"].blending == "minimum"
     assert viewer.layers["[Correction] NLS z-avg"].blending == "minimum"
-    assert viewer.layers["[Correction] Nucleus z-avg"].colormap.name == "I Orange"
-    assert viewer.layers["[Correction] NLS z-avg"].colormap.name == "I Blue"
+    assert viewer.layers["[Correction] Nucleus z-avg"].colormap.name == "I Purple"
+    assert viewer.layers["[Correction] NLS z-avg"].colormap.name == "I Orange"
     image_indices = [
         viewer.layers.index("[Correction] Cell z-avg"),
         viewer.layers.index("[Correction] Nucleus z-avg"),

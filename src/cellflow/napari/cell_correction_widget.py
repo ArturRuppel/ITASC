@@ -541,7 +541,7 @@ class CellCorrectionWidget(QWidget):
         # top of the layer stack (otherwise the z-avg images render over it).
         for img, name, cmap in (
             (self._broadcast_ref(cz, labels.shape), _CELL_ZAVG_LAYER, "gray"),
-            (self._broadcast_ref(nz, labels.shape), _NUC_ZAVG_LAYER, "I Orange"),
+            (self._broadcast_ref(nz, labels.shape), _NUC_ZAVG_LAYER, "I Purple"),
         ):
             if img is None:
                 continue

@@ -207,7 +207,7 @@ def test_load_labels_loads_tracked_cell_layer_and_cellpose_foregrounds(
     )
     assert viewer.layers["[Correction] Cell z-avg"].blending == "minimum"
     assert viewer.layers["[Correction] Nucleus z-avg"].blending == "minimum"
-    assert viewer.layers["[Correction] Nucleus z-avg"].colormap.name == "I Orange"
+    assert viewer.layers["[Correction] Nucleus z-avg"].colormap.name == "I Purple"
     assert widget.correction_widget._layer is viewer.layers["[Correction] Cell Labels"]
     assert "Loaded cell label stack" in widget.correction_status_lbl.text()
 

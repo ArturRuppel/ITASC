@@ -684,7 +684,7 @@ class NucleusCorrectionWidget(QWidget):
             (
                 self._nucleus_foreground_path(),
                 _CORRECTION_NUC_ZAVG_LAYER,
-                "I Orange",
+                "I Purple",
             ),
         ):
             if data is not None and data.exists():
@@ -699,7 +699,7 @@ class NucleusCorrectionWidget(QWidget):
             self._add_correction_image_layer(
                 np.asarray(tifffile.imread(str(nls_path)), dtype=np.float32),
                 _CORRECTION_NLS_ZAVG_LAYER,
-                "I Blue",
+                "I Orange",
             )
 
         labels_layer = self.viewer.add_labels(

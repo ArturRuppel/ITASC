@@ -210,6 +210,12 @@ def muted_stage_accent(stage_key: str) -> str:
     return muted_accent(stage_accent(stage_key))
 
 
+def stage_header_pill_background(stage_key: str) -> str:
+    color = QColor(muted_stage_accent(stage_key))
+    red, green, blue, _ = color.getRgb()
+    return f"rgba({red}, {green}, {blue}, 38)"
+
+
 # Stage status indicator colors. Keyed by status name so call sites stay
 # decoupled from specific hexes.
 STAGE_STATUS_COLORS = {
@@ -278,12 +284,32 @@ def parameter_heading(label):
 
 
 def stage_header_label(label, stage_key: str, size_pt: int = 9):
+    label.setProperty("cellflow_stage_key", stage_key)
+    label.setProperty("cellflow_stage_header_size_pt", size_pt)
+    apply_stage_header_label_style(label)
+    return label
+
+
+def apply_stage_header_label_style(label):
+    stage_key = label.property("cellflow_stage_key")
+    if not stage_key:
+        return label
+    size_pt = label.property("cellflow_stage_header_size_pt") or 9
     label.setStyleSheet(
         "font-weight: bold; "
         f"font-size: {size_pt}pt; "
-        f"color: {muted_stage_accent(stage_key)};"
+        f"color: {muted_stage_accent(stage_key)}; "
+        f"background-color: {stage_header_pill_background(stage_key)}; "
+        "border-radius: 4px; "
+        "padding: 1px 6px;"
     )
     return label
+
+
+def refresh_stage_header_labels(root) -> None:
+    for label in root.findChildren(QLabel):
+        if label.property("cellflow_stage_key"):
+            apply_stage_header_label_style(label)
 
 
 def danger_button(button):

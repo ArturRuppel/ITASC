@@ -35,6 +35,7 @@ from cellflow.napari.ui_style import (
     active_theme_name,
     icon_button,
     muted_label,
+    refresh_stage_header_labels,
     set_active_theme,
     stage_accent,
     theme_names,
@@ -198,6 +199,7 @@ class CellFlowMainWidget(QWidget):
         )
         for section, stage_key in section_stage_keys:
             section.set_accent_color(stage_accent(stage_key))
+        refresh_stage_header_labels(self)
 
     def _sync_theme_menu_state(self) -> None:
         current = active_theme_name()
