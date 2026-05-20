@@ -69,6 +69,7 @@ def export_tracked_labels(
             corrections,
             np.asarray(tracked_labels, dtype=np.uint32),
             cfg,
+            working_dir=wd,
         )
         tifffile.imwrite(str(output_path), labels, compression="zlib")
     return labels

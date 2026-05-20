@@ -11,6 +11,7 @@ import tifffile
 from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.corrections import (
     Correction,
+    annotate_anchor_tail_links,
     apply_corrections_to_database,
     corrections_from_validated_tracks,
     ensure_anchor_incident_links,
@@ -35,6 +36,7 @@ class AnnotateAndScoreReport:
     scored_nodes: int = 0
     seed_nodes: int = 0
     anchor_incident_links_inserted: int = 0
+    anchor_tail_links_annotated: int = 0
     injected_homemade_anchors: int = 0
 
 
@@ -157,6 +159,21 @@ def apply_annotations_and_score(
         f"across {int(incident.anchors_processed)} anchor node(s).",
     )
 
+    anchor_tail_links_annotated = 0
+    if corrections:
+        _notify(progress_cb, "Annotating anchor tail continuation links...")
+        tail = annotate_anchor_tail_links(
+            working_dir,
+            corrections,
+            cfg,
+            tracked_labels=tracked_labels,
+        )
+        anchor_tail_links_annotated = int(tail.annotated)
+        _notify(
+            progress_cb,
+            f"Annotated {anchor_tail_links_annotated} anchor tail link(s).",
+        )
+
     return AnnotateAndScoreReport(
         fake_nodes=fake_nodes,
         anchor_nodes=anchor_nodes,
@@ -164,6 +181,7 @@ def apply_annotations_and_score(
         scored_nodes=scored_nodes,
         seed_nodes=seed_nodes,
         anchor_incident_links_inserted=anchor_incident_links_inserted,
+        anchor_tail_links_annotated=anchor_tail_links_annotated,
         injected_homemade_anchors=injected_homemade_anchors,
     )
 

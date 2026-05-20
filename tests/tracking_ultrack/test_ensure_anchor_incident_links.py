@@ -108,6 +108,83 @@ def test_skips_existing_link_pair(tmp_path):
         assert link.weight == pytest.approx(0.99)
 
 
+def test_does_not_insert_duplicate_pair_when_adjacent_anchors_share_edge(tmp_path):
+    from collections import Counter
+
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import ensure_anchor_incident_links
+
+    engine = _make_engine(tmp_path / "data.db")
+
+    first_anchor = _make_node_row(1, t=0, y=10.0, x=10.0, area=25, real=True)
+    second_anchor = _make_node_row(2, t=1, y=11.0, x=11.0, area=25, real=True)
+
+    with Session(engine) as session:
+        session.add_all([first_anchor, second_anchor])
+        session.commit()
+
+    cfg = TrackingConfig(max_distance=15.0, linking_mode="default", distance_weight=0.0)
+    report = ensure_anchor_incident_links(tmp_path, cfg)
+
+    assert report.inserted == 1
+    with Session(engine) as session:
+        pairs = [
+            (int(source_id), int(target_id))
+            for source_id, target_id in session.query(
+                LinkDB.source_id, LinkDB.target_id
+            ).all()
+        ]
+
+    assert pairs == [(1, 2)]
+    assert Counter(pairs)[(1, 2)] == 1
+
+
+def test_removes_existing_duplicate_link_pairs_before_solve(tmp_path):
+    from collections import Counter
+
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, VarAnnotation
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import ensure_anchor_incident_links
+
+    engine = _make_engine(tmp_path / "data.db")
+
+    first_anchor = _make_node_row(1, t=0, y=10.0, x=10.0, area=25, real=True)
+    second_anchor = _make_node_row(2, t=1, y=11.0, x=11.0, area=25, real=True)
+
+    with Session(engine) as session:
+        session.add_all([first_anchor, second_anchor])
+        session.commit()
+        session.add_all(
+            [
+                LinkDB(source_id=1, target_id=2, weight=0.5),
+                LinkDB(
+                    source_id=1,
+                    target_id=2,
+                    weight=0.75,
+                    annotation=VarAnnotation.REAL,
+                ),
+            ]
+        )
+        session.commit()
+
+    cfg = TrackingConfig(max_distance=15.0, linking_mode="default", distance_weight=0.0)
+    report = ensure_anchor_incident_links(tmp_path, cfg)
+
+    assert report.inserted == 0
+    with Session(engine) as session:
+        links = session.query(LinkDB).all()
+        pairs = [(int(link.source_id), int(link.target_id)) for link in links]
+
+    assert Counter(pairs)[(1, 2)] == 1
+    assert links[0].annotation == VarAnnotation.REAL
+    assert links[0].weight == pytest.approx(0.75)
+
+
 def test_no_anchors_no_inserts(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB

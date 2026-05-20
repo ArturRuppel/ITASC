@@ -1,6 +1,7 @@
 """Per-frame correction primitives for Ultrack solves and exports."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -8,6 +9,8 @@ from typing import Literal
 import numpy as np
 
 from cellflow.tracking_ultrack.config import TrackingConfig
+
+LOG = logging.getLogger(__name__)
 
 
 CorrectionKind = Literal["validated", "anchor"]
@@ -39,6 +42,13 @@ class CorrectionDatabaseReport:
 class AnchorIncidentLinkReport:
     inserted: int = 0
     anchors_processed: int = 0
+
+
+@dataclass(frozen=True)
+class AnchorTailLinkReport:
+    annotated: int = 0
+    skipped_no_anchor: int = 0
+    skipped_no_link: int = 0
 
 
 @dataclass(frozen=True)
@@ -267,7 +277,7 @@ def ensure_anchor_incident_links(
     """
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
-    from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
+    from ultrack.core.database import LinkDB, NodeDB, OverlapDB, VarAnnotation
 
     from cellflow.tracking_ultrack.linking import compute_edge_weight
 
@@ -277,15 +287,53 @@ def ensure_anchor_incident_links(
     anchors_processed = 0
 
     with Session(engine) as session:
+        duplicate_groups: dict[tuple[int, int], list[LinkDB]] = {}
+        for link in session.query(LinkDB).order_by(
+            LinkDB.source_id,
+            LinkDB.target_id,
+            LinkDB.id,
+        ):
+            duplicate_groups.setdefault(
+                (int(link.source_id), int(link.target_id)),
+                [],
+            ).append(link)
+        for links in duplicate_groups.values():
+            if len(links) <= 1:
+                continue
+            keep = max(
+                links,
+                key=lambda link: (
+                    2
+                    if link.annotation == VarAnnotation.REAL
+                    else 1
+                    if link.annotation == VarAnnotation.FAKE
+                    else 0,
+                    float(link.weight) if link.weight is not None else float("-inf"),
+                    -int(link.id),
+                ),
+            )
+            for link in links:
+                if int(link.id) == int(keep.id):
+                    continue
+                session.delete(link)
+        session.flush()
+
         anchor_rows = session.query(
             NodeDB.id, NodeDB.t, NodeDB.y, NodeDB.x, NodeDB.pickle,
         ).where(NodeDB.node_annot == VarAnnotation.REAL).all()
 
         if not anchor_rows:
+            session.commit()
             engine.dispose()
             return AnchorIncidentLinkReport()
 
         max_distance = float(cfg.max_distance)
+        existing_pairs = {
+            (int(source_id), int(target_id))
+            for source_id, target_id in session.query(
+                LinkDB.source_id, LinkDB.target_id
+            )
+        }
         new_rows: list[LinkDB] = []
 
         for anchor_id, anchor_t, anchor_y, anchor_x, anchor_pickle in anchor_rows:
@@ -315,11 +363,8 @@ def ensure_anchor_incident_links(
                         source_id, target_id = neigh_id, anchor_id
                         source_node, target_node = neigh_pickle, anchor_node
 
-                    exists = session.query(LinkDB.id).where(
-                        LinkDB.source_id == source_id,
-                        LinkDB.target_id == target_id,
-                    ).first()
-                    if exists is not None:
+                    pair = (int(source_id), int(target_id))
+                    if pair in existing_pairs:
                         continue
 
                     weight = compute_edge_weight(source_node, target_node, dist, cfg)
@@ -333,16 +378,285 @@ def ensure_anchor_incident_links(
                             weight=float(weight),
                         )
                     )
+                    existing_pairs.add(pair)
 
         if new_rows:
             session.add_all(new_rows)
-            session.commit()
             inserted = len(new_rows)
+        session.commit()
 
     engine.dispose()
     return AnchorIncidentLinkReport(
         inserted=inserted,
         anchors_processed=anchors_processed,
+    )
+
+
+def _tracked_mask_bbox(
+    tracked_labels: np.ndarray,
+    t: int,
+    cell_id: int,
+) -> tuple[tuple[int, int, int, int], np.ndarray] | None:
+    if t < 0 or t >= tracked_labels.shape[0]:
+        return None
+    frame = np.asarray(tracked_labels[t])
+    mask = (
+        (frame == int(cell_id)).any(axis=0)
+        if frame.ndim == 3
+        else (frame == int(cell_id))
+    )
+    if not mask.any():
+        return None
+    rows = np.flatnonzero(mask.any(axis=1))
+    cols = np.flatnonzero(mask.any(axis=0))
+    y0, y1 = int(rows[0]), int(rows[-1]) + 1
+    x0, x1 = int(cols[0]), int(cols[-1]) + 1
+    return (
+        (y0, x0, y1, x1),
+        np.ascontiguousarray(mask[y0:y1, x0:x1], dtype=bool),
+    )
+
+
+def _best_real_anchor_node_id(
+    session,
+    correction: Correction,
+    cfg: TrackingConfig,
+    tracked_labels: np.ndarray | None,
+) -> int | None:
+    from ultrack.core.database import NodeDB, VarAnnotation
+
+    labels_arr = np.asarray(tracked_labels) if tracked_labels is not None else None
+    mask_record = (
+        _tracked_mask_bbox(labels_arr, int(correction.t), int(correction.cell_id))
+        if labels_arr is not None
+        else None
+    )
+
+    best_iou: tuple[float, float, int] | None = None
+    if mask_record is not None:
+        from cellflow.tracking_ultrack._node_geometry import (
+            node_bbox_and_mask as _node_bbox_and_mask,
+            raw_iou as _raw_iou,
+        )
+
+        anchor_bbox, anchor_crop = mask_record
+        broad_radius = float(cfg.anchor_radius_px) * 4.0
+        rows = session.query(NodeDB.id, NodeDB.y, NodeDB.x, NodeDB.pickle).where(
+            NodeDB.t == int(correction.t),
+            NodeDB.node_annot == VarAnnotation.REAL,
+        )
+        for node_id, y, x, node_pickle in rows:
+            dist = _distance(y, x, correction.y, correction.x)
+            if dist > broad_radius:
+                continue
+            cand_bbox, cand_mask = _node_bbox_and_mask(int(node_id), node_pickle)
+            iou = _raw_iou(anchor_bbox, anchor_crop, cand_bbox, cand_mask)
+            candidate = (float(iou), -float(dist), int(node_id))
+            if best_iou is None or candidate > best_iou:
+                best_iou = candidate
+        if best_iou is not None and best_iou[0] > 0:
+            return best_iou[2]
+
+    nearest: tuple[float, int] | None = None
+    rows = session.query(NodeDB.id, NodeDB.y, NodeDB.x).where(
+        NodeDB.t == int(correction.t),
+        NodeDB.node_annot == VarAnnotation.REAL,
+    )
+    for node_id, y, x in rows:
+        dist = _distance(y, x, correction.y, correction.x)
+        if dist <= float(cfg.anchor_radius_px) and (
+            nearest is None or dist < nearest[0]
+        ):
+            nearest = (float(dist), int(node_id))
+    return None if nearest is None else nearest[1]
+
+
+def _correction_protected_mask(
+    corrections: list[Correction],
+    tracked_labels: np.ndarray | None,
+    *,
+    t: int,
+    source_cell_id: int,
+) -> np.ndarray | None:
+    if tracked_labels is None:
+        return None
+    labels = np.asarray(tracked_labels)
+    if t < 0 or t >= labels.shape[0]:
+        return None
+
+    protected_ids = {
+        int(c.cell_id)
+        for c in corrections
+        if int(c.t) == int(t) and int(c.cell_id) != int(source_cell_id)
+    }
+    if not protected_ids:
+        return None
+
+    frame = labels[t]
+    mask = np.isin(frame, list(protected_ids))
+    if mask.ndim == 3:
+        mask = mask.any(axis=0)
+    return np.asarray(mask, dtype=bool)
+
+
+def annotate_anchor_tail_links(
+    working_dir: str | Path,
+    corrections: list[Correction],
+    cfg: TrackingConfig,
+    *,
+    tracked_labels: np.ndarray | None = None,
+) -> AnchorTailLinkReport:
+    """Force best successor links after each anchored track tail.
+
+    Consecutive anchor links constrain only the user-confirmed frames. This
+    helper walks the best positive same-linker successor chain from the last
+    anchor of each cell, mirroring the greedy extender while still letting the
+    ILP handle conflicts with other annotated cells.
+    """
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, NodeDB, OverlapDB, VarAnnotation
+
+    anchor_by_cell: dict[int, list[Correction]] = {}
+    for correction in corrections:
+        if correction.kind == "anchor":
+            anchor_by_cell.setdefault(int(correction.cell_id), []).append(correction)
+    if not anchor_by_cell:
+        return AnchorTailLinkReport()
+
+    engine = sqla.create_engine(f"sqlite:///{Path(working_dir) / 'data.db'}")
+    annotated = skipped_no_anchor = skipped_no_link = 0
+    labels_arr = np.asarray(tracked_labels) if tracked_labels is not None else None
+
+    with Session(engine) as session:
+        real_source_ids: set[int] = set()
+        real_target_ids: set[int] = set()
+        forced_node_ids_by_t: dict[int, set[int]] = {}
+        for node_id, t in session.query(NodeDB.id, NodeDB.t).where(
+            NodeDB.node_annot == VarAnnotation.REAL
+        ):
+            forced_node_ids_by_t.setdefault(int(t), set()).add(int(node_id))
+        for source_id, target_id in session.query(
+            LinkDB.source_id,
+            LinkDB.target_id,
+        ).where(LinkDB.annotation == VarAnnotation.REAL):
+            source_id = int(source_id)
+            target_id = int(target_id)
+            real_source_ids.add(source_id)
+            real_target_ids.add(target_id)
+            for node_id, t in session.query(NodeDB.id, NodeDB.t).where(
+                NodeDB.id.in_([source_id, target_id])
+            ):
+                forced_node_ids_by_t.setdefault(int(t), set()).add(int(node_id))
+
+        for cell_id, cell_anchors in sorted(anchor_by_cell.items()):
+            tail = max(cell_anchors, key=lambda item: int(item.t))
+            source_id = _best_real_anchor_node_id(session, tail, cfg, labels_arr)
+            if source_id is None:
+                skipped_no_anchor += 1
+                continue
+
+            seen_sources: set[int] = set()
+            annotated_for_cell = 0
+            while source_id not in seen_sources:
+                seen_sources.add(int(source_id))
+                source = (
+                    session.query(NodeDB).where(NodeDB.id == source_id).one_or_none()
+                )
+                if source is None:
+                    if annotated_for_cell == 0:
+                        skipped_no_anchor += 1
+                    break
+                if int(source_id) in real_source_ids:
+                    break
+                target_t = int(source.t) + 1
+                protected_mask = _correction_protected_mask(
+                    corrections,
+                    labels_arr,
+                    t=target_t,
+                    source_cell_id=cell_id,
+                )
+
+                candidates = []
+                rows = (
+                    session.query(LinkDB, NodeDB)
+                    .join(NodeDB, NodeDB.id == LinkDB.target_id)
+                    .where(
+                        LinkDB.source_id == int(source_id),
+                        NodeDB.t == target_t,
+                        NodeDB.node_annot != VarAnnotation.FAKE,
+                    )
+                    .all()
+                )
+                for link, target in rows:
+                    if link.weight is None or float(link.weight) <= 0:
+                        continue
+                    if int(target.id) in real_target_ids:
+                        continue
+                    forced_ids = forced_node_ids_by_t.get(int(target.t), set())
+                    if forced_ids:
+                        overlap = (
+                            session.query(OverlapDB.node_id)
+                            .where(
+                                sqla.or_(
+                                    sqla.and_(
+                                        OverlapDB.node_id == int(target.id),
+                                        OverlapDB.ancestor_id.in_(forced_ids),
+                                    ),
+                                    sqla.and_(
+                                        OverlapDB.ancestor_id == int(target.id),
+                                        OverlapDB.node_id.in_(forced_ids),
+                                    ),
+                                )
+                            )
+                            .first()
+                        )
+                        if overlap is not None:
+                            continue
+                    if protected_mask is not None:
+                        from cellflow.tracking_ultrack._node_geometry import (
+                            node_bbox_and_mask as _node_bbox_and_mask,
+                        )
+
+                        (y0, x0, y1, x1), target_crop = _node_bbox_and_mask(
+                            int(target.id), target.pickle
+                        )
+                        if np.any(target_crop & protected_mask[y0:y1, x0:x1]):
+                            continue
+                    candidates.append(
+                        (
+                            float(link.weight),
+                            -_distance(source.y, source.x, target.y, target.x),
+                            int(target.id),
+                            link,
+                        )
+                    )
+
+                if not candidates:
+                    if annotated_for_cell == 0:
+                        skipped_no_link += 1
+                    break
+
+                _weight, _neg_dist, next_source_id, best_link = max(
+                    candidates, key=lambda item: (item[0], item[1])
+                )
+                best_link.annotation = VarAnnotation.REAL
+                real_source_ids.add(int(source_id))
+                real_target_ids.add(int(next_source_id))
+                forced_node_ids_by_t.setdefault(target_t, set()).add(
+                    int(next_source_id)
+                )
+                annotated += 1
+                annotated_for_cell += 1
+                source_id = next_source_id
+
+        session.commit()
+
+    engine.dispose()
+    return AnchorTailLinkReport(
+        annotated=annotated,
+        skipped_no_anchor=skipped_no_anchor,
+        skipped_no_link=skipped_no_link,
     )
 
 
@@ -544,6 +858,97 @@ def _next_fresh_id(labels: np.ndarray, reserved_ids: set[int], used_ids: set[int
     return next_id
 
 
+def _anchor_lineage_track_remaps(
+    working_dir: str | Path | None,
+    corrections: list[Correction],
+    cfg: TrackingConfig,
+) -> dict[int, int]:
+    """Return raw exported track IDs that should inherit anchored cell IDs.
+
+    Ultrack may split a selected parent chain into multiple exported tracklets
+    at branch points. REAL links express the intended identity path, so any
+    selected node reachable from an anchor through REAL links should be remapped
+    to that anchor's cell ID even if it received a new exported track_id.
+    """
+    if working_dir is None:
+        return {}
+
+    anchor_corrections = [c for c in corrections if c.kind == "anchor"]
+    if not anchor_corrections:
+        return {}
+
+    try:
+        import sqlalchemy as sqla
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import LinkDB, VarAnnotation
+        from ultrack.core.export import to_tracks_layer
+
+        from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+    except Exception:
+        return {}
+
+    working_dir = Path(working_dir)
+    db_path = working_dir / "data.db"
+    if not db_path.exists():
+        return {}
+
+    try:
+        tracks_df, _graph = to_tracks_layer(_build_ultrack_config(cfg, working_dir))
+    except Exception:
+        return {}
+    if tracks_df.empty or "id" not in tracks_df:
+        return {}
+
+    tracks_by_node = tracks_df.set_index("id", drop=False)
+    selected_node_ids = {int(node_id) for node_id in tracks_by_node.index}
+    if not selected_node_ids:
+        return {}
+
+    remaps: dict[int, int] = {}
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    try:
+        with Session(engine) as session:
+            real_links: dict[int, list[int]] = {}
+            for source_id, target_id in session.query(
+                LinkDB.source_id, LinkDB.target_id
+            ).where(LinkDB.annotation == VarAnnotation.REAL):
+                if (
+                    int(source_id) in selected_node_ids
+                    and int(target_id) in selected_node_ids
+                ):
+                    real_links.setdefault(int(source_id), []).append(int(target_id))
+
+            for correction in anchor_corrections:
+                t = int(correction.t)
+                frame_rows = tracks_df[tracks_df["t"] == t]
+                nearest: tuple[float, int] | None = None
+                for row in frame_rows.itertuples(index=False):
+                    dist = _distance(row.y, row.x, correction.y, correction.x)
+                    if dist <= float(cfg.anchor_radius_px) and (
+                        nearest is None or dist < nearest[0]
+                    ):
+                        nearest = (float(dist), int(row.id))
+                if nearest is None:
+                    continue
+
+                queue = [nearest[1]]
+                seen: set[int] = set()
+                while queue:
+                    node_id = queue.pop(0)
+                    if node_id in seen:
+                        continue
+                    seen.add(node_id)
+                    if node_id not in tracks_by_node.index:
+                        continue
+                    solver_track_id = int(tracks_by_node.loc[node_id, "track_id"])
+                    remaps.setdefault(solver_track_id, int(correction.cell_id))
+                    queue.extend(real_links.get(node_id, ()))
+    finally:
+        engine.dispose()
+
+    return remaps
+
+
 def _stamp_disk(labels: np.ndarray, t: int, y: float, x: float, radius: float, cell_id: int) -> None:
     if t < 0 or t >= labels.shape[0]:
         return
@@ -586,6 +991,8 @@ def apply_post_solve_corrections(
     corrections: list[Correction],
     tracked_labels: np.ndarray,
     cfg: TrackingConfig,
+    *,
+    working_dir: str | Path | None = None,
 ) -> tuple[np.ndarray, PostSolveCorrectionReport]:
     """Apply anchor remap/stamp and validated paste-back to exported labels."""
     if not corrections:
@@ -620,10 +1027,30 @@ def apply_post_solve_corrections(
     # is an unrelated solver track that happens to share the numeric ID, and
     # gets relabeled to a fresh ID so that subsequent stamps/pastes do not
     # produce two disjoint regions sharing the same cell_id.
-    matched_anchor_target_to_solver: dict[int, int] = {
-        int(corr.cell_id): int(sid)
+    solver_track_remap: dict[int, int] = {
+        int(sid): int(corr.cell_id)
         for sid, (_d, _l, corr) in claims.items()
     }
+    matched_anchor_target_to_solver: dict[int, int] = {
+        target_id: solver_id for solver_id, target_id in solver_track_remap.items()
+    }
+    lineage_track_remaps = _anchor_lineage_track_remaps(working_dir, corrections, cfg)
+    for solver_id, cell_id in sorted(lineage_track_remaps.items()):
+        if solver_id in solver_track_remap and solver_track_remap[solver_id] != cell_id:
+            LOG.warning(
+                "Solver track %d claimed by multiple anchor lineages; "
+                "keeping cell %d and skipping cell %d",
+                solver_id,
+                solver_track_remap[solver_id],
+                cell_id,
+            )
+            continue
+        solver_track_remap[solver_id] = cell_id
+        if solver_id == cell_id:
+            matched_anchor_target_to_solver[cell_id] = solver_id
+        else:
+            matched_anchor_target_to_solver.setdefault(cell_id, solver_id)
+
     for cell_id in sorted(reserved_ids):
         owning_solver = matched_anchor_target_to_solver.get(cell_id)
         if owning_solver == cell_id:
@@ -635,8 +1062,7 @@ def apply_post_solve_corrections(
             labels[collision_mask] = _next_fresh_id(labels, reserved_ids, used_ids)
 
     remapped = 0
-    for solver_id, (_dist, _neg_lifetime, correction) in sorted(claims.items()):
-        target_id = int(correction.cell_id)
+    for solver_id, target_id in sorted(solver_track_remap.items()):
         if solver_id != target_id:
             labels[labels == solver_id] = target_id
             remapped += 1

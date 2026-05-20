@@ -171,9 +171,267 @@ def test_apply_corrections_marks_consecutive_anchor_link_real(tmp_path):
     assert link.annotation == VarAnnotation.REAL
 
 
+def test_annotate_anchor_tail_links_marks_best_successor_real(tmp_path):
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, VarAnnotation
+    from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import (
+        Correction,
+        annotate_anchor_tail_links,
+        apply_corrections_to_database,
+    )
+
+    engine = _make_engine(tmp_path / "data.db")
+    with Session(engine) as session:
+        anchor = _make_node_row(1, 0, 10, 10, 14, 14)
+        good = _make_node_row(2, 1, 11, 11, 15, 15)
+        bad = _make_node_row(3, 1, 35, 35, 39, 39)
+        session.add_all([anchor, good, bad])
+        session.commit()
+        session.add_all(
+            [
+                LinkDB(source_id=1, target_id=2, weight=1.25),
+                LinkDB(source_id=1, target_id=3, weight=-2.0),
+            ]
+        )
+        session.commit()
+
+    tracked = np.zeros((2, 50, 50), dtype=np.uint32)
+    tracked[0, 10:14, 10:14] = 5
+    correction = Correction(cell_id=5, t=0, kind="anchor", y=12.0, x=12.0)
+    cfg = TrackingConfig(anchor_radius_px=5.0, max_distance=40.0)
+
+    apply_corrections_to_database(
+        tmp_path,
+        [correction],
+        cfg,
+        tracked_labels=tracked,
+    )
+    report = annotate_anchor_tail_links(
+        tmp_path,
+        [correction],
+        cfg,
+        tracked_labels=tracked,
+    )
+
+    assert report.annotated == 1
+    with Session(engine) as session:
+        links = {
+            int(row.target_id): row.annotation
+            for row in session.query(LinkDB).where(LinkDB.source_id == 1)
+        }
+
+    assert links[2] == VarAnnotation.REAL
+    assert links[3] == VarAnnotation.UNKNOWN
+
+
+def test_annotate_anchor_tail_links_walks_successor_chain(tmp_path):
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, VarAnnotation
+    from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import (
+        Correction,
+        annotate_anchor_tail_links,
+        apply_corrections_to_database,
+    )
+
+    engine = _make_engine(tmp_path / "data.db")
+    with Session(engine) as session:
+        anchor = _make_node_row(1, 0, 10, 10, 14, 14)
+        frame_1_good = _make_node_row(2, 1, 11, 11, 15, 15)
+        frame_2_good = _make_node_row(3, 2, 12, 12, 16, 16)
+        frame_2_bad = _make_node_row(4, 2, 35, 35, 39, 39)
+        session.add_all([anchor, frame_1_good, frame_2_good, frame_2_bad])
+        session.commit()
+        session.add_all(
+            [
+                LinkDB(source_id=1, target_id=2, weight=1.5),
+                LinkDB(source_id=2, target_id=3, weight=1.25),
+                LinkDB(source_id=2, target_id=4, weight=-1.0),
+            ]
+        )
+        session.commit()
+
+    tracked = np.zeros((3, 50, 50), dtype=np.uint32)
+    tracked[0, 10:14, 10:14] = 5
+    correction = Correction(cell_id=5, t=0, kind="anchor", y=12.0, x=12.0)
+    cfg = TrackingConfig(anchor_radius_px=5.0, max_distance=40.0)
+
+    apply_corrections_to_database(
+        tmp_path,
+        [correction],
+        cfg,
+        tracked_labels=tracked,
+    )
+    report = annotate_anchor_tail_links(
+        tmp_path,
+        [correction],
+        cfg,
+        tracked_labels=tracked,
+    )
+
+    assert report.annotated == 2
+    with Session(engine) as session:
+        links = {
+            (int(row.source_id), int(row.target_id)): row.annotation
+            for row in session.query(LinkDB).all()
+        }
+
+    assert links[(1, 2)] == VarAnnotation.REAL
+    assert links[(2, 3)] == VarAnnotation.REAL
+    assert links[(2, 4)] == VarAnnotation.UNKNOWN
+
+
+def test_annotate_anchor_tail_links_avoids_converging_anchor_lineages(tmp_path):
+    from collections import Counter
+
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, VarAnnotation
+    from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import (
+        Correction,
+        annotate_anchor_tail_links,
+        apply_corrections_to_database,
+    )
+
+    engine = _make_engine(tmp_path / "data.db")
+    with Session(engine) as session:
+        first_anchor = _make_node_row(1, 0, 10, 10, 14, 14)
+        second_anchor = _make_node_row(2, 0, 30, 30, 34, 34)
+        common_best = _make_node_row(3, 1, 20, 20, 24, 24)
+        second_fallback = _make_node_row(4, 1, 31, 31, 35, 35)
+        session.add_all([first_anchor, second_anchor, common_best, second_fallback])
+        session.commit()
+        session.add_all(
+            [
+                LinkDB(source_id=1, target_id=3, weight=2.0),
+                LinkDB(source_id=2, target_id=3, weight=2.0),
+                LinkDB(source_id=2, target_id=4, weight=1.5),
+            ]
+        )
+        session.commit()
+
+    tracked = np.zeros((2, 50, 50), dtype=np.uint32)
+    tracked[0, 10:14, 10:14] = 5
+    tracked[0, 30:34, 30:34] = 6
+    corrections = [
+        Correction(cell_id=5, t=0, kind="anchor", y=12.0, x=12.0),
+        Correction(cell_id=6, t=0, kind="anchor", y=32.0, x=32.0),
+    ]
+    cfg = TrackingConfig(anchor_radius_px=5.0, max_distance=40.0)
+
+    apply_corrections_to_database(
+        tmp_path,
+        corrections,
+        cfg,
+        tracked_labels=tracked,
+    )
+    report = annotate_anchor_tail_links(
+        tmp_path,
+        corrections,
+        cfg,
+        tracked_labels=tracked,
+    )
+
+    assert report.annotated == 2
+    with Session(engine) as session:
+        real_links = [
+            (int(row.source_id), int(row.target_id))
+            for row in session.query(LinkDB).where(
+                LinkDB.annotation == VarAnnotation.REAL
+            )
+        ]
+
+    incoming = Counter(target_id for _source_id, target_id in real_links)
+    assert incoming[3] == 1
+    assert incoming[4] == 1
+
+
+def test_annotate_anchor_tail_links_avoids_overlapping_forced_successors(tmp_path):
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, OverlapDB, VarAnnotation
+    from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import (
+        Correction,
+        annotate_anchor_tail_links,
+        apply_corrections_to_database,
+    )
+
+    engine = _make_engine(tmp_path / "data.db")
+    with Session(engine) as session:
+        first_anchor = _make_node_row(1, 0, 10, 10, 14, 14)
+        second_anchor = _make_node_row(2, 0, 30, 30, 34, 34)
+        first_target = _make_node_row(3, 1, 20, 20, 24, 24)
+        overlapping_target = _make_node_row(4, 1, 21, 21, 25, 25)
+        fallback_target = _make_node_row(5, 1, 31, 31, 35, 35)
+        session.add_all(
+            [
+                first_anchor,
+                second_anchor,
+                first_target,
+                overlapping_target,
+                fallback_target,
+            ]
+        )
+        session.commit()
+        session.add_all(
+            [
+                LinkDB(source_id=1, target_id=3, weight=2.0),
+                LinkDB(source_id=2, target_id=4, weight=2.0),
+                LinkDB(source_id=2, target_id=5, weight=1.5),
+                OverlapDB(node_id=4, ancestor_id=3),
+            ]
+        )
+        session.commit()
+
+    tracked = np.zeros((2, 50, 50), dtype=np.uint32)
+    tracked[0, 10:14, 10:14] = 5
+    tracked[0, 30:34, 30:34] = 6
+    corrections = [
+        Correction(cell_id=5, t=0, kind="anchor", y=12.0, x=12.0),
+        Correction(cell_id=6, t=0, kind="anchor", y=32.0, x=32.0),
+    ]
+    cfg = TrackingConfig(anchor_radius_px=5.0, max_distance=40.0)
+
+    apply_corrections_to_database(
+        tmp_path,
+        corrections,
+        cfg,
+        tracked_labels=tracked,
+    )
+    report = annotate_anchor_tail_links(
+        tmp_path,
+        corrections,
+        cfg,
+        tracked_labels=tracked,
+    )
+
+    assert report.annotated == 2
+    with Session(engine) as session:
+        links = {
+            (int(row.source_id), int(row.target_id)): row.annotation
+            for row in session.query(LinkDB).all()
+        }
+
+    assert links[(1, 3)] == VarAnnotation.REAL
+    assert links[(2, 4)] == VarAnnotation.UNKNOWN
+    assert links[(2, 5)] == VarAnnotation.REAL
+
+
 def test_apply_post_solve_corrections_remaps_anchor_track_stamps_missing_anchor_and_pastes_validated():
     from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
+    from cellflow.tracking_ultrack.corrections import (
+        Correction,
+        apply_post_solve_corrections,
+    )
 
     exported = np.zeros((3, 40, 40), dtype=np.uint32)
     exported[:, 10:14, 10:14] = 99
@@ -198,6 +456,104 @@ def test_apply_post_solve_corrections_remaps_anchor_track_stamps_missing_anchor_
     assert np.all(result[:, 10:14, 10:14] == 5)
     assert result[2, 32, 32] == 6
     assert np.all(result[1, 20:24, 20:24] == 7)
+
+
+def test_apply_post_solve_corrections_remaps_real_link_descendant_tracklet(tmp_path):
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, NO_PARENT, VarAnnotation
+    from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import (
+        Correction,
+        apply_post_solve_corrections,
+    )
+    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+    from ultrack.core.export import to_tracks_layer
+
+    engine = _make_engine(tmp_path / "data.db")
+    (tmp_path / "metadata.toml").write_text("shape = [ 2, 40, 40,]\n")
+    with Session(engine) as session:
+        anchor = _make_node_row(1, 0, 10, 10, 14, 14)
+        continuation = _make_node_row(2, 1, 12, 12, 16, 16)
+        sibling_branch = _make_node_row(3, 1, 28, 28, 32, 32)
+        anchor.selected = True
+        anchor.parent_id = NO_PARENT
+        continuation.selected = True
+        continuation.parent_id = 1
+        sibling_branch.selected = True
+        sibling_branch.parent_id = 1
+        session.add_all([anchor, continuation, sibling_branch])
+        session.commit()
+        session.add(
+            LinkDB(
+                source_id=1,
+                target_id=2,
+                weight=1.0,
+                annotation=VarAnnotation.REAL,
+            )
+        )
+        session.commit()
+
+    cfg = TrackingConfig()
+    tracks_df, _graph = to_tracks_layer(_build_ultrack_config(cfg, tmp_path))
+    anchor_track = int(tracks_df.loc[tracks_df["id"] == 1, "track_id"].iloc[0])
+    continuation_track = int(tracks_df.loc[tracks_df["id"] == 2, "track_id"].iloc[0])
+    sibling_track = int(tracks_df.loc[tracks_df["id"] == 3, "track_id"].iloc[0])
+    assert continuation_track != anchor_track
+
+    exported = np.zeros((2, 40, 40), dtype=np.uint32)
+    exported[0, 10:14, 10:14] = anchor_track
+    exported[1, 12:16, 12:16] = continuation_track
+    exported[1, 28:32, 28:32] = sibling_track
+    tracked = np.zeros_like(exported)
+    tracked[0, 10:14, 10:14] = 5
+
+    result, report = apply_post_solve_corrections(
+        exported,
+        [Correction(cell_id=5, t=0, kind="anchor", y=12.0, x=12.0)],
+        tracked,
+        cfg,
+        working_dir=tmp_path,
+    )
+
+    assert report.remapped_anchor_tracks == 2
+    assert np.all(result[0, 10:14, 10:14] == 5)
+    assert np.all(result[1, 12:16, 12:16] == 5)
+    assert not (result[1, 28:32, 28:32] == 5).any()
+
+
+def test_apply_post_solve_corrections_preserves_identity_lineage_tracklet(monkeypatch):
+    from cellflow.tracking_ultrack import corrections as corrections_module
+    from cellflow.tracking_ultrack.config import TrackingConfig
+    from cellflow.tracking_ultrack.corrections import (
+        Correction,
+        apply_post_solve_corrections,
+    )
+
+    exported = np.zeros((2, 20, 20), dtype=np.uint32)
+    exported[0, 2:6, 2:6] = 10
+    exported[1, 3:7, 3:7] = 135
+    tracked = np.zeros_like(exported)
+    tracked[0, 2:6, 2:6] = 135
+
+    monkeypatch.setattr(
+        corrections_module,
+        "_anchor_lineage_track_remaps",
+        lambda working_dir, corrections, cfg: {10: 135, 135: 135},
+    )
+
+    result, report = apply_post_solve_corrections(
+        exported,
+        [Correction(cell_id=135, t=0, kind="anchor", y=3.5, x=3.5)],
+        tracked,
+        TrackingConfig(anchor_radius_px=5.0),
+        working_dir="unused",
+    )
+
+    assert report.remapped_anchor_tracks == 1
+    assert np.all(result[0, 2:6, 2:6] == 135)
+    assert np.all(result[1, 3:7, 3:7] == 135)
 
 
 def test_apply_post_solve_corrections_evicts_unrelated_solver_pixels_for_validated_paste():
