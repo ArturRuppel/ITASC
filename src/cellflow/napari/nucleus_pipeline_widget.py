@@ -55,8 +55,8 @@ def _ultrack_available() -> bool:
 
 # ── Layer name constants ──────────────────────────────────────────────────────
 _TRACKED_LAYER = "Tracked: Nucleus"
-_PREVIEW_CONTOURS_LAYER = "Ultrack Preview: Contours"
-_PREVIEW_FOREGROUND_LAYER = "Ultrack Preview: Foreground"
+_PREVIEW_CONTOURS_LAYER = "[Preview] Ultrack Preview: Contours"
+_PREVIEW_FOREGROUND_LAYER = "[Preview] Ultrack Preview: Foreground"
 
 
 class NucleusPipelineWidget(QWidget):

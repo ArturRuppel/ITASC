@@ -42,11 +42,11 @@ from cellflow.tracking_ultrack.db_query import (
 
 logger = logging.getLogger(__name__)
 
-_PREVIEW_PREFIX = "[Preview]"
-_ULTRACK_DB_PREVIEW_LAYER = f"{_PREVIEW_PREFIX} Ultrack DB Preview"
-_ULTRACK_DB_SELECTION_LAYER = f"{_PREVIEW_PREFIX} Ultrack DB Selection"
-_ULTRACK_DB_ANNOTATION_LAYER = f"{_PREVIEW_PREFIX} Ultrack DB Annotations"
-_ULTRACK_DB_NUC_LAYER = f"{_PREVIEW_PREFIX} Cellpose nucleus prob"
+_DATABASE_PREFIX = "[Database]"
+_ULTRACK_DB_PREVIEW_LAYER = f"{_DATABASE_PREFIX} Ultrack DB Preview"
+_ULTRACK_DB_SELECTION_LAYER = f"{_DATABASE_PREFIX} Ultrack DB Selection"
+_ULTRACK_DB_ANNOTATION_LAYER = f"{_DATABASE_PREFIX} Ultrack DB Annotations"
+_ULTRACK_DB_NUC_LAYER = f"{_DATABASE_PREFIX} Cellpose nucleus prob"
 
 
 class NucleusUltrackDbBrowserWidget(QWidget):
@@ -296,7 +296,7 @@ class NucleusUltrackDbBrowserMixin:
 
     @staticmethod
     def _is_ultrack_db_preview_layer(name: str) -> bool:
-        return name.startswith(f"{_PREVIEW_PREFIX} ")
+        return name.startswith(f"{_DATABASE_PREFIX} ")
 
     def _capture_ultrack_db_preview_view_state(self) -> None:
         selected = [layer.name for layer in self.viewer.layers.selection]

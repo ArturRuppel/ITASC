@@ -139,9 +139,9 @@ def test_database_browser_activate_button_expands_and_deactivation_removes_layer
     widget._ultrack_db_path = lambda: Path(__file__)
     widget._refresh_ultrack_db_browser = lambda: None
 
-    viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint8), name="[Preview] Ultrack DB Preview")
-    viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint8), name="[Preview] Ultrack DB Selection")
-    viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint8), name="[Preview] Ultrack DB Annotations")
+    viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint8), name="[Database] Ultrack DB Preview")
+    viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint8), name="[Database] Ultrack DB Selection")
+    viewer.add_labels(np.ones((1, 4, 4), dtype=np.uint8), name="[Database] Ultrack DB Annotations")
 
     assert widget.ultrack_db_browser_section.is_expanded is False
 
@@ -154,9 +154,9 @@ def test_database_browser_activate_button_expands_and_deactivation_removes_layer
 
     assert widget.ultrack_db_browser_section.is_expanded is False
     assert widget._ultrack_db_browser_active is False
-    assert "[Preview] Ultrack DB Preview" not in viewer.layers
-    assert "[Preview] Ultrack DB Selection" not in viewer.layers
-    assert "[Preview] Ultrack DB Annotations" not in viewer.layers
+    assert "[Database] Ultrack DB Preview" not in viewer.layers
+    assert "[Database] Ultrack DB Selection" not in viewer.layers
+    assert "[Database] Ultrack DB Annotations" not in viewer.layers
 
     widget.deleteLater()
     viewer.close()
@@ -183,17 +183,17 @@ def test_database_browser_preview_mode_hides_restores_and_cleans_preview_layers(
     widget._update_ultrack_db_annotation_layer(labels, {1: 10}, {10: "REAL"})
     widget._get_ultrack_db_highlight_layer()
 
-    assert "[Preview] Ultrack DB Preview" in viewer.layers
-    assert "[Preview] Ultrack DB Annotations" in viewer.layers
-    assert "[Preview] Ultrack DB Selection" in viewer.layers
+    assert "[Database] Ultrack DB Preview" in viewer.layers
+    assert "[Database] Ultrack DB Annotations" in viewer.layers
+    assert "[Database] Ultrack DB Selection" in viewer.layers
 
     widget.ultrack_db_active_btn.setChecked(False)
 
     assert raw.visible is True
     assert tracked.visible is False
-    assert "[Preview] Ultrack DB Preview" not in viewer.layers
-    assert "[Preview] Ultrack DB Annotations" not in viewer.layers
-    assert "[Preview] Ultrack DB Selection" not in viewer.layers
+    assert "[Database] Ultrack DB Preview" not in viewer.layers
+    assert "[Database] Ultrack DB Annotations" not in viewer.layers
+    assert "[Database] Ultrack DB Selection" not in viewer.layers
 
     widget.deleteLater()
     viewer.close()
@@ -395,10 +395,10 @@ def test_ultrack_db_browser_selection_highlight_uses_cyan_contour():
 
     widget._update_ultrack_db_highlight(labels, 7)
 
-    layer = viewer.layers["[Preview] Ultrack DB Selection"]
+    layer = viewer.layers["[Database] Ultrack DB Selection"]
     assert layer.visible
     assert len(layer.data) == 1
-    assert layer.name == "[Preview] Ultrack DB Selection"
+    assert layer.name == "[Database] Ultrack DB Selection"
 
     widget.deleteLater()
     viewer.close()
@@ -453,15 +453,15 @@ def test_ultrack_db_browser_connected_focus_filters_by_viewer_frame(tmp_path, mo
     monkeypatch.setattr(widget, "_render_hierarchy_cut", _render)
 
     widget._refresh_ultrack_db_browser()
-    assert set(np.unique(viewer.layers["[Preview] Ultrack DB Preview"].data)) == {0, 1}
+    assert set(np.unique(viewer.layers["[Database] Ultrack DB Preview"].data)) == {0, 1}
 
     current["t"] = 3
     widget._refresh_ultrack_db_browser()
-    assert set(np.unique(viewer.layers["[Preview] Ultrack DB Preview"].data)) == {0, 1}
+    assert set(np.unique(viewer.layers["[Database] Ultrack DB Preview"].data)) == {0, 1}
 
     current["t"] = 5
     widget._refresh_ultrack_db_browser()
-    assert set(np.unique(viewer.layers["[Preview] Ultrack DB Preview"].data)) == {0, 1}
+    assert set(np.unique(viewer.layers["[Database] Ultrack DB Preview"].data)) == {0, 1}
 
     widget.deleteLater()
     viewer.close()
@@ -505,7 +505,7 @@ def test_ultrack_db_browser_edge_and_node_prob_transparency_multiply(tmp_path, m
 
     widget._refresh_ultrack_db_browser()
 
-    layer = viewer.layers["[Preview] Ultrack DB Preview"]
+    layer = viewer.layers["[Database] Ultrack DB Preview"]
     assert layer.data.shape == (2, 2, 4)
     assert layer.data[0, 0, 3] == pytest.approx(0.075)
     assert layer.data[1, 0, 3] == pytest.approx(1.0)
@@ -549,10 +549,10 @@ def test_ultrack_db_browser_refresh_reanchors_selection_contour(tmp_path, monkey
 
     widget._refresh_ultrack_db_browser()
     widget._select_ultrack_db_preview_label(1, frame=4)
-    first_contour = np.asarray(viewer.layers["[Preview] Ultrack DB Selection"].data[0]).copy()
+    first_contour = np.asarray(viewer.layers["[Database] Ultrack DB Selection"].data[0]).copy()
     widget._ultrack_db_preview_cache.clear()
     widget._refresh_ultrack_db_browser()
-    second_contour = np.asarray(viewer.layers["[Preview] Ultrack DB Selection"].data[0])
+    second_contour = np.asarray(viewer.layers["[Database] Ultrack DB Selection"].data[0])
 
     assert widget._ultrack_db_node_id_to_label == {222: 2}
     assert second_contour[:, 0].max() > first_contour[:, 0].max()
@@ -635,7 +635,7 @@ def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, m
     assert calls[0] == (db_path, 0, 0.75)
     assert widget.ultrack_db_info_lbl.text() == "3 nodes | 2 links | frame 0: 1 nodes"
     assert widget.ultrack_db_section_status_lbl.text() == "rendered hierarchy cut"
-    assert "[Preview] Ultrack DB Preview" in viewer.layers
+    assert "[Database] Ultrack DB Preview" in viewer.layers
 
     widget.deleteLater()
     viewer.close()
@@ -673,7 +673,7 @@ def test_ultrack_db_browser_probability_transparency_renders_rgba_preview(tmp_pa
 
     widget._refresh_ultrack_db_browser()
 
-    layer = viewer.layers["[Preview] Ultrack DB Preview"]
+    layer = viewer.layers["[Database] Ultrack DB Preview"]
     assert layer.data.shape == (2, 2, 4)
     assert layer.data[0, 0, 3] < layer.data[1, 1, 3]
     assert layer.data[0, 1, 3] == 0
@@ -711,7 +711,7 @@ def test_ultrack_db_browser_shows_summary_while_rendering_hierarchy(tmp_path, mo
     assert calls == [(db_path, 0, 0.5)]
     assert widget.ultrack_db_info_lbl.text() == "summary stats"
     assert widget.ultrack_db_section_status_lbl.text() == "rendered hierarchy cut"
-    assert "[Preview] Ultrack DB Preview" in viewer.layers
+    assert "[Database] Ultrack DB Preview" in viewer.layers
 
     widget.deleteLater()
     viewer.close()
@@ -747,8 +747,8 @@ def test_ultrack_db_browser_does_not_add_contour_or_foreground_layers(tmp_path, 
 
     widget._refresh_ultrack_db_browser()
 
-    assert "[Preview] Ultrack DB Preview" in viewer.layers
-    assert "[Preview] Ultrack DB Annotations" not in viewer.layers
+    assert "[Database] Ultrack DB Preview" in viewer.layers
+    assert "[Database] Ultrack DB Annotations" not in viewer.layers
     assert "Contour Maps: Nucleus" not in viewer.layers
     assert "Foreground Masks: Nucleus" not in viewer.layers
 

@@ -613,10 +613,10 @@ def test_preview_threshold_pair_updates_layers_without_mutating_pair_list(
     assert len(calls) == 1
     _contours, _foreground_scores, kwargs = calls[0]
     assert kwargs["threshold_pairs"] == metadata
-    assert "Ultrack Preview: Contours" in viewer.layers
-    assert "Ultrack Preview: Foreground" in viewer.layers
-    contour_layer = viewer.layers["Ultrack Preview: Contours"]
-    foreground_layer = viewer.layers["Ultrack Preview: Foreground"]
+    assert "[Preview] Ultrack Preview: Contours" in viewer.layers
+    assert "[Preview] Ultrack Preview: Foreground" in viewer.layers
+    contour_layer = viewer.layers["[Preview] Ultrack Preview: Contours"]
+    foreground_layer = viewer.layers["[Preview] Ultrack Preview: Foreground"]
     assert isinstance(foreground_layer, Labels)
     assert contour_layer.data.shape[:2] == (2, 1)
     assert foreground_layer.data.shape[:2] == (2, 1)
@@ -863,8 +863,8 @@ def test_unchecked_source_auto_preview_ignores_late_worker_result(tmp_path, monk
             captured["connect"]["returned"](stop.value)
             break
 
-    assert "Ultrack Preview: Contours" not in viewer.layers
-    assert "Ultrack Preview: Foreground" not in viewer.layers
+    assert "[Preview] Ultrack Preview: Contours" not in viewer.layers
+    assert "[Preview] Ultrack Preview: Foreground" not in viewer.layers
 
     widget.deleteLater()
     viewer.close()
