@@ -23,7 +23,10 @@ from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
-from cellflow.napari.ui_style import stage_header_label as _stage_header_label
+from cellflow.napari.ui_style import (
+    stage_header_action_button as _stage_header_action_button,
+    stage_header_label as _stage_header_label,
+)
 from cellflow.database.validation import read_corrections, read_validated_tracks
 from cellflow.segmentation import CancelledError
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
@@ -96,6 +99,16 @@ class NucleusPipelineWidget(QWidget):
         self.solve_params_btn = _tool_btn("⚙", "Show parameters for this stage.", checkable=True)
         self.solve_run_btn = _tool_btn("▶", "Run Ultrack solve.")
 
+        for button in (
+            self.seg_params_btn,
+            self.seg_run_btn,
+            self.db_params_btn,
+            self.db_run_btn,
+            self.solve_params_btn,
+            self.solve_run_btn,
+        ):
+            _stage_header_action_button(button, "nucleus")
+
         self.pipeline_status_lbl = _make_status()
         self.pipeline_progress_bar = _make_progress()
 
@@ -146,9 +159,9 @@ class NucleusPipelineWidget(QWidget):
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(4)
             row.addWidget(label)
-            row.addStretch(1)
             for w in trailing:
                 row.addWidget(w)
+            row.addStretch(1)
             return row
 
         # ── Ultrack database ─────────────────────────────────────────

@@ -62,6 +62,7 @@ from cellflow.napari.ui_style import (
     block_grid,
     compact_spinbox,
     danger_button,
+    stage_header_action_button,
     stage_header_label,
 )
 from cellflow.napari.validated_overlay_controller import (
@@ -337,11 +338,13 @@ class NucleusCorrectionWidget(QWidget):
 
         self.header_lbl = QLabel("Correction")
         stage_header_label(self.header_lbl, "nucleus")
+        for button in (self.shortcuts_btn, self.params_btn, self.active_btn):
+            stage_header_action_button(button, "nucleus")
         row.addWidget(self.header_lbl)
-        row.addStretch(1)
         row.addWidget(self.shortcuts_btn)
         row.addWidget(self.params_btn)
         row.addWidget(self.active_btn)
+        row.addStretch(1)
         return header
 
     def _build_correction_toolbar(self) -> QWidget:

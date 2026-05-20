@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QSizePolicy,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -27,6 +28,41 @@ def _make_viewer():
     app = QApplication.instance() or QApplication([])
     viewer = napari.Viewer(show=False)
     return app, viewer
+
+
+def _layout_items(layout):
+    return [layout.itemAt(i) for i in range(layout.count())]
+
+
+def _layout_widgets(layout):
+    return [
+        item.widget()
+        for item in _layout_items(layout)
+        if item.widget() is not None
+    ]
+
+
+def _layout_widgets_from_items(items):
+    return [item.widget() for item in items if item.widget() is not None]
+
+
+def _layout_for_row_items_containing(root, *widgets):
+    wanted = set(widgets)
+    for layout in root.findChildren(QVBoxLayout):
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            row = item.layout()
+            if row is None:
+                continue
+            row_items = _layout_items(row)
+            row_widgets = _layout_widgets_from_items(row_items)
+            if wanted <= set(row_widgets):
+                return row_items
+    raise AssertionError("No layout row contained all requested widgets")
+
+
+def _layout_for_row_containing(root, *widgets):
+    return _layout_widgets_from_items(_layout_for_row_items_containing(root, *widgets))
 
 
 def _install_import_stubs() -> None:
@@ -425,17 +461,75 @@ def test_deprecated_sections_are_removed():
     viewer.close()
 
 
+def test_nucleus_stage_row_buttons_are_clustered_next_to_title():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_label = next(
+        child for child in widget.findChildren(QLabel) if child.text() == "Ultrack database"
+    )
+    solve_label = next(
+        child for child in widget.findChildren(QLabel) if child.text() == "Ultrack solve"
+    )
+
+    db_items = _layout_for_row_items_containing(
+        widget, db_label, widget.db_params_btn, widget.db_run_btn
+    )
+    assert _layout_widgets_from_items(db_items[:3]) == [
+        db_label,
+        widget.db_params_btn,
+        widget.db_run_btn,
+    ]
+    assert db_items[3].spacerItem() is not None
+
+    solve_items = _layout_for_row_items_containing(
+        widget, solve_label, widget.solve_params_btn, widget.solve_run_btn
+    )
+    assert _layout_widgets_from_items(solve_items[:3]) == [
+        solve_label,
+        widget.solve_params_btn,
+        widget.solve_run_btn,
+    ]
+    assert solve_items[3].spacerItem() is not None
+
+    pipeline_items = _layout_items(widget.pipeline_files_header.layout())
+    assert _layout_widgets_from_items(pipeline_items[:2]) == [
+        widget.pipeline_files_header_lbl,
+        widget.pipeline_files_toggle_btn,
+    ]
+    assert pipeline_items[2].spacerItem() is not None
+
+    db_browser_items = _layout_items(widget.ultrack_db_browser_header.layout())
+    assert _layout_widgets_from_items(db_browser_items[:2]) == [
+        widget.ultrack_db_browser_header_lbl,
+        widget.ultrack_db_active_btn,
+    ]
+    assert db_browser_items[2].spacerItem() is not None
+
+    for button in (
+        widget.db_params_btn,
+        widget.db_run_btn,
+        widget.solve_params_btn,
+        widget.solve_run_btn,
+        widget.pipeline_files_toggle_btn,
+        widget.ultrack_db_active_btn,
+    ):
+        assert button.property("cellflow_stage_header_action") is True
+        assert "border-radius: 4px" in button.styleSheet()
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_correction_section_uses_stage_header_params_activate_and_active_toolbar():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
 
     header_layout = widget.correction_header.layout()
-    header_widgets = [
-        header_layout.itemAt(i).widget()
-        for i in range(header_layout.count())
-        if header_layout.itemAt(i).widget() is not None
-    ]
+    header_items = _layout_items(header_layout)
+    header_widgets = _layout_widgets_from_items(header_items)
 
     assert widget.correction_header_lbl.text() == "Correction"
     assert widget.correction_shortcuts_btn.text() == "📖"
@@ -450,11 +544,20 @@ def test_correction_section_uses_stage_header_params_activate_and_active_toolbar
         widget.correction_params_btn,
         widget.correction_active_btn,
     ]
+    assert header_items[4].spacerItem() is not None
     assert widget.correction_shortcuts_btn in header_widgets
     assert widget.correction_params_btn in header_widgets
     assert widget.correction_active_btn in header_widgets
     assert widget.save_tracked_btn not in header_widgets
     assert widget.remove_unvalidated_btn not in header_widgets
+
+    for button in (
+        widget.correction_shortcuts_btn,
+        widget.correction_params_btn,
+        widget.correction_active_btn,
+    ):
+        assert button.property("cellflow_stage_header_action") is True
+        assert "border-radius: 4px" in button.styleSheet()
 
     assert widget.correction_widget._outline_btn.parent() is widget.extend_retrack_params_section._inner
     assert widget.correction_widget._status.isVisible() is False

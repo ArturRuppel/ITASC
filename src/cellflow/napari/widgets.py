@@ -22,6 +22,7 @@ from .ui_style import (
     icon_button,
     muted_accent,
     muted_label,
+    stage_header_action_button,
     stage_header_label,
     status_label,
 )
@@ -249,6 +250,7 @@ def make_pipeline_files_header(
     stage_header_label(label, stage_key)
 
     button = tool_btn("🔍", "Show pipeline files.", checkable=True)
+    stage_header_action_button(button, stage_key)
     button.setChecked(section.is_expanded)
 
     def _set_expanded(checked: bool) -> None:
@@ -264,8 +266,8 @@ def make_pipeline_files_header(
     section._toggle.toggled.connect(button.setChecked)
 
     layout.addWidget(label)
-    layout.addStretch(1)
     layout.addWidget(button)
+    layout.addStretch(1)
     return header, label, button
 
 
