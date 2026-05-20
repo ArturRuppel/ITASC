@@ -212,6 +212,10 @@ def test_stage_header_action_button_uses_matching_pill_style(_app):
     assert "border-radius: 4px" in style
     assert button.property("cellflow_stage_key") == "nucleus"
     assert button.property("cellflow_stage_header_action") is True
+    assert button.minimumSize().width() == 22
+    assert button.minimumSize().height() == 22
+    assert button.maximumSize().width() == 22
+    assert button.maximumSize().height() == 22
     assert button.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
     assert button.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
 
