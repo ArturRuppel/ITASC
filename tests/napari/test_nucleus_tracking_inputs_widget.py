@@ -192,6 +192,23 @@ def test_tracking_inputs_widget_scoring_controls_always_enabled():
     widget.deleteLater()
 
 
+def test_tracking_inputs_widget_validated_corrections_control_lives_in_solve_section():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    assert widget.solve_use_validated_check is widget.db_gen_use_validated_check
+    assert widget.solve_use_validated_check.text() == "Use validated corrections"
+
+    db_checkboxes = set(widget.db_section._inner.findChildren(QCheckBox))
+    solve_checkboxes = set(widget.solve_section._inner.findChildren(QCheckBox))
+
+    assert widget.solve_use_validated_check not in db_checkboxes
+    assert widget.solve_use_validated_check in solve_checkboxes
+
+    widget.deleteLater()
+
+
 def test_tracking_inputs_widget_threshold_pair_list_starts_empty_and_adds_pairs():
     _app = QApplication.instance() or QApplication([])
     widget_class, _module = _load_widget_class()

@@ -590,7 +590,9 @@ class NucleusPipelineWidget(QWidget):
         tracked_path = self._tracked_path()
 
         cfg = self._ultrack_config_from_controls()
-        use_corrections = self._tracking_inputs_provider().db_gen_use_validated_check.isChecked()
+        use_corrections = (
+            self._tracking_inputs_provider().solve_use_validated_check.isChecked()
+        )
         corrections = read_corrections(pos_dir) if use_corrections else None
         validated_tracks = (
             read_validated_tracks(pos_dir)

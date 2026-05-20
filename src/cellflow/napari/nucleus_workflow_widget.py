@@ -201,6 +201,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.add_threshold_pair = ti.add_threshold_pair
         self.remove_selected_threshold_pair = ti.remove_selected_threshold_pair
         self.clear_threshold_pairs = ti.clear_threshold_pairs
+        self.solve_use_validated_check = ti.solve_use_validated_check
         self.db_gen_use_validated_check = ti.db_gen_use_validated_check
         self.ultrack_max_partitions_spin = ti.ultrack_max_partitions_spin
         self.ultrack_n_frames_spin = ti.ultrack_n_frames_spin

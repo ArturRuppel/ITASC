@@ -424,6 +424,41 @@ def test_nucleus_state_persists_explicit_threshold_pairs():
     viewer.close()
 
 
+def test_nucleus_state_persists_validated_corrections_as_solve_option():
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+
+    widget.solve_use_validated_check.setChecked(True)
+
+    state = widget.get_state()
+
+    assert "use_validated" not in state["db_generation"]
+    assert state["ultrack"]["resolve_from_validated"] is True
+
+    restored = widget_class(viewer)
+    restored.set_state(state)
+
+    assert restored.solve_use_validated_check.isChecked() is True
+
+    restored.deleteLater()
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_state_loads_legacy_db_generation_validated_option():
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+
+    widget.set_state({"db_generation": {"use_validated": True}})
+
+    assert widget.solve_use_validated_check.isChecked() is True
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_nucleus_state_loads_legacy_sweep_state_as_empty_threshold_pairs():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()

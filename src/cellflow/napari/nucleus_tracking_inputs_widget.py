@@ -135,9 +135,6 @@ class NucleusTrackingInputsWidget(QWidget):
             "Weight applied to shape circularity.",
         )
 
-        # ─── DB Generation — Validated Seed Prior ───────────────────
-        self.db_gen_use_validated_check = QCheckBox("Use validated corrections")
-
         # ─── Ultrack — Track Scope ──────────────────────────────────
         self.ultrack_max_partitions_spin = _islider(
             0, 1000, 30, tooltip="0 = use all partitions.")
@@ -168,6 +165,13 @@ class NucleusTrackingInputsWidget(QWidget):
             "Constant offset applied by Ultrack tracking_config.bias.",
         )
         self.ultrack_solver_lbl = QLabel("—")
+        self.solve_use_validated_check = QCheckBox("Use validated corrections")
+        self.solve_use_validated_check.setToolTip(
+            "Before solving, reapply saved validations/corrections as Ultrack "
+            "annotations and preserve them during export."
+        )
+        # Compatibility alias for saved state and older tests/callers.
+        self.db_gen_use_validated_check = self.solve_use_validated_check
 
         # ─── Pack DB Generation controls ────────────────────────────
         row = 0
@@ -223,9 +227,6 @@ class NucleusTrackingInputsWidget(QWidget):
             "Circularity\nweight:", self.db_gen_circularity_weight_spin,
         ); row += 1
 
-        add_section_header(db_grid, row, _heading("Validated Seed Prior")); row += 1
-        add_section_full_row(db_grid, row, self.db_gen_use_validated_check); row += 1
-
         # ─── Pack Ultrack solver controls ───────────────────────────
         row = 0
 
@@ -251,6 +252,9 @@ class NucleusTrackingInputsWidget(QWidget):
             "Bias:", self.ultrack_bias_spin,
         ); row += 1
         add_section_pair_row(solve_grid, row, "Solver:", self.ultrack_solver_lbl); row += 1
+
+        add_section_header(solve_grid, row, _heading("Validated Corrections")); row += 1
+        add_section_full_row(solve_grid, row, self.solve_use_validated_check); row += 1
 
         self.db_section = CollapsibleSection(
             "Database Generation Parameters",
