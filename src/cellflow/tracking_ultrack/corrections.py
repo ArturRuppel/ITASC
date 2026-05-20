@@ -506,12 +506,13 @@ def annotate_anchor_tail_links(
     *,
     tracked_labels: np.ndarray | None = None,
 ) -> AnchorTailLinkReport:
-    """Force best successor links after each anchored track tail.
+    """Force best predecessor and successor links around anchored tracks.
 
     Consecutive anchor links constrain only the user-confirmed frames. This
-    helper walks the best positive same-linker successor chain from the last
-    anchor of each cell, mirroring the greedy extender while still letting the
-    ILP handle conflicts with other annotated cells.
+    helper walks the best positive same-linker chain backward from the first
+    anchor and forward from the last anchor of each cell, mirroring the greedy
+    extender while still letting the ILP handle conflicts with other annotated
+    cells.
     """
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
@@ -550,6 +551,119 @@ def annotate_anchor_tail_links(
                 forced_node_ids_by_t.setdefault(int(t), set()).add(int(node_id))
 
         for cell_id, cell_anchors in sorted(anchor_by_cell.items()):
+            head = min(cell_anchors, key=lambda item: int(item.t))
+            source_id = _best_real_anchor_node_id(session, head, cfg, labels_arr)
+            if source_id is None:
+                skipped_no_anchor += 1
+            else:
+                seen_sources: set[int] = set()
+                annotated_for_cell = 0
+                while source_id not in seen_sources:
+                    seen_sources.add(int(source_id))
+                    source = (
+                        session.query(NodeDB)
+                        .where(NodeDB.id == source_id)
+                        .one_or_none()
+                    )
+                    if source is None:
+                        if annotated_for_cell == 0:
+                            skipped_no_anchor += 1
+                        break
+                    if int(source_id) in real_target_ids:
+                        break
+                    predecessor_t = int(source.t) - 1
+                    protected_mask = _correction_protected_mask(
+                        corrections,
+                        labels_arr,
+                        t=predecessor_t,
+                        source_cell_id=cell_id,
+                    )
+
+                    candidates = []
+                    rows = (
+                        session.query(LinkDB, NodeDB)
+                        .join(NodeDB, NodeDB.id == LinkDB.source_id)
+                        .where(
+                            LinkDB.target_id == int(source_id),
+                            NodeDB.t == predecessor_t,
+                            NodeDB.node_annot != VarAnnotation.FAKE,
+                        )
+                        .all()
+                    )
+                    for link, predecessor in rows:
+                        if link.weight is None or float(link.weight) <= 0:
+                            continue
+                        if int(predecessor.id) in real_source_ids:
+                            continue
+                        forced_ids = forced_node_ids_by_t.get(
+                            int(predecessor.t),
+                            set(),
+                        )
+                        if forced_ids:
+                            overlap = (
+                                session.query(OverlapDB.node_id)
+                                .where(
+                                    sqla.or_(
+                                        sqla.and_(
+                                            OverlapDB.node_id == int(predecessor.id),
+                                            OverlapDB.ancestor_id.in_(forced_ids),
+                                        ),
+                                        sqla.and_(
+                                            OverlapDB.ancestor_id
+                                            == int(predecessor.id),
+                                            OverlapDB.node_id.in_(forced_ids),
+                                        ),
+                                    )
+                                )
+                                .first()
+                            )
+                            if overlap is not None:
+                                continue
+                        if protected_mask is not None:
+                            from cellflow.tracking_ultrack._node_geometry import (
+                                node_bbox_and_mask as _node_bbox_and_mask,
+                            )
+
+                            (y0, x0, y1, x1), predecessor_crop = _node_bbox_and_mask(
+                                int(predecessor.id),
+                                predecessor.pickle,
+                            )
+                            if np.any(
+                                predecessor_crop & protected_mask[y0:y1, x0:x1]
+                            ):
+                                continue
+                        candidates.append(
+                            (
+                                float(link.weight),
+                                -_distance(
+                                    source.y,
+                                    source.x,
+                                    predecessor.y,
+                                    predecessor.x,
+                                ),
+                                int(predecessor.id),
+                                link,
+                            )
+                        )
+
+                    if not candidates:
+                        if annotated_for_cell == 0:
+                            skipped_no_link += 1
+                        break
+
+                    _weight, _neg_dist, next_source_id, best_link = max(
+                        candidates, key=lambda item: (item[0], item[1])
+                    )
+                    best_link.annotation = VarAnnotation.REAL
+                    real_source_ids.add(int(next_source_id))
+                    real_target_ids.add(int(source_id))
+                    forced_node_ids_by_t.setdefault(predecessor_t, set()).add(
+                        int(next_source_id)
+                    )
+                    annotated += 1
+                    annotated_for_cell += 1
+                    source_id = next_source_id
+
             tail = max(cell_anchors, key=lambda item: int(item.t))
             source_id = _best_real_anchor_node_id(session, tail, cfg, labels_arr)
             if source_id is None:
@@ -912,11 +1026,11 @@ def _anchor_lineage_track_remaps(
             for source_id, target_id in session.query(
                 LinkDB.source_id, LinkDB.target_id
             ).where(LinkDB.annotation == VarAnnotation.REAL):
-                if (
-                    int(source_id) in selected_node_ids
-                    and int(target_id) in selected_node_ids
-                ):
-                    real_links.setdefault(int(source_id), []).append(int(target_id))
+                source_id = int(source_id)
+                target_id = int(target_id)
+                if source_id in selected_node_ids and target_id in selected_node_ids:
+                    real_links.setdefault(source_id, []).append(target_id)
+                    real_links.setdefault(target_id, []).append(source_id)
 
             for correction in anchor_corrections:
                 t = int(correction.t)
