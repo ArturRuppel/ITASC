@@ -146,6 +146,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             tracking_inputs_provider=lambda: self.nucleus_tracking_inputs_widget,
             refresh_files_callback=lambda pos: self._files_widget.refresh(pos),
             refresh_db_browser_callback=lambda: self._refresh_ultrack_db_browser(),
+            sync_viewer_activity_callback=lambda: self._sync_viewer_activity_controls(),
             parent=self,
         )
         self._alias_pipeline_controls()
@@ -383,7 +384,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     def _connect_signals(self) -> None:
         # DB Browser
         self.source_threshold_preview_check.toggled.connect(
-            self._on_threshold_preview_toggled
+            self._on_guarded_source_threshold_preview_toggled
         )
         self.source_contour_threshold_spin.valueChanged.connect(
             self._on_threshold_preview_params_changed
@@ -391,8 +392,18 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.source_foreground_threshold_spin.valueChanged.connect(
             self._on_threshold_preview_params_changed
         )
-        self.ultrack_db_active_btn.toggled.connect(self._on_ultrack_db_activate)
-        self.ultrack_db_refresh_btn.clicked.connect(self._refresh_ultrack_db_browser)
+        self.ultrack_db_active_btn.toggled.connect(
+            self._on_guarded_ultrack_db_activate
+        )
+        try:
+            self.correction_active_btn.toggled.disconnect(
+                self.nucleus_correction_widget._on_correction_active_button_toggled
+            )
+        except (TypeError, RuntimeError):
+            pass
+        self.correction_active_btn.toggled.connect(
+            self._on_guarded_correction_active_button_toggled
+        )
         self.ultrack_db_source_slider.valueChanged.connect(
             self._on_ultrack_db_source_changed
         )
@@ -424,6 +435,141 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         solver = _select_solver()
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
         self.ultrack_solver_lbl.setText(solver_display)
+        self._sync_viewer_activity_controls()
+
+    # ================================================================
+    # Viewer activity guard
+    # ================================================================
+    @staticmethod
+    def _set_checked_without_signal(button, checked: bool) -> None:
+        old = button.blockSignals(True)
+        try:
+            button.setChecked(checked)
+        finally:
+            button.blockSignals(old)
+
+    def _active_viewer_activity(self, *, ignore: str | None = None) -> str | None:
+        activities = (
+            ("source_preview", self.source_threshold_preview_check.isChecked()),
+            (
+                "db_browser",
+                self.ultrack_db_active_btn.isChecked()
+                or self._ultrack_db_browser_active,
+            ),
+            ("correction", self.correction_active_btn.isChecked()),
+        )
+        for name, active in activities:
+            if active and name != ignore:
+                return name
+        return None
+
+    def _sync_viewer_activity_controls(self) -> None:
+        active = self._active_viewer_activity()
+        source_active = active == "source_preview"
+        db_active = active == "db_browser"
+        correction_active = active == "correction"
+        idle = active is None
+
+        self.source_threshold_preview_check.setEnabled(idle or source_active)
+        self.ultrack_db_active_btn.setEnabled(idle or db_active)
+        self.correction_active_btn.setEnabled(idle or correction_active)
+
+        pipeline_buttons = (
+            self.seg_run_btn,
+            self.db_run_btn,
+            self.solve_run_btn,
+            self.seg_params_btn,
+            self.db_params_btn,
+            self.solve_params_btn,
+        )
+        if active is not None:
+            for button in pipeline_buttons:
+                button.setEnabled(False)
+        elif self.nucleus_pipeline_widget._running_stage is None:
+            for button in pipeline_buttons:
+                button.setEnabled(True)
+
+        if source_active:
+            self.ultrack_db_active_btn.setToolTip(
+                "Turn off source preview before activating the database browser."
+            )
+            self.correction_active_btn.setToolTip(
+                "Turn off source preview before activating correction mode."
+            )
+        elif db_active:
+            self.source_threshold_preview_check.setToolTip(
+                "Deactivate the database browser before enabling source preview."
+            )
+            self.correction_active_btn.setToolTip(
+                "Deactivate the database browser before activating correction mode."
+            )
+        elif correction_active:
+            self.source_threshold_preview_check.setToolTip(
+                "Deactivate correction mode before enabling source preview."
+            )
+            self.ultrack_db_active_btn.setToolTip(
+                "Deactivate correction mode before activating the database browser."
+            )
+        else:
+            self.source_threshold_preview_check.setToolTip(
+                "Preview the current threshold pair and update when thresholds change."
+            )
+            self.ultrack_db_active_btn.setToolTip("Activate database browser.")
+            self.correction_active_btn.setToolTip(
+                "Activate correction mode and show correction layers and controls."
+            )
+
+    def _reject_conflicting_viewer_activity(
+        self,
+        *,
+        activity: str,
+        button,
+        checked: bool,
+    ) -> bool:
+        if not checked:
+            return False
+        if self._active_viewer_activity(ignore=activity) is None:
+            return False
+        self._set_checked_without_signal(button, False)
+        self._sync_viewer_activity_controls()
+        return True
+
+    def _cancel_source_threshold_preview(self) -> None:
+        cancel_event = getattr(self.nucleus_pipeline_widget, "_contour_cancel", None)
+        if cancel_event is not None:
+            cancel_event.set()
+
+    def _on_guarded_source_threshold_preview_toggled(self, checked: bool) -> None:
+        if self._reject_conflicting_viewer_activity(
+            activity="source_preview",
+            button=self.source_threshold_preview_check,
+            checked=checked,
+        ):
+            return
+        if not checked:
+            self._cancel_source_threshold_preview()
+        self._on_threshold_preview_toggled(checked)
+        self._sync_viewer_activity_controls()
+
+    def _on_guarded_ultrack_db_activate(self, checked: bool) -> None:
+        if self._reject_conflicting_viewer_activity(
+            activity="db_browser",
+            button=self.ultrack_db_active_btn,
+            checked=checked,
+        ):
+            return
+        self._on_ultrack_db_activate(checked)
+        self._sync_viewer_activity_controls()
+
+    def _on_guarded_correction_active_button_toggled(self, checked: bool) -> None:
+        if self._reject_conflicting_viewer_activity(
+            activity="correction",
+            button=self.correction_active_btn,
+            checked=checked,
+        ):
+            return
+        self._on_correction_active_button_toggled(checked)
+        self._sync_viewer_activity_controls()
 
     # ================================================================
     # Path helpers

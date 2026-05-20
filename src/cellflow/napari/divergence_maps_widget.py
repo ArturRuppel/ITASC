@@ -262,43 +262,28 @@ class DivergenceMapsWidget(QWidget):
             },
         )
         def _worker():
-            import queue as _queue
-
-            msg_queue: _queue.SimpleQueue = _queue.SimpleQueue()
-            result_holder: list = []
-            exc_holder: list[Exception] = []
+            progress_signal = self._progress_signal
 
             def _progress_cb(done: int, total: int, msg: str) -> None:
-                msg_queue.put((done, total, msg))
+                progress_signal.emit(
+                    int(done),
+                    int(total),
+                    self._channel_progress_message(channel, str(msg)),
+                )
 
-            def _run() -> None:
-                try:
-                    result_holder.append(build_divergence_maps(
-                        prob_path,
-                        dp_path,
-                        contours_out,
-                        fg_out,
-                        foreground_z_reduction=params["foreground_z_reduction"],
-                        contour_z_reduction=params["contour_z_reduction"],
-                        smoothing_sigma=params["smoothing_sigma"],
-                        median_radius=params["median_radius"],
-                        progress_cb=_progress_cb,
-                        cancel=cancel_event.is_set,
-                    ))
-                except Exception as exc:  # pragma: no cover - reported via worker
-                    exc_holder.append(exc)
-
-            thread = threading.Thread(target=_run, daemon=True)
-            thread.start()
             yield (0, 1, f"Starting {channel} divergence maps...")
-            while thread.is_alive() or not msg_queue.empty():
-                try:
-                    yield msg_queue.get_nowait()
-                except _queue.Empty:
-                    thread.join(timeout=0.05)
-            if exc_holder:
-                raise exc_holder[0]
-            return result_holder[0]
+            return build_divergence_maps(
+                prob_path,
+                dp_path,
+                contours_out,
+                fg_out,
+                foreground_z_reduction=params["foreground_z_reduction"],
+                contour_z_reduction=params["contour_z_reduction"],
+                smoothing_sigma=params["smoothing_sigma"],
+                median_radius=params["median_radius"],
+                progress_cb=_progress_cb,
+                cancel=cancel_event.is_set,
+            )
 
         self._worker = _worker()
 
@@ -383,6 +368,13 @@ class DivergenceMapsWidget(QWidget):
         self.progress_bar.setValue(done)
         self.status_lbl.setText(msg)
         self.status_lbl.setVisible(bool(msg))
+
+    @staticmethod
+    def _channel_progress_message(channel: Literal["nucleus", "cell"], msg: str) -> str:
+        prefix = "Divergence maps: "
+        if msg.startswith(prefix):
+            return f"{channel.title()} divergence maps: {msg[len(prefix):]}"
+        return msg
 
     # ── Public API ───────────────────────────────────────────────────
     def refresh(self, pos_dir: Path | str | None) -> None:

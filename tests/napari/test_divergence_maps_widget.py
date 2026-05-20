@@ -45,6 +45,42 @@ def _qapp():
     return _APP
 
 
+def _make_sync_thread_worker():
+    """Patch napari thread_worker so tests can observe worker callbacks."""
+    import inspect
+
+    def fake_thread_worker(connect=None):
+        def decorator(fn):
+            def wrapper(*args, **kwargs):
+                try:
+                    result = fn(*args, **kwargs)
+                except Exception as exc:
+                    if connect and "errored" in connect:
+                        connect["errored"](exc)
+                    return None
+                if inspect.isgenerator(result):
+                    return_value = None
+                    while True:
+                        try:
+                            yielded = next(result)
+                        except StopIteration as exc:
+                            return_value = exc.value
+                            break
+                        if connect and "yielded" in connect:
+                            connect["yielded"](yielded)
+                    if connect and "returned" in connect:
+                        connect["returned"](return_value)
+                elif connect and "returned" in connect:
+                    connect["returned"](result)
+                return None
+
+            return wrapper
+
+        return decorator
+
+    return fake_thread_worker
+
+
 def test_widget_constructs_and_exposes_public_api(monkeypatch):
     _qapp()
     mod = _load_widget(monkeypatch)
@@ -181,4 +217,71 @@ def test_run_invokes_build_divergence_maps(tmp_path, monkeypatch):
     assert captured["median_radius"] == 1
     assert captured["foreground_z_reduction"] == "mean"
     assert captured["contour_z_reduction"] == "mean"
+    w.deleteLater()
+
+
+def test_worker_emits_granular_progress_for_nucleus_and_cell(tmp_path, monkeypatch):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+    from cellflow.segmentation.divergence_maps import DivergenceMapsReport
+    import tifffile
+
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos = tmp_path / "pos00"
+    cellpose = pos / "1_cellpose"
+    cellpose.mkdir(parents=True)
+    for channel in ("nucleus", "cell"):
+        tifffile.imwrite(
+            cellpose / f"{channel}_prob_3dt.tif",
+            np.zeros((2, 1, 2, 2), dtype=np.float32),
+        )
+        tifffile.imwrite(
+            cellpose / f"{channel}_dp_3dt.tif",
+            np.zeros((2, 1, 2, 2, 2), dtype=np.float32),
+        )
+
+    def _fake_build(
+        prob_path,
+        dp_path,
+        contours_out,
+        foreground_out,
+        *,
+        foreground_z_reduction,
+        contour_z_reduction,
+        smoothing_sigma,
+        median_radius,
+        progress_cb=None,
+        cancel=None,
+    ):
+        channel = "nucleus" if "nucleus" in str(prob_path) else "cell"
+        if progress_cb is not None:
+            progress_cb(1, 2, f"{channel} frame 1/2")
+            progress_cb(2, 2, f"{channel} frame 2/2")
+        return DivergenceMapsReport(
+            frames=2,
+            foreground_z_reduction=foreground_z_reduction,
+            contour_z_reduction=contour_z_reduction,
+            smoothing_sigma=smoothing_sigma,
+            median_radius=median_radius,
+            contours_path=contours_out,
+            foreground_path=foreground_out,
+        )
+
+    monkeypatch.setattr(mod, "build_divergence_maps", _fake_build)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer())
+    w.refresh(pos)
+    progress_messages: list[str] = []
+    w._progress_signal.connect(lambda done, total, msg: progress_messages.append(msg))
+
+    w._start_worker("nucleus")
+    w._start_worker("cell")
+
+    assert progress_messages == [
+        "nucleus frame 1/2",
+        "nucleus frame 2/2",
+        "cell frame 1/2",
+        "cell frame 2/2",
+    ]
     w.deleteLater()

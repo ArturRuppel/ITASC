@@ -57,8 +57,6 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         header_lay.setSpacing(4)
         self.header_lbl = QLabel("Database Browser")
         _stage_header_label(self.header_lbl, "nucleus")
-        self.refresh_btn = _tool_btn("↻", "Refresh Ultrack database browser")
-        self.refresh_btn.setEnabled(False)
         self.active_btn = _tool_btn(
             "⏻",
             "Activate database browser.",
@@ -67,7 +65,6 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         self.active_btn.setChecked(False)
         header_lay.addWidget(self.header_lbl)
         header_lay.addStretch(1)
-        header_lay.addWidget(self.refresh_btn)
         header_lay.addWidget(self.active_btn)
 
         lay = QVBoxLayout(self)
@@ -193,7 +190,6 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_height_lbl = browser.height_lbl
         self._ultrack_db_slider_row = browser.slider_row
         self.ultrack_db_active_btn = browser.active_btn
-        self.ultrack_db_refresh_btn = browser.refresh_btn
         self.ultrack_db_prob_alpha_check = browser.prob_alpha_check
         self.ultrack_db_connected_focus_check = browser.connected_focus_check
         self.ultrack_db_edge_alpha_check = browser.edge_alpha_check
@@ -272,7 +268,6 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_active_btn.setToolTip(
             "Deactivate database browser." if enabled else "Activate database browser."
         )
-        self.ultrack_db_refresh_btn.setEnabled(enabled)
         self.ultrack_db_source_slider.setEnabled(enabled)
         self.ultrack_db_hierarchy_slider.setEnabled(enabled)
         self.ultrack_db_prob_alpha_check.setEnabled(enabled)

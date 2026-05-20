@@ -68,6 +68,7 @@ class NucleusPipelineWidget(QWidget):
         tracking_inputs_provider: Callable,
         refresh_files_callback: Callable[[Path | None], None],
         refresh_db_browser_callback: Callable[[], None],
+        sync_viewer_activity_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -77,6 +78,7 @@ class NucleusPipelineWidget(QWidget):
         self._tracking_inputs_provider = tracking_inputs_provider
         self._refresh_files_callback = refresh_files_callback
         self._refresh_db_browser_callback = refresh_db_browser_callback
+        self._sync_viewer_activity_callback = sync_viewer_activity_callback
 
         self._contour_worker = None
         self._db_gen_worker = None
@@ -271,6 +273,8 @@ class NucleusPipelineWidget(QWidget):
                 else:
                     params_btn.setEnabled(False)
                     run_btn.setEnabled(False)
+        if self._sync_viewer_activity_callback is not None:
+            self._sync_viewer_activity_callback()
 
     def _set_pipeline_buttons_enabled(self, enabled: bool) -> None:
         """Backward-compat shim — delegates to _set_running_stage."""
@@ -371,7 +375,11 @@ class NucleusPipelineWidget(QWidget):
     def _on_build_segmentation_inputs(self) -> None:
         self._on_preview_threshold_pair()
 
-    def _on_preview_threshold_pair(self) -> None:
+    def _on_preview_threshold_pair(
+        self,
+        *,
+        require_preview_enabled: bool = False,
+    ) -> None:
         pos_dir = self._pos_dir
         if pos_dir is None:
             self._status("No project open."); return
@@ -398,6 +406,13 @@ class NucleusPipelineWidget(QWidget):
             self._contour_worker = None
             self._contour_cancel = None
             self._clear_progress()
+            preview_check = (
+                self._tracking_inputs_provider().source_threshold_preview_check
+            )
+            if require_preview_enabled and not preview_check.isChecked():
+                self._status("Ultrack threshold preview cancelled.")
+                self._set_running_stage(None)
+                return
             # Core source stacks are P x T x Y x X. Display them as
             # T x P x Y x X so the viewer's leading axis remains time for
             # DB browser and correction actions that read current_step[0].
@@ -454,11 +469,11 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_threshold_preview_toggled(self, checked: bool) -> None:
         if checked:
-            self._on_preview_threshold_pair()
+            self._on_preview_threshold_pair(require_preview_enabled=True)
 
     def _on_threshold_preview_params_changed(self, *args) -> None:
         if self._tracking_inputs_provider().source_threshold_preview_check.isChecked():
-            self._on_preview_threshold_pair()
+            self._on_preview_threshold_pair(require_preview_enabled=True)
 
     def _on_contour_worker_error(self, exc: Exception) -> None:
         self._contour_worker = None

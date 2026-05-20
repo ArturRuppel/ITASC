@@ -927,6 +927,16 @@ class NucleusCorrectionWidget(QWidget):
         for pid in protected_ids_at_target:
             protected_mask |= (frame == pid)
 
+        assignments = tuple(
+            a for a in assignments
+            if int(a.cell_id) not in protected_ids_at_target
+        )
+        if not assignments:
+            self._correction_status(
+                f"Extend skipped: cell {source_id} is protected at t={result.target_frame}."
+            )
+            return
+
         changed_ids = {int(a.cell_id) for a in assignments}
         for cid in changed_ids:
             frame[frame == cid] = 0

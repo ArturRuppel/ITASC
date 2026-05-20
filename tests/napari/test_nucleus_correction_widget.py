@@ -743,3 +743,50 @@ def test_extend_greedy_overwrite_preserves_validated_cells(tmp_path, monkeypatch
 
     widget.deleteLater()
     viewer.close()
+
+
+def test_extend_greedy_overwrite_skips_validated_target_cell(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    pos_dir = tmp_path / "pos00"
+    db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget, module = _make_widget(viewer, pos_dir)
+
+    labels = np.zeros((2, 32, 32), dtype=np.uint32)
+    labels[0, 5:10, 5:10] = 7
+    labels[1, 14:18, 14:18] = 7
+    expected_target = labels[1].copy()
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 7
+    widget.extend_greedy_overwrite_check.setChecked(True)
+
+    source_mask = np.zeros((32, 32), dtype=bool)
+    source_mask[6:11, 6:11] = True
+
+    result = types.SimpleNamespace(
+        target_frame=1,
+        candidate_label=101,
+        candidate_partition=0,
+        mask_2d=source_mask,
+        bbox=(6, 6, 11, 11),
+        centroid_distance=1.0,
+        area_ratio=1.0,
+        centroid_corrected_iou=1.0,
+        existing_overlap=0.0,
+        assignments=(types.SimpleNamespace(cell_id=7, mask_2d=source_mask),),
+    )
+    monkeypatch.setitem(
+        module._DEFAULT_DEPENDENCIES,
+        "extend_track_from_db",
+        lambda **_kwargs: result,
+    )
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {7: {1}})
+
+    widget._on_extend(direction="forward")
+
+    frame = viewer.layers["Tracked: Nucleus"].data[1]
+    np.testing.assert_array_equal(frame, expected_target)
+
+    widget.deleteLater()
+    viewer.close()

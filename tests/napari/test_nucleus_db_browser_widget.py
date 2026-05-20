@@ -173,6 +173,7 @@ def test_database_browser_header_uses_icon_activate_button_distinct_from_run():
     assert widget.ultrack_db_browser_header_lbl.text() == "Database Browser"
     assert not widget.ultrack_db_browser_header_lbl.isHidden()
     assert not widget.ultrack_db_browser_section._toggle.isVisible()
+    assert not hasattr(widget, "ultrack_db_refresh_btn")
 
     widget.deleteLater()
     viewer.close()
@@ -190,7 +191,6 @@ def test_database_browser_activation_without_database_restores_button_and_sectio
     assert widget.ultrack_db_active_btn.isChecked() is False
     assert widget.ultrack_db_browser_section.is_expanded is False
     assert widget._ultrack_db_browser_active is False
-    assert widget.ultrack_db_refresh_btn.isEnabled() is False
     assert "data.db" in widget.ultrack_db_section_status_lbl.text()
 
     widget.deleteLater()
