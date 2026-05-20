@@ -24,6 +24,8 @@ from qtpy.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 
@@ -151,6 +153,28 @@ def _progress_bars(widget):
     return widget.findChildren(QProgressBar)
 
 
+def _layout_widgets(layout):
+    return [
+        layout.itemAt(i).widget()
+        for i in range(layout.count())
+        if layout.itemAt(i).widget() is not None
+    ]
+
+
+def _layout_for_row_containing(root, *widgets):
+    wanted = set(widgets)
+    for layout in root.findChildren(QVBoxLayout):
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            row = item.layout()
+            if row is None:
+                continue
+            row_widgets = _layout_widgets(row)
+            if wanted <= set(row_widgets):
+                return row_widgets
+    raise AssertionError("No layout row contained all requested widgets")
+
+
 def test_cell_params_controller_does_not_cover_pipeline_header(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
@@ -245,6 +269,54 @@ def test_widget_exposes_stage_rows_with_inline_params(monkeypatch):
     app.processEvents()
 
 
+def test_cell_stage_row_buttons_are_clustered_next_to_title(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    flow_label = next(
+        child for child in widget.findChildren(QLabel)
+        if child.text() == "Flow filtering"
+    )
+    contour_label = next(
+        child for child in widget.findChildren(QLabel)
+        if child.text() == "Contours"
+    )
+
+    flow_widgets = _layout_for_row_containing(
+        widget,
+        flow_label,
+        widget.flow_params_btn,
+        widget.flow_run_btn,
+    )
+    assert flow_widgets[:3] == [flow_label, widget.flow_params_btn, widget.flow_run_btn]
+
+    contour_widgets = _layout_for_row_containing(
+        widget,
+        contour_label,
+        widget.contour_params_btn,
+        widget.contour_preview_btn,
+        widget.contour_run_btn,
+    )
+    assert contour_widgets[:4] == [
+        contour_label,
+        widget.contour_params_btn,
+        widget.contour_preview_btn,
+        widget.contour_run_btn,
+    ]
+
+    for button in (
+        widget.flow_params_btn,
+        widget.flow_run_btn,
+        widget.contour_preview_btn,
+    ):
+        assert button.property("cellflow_stage_header_action") is True
+        assert "border-radius: 4px" in button.styleSheet()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_cell_stage_running_state_disables_other_rows(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
@@ -281,6 +353,20 @@ def test_cell_correction_uses_stage_style_header(monkeypatch):
     assert isinstance(widget.correction_shortcuts_btn, QToolButton)
     assert isinstance(widget.correction_params_btn, QToolButton)
     assert isinstance(widget.correction_active_btn, QToolButton)
+    header_widgets = _layout_widgets(widget.correction_header.layout())
+    assert header_widgets[:4] == [
+        widget.correction_header_lbl,
+        widget.correction_shortcuts_btn,
+        widget.correction_params_btn,
+        widget.correction_active_btn,
+    ]
+    for button in (
+        widget.correction_shortcuts_btn,
+        widget.correction_params_btn,
+        widget.correction_active_btn,
+    ):
+        assert button.property("cellflow_stage_header_action") is True
+        assert "border-radius: 4px" in button.styleSheet()
     assert widget.cell_correction_widget.isVisible() is False
 
     widget.correction_params_btn.setChecked(True)

@@ -35,6 +35,7 @@ from cellflow.correction.labels import best_overlapping_label
 from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.napari.cell_params_widget import CellParamsWidget
 from cellflow.napari.ui_style import (
+    stage_header_action_button,
     stage_header_label,
     status_label,
 )
@@ -200,6 +201,19 @@ class CellWorkflowWidget(QWidget):
         )
         self.segmentation_run_btn = _tool_btn("▶", "Run cell segmentation.")
 
+        for button in (
+            self.flow_params_btn,
+            self.flow_run_btn,
+            self.foreground_params_btn,
+            self.foreground_run_btn,
+            self.contour_params_btn,
+            self.contour_preview_btn,
+            self.contour_run_btn,
+            self.segmentation_params_btn,
+            self.segmentation_run_btn,
+        ):
+            stage_header_action_button(button, "cell")
+
         # Backward-compatible preferred alias for existing callers.
         self.filter_flow_btn = self.flow_run_btn
         self.build_foreground_btn = self.foreground_run_btn
@@ -262,9 +276,9 @@ class CellWorkflowWidget(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
         row.addWidget(label)
-        row.addStretch(1)
         for widget in trailing:
             row.addWidget(widget)
+        row.addStretch(1)
         return row
 
     def _install_params_aliases(self) -> None:

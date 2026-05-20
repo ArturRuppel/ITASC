@@ -34,6 +34,7 @@ from cellflow.napari.ui_style import (
     add_block_pair_row,
     block_grid,
     compact_spinbox,
+    stage_header_action_button,
     stage_header_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
@@ -276,11 +277,13 @@ class CellCorrectionWidget(QWidget):
 
         self.correction_header_lbl = QLabel("Correction")
         stage_header_label(self.correction_header_lbl, "cell")
+        for button in (self.shortcuts_btn, self.params_btn, self.active_btn):
+            stage_header_action_button(button, "cell")
         row.addWidget(self.correction_header_lbl)
-        row.addStretch(1)
         row.addWidget(self.shortcuts_btn)
         row.addWidget(self.params_btn)
         row.addWidget(self.active_btn)
+        row.addStretch(1)
         return header
 
     # ------------------------------------------------------------------ #
