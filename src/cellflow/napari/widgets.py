@@ -23,7 +23,6 @@ from .ui_style import (
     muted_accent,
     muted_label,
     stage_header_label,
-    stage_status_color,
     status_label,
 )
 from ._widget_helpers import tool_btn
@@ -67,20 +66,12 @@ class CollapsibleSection(QWidget):
         self._toggle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._toggle.toggled.connect(self._on_toggled)
 
-        # Status dot lives to the right of the toggle. Hidden until a caller
-        # invokes set_status(); when hidden it claims no layout space so the
-        # toggle continues to span the full section width.
         self._status: str | None = None
-        self._status_dot = QLabel()
-        self._status_dot.setObjectName("collapsible_status_dot")
-        self._status_dot.setFixedSize(10, 10)
-        self._status_dot.setVisible(False)
 
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(4)
         header_row.addWidget(self._toggle, 1)
-        header_row.addWidget(self._status_dot, 0, Qt.AlignVCenter)
         layout.addLayout(header_row)
 
         self._content_frame = QFrame()
@@ -189,7 +180,6 @@ class CollapsibleSection(QWidget):
     def set_header_visible(self, visible: bool) -> None:
         """Show or hide the built-in toggle header row."""
         self._toggle.setVisible(visible)
-        self._status_dot.setVisible(visible and self._status is not None)
 
     def set_title(self, title: str) -> None:
         """Update the header text."""
@@ -197,20 +187,8 @@ class CollapsibleSection(QWidget):
         self._toggle.setText(self._qt_display_text(title))
 
     def set_status(self, status: str | None) -> None:
-        """Show / update / clear the status dot on the right of the header.
-
-        Pass one of "not_started", "in_progress", "done" to display the dot
-        in that state, or None to hide it entirely.
-        """
+        """Store section status for callers without rendering a header indicator."""
         self._status = status
-        if status is None:
-            self._status_dot.setVisible(False)
-            return
-        color = stage_status_color(status)
-        self._status_dot.setStyleSheet(
-            f"background-color: {color}; border-radius: 5px;"
-        )
-        self._status_dot.setVisible(True)
 
     @property
     def status(self) -> str | None:

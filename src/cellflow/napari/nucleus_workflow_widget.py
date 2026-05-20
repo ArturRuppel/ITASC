@@ -17,6 +17,7 @@ from pathlib import Path
 import napari
 import numpy as np
 from qtpy.QtWidgets import (
+    QLabel,
     QVBoxLayout,
     QSizePolicy,
     QWidget,
@@ -112,6 +113,15 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         )
         root.addWidget(self.pipeline_files_header)
         root.addWidget(self._pipeline_files_section)
+
+        self.viewer_activity_banner = QLabel("")
+        self.viewer_activity_banner.setWordWrap(True)
+        self.viewer_activity_banner.setVisible(False)
+        self.viewer_activity_banner.setStyleSheet(
+            "QLabel { font-weight: 700; padding: 4px 6px; "
+            "border: 1px solid #f9e2af; background: rgba(249, 226, 175, 35); }"
+        )
+        root.addWidget(self.viewer_activity_banner)
 
         # ── Workflow sections ────────────────────────────────────────
         self._build_segmentation_inputs_section(root)
@@ -470,6 +480,27 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         correction_active = active == "correction"
         idle = active is None
 
+        activity_labels = {
+            "source_preview": "Preview mode active",
+            "db_browser": "Database browser active",
+            "correction": "Correction mode active",
+        }
+        activity_names = {
+            "source_preview": "preview mode",
+            "db_browser": "database browser mode",
+            "correction": "correction mode",
+        }
+        active_label = activity_labels.get(active)
+        active_name = activity_names.get(active)
+        if active_label is None:
+            self.viewer_activity_banner.setText("")
+            self.viewer_activity_banner.setVisible(False)
+        else:
+            self.viewer_activity_banner.setText(
+                f"{active_label}. Exit {active_name} to use disabled workflow controls."
+            )
+            self.viewer_activity_banner.setVisible(True)
+
         self.source_threshold_preview_check.setEnabled(idle or source_active)
         self.ultrack_db_active_btn.setEnabled(idle or db_active)
         self.correction_active_btn.setEnabled(idle or correction_active)
@@ -482,33 +513,52 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             self.db_params_btn,
             self.solve_params_btn,
         )
+        if not hasattr(self, "_pipeline_button_idle_tooltips"):
+            self._pipeline_button_idle_tooltips = {
+                button: button.toolTip() for button in pipeline_buttons
+            }
         if active is not None:
+            reason = (
+                f"Unavailable while {active_name} is active. "
+                f"Exit {active_name} to use this control."
+            )
             for button in pipeline_buttons:
                 button.setEnabled(False)
+                button.setToolTip(reason)
         elif self.nucleus_pipeline_widget._running_stage is None:
             for button in pipeline_buttons:
                 button.setEnabled(True)
+                button.setToolTip(self._pipeline_button_idle_tooltips.get(button, ""))
 
         if source_active:
+            self.source_threshold_preview_check.setToolTip(
+                "Preview mode active. Turn it off to restore workflow controls."
+            )
             self.ultrack_db_active_btn.setToolTip(
-                "Turn off source preview before activating the database browser."
+                "Unavailable while preview mode is active. Exit preview mode before activating the database browser."
             )
             self.correction_active_btn.setToolTip(
-                "Turn off source preview before activating correction mode."
+                "Unavailable while preview mode is active. Exit preview mode before activating correction mode."
             )
         elif db_active:
+            self.ultrack_db_active_btn.setToolTip(
+                "Database browser mode active. Turn it off to restore workflow controls."
+            )
             self.source_threshold_preview_check.setToolTip(
-                "Deactivate the database browser before enabling source preview."
+                "Unavailable while database browser mode is active. Exit database browser mode before enabling source preview."
             )
             self.correction_active_btn.setToolTip(
-                "Deactivate the database browser before activating correction mode."
+                "Unavailable while database browser mode is active. Exit database browser mode before activating correction mode."
             )
         elif correction_active:
+            self.correction_active_btn.setToolTip(
+                "Correction mode active. Turn it off to restore workflow controls."
+            )
             self.source_threshold_preview_check.setToolTip(
-                "Deactivate correction mode before enabling source preview."
+                "Unavailable while correction mode is active. Exit correction mode before enabling source preview."
             )
             self.ultrack_db_active_btn.setToolTip(
-                "Deactivate correction mode before activating the database browser."
+                "Unavailable while correction mode is active. Exit correction mode before activating the database browser."
             )
         else:
             self.source_threshold_preview_check.setToolTip(

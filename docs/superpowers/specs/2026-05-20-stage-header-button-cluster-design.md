@@ -3,16 +3,16 @@
 ## Problem
 
 CellFlow workflow stage rows currently split the visual header into a left-side
-stage title and right-side controls. This creates an unclear interaction model:
+stage title, detached right-side controls, and occasional right-side status
+indicators. This creates an unclear interaction model:
 the title area reads like the section identity, while the controls that expose or
-run that section can appear detached from it. Passive right-side labels or status
-text should not become click targets because they do not have an obvious toggle
-or command meaning.
+run that section can appear detached from it. Passive right-side labels also
+compete with the actual active-mode/status surfaces.
 
 ## Goal
 
 Make stage-row actions feel attached to the stage they affect without turning
-passive labels into ambiguous clickable regions.
+passive status indicators into a second header surface.
 
 ## Design
 
@@ -20,7 +20,7 @@ Stage rows should group their compact action buttons immediately to the right of
 the stage title:
 
 ```text
-[ Stage title  gear  run ]                         [optional passive status]
+[ Stage title  gear  run ]
 ```
 
 The title remains a stage-colored pill. The adjacent action buttons use a related
@@ -28,8 +28,9 @@ pill treatment so the left cluster reads as one coherent stage control group, bu
 each action remains an independent button with its own tooltip, checked state,
 keyboard focus, and click behavior.
 
-The right side of the row remains available for passive status or metadata. Those
-labels are not clickable.
+Right-side status indicators should be removed from stage headers. State should
+instead appear in the shared status/progress area, active-state banners, button
+checked state, and disabled-reason tooltips.
 
 ## Components
 
@@ -37,15 +38,15 @@ labels are not clickable.
 - Reuse existing `QToolButton` controls for parameter toggles, run buttons,
   preview buttons, and activation buttons.
 - Update the cell and nucleus workflow stage-row builders so buttons are added
-  directly after the stage label, followed by stretch and any passive trailing
-  widgets.
+  directly after the stage label, followed by stretch only when layout spacing
+  needs it.
 
 ## Behavior
 
 - Parameter buttons still expand or collapse their associated inline
   `CollapsibleSection`.
 - Run, preview, active, and file-browser buttons keep their current semantics.
-- Passive labels and status summaries do not toggle sections.
+- Stage headers do not show passive right-side status indicators.
 - Existing keyboard navigation remains intact because the controls remain normal
   Qt buttons.
 
@@ -61,6 +62,6 @@ labels are not clickable.
 ## Out of Scope
 
 - Do not make whole header rows clickable.
-- Do not make passive sublabels or status text clickable.
+- Do not add passive sublabels or status text to the right side of stage headers.
 - Do not replace gear icons with chevrons in this change.
 - Do not change the underlying stage execution or parameter state logic.

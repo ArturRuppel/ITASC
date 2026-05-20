@@ -39,10 +39,11 @@ from cellflow.tracking_ultrack.db_query import (
 
 logger = logging.getLogger(__name__)
 
-_ULTRACK_DB_PREVIEW_LAYER = "Ultrack DB Preview"
-_ULTRACK_DB_SELECTION_LAYER = "Ultrack DB Selection"
-_ULTRACK_DB_ANNOTATION_LAYER = "Ultrack DB Annotations"
-_ULTRACK_DB_NUC_LAYER = "Cellpose nucleus prob"
+_PREVIEW_PREFIX = "[Preview]"
+_ULTRACK_DB_PREVIEW_LAYER = f"{_PREVIEW_PREFIX} Ultrack DB Preview"
+_ULTRACK_DB_SELECTION_LAYER = f"{_PREVIEW_PREFIX} Ultrack DB Selection"
+_ULTRACK_DB_ANNOTATION_LAYER = f"{_PREVIEW_PREFIX} Ultrack DB Annotations"
+_ULTRACK_DB_NUC_LAYER = f"{_PREVIEW_PREFIX} Cellpose nucleus prob"
 
 
 class NucleusUltrackDbBrowserWidget(QWidget):
@@ -165,6 +166,7 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_node_annotations: dict[int, str] = {}
         self._ultrack_db_preview_labels: np.ndarray | None = None
         self._ultrack_db_preview_mouse_callback = None
+        self._ultrack_db_preview_view_state: dict | None = None
 
     def _build_db_browser_section(self, root: QVBoxLayout) -> None:
         self.ultrack_db_browser_widget = NucleusUltrackDbBrowserWidget(self)
@@ -256,12 +258,15 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_browser_active = checked
         self._set_ultrack_db_controls_enabled(checked)
         if checked:
+            self._capture_ultrack_db_preview_view_state()
+            self._hide_non_ultrack_db_preview_layers()
             self.ultrack_db_browser_section.expand()
             self._load_db_browser_nucleus_image()
             self._ultrack_db_frame_initialized = False
             self._refresh_ultrack_db_browser()
         else:
             self._remove_ultrack_db_browser_layers()
+            self._restore_ultrack_db_preview_view_state()
             self.ultrack_db_browser_section.collapse()
 
     def _set_ultrack_db_controls_enabled(self, enabled: bool) -> None:
@@ -278,14 +283,46 @@ class NucleusUltrackDbBrowserMixin:
 
     def _remove_ultrack_db_browser_layers(self) -> None:
         self._remove_ultrack_db_preview_selector()
-        for name in (_ULTRACK_DB_PREVIEW_LAYER, _ULTRACK_DB_ANNOTATION_LAYER):
-            if name in self.viewer.layers:
-                self.viewer.layers.remove(name)
-        if _ULTRACK_DB_SELECTION_LAYER in self.viewer.layers:
-            self.viewer.layers.remove(_ULTRACK_DB_SELECTION_LAYER)
+        for layer in list(self.viewer.layers):
+            if self._is_ultrack_db_preview_layer(layer.name):
+                self.viewer.layers.remove(layer)
         self._remove_db_browser_nucleus_image()
         self.ultrack_db_info_lbl.setText("—")
         self._set_ultrack_db_status("")
+
+    @staticmethod
+    def _is_ultrack_db_preview_layer(name: str) -> bool:
+        return name.startswith(f"{_PREVIEW_PREFIX} ")
+
+    def _capture_ultrack_db_preview_view_state(self) -> None:
+        selected = [layer.name for layer in self.viewer.layers.selection]
+        active = self.viewer.layers.selection.active
+        self._ultrack_db_preview_view_state = {
+            "visibility": {
+                layer.name: bool(layer.visible) for layer in self.viewer.layers
+            },
+            "active": active.name if active is not None else None,
+            "selected": selected,
+        }
+
+    def _hide_non_ultrack_db_preview_layers(self) -> None:
+        for layer in self.viewer.layers:
+            if not self._is_ultrack_db_preview_layer(layer.name):
+                layer.visible = False
+
+    def _restore_ultrack_db_preview_view_state(self) -> None:
+        state = self._ultrack_db_preview_view_state or {}
+        for name, visible in state.get("visibility", {}).items():
+            if name in self.viewer.layers:
+                self.viewer.layers[name].visible = bool(visible)
+        self.viewer.layers.selection.clear()
+        for name in state.get("selected", ()):
+            if name in self.viewer.layers:
+                self.viewer.layers.selection.add(self.viewer.layers[name])
+        active_name = state.get("active")
+        if active_name in self.viewer.layers:
+            self.viewer.layers.selection.active = self.viewer.layers[active_name]
+        self._ultrack_db_preview_view_state = None
 
     def _load_db_browser_nucleus_image(self) -> None:
         if _ULTRACK_DB_NUC_LAYER in self.viewer.layers:

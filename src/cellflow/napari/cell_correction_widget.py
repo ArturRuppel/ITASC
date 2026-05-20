@@ -12,6 +12,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
@@ -93,6 +94,7 @@ class CellCorrectionWidget(QWidget):
         self._files_widget_refresh = files_widget_refresh_callback or (lambda _pd: None)
         self._correction_view_state: dict | None = None
         self._correction_owned_layers: set[str] = set()
+        self._correction_dirty: bool = False
         self._setup_ui()
         self._connect_signals()
 
@@ -345,11 +347,39 @@ class CellCorrectionWidget(QWidget):
             self._sync_correction_panel_visibility()
             return
 
+        if not self._confirm_deactivate_with_unsaved_changes():
+            self._set_checked_without_signal(self.active_btn, True)
+            self._sync_correction_panel_visibility()
+            return
+
+        self._set_checked_without_signal(self.active_btn, False)
         self.correction_widget.deactivate()
         self._refresh_tracked_layer_from_disk()
         self._remove_correction_owned_layers()
         self._restore_correction_view_state()
         self._sync_correction_panel_visibility()
+
+    def _confirm_deactivate_with_unsaved_changes(self) -> bool:
+        if not self._correction_dirty:
+            return True
+        choice = QMessageBox.question(
+            self,
+            "Save correction changes?",
+            (
+                "Correction mode has unsaved changes. "
+                "Save cell labels before turning correction mode off?"
+            ),
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if choice == QMessageBox.Cancel:
+            return False
+        if choice == QMessageBox.Save:
+            self._on_save_labels()
+            self._correction_dirty = False
+        elif choice == QMessageBox.Discard:
+            self._correction_dirty = False
+        return True
 
     def _remove_correction_owned_layers(self) -> None:
         for name in list(self._correction_owned_layers):
@@ -455,6 +485,11 @@ class CellCorrectionWidget(QWidget):
     def _correction_status(self, msg: str) -> None:
         self.correction_status_lbl.setText(msg)
         self.correction_status_lbl.setVisible(bool(msg))
+        lowered = msg.lower()
+        if "unsaved" in lowered:
+            self._correction_dirty = True
+        elif lowered.startswith("saved") or lowered.startswith("loaded"):
+            self._correction_dirty = False
         if msg:
             logger.info(msg)
 
@@ -581,6 +616,7 @@ class CellCorrectionWidget(QWidget):
         lp.parent.mkdir(parents=True, exist_ok=True)
         tifffile.imwrite(str(lp), data.astype(np.uint32, copy=False), compression="zlib")
         self._files_widget_refresh(self._pos_dir)
+        self._correction_dirty = False
         self._correction_status(f"Saved {data.shape[0]} frames → {lp.name}.")
 
     # ------------------------------------------------------------------ #

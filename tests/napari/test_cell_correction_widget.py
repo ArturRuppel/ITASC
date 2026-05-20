@@ -255,6 +255,53 @@ def test_save_labels_shows_error_when_no_layer_present(tmp_path):
     viewer.close()
 
 
+def test_cell_correction_deactivation_prompts_to_save_unsaved_changes(monkeypatch):
+    _app, viewer = _make_viewer()
+    widget, module = _make_widget(viewer)
+    save_calls = []
+
+    widget._correction_dirty = True
+    widget._set_checked_without_signal(widget.active_btn, True)
+    monkeypatch.setattr(
+        module.QMessageBox,
+        "question",
+        lambda *args, **kwargs: module.QMessageBox.Save,
+    )
+    monkeypatch.setattr(widget, "_on_save_labels", lambda: save_calls.append("save"))
+    monkeypatch.setattr(widget, "_refresh_tracked_layer_from_disk", lambda: None)
+    monkeypatch.setattr(widget, "_remove_correction_owned_layers", lambda: None)
+    monkeypatch.setattr(widget, "_restore_correction_view_state", lambda: None)
+
+    widget._on_active_button_toggled(False)
+
+    assert save_calls == ["save"]
+    assert widget.active_btn.isChecked() is False
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_cell_correction_deactivation_cancel_keeps_unsaved_mode_active(monkeypatch):
+    _app, viewer = _make_viewer()
+    widget, module = _make_widget(viewer)
+
+    widget._correction_dirty = True
+    widget._set_checked_without_signal(widget.active_btn, True)
+    monkeypatch.setattr(
+        module.QMessageBox,
+        "question",
+        lambda *args, **kwargs: module.QMessageBox.Cancel,
+    )
+
+    widget._on_active_button_toggled(False)
+
+    assert widget.active_btn.isChecked() is True
+    assert widget._correction_dirty is True
+
+    widget.deleteLater()
+    viewer.close()
+
+
 # ── Fill holes ────────────────────────────────────────────────────────────────
 
 

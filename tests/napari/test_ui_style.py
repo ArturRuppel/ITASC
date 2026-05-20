@@ -272,6 +272,17 @@ def test_collapsible_section_header_spans_available_width(_app):
     wrapper.deleteLater()
 
 
+def test_collapsible_section_status_does_not_show_right_side_indicator(_app):
+    section = CollapsibleSection("Pipeline Files", QLabel("files"), expanded=False)
+
+    section.set_status("done")
+
+    assert section.status == "done"
+    assert section.findChild(QLabel, "collapsible_status_dot") is None
+
+    section.deleteLater()
+
+
 def test_pipeline_files_widget_reflects_present_and_missing_states(_app, tmp_path):
     widget = PipelineFilesWidget(
         [

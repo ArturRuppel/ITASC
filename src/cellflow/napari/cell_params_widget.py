@@ -49,7 +49,9 @@ class CellParamsWidget(QWidget):
             "Blend: flow direction (1) vs EDT gravity (0).",
         )
         self.ff_step_scale_spin = _dslider(0.01, 2, 0.2, 0.05, 2, "Step-size multiplier.")
-        self.ff_max_iter_spin = _islider(10, 2000, 100, 10, "Max integration steps.")
+        self.ff_max_iter_spin = _islider(
+            10, 2000, 100, 10, "Max integration steps.", step_buttons=True
+        )
 
         # Contour — gamma averaging
         self.gamma_min_spin = _dslider(0.05, 5, 1.0, 0.05, 2)

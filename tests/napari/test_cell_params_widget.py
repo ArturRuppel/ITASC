@@ -11,7 +11,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel
+from qtpy.QtWidgets import QApplication, QLabel, QToolButton
 
 
 def _install_import_stubs() -> None:
@@ -239,6 +239,33 @@ def test_contour_ff_params_reflects_current_spinbox_values():
     assert params.median_kernel_space == 1
     assert params.gaussian_sigma_time == pytest.approx(0.0)
     assert params.gaussian_sigma_space == pytest.approx(0.0)
+
+    widget.deleteLater()
+
+
+def test_ff_max_iter_slider_has_step_buttons():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _mod = _load_widget_class()
+    widget = widget_class()
+
+    buttons = {
+        button.objectName(): button
+        for button in widget.ff_max_iter_spin.findChildren(QToolButton)
+    }
+
+    decrement = buttons["slider_decrement_button"]
+    increment = buttons["slider_increment_button"]
+
+    widget.ff_max_iter_spin.setValue(100)
+    increment.click()
+    assert widget.ff_max_iter_spin.value() == 110
+
+    decrement.click()
+    assert widget.ff_max_iter_spin.value() == 100
+
+    widget.ff_max_iter_spin.setValue(widget.ff_max_iter_spin.minimum())
+    decrement.click()
+    assert widget.ff_max_iter_spin.value() == widget.ff_max_iter_spin.minimum()
 
     widget.deleteLater()
 

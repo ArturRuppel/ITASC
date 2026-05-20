@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QShortcut,
     QVBoxLayout,
     QWidget,
@@ -123,6 +124,7 @@ class NucleusCorrectionWidget(QWidget):
         self._edit_callback = edit_callback or self._on_cells_edited
         self._correction_owned_layers: set[str] = set()
         self._correction_view_state: dict | None = None
+        self._correction_dirty: bool = False
         self._swap_cursor: _SwapCursor | None = None
         self._validated_overlay = ValidatedOverlayController(
             self.viewer,
@@ -616,6 +618,11 @@ class NucleusCorrectionWidget(QWidget):
     def _correction_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
         self.status_lbl.setVisible(bool(msg))
+        lowered = msg.lower()
+        if "unsaved" in lowered:
+            self._correction_dirty = True
+        elif lowered.startswith("saved") or lowered.startswith("loaded"):
+            self._correction_dirty = False
         if msg:
             logger.info(msg)
 
@@ -631,6 +638,7 @@ class NucleusCorrectionWidget(QWidget):
         n = layer.data.shape[0]
         for t in range(n):
             write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
+        self._correction_dirty = False
         self._correction_status(f"Saved {n} frame(s) to {tracked_path.name}.")
 
     @staticmethod
@@ -1311,6 +1319,14 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_refinement_widget()
             return
 
+        if not self._confirm_deactivate_with_unsaved_changes():
+            self._set_checked_without_signal(self.active_btn, True)
+            self._correction_active_content_visible = True
+            self._sync_correction_panel_visibility()
+            self._refresh_refinement_widget()
+            return
+
+        self._set_checked_without_signal(self.active_btn, False)
         self._correction_active_content_visible = False
         self.correction_widget.deactivate()
         for sc in getattr(self, "_correction_shortcuts", []):
@@ -1326,6 +1342,28 @@ class NucleusCorrectionWidget(QWidget):
         self.shortcuts_section._toggle.setChecked(False)
         self._sync_correction_panel_visibility()
         self._refresh_refinement_widget()
+
+    def _confirm_deactivate_with_unsaved_changes(self) -> bool:
+        if not self._correction_dirty:
+            return True
+        choice = QMessageBox.question(
+            self,
+            "Save correction changes?",
+            (
+                "Correction mode has unsaved changes. "
+                "Save tracked labels before turning correction mode off?"
+            ),
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if choice == QMessageBox.Cancel:
+            return False
+        if choice == QMessageBox.Save:
+            self._on_save_tracked()
+            self._correction_dirty = False
+        elif choice == QMessageBox.Discard:
+            self._correction_dirty = False
+        return True
 
     def _refresh_refinement_widget(self) -> None:
         self._refresh_refinement_callback()

@@ -580,3 +580,51 @@ Expected: only unrelated pre-existing local changes remain, or a clean tree if t
 - Both widgets: Task 2 covers nucleus; Task 3 covers cell.
 - Existing params and shortcuts preserved: Tasks 2 and 3 leave `_tool_btn` params/shortcuts controls intact; Task 4 keeps workflow assertions for those compact controls.
 - Tests: Tasks 2, 3, 4, and 5 cover direct widget behavior and workflow aliases.
+
+---
+
+## Follow-Up TODO: Louder Exclusive Viewer States
+
+Preview mode, correction mode, and database-browser mode are mutually exclusive
+viewer states. When one is active, the workflow disables buttons that would
+conflict with the active state. That behavior is correct, but the UI needs to
+make the active state louder so users can immediately tell why other buttons are
+disabled and what they need to exit first.
+
+- [ ] Add a persistent active-state banner for source preview mode.
+  - Label it clearly as preview/source-preview active.
+  - Include an obvious exit/stop action.
+  - Update disabled button tooltips to say they are unavailable while preview mode is active.
+
+- [ ] Add or keep a persistent active-state banner for correction mode.
+  - Label it clearly as correction mode active.
+  - Include an obvious exit action.
+  - Update disabled button tooltips to say they are unavailable while correction mode is active.
+  - When correction mode has unsaved changes, prompt before deactivation with a file dialog asking whether to save the corrections.
+  - Keep correction mode active if the user cancels the save/deactivation prompt.
+
+- [ ] Add a persistent active-state banner for database-browser mode.
+  - Label it clearly as database browser active.
+  - Include an obvious exit/close action.
+  - Update disabled button tooltips to say they are unavailable while database browser mode is active.
+
+- [ ] Make Ultrack database preview layers behave like correction-mode layers.
+  - Add a `[Preview]` prefix/tag to layers created by Ultrack database preview mode.
+  - Disable or hide unrelated viewer layers while preview mode is active so the preview state is unambiguous.
+  - Restore previously visible/enabled layers after preview mode is deactivated.
+  - Remove all `[Preview]` layers when preview mode exits so stale preview overlays do not remain in the viewer.
+
+- [ ] Centralize the disabled-reason text for exclusive viewer states.
+  - Use the same wording from banners, button tooltips, and status messages.
+  - Cover `source_threshold_preview_check`, `ultrack_db_active_btn`, `correction_active_btn`, and the pipeline run/parameter buttons disabled by `_sync_viewer_activity_controls()`.
+  - Prefer a small helper over repeating ad hoc strings across widgets.
+
+- [ ] Remove right-side status indicators from stage headers.
+  - Keep stage-header rows focused on the title and its action buttons.
+  - Put state in the shared status/progress area, active-state banners, checked button state, and disabled-reason tooltips instead.
+  - Update layout tests so no passive status label is expected on the right side.
+
+- [ ] Add focused Qt tests for each active state.
+  - Assert the correct banner is visible.
+  - Assert conflicting controls are disabled.
+  - Assert each disabled conflicting control explains the active mode in its tooltip.

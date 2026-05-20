@@ -6,6 +6,7 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -118,7 +119,40 @@ def _patch_label_autosize(label) -> None:
     label._update_size()
 
 
-def _stack_slider_label_above(slider) -> None:
+def _slider_step_button(text: str, object_name: str, tooltip: str) -> QToolButton:
+    button = QToolButton()
+    button.setText(text)
+    button.setObjectName(object_name)
+    button.setToolTip(tooltip)
+    button.setAutoRepeat(True)
+    button.setFixedSize(18, 18)
+    button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    return button
+
+
+def _connect_slider_step_buttons(slider) -> tuple[QToolButton, QToolButton]:
+    decrement = _slider_step_button(
+        "-", "slider_decrement_button", "Decrease by one step"
+    )
+    increment = _slider_step_button(
+        "+", "slider_increment_button", "Increase by one step"
+    )
+
+    def _set_stepped_value(direction: int) -> None:
+        slider.setValue(slider.value() + direction * slider.singleStep())
+
+    def _sync_button_state(*_args) -> None:
+        decrement.setEnabled(slider.value() > slider.minimum())
+        increment.setEnabled(slider.value() < slider.maximum())
+
+    decrement.clicked.connect(lambda: _set_stepped_value(-1))
+    increment.clicked.connect(lambda: _set_stepped_value(1))
+    slider.valueChanged.connect(_sync_button_state)
+    _sync_button_state()
+    return decrement, increment
+
+
+def _stack_slider_label_above(slider, *, step_buttons: bool = False) -> None:
     """Repack a QLabeledSlider / QLabeledDoubleSlider so the editable value
     label sits centered above the slider track instead of beside it."""
     label = slider._label
@@ -138,11 +172,21 @@ def _stack_slider_label_above(slider) -> None:
     vbox.setContentsMargins(0, 0, 0, 0)
     vbox.setSpacing(0)
     vbox.addWidget(label, alignment=Qt.AlignmentFlag.AlignHCenter)
-    vbox.addWidget(track)
+    if step_buttons:
+        decrement, increment = _connect_slider_step_buttons(slider)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        row.addWidget(decrement, alignment=Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(track)
+        row.addWidget(increment, alignment=Qt.AlignmentFlag.AlignVCenter)
+        vbox.addLayout(row)
+    else:
+        vbox.addWidget(track)
     slider.setLayout(vbox)
 
 
-def dslider(lo, hi, val, step=0.1, decimals=2, tooltip=""):
+def dslider(lo, hi, val, step=0.1, decimals=2, tooltip="", *, step_buttons=False):
     """A horizontal QLabeledDoubleSlider — same call signature as `dspin`.
 
     The editable value label sits above the slider track for a compact,
@@ -154,11 +198,11 @@ def dslider(lo, hi, val, step=0.1, decimals=2, tooltip=""):
     s.setDecimals(decimals)
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    _stack_slider_label_above(s)
+    _stack_slider_label_above(s, step_buttons=step_buttons)
     return s
 
 
-def islider(lo, hi, val, step=1, tooltip=""):
+def islider(lo, hi, val, step=1, tooltip="", *, step_buttons=False):
     """A horizontal QLabeledSlider — same call signature as `ispin`.
 
     The editable value label sits above the slider track."""
@@ -168,7 +212,7 @@ def islider(lo, hi, val, step=1, tooltip=""):
     s.setSingleStep(step)
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    _stack_slider_label_above(s)
+    _stack_slider_label_above(s, step_buttons=step_buttons)
     return s
 
 

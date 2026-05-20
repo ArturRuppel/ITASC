@@ -707,6 +707,10 @@ def test_source_auto_preview_blocks_conflicting_viewer_tools(tmp_path):
     assert widget.correction_active_btn.isEnabled() is False
     assert widget.db_run_btn.isEnabled() is False
     assert widget.solve_run_btn.isEnabled() is False
+    assert widget.viewer_activity_banner.isHidden() is False
+    assert "Preview mode active" in widget.viewer_activity_banner.text()
+    assert "preview mode is active" in widget.db_run_btn.toolTip().lower()
+    assert "preview mode is active" in widget.correction_active_btn.toolTip().lower()
 
     widget.source_threshold_preview_check.setChecked(False)
 
@@ -714,6 +718,7 @@ def test_source_auto_preview_blocks_conflicting_viewer_tools(tmp_path):
     assert widget.correction_active_btn.isEnabled() is True
     assert widget.db_run_btn.isEnabled() is True
     assert widget.solve_run_btn.isEnabled() is True
+    assert widget.viewer_activity_banner.isHidden() is True
 
     widget.deleteLater()
     viewer.close()
@@ -754,12 +759,17 @@ def test_database_browser_activity_blocks_other_viewer_tools(tmp_path):
     assert widget.source_threshold_preview_check.isEnabled() is False
     assert widget.correction_active_btn.isEnabled() is False
     assert widget.seg_run_btn.isEnabled() is False
+    assert widget.viewer_activity_banner.isHidden() is False
+    assert "Database browser active" in widget.viewer_activity_banner.text()
+    assert "database browser mode is active" in widget.seg_run_btn.toolTip().lower()
+    assert "database browser mode is active" in widget.correction_active_btn.toolTip().lower()
 
     widget.ultrack_db_active_btn.setChecked(False)
 
     assert widget.source_threshold_preview_check.isEnabled() is True
     assert widget.correction_active_btn.isEnabled() is True
     assert widget.seg_run_btn.isEnabled() is True
+    assert widget.viewer_activity_banner.isHidden() is True
 
     widget.deleteLater()
     viewer.close()
@@ -781,12 +791,17 @@ def test_correction_activity_blocks_other_viewer_tools(monkeypatch):
     assert widget.source_threshold_preview_check.isEnabled() is False
     assert widget.ultrack_db_active_btn.isEnabled() is False
     assert widget.db_run_btn.isEnabled() is False
+    assert widget.viewer_activity_banner.isHidden() is False
+    assert "Correction mode active" in widget.viewer_activity_banner.text()
+    assert "correction mode is active" in widget.db_run_btn.toolTip().lower()
+    assert "correction mode is active" in widget.ultrack_db_active_btn.toolTip().lower()
 
     widget.correction_active_btn.setChecked(False)
 
     assert widget.source_threshold_preview_check.isEnabled() is True
     assert widget.ultrack_db_active_btn.isEnabled() is True
     assert widget.db_run_btn.isEnabled() is True
+    assert widget.viewer_activity_banner.isHidden() is True
 
     widget.deleteLater()
     viewer.close()
