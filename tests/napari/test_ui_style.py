@@ -210,6 +210,10 @@ def test_stage_header_action_button_uses_matching_pill_style(_app):
     assert f"background-color: {stage_header_pill_background('nucleus')};" in style
     assert "QToolButton:checked" in style
     assert "border-radius: 4px" in style
+    assert "border: none" in style
+    assert "border: 1px" not in style
+    assert "padding: 0" in style
+    assert "text-align: center" in style
     assert button.property("cellflow_stage_key") == "nucleus"
     assert button.property("cellflow_stage_header_action") is True
     assert button.minimumSize().width() == 22
