@@ -11,20 +11,24 @@ from napari.qt.threading import thread_worker
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QCheckBox,
-    QDoubleSpinBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QSizePolicy,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from cellflow.napari._widget_helpers import tool_btn as _tool_btn
+from cellflow.napari._widget_helpers import (
+    dslider as _dslider,
+    islider as _islider,
+    tool_btn as _tool_btn,
+)
 from cellflow.napari.divergence_maps_widget import DivergenceMapsWidget
 from cellflow.napari.ui_style import (
+    add_section_full_row,
+    add_section_pair_row,
+    section_grid,
     stage_header_action_button,
     stage_header_label,
     status_label,
@@ -192,55 +196,44 @@ class CellposeWidget(QWidget):
 
     def _build_nucleus_params_section(self) -> CollapsibleSection:
         body = QWidget(self)
-        form = QFormLayout(body)
-        form.setContentsMargins(8, 4, 4, 4)
-        form.setSpacing(4)
+        grid = section_grid()
+        grid.setContentsMargins(8, 4, 4, 4)
+        body.setLayout(grid)
         self.nuc_3d_chk = QCheckBox("3D mode")
         self.nuc_3d_chk.setChecked(True)
-        self.nuc_anisotropy_spin = QDoubleSpinBox()
-        self.nuc_anisotropy_spin.setRange(0.1, 20.0)
-        self.nuc_anisotropy_spin.setSingleStep(0.1)
-        self.nuc_anisotropy_spin.setDecimals(2)
-        self.nuc_anisotropy_spin.setValue(1.5)
-        self.nuc_diameter_spin = QDoubleSpinBox()
-        self.nuc_diameter_spin.setRange(0.0, 500.0)
-        self.nuc_diameter_spin.setDecimals(1)
-        self.nuc_diameter_spin.setValue(25.0)
-        self.nuc_min_size_spin = QSpinBox()
-        self.nuc_min_size_spin.setRange(0, 100000)
-        self.nuc_min_size_spin.setValue(15)
-        self.nuc_gamma_spin = QDoubleSpinBox()
-        self.nuc_gamma_spin.setRange(0.1, 5.0)
-        self.nuc_gamma_spin.setSingleStep(0.1)
-        self.nuc_gamma_spin.setDecimals(2)
-        self.nuc_gamma_spin.setValue(1.0)
-        form.addRow(self.nuc_3d_chk)
-        form.addRow("Anisotropy", self.nuc_anisotropy_spin)
-        form.addRow("Diameter", self.nuc_diameter_spin)
-        form.addRow("Min size", self.nuc_min_size_spin)
-        form.addRow("Gamma", self.nuc_gamma_spin)
+        self.nuc_anisotropy_spin = _dslider(0.1, 20.0, 1.5, 0.1, 2)
+        self.nuc_diameter_spin = _dslider(0.0, 500.0, 25.0, 1.0, 1)
+        self.nuc_min_size_spin = _islider(0, 100000, 15)
+        self.nuc_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
+        row = 0
+        add_section_full_row(grid, row, self.nuc_3d_chk); row += 1
+        add_section_pair_row(
+            grid, row,
+            "Anisotropy:", self.nuc_anisotropy_spin,
+            "Diameter:", self.nuc_diameter_spin,
+        ); row += 1
+        add_section_pair_row(
+            grid, row,
+            "Min size:", self.nuc_min_size_spin,
+            "Gamma:", self.nuc_gamma_spin,
+        )
         return CollapsibleSection("Nucleus parameters", body, expanded=False)
 
     def _build_cell_params_section(self) -> CollapsibleSection:
         body = QWidget(self)
-        form = QFormLayout(body)
-        form.setContentsMargins(8, 4, 4, 4)
-        form.setSpacing(4)
-        self.cell_diameter_spin = QDoubleSpinBox()
-        self.cell_diameter_spin.setRange(0.0, 500.0)
-        self.cell_diameter_spin.setDecimals(1)
-        self.cell_diameter_spin.setValue(0.0)
-        self.cell_min_size_spin = QSpinBox()
-        self.cell_min_size_spin.setRange(0, 100000)
-        self.cell_min_size_spin.setValue(0)
-        self.cell_gamma_spin = QDoubleSpinBox()
-        self.cell_gamma_spin.setRange(0.1, 5.0)
-        self.cell_gamma_spin.setSingleStep(0.1)
-        self.cell_gamma_spin.setDecimals(2)
-        self.cell_gamma_spin.setValue(1.0)
-        form.addRow("Diameter", self.cell_diameter_spin)
-        form.addRow("Min size", self.cell_min_size_spin)
-        form.addRow("Gamma", self.cell_gamma_spin)
+        grid = section_grid()
+        grid.setContentsMargins(8, 4, 4, 4)
+        body.setLayout(grid)
+        self.cell_diameter_spin = _dslider(0.0, 500.0, 0.0, 1.0, 1)
+        self.cell_min_size_spin = _islider(0, 100000, 0)
+        self.cell_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
+        row = 0
+        add_section_pair_row(
+            grid, row,
+            "Diameter:", self.cell_diameter_spin,
+            "Min size:", self.cell_min_size_spin,
+        ); row += 1
+        add_section_pair_row(grid, row, "Gamma:", self.cell_gamma_spin)
         return CollapsibleSection("Cell parameters", body, expanded=False)
 
     @staticmethod

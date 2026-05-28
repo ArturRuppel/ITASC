@@ -91,7 +91,7 @@ def test_cell_correction_widget_files_widget_refresh_callback_is_called_on_save(
 
 
 def test_cell_correction_widget_exposes_expected_buttons_and_controls():
-    from qtpy.QtWidgets import QComboBox, QPushButton, QSpinBox
+    from qtpy.QtWidgets import QComboBox, QPushButton, QToolButton
 
     _app, viewer = _make_viewer()
     widget, _module = _make_widget(viewer)
@@ -109,13 +109,26 @@ def test_cell_correction_widget_exposes_expected_buttons_and_controls():
             for i in range(widget.correction_scope_combo.count())] == [
         "Current frame", "All frames",
     ]
-    assert isinstance(widget.hole_radius_spin, QSpinBox)
     assert widget.hole_radius_spin.value() == 5
-    assert isinstance(widget.semihole_opening_spin, QSpinBox)
     assert widget.semihole_opening_spin.value() == 3
-    assert isinstance(widget.expand_max_px_spin, QSpinBox)
     assert widget.expand_max_px_spin.value() == 25
     assert widget.expand_max_px_spin.maximum() == 999
+    for slider in (
+        widget.hole_radius_spin,
+        widget.semihole_opening_spin,
+        widget.expand_max_px_spin,
+        widget.correction_widget._hole_radius_spin,
+        widget.correction_widget._semihole_opening_spin,
+    ):
+        buttons = {
+            button.objectName(): button
+            for button in slider.findChildren(QToolButton)
+        }
+        start = slider.value()
+        buttons["slider_increment_button"].click()
+        assert slider.value() == start + slider.singleStep()
+        buttons["slider_decrement_button"].click()
+        assert slider.value() == start
 
     widget.deleteLater()
     viewer.close()

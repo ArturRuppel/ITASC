@@ -961,6 +961,7 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
         "build_ultrack_database_from_threshold_pairs",
         fake_build_database,
     )
+    monkeypatch.setattr(pipeline_module, "apply_annotations_and_score", lambda **kwargs: None)
     monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
     monkeypatch.setattr(pipeline_module, "_ultrack_segment", object(), raising=False)
 

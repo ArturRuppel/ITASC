@@ -277,7 +277,7 @@ def ensure_anchor_incident_links(
     """
     import sqlalchemy as sqla
     from sqlalchemy.orm import Session
-    from ultrack.core.database import LinkDB, NodeDB, OverlapDB, VarAnnotation
+    from ultrack.core.database import LinkDB, NodeDB, VarAnnotation
 
     from cellflow.tracking_ultrack.linking import compute_edge_weight
 

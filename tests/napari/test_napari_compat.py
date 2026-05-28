@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import importlib
+import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -27,7 +29,8 @@ class _NoSizeHintIndex:
 
 def test_layer_delegate_loading_indicator_tolerates_missing_size_hint():
     app = QApplication.instance() or QApplication([])
-    import cellflow.napari  # noqa: F401
+    sys.modules.pop("cellflow.napari", None)
+    importlib.import_module("cellflow.napari")
     from napari._qt.containers._layer_delegate import LayerDelegate
 
     delegate = LayerDelegate()

@@ -75,9 +75,7 @@ class ValidatedOverlayController:
         if overlay_exists:
             self.viewer.layers[VALIDATED_OVERLAY].data = full
         else:
-            from qtpy.QtCore import QTimer
-
-            QTimer.singleShot(0, lambda data=full: self.add_overlay(data))
+            self.add_overlay(full)
 
     def refresh_anchor_overlay(self, frame_view_2d: Callable[[np.ndarray, int], np.ndarray | None]) -> None:
         tracked = self._tracked_layer_provider()
@@ -112,9 +110,7 @@ class ValidatedOverlayController:
         if overlay_exists:
             self.viewer.layers[ANCHOR_OVERLAY].data = full
         else:
-            from qtpy.QtCore import QTimer
-
-            QTimer.singleShot(0, lambda data=full: self.add_anchor_overlay(data))
+            self.add_anchor_overlay(full)
 
     def add_overlay(self, data: np.ndarray) -> None:
         if VALIDATED_OVERLAY in self.viewer.layers:

@@ -28,7 +28,7 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari._widget_helpers import (
     btn as _btn,
-    dspin as _dspin,
+    dslider as _dslider,
     heading as _heading,
     make_status as _make_status,
     tool_btn as _tool_btn,
@@ -60,7 +60,6 @@ from cellflow.napari.ui_style import (
     add_block_checkbox_row,
     add_block_pair_row,
     block_grid,
-    compact_spinbox,
     danger_button,
     stage_header_action_button,
     stage_header_label,
@@ -232,43 +231,43 @@ class NucleusCorrectionWidget(QWidget):
 
         extend_retrack_lay.addWidget(_heading("Extend"))
         g = block_grid(horizontal_spacing=12)
-        self.extend_max_dist_spin = _dspin(0, 500, 40.0, 1.0, 1)
-        self.extend_area_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
-        self.extend_iou_weight_spin = _dspin(0, 10, 1.0, 0.1, 2)
-        self.extend_distance_weight_spin = _dspin(0, 10, 0.05, 0.01, 3)
-        self.extend_overlap_penalty_spin = _dspin(0, 10, 1.0, 0.1, 2)
+        self.extend_max_dist_spin = _dslider(0, 500, 40.0, 1.0, 1)
+        self.extend_area_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
+        self.extend_iou_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
+        self.extend_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 3)
+        self.extend_overlap_penalty_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
         add_block_pair_row(
             g,
             0,
-            "Max\ndistance:",
-            compact_spinbox(self.extend_max_dist_spin),
-            "Area\nweight:",
-            compact_spinbox(self.extend_area_weight_spin),
+            "Max distance:",
+            self.extend_max_dist_spin,
+            "Area weight:",
+            self.extend_area_weight_spin,
         )
         add_block_pair_row(
             g,
             1,
-            "IoU\nweight:",
-            compact_spinbox(self.extend_iou_weight_spin),
-            "Distance\nweight:",
-            compact_spinbox(self.extend_distance_weight_spin),
+            "IoU weight:",
+            self.extend_iou_weight_spin,
+            "Distance weight:",
+            self.extend_distance_weight_spin,
         )
-        self.swap_radius_spin = _dspin(0, 500, 40.0, 1.0, 1)
+        self.swap_radius_spin = _dslider(0, 500, 40.0, 1.0, 1)
         add_block_pair_row(
             g,
             2,
-            "Overlap\npenalty:",
-            compact_spinbox(self.extend_overlap_penalty_spin),
+            "Overlap penalty:",
+            self.extend_overlap_penalty_spin,
         )
-        add_block_pair_row(g, 3, "Swap\nradius:", compact_spinbox(self.swap_radius_spin))
+        add_block_pair_row(g, 3, "Swap radius:", self.swap_radius_spin)
         add_block_checkbox_row(g, 4, self.extend_greedy_overwrite_check)
         extend_retrack_lay.addLayout(g)
 
         extend_retrack_lay.addWidget(_heading("Retrack"))
         g = block_grid(horizontal_spacing=12)
-        self.retrack_max_dist_spin = _dspin(0, 500, 20.0, 1.0, 1)
-        add_block_pair_row(g, 0, "Max\ndistance:", compact_spinbox(self.retrack_max_dist_spin))
+        self.retrack_max_dist_spin = _dslider(0, 500, 20.0, 1.0, 1)
+        add_block_pair_row(g, 0, "Max distance:", self.retrack_max_dist_spin)
         extend_retrack_lay.addLayout(g)
         self.extend_retrack_params_section = CollapsibleSection(
             "Extend / Retrack Parameters",

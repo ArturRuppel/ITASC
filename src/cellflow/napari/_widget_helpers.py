@@ -1,7 +1,7 @@
 """Small Qt widget factory helpers shared across napari workflow widgets."""
 from __future__ import annotations
 
-from qtpy.QtCore import QSize, Qt
+from qtpy.QtCore import QEvent, QObject, QSize, Qt
 from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
@@ -130,6 +130,17 @@ def _slider_step_button(text: str, object_name: str, tooltip: str) -> QToolButto
     return button
 
 
+class _SliderStepButtonStateSyncer(QObject):
+    def __init__(self, sync_button_state) -> None:
+        super().__init__()
+        self._sync_button_state = sync_button_state
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.EnabledChange:
+            self._sync_button_state()
+        return False
+
+
 def _connect_slider_step_buttons(slider) -> tuple[QToolButton, QToolButton]:
     decrement = _slider_step_button(
         "-", "slider_decrement_button", "Decrease by one step"
@@ -139,16 +150,35 @@ def _connect_slider_step_buttons(slider) -> tuple[QToolButton, QToolButton]:
     )
 
     def _set_stepped_value(direction: int) -> None:
+        if not slider.isEnabled():
+            return
         slider.setValue(slider.value() + direction * slider.singleStep())
 
     def _sync_button_state(*_args) -> None:
-        decrement.setEnabled(slider.value() > slider.minimum())
-        increment.setEnabled(slider.value() < slider.maximum())
+        enabled = slider.isEnabled()
+        decrement.setEnabled(enabled and slider.value() > slider.minimum())
+        increment.setEnabled(enabled and slider.value() < slider.maximum())
 
     decrement.clicked.connect(lambda: _set_stepped_value(-1))
     increment.clicked.connect(lambda: _set_stepped_value(1))
     slider.valueChanged.connect(_sync_button_state)
+    slider.rangeChanged.connect(_sync_button_state)
+    state_syncer = _SliderStepButtonStateSyncer(_sync_button_state)
+    state_syncer.setParent(slider)
+    slider.installEventFilter(state_syncer)
+    slider._cellflow_slider_step_button_state_syncer = state_syncer
     _sync_button_state()
+    return decrement, increment
+
+
+def add_slider_step_buttons(
+    layout: QHBoxLayout, slider, track: QWidget | None = None
+) -> tuple[QToolButton, QToolButton]:
+    track = slider if track is None else track
+    decrement, increment = _connect_slider_step_buttons(slider)
+    layout.addWidget(decrement, alignment=Qt.AlignmentFlag.AlignVCenter)
+    layout.addWidget(track)
+    layout.addWidget(increment, alignment=Qt.AlignmentFlag.AlignVCenter)
     return decrement, increment
 
 
@@ -173,20 +203,17 @@ def _stack_slider_label_above(slider, *, step_buttons: bool = False) -> None:
     vbox.setSpacing(0)
     vbox.addWidget(label, alignment=Qt.AlignmentFlag.AlignHCenter)
     if step_buttons:
-        decrement, increment = _connect_slider_step_buttons(slider)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
-        row.addWidget(decrement, alignment=Qt.AlignmentFlag.AlignVCenter)
-        row.addWidget(track)
-        row.addWidget(increment, alignment=Qt.AlignmentFlag.AlignVCenter)
+        add_slider_step_buttons(row, slider, track)
         vbox.addLayout(row)
     else:
         vbox.addWidget(track)
     slider.setLayout(vbox)
 
 
-def dslider(lo, hi, val, step=0.1, decimals=2, tooltip="", *, step_buttons=False):
+def dslider(lo, hi, val, step=0.1, decimals=2, tooltip="", *, step_buttons=True):
     """A horizontal QLabeledDoubleSlider — same call signature as `dspin`.
 
     The editable value label sits above the slider track for a compact,
@@ -198,11 +225,12 @@ def dslider(lo, hi, val, step=0.1, decimals=2, tooltip="", *, step_buttons=False
     s.setDecimals(decimals)
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    s.setProperty("cellflow_stack_section_label", True)
     _stack_slider_label_above(s, step_buttons=step_buttons)
     return s
 
 
-def islider(lo, hi, val, step=1, tooltip="", *, step_buttons=False):
+def islider(lo, hi, val, step=1, tooltip="", *, step_buttons=True):
     """A horizontal QLabeledSlider — same call signature as `ispin`.
 
     The editable value label sits above the slider track."""
@@ -212,6 +240,7 @@ def islider(lo, hi, val, step=1, tooltip="", *, step_buttons=False):
     s.setSingleStep(step)
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    s.setProperty("cellflow_stack_section_label", True)
     _stack_slider_label_above(s, step_buttons=step_buttons)
     return s
 
@@ -245,6 +274,7 @@ def drslider(lo, hi, lo_val, hi_val, step=0.1, decimals=2, tooltip=""):
     s.setDecimals(decimals)
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    s.setProperty("cellflow_stack_section_label", True)
     _hide_range_edge_labels(s)
     _force_handle_label_width(s)
     return s
@@ -260,6 +290,7 @@ def irslider(lo, hi, lo_val, hi_val, step=1, tooltip=""):
     s.setSingleStep(step)
     s.setToolTip(tooltip)
     s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    s.setProperty("cellflow_stack_section_label", True)
     _hide_range_edge_labels(s)
     _force_handle_label_width(s)
     return s

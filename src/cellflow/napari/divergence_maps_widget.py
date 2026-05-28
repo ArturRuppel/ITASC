@@ -16,20 +16,23 @@ from napari.qt.threading import thread_worker
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QComboBox,
-    QDoubleSpinBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QSizePolicy,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from cellflow.napari._paths import NucleusArtifactPaths
-from cellflow.napari._widget_helpers import tool_btn as _tool_btn
+from cellflow.napari._widget_helpers import (
+    dslider as _dslider,
+    islider as _islider,
+    tool_btn as _tool_btn,
+)
 from cellflow.napari.ui_style import (
+    add_section_pair_row,
+    section_grid,
     stage_header_action_button,
     stage_header_label,
     status_label,
@@ -177,9 +180,9 @@ class DivergenceMapsWidget(QWidget):
         self, channel: Literal["nucleus", "cell"],
     ) -> CollapsibleSection:
         body = QWidget(self)
-        form = QFormLayout(body)
-        form.setContentsMargins(8, 4, 4, 4)
-        form.setSpacing(4)
+        grid = section_grid()
+        grid.setContentsMargins(8, 4, 4, 4)
+        body.setLayout(grid)
 
         fg_reduction = QComboBox()
         fg_reduction.addItems(["mean", "max"])
@@ -187,18 +190,19 @@ class DivergenceMapsWidget(QWidget):
         contour_reduction = QComboBox()
         contour_reduction.addItems(["mean", "max"])
         contour_reduction.setCurrentText("mean")
-        smoothing_spin = QDoubleSpinBox()
-        smoothing_spin.setRange(0.0, 20.0)
-        smoothing_spin.setDecimals(2)
-        smoothing_spin.setSingleStep(0.1)
-        smoothing_spin.setValue(1.0)
-        median_spin = QSpinBox()
-        median_spin.setRange(0, 20)
-        median_spin.setValue(0)
-        form.addRow("Foreground z-reduction", fg_reduction)
-        form.addRow("Contour z-reduction", contour_reduction)
-        form.addRow("Smoothing sigma", smoothing_spin)
-        form.addRow("Median radius", median_spin)
+        smoothing_spin = _dslider(0.0, 20.0, 1.0, 0.1, 2)
+        median_spin = _islider(0, 20, 0)
+        row = 0
+        add_section_pair_row(
+            grid, row,
+            "Foreground z-reduction:", fg_reduction,
+            "Contour z-reduction:", contour_reduction,
+        ); row += 1
+        add_section_pair_row(
+            grid, row,
+            "Smoothing sigma:", smoothing_spin,
+            "Median radius:", median_spin,
+        )
 
         prefix = "nuc" if channel == "nucleus" else "cell"
         setattr(self, f"{prefix}_fg_reduction", fg_reduction)

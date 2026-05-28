@@ -35,6 +35,8 @@ from cellflow.napari.ui_style import (
     TIGHT_SPACING,
     TINY_MARGIN,
     action_button,
+    add_section_pair_row,
+    add_block_pair_row,
     checked_success_button,
     compact_spinbox,
     danger_button,
@@ -42,12 +44,14 @@ from cellflow.napari.ui_style import (
     muted_label,
     muted_stage_accent,
     parameter_heading,
+    section_grid,
     stage_header_action_button,
     stage_header_label,
     stage_header_pill_background,
     status_label,
     tiny_button,
 )
+from cellflow.napari._widget_helpers import islider
 from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
 
 
@@ -102,6 +106,62 @@ def test_compact_spinbox_accepts_custom_width(_app):
     compact_spinbox(spin, width=56)
 
     assert spin.maximumWidth() == 56
+
+
+def test_section_pair_row_stacks_slider_label_above_number(_app):
+    outer = QWidget()
+    grid = section_grid()
+    outer.setLayout(grid)
+    slider = islider(0, 10, 5)
+
+    label_widget, returned_slider, _right_label, _right_widget = add_section_pair_row(
+        grid, 0, "Median:", slider
+    )
+
+    stacked_cell = grid.itemAtPosition(0, 0).widget()
+    stacked_layout = stacked_cell.layout()
+
+    assert returned_slider is slider
+    assert isinstance(stacked_layout, QVBoxLayout)
+    assert stacked_layout.itemAt(0).widget() is label_widget
+    assert stacked_layout.itemAt(1).widget() is slider
+    assert slider.layout().itemAt(0).widget() is slider._label
+
+
+def test_section_pair_row_stacks_plain_widget_label_above_control(_app):
+    outer = QWidget()
+    grid = section_grid()
+    outer.setLayout(grid)
+    spin = QSpinBox()
+
+    label_widget, returned_spin, _right_label, _right_widget = add_section_pair_row(
+        grid, 0, "Workers:", spin
+    )
+
+    assert returned_spin is spin
+    stacked_cell = grid.itemAtPosition(0, 0).widget()
+    stacked_layout = stacked_cell.layout()
+    assert isinstance(stacked_layout, QVBoxLayout)
+    assert stacked_layout.itemAt(0).widget() is label_widget
+    assert stacked_layout.itemAt(1).widget() is spin
+
+
+def test_block_pair_row_stacks_label_above_control(_app):
+    outer = QWidget()
+    grid = section_grid()
+    outer.setLayout(grid)
+    spin = QSpinBox()
+
+    label_widget, returned_spin, _right_label, _right_widget = add_block_pair_row(
+        grid, 0, "Radius:", spin
+    )
+
+    assert returned_spin is spin
+    stacked_cell = grid.itemAtPosition(0, 0).widget()
+    stacked_layout = stacked_cell.layout()
+    assert isinstance(stacked_layout, QVBoxLayout)
+    assert stacked_layout.itemAt(0).widget() is label_widget
+    assert stacked_layout.itemAt(1).widget() is spin
 
 
 def test_action_button_uses_fixed_or_expanding_horizontal_policy(_app):
@@ -254,7 +314,6 @@ def test_collapsible_section_does_not_tint_action_buttons(_app):
         accent_color="#89b4fa",
     )
     section.show()
-    _app.processEvents()
 
     assert button.styleSheet() == ""
 
@@ -268,8 +327,9 @@ def test_collapsible_section_header_spans_available_width(_app):
     layout.addWidget(section)
 
     wrapper.resize(360, 100)
-    wrapper.show()
-    _app.processEvents()
+    layout.activate()
+    section.resize(360, section.sizeHint().height())
+    section.layout().activate()
 
     toggle = section.findChild(QToolButton, "collapsible_toggle")
     assert toggle is not None

@@ -107,8 +107,11 @@ project directory.
 
 ## Testing
 
-Install the package in an environment with the test dependencies available, then
-run:
+Install the package with the declared development dependencies, then run:
+
+```bash
+python -m pip install -e .[dev]
+```
 
 ```bash
 python -m pytest
@@ -130,6 +133,11 @@ python -m pytest tests/contact_analysis
 
 Some tests or workflow stages may require optional packages such as Ultrack,
 Cellpose, or napari/Qt.
+
+## Archived Experiments
+
+Exploratory one-off scripts are kept under `notes/archived_scripts/` so the
+installable package and active test surface stay focused on maintained code.
 
 ## AI Usage Disclosure
 
@@ -153,6 +161,5 @@ please contact the authors for the appropriate citation guidance.
 
 ## License
 
-The package metadata declares CellFlow as GPL-3.0 licensed. A repository-level
-`LICENSE` file should be added before public release so the license terms are
-unambiguous to users and reviewers.
+CellFlow is distributed under the GPL-3.0 license. See the repository-level
+`LICENSE` file for the full license terms.

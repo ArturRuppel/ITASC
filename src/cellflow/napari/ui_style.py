@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import QFormLayout, QGridLayout, QLabel, QSizePolicy, QToolButton
+from qtpy.QtWidgets import (
+    QFormLayout,
+    QGridLayout,
+    QLabel,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 TINY_MARGIN = 2
 SECTION_MARGIN = 4
@@ -409,15 +417,25 @@ def add_section_pair_row(
     """Add a row with up to two [label][widget] pairs. Widgets keep their
     natural size policy (no fixed-width wrap) so sliders/combos can stretch."""
     left_label_widget = _block_label(left_label)
-    grid.addWidget(left_label_widget, row, 0)
-    grid.addWidget(left_widget, row, 1)
+    _add_section_pair_cell(grid, row, 0, left_label_widget, left_widget)
 
     right_label_widget = None
     if right_widget is not None:
         right_label_widget = _block_label(right_label or "")
-        grid.addWidget(right_label_widget, row, 2)
-        grid.addWidget(right_widget, row, 3)
+        _add_section_pair_cell(grid, row, 2, right_label_widget, right_widget)
     return left_label_widget, left_widget, right_label_widget, right_widget
+
+
+def _add_section_pair_cell(grid, row, column, label_widget, widget):
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(1)
+    label_widget.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+    layout.addWidget(label_widget)
+    layout.addWidget(widget)
+    grid.addWidget(container, row, column, 1, 2)
+    return container
 
 
 def _block_label(text):
@@ -444,16 +462,27 @@ def add_block_pair_row(
     field_width=70,
 ):
     left_label_widget = _block_label(left_label)
-    _add_block_cell(grid, row, 0, left_label_widget)
-    _add_block_cell(grid, row, 1, _fixed_widget(left_widget, field_width))
+    _add_block_pair_cell(grid, row, 0, left_label_widget, left_widget, field_width)
 
     right_label_widget = None
     if right_widget is not None:
         right_label_widget = _block_label(right_label or "")
-        _add_block_cell(grid, row, 2, right_label_widget)
-        _add_block_cell(grid, row, 3, _fixed_widget(right_widget, field_width))
+        _add_block_pair_cell(grid, row, 2, right_label_widget, right_widget, field_width)
 
     return left_label_widget, left_widget, right_label_widget, right_widget
+
+
+def _add_block_pair_cell(grid, row, column, label_widget, widget, field_width):
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(1)
+    label_widget.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+    layout.addWidget(label_widget)
+    field = widget if widget.property("cellflow_stack_section_label") else _fixed_widget(widget, field_width)
+    layout.addWidget(field)
+    grid.addWidget(container, row, column, 1, 2)
+    return container
 
 
 def add_block_checkbox_row(grid, row, checkbox):

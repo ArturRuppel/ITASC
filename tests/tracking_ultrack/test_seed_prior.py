@@ -40,6 +40,7 @@ def test_compute_mask_circularity_handles_empty_masks():
 
 
 def test_write_seed_prior_node_probs_scores_candidates_and_anchors(tmp_path):
+    pytest.importorskip("ultrack")
     from sqlalchemy.orm import Session
     from ultrack.core.database import NodeDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
@@ -74,12 +75,15 @@ def test_write_seed_prior_node_probs_scores_candidates_and_anchors(tmp_path):
         seed_row = session.query(NodeDB).filter_by(t=1, id=2_000_001).one()
 
     circularity = compute_mask_circularity(np.ones((4, 4), dtype=bool))
-    expected = (cfg.quality_weight * 1.0 + cfg.circularity_weight * circularity) ** cfg.quality_exponent
+    base = cfg.quality_weight * 1.0 + cfg.circularity_weight * circularity
+    max_base = cfg.quality_weight + cfg.circularity_weight
+    expected = (base / max_base) ** cfg.quality_exponent
     assert candidate_row.node_prob == pytest.approx(expected)
     assert seed_row.node_prob == 1.0
 
 
 def test_write_seed_prior_node_probs_respects_zero_quality_and_circularity_weights(tmp_path):
+    pytest.importorskip("ultrack")
     from sqlalchemy.orm import Session
     from ultrack.core.database import NodeDB
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row

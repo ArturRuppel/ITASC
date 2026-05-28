@@ -1,12 +1,39 @@
-from pathlib import Path
+from __future__ import annotations
+
+import numpy as np
+
+from cellflow.database.hypotheses import (
+    HypothesisRecord,
+    SeededWatershedParams,
+    iter_write_hypothesis_sweep_h5,
+    read_hypothesis_labels,
+)
 
 
-def test_nucleus_sweep_streams_records_to_hdf5_writer():
-    source = Path("src/cellflow/napari/nucleus_workflow_widget.py").read_text()
-    start = source.index("    def _on_run_sweep(self) -> None:")
-    end = source.index("    def _set_sweep_buttons_running", start)
-    run_sweep_source = source[start:end]
+def test_hypothesis_sweep_writer_streams_records(tmp_path):
+    consumed = []
 
-    assert "iter_write_hypothesis_sweep_h5" in run_sweep_source
-    assert "collected" not in run_sweep_source
-    assert "records = []" not in run_sweep_source
+    def records():
+        for t in range(2):
+            consumed.append(t)
+            yield HypothesisRecord(
+                t=t,
+                p=0,
+                labels=np.full((1, 3, 3), t + 1, dtype=np.uint32),
+                params=SeededWatershedParams(),
+            )
+
+    progress = iter_write_hypothesis_sweep_h5(
+        tmp_path / "hypotheses.h5",
+        records(),
+        overwrite=True,
+    )
+
+    assert consumed == []
+    assert next(progress) == 1
+    assert consumed == [0]
+    assert np.array_equal(
+        read_hypothesis_labels(tmp_path / "hypotheses.h5", 0, 0),
+        np.full((1, 3, 3), 1, dtype=np.uint32),
+    )
+    assert list(progress) == [2]

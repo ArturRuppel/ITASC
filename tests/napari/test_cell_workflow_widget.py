@@ -22,10 +22,8 @@ from qtpy.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QToolButton,
     QVBoxLayout,
-    QWidget,
 )
 
 
@@ -728,10 +726,14 @@ def test_cell_correction_widget_exposes_expand_cell_action(monkeypatch):
 
     assert "Expand Cell" in correction_button_texts
     assert "Max expand px:" in correction_label_texts
-    assert isinstance(widget.expand_max_px_spin, QSpinBox)
     assert widget.expand_max_px_spin.value() == 25
     assert widget.expand_max_px_spin.minimum() == 0
     assert widget.expand_max_px_spin.maximum() == 999
+    buttons = {
+        button.objectName(): button
+        for button in widget.expand_max_px_spin.findChildren(QToolButton)
+    }
+    assert {"slider_decrement_button", "slider_increment_button"} <= set(buttons)
 
     widget.deleteLater()
     app.processEvents()

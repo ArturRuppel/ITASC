@@ -7,6 +7,7 @@ Three test groups:
 from __future__ import annotations
 
 import pickle
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,13 @@ from cellflow.tracking_ultrack.reseed import (
     merge_validated_into_export,
     prune_validated_overlaps,
 )
+
+
+def _has_ultrack() -> bool:
+    try:
+        return importlib.util.find_spec("ultrack") is not None
+    except ValueError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +113,7 @@ def tracking_cfg():
 # Unit tests — prune_validated_overlaps
 # ===========================================================================
 
+@pytest.mark.skipif(not _has_ultrack(), reason="Ultrack is required for DB pruning tests")
 class TestPruneValidatedOverlaps:
     """Unit tests for prune_validated_overlaps."""
 
@@ -415,4 +424,3 @@ class TestMergeValidatedIntoExport:
         assert np.all(result[0, :, 3:7, 3:7] == 99)
         assert np.all(result[1] == 0)
         assert id_map == {}
-

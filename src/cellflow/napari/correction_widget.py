@@ -41,11 +41,14 @@ from cellflow.correction.labels import (
 )
 from cellflow.napari.ui_style import (
     action_button,
+    add_block_pair_row,
+    block_grid,
     checked_success_button,
     danger_button,
     muted_label,
     status_label,
 )
+from cellflow.napari._widget_helpers import islider as _islider
 
 log = logging.getLogger("cellflow.correction")
 if os.environ.get("CELLFLOW_DEBUG"):
@@ -160,37 +163,36 @@ class CorrectionWidget(QWidget):
         muted_label(cleanup_label, size_pt=9)
         _clay.addWidget(cleanup_label)                             # ← CHANGED (was root)
 
-        scope_row = QHBoxLayout()
-        scope_row.addWidget(QLabel("Scope:"))
+        cleanup_grid = block_grid(horizontal_spacing=12)
         self._cleanup_scope_combo = QComboBox()
         self._cleanup_scope_combo.addItems(["Current frame", "All frames"])
         self._cleanup_scope_combo.setToolTip(
             "Choose whether cleanup applies to the visible frame or the full label stack."
         )
-        scope_row.addWidget(self._cleanup_scope_combo)
-        _clay.addLayout(scope_row)                                 # ← CHANGED
-
-        hole_row = QHBoxLayout()
-        hole_row.addWidget(QLabel("Hole radius:"))
-        self._hole_radius_spin = QSpinBox()
-        self._hole_radius_spin.setRange(0, 999)
-        self._hole_radius_spin.setValue(5)
+        self._hole_radius_spin = _islider(0, 999, 5)
         self._hole_radius_spin.setToolTip(
             "Maximum pixel distance for filling enclosed background gaps. Set to 0 to skip gap filling."
         )
-        hole_row.addWidget(self._hole_radius_spin)
-        _clay.addLayout(hole_row)                                  # ← CHANGED
-
-        semihole_row = QHBoxLayout()
-        semihole_row.addWidget(QLabel("Max opening:"))
-        self._semihole_opening_spin = QSpinBox()
-        self._semihole_opening_spin.setRange(0, 999)
-        self._semihole_opening_spin.setValue(3)
+        self._semihole_opening_spin = _islider(0, 999, 3)
         self._semihole_opening_spin.setToolTip(
             "Maximum border contact, in pixels, for semihole repair. Set to 0 to skip semihole repair."
         )
-        semihole_row.addWidget(self._semihole_opening_spin)
-        _clay.addLayout(semihole_row)                              # ← CHANGED
+        add_block_pair_row(
+            cleanup_grid,
+            0,
+            "Scope:",
+            self._cleanup_scope_combo,
+            field_width=150,
+        )
+        add_block_pair_row(
+            cleanup_grid,
+            1,
+            "Hole radius:",
+            self._hole_radius_spin,
+            "Max opening:",
+            self._semihole_opening_spin,
+        )
+        _clay.addLayout(cleanup_grid)
 
         self._fill_holes_btn = QPushButton("Fill Holes")
         self._fill_holes_btn.setEnabled(False)

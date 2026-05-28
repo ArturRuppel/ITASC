@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
 from qtpy.QtGui import QKeySequence, QShortcut
-from qtpy.QtWidgets import QApplication
+from qtpy.QtWidgets import QApplication, QLabel, QToolButton
 
 
 def _make_viewer():
@@ -142,6 +142,59 @@ def _frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:
             return None
         view = view[0]
     return view
+
+
+def test_nucleus_correction_parameter_labels_are_single_line():
+    _app, viewer = _make_viewer()
+    widget_class, _module = _load_widget_class()
+    widget = widget_class(viewer)
+
+    broken = [label.text() for label in widget.findChildren(QLabel) if "\n" in label.text()]
+
+    assert broken == []
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_correction_extend_retrack_parameters_are_sliders():
+    _app, viewer = _make_viewer()
+    widget_class, _module = _load_widget_class()
+    widget = widget_class(viewer)
+
+    for slider in (
+        widget.extend_max_dist_spin,
+        widget.extend_area_weight_spin,
+        widget.extend_iou_weight_spin,
+        widget.extend_distance_weight_spin,
+        widget.extend_overlap_penalty_spin,
+        widget.swap_radius_spin,
+        widget.retrack_max_dist_spin,
+    ):
+        buttons = {
+            button.objectName(): button
+            for button in slider.findChildren(QToolButton)
+        }
+        start = slider.value()
+        buttons["slider_increment_button"].click()
+        assert slider.value() == pytest.approx(start + slider.singleStep())
+        buttons["slider_decrement_button"].click()
+        assert slider.value() == pytest.approx(start)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_correction_source_has_no_manual_label_line_breaks():
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "cellflow"
+        / "napari"
+        / "nucleus_correction_widget.py"
+    ).read_text(encoding="utf-8")
+
+    assert "\\n" not in source
 
 
 def _make_widget(viewer, pos_dir: Path | None = None):

@@ -247,6 +247,35 @@ def test_get_set_state_round_trips(_mock_cellpose, monkeypatch):
     w.deleteLater()
 
 
+def test_cellpose_parameter_controls_are_sliders(_mock_cellpose, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer())
+
+    for slider in (
+        w.nuc_anisotropy_spin,
+        w.nuc_diameter_spin,
+        w.nuc_min_size_spin,
+        w.nuc_gamma_spin,
+        w.cell_diameter_spin,
+        w.cell_min_size_spin,
+        w.cell_gamma_spin,
+    ):
+        buttons = {
+            button.objectName(): button
+            for button in slider.findChildren(QToolButton)
+        }
+        start = slider.value()
+
+        buttons["slider_increment_button"].click()
+        assert slider.value() == pytest.approx(start + slider.singleStep())
+
+        buttons["slider_decrement_button"].click()
+        assert slider.value() == pytest.approx(start)
+
+    w.deleteLater()
+
+
 def test_set_running_stage_disables_other_row(_mock_cellpose, monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)

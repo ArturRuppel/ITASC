@@ -24,6 +24,7 @@ class FlowFollowingParams:
     flow_weight: float = 0.5
     flow_step_scale: float = 0.2
     max_iterations: int = 100
+    capture_radius: float = 3.0
 
 
 # Progressive shell assignment defaults (not user-facing)
@@ -141,6 +142,138 @@ def _flow_integrate_to_positions(
             final_x[i, j] = px
 
     return result, final_y, final_x
+
+
+def _flow_integrate(
+    nuclear_labels: np.ndarray,
+    flow: np.ndarray,
+    grav_y: np.ndarray,
+    grav_x: np.ndarray,
+    dist: np.ndarray,
+    ny: np.ndarray,
+    nx: np.ndarray,
+    prob_mask: np.ndarray,
+    *,
+    n_steps: int,
+    flow_step_scale: float,
+    flow_weight: float,
+    capture_radius: float,
+) -> np.ndarray:
+    """Compatibility integrator for the movie-level flow-following API.
+
+    This is the original capture-radius behavior: foreground pixels are
+    advected through a flow/gravity blend and inherit the nearest nucleus label
+    only when the advected position reaches a nucleus or enters the configured
+    capture radius.  The newer per-frame path below uses the two-phase shell
+    assignment helper instead.
+    """
+    labels = np.asarray(nuclear_labels, dtype=np.int32)
+    result = labels.copy()
+    foreground = np.asarray(prob_mask, dtype=bool)
+    flow_arr = np.asarray(flow, dtype=np.float32)
+    if flow_arr.ndim != 3:
+        raise ValueError("flow must have shape (2, Y, X) or (Y, X, 2)")
+    if flow_arr.shape[0] == 2:
+        flow_y = flow_arr[0]
+        flow_x = flow_arr[1]
+    elif flow_arr.shape[-1] == 2:
+        flow_y = flow_arr[..., 0]
+        flow_x = flow_arr[..., 1]
+    else:
+        raise ValueError("flow must have shape (2, Y, X) or (Y, X, 2)")
+
+    height, width = labels.shape
+    radius = float(capture_radius)
+    for y in range(height):
+        for x in range(width):
+            if labels[y, x] > 0 or not foreground[y, x]:
+                continue
+
+            pos_y = float(y)
+            pos_x = float(x)
+            for _ in range(int(n_steps)):
+                iy = min(max(int(pos_y), 0), height - 1)
+                ix = min(max(int(pos_x), 0), width - 1)
+
+                if labels[iy, ix] > 0:
+                    result[y, x] = labels[iy, ix]
+                    break
+                if dist[iy, ix] <= radius:
+                    nearest_label = labels[int(ny[iy, ix]), int(nx[iy, ix])]
+                    if nearest_label > 0:
+                        result[y, x] = nearest_label
+                        break
+
+                step_y = (
+                    float(flow_weight) * float(flow_y[iy, ix])
+                    + (1.0 - float(flow_weight)) * float(grav_y[iy, ix])
+                )
+                step_x = (
+                    float(flow_weight) * float(flow_x[iy, ix])
+                    + (1.0 - float(flow_weight)) * float(grav_x[iy, ix])
+                )
+                pos_y = min(max(pos_y + step_y * float(flow_step_scale), 0.0), height - 1)
+                pos_x = min(max(pos_x + step_x * float(flow_step_scale), 0.0), width - 1)
+
+    return result
+
+
+def compute_flow_following_movie(
+    foreground_tyx: np.ndarray,
+    dp_tcyx: np.ndarray,
+    labels_tyx: np.ndarray,
+    params: FlowFollowingParams,
+    *,
+    filter_vectors: bool = True,
+    progress_cb=None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run capture-radius flow-following for a full time series."""
+    foreground = np.asarray(foreground_tyx, dtype=bool)
+    labels = np.asarray(labels_tyx, dtype=np.int32)
+    flow = np.asarray(dp_tcyx, dtype=np.float32)
+    if foreground.ndim != 3 or labels.shape != foreground.shape:
+        raise ValueError("foreground and labels must have matching shape (T, Y, X)")
+    if flow.shape != (foreground.shape[0], 2, foreground.shape[1], foreground.shape[2]):
+        raise ValueError("dp_tcyx must have shape (T, 2, Y, X)")
+
+    filtered = compute_filtered_flow_vectors(flow, params) if filter_vectors else flow
+    filtered = np.asarray(filtered, dtype=np.float32)
+    total = foreground.shape[0]
+    cell_labels = np.zeros_like(labels, dtype=np.int32)
+
+    for t in range(total):
+        fg = foreground[t]
+        nuclei = labels[t]
+        if fg.any() and nuclei.max() > 0:
+            dist, indices = distance_transform_edt(
+                nuclei == 0,
+                return_indices=True,
+            )
+            yy, xx = np.indices(nuclei.shape)
+            dy = indices[0].astype(np.float32) - yy.astype(np.float32)
+            dx = indices[1].astype(np.float32) - xx.astype(np.float32)
+            norm = np.hypot(dy, dx).astype(np.float32)
+            norm[norm == 0.0] = 1.0
+            grav_y = dy / norm
+            grav_x = dx / norm
+            cell_labels[t] = _flow_integrate(
+                nuclei,
+                filtered[t],
+                grav_y,
+                grav_x,
+                dist.astype(np.float32),
+                indices[0].astype(np.int32),
+                indices[1].astype(np.int32),
+                fg,
+                n_steps=int(params.max_iterations),
+                flow_step_scale=float(params.flow_step_scale),
+                flow_weight=float(params.flow_weight),
+                capture_radius=float(params.capture_radius),
+            )
+        if progress_cb is not None:
+            progress_cb(t + 1, total)
+
+    return filtered, cell_labels
 
 
 def _progressive_shell_assign(

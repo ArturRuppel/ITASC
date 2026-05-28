@@ -7,6 +7,7 @@ from cellflow.segmentation.flow_following import (
     FlowFollowingParams,
     compute_filtered_flow_vectors,
     compute_flow_following_frame,
+    compute_flow_following_movie,
     build_consensus_boundary_flow_following,
 )
 
@@ -27,6 +28,7 @@ from cellflow.segmentation.nucleus_segmentation import (
     CancelledError,
     ContourWatershedParams,
     compute_contour_watershed,
+    _fill_and_close_labels,
 )
 
 from cellflow.segmentation.cell_foreground import (
@@ -55,8 +57,10 @@ __all__ = [
     "compute_filtered_contour_maps",
     "compute_filtered_flow_vectors",
     "compute_flow_following_frame",
+    "compute_flow_following_movie",
     "initialize_icm",
     "refine_icm",
+    "_fill_and_close_labels",
 ]
 
 

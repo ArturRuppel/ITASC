@@ -16,7 +16,10 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari._widget_helpers import tool_btn as _tool_btn
+from cellflow.napari._widget_helpers import (
+    add_slider_step_buttons as _add_slider_step_buttons,
+    tool_btn as _tool_btn,
+)
 from cellflow.napari.ui_style import (
     stage_header_action_button as _stage_header_action_button,
     stage_header_label as _stage_header_label,
@@ -96,7 +99,8 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         self.source_slider_row = QWidget()
         source_slider_lay = QHBoxLayout(self.source_slider_row)
         source_slider_lay.setContentsMargins(0, 0, 0, 0)
-        source_slider_lay.addWidget(self.source_slider)
+        source_slider_lay.setSpacing(2)
+        _add_slider_step_buttons(source_slider_lay, self.source_slider)
         source_slider_lay.addWidget(self.source_lbl)
         lay.addWidget(self.source_slider_row)
 
@@ -112,7 +116,8 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         self.slider_row = QWidget()
         slider_lay = QHBoxLayout(self.slider_row)
         slider_lay.setContentsMargins(0, 0, 0, 0)
-        slider_lay.addWidget(self.hierarchy_slider)
+        slider_lay.setSpacing(2)
+        _add_slider_step_buttons(slider_lay, self.hierarchy_slider)
         slider_lay.addWidget(self.height_lbl)
         lay.addWidget(self.slider_row)
 

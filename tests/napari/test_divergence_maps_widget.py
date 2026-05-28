@@ -13,7 +13,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel
+from qtpy.QtWidgets import QApplication, QLabel, QToolButton
 
 _APP = None
 
@@ -128,6 +128,33 @@ def test_widget_constructs_and_exposes_public_api(monkeypatch):
     assert hasattr(w, "get_state")
     assert hasattr(w, "set_state")
     assert hasattr(w, "output_files_tracker")
+    w.deleteLater()
+
+
+def test_divergence_parameter_controls_are_sliders(monkeypatch):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer())
+
+    for slider in (
+        w.nuc_smoothing_spin,
+        w.nuc_median_spin,
+        w.cell_smoothing_spin,
+        w.cell_median_spin,
+    ):
+        buttons = {
+            button.objectName(): button
+            for button in slider.findChildren(QToolButton)
+        }
+        start = slider.value()
+
+        buttons["slider_increment_button"].click()
+        assert slider.value() == pytest.approx(start + slider.singleStep())
+
+        buttons["slider_decrement_button"].click()
+        assert slider.value() == pytest.approx(start)
+
     w.deleteLater()
 
 

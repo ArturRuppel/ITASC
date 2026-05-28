@@ -17,7 +17,10 @@ def _make_viewer():
 
 
 def test_controller_adds_validated_overlay_below_spotlight():
-    from cellflow.napari.validated_overlay_controller import ValidatedOverlayController
+    from cellflow.napari.validated_overlay_controller import (
+        VALIDATED_OVERLAY_OPACITY,
+        ValidatedOverlayController,
+    )
 
     _app, viewer = _make_viewer()
     owned_layers: set[str] = set()
@@ -43,8 +46,8 @@ def test_controller_adds_validated_overlay_below_spotlight():
     layer = viewer.layers["[Correction] Validated: Nucleus"]
     color = layer.get_color(1)
 
-    assert layer.opacity == 0.75
-    assert np.allclose(color[:3], [0.0, 115 / 255, 0.0], atol=1e-6)
+    assert layer.opacity == VALIDATED_OVERLAY_OPACITY
+    assert np.allclose(color[:3], [0.0, 1.0, 0.0], atol=1e-6)
     assert color[3] == 1.0
     assert "[Correction] Validated: Nucleus" in owned_layers
     assert viewer.layers.index("[Correction] Validated: Nucleus") < viewer.layers.index(
@@ -56,10 +59,13 @@ def test_controller_adds_validated_overlay_below_spotlight():
 
 def test_controller_refreshes_anchor_overlay_from_corrections(tmp_path):
     from cellflow.database.validation import add_correction
-    from cellflow.napari.validated_overlay_controller import ValidatedOverlayController
+    from cellflow.napari.validated_overlay_controller import (
+        VALIDATED_OVERLAY_OPACITY,
+        ValidatedOverlayController,
+    )
     from cellflow.tracking_ultrack.corrections import Correction
 
-    app, viewer = _make_viewer()
+    _app, viewer = _make_viewer()
     pos_dir = tmp_path / "pos00"
     tracked_data = np.zeros((2, 5, 5), dtype=np.uint8)
     tracked_data[1, 2:4, 1:4] = 7
@@ -80,7 +86,6 @@ def test_controller_refreshes_anchor_overlay_from_corrections(tmp_path):
     )
 
     controller.refresh_anchor_overlay(lambda data, t: data[t])
-    app.processEvents()
 
     layer = viewer.layers["[Correction] Anchors: Nucleus"]
     color = layer.get_color(1)
@@ -88,7 +93,7 @@ def test_controller_refreshes_anchor_overlay_from_corrections(tmp_path):
     expected[1, 2:4, 1:4] = 1
 
     np.testing.assert_array_equal(layer.data, expected)
-    assert layer.opacity == 0.75
+    assert layer.opacity == VALIDATED_OVERLAY_OPACITY
     assert np.allclose(color[:3], [179 / 255, 148 / 255, 0.0], atol=1e-6)
     assert color[3] == 1.0
     assert "[Correction] Anchors: Nucleus" in owned_layers

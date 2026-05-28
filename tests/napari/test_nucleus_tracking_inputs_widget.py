@@ -13,7 +13,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtWidgets import QApplication, QCheckBox
+from qtpy.QtWidgets import QApplication, QCheckBox, QLabel
 
 
 def _make_viewer():
@@ -108,6 +108,30 @@ def test_tracking_inputs_widget_exposes_node_probability_weight_controls():
     assert widget.db_gen_circularity_weight_spin.value() == pytest.approx(0.25)
 
     widget.deleteLater()
+
+
+def test_tracking_inputs_parameter_labels_are_single_line():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    broken = [label.text() for label in widget.findChildren(QLabel) if "\n" in label.text()]
+
+    assert broken == []
+
+    widget.deleteLater()
+
+
+def test_tracking_inputs_source_has_no_manual_label_line_breaks():
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "cellflow"
+        / "napari"
+        / "nucleus_tracking_inputs_widget.py"
+    ).read_text(encoding="utf-8")
+
+    assert "\\n" not in source
 
 
 def test_tracking_inputs_widget_db_gen_config_applies_all_controls():

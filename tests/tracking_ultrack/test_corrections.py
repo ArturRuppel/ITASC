@@ -773,7 +773,6 @@ def test_inject_unmatched_anchor_nodes_inserts_real_node_and_overlap_rows(tmp_pa
     """inject_unmatched_anchor_nodes must insert a REAL NodeDB row with the
     cell's mask from tracked_labels and add OverlapDB rows for overlapping
     existing candidates."""
-    import sqlalchemy as sqla
     from sqlalchemy.orm import Session
     from ultrack.core.database import NodeDB, OverlapDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
@@ -835,7 +834,6 @@ def test_inject_unmatched_anchor_nodes_skips_when_no_mask_in_tracked_labels(tmp_
 
     engine = _make_engine(tmp_path / "data.db")
     from sqlalchemy.orm import Session
-    from ultrack.core.database import NodeDB
     with Session(engine) as session:
         session.add(_make_node_row(1, 0, 0, 0, 5, 5))
         session.commit()

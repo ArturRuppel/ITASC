@@ -89,6 +89,7 @@ def far_hyp(tmp_path):
 class TestExtendTrack:
     def test_extend_track_from_db_handles_deserialized_2d_node(self, tmp_path):
         """DB-backed extend should accept already-deserialized 2D NodeDB.pickle values."""
+        pytest.importorskip("ultrack")
         from sqlalchemy.orm import Session
         from ultrack.core.database import NodeDB
         from tests.tracking_ultrack.test_reseed import _make_engine
@@ -141,6 +142,7 @@ class TestExtendTrack:
 
     def test_extend_track_from_db_skips_candidate_with_mismatched_mask_shape(self, tmp_path):
         """Malformed DB candidates should be skipped instead of crashing during paint."""
+        pytest.importorskip("ultrack")
         from sqlalchemy.orm import Session
         from ultrack.core.database import NodeDB
         from tests.tracking_ultrack.test_reseed import _make_engine
@@ -183,6 +185,7 @@ class TestExtendTrack:
 
     def test_extend_track_from_db_greedy_overwrite_returns_single_best_candidate(self, tmp_path):
         """Greedy overwrite returns the single best candidate regardless of overlap."""
+        pytest.importorskip("ultrack")
         from sqlalchemy.orm import Session
         from ultrack.core.database import NodeDB
         from tests.tracking_ultrack.test_reseed import _make_engine

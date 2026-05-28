@@ -19,6 +19,7 @@ def test_export_prefers_public_track_id_zarr_export(monkeypatch, tmp_path):
     calls: list[str] = []
 
     monkeypatch.setattr(export_module, "_build_export_config", lambda cfg, wd: object())
+    monkeypatch.setattr(export_module, "database_has_annotations", lambda wd: False)
 
     export_pkg = types.ModuleType("ultrack.core.export")
 

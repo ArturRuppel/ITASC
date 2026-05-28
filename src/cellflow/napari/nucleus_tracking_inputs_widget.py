@@ -189,42 +189,42 @@ class NucleusTrackingInputsWidget(QWidget):
         add_section_header(db_grid, row, _heading("Candidates")); row += 1
         add_section_pair_row(
             db_grid, row,
-            "Min\narea:", self.db_gen_min_area_spin,
-            "Max\narea:", self.db_gen_max_area_spin,
+            "Min area:", self.db_gen_min_area_spin,
+            "Max area:", self.db_gen_max_area_spin,
         ); row += 1
         add_section_pair_row(
             db_grid, row,
-            "Min\nfrontier:", self.db_gen_min_frontier_spin,
-            "WS\nhierarchy:", self.db_gen_ws_hierarchy_combo,
+            "Min frontier:", self.db_gen_min_frontier_spin,
+            "WS hierarchy:", self.db_gen_ws_hierarchy_combo,
         ); row += 1
         add_section_pair_row(db_grid, row, "Workers:", self.db_gen_n_workers_spin); row += 1
 
         add_section_header(db_grid, row, _heading("Linking")); row += 1
         add_section_pair_row(
             db_grid, row,
-            "Max\ndistance:", self.db_gen_max_dist_spin,
-            "Max\nneighbors:", self.db_gen_max_neighbors_spin,
+            "Max distance:", self.db_gen_max_dist_spin,
+            "Max neighbors:", self.db_gen_max_neighbors_spin,
         ); row += 1
         add_section_pair_row(
             db_grid, row,
-            "Linking\nmode:", self.db_gen_linking_mode_combo,
-            "Area\nweight:", self.db_gen_area_weight_spin,
+            "Linking mode:", self.db_gen_linking_mode_combo,
+            "Area weight:", self.db_gen_area_weight_spin,
         ); row += 1
         add_section_pair_row(
             db_grid, row,
-            "IoU\nweight:", self.db_gen_iou_weight_spin,
-            "Distance\nweight:", self.db_gen_distance_weight_spin,
+            "IoU weight:", self.db_gen_iou_weight_spin,
+            "Distance weight:", self.db_gen_distance_weight_spin,
         ); row += 1
 
         add_section_header(db_grid, row, _heading("Scoring")); row += 1
         add_section_pair_row(
             db_grid, row,
-            "Quality\nweight:", self.db_gen_quality_weight_spin,
-            "Quality\nexponent:", self.db_gen_quality_exp_spin,
+            "Quality weight:", self.db_gen_quality_weight_spin,
+            "Quality exponent:", self.db_gen_quality_exp_spin,
         ); row += 1
         add_section_pair_row(
             db_grid, row,
-            "Circularity\nweight:", self.db_gen_circularity_weight_spin,
+            "Circularity weight:", self.db_gen_circularity_weight_spin,
         ); row += 1
 
         # ─── Pack Ultrack solver controls ───────────────────────────
@@ -233,8 +233,8 @@ class NucleusTrackingInputsWidget(QWidget):
         add_section_header(solve_grid, row, _heading("Track Scope")); row += 1
         add_section_pair_row(
             solve_grid, row,
-            "Max\npartitions:", self.ultrack_max_partitions_spin,
-            "N\nframes:", self.ultrack_n_frames_spin,
+            "Max partitions:", self.ultrack_max_partitions_spin,
+            "N frames:", self.ultrack_n_frames_spin,
         ); row += 1
 
         add_section_header(solve_grid, row, _heading("Event Penalties")); row += 1

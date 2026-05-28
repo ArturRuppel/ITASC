@@ -45,6 +45,8 @@ __all__ = [
     "initialize_icm",
     "refine_icm",
     "commit_labels",
+    "segment_cells_icm",
+    "run_cell_icm_from_pos_dir",
 ]
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -873,6 +875,88 @@ def commit_labels(labels: np.ndarray, output_path: Path | str) -> None:
         str(output_path),
         labels.astype(np.uint16, copy=False),
         compression="zlib",
+    )
+
+
+def segment_cells_icm(
+    nuc_tracks: np.ndarray,
+    fg_mask: np.ndarray,
+    contours: np.ndarray,
+    params: CellLabelICMParams,
+    *,
+    foreground_scores: np.ndarray | None = None,
+    cache_dir: Path | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+) -> np.ndarray:
+    """Run the full initialize-refine cell ICM pipeline in memory."""
+    nuc_tracks = np.asarray(nuc_tracks, dtype=np.uint32)
+    fg_mask = np.asarray(fg_mask, dtype=bool)
+    contours = np.asarray(contours, dtype=np.float32)
+    if fg_mask.shape != nuc_tracks.shape:
+        raise ValueError(
+            f"Shape mismatch: fg_mask {fg_mask.shape} != nuc_tracks {nuc_tracks.shape}"
+        )
+    if contours.shape != nuc_tracks.shape:
+        raise ValueError(
+            f"Shape mismatch: contours {contours.shape} != nuc_tracks {nuc_tracks.shape}"
+        )
+    if foreground_scores is not None and foreground_scores.shape != nuc_tracks.shape:
+        raise ValueError(
+            "Shape mismatch: foreground_scores "
+            f"{foreground_scores.shape} != nuc_tracks {nuc_tracks.shape}"
+        )
+
+    state, labels = initialize_icm(
+        nuc_tracks,
+        fg_mask,
+        contours,
+        params,
+        foreground_scores=foreground_scores,
+        cache_dir=cache_dir,
+        progress_cb=progress_cb,
+    )
+    labels, _log = refine_icm(
+        state,
+        labels,
+        n_iters=params.n_iters,
+        min_round_flips=params.min_round_flips,
+        lambda_area=params.lambda_area,
+        progress_cb=progress_cb,
+    )
+    return labels
+
+
+def _apply_crop(arr: np.ndarray, crop: tuple[int, int, int, int, int, int] | None) -> np.ndarray:
+    if crop is None:
+        return arr
+    t0, t1, y0, y1, x0, x1 = crop
+    return arr[t0:t1, y0:y1, x0:x1]
+
+
+def run_cell_icm_from_pos_dir(
+    pos_dir: Path | str,
+    params: CellLabelICMParams,
+    *,
+    crop: tuple[int, int, int, int, int, int] | None = None,
+    cache_dir: Path | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+) -> np.ndarray:
+    """Load standard position-directory inputs and run the full ICM pipeline."""
+    pos_dir = Path(pos_dir)
+    nuc, fg, ct, fg_scores = _load_pos_dir_inputs(pos_dir)
+    nuc = _apply_crop(nuc, crop)
+    fg = _apply_crop(fg, crop)
+    ct = _apply_crop(ct, crop)
+    if fg_scores is not None:
+        fg_scores = _apply_crop(fg_scores, crop)
+    return segment_cells_icm(
+        nuc,
+        fg,
+        ct,
+        params,
+        foreground_scores=fg_scores,
+        cache_dir=cache_dir,
+        progress_cb=progress_cb,
     )
 
 

@@ -79,6 +79,12 @@ def test_apply_annotations_and_score_resets_then_applies_in_order(monkeypatch, t
         lambda *_a, **_kw: calls.append("incident_links")
         or type("IncidentReport", (), {"inserted": 4, "anchors_processed": 2})(),
     )
+    monkeypatch.setattr(
+        db_build,
+        "annotate_anchor_tail_links",
+        lambda *_a, **_kw: calls.append("tail_links")
+        or type("TailReport", (), {"annotated": 2})(),
+    )
 
     report = db_build.apply_annotations_and_score(
         working_dir=tmp_path / "work",
@@ -88,13 +94,21 @@ def test_apply_annotations_and_score_resets_then_applies_in_order(monkeypatch, t
         tracked_labels=tracked,
     )
 
-    assert calls == ["reset", "pre_link", "score", "post_link", "incident_links"]
+    assert calls == [
+        "reset",
+        "pre_link",
+        "score",
+        "post_link",
+        "incident_links",
+        "tail_links",
+    ]
     assert report.fake_nodes == 3
     assert report.anchor_nodes == 1
     assert report.anchor_links == 6
     assert report.scored_nodes == 5
     assert report.seed_nodes == 1
     assert report.anchor_incident_links_inserted == 4
+    assert report.anchor_tail_links_annotated == 2
 
 
 def test_apply_annotations_and_score_without_corrections_just_resets_and_scores(

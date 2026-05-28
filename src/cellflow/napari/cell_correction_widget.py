@@ -34,12 +34,11 @@ from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
     add_block_pair_row,
     block_grid,
-    compact_spinbox,
     stage_header_action_button,
     stage_header_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
-from cellflow.napari._widget_helpers import ispin as _ispin
+from cellflow.napari._widget_helpers import islider as _islider
 
 logger = logging.getLogger(__name__)
 
@@ -182,23 +181,23 @@ class CellCorrectionWidget(QWidget):
         params_lay.addLayout(scope_row)
 
         g = block_grid(horizontal_spacing=12)
-        self.hole_radius_spin = _ispin(
+        self.hole_radius_spin = _islider(
             0, 999, 5,
             tooltip="Max hole size (pixels) for fill / fix operations.",
         )
-        self.semihole_opening_spin = _ispin(
+        self.semihole_opening_spin = _islider(
             0, 999, 3,
             tooltip="Max channel width for semi-hole bridging.",
         )
-        self.expand_max_px_spin = _ispin(
+        self.expand_max_px_spin = _islider(
             0, 999, 25,
             tooltip="Max expansion distance in pixels.",
         )
         add_block_pair_row(g, 0,
-            "Hole radius:", compact_spinbox(self.hole_radius_spin),
-            "Max opening:", compact_spinbox(self.semihole_opening_spin))
+            "Hole radius:", self.hole_radius_spin,
+            "Max opening:", self.semihole_opening_spin)
         add_block_pair_row(g, 1,
-            "Max expand px:", compact_spinbox(self.expand_max_px_spin))
+            "Max expand px:", self.expand_max_px_spin)
         params_lay.addLayout(g)
 
         self.correction_params_section = CollapsibleSection(

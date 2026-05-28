@@ -2,12 +2,18 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 _SCRIPT = (
     Path(__file__).parent.parent.parent
     / "scripts"
     / "experiment_cell_2d_t_multilabel_graphcut.py"
+)
+
+pytestmark = pytest.mark.skipif(
+    not _SCRIPT.exists(),
+    reason="archived exploratory graphcut script is outside the maintained test surface",
 )
 
 

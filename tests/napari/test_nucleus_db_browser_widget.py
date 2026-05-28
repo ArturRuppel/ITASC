@@ -296,6 +296,39 @@ def test_ultrack_db_browser_exposes_hierarchy_only_controls():
     viewer.close()
 
 
+def test_ultrack_db_browser_sliders_have_step_buttons():
+    app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    for row, slider in (
+        (widget._ultrack_db_source_slider_row, widget.ultrack_db_source_slider),
+        (widget._ultrack_db_slider_row, widget.ultrack_db_hierarchy_slider),
+    ):
+        buttons = {
+            button.objectName(): button
+            for button in row.findChildren(QToolButton)
+        }
+        decrement = buttons["slider_decrement_button"]
+        increment = buttons["slider_increment_button"]
+
+        assert not decrement.isEnabled()
+        assert not increment.isEnabled()
+
+        slider.setRange(0, 2)
+        slider.setValue(1)
+        slider.setEnabled(True)
+
+        increment.click()
+        assert slider.value() == 2
+
+        decrement.click()
+        assert slider.value() == 1
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_db_browser_exposes_connected_focus_controls():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()

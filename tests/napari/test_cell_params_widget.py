@@ -14,6 +14,24 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qtpy.QtWidgets import QApplication, QLabel, QToolButton
 
 
+_MISSING = object()
+
+
+@pytest.fixture(autouse=True)
+def _restore_import_stubs():
+    saved = {
+        name: sys.modules.get(name, _MISSING)
+        for name in ("cellflow.napari", "cellflow.segmentation")
+    }
+    yield
+    for name, module in saved.items():
+        if module is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+    sys.modules.pop("cellflow.napari.cell_params_widget", None)
+
+
 def _install_import_stubs() -> None:
     src_root = Path(__file__).resolve().parents[2] / "src" / "cellflow"
     package_root = src_root / "napari"
@@ -266,6 +284,30 @@ def test_ff_max_iter_slider_has_step_buttons():
     widget.ff_max_iter_spin.setValue(widget.ff_max_iter_spin.minimum())
     decrement.click()
     assert widget.ff_max_iter_spin.value() == widget.ff_max_iter_spin.minimum()
+
+    widget.deleteLater()
+
+
+def test_cell_params_sliders_have_step_buttons_by_default():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _mod = _load_widget_class()
+    widget = widget_class()
+
+    for slider in (widget.ff_median_time_spin, widget.fg_cellprob_threshold_spin):
+        buttons = {
+            button.objectName(): button
+            for button in slider.findChildren(QToolButton)
+        }
+
+        decrement = buttons["slider_decrement_button"]
+        increment = buttons["slider_increment_button"]
+
+        start = slider.value()
+        increment.click()
+        assert slider.value() == pytest.approx(start + slider.singleStep())
+
+        decrement.click()
+        assert slider.value() == pytest.approx(start)
 
     widget.deleteLater()
 
