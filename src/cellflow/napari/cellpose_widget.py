@@ -24,7 +24,11 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari._widget_helpers import tool_btn as _tool_btn
 from cellflow.napari.divergence_maps_widget import DivergenceMapsWidget
-from cellflow.napari.ui_style import stage_header_label, status_label
+from cellflow.napari.ui_style import (
+    stage_header_action_button,
+    stage_header_label,
+    status_label,
+)
 from cellflow.napari.widgets import (
     CollapsibleSection,
     PipelineFilesWidget,
@@ -127,6 +131,12 @@ class CellposeWidget(QWidget):
         )
         self.nucleus_preview_btn = _tool_btn("▷", "Preview on current frame.")
         self.nucleus_run_btn = _tool_btn("▶", "Run nucleus Cellpose on all frames.")
+        for button in (
+            self.nucleus_params_btn,
+            self.nucleus_preview_btn,
+            self.nucleus_run_btn,
+        ):
+            stage_header_action_button(button, "cellpose")
         self.nucleus_section = self._build_nucleus_params_section()
         self.nucleus_section.set_header_visible(False)
         self.nucleus_section.collapse()
@@ -147,6 +157,12 @@ class CellposeWidget(QWidget):
         )
         self.cell_preview_btn = _tool_btn("▷", "Preview on current frame/z-slice.")
         self.cell_run_btn = _tool_btn("▶", "Run cell Cellpose on all frames.")
+        for button in (
+            self.cell_params_btn,
+            self.cell_preview_btn,
+            self.cell_run_btn,
+        ):
+            stage_header_action_button(button, "cellpose")
         self.cell_section = self._build_cell_params_section()
         self.cell_section.set_header_visible(False)
         self.cell_section.collapse()
@@ -237,9 +253,9 @@ class CellposeWidget(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
         row.addWidget(label)
-        row.addStretch(1)
         for w in trailing:
             row.addWidget(w)
+        row.addStretch(1)
         return row
 
     # ------------------------------------------------------------------
