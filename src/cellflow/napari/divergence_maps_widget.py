@@ -29,7 +29,11 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._widget_helpers import tool_btn as _tool_btn
-from cellflow.napari.ui_style import stage_header_label, status_label
+from cellflow.napari.ui_style import (
+    stage_header_action_button,
+    stage_header_label,
+    status_label,
+)
 from cellflow.napari.widgets import (
     CollapsibleSection,
     PipelineFilesWidget,
@@ -129,6 +133,8 @@ class DivergenceMapsWidget(QWidget):
             "⚙", "Show parameters for nucleus divergence maps.", checkable=True,
         )
         self.nucleus_run_btn = _tool_btn("▶", "Build nucleus divergence maps.")
+        for button in (self.nucleus_params_btn, self.nucleus_run_btn):
+            stage_header_action_button(button, "cellpose")
         self.nucleus_section = self._build_channel_params_section("nucleus")
         self.nucleus_section.set_header_visible(False)
         self.nucleus_section.collapse()
@@ -147,6 +153,8 @@ class DivergenceMapsWidget(QWidget):
             "⚙", "Show parameters for cell divergence maps.", checkable=True,
         )
         self.cell_run_btn = _tool_btn("▶", "Build cell divergence maps.")
+        for button in (self.cell_params_btn, self.cell_run_btn):
+            stage_header_action_button(button, "cellpose")
         self.cell_section = self._build_channel_params_section("cell")
         self.cell_section.set_header_visible(False)
         self.cell_section.collapse()
@@ -211,9 +219,9 @@ class DivergenceMapsWidget(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(4)
         row.addWidget(label)
-        row.addStretch(1)
         for w in trailing:
             row.addWidget(w)
+        row.addStretch(1)
         return row
 
     # ── Signals ──────────────────────────────────────────────────────

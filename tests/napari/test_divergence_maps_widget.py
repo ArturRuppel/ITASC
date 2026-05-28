@@ -13,7 +13,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication
+from qtpy.QtWidgets import QApplication, QLabel
 
 _APP = None
 
@@ -43,6 +43,28 @@ def _qapp():
     global _APP
     _APP = QApplication.instance() or QApplication([])
     return _APP
+
+
+def _layout_items(layout):
+    return [layout.itemAt(i) for i in range(layout.count())]
+
+
+def _layout_widgets_from_items(items):
+    return [item.widget() for item in items if item.widget() is not None]
+
+
+def _layout_for_row_items_containing(widget, *targets):
+    target_set = set(targets)
+    for index in range(widget.layout().count()):
+        item = widget.layout().itemAt(index)
+        row = item.layout()
+        if row is None:
+            continue
+        items = _layout_items(row)
+        widgets = set(_layout_widgets_from_items(items))
+        if target_set.issubset(widgets):
+            return items
+    raise AssertionError("Could not find matching divergence maps stage row")
 
 
 def _make_sync_thread_worker():
@@ -106,6 +128,60 @@ def test_widget_constructs_and_exposes_public_api(monkeypatch):
     assert hasattr(w, "get_state")
     assert hasattr(w, "set_state")
     assert hasattr(w, "output_files_tracker")
+    w.deleteLater()
+
+
+def test_stage_row_buttons_are_clustered_and_use_header_style(monkeypatch):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer())
+
+    nucleus_label = next(
+        child for child in w.findChildren(QLabel)
+        if child.text() == "Nucleus divergence maps"
+    )
+    cell_label = next(
+        child for child in w.findChildren(QLabel)
+        if child.text() == "Cell divergence maps"
+    )
+
+    nucleus_items = _layout_for_row_items_containing(
+        w,
+        nucleus_label,
+        w.nucleus_params_btn,
+        w.nucleus_run_btn,
+    )
+    assert _layout_widgets_from_items(nucleus_items[:3]) == [
+        nucleus_label,
+        w.nucleus_params_btn,
+        w.nucleus_run_btn,
+    ]
+    assert nucleus_items[3].spacerItem() is not None
+
+    cell_items = _layout_for_row_items_containing(
+        w,
+        cell_label,
+        w.cell_params_btn,
+        w.cell_run_btn,
+    )
+    assert _layout_widgets_from_items(cell_items[:3]) == [
+        cell_label,
+        w.cell_params_btn,
+        w.cell_run_btn,
+    ]
+    assert cell_items[3].spacerItem() is not None
+
+    for button in (
+        w.nucleus_params_btn,
+        w.nucleus_run_btn,
+        w.cell_params_btn,
+        w.cell_run_btn,
+    ):
+        assert button.property("cellflow_stage_header_action") is True
+        assert "border: none" in button.styleSheet()
+        assert "text-align: center" in button.styleSheet()
+
     w.deleteLater()
 
 
