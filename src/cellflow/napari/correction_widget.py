@@ -108,6 +108,9 @@ class CorrectionWidget(QWidget):
 
         self._edit_callback: Callable[[int, set[int]], None] | None = None
         self._selection_callback: Callable[[int, int], None] | None = None
+        self._protected_mask_callback: (
+            Callable[[int, np.ndarray], np.ndarray | None] | None
+        ) = None
 
         self._setup_ui()
 
@@ -487,6 +490,12 @@ class CorrectionWidget(QWidget):
     def set_selection_callback(self, fn: Callable[[int, int], None] | None) -> None:
         self._selection_callback = fn
 
+    def set_protected_mask_callback(
+        self,
+        fn: Callable[[int, np.ndarray], np.ndarray | None] | None,
+    ) -> None:
+        self._protected_mask_callback = fn
+
     def select_label(self, t: int, label: int, *, notify: bool = True) -> None:
         self._update_highlight(t, label, notify=notify)
 
@@ -602,6 +611,19 @@ class CorrectionWidget(QWidget):
                 except Exception:
                     import logging as _logging
                     _logging.getLogger("cellflow.correction").exception("edit_callback failed")
+
+    def _protected_mask(self, t: int, seg2d: np.ndarray) -> np.ndarray | None:
+        if self._protected_mask_callback is None:
+            return None
+        mask = self._protected_mask_callback(t, seg2d)
+        if mask is None:
+            return None
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != seg2d.shape:
+            raise ValueError(
+                f"protected mask shape {mask.shape} does not match frame shape {seg2d.shape}"
+            )
+        return mask
 
     # ── draw layer ────────────────────────────────────────────────────────────
 
@@ -1109,7 +1131,7 @@ class CorrectionWidget(QWidget):
                     self._update_highlight(t, self._selected_label)
                     return
 
-                if mods == {"Shift"} and btn == 1:
+                if btn == 1 and mods in ({"Shift"}, {"Control", "Shift"}):
                     dl = self._get_draw_layer()
                     dl.data = []
                     dl.visible = True
@@ -1132,6 +1154,7 @@ class CorrectionWidget(QWidget):
                         pos_list,
                         curlabel=curlabel,
                         new_label=self._next_free_label(),
+                        protected_mask=self._protected_mask(t, seg2d),
                     )
                     self._set_status(
                         f"Drew cell path — Active on '{_layer.name}'"

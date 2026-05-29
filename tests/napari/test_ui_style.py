@@ -11,6 +11,7 @@ import tifffile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QApplication,
     QLabel,
@@ -45,6 +46,7 @@ from cellflow.napari.ui_style import (  # noqa: E402
     muted_stage_accent,
     parameter_heading,
     section_grid,
+    stage_header_disabled_action_color,
     stage_header_action_button,
     stage_header_label,
     stage_header_pill_background,
@@ -171,11 +173,13 @@ def test_action_button_uses_fixed_or_expanding_horizontal_policy(_app):
     assert action_button(fixed) is fixed
     assert fixed.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Fixed
     assert fixed.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
+    assert "QPushButton:disabled" in fixed.styleSheet()
 
     action_button(expanding, expand=True)
     assert expanding.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
     assert expanding.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
-    assert expanding.styleSheet() == ""
+    assert "QPushButton:disabled" in expanding.styleSheet()
+    assert "background-color: transparent" not in expanding.styleSheet()
 
 
 def test_tiny_button_sets_small_style_and_fixed_vertical_policy(_app):
@@ -186,6 +190,8 @@ def test_tiny_button_sets_small_style_and_fixed_vertical_policy(_app):
     style = button.styleSheet()
     assert "font-size" in style
     assert "padding" in style
+    assert "QPushButton:disabled" in style
+    assert "background-color: transparent" not in style
     assert button.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
 
 
@@ -202,6 +208,7 @@ def test_icon_button_sets_fixed_width_and_optional_height(_app):
     assert sized.maximumWidth() == 28
     assert sized.minimumHeight() == 20
     assert sized.maximumHeight() == 20
+    assert "QPushButton:disabled" in sized.styleSheet()
 
 
 def test_muted_label_uses_palette_mid_and_font_size(_app):
@@ -266,12 +273,18 @@ def test_stage_header_action_button_uses_matching_pill_style(_app):
     assert stage_header_action_button(button, "nucleus") is button
 
     style = button.styleSheet()
+    disabled_icon_color = stage_header_disabled_action_color("nucleus")
     assert f"color: {muted_stage_accent('nucleus')};" in style
     assert f"background-color: {stage_header_pill_background('nucleus')};" in style
     assert "QToolButton:checked" in style
+    assert "QToolButton:disabled" in style
+    assert "QToolButton:disabled:checked" in style
+    assert f"color: {disabled_icon_color};" in style
+    assert "color: palette(mid)" not in style
     assert "border-radius: 4px" in style
     assert "border: none" in style
     assert "border: 1px" not in style
+    assert "background-color: transparent" not in style
     assert "padding: 0" in style
     assert "text-align: center" in style
     assert button.property("cellflow_stage_key") == "nucleus"
@@ -284,20 +297,34 @@ def test_stage_header_action_button_uses_matching_pill_style(_app):
     assert button.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
 
 
-def test_danger_button_keeps_native_button_style(_app):
+def test_stage_header_disabled_action_color_is_dimmer_than_active(_app):
+    active = QColor(muted_stage_accent("nucleus"))
+    disabled = QColor(stage_header_disabled_action_color("nucleus"))
+
+    assert disabled.lightnessF() < active.lightnessF()
+    assert disabled.saturationF() <= active.saturationF()
+
+
+def test_danger_button_keeps_native_button_shape_with_visible_disabled_state(_app):
     button = QPushButton("Delete")
 
     assert danger_button(button) is button
 
-    assert button.styleSheet() == ""
+    style = button.styleSheet()
+    assert "QPushButton:disabled" in style
+    assert "border-radius: 4px" in style
+    assert "background-color: transparent" not in style
 
 
-def test_checked_success_button_keeps_native_button_style(_app):
+def test_checked_success_button_keeps_native_button_shape_with_visible_disabled_state(_app):
     button = QPushButton("Activate")
 
     assert checked_success_button(button) is button
 
-    assert button.styleSheet() == ""
+    style = button.styleSheet()
+    assert "QPushButton:disabled" in style
+    assert "border-radius: 4px" in style
+    assert "background-color: transparent" not in style
 
 
 def test_collapsible_section_does_not_tint_action_buttons(_app):
@@ -315,7 +342,7 @@ def test_collapsible_section_does_not_tint_action_buttons(_app):
     )
     section.show()
 
-    assert button.styleSheet() == ""
+    assert "QPushButton:disabled" in button.styleSheet()
 
     section.deleteLater()
 

@@ -264,6 +264,31 @@ def test_validated_overlay_uses_green_fill_at_default_opacity_below_spotlight():
     viewer.close()
 
 
+def test_manual_correction_protected_mask_marks_validated_and_anchor_cells(tmp_path):
+    from cellflow.database.validation import add_correction, validate_track
+    from cellflow.tracking_ultrack.corrections import Correction
+
+    _app, viewer = _make_viewer()
+    pos_dir = tmp_path / "pos00"
+    pos_dir.mkdir()
+    widget, _module = _make_widget(viewer, pos_dir)
+    validate_track(pos_dir, 9, [1])
+    add_correction(pos_dir, Correction(cell_id=11, t=1, kind="anchor", y=6.0, x=6.0))
+    frame = np.zeros((10, 10), dtype=np.uint32)
+    frame[1:3, 1:3] = 7
+    frame[3:5, 3:5] = 9
+    frame[6:8, 6:8] = 11
+
+    mask = widget._manual_correction_protected_mask(1, frame)
+
+    assert not mask[1:3, 1:3].any()
+    assert mask[3:5, 3:5].all()
+    assert mask[6:8, 6:8].all()
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_nucleus_correction_button_removes_unvalidated_label_instances(tmp_path):
     from cellflow.database.validation import validate_track
 

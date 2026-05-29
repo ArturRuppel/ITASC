@@ -33,7 +33,7 @@ class TrackingConfig(BaseModel):
     disappear_weight: float = -0.001
     division_weight: float = -0.001
     link_function: str = "power"
-    power: float = 4.0
+    power: int = 4
     bias: float = 0.0
     solution_gap: float = 0.001
     time_limit: int = 36000

@@ -121,14 +121,14 @@ class NucleusTrackingInputsWidget(QWidget):
         self.db_gen_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 2)
         self.db_gen_distance_weight_spin.setEnabled(False)
 
-        # ─── DB Generation — Scoring ────────────────────────────────
+        # ─── DB Generation — Node Scoring ───────────────────────────
         self.db_gen_quality_weight_spin = _dslider(
             0, 10, 1.0, 0.05, 2,
             "Weight applied to signal-based segmentation quality.",
         )
         self.db_gen_quality_exp_spin = _dslider(
             0.1, 50, 8.0, 0.5, 2,
-            "Raises signal-based quality before storing as node_prob.",
+            "Raises the combined quality and circularity score before storing as node_prob.",
         )
         self.db_gen_circularity_weight_spin = _dslider(
             0, 10, 0.25, 0.05, 2,
@@ -156,9 +156,9 @@ class NucleusTrackingInputsWidget(QWidget):
         )
 
         # ─── Ultrack — Solver ───────────────────────────────────────
-        self.ultrack_power_spin = _dslider(
-            0.1, 20, 4.0, 0.5, 2,
-            "Solver transform for node_prob and link weights (link_function=power).",
+        self.ultrack_power_spin = _islider(
+            1, 20, 4,
+            tooltip="Solver transform for node_prob and link weights (link_function=power).",
         )
         self.ultrack_bias_spin = _dslider(
             -10, 10, 0.0, 0.05, 2,
@@ -216,15 +216,15 @@ class NucleusTrackingInputsWidget(QWidget):
             "Distance weight:", self.db_gen_distance_weight_spin,
         ); row += 1
 
-        add_section_header(db_grid, row, _heading("Scoring")); row += 1
+        add_section_header(db_grid, row, _heading("Node Scoring")); row += 1
         add_section_pair_row(
             db_grid, row,
             "Quality weight:", self.db_gen_quality_weight_spin,
-            "Quality exponent:", self.db_gen_quality_exp_spin,
+            "Circularity weight:", self.db_gen_circularity_weight_spin,
         ); row += 1
         add_section_pair_row(
             db_grid, row,
-            "Circularity weight:", self.db_gen_circularity_weight_spin,
+            "Scoring exponent:", self.db_gen_quality_exp_spin,
         ); row += 1
 
         # ─── Pack Ultrack solver controls ───────────────────────────

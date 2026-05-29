@@ -94,6 +94,25 @@ def test_draw_cell_path_uses_caller_supplied_fresh_label_for_new_cell():
     assert 6 not in stack[0]
 
 
+def test_draw_cell_path_extension_preserves_protected_pixels():
+    seg = np.zeros((12, 12), dtype=np.uint32)
+    seg[3:6, 3:6] = 1
+    seg[4:8, 6:9] = 9
+    seg[7:10, 6:9] = 8
+    protected_mask = seg == 9
+
+    ok = draw_cell_path(
+        seg,
+        [(3, 5), (3, 10), (10, 10), (10, 5)],
+        curlabel=1,
+        protected_mask=protected_mask,
+    )
+
+    assert ok is True
+    assert np.all(seg[protected_mask] == 9)
+    assert np.any(seg[7:10, 6:9] == 1)
+
+
 def test_clean_stranded_pixels_cleans_fragments_without_filling_background_holes():
     seg = np.ones((8, 8), dtype=np.uint32)
     seg[2:6, 2:6] = 2

@@ -7,8 +7,16 @@ from cellflow.tracking_ultrack.config import TrackingConfig
 def test_tracking_config_exposes_seed_prior_defaults():
     cfg = TrackingConfig()
 
-    assert cfg.power == 4.0
+    assert cfg.power == 4
+    assert isinstance(cfg.power, int)
     assert cfg.quality_exponent == 8.0
+
+
+def test_tracking_config_solver_power_is_integer_typed():
+    cfg = TrackingConfig(power=7)
+
+    assert cfg.power == 7
+    assert isinstance(cfg.power, int)
 
 
 def test_tracking_config_exposes_node_probability_weights():

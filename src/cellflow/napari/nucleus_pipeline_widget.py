@@ -250,6 +250,15 @@ class NucleusPipelineWidget(QWidget):
         else:
             self._status(str(data))
 
+    def _on_preview_progress(self, data) -> None:
+        if self._running_stage is None:
+            return
+        if isinstance(data, tuple) and len(data) >= 3:
+            self._status(str(data[2]))
+        else:
+            self._status(str(data))
+        self.pipeline_progress_bar.setVisible(False)
+
     def _clear_progress(self) -> None:
         self.pipeline_progress_bar.setValue(0)
         self.pipeline_progress_bar.setVisible(False)
@@ -350,6 +359,11 @@ class NucleusPipelineWidget(QWidget):
             self.viewer.layers.remove(name)
         self.viewer.add_image(data, name=name, metadata=dict(metadata or {}))
 
+    def _clear_threshold_preview_layers(self) -> None:
+        for name in (_PREVIEW_CONTOURS_LAYER, _PREVIEW_FOREGROUND_LAYER):
+            if name in self.viewer.layers:
+                self.viewer.layers.remove(self.viewer.layers[name])
+
     def _update_tracked_display(
         self, labels: np.ndarray, t: int | None = None,
     ) -> None:
@@ -449,7 +463,7 @@ class NucleusPipelineWidget(QWidget):
             self._set_running_stage(None)
 
         @thread_worker(connect={
-            "yielded": self._on_progress,
+            "yielded": self._on_preview_progress,
             "returned": _done,
             "errored": self._on_contour_worker_error,
         })
@@ -476,6 +490,7 @@ class NucleusPipelineWidget(QWidget):
             yield (3, 3, "Loaded Ultrack threshold preview.")
             return contour_preview, foreground_preview, metadata
 
+        self._clear_progress()
         self._status("Building Ultrack threshold preview...")
         self._set_running_stage("seg")
         self._contour_worker = _worker()
@@ -483,6 +498,8 @@ class NucleusPipelineWidget(QWidget):
     def _on_threshold_preview_toggled(self, checked: bool) -> None:
         if checked:
             self._on_preview_threshold_pair(require_preview_enabled=True)
+        else:
+            self._clear_threshold_preview_layers()
 
     def _on_threshold_preview_params_changed(self, *args) -> None:
         if self._tracking_inputs_provider().source_threshold_preview_check.isChecked():

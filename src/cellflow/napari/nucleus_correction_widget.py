@@ -33,8 +33,10 @@ from cellflow.napari._widget_helpers import (
     tool_btn as _tool_btn,
 )
 from cellflow.napari._correction_centroids import (
+    ensure_label_colormap_entries,
     refresh_centroid_cross_layer,
     refresh_label_colormap,
+    update_centroid_cross_layer_for_edit,
 )
 from cellflow.napari._correction_anchor import (
     anchor_correction,
@@ -255,6 +257,9 @@ class NucleusCorrectionWidget(QWidget):
             show_cleanup=False,
         )
         self.correction_widget.set_edit_callback(self._edit_callback)
+        self.correction_widget.set_protected_mask_callback(
+            self._manual_correction_protected_mask
+        )
         self.correction_widget._status.setVisible(False)
 
         extend_retrack_inner = QWidget(self)
@@ -1371,7 +1376,7 @@ class NucleusCorrectionWidget(QWidget):
         self._validated_overlay.refresh_counter(self.validation_counter_lbl)
 
     def _on_cells_edited(self, t: int, changed_ids: set[int]) -> None:
-        self._refresh_correction_label_visuals()
+        self._refresh_correction_label_visuals_for_edit(t, changed_ids)
         self._validated_overlay.on_cells_edited(
             t,
             changed_ids,
@@ -1381,6 +1386,51 @@ class NucleusCorrectionWidget(QWidget):
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
         return self._validated_overlay.frames_with_cell(cell_id)
+
+    def _manual_correction_protected_mask(
+        self,
+        t: int,
+        frame: np.ndarray,
+    ) -> np.ndarray:
+        pos_dir = self._pos_dir
+        if pos_dir is None:
+            return np.zeros_like(frame, dtype=bool)
+        validated_tracks = self._dependency("read_validated_tracks")(pos_dir)
+        corrections = self._dependency("read_corrections")(pos_dir)
+        protected_ids = protected_cell_ids_at_frame(
+            validated_tracks,
+            corrections,
+            frame=t,
+        )
+        return protected_cell_mask(frame, protected_ids)
+
+    def _refresh_correction_label_visuals_for_edit(
+        self,
+        t: int,
+        changed_ids: set[int],
+    ) -> None:
+        if _CORRECTION_TRACKED_LAYER not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
+        data = np.asarray(layer.data)
+        color_map = ensure_label_colormap_entries(
+            layer,
+            changed_ids,
+            color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
+        )
+        update_centroid_cross_layer_for_edit(
+            self.viewer,
+            data,
+            color_map=color_map,
+            name=_CORRECTION_CENTROID_LAYER,
+            owned_layer_names=self._correction_owned_layers,
+            frame=t,
+            changed_ids=changed_ids,
+        )
+        try:
+            self.viewer.layers.selection.active = layer
+        except Exception:
+            pass
 
     def _refresh_correction_label_visuals(self) -> None:
         if _CORRECTION_TRACKED_LAYER not in self.viewer.layers:

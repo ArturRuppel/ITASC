@@ -387,6 +387,67 @@ def test_contour_terminal_controls_are_removed():
     viewer.close()
 
 
+def test_source_preview_layers_are_removed_when_preview_mode_deactivates():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = importlib.import_module("cellflow.napari.nucleus_pipeline_widget")
+
+    viewer.add_image(
+        np.zeros((1, 1, 2, 2), dtype=np.float32),
+        name=pipeline_module._PREVIEW_CONTOURS_LAYER,
+    )
+    viewer.add_labels(
+        np.zeros((1, 1, 2, 2), dtype=np.uint8),
+        name=pipeline_module._PREVIEW_FOREGROUND_LAYER,
+    )
+    widget._set_checked_without_signal(widget.source_threshold_preview_check, False)
+
+    widget._on_guarded_source_threshold_preview_toggled(False)
+
+    assert pipeline_module._PREVIEW_CONTOURS_LAYER not in viewer.layers
+    assert pipeline_module._PREVIEW_FOREGROUND_LAYER not in viewer.layers
+
+    widget.deleteLater()
+    viewer.close()
+
+
+class _RecordingBanner(QLabel):
+    def __init__(self) -> None:
+        super().__init__("")
+        self.text_writes = 0
+        self.visibility_writes = 0
+
+    def setText(self, text):
+        self.text_writes += 1
+        super().setText(text)
+
+    def setVisible(self, visible):
+        self.visibility_writes += 1
+        super().setVisible(visible)
+
+
+def test_viewer_activity_banner_is_not_rewritten_when_activity_is_unchanged():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    banner = _RecordingBanner()
+    widget.viewer_activity_banner = banner
+
+    widget._set_checked_without_signal(widget.source_threshold_preview_check, True)
+    widget._sync_viewer_activity_controls()
+    banner.text_writes = 0
+    banner.visibility_writes = 0
+
+    widget._sync_viewer_activity_controls()
+
+    assert banner.text_writes == 0
+    assert banner.visibility_writes == 0
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_contour_filter_controls_and_actions_are_removed_from_state():
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()

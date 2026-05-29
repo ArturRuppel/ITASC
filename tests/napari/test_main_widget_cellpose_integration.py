@@ -76,6 +76,33 @@ def test_main_widget_constructs_new_cellpose_widget():
     w.deleteLater()
 
 
+def test_main_widget_disables_position_spin_while_correction_is_active():
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+
+    assert w.pos_spin.isEnabled()
+
+    w.nucleus_workflow_widget._set_checked_without_signal(
+        w.nucleus_workflow_widget.correction_active_btn,
+        True,
+    )
+    w._sync_position_controls_enabled()
+
+    assert not w.pos_spin.isEnabled()
+    assert "correction mode" in w.pos_spin.toolTip().lower()
+
+    w.nucleus_workflow_widget._set_checked_without_signal(
+        w.nucleus_workflow_widget.correction_active_btn,
+        False,
+    )
+    w._sync_position_controls_enabled()
+
+    assert w.pos_spin.isEnabled()
+
+    w.deleteLater()
+
+
 def test_main_widget_theme_picker_restyles_stage_subheaders():
     app = QApplication.instance() or QApplication([])
     ui_style = importlib.import_module("cellflow.napari.ui_style")

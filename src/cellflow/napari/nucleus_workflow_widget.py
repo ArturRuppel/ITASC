@@ -119,6 +119,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.viewer_activity_banner = QLabel("")
         self.viewer_activity_banner.setWordWrap(True)
         self.viewer_activity_banner.setVisible(False)
+        self.viewer_activity_banner.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
         self.viewer_activity_banner.setStyleSheet(
             "QLabel { font-weight: 700; padding: 4px 6px; "
             "border: 1px solid #f9e2af; background: rgba(249, 226, 175, 35); }"
@@ -475,6 +479,13 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
                 return name
         return None
 
+    def _set_viewer_activity_banner(self, text: str) -> None:
+        visible = bool(text)
+        if self.viewer_activity_banner.text() != text:
+            self.viewer_activity_banner.setText(text)
+        if self.viewer_activity_banner.isVisible() != visible:
+            self.viewer_activity_banner.setVisible(visible)
+
     def _sync_viewer_activity_controls(self) -> None:
         active = self._active_viewer_activity()
         source_active = active == "source_preview"
@@ -495,13 +506,11 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         active_label = activity_labels.get(active)
         active_name = activity_names.get(active)
         if active_label is None:
-            self.viewer_activity_banner.setText("")
-            self.viewer_activity_banner.setVisible(False)
+            self._set_viewer_activity_banner("")
         else:
-            self.viewer_activity_banner.setText(
+            self._set_viewer_activity_banner(
                 f"{active_label}. Exit {active_name} to use disabled workflow controls."
             )
-            self.viewer_activity_banner.setVisible(True)
 
         self.source_threshold_preview_check.setEnabled(idle or source_active)
         self.ultrack_db_active_btn.setEnabled(idle or db_active)

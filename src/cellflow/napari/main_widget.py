@@ -110,6 +110,7 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("cell"),
         )
         self._connect_label_selection_sync()
+        self._connect_correction_position_lock()
 
         self.contact_analysis_widget = ContactAnalysisWidget(self.viewer)
         self.contact_analysis_section = CollapsibleSection(
@@ -148,6 +149,7 @@ class CellFlowMainWidget(QWidget):
         
         self.refresh_btn.clicked.connect(lambda: self._refresh_all())
         self.pos_spin.valueChanged.connect(lambda: self._refresh_all())
+        self._sync_position_controls_enabled()
 
     def _connect_label_selection_sync(self) -> None:
         """Synchronize selected cell/nucleus IDs across correction widgets."""
@@ -159,6 +161,35 @@ class CellFlowMainWidget(QWidget):
             self.cell_workflow_widget.set_selection_callback(
                 lambda t, label: self.nucleus_workflow_widget.select_matching_nucleus_label(t, label)
             )
+
+    def _connect_correction_position_lock(self) -> None:
+        """Disable top-level position changes while correction mode is active."""
+        for workflow in (self.nucleus_workflow_widget, self.cell_workflow_widget):
+            button = getattr(workflow, "correction_active_btn", None)
+            if button is not None:
+                button.toggled.connect(
+                    lambda _checked=False: self._sync_position_controls_enabled()
+                )
+
+    def _correction_mode_active(self) -> bool:
+        for workflow in (self.nucleus_workflow_widget, self.cell_workflow_widget):
+            button = getattr(workflow, "correction_active_btn", None)
+            if button is not None and button.isChecked():
+                return True
+        return False
+
+    def _sync_position_controls_enabled(self) -> None:
+        if not hasattr(self, "_position_spin_idle_tooltip"):
+            self._position_spin_idle_tooltip = self.pos_spin.toolTip()
+        active = self._correction_mode_active()
+        self.pos_spin.setEnabled(not active)
+        if active:
+            self.pos_spin.setToolTip(
+                "Position cannot be changed while correction mode is active. "
+                "Exit correction mode before switching positions."
+            )
+        else:
+            self.pos_spin.setToolTip(self._position_spin_idle_tooltip)
 
     def _setup_theme_selector(self, layout: QVBoxLayout) -> None:
         footer = QHBoxLayout()

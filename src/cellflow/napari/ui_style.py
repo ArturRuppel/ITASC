@@ -6,6 +6,7 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QToolButton,
     QVBoxLayout,
@@ -224,6 +225,13 @@ def stage_header_pill_background(stage_key: str, alpha: int = 38) -> str:
     return f"rgba({red}, {green}, {blue}, {alpha})"
 
 
+def stage_header_disabled_action_color(stage_key: str) -> str:
+    color = QColor(muted_stage_accent(stage_key))
+    h, s, l, a = color.getHslF()
+    color.setHslF(h, s * 0.55, max(0.0, l * 0.62), a)
+    return color.name()
+
+
 # Stage status indicator colors. Keyed by status name so call sites stay
 # decoupled from specific hexes.
 STAGE_STATUS_COLORS = {
@@ -244,6 +252,30 @@ def _fixed_widget(widget, width=None):
     return widget
 
 
+_DISABLED_PUSH_BUTTON_STYLE = (
+    "QPushButton:disabled { "
+    "color: palette(mid); "
+    "background-color: rgba(127, 124, 120, 42); "
+    "border: 1px solid rgba(127, 124, 120, 72); "
+    "border-radius: 4px; "
+    "}"
+)
+
+
+def _append_button_style(button, style: str):
+    current = button.styleSheet().strip()
+    if style in current:
+        return button
+    button.setStyleSheet(f"{current} {style}".strip())
+    return button
+
+
+def _disabled_push_button(button):
+    if isinstance(button, QPushButton):
+        _append_button_style(button, _DISABLED_PUSH_BUTTON_STYLE)
+    return button
+
+
 def compact_spinbox(widget, width=DEFAULT_SPIN_WIDTH):
     return _fixed_widget(widget, width)
 
@@ -253,11 +285,13 @@ def action_button(button, expand=False):
         QSizePolicy.Policy.Expanding if expand else QSizePolicy.Policy.Fixed
     )
     button.setSizePolicy(horizontal_policy, QSizePolicy.Policy.Fixed)
+    _disabled_push_button(button)
     return button
 
 
 def tiny_button(button):
     button.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
+    _disabled_push_button(button)
     button.setSizePolicy(
         button.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Fixed
     )
@@ -268,6 +302,7 @@ def icon_button(button, width=24, height=None):
     button.setFixedWidth(width)
     if height is not None:
         button.setFixedHeight(height)
+    _disabled_push_button(button)
     return button
 
 
@@ -304,6 +339,7 @@ def stage_header_action_button(button: QToolButton, stage_key: str, size_px: int
     button.setFixedSize(size_px, size_px)
     button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     color = muted_stage_accent(stage_key)
+    disabled_color = stage_header_disabled_action_color(stage_key)
     background = stage_header_pill_background(stage_key)
     button.setStyleSheet(
         "QToolButton { "
@@ -324,8 +360,12 @@ def stage_header_action_button(button: QToolButton, stage_key: str, size_px: int
         f"background-color: {stage_header_pill_background(stage_key, alpha=82)}; "
         "} "
         "QToolButton:disabled { "
-        "color: palette(mid); "
-        "background-color: transparent; "
+        f"color: {disabled_color}; "
+        f"background-color: {stage_header_pill_background(stage_key, alpha=28)}; "
+        "} "
+        "QToolButton:disabled:checked { "
+        f"color: {disabled_color}; "
+        f"background-color: {stage_header_pill_background(stage_key, alpha=44)}; "
         "}"
     )
     return button
@@ -354,10 +394,12 @@ def refresh_stage_header_labels(root) -> None:
 
 
 def danger_button(button):
+    _disabled_push_button(button)
     return button
 
 
 def checked_success_button(button):
+    _disabled_push_button(button)
     return button
 
 

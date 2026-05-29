@@ -716,6 +716,70 @@ def test_preview_checkbox_auto_updates_when_threshold_changes(tmp_path, monkeypa
     viewer.close()
 
 
+def test_source_preview_parameter_update_does_not_show_progress_bar(
+    tmp_path,
+    monkeypatch,
+):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    _install_sync_thread_worker(monkeypatch, pipeline_module)
+
+    pos_dir = tmp_path / "pos00"
+    widget._pos_dir = pos_dir
+
+    import tifffile
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_contours.tif",
+        np.ones((2, 3, 3), dtype=np.float32),
+    )
+    tifffile.imwrite(
+        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
+        np.ones((2, 3, 3), dtype=np.float32),
+    )
+
+    def fake_build(contours, foreground_scores, **kwargs):
+        return (
+            np.ones((1, 2, 3, 3), dtype=np.float32),
+            np.ones((1, 2, 3, 3), dtype=np.uint8),
+            kwargs["threshold_pairs"],
+        )
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "build_ultrack_source_stacks_from_pairs",
+        fake_build,
+    )
+
+    widget.source_threshold_preview_check.setChecked(True)
+    _app.processEvents()
+
+    def _pending_thread_worker(*, connect):
+        def _decorator(_func):
+            def _runner():
+                yielded = connect.get("yielded")
+                if yielded is not None:
+                    yielded((1, 3, "Building Ultrack threshold preview..."))
+                return object()
+
+            return _runner
+
+        return _decorator
+
+    monkeypatch.setattr(pipeline_module, "thread_worker", _pending_thread_worker)
+
+    widget.source_contour_threshold_spin.setValue(0.35)
+    _app.processEvents()
+
+    assert widget.pipeline_status_lbl.text() == "Building Ultrack threshold preview..."
+    assert widget.pipeline_progress_bar.isHidden() is True
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_source_auto_preview_blocks_conflicting_viewer_tools(tmp_path):
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()

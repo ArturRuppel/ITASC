@@ -6,6 +6,7 @@ from cellflow.napari._correction_centroids import (
     build_centroid_points,
     correction_label_color_map,
     refresh_centroid_cross_layer,
+    update_centroid_cross_layer_for_edit,
 )
 
 
@@ -112,3 +113,43 @@ def test_refresh_centroid_cross_layer_adds_and_updates_owned_points_layer() -> N
     assert refreshed is layer
     assert refreshed.data.shape == (2, 3)
     assert refreshed.features["label_id"] == [3, 8]
+
+
+def test_update_centroid_cross_layer_for_edit_replaces_only_changed_frame_ids() -> None:
+    viewer = _Viewer()
+    owned = set()
+    labels = np.zeros((2, 10, 10), dtype=np.uint32)
+    labels[0, 1:3, 1:3] = 3
+    labels[0, 7:9, 7:9] = 4
+    labels[1, 2:4, 6:8] = 3
+    color_map = correction_label_color_map(labels)
+    layer = refresh_centroid_cross_layer(
+        viewer,
+        labels,
+        color_map=color_map,
+        name="[Correction] Nucleus Centroids",
+        owned_layer_names=owned,
+    )
+
+    labels[0, 4:6, 4:6] = 3
+    labels[0, 1:3, 1:3] = 0
+    updated = update_centroid_cross_layer_for_edit(
+        viewer,
+        labels,
+        color_map=color_map,
+        name="[Correction] Nucleus Centroids",
+        owned_layer_names=owned,
+        frame=0,
+        changed_ids={3},
+    )
+
+    assert updated is layer
+    assert updated.data.shape == (3, 3)
+    frame_label_pairs = list(
+        zip(updated.features["frame"], updated.features["label_id"], strict=True)
+    )
+    assert frame_label_pairs.count((0, 3)) == 1
+    assert (0, 4) in frame_label_pairs
+    assert (1, 3) in frame_label_pairs
+    row = frame_label_pairs.index((0, 3))
+    np.testing.assert_allclose(updated.data[row], [0, 4.5, 4.5])

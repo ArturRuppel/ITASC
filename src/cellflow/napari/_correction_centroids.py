@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +45,30 @@ def refresh_label_colormap(
 ) -> dict[int | None, tuple[float, float, float, float] | str]:
     """Refresh a labels layer colormap and return the color dictionary."""
     color_map = correction_label_color_map(labels, color_scale=color_scale)
+    try:
+        from napari.utils.colormaps import DirectLabelColormap
+
+        labels_layer.colormap = DirectLabelColormap(color_dict=color_map)
+    except Exception:
+        pass
+    return color_map
+
+
+def ensure_label_colormap_entries(
+    labels_layer: Any,
+    label_ids: Iterable[int],
+    *,
+    color_scale: float = 0.65,
+) -> dict[int | None, tuple[float, float, float, float] | str]:
+    """Ensure a labels layer has deterministic colors for the supplied IDs."""
+    color_map = _existing_color_dict(labels_layer)
+    for label_id in label_ids:
+        label_id = int(label_id)
+        if label_id == 0:
+            continue
+        rgba = _label_color(label_id)
+        rgba[:3] *= float(color_scale)
+        color_map[label_id] = tuple(float(channel) for channel in rgba)
     try:
         from napari.utils.colormaps import DirectLabelColormap
 
@@ -138,6 +163,94 @@ def refresh_centroid_cross_layer(
     return layer
 
 
+def update_centroid_cross_layer_for_edit(
+    viewer: Any,
+    labels: np.ndarray,
+    *,
+    color_map: dict[int | None, tuple[float, float, float, float] | str],
+    name: str,
+    owned_layer_names: set[str],
+    frame: int,
+    changed_ids: Iterable[int],
+) -> Any:
+    """Update centroid points for changed IDs in one frame."""
+    if name not in viewer.layers:
+        return refresh_centroid_cross_layer(
+            viewer,
+            labels,
+            color_map=color_map,
+            name=name,
+            owned_layer_names=owned_layer_names,
+        )
+
+    labels_arr = np.asarray(labels)
+    if labels_arr.ndim == 2:
+        labels_arr = labels_arr[np.newaxis, ...]
+    if labels_arr.ndim != 3:
+        return refresh_centroid_cross_layer(
+            viewer,
+            labels,
+            color_map=color_map,
+            name=name,
+            owned_layer_names=owned_layer_names,
+        )
+
+    frame = int(frame)
+    if frame < 0 or frame >= labels_arr.shape[0]:
+        return viewer.layers[name]
+
+    ids = {int(label_id) for label_id in changed_ids if int(label_id) != 0}
+    if not ids:
+        return viewer.layers[name]
+
+    layer = viewer.layers[name]
+    data = _as_point_array(getattr(layer, "data", np.empty((0, 3))))
+    features = getattr(layer, "features", None)
+    label_ids = [int(value) for value in _feature_values(features, "label_id")]
+    frames = [int(value) for value in _feature_values(features, "frame")]
+    colors = _as_color_array(getattr(layer, "border_color", None), len(data))
+
+    keep_indices = [
+        idx
+        for idx, (point_frame, label_id) in enumerate(
+            zip(frames, label_ids, strict=False)
+        )
+        if not (point_frame == frame and label_id in ids)
+    ]
+    new_data = [data[idx] for idx in keep_indices]
+    new_label_ids = [label_ids[idx] for idx in keep_indices]
+    new_frames = [frames[idx] for idx in keep_indices]
+    new_colors = [colors[idx] for idx in keep_indices]
+
+    frame_arr = labels_arr[frame]
+    for label_id in sorted(ids):
+        yy, xx = np.nonzero(frame_arr == label_id)
+        if yy.size == 0:
+            continue
+        new_data.append(np.asarray([frame, float(np.mean(yy)), float(np.mean(xx))]))
+        new_label_ids.append(label_id)
+        new_frames.append(frame)
+        new_colors.append(np.asarray(_resolved_color(color_map, label_id), dtype=float))
+
+    layer.data = (
+        np.asarray(new_data, dtype=float).reshape((-1, 3))
+        if new_data
+        else np.empty((0, 3), dtype=float)
+    )
+    color_array = (
+        np.asarray(new_colors, dtype=float).reshape((-1, 4))
+        if new_colors
+        else np.empty((0, 4), dtype=float)
+    )
+    layer.border_color = color_array
+    layer.face_color = color_array
+    layer.features = {"label_id": new_label_ids, "frame": new_frames}
+    layer.symbol = "cross"
+    layer.size = CENTROID_CROSS_SIZE
+    owned_layer_names.add(name)
+    return layer
+
+
 def _empty_payload() -> CentroidPointPayload:
     return CentroidPointPayload(
         data=np.empty((0, 3), dtype=float),
@@ -156,6 +269,42 @@ def _resolved_color(
         rgba = _label_color(label_id)
         return tuple(float(channel) for channel in rgba)
     return tuple(float(channel) for channel in raw)
+
+
+def _existing_color_dict(
+    labels_layer: Any,
+) -> dict[int | None, tuple[float, float, float, float] | str]:
+    color_map: dict[int | None, tuple[float, float, float, float] | str] = {
+        None: "transparent",
+        0: "transparent",
+    }
+    raw = getattr(getattr(labels_layer, "colormap", None), "color_dict", None)
+    if isinstance(raw, Mapping):
+        color_map.update(raw)
+    return color_map
+
+
+def _as_point_array(data: Any) -> np.ndarray:
+    arr = np.asarray(data, dtype=float)
+    if arr.size == 0:
+        return np.empty((0, 3), dtype=float)
+    return arr.reshape((-1, 3))
+
+
+def _as_color_array(colors: Any, length: int) -> np.ndarray:
+    arr = np.asarray(colors, dtype=float) if colors is not None else np.empty((0, 4))
+    if arr.size == length * 4:
+        return arr.reshape((length, 4))
+    return np.zeros((length, 4), dtype=float)
+
+
+def _feature_values(features: Any, name: str) -> list[Any]:
+    if features is None:
+        return []
+    try:
+        return list(features[name])
+    except Exception:
+        return []
 
 
 def _label_color(label_id: int) -> np.ndarray:

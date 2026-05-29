@@ -80,6 +80,17 @@ def _load_widget_class():
     return module.NucleusTrackingInputsWidget, module
 
 
+def _grid_position_containing_label(grid, text: str) -> tuple[int, int, int, int]:
+    for index in range(grid.count()):
+        item = grid.itemAt(index)
+        widget = item.widget()
+        if widget is None:
+            continue
+        if any(label.text() == text for label in widget.findChildren(QLabel)):
+            return grid.getItemPosition(index)
+    raise AssertionError(f"No grid cell contained label {text!r}")
+
+
 # ── Structure tests ───────────────────────────────────────────────────────────
 
 
@@ -106,6 +117,36 @@ def test_tracking_inputs_widget_exposes_node_probability_weight_controls():
     assert widget.db_gen_quality_weight_spin.value() == pytest.approx(1.0)
     assert widget.db_gen_quality_exp_spin.value() == pytest.approx(8.0)
     assert widget.db_gen_circularity_weight_spin.value() == pytest.approx(0.25)
+
+    widget.deleteLater()
+
+
+def test_tracking_inputs_widget_labels_node_scoring_and_shared_exponent_layout():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    labels = [label.text() for label in widget.db_section._inner.findChildren(QLabel)]
+    assert "Node Scoring" in labels
+    assert "Quality exponent:" not in labels
+    assert "Scoring exponent:" in labels
+
+    grid = widget.db_section._inner.layout()
+    quality_row, quality_col, _row_span, _col_span = _grid_position_containing_label(
+        grid, "Quality weight:"
+    )
+    circularity_row, circularity_col, _row_span, _col_span = _grid_position_containing_label(
+        grid, "Circularity weight:"
+    )
+    exponent_row, exponent_col, _row_span, _col_span = _grid_position_containing_label(
+        grid, "Scoring exponent:"
+    )
+
+    assert circularity_row == quality_row
+    assert quality_col == 0
+    assert circularity_col == 2
+    assert exponent_row == quality_row + 1
+    assert exponent_col == 0
 
     widget.deleteLater()
 
@@ -162,14 +203,32 @@ def test_tracking_inputs_widget_ultrack_config_includes_solver_controls():
     widget = widget_class()
 
     widget.ultrack_bias_spin.setValue(-0.5)
-    widget.ultrack_power_spin.setValue(3.0)
+    widget.ultrack_power_spin.setValue(3)
     widget.ultrack_appear_spin.setValue(-0.05)
 
     cfg = widget.ultrack_config()
 
     assert cfg.bias == pytest.approx(-0.5)
-    assert cfg.power == pytest.approx(3.0)
+    assert cfg.power == 3
     assert cfg.appear_weight == pytest.approx(-0.05)
+
+    widget.deleteLater()
+
+
+def test_tracking_inputs_widget_solver_power_control_is_integer_only():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    assert isinstance(widget.ultrack_power_spin.value(), int)
+    assert widget.ultrack_power_spin.minimum() == 1
+    assert widget.ultrack_power_spin.singleStep() == 1
+
+    widget.ultrack_power_spin.setValue(7)
+    cfg = widget.ultrack_config()
+
+    assert cfg.power == 7
+    assert isinstance(cfg.power, int)
 
     widget.deleteLater()
 

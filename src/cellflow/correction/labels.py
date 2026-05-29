@@ -390,6 +390,7 @@ def draw_cell_path(
     *,
     curlabel: int | None = None,
     new_label: int | None = None,
+    protected_mask: np.ndarray | None = None,
 ) -> bool:
     """Draw a closed region from the user's stroke and fill its interior."""
     log.debug("draw_cell_path: %d raw positions, curlabel=%s", len(positions), curlabel)
@@ -413,8 +414,18 @@ def draw_cell_path(
 
     fill_mask = np.zeros(seg.shape, dtype=bool)
     fill_mask[rr, cc] = True
+    if protected_mask is not None:
+        protected_mask = np.asarray(protected_mask, dtype=bool)
+        if protected_mask.shape != seg.shape:
+            raise ValueError(
+                f"protected_mask shape {protected_mask.shape} does not match "
+                f"segmentation shape {seg.shape}"
+            )
+        fill_mask &= ~protected_mask
     if extending:
         existing_mask = seg == label
+        if protected_mask is not None:
+            existing_mask &= ~protected_mask
         connected_regions, _ = nd_label(existing_mask | fill_mask)
         connected_ids = np.unique(connected_regions[existing_mask])
         fill_mask &= np.isin(connected_regions, connected_ids)
@@ -429,7 +440,10 @@ def draw_cell_path(
     if extending:
         cell_mask = seg == label
         filled_mask = binary_fill_holes(cell_mask)
-        seg[filled_mask & ~cell_mask] = label
+        hole_fill = filled_mask & ~cell_mask
+        if protected_mask is not None:
+            hole_fill &= ~protected_mask
+        seg[hole_fill] = label
     return True
 
 
