@@ -58,6 +58,10 @@ from cellflow.napari._correction_layer_loader import (
     add_tracked_labels_and_track_layer,
     remove_other_correction_label_layers,
 )
+from cellflow.napari._correction_protection import (
+    protected_cell_ids_at_frame,
+    protected_cell_mask,
+)
 from cellflow.napari._correction_validation import (
     correction_for_label_frame,
     corrections_for_label_frames,
@@ -868,18 +872,15 @@ class NucleusCorrectionWidget(QWidget):
             assignments = (SimpleNamespace(cell_id=source_id, mask_2d=result.mask_2d),)
 
         frame = layer.data[result.target_frame]
-
-        protected_ids_at_target: set[int] = set()
-        for cell_id, frames in validated_tracks.items():
-            if result.target_frame in frames:
-                protected_ids_at_target.add(cell_id)
-        if self._pos_dir is not None:
-            for c in read_corrections_fn(self._pos_dir):
-                if c.kind == "anchor" and int(c.t) == int(result.target_frame):
-                    protected_ids_at_target.add(int(c.cell_id))
-        protected_mask = np.zeros_like(frame, dtype=bool)
-        for pid in protected_ids_at_target:
-            protected_mask |= (frame == pid)
+        corrections = (
+            read_corrections_fn(self._pos_dir) if self._pos_dir is not None else []
+        )
+        protected_ids_at_target = protected_cell_ids_at_frame(
+            validated_tracks,
+            corrections,
+            frame=result.target_frame,
+        )
+        protected_mask = protected_cell_mask(frame, protected_ids_at_target)
 
         assignments = tuple(
             a for a in assignments
@@ -950,19 +951,17 @@ class NucleusCorrectionWidget(QWidget):
             src_area = int(props[0].area)
             source_centroid = (float(src_cy), float(src_cx))
 
-            protected_ids: set[int] = set()
-            for cell_id, frames in validated_tracks.items():
-                if t in frames and cell_id != source_id:
-                    protected_ids.add(cell_id)
             if self._pos_dir is not None:
-                for c in read_corrections(self._pos_dir):
-                    if c.kind == "anchor" and int(c.t) == t and int(c.cell_id) != source_id:
-                        protected_ids.add(int(c.cell_id))
-            protected_mask = (
-                np.isin(tracked[t], list(protected_ids))
-                if protected_ids
-                else np.zeros(tracked.shape[1:], dtype=bool)
+                corrections = read_corrections(self._pos_dir)
+            else:
+                corrections = []
+            protected_ids = protected_cell_ids_at_frame(
+                validated_tracks,
+                corrections,
+                frame=t,
+                exclude_cell_id=source_id,
             )
+            protected_mask = protected_cell_mask(tracked[t], protected_ids)
 
             radius_px = float(self.swap_radius_spin.value())
             candidates = list_swap_candidates(
@@ -1026,19 +1025,17 @@ class NucleusCorrectionWidget(QWidget):
         ):
             frame[:] = cursor.baseline_frame
 
-        protected_ids: set[int] = set()
-        for cell_id, frames in validated_tracks.items():
-            if t in frames and cell_id != source_id:
-                protected_ids.add(cell_id)
         if self._pos_dir is not None:
-            for c in read_corrections(self._pos_dir):
-                if c.kind == "anchor" and int(c.t) == t and int(c.cell_id) != source_id:
-                    protected_ids.add(int(c.cell_id))
-        protected_mask = (
-            np.isin(frame, list(protected_ids))
-            if protected_ids
-            else np.zeros_like(frame, dtype=bool)
+            corrections = read_corrections(self._pos_dir)
+        else:
+            corrections = []
+        protected_ids = protected_cell_ids_at_frame(
+            validated_tracks,
+            corrections,
+            frame=t,
+            exclude_cell_id=source_id,
         )
+        protected_mask = protected_cell_mask(frame, protected_ids)
 
         frame[frame == source_id] = 0
         paintable = candidate.mask_2d & ~protected_mask
