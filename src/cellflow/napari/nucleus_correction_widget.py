@@ -32,6 +32,10 @@ from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
+from cellflow.napari._correction_anchor import (
+    anchor_correction,
+    without_anchor_correction,
+)
 from cellflow.napari._correction_utils import (
     frame_view_2d,
     reassign_ids_stack,
@@ -778,17 +782,9 @@ class NucleusCorrectionWidget(QWidget):
             return
         cell_id, t, y, x = target
         corrections = read_corrections(self._pos_dir)
-        remaining = [
-            correction
-            for correction in corrections
-            if not (
-                int(correction.cell_id) == int(cell_id)
-                and int(correction.t) == int(t)
-                and correction.kind == "anchor"
-            )
-        ]
-        if len(remaining) != len(corrections):
-            write_corrections(self._pos_dir, remaining)
+        removal = without_anchor_correction(corrections, cell_id=cell_id, frame=t)
+        if removal.removed:
+            write_corrections(self._pos_dir, removal.remaining)
             self._refresh_validated_overlay()
             self._correction_status(f"Unanchored cell {cell_id} at t={t}.")
             return
@@ -796,7 +792,7 @@ class NucleusCorrectionWidget(QWidget):
         if layer is None:
             add_correction(
                 self._pos_dir,
-                Correction(cell_id=cell_id, t=t, kind="anchor", y=y, x=x),
+                anchor_correction(cell_id=cell_id, frame=t, y=y, x=x),
             )
             self._refresh_validated_overlay()
             self._correction_status(f"Anchored cell {cell_id} at t={t}.")
