@@ -87,6 +87,7 @@ class NucleusPipelineWidget(QWidget):
         self._db_gen_worker = None
         self._ultrack_worker = None
         self._contour_cancel: threading.Event | None = None
+        self._db_gen_cancel: threading.Event | None = None
         self._running_stage: str | None = None
 
         # ── Per-stage buttons ──────────────────────────────────────────
@@ -550,6 +551,8 @@ class NucleusPipelineWidget(QWidget):
         self.pipeline_progress_bar.setVisible(True)
         self._status("Starting DB generation…")
         self._set_running_stage("db")
+        cancel_event = threading.Event()
+        self._db_gen_cancel = cancel_event
 
         @thread_worker(connect={
             "yielded": self._on_progress,
@@ -576,9 +579,14 @@ class NucleusPipelineWidget(QWidget):
                         cfg=cfg,
                         threshold_pairs=threshold_pairs,
                         progress_cb=_progress_cb,
+                        cancel=cancel_event.is_set,
                     )
+                    if cancel_event.is_set():
+                        raise CancelledError("Operation cancelled.")
                     _progress_cb("Scoring node probabilities...")
                     score_signal_path = self._foreground_path()
+                    if cancel_event.is_set():
+                        raise CancelledError("Operation cancelled.")
                     apply_annotations_and_score(
                         working_dir=working_dir,
                         cfg=cfg,
@@ -587,6 +595,8 @@ class NucleusPipelineWidget(QWidget):
                         validated_tracks=None,
                         tracked_labels=None,
                     )
+                    if cancel_event.is_set():
+                        raise CancelledError("Operation cancelled.")
                     result_holder.append(pos_dir)
                 except Exception as e:
                     exc_holder.append(e)
@@ -606,6 +616,7 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_db_gen_done(self, pos_dir: Path) -> None:
         self._db_gen_worker = None
+        self._db_gen_cancel = None
         self._clear_progress()
         self._status("DB generation complete.")
         self._refresh_files_callback(pos_dir)
@@ -614,8 +625,12 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_db_gen_worker_error(self, exc: Exception) -> None:
         self._db_gen_worker = None
+        self._db_gen_cancel = None
         self._set_running_stage(None)
         self._clear_progress()
+        if isinstance(exc, CancelledError):
+            self._status("Cancelled.")
+            return
         self._status(f"Error: {exc}")
         logger.exception("DB generation worker error", exc_info=exc)
 
@@ -726,7 +741,18 @@ class NucleusPipelineWidget(QWidget):
         cancelled = False
         if self._contour_cancel is not None:
             self._contour_cancel.set()
-        for attr in ("_contour_worker", "_db_gen_worker", "_ultrack_worker"):
+        db_worker = self._db_gen_worker
+        if db_worker is not None:
+            if self._db_gen_cancel is not None:
+                self._db_gen_cancel.set()
+                self._status(
+                    "Cancelling DB generation after the current database step..."
+                )
+                return
+            db_worker.quit()
+            self._db_gen_worker = None
+            cancelled = True
+        for attr in ("_contour_worker", "_ultrack_worker"):
             worker = getattr(self, attr, None)
             if worker is not None:
                 worker.quit()

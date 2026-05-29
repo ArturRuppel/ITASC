@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import sqlalchemy as sqla
@@ -65,6 +67,59 @@ def _merged_overlap_pairs(db_path):
             }
     finally:
         engine.dispose()
+
+
+def test_build_source_arrays_cancel_preserves_existing_database(monkeypatch, tmp_path):
+    from cellflow.segmentation import CancelledError
+    from cellflow.tracking_ultrack import multi_threshold as mt
+
+    contour_sources = np.zeros((1, 1, 4, 4), dtype=np.float32)
+    contour_sources[0, 0, 1:3, 1:3] = 1.0
+    foreground_sources = (contour_sources > 0).astype(np.float32)
+
+    working_dir = tmp_path / "work"
+    working_dir.mkdir()
+    final_db = working_dir / "data.db"
+    final_db.write_bytes(b"existing database")
+
+    monkeypatch.setattr(mt, "_build_ultrack_config", lambda _cfg, path: Path(path))
+
+    def fake_segment(_foreground, _contours, ultrack_cfg, _cfg):
+        (Path(ultrack_cfg) / "data.db").write_bytes(b"partial database")
+
+    monkeypatch.setattr(mt, "_run_ultrack_segment", fake_segment)
+    monkeypatch.setattr(
+        mt,
+        "merge_ultrack_databases",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("merge should not run after cancellation")
+        ),
+    )
+    monkeypatch.setattr(
+        mt,
+        "run_linking",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("linking should not run after cancellation")
+        ),
+    )
+
+    cancel_checks = iter([False, False, True])
+
+    def cancel():
+        return next(cancel_checks, True)
+
+    with pytest.raises(CancelledError):
+        mt._build_ultrack_database_from_source_arrays(
+            contour_sources,
+            foreground_sources,
+            working_dir,
+            TrackingConfig(),
+            cancel=cancel,
+        )
+
+    assert final_db.read_bytes() == b"existing database"
+    assert not any(path.name.startswith("_source_tmp_") for path in working_dir.iterdir())
+    assert not any(path.name.startswith("_build_tmp_") for path in working_dir.iterdir())
 
 
 def test_merge_ultrack_databases_remaps_t_hier_ids_globally(tmp_path):
