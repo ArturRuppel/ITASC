@@ -5,6 +5,7 @@ import numpy as np
 from cellflow.napari._correction_validation import (
     SelectedCorrectionTarget,
     correction_for_label_frame,
+    corrections_for_label_frames,
     selected_correction_target,
 )
 
@@ -58,3 +59,16 @@ def test_correction_for_label_frame_returns_none_when_label_is_absent() -> None:
     )
 
     assert correction is None
+
+
+def test_corrections_for_label_frames_builds_validated_corrections_for_present_frames() -> None:
+    stack = np.zeros((4, 8, 8), dtype=np.uint32)
+    stack[0, 1:3, 1:3] = 5
+    stack[2, 4:6, 1:4] = 5
+
+    corrections = corrections_for_label_frames(stack, cell_id=5, frames=[0, 1, 2])
+
+    assert [(c.cell_id, c.t, c.kind, c.y, c.x) for c in corrections] == [
+        (5, 0, "validated", 1.5, 1.5),
+        (5, 2, "validated", 4.5, 2.0),
+    ]

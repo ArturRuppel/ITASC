@@ -54,6 +54,25 @@ def correction_for_label_frame(
     )
 
 
+def corrections_for_label_frames(
+    data: np.ndarray,
+    *,
+    cell_id: int,
+    frames: list[int] | tuple[int, ...],
+) -> list[Correction]:
+    """Build validated corrections for frames where *cell_id* is present."""
+    corrections: list[Correction] = []
+    for frame in frames:
+        correction = correction_for_label_frame(
+            data,
+            cell_id=cell_id,
+            frame=int(frame),
+        )
+        if correction is not None:
+            corrections.append(correction)
+    return corrections
+
+
 def _label_frame(data: np.ndarray, frame: int) -> np.ndarray | None:
     arr = np.asarray(data)
     return frame_view_2d(arr, frame) if arr.ndim >= 3 else arr

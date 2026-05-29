@@ -60,6 +60,7 @@ from cellflow.napari._correction_layer_loader import (
 )
 from cellflow.napari._correction_validation import (
     correction_for_label_frame,
+    corrections_for_label_frames,
     selected_correction_target,
 )
 from cellflow.napari._paths import NucleusArtifactPaths
@@ -766,10 +767,12 @@ class NucleusCorrectionWidget(QWidget):
         frames = self._frames_with_cell(cell_id)
         if not frames:
             self._correction_status(f"Cell {cell_id} not present in tracked labels."); return
-        for t in frames:
-            correction = self._validated_correction_for_frame(cell_id, t, data)
-            if correction is not None:
-                add_correction(self._pos_dir, correction)
+        for correction in corrections_for_label_frames(
+            data,
+            cell_id=cell_id,
+            frames=frames,
+        ):
+            add_correction(self._pos_dir, correction)
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
         self._correction_status(
@@ -1326,10 +1329,12 @@ class NucleusCorrectionWidget(QWidget):
             if layer is None:
                 return
             data = np.asarray(layer.data)
-            for frame in frames:
-                correction = self._validated_correction_for_frame(sel, frame, data)
-                if correction is not None:
-                    add_correction(self._pos_dir, correction)
+            for correction in corrections_for_label_frames(
+                data,
+                cell_id=sel,
+                frames=frames,
+            ):
+                add_correction(self._pos_dir, correction)
             self._correction_status(
                 f"Cell {sel} validated across {len(frames)} frame(s)."
             )
