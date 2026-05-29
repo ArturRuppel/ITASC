@@ -238,6 +238,68 @@ class TestExtendTrack:
         assert result.candidate_label == 101
         assert result.mask_2d[6:11, 6:11].all()
 
+    def test_extend_track_from_db_filters_distant_nodes_before_reading_masks(
+        self, tmp_path
+    ):
+        """DB-backed extend should not deserialize masks outside the distance window."""
+        pytest.importorskip("ultrack")
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from tests.tracking_ultrack.test_reseed import _make_engine
+
+        from cellflow.tracking_ultrack import extend as extend_module
+
+        engine = _make_engine(tmp_path / "data.db")
+        near_pickle = make_node_pickle(
+            1,
+            np.ones((5, 5), dtype=bool),
+            np.array([5, 5, 10, 10], dtype=np.int64),
+            101,
+        )
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    NodeDB(
+                        id=101,
+                        t=1,
+                        t_node_id=101,
+                        t_hier_id=0,
+                        z=0,
+                        y=7.0,
+                        x=7.0,
+                        area=25,
+                        pickle=near_pickle,
+                    ),
+                    NodeDB(
+                        id=202,
+                        t=1,
+                        t_node_id=202,
+                        t_hier_id=0,
+                        z=0,
+                        y=50.0,
+                        x=50.0,
+                        area=25,
+                        pickle=b"far",
+                    ),
+                ]
+            )
+            session.commit()
+
+        tracked = np.zeros((2, 64, 64), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+
+        result = extend_module.extend_track_from_db(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+            d_max=10.0,
+        )
+
+        assert result is not None
+        assert result.candidate_label == 101
+
     def test_forward_single_match(self, simple_hyp):
         """Forward with one close hypothesis returns a valid ExtendResult."""
         tracked, h5_path = simple_hyp

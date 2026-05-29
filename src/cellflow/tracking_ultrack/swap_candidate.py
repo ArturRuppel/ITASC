@@ -53,7 +53,17 @@ def list_swap_candidates(
 
     try:
         with Session(engine) as session:
-            rows = session.query(NodeDB).filter(NodeDB.t == frame).all()
+            rows = (
+                session.query(NodeDB)
+                .filter(
+                    NodeDB.t == frame,
+                    NodeDB.y >= src_y - radius_px,
+                    NodeDB.y <= src_y + radius_px,
+                    NodeDB.x >= src_x - radius_px,
+                    NodeDB.x <= src_x + radius_px,
+                )
+                .all()
+            )
             for node in rows:
                 try:
                     (y0, x0, y1, x1), mask_crop = node_bbox_and_mask(

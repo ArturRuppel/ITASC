@@ -12,6 +12,7 @@ from cellflow.tracking_ultrack.swap_candidate import (
     step_larger,
     step_smaller,
 )
+from cellflow.tracking_ultrack._node_geometry import make_node_pickle
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,60 @@ class TestListSwapCandidatesFiltersByRadius:
         assert 1 in node_ids
         assert 3 in node_ids
         assert 2 not in node_ids
+
+    def test_filters_distant_nodes_before_reading_masks(self, tmp_path):
+        """Candidate search should not deserialize masks outside the radius window."""
+        pytest.importorskip("ultrack")
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+
+        db_path = tmp_path / "data.db"
+        engine = _make_engine(db_path)
+        near_pickle = make_node_pickle(
+            0,
+            np.ones((5, 5), dtype=bool),
+            np.array([8, 8, 13, 13], dtype=np.int64),
+            1,
+            ndim=3,
+        )
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    NodeDB(
+                        id=1,
+                        t=0,
+                        t_node_id=1,
+                        t_hier_id=0,
+                        z=0,
+                        y=10.0,
+                        x=10.0,
+                        area=25,
+                        pickle=near_pickle,
+                    ),
+                    NodeDB(
+                        id=2,
+                        t=0,
+                        t_node_id=2,
+                        t_hier_id=0,
+                        z=0,
+                        y=80.0,
+                        x=80.0,
+                        area=25,
+                        pickle=b"far",
+                    ),
+                ]
+            )
+            session.commit()
+
+        candidates = list_swap_candidates(
+            db_path=db_path,
+            frame=0,
+            source_centroid=(10.0, 10.0),
+            radius_px=20.0,
+            frame_shape=(H, W),
+        )
+
+        assert [c.node_id for c in candidates] == [1]
 
 
 # ---------------------------------------------------------------------------

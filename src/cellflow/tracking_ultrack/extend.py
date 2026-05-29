@@ -310,6 +310,10 @@ def extend_track_from_db(
     source_mask = tracked_labels[source_frame] == source_id
     if not source_mask.any():
         return None
+    source_stats = _mask_centroid_area(source_mask)
+    if source_stats is None:
+        return None
+    src_cy, src_cx, _src_area = source_stats
 
     target_frame_labels = tracked_labels[target_frame]
 
@@ -317,7 +321,17 @@ def extend_track_from_db(
     candidates: list[_DbCandidate] = []
 
     with Session(engine) as session:
-        rows = session.query(NodeDB).filter(NodeDB.t == target_frame).all()
+        rows = (
+            session.query(NodeDB)
+            .filter(
+                NodeDB.t == target_frame,
+                NodeDB.y >= src_cy - d_max,
+                NodeDB.y <= src_cy + d_max,
+                NodeDB.x >= src_cx - d_max,
+                NodeDB.x <= src_cx + d_max,
+            )
+            .all()
+        )
         for node in rows:
             try:
                 (y0, x0, y1, x1), mask_2d = node_bbox_and_mask(int(node.id), node.pickle)
