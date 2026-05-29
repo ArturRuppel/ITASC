@@ -32,6 +32,7 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari._widget_helpers import tool_btn as _tool_btn
 from cellflow.correction.labels import best_overlapping_label
+from cellflow.core.tiff import imwrite_grayscale
 from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.napari.cell_params_widget import CellParamsWidget
 from cellflow.napari.ui_style import (
@@ -749,7 +750,7 @@ class CellWorkflowWidget(QWidget):
             mag = np.sqrt(filtered_dp[:, 0]**2 + filtered_dp[:, 1]**2).astype(np.float32)
             yield (3, 4, "Saving...")
             fdp.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(str(fdp), filtered_dp, compression="zlib")
+            imwrite_grayscale(fdp, filtered_dp, compression="zlib")
             return mag
 
         self._status("Filtering flow...")
@@ -804,7 +805,7 @@ class CellWorkflowWidget(QWidget):
                 progress_cb=lambda d, t: None,
             )
             fg_path.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(str(fg_path), masks, compression="zlib")
+            imwrite_grayscale(fg_path, masks, compression="zlib")
             return masks
 
         self._status("Building foreground...")
@@ -905,8 +906,8 @@ class CellWorkflowWidget(QWidget):
                 yield (T, T, f"Memory filter (τ={tau})...")
                 cm = contour_memory_filter(cm, tau=tau, floor=floor)
             ct_path.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(str(ct_path), cm, compression="zlib")
-            tifffile.imwrite(str(sc_path), fs, compression="zlib")
+            imwrite_grayscale(ct_path, cm, compression="zlib")
+            imwrite_grayscale(sc_path, fs, compression="zlib")
             return cm, fs
 
         tau_msg = f", τ={tau}" if tau > 0 else ""

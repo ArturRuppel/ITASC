@@ -4,7 +4,8 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
+from collections.abc import Iterable
 
 import h5py
 import numpy as np
@@ -70,12 +71,12 @@ def build_position_contact_analysis(
     params = dict(edge_extraction_params or {})
 
     cell_labels_path = Path(cell_tracked_labels_path) if cell_tracked_labels_path else (
-        position_path / "cell" / "tracked_labels.tif"
+        position_path / "3_cell" / "tracked_labels.tif"
     )
     nucleus_labels_path = (
         Path(nucleus_tracked_labels_path)
         if nucleus_tracked_labels_path
-        else position_path / "nucleus" / "tracked_labels.tif"
+        else position_path / "2_nucleus" / "tracked_labels.tif"
     )
     cell_stack = _read_label_stack(cell_labels_path)
     nucleus_stack = _read_label_stack(nucleus_labels_path)

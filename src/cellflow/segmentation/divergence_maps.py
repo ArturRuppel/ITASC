@@ -18,6 +18,7 @@ import numpy as np
 import tifffile
 from scipy.ndimage import gaussian_filter, median_filter
 
+from cellflow.core.tiff import imwrite_grayscale
 from cellflow.segmentation.nucleus_segmentation import (
     CancelledError,
     _check_cancel,
@@ -238,15 +239,15 @@ def build_divergence_maps(
     foreground_out = Path(foreground_out)
     contours_out.parent.mkdir(parents=True, exist_ok=True)
     foreground_out.parent.mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(
-        str(contours_out), np.stack(contour_frames).astype(np.float32),
+    imwrite_grayscale(
+        contours_out, np.stack(contour_frames).astype(np.float32),
         compression="zlib",
     )
     progress_done += 1
     if progress_cb is not None:
         progress_cb(progress_done, total_steps, "Divergence maps: writing contours")
-    tifffile.imwrite(
-        str(foreground_out), np.stack(foreground_frames).astype(np.float32),
+    imwrite_grayscale(
+        foreground_out, np.stack(foreground_frames).astype(np.float32),
         compression="zlib",
     )
     progress_done += 1

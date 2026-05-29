@@ -7,10 +7,10 @@ from cellflow.contact_analysis.build import build_position_contact_analysis
 
 def _write_position(tmp_path, cell_stack, nucleus_stack):
     pos_dir = tmp_path / "position_0001"
-    cell_dir = pos_dir / "cell"
-    nucleus_dir = pos_dir / "nucleus"
-    cell_dir.mkdir(parents=True)
+    cell_dir = pos_dir / "3_cell"
+    nucleus_dir = pos_dir / "2_nucleus"
     nucleus_dir.mkdir(parents=True)
+    cell_dir.mkdir()
     tifffile.imwrite(cell_dir / "tracked_labels.tif", cell_stack)
     tifffile.imwrite(nucleus_dir / "tracked_labels.tif", nucleus_stack)
     return pos_dir
@@ -34,8 +34,8 @@ def test_read_position_contact_analysis_reconstructs_edges_and_centroids(tmp_pat
     centroids = contact_analysis.centroid_points()
     assert centroids.shape == (4, 3)
     np.testing.assert_allclose(centroids[:, 0], [0, 0, 1, 1])
-    assert contact_analysis.cell_tracked_labels_path == str(pos_dir / "cell" / "tracked_labels.tif")
-    assert contact_analysis.nucleus_tracked_labels_path == str(pos_dir / "nucleus" / "tracked_labels.tif")
+    assert contact_analysis.cell_tracked_labels_path == str(pos_dir / "3_cell" / "tracked_labels.tif")
+    assert contact_analysis.nucleus_tracked_labels_path == str(pos_dir / "2_nucleus" / "tracked_labels.tif")
 
     lines = contact_analysis.edge_lines()
     assert len(lines) == len(contact_analysis.edges["frame"])

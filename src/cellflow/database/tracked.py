@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+from cellflow.core.tiff import imwrite_grayscale
+
 _LABEL_DTYPE = np.uint32
 
 
@@ -46,7 +48,7 @@ def write_tracked_frame(path: str | Path, t: int, labels: np.ndarray) -> None:
         extra = np.zeros((t + 1 - stack.shape[0], H, W), dtype=_LABEL_DTYPE)
         stack = np.concatenate([stack, extra], axis=0)
     stack[t] = labels
-    tifffile.imwrite(str(path), stack, compression="zlib")
+    imwrite_grayscale(path, stack, compression="zlib")
 
 
 def read_tracked_frame(path: str | Path, t: int) -> np.ndarray:

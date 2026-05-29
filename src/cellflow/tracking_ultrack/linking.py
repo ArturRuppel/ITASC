@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Generator
+from collections.abc import Generator
 
 import numpy as np
 

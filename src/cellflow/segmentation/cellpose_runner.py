@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Callable, Literal
 
 import numpy as np
-import tifffile
+
+from cellflow.core.tiff import imwrite_grayscale
 
 _NORMALIZE = {"tile_norm_blocksize": 128}
 
@@ -243,5 +244,5 @@ def write_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     prob_path = output_dir / f"{channel}_prob_3dt.tif"
     dp_path = output_dir / f"{channel}_dp_3dt.tif"
-    tifffile.imwrite(str(prob_path), prob_3dt.astype(np.float32), compression="zlib")
-    tifffile.imwrite(str(dp_path), dp_3dt.astype(np.float32), compression="zlib")
+    imwrite_grayscale(prob_path, prob_3dt.astype(np.float32), compression="zlib")
+    imwrite_grayscale(dp_path, dp_3dt.astype(np.float32), compression="zlib")

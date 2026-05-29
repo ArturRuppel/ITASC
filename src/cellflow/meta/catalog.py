@@ -10,7 +10,7 @@ from __future__ import annotations
 import csv
 import os
 from pathlib import Path
-from typing import Iterable
+from collections.abc import Iterable
 
 CONTACT_ANALYSIS_REL = Path("4_contact_analysis") / "contact_analysis.h5"
 NUCLEUS_LABELS_REL = Path("2_nucleus") / "tracked_labels.tif"

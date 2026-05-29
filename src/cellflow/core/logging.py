@@ -39,7 +39,7 @@ class StageLogger:
     def error(self, message: str) -> None:
         self._write("ERROR", message)
 
-    def __enter__(self) -> "StageLogger":
+    def __enter__(self) -> StageLogger:
         self.info("Stage started")
         return self
 

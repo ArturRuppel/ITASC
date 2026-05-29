@@ -27,7 +27,7 @@ napari_pkg = types.ModuleType("cellflow.napari")
 napari_pkg.__path__ = [str(package_root)]
 sys.modules["cellflow.napari"] = napari_pkg
 
-from cellflow.napari.ui_style import (
+from cellflow.napari.ui_style import (  # noqa: E402
     DEFAULT_SPIN_WIDTH,
     FIELD_NOTES,
     SECTION_MARGIN,
@@ -51,8 +51,8 @@ from cellflow.napari.ui_style import (
     status_label,
     tiny_button,
 )
-from cellflow.napari._widget_helpers import islider
-from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget
+from cellflow.napari._widget_helpers import islider  # noqa: E402
+from cellflow.napari.widgets import CollapsibleSection, PipelineFilesWidget  # noqa: E402
 
 
 @pytest.fixture

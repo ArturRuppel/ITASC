@@ -39,6 +39,8 @@ import numpy as np
 import tifffile
 from skimage.graph import MCP_Geometric
 
+from cellflow.core.tiff import imwrite_grayscale
+
 __all__ = [
     "CellLabelICMParams",
     "CellICMState",
@@ -871,8 +873,8 @@ def commit_labels(labels: np.ndarray, output_path: Path | str) -> None:
     """Write label array to TIFF."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(
-        str(output_path),
+    imwrite_grayscale(
+        output_path,
         labels.astype(np.uint16, copy=False),
         compression="zlib",
     )

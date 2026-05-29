@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+from cellflow.core.tiff import imwrite_grayscale
 from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.corrections import (
     Correction,
@@ -71,7 +72,7 @@ def export_tracked_labels(
             cfg,
             working_dir=wd,
         )
-        tifffile.imwrite(str(output_path), labels, compression="zlib")
+        imwrite_grayscale(output_path, labels, compression="zlib")
     return labels
 
 
@@ -93,7 +94,7 @@ def _export_tracked_labels_raw(
         labels = _materialize_labels(
             tracks_to_zarr(ultrack_cfg, tracks_df, overwrite=True)
         )
-        tifffile.imwrite(str(output_path), labels, compression="zlib")
+        imwrite_grayscale(output_path, labels, compression="zlib")
         return labels
     except Exception:
         pass
@@ -103,7 +104,7 @@ def _export_tracked_labels_raw(
         from ultrack.core.export.labels import to_labels  # type: ignore[import]
 
         labels = _materialize_labels(to_labels(ultrack_cfg))
-        tifffile.imwrite(str(output_path), labels, compression="zlib")
+        imwrite_grayscale(output_path, labels, compression="zlib")
         return labels
     except Exception:
         pass
@@ -123,7 +124,7 @@ def _export_tracked_labels_raw(
             raise RuntimeError("CTC export produced no mask files.")
         frames = [tifffile.imread(str(f)) for f in mask_files]
         labels = _materialize_labels(np.stack(frames, axis=0))
-        tifffile.imwrite(str(output_path), labels, compression="zlib")
+        imwrite_grayscale(output_path, labels, compression="zlib")
         return labels
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

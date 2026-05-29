@@ -19,14 +19,16 @@ import json
 import shutil
 from dataclasses import dataclass, asdict, replace
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
+from collections.abc import Iterable
 
 import numpy as np
-import tifffile as tif
 from scipy import ndimage as ndi
 from skimage.draw import polygon
 from skimage.measure import perimeter
 from skimage.morphology import remove_small_holes
+
+from cellflow.core.tiff import imwrite_grayscale
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -46,7 +48,7 @@ class RadialRefineConfig:
     smooth: int = 2
     orig_pull: float = 0.15
 
-    def with_(self, **kwargs) -> "RadialRefineConfig":
+    def with_(self, **kwargs) -> RadialRefineConfig:
         return replace(self, **kwargs)
 
 
@@ -541,7 +543,7 @@ def write_refinement_outputs(
     out_dir.mkdir(parents=True, exist_ok=True)
     name = config_label(cfg)
     tif_path = out_dir / f"refined_labels_{name}.tif"
-    tif.imwrite(tif_path, labels.astype(np.uint32))
+    imwrite_grayscale(tif_path, labels.astype(np.uint32))
 
     per_obj_path = out_dir / f"per_object_{name}.csv"
     with open(per_obj_path, "w", newline="") as f:
@@ -567,7 +569,7 @@ def write_refinement_outputs(
     summary_path = out_dir / "summary.csv"
     existing: list[list[str]] = []
     if summary_path.exists():
-        with open(summary_path, "r", newline="") as f:
+        with open(summary_path, newline="") as f:
             reader = csv.reader(f)
             rows = list(reader)
         if rows and rows[0] == SUMMARY_HEADER:

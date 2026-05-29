@@ -508,7 +508,7 @@ def resolve_with_canonical_segment(
     foreground_masks_path: str | Path,
     validated_tracks: dict[int, set[int]],
     tracked_labels: np.ndarray,
-    cfg: "TrackingConfig",
+    cfg: TrackingConfig,
     progress_cb: Callable[[str], None] | None = None,
     *,
     intensity_image_path: str | Path,

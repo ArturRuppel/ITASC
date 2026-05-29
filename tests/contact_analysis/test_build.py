@@ -14,10 +14,10 @@ from cellflow.contact_analysis.build import (
 
 def _write_position(tmp_path, cell_stack, nucleus_stack):
     pos_dir = tmp_path / "position_0001"
-    cell_dir = pos_dir / "cell"
-    nucleus_dir = pos_dir / "nucleus"
-    cell_dir.mkdir(parents=True)
+    cell_dir = pos_dir / "3_cell"
+    nucleus_dir = pos_dir / "2_nucleus"
     nucleus_dir.mkdir(parents=True)
+    cell_dir.mkdir()
     tifffile.imwrite(cell_dir / "tracked_labels.tif", cell_stack)
     tifffile.imwrite(nucleus_dir / "tracked_labels.tif", nucleus_stack)
     return pos_dir
@@ -36,10 +36,10 @@ def test_build_position_contact_analysis_writes_schema_and_references_label_path
     with h5py.File(output_path, "r") as h5:
         assert h5["provenance"].attrs["source_position_path"] == str(pos_dir)
         assert h5["provenance"].attrs["cell_tracked_labels_path"] == str(
-            pos_dir / "cell" / "tracked_labels.tif"
+            pos_dir / "3_cell" / "tracked_labels.tif"
         )
         assert h5["provenance"].attrs["nucleus_tracked_labels_path"] == str(
-            pos_dir / "nucleus" / "tracked_labels.tif"
+            pos_dir / "2_nucleus" / "tracked_labels.tif"
         )
 
         cells = h5["cells/table"]

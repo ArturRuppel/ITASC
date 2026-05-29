@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Generator
+from collections.abc import Generator
 
 from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.ingest import _build_ultrack_config

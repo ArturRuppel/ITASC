@@ -259,6 +259,34 @@ def _load_correction_widget_class():
     return module.CorrectionWidget
 
 
+def test_correction_widget_remove_callbacks_unbinds_layer_keys():
+    _app, viewer = _make_viewer()
+    widget_class = _load_correction_widget_class()
+    widget = widget_class(viewer)
+
+    class RecordingLayer:
+        def __init__(self) -> None:
+            self.unbinds = []
+
+        def bind_key(self, key, fn, overwrite=False):
+            self.unbinds.append((key, fn, overwrite))
+
+    layer = RecordingLayer()
+    widget._layer = layer
+    widget._bound_keys = ["Delete", "Shift-Left"]
+
+    widget._remove_callbacks()
+
+    assert layer.unbinds == [
+        ("Delete", None, False),
+        ("Shift-Left", None, False),
+    ]
+    assert widget._bound_keys == []
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def _install_terminal_capture(monkeypatch):
     captured = {}
     utils_module = types.ModuleType("cellflow.napari.utils")

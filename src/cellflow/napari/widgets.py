@@ -290,7 +290,7 @@ class _PipelineFileRow(QWidget):
         self._rel_path = rel_path
         self._legacy_rel_path = legacy_rel_path
         self._loadable = loadable or self._infer_load_kind(rel_path)
-        self._full_path: "Path | None" = None
+        self._full_path: Path | None = None
         self._viewer = viewer
 
         lay = QHBoxLayout(self)
@@ -449,7 +449,7 @@ class _PipelineFileRow(QWidget):
         return None
 
 
-def _file_info(path: "Path") -> str:
+def _file_info(path: Path) -> str:
     """Return a concise shape/dtype string for a pipeline output file."""
     if path.is_dir():
         return "Directory"
@@ -503,7 +503,7 @@ class PipelineFilesWidget(QWidget):
             if group_label:
                 self._rows_by_group[group_label] = group_rows
 
-    def refresh(self, pos_dir: "Path" | None) -> None:
+    def refresh(self, pos_dir: Path | None) -> None:
         """Update all rows to reflect current on-disk state."""
         if pos_dir is None:
             for row in self._rows:

@@ -367,7 +367,7 @@ class CellFlowMainWidget(QWidget):
     def _load_config(self, path: str) -> None:
         """Load state from a JSON file."""
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 state = json.load(f)
             self.set_state(state)
             print(f"Config loaded from {path}")

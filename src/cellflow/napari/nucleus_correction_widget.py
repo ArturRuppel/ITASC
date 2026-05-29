@@ -33,6 +33,11 @@ from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
+from cellflow.napari._correction_utils import (
+    frame_view_2d,
+    reassign_ids_stack,
+    remove_unvalidated_labels,
+)
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.contact_analysis_visualization import (
@@ -515,22 +520,11 @@ class NucleusCorrectionWidget(QWidget):
         step = self.viewer.dims.current_step
         return int(step[0]) if len(step) >= 1 else 0
 
-    @staticmethod
-    def _frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:
-        if arr.ndim < 3 or t < 0 or t >= arr.shape[0]:
-            return None
-        view = arr[t]
-        while view.ndim > 2:
-            if view.shape[0] != 1:
-                return None
-            view = view[0]
-        return view
-
     def _current_cell_ids(self, t: int) -> set[int]:
         layer = self._correction_tracked_layer()
         if layer is None:
             return set()
-        frame = self._frame_view_2d(np.asarray(layer.data), t)
+        frame = frame_view_2d(np.asarray(layer.data), t)
         if frame is None:
             return set()
         return set(int(value) for value in np.unique(frame)) - {0}
@@ -643,19 +637,6 @@ class NucleusCorrectionWidget(QWidget):
         self._correction_dirty = False
         self._correction_status(f"Saved {n} frame(s) to {tracked_path.name}.")
 
-    @staticmethod
-    def _reassign_ids_stack(stack: np.ndarray) -> tuple[np.ndarray, int, dict[int, int]]:
-        unique_ids = np.unique(stack)
-        unique_ids = unique_ids[unique_ids != 0]
-        if unique_ids.size == 0:
-            return stack, 0, {}
-        lut = np.zeros(int(unique_ids.max()) + 1, dtype=np.uint32)
-        old_to_new: dict[int, int] = {}
-        for new_id, old_id in enumerate(unique_ids, start=1):
-            lut[old_id] = new_id
-            old_to_new[int(old_id)] = new_id
-        return lut[stack], len(unique_ids), old_to_new
-
     def _refresh_tracked_layer_from_disk(self) -> None:
         """Overwrite the 'Tracked: Nucleus' layer data from the saved TIFF.
 
@@ -750,7 +731,7 @@ class NucleusCorrectionWidget(QWidget):
             "errored": self._on_correction_worker_error,
         })
         def _worker():
-            return self._reassign_ids_stack(stack)
+            return reassign_ids_stack(stack)
 
         _worker()
 
@@ -766,7 +747,7 @@ class NucleusCorrectionWidget(QWidget):
         )
 
     def _commit_reassign_ids(self, layer) -> int:
-        remapped, n_cells, old_to_new = self._reassign_ids_stack(np.asarray(layer.data))
+        remapped, n_cells, old_to_new = reassign_ids_stack(np.asarray(layer.data))
         layer.data = remapped
         if self._pos_dir is not None and old_to_new:
             remap_validated_tracks(self._pos_dir, old_to_new)
@@ -783,7 +764,7 @@ class NucleusCorrectionWidget(QWidget):
             self._correction_status("No cell selected (left-click first)."); return None
         t = self._current_t()
         data = np.asarray(layer.data)
-        frame = self._frame_view_2d(data, t) if data.ndim >= 3 else data
+        frame = frame_view_2d(data, t) if data.ndim >= 3 else data
         if frame is None or not np.any(frame == cell_id):
             self._correction_status(f"Cell {cell_id} not present at t={t}."); return None
         yy, xx = np.nonzero(frame == cell_id)
@@ -792,7 +773,7 @@ class NucleusCorrectionWidget(QWidget):
     def _validated_correction_for_frame(
         self, cell_id: int, t: int, data: np.ndarray
     ) -> Correction | None:
-        frame = self._frame_view_2d(data, t) if data.ndim >= 3 else data
+        frame = frame_view_2d(data, t) if data.ndim >= 3 else data
         if frame is None or not np.any(frame == cell_id):
             return None
         yy, xx = np.nonzero(frame == cell_id)
@@ -1179,23 +1160,13 @@ class NucleusCorrectionWidget(QWidget):
             self._correction_status("Tracked layer has no image data."); return
 
         validated_tracks = read_validated_tracks(self._pos_dir)
-        frame_count = int(data.shape[0]) if data.ndim >= 3 else 1
-        changed_pixels = changed_frames = 0
-        for t in range(frame_count):
-            frame = self._frame_view_2d(data, t) if data.ndim >= 3 else data
-            if frame is None:
-                self._correction_status("Tracked layer must be a time-first stack."); return
-            validated_ids = {
-                cid for cid, frames in validated_tracks.items() if t in frames
-            }
-            remove_mask = frame != 0
-            if validated_ids:
-                remove_mask &= ~np.isin(frame, list(validated_ids))
-            n_remove = int(np.count_nonzero(remove_mask))
-            if not n_remove: continue
-            frame[remove_mask] = 0
-            changed_pixels += n_remove
-            changed_frames += 1
+        try:
+            changed_frames, changed_pixels = remove_unvalidated_labels(
+                data,
+                validated_tracks,
+            )
+        except ValueError as exc:
+            self._correction_status(str(exc)); return
 
         if not changed_pixels:
             self._correction_status("No unvalidated labels found."); return
@@ -1216,24 +1187,10 @@ class NucleusCorrectionWidget(QWidget):
             return 0, 0
         data = np.asarray(layer.data)
         validated_tracks = read_validated_tracks(self._pos_dir)
-        frame_count = int(data.shape[0]) if data.ndim >= 3 else 1
-        changed_pixels = changed_frames = 0
-        for t in range(frame_count):
-            frame = self._frame_view_2d(data, t) if data.ndim >= 3 else data
-            if frame is None:
-                raise ValueError("Tracked layer must be a time-first stack.")
-            validated_ids = {
-                cid for cid, frames in validated_tracks.items() if t in frames
-            }
-            remove_mask = frame != 0
-            if validated_ids:
-                remove_mask &= ~np.isin(frame, list(validated_ids))
-            n_remove = int(np.count_nonzero(remove_mask))
-            if not n_remove:
-                continue
-            frame[remove_mask] = 0
-            changed_pixels += n_remove
-            changed_frames += 1
+        changed_frames, changed_pixels = remove_unvalidated_labels(
+            data,
+            validated_tracks,
+        )
         if changed_pixels:
             layer.refresh()
             if self.correction_widget._selected_label:
@@ -1416,7 +1373,7 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_validation_counter()
 
     def _refresh_validated_overlay(self) -> None:
-        self._validated_overlay.refresh_overlay(self._frame_view_2d)
+        self._validated_overlay.refresh_overlay(frame_view_2d)
 
     def _add_validated_overlay(self, data: np.ndarray) -> None:
         self._validated_overlay.add_overlay(data)
@@ -1431,7 +1388,7 @@ class NucleusCorrectionWidget(QWidget):
         self._validated_overlay.on_cells_edited(
             t,
             changed_ids,
-            frame_view_2d=self._frame_view_2d,
+            frame_view_2d=frame_view_2d,
             counter_label=self.validation_counter_lbl,
         )
 

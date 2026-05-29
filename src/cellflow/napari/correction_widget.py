@@ -1159,7 +1159,8 @@ class CorrectionWidget(QWidget):
         self._drag_callbacks.clear()
         for key in self._bound_keys:
             try:
-                layer.bind_key(key, None)
+                if self._layer is not None:
+                    self._layer.bind_key(key, None)
             except Exception:
                 pass
         self._bound_keys.clear()

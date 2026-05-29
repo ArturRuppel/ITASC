@@ -9,6 +9,7 @@ build/
 *.tiff
 .pytest_cache/
 .mypy_cache/
+.ipynb_checkpoints/
 *.so
 .env
 .claude/

@@ -18,6 +18,7 @@ import sqlalchemy as sqla
 import tifffile
 from sqlalchemy.orm import Session
 
+from cellflow.core.tiff import imwrite_grayscale
 from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.db_build import (
     _build_ultrack_config,
@@ -675,9 +676,9 @@ def write_ultrack_source_stacks(
     foreground_sources_path = Path(foreground_sources_path)
     contour_sources_path.parent.mkdir(parents=True, exist_ok=True)
     foreground_sources_path.parent.mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(str(contour_sources_path), contour_sources)
+    imwrite_grayscale(contour_sources_path, contour_sources)
     _check_cancel(cancel)
-    tifffile.imwrite(str(foreground_sources_path), foreground_sources)
+    imwrite_grayscale(foreground_sources_path, foreground_sources)
     return metadata
 
 

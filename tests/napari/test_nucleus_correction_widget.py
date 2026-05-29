@@ -15,6 +15,8 @@ import napari
 from qtpy.QtGui import QKeySequence, QShortcut
 from qtpy.QtWidgets import QApplication, QLabel, QToolButton
 
+from cellflow.napari._correction_utils import frame_view_2d
+
 
 def _make_viewer():
     app = QApplication.instance() or QApplication([])
@@ -133,17 +135,6 @@ def _load_widget_class():
     return module.NucleusCorrectionWidget, module
 
 
-def _frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:
-    if arr.ndim < 3 or t < 0 or t >= arr.shape[0]:
-        return None
-    view = arr[t]
-    while view.ndim > 2:
-        if view.shape[0] != 1:
-            return None
-        view = view[0]
-    return view
-
-
 def test_nucleus_correction_parameter_labels_are_single_line():
     _app, viewer = _make_viewer()
     widget_class, _module = _load_widget_class()
@@ -213,13 +204,12 @@ def _make_widget(viewer, pos_dir: Path | None = None):
     widget._nls_zavg_path = lambda: _path("0_input", "NLS_zavg.tif")
     widget._ultrack_db_path = lambda: _path("2_nucleus", "ultrack_workdir", "data.db")
     widget._current_t = lambda: int(viewer.dims.current_step[0])
-    widget._frame_view_2d = _frame_view_2d
 
     def _current_cell_ids(t: int) -> set[int]:
         layer = widget._correction_tracked_layer()
         if layer is None:
             return set()
-        frame = widget._frame_view_2d(np.asarray(layer.data), t)
+        frame = frame_view_2d(np.asarray(layer.data), t)
         if frame is None:
             return set()
         return set(int(value) for value in np.unique(frame)) - {0}

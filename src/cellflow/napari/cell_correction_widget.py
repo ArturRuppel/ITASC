@@ -23,6 +23,7 @@ from cellflow.correction.labels import (
     fill_label_holes,
     fix_label_semiholes,
 )
+from cellflow.core.tiff import imwrite_grayscale
 from cellflow.database.tracked import read_full_tracked_stack
 from cellflow.napari._widget_helpers import (
     btn as _btn,
@@ -613,7 +614,7 @@ class CellCorrectionWidget(QWidget):
         if data.ndim != 3:
             self._correction_status("Labels not 3D."); return
         lp.parent.mkdir(parents=True, exist_ok=True)
-        tifffile.imwrite(str(lp), data.astype(np.uint32, copy=False), compression="zlib")
+        imwrite_grayscale(lp, data.astype(np.uint32, copy=False), compression="zlib")
         self._files_widget_refresh(self._pos_dir)
         self._correction_dirty = False
         self._correction_status(f"Saved {data.shape[0]} frames → {lp.name}.")

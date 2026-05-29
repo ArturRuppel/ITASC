@@ -63,6 +63,13 @@ For development from a local checkout:
 python -m pip install -e .
 ```
 
+For the full interactive workflow, install the optional Cellpose and Ultrack
+dependencies:
+
+```bash
+python -m pip install -e .[all]
+```
+
 For linting support declared by the project:
 
 ```bash
@@ -71,16 +78,17 @@ python -m pip install -e .[dev]
 
 The core declared dependencies include napari, Qt support through `qtpy`,
 NumPy/SciPy/scikit-image, pandas, tifffile, h5py, SQLAlchemy, matplotlib,
-pymaxflow, pydantic, numba, and `cellpose>=4.0`.
+pymaxflow, pydantic, and numba. Cellpose, PyTorch, torchvision, and Ultrack are
+declared as optional workflow extras.
 
 ## External and Optional Tools
 
 - **Cellpose / Cellpose-SAM**: CellFlow includes a local runner based on
-  `cellpose>=4.0`. GPU use is detected through PyTorch when available; CPU use
-  is the fallback.
+  `cellpose>=4.0`. Install with `python -m pip install -e .[cellpose]`.
+  GPU use is detected through PyTorch when available; CPU use is the fallback.
 - **Ultrack**: The nucleus-tracking stages import Ultrack for candidate
-  segmentation, database construction, linking, and solving. Install Ultrack in
-  the working environment before using those stages.
+  segmentation, database construction, linking, and solving. Install with
+  `python -m pip install -e .[tracking]`.
 
 ## Basic Usage in napari
 
@@ -104,6 +112,19 @@ In the main `CellFlow` widget:
 
 The widget can save and load `cellflow_config.json` files in the selected
 project directory.
+
+## Public API Boundary
+
+CellFlow is currently published primarily as a napari plugin and research
+workflow package. The top-level `import cellflow` exposes only `__version__`
+and intentionally avoids importing napari, Cellpose, Ultrack, or other heavy
+workflow dependencies.
+
+Programmatic use should import from the relevant subpackages, such as
+`cellflow.segmentation`, `cellflow.tracking_ultrack`, `cellflow.database`,
+`cellflow.correction`, and `cellflow.contact_analysis`. These subpackage APIs
+are useful for scripting and testing, but they should still be treated as
+provisional until the public release and manuscript stabilize.
 
 ## Testing
 
@@ -155,9 +176,10 @@ ethical/legal compliance of the submitted work.
 
 ## Citation
 
-A formal citation and publication information will be added when the public
-release and associated manuscript are ready. If you use CellFlow before then,
-please contact the authors for the appropriate citation guidance.
+If you use CellFlow, please cite the software using the metadata in
+`CITATION.cff`. A DOI and manuscript citation will be added when the public
+release and associated manuscript are ready. For pre-publication citation
+questions, contact Artur Ruppel at `artur@ruppel.pro`.
 
 ## License
 

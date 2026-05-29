@@ -299,7 +299,7 @@ class CellposeWidget(QWidget):
     # ------------------------------------------------------------------
     # Run flow
     # ------------------------------------------------------------------
-    def _build_nucleus_params(self) -> "cellpose_runner.NucleusParams":
+    def _build_nucleus_params(self) -> cellpose_runner.NucleusParams:
         return cellpose_runner.NucleusParams(
             do_3d=self.nuc_3d_chk.isChecked(),
             anisotropy=float(self.nuc_anisotropy_spin.value()),
@@ -308,7 +308,7 @@ class CellposeWidget(QWidget):
             gamma=float(self.nuc_gamma_spin.value()),
         )
 
-    def _build_cell_params(self) -> "cellpose_runner.CellParams":
+    def _build_cell_params(self) -> cellpose_runner.CellParams:
         return cellpose_runner.CellParams(
             diameter=float(self.cell_diameter_spin.value()),
             min_size=int(self.cell_min_size_spin.value()),
