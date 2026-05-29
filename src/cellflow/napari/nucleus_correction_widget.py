@@ -32,6 +32,10 @@ from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
+from cellflow.napari._correction_centroids import (
+    refresh_centroid_cross_layer,
+    refresh_label_colormap,
+)
 from cellflow.napari._correction_anchor import (
     anchor_correction,
     without_anchor_correction,
@@ -113,6 +117,7 @@ logger = logging.getLogger(__name__)
 _TRACKED_LAYER = "Tracked: Nucleus"
 _CORRECTION_TRACKED_LAYER = "[Correction] Nucleus Labels"
 _CORRECTION_TRACK_LAYER = "[Correction] Nucleus tracks"
+_CORRECTION_CENTROID_LAYER = "[Correction] Nucleus Centroids"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
@@ -679,6 +684,7 @@ class NucleusCorrectionWidget(QWidget):
             stack,
             labels_layer_name=_CORRECTION_TRACKED_LAYER,
             track_layer_name=_CORRECTION_TRACK_LAYER,
+            centroid_layer_name=_CORRECTION_CENTROID_LAYER,
             owned_layer_names=self._correction_owned_layers,
             color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
         )
@@ -717,6 +723,7 @@ class NucleusCorrectionWidget(QWidget):
         layer = self._correction_tracked_layer()
         if layer is not None:
             layer.data = remapped
+            self._refresh_correction_label_visuals()
         if self._pos_dir is not None and old_to_new:
             remap_validated_tracks(self._pos_dir, old_to_new)
         self._correction_status(
@@ -726,6 +733,7 @@ class NucleusCorrectionWidget(QWidget):
     def _commit_reassign_ids(self, layer) -> int:
         remapped, n_cells, old_to_new = reassign_ids_stack(np.asarray(layer.data))
         layer.data = remapped
+        self._refresh_correction_label_visuals()
         if self._pos_dir is not None and old_to_new:
             remap_validated_tracks(self._pos_dir, old_to_new)
         return int(n_cells)
@@ -902,6 +910,7 @@ class NucleusCorrectionWidget(QWidget):
             for a in assignments:
                 frame[a.mask_2d & (frame == 0)] = int(a.cell_id)
         layer.refresh()
+        self._refresh_correction_label_visuals()
 
         step = list(self.viewer.dims.current_step)
         step[0] = result.target_frame
@@ -1043,6 +1052,7 @@ class NucleusCorrectionWidget(QWidget):
 
         self.correction_widget._record_history(layer, t, before)
         layer.refresh()
+        self._refresh_correction_label_visuals()
 
     def _on_retrack_forward(self) -> None:
         if self._pos_dir is None:
@@ -1069,6 +1079,7 @@ class NucleusCorrectionWidget(QWidget):
             reserved_ids=set(read_validated_tracks(self._pos_dir)),
         )
         layer.data = result.stack
+        self._refresh_correction_label_visuals()
         self._correction_status(
             f"Retracked forward from t={result.first_target_frame}: "
             f"{result.n_retracked} updated, "
@@ -1100,6 +1111,7 @@ class NucleusCorrectionWidget(QWidget):
             reserved_ids=set(read_validated_tracks(self._pos_dir)),
         )
         layer.data = result.stack
+        self._refresh_correction_label_visuals()
         self._correction_status(
             f"Retracked backward from t={result.first_target_frame}: "
             f"{result.n_retracked} updated, "
@@ -1128,6 +1140,7 @@ class NucleusCorrectionWidget(QWidget):
         if not result.changed_pixels:
             self._correction_status("No unvalidated labels found."); return
         layer.refresh()
+        self._refresh_correction_label_visuals()
         if self.correction_widget._selected_label:
             ct = self._current_t()
             if self.correction_widget._selected_label not in self._current_cell_ids(ct):
@@ -1150,6 +1163,7 @@ class NucleusCorrectionWidget(QWidget):
         )
         if result.changed_pixels:
             layer.refresh()
+            self._refresh_correction_label_visuals()
             if self.correction_widget._selected_label:
                 ct = self._current_t()
                 if self.correction_widget._selected_label not in self._current_cell_ids(ct):
@@ -1180,6 +1194,7 @@ class NucleusCorrectionWidget(QWidget):
             remap_validated_tracks(self._pos_dir, result.old_to_new)
         if result.changed_pixels:
             layer.refresh()
+            self._refresh_correction_label_visuals()
             if self.correction_widget._selected_label:
                 ct = self._current_t()
                 if self.correction_widget._selected_label not in self._current_cell_ids(ct):
@@ -1356,6 +1371,7 @@ class NucleusCorrectionWidget(QWidget):
         self._validated_overlay.refresh_counter(self.validation_counter_lbl)
 
     def _on_cells_edited(self, t: int, changed_ids: set[int]) -> None:
+        self._refresh_correction_label_visuals()
         self._validated_overlay.on_cells_edited(
             t,
             changed_ids,
@@ -1365,3 +1381,25 @@ class NucleusCorrectionWidget(QWidget):
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
         return self._validated_overlay.frames_with_cell(cell_id)
+
+    def _refresh_correction_label_visuals(self) -> None:
+        if _CORRECTION_TRACKED_LAYER not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
+        data = np.asarray(layer.data)
+        color_map = refresh_label_colormap(
+            layer,
+            data,
+            color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
+        )
+        refresh_centroid_cross_layer(
+            self.viewer,
+            data,
+            color_map=color_map,
+            name=_CORRECTION_CENTROID_LAYER,
+            owned_layer_names=self._correction_owned_layers,
+        )
+        try:
+            self.viewer.layers.selection.active = layer
+        except Exception:
+            pass

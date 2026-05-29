@@ -6,8 +6,12 @@ from typing import Any
 import numpy as np
 from napari.utils.colormaps import Colormap
 
+from cellflow.napari._correction_centroids import (
+    correction_label_color_map,
+    refresh_centroid_cross_layer,
+    refresh_label_colormap,
+)
 from cellflow.napari.contact_analysis_visualization import (
-    _categorical_colors,
     _nucleus_centroids_by_track,
     _rasterize_track_image,
 )
@@ -48,6 +52,7 @@ def add_tracked_labels_and_track_layer(
     track_layer_name: str,
     owned_layer_names: set[str],
     color_scale: float = 0.65,
+    centroid_layer_name: str | None = None,
 ) -> TrackedLayerLoadResult:
     """Add correction labels and the matching fading nucleus-track image."""
     labels_arr = np.asarray(labels)
@@ -58,20 +63,28 @@ def add_tracked_labels_and_track_layer(
     )
     labels_layer.blending = "additive"
     owned_layer_names.add(labels_layer_name)
+    color_map = refresh_label_colormap(
+        labels_layer,
+        labels_arr,
+        color_scale=color_scale,
+    )
 
-    color_map = add_correction_track_layer(
+    add_correction_track_layer(
         viewer,
         labels_arr,
         name=track_layer_name,
         owned_layer_names=owned_layer_names,
         color_scale=color_scale,
     )
-    try:
-        from napari.utils.colormaps import DirectLabelColormap
 
-        labels_layer.colormap = DirectLabelColormap(color_dict=color_map)
-    except Exception:
-        pass
+    if centroid_layer_name is not None:
+        refresh_centroid_cross_layer(
+            viewer,
+            labels_arr,
+            color_map=color_map,
+            name=centroid_layer_name,
+            owned_layer_names=owned_layer_names,
+        )
 
     return TrackedLayerLoadResult(labels_layer=labels_layer, color_map=color_map)
 
@@ -86,18 +99,7 @@ def add_correction_track_layer(
 ) -> dict[int | None, tuple[float, float, float, float] | str]:
     """Add the correction-owned fading nucleus-track image layer."""
     labels_arr = np.asarray(labels)
-    label_ids = np.asarray(
-        sorted(int(value) for value in np.unique(labels_arr) if int(value) != 0)
-    )
-    label_colors = _categorical_colors(label_ids)
-    color_map: dict[int | None, tuple[float, float, float, float] | str] = {
-        None: "transparent",
-        0: "transparent",
-    }
-    for label_id, color in zip(label_ids, label_colors, strict=True):
-        rgba = np.asarray(color, dtype=np.float32).copy()
-        rgba[:3] *= float(color_scale)
-        color_map[int(label_id)] = tuple(float(channel) for channel in rgba)
+    color_map = correction_label_color_map(labels_arr, color_scale=color_scale)
 
     shape = (
         (1, int(labels_arr.shape[0]), int(labels_arr.shape[1]))

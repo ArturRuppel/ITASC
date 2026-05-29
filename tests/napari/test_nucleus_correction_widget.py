@@ -482,6 +482,7 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     assert "[Correction] stale" not in viewer.layers
     assert "[Correction] Nucleus Labels" in viewer.layers
     assert "[Correction] Nucleus tracks" in viewer.layers
+    assert "[Correction] Nucleus Centroids" in viewer.layers
     assert "[Correction] Cell z-avg" in viewer.layers
     assert "[Correction] Nucleus z-avg" in viewer.layers
     assert "[Correction] NLS z-avg" in viewer.layers
@@ -491,6 +492,7 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     assert set(widget._correction_owned_layers) == {
         "[Correction] Nucleus Labels",
         "[Correction] Nucleus tracks",
+        "[Correction] Nucleus Centroids",
         "[Correction] Cell z-avg",
         "[Correction] Nucleus z-avg",
         "[Correction] NLS z-avg",
@@ -505,6 +507,18 @@ def test_correction_activation_loads_owned_layers_from_disk(tmp_path):
     assert track_layer.data.shape == (2, 4, 5, 4)
     assert np.count_nonzero(track_layer.data[1, :, :, 3]) > 0
     assert np.max(track_layer.data[..., :3]) < 255
+    centroid_layer = viewer.layers["[Correction] Nucleus Centroids"]
+    assert centroid_layer.symbol[0].value == "cross"
+    assert centroid_layer.data.shape == (2, 3)
+    assert list(centroid_layer.features["label_id"]) == [7, 7]
+
+    label_layer.data[1, 0:2, 3:5] = 4096
+    widget._on_cells_edited(1, {4096})
+
+    refreshed_centroids = viewer.layers["[Correction] Nucleus Centroids"]
+    assert 4096 in list(refreshed_centroids.features["label_id"])
+    high_label_color = np.asarray(label_layer.colormap.color_dict[4096])
+    assert not np.allclose(high_label_color[:3], [0.0, 0.0, 0.0])
     assert viewer.layers["[Correction] Cell z-avg"].blending == "minimum"
     assert viewer.layers["[Correction] Nucleus z-avg"].blending == "minimum"
     assert viewer.layers["[Correction] NLS z-avg"].blending == "minimum"
