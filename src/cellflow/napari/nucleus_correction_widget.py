@@ -51,6 +51,10 @@ from cellflow.napari._correction_layer_loader import (
     add_tracked_labels_and_track_layer,
     remove_other_correction_label_layers,
 )
+from cellflow.napari._correction_validation import (
+    correction_for_label_frame,
+    selected_correction_target,
+)
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.database.tracked import (
@@ -724,26 +728,22 @@ class NucleusCorrectionWidget(QWidget):
         if cell_id == 0:
             self._correction_status("No cell selected (left-click first)."); return None
         t = self._current_t()
-        data = np.asarray(layer.data)
-        frame = frame_view_2d(data, t) if data.ndim >= 3 else data
-        if frame is None or not np.any(frame == cell_id):
+        target = selected_correction_target(
+            np.asarray(layer.data),
+            cell_id=cell_id,
+            frame=t,
+        )
+        if target is None:
             self._correction_status(f"Cell {cell_id} not present at t={t}."); return None
-        yy, xx = np.nonzero(frame == cell_id)
-        return cell_id, t, float(np.mean(yy)), float(np.mean(xx))
+        return target.cell_id, target.frame, target.y, target.x
 
     def _validated_correction_for_frame(
         self, cell_id: int, t: int, data: np.ndarray
     ) -> Correction | None:
-        frame = frame_view_2d(data, t) if data.ndim >= 3 else data
-        if frame is None or not np.any(frame == cell_id):
-            return None
-        yy, xx = np.nonzero(frame == cell_id)
-        return Correction(
-            cell_id=int(cell_id),
-            t=int(t),
-            kind="validated",
-            y=float(np.mean(yy)),
-            x=float(np.mean(xx)),
+        return correction_for_label_frame(
+            data,
+            cell_id=cell_id,
+            frame=t,
         )
 
     def _on_validate_track(self) -> None:
