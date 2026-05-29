@@ -16,6 +16,7 @@ from pathlib import Path
 
 import napari
 import numpy as np
+from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import (
     QLabel,
     QVBoxLayout,
@@ -77,6 +78,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.viewer = viewer
         self._pos_dir: Path | None = None
         self._stop_flag: bool = False
+        self._dims_step_refresh_pending: bool = False
 
         self._init_ultrack_db_browser_state()
 
@@ -747,7 +749,12 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
     # Correction / DB browser coordination
     # ================================================================
     def _on_dims_step_changed(self, event=None) -> None:
-        self.nucleus_correction_widget.on_dims_step_changed()
+        if not self._dims_step_refresh_pending:
+            self._dims_step_refresh_pending = True
+            QTimer.singleShot(0, self._refresh_after_dims_step_changed)
         if self.ultrack_db_browser_section.is_expanded:
-            from qtpy.QtCore import QTimer
             QTimer.singleShot(0, self._refresh_ultrack_db_browser)
+
+    def _refresh_after_dims_step_changed(self) -> None:
+        self._dims_step_refresh_pending = False
+        self.nucleus_correction_widget.on_dims_step_changed()

@@ -290,6 +290,28 @@ def test_pipeline_widget_handler_methods_aliased_on_workflow():
     viewer.close()
 
 
+def test_dims_step_change_defers_correction_refresh_until_event_loop(monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    calls = []
+
+    monkeypatch.setattr(
+        widget.nucleus_correction_widget,
+        "on_dims_step_changed",
+        lambda: calls.append("correction refreshed"),
+    )
+
+    widget._on_dims_step_changed()
+
+    assert calls == []
+    _app.processEvents()
+    assert calls == ["correction refreshed"]
+
+    widget.deleteLater()
+    viewer.close()
+
+
 # ── Structure tests ───────────────────────────────────────────────────────────
 
 
