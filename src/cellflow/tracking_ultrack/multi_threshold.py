@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -248,6 +249,7 @@ def merge_ultrack_databases(
     *,
     frame_shape: tuple[int, int] | None = None,
     progress_cb: Callable[[str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> MultiThresholdMergeReport:
     """Merge several Ultrack ``data.db`` files into a single database.
 
@@ -271,7 +273,9 @@ def merge_ultrack_databases(
         Optional callback ``(message) -> None`` for progress reporting.
     """
     from ultrack.core.database import Base, NodeDB, OverlapDB
+    from cellflow.segmentation.nucleus_segmentation import _check_cancel
 
+    _check_cancel(cancel)
     src_paths = [Path(p) for p in source_db_paths]
     out_path = Path(output_db_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,6 +296,7 @@ def merge_ultrack_databases(
     db_nodes: list[list[dict[str, Any]]] = []
     db_overlaps: list[list[tuple[int, int]]] = []
     for sp in src_paths:
+        _check_cancel(cancel)
         nds, ovs = _read_nodes_and_overlaps(sp)
         db_nodes.append(nds)
         db_overlaps.append(ovs)
@@ -362,6 +367,7 @@ def merge_ultrack_databases(
             nodes_by_db_time[db_idx].setdefault(t, []).append(row)
 
     for t in sorted(timepoints):
+        _check_cancel(cancel)
         rows_by_source = [
             nodes_by_db_time[db_idx].get(t, [])
             for db_idx in range(len(db_nodes))
@@ -378,6 +384,7 @@ def merge_ultrack_databases(
         ),
     )
 
+    _check_cancel(cancel)
     engine = sqla.create_engine(f"sqlite:///{out_path}")
     try:
         Base.metadata.create_all(engine)
@@ -737,7 +744,11 @@ def _build_ultrack_database_from_source_arrays(
     cfg: TrackingConfig,
     *,
     progress_cb: Callable[[str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> UltrackDatabaseBuildReport:
+    from cellflow.segmentation.nucleus_segmentation import _check_cancel
+
+    _check_cancel(cancel)
     contour_sources = _normalize_source_stack(contour_sources, "contour_sources")
     foreground_sources = _normalize_source_stack(
         foreground_sources,
@@ -749,20 +760,20 @@ def _build_ultrack_database_from_source_arrays(
 
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
+    build_dir = Path(tempfile.mkdtemp(prefix="_build_tmp_", dir=working_dir))
     source_count, _frame_count, h, w = contour_sources.shape
 
-    temp_dirs: list[Path] = []
     temp_dbs: list[Path] = []
 
     try:
         for source_index in range(source_count):
+            _check_cancel(cancel)
             _notify(
                 progress_cb,
                 f"Segmenting source {source_index + 1}/{source_count} …",
             )
-            tmp_dir = working_dir / f"_source_tmp_{source_index}"
+            tmp_dir = build_dir / f"_source_tmp_{source_index}"
             tmp_dir.mkdir(parents=True, exist_ok=True)
-            temp_dirs.append(tmp_dir)
 
             ultrack_cfg = _build_ultrack_config(cfg, tmp_dir)
             _run_ultrack_segment(
@@ -771,6 +782,7 @@ def _build_ultrack_database_from_source_arrays(
                 ultrack_cfg,
                 cfg,
             )
+            _check_cancel(cancel)
 
             db_path = tmp_dir / "data.db"
             if not db_path.exists():
@@ -780,23 +792,47 @@ def _build_ultrack_database_from_source_arrays(
             temp_dbs.append(db_path)
 
         _notify(progress_cb, "Merging source databases …")
+        _check_cancel(cancel)
+        merge_kwargs = {
+            "frame_shape": (int(h), int(w)),
+            "progress_cb": progress_cb,
+        }
+        if cancel is not None:
+            merge_kwargs["cancel"] = cancel
         merge_ultrack_databases(
             temp_dbs,
-            working_dir / "data.db",
-            frame_shape=(int(h), int(w)),
-            progress_cb=progress_cb,
+            build_dir / "data.db",
+            **merge_kwargs,
         )
+        _check_cancel(cancel)
 
         _notify(progress_cb, "Linking candidates …")
-        for step, total, label in run_linking(working_dir, cfg):
+        for step, total, label in run_linking(build_dir, cfg):
+            _check_cancel(cancel)
             _notify(progress_cb, f"[link {step}/{total}] {label}")
+        _check_cancel(cancel)
+        _publish_staged_ultrack_workdir(build_dir, working_dir)
 
     finally:
-        for td in temp_dirs:
-            if td.exists():
-                shutil.rmtree(td, ignore_errors=True)
+        if build_dir.exists():
+            shutil.rmtree(build_dir, ignore_errors=True)
 
     return UltrackDatabaseBuildReport()
+
+
+def _publish_staged_ultrack_workdir(build_dir: Path, working_dir: Path) -> None:
+    staged_db = build_dir / "data.db"
+    if not staged_db.exists():
+        raise RuntimeError(f"Staged Ultrack build did not create {staged_db}")
+
+    working_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("data.db", "data.db-wal", "data.db-shm", "metadata.toml"):
+        staged_path = build_dir / name
+        final_path = working_dir / name
+        if staged_path.exists():
+            staged_path.replace(final_path)
+        elif final_path.exists() and name != "data.db":
+            final_path.unlink()
 
 
 def build_ultrack_database_from_sources(
@@ -806,6 +842,7 @@ def build_ultrack_database_from_sources(
     cfg: TrackingConfig,
     *,
     progress_cb: Callable[[str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> UltrackDatabaseBuildReport:
     """Build candidate ``data.db`` from Ultrack source-stack artifacts.
 
@@ -827,6 +864,7 @@ def build_ultrack_database_from_sources(
         working_dir,
         cfg,
         progress_cb=progress_cb,
+        cancel=cancel,
     )
 
 
@@ -839,6 +877,7 @@ def build_ultrack_database_from_thresholds(
     contour_thresholds: Sequence[float],
     foreground_thresholds: Sequence[float],
     progress_cb: Callable[[str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> UltrackDatabaseBuildReport:
     """Build candidate ``data.db`` from canonical maps and threshold controls.
 
@@ -847,12 +886,17 @@ def build_ultrack_database_from_thresholds(
     contour/foreground maps, builds the full source sweep in memory, segments
     each source, merges candidates, and links them.
     """
+    from cellflow.segmentation.nucleus_segmentation import _check_cancel
+
+    _check_cancel(cancel)
     _notify(progress_cb, "Loading contour maps and foreground scores …")
     contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
+    _check_cancel(cancel)
     foreground_scores = np.asarray(
         tifffile.imread(str(foreground_scores_path)),
         dtype=np.float32,
     )
+    _check_cancel(cancel)
 
     _notify(progress_cb, "Building threshold source sweep …")
     contour_sources, foreground_sources, _metadata = build_ultrack_source_stacks(
@@ -867,6 +911,7 @@ def build_ultrack_database_from_thresholds(
         working_dir,
         cfg,
         progress_cb=progress_cb,
+        cancel=cancel,
     )
 
 
@@ -878,14 +923,20 @@ def build_ultrack_database_from_threshold_pairs(
     *,
     threshold_pairs: Sequence[Mapping[str, float]],
     progress_cb: Callable[[str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> UltrackDatabaseBuildReport:
     """Build candidate ``data.db`` from explicit threshold pairs."""
+    from cellflow.segmentation.nucleus_segmentation import _check_cancel
+
+    _check_cancel(cancel)
     _notify(progress_cb, "Loading contour maps and foreground scores …")
     contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
+    _check_cancel(cancel)
     foreground_scores = np.asarray(
         tifffile.imread(str(foreground_scores_path)),
         dtype=np.float32,
     )
+    _check_cancel(cancel)
 
     _notify(progress_cb, "Building threshold source list …")
     contour_sources, foreground_sources, _metadata = (
@@ -901,6 +952,7 @@ def build_ultrack_database_from_threshold_pairs(
         working_dir,
         cfg,
         progress_cb=progress_cb,
+        cancel=cancel,
     )
 
 
