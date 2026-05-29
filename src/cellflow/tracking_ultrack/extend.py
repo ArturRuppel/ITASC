@@ -86,6 +86,7 @@ def _assignment_for_candidate(
     *,
     cell_id: int,
     reference_mask: np.ndarray,
+    reference_stats: tuple[float, float, float],
     target_frame_labels: np.ndarray,
     candidate: _DbCandidate,
     d_max: float,
@@ -94,10 +95,7 @@ def _assignment_for_candidate(
     distance_weight: float,
     overlap_penalty: float,
 ) -> ExtendAssignment | None:
-    stats = _mask_centroid_area(reference_mask)
-    if stats is None:
-        return None
-    src_cy, src_cx, src_area = stats
+    src_cy, src_cx, src_area = reference_stats
     cand_cy, cand_cx = candidate.centroid
     dist = float(np.hypot(cand_cy - src_cy, cand_cx - src_cx))
     if dist > d_max:
@@ -157,6 +155,7 @@ def _top_assignments_for_cell(
     *,
     cell_id: int,
     reference_mask: np.ndarray,
+    reference_stats: tuple[float, float, float],
     target_frame_labels: np.ndarray,
     candidates: list[_DbCandidate],
     d_max: float,
@@ -171,6 +170,7 @@ def _top_assignments_for_cell(
         assignment = _assignment_for_candidate(
             cell_id=cell_id,
             reference_mask=reference_mask,
+            reference_stats=reference_stats,
             target_frame_labels=target_frame_labels,
             candidate=candidate,
             d_max=d_max,
@@ -361,6 +361,7 @@ def extend_track_from_db(
         assignments = _top_assignments_for_cell(
             cell_id=source_id,
             reference_mask=source_mask,
+            reference_stats=source_stats,
             target_frame_labels=target_frame_labels,
             candidates=candidates,
             d_max=d_max,
@@ -377,6 +378,7 @@ def extend_track_from_db(
     assignments = _top_assignments_for_cell(
         cell_id=source_id,
         reference_mask=source_mask,
+        reference_stats=source_stats,
         target_frame_labels=target_frame_labels,
         candidates=candidates,
         d_max=d_max,

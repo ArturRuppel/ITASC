@@ -885,6 +885,7 @@ class NucleusCorrectionWidget(QWidget):
             assignments = (SimpleNamespace(cell_id=source_id, mask_2d=result.mask_2d),)
 
         frame = layer.data[result.target_frame]
+        before = np.asarray(frame).copy()
         corrections = (
             read_corrections_fn(self._pos_dir) if self._pos_dir is not None else []
         )
@@ -914,8 +915,17 @@ class NucleusCorrectionWidget(QWidget):
         else:
             for a in assignments:
                 frame[a.mask_2d & (frame == 0)] = int(a.cell_id)
+        changed = before != frame
+        changed_ids = (
+            set(int(v) for v in np.unique(before[changed]))
+            | set(int(v) for v in np.unique(np.asarray(frame)[changed]))
+        )
+        changed_ids.discard(0)
         layer.refresh()
-        self._refresh_correction_label_visuals()
+        self._refresh_correction_label_visuals_for_edit(
+            result.target_frame,
+            changed_ids,
+        )
 
         step = list(self.viewer.dims.current_step)
         step[0] = result.target_frame
@@ -1057,7 +1067,6 @@ class NucleusCorrectionWidget(QWidget):
 
         self.correction_widget._record_history(layer, t, before)
         layer.refresh()
-        self._refresh_correction_label_visuals()
 
     def _on_retrack_forward(self) -> None:
         if self._pos_dir is None:

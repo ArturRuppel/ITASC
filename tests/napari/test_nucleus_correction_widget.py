@@ -829,6 +829,61 @@ def test_extend_greedy_overwrite_paints_source_and_overwrites_non_validated(tmp_
     viewer.close()
 
 
+def test_extend_uses_incremental_visual_refresh(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    pos_dir = tmp_path / "pos00"
+    db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget, module = _make_widget(viewer, pos_dir)
+
+    labels = np.zeros((2, 32, 32), dtype=np.uint32)
+    labels[0, 5:10, 5:10] = 7
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    widget.correction_widget._selected_label = 7
+
+    candidate_mask = np.zeros((32, 32), dtype=bool)
+    candidate_mask[6:11, 6:11] = True
+    result = types.SimpleNamespace(
+        target_frame=1,
+        candidate_label=101,
+        candidate_partition=0,
+        mask_2d=candidate_mask,
+        bbox=(6, 6, 11, 11),
+        centroid_distance=1.0,
+        area_ratio=1.0,
+        centroid_corrected_iou=1.0,
+        existing_overlap=0.0,
+        assignments=(types.SimpleNamespace(cell_id=7, mask_2d=candidate_mask),),
+    )
+    monkeypatch.setitem(
+        module._DEFAULT_DEPENDENCIES,
+        "extend_track_from_db",
+        lambda **_kwargs: result,
+    )
+
+    full_refresh_calls = []
+    edit_refresh_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_refresh_correction_label_visuals",
+        lambda: full_refresh_calls.append("full"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_correction_label_visuals_for_edit",
+        lambda t, changed_ids: edit_refresh_calls.append((t, set(changed_ids))),
+    )
+
+    widget._on_extend(direction="forward")
+
+    assert edit_refresh_calls == [(1, {7})]
+    assert full_refresh_calls == []
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_extend_greedy_overwrite_preserves_validated_cells(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     pos_dir = tmp_path / "pos00"
@@ -870,6 +925,46 @@ def test_extend_greedy_overwrite_preserves_validated_cells(tmp_path, monkeypatch
 
     frame = viewer.layers["Tracked: Nucleus"].data[1]
     assert np.all(frame[6:11, 6:11] == 9)
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_swap_apply_uses_incremental_visual_refresh(monkeypatch):
+    _app, viewer = _make_viewer()
+    widget, module = _make_widget(viewer)
+
+    labels = np.zeros((1, 32, 32), dtype=np.uint32)
+    labels[0, 5:10, 5:10] = 7
+    layer = viewer.add_labels(labels, name="Tracked: Nucleus")
+
+    candidate_mask = np.zeros((32, 32), dtype=bool)
+    candidate_mask[7:12, 7:12] = True
+    candidate = module._SwapCandidate(
+        node_id=101,
+        mask_2d=candidate_mask,
+        bbox=(7, 7, 12, 12),
+        centroid=(9.0, 9.0),
+        area=25,
+    )
+
+    full_refresh_calls = []
+    edit_refresh_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_refresh_correction_label_visuals",
+        lambda: full_refresh_calls.append("full"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_correction_label_visuals_for_edit",
+        lambda t, changed_ids: edit_refresh_calls.append((t, set(changed_ids))),
+    )
+
+    widget._apply_swap(layer, 0, 7, candidate, {})
+
+    assert edit_refresh_calls == [(0, {7})]
+    assert full_refresh_calls == []
 
     widget.deleteLater()
     viewer.close()

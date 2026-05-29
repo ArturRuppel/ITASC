@@ -300,6 +300,74 @@ class TestExtendTrack:
         assert result is not None
         assert result.candidate_label == 101
 
+    def test_extend_track_from_db_computes_source_stats_once(
+        self, monkeypatch, tmp_path
+    ):
+        """Source-mask centroid and area should not be recomputed per candidate."""
+        pytest.importorskip("ultrack")
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from tests.tracking_ultrack.test_reseed import _make_engine
+
+        from cellflow.tracking_ultrack import extend as extend_module
+
+        engine = _make_engine(tmp_path / "data.db")
+
+        def add_node(session, node_id, y0, x0, y1, x1):
+            mask_2d = np.ones((y1 - y0, x1 - x0), dtype=bool)
+            session.add(
+                NodeDB(
+                    id=node_id,
+                    t=1,
+                    t_node_id=node_id,
+                    t_hier_id=0,
+                    z=0,
+                    y=(y0 + y1) / 2.0,
+                    x=(x0 + x1) / 2.0,
+                    area=int(mask_2d.sum()),
+                    pickle=make_node_pickle(
+                        1,
+                        mask_2d,
+                        np.array([y0, x0, y1, x1], dtype=np.int64),
+                        node_id,
+                    ),
+                )
+            )
+
+        with Session(engine) as session:
+            add_node(session, 101, 5, 5, 10, 10)
+            add_node(session, 102, 6, 6, 11, 11)
+            session.commit()
+
+        original = extend_module._mask_centroid_area
+        calls = 0
+
+        def counting_mask_centroid_area(mask):
+            nonlocal calls
+            calls += 1
+            return original(mask)
+
+        monkeypatch.setattr(
+            extend_module,
+            "_mask_centroid_area",
+            counting_mask_centroid_area,
+        )
+
+        tracked = np.zeros((2, 64, 64), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+
+        result = extend_module.extend_track_from_db(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+            d_max=10.0,
+        )
+
+        assert result is not None
+        assert calls == 1
+
     def test_forward_single_match(self, simple_hyp):
         """Forward with one close hypothesis returns a valid ExtendResult."""
         tracked, h5_path = simple_hyp
