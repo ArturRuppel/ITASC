@@ -36,6 +36,7 @@ from cellflow.napari._widget_helpers import (
 from cellflow.napari._correction_utils import (
     frame_view_2d,
     reassign_ids_stack,
+    retrack_stack_direction,
     remove_unvalidated_labels,
 )
 from cellflow.napari._paths import NucleusArtifactPaths
@@ -1096,25 +1097,23 @@ class NucleusCorrectionWidget(QWidget):
         if t0 >= layer.data.shape[0] - 1:
             self._correction_status("Already at last frame."); return
 
-        T = layer.data.shape[0]
-        stack = layer.data.copy()
-        fully_validated = read_validated_frames(self._pos_dir)
-        reserved_ids = set(read_validated_tracks(self._pos_dir))
-        n_retracked = n_skipped = 0
-        for t in range(t0 + 1, T):
-            if t in fully_validated:
-                n_skipped += 1; continue
-            locked = read_validated_cells_at_frame(self._pos_dir, t)
-            stack[t] = retrack_frame_constrained(
-                stack[t - 1], stack[t], locked,
-                max_dist_px=float(self.retrack_max_dist_spin.value()),
-                reserved_ids=reserved_ids,
-            )
-            n_retracked += 1
-        layer.data = stack
+        result = retrack_stack_direction(
+            np.asarray(layer.data),
+            start_frame=t0,
+            direction="forward",
+            fully_validated_frames=read_validated_frames(self._pos_dir),
+            validated_cells_at_frame=lambda t: read_validated_cells_at_frame(
+                self._pos_dir, t
+            ),
+            retrack_frame=retrack_frame_constrained,
+            max_dist_px=float(self.retrack_max_dist_spin.value()),
+            reserved_ids=set(read_validated_tracks(self._pos_dir)),
+        )
+        layer.data = result.stack
         self._correction_status(
-            f"Retracked forward from t={t0 + 1}: {n_retracked} updated, "
-            f"{n_skipped} validated skipped. Unsaved."
+            f"Retracked forward from t={result.first_target_frame}: "
+            f"{result.n_retracked} updated, "
+            f"{result.n_skipped} validated skipped. Unsaved."
         )
 
     def _on_retrack_backward(self) -> None:
@@ -1129,24 +1128,23 @@ class NucleusCorrectionWidget(QWidget):
         if t0 <= 0:
             self._correction_status("Already at first frame."); return
 
-        stack = layer.data.copy()
-        fully_validated = read_validated_frames(self._pos_dir)
-        reserved_ids = set(read_validated_tracks(self._pos_dir))
-        n_retracked = n_skipped = 0
-        for t in range(t0 - 1, -1, -1):
-            if t in fully_validated:
-                n_skipped += 1; continue
-            locked = read_validated_cells_at_frame(self._pos_dir, t)
-            stack[t] = retrack_frame_constrained(
-                stack[t + 1], stack[t], locked,
-                max_dist_px=float(self.retrack_max_dist_spin.value()),
-                reserved_ids=reserved_ids,
-            )
-            n_retracked += 1
-        layer.data = stack
+        result = retrack_stack_direction(
+            np.asarray(layer.data),
+            start_frame=t0,
+            direction="backward",
+            fully_validated_frames=read_validated_frames(self._pos_dir),
+            validated_cells_at_frame=lambda t: read_validated_cells_at_frame(
+                self._pos_dir, t
+            ),
+            retrack_frame=retrack_frame_constrained,
+            max_dist_px=float(self.retrack_max_dist_spin.value()),
+            reserved_ids=set(read_validated_tracks(self._pos_dir)),
+        )
+        layer.data = result.stack
         self._correction_status(
-            f"Retracked backward from t={t0 - 1}: {n_retracked} updated, "
-            f"{n_skipped} validated skipped. Unsaved."
+            f"Retracked backward from t={result.first_target_frame}: "
+            f"{result.n_retracked} updated, "
+            f"{result.n_skipped} validated skipped. Unsaved."
         )
 
     def _on_remove_unvalidated_labels(self) -> None:

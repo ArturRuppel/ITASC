@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Literal
+
 import numpy as np
+
+
+@dataclass(frozen=True)
+class RetrackDirectionResult:
+    stack: np.ndarray
+    n_retracked: int
+    n_skipped: int
+    first_target_frame: int
 
 
 def frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:
@@ -53,3 +65,51 @@ def remove_unvalidated_labels(
         changed_pixels += n_remove
         changed_frames += 1
     return changed_frames, changed_pixels
+
+
+def retrack_stack_direction(
+    stack: np.ndarray,
+    *,
+    start_frame: int,
+    direction: Literal["forward", "backward"],
+    fully_validated_frames: set[int],
+    validated_cells_at_frame: Callable[[int], set[int]],
+    retrack_frame: Callable[..., np.ndarray],
+    max_dist_px: float,
+    reserved_ids: set[int],
+) -> RetrackDirectionResult:
+    """Retrack a time-first stack in one direction, skipping validated frames."""
+    if stack.ndim != 3 or stack.shape[0] < 2:
+        raise ValueError("Tracked layer must be a 3D time-first stack.")
+
+    out = stack.copy()
+    n_retracked = n_skipped = 0
+    if direction == "forward":
+        frame_range = range(start_frame + 1, out.shape[0])
+        previous_frame = lambda t: out[t - 1]
+    elif direction == "backward":
+        frame_range = range(start_frame - 1, -1, -1)
+        previous_frame = lambda t: out[t + 1]
+    else:
+        raise ValueError(f"Unknown retrack direction: {direction!r}")
+
+    first_target_frame = next(iter(frame_range), start_frame)
+    for t in frame_range:
+        if t in fully_validated_frames:
+            n_skipped += 1
+            continue
+        out[t] = retrack_frame(
+            previous_frame(t),
+            out[t],
+            validated_cells_at_frame(t),
+            max_dist_px=max_dist_px,
+            reserved_ids=reserved_ids,
+        )
+        n_retracked += 1
+
+    return RetrackDirectionResult(
+        stack=out,
+        n_retracked=n_retracked,
+        n_skipped=n_skipped,
+        first_target_frame=first_target_frame,
+    )

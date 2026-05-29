@@ -5,6 +5,7 @@ import numpy as np
 from cellflow.napari._correction_utils import (
     frame_view_2d,
     reassign_ids_stack,
+    retrack_stack_direction,
     remove_unvalidated_labels,
 )
 
@@ -127,3 +128,64 @@ def test_frame_view_2d_rejects_missing_or_ambiguous_timepoint() -> None:
     assert frame_view_2d(np.zeros((1, 3, 4), dtype=np.uint32), -1) is None
     assert frame_view_2d(np.zeros((1, 3, 4), dtype=np.uint32), 1) is None
     assert frame_view_2d(np.zeros((1, 2, 3, 4), dtype=np.uint32), 0) is None
+
+
+def test_retrack_stack_direction_retracks_forward_and_skips_validated_frames() -> None:
+    stack = np.zeros((4, 2, 2), dtype=np.uint32)
+    stack[0, 0, 0] = 1
+    stack[1, 0, 1] = 2
+    stack[2, 1, 0] = 3
+    stack[3, 1, 1] = 4
+    calls = []
+
+    def retrack(previous, current, locked, *, max_dist_px, reserved_ids):
+        calls.append((previous.copy(), current.copy(), locked, max_dist_px, reserved_ids))
+        return previous + 10
+
+    result = retrack_stack_direction(
+        stack,
+        start_frame=0,
+        direction="forward",
+        fully_validated_frames={2},
+        validated_cells_at_frame=lambda t: {99} if t == 1 else set(),
+        retrack_frame=retrack,
+        max_dist_px=7.5,
+        reserved_ids={5, 6},
+    )
+
+    assert result.n_retracked == 2
+    assert result.n_skipped == 1
+    assert result.first_target_frame == 1
+    assert len(calls) == 2
+    assert calls[0][2:] == ({99}, 7.5, {5, 6})
+    np.testing.assert_array_equal(result.stack[1], stack[0] + 10)
+    np.testing.assert_array_equal(result.stack[2], stack[2])
+    np.testing.assert_array_equal(result.stack[3], result.stack[2] + 10)
+    np.testing.assert_array_equal(stack[1], np.array([[0, 2], [0, 0]], dtype=np.uint32))
+
+
+def test_retrack_stack_direction_retracks_backward() -> None:
+    stack = np.zeros((3, 2, 2), dtype=np.uint32)
+    stack[0, 0, 0] = 1
+    stack[1, 0, 1] = 2
+    stack[2, 1, 1] = 3
+
+    def retrack(previous, current, locked, *, max_dist_px, reserved_ids):
+        return previous + 20
+
+    result = retrack_stack_direction(
+        stack,
+        start_frame=2,
+        direction="backward",
+        fully_validated_frames=set(),
+        validated_cells_at_frame=lambda _t: set(),
+        retrack_frame=retrack,
+        max_dist_px=4.0,
+        reserved_ids=set(),
+    )
+
+    assert result.n_retracked == 2
+    assert result.n_skipped == 0
+    assert result.first_target_frame == 1
+    np.testing.assert_array_equal(result.stack[1], stack[2] + 20)
+    np.testing.assert_array_equal(result.stack[0], result.stack[1] + 20)
