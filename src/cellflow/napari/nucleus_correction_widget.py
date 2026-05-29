@@ -36,7 +36,10 @@ from cellflow.napari._correction_utils import (
     frame_view_2d,
     reassign_ids_stack,
     retrack_stack_direction,
-    remove_unvalidated_labels,
+)
+from cellflow.napari._correction_commit import (
+    prepare_committed_labels,
+    remove_unvalidated_from_data,
 )
 from cellflow.napari._correction_layer_lifecycle import (
     LayerViewState,
@@ -1119,14 +1122,14 @@ class NucleusCorrectionWidget(QWidget):
 
         validated_tracks = read_validated_tracks(self._pos_dir)
         try:
-            changed_frames, changed_pixels = remove_unvalidated_labels(
+            result = remove_unvalidated_from_data(
                 data,
                 validated_tracks,
             )
         except ValueError as exc:
             self._correction_status(str(exc)); return
 
-        if not changed_pixels:
+        if not result.changed_pixels:
             self._correction_status("No unvalidated labels found."); return
         layer.refresh()
         if self.correction_widget._selected_label:
@@ -1136,8 +1139,8 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
         self._correction_status(
-            f"Removed unvalidated labels in {changed_frames} frame(s), "
-            f"{changed_pixels} px changed. Unsaved."
+            f"Removed unvalidated labels in {result.changed_frames} frame(s), "
+            f"{result.changed_pixels} px changed. Unsaved."
         )
 
     def _remove_unvalidated_from_layer(self, layer) -> tuple[int, int]:
@@ -1145,11 +1148,11 @@ class NucleusCorrectionWidget(QWidget):
             return 0, 0
         data = np.asarray(layer.data)
         validated_tracks = read_validated_tracks(self._pos_dir)
-        changed_frames, changed_pixels = remove_unvalidated_labels(
+        result = remove_unvalidated_from_data(
             data,
             validated_tracks,
         )
-        if changed_pixels:
+        if result.changed_pixels:
             layer.refresh()
             if self.correction_widget._selected_label:
                 ct = self._current_t()
@@ -1157,7 +1160,7 @@ class NucleusCorrectionWidget(QWidget):
                     self.correction_widget.select_label(ct, 0)
             self._refresh_validated_overlay()
             self._refresh_validation_counter()
-        return changed_frames, changed_pixels
+        return result.changed_frames, result.changed_pixels
 
     def _on_commit(self) -> None:
         tracked_path = self._tracked_path()
@@ -1169,16 +1172,29 @@ class NucleusCorrectionWidget(QWidget):
         if layer.data.ndim != 3:
             self._correction_status("Tracked layer is not a 3D stack."); return
         try:
-            n_cells = self._commit_reassign_ids(layer)
-            changed_frames, changed_pixels = self._remove_unvalidated_from_layer(layer)
+            result = prepare_committed_labels(
+                np.asarray(layer.data),
+                read_validated_tracks(self._pos_dir),
+            )
         except Exception as exc:
             self._on_correction_worker_error(exc)
             return
+        layer.data = result.stack
+        if result.old_to_new:
+            remap_validated_tracks(self._pos_dir, result.old_to_new)
+        if result.changed_pixels:
+            layer.refresh()
+            if self.correction_widget._selected_label:
+                ct = self._current_t()
+                if self.correction_widget._selected_label not in self._current_cell_ids(ct):
+                    self.correction_widget.select_label(ct, 0)
+            self._refresh_validated_overlay()
+            self._refresh_validation_counter()
         for t in range(int(layer.data.shape[0])):
             write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
         self._correction_status(
-            f"Committed {n_cells} cell(s); removed {changed_pixels} px in "
-            f"{changed_frames} frame(s); saved to {tracked_path.name}."
+            f"Committed {result.n_cells} cell(s); removed {result.changed_pixels} px in "
+            f"{result.changed_frames} frame(s); saved to {tracked_path.name}."
         )
 
     def _on_correction_worker_error(self, exc: Exception) -> None:
