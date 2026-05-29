@@ -39,6 +39,13 @@ from cellflow.napari._correction_utils import (
     retrack_stack_direction,
     remove_unvalidated_labels,
 )
+from cellflow.napari._correction_layer_lifecycle import (
+    LayerViewState,
+    capture_layer_view_state,
+    hide_all_layers,
+    remove_owned_layers,
+    restore_layer_view_state,
+)
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.contact_analysis_visualization import (
@@ -129,7 +136,7 @@ class NucleusCorrectionWidget(QWidget):
         )
         self._edit_callback = edit_callback or self._on_cells_edited
         self._correction_owned_layers: set[str] = set()
-        self._correction_view_state: dict | None = None
+        self._correction_view_state: LayerViewState | None = None
         self._correction_dirty: bool = False
         self._swap_cursor: _SwapCursor | None = None
         self._validated_overlay = ValidatedOverlayController(
@@ -538,34 +545,14 @@ class NucleusCorrectionWidget(QWidget):
         return None
 
     def _capture_correction_view_state(self) -> None:
-        selected = [layer.name for layer in self.viewer.layers.selection]
-        active = self.viewer.layers.selection.active
-        self._correction_view_state = {
-            "visibility": {layer.name: bool(layer.visible) for layer in self.viewer.layers},
-            "active": active.name if active is not None else None,
-            "selected": selected,
-        }
+        self._correction_view_state = capture_layer_view_state(self.viewer.layers)
 
     def _restore_correction_view_state(self) -> None:
-        state = self._correction_view_state or {}
-        visibility = state.get("visibility", {})
-        for name, visible in visibility.items():
-            if name in self.viewer.layers:
-                self.viewer.layers[name].visible = bool(visible)
-        self.viewer.layers.selection.clear()
-        for name in state.get("selected", ()):
-            if name in self.viewer.layers:
-                self.viewer.layers.selection.add(self.viewer.layers[name])
-        active_name = state.get("active")
-        if active_name in self.viewer.layers:
-            self.viewer.layers.selection.active = self.viewer.layers[active_name]
+        restore_layer_view_state(self.viewer.layers, self._correction_view_state)
         self._correction_view_state = None
 
     def _remove_correction_owned_layers(self) -> None:
-        for name in list(self._correction_owned_layers):
-            if name in self.viewer.layers:
-                self.viewer.layers.remove(self.viewer.layers[name])
-        self._correction_owned_layers.clear()
+        remove_owned_layers(self.viewer.layers, self._correction_owned_layers)
 
     def _add_correction_image_layer(self, data: np.ndarray, name: str, colormap: str) -> None:
         arr = np.asarray(data, dtype=np.float32)
@@ -1248,8 +1235,7 @@ class NucleusCorrectionWidget(QWidget):
     def _on_correction_active_button_toggled(self, active: bool) -> None:
         if active:
             self._capture_correction_view_state()
-            for layer in list(self.viewer.layers):
-                layer.visible = False
+            hide_all_layers(self.viewer.layers)
 
             if not self._load_correction_layers_from_disk():
                 self._restore_correction_view_state()
