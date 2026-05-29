@@ -335,10 +335,11 @@ def test_ultrack_db_browser_exposes_connected_focus_controls():
     widget = widget_class(viewer)
 
     assert widget.ultrack_db_connected_focus_check.text() == "Connected focus"
-    assert widget.ultrack_db_edge_alpha_check.text() == "Edge weight transparency"
     assert widget.ultrack_db_prob_alpha_check.text() == "Node prob transparency"
     assert not widget.ultrack_db_connected_focus_check.isEnabled()
-    assert not widget.ultrack_db_edge_alpha_check.isEnabled()
+    assert not hasattr(widget, "ultrack_db_edge_alpha_check")
+    assert not hasattr(widget, "ultrack_db_show_validated_check")
+    assert not hasattr(widget, "ultrack_db_show_fake_check")
 
     widget.deleteLater()
     viewer.close()
@@ -500,7 +501,9 @@ def test_ultrack_db_browser_connected_focus_filters_by_viewer_frame(tmp_path, mo
     viewer.close()
 
 
-def test_ultrack_db_browser_edge_and_node_prob_transparency_multiply(tmp_path, monkeypatch):
+def test_ultrack_db_browser_connected_focus_preserves_node_prob_transparency(
+    tmp_path, monkeypatch
+):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
     widget = widget_class(viewer)
@@ -512,7 +515,6 @@ def test_ultrack_db_browser_edge_and_node_prob_transparency_multiply(tmp_path, m
     widget._ultrack_db_browser_active = True
     widget._ultrack_db_frame_initialized = True
     widget.ultrack_db_connected_focus_check.setChecked(True)
-    widget.ultrack_db_edge_alpha_check.setChecked(True)
     widget.ultrack_db_prob_alpha_check.setChecked(True)
     widget._ultrack_db_selected_node_id = 222
     widget._ultrack_db_selected_frame = 4
@@ -540,7 +542,7 @@ def test_ultrack_db_browser_edge_and_node_prob_transparency_multiply(tmp_path, m
 
     layer = viewer.layers["[Database] Ultrack DB Preview"]
     assert layer.data.shape == (2, 2, 4)
-    assert layer.data[0, 0, 3] == pytest.approx(0.075)
+    assert layer.data[0, 0, 3] == pytest.approx(0.15)
     assert layer.data[1, 0, 3] == pytest.approx(1.0)
     assert layer.data[0, 1, 3] == 0
 

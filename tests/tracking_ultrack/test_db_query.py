@@ -12,6 +12,7 @@ def _add_ultrack_node(
     parent_id: int | None,
     height: float,
     bbox: tuple[int, int, int, int],
+    node_prob: float | None = None,
 ) -> None:
     import pickle
 
@@ -38,6 +39,7 @@ def _add_ultrack_node(
             area=int(mask.sum()),
             height=float(height),
             hier_parent_id=parent_id,
+            node_prob=node_prob,
             pickle=pickle.dumps(node_obj),
         )
     )
@@ -93,6 +95,42 @@ def _make_hierarchy_db(db_path: Path) -> None:
         session.add(LinkDB(source_id=201, target_id=301, weight=0.25))
         session.commit()
     engine.dispose()
+
+
+def test_summary_text_reports_node_and_edge_probability_statistics(tmp_path):
+    pytest.importorskip("ultrack")
+
+    from cellflow.tracking_ultrack.db_query import summary_text
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, NodeDB
+
+    db_path = tmp_path / "data.db"
+    _make_hierarchy_db(db_path)
+
+    import sqlalchemy as sqla
+
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    with Session(engine) as session:
+        session.query(NodeDB).filter_by(id=100).update({"node_prob": 0.1})
+        session.query(NodeDB).filter_by(id=101).update({"node_prob": 0.3})
+        session.query(NodeDB).filter_by(id=102).update({"node_prob": 0.7})
+        session.query(NodeDB).filter_by(id=201).update({"node_prob": 0.9})
+        session.query(NodeDB).filter_by(id=301).update({"node_prob": None})
+        session.add(LinkDB(source_id=101, target_id=301, weight=0.75))
+        session.commit()
+    engine.dispose()
+
+    text = summary_text(db_path, frame=0)
+
+    assert "node prob 4/5 scored" in text
+    assert "min 0.100" in text
+    assert "median 0.500" in text
+    assert "mean 0.500" in text
+    assert "max 0.900" in text
+    assert "edge weight 2 links" in text
+    assert "min 0.250" in text
+    assert "median 0.500" in text
+    assert "max 0.750" in text
 
 
 def test_query_hierarchy_cut_states_promotes_equal_height_plateau(tmp_path):

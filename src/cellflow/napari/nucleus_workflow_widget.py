@@ -432,15 +432,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.ultrack_db_connected_focus_check.toggled.connect(
             self._refresh_ultrack_db_browser
         )
-        self.ultrack_db_edge_alpha_check.toggled.connect(
-            self._refresh_ultrack_db_browser
-        )
-        self.ultrack_db_show_validated_check.toggled.connect(
-            self._refresh_ultrack_db_browser
-        )
-        self.ultrack_db_show_fake_check.toggled.connect(
-            self._refresh_ultrack_db_browser
-        )
 
         # Viewer events & keyboard
         self.viewer.dims.events.current_step.connect(self._on_dims_step_changed)

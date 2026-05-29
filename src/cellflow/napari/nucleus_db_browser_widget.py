@@ -129,23 +129,9 @@ class NucleusUltrackDbBrowserWidget(QWidget):
             "Focus the DB preview on a selected node and its temporal neighbors"
         )
         self.connected_focus_check.setEnabled(False)
-        self.edge_alpha_check = QCheckBox("Edge weight transparency")
-        self.edge_alpha_check.setToolTip(
-            "Modulate connected-neighbor opacity by link weight"
-        )
-        self.edge_alpha_check.setEnabled(False)
-        self.show_validated_check = QCheckBox("Show validated nodes")
-        self.show_validated_check.setChecked(True)
-        self.show_validated_check.setEnabled(False)
-        self.show_fake_check = QCheckBox("Show fake nodes")
-        self.show_fake_check.setChecked(False)
-        self.show_fake_check.setEnabled(False)
         for cb in (
             self.prob_alpha_check,
             self.connected_focus_check,
-            self.edge_alpha_check,
-            self.show_validated_check,
-            self.show_fake_check,
         ):
             lay.addWidget(cb)
 
@@ -203,9 +189,6 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_active_btn = browser.active_btn
         self.ultrack_db_prob_alpha_check = browser.prob_alpha_check
         self.ultrack_db_connected_focus_check = browser.connected_focus_check
-        self.ultrack_db_edge_alpha_check = browser.edge_alpha_check
-        self.ultrack_db_show_validated_check = browser.show_validated_check
-        self.ultrack_db_show_fake_check = browser.show_fake_check
         self.ultrack_db_section_status_lbl = browser.status_lbl
 
     def _set_ultrack_db_status(self, msg: str) -> None:
@@ -286,9 +269,6 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_hierarchy_slider.setEnabled(enabled)
         self.ultrack_db_prob_alpha_check.setEnabled(enabled)
         self.ultrack_db_connected_focus_check.setEnabled(enabled)
-        self.ultrack_db_edge_alpha_check.setEnabled(enabled)
-        self.ultrack_db_show_validated_check.setEnabled(enabled)
-        self.ultrack_db_show_fake_check.setEnabled(enabled)
 
     def _remove_ultrack_db_browser_layers(self) -> None:
         self._remove_ultrack_db_preview_selector()
@@ -400,8 +380,6 @@ class NucleusUltrackDbBrowserMixin:
                 state = states[idx]
                 key = (
                     str(db_path.resolve()), mtime_ns, frame, idx, state,
-                    self.ultrack_db_show_validated_check.isChecked(),
-                    self.ultrack_db_show_fake_check.isChecked(),
                 )
                 cached = self._ultrack_db_preview_cache.get(key)
                 if cached is None:
@@ -492,8 +470,6 @@ class NucleusUltrackDbBrowserMixin:
             state = states[slider_int]
             key = (
                 str(db_path.resolve()), mtime_ns, frame, slider_int, state,
-                self.ultrack_db_show_validated_check.isChecked(),
-                self.ultrack_db_show_fake_check.isChecked(),
             )
             cached = self._ultrack_db_preview_cache.get(key)
             if cached is None:
@@ -808,14 +784,10 @@ class NucleusUltrackDbBrowserMixin:
             if ni not in allowed:
                 continue
             focused[labels == li] = li
-            alpha_on = (
-                self.ultrack_db_edge_alpha_check.isChecked()
-                or self.ultrack_db_prob_alpha_check.isChecked()
-            )
-            if alpha_on:
+            if self.ultrack_db_prob_alpha_check.isChecked():
                 alpha_dict[li] = (
                     1.0 if ni == sel_nid
-                    else self._ultrack_db_connected_alpha(li, float(allowed[ni]), prob_dict)
+                    else self._ultrack_db_connected_alpha(li, prob_dict)
                 )
 
         sel_label = node_id_to_label.get(int(sel_nid))
@@ -839,10 +811,8 @@ class NucleusUltrackDbBrowserMixin:
             f"{relation}: {count} connected{edge_summary}"
         ), alpha_dict
 
-    def _ultrack_db_connected_alpha(self, label_id, edge_weight, prob_dict):
+    def _ultrack_db_connected_alpha(self, label_id, prob_dict):
         alpha = 1.0
-        if self.ultrack_db_edge_alpha_check.isChecked():
-            alpha *= float(edge_weight)
         if self.ultrack_db_prob_alpha_check.isChecked() and prob_dict:
             probs = [float(v) for v in prob_dict.values()]
             min_p, max_p = min(probs), max(probs)
@@ -927,8 +897,6 @@ class NucleusUltrackDbBrowserMixin:
             frame,
             h_actual,
             plane_shape=self._viewer_plane_shape(),
-            show_validated=self.ultrack_db_show_validated_check.isChecked(),
-            show_fake=self.ultrack_db_show_fake_check.isChecked(),
         ).as_tuple()
 
     def _render_hierarchy_cut_state(self, db_path, frame, state):
@@ -937,8 +905,6 @@ class NucleusUltrackDbBrowserMixin:
             frame,
             state,
             plane_shape=self._viewer_plane_shape(),
-            show_validated=self.ultrack_db_show_validated_check.isChecked(),
-            show_fake=self.ultrack_db_show_fake_check.isChecked(),
         ).as_tuple()
 
     def _finalize_hierarchy_nodes(self, nodes, frame, *, empty_msg, status_suffix):
@@ -948,8 +914,6 @@ class NucleusUltrackDbBrowserMixin:
             nodes,
             frame,
             plane_shape=self._viewer_plane_shape(),
-            show_validated=self.ultrack_db_show_validated_check.isChecked(),
-            show_fake=self.ultrack_db_show_fake_check.isChecked(),
             empty_msg=empty_msg,
             status_suffix=status_suffix,
         ).as_tuple()

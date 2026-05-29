@@ -106,6 +106,37 @@ def query_connected_nodes(
     return predecessors, successors
 
 
+def _finite_values(rows) -> list[float]:
+    values: list[float] = []
+    for row in rows:
+        try:
+            raw = row[0]
+        except (TypeError, KeyError, IndexError):
+            raw = row
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            values.append(value)
+    return values
+
+
+def _stats_text(label: str, values: list[float], prefix: str) -> str | None:
+    if not values:
+        return None
+    arr = np.asarray(values, dtype=np.float64)
+    return (
+        f"{label} {prefix}: "
+        f"min {float(np.min(arr)):.3f}, "
+        f"median {float(np.median(arr)):.3f}, "
+        f"mean {float(np.mean(arr)):.3f}, "
+        f"max {float(np.max(arr)):.3f}"
+    )
+
+
 def summary_text(db_path: Path, frame: int) -> str:
     from sqlalchemy import func
     from sqlalchemy.orm import Session
@@ -121,6 +152,16 @@ def summary_text(db_path: Path, frame: int) -> str:
         with Session(engine) as session:
             n_nodes = int(session.query(func.count(NodeDB.id)).scalar() or 0)
             n_links = int(session.query(func.count(LinkDB.source_id)).scalar() or 0)
+            node_prob_values = _finite_values(
+                session.query(NodeDB.node_prob)
+                .filter(NodeDB.node_prob.isnot(None))
+                .all()
+            )
+            link_weight_values = _finite_values(
+                session.query(LinkDB.weight)
+                .filter(LinkDB.weight.isnot(None))
+                .all()
+            )
             n_real = int(
                 session.query(func.count(NodeDB.id))
                 .filter(NodeDB.node_annot == VarAnnotation.REAL)
@@ -163,11 +204,30 @@ def summary_text(db_path: Path, frame: int) -> str:
                         )
                     except Exception:
                         overlaps = 0
-        return (
+        stats_parts = [
+            text
+            for text in (
+                _stats_text(
+                    "node prob",
+                    node_prob_values,
+                    f"{len(node_prob_values)}/{n_nodes} scored",
+                ),
+                _stats_text(
+                    "edge weight",
+                    link_weight_values,
+                    f"{len(link_weight_values)} links",
+                ),
+            )
+            if text is not None
+        ]
+        base = (
             f"{n_nodes} nodes | {n_links} links | REAL {n_real} | FAKE {n_fake} | "
             f"frame {frame}: {len(node_ids)} nodes, {selected} selected, "
             f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
         )
+        if stats_parts:
+            return f"{base} | {' | '.join(stats_parts)}"
+        return base
     finally:
         engine.dispose()
 
@@ -290,8 +350,6 @@ def render_hierarchy_cut(
     height: float,
     *,
     plane_shape: tuple[int, int],
-    show_validated: bool = True,
-    show_fake: bool = True,
 ) -> UltrackDbPreview:
     from sqlalchemy.orm import Session, aliased
     from ultrack.core.database import NodeDB
@@ -328,8 +386,6 @@ def render_hierarchy_cut(
         nodes,
         frame,
         plane_shape=plane_shape,
-        show_validated=show_validated,
-        show_fake=show_fake,
         empty_msg=f"No segments at this threshold for frame {frame}.",
         status_suffix=f"at h={height:.2f}",
     )
@@ -341,8 +397,6 @@ def render_hierarchy_cut_state(
     state: HierarchyCutState,
     *,
     plane_shape: tuple[int, int],
-    show_validated: bool = True,
-    show_fake: bool = True,
 ) -> UltrackDbPreview:
     if not state.node_ids:
         return render_hierarchy_cut(
@@ -350,8 +404,6 @@ def render_hierarchy_cut_state(
             frame,
             float(state.height or 0.0),
             plane_shape=plane_shape,
-            show_validated=show_validated,
-            show_fake=show_fake,
         )
 
     from sqlalchemy.orm import Session
@@ -376,8 +428,6 @@ def render_hierarchy_cut_state(
         nodes,
         frame,
         plane_shape=plane_shape,
-        show_validated=show_validated,
-        show_fake=show_fake,
         empty_msg=f"No hierarchy state segments for frame {frame}.",
         status_suffix=f"at cut state h={height}",
     )
@@ -388,8 +438,6 @@ def finalize_hierarchy_nodes(
     frame: int,
     *,
     plane_shape: tuple[int, int],
-    show_validated: bool,
-    show_fake: bool,
     empty_msg: str,
     status_suffix: str,
 ) -> UltrackDbPreview:
@@ -397,33 +445,12 @@ def finalize_hierarchy_nodes(
     if not nodes:
         return _empty_preview(plane_shape, empty_msg)
 
-    filtered = []
-    hidden_real = hidden_fake = 0
-    for node in nodes:
-        annotation = annotation_name(getattr(node, "node_annot", None))
-        if annotation == "REAL" and not show_validated:
-            hidden_real += 1
-            continue
-        if annotation == "FAKE" and not show_fake:
-            hidden_fake += 1
-            continue
-        filtered.append(node)
-
-    if not filtered:
-        return _empty_preview(
-            plane_shape,
-            f"Frame {frame}: annotation filters hid all {len(nodes)} segment(s).",
-        )
-
-    labels = paint_nodes(filtered, plane_shape)
-    probabilities, label_to_node_id, node_id_to_label = node_preview_metadata(filtered)
-    annotations = node_annotation_metadata(filtered)
-    hidden = ""
-    if hidden_real or hidden_fake:
-        hidden = f" Hidden: REAL {hidden_real}, FAKE {hidden_fake}."
+    labels = paint_nodes(nodes, plane_shape)
+    probabilities, label_to_node_id, node_id_to_label = node_preview_metadata(nodes)
+    annotations = node_annotation_metadata(nodes)
     return UltrackDbPreview(
         labels=labels,
-        status=f"Frame {frame}: {len(filtered)} segment(s) {status_suffix}.{hidden}",
+        status=f"Frame {frame}: {len(nodes)} segment(s) {status_suffix}.",
         probabilities=probabilities,
         label_to_node_id=label_to_node_id,
         node_id_to_label=node_id_to_label,
