@@ -10,7 +10,6 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker as _thread_worker
-from napari.utils.colormaps import Colormap
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
@@ -46,13 +45,14 @@ from cellflow.napari._correction_layer_lifecycle import (
     remove_owned_layers,
     restore_layer_view_state,
 )
+from cellflow.napari._correction_layer_loader import (
+    add_correction_image_layer,
+    add_correction_track_layer,
+    add_tracked_labels_and_track_layer,
+    remove_other_correction_label_layers,
+)
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari.correction_widget import CorrectionWidget
-from cellflow.napari.contact_analysis_visualization import (
-    _categorical_colors,
-    _nucleus_centroids_by_track,
-    _rasterize_track_image,
-)
 from cellflow.database.tracked import (
     read_full_tracked_stack,
     write_tracked_frame,
@@ -555,49 +555,22 @@ class NucleusCorrectionWidget(QWidget):
         remove_owned_layers(self.viewer.layers, self._correction_owned_layers)
 
     def _add_correction_image_layer(self, data: np.ndarray, name: str, colormap: str) -> None:
-        arr = np.asarray(data, dtype=np.float32)
-        if colormap == "bop_blue":
-            colormap = Colormap(
-                [[0.0, 0.0, 0.0, 1.0], [0.0, 0.25, 1.0, 1.0]],
-                name="bop_blue",
-            )
-        self.viewer.add_image(arr, name=name, colormap=colormap, blending="minimum")
-        self._correction_owned_layers.add(name)
+        add_correction_image_layer(
+            self.viewer,
+            data,
+            name=name,
+            colormap=colormap,
+            owned_layer_names=self._correction_owned_layers,
+        )
 
     def _add_correction_track_layer(self, labels: np.ndarray) -> dict:
-        labels = np.asarray(labels)
-        label_ids = np.asarray(
-            sorted(int(v) for v in np.unique(labels) if int(v) != 0)
-        )
-        label_colors = _categorical_colors(label_ids)
-        color_map: dict[int | None, tuple[float, float, float, float] | str] = {
-            None: "transparent",
-            0: "transparent",
-        }
-        for label_id, color in zip(label_ids, label_colors, strict=True):
-            rgba = np.asarray(color, dtype=np.float32).copy()
-            rgba[:3] *= _NUCLEUS_TRACK_COLOR_SCALE
-            color_map[int(label_id)] = tuple(float(c) for c in rgba)
-
-        shape = (
-            (1, int(labels.shape[0]), int(labels.shape[1]))
-            if labels.ndim == 2
-            else tuple(int(v) for v in labels.shape[:3])
-        )
-        track_image = _rasterize_track_image(
-            _nucleus_centroids_by_track(labels),
-            color_map,
-            shape,
-        )
-        self.viewer.add_image(
-            track_image,
+        return add_correction_track_layer(
+            self.viewer,
+            labels,
             name=_CORRECTION_TRACK_LAYER,
-            rgb=True,
-            opacity=0.9,
-            blending="additive",
+            owned_layer_names=self._correction_owned_layers,
+            color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
         )
-        self._correction_owned_layers.add(_CORRECTION_TRACK_LAYER)
-        return color_map
 
     def _correction_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
@@ -667,42 +640,42 @@ class NucleusCorrectionWidget(QWidget):
             ),
         ):
             if data is not None and data.exists():
-                self._add_correction_image_layer(
+                add_correction_image_layer(
+                    self.viewer,
                     np.asarray(tifffile.imread(str(data)), dtype=np.float32),
-                    name,
-                    cmap,
+                    name=name,
+                    colormap=cmap,
+                    owned_layer_names=self._correction_owned_layers,
                 )
 
         nls_path = self._nls_zavg_path()
         if nls_path is not None and nls_path.exists():
-            self._add_correction_image_layer(
+            add_correction_image_layer(
+                self.viewer,
                 np.asarray(tifffile.imread(str(nls_path)), dtype=np.float32),
-                _CORRECTION_NLS_ZAVG_LAYER,
-                "I Orange",
+                name=_CORRECTION_NLS_ZAVG_LAYER,
+                colormap="I Orange",
+                owned_layer_names=self._correction_owned_layers,
             )
 
-        labels_layer = self.viewer.add_labels(
+        add_tracked_labels_and_track_layer(
+            self.viewer,
             stack,
-            name=_CORRECTION_TRACKED_LAYER,
-            blending="additive",
+            labels_layer_name=_CORRECTION_TRACKED_LAYER,
+            track_layer_name=_CORRECTION_TRACK_LAYER,
+            owned_layer_names=self._correction_owned_layers,
+            color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
         )
-        labels_layer.blending = "additive"
-        self._correction_owned_layers.add(_CORRECTION_TRACKED_LAYER)
-        color_map = self._add_correction_track_layer(stack)
-        try:
-            from napari.utils.colormaps import DirectLabelColormap
-            labels_layer.colormap = DirectLabelColormap(color_dict=color_map)
-        except Exception:
-            pass
 
         self._correction_status(f"Loaded tracked stack {stack.shape} into correction mode.")
         return True
 
     def _remove_other_correction_prefix_layers(self) -> None:
-        for layer in list(self.viewer.layers):
-            if layer.name.startswith("[Correction]") and layer.name not in self._correction_owned_layers:
-                if isinstance(layer, napari.layers.Labels):
-                    self.viewer.layers.remove(layer)
+        remove_other_correction_label_layers(
+            self.viewer,
+            owned_layer_names=self._correction_owned_layers,
+            label_layer_type=napari.layers.Labels,
+        )
 
     def _on_load_tracked(self) -> None:
         self._load_correction_layers_from_disk()
