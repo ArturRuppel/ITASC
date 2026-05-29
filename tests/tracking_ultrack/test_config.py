@@ -1,6 +1,9 @@
 import sys
 import types
 
+import numpy as np
+import pytest
+
 from cellflow.tracking_ultrack.config import TrackingConfig
 
 
@@ -64,3 +67,27 @@ def test_build_ultrack_config_forwards_bias_to_tracking_config(monkeypatch, tmp_
     _build_ultrack_config(TrackingConfig(bias=-0.5), tmp_path)
 
     assert captured["tracking"]["bias"] == -0.5
+
+
+def test_signed_power_transform_preserves_negative_edge_penalties():
+    from cellflow.tracking_ultrack.ingest import _signed_power_transform
+
+    values = np.array([-2.0, -0.5, 0.0, 0.5, 2.0])
+
+    transformed = _signed_power_transform(values, power=4, bias=0.0)
+
+    np.testing.assert_allclose(transformed, [-16.0, -0.0625, 0.0, 0.0625, 16.0])
+
+
+def test_build_ultrack_config_uses_signed_power_transform(tmp_path):
+    pytest.importorskip("ultrack")
+
+    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+
+    ultrack_cfg = _build_ultrack_config(TrackingConfig(power=4), tmp_path)
+
+    transformed = ultrack_cfg.tracking_config.apply_link_function(
+        np.array([-2.0, -0.5, 0.5, 2.0])
+    )
+
+    np.testing.assert_allclose(transformed, [-16.0, -0.0625, 0.0625, 16.0])
