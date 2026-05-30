@@ -88,10 +88,12 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         lay.setSpacing(4)
 
         self.info_lbl = QLabel("—")
-        self.info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.info_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
         self.info_lbl.setWordWrap(True)
         self.info_lbl.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum,
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding,
         )
         lay.addWidget(self.info_lbl)
 

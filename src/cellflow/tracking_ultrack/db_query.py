@@ -264,18 +264,22 @@ def summary_text(db_path: Path, frame: int) -> str:
             )
             if text is not None
         ]
-        base = (
-            f"{n_nodes} nodes | {n_links} links | "
-            f"REAL {n_real} | FAKE {n_fake} | UNKNOWN {n_unknown} | "
-            f"REAL links {link_annotations['REAL']} | "
-            f"FAKE links {link_annotations['FAKE']} | "
-            f"UNKNOWN links {link_annotations['UNKNOWN']} | "
-            f"frame {frame}: {len(node_ids)} nodes, {selected} selected, "
-            f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
-        )
+        lines = [
+            f"Database: {n_nodes} nodes, {n_links} links",
+            f"Node annotations: REAL {n_real}, FAKE {n_fake}, UNKNOWN {n_unknown}",
+            (
+                f"Link annotations: REAL links {link_annotations['REAL']}, "
+                f"FAKE links {link_annotations['FAKE']}, "
+                f"UNKNOWN links {link_annotations['UNKNOWN']}"
+            ),
+            (
+                f"Frame {frame}: {len(node_ids)} nodes, {selected} selected, "
+                f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
+            ),
+        ]
         if stats_parts:
-            return f"{base} | {' | '.join(stats_parts)}"
-        return base
+            lines.extend(stats_parts)
+        return "\n".join(lines)
     finally:
         engine.dispose()
 

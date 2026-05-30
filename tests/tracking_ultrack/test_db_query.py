@@ -137,6 +137,13 @@ def test_summary_text_reports_node_and_edge_probability_statistics(tmp_path):
 
     text = summary_text(db_path, frame=0)
 
+    lines = text.splitlines()
+    assert len(lines) >= 5
+    assert all("|" not in line for line in lines)
+    assert any(line.startswith("Database:") for line in lines)
+    assert any(line.startswith("Node annotations:") for line in lines)
+    assert any(line.startswith("Link annotations:") for line in lines)
+    assert any(line.startswith("Frame 0:") for line in lines)
     assert "node prob 4/5 scored" in text
     assert "min 0.100" in text
     assert "median 0.500" in text
