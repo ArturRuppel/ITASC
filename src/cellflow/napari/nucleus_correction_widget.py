@@ -85,7 +85,6 @@ from cellflow.database.validation import (
     invalidate_track,
     is_track_validated,
     read_corrections,
-    read_validated_cells_at_frame,
     read_validated_frames,
     read_validated_tracks,
     remap_validated_tracks,
@@ -1190,17 +1189,21 @@ class NucleusCorrectionWidget(QWidget):
             self._correction_status("Already at last frame."); return
 
         before = np.asarray(layer.data).copy()
+        validated_tracks = read_validated_tracks(self._pos_dir)
         result = retrack_stack_direction(
             before,
             start_frame=t0,
             direction="forward",
             fully_validated_frames=read_validated_frames(self._pos_dir),
-            validated_cells_at_frame=lambda t: read_validated_cells_at_frame(
-                self._pos_dir, t
-            ),
+            validated_cells_at_frame=lambda t: {
+                cid for cid, frames in validated_tracks.items() if t in frames
+            },
             retrack_frame=retrack_frame_constrained,
             max_dist_px=float(self.retrack_max_dist_spin.value()),
-            reserved_ids=set(read_validated_tracks(self._pos_dir)),
+            reserved_ids=set(validated_tracks),
+            area_weight=float(self.extend_area_weight_spin.value()),
+            iou_weight=float(self.extend_iou_weight_spin.value()),
+            distance_weight=float(self.extend_distance_weight_spin.value()),
         )
         layer.data = result.stack
         self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
@@ -1223,17 +1226,21 @@ class NucleusCorrectionWidget(QWidget):
             self._correction_status("Already at first frame."); return
 
         before = np.asarray(layer.data).copy()
+        validated_tracks = read_validated_tracks(self._pos_dir)
         result = retrack_stack_direction(
             before,
             start_frame=t0,
             direction="backward",
             fully_validated_frames=read_validated_frames(self._pos_dir),
-            validated_cells_at_frame=lambda t: read_validated_cells_at_frame(
-                self._pos_dir, t
-            ),
+            validated_cells_at_frame=lambda t: {
+                cid for cid, frames in validated_tracks.items() if t in frames
+            },
             retrack_frame=retrack_frame_constrained,
             max_dist_px=float(self.retrack_max_dist_spin.value()),
-            reserved_ids=set(read_validated_tracks(self._pos_dir)),
+            reserved_ids=set(validated_tracks),
+            area_weight=float(self.extend_area_weight_spin.value()),
+            iou_weight=float(self.extend_iou_weight_spin.value()),
+            distance_weight=float(self.extend_distance_weight_spin.value()),
         )
         layer.data = result.stack
         self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)

@@ -138,8 +138,10 @@ def test_retrack_stack_direction_retracks_forward_and_skips_validated_frames() -
     stack[3, 1, 1] = 4
     calls = []
 
-    def retrack(previous, current, locked, *, max_dist_px, reserved_ids):
-        calls.append((previous.copy(), current.copy(), locked, max_dist_px, reserved_ids))
+    def retrack(previous, current, locked, *, max_dist_px, reserved_ids, **weights):
+        calls.append(
+            (previous.copy(), current.copy(), locked, max_dist_px, reserved_ids, weights)
+        )
         return previous + 10
 
     result = retrack_stack_direction(
@@ -151,13 +153,21 @@ def test_retrack_stack_direction_retracks_forward_and_skips_validated_frames() -
         retrack_frame=retrack,
         max_dist_px=7.5,
         reserved_ids={5, 6},
+        area_weight=2.0,
+        iou_weight=3.0,
+        distance_weight=0.1,
     )
 
     assert result.n_retracked == 2
     assert result.n_skipped == 1
     assert result.first_target_frame == 1
     assert len(calls) == 2
-    assert calls[0][2:] == ({99}, 7.5, {5, 6})
+    assert calls[0][2:] == (
+        {99},
+        7.5,
+        {5, 6},
+        {"area_weight": 2.0, "iou_weight": 3.0, "distance_weight": 0.1},
+    )
     np.testing.assert_array_equal(result.stack[1], stack[0] + 10)
     np.testing.assert_array_equal(result.stack[2], stack[2])
     np.testing.assert_array_equal(result.stack[3], result.stack[2] + 10)
@@ -170,7 +180,7 @@ def test_retrack_stack_direction_retracks_backward() -> None:
     stack[1, 0, 1] = 2
     stack[2, 1, 1] = 3
 
-    def retrack(previous, current, locked, *, max_dist_px, reserved_ids):
+    def retrack(previous, current, locked, *, max_dist_px, reserved_ids, **weights):
         return previous + 20
 
     result = retrack_stack_direction(

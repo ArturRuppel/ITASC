@@ -105,3 +105,38 @@ def test_constrained_empty_locked_set_remaps_by_centroid_proximity():
 
     ids = set(int(i) for i in np.unique(result) if i != 0)
     assert ids == {1, 2}
+
+
+def test_iou_term_disambiguates_size_matched_cells():
+    """When two candidates are near-equidistant, area/IoU should break the tie
+    toward the same-shape match instead of pure centroid distance."""
+    shape = (100, 100)
+    # ref: small cell ID 1 at (40,40); large cell ID 2 at (40,52).
+    ref = _add(_sq(shape, 40, 40, 4, 1), _sq(shape, 40, 52, 12, 2))
+    # tgt: a large cell sitting between them, overlapping ID 2's footprint far
+    # more than ID 1's. Pure centroid distance could drift toward ID 1; the
+    # area+IoU terms must keep it on ID 2.
+    tgt = _sq(shape, 40, 52, 12, 77)
+
+    result = retrack_frame_constrained(ref, tgt, locked_target_ids=set(), max_dist_px=30.0)
+    ids = set(int(i) for i in np.unique(result) if i != 0)
+    assert ids == {2}
+
+
+def test_zero_iou_and_area_weight_recovers_distance_only_match():
+    """With only the distance term active, the nearest reference wins."""
+    shape = (100, 100)
+    ref = _add(_sq(shape, 10, 10, 8, 1), _sq(shape, 10, 60, 8, 2))
+    tgt = _sq(shape, 11, 11, 8, 99)
+
+    result = retrack_frame_constrained(
+        ref,
+        tgt,
+        locked_target_ids=set(),
+        max_dist_px=80.0,
+        area_weight=0.0,
+        iou_weight=0.0,
+        distance_weight=1.0,
+    )
+    ids = set(int(i) for i in np.unique(result) if i != 0)
+    assert ids == {1}

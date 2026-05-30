@@ -77,6 +77,9 @@ def retrack_stack_direction(
     retrack_frame: Callable[..., np.ndarray],
     max_dist_px: float,
     reserved_ids: set[int],
+    area_weight: float = 1.0,
+    iou_weight: float = 1.0,
+    distance_weight: float = 0.05,
 ) -> RetrackDirectionResult:
     """Retrack a time-first stack in one direction, skipping validated frames."""
     if stack.ndim != 3 or stack.shape[0] < 2:
@@ -104,6 +107,9 @@ def retrack_stack_direction(
             validated_cells_at_frame(t),
             max_dist_px=max_dist_px,
             reserved_ids=reserved_ids,
+            area_weight=area_weight,
+            iou_weight=iou_weight,
+            distance_weight=distance_weight,
         )
         n_retracked += 1
 

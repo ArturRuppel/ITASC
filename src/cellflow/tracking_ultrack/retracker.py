@@ -1,20 +1,43 @@
-"""Centroid-distance LAP retracker for relabelling corrected frames."""
+"""Constrained LAP retracker using the shared linker similarity score.
+
+Each unlocked target cell is matched to a reference cell by the same
+``scoring.similarity_score`` (area ratio + centroid-corrected IoU - distance)
+used by the linker and the Extend tool, gated only by centroid distance.
+"""
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import center_of_mass
 from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
+from skimage.measure import regionprops
+
+from cellflow.tracking_ultrack import scoring
+
+# Cost for a pair the distance gate forbids. Far larger than any real
+# ``-similarity_score`` (distance_weight * max_dist plus O(weights)), so the
+# assignment never prefers a gated pair over an allowed one.
+_FORBIDDEN_COST = 1e9
 
 
-def _centroids(labels: np.ndarray) -> dict[int, np.ndarray]:
-    """Return {label_id: centroid_yx} for all non-zero labels."""
-    ids = [int(i) for i in np.unique(labels) if i != 0]
-    if not ids:
+def _label_props(
+    labels: np.ndarray, keep_ids: list[int]
+) -> dict[int, tuple[np.ndarray, float, np.ndarray]]:
+    """Return {label_id: (centroid_yx, area, coords)} for labels in *keep_ids*.
+
+    Labels outside *keep_ids* (locked / reserved) are masked out before
+    ``regionprops`` so they cost no centroid, area, or coordinate extraction.
+    """
+    if not keep_ids:
         return {}
-    coms = center_of_mass(np.ones_like(labels), labels, ids)
-    if len(ids) == 1:
-        coms = [coms]
-    return {lid: np.array(com).ravel() for lid, com in zip(ids, coms)}
+    keep = np.where(np.isin(labels, keep_ids), labels, 0)
+    props: dict[int, tuple[np.ndarray, float, np.ndarray]] = {}
+    for region in regionprops(keep):
+        props[int(region.label)] = (
+            np.asarray(region.centroid, dtype=np.float32),
+            float(region.area),
+            region.coords.astype(np.float32),
+        )
+    return props
 
 
 def retrack_frame_constrained(
@@ -23,79 +46,97 @@ def retrack_frame_constrained(
     locked_target_ids: set[int],
     max_dist_px: float = 50.0,
     reserved_ids: set[int] | None = None,
+    *,
+    area_weight: float = 1.0,
+    iou_weight: float = 1.0,
+    distance_weight: float = 0.05,
 ) -> np.ndarray:
-    """Remap target IDs by centroid proximity without changing locked targets.
+    """Remap target IDs by linker similarity without changing locked targets.
 
-    Target cells whose ID is in locked_target_ids keep their existing IDs.
-    Those IDs, plus any reserved_ids, are protected from assignment to unlocked
-    target cells even if a matching reference cell exists.
+    Target cells whose ID is in ``locked_target_ids`` keep their existing IDs.
+    Those IDs, plus any ``reserved_ids``, are protected from assignment to
+    unlocked target cells even if a matching reference cell exists.
+
+    Unlocked target cells are matched to available reference cells by solving a
+    linear assignment problem over ``-similarity_score``. A pair is only eligible
+    when its centroid distance is ``<= max_dist_px``; area ratio and
+    centroid-corrected IoU contribute as soft score terms (no hard gate),
+    matching the Extend tool's behaviour.
     """
     locked_target_ids = set(locked_target_ids)
     reserved_ids = set(reserved_ids or set())
     blocked_ids = locked_target_ids | reserved_ids
 
-    ref_centroids = _centroids(ref_labels)
-    tgt_centroids = _centroids(target_labels)
-
     result = np.zeros_like(target_labels)
 
+    tgt_ids = {int(i) for i in np.unique(target_labels) if i != 0}
     for lid in locked_target_ids:
-        if lid in tgt_centroids:
+        if lid in tgt_ids:
             result[target_labels == lid] = lid
 
-    unlocked_tgt_ids = [tid for tid in tgt_centroids if tid not in locked_target_ids]
-
+    unlocked_tgt_ids = [tid for tid in tgt_ids if tid not in locked_target_ids]
     if not unlocked_tgt_ids:
         return result
 
-    available_ref_ids = [rid for rid in ref_centroids if rid not in blocked_ids]
+    ref_ids = {int(i) for i in np.unique(ref_labels) if i != 0}
+    available_ref_ids = [rid for rid in ref_ids if rid not in blocked_ids]
 
-    if not available_ref_ids:
-        max_existing = max(
-            int(ref_labels.max()) if ref_labels.max() > 0 else 0,
-            int(target_labels.max()) if target_labels.max() > 0 else 0,
-        )
+    max_existing = max(
+        int(ref_labels.max()) if ref_labels.size and ref_labels.max() > 0 else 0,
+        int(target_labels.max()) if target_labels.size and target_labels.max() > 0 else 0,
+    )
+
+    def _assign_fresh(remap: dict[int, int]) -> dict[int, int]:
         next_id = max_existing + 1
         for tid in unlocked_tgt_ids:
-            while next_id in blocked_ids:
+            if tid not in remap:
+                while next_id in blocked_ids:
+                    next_id += 1
+                remap[tid] = next_id
                 next_id += 1
-            result[target_labels == tid] = next_id
-            next_id += 1
+        return remap
+
+    if not available_ref_ids:
+        remap = _assign_fresh({})
+        for tid, new_id in remap.items():
+            result[target_labels == tid] = new_id
         return result
 
-    ref_pts = np.array([ref_centroids[i] for i in available_ref_ids])
-    tgt_pts = np.array([tgt_centroids[i] for i in unlocked_tgt_ids])
+    tgt_props = _label_props(target_labels, unlocked_tgt_ids)
+    ref_props = _label_props(ref_labels, available_ref_ids)
 
-    n_ref, n_tgt = len(available_ref_ids), len(unlocked_tgt_ids)
+    tgt_centroids = np.array([tgt_props[t][0] for t in unlocked_tgt_ids])
+    ref_centroids = np.array([ref_props[r][0] for r in available_ref_ids])
+    dist = cdist(tgt_centroids, ref_centroids)
+    gate = dist <= max_dist_px
 
-    cost = np.full((n_tgt, n_ref), fill_value=np.inf)
-    for ti, tp in enumerate(tgt_pts):
-        for ri, rp in enumerate(ref_pts):
-            d = float(np.linalg.norm(tp - rp))
-            if d <= max_dist_px:
-                cost[ti, ri] = d
+    n_tgt, n_ref = dist.shape
+    cost = np.full((n_tgt, n_ref), _FORBIDDEN_COST, dtype=np.float64)
+    for ti in range(n_tgt):
+        t_centroid, t_area, t_coords = tgt_props[unlocked_tgt_ids[ti]]
+        for ri in np.nonzero(gate[ti])[0]:
+            r_centroid, r_area, r_coords = ref_props[available_ref_ids[ri]]
+            area_ratio = min(t_area, r_area) / max(t_area, r_area)
+            iou = scoring.centroid_corrected_iou_from_coords(
+                r_coords, r_centroid, t_coords, t_centroid
+            )
+            cost[ti, ri] = -scoring.similarity_score(
+                area_ratio=area_ratio,
+                centroid_corrected_iou=iou,
+                distance=float(dist[ti, ri]),
+                area_weight=area_weight,
+                iou_weight=iou_weight,
+                distance_weight=distance_weight,
+            )
 
-    sentinel = max_dist_px * 10 * (n_tgt + n_ref + 1)
-    finite_cost = np.where(np.isinf(cost), sentinel, cost)
-    row_ind, col_ind = linear_sum_assignment(finite_cost)
+    row_ind, col_ind = linear_sum_assignment(cost)
 
     remap: dict[int, int] = {}
     for ti, ri in zip(row_ind, col_ind):
-        if cost[ti, ri] <= max_dist_px:
+        if gate[ti, ri]:
             remap[unlocked_tgt_ids[ti]] = available_ref_ids[ri]
 
-    max_existing = max(
-        int(ref_labels.max()) if ref_labels.max() > 0 else 0,
-        int(target_labels.max()) if target_labels.max() > 0 else 0,
-    )
-    next_id = max_existing + 1
-    for tid in unlocked_tgt_ids:
-        if tid not in remap:
-            while next_id in blocked_ids:
-                next_id += 1
-            remap[tid] = next_id
-            next_id += 1
-
+    remap = _assign_fresh(remap)
     for tid, new_id in remap.items():
         result[target_labels == tid] = new_id
 

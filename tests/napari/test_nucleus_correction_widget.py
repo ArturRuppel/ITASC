@@ -1109,12 +1109,7 @@ def test_retrack_forward_uses_incremental_visual_refresh(tmp_path, monkeypatch):
     viewer.dims.set_current_step(0, 0)
 
     monkeypatch.setattr(module, "read_validated_frames", lambda _pos_dir: set())
-    monkeypatch.setattr(
-        module,
-        "read_validated_cells_at_frame",
-        lambda _pos_dir, _t: set(),
-    )
-    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: set())
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: {})
 
     full_refresh_calls = []
     edit_refresh_calls = []
