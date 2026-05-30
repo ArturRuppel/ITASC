@@ -106,6 +106,43 @@ def query_connected_nodes(
     return predecessors, successors
 
 
+def _empty_annotation_counts() -> dict[str, int]:
+    return {"REAL": 0, "FAKE": 0, "UNKNOWN": 0}
+
+
+def _annotation_counts_from_rows(rows) -> dict[str, int]:
+    counts = _empty_annotation_counts()
+    for annotation, count in rows:
+        name = annotation_name(annotation)
+        counts[name] = counts.get(name, 0) + int(count or 0)
+    return counts
+
+
+def link_annotation_counts(
+    db_path: Path, selected_node_id: int | None = None
+) -> dict[str, int]:
+    """Return link annotation counts for the whole DB or one node's incident links."""
+    engine = _engine(db_path)
+    try:
+        from sqlalchemy import func
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import LinkDB
+
+        with Session(engine) as session:
+            query = session.query(LinkDB.annotation, func.count(LinkDB.source_id))
+            if selected_node_id is not None:
+                node_id = int(selected_node_id)
+                query = query.filter(
+                    (LinkDB.source_id == node_id) | (LinkDB.target_id == node_id)
+                )
+            rows = query.group_by(LinkDB.annotation).all()
+            return _annotation_counts_from_rows(rows)
+    except Exception:
+        return _empty_annotation_counts()
+    finally:
+        engine.dispose()
+
+
 def _finite_values(rows) -> list[float]:
     values: list[float] = []
     for row in rows:
@@ -174,6 +211,13 @@ def summary_text(db_path: Path, frame: int) -> str:
                 .scalar()
                 or 0
             )
+            n_unknown = max(n_nodes - n_real - n_fake, 0)
+            link_annotation_rows = (
+                session.query(LinkDB.annotation, func.count(LinkDB.source_id))
+                .group_by(LinkDB.annotation)
+                .all()
+            )
+            link_annotations = _annotation_counts_from_rows(link_annotation_rows)
             frame_nodes = session.query(NodeDB).filter(NodeDB.t == frame).all()
             selected = sum(1 for n in frame_nodes if getattr(n, "selected", False))
             node_ids = [int(n.id) for n in frame_nodes]
@@ -221,7 +265,11 @@ def summary_text(db_path: Path, frame: int) -> str:
             if text is not None
         ]
         base = (
-            f"{n_nodes} nodes | {n_links} links | REAL {n_real} | FAKE {n_fake} | "
+            f"{n_nodes} nodes | {n_links} links | "
+            f"REAL {n_real} | FAKE {n_fake} | UNKNOWN {n_unknown} | "
+            f"REAL links {link_annotations['REAL']} | "
+            f"FAKE links {link_annotations['FAKE']} | "
+            f"UNKNOWN links {link_annotations['UNKNOWN']} | "
             f"frame {frame}: {len(node_ids)} nodes, {selected} selected, "
             f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
         )
@@ -472,11 +520,19 @@ def _empty_preview(plane_shape: tuple[int, int], status: str) -> UltrackDbPrevie
 def annotation_name(value) -> str:
     if value is None:
         return "UNKNOWN"
-    raw = getattr(value, "value", value)
-    if raw is None:
-        return "UNKNOWN"
-    name = str(raw).split(".")[-1].upper()
-    return name if name in {"REAL", "FAKE"} else "UNKNOWN"
+    for raw in (getattr(value, "name", None), value, getattr(value, "value", None)):
+        if raw is None:
+            continue
+        if raw in {0, "0"}:
+            return "UNKNOWN"
+        if raw in {1, "1"}:
+            return "REAL"
+        if raw in {2, "2"}:
+            return "FAKE"
+        name = str(raw).split(".")[-1].upper()
+        if name in {"REAL", "FAKE", "UNKNOWN"}:
+            return name
+    return "UNKNOWN"
 
 
 def node_preview_metadata(nodes) -> tuple[dict[int, float], dict[int, int], dict[int, int]]:

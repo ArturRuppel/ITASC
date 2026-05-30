@@ -30,6 +30,7 @@ from cellflow.napari.ui_style import (
 from cellflow.database.validation import read_corrections, read_validated_tracks
 from cellflow.segmentation import CancelledError
 from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
+from cellflow.tracking_ultrack.corrections import corrections_from_validated_tracks
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.multi_threshold import (
     build_ultrack_database_from_threshold_pairs,
@@ -643,30 +644,31 @@ class NucleusPipelineWidget(QWidget):
         db_path = self._ultrack_db_path()
         if db_path is None or not db_path.exists():
             self._status("data.db not found — run DB Generation first."); return
-        score_path = self._foreground_path()
-        if score_path is None or not score_path.exists():
-            self._status("Missing: nucleus_foreground.tif — build divergence maps first."); return
         working_dir = self._ultrack_workdir()
         tracked_path = self._tracked_path()
 
         cfg = self._ultrack_config_from_controls()
-        use_corrections = (
-            self._tracking_inputs_provider().solve_use_validated_check.isChecked()
-        )
-        corrections = read_corrections(pos_dir) if use_corrections else None
-        validated_tracks = (
-            read_validated_tracks(pos_dir)
-            if use_corrections and not corrections
-            else None
-        )
+        corrections = read_corrections(pos_dir)
+        validated_tracks = read_validated_tracks(pos_dir) or None
         tracked_labels = None
         if corrections or validated_tracks:
             tracked_labels = self._ensure_tracked_layer_data()
             if tracked_labels is None:
                 self._status(
-                    "Correction-aware solve requires tracked_labels.tif "
+                    "Validated-aware export requires tracked_labels.tif "
                     "(layer not loaded and file not on disk)."
                 ); return
+        if corrections and validated_tracks and tracked_labels is not None:
+            existing = {
+                (int(c.cell_id), int(c.t))
+                for c in corrections
+                if getattr(c, "kind", None) == "validated"
+            }
+            corrections = list(corrections) + [
+                c for c in corrections_from_validated_tracks(validated_tracks, tracked_labels)
+                if (int(c.cell_id), int(c.t)) not in existing
+            ]
+            validated_tracks = None
 
         self.pipeline_progress_bar.setRange(0, 100)
         self.pipeline_progress_bar.setVisible(True)
@@ -680,15 +682,6 @@ class NucleusPipelineWidget(QWidget):
             "errored": self._on_ultrack_worker_error,
         })
         def _worker():
-            yield "Applying annotations and scoring…"
-            apply_annotations_and_score(
-                working_dir=working_dir,
-                cfg=cfg,
-                score_signal_path=score_path,
-                corrections=corrections,
-                validated_tracks=validated_tracks,
-                tracked_labels=tracked_labels,
-            )
             for step, total, label in run_solve(working_dir, cfg, overwrite=True):
                 yield (step, total, f"[solve] {label}")
             yield "Exporting tracked labels…"

@@ -70,6 +70,7 @@ def _install_import_stubs() -> None:
         },
         "cellflow.tracking_ultrack.db_build": {
             "apply_annotations_and_score": lambda *args, **kwargs: None,
+            "annotate_database_from_corrections": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
@@ -135,6 +136,26 @@ def _load_widget_class():
     return module.NucleusCorrectionWidget, module
 
 
+def _sync_thread_worker(*, connect):
+    def _decorator(func):
+        def _runner():
+            try:
+                result = func()
+            except Exception as exc:
+                errored = connect.get("errored")
+                if errored is not None:
+                    errored(exc)
+                    return
+                raise
+            returned = connect.get("returned")
+            if returned is not None:
+                returned(result)
+
+        return _runner
+
+    return _decorator
+
+
 def test_nucleus_correction_parameter_labels_are_single_line():
     _app, viewer = _make_viewer()
     widget_class, _module = _load_widget_class()
@@ -143,6 +164,69 @@ def test_nucleus_correction_parameter_labels_are_single_line():
     broken = [label.text() for label in widget.findChildren(QLabel) if "\n" in label.text()]
 
     assert broken == []
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_annotate_database_uses_saved_corrections_and_tracked_labels(tmp_path):
+    _app, viewer = _make_viewer()
+    widget_class, _module = _load_widget_class()
+    from cellflow.tracking_ultrack.corrections import Correction
+
+    calls = []
+    corrections = [Correction(cell_id=7, t=0, kind="validated", y=1.5, x=1.5)]
+
+    def fake_annotate(**kwargs):
+        calls.append(kwargs)
+        return types.SimpleNamespace(
+            fake_nodes=3,
+            anchor_nodes=0,
+            anchor_links=0,
+            scored_nodes=12,
+            seed_nodes=0,
+            anchor_incident_links_inserted=0,
+            injected_homemade_anchors=0,
+        )
+
+    widget = widget_class(
+        viewer,
+        dependencies={
+            "annotate_database_from_corrections": fake_annotate,
+            "read_corrections": lambda _pos_dir: corrections,
+            "read_validated_tracks": lambda _pos_dir: {8: {1}},
+            "thread_worker": _sync_thread_worker,
+        },
+    )
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "1_cellpose").mkdir(parents=True)
+    (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
+    (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(b"sqlite placeholder")
+    import tifffile
+    tifffile.imwrite(
+        str(pos_dir / "1_cellpose" / "nucleus_foreground.tif"),
+            np.zeros((2, 4, 4), dtype=np.float32),
+        )
+    tracked = np.zeros((2, 4, 4), dtype=np.uint32)
+    tracked[0, 1:3, 1:3] = 7
+    tracked[1, 2:4, 2:4] = 8
+    viewer.add_labels(tracked, name="[Correction] Nucleus Labels")
+    widget._pos_dir = pos_dir
+
+    widget._on_annotate_database()
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["working_dir"] == pos_dir / "2_nucleus" / "ultrack_workdir"
+    assert call["score_signal_path"] == pos_dir / "1_cellpose" / "nucleus_foreground.tif"
+    assert [(c.cell_id, c.t, c.kind) for c in call["corrections"]] == [
+        (7, 0, "validated"),
+        (8, 1, "validated"),
+    ]
+    assert call["validated_tracks"] is None
+    np.testing.assert_array_equal(call["tracked_labels"], tracked)
+    assert "Annotated DB" in widget.status_lbl.text()
 
     widget.deleteLater()
     viewer.close()
@@ -284,6 +368,50 @@ def test_manual_correction_protected_mask_marks_validated_and_anchor_cells(tmp_p
     assert not mask[1:3, 1:3].any()
     assert mask[3:5, 3:5].all()
     assert mask[6:8, 6:8].all()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_annotate_database_handler_calls_backend_with_saved_validation_geometry(
+    tmp_path,
+):
+    _app, viewer = _make_viewer()
+    pos_dir = tmp_path / "pos00"
+    db_path = pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db"
+    score_path = pos_dir / "1_cellpose" / "nucleus_foreground.tif"
+    db_path.parent.mkdir(parents=True)
+    score_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    score_path.write_bytes(b"tif placeholder")
+
+    tracked_labels = np.zeros((2, 6, 6), dtype=np.uint32)
+    tracked_labels[0, 1:4, 1:4] = 7
+    cfg = object()
+    captured = {}
+
+    widget, _module = _make_widget(viewer, pos_dir)
+    widget._dependencies.update(
+        {
+            "annotate_database_from_corrections": (
+                lambda **kwargs: captured.update(kwargs)
+            ),
+            "read_corrections": lambda _pos_dir: [],
+            "read_validated_tracks": lambda _pos_dir: {7: {0}},
+            "thread_worker": _sync_thread_worker,
+        }
+    )
+    widget._ultrack_config_from_controls = lambda: cfg
+    viewer.add_labels(tracked_labels.copy(), name="Tracked: Nucleus")
+
+    widget._on_annotate_database()
+
+    assert captured["working_dir"] == db_path.parent
+    assert captured["cfg"] is cfg
+    assert captured["score_signal_path"] == score_path
+    assert captured["corrections"] == []
+    assert captured["validated_tracks"] == {7: {0}}
+    np.testing.assert_array_equal(captured["tracked_labels"], tracked_labels)
 
     widget.deleteLater()
     viewer.close()
@@ -763,7 +891,7 @@ def test_extend_passes_weight_parameters_to_db_tracker(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setitem(
-        module._DEFAULT_DEPENDENCIES,
+        widget._dependencies,
         "extend_track_from_db",
         fake_extend_track_from_db,
     )
@@ -813,7 +941,7 @@ def test_extend_greedy_overwrite_paints_source_and_overwrites_non_validated(tmp_
         assignments=(types.SimpleNamespace(cell_id=7, mask_2d=source_mask),),
     )
     monkeypatch.setitem(
-        module._DEFAULT_DEPENDENCIES,
+        widget._dependencies,
         "extend_track_from_db",
         lambda **_kwargs: result,
     )
@@ -857,7 +985,7 @@ def test_extend_uses_incremental_visual_refresh(tmp_path, monkeypatch):
         assignments=(types.SimpleNamespace(cell_id=7, mask_2d=candidate_mask),),
     )
     monkeypatch.setitem(
-        module._DEFAULT_DEPENDENCIES,
+        widget._dependencies,
         "extend_track_from_db",
         lambda **_kwargs: result,
     )
@@ -915,7 +1043,7 @@ def test_extend_greedy_overwrite_preserves_validated_cells(tmp_path, monkeypatch
         assignments=(types.SimpleNamespace(cell_id=7, mask_2d=source_mask),),
     )
     monkeypatch.setitem(
-        module._DEFAULT_DEPENDENCIES,
+        widget._dependencies,
         "extend_track_from_db",
         lambda **_kwargs: result,
     )
@@ -970,6 +1098,48 @@ def test_swap_apply_uses_incremental_visual_refresh(monkeypatch):
     viewer.close()
 
 
+def test_retrack_forward_uses_incremental_visual_refresh(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    pos_dir = tmp_path / "pos00"
+    widget, module = _make_widget(viewer, pos_dir)
+
+    labels = np.zeros((3, 24, 24), dtype=np.uint32)
+    labels[0, 4:8, 4:8] = 7
+    labels[1, 5:9, 5:9] = 9
+    labels[2, 6:10, 6:10] = 11
+    viewer.add_labels(labels, name="Tracked: Nucleus")
+    viewer.dims.set_current_step(0, 0)
+
+    monkeypatch.setattr(module, "read_validated_frames", lambda _pos_dir: set())
+    monkeypatch.setattr(
+        module,
+        "read_validated_cells_at_frame",
+        lambda _pos_dir, _t: set(),
+    )
+    monkeypatch.setattr(module, "read_validated_tracks", lambda _pos_dir: set())
+
+    full_refresh_calls = []
+    edit_refresh_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_refresh_correction_label_visuals",
+        lambda: full_refresh_calls.append("full"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_correction_label_visuals_for_edit",
+        lambda t, changed_ids: edit_refresh_calls.append((t, set(changed_ids))),
+    )
+
+    widget._on_retrack_forward()
+
+    assert full_refresh_calls == []
+    assert edit_refresh_calls == [(1, {7, 9}), (2, {7, 11})]
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_extend_greedy_overwrite_skips_validated_target_cell(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     pos_dir = tmp_path / "pos00"
@@ -1002,7 +1172,7 @@ def test_extend_greedy_overwrite_skips_validated_target_cell(tmp_path, monkeypat
         assignments=(types.SimpleNamespace(cell_id=7, mask_2d=source_mask),),
     )
     monkeypatch.setitem(
-        module._DEFAULT_DEPENDENCIES,
+        widget._dependencies,
         "extend_track_from_db",
         lambda **_kwargs: result,
     )

@@ -95,13 +95,10 @@ def build_centroid_points(
     frames: list[int] = []
 
     for t in range(labels_arr.shape[0]):
-        frame = labels_arr[t]
-        for label_id in sorted(int(value) for value in np.unique(frame) if int(value) != 0):
-            yy, xx = np.nonzero(frame == label_id)
-            if yy.size == 0:
-                continue
+        frame_centroids = _frame_centroids(labels_arr[t])
+        for label_id, y, x in frame_centroids:
             color = _resolved_color(color_map, label_id)
-            points.append((float(t), float(np.mean(yy)), float(np.mean(xx))))
+            points.append((float(t), y, x))
             colors.append(color)
             label_ids.append(label_id)
             frames.append(int(t))
@@ -222,12 +219,17 @@ def update_centroid_cross_layer_for_edit(
     new_frames = [frames[idx] for idx in keep_indices]
     new_colors = [colors[idx] for idx in keep_indices]
 
-    frame_arr = labels_arr[frame]
+    frame_centroids = {
+        label_id: (y, x)
+        for label_id, y, x in _frame_centroids(labels_arr[frame])
+        if label_id in ids
+    }
     for label_id in sorted(ids):
-        yy, xx = np.nonzero(frame_arr == label_id)
-        if yy.size == 0:
+        centroid = frame_centroids.get(label_id)
+        if centroid is None:
             continue
-        new_data.append(np.asarray([frame, float(np.mean(yy)), float(np.mean(xx))]))
+        y, x = centroid
+        new_data.append(np.asarray([frame, y, x], dtype=float))
         new_label_ids.append(label_id)
         new_frames.append(frame)
         new_colors.append(np.asarray(_resolved_color(color_map, label_id), dtype=float))
@@ -296,6 +298,33 @@ def _as_color_array(colors: Any, length: int) -> np.ndarray:
     if arr.size == length * 4:
         return arr.reshape((length, 4))
     return np.zeros((length, 4), dtype=float)
+
+
+def _frame_centroids(frame: np.ndarray) -> list[tuple[int, float, float]]:
+    frame_arr = np.asarray(frame)
+    if frame_arr.ndim != 2:
+        return []
+
+    flat = frame_arr.ravel()
+    foreground = flat != 0
+    if not np.any(foreground):
+        return []
+
+    labels, inverse, counts = np.unique(
+        flat[foreground],
+        return_inverse=True,
+        return_counts=True,
+    )
+    flat_indices = np.arange(flat.size, dtype=float)[foreground]
+    y_coords = flat_indices // float(frame_arr.shape[1])
+    x_coords = flat_indices % float(frame_arr.shape[1])
+    sum_y = np.bincount(inverse, weights=y_coords, minlength=len(labels))
+    sum_x = np.bincount(inverse, weights=x_coords, minlength=len(labels))
+
+    return [
+        (int(label_id), float(sum_y[idx] / counts[idx]), float(sum_x[idx] / counts[idx]))
+        for idx, label_id in enumerate(labels)
+    ]
 
 
 def _feature_values(features: Any, name: str) -> list[Any]:

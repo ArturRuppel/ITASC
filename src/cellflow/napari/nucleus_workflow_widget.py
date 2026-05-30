@@ -218,8 +218,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.add_threshold_pair = ti.add_threshold_pair
         self.remove_selected_threshold_pair = ti.remove_selected_threshold_pair
         self.clear_threshold_pairs = ti.clear_threshold_pairs
-        self.solve_use_validated_check = ti.solve_use_validated_check
-        self.db_gen_use_validated_check = ti.db_gen_use_validated_check
         self.ultrack_max_partitions_spin = ti.ultrack_max_partitions_spin
         self.ultrack_n_frames_spin = ti.ultrack_n_frames_spin
         self.ultrack_appear_spin = ti.ultrack_appear_spin
@@ -295,6 +293,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.nucleus_correction_widget = NucleusCorrectionWidget(
             self.viewer,
             pos_dir_provider=lambda: self._pos_dir,
+            ultrack_config_provider=lambda: self._ultrack_config_from_controls(),
             refresh_refinement_callback=lambda: None,
             parent=self,
         )
@@ -324,6 +323,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self.reassign_ids_btn = correction.reassign_ids_btn
         self.validate_track_btn = correction.validate_track_btn
         self.anchor_here_btn = correction.anchor_here_btn
+        self.annotate_db_btn = correction.annotate_db_btn
         self.remove_unvalidated_btn = correction.remove_unvalidated_btn
         self.commit_btn = correction.commit_btn
         self.correction_status_lbl = correction.status_lbl
@@ -364,6 +364,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             "_validated_correction_for_frame",
             "_on_validate_track",
             "_on_anchor_here",
+            "_on_annotate_database",
+            "_on_annotate_database_done",
             "_on_extend_backward",
             "_on_extend_forward",
             "_on_extend",
@@ -430,6 +432,9 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             self._refresh_ultrack_db_browser
         )
         self.ultrack_db_connected_focus_check.toggled.connect(
+            self._refresh_ultrack_db_browser
+        )
+        self.ultrack_db_annotation_check.toggled.connect(
             self._refresh_ultrack_db_browser
         )
 

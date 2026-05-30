@@ -64,9 +64,13 @@ def _install_import_stubs() -> None:
                 "cellflow.tracking_ultrack.corrections",
                 fromlist=["Correction"],
             ).Correction,
+            "corrections_from_validated_tracks": (
+                lambda validated_tracks, tracked_labels: []
+            ),
         },
         "cellflow.tracking_ultrack.db_build": {
             "apply_annotations_and_score": lambda *args, **kwargs: None,
+            "annotate_database_from_corrections": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
@@ -197,6 +201,73 @@ def test_database_browser_preview_mode_hides_restores_and_cleans_preview_layers(
 
     widget.deleteLater()
     viewer.close()
+
+
+def test_ultrack_db_browser_annotation_toggle_controls_overlay_layer():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    labels = np.array([[0, 1], [2, 3]], dtype=np.uint32)
+    label_to_node_id = {1: 10, 2: 20, 3: 30}
+    node_annotations = {10: "REAL", 20: "FAKE", 30: "UNKNOWN"}
+
+    widget.ultrack_db_annotation_check.setChecked(False)
+    widget._refresh_ultrack_db_annotation_visualization(
+        labels, label_to_node_id, node_annotations,
+    )
+
+    assert "[Database] Ultrack DB Annotations" not in viewer.layers
+
+    widget.ultrack_db_annotation_check.setChecked(True)
+    widget._refresh_ultrack_db_annotation_visualization(
+        labels, label_to_node_id, node_annotations,
+    )
+
+    layer = viewer.layers["[Database] Ultrack DB Annotations"]
+    overlay = layer.data
+    assert set(np.unique(overlay)) == {0, 1, 2, 3}
+    np.testing.assert_allclose(
+        layer.colormap.map(np.array([0, 1, 2, 3])),
+        np.array(
+            [
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.75, 0.0, 0.75],
+                [1.0, 0.0, 0.0, 0.75],
+                [0.5, 0.5, 0.5, 0.45],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+    widget.ultrack_db_annotation_check.setChecked(False)
+    widget._refresh_ultrack_db_annotation_visualization(
+        labels, label_to_node_id, node_annotations,
+    )
+
+    assert "[Database] Ultrack DB Annotations" not in viewer.layers
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_counts_visible_annotations_from_preview():
+    widget_class = _load_widget_class()
+    labels = np.array(
+        [
+            [0, 1, 1],
+            [2, 0, 3],
+            [4, 4, 0],
+        ],
+        dtype=np.uint32,
+    )
+
+    counts = widget_class._ultrack_db_visible_annotation_counts(
+        labels,
+        {1: 10, 2: 20, 3: 30, 4: 40},
+        {10: "REAL", 20: "FAKE", 30: "UNKNOWN", 40: "REAL"},
+    )
+
+    assert counts == {"REAL": 2, "FAKE": 1, "UNKNOWN": 1}
 
 
 def test_database_browser_header_uses_icon_activate_button_distinct_from_run():
@@ -414,6 +485,42 @@ def test_ultrack_db_browser_click_selects_node_id_from_display_label(tmp_path, m
     assert widget._ultrack_db_selected_node_id == 222
     assert widget._ultrack_db_selected_frame == 4
     assert "Selected node 222" in widget.ultrack_db_section_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_selected_node_status_includes_annotation_probability_and_links(
+    tmp_path, monkeypatch,
+):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_label_to_node_id = {2: 222}
+    widget._ultrack_db_label_probabilities = {2: 0.25}
+    widget._ultrack_db_node_annotations = {222: "REAL"}
+    widget._ultrack_db_preview_labels = np.array([[0, 2], [0, 0]], dtype=np.uint32)
+    monkeypatch.setattr(widget, "_current_t", lambda: 4)
+    monkeypatch.setattr(
+        widget,
+        "_query_ultrack_db_link_annotation_counts",
+        lambda _db_path, _node_id: {"REAL": 2, "FAKE": 1, "UNKNOWN": 3},
+    )
+
+    widget._select_ultrack_db_preview_label(2, frame=4)
+
+    status = widget.ultrack_db_section_status_lbl.text()
+    assert "Selected node 222" in status
+    assert "[REAL]" in status
+    assert "p=0.250" in status
+    assert "links REAL 2" in status
+    assert "FAKE 1" in status
+    assert "UNKNOWN 3" in status
 
     widget.deleteLater()
     viewer.close()
@@ -676,6 +783,70 @@ def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, m
     viewer.close()
 
 
+def test_ultrack_db_browser_slider_change_preserves_render_cache(tmp_path, monkeypatch):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_preview_cache["existing render"] = object()
+    monkeypatch.setattr(
+        widget,
+        "_query_distinct_heights",
+        lambda *_args: (0.1, 0.2, 0.3),
+    )
+
+    widget._on_ultrack_db_slider_changed(1)
+
+    assert "existing render" in widget._ultrack_db_preview_cache
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_reuses_summary_text_for_same_database_frame(
+    tmp_path, monkeypatch,
+):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_hierarchy_slider.setValue(0)
+    monkeypatch.setattr(widget, "_current_t", lambda: 0)
+    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    monkeypatch.setattr(
+        widget,
+        "_render_hierarchy_cut",
+        lambda *args: (np.zeros((5, 5), dtype=np.uint32), "rendered hierarchy cut"),
+    )
+    calls = []
+
+    def _summary(path, frame):
+        calls.append((path, frame))
+        return "summary stats"
+
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", _summary)
+
+    widget._refresh_ultrack_db_browser()
+    widget._refresh_ultrack_db_browser()
+
+    assert calls == [(db_path, 0)]
+    assert widget.ultrack_db_info_lbl.text() == "summary stats"
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_db_browser_probability_transparency_renders_rgba_preview(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
@@ -828,6 +999,67 @@ def _make_ultrack_db_with_heights(db_path: Path, heights: list[float]) -> None:
         session.commit()
         assert session.query(NodeDB.height).distinct().count() == len(set(heights))
     engine.dispose()
+
+
+def test_ultrack_db_summary_counts_annotated_links(tmp_path):
+    pytest.importorskip("ultrack")
+    import pickle
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import Base, LinkDB, NodeDB, VarAnnotation
+    from ultrack.core.segmentation.node import Node
+    from ultrack.utils.constants import NO_PARENT
+    from cellflow.tracking_ultrack.db_query import summary_text
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        for node_id, annotation in (
+            (1, VarAnnotation.REAL),
+            (2, VarAnnotation.FAKE),
+            (3, VarAnnotation.UNKNOWN),
+        ):
+            mask = np.ones((1, 2, 2), dtype=bool)
+            node_obj = Node.from_mask(
+                time=0,
+                mask=mask,
+                bbox=np.array([0, 0, 0, 1, 2, 2], dtype=np.int64),
+                node_id=node_id,
+            )
+            session.add(
+                NodeDB(
+                    id=node_id,
+                    t=0,
+                    t_node_id=node_id,
+                    t_hier_id=1,
+                    z=0,
+                    y=1,
+                    x=1,
+                    area=4,
+                    height=1.0,
+                    hier_parent_id=NO_PARENT,
+                    pickle=pickle.dumps(node_obj),
+                    node_annot=annotation,
+                )
+            )
+        session.add_all(
+            [
+                LinkDB(source_id=1, target_id=2, weight=1.0, annotation=VarAnnotation.REAL),
+                LinkDB(source_id=2, target_id=3, weight=1.0, annotation=VarAnnotation.FAKE),
+                LinkDB(source_id=3, target_id=1, weight=1.0, annotation=VarAnnotation.UNKNOWN),
+            ]
+        )
+        session.commit()
+    engine.dispose()
+
+    text = summary_text(db_path, frame=0)
+
+    assert "UNKNOWN 1" in text
+    assert "REAL links 1" in text
+    assert "FAKE links 1" in text
+    assert "UNKNOWN links 1" in text
 
 
 def _add_ultrack_node(

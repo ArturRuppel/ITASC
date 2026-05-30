@@ -4,6 +4,21 @@ import numpy as np
 import pytest
 
 
+def test_annotation_name_handles_ultrack_var_annotation_enum_shape():
+    from enum import Enum
+
+    from cellflow.tracking_ultrack.db_query import annotation_name
+
+    class VarAnnotationLike(Enum):
+        UNKNOWN = 0
+        REAL = 1
+        FAKE = 2
+
+    assert annotation_name(VarAnnotationLike.REAL) == "REAL"
+    assert annotation_name(VarAnnotationLike.FAKE) == "FAKE"
+    assert annotation_name(VarAnnotationLike.UNKNOWN) == "UNKNOWN"
+
+
 def _add_ultrack_node(
     session,
     *,

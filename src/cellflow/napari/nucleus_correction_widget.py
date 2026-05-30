@@ -103,7 +103,14 @@ from cellflow.napari.validated_overlay_controller import (
     ValidatedOverlayController,
 )
 from cellflow.napari.widgets import CollapsibleSection
-from cellflow.tracking_ultrack.corrections import Correction
+from cellflow.tracking_ultrack.corrections import (
+    Correction,
+    corrections_from_validated_tracks,
+)
+from cellflow.tracking_ultrack.config import TrackingConfig
+from cellflow.tracking_ultrack.db_build import (
+    annotate_database_from_corrections as _annotate_database_from_corrections,
+)
 from cellflow.tracking_ultrack.extend import extend_track_from_db as _extend_track_from_db
 from cellflow.tracking_ultrack.swap_candidate import (
     SwapCandidate as _SwapCandidate,
@@ -126,6 +133,7 @@ _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
 _NUCLEUS_TRACK_COLOR_SCALE = 0.65
 
 _DEFAULT_DEPENDENCIES = {
+    "annotate_database_from_corrections": _annotate_database_from_corrections,
     "extend_track_from_db": _extend_track_from_db,
     "read_corrections": lambda *args, **kwargs: read_corrections(*args, **kwargs),
     "read_validated_tracks": (
@@ -144,6 +152,7 @@ class NucleusCorrectionWidget(QWidget):
         *,
         edit_callback=None,
         pos_dir_provider: Callable[[], Path | None] | None = None,
+        ultrack_config_provider: Callable[[], TrackingConfig] | None = None,
         refresh_refinement_callback: Callable[[], None] | None = None,
         dependencies: dict[str, Callable] | None = None,
         parent: QWidget | None = None,
@@ -151,12 +160,10 @@ class NucleusCorrectionWidget(QWidget):
         super().__init__(parent)
         self.viewer = viewer
         self._pos_dir_provider = pos_dir_provider
+        self._ultrack_config_provider = ultrack_config_provider
         self._local_pos_dir: Path | None = None
         self._refresh_refinement_callback = refresh_refinement_callback or (lambda: None)
-        self._dependencies = (
-            _DEFAULT_DEPENDENCIES if dependencies is None
-            else {**_DEFAULT_DEPENDENCIES, **dependencies}
-        )
+        self._dependencies = {**_DEFAULT_DEPENDENCIES, **(dependencies or {})}
         self._edit_callback = edit_callback or self._on_cells_edited
         self._correction_owned_layers: set[str] = set()
         self._correction_view_state: LayerViewState | None = None
@@ -232,6 +239,9 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.anchor_here_btn = _tool_btn(
             "⚓", "Anchor selected cell identity at the current frame (B)."
+        )
+        self.annotate_db_btn = _tool_btn(
+            "✎", "Apply saved validations and anchors to the Ultrack database."
         )
         self.remove_unvalidated_btn = _tool_btn(
             "🗑",
@@ -403,6 +413,7 @@ class NucleusCorrectionWidget(QWidget):
             (self.extend_back_btn, self.extend_fwd_btn),
             (self.retrack_back_btn, self.retrack_fwd_btn),
             (self.validate_track_btn, self.anchor_here_btn),
+            (self.annotate_db_btn,),
             (self.reassign_ids_btn, self.remove_unvalidated_btn),
         ]
         for i, group in enumerate(groups):
@@ -466,6 +477,7 @@ class NucleusCorrectionWidget(QWidget):
         self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
         self.validate_track_btn.clicked.connect(self._on_validate_track)
         self.anchor_here_btn.clicked.connect(self._on_anchor_here)
+        self.annotate_db_btn.clicked.connect(self._on_annotate_database)
         self.extend_back_btn.clicked.connect(self._on_extend_backward)
         self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
         self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
@@ -531,6 +543,32 @@ class NucleusCorrectionWidget(QWidget):
 
     def _tracked_path(self):
         return self._paths.tracked if self._paths else None
+
+    def _foreground_path(self):
+        return self._paths.nucleus_foreground if self._paths else None
+
+    def _ultrack_workdir(self):
+        return self._paths.ultrack_workdir if self._paths else None
+
+    def _ultrack_db_path(self):
+        return self._paths.ultrack_db if self._paths else None
+
+    def _ultrack_config_from_controls(self):
+        if self._ultrack_config_provider is not None:
+            return self._ultrack_config_provider()
+        return TrackingConfig()
+
+    def _ensure_tracked_layer_data(self) -> np.ndarray | None:
+        layer = self._correction_tracked_layer()
+        if layer is not None:
+            return np.asarray(layer.data)
+        tracked_path = self._tracked_path()
+        if tracked_path is None or not tracked_path.exists():
+            return None
+        labels = np.asarray(tifffile.imread(str(tracked_path)), dtype=np.uint32)
+        if labels.ndim == 4 and labels.shape[1] == 1:
+            labels = labels[:, 0]
+        return labels
 
     def _cell_zavg_path(self):
         return self._paths.cell_zavg if self._paths else None
@@ -829,6 +867,77 @@ class NucleusCorrectionWidget(QWidget):
         suffix = f" (gap-filled {filled} frame(s))" if filled else ""
         self._correction_status(f"Anchored cell {cell_id} at t={t}.{suffix}")
 
+    def _on_annotate_database(self) -> None:
+        pos_dir = self._pos_dir
+        if pos_dir is None:
+            self._correction_status("No project open."); return
+        db_path = self._ultrack_db_path()
+        if db_path is None or not db_path.exists():
+            self._correction_status("data.db not found — run DB Generation first."); return
+        score_path = self._foreground_path()
+        if score_path is None or not score_path.exists():
+            self._correction_status(
+                "Missing: nucleus_foreground.tif — build divergence maps first."
+            ); return
+        working_dir = self._ultrack_workdir()
+        if working_dir is None:
+            self._correction_status("No Ultrack working directory."); return
+
+        read_corrections_fn = self._dependency("read_corrections")
+        read_validated_tracks_fn = self._dependency("read_validated_tracks")
+        corrections = list(read_corrections_fn(pos_dir))
+        validated_tracks = read_validated_tracks_fn(pos_dir) or None
+        tracked_labels = self._ensure_tracked_layer_data()
+        if validated_tracks and tracked_labels is None:
+            self._correction_status(
+                "Annotation from validated tracks requires tracked_labels.tif "
+                "(layer not loaded and file not on disk)."
+            ); return
+        if corrections and validated_tracks and tracked_labels is not None:
+            existing = {
+                (int(c.cell_id), int(c.t))
+                for c in corrections
+                if getattr(c, "kind", None) == "validated"
+            }
+            corrections = list(corrections) + [
+                c for c in corrections_from_validated_tracks(validated_tracks, tracked_labels)
+                if (int(c.cell_id), int(c.t)) not in existing
+            ]
+            validated_tracks = None
+
+        cfg = self._ultrack_config_from_controls()
+        self._correction_status("Annotating Ultrack database...")
+
+        @self._dependency("thread_worker")(connect={
+            "returned": self._on_annotate_database_done,
+            "errored": self._on_correction_worker_error,
+        })
+        def _worker():
+            return self._dependency("annotate_database_from_corrections")(
+                working_dir=working_dir,
+                cfg=cfg,
+                score_signal_path=score_path,
+                corrections=corrections,
+                validated_tracks=validated_tracks,
+                tracked_labels=tracked_labels,
+            )
+
+        _worker()
+
+    def _on_annotate_database_done(self, report) -> None:
+        fake_nodes = int(getattr(report, "fake_nodes", 0) or 0)
+        anchor_nodes = int(getattr(report, "anchor_nodes", 0) or 0)
+        anchor_links = int(getattr(report, "anchor_links", 0) or 0)
+        scored_nodes = int(getattr(report, "scored_nodes", 0) or 0)
+        inserted_nodes = int(getattr(report, "injected_homemade_anchors", 0) or 0)
+        inserted_links = int(getattr(report, "anchor_incident_links_inserted", 0) or 0)
+        self._correction_status(
+            "Annotated DB: "
+            f"{fake_nodes} FAKE, {anchor_nodes} REAL, "
+            f"{anchor_links + inserted_links} link(s), "
+            f"{inserted_nodes} inserted node(s), {scored_nodes} scored."
+        )
+
     def _on_extend_backward(self) -> None:
         self._on_extend(direction="backward")
 
@@ -1080,8 +1189,9 @@ class NucleusCorrectionWidget(QWidget):
         if t0 >= layer.data.shape[0] - 1:
             self._correction_status("Already at last frame."); return
 
+        before = np.asarray(layer.data).copy()
         result = retrack_stack_direction(
-            np.asarray(layer.data),
+            before,
             start_frame=t0,
             direction="forward",
             fully_validated_frames=read_validated_frames(self._pos_dir),
@@ -1093,7 +1203,7 @@ class NucleusCorrectionWidget(QWidget):
             reserved_ids=set(read_validated_tracks(self._pos_dir)),
         )
         layer.data = result.stack
-        self._refresh_correction_label_visuals()
+        self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
         self._correction_status(
             f"Retracked forward from t={result.first_target_frame}: "
             f"{result.n_retracked} updated, "
@@ -1112,8 +1222,9 @@ class NucleusCorrectionWidget(QWidget):
         if t0 <= 0:
             self._correction_status("Already at first frame."); return
 
+        before = np.asarray(layer.data).copy()
         result = retrack_stack_direction(
-            np.asarray(layer.data),
+            before,
             start_frame=t0,
             direction="backward",
             fully_validated_frames=read_validated_frames(self._pos_dir),
@@ -1125,7 +1236,7 @@ class NucleusCorrectionWidget(QWidget):
             reserved_ids=set(read_validated_tracks(self._pos_dir)),
         )
         layer.data = result.stack
-        self._refresh_correction_label_visuals()
+        self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
         self._correction_status(
             f"Retracked backward from t={result.first_target_frame}: "
             f"{result.n_retracked} updated, "
@@ -1440,6 +1551,32 @@ class NucleusCorrectionWidget(QWidget):
             self.viewer.layers.selection.active = layer
         except Exception:
             pass
+
+    def _refresh_correction_label_visuals_for_changed_frames(
+        self,
+        before: np.ndarray,
+        after: np.ndarray,
+    ) -> None:
+        before_arr = np.asarray(before)
+        after_arr = np.asarray(after)
+        if before_arr.shape != after_arr.shape or before_arr.ndim != 3:
+            self._refresh_correction_label_visuals()
+            return
+
+        for t in range(after_arr.shape[0]):
+            before_frame = before_arr[t]
+            after_frame = after_arr[t]
+            if np.array_equal(before_frame, after_frame):
+                continue
+            changed_mask = before_frame != after_frame
+            changed_ids = {
+                int(value)
+                for value in np.unique(np.concatenate(
+                    [before_frame[changed_mask], after_frame[changed_mask]]
+                ))
+                if int(value) != 0
+            }
+            self._refresh_correction_label_visuals_for_edit(t, changed_ids)
 
     def _refresh_correction_label_visuals(self) -> None:
         if _CORRECTION_TRACKED_LAYER not in self.viewer.layers:

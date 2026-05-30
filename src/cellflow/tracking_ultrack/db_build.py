@@ -186,6 +186,28 @@ def apply_annotations_and_score(
     )
 
 
+def annotate_database_from_corrections(
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    *,
+    score_signal_path: str | Path,
+    corrections: list[Correction] | None = None,
+    validated_tracks: dict[int, set[int]] | None = None,
+    tracked_labels: np.ndarray | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+) -> AnnotateAndScoreReport:
+    """Apply correction-derived annotations to ``data.db`` and rescore nodes."""
+    return apply_annotations_and_score(
+        working_dir=working_dir,
+        cfg=cfg,
+        score_signal_path=score_signal_path,
+        corrections=corrections,
+        validated_tracks=validated_tracks,
+        tracked_labels=tracked_labels,
+        progress_cb=progress_cb,
+    )
+
+
 def _notify(progress_cb: Callable[[str], None] | None, message: str) -> None:
     if progress_cb is not None:
         progress_cb(message)

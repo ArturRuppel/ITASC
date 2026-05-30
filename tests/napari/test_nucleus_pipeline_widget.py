@@ -446,22 +446,20 @@ def test_nucleus_state_persists_explicit_threshold_pairs():
     viewer.close()
 
 
-def test_nucleus_state_persists_validated_corrections_as_solve_option():
+def test_nucleus_state_does_not_persist_validated_corrections_as_solve_option():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
 
-    widget.solve_use_validated_check.setChecked(True)
-
     state = widget.get_state()
 
     assert "use_validated" not in state["db_generation"]
-    assert state["ultrack"]["resolve_from_validated"] is True
+    assert "resolve_from_validated" not in state["ultrack"]
 
     restored = widget_class(viewer)
     restored.set_state(state)
 
-    assert restored.solve_use_validated_check.isChecked() is True
+    assert not hasattr(restored, "solve_use_validated_check")
 
     restored.deleteLater()
     widget.deleteLater()
@@ -475,7 +473,28 @@ def test_nucleus_state_loads_legacy_db_generation_validated_option():
 
     widget.set_state({"db_generation": {"use_validated": True}})
 
-    assert widget.solve_use_validated_check.isChecked() is True
+    assert "use_validated" not in widget.get_state()["db_generation"]
+    assert not hasattr(widget, "solve_use_validated_check")
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_nucleus_state_loads_legacy_validated_options_without_solve_checkbox():
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+
+    widget.set_state(
+        {
+            "db_generation": {"use_validated": True},
+            "ultrack": {"resolve_from_validated": True},
+        }
+    )
+
+    assert "resolve_from_validated" not in widget.get_state()["ultrack"]
+    assert "use_validated" not in widget.get_state()["db_generation"]
+    assert not hasattr(widget, "solve_use_validated_check")
 
     widget.deleteLater()
     viewer.close()
@@ -1024,6 +1043,120 @@ def test_run_ultrack_updates_tracked_layer(tmp_path, monkeypatch):
     assert "Tracked: Nucleus" in viewer.layers
     assert (pos_dir / "2_nucleus" / "tracked_labels.tif").exists()
     assert not widget.pipeline_progress_bar.isVisible()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_run_ultrack_solve_does_not_apply_annotations_or_require_tracked_labels(
+    tmp_path,
+    monkeypatch,
+):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    _install_sync_thread_worker(monkeypatch, pipeline_module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
+    (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(
+        b"sqlite placeholder"
+    )
+    widget._pos_dir = pos_dir
+
+    calls = []
+    labels = np.ones((2, 4, 4), dtype=np.uint32)
+    monkeypatch.setattr(pipeline_module, "read_corrections", lambda _pos_dir: [])
+    monkeypatch.setattr(pipeline_module, "read_validated_tracks", lambda _pos_dir: {})
+    monkeypatch.setattr(
+        pipeline_module,
+        "apply_annotations_and_score",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("solve path should not apply annotations")
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_solve",
+        lambda working_dir, cfg, overwrite: calls.append(
+            ("solve", working_dir, cfg, overwrite)
+        )
+        or iter([(1, 1, "solved")]),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "export_tracked_labels",
+        lambda working_dir, cfg, tracked_path, **kwargs: calls.append(
+            ("export", working_dir, cfg, tracked_path, kwargs)
+        )
+        or labels,
+    )
+
+    widget._on_run_ultrack()
+
+    assert [call[0] for call in calls] == ["solve", "export"]
+    assert "Tracked: Nucleus" in viewer.layers
+    assert "tracked_labels" not in widget.pipeline_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_run_ultrack_export_receives_saved_validation_geometry_without_solve_checkbox(
+    tmp_path,
+    monkeypatch,
+):
+    _app, viewer = _make_viewer()
+    widget_class = _load_workflow_widget_class()
+    widget = widget_class(viewer)
+    pipeline_module = _get_pipeline_module()
+    _install_sync_thread_worker(monkeypatch, pipeline_module)
+
+    pos_dir = tmp_path / "pos00"
+    (pos_dir / "2_nucleus" / "ultrack_workdir").mkdir(parents=True)
+    (pos_dir / "1_cellpose").mkdir()
+    (pos_dir / "2_nucleus" / "ultrack_workdir" / "data.db").write_bytes(
+        b"sqlite placeholder"
+    )
+    import tifffile
+
+    tracked_labels = np.zeros((2, 4, 4), dtype=np.uint32)
+    tracked_labels[0, 1:3, 1:3] = 7
+    tracked_labels[1, 2:4, 2:4] = 8
+    tifffile.imwrite(pos_dir / "1_cellpose" / "nucleus_foreground.tif", tracked_labels)
+    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", tracked_labels)
+    widget._pos_dir = pos_dir
+
+    from cellflow.tracking_ultrack.corrections import Correction
+
+    correction = Correction(cell_id=7, t=0, kind="validated", y=1.5, x=1.5)
+    captured = {}
+    monkeypatch.setattr(pipeline_module, "read_corrections", lambda _pos_dir: [correction])
+    monkeypatch.setattr(pipeline_module, "read_validated_tracks", lambda _pos_dir: {8: {1}})
+    monkeypatch.setattr(
+        pipeline_module,
+        "apply_annotations_and_score",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("solve path should not apply annotations")
+        ),
+    )
+    monkeypatch.setattr(pipeline_module, "run_solve", lambda *a, **kw: iter(()))
+
+    def fake_export(_working_dir, _cfg, _tracked_path, **kwargs):
+        captured.update(kwargs)
+        return tracked_labels
+
+    monkeypatch.setattr(pipeline_module, "export_tracked_labels", fake_export)
+
+    widget._on_run_ultrack()
+
+    assert [(c.cell_id, c.t, c.kind) for c in captured["corrections"]] == [
+        (7, 0, "validated"),
+        (8, 1, "validated"),
+    ]
+    assert captured["validated_tracks"] is None
+    np.testing.assert_array_equal(captured["tracked_labels"], tracked_labels)
 
     widget.deleteLater()
     viewer.close()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+import cellflow.napari._correction_centroids as centroid_module
 from cellflow.napari._correction_centroids import (
     build_centroid_points,
     correction_label_color_map,
@@ -67,6 +68,28 @@ def test_build_centroid_points_returns_cross_positions_and_matching_colors() -> 
     assert payload.features["label_id"] == [4, 9]
     np.testing.assert_allclose(payload.border_color[0], color_map[4])
     np.testing.assert_allclose(payload.border_color[1], color_map[9])
+
+
+def test_build_centroid_points_avoids_per_label_full_frame_scans(monkeypatch) -> None:
+    labels = np.zeros((2, 12, 12), dtype=np.uint32)
+    for label_id in range(1, 7):
+        labels[0, label_id : label_id + 1, 1:3] = label_id
+        labels[1, label_id : label_id + 1, 5:7] = label_id
+    color_map = correction_label_color_map(labels)
+    nonzero_calls = 0
+    original_nonzero = np.nonzero
+
+    def counting_nonzero(*args, **kwargs):
+        nonlocal nonzero_calls
+        nonzero_calls += 1
+        return original_nonzero(*args, **kwargs)
+
+    monkeypatch.setattr(centroid_module.np, "nonzero", counting_nonzero)
+
+    payload = build_centroid_points(labels, color_map)
+
+    assert payload.data.shape == (12, 3)
+    assert nonzero_calls <= labels.shape[0]
 
 
 def test_correction_label_color_map_gives_high_new_labels_non_black_colors() -> None:

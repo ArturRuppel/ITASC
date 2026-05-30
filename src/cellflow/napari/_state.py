@@ -51,7 +51,6 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "division_weight": w.ultrack_division_spin.value(),
             "power": w.ultrack_power_spin.value(),
             "bias": w.ultrack_bias_spin.value(),
-            "resolve_from_validated": w.solve_use_validated_check.isChecked(),
         },
     }
 
@@ -83,7 +82,6 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "quality_exponent" in dbg: w.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
         if "circularity_weight" in dbg: w.db_gen_circularity_weight_spin.setValue(dbg["circularity_weight"])
         if "n_workers" in dbg: w.db_gen_n_workers_spin.setValue(dbg["n_workers"])
-        if "use_validated" in dbg: w.solve_use_validated_check.setChecked(dbg["use_validated"])
     if "extend" in state:
         ext = state["extend"]
         if "max_distance" in ext: w.extend_max_dist_spin.setValue(ext["max_distance"])
@@ -116,7 +114,5 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
             w.db_gen_max_neighbors_spin.setValue(ul["max_neighbors"])
         if "power" in ul: w.ultrack_power_spin.setValue(ul["power"])
         if "bias" in ul: w.ultrack_bias_spin.setValue(ul["bias"])
-        if "resolve_from_validated" in ul:
-            w.solve_use_validated_check.setChecked(ul["resolve_from_validated"])
         if "quality_exponent" in ul and not (dbg_present and "quality_exponent" in state["db_generation"]):
             w.db_gen_quality_exp_spin.setValue(ul["quality_exponent"])

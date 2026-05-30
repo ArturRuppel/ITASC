@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +29,7 @@ from cellflow.napari.widgets import CollapsibleSection
 from cellflow.tracking_ultrack.db_query import (
     HierarchyCutState as _HierarchyCutState,
     annotation_name as _ultrack_db_annotation_name,
+    link_annotation_counts as _query_ultrack_db_link_annotation_counts,
     node_annotation_metadata as _ultrack_db_node_annotation_metadata,
     node_mask_and_bbox as _node_mask_and_bbox,
     node_preview_metadata as _ultrack_db_node_preview_metadata,
@@ -50,6 +52,12 @@ _ULTRACK_DB_PREVIEW_LAYER = f"{_DATABASE_PREFIX} Ultrack DB Preview"
 _ULTRACK_DB_SELECTION_LAYER = f"{_DATABASE_PREFIX} Ultrack DB Selection"
 _ULTRACK_DB_ANNOTATION_LAYER = f"{_DATABASE_PREFIX} Ultrack DB Annotations"
 _ULTRACK_DB_NUC_LAYER = f"{_DATABASE_PREFIX} Cellpose nucleus prob"
+_ULTRACK_DB_ANNOTATION_COLORS = {
+    0: np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    1: np.array([0.0, 0.75, 0.0, 0.75], dtype=np.float32),
+    2: np.array([1.0, 0.0, 0.0, 0.75], dtype=np.float32),
+    3: np.array([0.5, 0.5, 0.5, 0.45], dtype=np.float32),
+}
 
 
 class NucleusUltrackDbBrowserWidget(QWidget):
@@ -129,9 +137,13 @@ class NucleusUltrackDbBrowserWidget(QWidget):
             "Focus the DB preview on a selected node and its temporal neighbors"
         )
         self.connected_focus_check.setEnabled(False)
+        self.annotation_check = QCheckBox("Show DB annotations")
+        self.annotation_check.setToolTip("Overlay DB REAL and FAKE annotations")
+        self.annotation_check.setEnabled(False)
         for cb in (
             self.prob_alpha_check,
             self.connected_focus_check,
+            self.annotation_check,
         ):
             lay.addWidget(cb)
 
@@ -148,6 +160,7 @@ class NucleusUltrackDbBrowserMixin:
 
     def _init_ultrack_db_browser_state(self) -> None:
         self._ultrack_db_preview_cache: dict = {}
+        self._ultrack_db_summary_cache: dict[tuple, str] = {}
         self._ultrack_db_height_values_cache: dict[tuple, tuple[float, ...]] = {}
         self._ultrack_db_cut_state_cache: dict[tuple, tuple[_HierarchyCutState, ...]] = {}
         self._ultrack_db_sources_cache: dict[tuple, tuple[int, ...]] = {}
@@ -159,9 +172,14 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_label_to_node_id: dict[int, int] = {}
         self._ultrack_db_node_id_to_label: dict[int, int] = {}
         self._ultrack_db_node_annotations: dict[int, str] = {}
+        self._ultrack_db_label_probabilities: dict[int, float] = {}
         self._ultrack_db_preview_labels: np.ndarray | None = None
         self._ultrack_db_preview_mouse_callback = None
         self._ultrack_db_preview_view_state: dict | None = None
+        self._ultrack_db_refresh_timer = QTimer(self)
+        self._ultrack_db_refresh_timer.setSingleShot(True)
+        self._ultrack_db_refresh_timer.setInterval(150)
+        self._ultrack_db_refresh_timer.timeout.connect(self._refresh_ultrack_db_browser)
 
     def _build_db_browser_section(self, root: QVBoxLayout) -> None:
         self.ultrack_db_browser_widget = NucleusUltrackDbBrowserWidget(self)
@@ -189,6 +207,7 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_active_btn = browser.active_btn
         self.ultrack_db_prob_alpha_check = browser.prob_alpha_check
         self.ultrack_db_connected_focus_check = browser.connected_focus_check
+        self.ultrack_db_annotation_check = browser.annotation_check
         self.ultrack_db_section_status_lbl = browser.status_lbl
 
     def _set_ultrack_db_status(self, msg: str) -> None:
@@ -199,6 +218,9 @@ class NucleusUltrackDbBrowserMixin:
     def _on_ultrack_db_browser_param_changed(self, *_args) -> None:
         self._ultrack_db_preview_cache.clear()
 
+    def _schedule_ultrack_db_browser_refresh(self) -> None:
+        self._ultrack_db_refresh_timer.start()
+
     def _on_ultrack_db_source_changed(self, value: int) -> None:
         if not self._ultrack_db_browser_active:
             return
@@ -207,8 +229,7 @@ class NucleusUltrackDbBrowserMixin:
             self.ultrack_db_source_lbl.setText(f"{value}/{max_source}")
         else:
             self.ultrack_db_source_lbl.setText("all")
-        self._ultrack_db_preview_cache.clear()
-        QTimer.singleShot(150, self._refresh_ultrack_db_browser)
+        self._schedule_ultrack_db_browser_refresh()
 
     def _on_ultrack_db_slider_changed(self, value: int) -> None:
         if not self._ultrack_db_browser_active:
@@ -227,8 +248,7 @@ class NucleusUltrackDbBrowserMixin:
                 self.ultrack_db_height_lbl.setText(str(value))
         else:
             self.ultrack_db_height_lbl.setText(str(value))
-        self._ultrack_db_preview_cache.clear()
-        QTimer.singleShot(150, self._refresh_ultrack_db_browser)
+        self._schedule_ultrack_db_browser_refresh()
 
     def _on_ultrack_db_activate(self, checked: bool) -> None:
         if checked:
@@ -269,6 +289,7 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_hierarchy_slider.setEnabled(enabled)
         self.ultrack_db_prob_alpha_check.setEnabled(enabled)
         self.ultrack_db_connected_focus_check.setEnabled(enabled)
+        self.ultrack_db_annotation_check.setEnabled(enabled)
 
     def _remove_ultrack_db_browser_layers(self) -> None:
         self._remove_ultrack_db_preview_selector()
@@ -366,7 +387,9 @@ class NucleusUltrackDbBrowserMixin:
                 return
 
             mid_frame = frames[len(frames) // 2]
-            self.ultrack_db_info_lbl.setText(self._ultrack_db_summary_text(db_path, mid_frame))
+            self.ultrack_db_info_lbl.setText(
+                self._cached_ultrack_db_summary_text(db_path, mtime_ns, mid_frame)
+            )
             self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, mid_frame)
             slider_int = int(self.ultrack_db_hierarchy_slider.value())
 
@@ -378,8 +401,8 @@ class NucleusUltrackDbBrowserMixin:
                     continue
                 idx = min(slider_int, len(states) - 1)
                 state = states[idx]
-                key = (
-                    str(db_path.resolve()), mtime_ns, frame, idx, state,
+                key = self._ultrack_db_preview_cache_key(
+                    db_path, mtime_ns, frame, idx, state,
                 )
                 cached = self._ultrack_db_preview_cache.get(key)
                 if cached is None:
@@ -393,6 +416,7 @@ class NucleusUltrackDbBrowserMixin:
                     self._ultrack_db_label_to_node_id = l2n
                     self._ultrack_db_node_id_to_label = n2l
                     self._ultrack_db_node_annotations = annots
+                    self._ultrack_db_label_probabilities = prob_dict
 
             if not per_frame:
                 self._set_ultrack_db_status("No hierarchy states in database.")
@@ -457,8 +481,10 @@ class NucleusUltrackDbBrowserMixin:
                     frame = mid
                     self._set_viewer_frame(frame)
         try:
-            self.ultrack_db_info_lbl.setText(self._ultrack_db_summary_text(db_path, frame))
             mtime_ns = db_path.stat().st_mtime_ns
+            self.ultrack_db_info_lbl.setText(
+                self._cached_ultrack_db_summary_text(db_path, mtime_ns, frame)
+            )
             self._configure_ultrack_db_source_slider(db_path, mtime_ns)
             states = self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, frame)
             if not states:
@@ -468,8 +494,8 @@ class NucleusUltrackDbBrowserMixin:
                 return
             slider_int = int(self.ultrack_db_hierarchy_slider.value())
             state = states[slider_int]
-            key = (
-                str(db_path.resolve()), mtime_ns, frame, slider_int, state,
+            key = self._ultrack_db_preview_cache_key(
+                db_path, mtime_ns, frame, slider_int, state,
             )
             cached = self._ultrack_db_preview_cache.get(key)
             if cached is None:
@@ -481,6 +507,7 @@ class NucleusUltrackDbBrowserMixin:
             self._ultrack_db_label_to_node_id = label_to_node_id
             self._ultrack_db_node_id_to_label = node_id_to_label
             self._ultrack_db_node_annotations = node_annotations
+            self._ultrack_db_label_probabilities = prob_dict
             alpha_dict: dict[int, float] = {}
             if self.ultrack_db_connected_focus_check.isChecked():
                 labels, status, alpha_dict = self._render_ultrack_db_connected_focus(
@@ -492,8 +519,14 @@ class NucleusUltrackDbBrowserMixin:
                 self._update_ultrack_db_preview_layer(
                     self._ultrack_db_preview_labels, prob_dict, alpha_dict,
                 )
-            self._update_ultrack_db_annotation_layer(
+            self._refresh_ultrack_db_annotation_visualization(
                 self._ultrack_db_preview_labels, label_to_node_id, node_annotations,
+            )
+            status = self._append_ultrack_db_visible_annotation_status(
+                status,
+                self._ultrack_db_preview_labels,
+                label_to_node_id,
+                node_annotations,
             )
             self._install_ultrack_db_preview_selector()
             if not self.ultrack_db_connected_focus_check.isChecked():
@@ -539,20 +572,83 @@ class NucleusUltrackDbBrowserMixin:
                 overlay[labels == int(lid)] = 1
             elif annot == "FAKE":
                 overlay[labels == int(lid)] = 2
+            else:
+                overlay[labels == int(lid)] = 3
         if not np.any(overlay):
             if _ULTRACK_DB_ANNOTATION_LAYER in self.viewer.layers:
                 self.viewer.layers.remove(_ULTRACK_DB_ANNOTATION_LAYER)
             return
-        self._update_labels_layer(_ULTRACK_DB_ANNOTATION_LAYER, overlay)
+        self._update_labels_layer(
+            _ULTRACK_DB_ANNOTATION_LAYER,
+            overlay,
+            colormap=self._ultrack_db_annotation_colormap(),
+        )
 
-    def _update_labels_layer(self, name: str, data: np.ndarray) -> None:
+    def _refresh_ultrack_db_annotation_visualization(
+        self, labels, label_to_node_id, node_annotations
+    ) -> None:
+        if not self.ultrack_db_annotation_check.isChecked():
+            if _ULTRACK_DB_ANNOTATION_LAYER in self.viewer.layers:
+                self.viewer.layers.remove(_ULTRACK_DB_ANNOTATION_LAYER)
+            return
+        self._update_ultrack_db_annotation_layer(
+            labels, label_to_node_id, node_annotations,
+        )
+
+    @classmethod
+    def _ultrack_db_visible_annotation_counts(
+        cls, labels, label_to_node_id, node_annotations
+    ) -> dict[str, int]:
+        counts = {"REAL": 0, "FAKE": 0, "UNKNOWN": 0}
+        if labels is None:
+            return counts
+        visible_labels = set(int(v) for v in np.unique(labels) if int(v) != 0)
+        for display_label in visible_labels:
+            node_id = label_to_node_id.get(display_label)
+            if node_id is None:
+                counts["UNKNOWN"] += 1
+                continue
+            annotation = cls._ultrack_db_annotation_name(
+                node_annotations.get(int(node_id), "UNKNOWN")
+            )
+            counts[annotation] += 1
+        return counts
+
+    def _append_ultrack_db_visible_annotation_status(
+        self, status, labels, label_to_node_id, node_annotations
+    ) -> str:
+        if not self.ultrack_db_annotation_check.isChecked():
+            return status
+        counts = self._ultrack_db_visible_annotation_counts(
+            labels, label_to_node_id, node_annotations,
+        )
+        return (
+            f"{status} Visible annotations: REAL {counts['REAL']}, "
+            f"FAKE {counts['FAKE']}, UNKNOWN {counts['UNKNOWN']}."
+        )
+
+    @staticmethod
+    def _ultrack_db_annotation_colormap():
+        from napari.utils.colormaps import DirectLabelColormap
+
+        return DirectLabelColormap(
+            color_dict=defaultdict(
+                lambda: _ULTRACK_DB_ANNOTATION_COLORS[3],
+                _ULTRACK_DB_ANNOTATION_COLORS,
+            ),
+        )
+
+    def _update_labels_layer(self, name: str, data: np.ndarray, *, colormap=None) -> None:
         from napari.layers import Labels
         if name in self.viewer.layers and isinstance(self.viewer.layers[name], Labels):
+            if colormap is not None:
+                self.viewer.layers[name].colormap = colormap
             self.viewer.layers[name].data = data
             return
         if name in self.viewer.layers:
             self.viewer.layers.remove(name)
-        self.viewer.add_labels(data, name=name)
+        kwargs = {"colormap": colormap} if colormap is not None else {}
+        self.viewer.add_labels(data, name=name, **kwargs)
 
     def _update_image_layer(self, name: str, data: np.ndarray, *, rgb: bool = False) -> None:
         from napari.layers import Image
@@ -654,7 +750,18 @@ class NucleusUltrackDbBrowserMixin:
         self._update_ultrack_db_highlight(self._ultrack_db_preview_labels, int(display_label))
         annot = self._ultrack_db_node_annotations.get(int(node_id), "UNKNOWN")
         annot_suffix = "" if annot == "UNKNOWN" else f" [{annot}]"
-        self._set_ultrack_db_status(f"Selected node {node_id}{annot_suffix} at t={selected_frame}.")
+        parts = [f"Selected node {node_id}{annot_suffix} at t={selected_frame}"]
+        probability = self._ultrack_db_label_probabilities.get(int(display_label))
+        if probability is not None:
+            parts.append(f"p={float(probability):.3f}")
+        db_path = self._ultrack_db_path()
+        if db_path is not None and db_path.exists():
+            link_counts = self._query_ultrack_db_link_annotation_counts(db_path, int(node_id))
+            parts.append(
+                f"links REAL {link_counts['REAL']}, "
+                f"FAKE {link_counts['FAKE']}, UNKNOWN {link_counts['UNKNOWN']}"
+            )
+        self._set_ultrack_db_status(" | ".join(parts) + ".")
         if self.ultrack_db_connected_focus_check.isChecked():
             self._refresh_ultrack_db_browser()
 
@@ -745,6 +852,9 @@ class NucleusUltrackDbBrowserMixin:
     def _query_ultrack_db_connected_nodes(self, db_path, selected_node_id):
         return _query_ultrack_db_connected_nodes(db_path, selected_node_id)
 
+    def _query_ultrack_db_link_annotation_counts(self, db_path, selected_node_id):
+        return _query_ultrack_db_link_annotation_counts(db_path, selected_node_id)
+
     def _render_ultrack_db_connected_focus(
         self, db_path, frame, labels, status, prob_dict, label_to_node_id, node_id_to_label,
     ):
@@ -823,6 +933,23 @@ class NucleusUltrackDbBrowserMixin:
 
     def _ultrack_db_summary_text(self, db_path, frame):
         return _ultrack_db_summary_text(db_path, frame)
+
+    def _cached_ultrack_db_summary_text(self, db_path, mtime_ns, frame):
+        key = (str(db_path.resolve()), mtime_ns, int(frame))
+        cached = self._ultrack_db_summary_cache.get(key)
+        if cached is not None:
+            return cached
+        text = self._ultrack_db_summary_text(db_path, frame)
+        self._ultrack_db_summary_cache[key] = text
+        return text
+
+    def _ultrack_db_preview_cache_key(self, db_path, mtime_ns, frame, index, state):
+        source_idx = self.ultrack_db_source_slider.value()
+        max_source = self.ultrack_db_source_slider.maximum()
+        source_key = int(source_idx) if max_source > 0 else None
+        return (
+            str(db_path.resolve()), mtime_ns, int(frame), int(index), source_key, state,
+        )
 
     def _query_distinct_heights(self, db_path, mtime_ns):
         key = (str(db_path.resolve()), mtime_ns)
