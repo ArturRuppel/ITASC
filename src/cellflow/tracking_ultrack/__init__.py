@@ -1,4 +1,4 @@
-"""Ultrack-based ILP tracker for CellFlow v2 hypotheses."""
+"""Ultrack-based ILP tracker for CellFlow candidate databases."""
 from __future__ import annotations
 
 __all__ = ["TrackingConfig"]

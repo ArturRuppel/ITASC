@@ -9,7 +9,6 @@ import numpy as np
 
 def _merge_validated_into_export():
     ingest_stub = types.ModuleType("cellflow.tracking_ultrack.ingest")
-    ingest_stub.ingest_hypotheses_to_db = lambda *args, **kwargs: None
     ingest_stub._build_ultrack_config = lambda *args, **kwargs: object()
     sys.modules.setdefault("cellflow.tracking_ultrack.ingest", ingest_stub)
     return importlib.import_module(

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cellflow"
 version = "0.2.0"
-description = "Fast, interactive, hypothesis-driven cell tracking"
+description = "Fast, interactive cell tracking"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "GPL-3.0"}

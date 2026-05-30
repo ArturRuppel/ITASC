@@ -439,7 +439,7 @@ class NucleusCorrectionWidget(QWidget):
                 ("B", "Anchor selected cell at current frame"),
                 ("A / D", "Extend selected track backward / forward"),
                 ("Q / E", "Retrack backward / forward"),
-                ("Z / C", "Swap with smaller / larger hypothesis fragment"),
+                ("Z / C", "Swap with smaller / larger candidate fragment"),
                 ("S", "Save tracked labels"),
             ],
             start_row=row,

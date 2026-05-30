@@ -378,7 +378,7 @@ class NucleusUltrackDbBrowserMixin:
         return result
 
     def _load_full_db_stack(self, db_path: Path) -> None:
-        """Render all DB frames into a 3D (T, H, W) stack when no movie is open."""
+        """Create a 3D DB preview stack and render only the initial frame."""
         try:
             mtime_ns = db_path.stat().st_mtime_ns
             self._configure_ultrack_db_source_slider(db_path, mtime_ns)
@@ -395,40 +395,36 @@ class NucleusUltrackDbBrowserMixin:
             self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, mid_frame)
             slider_int = int(self.ultrack_db_hierarchy_slider.value())
 
-            max_h = max_w = 1
-            per_frame: dict[int, np.ndarray] = {}
-            for frame in frames:
-                states = self._query_hierarchy_cut_states(db_path, mtime_ns, frame)
-                if not states:
-                    continue
-                idx = min(slider_int, len(states) - 1)
-                state = states[idx]
-                key = self._ultrack_db_preview_cache_key(
-                    db_path, mtime_ns, frame, idx, state,
+            states = self._query_hierarchy_cut_states(db_path, mtime_ns, mid_frame)
+            if not states:
+                self._set_ultrack_db_status(
+                    f"No hierarchy states for frame {mid_frame}."
                 )
-                cached = self._ultrack_db_preview_cache.get(key)
-                if cached is None:
-                    cached = self._render_hierarchy_cut_state(db_path, frame, state)
-                    self._ultrack_db_preview_cache[key] = cached
-                labels, _, _, l2n, n2l, annots = self._normalize_ultrack_db_preview(cached)
-                per_frame[frame] = labels
-                max_h = max(max_h, labels.shape[0])
-                max_w = max(max_w, labels.shape[1])
-                if frame == mid_frame:
-                    self._ultrack_db_label_to_node_id = l2n
-                    self._ultrack_db_node_id_to_label = n2l
-                    self._ultrack_db_node_annotations = annots
-                    self._ultrack_db_label_probabilities = prob_dict
-
-            if not per_frame:
-                self._set_ultrack_db_status("No hierarchy states in database.")
                 return
+            idx = min(slider_int, len(states) - 1)
+            state = states[idx]
+            key = self._ultrack_db_preview_cache_key(
+                db_path, mtime_ns, mid_frame, idx, state,
+            )
+            cached = self._ultrack_db_preview_cache.get(key)
+            if cached is None:
+                cached = self._render_hierarchy_cut_state(db_path, mid_frame, state)
+                self._ultrack_db_preview_cache[key] = cached
+            labels, _status, prob_dict, l2n, n2l, annots = (
+                self._normalize_ultrack_db_preview(cached)
+            )
+            self._ultrack_db_label_to_node_id = l2n
+            self._ultrack_db_node_id_to_label = n2l
+            self._ultrack_db_node_annotations = annots
+            self._ultrack_db_label_probabilities = prob_dict
 
             n_frames = frames[-1] + 1
+            base_h, base_w = self._viewer_plane_shape()
+            max_h = max(base_h, labels.shape[0], 1)
+            max_w = max(base_w, labels.shape[1], 1)
             stack = np.zeros((n_frames, max_h, max_w), dtype=np.uint32)
-            for frame, frame_labels in per_frame.items():
-                h, w = frame_labels.shape
-                stack[frame, :h, :w] = frame_labels
+            h, w = labels.shape
+            stack[mid_frame, :h, :w] = labels
 
             self._update_labels_layer(_ULTRACK_DB_PREVIEW_LAYER, stack)
             self._ultrack_db_preview_labels = stack[mid_frame] if mid_frame < n_frames else stack[0]
@@ -436,7 +432,8 @@ class NucleusUltrackDbBrowserMixin:
             self._restore_ultrack_db_preview_active()
             self._set_viewer_frame(mid_frame)
             self._set_ultrack_db_status(
-                f"Loaded {len(per_frame)}/{len(frames)} frames from database."
+                f"Loaded frame {mid_frame}/{frames[-1]} from database; "
+                "other frames render when visited."
             )
         except Exception as e:
             self._set_ultrack_db_status(f"DB read error: {e}")
@@ -454,10 +451,21 @@ class NucleusUltrackDbBrowserMixin:
         t = int(frame)
         if t < 0 or t >= stack.shape[0]:
             return False
-        lh = min(labels.shape[0], stack.shape[1])
-        lw = min(labels.shape[1], stack.shape[2])
+        if labels.shape[0] > stack.shape[1] or labels.shape[1] > stack.shape[2]:
+            expanded = np.zeros(
+                (
+                    stack.shape[0],
+                    max(stack.shape[1], labels.shape[0]),
+                    max(stack.shape[2], labels.shape[1]),
+                ),
+                dtype=stack.dtype,
+            )
+            expanded[:, : stack.shape[1], : stack.shape[2]] = stack
+            stack = expanded
+        lh = labels.shape[0]
+        lw = labels.shape[1]
         stack[t] = 0
-        stack[t, :lh, :lw] = labels[:lh, :lw]
+        stack[t, :lh, :lw] = labels
         layer.data = stack
         return True
 

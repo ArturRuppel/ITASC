@@ -22,7 +22,7 @@ _LABEL_DTYPE = np.uint32
 
 @dataclass(frozen=True, slots=True)
 class ContourWatershedParams:
-    """Parameters for contour-map watershed hypothesis generation."""
+    """Parameters for contour-map watershed candidate generation."""
 
     seed_distance: int = 10
     foreground_threshold: float = 0.5

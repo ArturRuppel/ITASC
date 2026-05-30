@@ -395,7 +395,6 @@ def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
         },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
-            "ingest_hypotheses_to_db": lambda *args, **kwargs: None,
             "_select_solver": lambda: "CBC",
             "_build_ultrack_config": lambda *args, **kwargs: None,
         },
@@ -418,7 +417,6 @@ def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
             "write_ultrack_source_stacks": lambda *args, **kwargs: [],
         },
         "cellflow.tracking_ultrack.extend": {
-            "extend_track": lambda *args, **kwargs: None,
             "extend_track_from_db": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.reseed": {

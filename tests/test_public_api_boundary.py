@@ -68,3 +68,27 @@ def test_readme_documents_public_api_boundary() -> None:
     assert "`import cellflow` exposes only `__version__`" in readme
     assert "napari plugin" in readme
     assert "provisional" in readme
+
+
+def test_active_code_does_not_reference_deprecated_h5_candidate_workflow() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    forbidden = (
+        "hyp" + "otheses" + ".h5",
+        "ingest_" + "hyp" + "otheses_to_db",
+    )
+    allowed_files = {
+        Path("tests/test_public_api_boundary.py"),
+    }
+
+    offenders: list[str] = []
+    for root in (repo_root / "src", repo_root / "tests"):
+        for path in root.rglob("*.py"):
+            rel_path = path.relative_to(repo_root)
+            if rel_path in allowed_files:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for pattern in forbidden:
+                if pattern in text:
+                    offenders.append(f"{rel_path}: {pattern}")
+
+    assert offenders == []

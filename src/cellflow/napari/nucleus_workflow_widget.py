@@ -1,4 +1,4 @@
-"""Nucleus workflow widget for hypothesis generation and tracking in CellFlow.
+"""Nucleus workflow widget for candidate generation and tracking in CellFlow.
 
 Simplified workflow layout with action buttons grouped into their owning
 sections: segmentation inputs, tracking/Ultrack, database browser, correction.
@@ -71,7 +71,7 @@ _NUCLEUS_PIPELINE_FILE_GROUPS = [
 
 
 class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
-    """Nucleus hypothesis generation and tracking — flat action-button layout."""
+    """Nucleus candidate generation and tracking — flat action-button layout."""
 
     def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
         super().__init__(parent)

@@ -101,7 +101,7 @@ def apply_corrections_to_database(
     ``tracked_labels`` enables IoU-based candidate matching for anchors. When
     provided, the mask of the anchored cell in ``tracked_labels`` is compared
     against NodeDB candidate masks, and the candidate with the highest IoU is
-    chosen. This correctly identifies the intended hypothesis even when two
+    chosen. This correctly identifies the intended candidate even when two
     hierarchical candidates (e.g. parent vs child) have nearly identical
     centroids. Falls back to centroid-distance matching when no IoU > 0 is
     found.
@@ -149,7 +149,7 @@ def apply_corrections_to_database(
 
             # IoU-based matching: find the candidate whose mask best overlaps
             # the cell the user currently has in tracked_labels. This is the
-            # correct approach when two hierarchical hypotheses (e.g. parent
+            # correct approach when two hierarchical candidates (e.g. parent
             # mask vs smaller child mask) share nearly the same centroid —
             # centroid distance cannot distinguish them, but IoU can.
             if labels_arr is not None:

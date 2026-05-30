@@ -74,7 +74,6 @@ def _install_import_stubs() -> None:
         },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
-            "ingest_hypotheses_to_db": lambda *args, **kwargs: None,
             "_select_solver": lambda: "CBC",
             "_build_ultrack_config": lambda *args, **kwargs: None,
         },
@@ -97,7 +96,6 @@ def _install_import_stubs() -> None:
             "write_ultrack_source_stacks": lambda *args, **kwargs: [],
         },
         "cellflow.tracking_ultrack.extend": {
-            "extend_track": lambda *args, **kwargs: None,
             "extend_track_from_db": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.reseed": {
@@ -842,6 +840,81 @@ def test_ultrack_db_browser_reuses_summary_text_for_same_database_frame(
 
     assert calls == [(db_path, 0)]
     assert widget.ultrack_db_info_lbl.text() == "summary stats"
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_no_movie_initializes_stack_from_middle_frame_only(
+    tmp_path, monkeypatch,
+):
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    module = sys.modules[widget_class.__module__]
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"sqlite placeholder")
+    widget._pos_dir = tmp_path / "pos00"
+    widget._ultrack_db_browser_active = True
+    monkeypatch.setattr(widget, "_query_db_frames", lambda *_args: (0, 1, 2))
+    monkeypatch.setattr(
+        widget,
+        "_query_hierarchy_cut_states",
+        lambda *_args: (module._HierarchyCutState((1,), 0.5),),
+    )
+    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *_args: "summary")
+    rendered_frames = []
+
+    def _render(_db_path, frame, _state):
+        rendered_frames.append(frame)
+        return (
+            np.full((2, 2), frame + 1, dtype=np.uint32),
+            f"rendered frame {frame}",
+            {},
+            {},
+            {},
+            {},
+        )
+
+    monkeypatch.setattr(widget, "_render_hierarchy_cut_state", _render)
+
+    widget._load_full_db_stack(db_path)
+
+    layer = viewer.layers["[Database] Ultrack DB Preview"]
+    assert rendered_frames == [1]
+    assert layer.data.shape == (3, 2, 2)
+    assert not np.any(layer.data[0])
+    assert np.all(layer.data[1] == 2)
+    assert not np.any(layer.data[2])
+    assert widget.ultrack_db_section_status_lbl.text() == (
+        "Loaded frame 1/2 from database; other frames render when visited."
+    )
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_ultrack_db_browser_stack_frame_update_expands_to_fit_larger_frame():
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+    viewer.add_labels(
+        np.zeros((3, 2, 2), dtype=np.uint32),
+        name="[Database] Ultrack DB Preview",
+    )
+
+    updated = widget._update_ultrack_db_stack_frame(
+        2,
+        np.full((4, 5), 7, dtype=np.uint32),
+    )
+
+    layer = viewer.layers["[Database] Ultrack DB Preview"]
+    assert updated is True
+    assert layer.data.shape == (3, 4, 5)
+    assert np.all(layer.data[2] == 7)
+    assert not np.any(layer.data[0])
 
     widget.deleteLater()
     viewer.close()

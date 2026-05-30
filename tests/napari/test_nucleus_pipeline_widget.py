@@ -249,7 +249,7 @@ def test_nucleus_pipeline_files_omit_source_stack_artifacts():
     assert "2_nucleus/ultrack_workdir/data.db" in tracked_paths
 
 
-def test_project_status_panel_omits_source_stack_artifacts():
+def test_project_status_panel_tracks_only_required_input_stacks():
     _install_import_stubs()
     data_panel_module = importlib.import_module("cellflow.napari.data_panel_widget")
 
@@ -261,6 +261,8 @@ def test_project_status_panel_omits_source_stack_artifacts():
 
     assert "2_nucleus/contour_sources.tif" not in tracked_paths
     assert "2_nucleus/foreground_sources.tif" not in tracked_paths
+    assert "0_input/NLS_zavg.tif" not in tracked_paths
+    assert "0_input/NLS_3dt.tif" not in tracked_paths
     assert "2_nucleus/ultrack_workdir/data.db" in tracked_paths
 
 

@@ -152,7 +152,7 @@ def prune_validated_overlaps(
 
     Notes
     -----
-    Conflict criterion: **any pixel intersection** between a hypothesis node's
+    Conflict criterion: **any pixel intersection** between a candidate node's
     2D footprint and any validated cell mask at the same frame counts as a
     conflict.  The node (and all OverlapDB rows referencing it) is deleted.
 
@@ -513,12 +513,7 @@ def resolve_with_canonical_segment(
     *,
     intensity_image_path: str | Path,
 ) -> tuple[np.ndarray, dict[int, int]]:
-    """Re-solve using canonical ultrack.segment instead of hypotheses.h5.
-
-    Replaces the old resolve_with_validation() call chain:
-      old: hypotheses.h5 → ingest_hypotheses_to_db → inject → score → link → solve
-      new: foreground_masks + contours → ultrack.segment → inject → score → link → solve
-    """
+    """Re-solve using canonical ultrack.segment from foreground masks and contours."""
     def _notify(msg: str) -> None:
         if progress_cb is not None:
             progress_cb(msg)

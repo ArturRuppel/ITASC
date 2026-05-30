@@ -183,7 +183,7 @@ class TestPruneValidatedOverlaps:
         # N1 overlaps the validated cell → should be deleted together with the pair.
         _insert_nodes(engine, [
             _make_node_row(10, 0, 0, 0, 10, 10),   # N1 — overlaps validated cell
-            _make_node_row(20, 0, 0, 0, 10, 10),   # N2 — same bbox (alternative hypothesis)
+            _make_node_row(20, 0, 0, 0, 10, 10),   # N2 — same bbox (alternative candidate)
         ])
         _insert_overlaps(engine, [(10, 20)])
 
