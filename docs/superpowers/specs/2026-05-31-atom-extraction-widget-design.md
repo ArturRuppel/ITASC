@@ -27,6 +27,13 @@ extraction needs an interactive, preview-driven tuning surface.
 - Atom extraction and its **live preview live in this (Atom Extraction)
   widget**, not in DB-Gen. All knobs that shape the atoms are tuned here against
   a recoloured-atoms preview.
+- **Handoff is via a single intermediate file**, not recomputation: ① writes
+  `atoms.tif` as a pipeline-stage output and ② reads it, matching the existing
+  file-staged pipeline (`cellpose → fg/contour.tif → atoms.tif → data.db`). The
+  atoms you tuned are exactly the atoms ② uses. ②'s union enumeration needs only
+  the atom labels — `residual_contour` is consumed *inside* atom extraction (the
+  watershed elevation) and is **not** persisted. The browser (③) reads the
+  **database** (candidates), not `atoms.tif`.
 
 ## Goal
 
@@ -55,15 +62,14 @@ stack. No DB writing happens here.
 
 ```
 cellpose maps ──▶ ① Atom Extraction (this spec)
-  fg.tif            knobs : W_fg, fg_cutoff, W_c, contour_floor, atom_min_area
+  fg.tif            knobs  : W_fg, fg_cutoff, W_c, contour_floor, atom_min_area
   contour.tif       preview: recoloured ATOMS over raw fg (current frame)
-                    output : deterministic extract_atoms_stack(...) + persisted
-                             params
-                              │  atoms + residual_contour (recomputed on demand)
+                    output : atoms.tif (full stack) + persisted params
+                              │  reads atoms.tif
                               ▼
                   ② Candidate DB-Gen (spec ②) — atoms → union lattice →
                     NodeDB/OverlapDB → link → score → solve
-                              │
+                              │  reads data.db
                               ▼
                   ③ Database Browser rework (spec ③)
 ```
@@ -84,29 +90,32 @@ def extract_atoms_frame(residual_contour, territory, contour_floor, atom_min_are
        atoms = watershed(residual_contour, markers=label(cores), mask=territory)
        merge atoms < atom_min_area into neighbours by re-flood (no holes)."""
 
-def extract_atoms_stack(fg, contour, params) -> (atoms, residual_contour):
+def extract_atoms_stack(fg, contour, params) -> atoms:
     """Per frame: residual_fg = residual(fg, W_fg); territory = residual_fg >
        fg_cutoff; residual_contour = residual(contour, W_c); then
-       extract_atoms_frame(...). Returns the atom label stack and the float
-       residual_contour stack (the watershed elevation DB-Gen also needs)."""
+       extract_atoms_frame(...). Returns the atom label stack only —
+       residual_contour is internal and not returned."""
 ```
 
 `window` is forced odd. The function is pure (no I/O), deterministic, and the
-single source of truth for "what an atom is."
+single source of truth for "what an atom is." For the per-frame **preview**, the
+widget calls the steps directly so it can also surface the intermediate
+`territory` / `residual_contour` overlays (see Widget); the saved artifact is
+the atom labels only.
 
 ## Parameters
 
 | knob | type | range | default | role |
 |---|---|---|---|---|
 | `W_fg` (foreground residual window) | int (odd) | 3–301 | 51 | local-mean window for the fg map; must exceed a nucleus |
-| `fg_cutoff` (territory threshold) | float | 0–1 | 0.01 | residual-fg threshold defining nucleus territory |
+| `fg_cutoff` (territory threshold) | float | 0–1 | 0.002 | residual-fg threshold defining nucleus territory |
 | `W_c` (contour residual window) | int (odd) | 3–301 | 51 | local-mean window for the contour map |
 | `contour_floor` (ridge noise floor) | float | 0–1 | 0.01 | residual-contour cutoff; keeps watershed off speckle |
 | `atom_min_area` | int (px) | 0–5000 | 100 | atoms smaller than this merge into a neighbour |
 
-Defaults are the validated-prototype values. `fg_cutoff` was tuned visually in
-the prototype between ~0.002 and 0.01; 0.01 is the verbally-locked default and
-users will retune by eye. Windows default equal but are independent.
+Defaults are the validated-prototype values. `fg_cutoff` defaults to 0.002 (the
+value used in the 50-frame full run, broader coverage); users retune by eye.
+Windows default equal but are independent.
 
 ## Widget
 
@@ -119,6 +128,10 @@ toggle, holding:
 - Residual group: `W_fg`, `fg_cutoff`, `W_c`, `contour_floor` (paired rows).
 - Atoms group: `atom_min_area`.
 - A small status label (atom count for the current frame).
+- A **"Compute atoms (full stack)"** button that runs `extract_atoms_stack`
+  over all frames and writes `atoms.tif` + the param fingerprint, with a
+  progress indication (it is the stage's commit action, distinct from the live
+  single-frame preview).
 
 **Preview behavior**
 - Activating (`⏻`) hides non-preview layers (as the browser does), loads the raw
@@ -144,32 +157,32 @@ existing one-frame-at-a-time browser rendering — fine for interactive tuning.
   `seg_min_area`/`seg_max_area` are superseded by `atom_min_area` and (in spec
   ②) `min_area`/`max_area`; remove or repurpose in ②.
 - The widget reads/writes these via the same workflow settings/state path the
-  current tracking-inputs controls use.
+  current tracking-inputs controls use. Persisted params also let the widget
+  reload its sliders and let ② run a staleness check (below).
 
-**Source of truth = the params, not files.** The widget persists the five
-params; DB-Gen recomputes atoms over the full stack deterministically. This
-avoids stale-intermediate-file bugs. (See decision D1.)
+**`atoms.tif` is the handoff artifact; the params are persisted alongside it.**
+The widget tunes the five params and, via an explicit **"Compute atoms (full
+stack)"** action, writes `atoms.tif` next to the cellpose maps. The params used
+are fingerprinted into the file (tif metadata / sidecar) so ② can warn if
+`atoms.tif` is stale relative to the current params.
 
 ## Handoff contract to DB-Gen (spec ②)
 
-DB-Gen calls `extract_atoms_stack(fg, contour, params)` to obtain the atom label
-stack and `residual_contour`, then builds the union lattice and DB. As a
-**byproduct at generation time**, DB-Gen writes `atoms.tif` and
-`residual_contour.tif` next to `data.db` so the browser (spec ③) and manual
-inspection can read finished atoms without recomputing. These are caches, not
-the source of truth.
+① writes `atoms.tif` (full-stack atom label image) plus a param fingerprint. ②
+reads `atoms.tif` directly and builds the union lattice → DB; its enumeration
+needs only the atom labels, so nothing else is persisted. ② compares the stored
+fingerprint against the current config and warns if they differ (stale atoms).
+The browser (③) reads `data.db` (candidates), not `atoms.tif`.
 
-## Decisions flagged for review
+## Resolved decisions
 
-- **D1 — persistence:** params-as-source-of-truth + recompute (recommended),
-  vs. the Atom Extraction widget itself writing `atoms.tif`/`residual_contour.tif`
-  on demand. Recommendation keeps one source of truth; the alternative makes the
-  artifacts available earlier but risks staleness.
-- **D2 — `fg_cutoff` default:** 0.01 (verbally locked) vs. 0.002 (used in the
-  50-frame full run, broader coverage). Either is a starting point for visual
-  tuning.
-- **D3 — diagnostic overlays:** include `territory`/`residual_contour` toggle
-  layers in the preview, or keep the preview atoms-only for simplicity.
+- **D1 — handoff:** intermediate file. ① writes **only** `atoms.tif`; ② reads
+  it. `residual_contour` is internal to extraction and not saved. (Rejected:
+  params-as-source-of-truth + recompute — opaque, made ① feel like a mere param
+  editor for ②.)
+- **D2 — `fg_cutoff` default:** 0.002 (the value used in the 50-frame full run).
+- **D3 — diagnostic overlays:** include `territory` / `residual_contour` toggle
+  layers in the preview (off by default).
 
 ## Testing
 
