@@ -108,6 +108,10 @@ class NucleusArtifactPaths:
     def ultrack_db(self) -> Path:
         return self.ultrack_workdir / "data.db"
 
+    @property
+    def nucleus_atoms(self) -> Path:
+        return self.pos_dir / "2_nucleus" / "atoms.tif"
+
 
 @dataclass(frozen=True)
 class CellArtifactPaths:
