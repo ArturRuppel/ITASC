@@ -6,11 +6,19 @@ shared by the interactive preview and the full-stack ``atoms.tif`` writer.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from scipy import ndimage as ndi
 from skimage.filters import threshold_local
 from skimage.segmentation import watershed
+
+import tifffile
+
+_PARAMS_KEY = "cellflow_atom_params"
+_FINGERPRINT_KEY = "cellflow_atom_fingerprint"
 
 
 @dataclass(frozen=True)
@@ -83,3 +91,34 @@ def extract_atoms_stack(
             residual_contour, territory, params.contour_floor, params.atom_min_area
         )
     return out
+
+
+def params_fingerprint(params: AtomParams) -> str:
+    """Stable SHA-1 of the params, used to detect stale atoms.tif in DB-Gen."""
+    payload = json.dumps(asdict(params), sort_keys=True).encode("utf-8")
+    return hashlib.sha1(payload).hexdigest()
+
+
+def write_atoms_tif(path, atoms: np.ndarray, params: AtomParams) -> None:
+    """Write the atom label stack with the params + fingerprint embedded in the
+    TIFF ImageDescription, so DB-Gen (②) can read what produced it."""
+    description = json.dumps(
+        {_PARAMS_KEY: asdict(params), _FINGERPRINT_KEY: params_fingerprint(params)}
+    )
+    tifffile.imwrite(
+        str(path), np.asarray(atoms, dtype=np.int32), description=description
+    )
+
+
+def read_atoms_params(path) -> tuple[dict | None, str | None]:
+    """Return ``(params_dict, fingerprint)`` embedded by ``write_atoms_tif``, or
+    ``(None, None)`` if the file has no atom metadata."""
+    if not Path(path).exists():
+        return None, None
+    with tifffile.TiffFile(str(path)) as tf:
+        description = tf.pages[0].description or ""
+    try:
+        meta = json.loads(description)
+    except (json.JSONDecodeError, TypeError):
+        return None, None
+    return meta.get(_PARAMS_KEY), meta.get(_FINGERPRINT_KEY)

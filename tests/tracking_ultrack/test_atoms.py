@@ -93,3 +93,43 @@ def test_extract_atoms_stack_shape_and_determinism():
     assert a1.shape == (3, 40, 40)
     assert a1.dtype == np.int32
     assert np.array_equal(a1, a2)  # deterministic
+
+
+from cellflow.tracking_ultrack.atoms import (
+    params_fingerprint,
+    write_atoms_tif,
+    read_atoms_params,
+)
+
+
+def test_params_fingerprint_is_stable_and_param_sensitive():
+    a = AtomParams()
+    assert params_fingerprint(a) == params_fingerprint(AtomParams())
+    assert params_fingerprint(a) != params_fingerprint(AtomParams(fg_cutoff=0.01))
+
+
+def test_write_then_read_atoms_tif_round_trips_labels_and_params(tmp_path):
+    import tifffile
+
+    atoms = np.zeros((2, 16, 16), dtype=np.int32)
+    atoms[0, 2:6, 2:6] = 1
+    atoms[1, 8:12, 8:12] = 7
+    params = AtomParams(fg_window=31, fg_cutoff=0.005)
+
+    path = tmp_path / "atoms.tif"
+    write_atoms_tif(path, atoms, params)
+
+    assert np.array_equal(tifffile.imread(path), atoms)
+    stored_params, stored_fp = read_atoms_params(path)
+    assert stored_params["fg_window"] == 31
+    assert stored_params["fg_cutoff"] == 0.005
+    assert stored_fp == params_fingerprint(params)
+
+
+def test_read_atoms_params_returns_none_when_absent(tmp_path):
+    import tifffile
+
+    path = tmp_path / "plain.tif"
+    tifffile.imwrite(path, np.zeros((4, 4), dtype=np.int32))
+    params, fp = read_atoms_params(path)
+    assert params is None and fp is None
