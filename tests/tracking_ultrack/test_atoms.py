@@ -68,3 +68,28 @@ def test_extract_atoms_frame_merges_small_atoms_and_leaves_no_holes():
     # tiny sliver merged away -> one atom, and every territory pixel is labelled
     assert len({int(v) for v in np.unique(atoms) if v != 0}) == 1
     assert np.all(atoms[territory] > 0)
+
+
+from cellflow.tracking_ultrack.atoms import AtomParams, extract_atoms_stack
+
+
+def test_atom_params_defaults_match_spec():
+    p = AtomParams()
+    assert p.fg_window == 51
+    assert p.fg_cutoff == 0.002
+    assert p.contour_window == 51
+    assert p.contour_floor == 0.01
+    assert p.atom_min_area == 100
+
+
+def test_extract_atoms_stack_shape_and_determinism():
+    rng = np.random.default_rng(0)
+    fg = rng.random((3, 40, 40)).astype(np.float32)
+    contour = rng.random((3, 40, 40)).astype(np.float32)
+    params = AtomParams(fg_window=11, fg_cutoff=0.01, contour_window=11,
+                        contour_floor=0.05, atom_min_area=0)
+    a1 = extract_atoms_stack(fg, contour, params)
+    a2 = extract_atoms_stack(fg, contour, params)
+    assert a1.shape == (3, 40, 40)
+    assert a1.dtype == np.int32
+    assert np.array_equal(a1, a2)  # deterministic

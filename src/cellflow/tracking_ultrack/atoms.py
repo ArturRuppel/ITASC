@@ -7,9 +7,20 @@ shared by the interactive preview and the full-stack ``atoms.tif`` writer.
 from __future__ import annotations
 
 import numpy as np
+from dataclasses import dataclass
 from scipy import ndimage as ndi
 from skimage.filters import threshold_local
 from skimage.segmentation import watershed
+
+
+@dataclass(frozen=True)
+class AtomParams:
+    """The five knobs that fully determine an atom segmentation."""
+    fg_window: int = 51
+    fg_cutoff: float = 0.002
+    contour_window: int = 51
+    contour_floor: float = 0.01
+    atom_min_area: int = 100
 
 
 def residual(frame: np.ndarray, window: int) -> np.ndarray:
@@ -51,3 +62,24 @@ def extract_atoms_frame(
             keep_markers = np.where(np.isin(atoms, list(small)), 0, atoms)
             atoms = watershed(residual_contour, markers=keep_markers, mask=territory)
     return atoms.astype(np.int32)
+
+
+def extract_atoms_stack(
+    fg: np.ndarray, contour: np.ndarray, params: AtomParams
+) -> np.ndarray:
+    """Atom label stack for a (T, Y, X) foreground + contour pair.
+
+    Per frame: residual the fg map and threshold it into territory, residual the
+    contour map into the watershed elevation, then ``extract_atoms_frame``.
+    Returns the atom labels only — the residual contour is internal.
+    """
+    fg = np.asarray(fg, dtype=np.float32)
+    contour = np.asarray(contour, dtype=np.float32)
+    out = np.zeros(fg.shape, dtype=np.int32)
+    for t in range(fg.shape[0]):
+        territory = residual(fg[t], params.fg_window) > params.fg_cutoff
+        residual_contour = residual(contour[t], params.contour_window)
+        out[t] = extract_atoms_frame(
+            residual_contour, territory, params.contour_floor, params.atom_min_area
+        )
+    return out
