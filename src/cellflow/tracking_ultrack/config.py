@@ -14,6 +14,13 @@ class TrackingConfig(BaseModel):
     # ID scheme — must match ultrack._generate_id
     max_segments_per_time: int = 1_000_000
 
+    # Atom extraction (stage ①) — see atoms.AtomParams
+    fg_window: int = 51
+    fg_cutoff: float = 0.002
+    contour_window: int = 51
+    contour_floor: float = 0.01
+    atom_min_area: int = 100
+
     # Linking
     # Ultrack's multiprocessing_apply activates a Pool only when n_workers > 1,
     # and batch_index_range uses n_workers as a window stride (0 would div-zero).

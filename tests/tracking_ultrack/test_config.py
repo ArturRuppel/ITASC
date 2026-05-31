@@ -91,3 +91,18 @@ def test_build_ultrack_config_uses_signed_power_transform(tmp_path):
     )
 
     np.testing.assert_allclose(transformed, [-16.0, -0.0625, 0.0625, 16.0])
+
+
+def test_tracking_config_exposes_atom_extraction_params():
+    cfg = TrackingConfig()
+    assert cfg.fg_window == 51
+    assert cfg.fg_cutoff == 0.002
+    assert cfg.contour_window == 51
+    assert cfg.contour_floor == 0.01
+    assert cfg.atom_min_area == 100
+
+
+def test_tracking_config_atom_params_override():
+    cfg = TrackingConfig(fg_cutoff=0.01, atom_min_area=250)
+    assert cfg.fg_cutoff == 0.01
+    assert cfg.atom_min_area == 250
