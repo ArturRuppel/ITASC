@@ -133,3 +133,13 @@ def test_read_atoms_params_returns_none_when_absent(tmp_path):
     tifffile.imwrite(path, np.zeros((4, 4), dtype=np.int32))
     params, fp = read_atoms_params(path)
     assert params is None and fp is None
+
+
+def test_extract_atoms_frame_keeps_labels_when_all_atoms_below_min_area():
+    territory = np.zeros((20, 20), dtype=bool)
+    territory[8:12, 8:12] = True  # a single 16-px atom
+    rc = np.zeros((20, 20), dtype=np.float32)
+    atoms = extract_atoms_frame(rc, territory, contour_floor=0.1, atom_min_area=10000)
+    # min_area far exceeds the atom; territory must stay labelled, not blanked
+    assert np.all(atoms[territory] > 0)
+    assert atoms[~territory].max() == 0

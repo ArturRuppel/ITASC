@@ -68,7 +68,10 @@ def extract_atoms_frame(
         small = set(ids[(counts < atom_min_area) & (ids != 0)].tolist())
         if small:
             keep_markers = np.where(np.isin(atoms, list(small)), 0, atoms)
-            atoms = watershed(residual_contour, markers=keep_markers, mask=territory)
+            # Only re-flood if some marker survives pruning; otherwise keeping the
+            # original labels avoids silently blanking the whole territory.
+            if keep_markers[territory].any():
+                atoms = watershed(residual_contour, markers=keep_markers, mask=territory)
     return atoms.astype(np.int32)
 
 
@@ -96,7 +99,7 @@ def extract_atoms_stack(
 def params_fingerprint(params: AtomParams) -> str:
     """Stable SHA-1 of the params, used to detect stale atoms.tif in DB-Gen."""
     payload = json.dumps(asdict(params), sort_keys=True).encode("utf-8")
-    return hashlib.sha1(payload).hexdigest()
+    return hashlib.sha1(payload, usedforsecurity=False).hexdigest()
 
 
 def write_atoms_tif(path, atoms: np.ndarray, params: AtomParams) -> None:
