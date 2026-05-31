@@ -13,13 +13,20 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from qtpy.QtWidgets import QApplication, QCheckBox, QLabel
+from qtpy.QtWidgets import QApplication, QLabel
 
 
 def _make_viewer():
     app = QApplication.instance() or QApplication([])
     viewer = napari.Viewer(show=False)
     return app, viewer
+
+
+def _stub_missing_attr(name: str):
+    """Fallback for stub modules: resolve any unlisted import to a no-op callable."""
+    if name.startswith("__") and name.endswith("__"):
+        raise AttributeError(name)
+    return lambda *args, **kwargs: None
 
 
 def _install_import_stubs() -> None:
@@ -191,8 +198,22 @@ def test_tracking_inputs_widget_db_gen_config_applies_all_controls():
     assert cfg.quality_weight == pytest.approx(0.8)
     assert cfg.quality_exponent == pytest.approx(6.0)
     assert cfg.circularity_weight == pytest.approx(0.35)
+    assert cfg.min_area == 500
     assert cfg.seg_min_area == 500
+    assert cfg.atom_union_max_atoms == 3
+    assert cfg.atom_union_max_area == 8000
     assert cfg.max_distance == pytest.approx(20.0)
+
+    widget.deleteLater()
+
+
+def test_tracking_inputs_widget_has_atom_union_controls():
+    _app = QApplication.instance() or QApplication([])
+    widget_class, _module = _load_widget_class()
+    widget = widget_class()
+
+    assert widget.atom_union_max_atoms_spin.value() == 3
+    assert widget.atom_union_max_area_spin.value() == 8000
 
     widget.deleteLater()
 
@@ -284,86 +305,6 @@ def test_tracking_inputs_widget_has_no_solve_validated_corrections_control():
     widget.deleteLater()
 
 
-def test_tracking_inputs_widget_threshold_pair_list_starts_empty_and_adds_pairs():
-    _app = QApplication.instance() or QApplication([])
-    widget_class, _module = _load_widget_class()
-    widget = widget_class()
-
-    assert widget.threshold_pairs() == []
-
-    widget.source_contour_threshold_spin.setValue(0.2)
-    widget.source_foreground_threshold_spin.setValue(0.7)
-
-    assert widget.current_threshold_pair() == {
-        "contour_threshold": pytest.approx(0.2),
-        "foreground_threshold": pytest.approx(0.7),
-    }
-
-    assert widget.add_threshold_pair()
-    pairs = widget.threshold_pairs()
-    assert len(pairs) == 1
-    assert pairs[0]["contour_threshold"] == pytest.approx(0.2)
-    assert pairs[0]["foreground_threshold"] == pytest.approx(0.7)
-    assert widget.source_threshold_pairs_table.rowCount() == 1
-
-    widget.deleteLater()
-
-
-def test_tracking_inputs_widget_preview_control_is_checkbox():
-    _app = QApplication.instance() or QApplication([])
-    widget_class, _module = _load_widget_class()
-    widget = widget_class()
-
-    assert isinstance(widget.source_threshold_preview_check, QCheckBox)
-    assert widget.source_threshold_preview_check.text() == "Preview"
-    assert not hasattr(widget, "source_threshold_preview_btn")
-
-    widget.deleteLater()
-
-
-def test_tracking_inputs_widget_threshold_pair_list_rejects_duplicates():
-    _app = QApplication.instance() or QApplication([])
-    widget_class, _module = _load_widget_class()
-    widget = widget_class()
-
-    widget.source_contour_threshold_spin.setValue(0.2)
-    widget.source_foreground_threshold_spin.setValue(0.7)
-
-    assert widget.add_threshold_pair()
-    assert not widget.add_threshold_pair()
-
-    assert len(widget.threshold_pairs()) == 1
-    assert widget.source_threshold_status_lbl.text()
-
-    widget.deleteLater()
-
-
-def test_tracking_inputs_widget_removes_and_clears_threshold_pairs():
-    _app = QApplication.instance() or QApplication([])
-    widget_class, _module = _load_widget_class()
-    widget = widget_class()
-
-    widget.set_threshold_pairs(
-        [
-            {"contour_threshold": 0.2, "foreground_threshold": 0.7},
-            {"contour_threshold": 0.4, "foreground_threshold": 0.8},
-        ]
-    )
-    widget.source_threshold_pairs_table.selectRow(0)
-
-    assert widget.remove_selected_threshold_pair()
-    pairs = widget.threshold_pairs()
-    assert len(pairs) == 1
-    assert pairs[0]["contour_threshold"] == pytest.approx(0.4)
-
-    widget.clear_threshold_pairs()
-
-    assert widget.threshold_pairs() == []
-    assert widget.source_threshold_pairs_table.rowCount() == 0
-
-    widget.deleteLater()
-
-
 # ── Delegation seam test ──────────────────────────────────────────────────────
 
 
@@ -389,9 +330,12 @@ def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
                 "cellflow.tracking_ultrack.corrections",
                 fromlist=["Correction"],
             ).Correction,
+            "corrections_from_validated_tracks": lambda *args, **kwargs: [],
         },
         "cellflow.tracking_ultrack.db_build": {
             "apply_annotations_and_score": lambda *args, **kwargs: None,
+            "build_atom_union_database": lambda *args, **kwargs: None,
+            "annotate_database_from_corrections": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
@@ -441,6 +385,7 @@ def test_nucleus_workflow_delegates_tracking_inputs_to_child_widget():
         module = types.ModuleType(module_name)
         for attr_name, value in attrs.items():
             setattr(module, attr_name, value)
+        module.__getattr__ = _stub_missing_attr
         sys.modules[module_name] = module
 
     _app, viewer = _make_viewer()

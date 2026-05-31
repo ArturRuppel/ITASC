@@ -29,6 +29,15 @@ class UltrackDatabaseBuildReport:
 
 
 @dataclass(frozen=True)
+class AtomUnionDatabaseBuildReport:
+    """Result of atom-union candidate-building + linking (stage ②)."""
+    total_nodes: int = 0
+    total_overlaps: int = 0
+    n_frames: int = 0
+    stale_atoms: bool = False
+
+
+@dataclass(frozen=True)
 class AnnotateAndScoreReport:
     fake_nodes: int = 0
     anchor_nodes: int = 0
@@ -211,6 +220,160 @@ def annotate_database_from_corrections(
 def _notify(progress_cb: Callable[[str], None] | None, message: str) -> None:
     if progress_cb is not None:
         progress_cb(message)
+
+
+def build_atom_union_database(
+    atoms_path: str | Path,
+    working_dir: str | Path,
+    cfg: TrackingConfig,
+    progress_cb: Callable[[str], None] | None = None,
+) -> AtomUnionDatabaseBuildReport:
+    """Build candidate ``data.db`` from ``atoms.tif`` via connected-union enumeration.
+
+    Reads ``atoms.tif`` (written by stage ①), builds NodeDB + OverlapDB rows for
+    every connected union of ≤ ``cfg.atom_union_max_atoms`` atoms whose total area is
+    ≤ ``cfg.atom_union_max_area``, then runs linking. Warns if the embedded fingerprint
+    differs from the current atom params in ``cfg``.
+    """
+    import pickle
+
+    import sqlalchemy as sqla
+    from scipy import ndimage as ndi
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import Base, NodeDB, OverlapDB, clear_all_data
+    from ultrack.core.segmentation.node import Node
+
+    from cellflow.tracking_ultrack.atoms import (
+        AtomParams,
+        atom_adjacency,
+        enum_connected_unions,
+        params_fingerprint,
+        read_atoms_params,
+    )
+
+    atoms_path = Path(atoms_path)
+    working_dir = Path(working_dir)
+    working_dir.mkdir(parents=True, exist_ok=True)
+
+    # Staleness check: warn if atoms.tif was built with different atom params
+    stored_params_dict, stored_fp = read_atoms_params(atoms_path)
+    current_atom_params = AtomParams(
+        fg_window=cfg.fg_window,
+        fg_cutoff=cfg.fg_cutoff,
+        fg_strength=cfg.fg_strength,
+        contour_window=cfg.contour_window,
+        contour_floor=cfg.contour_floor,
+        contour_strength=cfg.contour_strength,
+        atom_min_area=cfg.atom_min_area,
+    )
+    stale = False
+    if stored_fp is not None and stored_fp != params_fingerprint(current_atom_params):
+        stale = True
+        _notify(
+            progress_cb,
+            "Warning: atoms.tif fingerprint differs from current atom params — "
+            "consider re-running Atom Extraction first.",
+        )
+
+    _notify(progress_cb, "Reading atoms.tif...")
+    atoms_stack = tifffile.imread(str(atoms_path)).astype(np.int32)
+    if atoms_stack.ndim == 2:
+        atoms_stack = atoms_stack[np.newaxis]
+
+    ultrack_cfg = _build_ultrack_config(cfg, working_dir)
+    db_path = ultrack_cfg.data_config.database_path
+    clear_all_data(db_path)
+    engine = sqla.create_engine(db_path)
+    Base.metadata.create_all(engine)
+    ultrack_cfg.data_config.metadata_add({"shape": list(atoms_stack.shape)})
+
+    n_frames = atoms_stack.shape[0]
+    max_seg = cfg.max_segments_per_time
+    max_atoms = cfg.atom_union_max_atoms
+    max_area = cfg.atom_union_max_area
+    min_area = cfg.min_area
+    total_nodes = total_overlaps = 0
+
+    for t in range(n_frames):
+        _notify(progress_cb, f"Building candidates frame {t + 1}/{n_frames}...")
+        frame_atoms = atoms_stack[t]
+        n_atoms = int(frame_atoms.max())
+        if n_atoms == 0:
+            continue
+
+        slices = ndi.find_objects(frame_atoms)
+        ids, counts = np.unique(frame_atoms, return_counts=True)
+        areas = {int(i): int(c) for i, c in zip(ids, counts) if i != 0}
+        adj = atom_adjacency(frame_atoms)
+        unions = enum_connected_unions(adj, areas, max_atoms, max_area)
+        unions = [
+            u for u in unions
+            if sum(areas[m] for m in u) >= min_area or len(u) > 1
+        ]
+
+        nodes: list[NodeDB] = []
+        atom_to_node_ids: dict[int, list[int]] = {a: [] for a in areas}
+        index = 1
+        for members in unions:
+            mlist = sorted(members)
+            ys0 = min(slices[m - 1][0].start for m in mlist)
+            xs0 = min(slices[m - 1][1].start for m in mlist)
+            ys1 = max(slices[m - 1][0].stop for m in mlist)
+            xs1 = max(slices[m - 1][1].stop for m in mlist)
+            crop = frame_atoms[ys0:ys1, xs0:xs1]
+            mask = np.isin(crop, mlist)
+            bbox = np.array([ys0, xs0, ys1, xs1])
+            node = Node.from_mask(t, mask.astype(bool), bbox=bbox)
+            nid = index + (t + 1) * max_seg
+            node.id = nid
+            node.time = t
+            centroid = node.centroid
+            z, y, x = (0, *centroid) if len(centroid) == 2 else centroid
+            nodes.append(NodeDB(
+                id=nid, t_node_id=index, t_hier_id=1, t=t,
+                z=int(z), y=int(y), x=int(x), area=int(node.area),
+                frontier=-1.0, height=float(len(mlist)),
+                pickle=pickle.dumps(node),
+            ))
+            for a in mlist:
+                atom_to_node_ids[a].append(nid)
+            index += 1
+
+        # Two candidates overlap iff they share an atom (atoms are disjoint).
+        seen_pairs: set[tuple[int, int]] = set()
+        overlaps: list[OverlapDB] = []
+        for cand_ids in atom_to_node_ids.values():
+            for i in range(len(cand_ids)):
+                for j in range(i + 1, len(cand_ids)):
+                    a, b = cand_ids[i], cand_ids[j]
+                    key = (a, b) if a < b else (b, a)
+                    if key not in seen_pairs:
+                        seen_pairs.add(key)
+                        overlaps.append(OverlapDB(node_id=key[0], ancestor_id=key[1]))
+
+        with Session(engine) as session:
+            session.add_all(nodes)
+            session.add_all(overlaps)
+            session.commit()
+        engine.dispose()
+
+        total_nodes += len(nodes)
+        total_overlaps += len(overlaps)
+
+    _notify(
+        progress_cb,
+        f"Wrote {total_nodes} candidate nodes, {total_overlaps} overlap rows.",
+    )
+    _notify(progress_cb, "Linking candidates...")
+    for step, total, label in run_linking(working_dir, cfg):
+        _notify(progress_cb, f"[link {step}/{total}] {label}")
+
+    return AtomUnionDatabaseBuildReport(
+        total_nodes=total_nodes,
+        total_overlaps=total_overlaps,
+        n_frames=n_frames,
+        stale_atoms=stale,
+    )
 
 
 def _load_ultrack_inputs(

@@ -63,6 +63,7 @@ _NUCLEUS_PIPELINE_FILE_GROUPS = [
         ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
     ]),
     ("Intermediates", [
+        ("2_nucleus/atoms.tif", "Atoms"),
         ("2_nucleus/ultrack_workdir/data.db", "Ultrack database"),
     ]),
     ("Output", [
@@ -134,15 +135,15 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         )
         root.addWidget(self.viewer_activity_banner)
 
+        # ── Atom Extraction ──────────────────────────────────────────
+        self._build_atom_extraction_section(root)
+
         # ── Workflow sections ────────────────────────────────────────
         self._build_segmentation_inputs_section(root)
         self._build_tracking_ultrack_section(root)
 
         # ── Ultrack Database Browser ─────────────────────────────────
         self._build_db_browser_section(root)
-
-        # ── Atom Extraction ──────────────────────────────────────────
-        self._build_atom_extraction_section(root)
 
         # ── Refinement (deprecated; widget no longer rendered) ───────
         # self._build_refinement_section(root)
@@ -199,10 +200,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self.tracking_db_section = ti.db_section
         self.tracking_solve_section = ti.solve_section
         self.db_gen_min_area_spin = ti.db_gen_min_area_spin
-        self.db_gen_max_area_spin = ti.db_gen_max_area_spin
-        self.db_gen_min_frontier_spin = ti.db_gen_min_frontier_spin
-        self.db_gen_ws_hierarchy_combo = ti.db_gen_ws_hierarchy_combo
-        self.db_gen_n_workers_spin = ti.db_gen_n_workers_spin
+        self.atom_union_max_atoms_spin = ti.atom_union_max_atoms_spin
+        self.atom_union_max_area_spin = ti.atom_union_max_area_spin
         self.db_gen_max_dist_spin = ti.db_gen_max_dist_spin
         self.db_gen_max_neighbors_spin = ti.db_gen_max_neighbors_spin
         self.db_gen_linking_mode_combo = ti.db_gen_linking_mode_combo
@@ -212,20 +211,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self.db_gen_quality_weight_spin = ti.db_gen_quality_weight_spin
         self.db_gen_quality_exp_spin = ti.db_gen_quality_exp_spin
         self.db_gen_circularity_weight_spin = ti.db_gen_circularity_weight_spin
-        self.source_contour_threshold_spin = ti.source_contour_threshold_spin
-        self.source_foreground_threshold_spin = ti.source_foreground_threshold_spin
-        self.source_threshold_preview_check = ti.source_threshold_preview_check
-        self.source_threshold_add_btn = ti.source_threshold_add_btn
-        self.source_threshold_remove_btn = ti.source_threshold_remove_btn
-        self.source_threshold_clear_btn = ti.source_threshold_clear_btn
-        self.source_threshold_pairs_table = ti.source_threshold_pairs_table
-        self.source_threshold_status_lbl = ti.source_threshold_status_lbl
-        self.current_threshold_pair = ti.current_threshold_pair
-        self.threshold_pairs = ti.threshold_pairs
-        self.set_threshold_pairs = ti.set_threshold_pairs
-        self.add_threshold_pair = ti.add_threshold_pair
-        self.remove_selected_threshold_pair = ti.remove_selected_threshold_pair
-        self.clear_threshold_pairs = ti.clear_threshold_pairs
         self.ultrack_max_partitions_spin = ti.ultrack_max_partitions_spin
         self.ultrack_n_frames_spin = ti.ultrack_n_frames_spin
         self.ultrack_appear_spin = ti.ultrack_appear_spin
@@ -247,10 +232,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self.pipeline_progress_bar = pl.pipeline_progress_bar
         for name in (
             "_on_build_segmentation_inputs",
-            "_on_preview_threshold_pair",
-            "_on_threshold_preview_toggled",
-            "_on_threshold_preview_params_changed",
-            "_on_contour_worker_error",
             "_on_run_db_generation",
             "_on_db_gen_done",
             "_on_db_gen_worker_error",
@@ -408,12 +389,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
     def _build_atom_extraction_section(self, root: QVBoxLayout) -> None:
         self.atom_extraction_widget = NucleusAtomExtractionWidget(self)
-        self.atom_extraction_section = CollapsibleSection(
-            "Atom Extraction", self.atom_extraction_widget, expanded=False,
-        )
+        self.atom_extraction_section = self.atom_extraction_widget.section
         self._alias_atom_extraction_controls()
         root.addWidget(self.atom_extraction_widget.header)
-        root.addWidget(self.atom_extraction_section)
+        root.addWidget(self.atom_extraction_widget.section)
 
     def _atom_fg_path(self):
         return self._paths.nucleus_foreground if self._paths else None
@@ -429,15 +408,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     # ================================================================
     def _connect_signals(self) -> None:
         # DB Browser
-        self.source_threshold_preview_check.toggled.connect(
-            self._on_guarded_source_threshold_preview_toggled
-        )
-        self.source_contour_threshold_spin.valueChanged.connect(
-            self._on_threshold_preview_params_changed
-        )
-        self.source_foreground_threshold_spin.valueChanged.connect(
-            self._on_threshold_preview_params_changed
-        )
         self.ultrack_db_active_btn.toggled.connect(
             self._on_guarded_ultrack_db_activate
         )
@@ -490,7 +460,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
     def _active_viewer_activity(self, *, ignore: str | None = None) -> str | None:
         activities = (
-            ("source_preview", self.source_threshold_preview_check.isChecked()),
             (
                 "db_browser",
                 self.ultrack_db_active_btn.isChecked()
@@ -512,18 +481,15 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
     def _sync_viewer_activity_controls(self) -> None:
         active = self._active_viewer_activity()
-        source_active = active == "source_preview"
         db_active = active == "db_browser"
         correction_active = active == "correction"
         idle = active is None
 
         activity_labels = {
-            "source_preview": "Preview mode active",
             "db_browser": "Database browser active",
             "correction": "Correction mode active",
         }
         activity_names = {
-            "source_preview": "preview mode",
             "db_browser": "database browser mode",
             "correction": "correction mode",
         }
@@ -536,7 +502,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
                 f"{active_label}. Exit {active_name} to use disabled workflow controls."
             )
 
-        self.source_threshold_preview_check.setEnabled(idle or source_active)
         self.ultrack_db_active_btn.setEnabled(idle or db_active)
         self.correction_active_btn.setEnabled(idle or correction_active)
 
@@ -565,22 +530,9 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
                 button.setEnabled(True)
                 button.setToolTip(self._pipeline_button_idle_tooltips.get(button, ""))
 
-        if source_active:
-            self.source_threshold_preview_check.setToolTip(
-                "Preview mode active. Turn it off to restore workflow controls."
-            )
-            self.ultrack_db_active_btn.setToolTip(
-                "Unavailable while preview mode is active. Exit preview mode before activating the database browser."
-            )
-            self.correction_active_btn.setToolTip(
-                "Unavailable while preview mode is active. Exit preview mode before activating correction mode."
-            )
-        elif db_active:
+        if db_active:
             self.ultrack_db_active_btn.setToolTip(
                 "Database browser mode active. Turn it off to restore workflow controls."
-            )
-            self.source_threshold_preview_check.setToolTip(
-                "Unavailable while database browser mode is active. Exit database browser mode before enabling source preview."
             )
             self.correction_active_btn.setToolTip(
                 "Unavailable while database browser mode is active. Exit database browser mode before activating correction mode."
@@ -589,16 +541,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
             self.correction_active_btn.setToolTip(
                 "Correction mode active. Turn it off to restore workflow controls."
             )
-            self.source_threshold_preview_check.setToolTip(
-                "Unavailable while correction mode is active. Exit correction mode before enabling source preview."
-            )
             self.ultrack_db_active_btn.setToolTip(
                 "Unavailable while correction mode is active. Exit correction mode before activating the database browser."
             )
         else:
-            self.source_threshold_preview_check.setToolTip(
-                "Preview the current threshold pair and update when thresholds change."
-            )
             self.ultrack_db_active_btn.setToolTip("Activate database browser.")
             self.correction_active_btn.setToolTip(
                 "Activate correction mode and show correction layers and controls."
@@ -618,23 +564,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self._set_checked_without_signal(button, False)
         self._sync_viewer_activity_controls()
         return True
-
-    def _cancel_source_threshold_preview(self) -> None:
-        cancel_event = getattr(self.nucleus_pipeline_widget, "_contour_cancel", None)
-        if cancel_event is not None:
-            cancel_event.set()
-
-    def _on_guarded_source_threshold_preview_toggled(self, checked: bool) -> None:
-        if self._reject_conflicting_viewer_activity(
-            activity="source_preview",
-            button=self.source_threshold_preview_check,
-            checked=checked,
-        ):
-            return
-        if not checked:
-            self._cancel_source_threshold_preview()
-        self._on_threshold_preview_toggled(checked)
-        self._sync_viewer_activity_controls()
 
     def _on_guarded_ultrack_db_activate(self, checked: bool) -> None:
         if self._reject_conflicting_viewer_activity(
@@ -765,9 +694,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     # ================================================================
     # Backward-compat delegates (tests call these on the workflow widget)
     # ================================================================
-    def _db_gen_thresholds_from_controls(self):
-        return self.nucleus_pipeline_widget._threshold_pairs_from_controls()
-
     def _db_gen_config_from_controls(self):
         return self.nucleus_pipeline_widget._db_gen_config_from_controls()
 

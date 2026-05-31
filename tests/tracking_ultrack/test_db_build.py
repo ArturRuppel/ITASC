@@ -1,8 +1,176 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import numpy as np
 
 from cellflow.tracking_ultrack.config import TrackingConfig
+
+
+class _FakeNodeDB:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class _FakeOverlapDB:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class _FakeNode:
+    """Module-level so ``pickle.dumps(node)`` inside the builder succeeds."""
+
+    def __init__(self):
+        self.id = 0
+        self.time = 0
+        self.area = 1
+        self.centroid = (0.0, 0.0)
+
+    @classmethod
+    def from_mask(cls, t, mask, bbox=None):
+        node = cls()
+        node.time = t
+        mask = np.asarray(mask, dtype=bool)
+        node.area = int(mask.sum())
+        ys, xs = np.nonzero(mask)
+        node.centroid = (float(ys.mean()), float(xs.mean()))
+        return node
+
+
+def _install_ultrack_stubs(monkeypatch):
+    """Inject minimal ``ultrack.core.*`` stand-ins so build_atom_union_database
+    can run without the real (unimportable) ultrack package.
+
+    Returns a dict capturing what the function did against the fakes.
+    """
+    captured: dict = {"cleared": [], "created_all": 0}
+
+    class _FakeBase:
+        class metadata:
+            @staticmethod
+            def create_all(_engine):
+                captured["created_all"] += 1
+
+    def _clear_all_data(db_path):
+        captured["cleared"].append(db_path)
+
+    database_mod = types.ModuleType("ultrack.core.database")
+    database_mod.Base = _FakeBase
+    database_mod.NodeDB = _FakeNodeDB
+    database_mod.OverlapDB = _FakeOverlapDB
+    database_mod.clear_all_data = _clear_all_data
+
+    node_mod = types.ModuleType("ultrack.core.segmentation.node")
+    node_mod.Node = _FakeNode
+
+    core_mod = types.ModuleType("ultrack.core")
+    seg_mod = types.ModuleType("ultrack.core.segmentation")
+    root_mod = types.ModuleType("ultrack")
+
+    for name, mod in {
+        "ultrack": root_mod,
+        "ultrack.core": core_mod,
+        "ultrack.core.database": database_mod,
+        "ultrack.core.segmentation": seg_mod,
+        "ultrack.core.segmentation.node": node_mod,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    return captured
+
+
+def test_build_atom_union_database_segments_then_links(monkeypatch, tmp_path):
+    """Atom-union build: read atoms -> config -> clear/create DB -> link, in order."""
+    import tifffile
+
+    from cellflow.tracking_ultrack import db_build
+
+    _install_ultrack_stubs(monkeypatch)
+
+    calls: list[str] = []
+
+    # A tiny 2-frame atoms stack with two adjacent atoms per frame.
+    atoms = np.zeros((2, 4, 6), dtype=np.int32)
+    atoms[:, :, :3] = 1
+    atoms[:, :, 3:] = 2
+
+    monkeypatch.setattr(
+        tifffile,
+        "imread",
+        lambda *_args, **_kwargs: calls.append("imread") or atoms,
+    )
+
+    class _FakeDataConfig:
+        database_path = f"sqlite:///{tmp_path / 'data.db'}"
+
+        def metadata_add(self, _meta):
+            calls.append("metadata_add")
+
+    class _FakeUltrackConfig:
+        data_config = _FakeDataConfig()
+
+    monkeypatch.setattr(
+        db_build,
+        "_build_ultrack_config",
+        lambda *_args: calls.append("config") or _FakeUltrackConfig(),
+    )
+
+    # Stub sqlalchemy engine + Session: the fake NodeDB/OverlapDB rows are not
+    # mapped ORM classes, so collect them in plain lists instead of writing SQL.
+    import sqlalchemy
+    import sqlalchemy.orm
+
+    added: list = []
+
+    class _FakeEngine:
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr(
+        sqlalchemy, "create_engine", lambda *_a, **_kw: _FakeEngine()
+    )
+
+    class _FakeSession:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def add_all(self, rows):
+            added.extend(rows)
+
+        def commit(self):
+            calls.append("commit")
+
+    monkeypatch.setattr(sqlalchemy.orm, "Session", _FakeSession)
+
+    monkeypatch.setattr(
+        db_build,
+        "run_linking",
+        lambda *_args, **_kwargs: calls.append("link") or iter([(1, 1, "linked")]),
+    )
+
+    report = db_build.build_atom_union_database(
+        tmp_path / "atoms.tif",
+        tmp_path / "work",
+        TrackingConfig(),
+    )
+
+    # imread happens before config; linking is the last step.
+    assert calls[0] == "imread"
+    assert "config" in calls
+    assert calls.index("config") < calls.index("link")
+    assert calls[-1] == "link"
+
+    assert isinstance(report, db_build.AtomUnionDatabaseBuildReport)
+    assert report.n_frames == 2
+    assert report.total_nodes > 0
+    assert report.stale_atoms is False
 
 
 def test_db_build_segments_then_links(monkeypatch, tmp_path):

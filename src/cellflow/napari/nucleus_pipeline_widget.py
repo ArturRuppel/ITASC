@@ -29,13 +29,12 @@ from cellflow.napari.ui_style import (
 )
 from cellflow.database.validation import read_corrections, read_validated_tracks
 from cellflow.segmentation import CancelledError
-from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
+from cellflow.tracking_ultrack.db_build import (
+    apply_annotations_and_score,
+    build_atom_union_database,
+)
 from cellflow.tracking_ultrack.corrections import corrections_from_validated_tracks
 from cellflow.tracking_ultrack.export import export_tracked_labels
-from cellflow.tracking_ultrack.multi_threshold import (
-    build_ultrack_database_from_threshold_pairs,
-    build_ultrack_source_stacks_from_pairs,
-)
 from cellflow.tracking_ultrack.solve import run_solve
 
 logger = logging.getLogger(__name__)
@@ -56,8 +55,6 @@ def _ultrack_available() -> bool:
 
 # ── Layer name constants ──────────────────────────────────────────────────────
 _TRACKED_LAYER = "Tracked: Nucleus"
-_PREVIEW_CONTOURS_LAYER = "[Preview] Ultrack Preview: Contours"
-_PREVIEW_FOREGROUND_LAYER = "[Preview] Ultrack Preview: Foreground"
 
 
 class NucleusPipelineWidget(QWidget):
@@ -84,10 +81,8 @@ class NucleusPipelineWidget(QWidget):
         self._refresh_db_browser_callback = refresh_db_browser_callback
         self._sync_viewer_activity_callback = sync_viewer_activity_callback
 
-        self._contour_worker = None
         self._db_gen_worker = None
         self._ultrack_worker = None
-        self._contour_cancel: threading.Event | None = None
         self._db_gen_cancel: threading.Event | None = None
         self._running_stage: str | None = None
 
@@ -252,15 +247,6 @@ class NucleusPipelineWidget(QWidget):
         else:
             self._status(str(data))
 
-    def _on_preview_progress(self, data) -> None:
-        if self._running_stage is None:
-            return
-        if isinstance(data, tuple) and len(data) >= 3:
-            self._status(str(data[2]))
-        else:
-            self._status(str(data))
-        self.pipeline_progress_bar.setVisible(False)
-
     def _clear_progress(self) -> None:
         self.pipeline_progress_bar.setValue(0)
         self.pipeline_progress_bar.setVisible(False)
@@ -310,13 +296,7 @@ class NucleusPipelineWidget(QWidget):
                         self.seg_params_btn, self.db_params_btn, self.solve_params_btn):
                 btn.setEnabled(False)
 
-    # ── Threshold / config delegation ─────────────────────────────────────────
-
-    def _current_threshold_pair_from_controls(self):
-        return self._tracking_inputs_provider().current_threshold_pair()
-
-    def _threshold_pairs_from_controls(self):
-        return self._tracking_inputs_provider().threshold_pairs()
+    # ── Config delegation ─────────────────────────────────────────────────────
 
     def _db_gen_config_from_controls(self):
         return self._tracking_inputs_provider().db_gen_config()
@@ -342,29 +322,6 @@ class NucleusPipelineWidget(QWidget):
         if name in self.viewer.layers:
             self.viewer.layers.remove(name)
         self.viewer.add_labels(data, name=name, metadata=dict(metadata or {}))
-
-    def _update_image_layer(
-        self,
-        name: str,
-        data: np.ndarray,
-        *,
-        metadata: dict | None = None,
-    ) -> None:
-        from napari.layers import Image
-
-        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Image):
-            layer = self.viewer.layers[name]
-            layer.data = data
-            layer.metadata = dict(metadata or {})
-            return
-        if name in self.viewer.layers:
-            self.viewer.layers.remove(name)
-        self.viewer.add_image(data, name=name, metadata=dict(metadata or {}))
-
-    def _clear_threshold_preview_layers(self) -> None:
-        for name in (_PREVIEW_CONTOURS_LAYER, _PREVIEW_FOREGROUND_LAYER):
-            if name in self.viewer.layers:
-                self.viewer.layers.remove(self.viewer.layers[name])
 
     def _update_tracked_display(
         self, labels: np.ndarray, t: int | None = None,
@@ -402,123 +359,14 @@ class NucleusPipelineWidget(QWidget):
     # ── Pipeline handlers — segmentation inputs ───────────────────────────────
 
     def _on_build_segmentation_inputs(self) -> None:
-        self._on_preview_threshold_pair()
-
-    def _on_preview_threshold_pair(
-        self,
-        *,
-        require_preview_enabled: bool = False,
-    ) -> None:
-        pos_dir = self._pos_dir
-        if pos_dir is None:
-            self._status("No project open."); return
-        paths = self._paths
-        if paths is None:
-            self._status("No project open."); return
-        contours_path = paths.nucleus_contours
-        score_path = paths.nucleus_foreground
-        if not contours_path.exists():
-            self._status(
-                "Missing: nucleus_contours.tif — build divergence maps first."
-            ); return
-        if not score_path.exists():
-            self._status(
-                "Missing: nucleus_foreground.tif — build divergence maps first."
-            ); return
-        threshold_pair = self._current_threshold_pair_from_controls()
-
-        cancel_event = threading.Event()
-        self._contour_cancel = cancel_event
-
-        def _done(result):
-            contour_preview, foreground_preview, metadata = result
-            self._contour_worker = None
-            self._contour_cancel = None
-            self._clear_progress()
-            preview_check = (
-                self._tracking_inputs_provider().source_threshold_preview_check
-            )
-            if require_preview_enabled and not preview_check.isChecked():
-                self._status("Ultrack threshold preview cancelled.")
-                self._set_running_stage(None)
-                return
-            # Core source stacks are P x T x Y x X. Display them as
-            # T x P x Y x X so the viewer's leading axis remains time for
-            # DB browser and correction actions that read current_step[0].
-            contour_display = np.moveaxis(contour_preview, 0, 1)
-            foreground_display = np.moveaxis(foreground_preview, 0, 1)
-            layer_metadata = {
-                "thresholds": metadata,
-                "axis_order": ("time", "source", "y", "x"),
-            }
-            self._update_image_layer(
-                _PREVIEW_CONTOURS_LAYER,
-                contour_display,
-                metadata=layer_metadata,
-            )
-            self._update_labels_layer(
-                _PREVIEW_FOREGROUND_LAYER,
-                foreground_display.astype(np.uint8, copy=False),
-                metadata=layer_metadata,
-            )
-            self._status(f"Ultrack threshold preview ready ({len(metadata)} source).")
-            self._set_running_stage(None)
-
-        @thread_worker(connect={
-            "yielded": self._on_preview_progress,
-            "returned": _done,
-            "errored": self._on_contour_worker_error,
-        })
-        def _worker():
-            from cellflow.segmentation.nucleus_segmentation import _check_cancel
-
-            yield (0, 3, "Loading Ultrack input maps...")
-            contours = np.asarray(tifffile.imread(str(contours_path)), dtype=np.float32)
-            _check_cancel(cancel_event.is_set)
-            foreground_scores = np.asarray(
-                tifffile.imread(str(score_path)),
-                dtype=np.float32,
-            )
-            _check_cancel(cancel_event.is_set)
-            yield (1, 3, "Building Ultrack threshold preview...")
-            contour_preview, foreground_preview, metadata = (
-                build_ultrack_source_stacks_from_pairs(
-                    contours,
-                    foreground_scores,
-                    threshold_pairs=[threshold_pair],
-                )
-            )
-            _check_cancel(cancel_event.is_set)
-            yield (3, 3, "Loaded Ultrack threshold preview.")
-            return contour_preview, foreground_preview, metadata
-
-        self._clear_progress()
-        self._status("Building Ultrack threshold preview...")
-        self._set_running_stage("seg")
-        self._contour_worker = _worker()
-
-    def _on_threshold_preview_toggled(self, checked: bool) -> None:
-        if checked:
-            self._on_preview_threshold_pair(require_preview_enabled=True)
-        else:
-            self._clear_threshold_preview_layers()
-
-    def _on_threshold_preview_params_changed(self, *args) -> None:
-        if self._tracking_inputs_provider().source_threshold_preview_check.isChecked():
-            self._on_preview_threshold_pair(require_preview_enabled=True)
-
-    def _on_contour_worker_error(self, exc: Exception) -> None:
-        self._contour_worker = None
-        self._contour_cancel = None
-        self._set_running_stage(None)
-        self._clear_progress()
-        if isinstance(exc, CancelledError):
-            self._status("Cancelled.")
-            return
-        self._status(f"Error: {exc}")
-        logger.exception("Contour worker error", exc_info=exc)
+        # Cellpose maps and atom extraction now produce the candidate inputs;
+        # there is no separate source-threshold build step here.
+        self._status("Segmentation inputs are produced by Atom Extraction.")
 
     # ── Pipeline handlers — DB generation ────────────────────────────────────
+
+    def _atoms_path(self) -> Path | None:
+        return self._paths.nucleus_atoms if self._paths else None
 
     def _on_run_db_generation(self) -> None:
         pos_dir = self._pos_dir
@@ -527,26 +375,16 @@ class NucleusPipelineWidget(QWidget):
         paths = self._paths
         if paths is None:
             self._status("No project open."); return
-        contours_path = paths.nucleus_contours
-        score_path = paths.nucleus_foreground
-        if not contours_path.exists():
-            self._status(
-                "Missing: nucleus_contours.tif — build divergence maps first."
-            ); return
-        if not score_path.exists():
-            self._status(
-                "Missing: nucleus_foreground.tif — build divergence maps first."
-            ); return
+        atoms_path = self._atoms_path()
+        if atoms_path is None or not atoms_path.exists():
+            self._status("Missing: atoms.tif — run Atom Extraction first.")
+            return
         if not _ultrack_available():
             self._status("ultrack not installed — activate the cellflow conda environment."); return
 
-        threshold_pairs = self._threshold_pairs_from_controls()
-        if not threshold_pairs:
-            self._status("Add at least one threshold pair before DB generation.")
-            return
-
         cfg = self._db_gen_config_from_controls()
         working_dir = self._ultrack_workdir()
+        foreground_path = self._foreground_path()
 
         self.pipeline_progress_bar.setRange(0, 0)
         self.pipeline_progress_bar.setVisible(True)
@@ -573,32 +411,27 @@ class NucleusPipelineWidget(QWidget):
 
             def _run() -> None:
                 try:
-                    build_ultrack_database_from_threshold_pairs(
-                        contours_path=contours_path,
-                        foreground_scores_path=score_path,
-                        working_dir=working_dir,
-                        cfg=cfg,
-                        threshold_pairs=threshold_pairs,
-                        progress_cb=_progress_cb,
-                        cancel=cancel_event.is_set,
+                    report = build_atom_union_database(
+                        atoms_path,
+                        working_dir,
+                        cfg,
+                        _progress_cb,
                     )
                     if cancel_event.is_set():
                         raise CancelledError("Operation cancelled.")
-                    _progress_cb("Scoring node probabilities...")
-                    score_signal_path = self._foreground_path()
+                    if foreground_path is not None and foreground_path.exists():
+                        _progress_cb("Scoring node probabilities...")
+                        apply_annotations_and_score(
+                            working_dir=working_dir,
+                            cfg=cfg,
+                            score_signal_path=foreground_path,
+                            corrections=None,
+                            validated_tracks=None,
+                            tracked_labels=None,
+                        )
                     if cancel_event.is_set():
                         raise CancelledError("Operation cancelled.")
-                    apply_annotations_and_score(
-                        working_dir=working_dir,
-                        cfg=cfg,
-                        score_signal_path=score_signal_path,
-                        corrections=None,
-                        validated_tracks=None,
-                        tracked_labels=None,
-                    )
-                    if cancel_event.is_set():
-                        raise CancelledError("Operation cancelled.")
-                    result_holder.append(pos_dir)
+                    result_holder.append(report)
                 except Exception as e:
                     exc_holder.append(e)
 
@@ -611,15 +444,19 @@ class NucleusPipelineWidget(QWidget):
                     t.join(timeout=0.05)
             if exc_holder:
                 raise exc_holder[0]
-            return pos_dir
+            return (pos_dir, result_holder[0] if result_holder else None)
 
         self._db_gen_worker = _worker()
 
-    def _on_db_gen_done(self, pos_dir: Path) -> None:
+    def _on_db_gen_done(self, result) -> None:
         self._db_gen_worker = None
         self._db_gen_cancel = None
         self._clear_progress()
-        self._status("DB generation complete.")
+        pos_dir, report = result
+        message = "DB generation complete."
+        if report is not None and getattr(report, "stale_atoms", False):
+            message += " — warning: atoms.tif is stale vs current atom params"
+        self._status(message)
         self._refresh_files_callback(pos_dir)
         self._refresh_db_browser_callback()
         self._set_running_stage(None)
@@ -732,8 +569,6 @@ class NucleusPipelineWidget(QWidget):
 
     def _on_cancel(self) -> None:
         cancelled = False
-        if self._contour_cancel is not None:
-            self._contour_cancel.set()
         db_worker = self._db_gen_worker
         if db_worker is not None:
             if self._db_gen_cancel is not None:
@@ -745,13 +580,11 @@ class NucleusPipelineWidget(QWidget):
             db_worker.quit()
             self._db_gen_worker = None
             cancelled = True
-        for attr in ("_contour_worker", "_ultrack_worker"):
-            worker = getattr(self, attr, None)
-            if worker is not None:
-                worker.quit()
-                setattr(self, attr, None)
-                cancelled = True
-        self._contour_cancel = None
+        ultrack_worker = self._ultrack_worker
+        if ultrack_worker is not None:
+            ultrack_worker.quit()
+            self._ultrack_worker = None
+            cancelled = True
         self._set_running_stage(None)
         self._clear_progress()
         self._status("Cancelled." if cancelled else "Nothing running.")

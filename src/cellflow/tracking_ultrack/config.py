@@ -17,9 +17,15 @@ class TrackingConfig(BaseModel):
     # Atom extraction (stage ①) — see atoms.AtomParams
     fg_window: int = 51
     fg_cutoff: float = 0.002
+    fg_strength: float = 1.0
     contour_window: int = 51
     contour_floor: float = 0.01
+    contour_strength: float = 1.0
     atom_min_area: int = 100
+
+    # Atom-union candidate enumeration (stage ②)
+    atom_union_max_atoms: int = 3
+    atom_union_max_area: int = 8000
 
     # Linking
     # Ultrack's multiprocessing_apply activates a Pool only when n_workers > 1,

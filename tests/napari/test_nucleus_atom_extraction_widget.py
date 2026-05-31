@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -29,19 +30,36 @@ def test_controls_have_spec_defaults():
     w = NucleusAtomExtractionWidget()
     assert w.fg_window_spin.value() == 51
     assert abs(w.fg_cutoff_spin.value() - 0.002) < 1e-9
+    assert abs(w.fg_strength_spin.value() - 1.0) < 1e-9
     assert w.contour_window_spin.value() == 51
     assert abs(w.contour_floor_spin.value() - 0.01) < 1e-9
+    assert abs(w.contour_strength_spin.value() - 1.0) < 1e-9
     assert w.atom_min_area_spin.value() == 100
 
 
-def test_controls_have_activate_and_compute_and_overlays():
+def test_controls_have_stage_row_buttons():
     _app()
     w = NucleusAtomExtractionWidget()
-    assert w.active_btn.isCheckable()
+    assert hasattr(w, "params_btn") and w.params_btn.isCheckable()
+    assert not w.params_btn.isChecked()
+    assert hasattr(w, "active_btn") and w.active_btn.isCheckable()
     assert not w.active_btn.isChecked()
-    assert w.compute_btn is not None
-    assert w.territory_overlay_check is not None
-    assert w.residual_overlay_check is not None
+    assert hasattr(w, "run_btn") and not w.run_btn.isCheckable()
+    assert not hasattr(w, "territory_overlay_check")
+    assert not hasattr(w, "residual_overlay_check")
+    assert not hasattr(w, "compute_btn")
+
+
+def test_params_btn_toggles_section():
+    _app()
+    w = NucleusAtomExtractionWidget()
+    from cellflow.napari.widgets import CollapsibleSection
+    assert isinstance(w.section, CollapsibleSection)
+    assert not w.section.is_expanded
+    w.params_btn.setChecked(True)
+    assert w.section.is_expanded
+    w.params_btn.setChecked(False)
+    assert not w.section.is_expanded
 
 
 from cellflow.napari.nucleus_atom_extraction_widget import (
@@ -82,6 +100,15 @@ class _Host(NucleusAtomExtractionMixin, QWidget):
         return self._out_path
 
 
+def _drain_atom_preview(h, timeout=10.0):
+    """Pump the Qt loop until the (async) preview worker has finished."""
+    deadline = time.time() + timeout
+    while getattr(h, "_atom_preview_worker", None) is not None and time.time() < deadline:
+        _app().processEvents()
+        time.sleep(0.005)
+    _app().processEvents()
+
+
 def _host(tmp_path):
     _app()
     fg = tmp_path / "fg.tif"
@@ -110,32 +137,69 @@ def test_atom_params_reads_controls():
     napari.Viewer.close_all()
 
 
-def test_activate_adds_preview_layer_then_deactivate_removes(tmp_path):
+def test_activate_adds_four_layers_then_deactivate_removes(tmp_path):
+    from cellflow.napari.nucleus_atom_extraction_widget import (
+        _ATOM_TERRITORY_LAYER,
+        _ATOM_FG_RESIDUAL_LAYER,
+        _ATOM_CONTOUR_RESIDUAL_LAYER,
+    )
+    names = (_ATOM_PREVIEW_LAYER, _ATOM_TERRITORY_LAYER,
+             _ATOM_FG_RESIDUAL_LAYER, _ATOM_CONTOUR_RESIDUAL_LAYER)
     h, viewer = _host(tmp_path)
     h._on_atom_activate(True)
-    assert _ATOM_PREVIEW_LAYER in viewer.layers
-    # Preview layer must be 2-D (single frame), not the full 3-D stack.
-    assert viewer.layers[_ATOM_PREVIEW_LAYER].data.ndim == 2
-    assert viewer.layers[_ATOM_PREVIEW_LAYER].data.shape == (40, 40)
+    _drain_atom_preview(h)
+    for name in names:
+        assert name in viewer.layers
+        # Preview layers carry the full time axis (T, Y, X) so the viewer has a
+        # frame slider even without an open movie.
+        assert viewer.layers[name].data.shape == (3, 40, 40)
     h._on_atom_activate(False)
-    assert _ATOM_PREVIEW_LAYER not in viewer.layers
+    for name in names:
+        assert name not in viewer.layers
+    napari.Viewer.close_all()
+
+
+def test_layer_visibility_preserved_across_refresh(tmp_path):
+    from cellflow.napari.nucleus_atom_extraction_widget import (
+        _ATOM_TERRITORY_LAYER,
+        _ATOM_CONTOUR_RESIDUAL_LAYER,
+    )
+    h, viewer = _host(tmp_path)
+    h._on_atom_activate(True)
+    _drain_atom_preview(h)
+    viewer.layers[_ATOM_TERRITORY_LAYER].visible = False
+    viewer.layers[_ATOM_CONTOUR_RESIDUAL_LAYER].visible = False
+    h._refresh_atom_preview()
+    _drain_atom_preview(h)
+    assert not viewer.layers[_ATOM_TERRITORY_LAYER].visible
+    assert not viewer.layers[_ATOM_CONTOUR_RESIDUAL_LAYER].visible
+    assert viewer.layers[_ATOM_PREVIEW_LAYER].visible
     napari.Viewer.close_all()
 
 
 from cellflow.tracking_ultrack.atoms import read_atoms_params, params_fingerprint
 
 
-def test_compute_atoms_full_stack_writes_tif_with_fingerprint(tmp_path):
+def test_run_atom_extraction_writes_tif_and_shows_layers(tmp_path):
+    from cellflow.napari.nucleus_atom_extraction_widget import (
+        _ATOM_TERRITORY_LAYER,
+        _ATOM_FG_RESIDUAL_LAYER,
+        _ATOM_CONTOUR_RESIDUAL_LAYER,
+    )
     h, viewer = _host(tmp_path)
     h.atom_extraction_widget.fg_window_spin.setValue(11)
     h.atom_extraction_widget.contour_window_spin.setValue(11)
-    h._compute_atoms_full_stack()
+    h._run_atom_extraction()
     out = tmp_path / "atoms.tif"
     assert out.exists()
     atoms = tifffile.imread(out)
     assert atoms.shape == (3, 40, 40)
     stored_params, stored_fp = read_atoms_params(out)
     assert stored_fp == params_fingerprint(h._atom_params())
+    for name in (_ATOM_PREVIEW_LAYER, _ATOM_TERRITORY_LAYER,
+                 _ATOM_FG_RESIDUAL_LAYER, _ATOM_CONTOUR_RESIDUAL_LAYER):
+        assert name in viewer.layers
+    assert viewer.layers[_ATOM_PREVIEW_LAYER].data.ndim == 3
     napari.Viewer.close_all()
 
 
@@ -163,13 +227,19 @@ def test_state_round_trip_for_atom_params():
 
     w = NucleusWorkflowWidget(napari.Viewer(show=False))
     w.atom_extraction_widget.fg_cutoff_spin.setValue(0.01)
+    w.atom_extraction_widget.fg_strength_spin.setValue(0.5)
+    w.atom_extraction_widget.contour_strength_spin.setValue(0.25)
     w.atom_extraction_widget.atom_min_area_spin.setValue(300)
     state = dump_state(w)
     assert state["atom_extraction"]["fg_cutoff"] == 0.01
+    assert state["atom_extraction"]["fg_strength"] == 0.5
+    assert state["atom_extraction"]["contour_strength"] == 0.25
     assert state["atom_extraction"]["atom_min_area"] == 300
 
     w2 = NucleusWorkflowWidget(napari.Viewer(show=False))
     load_state(w2, state)
     assert w2.atom_extraction_widget.fg_cutoff_spin.value() == 0.01
+    assert w2.atom_extraction_widget.fg_strength_spin.value() == 0.5
+    assert w2.atom_extraction_widget.contour_strength_spin.value() == 0.25
     assert w2.atom_extraction_widget.atom_min_area_spin.value() == 300
     napari.Viewer.close_all()

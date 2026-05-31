@@ -20,10 +20,8 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
     return {
         "db_generation": {
             "min_area": w.db_gen_min_area_spin.value(),
-            "max_area": w.db_gen_max_area_spin.value(),
-            "threshold_pairs": w.threshold_pairs(),
-            "min_frontier": w.db_gen_min_frontier_spin.value(),
-            "ws_hierarchy": w.db_gen_ws_hierarchy_combo.currentText(),
+            "atom_union_max_area": w.atom_union_max_area_spin.value(),
+            "max_atoms": w.atom_union_max_atoms_spin.value(),
             "max_distance": w.db_gen_max_dist_spin.value(),
             "max_neighbors": w.db_gen_max_neighbors_spin.value(),
             "linking_mode": w.db_gen_linking_mode_combo.currentText(),
@@ -33,7 +31,6 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "quality_weight": w.db_gen_quality_weight_spin.value(),
             "quality_exponent": w.db_gen_quality_exp_spin.value(),
             "circularity_weight": w.db_gen_circularity_weight_spin.value(),
-            "n_workers": w.db_gen_n_workers_spin.value(),
         },
         "extend": {
             "max_distance": w.extend_max_dist_spin.value(),
@@ -55,8 +52,10 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
         "atom_extraction": {
             "fg_window": w.atom_extraction_widget.fg_window_spin.value(),
             "fg_cutoff": w.atom_extraction_widget.fg_cutoff_spin.value(),
+            "fg_strength": w.atom_extraction_widget.fg_strength_spin.value(),
             "contour_window": w.atom_extraction_widget.contour_window_spin.value(),
             "contour_floor": w.atom_extraction_widget.contour_floor_spin.value(),
+            "contour_strength": w.atom_extraction_widget.contour_strength_spin.value(),
             "atom_min_area": w.atom_extraction_widget.atom_min_area_spin.value(),
         },
     }
@@ -74,11 +73,8 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
     if "db_generation" in state:
         dbg = state["db_generation"]
         if "min_area" in dbg: w.db_gen_min_area_spin.setValue(dbg["min_area"])
-        if "max_area" in dbg: w.db_gen_max_area_spin.setValue(dbg["max_area"])
-        if "threshold_pairs" in dbg:
-            w.set_threshold_pairs(list(dbg["threshold_pairs"]))
-        if "min_frontier" in dbg: w.db_gen_min_frontier_spin.setValue(dbg["min_frontier"])
-        if "ws_hierarchy" in dbg: _set_combo(w.db_gen_ws_hierarchy_combo, dbg["ws_hierarchy"])
+        if "atom_union_max_area" in dbg: w.atom_union_max_area_spin.setValue(dbg["atom_union_max_area"])
+        if "max_atoms" in dbg: w.atom_union_max_atoms_spin.setValue(dbg["max_atoms"])
         if "max_distance" in dbg: w.db_gen_max_dist_spin.setValue(dbg["max_distance"])
         if "max_neighbors" in dbg: w.db_gen_max_neighbors_spin.setValue(dbg["max_neighbors"])
         if "linking_mode" in dbg: _set_combo(w.db_gen_linking_mode_combo, dbg["linking_mode"])
@@ -88,7 +84,6 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "quality_weight" in dbg: w.db_gen_quality_weight_spin.setValue(dbg["quality_weight"])
         if "quality_exponent" in dbg: w.db_gen_quality_exp_spin.setValue(dbg["quality_exponent"])
         if "circularity_weight" in dbg: w.db_gen_circularity_weight_spin.setValue(dbg["circularity_weight"])
-        if "n_workers" in dbg: w.db_gen_n_workers_spin.setValue(dbg["n_workers"])
     if "extend" in state:
         ext = state["extend"]
         if "max_distance" in ext: w.extend_max_dist_spin.setValue(ext["max_distance"])
@@ -128,6 +123,8 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         aw = w.atom_extraction_widget
         if "fg_window" in ae: aw.fg_window_spin.setValue(ae["fg_window"])
         if "fg_cutoff" in ae: aw.fg_cutoff_spin.setValue(ae["fg_cutoff"])
+        if "fg_strength" in ae: aw.fg_strength_spin.setValue(ae["fg_strength"])
         if "contour_window" in ae: aw.contour_window_spin.setValue(ae["contour_window"])
         if "contour_floor" in ae: aw.contour_floor_spin.setValue(ae["contour_floor"])
+        if "contour_strength" in ae: aw.contour_strength_spin.setValue(ae["contour_strength"])
         if "atom_min_area" in ae: aw.atom_min_area_spin.setValue(ae["atom_min_area"])

@@ -23,24 +23,32 @@ _FINGERPRINT_KEY = "cellflow_atom_fingerprint"
 
 @dataclass(frozen=True)
 class AtomParams:
-    """The five knobs that fully determine an atom segmentation."""
+    """The knobs that fully determine an atom segmentation."""
     fg_window: int = 51
     fg_cutoff: float = 0.002
+    fg_strength: float = 1.0
     contour_window: int = 51
     contour_floor: float = 0.01
+    contour_strength: float = 1.0
     atom_min_area: int = 100
 
 
-def residual(frame: np.ndarray, window: int) -> np.ndarray:
-    """Local-mean-subtracted residual: ``clip(frame - localmean(frame), 0)``.
+def residual(frame: np.ndarray, window: int, strength: float = 1.0) -> np.ndarray:
+    """Local-mean-subtracted residual: ``clip(frame - strength*localmean(frame), 0)``.
 
     Flattens each map's per-nucleus offset so a single global threshold works
     everywhere while staying ~0 in flat background. ``window`` is forced odd.
+
+    ``strength`` blends between the raw map and the fully-flattened residual:
+    ``1.0`` subtracts the whole local background (default), ``0.0`` subtracts
+    nothing so the result is the raw (non-negative) map, and values in between
+    partially flatten. Lowering it trades uniform-threshold behaviour for
+    keeping more of the original signal where the background is already flat.
     """
     window = int(window) | 1
     frame = np.asarray(frame, dtype=np.float32)
     local_mean = threshold_local(frame, block_size=window, method="gaussian")
-    return np.clip(frame - local_mean, 0.0, None).astype(np.float32)
+    return np.clip(frame - strength * local_mean, 0.0, None).astype(np.float32)
 
 
 def extract_atoms_frame(
@@ -75,6 +83,29 @@ def extract_atoms_frame(
     return atoms.astype(np.int32)
 
 
+def extract_atoms_stack_with_maps(
+    fg: np.ndarray, contour: np.ndarray, params: AtomParams
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(atoms, territory, residual_foreground, residual_contour) stacks, each (T, Y, X)."""
+    fg = np.asarray(fg, dtype=np.float32)
+    contour = np.asarray(contour, dtype=np.float32)
+    atoms_out = np.zeros(fg.shape, dtype=np.int32)
+    territory_out = np.zeros(fg.shape, dtype=np.uint8)
+    rf_out = np.zeros(fg.shape, dtype=np.float32)
+    rc_out = np.zeros(fg.shape, dtype=np.float32)
+    for t in range(fg.shape[0]):
+        rf = residual(fg[t], params.fg_window, params.fg_strength)
+        territory = rf > params.fg_cutoff
+        rc = residual(contour[t], params.contour_window, params.contour_strength)
+        atoms_out[t] = extract_atoms_frame(
+            rc, territory, params.contour_floor, params.atom_min_area
+        )
+        territory_out[t] = territory.astype(np.uint8)
+        rf_out[t] = rf
+        rc_out[t] = rc
+    return atoms_out, territory_out, rf_out, rc_out
+
+
 def extract_atoms_stack(
     fg: np.ndarray, contour: np.ndarray, params: AtomParams
 ) -> np.ndarray:
@@ -82,18 +113,10 @@ def extract_atoms_stack(
 
     Per frame: residual the fg map and threshold it into territory, residual the
     contour map into the watershed elevation, then ``extract_atoms_frame``.
-    Returns the atom labels only — the residual contour is internal.
+    Returns the atom labels only — the residual maps are internal.
     """
-    fg = np.asarray(fg, dtype=np.float32)
-    contour = np.asarray(contour, dtype=np.float32)
-    out = np.zeros(fg.shape, dtype=np.int32)
-    for t in range(fg.shape[0]):
-        territory = residual(fg[t], params.fg_window) > params.fg_cutoff
-        residual_contour = residual(contour[t], params.contour_window)
-        out[t] = extract_atoms_frame(
-            residual_contour, territory, params.contour_floor, params.atom_min_area
-        )
-    return out
+    atoms, *_ = extract_atoms_stack_with_maps(fg, contour, params)
+    return atoms
 
 
 def params_fingerprint(params: AtomParams) -> str:
@@ -111,6 +134,68 @@ def write_atoms_tif(path, atoms: np.ndarray, params: AtomParams) -> None:
     tifffile.imwrite(
         str(path), np.asarray(atoms, dtype=np.int32), description=description
     )
+
+
+def atom_adjacency(atoms: np.ndarray) -> dict[int, set[int]]:
+    """Region-adjacency graph of a label image: labels sharing a 4-connected border."""
+    adj: dict[int, set[int]] = {}
+    pairs: set[tuple[int, int]] = set()
+    for a, b in (
+        (atoms[:-1, :], atoms[1:, :]),
+        (atoms[:, :-1], atoms[:, 1:]),
+    ):
+        m = (a != b) & (a != 0) & (b != 0)
+        for u, v in zip(a[m].tolist(), b[m].tolist()):
+            pairs.add((u, v) if u < v else (v, u))
+    for lbl in np.unique(atoms):
+        if lbl != 0:
+            adj[int(lbl)] = set()
+    for u, v in pairs:
+        adj[u].add(v)
+        adj[v].add(u)
+    return adj
+
+
+def enum_connected_unions(
+    adj: dict[int, set[int]],
+    areas: dict[int, int],
+    max_atoms: int,
+    max_area: int,
+) -> list[frozenset[int]]:
+    """All connected atom-subsets of size 1..max_atoms with total area ≤ max_area.
+
+    BFS growth with a global ``seen`` set — each subset is reached exactly once,
+    deduped by frozenset. Exhaustive and correct; bounded by max_atoms/max_area
+    so it does not explode on large frames.
+    """
+    seen: set[frozenset[int]] = set()
+    out: list[frozenset[int]] = []
+    frontier: list[tuple[frozenset[int], int]] = []
+    for v, ar in areas.items():
+        fs = frozenset((v,))
+        seen.add(fs)
+        out.append(fs)
+        if ar <= max_area:
+            frontier.append((fs, ar))
+    while frontier:
+        fs, area = frontier.pop()
+        if len(fs) >= max_atoms:
+            continue
+        nbrs: set[int] = set()
+        for v in fs:
+            nbrs |= adj[v]
+        nbrs -= fs
+        for w in nbrs:
+            na = area + areas[w]
+            if na > max_area:
+                continue
+            nfs = fs | {w}
+            if nfs in seen:
+                continue
+            seen.add(nfs)
+            out.append(nfs)
+            frontier.append((nfs, na))
+    return out
 
 
 def read_atoms_params(path) -> tuple[dict | None, str | None]:

@@ -28,6 +28,21 @@ def test_residual_forces_odd_window():
     assert np.allclose(residual(frame, window=10), residual(frame, window=11))
 
 
+def test_residual_strength_blends_to_raw_map():
+    rng = np.random.default_rng(1)
+    frame = rng.random((30, 30)).astype(np.float32)  # non-negative
+    # strength=0 subtracts no background → raw map (clip is a no-op when >= 0).
+    assert np.allclose(residual(frame, window=11, strength=0.0), frame)
+    # strength defaults to 1.0 (full residual).
+    assert np.allclose(residual(frame, window=11, strength=1.0),
+                       residual(frame, window=11))
+    # a partial strength sits between raw and full residual everywhere.
+    raw = residual(frame, window=11, strength=0.0)
+    full = residual(frame, window=11, strength=1.0)
+    half = residual(frame, window=11, strength=0.5)
+    assert np.all(half <= raw + 1e-6) and np.all(half >= full - 1e-6)
+
+
 from cellflow.tracking_ultrack.atoms import extract_atoms_frame
 
 
@@ -143,3 +158,88 @@ def test_extract_atoms_frame_keeps_labels_when_all_atoms_below_min_area():
     # min_area far exceeds the atom; territory must stay labelled, not blanked
     assert np.all(atoms[territory] > 0)
     assert atoms[~territory].max() == 0
+
+
+def test_extract_atoms_stack_with_maps_dtypes_and_consistency():
+    from cellflow.tracking_ultrack.atoms import extract_atoms_stack_with_maps
+
+    rng = np.random.default_rng(42)
+    fg = rng.random((3, 40, 40)).astype(np.float32)
+    contour = rng.random((3, 40, 40)).astype(np.float32)
+    params = AtomParams(fg_window=11, fg_cutoff=0.01, contour_window=11,
+                        contour_floor=0.05, atom_min_area=0)
+    atoms, territory, residual_foreground, residual_contour = extract_atoms_stack_with_maps(
+        fg, contour, params
+    )
+    # shapes
+    assert atoms.shape == (3, 40, 40)
+    assert territory.shape == (3, 40, 40)
+    assert residual_foreground.shape == (3, 40, 40)
+    assert residual_contour.shape == (3, 40, 40)
+    # dtypes
+    assert atoms.dtype == np.int32
+    assert territory.dtype == np.uint8
+    assert residual_foreground.dtype == np.float32
+    assert residual_contour.dtype == np.float32
+    # territory is exactly the fg residual thresholded by fg_cutoff
+    assert np.array_equal(territory, (residual_foreground > params.fg_cutoff).astype(np.uint8))
+    # atoms matches extract_atoms_stack
+    assert np.array_equal(atoms, extract_atoms_stack(fg, contour, params))
+    # territory is binary (0 or 1)
+    assert set(np.unique(territory)).issubset({0, 1})
+
+
+from cellflow.tracking_ultrack.atoms import atom_adjacency, enum_connected_unions
+
+
+def test_atom_adjacency_two_adjacent_labels():
+    atoms = np.zeros((4, 6), dtype=np.int32)
+    atoms[:, :3] = 1  # left half
+    atoms[:, 3:] = 2  # right half (shares a 4-connected border with label 1)
+    adj = atom_adjacency(atoms)
+    # only the two foreground labels appear; background (0) is never a key
+    assert set(adj) == {1, 2}
+    # edges are symmetric
+    assert adj[1] == {2}
+    assert adj[2] == {1}
+
+
+def test_atom_adjacency_diagonal_not_adjacent():
+    # two labels touching only at a corner -> not adjacent under 4-connectivity
+    atoms = np.zeros((4, 4), dtype=np.int32)
+    atoms[0:2, 0:2] = 1  # top-left block
+    atoms[2:4, 2:4] = 2  # bottom-right block (diagonal touch only)
+    adj = atom_adjacency(atoms)
+    assert adj[1] == set()
+    assert adj[2] == set()
+
+
+def test_enum_connected_unions_single_atom():
+    adj = {1: set()}
+    areas = {1: 10}
+    unions = enum_connected_unions(adj, areas, max_atoms=3, max_area=1000)
+    assert unions == [frozenset({1})]
+
+
+def test_enum_connected_unions_two_adjacent():
+    adj = {1: {2}, 2: {1}}
+    areas = {1: 10, 2: 20}
+    unions = enum_connected_unions(adj, areas, max_atoms=3, max_area=1000)
+    assert set(unions) == {frozenset({1}), frozenset({2}), frozenset({1, 2})}
+
+
+def test_enum_connected_unions_respects_max_atoms_and_max_area():
+    # a chain 1-2-3, all adjacent in sequence
+    adj = {1: {2}, 2: {1, 3}, 3: {2}}
+    areas = {1: 10, 2: 10, 3: 10}
+
+    # max_atoms=2 forbids the 3-atom union {1,2,3}
+    capped_atoms = enum_connected_unions(adj, areas, max_atoms=2, max_area=1000)
+    assert all(len(u) <= 2 for u in capped_atoms)
+    assert frozenset({1, 2, 3}) not in capped_atoms
+    assert frozenset({1, 2}) in capped_atoms
+    assert frozenset({2, 3}) in capped_atoms
+
+    # max_area=15 forbids any multi-atom union (each pair sums to 20 > 15)
+    capped_area = enum_connected_unions(adj, areas, max_atoms=3, max_area=15)
+    assert set(capped_area) == {frozenset({1}), frozenset({2}), frozenset({3})}

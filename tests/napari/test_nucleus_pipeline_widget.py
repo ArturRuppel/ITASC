@@ -13,7 +13,6 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import napari
-from napari.layers import Labels
 from qtpy.QtWidgets import QApplication, QProgressBar, QToolButton
 
 
@@ -49,6 +48,13 @@ def _make_viewer():
     app = QApplication.instance() or QApplication([])
     viewer = napari.Viewer(show=False)
     return app, viewer
+
+
+def _stub_missing_attr(name: str):
+    """Fallback for stub modules: resolve any unlisted import to a no-op callable."""
+    if name.startswith("__") and name.endswith("__"):
+        raise AttributeError(name)
+    return lambda *args, **kwargs: None
 
 
 def _install_import_stubs() -> None:
@@ -95,9 +101,15 @@ def _install_import_stubs() -> None:
                 "cellflow.tracking_ultrack.corrections",
                 fromlist=["Correction"],
             ).Correction,
+            "corrections_from_validated_tracks": __import__(
+                "cellflow.tracking_ultrack.corrections",
+                fromlist=["corrections_from_validated_tracks"],
+            ).corrections_from_validated_tracks,
         },
         "cellflow.tracking_ultrack.db_build": {
             "apply_annotations_and_score": lambda *args, **kwargs: None,
+            "build_atom_union_database": lambda *args, **kwargs: None,
+            "annotate_database_from_corrections": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
@@ -106,7 +118,6 @@ def _install_import_stubs() -> None:
         "cellflow.tracking_ultrack.multi_threshold": {
             "build_ultrack_database_from_sources": lambda *args, **kwargs: None,
             "build_ultrack_database_from_thresholds": lambda *args, **kwargs: None,
-            "build_ultrack_database_from_threshold_pairs": lambda *args, **kwargs: None,
             "build_ultrack_source_stacks": lambda *args, **kwargs: (
                 np.zeros((1, 1, 1, 1), dtype=np.float32),
                 np.zeros((1, 1, 1, 1), dtype=np.uint8),
@@ -139,6 +150,7 @@ def _install_import_stubs() -> None:
             mod.__path__ = []
         for attr_name, value in attrs.items():
             setattr(mod, attr_name, value)
+        mod.__getattr__ = _stub_missing_attr
         sys.modules[module_name] = mod
 
 
@@ -333,46 +345,6 @@ def test_pipeline_widget_initial_run_buttons_enabled():
     viewer.close()
 
 
-def test_nucleus_workflow_exposes_threshold_pair_controls_in_db_parameters():
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-
-    for name in (
-        "map_cellprob_min_spin",
-        "map_cellprob_max_spin",
-        "map_cellprob_step_spin",
-        "map_cellprob_range",
-        "map_z_range",
-        "map_z_start_spin",
-        "map_z_stop_spin",
-        "map_z_step_spin",
-    ):
-        assert not hasattr(widget, name)
-        assert not hasattr(widget.nucleus_segmentation_inputs_widget, name)
-
-    for name in (
-        "source_contour_threshold_min_spin",
-        "source_contour_threshold_max_spin",
-        "source_contour_threshold_step_spin",
-        "source_foreground_threshold_min_spin",
-        "source_foreground_threshold_max_spin",
-        "source_foreground_threshold_step_spin",
-        "source_contour_threshold_range",
-        "source_foreground_threshold_range",
-    ):
-        assert not hasattr(widget, name)
-        assert not hasattr(widget.nucleus_segmentation_inputs_widget, name)
-
-    assert hasattr(widget, "source_contour_threshold_spin")
-    assert hasattr(widget, "source_foreground_threshold_spin")
-    assert widget.threshold_pairs() == []
-    assert "map_generation" not in widget.get_state()
-
-    widget.deleteLater()
-    viewer.close()
-
-
 def test_pipeline_widget_status_label_starts_empty():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
@@ -415,33 +387,27 @@ def test_pipeline_status_method_updates_label():
     viewer.close()
 
 
-def test_nucleus_state_persists_explicit_threshold_pairs():
+def test_nucleus_state_persists_atom_union_params():
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
 
-    widget.set_threshold_pairs(
-        [
-            {"contour_threshold": 0.2, "foreground_threshold": 0.7},
-            {"contour_threshold": 0.4, "foreground_threshold": 0.8},
-        ]
-    )
+    widget.atom_union_max_atoms_spin.setValue(5)
+    widget.atom_union_max_area_spin.setValue(4242)
 
     state = widget.get_state()
     db_state = state["db_generation"]
 
-    assert db_state["threshold_pairs"] == [
-        {"contour_threshold": 0.2, "foreground_threshold": 0.7},
-        {"contour_threshold": 0.4, "foreground_threshold": 0.8},
-    ]
-    assert "threshold_min" not in db_state
-    assert "contour_threshold_min" not in db_state
-    assert "foreground_threshold_min" not in db_state
+    assert db_state["max_atoms"] == 5
+    assert db_state["atom_union_max_area"] == 4242
+    assert "threshold_pairs" not in db_state
+    assert "max_area" not in db_state
 
     restored = widget_class(viewer)
     restored.set_state(state)
 
-    assert restored.threshold_pairs() == db_state["threshold_pairs"]
+    assert restored.atom_union_max_atoms_spin.value() == 5
+    assert restored.atom_union_max_area_spin.value() == 4242
 
     restored.deleteLater()
     widget.deleteLater()
@@ -497,29 +463,6 @@ def test_nucleus_state_loads_legacy_validated_options_without_solve_checkbox():
     assert "resolve_from_validated" not in widget.get_state()["ultrack"]
     assert "use_validated" not in widget.get_state()["db_generation"]
     assert not hasattr(widget, "solve_use_validated_check")
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_nucleus_state_loads_legacy_sweep_state_as_empty_threshold_pairs():
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-
-    widget.set_state(
-        {
-            "db_generation": {
-                "threshold_min": 0.1,
-                "threshold_max": 0.5,
-                "threshold_step": 0.1,
-                "contour_threshold_min": 0.2,
-                "foreground_threshold_min": 0.3,
-            }
-        }
-    )
-
-    assert widget.threshold_pairs() == []
 
     widget.deleteLater()
     viewer.close()
@@ -602,320 +545,50 @@ def test_running_stage_params_btn_stays_enabled():
 # ── Handler tests ─────────────────────────────────────────────────────────────
 
 
-def test_preview_threshold_pair_updates_layers_without_mutating_pair_list(
-    tmp_path, monkeypatch
-):
+def test_run_db_generation_calls_build_atom_union_database(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
     pipeline_module = _get_pipeline_module()
     _install_sync_thread_worker(monkeypatch, pipeline_module)
 
-    pos_dir = tmp_path / "pos00"
-    widget._pos_dir = pos_dir
-    widget.source_contour_threshold_spin.setValue(0.2)
-    widget.source_foreground_threshold_spin.setValue(0.6)
-
-    import tifffile
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_contours.tif",
-        np.ones((2, 3, 3), dtype=np.float32),
-    )
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
-        np.ones((2, 3, 3), dtype=np.float32),
-    )
-
-    calls = []
-    contour_preview = np.full((1, 2, 3, 3), 0.75, dtype=np.float32)
-    foreground_preview = np.ones((1, 2, 3, 3), dtype=np.uint8)
-    metadata = [{"contour_threshold": 0.2, "foreground_threshold": 0.6}]
-
-    def fake_build(contours, foreground_scores, **kwargs):
-        calls.append((contours.copy(), foreground_scores.copy(), kwargs))
-        return contour_preview, foreground_preview, metadata
-
-    def fail_write(*args, **kwargs):
-        raise AssertionError("source-stack TIFF writer should not be called")
-
-    monkeypatch.setattr(
-        pipeline_module,
-        "build_ultrack_source_stacks_from_pairs",
-        fake_build,
-    )
-    monkeypatch.setattr(
-        pipeline_module,
-        "write_ultrack_source_stacks",
-        fail_write,
-        raising=False,
-    )
-
-    widget._on_preview_threshold_pair()
-
-    assert len(calls) == 1
-    _contours, _foreground_scores, kwargs = calls[0]
-    assert kwargs["threshold_pairs"] == metadata
-    assert "[Preview] Ultrack Preview: Contours" in viewer.layers
-    assert "[Preview] Ultrack Preview: Foreground" in viewer.layers
-    contour_layer = viewer.layers["[Preview] Ultrack Preview: Contours"]
-    foreground_layer = viewer.layers["[Preview] Ultrack Preview: Foreground"]
-    assert isinstance(foreground_layer, Labels)
-    assert contour_layer.data.shape[:2] == (2, 1)
-    assert foreground_layer.data.shape[:2] == (2, 1)
-    np.testing.assert_allclose(contour_layer.data, np.moveaxis(contour_preview, 0, 1))
-    np.testing.assert_array_equal(
-        foreground_layer.data,
-        np.moveaxis(foreground_preview, 0, 1),
-    )
-    assert contour_layer.metadata["thresholds"] == metadata
-    assert foreground_layer.metadata["thresholds"] == metadata
-    assert contour_layer.metadata["axis_order"] == ("time", "source", "y", "x")
-    assert foreground_layer.metadata["axis_order"] == ("time", "source", "y", "x")
-    viewer.dims.set_current_step(0, 1)
-    viewer.dims.set_current_step(1, 0)
-    assert widget._current_t() == 1
-    assert widget.threshold_pairs() == []
-    assert not (pos_dir / "2_nucleus" / "contour_sources.tif").exists()
-    assert "preview" in widget.pipeline_status_lbl.text().lower()
-    assert not widget.pipeline_progress_bar.isVisible()
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_preview_checkbox_auto_updates_when_threshold_changes(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-    pipeline_module = _get_pipeline_module()
-    _install_sync_thread_worker(monkeypatch, pipeline_module)
-
-    pos_dir = tmp_path / "pos00"
-    widget._pos_dir = pos_dir
-
-    import tifffile
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_contours.tif",
-        np.ones((2, 3, 3), dtype=np.float32),
-    )
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
-        np.ones((2, 3, 3), dtype=np.float32),
-    )
+    widget.atom_union_max_atoms_spin.setValue(4)
+    widget.atom_union_max_area_spin.setValue(7000)
 
     calls = []
 
-    def fake_build(contours, foreground_scores, **kwargs):
-        calls.append(kwargs["threshold_pairs"][0])
-        return (
-            np.ones((1, 2, 3, 3), dtype=np.float32),
-            np.ones((1, 2, 3, 3), dtype=np.uint8),
-            kwargs["threshold_pairs"],
-        )
-
-    monkeypatch.setattr(
-        pipeline_module,
-        "build_ultrack_source_stacks_from_pairs",
-        fake_build,
-    )
-
-    widget.source_threshold_preview_check.setChecked(True)
-    calls.clear()
-    widget.source_contour_threshold_spin.setValue(0.35)
-
-    assert calls[-1]["contour_threshold"] == pytest.approx(0.35)
-
-    widget.source_threshold_preview_check.setChecked(False)
-    calls.clear()
-    widget.source_foreground_threshold_spin.setValue(0.75)
-
-    assert calls == []
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_source_preview_parameter_update_does_not_show_progress_bar(
-    tmp_path,
-    monkeypatch,
-):
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-    pipeline_module = _get_pipeline_module()
-    _install_sync_thread_worker(monkeypatch, pipeline_module)
-
-    pos_dir = tmp_path / "pos00"
-    widget._pos_dir = pos_dir
-
-    import tifffile
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_contours.tif",
-        np.ones((2, 3, 3), dtype=np.float32),
-    )
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
-        np.ones((2, 3, 3), dtype=np.float32),
-    )
-
-    def fake_build(contours, foreground_scores, **kwargs):
-        return (
-            np.ones((1, 2, 3, 3), dtype=np.float32),
-            np.ones((1, 2, 3, 3), dtype=np.uint8),
-            kwargs["threshold_pairs"],
-        )
-
-    monkeypatch.setattr(
-        pipeline_module,
-        "build_ultrack_source_stacks_from_pairs",
-        fake_build,
-    )
-
-    widget.source_threshold_preview_check.setChecked(True)
-    _app.processEvents()
-
-    def _pending_thread_worker(*, connect):
-        def _decorator(_func):
-            def _runner():
-                yielded = connect.get("yielded")
-                if yielded is not None:
-                    yielded((1, 3, "Building Ultrack threshold preview..."))
-                return object()
-
-            return _runner
-
-        return _decorator
-
-    monkeypatch.setattr(pipeline_module, "thread_worker", _pending_thread_worker)
-
-    widget.source_contour_threshold_spin.setValue(0.35)
-    _app.processEvents()
-
-    assert widget.pipeline_status_lbl.text() == "Building Ultrack threshold preview..."
-    assert widget.pipeline_progress_bar.isHidden() is True
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_unchecked_source_auto_preview_ignores_late_worker_result(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-    pipeline_module = _get_pipeline_module()
-
-    captured = {}
-
-    def _capturing_thread_worker(*, connect):
-        def _decorator(func):
-            def _runner():
-                captured["connect"] = connect
-                captured["func"] = func
-                return object()
-
-            return _runner
-
-        return _decorator
-
-    monkeypatch.setattr(pipeline_module, "thread_worker", _capturing_thread_worker)
-
-    pos_dir = tmp_path / "pos00"
-    widget._pos_dir = pos_dir
-
-    import tifffile
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_contours.tif",
-        np.ones((2, 3, 3), dtype=np.float32),
-    )
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_foreground.tif",
-        np.ones((2, 3, 3), dtype=np.float32),
-    )
-
-    monkeypatch.setattr(
-        pipeline_module,
-        "build_ultrack_source_stacks_from_pairs",
-        lambda *_args, **kwargs: (
-            np.ones((1, 2, 3, 3), dtype=np.float32),
-            np.ones((1, 2, 3, 3), dtype=np.uint8),
-            kwargs["threshold_pairs"],
-        ),
-    )
-
-    widget.source_threshold_preview_check.setChecked(True)
-    widget.source_threshold_preview_check.setChecked(False)
-
-    result = captured["func"]()
-    while True:
-        try:
-            next(result)
-        except StopIteration as stop:
-            captured["connect"]["returned"](stop.value)
-            break
-
-    assert "[Preview] Ultrack Preview: Contours" not in viewer.layers
-    assert "[Preview] Ultrack Preview: Foreground" not in viewer.layers
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-    pipeline_module = _get_pipeline_module()
-    _install_sync_thread_worker(monkeypatch, pipeline_module)
-    widget.set_threshold_pairs(
-        [
-            {"contour_threshold": 0.4, "foreground_threshold": 0.8},
-            {"contour_threshold": 0.2, "foreground_threshold": 0.6},
-        ]
-    )
-
-    calls = []
-
-    def fake_build_database(**kwargs):
-        calls.append(kwargs)
-        data_db = kwargs["working_dir"] / "data.db"
+    def fake_build_atom_union_database(atoms_path, working_dir, cfg, progress_cb=None):
+        calls.append((atoms_path, working_dir, cfg))
+        data_db = Path(working_dir) / "data.db"
         data_db.parent.mkdir(parents=True, exist_ok=True)
         data_db.write_bytes(b"sqlite placeholder")
-        return {"database": str(data_db)}
+        return types.SimpleNamespace(stale_atoms=False)
 
     monkeypatch.setattr(
         pipeline_module,
-        "build_ultrack_database_from_threshold_pairs",
-        fake_build_database,
+        "build_atom_union_database",
+        fake_build_atom_union_database,
     )
     monkeypatch.setattr(pipeline_module, "apply_annotations_and_score", lambda **kwargs: None)
     monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
-    monkeypatch.setattr(pipeline_module, "_ultrack_segment", object(), raising=False)
 
     pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    dummy = np.zeros((2, 1, 4, 4), dtype=np.float32)
+    (pos_dir / "2_nucleus").mkdir(parents=True)
     import tifffile
-    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_contours.tif"), dummy)
-    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_foreground.tif"), dummy)
+    tifffile.imwrite(
+        str(pos_dir / "2_nucleus" / "atoms.tif"),
+        np.zeros((2, 4, 4), dtype=np.int32),
+    )
     widget._pos_dir = pos_dir
 
     widget._on_run_db_generation()
 
     assert len(calls) == 1
-    call = calls[0]
-    assert call["contours_path"] == pos_dir / "1_cellpose" / "nucleus_contours.tif"
-    assert call["foreground_scores_path"] == pos_dir / "1_cellpose" / "nucleus_foreground.tif"
-    assert call["working_dir"] == pos_dir / "2_nucleus" / "ultrack_workdir"
-    assert call["threshold_pairs"] == [
-        {"contour_threshold": 0.4, "foreground_threshold": 0.8},
-        {"contour_threshold": 0.2, "foreground_threshold": 0.6},
-    ]
-    assert "score_signal_path" not in call
-    assert call["cfg"].seg_foreground_threshold == pytest.approx(0.0)
+    atoms_path, working_dir, cfg = calls[0]
+    assert atoms_path == pos_dir / "2_nucleus" / "atoms.tif"
+    assert working_dir == pos_dir / "2_nucleus" / "ultrack_workdir"
+    assert cfg.atom_union_max_atoms == 4
+    assert cfg.atom_union_max_area == 7000
     assert widget.db_run_btn.isEnabled()
     assert widget.db_run_btn.text() == "▶"
     assert "complete" in widget.pipeline_status_lbl.text().lower()
@@ -925,7 +598,7 @@ def test_run_db_generation_calls_build_database(tmp_path, monkeypatch):
     viewer.close()
 
 
-def test_run_db_generation_reports_empty_threshold_pair_list(tmp_path, monkeypatch):
+def test_run_db_generation_reports_missing_atoms_tif(tmp_path, monkeypatch):
     _app, viewer = _make_viewer()
     widget_class = _load_workflow_widget_class()
     widget = widget_class(viewer)
@@ -933,61 +606,12 @@ def test_run_db_generation_reports_empty_threshold_pair_list(tmp_path, monkeypat
     monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
 
     pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    dummy = np.zeros((2, 4, 4), dtype=np.float32)
-    import tifffile
-    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_contours.tif"), dummy)
-    tifffile.imwrite(str(pos_dir / "1_cellpose" / "nucleus_foreground.tif"), dummy)
+    (pos_dir / "2_nucleus").mkdir(parents=True)
     widget._pos_dir = pos_dir
 
     widget._on_run_db_generation()
 
-    assert widget.pipeline_status_lbl.text() == (
-        "Add at least one threshold pair before DB generation."
-    )
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_run_db_generation_reports_missing_canonical_contours(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-    pipeline_module = _get_pipeline_module()
-    monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    widget._pos_dir = pos_dir
-
-    widget._on_run_db_generation()
-
-    assert "nucleus_contours.tif" in widget.pipeline_status_lbl.text()
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_run_db_generation_reports_missing_canonical_foreground(tmp_path, monkeypatch):
-    _app, viewer = _make_viewer()
-    widget_class = _load_workflow_widget_class()
-    widget = widget_class(viewer)
-    pipeline_module = _get_pipeline_module()
-    monkeypatch.setattr(pipeline_module, "_ultrack_available", lambda: True)
-
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    import tifffile
-    tifffile.imwrite(
-        pos_dir / "1_cellpose" / "nucleus_contours.tif",
-        np.ones((2, 4, 4), dtype=np.float32),
-    )
-    widget._pos_dir = pos_dir
-
-    widget._on_run_db_generation()
-
-    assert "nucleus_foreground.tif" in widget.pipeline_status_lbl.text()
+    assert "atoms.tif" in widget.pipeline_status_lbl.text()
 
     widget.deleteLater()
     viewer.close()
