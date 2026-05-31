@@ -87,8 +87,11 @@ def _host(tmp_path):
     fg = tmp_path / "fg.tif"
     contour = tmp_path / "contour.tif"
     rng = np.random.default_rng(0)
-    tifffile.imwrite(fg, rng.random((3, 40, 40)).astype(np.float32))
-    tifffile.imwrite(contour, rng.random((3, 40, 40)).astype(np.float32))
+    # Write page-per-frame TIFFs matching production format (imwrite_grayscale).
+    # photometric='minisblack' causes tifffile to store each leading-axis slice
+    # as a separate IFD page, so tifffile.imread(path, key=t) returns a 2-D frame.
+    tifffile.imwrite(str(fg), rng.random((3, 40, 40)).astype(np.float32), photometric="minisblack")
+    tifffile.imwrite(str(contour), rng.random((3, 40, 40)).astype(np.float32), photometric="minisblack")
     viewer = napari.Viewer(show=False)
     viewer.add_image(np.asarray(tifffile.imread(fg)), name="fg")
     return _Host(viewer, fg, contour, tmp_path / "atoms.tif"), viewer
@@ -111,6 +114,9 @@ def test_activate_adds_preview_layer_then_deactivate_removes(tmp_path):
     h, viewer = _host(tmp_path)
     h._on_atom_activate(True)
     assert _ATOM_PREVIEW_LAYER in viewer.layers
+    # Preview layer must be 2-D (single frame), not the full 3-D stack.
+    assert viewer.layers[_ATOM_PREVIEW_LAYER].data.ndim == 2
+    assert viewer.layers[_ATOM_PREVIEW_LAYER].data.shape == (40, 40)
     h._on_atom_activate(False)
     assert _ATOM_PREVIEW_LAYER not in viewer.layers
     napari.Viewer.close_all()

@@ -256,11 +256,15 @@ class NucleusAtomExtractionMixin:
             return
         params = self._atom_params()
         self._set_atom_status("Computing atoms over all frames…")
-        fg = np.asarray(tifffile.imread(str(fg_path)), dtype=np.float32)
-        contour = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
-        atoms = extract_atoms_stack(fg, contour, params)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        write_atoms_tif(out_path, atoms, params)
+        try:
+            fg = np.asarray(tifffile.imread(str(fg_path)), dtype=np.float32)
+            contour = np.asarray(tifffile.imread(str(contour_path)), dtype=np.float32)
+            atoms = extract_atoms_stack(fg, contour, params)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            write_atoms_tif(out_path, atoms, params)
+        except Exception as exc:
+            self._set_atom_status(f"Atom computation failed: {exc}")
+            return
         self._set_atom_status(
             f"Wrote {atoms.shape[0]} frames to {out_path.name} "
             f"({int(atoms.max())} atoms in last frame)."
