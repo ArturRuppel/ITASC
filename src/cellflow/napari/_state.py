@@ -52,6 +52,13 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "power": w.ultrack_power_spin.value(),
             "bias": w.ultrack_bias_spin.value(),
         },
+        "atom_extraction": {
+            "fg_window": w.atom_extraction_widget.fg_window_spin.value(),
+            "fg_cutoff": w.atom_extraction_widget.fg_cutoff_spin.value(),
+            "contour_window": w.atom_extraction_widget.contour_window_spin.value(),
+            "contour_floor": w.atom_extraction_widget.contour_floor_spin.value(),
+            "atom_min_area": w.atom_extraction_widget.atom_min_area_spin.value(),
+        },
     }
 
 
@@ -116,3 +123,11 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "bias" in ul: w.ultrack_bias_spin.setValue(ul["bias"])
         if "quality_exponent" in ul and not (dbg_present and "quality_exponent" in state["db_generation"]):
             w.db_gen_quality_exp_spin.setValue(ul["quality_exponent"])
+    if "atom_extraction" in state:
+        ae = state["atom_extraction"]
+        aw = w.atom_extraction_widget
+        if "fg_window" in ae: aw.fg_window_spin.setValue(ae["fg_window"])
+        if "fg_cutoff" in ae: aw.fg_cutoff_spin.setValue(ae["fg_cutoff"])
+        if "contour_window" in ae: aw.contour_window_spin.setValue(ae["contour_window"])
+        if "contour_floor" in ae: aw.contour_floor_spin.setValue(ae["contour_floor"])
+        if "atom_min_area" in ae: aw.atom_min_area_spin.setValue(ae["atom_min_area"])

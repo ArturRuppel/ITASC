@@ -151,3 +151,25 @@ def test_workflow_widget_builds_atom_extraction_section():
     # path hooks resolve to None without a loaded position (no crash)
     assert w._atom_output_path() is None or str(w._atom_output_path()).endswith("atoms.tif")
     napari.Viewer.close_all()
+
+
+# ── Task 11: state round-trip ─────────────────────────────────────────────────
+
+
+def test_state_round_trip_for_atom_params():
+    _app()
+    from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
+    from cellflow.napari._state import dump_state, load_state
+
+    w = NucleusWorkflowWidget(napari.Viewer(show=False))
+    w.atom_extraction_widget.fg_cutoff_spin.setValue(0.01)
+    w.atom_extraction_widget.atom_min_area_spin.setValue(300)
+    state = dump_state(w)
+    assert state["atom_extraction"]["fg_cutoff"] == 0.01
+    assert state["atom_extraction"]["atom_min_area"] == 300
+
+    w2 = NucleusWorkflowWidget(napari.Viewer(show=False))
+    load_state(w2, state)
+    assert w2.atom_extraction_widget.fg_cutoff_spin.value() == 0.01
+    assert w2.atom_extraction_widget.atom_min_area_spin.value() == 300
+    napari.Viewer.close_all()
