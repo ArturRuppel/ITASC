@@ -137,3 +137,17 @@ def test_compute_atoms_full_stack_writes_tif_with_fingerprint(tmp_path):
     stored_params, stored_fp = read_atoms_params(out)
     assert stored_fp == params_fingerprint(h._atom_params())
     napari.Viewer.close_all()
+
+
+# ── Task 10: workflow widget wiring ──────────────────────────────────────────
+
+
+def test_workflow_widget_builds_atom_extraction_section():
+    _app()
+    from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
+    w = NucleusWorkflowWidget(napari.Viewer(show=False))
+    assert hasattr(w, "atom_extraction_widget")
+    assert w.atom_extraction_section is not None
+    # path hooks resolve to None without a loaded position (no crash)
+    assert w._atom_output_path() is None or str(w._atom_output_path()).endswith("atoms.tif")
+    napari.Viewer.close_all()

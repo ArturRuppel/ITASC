@@ -26,6 +26,9 @@ from qtpy.QtWidgets import (
 
 from cellflow.correction.labels import best_overlapping_label
 from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
+from cellflow.napari.nucleus_atom_extraction_widget import (
+    NucleusAtomExtractionMixin,
+)
 from cellflow.napari.nucleus_db_browser_widget import (
     NucleusUltrackDbBrowserMixin,
     _HierarchyCutState,  # noqa: F401 - legacy module-level test helper export
@@ -70,7 +73,7 @@ _NUCLEUS_PIPELINE_FILE_GROUPS = [
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
+class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionMixin, QWidget):
     """Nucleus candidate generation and tracking — flat action-button layout."""
 
     def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
@@ -81,6 +84,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         self._dims_step_refresh_pending: bool = False
 
         self._init_ultrack_db_browser_state()
+        self._init_atom_extraction_state()
 
         self._setup_ui()
         self._connect_signals()
@@ -135,6 +139,9 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
 
         # ── Ultrack Database Browser ─────────────────────────────────
         self._build_db_browser_section(root)
+
+        # ── Atom Extraction ──────────────────────────────────────────
+        self._build_atom_extraction_section(root)
 
         # ── Refinement (deprecated; widget no longer rendered) ───────
         # self._build_refinement_section(root)
@@ -395,6 +402,30 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
         # activated.
         for sc in correction._correction_shortcuts:
             sc.setParent(self)
+
+    # -- Atom Extraction ---------------------------------------------------
+
+    def _build_atom_extraction_section(self, root: QVBoxLayout) -> None:
+        from cellflow.napari.nucleus_atom_extraction_widget import (
+            NucleusAtomExtractionWidget,
+        )
+
+        self.atom_extraction_widget = NucleusAtomExtractionWidget(self)
+        self.atom_extraction_section = CollapsibleSection(
+            "Atom Extraction", self.atom_extraction_widget, expanded=False,
+        )
+        self._alias_atom_extraction_controls()
+        root.addWidget(self.atom_extraction_widget.header)
+        root.addWidget(self.atom_extraction_section)
+
+    def _atom_fg_path(self):
+        return self._paths.nucleus_foreground if self._paths else None
+
+    def _atom_contour_path(self):
+        return self._paths.nucleus_contours if self._paths else None
+
+    def _atom_output_path(self):
+        return self._paths.nucleus_atoms if self._paths else None
 
     # ================================================================
     # Signals
@@ -759,6 +790,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, QWidget):
             QTimer.singleShot(0, self._refresh_after_dims_step_changed)
         if self.ultrack_db_browser_section.is_expanded:
             QTimer.singleShot(0, self._refresh_ultrack_db_browser)
+        if getattr(self, "_atom_preview_active", False):
+            QTimer.singleShot(0, self._refresh_atom_preview)
 
     def _refresh_after_dims_step_changed(self) -> None:
         self._dims_step_refresh_pending = False
