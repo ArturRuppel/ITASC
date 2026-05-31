@@ -32,7 +32,6 @@ from cellflow.napari.nucleus_atom_extraction_widget import (
 )
 from cellflow.napari.nucleus_db_browser_widget import (
     NucleusUltrackDbBrowserMixin,
-    _HierarchyCutState,  # noqa: F401 - legacy module-level test helper export
 )
 from cellflow.napari.nucleus_pipeline_widget import NucleusPipelineWidget
 from cellflow.napari.nucleus_segmentation_inputs_widget import (

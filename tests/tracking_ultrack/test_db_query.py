@@ -202,3 +202,137 @@ def test_render_hierarchy_cut_state_returns_preview_metadata(tmp_path):
     assert set(preview.label_to_node_id.values()) == {101, 102}
     assert preview.labels.shape == (2, 4)
     assert "2 segment(s)" in preview.status
+
+
+# ── Atom-union browser model ──────────────────────────────────────────────────
+
+
+def test_greedy_color_classes_packs_non_overlapping_candidates():
+    from cellflow.tracking_ultrack.db_query import greedy_color_classes
+
+    # 4 atoms in a row -> size-2 unions AB=11, BC=12, CD=13; 11-12 and 12-13 overlap.
+    classes = greedy_color_classes([11, 12, 13], [(11, 12), (12, 13)])
+
+    # Every candidate appears exactly once; 12 conflicts with both so it is alone,
+    # while the disjoint 11 and 13 share a class -> 2 slider positions, not 3.
+    assert sorted(sum(classes, ())) == [11, 12, 13]
+    assert (12,) in classes and (11, 13) in classes
+    # No class contains an overlapping pair.
+    edge_set = {(11, 12), (12, 13)}
+    for cls in classes:
+        for a in cls:
+            for b in cls:
+                assert (a, b) not in edge_set and (b, a) not in edge_set
+
+
+def test_greedy_color_classes_edge_cases():
+    from cellflow.tracking_ultrack.db_query import greedy_color_classes
+
+    assert greedy_color_classes([], []) == ()
+    assert greedy_color_classes([1, 2, 3], []) == ((1, 2, 3),)  # no overlaps -> one class
+    assert len(greedy_color_classes([1, 2, 3], [(1, 2), (2, 3), (1, 3)])) == 3  # triangle
+
+
+def _add_atom_union_node(session, *, node_id, height, bbox, frame=0):
+    import pickle
+
+    from ultrack.core.database import NodeDB
+    from ultrack.core.segmentation.node import Node
+
+    y0, x0, y1, x1 = bbox
+    mask = np.ones((1, y1 - y0, x1 - x0), dtype=bool)
+    node_obj = Node.from_mask(
+        time=frame,
+        mask=mask,
+        bbox=np.array([0, y0, x0, 1, y1, x1], dtype=np.int64),
+        node_id=node_id,
+    )
+    session.add(
+        NodeDB(
+            id=node_id,
+            t=frame,
+            t_node_id=node_id,
+            t_hier_id=1,
+            z=0,
+            y=(y0 + y1) / 2,
+            x=(x0 + x1) / 2,
+            area=int(mask.sum()),
+            height=float(height),
+            frontier=-1.0,
+            pickle=pickle.dumps(node_obj),
+        )
+    )
+
+
+def _make_atom_union_db(db_path: Path) -> None:
+    """4 atoms A,B,C,D in a row, plus the size-2 unions AB, BC, CD."""
+    pytest.importorskip("ultrack")
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import Base, OverlapDB
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        _add_atom_union_node(session, node_id=1, height=1, bbox=(0, 0, 2, 2))
+        _add_atom_union_node(session, node_id=2, height=1, bbox=(0, 2, 2, 4))
+        _add_atom_union_node(session, node_id=3, height=1, bbox=(0, 4, 2, 6))
+        _add_atom_union_node(session, node_id=4, height=1, bbox=(0, 6, 2, 8))
+        _add_atom_union_node(session, node_id=11, height=2, bbox=(0, 0, 2, 4))  # AB
+        _add_atom_union_node(session, node_id=12, height=2, bbox=(0, 2, 2, 6))  # BC
+        _add_atom_union_node(session, node_id=13, height=2, bbox=(0, 4, 2, 8))  # CD
+        # AB-BC share atom B, BC-CD share atom C (node_id < ancestor_id).
+        session.add(OverlapDB(node_id=11, ancestor_id=12))
+        session.add(OverlapDB(node_id=12, ancestor_id=13))
+        session.commit()
+    engine.dispose()
+
+
+def test_query_union_sizes_returns_distinct_sizes_for_frame(tmp_path):
+    from cellflow.tracking_ultrack.db_query import query_union_sizes
+
+    db_path = tmp_path / "data.db"
+    _make_atom_union_db(db_path)
+
+    assert query_union_sizes(db_path, frame=0) == (1, 2)
+
+
+def test_query_union_color_classes_groups_disjoint_size2_candidates(tmp_path):
+    from cellflow.tracking_ultrack.db_query import query_union_color_classes
+
+    db_path = tmp_path / "data.db"
+    _make_atom_union_db(db_path)
+
+    classes = query_union_color_classes(db_path, frame=0, union_size=2)
+
+    # BC overlaps both neighbors, so it is alone; AB and CD pack together.
+    assert sorted(sum(classes, ())) == [11, 12, 13]
+    assert (12,) in classes and (11, 13) in classes
+
+
+def test_query_union_color_classes_size1_atoms_are_one_class(tmp_path):
+    from cellflow.tracking_ultrack.db_query import query_union_color_classes
+
+    db_path = tmp_path / "data.db"
+    _make_atom_union_db(db_path)
+
+    # Atoms are disjoint -> a single full-frame partition of individual atoms.
+    assert query_union_color_classes(db_path, frame=0, union_size=1) == ((1, 2, 3, 4),)
+
+
+def test_render_union_partition_merges_class_and_fills_leftover_atoms(tmp_path):
+    from cellflow.tracking_ultrack.db_query import render_union_partition
+
+    db_path = tmp_path / "data.db"
+    _make_atom_union_db(db_path)
+
+    # Class {AB, CD} covers all 4 atoms -> 2 merged regions, fully tiled, no leftovers.
+    full = render_union_partition(db_path, 0, (11, 13), plane_shape=(2, 8))
+    assert set(full.label_to_node_id.values()) == {11, 13}
+    assert set(np.unique(full.labels)) == {1, 2}
+
+    # Class {BC} merges B+C; A and D fall back to individual atoms -> 3 regions.
+    partial = render_union_partition(db_path, 0, (12,), plane_shape=(2, 8))
+    assert set(partial.label_to_node_id.values()) == {12, 1, 4}
+    assert (partial.labels == 0).sum() == 0  # still a full-frame partition

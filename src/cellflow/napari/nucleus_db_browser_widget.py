@@ -27,21 +27,18 @@ from cellflow.napari.ui_style import (
 )
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.tracking_ultrack.db_query import (
-    HierarchyCutState as _HierarchyCutState,
     annotation_name as _ultrack_db_annotation_name,
     link_annotation_counts as _query_ultrack_db_link_annotation_counts,
     node_annotation_metadata as _ultrack_db_node_annotation_metadata,
     node_mask_and_bbox as _node_mask_and_bbox,
     node_preview_metadata as _ultrack_db_node_preview_metadata,
     paint_nodes as _paint_ultrack_db_nodes,
-    query_available_sources as _query_available_sources,
     query_connected_nodes as _query_ultrack_db_connected_nodes,
-    query_distinct_heights as _query_distinct_heights,
     query_frame_range as _query_db_frame_range,
-    query_hierarchy_cut_states as _query_hierarchy_cut_states,
     query_middle_frame as _query_ultrack_db_middle_frame,
-    render_hierarchy_cut as _render_hierarchy_cut,
-    render_hierarchy_cut_state as _render_hierarchy_cut_state,
+    query_union_color_classes as _query_union_color_classes,
+    query_union_sizes as _query_union_sizes,
+    render_union_partition as _render_union_partition,
     summary_text as _ultrack_db_summary_text,
 )
 
@@ -97,32 +94,18 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         )
         lay.addWidget(self.info_lbl)
 
-        self.source_slider = QSlider(Qt.Horizontal)
-        self.source_slider.setRange(0, 0)
-        self.source_slider.setValue(0)
-        self.source_slider.setToolTip(
-            "Select threshold source: 0 = lowest threshold, higher = more stringent"
-        )
-        self.source_slider.setEnabled(False)
-        self.source_lbl = QLabel("all")
-        self.source_lbl.setFixedWidth(48)
-        self.source_slider_row = QWidget()
-        source_slider_lay = QHBoxLayout(self.source_slider_row)
-        source_slider_lay.setContentsMargins(0, 0, 0, 0)
-        source_slider_lay.setSpacing(2)
-        _add_slider_step_buttons(source_slider_lay, self.source_slider)
-        source_slider_lay.addWidget(self.source_lbl)
-        lay.addWidget(self.source_slider_row)
-
+        # Vertical axis (primary): atom-union size — how many atoms are merged
+        # into each candidate. 0 = individual atoms, higher = coarser merges.
         self.hierarchy_slider = QSlider(Qt.Horizontal)
-        self.hierarchy_slider.setRange(0, 100)
-        self.hierarchy_slider.setValue(50)
+        self.hierarchy_slider.setRange(0, 0)
+        self.hierarchy_slider.setValue(0)
         self.hierarchy_slider.setToolTip(
-            "Hierarchy cut level: 0 = most split, 1 = most merged"
+            "Union size: number of atoms merged per candidate "
+            "(lowest = individual atoms, higher = coarser merges)"
         )
         self.hierarchy_slider.setEnabled(False)
-        self.height_lbl = QLabel("0.50")
-        self.height_lbl.setFixedWidth(48)
+        self.height_lbl = QLabel("—")
+        self.height_lbl.setFixedWidth(64)
         self.slider_row = QWidget()
         slider_lay = QHBoxLayout(self.slider_row)
         slider_lay.setContentsMargins(0, 0, 0, 0)
@@ -130,6 +113,27 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         _add_slider_step_buttons(slider_lay, self.hierarchy_slider)
         slider_lay.addWidget(self.height_lbl)
         lay.addWidget(self.slider_row)
+
+        # Horizontal axis: which merge — at the chosen union size, scan the
+        # non-overlapping merge groups (color classes) that together show every
+        # candidate at least once.
+        self.source_slider = QSlider(Qt.Horizontal)
+        self.source_slider.setRange(0, 0)
+        self.source_slider.setValue(0)
+        self.source_slider.setToolTip(
+            "Merge view: scan the different non-overlapping merge groups "
+            "at the current union size"
+        )
+        self.source_slider.setEnabled(False)
+        self.source_lbl = QLabel("—")
+        self.source_lbl.setFixedWidth(64)
+        self.source_slider_row = QWidget()
+        source_slider_lay = QHBoxLayout(self.source_slider_row)
+        source_slider_lay.setContentsMargins(0, 0, 0, 0)
+        source_slider_lay.setSpacing(2)
+        _add_slider_step_buttons(source_slider_lay, self.source_slider)
+        source_slider_lay.addWidget(self.source_lbl)
+        lay.addWidget(self.source_slider_row)
 
         self.prob_alpha_check = QCheckBox("Node prob transparency")
         self.prob_alpha_check.setToolTip("Modulate label opacity by node probability")
@@ -163,9 +167,8 @@ class NucleusUltrackDbBrowserMixin:
     def _init_ultrack_db_browser_state(self) -> None:
         self._ultrack_db_preview_cache: dict = {}
         self._ultrack_db_summary_cache: dict[tuple, str] = {}
-        self._ultrack_db_height_values_cache: dict[tuple, tuple[float, ...]] = {}
-        self._ultrack_db_cut_state_cache: dict[tuple, tuple[_HierarchyCutState, ...]] = {}
-        self._ultrack_db_sources_cache: dict[tuple, tuple[int, ...]] = {}
+        self._ultrack_db_size_values_cache: dict[tuple, tuple[int, ...]] = {}
+        self._ultrack_db_color_class_cache: dict[tuple, tuple[tuple[int, ...], ...]] = {}
         self._ultrack_db_frames_cache: dict[tuple, tuple[int, ...]] = {}
         self._ultrack_db_browser_active: bool = False
         self._ultrack_db_frame_initialized: bool = False
@@ -224,32 +227,30 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_refresh_timer.start()
 
     def _on_ultrack_db_source_changed(self, value: int) -> None:
+        """Horizontal axis: pick which merge group (color class) to display."""
         if not self._ultrack_db_browser_active:
             return
-        max_source = self.ultrack_db_source_slider.maximum()
-        if max_source > 0:
-            self.ultrack_db_source_lbl.setText(f"{value}/{max_source}")
-        else:
-            self.ultrack_db_source_lbl.setText("all")
+        max_merge = self.ultrack_db_source_slider.maximum()
+        self._set_ultrack_db_merge_label(value, max_merge + 1)
         self._schedule_ultrack_db_browser_refresh()
 
     def _on_ultrack_db_slider_changed(self, value: int) -> None:
+        """Vertical axis: pick the union size (number of atoms merged)."""
         if not self._ultrack_db_browser_active:
             return
         db_path = self._ultrack_db_path()
+        sizes: tuple[int, ...] = ()
         if db_path is not None and db_path.exists():
             try:
                 mtime_ns = db_path.stat().st_mtime_ns
-                heights = self._query_distinct_heights(db_path, mtime_ns)
-                index = min(max(int(value), 0), max(len(heights) - 1, 0))
-                if heights:
-                    self._set_ultrack_db_height_label(index, heights[index], len(heights))
-                else:
-                    self.ultrack_db_height_lbl.setText("—")
+                sizes = self._query_union_sizes(db_path, mtime_ns, self._current_t())
             except Exception:
-                self.ultrack_db_height_lbl.setText(str(value))
+                sizes = ()
+        if sizes:
+            index = min(max(int(value), 0), len(sizes) - 1)
+            self._set_ultrack_db_size_label(index, sizes[index], len(sizes))
         else:
-            self.ultrack_db_height_lbl.setText(str(value))
+            self.ultrack_db_height_lbl.setText("—")
         self._schedule_ultrack_db_browser_refresh()
 
     def _on_ultrack_db_activate(self, checked: bool) -> None:
@@ -377,12 +378,39 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_frames_cache[key] = result
         return result
 
+    def _resolve_ultrack_db_partition(self, db_path: Path, mtime_ns: int, frame: int):
+        """Configure both sliders for ``frame`` and return the normalized preview
+        tuple for the current (union size, merge group), or ``None`` if the frame
+        has no candidates.
+
+        Vertical slider → union size (atoms merged per candidate); horizontal slider
+        → which non-overlapping merge group (color class) of that size to paint.
+        """
+        sizes = self._configure_ultrack_db_size_slider(db_path, mtime_ns, frame)
+        if not sizes:
+            return None
+        size_index = min(int(self.ultrack_db_hierarchy_slider.value()), len(sizes) - 1)
+        union_size = sizes[size_index]
+        classes = self._configure_ultrack_db_merge_slider(
+            db_path, mtime_ns, frame, union_size
+        )
+        if not classes:
+            return None
+        color_index = min(int(self.ultrack_db_source_slider.value()), len(classes) - 1)
+        color_node_ids = classes[color_index]
+        key = self._ultrack_db_preview_cache_key(
+            db_path, mtime_ns, frame, union_size, color_index,
+        )
+        cached = self._ultrack_db_preview_cache.get(key)
+        if cached is None:
+            cached = self._render_union_partition(db_path, frame, color_node_ids)
+            self._ultrack_db_preview_cache[key] = cached
+        return self._normalize_ultrack_db_preview(cached)
+
     def _load_full_db_stack(self, db_path: Path) -> None:
         """Create a 3D DB preview stack and render only the initial frame."""
         try:
             mtime_ns = db_path.stat().st_mtime_ns
-            self._configure_ultrack_db_source_slider(db_path, mtime_ns)
-
             frames = self._query_db_frames(db_path, mtime_ns)
             if not frames:
                 self._set_ultrack_db_status("No frames in database.")
@@ -392,27 +420,11 @@ class NucleusUltrackDbBrowserMixin:
             self.ultrack_db_info_lbl.setText(
                 self._cached_ultrack_db_summary_text(db_path, mtime_ns, mid_frame)
             )
-            self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, mid_frame)
-            slider_int = int(self.ultrack_db_hierarchy_slider.value())
-
-            states = self._query_hierarchy_cut_states(db_path, mtime_ns, mid_frame)
-            if not states:
-                self._set_ultrack_db_status(
-                    f"No hierarchy states for frame {mid_frame}."
-                )
+            resolved = self._resolve_ultrack_db_partition(db_path, mtime_ns, mid_frame)
+            if resolved is None:
+                self._set_ultrack_db_status(f"No candidates for frame {mid_frame}.")
                 return
-            idx = min(slider_int, len(states) - 1)
-            state = states[idx]
-            key = self._ultrack_db_preview_cache_key(
-                db_path, mtime_ns, mid_frame, idx, state,
-            )
-            cached = self._ultrack_db_preview_cache.get(key)
-            if cached is None:
-                cached = self._render_hierarchy_cut_state(db_path, mid_frame, state)
-                self._ultrack_db_preview_cache[key] = cached
-            labels, _status, prob_dict, l2n, n2l, annots = (
-                self._normalize_ultrack_db_preview(cached)
-            )
+            labels, _status, prob_dict, l2n, n2l, annots = resolved
             self._ultrack_db_label_to_node_id = l2n
             self._ultrack_db_node_id_to_label = n2l
             self._ultrack_db_node_annotations = annots
@@ -495,24 +507,14 @@ class NucleusUltrackDbBrowserMixin:
             self.ultrack_db_info_lbl.setText(
                 self._cached_ultrack_db_summary_text(db_path, mtime_ns, frame)
             )
-            self._configure_ultrack_db_source_slider(db_path, mtime_ns)
-            states = self._configure_ultrack_db_hierarchy_slider(db_path, mtime_ns, frame)
-            if not states:
+            resolved = self._resolve_ultrack_db_partition(db_path, mtime_ns, frame)
+            if resolved is None:
                 labels = self._empty_ultrack_db_preview()
                 self._update_labels_layer(_ULTRACK_DB_PREVIEW_LAYER, labels)
-                self._set_ultrack_db_status(f"No hierarchy states for frame {frame}.")
+                self._set_ultrack_db_status(f"No candidates for frame {frame}.")
                 return
-            slider_int = int(self.ultrack_db_hierarchy_slider.value())
-            state = states[slider_int]
-            key = self._ultrack_db_preview_cache_key(
-                db_path, mtime_ns, frame, slider_int, state,
-            )
-            cached = self._ultrack_db_preview_cache.get(key)
-            if cached is None:
-                cached = self._render_hierarchy_cut_state(db_path, frame, state)
-                self._ultrack_db_preview_cache[key] = cached
             labels, status, prob_dict, label_to_node_id, node_id_to_label, node_annotations = (
-                self._normalize_ultrack_db_preview(cached)
+                resolved
             )
             self._ultrack_db_label_to_node_id = label_to_node_id
             self._ultrack_db_node_id_to_label = node_id_to_label
@@ -801,7 +803,7 @@ class NucleusUltrackDbBrowserMixin:
                 )
             return (
                 f"{status} Selected node {sel} is hidden "
-                f"at frame {frame} and the current hierarchy threshold."
+                f"at frame {frame} and the current union size / merge group."
             )
         self._update_ultrack_db_highlight(labels, int(dl))
         return status
@@ -953,64 +955,34 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_summary_cache[key] = text
         return text
 
-    def _ultrack_db_preview_cache_key(self, db_path, mtime_ns, frame, index, state):
-        source_idx = self.ultrack_db_source_slider.value()
-        max_source = self.ultrack_db_source_slider.maximum()
-        source_key = int(source_idx) if max_source > 0 else None
+    def _ultrack_db_preview_cache_key(self, db_path, mtime_ns, frame, union_size, color_index):
         return (
-            str(db_path.resolve()), mtime_ns, int(frame), int(index), source_key, state,
+            str(db_path.resolve()), mtime_ns, int(frame),
+            int(union_size), int(color_index),
         )
 
-    def _query_distinct_heights(self, db_path, mtime_ns):
-        key = (str(db_path.resolve()), mtime_ns)
-        cached = self._ultrack_db_height_values_cache.get(key)
+    def _query_union_sizes(self, db_path, mtime_ns, frame):
+        key = (str(db_path.resolve()), mtime_ns, int(frame))
+        cached = self._ultrack_db_size_values_cache.get(key)
         if cached is not None:
             return cached
-        heights = _query_distinct_heights(db_path)
-        self._ultrack_db_height_values_cache[key] = heights
-        return heights
+        sizes = _query_union_sizes(db_path, int(frame))
+        self._ultrack_db_size_values_cache[key] = sizes
+        return sizes
 
-    def _query_hierarchy_cut_states(self, db_path, mtime_ns, frame):
-        source_idx = self.ultrack_db_source_slider.value()
-        max_source = self.ultrack_db_source_slider.maximum()
-        source_key = int(source_idx) if max_source > 0 else None
-        key = (str(db_path.resolve()), mtime_ns, frame, source_key)
-        cached = self._ultrack_db_cut_state_cache.get(key)
+    def _query_union_color_classes(self, db_path, mtime_ns, frame, union_size):
+        key = (str(db_path.resolve()), mtime_ns, int(frame), int(union_size))
+        cached = self._ultrack_db_color_class_cache.get(key)
         if cached is not None:
             return cached
-        result = _query_hierarchy_cut_states(db_path, frame, source_index=source_key)
-        self._ultrack_db_cut_state_cache[key] = result
-        return result
+        classes = _query_union_color_classes(db_path, int(frame), int(union_size))
+        self._ultrack_db_color_class_cache[key] = classes
+        return classes
 
-    def _query_available_sources(self, db_path, mtime_ns):
-        key = (str(db_path.resolve()), mtime_ns, "sources")
-        cached = self._ultrack_db_sources_cache.get(key)
-        if cached is not None:
-            return cached
-        sources = _query_available_sources(db_path)
-        self._ultrack_db_sources_cache[key] = sources
-        return sources
-
-    def _configure_ultrack_db_source_slider(self, db_path, mtime_ns):
-        sources = self._query_available_sources(db_path, mtime_ns)
-        if not sources:
-            self.ultrack_db_source_slider.setRange(0, 0)
-            self.ultrack_db_source_lbl.setText("all")
-            return False
-        max_source = max(sources)
-        current = min(max(int(self.ultrack_db_source_slider.value()), 0), max_source)
-        old = self.ultrack_db_source_slider.blockSignals(True)
-        try:
-            self.ultrack_db_source_slider.setRange(0, max_source)
-            self.ultrack_db_source_slider.setValue(current)
-        finally:
-            self.ultrack_db_source_slider.blockSignals(old)
-        self.ultrack_db_source_lbl.setText(f"{current}/{max_source}")
-        return len(sources) > 1
-
-    def _configure_ultrack_db_hierarchy_slider(self, db_path, mtime_ns, frame):
-        states = self._query_hierarchy_cut_states(db_path, mtime_ns, frame)
-        maximum = max(len(states) - 1, 0)
+    def _configure_ultrack_db_size_slider(self, db_path, mtime_ns, frame):
+        """Vertical axis. Range over the distinct union sizes present in ``frame``."""
+        sizes = self._query_union_sizes(db_path, mtime_ns, frame)
+        maximum = max(len(sizes) - 1, 0)
         value = min(max(int(self.ultrack_db_hierarchy_slider.value()), 0), maximum)
         old = self.ultrack_db_hierarchy_slider.blockSignals(True)
         try:
@@ -1018,29 +990,45 @@ class NucleusUltrackDbBrowserMixin:
             self.ultrack_db_hierarchy_slider.setValue(value)
         finally:
             self.ultrack_db_hierarchy_slider.blockSignals(old)
-        if states:
-            self._set_ultrack_db_height_label(value, states[value].height, len(states))
+        if sizes:
+            self._set_ultrack_db_size_label(value, sizes[value], len(sizes))
         else:
             self.ultrack_db_height_lbl.setText("—")
-        return states
+        return sizes
 
-    def _set_ultrack_db_height_label(self, index, height, total):
-        ht = "—" if height is None else f"{height:.2f}"
-        self.ultrack_db_height_lbl.setText(f"i={index} h={ht} ({index + 1}/{total})")
+    def _configure_ultrack_db_merge_slider(self, db_path, mtime_ns, frame, union_size):
+        """Horizontal axis. Range over the merge groups (color classes) of ``union_size``."""
+        classes = self._query_union_color_classes(db_path, mtime_ns, frame, union_size)
+        maximum = max(len(classes) - 1, 0)
+        value = min(max(int(self.ultrack_db_source_slider.value()), 0), maximum)
+        old = self.ultrack_db_source_slider.blockSignals(True)
+        try:
+            self.ultrack_db_source_slider.setRange(0, maximum)
+            self.ultrack_db_source_slider.setValue(value)
+        finally:
+            self.ultrack_db_source_slider.blockSignals(old)
+        if classes:
+            self._set_ultrack_db_merge_label(value, len(classes))
+        else:
+            self.ultrack_db_source_lbl.setText("—")
+        return classes
 
-    def _render_hierarchy_cut(self, db_path, frame, h_actual):
-        return _render_hierarchy_cut(
+    def _set_ultrack_db_size_label(self, index, union_size, total):
+        self.ultrack_db_height_lbl.setText(
+            f"N={int(union_size)} ({index + 1}/{total})"
+        )
+
+    def _set_ultrack_db_merge_label(self, index, total):
+        if total <= 0:
+            self.ultrack_db_source_lbl.setText("—")
+            return
+        self.ultrack_db_source_lbl.setText(f"{index + 1}/{total}")
+
+    def _render_union_partition(self, db_path, frame, color_node_ids):
+        return _render_union_partition(
             db_path,
             frame,
-            h_actual,
-            plane_shape=self._viewer_plane_shape(),
-        ).as_tuple()
-
-    def _render_hierarchy_cut_state(self, db_path, frame, state):
-        return _render_hierarchy_cut_state(
-            db_path,
-            frame,
-            state,
+            color_node_ids,
             plane_shape=self._viewer_plane_shape(),
         ).as_tuple()
 

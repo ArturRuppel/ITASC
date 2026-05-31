@@ -303,6 +303,207 @@ def query_distinct_heights(db_path: Path) -> tuple[float, ...]:
         engine.dispose()
 
 
+def query_union_sizes(db_path: Path, frame: int) -> tuple[int, ...]:
+    """Distinct atom-union sizes (``height`` = number of merged atoms) present in
+    ``frame``, sorted ascending. Drives the vertical "union size" slider: index 0
+    is the finest (1 atom = individual atoms), higher indices merge more atoms.
+    """
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            rows = (
+                session.query(NodeDB.height)
+                .filter(NodeDB.t == frame)
+                .distinct()
+                .order_by(NodeDB.height)
+                .all()
+            )
+    finally:
+        engine.dispose()
+    return tuple(int(round(float(r[0]))) for r in rows if r[0] is not None)
+
+
+def query_union_color_classes(
+    db_path: Path, frame: int, union_size: int
+) -> tuple[tuple[int, ...], ...]:
+    """Group the size-``union_size`` candidates of ``frame`` into color classes of
+    mutually non-overlapping candidates (a greedy graph coloring of the shared-atom
+    overlap graph from ``OverlapDB``).
+
+    Each returned class is a tuple of node ids that can be painted together in one
+    full-frame partition without conflict, so every candidate of this size is shown
+    in exactly one class while keeping the number of classes (= horizontal slider
+    positions) small. Returns ``()`` if no candidates of this size exist.
+    """
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    try:
+        from ultrack.core.database import OverlapDB
+    except Exception:
+        OverlapDB = None
+
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            node_ids = [
+                int(r[0])
+                for r in session.query(NodeDB.id)
+                .filter(NodeDB.t == frame)
+                .filter(NodeDB.height == float(union_size))
+                .order_by(NodeDB.id)
+                .all()
+            ]
+            id_set = set(node_ids)
+            edges: list[tuple[int, int]] = []
+            if OverlapDB is not None and node_ids:
+                # OverlapDB stores node_id < ancestor_id, so every intra-set edge has
+                # its node_id endpoint in node_ids; filtering on that side is exact.
+                rows = (
+                    session.query(OverlapDB.node_id, OverlapDB.ancestor_id)
+                    .filter(OverlapDB.node_id.in_(node_ids))
+                    .all()
+                )
+                edges = [(int(a), int(b)) for a, b in rows if int(b) in id_set]
+    finally:
+        engine.dispose()
+
+    return greedy_color_classes(node_ids, edges)
+
+
+def greedy_color_classes(
+    node_ids: list[int], edges: Iterable[tuple[int, int]]
+) -> tuple[tuple[int, ...], ...]:
+    """Partition ``node_ids`` into classes with no intra-class edge (greedy graph
+    coloring). Welsh–Powell order (highest degree first) keeps the class count low;
+    ids preserve their original order within each class. Pure helper, no DB."""
+    if not node_ids:
+        return ()
+    adj: dict[int, set[int]] = {nid: set() for nid in node_ids}
+    id_set = set(node_ids)
+    for a, b in edges:
+        if a != b and a in id_set and b in id_set:
+            adj[a].add(b)
+            adj[b].add(a)
+
+    order = sorted(node_ids, key=lambda n: (-len(adj[n]), n))
+    colors: dict[int, int] = {}
+    for nid in order:
+        used = {colors[m] for m in adj[nid] if m in colors}
+        c = 0
+        while c in used:
+            c += 1
+        colors[nid] = c
+
+    n_colors = max(colors.values()) + 1
+    classes: list[list[int]] = [[] for _ in range(n_colors)]
+    for nid in node_ids:  # stable id order within each class
+        classes[colors[nid]].append(nid)
+    return tuple(tuple(c) for c in classes)
+
+
+def _paint_union_partition(
+    union_nodes: list, atom_nodes: list, plane_shape: tuple[int, int]
+) -> tuple[np.ndarray, list]:
+    """Paint a full-frame partition: the merged ``union_nodes`` take priority, then
+    the individual ``atom_nodes`` fill any territory not covered by a union.
+
+    Returns ``(labels, ordered_nodes)`` where ``ordered_nodes[i]`` is painted with
+    label ``i + 1`` — matching ``node_preview_metadata`` so click selection lines up.
+    """
+    parsed: list[tuple] = []
+    max_y = max_x = 0
+    for node in union_nodes:
+        result = node_mask_and_bbox(node)
+        if result is None:
+            continue
+        (y0, x0, y1, x1), mask = result
+        max_y, max_x = max(max_y, y1), max(max_x, x1)
+        parsed.append((node, (y0, x0, y1, x1), mask, True))
+    for node in atom_nodes:
+        result = node_mask_and_bbox(node)
+        if result is None:
+            continue
+        (y0, x0, y1, x1), mask = result
+        max_y, max_x = max(max_y, y1), max(max_x, x1)
+        parsed.append((node, (y0, x0, y1, x1), mask, False))
+
+    base_y, base_x = plane_shape
+    labels = np.zeros((max(base_y, max_y, 1), max(base_x, max_x, 1)), dtype=np.uint32)
+    ordered: list = []
+    for node, (y0, x0, y1, x1), mask, priority in parsed:
+        region = labels[y0:y1, x0:x1]
+        if region.shape != mask.shape:
+            continue
+        # Unions never overlap within a class, so they paint freely; atoms only fill
+        # background, leaving atoms already covered by a union unlabeled here.
+        sub = mask if priority else (mask & (region == 0))
+        if not sub.any():
+            continue
+        region[sub] = len(ordered) + 1
+        ordered.append(node)
+    return labels, ordered
+
+
+def render_union_partition(
+    db_path: Path,
+    frame: int,
+    color_node_ids: Iterable[int],
+    *,
+    plane_shape: tuple[int, int],
+) -> UltrackDbPreview:
+    """Full-frame partition for one horizontal slider position: the candidates in
+    ``color_node_ids`` painted as merged regions, with leftover atoms filled in."""
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    color_node_ids = tuple(int(n) for n in color_node_ids)
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            union_nodes: list = []
+            if color_node_ids:
+                rows = (
+                    session.query(NodeDB)
+                    .filter(NodeDB.t == frame)
+                    .filter(NodeDB.id.in_(color_node_ids))
+                    .all()
+                )
+                by_id = {int(n.id): n for n in rows}
+                union_nodes = [by_id[i] for i in color_node_ids if i in by_id]
+            atom_nodes = (
+                session.query(NodeDB)
+                .filter(NodeDB.t == frame)
+                .filter(NodeDB.height == 1.0)
+                .order_by(NodeDB.id)
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    labels, ordered = _paint_union_partition(union_nodes, atom_nodes, plane_shape)
+    if not ordered:
+        return _empty_preview(plane_shape, f"No candidates for frame {frame}.")
+
+    probabilities, label_to_node_id, node_id_to_label = node_preview_metadata(ordered)
+    annotations = node_annotation_metadata(ordered)
+    n_merged = len(union_nodes)
+    return UltrackDbPreview(
+        labels=labels,
+        status=(
+            f"Frame {frame}: {len(ordered)} region(s), "
+            f"{n_merged} merged candidate(s)."
+        ),
+        probabilities=probabilities,
+        label_to_node_id=label_to_node_id,
+        node_id_to_label=node_id_to_label,
+        node_annotations=annotations,
+    )
+
+
 def query_hierarchy_cut_states(
     db_path: Path, frame: int, *, source_index: int | None = None
 ) -> tuple[HierarchyCutState, ...]:

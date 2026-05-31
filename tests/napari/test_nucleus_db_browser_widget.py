@@ -71,6 +71,7 @@ def _install_import_stubs() -> None:
         "cellflow.tracking_ultrack.db_build": {
             "apply_annotations_and_score": lambda *args, **kwargs: None,
             "annotate_database_from_corrections": lambda *args, **kwargs: None,
+            "build_atom_union_database": lambda *args, **kwargs: None,
         },
         "cellflow.tracking_ultrack.export": {"export_tracked_labels": lambda *args, **kwargs: None},
         "cellflow.tracking_ultrack.ingest": {
@@ -323,16 +324,14 @@ def test_ultrack_db_browser_shows_missing_db_status(tmp_path):
     viewer.close()
 
 
-def _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, heights):
-    module = sys.modules[widget_class.__module__]
-    states = tuple(module._HierarchyCutState((), height) for height in heights)
-    monkeypatch.setattr(widget, "_query_hierarchy_cut_states", lambda *a: states)
-    monkeypatch.setattr(
-        widget,
-        "_render_hierarchy_cut_state",
-        lambda path, frame, state: widget._render_hierarchy_cut(path, frame, state.height),
-    )
-    return states
+def _stub_ultrack_db_partition(monkeypatch, widget, *, sizes=(1,), classes=((1,),)):
+    """Stub the union-size (vertical) and merge-group (horizontal) queries.
+
+    Tests provide the rendered preview by monkeypatching ``_render_union_partition``,
+    which the browser calls with ``(db_path, frame, color_node_ids)``.
+    """
+    monkeypatch.setattr(widget, "_query_union_sizes", lambda *a: tuple(sizes))
+    monkeypatch.setattr(widget, "_query_union_color_classes", lambda *a: tuple(classes))
 
 
 def test_ultrack_db_browser_summary_label_wraps_instead_of_widening():
@@ -357,8 +356,8 @@ def test_ultrack_db_browser_exposes_hierarchy_only_controls():
 
     assert not hasattr(widget, "ultrack_db_mode_combo")
     assert widget.ultrack_db_hierarchy_slider.minimum() == 0
-    assert widget.ultrack_db_hierarchy_slider.maximum() == 100
-    assert widget.ultrack_db_hierarchy_slider.value() == 50
+    assert widget.ultrack_db_hierarchy_slider.maximum() == 0
+    assert widget.ultrack_db_hierarchy_slider.value() == 0
     assert widget._ultrack_db_slider_row.isHidden() is False
 
     widget.deleteLater()
@@ -464,10 +463,10 @@ def test_ultrack_db_browser_click_selects_node_id_from_display_label(tmp_path, m
     widget._ultrack_db_frame_initialized = True
     monkeypatch.setattr(widget, "_current_t", lambda: 4)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
     monkeypatch.setattr(
         widget,
-        "_render_hierarchy_cut",
+        "_render_union_partition",
         lambda *a: (
             np.array([[0, 2], [0, 0]], dtype=np.uint32),
             "rendered",
@@ -558,7 +557,7 @@ def test_ultrack_db_browser_connected_focus_filters_by_viewer_frame(tmp_path, mo
     widget._ultrack_db_selected_node_id = 222
     widget._ultrack_db_selected_frame = 4
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
     monkeypatch.setattr(
         widget,
         "_query_ultrack_db_connected_nodes",
@@ -589,7 +588,7 @@ def test_ultrack_db_browser_connected_focus_filters_by_viewer_frame(tmp_path, mo
         labels, label_to_node_id, node_id_to_label = labels_by_frame[current["t"]]
         return labels, "rendered", {1: 1.0, 2: 1.0}, label_to_node_id, node_id_to_label
 
-    monkeypatch.setattr(widget, "_render_hierarchy_cut", _render)
+    monkeypatch.setattr(widget, "_render_union_partition", _render)
 
     widget._refresh_ultrack_db_browser()
     assert set(np.unique(viewer.layers["[Database] Ultrack DB Preview"].data)) == {0, 1}
@@ -625,7 +624,7 @@ def test_ultrack_db_browser_connected_focus_preserves_node_prob_transparency(
     widget._ultrack_db_selected_frame = 4
     monkeypatch.setattr(widget, "_current_t", lambda: 5)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
     monkeypatch.setattr(
         widget,
         "_query_ultrack_db_connected_nodes",
@@ -633,7 +632,7 @@ def test_ultrack_db_browser_connected_focus_preserves_node_prob_transparency(
     )
     monkeypatch.setattr(
         widget,
-        "_render_hierarchy_cut",
+        "_render_union_partition",
         lambda *a: (
             np.array([[1, 0], [2, 0]], dtype=np.uint32),
             "rendered",
@@ -668,7 +667,7 @@ def test_ultrack_db_browser_refresh_reanchors_selection_contour(tmp_path, monkey
     widget._ultrack_db_frame_initialized = True
     monkeypatch.setattr(widget, "_current_t", lambda: 4)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
     renders = [
         (
             np.array([[1, 1, 0], [1, 1, 0], [0, 0, 0]], dtype=np.uint32),
@@ -685,7 +684,7 @@ def test_ultrack_db_browser_refresh_reanchors_selection_contour(tmp_path, monkey
             {222: 2},
         ),
     ]
-    monkeypatch.setattr(widget, "_render_hierarchy_cut", lambda *a: renders.pop(0))
+    monkeypatch.setattr(widget, "_render_union_partition", lambda *a: renders.pop(0))
 
     widget._refresh_ultrack_db_browser()
     widget._select_ultrack_db_preview_label(1, frame=4)
@@ -718,11 +717,11 @@ def test_ultrack_db_browser_connected_focus_reports_hidden_selected_node(tmp_pat
     widget._ultrack_db_selected_frame = 4
     monkeypatch.setattr(widget, "_current_t", lambda: 4)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *a: "summary")
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
     monkeypatch.setattr(widget, "_query_ultrack_db_connected_nodes", lambda *a: ({}, {}))
     monkeypatch.setattr(
         widget,
-        "_render_hierarchy_cut",
+        "_render_union_partition",
         lambda *a: (
             np.array([[1, 0]], dtype=np.uint32),
             "rendered",
@@ -760,21 +759,21 @@ def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, m
     def _fake_summary(path, frame):
         return "3 nodes | 2 links | frame 0: 1 nodes"
 
-    def _fake_render(path, frame, slider_int):
-        calls.append((path, frame, slider_int))
-        return np.zeros((5, 5), dtype=np.uint32), "rendered hierarchy cut"
+    def _fake_render(path, frame, color_node_ids):
+        calls.append((path, frame, color_node_ids))
+        return np.zeros((5, 5), dtype=np.uint32), "rendered partition"
 
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", _fake_summary)
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.25, 0.75))
-    monkeypatch.setattr(widget, "_render_hierarchy_cut", _fake_render)
+    _stub_ultrack_db_partition(monkeypatch, widget, sizes=(1, 2), classes=((10,),))
+    monkeypatch.setattr(widget, "_render_union_partition", _fake_render)
 
     widget._refresh_ultrack_db_browser()
     widget._refresh_ultrack_db_browser()
 
     assert len(calls) == 1
-    assert calls[0] == (db_path, 0, 0.75)
+    assert calls[0] == (db_path, 0, (10,))
     assert widget.ultrack_db_info_lbl.text() == "3 nodes | 2 links | frame 0: 1 nodes"
-    assert widget.ultrack_db_section_status_lbl.text() == "rendered hierarchy cut"
+    assert widget.ultrack_db_section_status_lbl.text() == "rendered partition"
     assert "[Database] Ultrack DB Preview" in viewer.layers
 
     widget.deleteLater()
@@ -792,10 +791,11 @@ def test_ultrack_db_browser_slider_change_preserves_render_cache(tmp_path, monke
     widget._pos_dir = tmp_path / "pos00"
     widget._ultrack_db_browser_active = True
     widget._ultrack_db_preview_cache["existing render"] = object()
+    monkeypatch.setattr(widget, "_current_t", lambda: 0)
     monkeypatch.setattr(
         widget,
-        "_query_distinct_heights",
-        lambda *_args: (0.1, 0.2, 0.3),
+        "_query_union_sizes",
+        lambda *_args: (1, 2, 3),
     )
 
     widget._on_ultrack_db_slider_changed(1)
@@ -821,11 +821,11 @@ def test_ultrack_db_browser_reuses_summary_text_for_same_database_frame(
     widget._ultrack_db_frame_initialized = True
     widget.ultrack_db_hierarchy_slider.setValue(0)
     monkeypatch.setattr(widget, "_current_t", lambda: 0)
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
     monkeypatch.setattr(
         widget,
-        "_render_hierarchy_cut",
-        lambda *args: (np.zeros((5, 5), dtype=np.uint32), "rendered hierarchy cut"),
+        "_render_union_partition",
+        lambda *args: (np.zeros((5, 5), dtype=np.uint32), "rendered partition"),
     )
     calls = []
 
@@ -850,7 +850,6 @@ def test_ultrack_db_browser_no_movie_initializes_stack_from_middle_frame_only(
 ):
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
-    module = sys.modules[widget_class.__module__]
     widget = widget_class(viewer)
 
     db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
@@ -859,15 +858,11 @@ def test_ultrack_db_browser_no_movie_initializes_stack_from_middle_frame_only(
     widget._pos_dir = tmp_path / "pos00"
     widget._ultrack_db_browser_active = True
     monkeypatch.setattr(widget, "_query_db_frames", lambda *_args: (0, 1, 2))
-    monkeypatch.setattr(
-        widget,
-        "_query_hierarchy_cut_states",
-        lambda *_args: (module._HierarchyCutState((1,), 0.5),),
-    )
+    _stub_ultrack_db_partition(monkeypatch, widget)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *_args: "summary")
     rendered_frames = []
 
-    def _render(_db_path, frame, _state):
+    def _render(_db_path, frame, _color_node_ids):
         rendered_frames.append(frame)
         return (
             np.full((2, 2), frame + 1, dtype=np.uint32),
@@ -878,7 +873,7 @@ def test_ultrack_db_browser_no_movie_initializes_stack_from_middle_frame_only(
             {},
         )
 
-    monkeypatch.setattr(widget, "_render_hierarchy_cut_state", _render)
+    monkeypatch.setattr(widget, "_render_union_partition", _render)
 
     widget._load_full_db_stack(db_path)
 
@@ -935,7 +930,7 @@ def test_ultrack_db_browser_probability_transparency_renders_rgba_preview(tmp_pa
     widget._ultrack_db_frame_initialized = True
     monkeypatch.setattr(widget, "_current_t", lambda: 0)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda path, frame: "summary")
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
 
     labels = np.array(
         [
@@ -946,8 +941,8 @@ def test_ultrack_db_browser_probability_transparency_renders_rgba_preview(tmp_pa
     )
     monkeypatch.setattr(
         widget,
-        "_render_hierarchy_cut",
-        lambda *args: (labels, "rendered hierarchy cut", {1: 0.2, 2: 0.8}),
+        "_render_union_partition",
+        lambda *args: (labels, "rendered partition", {1: 0.2, 2: 0.8}),
     )
 
     widget._refresh_ultrack_db_browser()
@@ -977,19 +972,19 @@ def test_ultrack_db_browser_shows_summary_while_rendering_hierarchy(tmp_path, mo
     labels = np.zeros((5, 5), dtype=np.uint32)
     monkeypatch.setattr(widget, "_current_t", lambda: 0)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda path, frame: "summary stats")
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
     monkeypatch.setattr(
         widget,
-        "_render_hierarchy_cut",
-        lambda path, frame, height: calls.append((path, frame, height))
-        or (labels, "rendered hierarchy cut"),
+        "_render_union_partition",
+        lambda path, frame, color_node_ids: calls.append((path, frame, color_node_ids))
+        or (labels, "rendered partition"),
     )
 
     widget._refresh_ultrack_db_browser()
 
-    assert calls == [(db_path, 0, 0.5)]
+    assert calls == [(db_path, 0, (1,))]
     assert widget.ultrack_db_info_lbl.text() == "summary stats"
-    assert widget.ultrack_db_section_status_lbl.text() == "rendered hierarchy cut"
+    assert widget.ultrack_db_section_status_lbl.text() == "rendered partition"
     assert "[Database] Ultrack DB Preview" in viewer.layers
 
     widget.deleteLater()
@@ -1017,11 +1012,11 @@ def test_ultrack_db_browser_does_not_add_contour_or_foreground_layers(tmp_path, 
 
     monkeypatch.setattr(widget, "_current_t", lambda: 0)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda path, frame: "summary")
-    _stub_ultrack_db_cut_states(widget_class, monkeypatch, widget, (0.5,))
+    _stub_ultrack_db_partition(monkeypatch, widget)
     monkeypatch.setattr(
         widget,
-        "_render_hierarchy_cut",
-        lambda *args: (np.zeros((4, 4), dtype=np.uint32), "rendered hierarchy cut"),
+        "_render_union_partition",
+        lambda *args: (np.zeros((4, 4), dtype=np.uint32), "rendered partition"),
     )
 
     widget._refresh_ultrack_db_browser()
@@ -1033,46 +1028,6 @@ def test_ultrack_db_browser_does_not_add_contour_or_foreground_layers(tmp_path, 
 
     widget.deleteLater()
     viewer.close()
-
-# ── DB Browser hierarchy slider: discrete height-index tests ────────────
-
-
-def _make_ultrack_db_with_heights(db_path: Path, heights: list[float]) -> None:
-    import pickle
-    import sqlalchemy as sqla
-    from sqlalchemy.orm import Session
-    from ultrack.core.database import Base
-    from ultrack.core.database import NodeDB
-    from ultrack.core.segmentation.node import Node
-    from ultrack.utils.constants import NO_PARENT
-
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = sqla.create_engine(f"sqlite:///{db_path}")
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        for i, height in enumerate(heights, start=1):
-            mask = np.ones((1, 2, 2), dtype=bool)
-            bbox = np.array([0, i, i, 1, i + 2, i + 2], dtype=np.int64)
-            node_obj = Node.from_mask(time=0, mask=mask, bbox=bbox, node_id=i)
-            session.add(
-                NodeDB(
-                    id=i,
-                    t=0,
-                    t_node_id=i,
-                    t_hier_id=1,
-                    z=0,
-                    y=i + 1,
-                    x=i + 1,
-                    area=4,
-                    height=float(height),
-                    hier_parent_id=NO_PARENT,
-                    pickle=pickle.dumps(node_obj),
-                )
-            )
-        session.commit()
-        assert session.query(NodeDB.height).distinct().count() == len(set(heights))
-    engine.dispose()
-
 
 def test_ultrack_db_summary_counts_annotated_links(tmp_path):
     pytest.importorskip("ultrack")
@@ -1135,254 +1090,45 @@ def test_ultrack_db_summary_counts_annotated_links(tmp_path):
     assert "UNKNOWN links 1" in text
 
 
-def _add_ultrack_node(
-    session,
-    *,
-    node_id: int,
-    parent_id: int,
-    height: float,
-    bbox: tuple[int, int, int, int],
-) -> None:
-    import pickle
-    from ultrack.core.database import NodeDB
-    from ultrack.core.segmentation.node import Node
-
-    y0, x0, y1, x1 = bbox
-    mask = np.ones((1, y1 - y0, x1 - x0), dtype=bool)
-    node_obj = Node.from_mask(
-        time=0,
-        mask=mask,
-        bbox=np.array([0, y0, x0, 1, y1, x1], dtype=np.int64),
-        node_id=node_id,
-    )
-    session.add(
-        NodeDB(
-            id=node_id,
-            t=0,
-            t_node_id=node_id,
-            t_hier_id=1,
-            z=0,
-            y=(y0 + y1) / 2,
-            x=(x0 + x1) / 2,
-            area=int(mask.sum()),
-            height=float(height),
-            hier_parent_id=parent_id,
-            pickle=pickle.dumps(node_obj),
-        )
-    )
-
-
-def _make_ultrack_db_with_equal_height_plateau(db_path: Path) -> None:
-    pytest.importorskip("ultrack")
-    import sqlalchemy as sqla
-    from sqlalchemy.orm import Session
-    from ultrack.core.database import Base
-    from ultrack.utils.constants import NO_PARENT
-
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = sqla.create_engine(f"sqlite:///{db_path}")
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        _add_ultrack_node(
-            session,
-            node_id=100,
-            parent_id=NO_PARENT,
-            height=10.0,
-            bbox=(0, 0, 2, 4),
-        )
-        _add_ultrack_node(
-            session,
-            node_id=101,
-            parent_id=100,
-            height=10.0,
-            bbox=(0, 0, 2, 2),
-        )
-        _add_ultrack_node(
-            session,
-            node_id=102,
-            parent_id=100,
-            height=10.0,
-            bbox=(0, 2, 2, 4),
-        )
-        _add_ultrack_node(
-            session,
-            node_id=201,
-            parent_id=101,
-            height=1.0,
-            bbox=(0, 0, 1, 1),
-        )
-        session.commit()
-    engine.dispose()
-
-
-def test_ultrack_db_hierarchy_slider_uses_frame_cut_states(tmp_path, monkeypatch):
-    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
-    _make_ultrack_db_with_equal_height_plateau(db_path)
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    widget._pos_dir = tmp_path / "pos00"
-    widget._ultrack_db_browser_active = True
-    widget._ultrack_db_frame_initialized = True
-    widget.ultrack_db_hierarchy_slider.setValue(1)
-    monkeypatch.setattr(widget, "_current_t", lambda: 0)
-    monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda _path, _frame: "ok")
-
-    widget._refresh_ultrack_db_browser()
-
-    assert widget.ultrack_db_hierarchy_slider.minimum() == 0
-    assert widget.ultrack_db_hierarchy_slider.maximum() == 2
-    assert widget.ultrack_db_hierarchy_slider.value() == 1
-    assert "1" in widget.ultrack_db_height_lbl.text()
-    assert "10.00" in widget.ultrack_db_height_lbl.text()
-    assert set(widget._ultrack_db_label_to_node_id.values()) == {101, 102}
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_ultrack_db_hierarchy_cut_keeps_equal_height_intermediate_nodes(tmp_path):
-    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
-    _make_ultrack_db_with_equal_height_plateau(db_path)
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    _labels, status, _probs, label_to_node_id, _node_id_to_label, _annotations = (
-        widget._render_hierarchy_cut(db_path, frame=0, h_actual=10.0)
-    )
-
-    assert set(label_to_node_id.values()) == {101, 102}
-    assert 100 not in label_to_node_id.values()
-    assert 201 not in label_to_node_id.values()
-    assert "2 segment(s)" in status
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_ultrack_db_hierarchy_slider_states_eventually_show_equal_height_parent(tmp_path):
-    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
-    _make_ultrack_db_with_equal_height_plateau(db_path)
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    states = widget._query_hierarchy_cut_states(
-        db_path, db_path.stat().st_mtime_ns, frame=0
-    )
-    rendered_node_ids = []
-    for index, state in enumerate(states):
-        labels, status, _probs, label_to_node_id, _node_id_to_label, _annotations = (
-            widget._render_hierarchy_cut_state(db_path, frame=0, state=state)
-        )
-        assert labels.size > 0
-        assert f"i={index}" not in status
-        rendered_node_ids.append(set(label_to_node_id.values()))
-
-    assert rendered_node_ids == [
-        {102, 201},
-        {101, 102},
-        {100},
-    ]
-    assert {100, 101, 102, 201} == set().union(*rendered_node_ids)
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_ultrack_db_hierarchy_states_treat_null_parent_as_root(tmp_path):
-    pytest.importorskip("ultrack")
-    import sqlalchemy as sqla
-    from sqlalchemy.orm import Session
-    from ultrack.core.database import Base
-
-    db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = sqla.create_engine(f"sqlite:///{db_path}")
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        _add_ultrack_node(
-            session,
-            node_id=100,
-            parent_id=None,
-            height=10.0,
-            bbox=(0, 0, 2, 4),
-        )
-        _add_ultrack_node(
-            session,
-            node_id=101,
-            parent_id=100,
-            height=1.0,
-            bbox=(0, 0, 2, 2),
-        )
-        session.commit()
-    engine.dispose()
-
-    _app, viewer = _make_viewer()
-    widget_class = _load_widget_class()
-    widget = widget_class(viewer)
-
-    states = widget._query_hierarchy_cut_states(
-        db_path, db_path.stat().st_mtime_ns, frame=0
-    )
-
-    assert [state.node_ids for state in states] == [(101,), (100,)]
-
-    widget.deleteLater()
-    viewer.close()
-
-
-def test_ultrack_db_hierarchy_slider_clamps_when_cut_states_shrink(tmp_path, monkeypatch):
+def test_ultrack_db_size_slider_clamps_when_union_sizes_shrink(tmp_path, monkeypatch):
     db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.write_bytes(b"sqlite placeholder")
     _app, viewer = _make_viewer()
     widget_class = _load_widget_class()
-    module = sys.modules[widget_class.__module__]
     widget = widget_class(viewer)
     calls = []
 
     widget._pos_dir = tmp_path / "pos00"
     widget._ultrack_db_browser_active = True
     widget._ultrack_db_frame_initialized = True
+    widget.ultrack_db_hierarchy_slider.setRange(0, 3)
     widget.ultrack_db_hierarchy_slider.setValue(3)
     monkeypatch.setattr(widget, "_current_t", lambda: 0)
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda _path, _frame: "ok")
-    state_sets = [
-        (
-            module._HierarchyCutState((1,), 0.1),
-            module._HierarchyCutState((2,), 0.3),
-            module._HierarchyCutState((3,), 0.5),
-            module._HierarchyCutState((4,), 0.7),
-        ),
-        (
-            module._HierarchyCutState((5,), 0.2),
-            module._HierarchyCutState((6,), 0.6),
-        ),
-    ]
+    size_sets = [(1, 2, 3, 4), (5, 6)]
 
-    def _states(*_args):
-        return state_sets[0]
+    def _sizes(*_args):
+        return size_sets[0]
 
-    def _render(_db_path, _frame, state):
-        calls.append(state.height)
+    def _render(_db_path, _frame, color_node_ids):
+        calls.append(color_node_ids)
         return np.zeros((5, 5), dtype=np.uint32), "ok"
 
-    monkeypatch.setattr(widget, "_query_hierarchy_cut_states", _states)
-    monkeypatch.setattr(widget, "_render_hierarchy_cut_state", _render)
+    monkeypatch.setattr(widget, "_query_union_sizes", _sizes)
+    monkeypatch.setattr(widget, "_query_union_color_classes", lambda *_a: ((10,),))
+    monkeypatch.setattr(widget, "_render_union_partition", _render)
     widget._refresh_ultrack_db_browser()
 
-    state_sets.pop(0)
+    size_sets.pop(0)
     widget._ultrack_db_preview_cache.clear()
     widget._refresh_ultrack_db_browser()
 
     assert widget.ultrack_db_hierarchy_slider.maximum() == 1
     assert widget.ultrack_db_hierarchy_slider.value() == 1
-    assert "1" in widget.ultrack_db_height_lbl.text()
-    assert "0.60" in widget.ultrack_db_height_lbl.text()
-    assert calls == [0.7, 0.6]
+    assert "N=6" in widget.ultrack_db_height_lbl.text()
+    assert "2/2" in widget.ultrack_db_height_lbl.text()
+    assert calls == [(10,), (10,)]
 
     widget.deleteLater()
     viewer.close()
