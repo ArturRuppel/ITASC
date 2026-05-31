@@ -403,7 +403,9 @@ class NucleusUltrackDbBrowserMixin:
         )
         cached = self._ultrack_db_preview_cache.get(key)
         if cached is None:
-            cached = self._render_union_partition(db_path, frame, color_node_ids)
+            cached = self._render_union_partition(
+                db_path, frame, color_node_ids, union_size
+            )
             self._ultrack_db_preview_cache[key] = cached
         return self._normalize_ultrack_db_preview(cached)
 
@@ -1024,12 +1026,13 @@ class NucleusUltrackDbBrowserMixin:
             return
         self.ultrack_db_source_lbl.setText(f"{index + 1}/{total}")
 
-    def _render_union_partition(self, db_path, frame, color_node_ids):
+    def _render_union_partition(self, db_path, frame, color_node_ids, union_size=None):
         return _render_union_partition(
             db_path,
             frame,
             color_node_ids,
             plane_shape=self._viewer_plane_shape(),
+            union_size=union_size,
         ).as_tuple()
 
     def _finalize_hierarchy_nodes(self, nodes, frame, *, empty_msg, status_suffix):

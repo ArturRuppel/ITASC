@@ -332,7 +332,47 @@ def test_render_union_partition_merges_class_and_fills_leftover_atoms(tmp_path):
     assert set(full.label_to_node_id.values()) == {11, 13}
     assert set(np.unique(full.labels)) == {1, 2}
 
-    # Class {BC} merges B+C; A and D fall back to individual atoms -> 3 regions.
+    # Class {BC} merges B+C; A and D have no other available union of size <= 2
+    # (AB needs B, CD needs C, both taken) so they fall back to individual atoms.
     partial = render_union_partition(db_path, 0, (12,), plane_shape=(2, 8))
     assert set(partial.label_to_node_id.values()) == {12, 1, 4}
     assert (partial.labels == 0).sum() == 0  # still a full-frame partition
+
+
+def _make_atom_union_db_with_lower_merge(db_path: Path) -> None:
+    """6 atoms A..F in a row, the size-3 union ABC, and the size-2 unions AB and DE."""
+    pytest.importorskip("ultrack")
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import Base
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        for i in range(6):  # atoms A..F = ids 1..6
+            _add_atom_union_node(
+                session, node_id=i + 1, height=1, bbox=(0, 2 * i, 2, 2 * i + 2)
+            )
+        _add_atom_union_node(session, node_id=11, height=2, bbox=(0, 0, 2, 4))  # AB
+        _add_atom_union_node(session, node_id=14, height=2, bbox=(0, 6, 2, 10))  # DE
+        _add_atom_union_node(session, node_id=21, height=3, bbox=(0, 0, 2, 6))  # ABC
+        session.commit()
+    engine.dispose()
+
+
+def test_render_union_partition_fills_leftover_with_most_merged_union(tmp_path):
+    from cellflow.tracking_ultrack.db_query import render_union_partition
+
+    db_path = tmp_path / "data.db"
+    _make_atom_union_db_with_lower_merge(db_path)
+
+    # Viewing the size-3 group {ABC}: leftover D,E must show as the size-2 union DE,
+    # not as two separate atoms; only F (no available union) stays an atom.
+    preview = render_union_partition(
+        db_path, 0, (21,), plane_shape=(2, 12), union_size=3
+    )
+    assert set(preview.label_to_node_id.values()) == {21, 14, 6}
+    assert 4 not in preview.label_to_node_id.values()  # atom D not shown raw
+    assert 5 not in preview.label_to_node_id.values()  # atom E not shown raw
+    assert (preview.labels == 0).sum() == 0  # still a full-frame partition

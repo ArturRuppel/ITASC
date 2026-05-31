@@ -406,10 +406,14 @@ def greedy_color_classes(
 
 
 def _paint_union_partition(
-    union_nodes: list, atom_nodes: list, plane_shape: tuple[int, int]
+    union_nodes: list, fill_nodes: list, plane_shape: tuple[int, int]
 ) -> tuple[np.ndarray, list]:
-    """Paint a full-frame partition: the merged ``union_nodes`` take priority, then
-    the individual ``atom_nodes`` fill any territory not covered by a union.
+    """Paint a full-frame partition: the merged ``union_nodes`` (the selected merge
+    group) take priority, then ``fill_nodes`` cover the leftover territory.
+
+    ``fill_nodes`` should be ordered most-merged first; each is painted all-or-nothing
+    only if its whole mask is still free, so a leftover atom is shown inside the
+    largest union that still fits rather than dropping back to an individual atom.
 
     Returns ``(labels, ordered_nodes)`` where ``ordered_nodes[i]`` is painted with
     label ``i + 1`` — matching ``node_preview_metadata`` so click selection lines up.
@@ -423,7 +427,7 @@ def _paint_union_partition(
         (y0, x0, y1, x1), mask = result
         max_y, max_x = max(max_y, y1), max(max_x, x1)
         parsed.append((node, (y0, x0, y1, x1), mask, True))
-    for node in atom_nodes:
+    for node in fill_nodes:
         result = node_mask_and_bbox(node)
         if result is None:
             continue
@@ -438,9 +442,15 @@ def _paint_union_partition(
         region = labels[y0:y1, x0:x1]
         if region.shape != mask.shape:
             continue
-        # Unions never overlap within a class, so they paint freely; atoms only fill
-        # background, leaving atoms already covered by a union unlabeled here.
-        sub = mask if priority else (mask & (region == 0))
+        if priority:
+            # Unions never overlap within a class, so they paint freely.
+            sub = mask
+        else:
+            # All-or-nothing: only paint a leftover union/atom if its whole footprint
+            # is still free, so larger unions win and nothing is split mid-region.
+            if (mask & (region != 0)).any():
+                continue
+            sub = mask
         if not sub.any():
             continue
         region[sub] = len(ordered) + 1
@@ -454,9 +464,16 @@ def render_union_partition(
     color_node_ids: Iterable[int],
     *,
     plane_shape: tuple[int, int],
+    union_size: int | None = None,
 ) -> UltrackDbPreview:
     """Full-frame partition for one horizontal slider position: the candidates in
-    ``color_node_ids`` painted as merged regions, with leftover atoms filled in."""
+    ``color_node_ids`` painted as merged regions, with the leftover territory filled
+    by the largest available unions (size ≤ ``union_size``) so regions outside this
+    merge group still show at their most-merged state instead of as raw atoms.
+
+    ``union_size`` caps how merged the leftover fill may be; when ``None`` it is taken
+    from the selected candidates (their ``height``), defaulting to atoms only.
+    """
     from sqlalchemy.orm import Session
     from ultrack.core.database import NodeDB
 
@@ -474,17 +491,25 @@ def render_union_partition(
                 )
                 by_id = {int(n.id): n for n in rows}
                 union_nodes = [by_id[i] for i in color_node_ids if i in by_id]
-            atom_nodes = (
+            if union_size is None:
+                heights = [
+                    float(n.height) for n in union_nodes if n.height is not None
+                ]
+                union_size = int(round(max(heights))) if heights else 1
+            # Leftover fill: every non-selected candidate up to the current level,
+            # most-merged first, so larger unions claim free territory before atoms.
+            fill_nodes = (
                 session.query(NodeDB)
                 .filter(NodeDB.t == frame)
-                .filter(NodeDB.height == 1.0)
-                .order_by(NodeDB.id)
+                .filter(NodeDB.height <= float(union_size))
+                .filter(NodeDB.id.notin_(color_node_ids) if color_node_ids else True)
+                .order_by(NodeDB.height.desc(), NodeDB.id)
                 .all()
             )
     finally:
         engine.dispose()
 
-    labels, ordered = _paint_union_partition(union_nodes, atom_nodes, plane_shape)
+    labels, ordered = _paint_union_partition(union_nodes, fill_nodes, plane_shape)
     if not ordered:
         return _empty_preview(plane_shape, f"No candidates for frame {frame}.")
 

@@ -759,7 +759,7 @@ def test_ultrack_db_browser_hierarchy_cut_caches_by_frame_and_slider(tmp_path, m
     def _fake_summary(path, frame):
         return "3 nodes | 2 links | frame 0: 1 nodes"
 
-    def _fake_render(path, frame, color_node_ids):
+    def _fake_render(path, frame, color_node_ids, union_size=None):
         calls.append((path, frame, color_node_ids))
         return np.zeros((5, 5), dtype=np.uint32), "rendered partition"
 
@@ -862,7 +862,7 @@ def test_ultrack_db_browser_no_movie_initializes_stack_from_middle_frame_only(
     monkeypatch.setattr(widget, "_ultrack_db_summary_text", lambda *_args: "summary")
     rendered_frames = []
 
-    def _render(_db_path, frame, _color_node_ids):
+    def _render(_db_path, frame, _color_node_ids, _union_size=None):
         rendered_frames.append(frame)
         return (
             np.full((2, 2), frame + 1, dtype=np.uint32),
@@ -976,7 +976,9 @@ def test_ultrack_db_browser_shows_summary_while_rendering_hierarchy(tmp_path, mo
     monkeypatch.setattr(
         widget,
         "_render_union_partition",
-        lambda path, frame, color_node_ids: calls.append((path, frame, color_node_ids))
+        lambda path, frame, color_node_ids, union_size=None: calls.append(
+            (path, frame, color_node_ids)
+        )
         or (labels, "rendered partition"),
     )
 
@@ -1111,7 +1113,7 @@ def test_ultrack_db_size_slider_clamps_when_union_sizes_shrink(tmp_path, monkeyp
     def _sizes(*_args):
         return size_sets[0]
 
-    def _render(_db_path, _frame, color_node_ids):
+    def _render(_db_path, _frame, color_node_ids, _union_size=None):
         calls.append(color_node_ids)
         return np.zeros((5, 5), dtype=np.uint32), "ok"
 
