@@ -110,7 +110,7 @@ class NucleusArtifactPaths:
 
     @property
     def nucleus_atoms(self) -> Path:
-        return self.pos_dir / "2_nucleus" / "atoms.tif"
+        return self.nucleus_dir / "atoms.tif"
 
 
 @dataclass(frozen=True)
