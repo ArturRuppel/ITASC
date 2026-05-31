@@ -28,6 +28,7 @@ from cellflow.correction.labels import best_overlapping_label
 from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
 from cellflow.napari.nucleus_atom_extraction_widget import (
     NucleusAtomExtractionMixin,
+    NucleusAtomExtractionWidget,
 )
 from cellflow.napari.nucleus_db_browser_widget import (
     NucleusUltrackDbBrowserMixin,
@@ -406,10 +407,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     # -- Atom Extraction ---------------------------------------------------
 
     def _build_atom_extraction_section(self, root: QVBoxLayout) -> None:
-        from cellflow.napari.nucleus_atom_extraction_widget import (
-            NucleusAtomExtractionWidget,
-        )
-
         self.atom_extraction_widget = NucleusAtomExtractionWidget(self)
         self.atom_extraction_section = CollapsibleSection(
             "Atom Extraction", self.atom_extraction_widget, expanded=False,
