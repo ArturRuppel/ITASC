@@ -114,3 +114,20 @@ def test_activate_adds_preview_layer_then_deactivate_removes(tmp_path):
     h._on_atom_activate(False)
     assert _ATOM_PREVIEW_LAYER not in viewer.layers
     napari.Viewer.close_all()
+
+
+from cellflow.tracking_ultrack.atoms import read_atoms_params, params_fingerprint
+
+
+def test_compute_atoms_full_stack_writes_tif_with_fingerprint(tmp_path):
+    h, viewer = _host(tmp_path)
+    h.atom_extraction_widget.fg_window_spin.setValue(11)
+    h.atom_extraction_widget.contour_window_spin.setValue(11)
+    h._compute_atoms_full_stack()
+    out = tmp_path / "atoms.tif"
+    assert out.exists()
+    atoms = tifffile.imread(out)
+    assert atoms.shape == (3, 40, 40)
+    stored_params, stored_fp = read_atoms_params(out)
+    assert stored_fp == params_fingerprint(h._atom_params())
+    napari.Viewer.close_all()

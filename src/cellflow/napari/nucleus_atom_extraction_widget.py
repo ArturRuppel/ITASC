@@ -152,7 +152,7 @@ class NucleusAtomExtractionMixin:
         w.territory_overlay_check.toggled.connect(self._on_atom_param_changed)
         w.residual_overlay_check.toggled.connect(self._on_atom_param_changed)
         w.active_btn.toggled.connect(self._on_atom_activate)
-        # compute_btn is wired in Task 9 (when _compute_atoms_full_stack exists)
+        w.compute_btn.clicked.connect(self._compute_atoms_full_stack)
 
     def _atom_params(self) -> AtomParams:
         w = self.atom_extraction_widget
