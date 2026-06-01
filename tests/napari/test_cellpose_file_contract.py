@@ -32,8 +32,10 @@ def test_segmentation_widgets_use_cellpose_foregrounds_as_inputs():
     cell_source = (package_root / "cell_workflow_widget.py").read_text()
 
     assert "1_cellpose/nucleus_foreground.tif" in nucleus_source
+    # The simplified cell widget consumes the cached cell divergence maps
+    # (contours + foreground) produced upstream by DivergenceMapsWidget.
     assert "1_cellpose/cell_foreground.tif" in cell_source
-    assert "1_cellpose/nucleus_foreground.tif" in cell_source
+    assert "1_cellpose/cell_contours.tif" in cell_source
 
 
 def test_hpc_cellpose_controls_are_not_public_napari_entry_points():

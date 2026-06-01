@@ -8,7 +8,6 @@ from cellflow.segmentation.flow_following import (
     compute_filtered_flow_vectors,
     compute_flow_following_frame,
     compute_flow_following_movie,
-    build_consensus_boundary_flow_following,
 )
 
 from cellflow.segmentation.contour_filtering import (
@@ -19,9 +18,15 @@ from cellflow.segmentation.contour_filtering import (
 from cellflow.segmentation.cell_label_icm import (
     CellICMState,
     CellLabelICMParams,
+    assemble_cost_field,
     commit_labels,
     initialize_icm,
-    refine_icm,
+)
+
+from cellflow.segmentation.cell_divergence_segmentation import (
+    CellDivergenceParams,
+    CellDivergenceResult,
+    segment_cells_divergence,
 )
 
 from cellflow.segmentation.nucleus_segmentation import (
@@ -31,10 +36,6 @@ from cellflow.segmentation.nucleus_segmentation import (
     _fill_and_close_labels,
 )
 
-from cellflow.segmentation.cell_foreground import (
-    compute_cellpose_foreground_masks,
-)
-
 from cellflow.segmentation.divergence_maps import (
     DivergenceMapsReport,
     build_divergence_maps,
@@ -42,6 +43,8 @@ from cellflow.segmentation.divergence_maps import (
 
 __all__ = [
     "CancelledError",
+    "CellDivergenceParams",
+    "CellDivergenceResult",
     "CellICMState",
     "CellLabelICMParams",
     "ContourFilterParams",
@@ -49,17 +52,16 @@ __all__ = [
     "DivergenceMapsReport",
     "FlowFollowingParams",
     "apply_gamma",
-    "build_consensus_boundary_flow_following",
+    "assemble_cost_field",
     "build_divergence_maps",
     "commit_labels",
-    "compute_cellpose_foreground_masks",
     "compute_contour_watershed",
     "compute_filtered_contour_maps",
     "compute_filtered_flow_vectors",
     "compute_flow_following_frame",
     "compute_flow_following_movie",
     "initialize_icm",
-    "refine_icm",
+    "segment_cells_divergence",
     "_fill_and_close_labels",
 ]
 

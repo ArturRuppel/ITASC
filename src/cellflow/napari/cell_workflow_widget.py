@@ -1,26 +1,37 @@
-"""Cell segmentation workflow widget for CellFlow.
+"""Cell segmentation workflow widget — simplified divergence pipeline.
 
-Flat layout — action buttons in a two-column grid at top, one collapsible
-parameter panel, correction section at bottom.
+A single run path and a single preview path (no per-stage run buttons). The
+widget consumes the cached divergence maps produced upstream by
+``DivergenceMapsWidget`` (``1_cellpose/cell_contours.tif`` +
+``1_cellpose/cell_foreground.tif``) plus the tracked nucleus seeds, and runs
+the unary-only geodesic-Voronoi pipeline from
+:func:`cellflow.segmentation.segment_cells_divergence`:
 
-Stages:
-  1. Flow Filtering → ``filtered_dp.tif``
-  2. Foreground Masks → ``foreground_masks.tif``
-  3. Contours → ``contours.tif``, ``foreground_scores.tif``
-  4. Segmentation → ``tracked_labels.tif`` (initialize + auto-commit)
-  5. Correction (load / save / fill holes / fix semiholes / cleanup / expand)
+    1. Map cleanup (foreground + contours) — local-mean residual + threshold.
+    2. Temporal contour smoothing (full run only).
+    3. Foreground mask.
+    4. Unary-only segmentation → ``3_cell/tracked_labels.tif``.
+
+Live preview recomputes the current frame off the GUI thread on any param edit
+or time scrub and surfaces every *cheap* intermediate as a napari layer — up to
+and including the weighted cost field the geodesic walk would traverse. It
+deliberately stops short of the geodesic label assignment (by far the slowest
+step), so tuning stays responsive; the cost field already explains where the
+labels would land. The full run processes all frames in memory, runs the
+geodesic walk, and persists only the labels. Correction is delegated to
+:class:`CellCorrectionWidget`, unchanged.
 """
 from __future__ import annotations
 
 import logging
-import queue
-import threading
+import os
 from pathlib import Path
 
 import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
+from qtpy.QtCore import QTimer, Signal
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -30,12 +41,18 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari._widget_helpers import tool_btn as _tool_btn
 from cellflow.correction.labels import best_overlapping_label
-from cellflow.core.tiff import imwrite_grayscale
+from cellflow.napari._widget_helpers import (
+    dslider as _dslider,
+    heading as _heading,
+    islider as _islider,
+    tool_btn as _tool_btn,
+)
 from cellflow.napari.cell_correction_widget import CellCorrectionWidget
-from cellflow.napari.cell_params_widget import CellParamsWidget
 from cellflow.napari.ui_style import (
+    add_section_header,
+    add_section_pair_row,
+    section_grid,
     stage_header_action_button,
     stage_header_label,
     status_label,
@@ -45,21 +62,46 @@ from cellflow.napari.widgets import (
     PipelineFilesWidget,
     make_pipeline_files_header,
 )
-from cellflow.segmentation import (
-    apply_gamma,
-    build_consensus_boundary_flow_following,
+from cellflow.segmentation import CancelledError
+from cellflow.segmentation.cell_divergence_segmentation import (
+    CellDivergenceParams,
+    segment_cells_divergence,
 )
-from cellflow.segmentation.contour_filtering import contour_memory_filter
+from cellflow.segmentation.cell_label_icm import commit_labels
 
 logger = logging.getLogger(__name__)
 
-# ── Layer name constants ──────────────────────────────────────────────────────
-_FILTERED_FLOW_LAYER = "Filtered Flow Magnitude"
-_CELL_FOREGROUND_LAYER = "Foreground Mask: Cell"
-_CELL_FOREGROUND_SCORE_LAYER = "Foreground Score: Cell"
-_CELL_CONTOUR_LAYER = "Contour Map: Cell"
-_CELL_SEG_LAYER = "Cell Segmentation"
+# ── Preview layer names (pipeline order) ──────────────────────────────────────
+_PREFIX = "[Cell]"
+_FG_RAW_LAYER = f"{_PREFIX} foreground (sigmoid)"
+_FG_CLEAN_LAYER = f"{_PREFIX} foreground cleaned"
+_CT_RAW_LAYER = f"{_PREFIX} contours raw"
+_CT_CLEAN_LAYER = f"{_PREFIX} contours cleaned"
+_FG_MASK_LAYER = f"{_PREFIX} foreground mask"
+_COST_LAYER = f"{_PREFIX} weighted cost field"
+# The geodesic label assignment is the pipeline's slowest step, so the live
+# preview stops at the cost field and never creates this layer; labels are
+# produced only by the full run (as ``_TRACKED_CELL_LAYER``).
+_LABELS_LAYER = f"{_PREFIX} cell labels"
+
+# Tracked pipeline layer the correction widget syncs against.
 _TRACKED_CELL_LAYER = "Tracked: Cell"
+
+# (layer_name, kind, colormap) in pipeline order. Image layers carry a
+# colormap; label layers ignore it.
+_PREVIEW_IMAGE_LAYERS = (
+    (_FG_RAW_LAYER, "gray"),
+    (_FG_CLEAN_LAYER, "gray"),
+    (_CT_RAW_LAYER, "magma"),
+    (_CT_CLEAN_LAYER, "magma"),
+    (_COST_LAYER, "turbo"),
+)
+_PREVIEW_LABEL_LAYERS = (_FG_MASK_LAYER,)
+_PREVIEW_LAYERS = (
+    _FG_RAW_LAYER, _FG_CLEAN_LAYER, _CT_RAW_LAYER, _CT_CLEAN_LAYER,
+    _FG_MASK_LAYER, _COST_LAYER,
+)
+
 
 def _make_status() -> QLabel:
     lbl = QLabel("")
@@ -78,27 +120,40 @@ def _make_progress() -> QProgressBar:
     return bar
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# Canonical input/output paths (kept as literals so the file-contract test and
+# the PipelineFilesWidget stay in sync):
+#   1_cellpose/cell_contours.tif, 1_cellpose/cell_foreground.tif,
+#   2_nucleus/tracked_labels.tif → 3_cell/tracked_labels.tif
 
 
 class CellWorkflowWidget(QWidget):
-    """Cell segmentation pipeline — flat action-button layout."""
+    """Simplified divergence-based cell segmentation widget."""
+
+    _run_progress = Signal(str)
 
     def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self._pos_dir: Path | None = None
 
-        self._ff_worker = None
-        self._foreground_worker = None
-        self._contour_worker = None
-        self._initialize_worker = None
+        # Live preview state — a compute is in flight (None when idle); rapid
+        # edits while one runs set _preview_pending so exactly one fresh pass
+        # fires when it returns.
+        self._preview_active = False
+        self._preview_worker = None
+        self._preview_pending = False
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(150)
+        self._preview_timer.timeout.connect(self._refresh_preview)
 
-        self._icm_state = None
-        self._running_stage: str | None = None
+        # Full-run worker state.
+        self._run_worker = None
+        self._running = False
 
         self._setup_ui()
         self._connect_signals()
+        self._run_progress.connect(self._set_status)
 
     # ================================================================
     # UI
@@ -107,25 +162,15 @@ class CellWorkflowWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(6)
-        # Shrink to content height so collapsed sections don't leave a tall
-        # empty strip below the last row. Matches nucleus_workflow_widget.
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        # ── Pipeline files (single deduplicated panel) ────────────────
+        # ── Pipeline files ────────────────────────────────────────────
         self._files_widget = PipelineFilesWidget(
             [
                 ("Inputs", [
-                    ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
-                    ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
-                    ("1_cellpose/cell_foreground.tif", "Cell foreground"),
-                    ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
+                    ("1_cellpose/cell_contours.tif", "Cell contours (divergence)"),
+                    ("1_cellpose/cell_foreground.tif", "Cell foreground (sigmoid)"),
                     ("2_nucleus/tracked_labels.tif", "Nucleus tracked labels"),
-                ]),
-                ("Intermediates", [
-                    ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
-                    ("3_cell/foreground_masks.tif", "Foreground masks"),
-                    ("3_cell/contours.tif", "Contours"),
-                    ("3_cell/foreground_scores.tif", "Foreground scores"),
                 ]),
                 ("Output", [
                     ("3_cell/tracked_labels.tif", "Cell tracked labels"),
@@ -134,138 +179,153 @@ class CellWorkflowWidget(QWidget):
             viewer=self.viewer,
         )
         self._pipeline_files_section = CollapsibleSection(
-            "Pipeline Files",
-            self._files_widget,
-            expanded=False,
+            "Pipeline Files", self._files_widget, expanded=False,
         )
         (
             self.pipeline_files_header,
             self.pipeline_files_header_lbl,
             self.pipeline_files_toggle_btn,
         ) = make_pipeline_files_header(
-            self._pipeline_files_section,
-            stage_key="cell",
-            parent=self,
+            self._pipeline_files_section, stage_key="cell", parent=self,
         )
         root.addWidget(self.pipeline_files_header)
         root.addWidget(self._pipeline_files_section)
 
-        # ── Pipeline parameters and per-stage rows ───────────────────
-        self.cell_params_widget = CellParamsWidget(self)
-        self._install_params_aliases()
-        # CellParamsWidget acts as a controller here. Its visible section is
-        # reparented into this layout, so keep the owner widget hidden to avoid
-        # an unmanaged default rectangle intercepting header clicks.
-        self.cell_params_widget.hide()
+        # ── Stage row: ⚙ params / ◉ live preview / ▶ run ──────────────
+        self.params_btn = _tool_btn(
+            "⚙", "Toggle segmentation parameters.", checkable=True
+        )
+        self.active_btn = _tool_btn(
+            "◉", "Live preview (tune against the current frame).", checkable=True
+        )
+        self.run_btn = _tool_btn(
+            "▶", "Run the full pipeline over all frames and write tracked_labels.tif."
+        )
+        for button in (self.params_btn, self.active_btn, self.run_btn):
+            stage_header_action_button(button, "cell")
 
-        self._build_pipeline_stage_rows(root)
+        self.params_section = self._build_params_section()
+        self.params_section.set_header_visible(False)
+        self.params_section.collapse()
+        self.params_btn.toggled.connect(
+            lambda checked: self.params_section._toggle.setChecked(checked)
+        )
+
+        root.addLayout(self._stage_row(
+            self._stage_label("Segmentation"),
+            self.params_btn, self.active_btn, self.run_btn,
+        ))
+        root.addWidget(self.params_section)
 
         self.pipeline_status_lbl = _make_status()
         root.addWidget(self.pipeline_status_lbl)
         self.pipeline_progress_bar = _make_progress()
         root.addWidget(self.pipeline_progress_bar)
 
-        # ── Correction section (child widget) ────────────────────────
+        # ── Correction (delegated, unchanged) ─────────────────────────
         self.cell_correction_widget = CellCorrectionWidget(
             self.viewer,
             pos_dir_provider=lambda: self._pos_dir,
             files_widget_refresh_callback=lambda pd: self._files_widget.refresh(pd),
         )
         self._install_correction_aliases()
-        # CellCorrectionWidget owns behavior; visible pieces are reparented
-        # here to mirror the nucleus workflow structure.
         self.cell_correction_widget.hide()
         root.addWidget(self.correction_header)
         root.addWidget(self.correction_mode_section)
 
-    # -- Parameters --------------------------------------------------------
+    def _build_params_section(self) -> CollapsibleSection:
+        """One flat panel: every knob shown once, grouped by stage."""
+        body = QWidget(self)
+        grid = section_grid()
+        grid.setContentsMargins(8, 4, 4, 4)
+        body.setLayout(grid)
 
-    def _build_pipeline_stage_rows(self, root: QVBoxLayout) -> None:
-        """Build nucleus-style pipeline stage rows with inline params."""
-        self.flow_params_btn = _tool_btn(
-            "⚙", "Show parameters for this stage.", checkable=True
+        max_workers = max(1, os.cpu_count() or 1)
+
+        # ── Map cleanup: foreground ──────────────────────────────────
+        self.fg_strength_spin = _dslider(
+            0, 1, 0.0, 0.05, 2,
+            "0 = raw sigmoid, 1 = full local-mean background subtraction.",
         )
-        self.flow_run_btn = _tool_btn("▶", "Run flow filtering.")
-        self.foreground_params_btn = _tool_btn(
-            "⚙", "Show parameters for this stage.", checkable=True
+        self.fg_threshold_spin = _dslider(
+            0, 1, 0.1, 0.01, 2,
+            "Cleaned-foreground cutoff → fill mask (sigmoid scale).",
         )
-        self.foreground_run_btn = _tool_btn("▶", "Run foreground mask generation.")
-        self.contour_params_btn = _tool_btn(
-            "⚙", "Show parameters for this stage.", checkable=True
+        self.fg_window_spin = _islider(
+            3, 201, 51, tooltip="Local-mean window for foreground residual (odd px)."
         )
-        self.contour_preview_btn = _tool_btn(
-            "▷", "Preview contours for the current frame."
+        # ── Map cleanup: contours ────────────────────────────────────
+        self.contour_strength_spin = _dslider(
+            0, 1, 1.0, 0.05, 2, "0 = raw, 1 = full local-mean subtraction."
         )
-        self.contour_run_btn = _tool_btn("▶", "Run contour map generation.")
-        self.segmentation_params_btn = _tool_btn(
-            "⚙", "Show parameters for this stage.", checkable=True
+        self.contour_threshold_spin = _dslider(
+            0, 1, 0.0, 0.001, 3, "Noise floor on normalized contour; below → 0."
         )
-        self.segmentation_run_btn = _tool_btn("▶", "Run cell segmentation.")
+        self.contour_norm_pct_spin = _dslider(
+            90, 100, 99.0, 0.5, 1,
+            "Percentile mapped to 1.0 in the contour [0,1] normalize.",
+        )
+        self.contour_window_spin = _islider(
+            3, 201, 51, tooltip="Local-mean window for contour residual (odd px)."
+        )
+        # ── Temporal smoothing ───────────────────────────────────────
+        self.memory_tau_spin = _dslider(
+            0, 1, 0.0, 0.01, 3,
+            "Temporal EMA crossover (~the contour value you call weak). 0 = off.",
+        )
+        self.memory_floor_spin = _dslider(
+            0.001, 0.5, 0.01, 0.001, 3,
+            "Min per-frame alpha; ghost half-life (~69 frames @ 0.01).",
+        )
+        # ── Segmentation ─────────────────────────────────────────────
+        self.alpha_spin = _dslider(
+            0, 1000, 100.0, 1.0, 1,
+            "Contour weight: cost = 1 + α·contour — boundary snap strength.",
+        )
+        self.gamma_spin = _dslider(
+            0, 100, 2.0, 0.5, 1,
+            "Foreground weight: + γ·(1 − fg_score) — pull toward confident fg.",
+        )
+        self.n_workers_spin = _islider(
+            1, max_workers, min(4, max_workers),
+            tooltip="Parallel workers for geodesic computation (compute only).",
+        )
 
-        for button in (
-            self.flow_params_btn,
-            self.flow_run_btn,
-            self.foreground_params_btn,
-            self.foreground_run_btn,
-            self.contour_params_btn,
-            self.contour_preview_btn,
-            self.contour_run_btn,
-            self.segmentation_params_btn,
-            self.segmentation_run_btn,
-        ):
-            stage_header_action_button(button, "cell")
+        row = 0
+        add_section_header(grid, row, _heading("Map cleanup")); row += 1
+        add_section_header(grid, row, _heading("Foreground")); row += 1
+        add_section_pair_row(
+            grid, row,
+            "Strength:", self.fg_strength_spin,
+            "Threshold:", self.fg_threshold_spin,
+        ); row += 1
+        add_section_pair_row(grid, row, "Window:", self.fg_window_spin); row += 1
+        add_section_header(grid, row, _heading("Contours")); row += 1
+        add_section_pair_row(
+            grid, row,
+            "Strength:", self.contour_strength_spin,
+            "Floor:", self.contour_threshold_spin,
+        ); row += 1
+        add_section_pair_row(
+            grid, row,
+            "Norm %:", self.contour_norm_pct_spin,
+            "Window:", self.contour_window_spin,
+        ); row += 1
+        add_section_header(grid, row, _heading("Temporal smoothing")); row += 1
+        add_section_pair_row(
+            grid, row,
+            "Memory τ:", self.memory_tau_spin,
+            "Memory floor:", self.memory_floor_spin,
+        ); row += 1
+        add_section_header(grid, row, _heading("Segmentation")); row += 1
+        add_section_pair_row(
+            grid, row,
+            "α (contour):", self.alpha_spin,
+            "γ (foreground):", self.gamma_spin,
+        ); row += 1
+        add_section_pair_row(grid, row, "Workers:", self.n_workers_spin); row += 1
 
-        # Backward-compatible preferred alias for existing callers.
-        self.filter_flow_btn = self.flow_run_btn
-        self.build_foreground_btn = self.foreground_run_btn
-        self.preview_contour_btn = self.contour_preview_btn
-        self.build_contour_btn = self.contour_run_btn
-        self.segment_btn = self.segmentation_run_btn
-
-        for section in (
-            self.flow_filter_section,
-            self.foreground_section,
-            self.contour_section,
-            self.segmentation_section,
-        ):
-            section.set_header_visible(False)
-            section.collapse()
-
-        for params_btn, section in (
-            (self.flow_params_btn, self.flow_filter_section),
-            (self.foreground_params_btn, self.foreground_section),
-            (self.contour_params_btn, self.contour_section),
-            (self.segmentation_params_btn, self.segmentation_section),
-        ):
-            params_btn.toggled.connect(
-                lambda checked, section=section: section._toggle.setChecked(checked)
-            )
-
-        root.addLayout(self._stage_row(
-            self._stage_label("Flow filtering"),
-            self.flow_params_btn,
-            self.flow_run_btn,
-        ))
-        root.addWidget(self.flow_filter_section)
-        root.addLayout(self._stage_row(
-            self._stage_label("Foreground masks"),
-            self.foreground_params_btn,
-            self.foreground_run_btn,
-        ))
-        root.addWidget(self.foreground_section)
-        root.addLayout(self._stage_row(
-            self._stage_label("Contours"),
-            self.contour_params_btn,
-            self.contour_preview_btn,
-            self.contour_run_btn,
-        ))
-        root.addWidget(self.contour_section)
-        root.addLayout(self._stage_row(
-            self._stage_label("Segmentation"),
-            self.segmentation_params_btn,
-            self.segmentation_run_btn,
-        ))
-        root.addWidget(self.segmentation_section)
+        return CollapsibleSection("Segmentation Parameters", body, expanded=False)
 
     @staticmethod
     def _stage_label(text: str) -> QLabel:
@@ -282,47 +342,8 @@ class CellWorkflowWidget(QWidget):
         row.addStretch(1)
         return row
 
-    def _install_params_aliases(self) -> None:
-        """Install compatibility aliases for all controls owned by CellParamsWidget."""
-        p = self.cell_params_widget
-        self.flow_filter_section = p.flow_filter_section
-        self.foreground_section = p.foreground_section
-        self.contour_section = p.contour_section
-        self.segmentation_section = p.segmentation_section
-        # Flow filtering
-        self.ff_median_time_spin = p.ff_median_time_spin
-        self.ff_median_space_spin = p.ff_median_space_spin
-        self.ff_gauss_time_spin = p.ff_gauss_time_spin
-        self.ff_gauss_space_spin = p.ff_gauss_space_spin
-        # Foreground
-        self.fg_cellprob_threshold_spin = p.fg_cellprob_threshold_spin
-        # Contour sweep
-        self.cp_min_spin = p.cp_min_spin
-        self.cp_max_spin = p.cp_max_spin
-        self.cp_step_spin = p.cp_step_spin
-        # Contour flow-following
-        self.ff_flow_weight_spin = p.ff_flow_weight_spin
-        self.ff_step_scale_spin = p.ff_step_scale_spin
-        self.ff_max_iter_spin = p.ff_max_iter_spin
-        # Gamma averaging
-        self.gamma_min_spin = p.gamma_min_spin
-        self.gamma_max_spin = p.gamma_max_spin
-        self.gamma_step_spin = p.gamma_step_spin
-        # Temporal stabilization
-        self.memory_tau_spin = p.memory_tau_spin
-        self.memory_floor_spin = p.memory_floor_spin
-        # Segmentation ICM
-        self.alpha_unary_spin = p.alpha_unary_spin
-        self.lambda_s_spin = p.lambda_s_spin
-        self.beta_s_spin = p.beta_s_spin
-        self.lambda_t_spin = p.lambda_t_spin
-        self.gamma_unary_spin = p.gamma_unary_spin
-        self.n_workers_spin = p.n_workers_spin
-
-    # -- Correction aliases -----------------------------------------------
-
     def _install_correction_aliases(self) -> None:
-        """Install compatibility aliases for all controls owned by CellCorrectionWidget."""
+        """Install compatibility aliases for controls owned by CellCorrectionWidget."""
         c = self.cell_correction_widget
         self.correction_header = c.header
         self.correction_header_lbl = c.header_lbl
@@ -348,103 +369,83 @@ class CellWorkflowWidget(QWidget):
     # Signals
     # ================================================================
     def _connect_signals(self) -> None:
-        self.flow_run_btn.clicked.connect(self._on_flow_run_btn_clicked)
-        self.foreground_run_btn.clicked.connect(self._on_foreground_run_btn_clicked)
-        self.contour_preview_btn.clicked.connect(self._on_preview_contours)
-        self.contour_run_btn.clicked.connect(self._on_contour_run_btn_clicked)
-        self.segmentation_run_btn.clicked.connect(
-            self._on_segmentation_run_btn_clicked
+        for spin in (
+            self.fg_strength_spin, self.fg_threshold_spin, self.memory_tau_spin,
+            self.alpha_spin, self.gamma_spin, self.fg_window_spin,
+            self.contour_window_spin, self.contour_strength_spin,
+            self.contour_threshold_spin, self.contour_norm_pct_spin,
+            self.memory_floor_spin, self.n_workers_spin,
+        ):
+            spin.valueChanged.connect(self._on_param_changed)
+        self.active_btn.toggled.connect(self._on_activate)
+        self.run_btn.clicked.connect(self._on_run_clicked)
+        if hasattr(self.viewer, "dims") and hasattr(self.viewer.dims, "events"):
+            try:
+                self.viewer.dims.events.current_step.connect(self._on_time_changed)
+            except Exception:
+                pass
+
+    # ================================================================
+    # Params / paths
+    # ================================================================
+    def _params(self) -> CellDivergenceParams:
+        return CellDivergenceParams(
+            fg_window=int(self.fg_window_spin.value()),
+            fg_strength=float(self.fg_strength_spin.value()),
+            fg_threshold=float(self.fg_threshold_spin.value()),
+            contour_window=int(self.contour_window_spin.value()),
+            contour_strength=float(self.contour_strength_spin.value()),
+            contour_threshold=float(self.contour_threshold_spin.value()),
+            contour_norm_pct=float(self.contour_norm_pct_spin.value()),
+            memory_tau=float(self.memory_tau_spin.value()),
+            memory_floor=float(self.memory_floor_spin.value()),
+            alpha=float(self.alpha_spin.value()),
+            gamma=float(self.gamma_spin.value()),
+            n_workers=int(self.n_workers_spin.value()),
         )
 
-    def _on_flow_run_btn_clicked(self) -> None:
-        if self._running_stage is not None:
-            self._on_cancel()
-        else:
-            self._on_filter_flow()
-
-    def _on_foreground_run_btn_clicked(self) -> None:
-        if self._running_stage is not None:
-            self._on_cancel()
-        else:
-            self._on_build_foreground()
-
-    def _on_contour_run_btn_clicked(self) -> None:
-        if self._running_stage is not None:
-            self._on_cancel()
-        else:
-            self._on_build_contours()
-
-    def _on_segmentation_run_btn_clicked(self) -> None:
-        if self._running_stage is not None:
-            self._on_cancel()
-        else:
-            self._on_segment()
-
-    # ================================================================
-    # Path helpers
-    # ================================================================
     def _p(self, *parts: str) -> Path | None:
         return self._pos_dir.joinpath(*parts) if self._pos_dir else None
 
-    def _prob_path(self):          return self._p("1_cellpose", "cell_prob_3dt.tif")
-    def _dp_path(self):            return self._p("1_cellpose", "cell_dp_3dt.tif")
-    def _filtered_dp_path(self):   return self._p("3_cell", "filtered_dp.tif")
-    def _foreground_path(self):    return self._p("3_cell", "foreground_masks.tif")
-    def _contours_path(self):      return self._p("3_cell", "contours.tif")
-    def _fg_scores_path(self):     return self._p("3_cell", "foreground_scores.tif")
-    def _nuc_labels_path(self):    return self._p("2_nucleus", "tracked_labels.tif")
-    def _cell_labels_path(self):   return self._p("3_cell", "tracked_labels.tif")
+    def _contours_path(self):   return self._p("1_cellpose", "cell_contours.tif")
+    def _foreground_path(self): return self._p("1_cellpose", "cell_foreground.tif")
+    def _nuc_path(self):        return self._p("2_nucleus", "tracked_labels.tif")
+    def _output_path(self):     return self._p("3_cell", "tracked_labels.tif")
 
-    def _require(self, *pairs: tuple[Path | None, str]) -> bool:
-        for path, name in pairs:
-            if path is None or not path.exists():
-                self._status(f"Missing: {name}")
-                return False
-        return True
+    def _maps_present(self) -> bool:
+        ct, fg = self._contours_path(), self._foreground_path()
+        return ct is not None and ct.exists() and fg is not None and fg.exists()
 
     # ================================================================
-    # Public API
+    # Public API (consumed by the main widget)
     # ================================================================
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
-        self._icm_state = None
         self._files_widget.refresh(pos_dir)
         if pos_dir is None:
             self.correction_widget.deactivate()
 
     def get_state(self) -> dict:
         return {
-            "flow_filtering": {
-                "median_time": self.ff_median_time_spin.value(),
-                "median_space": self.ff_median_space_spin.value(),
-                "gauss_time": self.ff_gauss_time_spin.value(),
-                "gauss_space": self.ff_gauss_space_spin.value(),
+            "cleanup": {
+                "fg_window": self.fg_window_spin.value(),
+                "fg_strength": self.fg_strength_spin.value(),
+                "fg_threshold": self.fg_threshold_spin.value(),
+                "contour_window": self.contour_window_spin.value(),
+                "contour_strength": self.contour_strength_spin.value(),
+                "contour_threshold": self.contour_threshold_spin.value(),
+                "contour_norm_pct": self.contour_norm_pct_spin.value(),
             },
-            "foreground": {
-                "cellprob_threshold": self.fg_cellprob_threshold_spin.value(),
-            },
-            "contour": {
-                "cp_min": self.cp_min_spin.value(),
-                "cp_max": self.cp_max_spin.value(),
-                "cp_step": self.cp_step_spin.value(),
-                "gamma_min": self.gamma_min_spin.value(),
-                "gamma_max": self.gamma_max_spin.value(),
-                "gamma_step": self.gamma_step_spin.value(),
-                "ff_flow_weight": self.ff_flow_weight_spin.value(),
-                "ff_step_scale": self.ff_step_scale_spin.value(),
-                "ff_max_iter": self.ff_max_iter_spin.value(),
+            "temporal": {
                 "memory_tau": self.memory_tau_spin.value(),
                 "memory_floor": self.memory_floor_spin.value(),
             },
             "segmentation": {
-                "alpha_unary": self.alpha_unary_spin.value(),
-                "lambda_s": self.lambda_s_spin.value(),
-                "beta_s": self.beta_s_spin.value(),
-                "lambda_t": self.lambda_t_spin.value(),
-                "gamma_unary": self.gamma_unary_spin.value(),
+                "alpha": self.alpha_spin.value(),
+                "gamma": self.gamma_spin.value(),
                 "n_workers": self.n_workers_spin.value(),
             },
-            "correction": {                                        # ← CHANGED
+            "correction": {
                 "expand_max_px": self.expand_max_px_spin.value(),
                 "hole_radius": self.hole_radius_spin.value(),
                 "semihole_opening": self.semihole_opening_spin.value(),
@@ -454,40 +455,26 @@ class CellWorkflowWidget(QWidget):
     def set_state(self, state: dict) -> None:
         if not isinstance(state, dict):
             return
-        if "flow_following" in state and "foreground" not in state:
-            state = self._migrate_legacy_state(state)
         _map = {
-            "flow_filtering": {
-                "median_time": self.ff_median_time_spin,
-                "median_space": self.ff_median_space_spin,
-                "gauss_time": self.ff_gauss_time_spin,
-                "gauss_space": self.ff_gauss_space_spin,
+            "cleanup": {
+                "fg_window": self.fg_window_spin,
+                "fg_strength": self.fg_strength_spin,
+                "fg_threshold": self.fg_threshold_spin,
+                "contour_window": self.contour_window_spin,
+                "contour_strength": self.contour_strength_spin,
+                "contour_threshold": self.contour_threshold_spin,
+                "contour_norm_pct": self.contour_norm_pct_spin,
             },
-            "foreground": {
-                "cellprob_threshold": self.fg_cellprob_threshold_spin,
-            },
-            "contour": {
-                "cp_min": self.cp_min_spin,
-                "cp_max": self.cp_max_spin,
-                "cp_step": self.cp_step_spin,
-                "gamma_min": self.gamma_min_spin,
-                "gamma_max": self.gamma_max_spin,
-                "gamma_step": self.gamma_step_spin,
-                "ff_flow_weight": self.ff_flow_weight_spin,
-                "ff_step_scale": self.ff_step_scale_spin,
-                "ff_max_iter": self.ff_max_iter_spin,
+            "temporal": {
                 "memory_tau": self.memory_tau_spin,
                 "memory_floor": self.memory_floor_spin,
             },
             "segmentation": {
-                "alpha_unary": self.alpha_unary_spin,
-                "lambda_s": self.lambda_s_spin,
-                "beta_s": self.beta_s_spin,
-                "lambda_t": self.lambda_t_spin,
-                "gamma_unary": self.gamma_unary_spin,
+                "alpha": self.alpha_spin,
+                "gamma": self.gamma_spin,
                 "n_workers": self.n_workers_spin,
             },
-            "correction": {                                        # ← CHANGED
+            "correction": {
                 "expand_max_px": self.expand_max_px_spin,
                 "hole_radius": self.hole_radius_spin,
                 "semihole_opening": self.semihole_opening_spin,
@@ -497,40 +484,9 @@ class CellWorkflowWidget(QWidget):
             group = state.get(group_key, {})
             if not isinstance(group, dict):
                 continue
-            for k, w in widgets.items():
-                if k in group:
-                    w.setValue(group[k])
-
-    @staticmethod
-    def _migrate_legacy_state(state: dict) -> dict:
-        new: dict = {}
-        ff = state.get("flow_following", {})
-        if ff:
-            new["flow_filtering"] = dict(ff)
-        seg = state.get("segmentation", {})
-        if not seg:
-            return new
-        new["foreground"] = {}
-        for k in ("fg_cellprob_threshold", "cellprob_threshold"):
-            if k in seg:
-                new["foreground"]["cellprob_threshold"] = seg[k]
-        new["contour"] = {
-            k: v for k, v in seg.items()
-            if k.startswith(("cp_", "ff_", "memory_"))
-        }
-        for old, new_k in [
-            ("cp_gamma_min", "gamma_min"),
-            ("cp_gamma_max", "gamma_max"),
-            ("cp_gamma_step", "gamma_step"),
-        ]:
-            if old in new["contour"]:
-                new["contour"][new_k] = new["contour"].pop(old)
-        new["segmentation"] = {
-            k: v for k, v in seg.items()
-            if k in {"alpha_unary", "lambda_s", "beta_s",
-                      "lambda_t", "gamma_unary", "n_workers"}
-        }
-        return new
+            for key, spin in widgets.items():
+                if key in group:
+                    spin.setValue(group[key])
 
     def set_selection_callback(self, fn) -> None:
         self.correction_widget.set_selection_callback(fn)
@@ -539,8 +495,6 @@ class CellWorkflowWidget(QWidget):
         self, t: int, source_label: int,
         *, source_labels: np.ndarray | None = None,
     ) -> None:
-        # Prefer the [Correction] layer (active when correction mode is on);
-        # fall back to the pipeline-side Tracked: Cell.
         if "[Correction] Cell Labels" in self.viewer.layers:
             target_layer = self.viewer.layers["[Correction] Cell Labels"]
         elif _TRACKED_CELL_LAYER in self.viewer.layers:
@@ -558,121 +512,11 @@ class CellWorkflowWidget(QWidget):
     # ================================================================
     # Status / layer helpers
     # ================================================================
-    def _status(self, msg: str) -> None:
+    def _set_status(self, msg: str) -> None:
         self.pipeline_status_lbl.setText(msg)
         self.pipeline_status_lbl.setVisible(bool(msg))
         if msg:
             logger.info(msg)
-
-    def _correction_status(self, msg: str) -> None:
-        self.cell_correction_widget._correction_status(msg)
-
-    def _progress(self, done: int, total: int, msg: str) -> None:
-        self.pipeline_progress_bar.setVisible(True)
-        self.pipeline_progress_bar.setRange(0, total)
-        self.pipeline_progress_bar.setValue(done)
-        self._status(msg)
-
-    def _on_progress(self, data) -> None:
-        if isinstance(data, tuple):
-            self._progress(*data)
-        else:
-            self._status(str(data))
-
-    def _clear_progress(self) -> None:
-        self.pipeline_progress_bar.setValue(0)
-        self.pipeline_progress_bar.setVisible(False)
-
-    def _set_running_stage(self, stage_key: str | None) -> None:
-        """Update per-stage run/cancel state.
-
-        ``None`` means idle.  Any stage key means that row owns cancellation
-        and the other rows are disabled until the worker returns or errors.
-        """
-        self._running_stage = stage_key
-        rows = {
-            "flow": (
-                self.flow_params_btn,
-                self.flow_run_btn,
-                "Run flow filtering.",
-            ),
-            "foreground": (
-                self.foreground_params_btn,
-                self.foreground_run_btn,
-                "Run foreground mask generation.",
-            ),
-            "contour": (
-                self.contour_params_btn,
-                self.contour_run_btn,
-                "Run contour map generation.",
-            ),
-            "segmentation": (
-                self.segmentation_params_btn,
-                self.segmentation_run_btn,
-                "Run cell segmentation.",
-            ),
-        }
-        if stage_key is None:
-            for params_btn, run_btn, tooltip in rows.values():
-                params_btn.setEnabled(True)
-                run_btn.setEnabled(True)
-                run_btn.setText("▶")
-                run_btn.setToolTip(tooltip)
-            self.contour_preview_btn.setEnabled(True)
-            return
-
-        for key, (params_btn, run_btn, _tooltip) in rows.items():
-            if key == stage_key:
-                params_btn.setEnabled(True)
-                run_btn.setEnabled(True)
-                run_btn.setText("✕")
-                run_btn.setToolTip("Cancel.")
-            else:
-                params_btn.setEnabled(False)
-                run_btn.setEnabled(False)
-        self.contour_preview_btn.setEnabled(False)
-
-    def _set_pipeline_buttons_enabled(self, enabled: bool) -> None:
-        """Backward-compatible shim for older tests/callers."""
-        if enabled:
-            self._set_running_stage(None)
-            return
-        for btn in (
-            self.flow_params_btn,
-            self.flow_run_btn,
-            self.foreground_params_btn,
-            self.foreground_run_btn,
-            self.contour_params_btn,
-            self.contour_preview_btn,
-            self.contour_run_btn,
-            self.segmentation_params_btn,
-            self.segmentation_run_btn,
-        ):
-            btn.setEnabled(False)
-
-    def _on_cancel(self) -> None:
-        stage_to_worker = {
-            "flow": self._ff_worker,
-            "foreground": self._foreground_worker,
-            "contour": self._contour_worker,
-            "segmentation": self._initialize_worker,
-        }
-        worker = stage_to_worker.get(self._running_stage)
-        if worker is not None and hasattr(worker, "quit"):
-            worker.quit()
-        self._ff_worker = None if self._running_stage == "flow" else self._ff_worker
-        self._foreground_worker = (
-            None if self._running_stage == "foreground" else self._foreground_worker
-        )
-        self._contour_worker = (
-            None if self._running_stage == "contour" else self._contour_worker
-        )
-        self._initialize_worker = (
-            None if self._running_stage == "segmentation" else self._initialize_worker
-        )
-        self._clear_progress()
-        self._set_running_stage(None)
-        self._status("Cancelled.")
 
     def _show_layer(self, name, data, kwargs, adder):
         if name in self.viewer.layers:
@@ -688,350 +532,282 @@ class CellWorkflowWidget(QWidget):
         step = getattr(getattr(self.viewer, "dims", None), "current_step", (0,))
         return int(step[0]) if len(step) >= 1 else 0
 
-    def _current_time_index(self, max_t: int) -> int:
-        return min(max(self._current_t(), 0), max(max_t - 1, 0))
+    def _read_frame(self, path, t: int, dtype=np.float32) -> np.ndarray:
+        return np.asarray(tifffile.imread(str(path), key=t), dtype=dtype)
+
+    def _map_shape(self):
+        """(T, Y, X) from the contours TIFF header (no pixel load)."""
+        ct = self._contours_path()
+        if ct is None or not ct.exists():
+            return None
+        with tifffile.TiffFile(str(ct)) as tf:
+            n_frames = len(tf.pages)
+            y, x = tf.pages[0].shape[-2], tf.pages[0].shape[-1]
+        return int(n_frames), int(y), int(x)
 
     # ================================================================
-    # 1. Flow Filtering
+    # Live preview (single frame, all intermediates)
     # ================================================================
-    def _flow_filter_params(self):
-        return self.cell_params_widget.flow_filter_params()
+    def _on_param_changed(self, *_args) -> None:
+        if self._preview_active:
+            self._preview_timer.start()
 
-    def _read_dp_tcyx(self, prob_path: Path, dp_path: Path) -> np.ndarray:
-        from cellflow.segmentation._array_utils import normalize_seeded_watershed_dp_stack
-        prob = np.asarray(tifffile.imread(str(prob_path)), dtype=np.float32)
-        if prob.ndim == 3:
-            prob = prob[np.newaxis]
-        dp_raw = np.asarray(tifffile.imread(str(dp_path)), dtype=np.float32)
-        dp_full = normalize_seeded_watershed_dp_stack(dp_raw, prob.shape)
-        return dp_full[:, :, :2].mean(axis=1).astype(np.float32)
+    def _on_time_changed(self, *_args) -> None:
+        if self._preview_active:
+            self._preview_timer.start()
 
-    def _on_filter_flow(self) -> None:
+    def _on_activate(self, checked: bool) -> None:
+        self._preview_active = bool(checked)
+        if checked:
+            self._refresh_preview()
+        else:
+            self._preview_pending = False
+            for name in _PREVIEW_LAYERS:
+                if name in self.viewer.layers:
+                    self.viewer.layers.remove(name)
+            self._set_status("")
+
+    def _refresh_preview(self):
+        """Recompute the current frame's preview off the GUI thread.
+
+        Mirrors the atom widget: while a pass is in flight, further edits arm
+        ``_preview_pending`` so one fresh pass (latest params/frame) fires when
+        the current one returns. Returns the started worker (or ``None``).
+        """
+        if not self._preview_active:
+            return None
+        if not self._maps_present():
+            self._set_status("Cell divergence maps not found — run Divergence Maps first.")
+            return None
+        nuc_path = self._nuc_path()
+        if nuc_path is None or not nuc_path.exists():
+            self._set_status("Nucleus tracked_labels.tif not found.")
+            return None
+        shape = self._map_shape()
+        if shape is None:
+            self._set_status("Cell divergence maps not found — run Divergence Maps first.")
+            return None
+        self._ensure_preview_layers(shape[-2:])
+        if self._preview_worker is not None:
+            self._preview_pending = True
+            return self._preview_worker
+
+        params = self._params()
+        n_frames = shape[0]
+        t = max(0, min(self._current_t(), n_frames - 1))
+        contours_path = self._contours_path()
+        foreground_path = self._foreground_path()
+        self._set_status(f"Computing cell preview for frame {t}…")
+
+        @thread_worker(connect={
+            "returned": self._on_preview_done,
+            "errored": self._on_preview_error,
+        })
+        def _worker():
+            contour = self._read_frame(contours_path, t)[np.newaxis]
+            fg = self._read_frame(foreground_path, t)[np.newaxis]
+            nuc = self._read_frame(nuc_path, t, dtype=np.uint32)[np.newaxis]
+            result = segment_cells_divergence(
+                contour, fg, nuc, params, frame=0, with_labels=False,
+            )
+            return t, result
+
+        self._preview_worker = _worker()
+        return self._preview_worker
+
+    def _on_preview_done(self, payload) -> None:
+        self._preview_worker = None
+        t, result = payload
+        if self._preview_active:
+            self._fill_image_layer(_FG_RAW_LAYER, result.foreground_raw)
+            self._fill_image_layer(_FG_CLEAN_LAYER, result.foreground_clean)
+            self._fill_image_layer(_CT_RAW_LAYER, result.contours_raw)
+            self._fill_image_layer(_CT_CLEAN_LAYER, result.contours_clean)
+            self._fill_labels_layer(
+                _FG_MASK_LAYER, result.foreground_mask.astype(np.uint8)
+            )
+            self._fill_image_layer(_COST_LAYER, self._cost_for_display(result.cost_field))
+            coverage = 100.0 * float(result.foreground_mask.mean())
+            self._set_status(
+                f"Frame {t}: {coverage:.0f}% fill coverage "
+                f"(labels computed on Run)."
+            )
+        if self._preview_pending and self._preview_active:
+            self._preview_pending = False
+            self._refresh_preview()
+        else:
+            self._preview_pending = False
+
+    def _on_preview_error(self, exc: Exception) -> None:
+        self._preview_worker = None
+        self._preview_pending = False
+        self._set_status(f"Cell preview failed: {exc}")
+        logger.exception("Cell preview worker error", exc_info=exc)
+
+    @staticmethod
+    def _cost_for_display(cost: np.ndarray) -> np.ndarray:
+        """Mask the geodesic-cost background (inf) to NaN for the colormap."""
+        return np.where(np.isfinite(cost), cost, np.nan).astype(np.float32)
+
+    # ── preview layers (one 2-D current-frame layer per intermediate) ─────
+    # The preview only ever computes the current frame, and a time scrub
+    # recomputes it (``_on_time_changed``), so the layers are 2-D (Y, X) rather
+    # than full (T, Y, X) stacks — napari broadcasts them across the time axis.
+    # This keeps activation cheap regardless of movie length.
+    def _ensure_preview_layers(self, yx) -> None:
+        for name, colormap in _PREVIEW_IMAGE_LAYERS:
+            self._ensure_image_layer(name, yx, colormap)
+        for name in _PREVIEW_LABEL_LAYERS:
+            self._ensure_labels_layer(name, yx)
+
+    def _ensure_image_layer(self, name: str, yx, colormap: str) -> None:
+        if name in self.viewer.layers:
+            layer = self.viewer.layers[name]
+            if tuple(layer.data.shape) == tuple(yx):
+                return
+            was_visible = layer.visible
+            self.viewer.layers.remove(name)
+        else:
+            was_visible = True
+        new_layer = self.viewer.add_image(
+            np.full(yx, np.nan, dtype=np.float32), name=name, colormap=colormap,
+        )
+        new_layer.visible = was_visible
+
+    def _ensure_labels_layer(self, name: str, yx) -> None:
+        from napari.layers import Labels
+        if name in self.viewer.layers:
+            layer = self.viewer.layers[name]
+            if isinstance(layer, Labels) and tuple(layer.data.shape) == tuple(yx):
+                return
+            was_visible = layer.visible
+            self.viewer.layers.remove(name)
+        else:
+            was_visible = True
+        new_layer = self.viewer.add_labels(
+            np.zeros(yx, dtype=np.int32), name=name, opacity=0.55
+        )
+        new_layer.visible = was_visible
+
+    def _fill_image_layer(self, name: str, frame: np.ndarray) -> None:
+        if name not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[name]
+        layer.data = np.asarray(frame, dtype=np.float32)
+        finite = frame[np.isfinite(frame)]
+        if finite.size:
+            lo, hi = float(finite.min()), float(finite.max())
+            if hi > lo:
+                layer.contrast_limits = (lo, hi)
+        layer.refresh()
+
+    def _fill_labels_layer(self, name: str, frame: np.ndarray) -> None:
+        if name not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[name]
+        layer.data = np.asarray(frame, dtype=np.int32)
+        layer.refresh()
+
+    # ================================================================
+    # Full run (final output only)
+    # ================================================================
+    def _on_run_clicked(self) -> None:
+        if self._running:
+            self._on_cancel()
+        else:
+            self._on_run()
+
+    def _on_cancel(self) -> None:
+        if self._run_worker is not None and hasattr(self._run_worker, "quit"):
+            self._run_worker.quit()
+        self._run_worker = None
+        self._running = False
+        self._set_run_idle()
+        self._clear_progress()
+        self._set_status("Cancelled.")
+
+    def _on_run(self) -> None:
         if self._pos_dir is None:
-            self._status("No project open."); return
-        prob_path, dp_path = self._prob_path(), self._dp_path()
-        fdp = self._filtered_dp_path()
-        if not self._require(
-            (prob_path, "cell_prob_3dt.tif"),
-            (dp_path, "cell_dp_3dt.tif"),
-        ):
+            self._set_status("No project open.")
+            return
+        if not self._maps_present():
+            self._set_status("Cell divergence maps not found — run Divergence Maps first.")
+            return
+        nuc_path = self._nuc_path()
+        if nuc_path is None or not nuc_path.exists():
+            self._set_status("Nucleus tracked_labels.tif not found.")
             return
 
-        params = self._flow_filter_params()
+        params = self._params()
+        contours_path = self._contours_path()
+        foreground_path = self._foreground_path()
+        output_path = self._output_path()
         pos_dir = self._pos_dir
 
         def _done(result):
-            self._ff_worker = None
-            self._set_running_stage(None)
+            self._run_worker = None
+            self._running = False
+            self._set_run_idle()
             self._clear_progress()
+            labels, n_labels = result
             self._show_layer(
-                _FILTERED_FLOW_LAYER, result,
-                {"colormap": "inferno", "blending": "additive"},
-                self.viewer.add_image,
+                _TRACKED_CELL_LAYER, labels, {"visible": True}, self.viewer.add_labels
             )
             self._files_widget.refresh(pos_dir)
-            self._status("Flow filtering complete.")
-
-        def _error(exc):
-            self._ff_worker = None
-            self._set_running_stage(None)
-            self._clear_progress()
-            self._status(f"Error: {exc}")
-            logger.exception("Flow filter error", exc_info=exc)
-
-        @thread_worker(connect={"yielded": self._on_progress, "returned": _done, "errored": _error})
-        def _worker():
-            from cellflow.segmentation import compute_filtered_flow_vectors
-            yield (0, 4, "Loading flow inputs...")
-            dp_tcyx = self._read_dp_tcyx(prob_path, dp_path)
-            yield (1, 4, "Filtering...")
-            filtered_dp = compute_filtered_flow_vectors(dp_tcyx, params)
-            yield (2, 4, "Computing magnitude...")
-            mag = np.sqrt(filtered_dp[:, 0]**2 + filtered_dp[:, 1]**2).astype(np.float32)
-            yield (3, 4, "Saving...")
-            fdp.parent.mkdir(parents=True, exist_ok=True)
-            imwrite_grayscale(fdp, filtered_dp, compression="zlib")
-            return mag
-
-        self._status("Filtering flow...")
-        self._set_running_stage("flow")
-        self._ff_worker = _worker()
-
-    # ================================================================
-    # 2. Foreground Masks
-    # ================================================================
-    def _on_build_foreground(self) -> None:
-        if self._pos_dir is None:
-            self._status("No project open."); return
-        prob_path, fdp = self._prob_path(), self._filtered_dp_path()
-        fg_path = self._foreground_path()
-        if not self._require(
-            (prob_path, "cell_prob_3dt.tif"),
-            (fdp, "filtered_dp.tif"),
-        ):
-            return
-
-        thr = self.fg_cellprob_threshold_spin.value()
-        pos_dir = self._pos_dir
-
-        def _done(result):
-            self._foreground_worker = None
-            self._set_running_stage(None)
-            self._clear_progress()
-            self._show_layer(_CELL_FOREGROUND_LAYER, result, {}, self.viewer.add_labels)
-            self._files_widget.refresh(pos_dir)
-            self._status("Foreground masks complete.")
-
-        def _error(exc):
-            self._foreground_worker = None
-            self._set_running_stage(None)
-            self._clear_progress()
-            self._status(f"Error: {exc}")
-            logger.exception("Foreground error", exc_info=exc)
-
-        @thread_worker(connect={"yielded": self._on_progress, "returned": _done, "errored": _error})
-        def _worker():
-            from cellflow.segmentation.cell_foreground import compute_cellpose_foreground_masks
-            yield (0, 1, "Loading inputs...")
-            prob = tifffile.imread(str(prob_path))
-            dp = tifffile.imread(str(fdp))
-            if prob.ndim == 3: prob = prob[np.newaxis]
-            if dp.ndim == 3: dp = dp[np.newaxis]
-            T = prob.shape[0]
-            yield (0, T, f"Building foreground (T={T})...")
-            masks = compute_cellpose_foreground_masks(
-                prob, dp, cellprob_threshold=thr,
-                flow_threshold=0.0, min_size=15, niter=200,
-                progress_cb=lambda d, t: None,
-            )
-            fg_path.parent.mkdir(parents=True, exist_ok=True)
-            imwrite_grayscale(fg_path, masks, compression="zlib")
-            return masks
-
-        self._status("Building foreground...")
-        self._set_running_stage("foreground")
-        self._foreground_worker = _worker()
-
-    # ================================================================
-    # 3. Contour Maps
-    # ================================================================
-    def _cellprob_thresholds(self) -> list[float]:
-        return self.cell_params_widget.cellprob_thresholds()
-
-    def _gammas(self) -> list[float]:
-        return self.cell_params_widget.gammas()
-
-    def _contour_ff_params(self):
-        return self.cell_params_widget.contour_ff_params()
-
-    def _consensus_boundary_averaged(
-        self, prob_3d, dp_2d, labels_yx, thresholds, gammas, *, ff_params,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        b_acc = fg_acc = None
-        n = 0
-        for gamma in gammas:
-            logits = apply_gamma(prob_3d, gamma)
-            probs = 1.0 / (1.0 + np.exp(-logits))
-            prob_2d = probs.mean(axis=0).astype(np.float32)
-            b, fg = build_consensus_boundary_flow_following(
-                prob_2d, dp_2d, labels_yx, thresholds,
-                params=ff_params, reduction="mean",
-            )
-            if b_acc is None:
-                b_acc, fg_acc = b.copy(), fg.copy()
-            else:
-                b_acc += b; fg_acc += fg
-            n += 1
-        if n > 0:
-            b_acc /= n; fg_acc /= n
-        return b_acc, fg_acc
-
-    def _on_build_contours(self) -> None:
-        if self._pos_dir is None:
-            self._status("No project open."); return
-        prob_path, fdp = self._prob_path(), self._filtered_dp_path()
-        nuc_path = self._nuc_labels_path()
-        ct_path, sc_path = self._contours_path(), self._fg_scores_path()
-        if not self._require(
-            (prob_path, "cell_prob_3dt.tif"),
-            (fdp, "filtered_dp.tif"),
-            (nuc_path, "tracked_labels.tif (nucleus)"),
-        ):
-            return
-
-        thresholds = self._cellprob_thresholds()
-        gammas = self._gammas()
-        tau = self.memory_tau_spin.value()
-        floor = self.memory_floor_spin.value()
-        ff_params = self._contour_ff_params()
-        nuc_labels = tifffile.imread(str(nuc_path))
-        pos_dir = self._pos_dir
-
-        def _done(result):
-            self._contour_worker = None
-            self._set_running_stage(None)
-            self._clear_progress()
-            contours, scores = result
-            self._show_layer(_CELL_CONTOUR_LAYER, contours,
-                             {"colormap": "magma", "visible": True}, self.viewer.add_image)
-            self._show_layer(_CELL_FOREGROUND_SCORE_LAYER, scores,
-                             {"colormap": "viridis", "visible": True}, self.viewer.add_image)
-            self._files_widget.refresh(pos_dir)
-            self._status("Contour maps complete.")
-
-        def _error(exc):
-            self._contour_worker = None
-            self._set_running_stage(None)
-            self._clear_progress()
-            self._status(f"Error: {exc}")
-            logger.exception("Contour error", exc_info=exc)
-
-        @thread_worker(connect={"yielded": self._on_progress, "returned": _done, "errored": _error})
-        def _worker():
-            prob_stack = tifffile.imread(str(prob_path))
-            dp_stack = tifffile.imread(str(fdp))
-            if prob_stack.ndim == 3: prob_stack = prob_stack[np.newaxis]
-            if dp_stack.ndim == 3: dp_stack = dp_stack[np.newaxis]
-            T = prob_stack.shape[0]
-            cm = np.zeros((T, *prob_stack.shape[2:]), dtype=np.float32)
-            fs = np.zeros_like(cm)
-            for t in range(T):
-                yield (t + 1, T, f"Contour maps: frame {t+1}/{T}...")
-                b, fg = self._consensus_boundary_averaged(
-                    prob_stack[t], dp_stack[t], nuc_labels[t],
-                    thresholds, gammas, ff_params=ff_params,
-                )
-                cm[t], fs[t] = b, fg
-            if tau > 0 and T > 1:
-                yield (T, T, f"Memory filter (τ={tau})...")
-                cm = contour_memory_filter(cm, tau=tau, floor=floor)
-            ct_path.parent.mkdir(parents=True, exist_ok=True)
-            imwrite_grayscale(ct_path, cm, compression="zlib")
-            imwrite_grayscale(sc_path, fs, compression="zlib")
-            return cm, fs
-
-        tau_msg = f", τ={tau}" if tau > 0 else ""
-        self._status(f"Building contours ({len(thresholds)} thr, {len(gammas)} γ{tau_msg})...")
-        self._set_running_stage("contour")
-        self._contour_worker = _worker()
-
-    def _on_preview_contours(self) -> None:
-        t = self._current_t()
-        prob_path, fdp = self._prob_path(), self._filtered_dp_path()
-        nuc_path = self._nuc_labels_path()
-        if not self._require(
-            (prob_path, "cell_prob_3dt.tif"),
-            (fdp, "filtered_dp.tif"),
-            (nuc_path, "tracked_labels.tif (nucleus)"),
-        ):
-            return
-
-        prob_stack = tifffile.imread(str(prob_path))
-        if prob_stack.ndim == 3: prob_stack = prob_stack[np.newaxis]
-        dp_stack = tifffile.imread(str(fdp))
-        if dp_stack.ndim == 3: dp_stack = dp_stack[np.newaxis]
-        nuc_t = tifffile.imread(str(nuc_path))[t]
-
-        b, fg = self._consensus_boundary_averaged(
-            prob_stack[t].astype(np.float32),
-            dp_stack[t].astype(np.float32),
-            nuc_t,
-            self._cellprob_thresholds(), self._gammas(),
-            ff_params=self._contour_ff_params(),
-        )
-        n_t = prob_stack.shape[0]
-        cd = np.zeros((n_t,) + b.shape, dtype=np.float32); cd[t] = b
-        sd = np.zeros((n_t,) + fg.shape, dtype=np.float32); sd[t] = fg
-        self._show_layer(_CELL_CONTOUR_LAYER, cd,
-                         {"colormap": "magma", "visible": True}, self.viewer.add_image)
-        self._show_layer(_CELL_FOREGROUND_SCORE_LAYER, sd,
-                         {"colormap": "viridis", "visible": True}, self.viewer.add_image)
-        mem = " (memory filter on full build only)" if self.memory_tau_spin.value() > 0 else ""
-        self._status(f"Preview t={t}{mem}")
-
-    # ================================================================
-    # 4. Segment (Initialize + auto-commit)
-    # ================================================================
-    def _on_segment(self) -> None:
-        if self._pos_dir is None:
-            self._status("No project open."); return
-        if not self._require(
-            (self._nuc_labels_path(), "tracked_labels.tif (nucleus)"),
-            (self._contours_path(), "contours.tif"),
-            (self._foreground_path(), "foreground_masks.tif"),
-        ):
-            return
-
-        pos_dir = self._pos_dir
-        output_path = self._cell_labels_path()
-
-        from cellflow.segmentation.cell_label_icm import (
-            CellLabelICMParams, initialize_icm, commit_labels,
-        )
-        params = CellLabelICMParams(
-            alpha_unary=self.alpha_unary_spin.value(),
-            lambda_s=self.lambda_s_spin.value(),
-            beta_s=self.beta_s_spin.value(),
-            lambda_t=self.lambda_t_spin.value(),
-            gamma_unary=self.gamma_unary_spin.value(),
-            n_workers=self.n_workers_spin.value(),
-        )
-
-        def _done(result):
-            self._initialize_worker = None
-            state, labels = result
-            self._icm_state = state
-            self._show_layer(_CELL_SEG_LAYER, labels, {"visible": True}, self.viewer.add_labels)
-            commit_labels(labels, output_path)
-            self._set_running_stage(None)
-            self._clear_progress()
-            self._files_widget.refresh(pos_dir)
-            self._status(
-                f"Segmentation complete — {state.n_labels} labels, "
+            self._set_status(
+                f"Segmentation complete — {n_labels} labels, "
                 f"saved to {output_path.name}."
             )
 
         def _error(exc):
-            self._initialize_worker = None
-            self._set_running_stage(None)
+            self._run_worker = None
+            self._running = False
+            self._set_run_idle()
             self._clear_progress()
-            self._status(f"Error: {exc}")
-            logger.exception("Segment error", exc_info=exc)
+            if isinstance(exc, CancelledError):
+                self._set_status("Cancelled.")
+                return
+            self._set_status(f"Error: {exc}")
+            logger.exception("Cell segmentation run error", exc_info=exc)
 
-        @thread_worker(connect={
-            "yielded": self._on_progress, "returned": _done, "errored": _error,
-        })
+        @thread_worker(connect={"returned": _done, "errored": _error})
         def _worker():
-            from cellflow.segmentation.cell_label_icm import _load_pos_dir_inputs
-            msg_q: queue.SimpleQueue = queue.SimpleQueue()
-            result_holder, exc_holder = [], []
+            progress = self._run_progress
 
-            def _run():
-                try:
-                    nuc, fg, ct, fg_scores = _load_pos_dir_inputs(pos_dir)
-                    s, init = initialize_icm(
-                        nuc, fg, ct, params,
-                        foreground_scores=fg_scores,
-                        progress_cb=lambda m: msg_q.put(m),
-                    )
-                    result_holder.append((s, init))
-                except Exception as e:
-                    exc_holder.append(e)
+            def _cb(msg: str) -> None:
+                progress.emit(str(msg))
 
-            yield "Loading inputs..."
-            t = threading.Thread(target=_run, daemon=True)
-            t.start()
-            while t.is_alive() or not msg_q.empty():
-                try:
-                    yield msg_q.get_nowait()
-                except queue.Empty:
-                    t.join(timeout=0.05)
-            if exc_holder:
-                raise exc_holder[0]
-            return result_holder[0]
+            contours = tifffile.imread(str(contours_path))
+            foreground = tifffile.imread(str(foreground_path))
+            nuc = tifffile.imread(str(nuc_path))
+            result = segment_cells_divergence(
+                contours, foreground, nuc, params, progress_cb=_cb,
+            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            commit_labels(result.labels, output_path)
+            n_labels = int(np.unique(result.labels[result.labels > 0]).size)
+            return result.labels, n_labels
 
-        self._status("Segmenting...")
+        self._set_status("Segmenting all frames…")
         self.pipeline_progress_bar.setRange(0, 0)
         self.pipeline_progress_bar.setVisible(True)
-        self._set_running_stage("segmentation")
-        self._initialize_worker = _worker()
+        self._running = True
+        self._set_run_running()
+        self._run_worker = _worker()
+
+    def _set_run_running(self) -> None:
+        self.run_btn.setText("✕")
+        self.run_btn.setToolTip("Cancel.")
+        self.active_btn.setEnabled(False)
+
+    def _set_run_idle(self) -> None:
+        self.run_btn.setText("▶")
+        self.run_btn.setToolTip(
+            "Run the full pipeline over all frames and write tracked_labels.tif."
+        )
+        self.active_btn.setEnabled(True)
+
+    def _clear_progress(self) -> None:
+        self.pipeline_progress_bar.setRange(0, 100)
+        self.pipeline_progress_bar.setValue(0)
+        self.pipeline_progress_bar.setVisible(False)

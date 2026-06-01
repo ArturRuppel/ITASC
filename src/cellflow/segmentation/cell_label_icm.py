@@ -1,31 +1,23 @@
-"""Cell label ICM solver with staged API (Initialize → Refine → Commit).
+"""Unary-only cell label segmentation (contour-aware geodesic Voronoi).
 
-Provides a decomposed pipeline for cell boundary optimization:
+- ``initialize_icm``: compute geodesic unary costs from the contour/foreground
+  cost field and assign each foreground pixel to its nearest nucleus seed
+  (per-pixel argmin). Returns a :class:`CellICMState` caching the unary and a
+  hard-anchored initial label array.
 
-- ``initialize_icm``: compute geodesic unary costs and spatial/temporal
-  pairwise weights, then build initial labels (nucleus-only, argmin, or
-  watershed).  Returns a :class:`CellICMState` that caches all
-  energy-landscape data, plus the initial label array.
+- ``assemble_cost_field``: build the per-frame geodesic cost field the walk
+  traverses (shared with the cell widget's preview).
 
-- ``refine_icm``: run *N* Iterated Conditional Modes (ICM) sweeps on an
-  existing label array using a previously computed ``CellICMState``.
-  Can be called repeatedly for incremental refinement, interleaved with
-  manual corrections in the napari viewer.
+- ``commit_labels``: write the label array to a TIFF file.
 
-- ``commit_labels``: write the current label array to a TIFF file.
-
-Backward-compatible monolithic entry points are preserved:
-
-- ``segment_cells_icm``: run the full pipeline on in-memory arrays.
-- ``run_cell_icm_from_pos_dir``: load TIFFs from disk, run full pipeline.
-
-The ICM solver uses a sequential Gauss-Seidel raster sweep (Numba JIT)
-with 8-connected spatial neighbours and spatiotemporal face-diagonal edges.
+The spatial/temporal Potts pairwise terms and the iterated-conditional-modes
+refinement sweep have been removed — with the pairwise weights zeroed the ICM
+optimum is exactly the argmin of the unary, so the initialisation *is* the
+answer.
 """
 from __future__ import annotations
 
 import hashlib
-import math
 import multiprocessing as mp
 import os
 from dataclasses import dataclass, field
@@ -34,9 +26,7 @@ from time import perf_counter
 from typing import Callable
 
 import h5py
-import numba
 import numpy as np
-import tifffile
 from skimage.graph import MCP_Geometric
 
 from cellflow.core.tiff import imwrite_grayscale
@@ -44,45 +34,24 @@ from cellflow.core.tiff import imwrite_grayscale
 __all__ = [
     "CellLabelICMParams",
     "CellICMState",
+    "assemble_cost_field",
     "initialize_icm",
-    "refine_icm",
     "commit_labels",
-    "segment_cells_icm",
-    "run_cell_icm_from_pos_dir",
 ]
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 _INF: float = 1e9
-_DIAG_SCALE: float = 1.0 / math.sqrt(2.0)
 
 
 # ── Dataclasses ──────────────────────────────────────────────────────────────
 
 @dataclass
 class CellLabelICMParams:
-    """Parameters for the cell label ICM pipeline."""
+    """Parameters for the unary-only geodesic cell segmentation."""
 
     alpha_unary: float = 4.0
     """Contour weight in the geodesic cost field: ``1 + alpha_unary * contour``."""
-
-    lambda_s: float = 1.0
-    """Spatial pairwise Potts weight."""
-
-    beta_s: float = 5.0
-    """Contour sensitivity in spatial pairwise: ``exp(-beta_s * avg_contour)``."""
-
-    lambda_t: float = 1.0
-    """Temporal pairwise Potts weight."""
-
-    n_iters: int = 3
-    """Number of ICM sweeps."""
-
-    min_round_flips: int = 0
-    """Stop early if a round has fewer flips than this."""
-
-    lambda_area: float = 0.0
-    """Weight for per-label frame-to-frame area-change penalty."""
 
     gamma_unary: float = 0.0
     """Weight for ``(1 - foreground_score)`` added to the geodesic cost field."""
@@ -95,12 +64,10 @@ class CellLabelICMParams:
 
 @dataclass
 class CellICMState:
-    """Cached energy-landscape data for incremental ICM refinement.
+    """Cached energy-landscape data for the unary segmentation.
 
-    Created by :func:`initialize_icm` and consumed by :func:`refine_icm`.
-    All arrays are stored as their solver-ready dtypes (float32 / uint32 /
-    bool).  The state is **read-only** once created — it describes the energy
-    landscape, not the current solution.
+    Created by :func:`initialize_icm`.  All arrays are stored as their
+    solver-ready dtypes (float32 / uint32 / bool).
     """
 
     fg_mask: np.ndarray = field(repr=False)
@@ -116,19 +83,6 @@ class CellICMState:
     """(T, Y, X, K) float32 — dense unary cost array.  Dead / background
     entries are ``_INF``."""
 
-    # Spatial pairwise weights — all (T, Y, X) float32
-    h: np.ndarray = field(repr=False)
-    v: np.ndarray = field(repr=False)
-    dr: np.ndarray = field(repr=False)
-    dl: np.ndarray = field(repr=False)
-
-    # Temporal pairwise weights — all (T, Y, X) float32
-    tw: np.ndarray = field(repr=False)
-    tw_ty_dn: np.ndarray = field(repr=False)
-    tw_ty_up: np.ndarray = field(repr=False)
-    tw_tx_r: np.ndarray = field(repr=False)
-    tw_tx_l: np.ndarray = field(repr=False)
-
     @property
     def shape(self) -> tuple[int, int, int]:
         return self.fg_mask.shape  # type: ignore[return-value]
@@ -138,76 +92,30 @@ class CellICMState:
         return len(self.label_ids)
 
 
-# ── Internal: pairwise weights ───────────────────────────────────────────────
+# ── Cost field assembly (shared by solver + previews) ────────────────────────
 
-def _compute_pairwise_weights(
-    fg_mask: np.ndarray,
-    boundary_signal: np.ndarray,
-    lambda_s: float,
-    beta_s: float,
-    lambda_t: float,
-) -> tuple[
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-    np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-]:
-    """Compute per-pixel spatial + temporal Potts pairwise weights.
+def assemble_cost_field(
+    contours_t: np.ndarray,
+    fg_t: np.ndarray,
+    alpha_unary: float,
+    fg_scores_t: np.ndarray | None = None,
+    gamma_unary: float = 0.0,
+) -> np.ndarray:
+    """Per-pixel geodesic cost over a single frame's foreground mask.
 
-    Returns ``(h, v, dr, dl, tw, tw_ty_dn, tw_ty_up, tw_tx_r, tw_tx_l)``
-    — nine ``(T, Y, X)`` float32 arrays.
+    ``cost = 1 + alpha_unary * contour + gamma_unary * (1 - fg_score)`` inside
+    the mask, ``inf`` elsewhere.  This is the exact field the geodesic walk
+    traverses; sharing it between :func:`_compute_frame_geodesic` and the cell
+    widget's live preview guarantees the preview shows the same array the
+    solver uses rather than a re-derivation.
     """
-    T, Y, X = fg_mask.shape
-    fg = fg_mask.astype(bool)
-    c = boundary_signal
-
-    h = np.zeros((T, Y, X), dtype=np.float32)
-    h[:, :, :-1] = (
-        lambda_s * np.exp(-beta_s * 0.5 * (c[:, :, :-1] + c[:, :, 1:]))
-        * (fg[:, :, :-1] & fg[:, :, 1:])
-    ).astype(np.float32)
-
-    v = np.zeros((T, Y, X), dtype=np.float32)
-    v[:, :-1, :] = (
-        lambda_s * np.exp(-beta_s * 0.5 * (c[:, :-1, :] + c[:, 1:, :]))
-        * (fg[:, :-1, :] & fg[:, 1:, :])
-    ).astype(np.float32)
-
-    dr = np.zeros((T, Y, X), dtype=np.float32)
-    dr[:, :-1, :-1] = (
-        _DIAG_SCALE * lambda_s
-        * np.exp(-beta_s * 0.5 * (c[:, :-1, :-1] + c[:, 1:, 1:]))
-        * (fg[:, :-1, :-1] & fg[:, 1:, 1:])
-    ).astype(np.float32)
-
-    dl = np.zeros((T, Y, X), dtype=np.float32)
-    dl[:, :-1, 1:] = (
-        _DIAG_SCALE * lambda_s
-        * np.exp(-beta_s * 0.5 * (c[:, :-1, 1:] + c[:, 1:, :-1]))
-        * (fg[:, :-1, 1:] & fg[:, 1:, :-1])
-    ).astype(np.float32)
-
-    tw = np.zeros((T, Y, X), dtype=np.float32)
-    if T > 1:
-        tw[:-1, :, :] = (lambda_t * (fg[:-1] & fg[1:])).astype(np.float32)
-
-    tw_ty_dn = np.zeros((T, Y, X), dtype=np.float32)
-    tw_ty_up = np.zeros((T, Y, X), dtype=np.float32)
-    tw_tx_r = np.zeros((T, Y, X), dtype=np.float32)
-    tw_tx_l = np.zeros((T, Y, X), dtype=np.float32)
-    if T > 1:
-        tw_ty_dn[:-1, :-1, :] = (
-            _DIAG_SCALE * lambda_t * (fg[:-1, :-1, :] & fg[1:, 1:, :])
-        ).astype(np.float32)
-        tw_ty_up[:-1, 1:, :] = (
-            _DIAG_SCALE * lambda_t * (fg[:-1, 1:, :] & fg[1:, :-1, :])
-        ).astype(np.float32)
-        tw_tx_r[:-1, :, :-1] = (
-            _DIAG_SCALE * lambda_t * (fg[:-1, :, :-1] & fg[1:, :, 1:])
-        ).astype(np.float32)
-        tw_tx_l[:-1, :, 1:] = (
-            _DIAG_SCALE * lambda_t * (fg[:-1, :, 1:] & fg[1:, :, :-1])
-        ).astype(np.float32)
-
-    return h, v, dr, dl, tw, tw_ty_dn, tw_ty_up, tw_tx_r, tw_tx_l
+    Y, X = fg_t.shape
+    cost_field = np.full((Y, X), np.inf, dtype=np.float32)
+    c = 1.0 + alpha_unary * contours_t[fg_t]
+    if gamma_unary != 0.0 and fg_scores_t is not None:
+        c = c + gamma_unary * (1.0 - np.clip(fg_scores_t[fg_t], 0.0, 1.0))
+    cost_field[fg_t] = c
+    return cost_field
 
 
 # ── Internal: geodesic unaries ───────────────────────────────────────────────
@@ -229,14 +137,10 @@ def _compute_frame_geodesic(
     The MCP object is created once and reused for all labels in the frame
     (the cost field depends only on the contour map, not the label).
     """
-    Y, X = fg_t.shape
-
-    # Build cost field — shared across all labels
-    cost_field = np.full((Y, X), np.inf, dtype=np.float32)
-    c = 1.0 + alpha_unary * contours_t[fg_t]
-    if gamma_unary != 0.0 and fg_scores_t is not None:
-        c = c + gamma_unary * (1.0 - np.clip(fg_scores_t[fg_t], 0.0, 1.0))
-    cost_field[fg_t] = c
+    # Build cost field — shared across all labels (and with the widget preview)
+    cost_field = assemble_cost_field(
+        contours_t, fg_t, alpha_unary, fg_scores_t, gamma_unary
+    )
 
     alive = [int(k) for k in label_ids if np.any(nuc_t == k)]
     if not alive:
@@ -540,166 +444,8 @@ def _argmin_init(
     return np.where(fg_mask, label_ids[best_ki], 0).astype(np.uint32)
 
 
-# ── Internal: Numba ICM kernel ───────────────────────────────────────────────
-
-@numba.njit(cache=True)
-def _nb_icm_round(
-    labels: np.ndarray,
-    unary_dense: np.ndarray,
-    h_w: np.ndarray,
-    v_w: np.ndarray,
-    dr_w: np.ndarray,
-    dl_w: np.ndarray,
-    tw_w: np.ndarray,
-    tw_ty_dn_w: np.ndarray,
-    tw_ty_up_w: np.ndarray,
-    tw_tx_r_w: np.ndarray,
-    tw_tx_l_w: np.ndarray,
-    fg_mask: np.ndarray,
-    label_ids: np.ndarray,
-    anchor_label: np.ndarray,
-    areas: np.ndarray,
-    lambda_area: np.float32,
-) -> int:
-    """One sequential Gauss-Seidel ICM sweep — raster scan, in-place."""
-    T, Y, X = fg_mask.shape
-    K = len(label_ids)
-    n_flips = 0
-
-    for t in range(T):
-        for y in range(Y):
-            for x in range(X):
-                if anchor_label[t, y, x] > np.uint32(0):
-                    continue
-                if not fg_mask[t, y, x]:
-                    continue
-
-                old_label = labels[t, y, x]
-
-                ji = np.int32(-1)
-                for kk in range(K):
-                    if label_ids[kk] == old_label:
-                        ji = np.int32(kk)
-                        break
-
-                best_cost = np.float32(1e30)
-                best_k = old_label
-                best_ki = np.int32(-1)
-
-                for ki in range(K):
-                    u = unary_dense[t, y, x, ki]
-                    if u >= np.float32(1e8):
-                        continue
-                    k = label_ids[ki]
-
-                    if k != old_label:
-                        adj = False
-                        if x + 1 < X and labels[t, y, x + 1] == k:
-                            adj = True
-                        elif x > 0 and labels[t, y, x - 1] == k:
-                            adj = True
-                        elif y + 1 < Y and labels[t, y + 1, x] == k:
-                            adj = True
-                        elif y > 0 and labels[t, y - 1, x] == k:
-                            adj = True
-                        elif y + 1 < Y and x + 1 < X and labels[t, y + 1, x + 1] == k:
-                            adj = True
-                        elif y > 0 and x > 0 and labels[t, y - 1, x - 1] == k:
-                            adj = True
-                        elif y + 1 < Y and x > 0 and labels[t, y + 1, x - 1] == k:
-                            adj = True
-                        elif y > 0 and x + 1 < X and labels[t, y - 1, x + 1] == k:
-                            adj = True
-                        if not adj:
-                            continue
-
-                    cost = u
-
-                    if x + 1 < X and fg_mask[t, y, x + 1] and labels[t, y, x + 1] != k:
-                        cost += h_w[t, y, x]
-                    if x > 0 and fg_mask[t, y, x - 1] and labels[t, y, x - 1] != k:
-                        cost += h_w[t, y, x - 1]
-                    if y + 1 < Y and fg_mask[t, y + 1, x] and labels[t, y + 1, x] != k:
-                        cost += v_w[t, y, x]
-                    if y > 0 and fg_mask[t, y - 1, x] and labels[t, y - 1, x] != k:
-                        cost += v_w[t, y - 1, x]
-
-                    if y + 1 < Y and x + 1 < X and fg_mask[t, y + 1, x + 1] and labels[t, y + 1, x + 1] != k:
-                        cost += dr_w[t, y, x]
-                    if y > 0 and x > 0 and fg_mask[t, y - 1, x - 1] and labels[t, y - 1, x - 1] != k:
-                        cost += dr_w[t, y - 1, x - 1]
-                    if y + 1 < Y and x > 0 and fg_mask[t, y + 1, x - 1] and labels[t, y + 1, x - 1] != k:
-                        cost += dl_w[t, y, x]
-                    if y > 0 and x + 1 < X and fg_mask[t, y - 1, x + 1] and labels[t, y - 1, x + 1] != k:
-                        cost += dl_w[t, y - 1, x + 1]
-
-                    if t + 1 < T and fg_mask[t + 1, y, x] and labels[t + 1, y, x] != k:
-                        cost += tw_w[t, y, x]
-                    if t > 0 and fg_mask[t - 1, y, x] and labels[t - 1, y, x] != k:
-                        cost += tw_w[t - 1, y, x]
-
-                    if t + 1 < T:
-                        if y + 1 < Y and fg_mask[t + 1, y + 1, x] and labels[t + 1, y + 1, x] != k:
-                            cost += tw_ty_dn_w[t, y, x]
-                        if y > 0 and fg_mask[t + 1, y - 1, x] and labels[t + 1, y - 1, x] != k:
-                            cost += tw_ty_up_w[t, y, x]
-                        if x + 1 < X and fg_mask[t + 1, y, x + 1] and labels[t + 1, y, x + 1] != k:
-                            cost += tw_tx_r_w[t, y, x]
-                        if x > 0 and fg_mask[t + 1, y, x - 1] and labels[t + 1, y, x - 1] != k:
-                            cost += tw_tx_l_w[t, y, x]
-
-                    if t > 0:
-                        if y + 1 < Y and fg_mask[t - 1, y + 1, x] and labels[t - 1, y + 1, x] != k:
-                            cost += tw_ty_up_w[t - 1, y + 1, x]
-                        if y > 0 and fg_mask[t - 1, y - 1, x] and labels[t - 1, y - 1, x] != k:
-                            cost += tw_ty_dn_w[t - 1, y - 1, x]
-                        if x + 1 < X and fg_mask[t - 1, y, x + 1] and labels[t - 1, y, x + 1] != k:
-                            cost += tw_tx_l_w[t - 1, y, x + 1]
-                        if x > 0 and fg_mask[t - 1, y, x - 1] and labels[t - 1, y, x - 1] != k:
-                            cost += tw_tx_r_w[t - 1, y, x - 1]
-
-                    if lambda_area > np.float32(0.0) and ki != ji:
-                        ak = areas[ki, t]
-                        aj = areas[ji, t] if ji >= np.int32(0) else np.int32(0)
-                        area_delta = np.float32(0.0)
-                        if t > 0:
-                            area_delta += np.float32(2 * (ak - areas[ki, t - 1]) + 1)
-                            if ji >= np.int32(0):
-                                area_delta += np.float32(1 - 2 * (aj - areas[ji, t - 1]))
-                        if t + 1 < T:
-                            area_delta += np.float32(2 * (ak - areas[ki, t + 1]) + 1)
-                            if ji >= np.int32(0):
-                                area_delta += np.float32(1 - 2 * (aj - areas[ji, t + 1]))
-                        cost += lambda_area * area_delta
-
-                    if cost < best_cost:
-                        best_cost = cost
-                        best_k = k
-                        best_ki = np.int32(ki)
-
-                labels[t, y, x] = best_k
-                if best_k != old_label:
-                    n_flips += 1
-                    if best_ki >= np.int32(0):
-                        areas[best_ki, t] += np.int32(1)
-                    if ji >= np.int32(0):
-                        areas[ji, t] -= np.int32(1)
-
-    return n_flips
-
-
-def _build_areas(labels: np.ndarray, label_ids: np.ndarray) -> np.ndarray:
-    K = len(label_ids)
-    T = labels.shape[0]
-    areas = np.zeros((K, T), dtype=np.int32)
-    for ki, k in enumerate(label_ids):
-        for t in range(T):
-            areas[ki, t] = int(np.count_nonzero(labels[t] == k))
-    return areas
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# Public API — Staged
+# Public API
 # ══════════════════════════════════════════════════════════════════════════════
 
 def initialize_icm(
@@ -712,7 +458,7 @@ def initialize_icm(
     cache_dir: Path | None = None,
     progress_cb: Callable[[str], None] | None = None,
 ) -> tuple[CellICMState, np.ndarray]:
-    """Compute energy terms and build initial labels.
+    """Compute geodesic unaries and build labels (per-pixel argmin).
 
     Parameters
     ----------
@@ -743,16 +489,6 @@ def initialize_icm(
         f"Label set: {len(label_ids)} track IDs, "
         f"shape {T}×{Y}×{X}, "
         f"fg_voxels={int(np.count_nonzero(fg_mask))}"
-    )
-
-    # ── Pairwise weights (cheap — always recompute) ───────────────────
-    _report("Computing pairwise weights...")
-    boundary_signal = np.clip(contours, 0.0, 1.0).astype(np.float32, copy=False)
-    h, v, dr, dl, tw, tw_ty_dn, tw_ty_up, tw_tx_r, tw_tx_l = (
-        _compute_pairwise_weights(
-            fg_mask, boundary_signal,
-            params.lambda_s, params.beta_s, params.lambda_t,
-        )
     )
 
     # ── Geodesic unaries (expensive — cache + parallel) ───────────────
@@ -799,74 +535,10 @@ def initialize_icm(
         nuc_tracks=nuc_tracks.astype(np.uint32, copy=False),
         label_ids=label_ids,
         unary_dense=unary_dense,
-        h=h, v=v, dr=dr, dl=dl,
-        tw=tw, tw_ty_dn=tw_ty_dn, tw_ty_up=tw_ty_up,
-        tw_tx_r=tw_tx_r, tw_tx_l=tw_tx_l,
     )
 
     _report("Initialisation complete.")
     return state, init_labels
-
-
-def refine_icm(
-    state: CellICMState,
-    labels: np.ndarray,
-    n_iters: int = 1,
-    *,
-    min_round_flips: int = 0,
-    lambda_area: float = 0.0,
-    progress_cb: Callable[[str], None] | None = None,
-) -> tuple[np.ndarray, list[dict]]:
-    """Run *n_iters* ICM sweeps on *labels*.
-
-    Input ``labels`` is **not** modified — a copy is returned.
-    """
-    _report = progress_cb or (lambda msg: None)
-
-    labels = labels.copy().astype(np.uint32)
-    nuc_mask = state.nuc_tracks > 0
-    labels[nuc_mask] = state.nuc_tracks[nuc_mask].astype(np.uint32)
-
-    anchor_label = state.nuc_tracks.astype(np.uint32)
-    h32 = state.h.astype(np.float32, copy=False)
-    v32 = state.v.astype(np.float32, copy=False)
-    dr32 = state.dr.astype(np.float32, copy=False)
-    dl32 = state.dl.astype(np.float32, copy=False)
-    tw32 = state.tw.astype(np.float32, copy=False)
-    tw_ty_dn32 = state.tw_ty_dn.astype(np.float32, copy=False)
-    tw_ty_up32 = state.tw_ty_up.astype(np.float32, copy=False)
-    tw_tx_r32 = state.tw_tx_r.astype(np.float32, copy=False)
-    tw_tx_l32 = state.tw_tx_l.astype(np.float32, copy=False)
-    lids32 = state.label_ids.astype(np.uint32, copy=False)
-    lambda_area32 = np.float32(lambda_area)
-
-    areas = _build_areas(labels, state.label_ids)
-
-    energy_log: list[dict] = []
-    for iteration in range(n_iters):
-        _report(f"ICM round {iteration + 1}/{n_iters}...")
-        t0 = perf_counter()
-        n_flips = _nb_icm_round(
-            labels, state.unary_dense,
-            h32, v32, dr32, dl32, tw32,
-            tw_ty_dn32, tw_ty_up32, tw_tx_r32, tw_tx_l32,
-            state.fg_mask, lids32, anchor_label, areas, lambda_area32,
-        )
-        elapsed = perf_counter() - t0
-        _report(f"ICM round {iteration + 1}/{n_iters}: {n_flips} flips, {elapsed:.1f}s")
-        energy_log.append({
-            "iteration": iteration + 1,
-            "flips": int(n_flips),
-            "elapsed_s": round(elapsed, 2),
-        })
-        if n_flips == 0:
-            _report(f"Converged after round {iteration + 1}.")
-            break
-        if min_round_flips > 0 and n_flips < min_round_flips:
-            _report(f"Stopping: {n_flips} < min_round_flips={min_round_flips}")
-            break
-
-    return labels, energy_log
 
 
 def commit_labels(labels: np.ndarray, output_path: Path | str) -> None:
@@ -878,106 +550,3 @@ def commit_labels(labels: np.ndarray, output_path: Path | str) -> None:
         labels.astype(np.uint16, copy=False),
         compression="zlib",
     )
-
-
-def segment_cells_icm(
-    nuc_tracks: np.ndarray,
-    fg_mask: np.ndarray,
-    contours: np.ndarray,
-    params: CellLabelICMParams,
-    *,
-    foreground_scores: np.ndarray | None = None,
-    cache_dir: Path | None = None,
-    progress_cb: Callable[[str], None] | None = None,
-) -> np.ndarray:
-    """Run the full initialize-refine cell ICM pipeline in memory."""
-    nuc_tracks = np.asarray(nuc_tracks, dtype=np.uint32)
-    fg_mask = np.asarray(fg_mask, dtype=bool)
-    contours = np.asarray(contours, dtype=np.float32)
-    if fg_mask.shape != nuc_tracks.shape:
-        raise ValueError(
-            f"Shape mismatch: fg_mask {fg_mask.shape} != nuc_tracks {nuc_tracks.shape}"
-        )
-    if contours.shape != nuc_tracks.shape:
-        raise ValueError(
-            f"Shape mismatch: contours {contours.shape} != nuc_tracks {nuc_tracks.shape}"
-        )
-    if foreground_scores is not None and foreground_scores.shape != nuc_tracks.shape:
-        raise ValueError(
-            "Shape mismatch: foreground_scores "
-            f"{foreground_scores.shape} != nuc_tracks {nuc_tracks.shape}"
-        )
-
-    state, labels = initialize_icm(
-        nuc_tracks,
-        fg_mask,
-        contours,
-        params,
-        foreground_scores=foreground_scores,
-        cache_dir=cache_dir,
-        progress_cb=progress_cb,
-    )
-    labels, _log = refine_icm(
-        state,
-        labels,
-        n_iters=params.n_iters,
-        min_round_flips=params.min_round_flips,
-        lambda_area=params.lambda_area,
-        progress_cb=progress_cb,
-    )
-    return labels
-
-
-def _apply_crop(arr: np.ndarray, crop: tuple[int, int, int, int, int, int] | None) -> np.ndarray:
-    if crop is None:
-        return arr
-    t0, t1, y0, y1, x0, x1 = crop
-    return arr[t0:t1, y0:y1, x0:x1]
-
-
-def run_cell_icm_from_pos_dir(
-    pos_dir: Path | str,
-    params: CellLabelICMParams,
-    *,
-    crop: tuple[int, int, int, int, int, int] | None = None,
-    cache_dir: Path | None = None,
-    progress_cb: Callable[[str], None] | None = None,
-) -> np.ndarray:
-    """Load standard position-directory inputs and run the full ICM pipeline."""
-    pos_dir = Path(pos_dir)
-    nuc, fg, ct, fg_scores = _load_pos_dir_inputs(pos_dir)
-    nuc = _apply_crop(nuc, crop)
-    fg = _apply_crop(fg, crop)
-    ct = _apply_crop(ct, crop)
-    if fg_scores is not None:
-        fg_scores = _apply_crop(fg_scores, crop)
-    return segment_cells_icm(
-        nuc,
-        fg,
-        ct,
-        params,
-        foreground_scores=fg_scores,
-        cache_dir=cache_dir,
-        progress_cb=progress_cb,
-    )
-
-
-def _read_tiff(path: Path, dtype) -> np.ndarray:
-    a = np.asarray(tifffile.imread(str(path)), dtype=dtype)
-    if a.ndim == 4 and a.shape[1] == 1:
-        a = a[:, 0]
-    return a
-
-
-def _load_pos_dir_inputs(
-    pos_dir: Path,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
-    nuc = _read_tiff(pos_dir / "2_nucleus" / "tracked_labels.tif", np.uint32)
-    fg = _read_tiff(pos_dir / "3_cell" / "foreground_masks.tif", np.uint8) > 0
-    ct = _read_tiff(pos_dir / "3_cell" / "contours.tif", np.float32)
-    fg = fg | (nuc > 0)
-    fg_score_path = pos_dir / "3_cell" / "foreground_scores.tif"
-    fg_scores = (
-        _read_tiff(fg_score_path, np.float32) if fg_score_path.exists() else None
-    )
-    return nuc, fg, ct, fg_scores
