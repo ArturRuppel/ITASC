@@ -17,6 +17,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.core.tiff import imwrite_grayscale
+from cellflow.napari._correction_utils import reorder_stack_by_quality
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._widget_helpers import (
     make_progress as _make_progress,
@@ -36,6 +38,7 @@ from cellflow.tracking_ultrack.db_build import (
 from cellflow.tracking_ultrack.corrections import corrections_from_validated_tracks
 from cellflow.tracking_ultrack.export import export_tracked_labels
 from cellflow.tracking_ultrack.solve import run_solve
+from cellflow.tracking_ultrack.track_quality import track_quality_scores
 
 logger = logging.getLogger(__name__)
 
@@ -522,12 +525,24 @@ class NucleusPipelineWidget(QWidget):
             for step, total, label in run_solve(working_dir, cfg, overwrite=True):
                 yield (step, total, f"[solve] {label}")
             yield "Exporting tracked labels…"
-            return export_tracked_labels(
+            labels = export_tracked_labels(
                 working_dir, cfg, tracked_path,
                 corrections=corrections,
                 validated_tracks=validated_tracks,
                 tracked_labels=tracked_labels,
             )
+            yield "Ordering track IDs by quality…"
+            try:
+                scores = track_quality_scores(db_path, cfg)
+            except Exception:
+                logger.exception("Quality scoring failed; leaving track IDs unordered.")
+                scores = {}
+            if scores:
+                relabeled, old_to_new = reorder_stack_by_quality(labels, scores, pos_dir)
+                if old_to_new:
+                    labels = relabeled
+                    imwrite_grayscale(tracked_path, labels, compression="zlib")
+            return labels
 
         self._ultrack_worker = _worker()
 

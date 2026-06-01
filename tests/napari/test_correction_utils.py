@@ -4,7 +4,9 @@ import numpy as np
 
 from cellflow.napari._correction_utils import (
     frame_view_2d,
+    reassign_ids_ordered,
     reassign_ids_stack,
+    reorder_stack_by_quality,
     retrack_stack_direction,
     remove_unvalidated_labels,
 )
@@ -199,3 +201,81 @@ def test_retrack_stack_direction_retracks_backward() -> None:
     assert result.first_target_frame == 1
     np.testing.assert_array_equal(result.stack[1], stack[2] + 20)
     np.testing.assert_array_equal(result.stack[0], result.stack[1] + 20)
+
+
+def test_reassign_ids_ordered_follows_explicit_order_then_ascending() -> None:
+    stack = np.array(
+        [
+            [[0, 5, 5], [9, 0, 3]],
+            [[3, 9, 0], [0, 5, 0]],
+        ],
+        dtype=np.uint32,
+    )
+
+    # Best -> 1: order says 9 then 3; remaining (5) follows ascending.
+    remapped, n_cells, old_to_new = reassign_ids_ordered(stack, [9, 3])
+
+    assert n_cells == 3
+    assert old_to_new == {9: 1, 3: 2, 5: 3}
+    assert remapped[0, 1, 0] == 1  # was 9
+    assert remapped[0, 1, 2] == 2  # was 3
+    assert remapped[0, 0, 1] == 3  # was 5
+
+
+def test_reassign_ids_ordered_ignores_absent_ids_in_order() -> None:
+    stack = np.array([[1, 2], [0, 1]], dtype=np.uint32)
+
+    remapped, n_cells, old_to_new = reassign_ids_ordered(stack, [99, 2, 1])
+
+    # 99 is not present; 2 then 1 by order.
+    assert old_to_new == {2: 1, 1: 2}
+    assert n_cells == 2
+
+
+def test_reassign_ids_ordered_empty_order_matches_compaction() -> None:
+    stack = np.array([[0, 7], [42, 7]], dtype=np.uint32)
+
+    remapped, n_cells, old_to_new = reassign_ids_ordered(stack, [])
+
+    assert old_to_new == {7: 1, 42: 2}
+    np.testing.assert_array_equal(remapped, np.array([[0, 1], [2, 1]]))
+
+
+def test_reorder_stack_by_quality_relabels_best_track_to_one() -> None:
+    stack = np.array([[0, 1, 2], [3, 1, 2]], dtype=np.uint32)
+    scores = {1: 0.1, 2: 5.0, 3: 2.0}  # best -> 2, then 3, then 1
+
+    relabeled, old_to_new = reorder_stack_by_quality(stack, scores)
+
+    assert old_to_new == {2: 1, 3: 2, 1: 3}
+    assert relabeled[0, 2] == 1  # was track 2 (best)
+
+
+def test_reorder_stack_by_quality_no_scores_is_noop() -> None:
+    stack = np.array([[1, 2]], dtype=np.uint32)
+
+    relabeled, old_to_new = reorder_stack_by_quality(stack, {})
+
+    assert old_to_new == {}
+    assert relabeled is stack
+
+
+def test_reorder_stack_by_quality_remaps_validated_tracks(monkeypatch) -> None:
+    import cellflow.database.validation as validation
+
+    calls = {}
+
+    def fake_remap(pos_dir, old_to_new):
+        calls["pos_dir"] = pos_dir
+        calls["old_to_new"] = old_to_new
+
+    monkeypatch.setattr(validation, "remap_validated_tracks", fake_remap)
+
+    stack = np.array([[1, 2]], dtype=np.uint32)
+    scores = {1: 1.0, 2: 9.0}  # best -> 2
+
+    _relabeled, old_to_new = reorder_stack_by_quality(stack, scores, pos_dir="/tmp/pos")
+
+    assert old_to_new == {2: 1, 1: 2}
+    assert calls["old_to_new"] == old_to_new
+    assert str(calls["pos_dir"]) == "/tmp/pos"

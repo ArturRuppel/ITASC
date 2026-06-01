@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import numpy as np
@@ -27,18 +28,68 @@ def frame_view_2d(arr: np.ndarray, t: int) -> np.ndarray | None:
     return view
 
 
-def reassign_ids_stack(stack: np.ndarray) -> tuple[np.ndarray, int, dict[int, int]]:
-    """Compact non-zero label IDs in a stack to contiguous IDs from 1."""
+def reassign_ids_ordered(
+    stack: np.ndarray, order: list[int]
+) -> tuple[np.ndarray, int, dict[int, int]]:
+    """Relabel non-zero IDs to contiguous IDs from 1, following *order*.
+
+    Old IDs listed in *order* are assigned new IDs first (best → 1, next → 2,
+    …); any present IDs not in *order* follow in ascending order. Passing an
+    empty *order* reproduces plain numeric compaction.
+    """
     unique_ids = np.unique(stack)
     unique_ids = unique_ids[unique_ids != 0]
     if unique_ids.size == 0:
         return stack, 0, {}
+    present = {int(x) for x in unique_ids}
+    seen: set[int] = set()
+    ordered_ids: list[int] = []
+    for old_id in order:
+        old_id = int(old_id)
+        if old_id in present and old_id not in seen:
+            ordered_ids.append(old_id)
+            seen.add(old_id)
+    ordered_ids.extend(sorted(present - seen))
     lut = np.zeros(int(unique_ids.max()) + 1, dtype=np.uint32)
     old_to_new: dict[int, int] = {}
-    for new_id, old_id in enumerate(unique_ids, start=1):
+    for new_id, old_id in enumerate(ordered_ids, start=1):
         lut[old_id] = new_id
-        old_to_new[int(old_id)] = new_id
-    return lut[stack], len(unique_ids), old_to_new
+        old_to_new[old_id] = new_id
+    return lut[stack], len(ordered_ids), old_to_new
+
+
+def reassign_ids_stack(stack: np.ndarray) -> tuple[np.ndarray, int, dict[int, int]]:
+    """Compact non-zero label IDs in a stack to contiguous IDs from 1."""
+    return reassign_ids_ordered(stack, [])
+
+
+def reorder_stack_by_quality(
+    stack: np.ndarray,
+    scores: Mapping[int, float],
+    pos_dir: str | Path | None = None,
+) -> tuple[np.ndarray, dict[int, int]]:
+    """Relabel a tracked stack so track IDs follow quality order, best → 1.
+
+    *scores* maps track_id -> quality score (see
+    :func:`cellflow.tracking_ultrack.track_quality.track_quality_scores`). When
+    *pos_dir* is given, existing validations/anchors are remapped onto the new
+    IDs so prior work stays attached. Returns ``(relabeled_stack, old_to_new)``;
+    a no-op (empty mapping, original array) when there is nothing to reorder.
+    """
+    from cellflow.tracking_ultrack.track_quality import quality_order
+
+    stack = np.asarray(stack)
+    order = quality_order(scores) if scores else []
+    if not order:
+        return stack, {}
+    relabeled, _n, old_to_new = reassign_ids_ordered(
+        stack.astype(np.uint32, copy=False), order
+    )
+    if old_to_new and pos_dir is not None:
+        from cellflow.database.validation import remap_validated_tracks
+
+        remap_validated_tracks(Path(pos_dir), old_to_new)
+    return relabeled, old_to_new
 
 
 def remove_unvalidated_labels(
