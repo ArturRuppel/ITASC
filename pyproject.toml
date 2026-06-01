@@ -38,6 +38,7 @@ dependencies = [
     "pymaxflow>=1.3.2",
     "pydantic",
     "sqlalchemy",
+    "pyqtgraph>=0.13",
 ]
 
 [project.urls]

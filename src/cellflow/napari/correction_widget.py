@@ -108,6 +108,13 @@ class CorrectionWidget(QWidget):
 
         self._edit_callback: Callable[[int, set[int]], None] | None = None
         self._selection_callback: Callable[[int, int], None] | None = None
+        self._selection_listeners: list[Callable[[int, int], None]] = []
+        # Optional override for the spotlight cutout: given (t, lab, default_mask)
+        # it may return a different boolean mask to highlight (e.g. the union of a
+        # whole track's masks) or None to keep the default per-frame behavior.
+        self._spotlight_mask_provider: (
+            Callable[[int, int, np.ndarray], np.ndarray | None] | None
+        ) = None
         self._protected_mask_callback: (
             Callable[[int, np.ndarray], np.ndarray | None] | None
         ) = None
@@ -490,6 +497,22 @@ class CorrectionWidget(QWidget):
     def set_selection_callback(self, fn: Callable[[int, int], None] | None) -> None:
         self._selection_callback = fn
 
+    def add_selection_listener(self, fn: Callable[[int, int], None]) -> None:
+        """Register an extra selection callback that survives ``set_selection_callback``.
+
+        ``set_selection_callback`` is a single slot owned by the workflow widget,
+        so registering there would clobber (or be clobbered by) it. Listeners
+        accumulate instead, letting independent features (e.g. the track-path
+        comet) react to selection changes without fighting over that slot.
+        """
+        if fn not in self._selection_listeners:
+            self._selection_listeners.append(fn)
+
+    def set_spotlight_mask_provider(
+        self, fn: Callable[[int, int, np.ndarray], np.ndarray | None] | None
+    ) -> None:
+        self._spotlight_mask_provider = fn
+
     def set_protected_mask_callback(
         self,
         fn: Callable[[int, np.ndarray], np.ndarray | None] | None,
@@ -678,13 +701,23 @@ class CorrectionWidget(QWidget):
         return spotlight
 
     def _notify_selection_changed(self, t: int, lab: int, previous_label: int) -> None:
-        if lab == previous_label or self._selection_callback is None:
+        if lab == previous_label:
             return
-        try:
-            self._selection_callback(t, lab)
-        except Exception:
-            import logging as _logging
-            _logging.getLogger("cellflow.correction").exception("selection_callback failed")
+        import logging as _logging
+        if self._selection_callback is not None:
+            try:
+                self._selection_callback(t, lab)
+            except Exception:
+                _logging.getLogger("cellflow.correction").exception(
+                    "selection_callback failed"
+                )
+        for listener in list(self._selection_listeners):
+            try:
+                listener(t, lab)
+            except Exception:
+                _logging.getLogger("cellflow.correction").exception(
+                    "selection_listener failed"
+                )
 
     def _update_highlight(self, t: int, lab: int, *, notify: bool = True) -> None:
         previous_label = self._selected_label
@@ -728,7 +761,7 @@ class CorrectionWidget(QWidget):
                 self._notify_selection_changed(t, 0, previous_label)
             return
         if self._spotlight:                                        # ← NEW
-            self._update_spotlight(mask.astype(bool))
+            self._update_spotlight(self._resolve_spotlight_mask(t, lab, mask.astype(bool)))
         contour = max(contours, key=len)
         hl.data = [contour]
         hl.shape_type = ["polygon"]
@@ -740,6 +773,29 @@ class CorrectionWidget(QWidget):
     def _cleanup_highlight_layer(self) -> None:
         if _HIGHLIGHT_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[_HIGHLIGHT_LAYER])
+
+    def _resolve_spotlight_mask(
+        self, t: int, lab: int, default_mask: np.ndarray
+    ) -> np.ndarray:
+        """Let an optional provider widen the spotlight cutout (e.g. to a whole
+        track's union), falling back to the per-frame ``default_mask``."""
+        provider = self._spotlight_mask_provider
+        if provider is None:
+            return default_mask
+        try:
+            override = provider(t, lab, default_mask)
+        except Exception:
+            import logging as _logging
+            _logging.getLogger("cellflow.correction").exception(
+                "spotlight_mask_provider failed"
+            )
+            return default_mask
+        if override is None:
+            return default_mask
+        override = np.asarray(override, dtype=bool)
+        if override.shape != default_mask.shape or not override.any():
+            return default_mask
+        return override
 
     def _update_spotlight(self, mask: np.ndarray) -> None:
         spotlight = self._get_spotlight_layer()

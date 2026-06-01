@@ -36,11 +36,23 @@ from cellflow.tracking_ultrack.db_query import (
     query_connected_nodes as _query_ultrack_db_connected_nodes,
     query_frame_range as _query_db_frame_range,
     query_middle_frame as _query_ultrack_db_middle_frame,
+    query_node_edges as _query_ultrack_db_node_edges,
     query_union_color_classes as _query_union_color_classes,
     query_union_sizes as _query_union_sizes,
     render_union_partition as _render_union_partition,
     summary_text as _ultrack_db_summary_text,
 )
+
+# pyqtgraph backs the optional local node-link panel. It is a pure-Python
+# dependency, but guard the import so a missing install degrades to a
+# "panel unavailable" hint instead of breaking the whole browser widget.
+try:
+    import pyqtgraph as pg
+
+    _HAS_PYQTGRAPH = True
+except Exception:  # pragma: no cover - exercised only when pyqtgraph is absent
+    pg = None
+    _HAS_PYQTGRAPH = False
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +67,18 @@ _ULTRACK_DB_ANNOTATION_COLORS = {
     2: np.array([1.0, 0.0, 0.0, 0.75], dtype=np.float32),
     3: np.array([0.5, 0.5, 0.5, 0.45], dtype=np.float32),
 }
+# Annotation name -> _ULTRACK_DB_ANNOTATION_COLORS key, so the node-graph panel
+# fills match the in-canvas annotation overlay.
+_ULTRACK_DB_ANNOTATION_KEY = {"REAL": 1, "FAKE": 2, "UNKNOWN": 3}
+# Node-graph panel encoding ranges.
+_NODE_GRAPH_MAX_PER_SIDE = 20
+_NODE_GRAPH_EDGE_WIDTH = (1.0, 6.0)
+_NODE_GRAPH_NODE_DIAMETER = (10.0, 24.0)
+# Perceptual-ish low->high weight ramp (viridis endpoints), RGB 0-255.
+_NODE_GRAPH_WEIGHT_LOW = np.array([59, 82, 139], dtype=float)
+_NODE_GRAPH_WEIGHT_HIGH = np.array([253, 231, 37], dtype=float)
+_NODE_GRAPH_SELECTED_OUTLINE = (0, 255, 255)  # cyan, matching the selection layer
+_NODE_GRAPH_CAME_FROM_OUTLINE = (255, 170, 0)  # amber, the node you navigated from
 
 
 class NucleusUltrackDbBrowserWidget(QWidget):
@@ -153,12 +177,59 @@ class NucleusUltrackDbBrowserWidget(QWidget):
         ):
             lay.addWidget(cb)
 
+        # Local node-link panel: predecessors / selected / successors with raw
+        # per-edge weights. Collapsible so it never crowds the controls.
+        self.node_graph_section = CollapsibleSection(
+            "Local node graph",
+            self._build_node_graph_panel(),
+            expanded=False,
+        )
+        lay.addWidget(self.node_graph_section)
+
         self.status_lbl = QLabel("")
         self.status_lbl.setWordWrap(True)
         self.status_lbl.setVisible(False)
         lay.addWidget(self.status_lbl)
 
         self.section: CollapsibleSection | None = None
+
+    def _build_node_graph_panel(self) -> QWidget:
+        """Build the (optional) pyqtgraph node-link panel inner widget.
+
+        Stores ``node_graph_*`` attributes used by the browser mixin. If
+        pyqtgraph is unavailable, only a hint label is shown.
+        """
+        panel = QWidget()
+        panel_lay = QVBoxLayout(panel)
+        panel_lay.setContentsMargins(0, 0, 0, 0)
+        panel_lay.setSpacing(2)
+
+        self.node_graph_hint = QLabel("Click a preview node")
+        self.node_graph_hint.setWordWrap(True)
+        panel_lay.addWidget(self.node_graph_hint)
+
+        # Per-render scratch state shared with the mixin behavior.
+        self.node_graph_text_items: list = []
+
+        if not _HAS_PYQTGRAPH:
+            self.node_graph_widget = None
+            self.node_graph_view = None
+            self.node_graph_item = None
+            self.node_graph_hint.setText(
+                "Local node graph unavailable (pyqtgraph not installed)."
+            )
+            return panel
+
+        self.node_graph_widget = pg.GraphicsLayoutWidget()
+        self.node_graph_widget.setMinimumHeight(180)
+        self.node_graph_view = self.node_graph_widget.addViewBox()
+        self.node_graph_view.setAspectLocked(True)
+        self.node_graph_view.setMouseEnabled(x=True, y=True)
+        self.node_graph_view.invertY(True)  # match image (y grows downward)
+        self.node_graph_item = pg.GraphItem()
+        self.node_graph_view.addItem(self.node_graph_item)
+        panel_lay.addWidget(self.node_graph_widget)
+        return panel
 
 
 class NucleusUltrackDbBrowserMixin:
@@ -181,6 +252,16 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_preview_labels: np.ndarray | None = None
         self._ultrack_db_preview_mouse_callback = None
         self._ultrack_db_preview_view_state: dict | None = None
+        # Node-graph panel scratch state: rows of the GraphItem aligned with the
+        # selected/neighbor node ids, and each node's frame for panel->canvas.
+        self._ultrack_db_node_graph_node_ids: list[int] = []
+        self._ultrack_db_node_graph_edge_count: int = 0
+        self._ultrack_db_node_graph_neighbor_t: dict[int, int] = {}
+        # Navigation history for the panel: the node we just navigated away from
+        # (set on a panel click, consumed by the next rebuild) and the node id
+        # currently marked as "came from" in the displayed graph.
+        self._ultrack_db_node_graph_pending_prev: int | None = None
+        self._ultrack_db_node_graph_came_from: int | None = None
         self._ultrack_db_refresh_timer = QTimer(self)
         self._ultrack_db_refresh_timer.setSingleShot(True)
         self._ultrack_db_refresh_timer.setInterval(150)
@@ -214,6 +295,17 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_connected_focus_check = browser.connected_focus_check
         self.ultrack_db_annotation_check = browser.annotation_check
         self.ultrack_db_section_status_lbl = browser.status_lbl
+        self.ultrack_db_node_graph_section = browser.node_graph_section
+        self.ultrack_db_node_graph_widget = browser.node_graph_widget
+        self.ultrack_db_node_graph_view = browser.node_graph_view
+        self.ultrack_db_node_graph_item = browser.node_graph_item
+        self.ultrack_db_node_graph_hint = browser.node_graph_hint
+        if browser.node_graph_item is not None:
+            # GraphItem draws its nodes via an inner ScatterPlotItem whose
+            # sigClicked carries the clicked spots back to us.
+            browser.node_graph_item.scatter.sigClicked.connect(
+                self._on_node_graph_node_clicked
+            )
 
     def _set_ultrack_db_status(self, msg: str) -> None:
         self.ultrack_db_section_status_lbl.setText(msg)
@@ -293,6 +385,9 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_prob_alpha_check.setEnabled(enabled)
         self.ultrack_db_connected_focus_check.setEnabled(enabled)
         self.ultrack_db_annotation_check.setEnabled(enabled)
+        self.ultrack_db_node_graph_section.setEnabled(enabled)
+        if not enabled and self._node_graph_available():
+            self._clear_node_graph("Click a preview node")
 
     def _remove_ultrack_db_browser_layers(self) -> None:
         self._remove_ultrack_db_preview_selector()
@@ -776,6 +871,7 @@ class NucleusUltrackDbBrowserMixin:
                 f"FAKE {link_counts['FAKE']}, UNKNOWN {link_counts['UNKNOWN']}"
             )
         self._set_ultrack_db_status(" | ".join(parts) + ".")
+        self._refresh_node_graph_panel()
         if self.ultrack_db_connected_focus_check.isChecked():
             self._refresh_ultrack_db_browser()
 
@@ -786,6 +882,7 @@ class NucleusUltrackDbBrowserMixin:
         self._ultrack_db_selected_frame = None
         self._clear_ultrack_db_highlight()
         self._set_ultrack_db_status("")
+        self._refresh_node_graph_panel()
         if self.ultrack_db_connected_focus_check.isChecked():
             self._refresh_ultrack_db_browser()
 
@@ -868,6 +965,287 @@ class NucleusUltrackDbBrowserMixin:
 
     def _query_ultrack_db_link_annotation_counts(self, db_path, selected_node_id):
         return _query_ultrack_db_link_annotation_counts(db_path, selected_node_id)
+
+    # ── Local node-link panel ─────────────────────────────────────────────────
+
+    def _query_ultrack_db_node_edges(self, db_path, node_id):
+        return _query_ultrack_db_node_edges(db_path, node_id)
+
+    def _node_graph_available(self) -> bool:
+        return (
+            _HAS_PYQTGRAPH
+            and getattr(self, "ultrack_db_node_graph_item", None) is not None
+        )
+
+    def _set_node_graph_hint(self, text: str) -> None:
+        hint = getattr(self, "ultrack_db_node_graph_hint", None)
+        if hint is not None:
+            hint.setText(text)
+
+    def _clear_node_graph_text_items(self) -> None:
+        items = getattr(self.ultrack_db_browser_widget, "node_graph_text_items", None)
+        if not items:
+            return
+        view = self.ultrack_db_node_graph_view
+        for item in items:
+            try:
+                view.removeItem(item)
+            except Exception:
+                pass
+        items.clear()
+
+    def _clear_node_graph(self, hint: str) -> None:
+        self._clear_node_graph_text_items()
+        self._ultrack_db_node_graph_node_ids = []
+        self._ultrack_db_node_graph_edge_count = 0
+        self._ultrack_db_node_graph_neighbor_t = {}
+        self._ultrack_db_node_graph_pending_prev = None
+        self._ultrack_db_node_graph_came_from = None
+        if self._node_graph_available():
+            self.ultrack_db_node_graph_item.setData(
+                pos=np.zeros((0, 2), dtype=float),
+                adj=np.zeros((0, 2), dtype=int),
+            )
+        self._set_node_graph_hint(hint)
+
+    def _refresh_node_graph_panel(self) -> None:
+        """Rebuild the node-link panel for the current selection (or clear it)."""
+        if not self._node_graph_available():
+            return
+        sel = self._ultrack_db_selected_node_id
+        if sel is None:
+            self._clear_node_graph("Click a preview node")
+            return
+        db_path = self._ultrack_db_path()
+        if db_path is None or not db_path.exists():
+            self._clear_node_graph("No database available")
+            return
+        try:
+            node_edges = self._query_ultrack_db_node_edges(db_path, int(sel))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Node graph query failed: %s", exc)
+            self._clear_node_graph("Could not query node edges")
+            return
+        self._build_node_graph(node_edges)
+
+    @staticmethod
+    def _node_graph_pick_neighbors(mapping: dict) -> list[int]:
+        """Neighbors heaviest-first (by their strongest link), capped per side.
+
+        Ties break by ascending id for determinism. The returned order is what
+        :meth:`_node_graph_place_column` lays out center-outwards, so the
+        strongest links land nearest the selected node's row.
+        """
+        by_weight = sorted(
+            mapping,
+            key=lambda nid: (-max(e.weight for e in mapping[nid]), nid),
+        )
+        return by_weight[:_NODE_GRAPH_MAX_PER_SIDE]
+
+    @staticmethod
+    def _node_graph_place_column(pos, ids, index_of, x: float) -> None:
+        # Center-out: ids[0] (heaviest) at y=0, then +1, -1, +2, -2, ... so the
+        # strongest neighbors sit closest to the selected node at the origin.
+        for k, nid in enumerate(ids):
+            step = (k + 1) // 2
+            y = float(step if k % 2 == 1 else -step)
+            pos[index_of[nid]] = (x, y)
+
+    @staticmethod
+    def _node_graph_weight_color(norm: float):
+        rgb = (
+            _NODE_GRAPH_WEIGHT_LOW
+            + (_NODE_GRAPH_WEIGHT_HIGH - _NODE_GRAPH_WEIGHT_LOW) * float(norm)
+        )
+        return tuple(int(round(v)) for v in rgb)
+
+    def _build_node_graph(self, node_edges) -> None:
+        self._clear_node_graph_text_items()
+        edges = list(node_edges.edges)
+
+        preds: dict[int, list] = {}
+        succs: dict[int, list] = {}
+        for edge in edges:
+            bucket = preds if edge.direction == "pred" else succs
+            bucket.setdefault(edge.neighbor_id, []).append(edge)
+
+        pred_ids = self._node_graph_pick_neighbors(preds)
+        succ_ids = self._node_graph_pick_neighbors(succs)
+        kept = set(pred_ids) | set(succ_ids)
+        n_total = len(preds) + len(succs)
+        n_kept = len(pred_ids) + len(succ_ids)
+
+        node_ids = [node_edges.selected_id] + pred_ids + succ_ids
+        index_of = {nid: i for i, nid in enumerate(node_ids)}
+
+        # "Came from": the node we navigated away from on the last panel click,
+        # if it is visible as a neighbor here. Consumed (one-shot) on rebuild.
+        pending = self._ultrack_db_node_graph_pending_prev
+        self._ultrack_db_node_graph_pending_prev = None
+        came_from = pending if pending in set(node_ids[1:]) else None
+        self._ultrack_db_node_graph_came_from = came_from
+
+        # Frame + annotation + probability per node, for click routing & encoding.
+        neighbor_t = {node_edges.selected_id: node_edges.selected_t}
+        annot = {node_edges.selected_id: node_edges.selected_annot}
+        prob = {node_edges.selected_id: node_edges.selected_prob}
+        for edge in edges:
+            neighbor_t[edge.neighbor_id] = edge.neighbor_t
+            annot[edge.neighbor_id] = edge.neighbor_annot
+            prob[edge.neighbor_id] = edge.neighbor_prob
+        self._ultrack_db_node_graph_neighbor_t = neighbor_t
+
+        pos = np.zeros((len(node_ids), 2), dtype=float)
+        pos[0] = (0.0, 0.0)
+        self._node_graph_place_column(pos, pred_ids, index_of, x=-1.0)
+        self._node_graph_place_column(pos, succ_ids, index_of, x=1.0)
+
+        # Node visuals: fill by annotation, size by node_prob, cyan outline for sel.
+        probs = np.array([prob[nid] for nid in node_ids], dtype=float)
+        pmin, pmax = float(probs.min()), float(probs.max())
+        dmin, dmax = _NODE_GRAPH_NODE_DIAMETER
+        if pmax > pmin:
+            sizes = dmin + (dmax - dmin) * (probs - pmin) / (pmax - pmin)
+        else:
+            sizes = np.full(len(node_ids), (dmin + dmax) / 2.0)
+
+        brushes = []
+        symbol_pens = []
+        for nid in node_ids:
+            key = _ULTRACK_DB_ANNOTATION_KEY.get(annot.get(nid, "UNKNOWN"), 3)
+            r, g, b, a = (_ULTRACK_DB_ANNOTATION_COLORS[key] * 255.0).astype(int)
+            brushes.append(pg.mkBrush(int(r), int(g), int(b), max(int(a), 200)))
+            if nid == node_edges.selected_id:
+                symbol_pens.append(pg.mkPen(_NODE_GRAPH_SELECTED_OUTLINE, width=3))
+            elif nid == came_from:
+                symbol_pens.append(pg.mkPen(_NODE_GRAPH_CAME_FROM_OUTLINE, width=3))
+            else:
+                symbol_pens.append(pg.mkPen(150, 150, 150, width=1))
+
+        # One adjacency row + pen per raw link (never collapsed). Order
+        # deterministically (preds first, then by neighbor id, heaviest link
+        # first) so duplicate links to the same neighbor stack stably.
+        drawn = sorted(
+            (e for e in edges if e.neighbor_id in kept),
+            key=lambda e: (e.direction != "pred", e.neighbor_id, -e.weight),
+        )
+        self._ultrack_db_node_graph_node_ids = list(node_ids)
+        self._ultrack_db_node_graph_edge_count = len(drawn)
+
+        if drawn:
+            weights = np.array([e.weight for e in drawn], dtype=float)
+            wmin, wmax = float(weights.min()), float(weights.max())
+            adj = np.zeros((len(drawn), 2), dtype=int)
+            pen = np.zeros(
+                len(drawn),
+                dtype=[
+                    ("red", np.ubyte), ("green", np.ubyte), ("blue", np.ubyte),
+                    ("alpha", np.ubyte), ("width", float),
+                ],
+            )
+            wlo, whi = _NODE_GRAPH_EDGE_WIDTH
+            seen_pairs: dict[tuple[int, int], int] = {}
+            for i, edge in enumerate(drawn):
+                j = index_of[edge.neighbor_id]
+                adj[i] = (0, j)
+                norm = (edge.weight - wmin) / (wmax - wmin) if wmax > wmin else 0.5
+                r, g, b = self._node_graph_weight_color(norm)
+                pen[i] = (r, g, b, 255, wlo + (whi - wlo) * norm)
+                # Edge weight label: lift it off the line (perpendicular offset)
+                # with a dark background pill so it stays readable over the edge.
+                # Duplicate links to the same neighbor stack along the edge.
+                d = pos[j] - pos[0]
+                length = float(np.hypot(d[0], d[1])) or 1.0
+                perp = np.array([-d[1], d[0]]) / length
+                along = d / length
+                dup = seen_pairs.get((0, j), 0)
+                seen_pairs[(0, j)] = dup + 1
+                lp = pos[0] + d * 0.5 + perp * 0.14 + along * (0.16 * dup)
+                txt = f"{edge.weight:.2f}*" if edge.weight_is_null else f"{edge.weight:.2f}"
+                label = pg.TextItem(
+                    txt, anchor=(0.5, 0.5), color=(235, 235, 235),
+                    fill=pg.mkBrush(20, 20, 20, 200),
+                )
+                label.setPos(float(lp[0]), float(lp[1]))
+                self.ultrack_db_node_graph_view.addItem(label)
+                self.ultrack_db_browser_widget.node_graph_text_items.append(label)
+            self.ultrack_db_node_graph_item.setData(
+                pos=pos, adj=adj, pen=pen, size=sizes, symbol="o",
+                symbolBrush=brushes, symbolPen=symbol_pens, pxMode=True,
+                data=np.array(node_ids),
+            )
+        else:
+            self.ultrack_db_node_graph_item.setData(
+                pos=pos, adj=np.zeros((0, 2), dtype=int), size=sizes, symbol="o",
+                symbolBrush=brushes, symbolPen=symbol_pens, pxMode=True,
+                data=np.array(node_ids),
+            )
+
+        # Node id labels below each node; flag the "came from" node so it is easy
+        # to click back to where you were.
+        for nid in node_ids:
+            p = pos[index_of[nid]]
+            if nid == came_from:
+                text = f"↩ {nid} (from)"
+                color = _NODE_GRAPH_CAME_FROM_OUTLINE
+            else:
+                text = str(nid)
+                color = (200, 200, 200)
+            label = pg.TextItem(text, anchor=(0.5, 0.0), color=color)
+            label.setPos(float(p[0]), float(p[1]) + 0.22)
+            self.ultrack_db_node_graph_view.addItem(label)
+            self.ultrack_db_browser_widget.node_graph_text_items.append(label)
+
+        if not drawn:
+            self._set_node_graph_hint(f"Selected node {node_edges.selected_id}: no links")
+        elif n_kept < n_total:
+            self._set_node_graph_hint(
+                f"Selected node {node_edges.selected_id}: "
+                f"showing top {n_kept} of {n_total} neighbors"
+            )
+        else:
+            self._set_node_graph_hint(
+                f"Selected node {node_edges.selected_id}: "
+                f"{len(pred_ids)} pred, {len(succ_ids)} succ"
+            )
+
+    def _on_node_graph_node_clicked(self, _scatter, points) -> None:
+        if points is None or len(points) == 0:
+            return
+        point = points[0]
+        node_id = None
+        try:
+            node_id = point.data()
+        except Exception:
+            node_id = None
+        if node_id is None:
+            try:
+                node_id = self._ultrack_db_node_graph_node_ids[point.index()]
+            except Exception:
+                return
+        self._node_graph_select_node(int(node_id))
+
+    def _node_graph_select_node(self, node_id: int) -> None:
+        node_id = int(node_id)
+        if node_id == self._ultrack_db_selected_node_id:
+            return
+        # Remember where we came from so the rebuilt graph can mark it; consumed
+        # by the next _build_node_graph triggered through the selection below.
+        self._ultrack_db_node_graph_pending_prev = self._ultrack_db_selected_node_id
+        target_t = self._ultrack_db_node_graph_neighbor_t.get(node_id)
+        if target_t is not None and target_t != self._current_t():
+            # Neighbor lives in an adjacent frame; move the slider there first so
+            # the preview labels (and id->label map) match before selecting.
+            self._set_viewer_frame(int(target_t))
+            self._refresh_ultrack_db_browser()
+        display_label = self._ultrack_db_node_id_to_label.get(node_id)
+        if display_label is None:
+            self._ultrack_db_node_graph_pending_prev = None
+            self._set_ultrack_db_status(
+                f"Node {node_id} is hidden at frame {self._current_t()}."
+            )
+            return
+        self._select_ultrack_db_preview_label(display_label, frame=self._current_t())
 
     def _render_ultrack_db_connected_focus(
         self, db_path, frame, labels, status, prob_dict, label_to_node_id, node_id_to_label,

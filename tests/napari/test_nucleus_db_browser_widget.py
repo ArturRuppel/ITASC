@@ -1092,6 +1092,172 @@ def test_ultrack_db_summary_counts_annotated_links(tmp_path):
     assert "UNKNOWN links 1" in text
 
 
+def _make_node_edges(selected_id=222, selected_t=4):
+    from cellflow.tracking_ultrack.db_query import NodeEdge, NodeEdges
+
+    return NodeEdges(
+        selected_id=selected_id,
+        selected_t=selected_t,
+        selected_prob=0.9,
+        selected_annot="REAL",
+        edges=(
+            NodeEdge(111, 0.25, "UNKNOWN", "pred", selected_t - 1, 0.4, "REAL"),
+            # neighbor 333 has TWO succ links -> must not collapse to one edge.
+            NodeEdge(333, 0.8, "REAL", "succ", selected_t + 1, 0.5, "REAL"),
+            NodeEdge(333, 0.2, "FAKE", "succ", selected_t + 1, 0.5, "REAL"),
+        ),
+    )
+
+
+def test_node_graph_panel_populates_on_select_and_clears_on_deselect(tmp_path, monkeypatch):
+    pytest.importorskip("pyqtgraph")
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "data.db"
+    db_path.write_bytes(b"sqlite placeholder")
+    monkeypatch.setattr(widget, "_ultrack_db_path", lambda: db_path)
+    monkeypatch.setattr(widget, "_query_ultrack_db_node_edges", lambda *a: _make_node_edges())
+
+    widget._ultrack_db_selected_node_id = 222
+    widget._refresh_node_graph_panel()
+
+    # selected + pred(111) + succ(333); two succ links kept as separate edges.
+    assert widget._ultrack_db_node_graph_node_ids == [222, 111, 333]
+    assert widget._ultrack_db_node_graph_edge_count == 3
+    assert widget._ultrack_db_node_graph_neighbor_t == {222: 4, 111: 3, 333: 5}
+
+    widget._ultrack_db_selected_node_id = None
+    widget._refresh_node_graph_panel()
+    assert widget._ultrack_db_node_graph_node_ids == []
+    assert widget._ultrack_db_node_graph_edge_count == 0
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_node_graph_panel_click_routes_to_select_preview_label(monkeypatch):
+    pytest.importorskip("pyqtgraph")
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    monkeypatch.setattr(widget, "_current_t", lambda: 4)
+    widget._ultrack_db_node_id_to_label = {333: 5}
+    widget._ultrack_db_node_graph_neighbor_t = {333: 4}  # same frame, no slider move
+    widget._ultrack_db_node_graph_node_ids = [222, 333]
+
+    routed = {}
+    monkeypatch.setattr(
+        widget,
+        "_select_ultrack_db_preview_label",
+        lambda display_label, *, frame=None: routed.update(label=display_label, frame=frame),
+    )
+
+    widget._node_graph_select_node(333)
+
+    assert routed == {"label": 5, "frame": 4}
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_node_graph_orders_neighbors_by_weight_center_out():
+    from cellflow.tracking_ultrack.db_query import NodeEdge
+
+    widget_class = _load_widget_class()
+    mapping = {
+        10: [NodeEdge(10, 0.2, "UNKNOWN", "succ", 5, 1.0, "REAL")],
+        11: [NodeEdge(11, 0.9, "UNKNOWN", "succ", 5, 1.0, "REAL")],
+        12: [NodeEdge(12, 0.5, "UNKNOWN", "succ", 5, 1.0, "REAL")],
+    }
+
+    order = widget_class._node_graph_pick_neighbors(mapping)
+    assert order == [11, 12, 10]  # heaviest link first
+
+    pos = np.zeros((4, 2))
+    index_of = {0: 0, 11: 1, 12: 2, 10: 3}
+    widget_class._node_graph_place_column(pos, order, index_of, x=1.0)
+
+    # Heaviest neighbor aligned with the selected node row (y=0); lighter ones fan out.
+    assert pos[index_of[11]].tolist() == [1.0, 0.0]
+    assert pos[index_of[12]][1] == 1.0
+    assert pos[index_of[10]][1] == -1.0
+
+
+def test_node_graph_panel_marks_node_navigated_from(tmp_path, monkeypatch):
+    pytest.importorskip("pyqtgraph")
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    db_path = tmp_path / "data.db"
+    db_path.write_bytes(b"sqlite placeholder")
+    monkeypatch.setattr(widget, "_ultrack_db_path", lambda: db_path)
+    monkeypatch.setattr(widget, "_current_t", lambda: 4)
+
+    # Selected 222 with a successor 333 (same frame so no slider move on click).
+    from cellflow.tracking_ultrack.db_query import NodeEdge, NodeEdges
+
+    edges_222 = NodeEdges(222, 4, 0.9, "REAL", (
+        NodeEdge(333, 0.8, "REAL", "succ", 4, 0.5, "REAL"),
+    ))
+    # After navigating to 333, its graph has 222 as a (predecessor) neighbor.
+    edges_333 = NodeEdges(333, 4, 0.5, "REAL", (
+        NodeEdge(222, 0.8, "REAL", "pred", 4, 0.9, "REAL"),
+    ))
+    graphs = {222: edges_222, 333: edges_333}
+    monkeypatch.setattr(
+        widget, "_query_ultrack_db_node_edges", lambda _db, nid: graphs[int(nid)]
+    )
+    # Selecting the preview label just sets the selected id and rebuilds.
+    widget._ultrack_db_node_id_to_label = {222: 1, 333: 2}
+
+    def _fake_select(display_label, *, frame=None):
+        widget._ultrack_db_selected_node_id = {1: 222, 2: 333}[display_label]
+        widget._refresh_node_graph_panel()
+
+    monkeypatch.setattr(widget, "_select_ultrack_db_preview_label", _fake_select)
+
+    widget._ultrack_db_selected_node_id = 222
+    widget._refresh_node_graph_panel()
+    assert widget._ultrack_db_node_graph_came_from is None
+
+    # Click 333 in the panel -> graph recenters on 333 and marks 222 as "from".
+    widget._node_graph_select_node(333)
+    assert widget._ultrack_db_selected_node_id == 333
+    assert widget._ultrack_db_node_graph_came_from == 222
+
+    widget.deleteLater()
+    viewer.close()
+
+
+def test_node_graph_panel_click_on_hidden_neighbor_reports_status(monkeypatch):
+    pytest.importorskip("pyqtgraph")
+    _app, viewer = _make_viewer()
+    widget_class = _load_widget_class()
+    widget = widget_class(viewer)
+
+    monkeypatch.setattr(widget, "_current_t", lambda: 4)
+    widget._ultrack_db_node_id_to_label = {}  # neighbor not painted at this frame
+    widget._ultrack_db_node_graph_neighbor_t = {999: 4}
+
+    called = []
+    monkeypatch.setattr(
+        widget, "_select_ultrack_db_preview_label", lambda *a, **k: called.append(a)
+    )
+
+    widget._node_graph_select_node(999)
+
+    assert called == []
+    assert "hidden" in widget.ultrack_db_section_status_lbl.text().lower()
+    assert "999" in widget.ultrack_db_section_status_lbl.text()
+
+    widget.deleteLater()
+    viewer.close()
+
+
 def test_ultrack_db_size_slider_clamps_when_union_sizes_shrink(tmp_path, monkeypatch):
     db_path = tmp_path / "pos00" / "2_nucleus" / "ultrack_workdir" / "data.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)

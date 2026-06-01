@@ -106,6 +106,112 @@ def query_connected_nodes(
     return predecessors, successors
 
 
+@dataclass(frozen=True)
+class NodeEdge:
+    neighbor_id: int
+    weight: float          # raw LinkDB.weight (NOT a product)
+    annotation: str        # annotation_name(LinkDB.annotation): REAL/FAKE/UNKNOWN
+    direction: str         # "pred" (neighbor -> selected) or "succ" (selected -> neighbor)
+    neighbor_t: int        # NodeDB.t of the neighbor
+    neighbor_prob: float   # NodeDB.node_prob (1.0 if NULL)
+    neighbor_annot: str    # annotation_name(NodeDB.node_annot)
+    weight_is_null: bool = False  # raw LinkDB.weight was NULL (rendered 1.0)
+
+
+@dataclass(frozen=True)
+class NodeEdges:
+    selected_id: int
+    selected_t: int
+    selected_prob: float
+    selected_annot: str
+    edges: tuple[NodeEdge, ...]
+
+
+def query_node_edges(db_path: Path, node_id: int) -> NodeEdges:
+    """Return raw, un-collapsed per-link edges incident to ``node_id``.
+
+    Unlike :func:`query_connected_nodes` (which multiplies weights when a
+    neighbor pair shares multiple links), each ``LinkDB`` row becomes its own
+    :class:`NodeEdge`, so per-edge weights stay legible. Pure read.
+    """
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import LinkDB, NodeDB
+
+    node_id = int(node_id)
+    engine = _engine(db_path)
+    try:
+        with Session(engine) as session:
+            link_rows = (
+                session.query(
+                    LinkDB.source_id, LinkDB.target_id, LinkDB.weight, LinkDB.annotation
+                )
+                .filter(
+                    (LinkDB.source_id == node_id) | (LinkDB.target_id == node_id)
+                )
+                .all()
+            )
+
+            # Gather every node id we need metadata for (selected + neighbors).
+            wanted: set[int] = {node_id}
+            for src, tgt, _weight, _annot in link_rows:
+                wanted.add(int(src))
+                wanted.add(int(tgt))
+            node_rows = (
+                session.query(
+                    NodeDB.id, NodeDB.t, NodeDB.node_prob, NodeDB.node_annot
+                )
+                .filter(NodeDB.id.in_(sorted(wanted)))
+                .all()
+            )
+            node_meta: dict[int, tuple[int, float, str]] = {}
+            for nid, t, prob, annot in node_rows:
+                node_meta[int(nid)] = (
+                    int(t),
+                    float(prob if prob is not None else 1.0),
+                    annotation_name(annot),
+                )
+
+            edges: list[NodeEdge] = []
+            for src, tgt, weight, annot in link_rows:
+                src_id = int(src)
+                tgt_id = int(tgt)
+                if src_id == tgt_id:
+                    continue  # skip self / degenerate links
+                weight_is_null = weight is None
+                wf = float(weight if weight is not None else 1.0)
+                if tgt_id == node_id:
+                    neighbor_id, direction = src_id, "pred"
+                else:
+                    neighbor_id, direction = tgt_id, "succ"
+                n_t, n_prob, n_annot = node_meta.get(
+                    neighbor_id, (0, 1.0, "UNKNOWN")
+                )
+                edges.append(
+                    NodeEdge(
+                        neighbor_id=neighbor_id,
+                        weight=wf,
+                        annotation=annotation_name(annot),
+                        direction=direction,
+                        neighbor_t=n_t,
+                        neighbor_prob=n_prob,
+                        neighbor_annot=n_annot,
+                        weight_is_null=weight_is_null,
+                    )
+                )
+
+            sel_t, sel_prob, sel_annot = node_meta.get(node_id, (0, 1.0, "UNKNOWN"))
+    finally:
+        engine.dispose()
+
+    return NodeEdges(
+        selected_id=node_id,
+        selected_t=sel_t,
+        selected_prob=sel_prob,
+        selected_annot=sel_annot,
+        edges=tuple(edges),
+    )
+
+
 def _empty_annotation_counts() -> dict[str, int]:
     return {"REAL": 0, "FAKE": 0, "UNKNOWN": 0}
 

@@ -183,6 +183,109 @@ def test_query_connected_nodes_returns_predecessor_successor_weights(tmp_path):
     assert successors == {301: pytest.approx(0.25)}
 
 
+def _make_node_edges_db(db_path: Path) -> None:
+    """Selected node 201 (t=0) with two preds (t=-... here t=0) and two succs.
+
+    Includes a duplicate succ link, a NULL-weight link, and an annotated link so
+    the per-edge readout can be asserted.
+    """
+    pytest.importorskip("ultrack")
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import Base, LinkDB, NodeDB, VarAnnotation
+    from ultrack.utils.constants import NO_PARENT
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = sqla.create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        # predecessors at t=0
+        _add_ultrack_node(session, node_id=10, frame=0, parent_id=NO_PARENT,
+                          height=1.0, bbox=(0, 0, 1, 1), node_prob=0.4)
+        _add_ultrack_node(session, node_id=11, frame=0, parent_id=NO_PARENT,
+                          height=1.0, bbox=(1, 0, 2, 1), node_prob=0.6)
+        # selected node at t=1
+        _add_ultrack_node(session, node_id=201, frame=1, parent_id=NO_PARENT,
+                          height=1.0, bbox=(0, 0, 1, 1), node_prob=0.9)
+        # successors at t=2
+        _add_ultrack_node(session, node_id=30, frame=2, parent_id=NO_PARENT,
+                          height=1.0, bbox=(0, 0, 1, 1), node_prob=0.5)
+        _add_ultrack_node(session, node_id=31, frame=2, parent_id=NO_PARENT,
+                          height=1.0, bbox=(1, 0, 2, 1), node_prob=None)
+        session.query(NodeDB).filter_by(id=201).update(
+            {"node_annot": VarAnnotation.REAL}
+        )
+        # two predecessor links into 201
+        session.add(LinkDB(source_id=10, target_id=201, weight=0.25))
+        session.add(LinkDB(source_id=11, target_id=201, weight=0.5,
+                           annotation=VarAnnotation.REAL))
+        # successor links out of 201: 30 has TWO links (must not collapse),
+        # 31 has a NULL weight.
+        session.add(LinkDB(source_id=201, target_id=30, weight=0.8))
+        session.add(LinkDB(source_id=201, target_id=30, weight=0.2))
+        session.add(LinkDB(source_id=201, target_id=31, weight=None))
+        # self link must be skipped
+        session.add(LinkDB(source_id=201, target_id=201, weight=0.99))
+        session.commit()
+    engine.dispose()
+
+
+def test_query_node_edges_returns_raw_uncollapsed_per_link_rows(tmp_path):
+    from cellflow.tracking_ultrack.db_query import query_node_edges
+
+    db_path = tmp_path / "data.db"
+    _make_node_edges_db(db_path)
+
+    result = query_node_edges(db_path, node_id=201)
+
+    assert result.selected_id == 201
+    assert result.selected_t == 1
+    assert result.selected_prob == pytest.approx(0.9)
+    assert result.selected_annot == "REAL"
+
+    # Self link skipped; everything else kept as its own row (no collapsing).
+    assert len(result.edges) == 5
+
+    preds = [e for e in result.edges if e.direction == "pred"]
+    succs = [e for e in result.edges if e.direction == "succ"]
+    assert {e.neighbor_id for e in preds} == {10, 11}
+    # neighbor 30 appears twice -> not collapsed.
+    assert sorted(e.neighbor_id for e in succs) == [30, 30, 31]
+
+    by_pair = {(e.neighbor_id, round(e.weight, 3)) for e in succs}
+    assert (30, 0.8) in by_pair and (30, 0.2) in by_pair
+
+    # NULL weight -> 1.0 and flagged.
+    null_edge = next(e for e in result.edges if e.neighbor_id == 31)
+    assert null_edge.weight == pytest.approx(1.0)
+    assert null_edge.weight_is_null is True
+
+    # Directions point the right way relative to LinkDB rows.
+    pred10 = next(e for e in preds if e.neighbor_id == 10)
+    assert pred10.weight == pytest.approx(0.25)
+    assert pred10.neighbor_t == 0
+    assert pred10.neighbor_prob == pytest.approx(0.4)
+
+    # Annotation maps via annotation_name.
+    pred11 = next(e for e in preds if e.neighbor_id == 11)
+    assert pred11.annotation == "REAL"
+
+    # Neighbor with NULL node_prob -> 1.0.
+    assert null_edge.neighbor_prob == pytest.approx(1.0)
+
+
+def test_query_node_edges_no_links_returns_empty_edges(tmp_path):
+    from cellflow.tracking_ultrack.db_query import query_node_edges
+
+    db_path = tmp_path / "data.db"
+    _make_hierarchy_db(db_path)
+
+    result = query_node_edges(db_path, node_id=100)
+
+    assert result.selected_id == 100
+    assert result.edges == ()
+
+
 def test_render_hierarchy_cut_state_returns_preview_metadata(tmp_path):
     from cellflow.tracking_ultrack.db_query import (
         HierarchyCutState,

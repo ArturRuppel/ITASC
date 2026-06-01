@@ -38,6 +38,7 @@ from cellflow.napari._correction_centroids import (
     refresh_label_colormap,
     update_centroid_cross_layer_for_edit,
 )
+from cellflow.napari._correction_track_path import build_track_path_overlay
 from cellflow.napari._correction_anchor import (
     anchor_correction,
     without_anchor_correction,
@@ -129,6 +130,8 @@ _CORRECTION_CENTROID_LAYER = "[Correction] Nucleus Centroids"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
+_CORRECTION_TRACK_PATH_LAYER = "[Correction] Track Path"
+_CORRECTION_TRACK_PATH_NUMBERS_LAYER = "[Correction] Track Path Numbers"
 _NUCLEUS_TRACK_COLOR_SCALE = 0.65
 
 _DEFAULT_DEPENDENCIES = {
@@ -269,6 +272,15 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_widget.set_protected_mask_callback(
             self._manual_correction_protected_mask
         )
+        # Use an additive listener, not set_selection_callback: the workflow
+        # widget owns that single slot and would otherwise clobber the comet's
+        # rebuild-on-selection (so it would only build on first checkbox tick).
+        self.correction_widget.add_selection_listener(
+            self._on_track_selection_changed
+        )
+        self.correction_widget.set_spotlight_mask_provider(
+            self._track_path_spotlight_mask
+        )
         self.correction_widget._status.setVisible(False)
 
         extend_retrack_inner = QWidget(self)
@@ -343,6 +355,13 @@ class NucleusCorrectionWidget(QWidget):
         self.toolbar = self._build_correction_toolbar()
         self.toolbar.setVisible(False)
         group_lay.addWidget(self.toolbar)
+        self.track_path_check = QCheckBox("Show track path")
+        self.track_path_check.setToolTip(
+            "Paint the selected track's whole trajectory as a fading comet "
+            "(viridis, oldest→newest) with a frame number in each mask."
+        )
+        self.track_path_check.setVisible(False)
+        group_lay.addWidget(self.track_path_check)
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
         group_lay.addWidget(self.correction_widget._attrib_lbl)
@@ -485,6 +504,7 @@ class NucleusCorrectionWidget(QWidget):
             self._on_remove_unvalidated_labels
         )
         self.commit_btn.clicked.connect(self._on_commit)
+        self.track_path_check.toggled.connect(self._on_toggle_track_path)
         self.params_btn.toggled.connect(
             self._on_correction_params_button_toggled
         )
@@ -516,6 +536,7 @@ class NucleusCorrectionWidget(QWidget):
         self.toolbar.setVisible(show_active)
         self.validation_counter_lbl.setVisible(show_active)
         self.correction_widget._attrib_lbl.setVisible(show_active)
+        self.track_path_check.setVisible(show_active)
 
         if show_params or show_shortcuts or show_active:
             self.section.expand()
@@ -1446,6 +1467,7 @@ class NucleusCorrectionWidget(QWidget):
     def _on_correction_mode_toggled(self, active: bool) -> None:
         if not active:
             self._swap_cursor = None
+            self._clear_track_path_overlay()
         for sc in self._correction_shortcuts:
             sc.setEnabled(active)
 
@@ -1498,6 +1520,112 @@ class NucleusCorrectionWidget(QWidget):
 
     def _place_validated_overlay_below_spotlight(self) -> None:
         self._validated_overlay.place_below_spotlight()
+
+    # ── Whole-track temporal overlay ("comet") ─────────────────────────────────
+
+    def _on_toggle_track_path(self, checked: bool) -> None:
+        if checked:
+            self._refresh_track_path_overlay()
+        else:
+            self._clear_track_path_overlay()
+        self._refresh_track_path_spotlight()
+
+    def _on_track_selection_changed(self, _t: int, _lab: int) -> None:
+        """Rebuild the comet when the selected track changes (if enabled)."""
+        if self.track_path_check.isChecked():
+            self._refresh_track_path_overlay()
+
+    def _track_path_spotlight_mask(self, _t: int, lab: int, _default_mask):
+        """Spotlight the union of the selected track's masks while the comet is on."""
+        if not self.track_path_check.isChecked() or not lab:
+            return None
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            return None
+        data = np.asarray(layer.data)
+        if data.ndim != 3:
+            return None
+        union = np.any(data == int(lab), axis=0)
+        return union if union.any() else None
+
+    def _refresh_track_path_spotlight(self) -> None:
+        """Re-run the inner highlight so the spotlight mask provider is consulted."""
+        cw = self.correction_widget
+        lab = int(getattr(cw, "_selected_label", 0) or 0)
+        if not lab:
+            return
+        try:
+            cw._update_highlight(self._current_t(), lab, notify=False)
+        except Exception:
+            logger.exception("track path spotlight refresh failed")
+
+    def _refresh_track_path_overlay(self) -> None:
+        lab = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        if not self.track_path_check.isChecked() or not lab:
+            self._clear_track_path_overlay()
+            return
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._clear_track_path_overlay()
+            return
+        overlay = build_track_path_overlay(np.asarray(layer.data), lab)
+        if overlay.is_empty():
+            self._clear_track_path_overlay()
+            return
+        self._update_track_path_layers(overlay)
+        self._correction_status(
+            f"Track path: cell {lab} across {len(overlay.frames)} frame(s)."
+        )
+
+    def _update_track_path_layers(self, overlay) -> None:
+        from napari.layers import Image, Points
+
+        name = _CORRECTION_TRACK_PATH_LAYER
+        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Image):
+            self.viewer.layers[name].data = overlay.overlay
+        else:
+            if name in self.viewer.layers:
+                self.viewer.layers.remove(name)
+            self.viewer.add_image(
+                overlay.overlay, name=name, rgb=True, blending="translucent",
+            )
+        self._correction_owned_layers.add(name)
+
+        nname = _CORRECTION_TRACK_PATH_NUMBERS_LAYER
+        frames = list(overlay.frames)
+        text = {"string": "{frame}", "color": "white", "anchor": "center", "size": 8}
+        if nname in self.viewer.layers and isinstance(self.viewer.layers[nname], Points):
+            pts = self.viewer.layers[nname]
+            pts.data = overlay.centroids
+            pts.features = {"frame": frames}
+            pts.text = text
+        else:
+            if nname in self.viewer.layers:
+                self.viewer.layers.remove(nname)
+            self.viewer.add_points(
+                overlay.centroids,
+                name=nname,
+                ndim=2,
+                size=1,
+                face_color="transparent",
+                border_color="transparent",
+                features={"frame": frames},
+                text=text,
+            )
+        self._correction_owned_layers.add(nname)
+        try:
+            self.viewer.layers.selection.active = self._correction_tracked_layer()
+        except Exception:
+            pass
+
+    def _clear_track_path_overlay(self) -> None:
+        for name in (
+            _CORRECTION_TRACK_PATH_LAYER,
+            _CORRECTION_TRACK_PATH_NUMBERS_LAYER,
+        ):
+            if name in self.viewer.layers:
+                self.viewer.layers.remove(self.viewer.layers[name])
+            self._correction_owned_layers.discard(name)
 
     def _refresh_validation_counter(self) -> None:
         self._validated_overlay.refresh_counter(self.validation_counter_lbl)
