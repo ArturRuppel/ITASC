@@ -131,3 +131,171 @@ def build_track_path_overlay(
         union_mask=union_mask,
         centroids=np.asarray(centroids, dtype=float),
     )
+
+
+@dataclass(frozen=True)
+class FilmStripTile:
+    """One frame's panel in the film strip: an RGB crop with the mask outlined."""
+
+    frame: int            # source frame index
+    rgb: np.ndarray       # (h, w, 3) uint8, raw crop with the mask edge drawn on
+
+    @property
+    def height(self) -> int:
+        return self.rgb.shape[0]
+
+    @property
+    def width(self) -> int:
+        return self.rgb.shape[1]
+
+
+@dataclass(frozen=True)
+class TrackFilmStrip:
+    """Per-frame crops of one track, ready for a Qt dock to blit side by side.
+
+    Every tile is a fixed-size square window *centered on that frame's nucleus
+    centroid*, so the nucleus stays put in the middle of every tile and you read
+    the surroundings sweeping past. Tiles are ordered oldest-first.
+    """
+
+    tiles: tuple[FilmStripTile, ...]
+
+    def is_empty(self) -> bool:
+        return len(self.tiles) == 0
+
+    @property
+    def frames(self) -> tuple[int, ...]:
+        return tuple(tile.frame for tile in self.tiles)
+
+
+def _binary_dilate(mask: np.ndarray, iterations: int) -> np.ndarray:
+    """8-connected binary dilation by ``iterations`` (no scipy dependency)."""
+    out = mask
+    for _ in range(max(iterations, 0)):
+        d = out.copy()
+        d[1:, :] |= out[:-1, :]
+        d[:-1, :] |= out[1:, :]
+        d[:, 1:] |= out[:, :-1]
+        d[:, :-1] |= out[:, 1:]
+        d[1:, 1:] |= out[:-1, :-1]
+        d[1:, :-1] |= out[:-1, 1:]
+        d[:-1, 1:] |= out[1:, :-1]
+        d[:-1, :-1] |= out[1:, 1:]
+        out = d
+    return out
+
+
+def _centered_crop(arr: np.ndarray, cy: int, cx: int, size: int) -> np.ndarray:
+    """``size``x``size`` crop of ``arr`` centered on (cy, cx), zero-padded at edges."""
+    out = np.zeros((size, size), dtype=arr.dtype)
+    half = size // 2
+    top, left = cy - half, cx - half
+    h, w = arr.shape
+    y0, y1 = max(top, 0), min(top + size, h)
+    x0, x1 = max(left, 0), min(left + size, w)
+    if y0 < y1 and x0 < x1:
+        out[y0 - top : y1 - top, x0 - left : x1 - left] = arr[y0:y1, x0:x1]
+    return out
+
+
+def _apply_colormap(normalized: np.ndarray, colormap) -> np.ndarray:
+    """Map a (h, w) array in [0, 1] to (h, w, 3) RGB float; grayscale if None."""
+    if colormap is None:
+        return np.repeat(normalized[:, :, np.newaxis], 3, axis=2)
+    mapped = np.asarray(colormap(normalized), dtype=float)
+    # ascontiguousarray guarantees a writable copy (the builder mutates rgb).
+    return np.ascontiguousarray(mapped[..., :3], dtype=float)
+
+
+def build_track_film_strip(
+    tracked_stack: np.ndarray,
+    intensity_stack: np.ndarray,
+    track_id: int,
+    *,
+    margin: int = 6,
+    colormap=None,
+    outline_width: int = 2,
+    spotlight_dim: float = 0.35,
+    spotlight_dilation: int = 2,
+) -> TrackFilmStrip:
+    """Build per-frame, nucleus-centered intensity crops for ``track_id``.
+
+    ``tracked_stack`` and ``intensity_stack`` are matching ``(T, H, W)`` arrays
+    (bare ``(H, W)`` planes are treated as a single frame). For each occupied
+    frame the intensity is cropped to a fixed square window centered on the
+    nucleus, contrast-stretched against the track's own nucleus pixels, colored
+    through ``colormap`` (e.g. the layer's "I Purple"; grayscale if ``None``),
+    dimmed outside the nucleus by ``spotlight_dim`` for a spotlight effect, and
+    overdrawn with a thick (``outline_width``) mask outline in the frame's
+    viridis time color. ``margin`` pads the window around the largest nucleus.
+    """
+    tracked = np.asarray(tracked_stack)
+    intensity = np.asarray(intensity_stack)
+    if tracked.ndim == 2:
+        tracked = tracked[np.newaxis, ...]
+    if intensity.ndim == 2:
+        intensity = intensity[np.newaxis, ...]
+    if tracked.ndim != 3 or intensity.ndim != 3:
+        raise ValueError("tracked_stack and intensity_stack must be 2D or 3D")
+    if tracked.shape != intensity.shape:
+        raise ValueError(
+            f"shape mismatch: tracked {tracked.shape} vs intensity {intensity.shape}"
+        )
+
+    track_id = int(track_id)
+
+    occupied: list[int] = []
+    masks: list[np.ndarray] = []
+    centroids: list[tuple[int, int]] = []
+    extents: list[int] = []
+    for t in range(tracked.shape[0]):
+        mask = tracked[t] == track_id
+        if not mask.any():
+            continue
+        ys, xs = np.nonzero(mask)
+        occupied.append(t)
+        masks.append(mask)
+        centroids.append((int(round(ys.mean())), int(round(xs.mean()))))
+        extents.append(max(ys.max() - ys.min() + 1, xs.max() - xs.min() + 1))
+    if not occupied:
+        return TrackFilmStrip(tiles=())
+
+    # One square window big enough for the largest nucleus plus margin, used for
+    # every tile so the strip is uniform and the nucleus is always centered.
+    size = int(max(extents)) + 2 * margin
+
+    # Contrast-stretch against the track's own nucleus pixels (good cell contrast
+    # regardless of background), shared across tiles for comparability.
+    nucleus_values = np.concatenate(
+        [intensity[t][mask] for t, mask in zip(occupied, masks)]
+    ).astype(float)
+    if nucleus_values.size:
+        lo = float(np.percentile(nucleus_values, 2.0))
+        hi = float(np.percentile(nucleus_values, 98.0))
+    else:  # pragma: no cover - occupied implies non-empty masks
+        lo, hi = 0.0, 1.0
+
+    colors = _viridis_colors(len(occupied))
+    tiles: list[FilmStripTile] = []
+    for t, mask, (cy, cx), color in zip(
+        occupied, masks, centroids, colors, strict=True
+    ):
+        crop = _centered_crop(intensity[t], cy, cx, size).astype(float)
+        norm = np.zeros_like(crop) if hi <= lo else np.clip((crop - lo) / (hi - lo), 0, 1)
+        rgb = _apply_colormap(norm, colormap)
+
+        mask_crop = _centered_crop(mask, cy, cx, size)
+        spotlight = _binary_dilate(mask_crop, spotlight_dilation)
+        rgb[~spotlight] *= spotlight_dim
+
+        outline = _binary_dilate(_mask_outline(mask_crop), outline_width - 1)
+        rgb[outline] = color[:3]
+
+        tiles.append(
+            FilmStripTile(
+                frame=t,
+                rgb=(np.clip(rgb, 0.0, 1.0) * 255.0).round().astype(np.uint8),
+            )
+        )
+
+    return TrackFilmStrip(tiles=tuple(tiles))

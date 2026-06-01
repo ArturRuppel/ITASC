@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QMessageBox,
     QShortcut,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -38,7 +39,10 @@ from cellflow.napari._correction_centroids import (
     refresh_label_colormap,
     update_centroid_cross_layer_for_edit,
 )
-from cellflow.napari._correction_track_path import build_track_path_overlay
+from cellflow.napari._correction_track_path import (
+    build_track_film_strip,
+    build_track_path_overlay,
+)
 from cellflow.napari._correction_anchor import (
     anchor_correction,
     without_anchor_correction,
@@ -362,6 +366,27 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.track_path_check.setVisible(False)
         group_lay.addWidget(self.track_path_check)
+        self.film_strip_row = QWidget()
+        film_strip_lay = QHBoxLayout(self.film_strip_row)
+        film_strip_lay.setContentsMargins(0, 0, 0, 0)
+        self.film_strip_check = QCheckBox("Show film strip")
+        self.film_strip_check.setToolTip(
+            "Open a docked strip of the selected track's per-frame crops "
+            "(raw intensity with the mask edge outlined), one tile per frame."
+        )
+        film_strip_lay.addWidget(self.film_strip_check)
+        film_strip_lay.addStretch(1)
+        film_strip_lay.addWidget(QLabel("Tile px"))
+        self.film_strip_size_spin = QSpinBox()
+        self.film_strip_size_spin.setRange(20, 512)
+        self.film_strip_size_spin.setSingleStep(16)
+        self.film_strip_size_spin.setValue(96)
+        self.film_strip_size_spin.setToolTip(
+            "On-screen size each per-frame crop is rendered at, in pixels."
+        )
+        film_strip_lay.addWidget(self.film_strip_size_spin)
+        self.film_strip_row.setVisible(False)
+        group_lay.addWidget(self.film_strip_row)
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
         group_lay.addWidget(self.correction_widget._attrib_lbl)
@@ -505,6 +530,10 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.commit_btn.clicked.connect(self._on_commit)
         self.track_path_check.toggled.connect(self._on_toggle_track_path)
+        self.film_strip_check.toggled.connect(self._on_toggle_film_strip)
+        self.film_strip_size_spin.valueChanged.connect(
+            self._on_film_strip_size_changed
+        )
         self.params_btn.toggled.connect(
             self._on_correction_params_button_toggled
         )
@@ -537,6 +566,7 @@ class NucleusCorrectionWidget(QWidget):
         self.validation_counter_lbl.setVisible(show_active)
         self.correction_widget._attrib_lbl.setVisible(show_active)
         self.track_path_check.setVisible(show_active)
+        self.film_strip_row.setVisible(show_active)
 
         if show_params or show_shortcuts or show_active:
             self.section.expand()
@@ -1468,6 +1498,7 @@ class NucleusCorrectionWidget(QWidget):
         if not active:
             self._swap_cursor = None
             self._clear_track_path_overlay()
+            self._teardown_film_strip()
         for sc in self._correction_shortcuts:
             sc.setEnabled(active)
 
@@ -1531,9 +1562,11 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_track_path_spotlight()
 
     def _on_track_selection_changed(self, _t: int, _lab: int) -> None:
-        """Rebuild the comet when the selected track changes (if enabled)."""
+        """Rebuild the comet / film strip when the selected track changes."""
         if self.track_path_check.isChecked():
             self._refresh_track_path_overlay()
+        if self.film_strip_check.isChecked():
+            self._refresh_film_strip()
 
     def _track_path_spotlight_mask(self, _t: int, lab: int, _default_mask):
         """Spotlight the union of the selected track's masks while the comet is on."""
@@ -1626,6 +1659,100 @@ class NucleusCorrectionWidget(QWidget):
             if name in self.viewer.layers:
                 self.viewer.layers.remove(self.viewer.layers[name])
             self._correction_owned_layers.discard(name)
+
+    # -- Film strip (docked per-frame crops of the selected track) ---------
+
+    def _on_toggle_film_strip(self, checked: bool) -> None:
+        if checked:
+            self._refresh_film_strip()
+        else:
+            self._teardown_film_strip()
+
+    def _film_strip_intensity_layer(self):
+        """Best raw layer to crop tiles from (nucleus, then cell, then NLS)."""
+        for name in (
+            _CORRECTION_NUC_ZAVG_LAYER,
+            _CORRECTION_CELL_ZAVG_LAYER,
+            _CORRECTION_NLS_ZAVG_LAYER,
+        ):
+            if name in self.viewer.layers:
+                return self.viewer.layers[name]
+        return None
+
+    def _ensure_film_strip_panel(self):
+        panel = getattr(self, "_film_strip_panel", None)
+        if panel is not None:
+            return panel
+        from cellflow.napari._correction_film_strip import TrackFilmStripPanel
+
+        panel = TrackFilmStripPanel(tile_px=self.film_strip_size_spin.value())
+        panel.frame_clicked.connect(self._on_film_strip_frame_clicked)
+        self._film_strip_panel = panel
+        try:
+            self._film_strip_dock = self.viewer.window.add_dock_widget(
+                panel, name="Track film strip", area="bottom"
+            )
+        except Exception:
+            logger.exception("could not dock the track film strip")
+            self._film_strip_dock = None
+        return panel
+
+    def _refresh_film_strip(self) -> None:
+        lab = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        tracked = self._correction_tracked_layer()
+        intensity = self._film_strip_intensity_layer()
+        if not lab or tracked is None or intensity is None:
+            panel = getattr(self, "_film_strip_panel", None)
+            if panel is not None:
+                from cellflow.napari._correction_track_path import TrackFilmStrip
+
+                panel.set_strip(TrackFilmStrip(tiles=()), title="No track selected")
+            return
+        strip = build_track_film_strip(
+            np.asarray(tracked.data),
+            np.asarray(intensity.data),
+            lab,
+            colormap=self._film_strip_colormap(intensity),
+        )
+        panel = self._ensure_film_strip_panel()
+        panel.set_strip(strip, title=f"Track {lab} — {len(strip.frames)} frame(s)")
+
+    @staticmethod
+    def _film_strip_colormap(layer):
+        """Adapt the intensity layer's colormap (e.g. 'I Purple') to a (h,w)->RGB map."""
+        cmap = getattr(layer, "colormap", None)
+        if cmap is None or not hasattr(cmap, "map"):
+            return None
+
+        def _map(values: np.ndarray) -> np.ndarray:
+            flat = np.asarray(values, dtype=float).ravel()
+            mapped = np.asarray(cmap.map(flat), dtype=float)
+            return mapped.reshape(values.shape + (mapped.shape[-1],))
+
+        return _map
+
+    def _on_film_strip_size_changed(self, value: int) -> None:
+        panel = getattr(self, "_film_strip_panel", None)
+        if panel is not None:
+            panel.set_tile_size(int(value))
+
+    def _on_film_strip_frame_clicked(self, frame: int) -> None:
+        try:
+            step = list(self.viewer.dims.current_step)
+            step[0] = int(frame)
+            self.viewer.dims.current_step = tuple(step)
+        except Exception:
+            logger.exception("film strip frame jump failed")
+
+    def _teardown_film_strip(self) -> None:
+        dock = getattr(self, "_film_strip_dock", None)
+        if dock is not None:
+            try:
+                self.viewer.window.remove_dock_widget(dock)
+            except Exception:
+                logger.exception("could not remove the track film strip dock")
+        self._film_strip_dock = None
+        self._film_strip_panel = None
 
     def _refresh_validation_counter(self) -> None:
         self._validated_overlay.refresh_counter(self.validation_counter_lbl)

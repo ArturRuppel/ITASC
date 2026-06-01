@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from cellflow.napari._correction_track_path import (
+    build_track_film_strip,
     build_track_path_overlay,
 )
 
@@ -119,3 +121,121 @@ def test_2d_plane_treated_as_single_frame():
 
     assert overlay.frames == (0,)
     np.testing.assert_allclose(overlay.centroids, [[1.0, 1.0]])
+
+
+# --- film strip -------------------------------------------------------------
+
+
+def _film_stacks():
+    # A 5x5 nucleus (bright center) that drifts across frames on a dim
+    # background, with room to stay centered in every tile. 5x5 keeps a real
+    # interior even after the outline is thickened.
+    tracked = np.zeros((3, 20, 20), dtype=np.uint32)
+    intensity = np.full((3, 20, 20), 1000, dtype=np.uint16)
+    for t, (y, x) in enumerate([(6, 6), (10, 10), (13, 13)]):
+        tracked[t, y - 2 : y + 3, x - 2 : x + 3] = 8
+        intensity[t, y - 2 : y + 3, x - 2 : x + 3] = 4000
+        intensity[t, y, x] = 6000  # brighter core so normalization is non-degenerate
+    return tracked, intensity
+
+
+def _const_cmap(value):
+    def _map(v):
+        return np.broadcast_to(np.asarray(value, dtype=float), v.shape + (3,))
+
+    return _map
+
+
+def _red_cmap(v):
+    out = np.zeros(v.shape + (3,), dtype=float)
+    out[..., 0] = v  # intensity -> red channel only
+    return out
+
+
+def test_film_strip_tiles_are_uniform_square_rgb():
+    tracked, intensity = _film_stacks()
+
+    strip = build_track_film_strip(tracked, intensity, 8, margin=2)
+
+    assert strip.frames == (0, 1, 2)
+    shapes = {tile.rgb.shape for tile in strip.tiles}
+    assert len(shapes) == 1
+    h, w, c = strip.tiles[0].rgb.shape
+    assert h == w and c == 3  # square tiles
+    assert strip.tiles[0].rgb.dtype == np.uint8
+
+
+def test_film_strip_nucleus_is_centered_in_each_tile():
+    tracked, intensity = _film_stacks()
+
+    strip = build_track_film_strip(
+        tracked, intensity, 8, margin=2, colormap=_red_cmap, spotlight_dilation=0
+    )
+
+    # The bright nucleus core lands at the tile center for every frame, even as
+    # the nucleus moves in source coordinates.
+    for tile in strip.tiles:
+        size = tile.rgb.shape[0]
+        center = tile.rgb[size // 2, size // 2]
+        assert center[0] > 200  # red core (normalized ~1) at the center
+
+
+def test_film_strip_spotlight_dims_outside_the_nucleus():
+    tracked, intensity = _film_stacks()
+
+    strip = build_track_film_strip(
+        tracked, intensity, 8, margin=4, colormap=_const_cmap([0.8, 0.8, 0.8])
+    )
+
+    tile = strip.tiles[0].rgb
+    size = tile.shape[0]
+    corner = int(tile[0, 0, 0])              # outside the spotlight -> dimmed
+    center = int(tile[size // 2, size // 2, 0])  # nucleus -> full brightness
+    assert corner < center
+    assert corner == round(0.8 * 0.35 * 255)  # dimmed by spotlight_dim
+
+
+def test_film_strip_outline_is_drawn_in_the_frames_viridis_color():
+    from matplotlib import colormaps
+
+    tracked, intensity = _film_stacks()
+    strip = build_track_film_strip(tracked, intensity, 8, margin=2)
+
+    last_color = np.asarray(colormaps["viridis"](1.0))[:3]
+    expected = (last_color * 255.0).round().astype(np.uint8)
+    tile = strip.tiles[-1].rgb
+    assert np.any(np.all(tile == expected, axis=-1))  # outline pixels present
+
+
+def test_film_strip_thicker_outline_paints_more_pixels():
+    tracked, intensity = _film_stacks()
+    color = np.asarray(__import__("matplotlib").colormaps["viridis"](1.0))[:3]
+    expected = (color * 255.0).round().astype(np.uint8)
+
+    thin = build_track_film_strip(
+        tracked, intensity, 8, margin=2, outline_width=1
+    ).tiles[-1].rgb
+    thick = build_track_film_strip(
+        tracked, intensity, 8, margin=2, outline_width=3
+    ).tiles[-1].rgb
+
+    n_thin = np.all(thin == expected, axis=-1).sum()
+    n_thick = np.all(thick == expected, axis=-1).sum()
+    assert n_thick > n_thin
+
+
+def test_film_strip_absent_track_is_empty():
+    tracked, intensity = _film_stacks()
+
+    strip = build_track_film_strip(tracked, intensity, 999)
+
+    assert strip.is_empty()
+    assert strip.frames == ()
+
+
+def test_film_strip_rejects_shape_mismatch():
+    tracked = np.zeros((2, 5, 5), dtype=np.uint32)
+    intensity = np.zeros((2, 6, 6), dtype=np.uint16)
+
+    with pytest.raises(ValueError):
+        build_track_film_strip(tracked, intensity, 1)
