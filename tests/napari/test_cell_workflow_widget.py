@@ -310,6 +310,139 @@ def test_preview_reports_missing_maps(monkeypatch, tmp_path):
     app.processEvents()
 
 
+# ── on-demand single-frame labels ───────────────────────────────────────────
+
+def test_labels_button_enabled_only_during_preview(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = tmp_path / "pos00"
+    _write_inputs(pos_dir)
+    viewer = _FakeViewer()
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+
+    assert widget.labels_btn.isEnabled() is False
+    widget.active_btn.setChecked(True)
+    assert widget.labels_btn.isEnabled() is True
+    widget.active_btn.setChecked(False)
+    assert widget.labels_btn.isEnabled() is False
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_labels_button_fills_cell_labels_for_current_frame(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = tmp_path / "pos00"
+    _write_inputs(pos_dir)
+    viewer = _FakeViewer()
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+    widget.set_state({"segmentation": {"n_workers": 1}})
+
+    widget.active_btn.setChecked(True)
+    # Activation alone never creates the (slow) labels layer.
+    assert mod._LABELS_LAYER not in viewer.layers
+
+    widget.labels_btn.click()  # explicit on-demand geodesic for the current frame
+    assert mod._LABELS_LAYER in viewer.layers
+    labels = viewer.layers[mod._LABELS_LAYER].data
+    assert labels.ndim == 2
+    assert set(np.unique(labels).tolist()) <= {0, 1, 2}
+    assert labels.max() > 0
+    assert "cell labels" in widget.pipeline_status_lbl.text()
+
+    # Deactivation tears the labels layer down alongside the intermediates.
+    widget.active_btn.setChecked(False)
+    assert mod._LABELS_LAYER not in viewer.layers
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+# ── temporal smoothing in preview (cached stack) ─────────────────────────────
+
+def test_preview_smoothing_caches_and_reuses_stack(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    # Count whole-movie smoothing passes so we can prove the cache is reused.
+    calls = {"n": 0}
+    real = mod.clean_and_smooth_contours
+
+    def _counting(contours, params):
+        calls["n"] += 1
+        return real(contours, params)
+
+    monkeypatch.setattr(mod, "clean_and_smooth_contours", _counting)
+
+    pos_dir = tmp_path / "pos00"
+    _write_inputs(pos_dir, T=4)
+    viewer = _FakeViewer()
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+    widget.memory_tau_spin.setValue(0.1)
+
+    # The synchronous test thread_worker calls _on_preview_done (which clears
+    # _preview_worker) *before* the `self._preview_worker = _worker()`
+    # assignment lands, so after each pass _preview_worker holds a stale handle.
+    # In real async use it is None once the pass settles; mimic that so a forced
+    # refresh recomputes rather than coalescing.
+    def _settled_refresh():
+        widget._preview_worker = None
+        widget._refresh_preview()
+
+    widget.active_btn.setChecked(True)  # tau > 0 → one smoothing pass, cached
+    assert calls["n"] == 1
+    assert widget._smoothed_stack is not None
+    assert widget._smoothed_stack.shape[0] == 4
+
+    # Editing a non-smoothing knob (alpha) reuses the cached stack.
+    widget.alpha_spin.setValue(200.0)
+    _settled_refresh()
+    assert calls["n"] == 1
+
+    # Editing a contour-cleanup knob invalidates the cache → recompute.
+    widget.contour_strength_spin.setValue(0.5)
+    _settled_refresh()
+    assert calls["n"] == 2
+
+    # Turning smoothing off releases the resident stack.
+    widget.memory_tau_spin.setValue(0.0)
+    _settled_refresh()
+    assert widget._smoothed_stack is None
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_preview_deactivation_drops_smoothed_stack(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = tmp_path / "pos00"
+    _write_inputs(pos_dir, T=4)
+    viewer = _FakeViewer()
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+    widget.memory_tau_spin.setValue(0.1)
+
+    widget.active_btn.setChecked(True)
+    assert widget._smoothed_stack is not None
+    widget.active_btn.setChecked(False)
+    assert widget._smoothed_stack is None
+
+    widget.deleteLater()
+    app.processEvents()
+
+
 # ── full run ──────────────────────────────────────────────────────────────────
 
 def test_full_run_writes_tracked_labels(monkeypatch, tmp_path):

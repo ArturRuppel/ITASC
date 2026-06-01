@@ -16,10 +16,17 @@ Live preview recomputes the current frame off the GUI thread on any param edit
 or time scrub and surfaces every *cheap* intermediate as a napari layer — up to
 and including the weighted cost field the geodesic walk would traverse. It
 deliberately stops short of the geodesic label assignment (by far the slowest
-step), so tuning stays responsive; the cost field already explains where the
-labels would land. The full run processes all frames in memory, runs the
-geodesic walk, and persists only the labels. Correction is delegated to
-:class:`CellCorrectionWidget`, unchanged.
+step) on every edit, so tuning stays responsive; the cost field already explains
+where the labels would land. A separate on-demand button runs the geodesic walk
+for just the current frame when the user wants to see the actual labels.
+
+Temporal smoothing (``memory_tau > 0``) needs the whole movie, so the preview
+computes the cleaned-and-smoothed contour stack once, caches it keyed on the
+contour/temporal knobs, and slices the current frame from it for the cost field
+and labels — reusing the cache across frame scrubs and edits to non-smoothing
+knobs. The previewed frame then matches the full run exactly. The full run
+processes all frames in memory, runs the geodesic walk, and persists only the
+labels. Correction is delegated to :class:`CellCorrectionWidget`, unchanged.
 """
 from __future__ import annotations
 
@@ -65,6 +72,7 @@ from cellflow.napari.widgets import (
 from cellflow.segmentation import CancelledError
 from cellflow.segmentation.cell_divergence_segmentation import (
     CellDivergenceParams,
+    clean_and_smooth_contours,
     segment_cells_divergence,
 )
 from cellflow.segmentation.cell_label_icm import commit_labels
@@ -80,8 +88,10 @@ _CT_CLEAN_LAYER = f"{_PREFIX} contours cleaned"
 _FG_MASK_LAYER = f"{_PREFIX} foreground mask"
 _COST_LAYER = f"{_PREFIX} weighted cost field"
 # The geodesic label assignment is the pipeline's slowest step, so the live
-# preview stops at the cost field and never creates this layer; labels are
-# produced only by the full run (as ``_TRACKED_CELL_LAYER``).
+# preview stops at the cost field and never creates this layer on activation or
+# on a param/time edit. It is filled only when the user explicitly clicks the
+# on-demand labels button (single current frame), and by the full run (as
+# ``_TRACKED_CELL_LAYER``).
 _LABELS_LAYER = f"{_PREFIX} cell labels"
 
 # Tracked pipeline layer the correction widget syncs against.
@@ -101,6 +111,9 @@ _PREVIEW_LAYERS = (
     _FG_RAW_LAYER, _FG_CLEAN_LAYER, _CT_RAW_LAYER, _CT_CLEAN_LAYER,
     _FG_MASK_LAYER, _COST_LAYER,
 )
+# Everything removed when preview deactivates: the always-on intermediates plus
+# the on-demand labels layer (created only if the user asked for labels).
+_PREVIEW_TEARDOWN_LAYERS = _PREVIEW_LAYERS + (_LABELS_LAYER,)
 
 
 def _make_status() -> QLabel:
@@ -146,6 +159,19 @@ class CellWorkflowWidget(QWidget):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(150)
         self._preview_timer.timeout.connect(self._refresh_preview)
+
+        # Cached cleaned+smoothed contour stack for the preview when
+        # ``memory_tau > 0`` (the smoothing needs the whole movie). Keyed on the
+        # contour/temporal knobs so it survives frame scrubs and edits to the
+        # non-smoothing knobs (fg_*, alpha, gamma) and only recomputes when a
+        # knob that actually changes the smoothing is touched. Dropped on
+        # deactivate to free the (T, Y, X) array.
+        self._smoothed_stack = None
+        self._smoothed_key = None
+
+        # On-demand single-frame labels worker (explicit, one-shot — never
+        # fired by param edits or time scrubs).
+        self._labels_worker = None
 
         # Full-run worker state.
         self._run_worker = None
@@ -198,10 +224,16 @@ class CellWorkflowWidget(QWidget):
         self.active_btn = _tool_btn(
             "◉", "Live preview (tune against the current frame).", checkable=True
         )
+        self.labels_btn = _tool_btn(
+            "▦",
+            "Compute cell labels for the current frame only (the slow geodesic "
+            "step). Available while live preview is active.",
+        )
+        self.labels_btn.setEnabled(False)
         self.run_btn = _tool_btn(
             "▶", "Run the full pipeline over all frames and write tracked_labels.tif."
         )
-        for button in (self.params_btn, self.active_btn, self.run_btn):
+        for button in (self.params_btn, self.active_btn, self.labels_btn, self.run_btn):
             stage_header_action_button(button, "cell")
 
         self.params_section = self._build_params_section()
@@ -213,7 +245,7 @@ class CellWorkflowWidget(QWidget):
 
         root.addLayout(self._stage_row(
             self._stage_label("Segmentation"),
-            self.params_btn, self.active_btn, self.run_btn,
+            self.params_btn, self.active_btn, self.labels_btn, self.run_btn,
         ))
         root.addWidget(self.params_section)
 
@@ -378,6 +410,7 @@ class CellWorkflowWidget(QWidget):
         ):
             spin.valueChanged.connect(self._on_param_changed)
         self.active_btn.toggled.connect(self._on_activate)
+        self.labels_btn.clicked.connect(self._on_compute_labels)
         self.run_btn.clicked.connect(self._on_run_clicked)
         if hasattr(self.viewer, "dims") and hasattr(self.viewer.dims, "events"):
             try:
@@ -558,21 +591,47 @@ class CellWorkflowWidget(QWidget):
 
     def _on_activate(self, checked: bool) -> None:
         self._preview_active = bool(checked)
+        # The on-demand labels button only makes sense against a live preview.
+        self.labels_btn.setEnabled(checked and not self._running)
         if checked:
             self._refresh_preview()
         else:
             self._preview_pending = False
-            for name in _PREVIEW_LAYERS:
+            for name in _PREVIEW_TEARDOWN_LAYERS:
                 if name in self.viewer.layers:
                     self.viewer.layers.remove(name)
+            # Free the resident smoothed stack; the preview session is over.
+            self._smoothed_stack = None
+            self._smoothed_key = None
             self._set_status("")
 
-    def _refresh_preview(self):
-        """Recompute the current frame's preview off the GUI thread.
+    @staticmethod
+    def _smooth_key(params: CellDivergenceParams) -> tuple:
+        """Cache key for the smoothed contour stack: the knobs that determine it.
 
-        Mirrors the atom widget: while a pass is in flight, further edits arm
-        ``_preview_pending`` so one fresh pass (latest params/frame) fires when
-        the current one returns. Returns the started worker (or ``None``).
+        The fg_*, alpha and gamma knobs are deliberately absent — they do not
+        change the smoothed contours, so editing them reuses the cached stack.
+        """
+        return (
+            params.contour_window, params.contour_strength,
+            params.contour_threshold, params.contour_norm_pct,
+            params.memory_tau, params.memory_floor,
+        )
+
+    def _cached_stack_for(self, params: CellDivergenceParams):
+        """Return the resident smoothed stack iff it matches ``params``, else None."""
+        if (
+            self._smoothed_stack is not None
+            and self._smoothed_key == self._smooth_key(params)
+        ):
+            return self._smoothed_stack
+        return None
+
+    def _preview_inputs(self):
+        """Validate the inputs a single-frame compute needs.
+
+        Sets a status message and returns ``None`` on any failure; otherwise
+        returns ``(shape, contours_path, foreground_path, nuc_path)``.
         """
         if not self._preview_active:
             return None
@@ -587,6 +646,54 @@ class CellWorkflowWidget(QWidget):
         if shape is None:
             self._set_status("Cell divergence maps not found — run Divergence Maps first.")
             return None
+        return shape, self._contours_path(), self._foreground_path(), nuc_path
+
+    def _compute_frame(
+        self, *, t, params, contours_path, foreground_path, nuc_path,
+        cached_stack, with_labels,
+    ):
+        """Worker-thread body shared by the live preview and the labels button.
+
+        Reads frame ``t`` of each map. When ``memory_tau > 0`` the cleaned +
+        smoothed contour stack (whole movie) feeds the frame through
+        ``contours_clean_override`` so the result matches the full run; the
+        stack is taken from ``cached_stack`` when valid, otherwise computed here
+        and returned for the caller to cache. Returns ``(t, result, new_stack)``
+        where ``new_stack`` is non-``None`` only when it was (re)computed.
+        """
+        fg = self._read_frame(foreground_path, t)[np.newaxis]
+        nuc = self._read_frame(nuc_path, t, dtype=np.uint32)[np.newaxis]
+        contour = self._read_frame(contours_path, t)[np.newaxis]
+
+        new_stack = None
+        override = None
+        if params.memory_tau > 0.0:
+            stack = cached_stack
+            if stack is None:
+                full = np.asarray(
+                    tifffile.imread(str(contours_path)), dtype=np.float32
+                )
+                stack = clean_and_smooth_contours(full, params)
+                new_stack = stack
+            override = stack[t]
+
+        result = segment_cells_divergence(
+            contour, fg, nuc, params, frame=0, with_labels=with_labels,
+            contours_clean_override=override,
+        )
+        return t, result, new_stack
+
+    def _refresh_preview(self):
+        """Recompute the current frame's preview off the GUI thread.
+
+        Mirrors the atom widget: while a pass is in flight, further edits arm
+        ``_preview_pending`` so one fresh pass (latest params/frame) fires when
+        the current one returns. Returns the started worker (or ``None``).
+        """
+        info = self._preview_inputs()
+        if info is None:
+            return None
+        shape, contours_path, foreground_path, nuc_path = info
         self._ensure_preview_layers(shape[-2:])
         if self._preview_worker is not None:
             self._preview_pending = True
@@ -595,42 +702,42 @@ class CellWorkflowWidget(QWidget):
         params = self._params()
         n_frames = shape[0]
         t = max(0, min(self._current_t(), n_frames - 1))
-        contours_path = self._contours_path()
-        foreground_path = self._foreground_path()
-        self._set_status(f"Computing cell preview for frame {t}…")
+        smooth = params.memory_tau > 0.0
+        cached_stack = self._cached_stack_for(params) if smooth else None
+        if not smooth:
+            # Smoothing turned off — release the resident stack.
+            self._smoothed_stack = None
+            self._smoothed_key = None
+        if smooth and cached_stack is None:
+            self._set_status(f"Temporal smoothing over {n_frames} frames…")
+        else:
+            self._set_status(f"Computing cell preview for frame {t}…")
 
         @thread_worker(connect={
             "returned": self._on_preview_done,
             "errored": self._on_preview_error,
         })
         def _worker():
-            contour = self._read_frame(contours_path, t)[np.newaxis]
-            fg = self._read_frame(foreground_path, t)[np.newaxis]
-            nuc = self._read_frame(nuc_path, t, dtype=np.uint32)[np.newaxis]
-            result = segment_cells_divergence(
-                contour, fg, nuc, params, frame=0, with_labels=False,
+            t_, result, new_stack = self._compute_frame(
+                t=t, params=params, contours_path=contours_path,
+                foreground_path=foreground_path, nuc_path=nuc_path,
+                cached_stack=cached_stack, with_labels=False,
             )
-            return t, result
+            return t_, result, params, new_stack
 
         self._preview_worker = _worker()
         return self._preview_worker
 
     def _on_preview_done(self, payload) -> None:
         self._preview_worker = None
-        t, result = payload
+        t, result, params, new_stack = payload
+        self._cache_stack(params, new_stack)
         if self._preview_active:
-            self._fill_image_layer(_FG_RAW_LAYER, result.foreground_raw)
-            self._fill_image_layer(_FG_CLEAN_LAYER, result.foreground_clean)
-            self._fill_image_layer(_CT_RAW_LAYER, result.contours_raw)
-            self._fill_image_layer(_CT_CLEAN_LAYER, result.contours_clean)
-            self._fill_labels_layer(
-                _FG_MASK_LAYER, result.foreground_mask.astype(np.uint8)
-            )
-            self._fill_image_layer(_COST_LAYER, self._cost_for_display(result.cost_field))
+            self._apply_intermediates(result)
             coverage = 100.0 * float(result.foreground_mask.mean())
             self._set_status(
                 f"Frame {t}: {coverage:.0f}% fill coverage "
-                f"(labels computed on Run)."
+                f"(labels on ▦ / Run)."
             )
         if self._preview_pending and self._preview_active:
             self._preview_pending = False
@@ -643,6 +750,88 @@ class CellWorkflowWidget(QWidget):
         self._preview_pending = False
         self._set_status(f"Cell preview failed: {exc}")
         logger.exception("Cell preview worker error", exc_info=exc)
+
+    # ── On-demand single-frame labels (the slow geodesic step, explicit) ──────
+    def _on_compute_labels(self) -> None:
+        """Run the geodesic Voronoi for the current frame only, on request.
+
+        An explicit action: it never fires on param edits or time scrubs, so
+        tuning stays responsive. Reuses (or fills) the smoothed-stack cache so
+        the previewed labels match the full run for this frame.
+        """
+        if not self._preview_active or self._labels_worker is not None:
+            return
+        info = self._preview_inputs()
+        if info is None:
+            return
+        shape, contours_path, foreground_path, nuc_path = info
+        self._ensure_preview_layers(shape[-2:])
+        self._ensure_labels_layer(_LABELS_LAYER, shape[-2:])
+
+        params = self._params()
+        n_frames = shape[0]
+        t = max(0, min(self._current_t(), n_frames - 1))
+        smooth = params.memory_tau > 0.0
+        cached_stack = self._cached_stack_for(params) if smooth else None
+        self.labels_btn.setEnabled(False)
+        self._set_status(f"Computing cell labels for frame {t}…")
+
+        @thread_worker(connect={
+            "returned": self._on_labels_done,
+            "errored": self._on_labels_error,
+        })
+        def _worker():
+            t_, result, new_stack = self._compute_frame(
+                t=t, params=params, contours_path=contours_path,
+                foreground_path=foreground_path, nuc_path=nuc_path,
+                cached_stack=cached_stack, with_labels=True,
+            )
+            return t_, result, params, new_stack
+
+        self._labels_worker = _worker()
+
+    def _on_labels_done(self, payload) -> None:
+        self._labels_worker = None
+        t, result, params, new_stack = payload
+        self._cache_stack(params, new_stack)
+        if self._preview_active:
+            self._apply_intermediates(result)
+            n_labels = (
+                int(np.unique(result.labels[result.labels > 0]).size)
+                if result.labels is not None else 0
+            )
+            if result.labels is not None:
+                self._fill_labels_layer(
+                    _LABELS_LAYER, result.labels.astype(np.int32)
+                )
+            coverage = 100.0 * float(result.foreground_mask.mean())
+            self._set_status(
+                f"Frame {t}: {coverage:.0f}% fill, {n_labels} cell labels."
+            )
+        self.labels_btn.setEnabled(self._preview_active and not self._running)
+
+    def _on_labels_error(self, exc: Exception) -> None:
+        self._labels_worker = None
+        self.labels_btn.setEnabled(self._preview_active and not self._running)
+        self._set_status(f"Cell labels failed: {exc}")
+        logger.exception("Cell labels worker error", exc_info=exc)
+
+    def _cache_stack(self, params: CellDivergenceParams, new_stack) -> None:
+        """Hold a freshly computed smoothed stack resident for later frames/edits."""
+        if new_stack is not None:
+            self._smoothed_stack = new_stack
+            self._smoothed_key = self._smooth_key(params)
+
+    def _apply_intermediates(self, result) -> None:
+        """Fill the six always-on preview layers (everything but cell labels)."""
+        self._fill_image_layer(_FG_RAW_LAYER, result.foreground_raw)
+        self._fill_image_layer(_FG_CLEAN_LAYER, result.foreground_clean)
+        self._fill_image_layer(_CT_RAW_LAYER, result.contours_raw)
+        self._fill_image_layer(_CT_CLEAN_LAYER, result.contours_clean)
+        self._fill_labels_layer(
+            _FG_MASK_LAYER, result.foreground_mask.astype(np.uint8)
+        )
+        self._fill_image_layer(_COST_LAYER, self._cost_for_display(result.cost_field))
 
     @staticmethod
     def _cost_for_display(cost: np.ndarray) -> np.ndarray:
@@ -799,6 +988,7 @@ class CellWorkflowWidget(QWidget):
         self.run_btn.setText("✕")
         self.run_btn.setToolTip("Cancel.")
         self.active_btn.setEnabled(False)
+        self.labels_btn.setEnabled(False)
 
     def _set_run_idle(self) -> None:
         self.run_btn.setText("▶")
@@ -806,6 +996,7 @@ class CellWorkflowWidget(QWidget):
             "Run the full pipeline over all frames and write tracked_labels.tif."
         )
         self.active_btn.setEnabled(True)
+        self.labels_btn.setEnabled(self._preview_active)
 
     def _clear_progress(self) -> None:
         self.pipeline_progress_bar.setRange(0, 100)

@@ -26,6 +26,7 @@ from cellflow.segmentation.cell_label_icm import (
 from cellflow.segmentation.cell_divergence_segmentation import (
     CellDivergenceParams,
     CellDivergenceResult,
+    clean_and_smooth_contours,
     segment_cells_divergence,
 )
 
@@ -54,6 +55,7 @@ __all__ = [
     "apply_gamma",
     "assemble_cost_field",
     "build_divergence_maps",
+    "clean_and_smooth_contours",
     "commit_labels",
     "compute_contour_watershed",
     "compute_filtered_contour_maps",

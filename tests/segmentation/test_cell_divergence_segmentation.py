@@ -9,6 +9,9 @@ from cellflow.segmentation import (
     CellDivergenceResult,
     segment_cells_divergence,
 )
+from cellflow.segmentation.cell_divergence_segmentation import (
+    clean_and_smooth_contours,
+)
 from cellflow.segmentation.cell_label_icm import assemble_cost_field
 
 
@@ -101,6 +104,74 @@ def test_foreground_mask_includes_nucleus_pixels():
         contours, fg, nuc, CellDivergenceParams(fg_threshold=2.0)
     )
     assert np.all(result.foreground_mask[nuc > 0])
+
+
+def test_clean_and_smooth_contours_matches_full_run_contours_clean():
+    contours, fg, nuc = _make_inputs()
+    params = CellDivergenceParams(memory_tau=0.1)
+
+    smoothed = clean_and_smooth_contours(contours, params)
+    full = segment_cells_divergence(contours, fg, nuc, params)
+
+    assert smoothed.shape == contours.shape
+    np.testing.assert_array_equal(smoothed, full.contours_clean)
+
+
+def test_single_frame_override_reproduces_full_run_frame():
+    # With temporal smoothing on, the per-frame preview can only match the full
+    # run by reusing the whole-movie smoothed contours via the override.
+    contours, fg, nuc = _make_inputs()
+    params = CellDivergenceParams(memory_tau=0.1)
+
+    full = segment_cells_divergence(contours, fg, nuc, params)
+    smoothed = clean_and_smooth_contours(contours, params)
+
+    t = 1
+    single = segment_cells_divergence(
+        contours, fg, nuc, params, frame=t,
+        contours_clean_override=smoothed[t],
+    )
+
+    np.testing.assert_array_equal(single.contours_clean, full.contours_clean[t])
+    np.testing.assert_array_equal(single.labels, full.labels[t])
+    finite = np.isfinite(full.cost_field[t])
+    np.testing.assert_allclose(single.cost_field[finite], full.cost_field[t][finite])
+
+
+def test_single_frame_without_override_diverges_under_smoothing():
+    # Sanity check that the override is doing real work: the naive per-frame
+    # path (no whole-movie smoothing) need not equal the full run for the frame.
+    contours, fg, nuc = _make_inputs()
+    params = CellDivergenceParams(memory_tau=0.1)
+
+    full = segment_cells_divergence(contours, fg, nuc, params)
+    naive = segment_cells_divergence(contours, fg, nuc, params, frame=1)
+
+    assert not np.array_equal(naive.contours_clean, full.contours_clean[1])
+
+
+def test_override_shape_mismatch_raises():
+    contours, fg, nuc = _make_inputs()
+    bad = np.zeros((3, 3), np.float32)
+    with pytest.raises(ValueError):
+        segment_cells_divergence(
+            contours, fg, nuc, CellDivergenceParams(), frame=0,
+            contours_clean_override=bad,
+        )
+
+
+def test_override_ignored_for_full_stack_run():
+    # Override is single-frame only; a full-stack run must ignore it.
+    contours, fg, nuc = _make_inputs()
+    params = CellDivergenceParams()
+    baseline = segment_cells_divergence(contours, fg, nuc, params)
+    with_override = segment_cells_divergence(
+        contours, fg, nuc, params,
+        contours_clean_override=np.zeros(contours.shape[1:], np.float32),
+    )
+    np.testing.assert_array_equal(
+        baseline.contours_clean, with_override.contours_clean
+    )
 
 
 def test_progress_callback_receives_messages():

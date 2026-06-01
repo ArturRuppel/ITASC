@@ -42,6 +42,7 @@ from cellflow.tracking_ultrack.atoms import residual
 __all__ = [
     "CellDivergenceParams",
     "CellDivergenceResult",
+    "clean_and_smooth_contours",
     "segment_cells_divergence",
 ]
 
@@ -151,6 +152,31 @@ def _clean_contours(contours: np.ndarray, params: CellDivergenceParams) -> np.nd
     return cleaned.astype(np.float32)
 
 
+def clean_and_smooth_contours(
+    contours: np.ndarray, params: CellDivergenceParams
+) -> np.ndarray:
+    """Full-stack contour cleanup + temporal smoothing — pipeline stages 1+2.
+
+    Returns the ``(T, Y, X)`` cleaned (residual → global-percentile normalize →
+    floor) and, when ``memory_tau > 0`` and there is more than one frame,
+    temporally smoothed contour stack — exactly the ``contours_clean`` the
+    full run feeds the segmenter.
+
+    The widget's live preview computes this once over the whole movie, caches it,
+    and slices the current frame back into :func:`segment_cells_divergence` via
+    ``contours_clean_override`` so the previewed cost field / labels for a frame
+    match the full run (which the per-frame path cannot, since both the global
+    percentile and the bidirectional EMA need every frame).
+    """
+    contours = _to_tyx(contours, np.float32)
+    cleaned = _clean_contours(contours, params)
+    if params.memory_tau > 0.0 and cleaned.shape[0] > 1:
+        cleaned = contour_memory_filter(
+            cleaned, tau=params.memory_tau, floor=params.memory_floor,
+        )
+    return cleaned.astype(np.float32)
+
+
 def _to_tyx(arr: np.ndarray, dtype) -> np.ndarray:
     a = np.asarray(arr, dtype=dtype)
     if a.ndim == 4 and a.shape[1] == 1:
@@ -168,6 +194,7 @@ def segment_cells_divergence(
     *,
     frame: int | None = None,
     with_labels: bool = True,
+    contours_clean_override: np.ndarray | None = None,
     progress_cb: Callable[[str], None] | None = None,
 ) -> CellDivergenceResult:
     """Run the unary-only divergence pipeline and return all intermediates.
@@ -190,6 +217,14 @@ def segment_cells_divergence(
         cost field is still returned, but ``result.labels`` is ``None``.  The
         live preview uses this to stay responsive — the cost field already
         explains every boundary the labels would land on.
+    contours_clean_override : (Y, X) float, optional
+        Single-frame-only.  When given (with ``frame`` set), this pre-cleaned —
+        and, when temporal smoothing is on, pre-smoothed — contour frame is used
+        as ``contours_clean`` instead of re-running the per-frame cleanup.  The
+        widget passes a frame sliced from :func:`clean_and_smooth_contours` so
+        the single-frame cost field / labels match the full run exactly (the
+        per-frame path cannot, as it lacks the whole-movie percentile and EMA).
+        Ignored when ``frame`` is ``None``.
     progress_cb : callable, optional
         Receives short status strings.
 
@@ -219,14 +254,26 @@ def segment_cells_divergence(
     # ── 1. Map cleanup ──────────────────────────────────────────────────────
     _report("Cleaning maps…")
     foreground_clean = _clean_foreground(foreground, params)
-    contours_clean = _clean_contours(contours, params)
 
-    # ── 2. Temporal contour smoothing (full-stack only) ─────────────────────
-    if not single and params.memory_tau > 0.0 and contours_clean.shape[0] > 1:
-        _report(f"Temporal contour smoothing (τ={params.memory_tau})…")
-        contours_clean = contour_memory_filter(
-            contours_clean, tau=params.memory_tau, floor=params.memory_floor,
-        )
+    if single and contours_clean_override is not None:
+        # Caller supplied the already cleaned (+ smoothed) frame — use it
+        # verbatim so the single-frame result matches the full run for this
+        # frame.  Stage 2 is folded into the override and skipped here.
+        override = np.asarray(contours_clean_override, dtype=np.float32)
+        if override.shape != contours.shape[1:]:
+            raise ValueError(
+                "contours_clean_override shape "
+                f"{override.shape} does not match frame shape {contours.shape[1:]}"
+            )
+        contours_clean = override[np.newaxis]
+    else:
+        contours_clean = _clean_contours(contours, params)
+        # ── 2. Temporal contour smoothing (full-stack only) ─────────────────
+        if not single and params.memory_tau > 0.0 and contours_clean.shape[0] > 1:
+            _report(f"Temporal contour smoothing (τ={params.memory_tau})…")
+            contours_clean = contour_memory_filter(
+                contours_clean, tau=params.memory_tau, floor=params.memory_floor,
+            )
 
     # ── 3. Foreground mask ──────────────────────────────────────────────────
     foreground_mask = (foreground_clean > params.fg_threshold) | (nuc > 0)
