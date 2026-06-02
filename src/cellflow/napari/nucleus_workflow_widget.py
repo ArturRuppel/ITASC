@@ -604,11 +604,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     def _contours_path(self) -> Path | None:
         return self.nucleus_pipeline_widget._contours_path()
 
-    def _contour_maps_path(self) -> Path | None:
-        return self._contours_path()
-
-    def _foreground_scores_path(self) -> Path | None:
-        return self.nucleus_pipeline_widget._foreground_path()
 
     # ================================================================
     # Public API

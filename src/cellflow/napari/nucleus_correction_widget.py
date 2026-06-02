@@ -622,11 +622,6 @@ class NucleusCorrectionWidget(QWidget):
             labels = labels[:, 0]
         return labels
 
-    def _cell_zavg_path(self):
-        return self._paths.cell_zavg if self._paths else None
-
-    def _nucleus_zavg_path(self):
-        return self._paths.nucleus_zavg if self._paths else None
 
     def _cell_foreground_path(self):
         return self._paths.cell_foreground if self._paths else None

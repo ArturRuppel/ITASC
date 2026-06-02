@@ -31,13 +31,5 @@ def test_read_position_contact_analysis_reconstructs_edges_and_centroids(tmp_pat
     assert set(contact_analysis.edges) >= {"frame", "coord_offset", "coord_count", "kind"}
     assert set(contact_analysis.t1_events) >= {"t1_event_id", "frame", "edge_id"}
 
-    centroids = contact_analysis.centroid_points()
-    assert centroids.shape == (4, 3)
-    np.testing.assert_allclose(centroids[:, 0], [0, 0, 1, 1])
     assert contact_analysis.cell_tracked_labels_path == str(pos_dir / "3_cell" / "tracked_labels.tif")
     assert contact_analysis.nucleus_tracked_labels_path == str(pos_dir / "2_nucleus" / "tracked_labels.tif")
-
-    lines = contact_analysis.edge_lines()
-    assert len(lines) == len(contact_analysis.edges["frame"])
-    assert all(line.shape[1] == 3 for line in lines)
-    np.testing.assert_array_equal(lines[0][:, 0], np.full(len(lines[0]), contact_analysis.edges["frame"][0]))

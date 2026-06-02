@@ -201,20 +201,10 @@ class NucleusPipelineWidget(QWidget):
         pos = self._pos_dir
         return NucleusArtifactPaths(pos) if pos else None
 
-    def _prob_path(self) -> Path | None:
-        return self._paths.prob if self._paths else None
-
-    def _dp_path(self) -> Path | None:
-        return self._paths.dp if self._paths else None
 
     def _contours_path(self) -> Path | None:
         return self._paths.nucleus_contours if self._paths else None
 
-    def _contour_sources_path(self) -> Path | None:
-        return self._paths.contour_sources if self._paths else None
-
-    def _foreground_sources_path(self) -> Path | None:
-        return self._paths.foreground_sources if self._paths else None
 
     def _foreground_path(self) -> Path | None:
         return self._paths.nucleus_foreground if self._paths else None

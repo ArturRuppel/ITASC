@@ -3,7 +3,6 @@ from __future__ import annotations
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QFormLayout,
     QGridLayout,
     QLabel,
     QPushButton,
@@ -241,10 +240,6 @@ STAGE_STATUS_COLORS = {
 }
 
 
-def stage_status_color(status: str) -> str:
-    return STAGE_STATUS_COLORS[status]
-
-
 def _fixed_widget(widget, width=None):
     if width is not None:
         widget.setMaximumWidth(width)
@@ -403,15 +398,6 @@ def checked_success_button(button):
     return button
 
 
-def compact_form_layout():
-    layout = QFormLayout()
-    layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
-    layout.setHorizontalSpacing(DEFAULT_FIELD_SPACING)
-    layout.setVerticalSpacing(DEFAULT_ROW_SPACING)
-    return layout
-
-
 def block_grid(horizontal_spacing=8, vertical_spacing=4):
     layout = QGridLayout()
     layout.setHorizontalSpacing(horizontal_spacing)
@@ -419,10 +405,6 @@ def block_grid(horizontal_spacing=8, vertical_spacing=4):
     for col in range(BLOCK_GRID_COLUMNS):
         layout.setColumnStretch(col, 0)
     return layout
-
-
-def two_column_parameter_grid(horizontal_spacing=12, vertical_spacing=4):
-    return block_grid(horizontal_spacing, vertical_spacing)
 
 
 def section_grid():
@@ -537,76 +519,3 @@ def add_block_checkbox_row(grid, row, checkbox):
         alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
     )
     return checkbox
-
-
-def add_block_button_row(grid, row, *buttons):
-    count = len(buttons)
-    if count == 0:
-        return ()
-    if count == 1:
-        placements = ((0, 4),)
-    elif count == 2:
-        placements = ((0, 2), (2, 2))
-    elif count == 3:
-        placements = ((0, 1), (1, 1), (2, 2))
-    elif count == 4:
-        placements = ((0, 1), (1, 1), (2, 1), (3, 1))
-    else:
-        raise ValueError("add_block_button_row supports at most four buttons")
-
-    for button, (column, span) in zip(buttons, placements):
-        action_button(button, expand=True)
-        _add_block_cell(
-            grid,
-            row,
-            column,
-            button,
-            span=span,
-            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-        )
-    return buttons
-
-
-def add_parameter_grid_row(grid, row, column, label_text, field):
-    base_col = column * 2
-    label = _block_label(label_text)
-    _add_block_cell(grid, row, base_col, label)
-    _add_block_cell(grid, row, base_col + 1, _fixed_widget(field))
-    return label, field
-
-
-def sweep_parameter_grid(
-    horizontal_spacing=8,
-    vertical_spacing=4,
-    spin_width=DEFAULT_SWEEP_SPIN_WIDTH,
-):
-    layout = block_grid(horizontal_spacing, vertical_spacing)
-    layout.setColumnMinimumWidth(1, spin_width)
-    layout.setColumnMinimumWidth(2, spin_width)
-    layout.setColumnMinimumWidth(3, spin_width)
-
-    layout.addWidget(QLabel(""), 0, 0)
-    for col, text in enumerate(("min", "max", "step"), start=1):
-        header = QLabel(text)
-        header.setAlignment(
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
-        )
-        layout.addWidget(header, 0, col)
-    return layout
-
-
-def add_sweep_parameter_row(
-    grid,
-    row,
-    label_text,
-    min_widget,
-    max_widget,
-    step_widget,
-    spin_width=DEFAULT_SWEEP_SPIN_WIDTH,
-):
-    label = _block_label(label_text)
-    _add_block_cell(grid, row, 0, label)
-    _add_block_cell(grid, row, 1, compact_spinbox(min_widget, spin_width))
-    _add_block_cell(grid, row, 2, compact_spinbox(max_widget, spin_width))
-    _add_block_cell(grid, row, 3, compact_spinbox(step_widget, spin_width))
-    return label, min_widget, max_widget, step_widget

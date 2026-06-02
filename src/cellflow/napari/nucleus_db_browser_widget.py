@@ -312,8 +312,6 @@ class NucleusUltrackDbBrowserMixin:
         self.ultrack_db_section_status_lbl.setVisible(bool(msg))
         logger.info(msg)
 
-    def _on_ultrack_db_browser_param_changed(self, *_args) -> None:
-        self._ultrack_db_preview_cache.clear()
 
     def _schedule_ultrack_db_browser_refresh(self) -> None:
         self._ultrack_db_refresh_timer.start()
@@ -1413,16 +1411,6 @@ class NucleusUltrackDbBrowserMixin:
             union_size=union_size,
         ).as_tuple()
 
-    def _finalize_hierarchy_nodes(self, nodes, frame, *, empty_msg, status_suffix):
-        from cellflow.tracking_ultrack.db_query import finalize_hierarchy_nodes
-
-        return finalize_hierarchy_nodes(
-            nodes,
-            frame,
-            plane_shape=self._viewer_plane_shape(),
-            empty_msg=empty_msg,
-            status_suffix=status_suffix,
-        ).as_tuple()
 
     @staticmethod
     def _ultrack_db_annotation_name(value):

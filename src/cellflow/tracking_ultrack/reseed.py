@@ -15,21 +15,12 @@ end of `resolve_with_canonical_segment` to paste validated IDs back.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
 import logging
 import pickle
-import tempfile
 from pathlib import Path
 
 import numpy as np
 
-from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.db_build import (
-    apply_annotations_and_score,
-    build_ultrack_database,
-)
-from cellflow.tracking_ultrack.export import export_tracked_labels
-from cellflow.tracking_ultrack.solve import run_solve
 
 LOG = logging.getLogger(__name__)
 
@@ -85,44 +76,6 @@ def _build_frame_masks(
             frame_index[t].append((cell_id, mask_crop, (y0, x0, y1, x1)))
 
     return frame_index
-
-
-def _build_frame_forbidden_masks(
-    validated_tracks: dict[int, set[int]],
-    tracked_labels: np.ndarray,
-) -> dict[int, np.ndarray]:
-    """Return ``{t: bool_array (Y, X)}`` — union of all validated cell footprints per frame.
-
-    Frames with no validated cells are omitted.  For 4-D ``(T, Z, Y, X)`` input
-    the z-axis is max-projected to give a conservative 2D footprint.
-    """
-    if not validated_tracks:
-        return {}
-
-    n_frames = tracked_labels.shape[0]
-    if tracked_labels.ndim == 4:
-        Y, X = tracked_labels.shape[2], tracked_labels.shape[3]
-    else:
-        Y, X = tracked_labels.shape[1], tracked_labels.shape[2]
-
-    # Group cell IDs by frame so we touch each frame slice once.
-    cells_by_frame: dict[int, list[int]] = {}
-    for cell_id, frames in validated_tracks.items():
-        for t in frames:
-            cells_by_frame.setdefault(int(t), []).append(int(cell_id))
-
-    out: dict[int, np.ndarray] = {}
-    for t, cell_ids in cells_by_frame.items():
-        if t < 0 or t >= n_frames:
-            continue
-        frame_vol = tracked_labels[t]
-        if frame_vol.ndim == 3:
-            frame_2d = np.isin(frame_vol, cell_ids).any(axis=0)
-        else:
-            frame_2d = np.isin(frame_vol, cell_ids)
-        if frame_2d.any():
-            out[t] = np.ascontiguousarray(frame_2d, dtype=bool)
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -501,71 +454,3 @@ def merge_validated_into_export(
                 )
 
     return exported_labels, id_map
-
-
-def resolve_with_canonical_segment(
-    contour_maps_path: str | Path,
-    foreground_masks_path: str | Path,
-    validated_tracks: dict[int, set[int]],
-    tracked_labels: np.ndarray,
-    cfg: TrackingConfig,
-    progress_cb: Callable[[str], None] | None = None,
-    *,
-    intensity_image_path: str | Path,
-) -> tuple[np.ndarray, dict[int, int]]:
-    """Re-solve using canonical ultrack.segment from foreground masks and contours."""
-    def _notify(msg: str) -> None:
-        if progress_cb is not None:
-            progress_cb(msg)
-
-    contour_maps_path = Path(contour_maps_path)
-    foreground_masks_path = Path(foreground_masks_path)
-
-    if not validated_tracks:
-        return np.asarray(tracked_labels, dtype=np.uint32).copy(), {}
-
-    with tempfile.TemporaryDirectory(prefix="cellflow_resolve_") as tmp_dir:
-        working_dir = Path(tmp_dir)
-        build_ultrack_database(
-            contour_maps_path=contour_maps_path,
-            foreground_masks_path=foreground_masks_path,
-            working_dir=working_dir,
-            cfg=cfg,
-            progress_cb=_notify,
-        )
-
-        apply_annotations_and_score(
-            working_dir=working_dir,
-            cfg=cfg,
-            score_signal_path=intensity_image_path,
-            validated_tracks=validated_tracks,
-            tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
-            progress_cb=_notify,
-        )
-
-        _notify("Solving ILP…")
-        for _step, _total, label in run_solve(working_dir, cfg, overwrite=True):
-            _notify(f"[solve] {label}")
-
-        _notify("Exporting tracked labels…")
-        tmp_out = working_dir / "tracked_labels_resolve.tif"
-        export_tracked_labels(
-            working_dir,
-            cfg,
-            tmp_out,
-            validated_tracks=validated_tracks,
-            tracked_labels=np.asarray(tracked_labels, dtype=np.uint32),
-        )
-        import tifffile
-        new_labels = np.asarray(tifffile.imread(str(tmp_out)), dtype=np.uint32)
-        if new_labels.ndim == 4 and new_labels.shape[1] == 1:
-            new_labels = new_labels[:, 0]
-
-    _notify("Pasting validated IDs back into export…")
-    new_labels, id_map = merge_validated_into_export(
-        new_labels,
-        validated_tracks,
-        np.asarray(tracked_labels, dtype=np.uint32),
-    )
-
-    return new_labels, id_map

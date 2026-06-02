@@ -1252,18 +1252,3 @@ class CorrectionWidget(QWidget):
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _image_frame(self, t: int) -> np.ndarray | None:
-        for lyr in self.viewer.layers:
-            if getattr(lyr, "name", None) == _SPOTLIGHT_LAYER:
-                continue
-            if isinstance(lyr, napari.layers.Image):
-                d = lyr.data
-                if d.ndim == 2:
-                    return d
-                v = d[t] if d.ndim >= 3 else d
-                while v.ndim > 2:
-                    if v.shape[0] != 1:
-                        return None
-                    v = v[0]
-                return v
-        return None

@@ -35,31 +35,6 @@ class PositionContactAnalysis:
     def coord_x(self) -> np.ndarray:
         return self._edge_coord_x
 
-    def edge_lines(self) -> list[np.ndarray]:
-        lines: list[np.ndarray] = []
-        offsets = self.edges.get("coord_offset", np.asarray([], dtype=np.int64))
-        counts = self.edges.get("coord_count", np.asarray([], dtype=np.int64))
-        frames = self.edges.get("frame", np.asarray([], dtype=np.int64))
-        for frame, offset, count in zip(frames, offsets, counts):
-            start = int(offset)
-            stop = start + int(count)
-            y = self._edge_coord_y[start:stop]
-            x = self._edge_coord_x[start:stop]
-            if len(y) == 0:
-                lines.append(np.empty((0, 3), dtype=float))
-                continue
-            frame_col = np.full(len(y), float(frame), dtype=float)
-            lines.append(np.column_stack([frame_col, y.astype(float, copy=False), x.astype(float, copy=False)]))
-        return lines
-
-    def centroid_points(self) -> np.ndarray:
-        frames = self.cells.get("frame", np.asarray([], dtype=np.int64))
-        ys = self.cells.get("centroid_y", np.asarray([], dtype=float))
-        xs = self.cells.get("centroid_x", np.asarray([], dtype=float))
-        if len(frames) == 0:
-            return np.empty((0, 3), dtype=float)
-        return np.column_stack([frames.astype(float, copy=False), ys.astype(float, copy=False), xs.astype(float, copy=False)])
-
 
 def read_position_contact_analysis(path: str | Path) -> PositionContactAnalysis:
     path = Path(path)

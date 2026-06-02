@@ -719,15 +719,6 @@ def query_hierarchy_cut_states(
     return tuple(states)
 
 
-def query_available_sources(db_path: Path) -> tuple[int, ...]:
-    try:
-        from cellflow.tracking_ultrack.multi_threshold import query_source_indices
-
-        return query_source_indices(db_path)
-    except Exception:
-        return ()
-
-
 def render_hierarchy_cut(
     db_path: Path,
     frame: int,

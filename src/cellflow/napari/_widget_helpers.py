@@ -4,14 +4,12 @@ from __future__ import annotations
 from qtpy.QtCore import QEvent, QObject, QSize, Qt
 from qtpy.QtWidgets import (
     QDoubleSpinBox,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
     QStyle,
     QStyleOption,
     QToolButton,
@@ -19,20 +17,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from superqt import (
-    QLabeledDoubleRangeSlider,
     QLabeledDoubleSlider,
-    QLabeledRangeSlider,
     QLabeledSlider,
 )
 
 from cellflow.napari.ui_style import action_button, parameter_heading, status_label
-
-
-def separator() -> QFrame:
-    line = QFrame()
-    line.setFrameShape(QFrame.HLine)
-    line.setStyleSheet("color: #555;")
-    return line
 
 
 def heading(text: str) -> QLabel:
@@ -61,13 +50,6 @@ def dspin(lo, hi, val, step=0.1, decimals=2, tooltip=""):
     s = QDoubleSpinBox()
     s.setRange(lo, hi); s.setValue(val); s.setSingleStep(step)
     s.setDecimals(decimals); s.setToolTip(tooltip)
-    return s
-
-
-def ispin(lo, hi, val, step=1, tooltip=""):
-    s = QSpinBox()
-    s.setRange(lo, hi); s.setValue(val); s.setSingleStep(step)
-    s.setToolTip(tooltip)
     return s
 
 
@@ -243,81 +225,6 @@ def islider(lo, hi, val, step=1, tooltip="", *, step_buttons=True):
     s.setProperty("cellflow_stack_section_label", True)
     _stack_slider_label_above(s, step_buttons=step_buttons)
     return s
-
-
-def _hide_range_edge_labels(slider) -> None:
-    """Hide the edge labels of a QLabeled[Double]RangeSlider.
-
-    The slider already renders an editable value label above each thumb
-    (HandleLabelPosition.LabelsAbove, the superqt default), so the edge
-    labels would just duplicate the same numbers at the track ends."""
-    for name in ("_min_label", "_max_label"):
-        lbl = getattr(slider, name, None)
-        if lbl is not None:
-            lbl.hide()
-
-
-def _force_handle_label_width(slider) -> None:
-    """Resize the handle labels of a range slider to fit the widest value
-    they may display, robust to later rangeChanged/showEvent re-sizes."""
-    for lbl in getattr(slider, "_handle_labels", []) or []:
-        _patch_label_autosize(lbl)
-
-
-def drslider(lo, hi, lo_val, hi_val, step=0.1, decimals=2, tooltip=""):
-    """A horizontal QLabeledDoubleRangeSlider with one editable label above
-    each thumb. Edge labels are hidden to avoid duplicating those values."""
-    s = QLabeledDoubleRangeSlider(Qt.Orientation.Horizontal)
-    s.setRange(lo, hi)
-    s.setValue((lo_val, hi_val))
-    s.setSingleStep(step)
-    s.setDecimals(decimals)
-    s.setToolTip(tooltip)
-    s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    s.setProperty("cellflow_stack_section_label", True)
-    _hide_range_edge_labels(s)
-    _force_handle_label_width(s)
-    return s
-
-
-def irslider(lo, hi, lo_val, hi_val, step=1, tooltip=""):
-    """A horizontal QLabeledRangeSlider (integer) with one editable label
-    above each thumb. Edge labels are hidden to avoid duplicating those
-    values."""
-    s = QLabeledRangeSlider(Qt.Orientation.Horizontal)
-    s.setRange(lo, hi)
-    s.setValue((lo_val, hi_val))
-    s.setSingleStep(step)
-    s.setToolTip(tooltip)
-    s.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-    s.setProperty("cellflow_stack_section_label", True)
-    _hide_range_edge_labels(s)
-    _force_handle_label_width(s)
-    return s
-
-
-class RangeThumbProxy:
-    """A spinbox-like proxy (.value() / .setValue()) that reads and writes
-    one thumb of a range slider, so existing call sites that used a
-    standalone QSpinBox/QDoubleSpinBox per thumb keep working."""
-    __slots__ = ("_slider", "_index")
-
-    def __init__(self, slider, index: int) -> None:
-        self._slider = slider
-        self._index = index
-
-    def value(self):
-        return self._slider.value()[self._index]
-
-    def setValue(self, v) -> None:
-        vals = list(self._slider.value())
-        vals[self._index] = v
-        # Range sliders enforce min<=max; nudge the other thumb if needed.
-        if self._index == 0 and v > vals[1]:
-            vals[1] = v
-        elif self._index == 1 and v < vals[0]:
-            vals[0] = v
-        self._slider.setValue(tuple(vals))
 
 
 def tool_btn(glyph: str, tooltip: str = "", *, checkable: bool = False) -> QToolButton:
