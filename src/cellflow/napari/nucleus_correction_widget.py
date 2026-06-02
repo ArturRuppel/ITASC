@@ -137,6 +137,8 @@ _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
 _CORRECTION_TRACK_PATH_LAYER = "[Correction] Track Path"
 _CORRECTION_TRACK_PATH_NUMBERS_LAYER = "[Correction] Track Path Numbers"
 _NUCLEUS_TRACK_COLOR_SCALE = 0.65
+# Slightly transparent so the underlying labels stay readable through the comet.
+_TRACK_PATH_OPACITY = 0.8
 
 _DEFAULT_DEPENDENCIES = {
     "annotate_database_from_corrections": _annotate_database_from_corrections,
@@ -880,6 +882,7 @@ class NucleusCorrectionWidget(QWidget):
             add_correction(self._pos_dir, correction)
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
+        self._refresh_film_strip_if_shown()
         self._correction_status(
             f"Validated track {cell_id} across {len(frames)} frame(s)."
         )
@@ -894,6 +897,7 @@ class NucleusCorrectionWidget(QWidget):
         if removal.removed:
             write_corrections(self._pos_dir, removal.remaining)
             self._refresh_validated_overlay()
+            self._refresh_film_strip_if_shown()
             self._correction_status(f"Unanchored cell {cell_id} at t={t}.")
             return
         layer = self._correction_tracked_layer()
@@ -903,6 +907,7 @@ class NucleusCorrectionWidget(QWidget):
                 anchor_correction(cell_id=cell_id, frame=t, y=y, x=x),
             )
             self._refresh_validated_overlay()
+            self._refresh_film_strip_if_shown()
             self._correction_status(f"Anchored cell {cell_id} at t={t}.")
             return
         filled = add_anchor(
@@ -914,6 +919,7 @@ class NucleusCorrectionWidget(QWidget):
             tracked_labels=np.asarray(layer.data),
         )
         self._refresh_validated_overlay()
+        self._refresh_film_strip_if_shown()
         suffix = f" (gap-filled {filled} frame(s))" if filled else ""
         self._correction_status(f"Anchored cell {cell_id} at t={t}.{suffix}")
 
@@ -1090,6 +1096,7 @@ class NucleusCorrectionWidget(QWidget):
         step[0] = result.target_frame
         self.viewer.dims.current_step = tuple(step)
 
+        self._refresh_track_visuals_live()
         self._correction_status(
             f"Extended cell {source_id} -> t={result.target_frame} "
             f"(dist={result.centroid_distance:.1f}px, area={result.area_ratio:.2f}, "
@@ -1189,6 +1196,7 @@ class NucleusCorrectionWidget(QWidget):
         self._apply_swap(layer, t, source_id, candidate, validated_tracks_full)
         cursor.cursor = idx
         cursor.displayed_area = candidate.area
+        self._refresh_track_visuals_live()
         self._correction_status(
             f"Swapped cell {source_id} -> candidate {idx + 1}/{len(cursor.candidates)}"
             f" (area={candidate.area} px)"
@@ -1258,8 +1266,9 @@ class NucleusCorrectionWidget(QWidget):
         )
         layer.data = result.stack
         self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
+        self._refresh_track_visuals_live()
         self._correction_status(
-            f"Retracked forward from t={result.first_target_frame}: "
+            f"Retrackedforward from t={result.first_target_frame}: "
             f"{result.n_retracked} updated, "
             f"{result.n_skipped} validated skipped. Unsaved."
         )
@@ -1295,8 +1304,9 @@ class NucleusCorrectionWidget(QWidget):
         )
         layer.data = result.stack
         self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
+        self._refresh_track_visuals_live()
         self._correction_status(
-            f"Retracked backward from t={result.first_target_frame}: "
+            f"Retrackedbackward from t={result.first_target_frame}: "
             f"{result.n_retracked} updated, "
             f"{result.n_skipped} validated skipped. Unsaved."
         )
@@ -1537,11 +1547,15 @@ class NucleusCorrectionWidget(QWidget):
             )
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
+        self._refresh_film_strip_if_shown()
 
     def on_dims_step_changed(self) -> None:
         self._swap_cursor = None
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
+        panel = getattr(self, "_film_strip_panel", None)
+        if panel is not None and self.film_strip_check.isChecked():
+            panel.set_current_frame(self._current_t())
 
     def _refresh_validated_overlay(self) -> None:
         self._validated_overlay.refresh_overlay(frame_view_2d)
@@ -1565,6 +1579,24 @@ class NucleusCorrectionWidget(QWidget):
         """Rebuild the comet / film strip when the selected track changes."""
         if self.track_path_check.isChecked():
             self._refresh_track_path_overlay()
+        if self.film_strip_check.isChecked():
+            self._refresh_film_strip()
+
+    def _refresh_track_visuals_live(self) -> None:
+        """Rebuild the comet overlay and film strip after an edit.
+
+        Called when the selected track's pixels change (swap / extend / retrack)
+        so both views reflect the new trajectory without reselecting the cell.
+        """
+        if self.track_path_check.isChecked():
+            self._refresh_track_path_overlay()
+            self._refresh_track_path_spotlight()
+        if self.film_strip_check.isChecked():
+            self._refresh_film_strip()
+
+    def _refresh_film_strip_if_shown(self) -> None:
+        """Rebuild only the film strip (e.g. after validate/anchor changes its
+        per-frame markers but leaves the trajectory untouched)."""
         if self.film_strip_check.isChecked():
             self._refresh_film_strip()
 
@@ -1611,41 +1643,32 @@ class NucleusCorrectionWidget(QWidget):
         )
 
     def _update_track_path_layers(self, overlay) -> None:
-        from napari.layers import Image, Points
+        from napari.layers import Image
 
         name = _CORRECTION_TRACK_PATH_LAYER
         if name in self.viewer.layers and isinstance(self.viewer.layers[name], Image):
-            self.viewer.layers[name].data = overlay.overlay
+            layer = self.viewer.layers[name]
+            layer.data = overlay.overlay
+            layer.opacity = _TRACK_PATH_OPACITY
         else:
             if name in self.viewer.layers:
                 self.viewer.layers.remove(name)
             self.viewer.add_image(
-                overlay.overlay, name=name, rgb=True, blending="translucent",
+                overlay.overlay,
+                name=name,
+                rgb=True,
+                blending="translucent",
+                opacity=_TRACK_PATH_OPACITY,
             )
         self._correction_owned_layers.add(name)
 
+        # The per-frame number labels are intentionally not drawn anymore; drop
+        # any layer left over from an earlier session.
         nname = _CORRECTION_TRACK_PATH_NUMBERS_LAYER
-        frames = list(overlay.frames)
-        text = {"string": "{frame}", "color": "white", "anchor": "center", "size": 8}
-        if nname in self.viewer.layers and isinstance(self.viewer.layers[nname], Points):
-            pts = self.viewer.layers[nname]
-            pts.data = overlay.centroids
-            pts.features = {"frame": frames}
-            pts.text = text
-        else:
-            if nname in self.viewer.layers:
-                self.viewer.layers.remove(nname)
-            self.viewer.add_points(
-                overlay.centroids,
-                name=nname,
-                ndim=2,
-                size=1,
-                face_color="transparent",
-                border_color="transparent",
-                features={"frame": frames},
-                text=text,
-            )
-        self._correction_owned_layers.add(nname)
+        if nname in self.viewer.layers:
+            self.viewer.layers.remove(nname)
+        self._correction_owned_layers.discard(nname)
+
         try:
             self.viewer.layers.selection.active = self._correction_tracked_layer()
         except Exception:
@@ -1708,14 +1731,48 @@ class NucleusCorrectionWidget(QWidget):
 
                 panel.set_strip(TrackFilmStrip(tiles=()), title="No track selected")
             return
+        validated_frames, anchored_frames = self._track_validated_anchored_frames(lab)
         strip = build_track_film_strip(
             np.asarray(tracked.data),
             np.asarray(intensity.data),
             lab,
             colormap=self._film_strip_colormap(intensity),
+            outline_color=self._track_outline_color(lab),
+            validated_frames=validated_frames,
+            anchored_frames=anchored_frames,
         )
         panel = self._ensure_film_strip_panel()
         panel.set_strip(strip, title=f"Track {lab} — {len(strip.frames)} frame(s)")
+        panel.set_current_frame(self._current_t())
+
+    def _track_outline_color(self, lab: int):
+        """RGB (0..1) the tracked labels layer paints cell ``lab`` with, or None."""
+        layer = self._correction_tracked_layer()
+        color_dict = getattr(getattr(layer, "colormap", None), "color_dict", None)
+        try:
+            raw = color_dict.get(int(lab)) if color_dict is not None else None
+        except Exception:
+            raw = None
+        if raw is None or isinstance(raw, str):
+            return None
+        rgba = np.asarray(raw, dtype=float).ravel()
+        if rgba.size < 3:
+            return None
+        return (float(rgba[0]), float(rgba[1]), float(rgba[2]))
+
+    def _track_validated_anchored_frames(self, lab: int) -> tuple[set[int], set[int]]:
+        """Frames where cell ``lab`` is validated / anchored (empty if no project)."""
+        if self._pos_dir is None:
+            return set(), set()
+        validated = {
+            int(f) for f in read_validated_tracks(self._pos_dir).get(int(lab), set())
+        }
+        anchored = {
+            int(correction.t)
+            for correction in read_corrections(self._pos_dir)
+            if correction.kind == "anchor" and int(correction.cell_id) == int(lab)
+        }
+        return validated, anchored
 
     @staticmethod
     def _film_strip_colormap(layer):

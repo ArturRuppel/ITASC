@@ -224,6 +224,61 @@ def test_film_strip_thicker_outline_paints_more_pixels():
     assert n_thick > n_thin
 
 
+def test_film_strip_outline_uses_label_color_when_given():
+    # An explicit outline_color (the label layer's colour) overrides viridis.
+    tracked, intensity = _film_stacks()
+    strip = build_track_film_strip(
+        tracked, intensity, 8, margin=2, outline_color=(1.0, 0.0, 0.0)
+    )
+
+    expected = np.array([255, 0, 0], dtype=np.uint8)
+    for tile in strip.tiles:
+        assert np.any(np.all(tile.rgb == expected, axis=-1))
+
+
+def test_film_strip_border_coincides_with_spotlight_edge():
+    # The coloured border must sit *between* the bright spotlight and the dim
+    # background: no bright (undimmed) pixel may touch a dimmed pixel, otherwise
+    # a bright ring would read as a second (white) border outside the contour.
+    tracked, intensity = _film_stacks()
+    strip = build_track_film_strip(
+        tracked,
+        intensity,
+        8,
+        margin=4,
+        colormap=_const_cmap([0.8, 0.8, 0.8]),
+        outline_color=(1.0, 0.0, 0.0),
+    )
+
+    tile = strip.tiles[0].rgb
+    bright = round(0.8 * 255)
+    dim = round(0.8 * 0.35 * 255)
+    bright_mask = np.all(tile == bright, axis=-1)
+    dim_mask = np.all(tile == dim, axis=-1)
+
+    touches_dim = np.zeros_like(bright_mask)
+    touches_dim[1:, :] |= dim_mask[:-1, :]
+    touches_dim[:-1, :] |= dim_mask[1:, :]
+    touches_dim[:, 1:] |= dim_mask[:, :-1]
+    touches_dim[:, :-1] |= dim_mask[:, 1:]
+
+    assert bright_mask.any() and dim_mask.any()
+    assert not np.any(bright_mask & touches_dim)
+
+
+def test_film_strip_flags_validated_and_anchored_frames():
+    tracked, intensity = _film_stacks()
+    strip = build_track_film_strip(
+        tracked, intensity, 8, margin=2,
+        validated_frames={0}, anchored_frames={2},
+    )
+
+    by_frame = {tile.frame: tile for tile in strip.tiles}
+    assert by_frame[0].validated and not by_frame[0].anchored
+    assert by_frame[2].anchored and not by_frame[2].validated
+    assert not by_frame[1].validated and not by_frame[1].anchored
+
+
 def test_film_strip_absent_track_is_empty():
     tracked, intensity = _film_stacks()
 

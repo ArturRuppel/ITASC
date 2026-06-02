@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 from qtpy.QtCore import QPoint, QRect, QSize, Qt, Signal
-from qtpy.QtGui import QImage, QPixmap
+from qtpy.QtGui import QColor, QImage, QPainter, QPixmap
 from qtpy.QtWidgets import (
     QLabel,
     QLayout,
@@ -31,6 +31,14 @@ from cellflow.napari._correction_track_path import TrackFilmStrip
 _TILE_PX = 96
 _TILE_PX_MIN = 20
 _TILE_PX_MAX = 512
+
+# Border drawn around the tile for the frame the viewer is currently on.
+_CURRENT_FRAME_BORDER = "#ffffff"
+# Top marker strips for validated / anchored frames (match the in-canvas
+# validated- and anchor-overlay colours).
+_VALIDATED_STRIP_COLOR = "#00ff00"
+_ANCHOR_STRIP_COLOR = "#b39400"
+_MARKER_STRIP_PX = 4
 
 
 def rgb_to_qimage(rgb: np.ndarray) -> QImage:
@@ -152,6 +160,8 @@ class TrackFilmStripPanel(QWidget):
         self._tile_px = int(tile_px)
         self._strip = TrackFilmStrip(tiles=())
         self._title_text = ""
+        self._current_frame: int | None = None
+        self._tile_cells: dict[int, list[QWidget]] = {}
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -191,28 +201,86 @@ class TrackFilmStripPanel(QWidget):
         self._tile_px = tile_px
         self.set_strip(self._strip, self._title_text)
 
+    def set_current_frame(self, frame: int | None) -> None:
+        """Highlight the tile for ``frame`` (live, without rebuilding the strip)."""
+        frame = None if frame is None else int(frame)
+        if frame == self._current_frame:
+            return
+        previous = self._current_frame
+        self._current_frame = frame
+        for value in (previous, frame):
+            if value is None:
+                continue
+            for cell in self._tile_cells.get(value, ()):
+                self._apply_border(cell, value == frame)
+
     def _make_tile(self, tile) -> QWidget:
         cell = QWidget()
+        cell.setObjectName("filmTileCell")
         col = QVBoxLayout(cell)
-        col.setContentsMargins(0, 0, 0, 0)
+        col.setContentsMargins(2, 2, 2, 2)
         col.setSpacing(1)
 
         pixmap = QPixmap.fromImage(rgb_to_qimage(tile.rgb)).scaledToHeight(
             self._tile_px, Qt.FastTransformation
         )
+        self._draw_marker_strips(
+            pixmap,
+            validated=getattr(tile, "validated", False),
+            anchored=getattr(tile, "anchored", False),
+        )
         thumb = _ClickableTile(tile.frame)
         thumb.setPixmap(pixmap)
-        thumb.setToolTip(f"Frame {tile.frame} — click to jump")
+        thumb.setToolTip(self._tile_tooltip(tile))
         thumb.clicked.connect(self.frame_clicked)
         col.addWidget(thumb, alignment=Qt.AlignHCenter)
 
         caption = QLabel(str(tile.frame))
         caption.setAlignment(Qt.AlignHCenter)
         col.addWidget(caption)
+
+        self._tile_cells.setdefault(int(tile.frame), []).append(cell)
+        self._apply_border(cell, int(tile.frame) == self._current_frame)
         return cell
+
+    @staticmethod
+    def _tile_tooltip(tile) -> str:
+        tags = []
+        if getattr(tile, "validated", False):
+            tags.append("validated")
+        if getattr(tile, "anchored", False):
+            tags.append("anchored")
+        suffix = f" ({', '.join(tags)})" if tags else ""
+        return f"Frame {tile.frame}{suffix} — click to jump"
+
+    @staticmethod
+    def _apply_border(cell: QWidget, is_current: bool) -> None:
+        # Reserve the border width even when off so the layout never shifts.
+        color = _CURRENT_FRAME_BORDER if is_current else "transparent"
+        cell.setStyleSheet(
+            f"QWidget#filmTileCell {{ border: 2px solid {color}; border-radius: 2px; }}"
+        )
+
+    @staticmethod
+    def _draw_marker_strips(pixmap: QPixmap, *, validated: bool, anchored: bool) -> None:
+        if not (validated or anchored):
+            return
+        painter = QPainter(pixmap)
+        width = pixmap.width()
+        height = _MARKER_STRIP_PX
+        if validated and anchored:
+            half = width // 2
+            painter.fillRect(0, 0, half, height, QColor(_VALIDATED_STRIP_COLOR))
+            painter.fillRect(half, 0, width - half, height, QColor(_ANCHOR_STRIP_COLOR))
+        elif validated:
+            painter.fillRect(0, 0, width, height, QColor(_VALIDATED_STRIP_COLOR))
+        else:
+            painter.fillRect(0, 0, width, height, QColor(_ANCHOR_STRIP_COLOR))
+        painter.end()
 
     def clear(self) -> None:
         """Remove every tile from the strip."""
+        self._tile_cells = {}
         while self._row.count():
             item = self._row.takeAt(0)
             widget = item.widget()

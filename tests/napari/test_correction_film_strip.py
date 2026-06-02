@@ -84,3 +84,47 @@ def test_panel_tile_size_is_clamped(_qapp):
     assert panel._tile_px == 512  # _TILE_PX_MAX
     panel.set_tile_size(1)
     assert panel._tile_px == 20  # _TILE_PX_MIN
+
+
+def test_panel_highlights_current_frame_with_a_border(_qapp):
+    from cellflow.napari._correction_film_strip import TrackFilmStripPanel
+    from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip
+
+    strip = TrackFilmStrip(
+        tiles=(
+            FilmStripTile(frame=2, rgb=np.zeros((5, 5, 3), dtype=np.uint8)),
+            FilmStripTile(frame=5, rgb=np.zeros((5, 5, 3), dtype=np.uint8)),
+        )
+    )
+    panel = TrackFilmStripPanel()
+    panel.set_strip(strip)
+    panel.set_current_frame(5)
+
+    # The current frame's cell gets a visible white border; others stay clear.
+    assert "#ffffff" in panel._tile_cells[5][0].styleSheet()
+    assert "transparent" in panel._tile_cells[2][0].styleSheet()
+
+    panel.set_current_frame(2)
+    assert "#ffffff" in panel._tile_cells[2][0].styleSheet()
+    assert "transparent" in panel._tile_cells[5][0].styleSheet()
+
+
+def test_panel_tooltip_notes_validated_and_anchored(_qapp):
+    from cellflow.napari._correction_film_strip import TrackFilmStripPanel
+    from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip
+
+    strip = TrackFilmStrip(
+        tiles=(
+            FilmStripTile(
+                frame=0, rgb=np.zeros((5, 5, 3), dtype=np.uint8),
+                validated=True, anchored=True,
+            ),
+        )
+    )
+    panel = TrackFilmStripPanel()
+    panel.set_strip(strip)
+
+    cell = panel._tile_cells[0][0]
+    thumb = cell.layout().itemAt(0).widget()
+    tip = thumb.toolTip()
+    assert "validated" in tip and "anchored" in tip

@@ -135,10 +135,17 @@ def build_track_path_overlay(
 
 @dataclass(frozen=True)
 class FilmStripTile:
-    """One frame's panel in the film strip: an RGB crop with the mask outlined."""
+    """One frame's panel in the film strip: an RGB crop with the mask outlined.
+
+    ``validated`` / ``anchored`` flag whether this frame is a validated or an
+    anchored frame for the track; the view draws a coloured marker strip for
+    each. They are view metadata, not baked into ``rgb``.
+    """
 
     frame: int            # source frame index
     rgb: np.ndarray       # (h, w, 3) uint8, raw crop with the mask edge drawn on
+    validated: bool = False
+    anchored: bool = False
 
     @property
     def height(self) -> int:
@@ -215,8 +222,11 @@ def build_track_film_strip(
     margin: int = 6,
     colormap=None,
     outline_width: int = 2,
+    outline_color: tuple[float, float, float] | None = None,
     spotlight_dim: float = 0.35,
     spotlight_dilation: int = 2,
+    validated_frames: set[int] | None = None,
+    anchored_frames: set[int] | None = None,
 ) -> TrackFilmStrip:
     """Build per-frame, nucleus-centered intensity crops for ``track_id``.
 
@@ -225,9 +235,17 @@ def build_track_film_strip(
     frame the intensity is cropped to a fixed square window centered on the
     nucleus, contrast-stretched against the track's own nucleus pixels, colored
     through ``colormap`` (e.g. the layer's "I Purple"; grayscale if ``None``),
-    dimmed outside the nucleus by ``spotlight_dim`` for a spotlight effect, and
-    overdrawn with a thick (``outline_width``) mask outline in the frame's
-    viridis time color. ``margin`` pads the window around the largest nucleus.
+    and dimmed outside the nucleus by ``spotlight_dim`` for a spotlight effect.
+
+    A ``outline_width``-thick border is drawn at the *inner edge of the bright
+    spotlight region*, so the coloured contour coincides with the bright/dim
+    boundary instead of leaving a bright ring outside it. The border uses
+    ``outline_color`` (the label layer's colour for this track, RGB in 0..1);
+    when ``None`` it falls back to the frame's viridis time colour.
+
+    ``validated_frames`` / ``anchored_frames`` (sets of frame indices) flag each
+    tile so the view can mark validated/anchored frames. ``margin`` pads the
+    window around the largest nucleus.
     """
     tracked = np.asarray(tracked_stack)
     intensity = np.asarray(intensity_stack)
@@ -275,6 +293,9 @@ def build_track_film_strip(
     else:  # pragma: no cover - occupied implies non-empty masks
         lo, hi = 0.0, 1.0
 
+    validated = {int(f) for f in (validated_frames or set())}
+    anchored = {int(f) for f in (anchored_frames or set())}
+
     colors = _viridis_colors(len(occupied))
     tiles: list[FilmStripTile] = []
     for t, mask, (cy, cx), color in zip(
@@ -288,13 +309,19 @@ def build_track_film_strip(
         spotlight = _binary_dilate(mask_crop, spotlight_dilation)
         rgb[~spotlight] *= spotlight_dim
 
-        outline = _binary_dilate(_mask_outline(mask_crop), outline_width - 1)
-        rgb[outline] = color[:3]
+        # Border on the inner edge of the bright spotlight, so the coloured
+        # contour lands exactly on the bright/dim boundary (no bright ring left
+        # outside it). Grown inward from the boundary so it stays robust even
+        # when the spotlight fills the whole crop.
+        border = _binary_dilate(_mask_outline(spotlight), outline_width - 1) & spotlight
+        rgb[border] = outline_color if outline_color is not None else color[:3]
 
         tiles.append(
             FilmStripTile(
                 frame=t,
                 rgb=(np.clip(rgb, 0.0, 1.0) * 255.0).round().astype(np.uint8),
+                validated=t in validated,
+                anchored=t in anchored,
             )
         )
 
