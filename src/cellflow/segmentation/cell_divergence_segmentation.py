@@ -34,6 +34,7 @@ import numpy as np
 from cellflow.segmentation.cell_label_icm import (
     CellLabelICMParams,
     assemble_cost_field,
+    balance_strength_to_weights,
     initialize_icm,
 )
 from cellflow.segmentation.contour_filtering import contour_memory_filter
@@ -77,10 +78,11 @@ class CellDivergenceParams:
     """Minimum per-frame alpha; ghost half-life (~69 frames @ 0.01)."""
 
     # ── Segmentation ────────────────────────────────────────────────────────
-    alpha: float = 100.0
-    """Contour weight in the cost field: ``1 + alpha * contour``."""
-    gamma: float = 2.0
-    """Foreground weight: ``+ gamma * (1 - fg_score)``."""
+    balance: float = 0.98
+    """Contour↔foreground split ``r`` in ``[0, 1]`` (``1`` = pure contour).
+    See :func:`balance_strength_to_weights`."""
+    feature_strength: float = 100.0
+    """Overall feature weight ``s >= 0`` relative to the base cost of 1."""
     n_workers: int = 4
     """Parallel workers for geodesic computation (compute only)."""
 
@@ -281,10 +283,13 @@ def segment_cells_divergence(
     # ── Weighted cost field (same construction the solver traverses) ────────
     # Cheap (`1 + α·contour + γ·(1 − fg)`); built first so it is available even
     # when the geodesic label assignment below is skipped.
+    alpha, gamma = balance_strength_to_weights(
+        params.balance, params.feature_strength
+    )
     cost_field = np.stack([
         assemble_cost_field(
             contours_clean[i], foreground_mask[i],
-            params.alpha, foreground_clean[i], params.gamma,
+            alpha, foreground_clean[i], gamma,
         )
         for i in range(contours_clean.shape[0])
     ]).astype(np.float32)
@@ -294,8 +299,8 @@ def segment_cells_divergence(
     if with_labels:
         _report("Segmenting (unary geodesic Voronoi)…")
         icm_params = CellLabelICMParams(
-            alpha_unary=params.alpha,
-            gamma_unary=params.gamma,
+            balance=params.balance,
+            feature_strength=params.feature_strength,
             n_workers=1 if single else max(1, params.n_workers),
         )
         _state, labels = initialize_icm(

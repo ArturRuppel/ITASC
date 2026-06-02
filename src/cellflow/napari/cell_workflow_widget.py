@@ -155,6 +155,11 @@ class CellWorkflowWidget(QWidget):
         self._preview_active = False
         self._preview_worker = None
         self._preview_pending = False
+        # Image preview layers whose contrast has not yet been auto-set. We seed
+        # contrast once, from the first real frame a freshly created layer
+        # receives, then leave it alone so a scrub to another frame (or a manual
+        # contrast tweak) is not clobbered on every refresh.
+        self._image_needs_autocontrast: set[str] = set()
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(150)
@@ -163,7 +168,8 @@ class CellWorkflowWidget(QWidget):
         # Cached cleaned+smoothed contour stack for the preview when
         # ``memory_tau > 0`` (the smoothing needs the whole movie). Keyed on the
         # contour/temporal knobs so it survives frame scrubs and edits to the
-        # non-smoothing knobs (fg_*, alpha, gamma) and only recomputes when a
+        # non-smoothing knobs (fg_*, balance, feature_strength) and only
+        # recomputes when a
         # knob that actually changes the smoothing is touched. Dropped on
         # deactivate to free the (T, Y, X) array.
         self._smoothed_stack = None
@@ -310,13 +316,15 @@ class CellWorkflowWidget(QWidget):
             "Min per-frame alpha; ghost half-life (~69 frames @ 0.01).",
         )
         # ── Segmentation ─────────────────────────────────────────────
-        self.alpha_spin = _dslider(
-            0, 1000, 100.0, 1.0, 1,
-            "Contour weight: cost = 1 + α·contour — boundary snap strength.",
+        self.balance_spin = _dslider(
+            0.0, 1.0, 0.98, 0.01, 2,
+            "Contour↔foreground split r: 1 = pure contour, 0 = pure "
+            "foreground. cost = 1 + s·[r·contour + (1−r)·(1−fg)].",
         )
-        self.gamma_spin = _dslider(
-            0, 100, 2.0, 0.5, 1,
-            "Foreground weight: + γ·(1 − fg_score) — pull toward confident fg.",
+        self.feature_strength_spin = _dslider(
+            0, 1000, 100.0, 1.0, 1,
+            "Feature strength s: how hard contour/foreground bend the walk vs "
+            "a plain distance Voronoi. 0 = pure distance.",
         )
         self.n_workers_spin = _islider(
             1, max_workers, min(4, max_workers),
@@ -352,8 +360,8 @@ class CellWorkflowWidget(QWidget):
         add_section_header(grid, row, _heading("Segmentation")); row += 1
         add_section_pair_row(
             grid, row,
-            "α (contour):", self.alpha_spin,
-            "γ (foreground):", self.gamma_spin,
+            "Balance (r):", self.balance_spin,
+            "Strength (s):", self.feature_strength_spin,
         ); row += 1
         add_section_pair_row(grid, row, "Workers:", self.n_workers_spin); row += 1
 
@@ -403,7 +411,7 @@ class CellWorkflowWidget(QWidget):
     def _connect_signals(self) -> None:
         for spin in (
             self.fg_strength_spin, self.fg_threshold_spin, self.memory_tau_spin,
-            self.alpha_spin, self.gamma_spin, self.fg_window_spin,
+            self.balance_spin, self.feature_strength_spin, self.fg_window_spin,
             self.contour_window_spin, self.contour_strength_spin,
             self.contour_threshold_spin, self.contour_norm_pct_spin,
             self.memory_floor_spin, self.n_workers_spin,
@@ -432,8 +440,8 @@ class CellWorkflowWidget(QWidget):
             contour_norm_pct=float(self.contour_norm_pct_spin.value()),
             memory_tau=float(self.memory_tau_spin.value()),
             memory_floor=float(self.memory_floor_spin.value()),
-            alpha=float(self.alpha_spin.value()),
-            gamma=float(self.gamma_spin.value()),
+            balance=float(self.balance_spin.value()),
+            feature_strength=float(self.feature_strength_spin.value()),
             n_workers=int(self.n_workers_spin.value()),
         )
 
@@ -474,8 +482,8 @@ class CellWorkflowWidget(QWidget):
                 "memory_floor": self.memory_floor_spin.value(),
             },
             "segmentation": {
-                "alpha": self.alpha_spin.value(),
-                "gamma": self.gamma_spin.value(),
+                "balance": self.balance_spin.value(),
+                "feature_strength": self.feature_strength_spin.value(),
                 "n_workers": self.n_workers_spin.value(),
             },
             "correction": {
@@ -503,8 +511,8 @@ class CellWorkflowWidget(QWidget):
                 "memory_floor": self.memory_floor_spin,
             },
             "segmentation": {
-                "alpha": self.alpha_spin,
-                "gamma": self.gamma_spin,
+                "balance": self.balance_spin,
+                "feature_strength": self.feature_strength_spin,
                 "n_workers": self.n_workers_spin,
             },
             "correction": {
@@ -600,6 +608,7 @@ class CellWorkflowWidget(QWidget):
             for name in _PREVIEW_TEARDOWN_LAYERS:
                 if name in self.viewer.layers:
                     self.viewer.layers.remove(name)
+            self._image_needs_autocontrast.clear()
             # Free the resident smoothed stack; the preview session is over.
             self._smoothed_stack = None
             self._smoothed_key = None
@@ -609,8 +618,9 @@ class CellWorkflowWidget(QWidget):
     def _smooth_key(params: CellDivergenceParams) -> tuple:
         """Cache key for the smoothed contour stack: the knobs that determine it.
 
-        The fg_*, alpha and gamma knobs are deliberately absent — they do not
-        change the smoothed contours, so editing them reuses the cached stack.
+        The fg_*, balance and feature_strength knobs are deliberately absent —
+        they do not change the smoothed contours, so editing them reuses the
+        cached stack.
         """
         return (
             params.contour_window, params.contour_strength,
@@ -694,7 +704,7 @@ class CellWorkflowWidget(QWidget):
         if info is None:
             return None
         shape, contours_path, foreground_path, nuc_path = info
-        self._ensure_preview_layers(shape[-2:])
+        self._ensure_preview_layers(shape)
         if self._preview_worker is not None:
             self._preview_pending = True
             return self._preview_worker
@@ -733,7 +743,7 @@ class CellWorkflowWidget(QWidget):
         t, result, params, new_stack = payload
         self._cache_stack(params, new_stack)
         if self._preview_active:
-            self._apply_intermediates(result)
+            self._apply_intermediates(t, result)
             coverage = 100.0 * float(result.foreground_mask.mean())
             self._set_status(
                 f"Frame {t}: {coverage:.0f}% fill coverage "
@@ -765,8 +775,8 @@ class CellWorkflowWidget(QWidget):
         if info is None:
             return
         shape, contours_path, foreground_path, nuc_path = info
-        self._ensure_preview_layers(shape[-2:])
-        self._ensure_labels_layer(_LABELS_LAYER, shape[-2:])
+        self._ensure_preview_layers(shape)
+        self._ensure_labels_layer(_LABELS_LAYER, shape)
 
         params = self._params()
         n_frames = shape[0]
@@ -795,14 +805,14 @@ class CellWorkflowWidget(QWidget):
         t, result, params, new_stack = payload
         self._cache_stack(params, new_stack)
         if self._preview_active:
-            self._apply_intermediates(result)
+            self._apply_intermediates(t, result)
             n_labels = (
                 int(np.unique(result.labels[result.labels > 0]).size)
                 if result.labels is not None else 0
             )
             if result.labels is not None:
                 self._fill_labels_layer(
-                    _LABELS_LAYER, result.labels.astype(np.int32)
+                    _LABELS_LAYER, t, result.labels.astype(np.int32)
                 )
             coverage = 100.0 * float(result.foreground_mask.mean())
             self._set_status(
@@ -822,79 +832,93 @@ class CellWorkflowWidget(QWidget):
             self._smoothed_stack = new_stack
             self._smoothed_key = self._smooth_key(params)
 
-    def _apply_intermediates(self, result) -> None:
-        """Fill the six always-on preview layers (everything but cell labels)."""
-        self._fill_image_layer(_FG_RAW_LAYER, result.foreground_raw)
-        self._fill_image_layer(_FG_CLEAN_LAYER, result.foreground_clean)
-        self._fill_image_layer(_CT_RAW_LAYER, result.contours_raw)
-        self._fill_image_layer(_CT_CLEAN_LAYER, result.contours_clean)
+    def _apply_intermediates(self, t: int, result) -> None:
+        """Paint the six always-on preview layers (everything but cell labels)
+        into frame ``t``'s slice."""
+        self._fill_image_layer(_FG_RAW_LAYER, t, result.foreground_raw)
+        self._fill_image_layer(_FG_CLEAN_LAYER, t, result.foreground_clean)
+        self._fill_image_layer(_CT_RAW_LAYER, t, result.contours_raw)
+        self._fill_image_layer(_CT_CLEAN_LAYER, t, result.contours_clean)
         self._fill_labels_layer(
-            _FG_MASK_LAYER, result.foreground_mask.astype(np.uint8)
+            _FG_MASK_LAYER, t, result.foreground_mask.astype(np.uint8)
         )
-        self._fill_image_layer(_COST_LAYER, self._cost_for_display(result.cost_field))
+        self._fill_image_layer(
+            _COST_LAYER, t, self._cost_for_display(result.cost_field)
+        )
 
     @staticmethod
     def _cost_for_display(cost: np.ndarray) -> np.ndarray:
         """Mask the geodesic-cost background (inf) to NaN for the colormap."""
         return np.where(np.isfinite(cost), cost, np.nan).astype(np.float32)
 
-    # ── preview layers (one 2-D current-frame layer per intermediate) ─────
-    # The preview only ever computes the current frame, and a time scrub
-    # recomputes it (``_on_time_changed``), so the layers are 2-D (Y, X) rather
-    # than full (T, Y, X) stacks — napari broadcasts them across the time axis.
-    # This keeps activation cheap regardless of movie length.
-    def _ensure_preview_layers(self, yx) -> None:
+    # ── preview layers (one full (T, Y, X) stack per intermediate) ────────
+    # The preview only ever computes the current frame, but the layers are sized
+    # to the whole input movie ``(T, Y, X)`` and painted one frame at a time.
+    # Carrying the time axis is what gives the viewer a frame slider even when no
+    # movie layer is open — otherwise ``current_step`` has no temporal entry and
+    # the preview is stuck on (and mislabels) frame 0. A time scrub recomputes
+    # the newly shown frame (``_on_time_changed``) and paints it into its slice;
+    # previously computed frames stay painted in theirs.
+    def _ensure_preview_layers(self, shape) -> None:
         for name, colormap in _PREVIEW_IMAGE_LAYERS:
-            self._ensure_image_layer(name, yx, colormap)
+            self._ensure_image_layer(name, shape, colormap)
         for name in _PREVIEW_LABEL_LAYERS:
-            self._ensure_labels_layer(name, yx)
+            self._ensure_labels_layer(name, shape)
 
-    def _ensure_image_layer(self, name: str, yx, colormap: str) -> None:
+    def _ensure_image_layer(self, name: str, shape, colormap: str) -> None:
         if name in self.viewer.layers:
             layer = self.viewer.layers[name]
-            if tuple(layer.data.shape) == tuple(yx):
+            if tuple(layer.data.shape) == tuple(shape):
                 return
             was_visible = layer.visible
             self.viewer.layers.remove(name)
         else:
             was_visible = True
         new_layer = self.viewer.add_image(
-            np.full(yx, np.nan, dtype=np.float32), name=name, colormap=colormap,
+            np.zeros(shape, dtype=np.float32), name=name, colormap=colormap,
         )
         new_layer.visible = was_visible
+        # Seed this layer's contrast from the first real frame it receives.
+        self._image_needs_autocontrast.add(name)
 
-    def _ensure_labels_layer(self, name: str, yx) -> None:
+    def _ensure_labels_layer(self, name: str, shape) -> None:
         from napari.layers import Labels
         if name in self.viewer.layers:
             layer = self.viewer.layers[name]
-            if isinstance(layer, Labels) and tuple(layer.data.shape) == tuple(yx):
+            if isinstance(layer, Labels) and tuple(layer.data.shape) == tuple(shape):
                 return
             was_visible = layer.visible
             self.viewer.layers.remove(name)
         else:
             was_visible = True
         new_layer = self.viewer.add_labels(
-            np.zeros(yx, dtype=np.int32), name=name, opacity=0.55
+            np.zeros(shape, dtype=np.int32), name=name, opacity=0.55
         )
         new_layer.visible = was_visible
 
-    def _fill_image_layer(self, name: str, frame: np.ndarray) -> None:
+    def _fill_image_layer(self, name: str, t: int, frame: np.ndarray) -> None:
         if name not in self.viewer.layers:
             return
         layer = self.viewer.layers[name]
-        layer.data = np.asarray(frame, dtype=np.float32)
-        finite = frame[np.isfinite(frame)]
-        if finite.size:
-            lo, hi = float(finite.min()), float(finite.max())
-            if hi > lo:
-                layer.contrast_limits = (lo, hi)
+        if layer.data.ndim != 3 or not 0 <= t < layer.data.shape[0]:
+            return
+        layer.data[t] = np.asarray(frame, dtype=layer.data.dtype)
+        if name in self._image_needs_autocontrast:
+            finite = frame[np.isfinite(frame)]
+            if finite.size:
+                lo, hi = float(finite.min()), float(finite.max())
+                if hi > lo:
+                    layer.contrast_limits = (lo, hi)
+                    self._image_needs_autocontrast.discard(name)
         layer.refresh()
 
-    def _fill_labels_layer(self, name: str, frame: np.ndarray) -> None:
+    def _fill_labels_layer(self, name: str, t: int, frame: np.ndarray) -> None:
         if name not in self.viewer.layers:
             return
         layer = self.viewer.layers[name]
-        layer.data = np.asarray(frame, dtype=np.int32)
+        if layer.data.ndim != 3 or not 0 <= t < layer.data.shape[0]:
+            return
+        layer.data[t] = np.asarray(frame, dtype=layer.data.dtype)
         layer.refresh()
 
     # ================================================================

@@ -176,8 +176,8 @@ def test_widget_exposes_single_run_and_preview_path(monkeypatch):
     assert widget.fg_strength_spin.value() == 0.0
     assert widget.fg_threshold_spin.value() == 0.1
     assert widget.memory_tau_spin.value() == 0.0
-    assert widget.alpha_spin.value() == 100.0
-    assert widget.gamma_spin.value() == 2.0
+    assert widget.balance_spin.value() == 0.98
+    assert widget.feature_strength_spin.value() == 100.0
 
     # Every knob lives in one flat panel — no separate Advanced block.
     assert not hasattr(widget, "advanced_section")
@@ -242,15 +242,15 @@ def test_get_set_state_roundtrip(monkeypatch):
     widget.set_state({
         "cleanup": {"fg_strength": 0.3, "fg_threshold": 0.2, "contour_window": 71},
         "temporal": {"memory_tau": 0.05},
-        "segmentation": {"alpha": 250.0, "gamma": 5.0, "n_workers": 1},
+        "segmentation": {"balance": 0.5, "feature_strength": 250.0, "n_workers": 1},
     })
     state = widget.get_state()
     assert state["cleanup"]["fg_strength"] == 0.3
     assert state["cleanup"]["fg_threshold"] == 0.2
     assert state["cleanup"]["contour_window"] == 71
     assert state["temporal"]["memory_tau"] == 0.05
-    assert state["segmentation"]["alpha"] == 250.0
-    assert state["segmentation"]["gamma"] == 5.0
+    assert state["segmentation"]["balance"] == 0.5
+    assert state["segmentation"]["feature_strength"] == 250.0
 
     widget.deleteLater()
     app.processEvents()
@@ -277,11 +277,13 @@ def test_preview_activation_populates_all_intermediate_layers(monkeypatch, tmp_p
 
     # Preview stops before the expensive geodesic walk: no cell-labels layer,
     # but the diagnostic intermediates (incl. the weighted cost field) are shown.
-    # Preview layers are 2-D (current frame only), broadcast across the time axis.
+    # Preview layers are full (T, Y, X) stacks (so the viewer keeps a time slider
+    # even with no movie open), painted one frame at a time.
     assert mod._LABELS_LAYER not in viewer.layers
     cost_layer = viewer.layers[mod._COST_LAYER]
-    assert cost_layer.data.ndim == 2
-    assert np.isfinite(cost_layer.data).any()
+    assert cost_layer.data.ndim == 3
+    assert cost_layer.data.shape[0] == 2  # T from the input maps
+    assert np.isfinite(cost_layer.data[0]).any()  # current frame painted
 
     # Deactivation tears the preview layers down.
     widget.active_btn.setChecked(False)
@@ -352,9 +354,9 @@ def test_labels_button_fills_cell_labels_for_current_frame(monkeypatch, tmp_path
     widget.labels_btn.click()  # explicit on-demand geodesic for the current frame
     assert mod._LABELS_LAYER in viewer.layers
     labels = viewer.layers[mod._LABELS_LAYER].data
-    assert labels.ndim == 2
+    assert labels.ndim == 3  # full (T, Y, X) stack, current frame painted
     assert set(np.unique(labels).tolist()) <= {0, 1, 2}
-    assert labels.max() > 0
+    assert labels[0].max() > 0
     assert "cell labels" in widget.pipeline_status_lbl.text()
 
     # Deactivation tears the labels layer down alongside the intermediates.
@@ -403,8 +405,8 @@ def test_preview_smoothing_caches_and_reuses_stack(monkeypatch, tmp_path):
     assert widget._smoothed_stack is not None
     assert widget._smoothed_stack.shape[0] == 4
 
-    # Editing a non-smoothing knob (alpha) reuses the cached stack.
-    widget.alpha_spin.setValue(200.0)
+    # Editing a non-smoothing knob (balance) reuses the cached stack.
+    widget.balance_spin.setValue(0.5)
     _settled_refresh()
     assert calls["n"] == 1
 

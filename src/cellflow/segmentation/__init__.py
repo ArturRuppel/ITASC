@@ -19,6 +19,7 @@ from cellflow.segmentation.cell_label_icm import (
     CellICMState,
     CellLabelICMParams,
     assemble_cost_field,
+    balance_strength_to_weights,
     commit_labels,
     initialize_icm,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "FlowFollowingParams",
     "apply_gamma",
     "assemble_cost_field",
+    "balance_strength_to_weights",
     "build_divergence_maps",
     "clean_and_smooth_contours",
     "commit_labels",

@@ -35,6 +35,7 @@ __all__ = [
     "CellLabelICMParams",
     "CellICMState",
     "assemble_cost_field",
+    "balance_strength_to_weights",
     "initialize_icm",
     "commit_labels",
 ]
@@ -44,17 +45,46 @@ __all__ = [
 _INF: float = 1e9
 
 
+# ── Cost-field parameterisation ──────────────────────────────────────────────
+
+def balance_strength_to_weights(
+    balance: float, feature_strength: float
+) -> tuple[float, float]:
+    """Map the (balance, feature_strength) knobs to raw cost-field weights.
+
+    The geodesic cost field is ``1 + alpha * contour + gamma * (1 - fg_score)``.
+    Because the final labels come from a per-pixel ``argmin`` over geodesic
+    distances, multiplying the whole field by any positive constant leaves the
+    result unchanged — overall scale is a free gauge.  That leaves exactly two
+    observable degrees of freedom, exposed here as:
+
+    - ``balance`` (``r`` in ``[0, 1]``) — the contour↔foreground split
+      (``1`` = pure contour, ``0`` = pure foreground).
+    - ``feature_strength`` (``s >= 0``) — how strongly either feature bends the
+      walk away from a plain distance Voronoi, relative to the fixed base of 1
+      (``0`` = pure distance Voronoi).
+
+    with ``alpha = s * r`` and ``gamma = s * (1 - r)``.
+    """
+    r = min(1.0, max(0.0, float(balance)))
+    s = max(0.0, float(feature_strength))
+    return s * r, s * (1.0 - r)
+
+
 # ── Dataclasses ──────────────────────────────────────────────────────────────
 
 @dataclass
 class CellLabelICMParams:
     """Parameters for the unary-only geodesic cell segmentation."""
 
-    alpha_unary: float = 4.0
-    """Contour weight in the geodesic cost field: ``1 + alpha_unary * contour``."""
+    balance: float = 1.0
+    """Contour↔foreground split ``r`` in ``[0, 1]``: ``1`` = pure contour,
+    ``0`` = pure foreground.  See :func:`balance_strength_to_weights`."""
 
-    gamma_unary: float = 0.0
-    """Weight for ``(1 - foreground_score)`` added to the geodesic cost field."""
+    feature_strength: float = 4.0
+    """Overall feature weight ``s >= 0`` relative to the fixed base cost of 1:
+    how strongly contour/foreground bend the walk away from a plain geodesic
+    distance Voronoi.  ``0`` = pure distance Voronoi."""
 
     n_workers: int = 1
     """Parallel worker processes for geodesic unary computation.
@@ -151,10 +181,13 @@ def _compute_frame_geodesic(
 
     raw: dict[int, np.ndarray] = {}
     for k in alive:
-        starts = [
-            tuple(int(v) for v in coord)
-            for coord in np.argwhere(nuc_t == k)
-        ]
+        coords = np.argwhere(nuc_t == k)
+        # Seed the geodesic front from the nucleus centroid only, not the
+        # whole body, so pixels are drawn toward the centre rather than
+        # captured by the nearest point of the full nucleus footprint.
+        centroid = coords.mean(axis=0)
+        nearest = int(np.argmin(((coords - centroid) ** 2).sum(axis=1)))
+        starts = [tuple(int(v) for v in coords[nearest])]
         cum, _ = mcp.find_costs(starts)
         d = cum.astype(np.float32)
         d[~fg_t] = np.inf
@@ -492,7 +525,10 @@ def initialize_icm(
     )
 
     # ── Geodesic unaries (expensive — cache + parallel) ───────────────
-    cache_key = _unary_cache_key((T, Y, X), params.alpha_unary, params.gamma_unary)
+    alpha_unary, gamma_unary = balance_strength_to_weights(
+        params.balance, params.feature_strength
+    )
+    cache_key = _unary_cache_key((T, Y, X), alpha_unary, gamma_unary)
     unary_dict: dict[tuple[int, int], np.ndarray] | None = None
 
     if cache_dir is not None:
@@ -504,9 +540,9 @@ def initialize_icm(
     if unary_dict is None:
         t0 = perf_counter()
         unary_dict = _compute_geodesic_unaries(
-            nuc_tracks, fg_mask, contours, label_ids, params.alpha_unary,
+            nuc_tracks, fg_mask, contours, label_ids, alpha_unary,
             foreground_scores=foreground_scores,
-            gamma_unary=params.gamma_unary,
+            gamma_unary=gamma_unary,
             n_workers=params.n_workers,
             progress_cb=progress_cb,
         )

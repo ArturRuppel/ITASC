@@ -12,7 +12,10 @@ from cellflow.segmentation import (
 from cellflow.segmentation.cell_divergence_segmentation import (
     clean_and_smooth_contours,
 )
-from cellflow.segmentation.cell_label_icm import assemble_cost_field
+from cellflow.segmentation.cell_label_icm import (
+    assemble_cost_field,
+    balance_strength_to_weights,
+)
 
 
 def _make_inputs(T=3, Y=24, X=24, seed=0):
@@ -87,9 +90,12 @@ def test_cost_field_matches_solver_assembly():
     params = CellDivergenceParams()
     result = segment_cells_divergence(contours, fg, nuc, params, frame=0)
 
+    alpha, gamma = balance_strength_to_weights(
+        params.balance, params.feature_strength
+    )
     expected = assemble_cost_field(
         result.contours_clean, result.foreground_mask,
-        params.alpha, result.foreground_clean, params.gamma,
+        alpha, result.foreground_clean, gamma,
     )
     finite = np.isfinite(expected)
     np.testing.assert_allclose(result.cost_field[finite], expected[finite])
