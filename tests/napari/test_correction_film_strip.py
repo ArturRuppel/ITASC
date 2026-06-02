@@ -64,7 +64,7 @@ def test_panel_tile_size_param_drives_rendered_pixmap_height(_qapp):
     panel.set_strip(strip)
 
     def _first_pixmap_height():
-        # tiles live before the trailing stretch in the row layout
+        # tiles are laid out in order in the wrapping flow layout
         cell = panel._row.itemAt(0).widget()
         thumb = cell.layout().itemAt(0).widget()
         return thumb.pixmap().height()

@@ -2,7 +2,8 @@
 
 This is the *view* half of the track-validation film strip: the pixels are
 produced by the pure :func:`build_track_film_strip` helper, and this panel just
-lays the tiles out in a horizontal, scrollable row with frame-number captions.
+lays the tiles out in a wrapping grid with frame-number captions — tiles flow
+left-to-right and wrap onto a new line when they don't fit the panel width.
 Clicking a tile emits :attr:`TrackFilmStripPanel.frame_clicked` so the host can
 jump the viewer to that frame.
 
@@ -13,11 +14,11 @@ itself needs Qt up (as any widget does).
 from __future__ import annotations
 
 import numpy as np
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QPoint, QRect, QSize, Qt, Signal
 from qtpy.QtGui import QImage, QPixmap
 from qtpy.QtWidgets import (
-    QHBoxLayout,
     QLabel,
+    QLayout,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -46,6 +47,85 @@ def rgb_to_qimage(rgb: np.ndarray) -> QImage:
     return image.copy()
 
 
+class _FlowLayout(QLayout):
+    """A layout that arranges children left-to-right, wrapping onto new lines.
+
+    Qt ships no wrapping layout, so this is the canonical Qt ``FlowLayout``
+    example adapted to qtpy: it lets the film strip break onto extra rows when
+    the tiles don't fit the available width, instead of scrolling sideways.
+    """
+
+    def __init__(self, parent: QWidget | None = None, *, spacing: int = 6) -> None:
+        super().__init__(parent)
+        self._items: list = []
+        self.setSpacing(spacing)
+
+    def addItem(self, item) -> None:  # noqa: N802 (Qt override)
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):  # noqa: N802 (Qt override)
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index: int):  # noqa: N802 (Qt override)
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):  # noqa: N802 (Qt override)
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 (Qt override)
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 (Qt override)
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802 (Qt override)
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 (Qt override)
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:  # noqa: N802 (Qt override)
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(
+            margins.left() + margins.right(), margins.top() + margins.bottom()
+        )
+        return size
+
+    def _do_layout(self, rect: QRect, *, test_only: bool) -> int:
+        margins = self.contentsMargins()
+        effective = rect.adjusted(
+            margins.left(), margins.top(), -margins.right(), -margins.bottom()
+        )
+        x = effective.x()
+        y = effective.y()
+        line_height = 0
+        spacing = self.spacing()
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + spacing
+            if next_x - spacing > effective.right() and line_height > 0:
+                x = effective.x()
+                y = y + line_height + spacing
+                next_x = x + hint.width() + spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y() + margins.bottom()
+
+
 class _ClickableTile(QLabel):
     """A pixmap label that reports its frame index when clicked."""
 
@@ -63,7 +143,7 @@ class _ClickableTile(QLabel):
 
 
 class TrackFilmStripPanel(QWidget):
-    """Horizontal, scrollable strip of a track's per-frame crops."""
+    """Wrapping grid of a track's per-frame crops (breaks onto new lines)."""
 
     frame_clicked = Signal(int)
 
@@ -81,15 +161,13 @@ class TrackFilmStripPanel(QWidget):
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         outer.addWidget(self._scroll)
 
         self._row_host = QWidget()
-        self._row = QHBoxLayout(self._row_host)
+        self._row = _FlowLayout(self._row_host, spacing=6)
         self._row.setContentsMargins(4, 4, 4, 4)
-        self._row.setSpacing(6)
-        self._row.addStretch(1)
         self._scroll.setWidget(self._row_host)
 
     def set_strip(self, strip: TrackFilmStrip, title: str = "") -> None:
@@ -103,7 +181,7 @@ class TrackFilmStripPanel(QWidget):
             self._title.setText(title or "No frames for this track")
             return
         for tile in strip.tiles:
-            self._row.insertWidget(self._row.count() - 1, self._make_tile(tile))
+            self._row.addWidget(self._make_tile(tile))
 
     def set_tile_size(self, tile_px: int) -> None:
         """Change the on-screen render size of each tile and re-lay the strip."""
@@ -134,8 +212,8 @@ class TrackFilmStripPanel(QWidget):
         return cell
 
     def clear(self) -> None:
-        """Remove every tile (keeps the trailing stretch)."""
-        while self._row.count() > 1:
+        """Remove every tile from the strip."""
+        while self._row.count():
             item = self._row.takeAt(0)
             widget = item.widget()
             if widget is not None:
