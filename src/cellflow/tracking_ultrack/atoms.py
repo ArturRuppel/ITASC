@@ -56,7 +56,7 @@ def extract_atoms_frame(
     territory: np.ndarray,
     contour_floor: float,
     atom_min_area: int,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """Split ``territory`` into atoms along the cleaned contour ridge.
 
     ``ridge`` is where the residual contour exceeds ``contour_floor`` (a noise
@@ -64,6 +64,12 @@ def extract_atoms_frame(
     residual-contour elevation, so a broken faint ridge still meets at the crest.
     Atoms smaller than ``atom_min_area`` are merged into a neighbour by dropping
     their markers and re-flooding, leaving no holes in the territory.
+
+    Returns ``(atoms, ridge)``: ``atoms`` is the ``int32`` label image; ``ridge``
+    is the boolean wall ``residual_contour > contour_floor`` returned as ``uint8``
+    ``(Y, X)`` — the exact array the watershed carves out of territory, surfaced
+    so it can be tuned against directly. ``atom_min_area`` re-flooding does not
+    move the ridge, so it is captured once up front.
     """
     residual_contour = np.asarray(residual_contour, dtype=np.float32)
     territory = np.asarray(territory, dtype=bool)
@@ -80,30 +86,35 @@ def extract_atoms_frame(
             # original labels avoids silently blanking the whole territory.
             if keep_markers[territory].any():
                 atoms = watershed(residual_contour, markers=keep_markers, mask=territory)
-    return atoms.astype(np.int32)
+    return atoms.astype(np.int32), ridge.astype(np.uint8)
 
 
 def extract_atoms_stack_with_maps(
     fg: np.ndarray, contour: np.ndarray, params: AtomParams
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """(atoms, territory, residual_foreground, residual_contour) stacks, each (T, Y, X)."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(atoms, territory, residual_foreground, residual_contour, ridge) stacks, each (T, Y, X).
+
+    ``ridge`` is the per-frame ``residual_contour > contour_floor`` wall returned
+    by ``extract_atoms_frame``, accumulated as a ``uint8`` stack.
+    """
     fg = np.asarray(fg, dtype=np.float32)
     contour = np.asarray(contour, dtype=np.float32)
     atoms_out = np.zeros(fg.shape, dtype=np.int32)
     territory_out = np.zeros(fg.shape, dtype=np.uint8)
     rf_out = np.zeros(fg.shape, dtype=np.float32)
     rc_out = np.zeros(fg.shape, dtype=np.float32)
+    ridge_out = np.zeros(fg.shape, dtype=np.uint8)
     for t in range(fg.shape[0]):
         rf = residual(fg[t], params.fg_window, params.fg_strength)
         territory = rf > params.fg_cutoff
         rc = residual(contour[t], params.contour_window, params.contour_strength)
-        atoms_out[t] = extract_atoms_frame(
+        atoms_out[t], ridge_out[t] = extract_atoms_frame(
             rc, territory, params.contour_floor, params.atom_min_area
         )
         territory_out[t] = territory.astype(np.uint8)
         rf_out[t] = rf
         rc_out[t] = rc
-    return atoms_out, territory_out, rf_out, rc_out
+    return atoms_out, territory_out, rf_out, rc_out, ridge_out
 
 
 def extract_atoms_stack(

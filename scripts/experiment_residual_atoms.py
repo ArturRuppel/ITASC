@@ -111,8 +111,8 @@ def main():
         atoms = np.zeros(fg.shape, np.int32)
         counts = []
         for t in range(fg.shape[0]):
-            a = extract_atoms_frame(ridge_resid[t], territory[t], args.floor,
-                                    args.min_area)
+            a, _ = extract_atoms_frame(ridge_resid[t], territory[t], args.floor,
+                                       args.min_area)
             atoms[t] = a
             counts.append(int(a.max()))
         atom_layers[f"atoms_t{thr:g}"] = atoms

@@ -271,7 +271,7 @@ def main():
     print("\nextracting atoms…")
     atoms_stack = np.zeros(fg.shape, np.int32)
     for t in range(fg.shape[0]):
-        atoms_stack[t] = extract_atoms_frame(
+        atoms_stack[t], _ = extract_atoms_frame(
             ridge_resid[t], territory[t], args.floor, args.atom_min_area)
     print(f"  atoms/frame = {np.mean([a.max() for a in atoms_stack]):.1f}")
 

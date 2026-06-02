@@ -455,11 +455,8 @@ class NucleusPipelineWidget(QWidget):
         self._db_gen_worker = None
         self._db_gen_cancel = None
         self._clear_progress()
-        pos_dir, report = result
-        message = "DB generation complete."
-        if report is not None and getattr(report, "stale_atoms", False):
-            message += " — warning: atoms.tif is stale vs current atom params"
-        self._status(message)
+        pos_dir, _ = result
+        self._status("DB generation complete.")
         self._refresh_files_callback(pos_dir)
         self._refresh_db_browser_callback()
         self._set_running_stage(None)

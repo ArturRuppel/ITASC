@@ -34,7 +34,6 @@ class AtomUnionDatabaseBuildReport:
     total_nodes: int = 0
     total_overlaps: int = 0
     n_frames: int = 0
-    stale_atoms: bool = False
 
 
 @dataclass(frozen=True)
@@ -244,36 +243,13 @@ def build_atom_union_database(
     from ultrack.core.segmentation.node import Node
 
     from cellflow.tracking_ultrack.atoms import (
-        AtomParams,
         atom_adjacency,
         enum_connected_unions,
-        params_fingerprint,
-        read_atoms_params,
     )
 
     atoms_path = Path(atoms_path)
     working_dir = Path(working_dir)
     working_dir.mkdir(parents=True, exist_ok=True)
-
-    # Staleness check: warn if atoms.tif was built with different atom params
-    stored_params_dict, stored_fp = read_atoms_params(atoms_path)
-    current_atom_params = AtomParams(
-        fg_window=cfg.fg_window,
-        fg_cutoff=cfg.fg_cutoff,
-        fg_strength=cfg.fg_strength,
-        contour_window=cfg.contour_window,
-        contour_floor=cfg.contour_floor,
-        contour_strength=cfg.contour_strength,
-        atom_min_area=cfg.atom_min_area,
-    )
-    stale = False
-    if stored_fp is not None and stored_fp != params_fingerprint(current_atom_params):
-        stale = True
-        _notify(
-            progress_cb,
-            "Warning: atoms.tif fingerprint differs from current atom params — "
-            "consider re-running Atom Extraction first.",
-        )
 
     _notify(progress_cb, "Reading atoms.tif...")
     atoms_stack = tifffile.imread(str(atoms_path)).astype(np.int32)
@@ -372,7 +348,6 @@ def build_atom_union_database(
         total_nodes=total_nodes,
         total_overlaps=total_overlaps,
         n_frames=n_frames,
-        stale_atoms=stale,
     )
 
 

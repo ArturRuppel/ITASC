@@ -562,7 +562,7 @@ def test_run_db_generation_calls_build_atom_union_database(tmp_path, monkeypatch
         data_db = Path(working_dir) / "data.db"
         data_db.parent.mkdir(parents=True, exist_ok=True)
         data_db.write_bytes(b"sqlite placeholder")
-        return types.SimpleNamespace(stale_atoms=False)
+        return types.SimpleNamespace()
 
     monkeypatch.setattr(
         pipeline_module,

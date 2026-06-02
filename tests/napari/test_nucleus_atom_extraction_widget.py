@@ -137,14 +137,16 @@ def test_atom_params_reads_controls():
     napari.Viewer.close_all()
 
 
-def test_activate_adds_four_layers_then_deactivate_removes(tmp_path):
+def test_activate_adds_five_layers_then_deactivate_removes(tmp_path):
     from cellflow.napari.nucleus_atom_extraction_widget import (
         _ATOM_TERRITORY_LAYER,
         _ATOM_FG_RESIDUAL_LAYER,
         _ATOM_CONTOUR_RESIDUAL_LAYER,
+        _ATOM_RIDGE_LAYER,
     )
     names = (_ATOM_PREVIEW_LAYER, _ATOM_TERRITORY_LAYER,
-             _ATOM_FG_RESIDUAL_LAYER, _ATOM_CONTOUR_RESIDUAL_LAYER)
+             _ATOM_FG_RESIDUAL_LAYER, _ATOM_CONTOUR_RESIDUAL_LAYER,
+             _ATOM_RIDGE_LAYER)
     h, viewer = _host(tmp_path)
     h._on_atom_activate(True)
     _drain_atom_preview(h)
@@ -159,21 +161,90 @@ def test_activate_adds_four_layers_then_deactivate_removes(tmp_path):
     napari.Viewer.close_all()
 
 
-def test_layer_visibility_preserved_across_refresh(tmp_path):
+def test_atoms_layer_is_named_atoms():
+    # the atoms label layer is "[Atoms] atoms" (was "[Atoms] preview").
+    assert _ATOM_PREVIEW_LAYER == "[Atoms] atoms"
+
+
+def test_default_visibility_on_activate_foreground_only(tmp_path):
     from cellflow.napari.nucleus_atom_extraction_widget import (
-        _ATOM_TERRITORY_LAYER,
+        _ATOM_FG_GROUP_LAYERS,
+        _ATOM_CONTOUR_GROUP_LAYERS,
+    )
+    h, viewer = _host(tmp_path)
+    h._on_atom_activate(True)
+    _drain_atom_preview(h)
+    # Foreground pair visible, Contour group hidden — and the checkboxes match.
+    assert h.atom_extraction_widget.fg_visible_check.isChecked()
+    assert not h.atom_extraction_widget.contour_visible_check.isChecked()
+    for name in _ATOM_FG_GROUP_LAYERS:
+        assert viewer.layers[name].visible
+    for name in _ATOM_CONTOUR_GROUP_LAYERS:
+        assert not viewer.layers[name].visible
+    napari.Viewer.close_all()
+
+
+def test_group_checkboxes_flip_their_layers_together(tmp_path):
+    from cellflow.napari.nucleus_atom_extraction_widget import (
+        _ATOM_FG_GROUP_LAYERS,
+        _ATOM_CONTOUR_GROUP_LAYERS,
+    )
+    h, viewer = _host(tmp_path)
+    h._on_atom_activate(True)
+    _drain_atom_preview(h)
+    w = h.atom_extraction_widget
+
+    # Contour checkbox on → all three contour layers visible together.
+    w.contour_visible_check.setChecked(True)
+    for name in _ATOM_CONTOUR_GROUP_LAYERS:
+        assert viewer.layers[name].visible
+    # Foreground checkbox off → both foreground layers hidden together.
+    w.fg_visible_check.setChecked(False)
+    for name in _ATOM_FG_GROUP_LAYERS:
+        assert not viewer.layers[name].visible
+    # Independent: contour stays visible while foreground is hidden.
+    for name in _ATOM_CONTOUR_GROUP_LAYERS:
+        assert viewer.layers[name].visible
+    napari.Viewer.close_all()
+
+
+def test_ridge_layer_is_exactly_the_core_return(tmp_path):
+    from cellflow.napari.nucleus_atom_extraction_widget import _ATOM_RIDGE_LAYER
+    from cellflow.tracking_ultrack.atoms import residual, extract_atoms_frame
+
+    h, viewer = _host(tmp_path)
+    h._on_atom_activate(True)
+    _drain_atom_preview(h)
+    t = h._current_t()
+    params = h._atom_params()
+    fg = h._read_frame(h._atom_fg_path(), t)
+    contour = h._read_frame(h._atom_contour_path(), t)
+    rf = residual(fg, params.fg_window, params.fg_strength)
+    rc = residual(contour, params.contour_window, params.contour_strength)
+    _atoms, ridge = extract_atoms_frame(
+        rc, rf > params.fg_cutoff, params.contour_floor, params.atom_min_area
+    )
+    # the displayed ridge slice equals the core's returned mask, not a re-derivation.
+    assert np.array_equal(viewer.layers[_ATOM_RIDGE_LAYER].data[t], ridge.astype(np.int32))
+    napari.Viewer.close_all()
+
+
+def test_contrast_limits_preserved_across_refresh(tmp_path):
+    from cellflow.napari.nucleus_atom_extraction_widget import (
+        _ATOM_FG_RESIDUAL_LAYER,
         _ATOM_CONTOUR_RESIDUAL_LAYER,
     )
     h, viewer = _host(tmp_path)
     h._on_atom_activate(True)
     _drain_atom_preview(h)
-    viewer.layers[_ATOM_TERRITORY_LAYER].visible = False
-    viewer.layers[_ATOM_CONTOUR_RESIDUAL_LAYER].visible = False
+    # user dials in a non-default contrast on both residual image layers
+    viewer.layers[_ATOM_FG_RESIDUAL_LAYER].contrast_limits = (0.1, 0.2)
+    viewer.layers[_ATOM_CONTOUR_RESIDUAL_LAYER].contrast_limits = (0.3, 0.4)
+    h.atom_extraction_widget.contour_floor_spin.setValue(0.02)
     h._refresh_atom_preview()
     _drain_atom_preview(h)
-    assert not viewer.layers[_ATOM_TERRITORY_LAYER].visible
-    assert not viewer.layers[_ATOM_CONTOUR_RESIDUAL_LAYER].visible
-    assert viewer.layers[_ATOM_PREVIEW_LAYER].visible
+    assert tuple(viewer.layers[_ATOM_FG_RESIDUAL_LAYER].contrast_limits) == (0.1, 0.2)
+    assert tuple(viewer.layers[_ATOM_CONTOUR_RESIDUAL_LAYER].contrast_limits) == (0.3, 0.4)
     napari.Viewer.close_all()
 
 
@@ -185,6 +256,7 @@ def test_run_atom_extraction_writes_tif_and_shows_layers(tmp_path):
         _ATOM_TERRITORY_LAYER,
         _ATOM_FG_RESIDUAL_LAYER,
         _ATOM_CONTOUR_RESIDUAL_LAYER,
+        _ATOM_RIDGE_LAYER,
     )
     h, viewer = _host(tmp_path)
     h.atom_extraction_widget.fg_window_spin.setValue(11)
@@ -197,7 +269,8 @@ def test_run_atom_extraction_writes_tif_and_shows_layers(tmp_path):
     stored_params, stored_fp = read_atoms_params(out)
     assert stored_fp == params_fingerprint(h._atom_params())
     for name in (_ATOM_PREVIEW_LAYER, _ATOM_TERRITORY_LAYER,
-                 _ATOM_FG_RESIDUAL_LAYER, _ATOM_CONTOUR_RESIDUAL_LAYER):
+                 _ATOM_FG_RESIDUAL_LAYER, _ATOM_CONTOUR_RESIDUAL_LAYER,
+                 _ATOM_RIDGE_LAYER):
         assert name in viewer.layers
     assert viewer.layers[_ATOM_PREVIEW_LAYER].data.ndim == 3
     napari.Viewer.close_all()

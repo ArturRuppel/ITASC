@@ -58,7 +58,7 @@ def _two_blob_frame():
 
 def test_extract_atoms_frame_labels_each_territory_island():
     rc, territory = _two_blob_frame()
-    atoms = extract_atoms_frame(rc, territory, contour_floor=0.05, atom_min_area=0)
+    atoms, _ridge = extract_atoms_frame(rc, territory, contour_floor=0.05, atom_min_area=0)
     # two disconnected islands -> exactly two atoms, background stays 0
     assert atoms[territory].min() >= 1
     assert atoms[~territory].max() == 0
@@ -70,7 +70,7 @@ def test_extract_atoms_frame_splits_one_island_on_ridge():
     territory[10:30, 8:52] = True  # one connected island
     rc = np.zeros((40, 60), dtype=np.float32)
     rc[10:30, 29:31] = 1.0         # a strong ridge down the middle
-    atoms = extract_atoms_frame(rc, territory, contour_floor=0.1, atom_min_area=0)
+    atoms, _ridge = extract_atoms_frame(rc, territory, contour_floor=0.1, atom_min_area=0)
     assert len({int(v) for v in np.unique(atoms) if v != 0}) == 2
 
 
@@ -79,10 +79,27 @@ def test_extract_atoms_frame_merges_small_atoms_and_leaves_no_holes():
     territory[10:30, 8:52] = True
     rc = np.zeros((40, 60), dtype=np.float32)
     rc[10:30, 12:14] = 1.0  # ridge that carves off a tiny sliver (cols 8-12)
-    atoms = extract_atoms_frame(rc, territory, contour_floor=0.1, atom_min_area=200)
+    atoms, _ridge = extract_atoms_frame(rc, territory, contour_floor=0.1, atom_min_area=200)
     # tiny sliver merged away -> one atom, and every territory pixel is labelled
     assert len({int(v) for v in np.unique(atoms) if v != 0}) == 1
     assert np.all(atoms[territory] > 0)
+
+
+def test_extract_atoms_frame_returns_ridge_as_the_threshold_wall():
+    # ridge is the exact array the watershed carves out of territory: it is
+    # residual_contour > contour_floor, as uint8, sharing the frame shape.
+    territory = np.zeros((40, 60), dtype=bool)
+    territory[10:30, 8:52] = True
+    rc = np.zeros((40, 60), dtype=np.float32)
+    rc[10:30, 29:31] = 1.0
+    floor = 0.1
+    atoms, ridge = extract_atoms_frame(rc, territory, contour_floor=floor, atom_min_area=0)
+    assert ridge.dtype == np.uint8
+    assert ridge.shape == rc.shape
+    assert np.array_equal(ridge, (rc > floor).astype(np.uint8))
+    # min-area re-flooding must not move the ridge — it is purely the threshold.
+    _atoms2, ridge2 = extract_atoms_frame(rc, territory, contour_floor=floor, atom_min_area=5000)
+    assert np.array_equal(ridge, ridge2)
 
 
 from cellflow.tracking_ultrack.atoms import AtomParams, extract_atoms_stack
@@ -154,7 +171,7 @@ def test_extract_atoms_frame_keeps_labels_when_all_atoms_below_min_area():
     territory = np.zeros((20, 20), dtype=bool)
     territory[8:12, 8:12] = True  # a single 16-px atom
     rc = np.zeros((20, 20), dtype=np.float32)
-    atoms = extract_atoms_frame(rc, territory, contour_floor=0.1, atom_min_area=10000)
+    atoms, _ridge = extract_atoms_frame(rc, territory, contour_floor=0.1, atom_min_area=10000)
     # min_area far exceeds the atom; territory must stay labelled, not blanked
     assert np.all(atoms[territory] > 0)
     assert atoms[~territory].max() == 0
@@ -168,7 +185,7 @@ def test_extract_atoms_stack_with_maps_dtypes_and_consistency():
     contour = rng.random((3, 40, 40)).astype(np.float32)
     params = AtomParams(fg_window=11, fg_cutoff=0.01, contour_window=11,
                         contour_floor=0.05, atom_min_area=0)
-    atoms, territory, residual_foreground, residual_contour = extract_atoms_stack_with_maps(
+    atoms, territory, residual_foreground, residual_contour, ridge = extract_atoms_stack_with_maps(
         fg, contour, params
     )
     # shapes
@@ -176,17 +193,22 @@ def test_extract_atoms_stack_with_maps_dtypes_and_consistency():
     assert territory.shape == (3, 40, 40)
     assert residual_foreground.shape == (3, 40, 40)
     assert residual_contour.shape == (3, 40, 40)
+    assert ridge.shape == (3, 40, 40)
     # dtypes
     assert atoms.dtype == np.int32
     assert territory.dtype == np.uint8
     assert residual_foreground.dtype == np.float32
     assert residual_contour.dtype == np.float32
+    assert ridge.dtype == np.uint8
     # territory is exactly the fg residual thresholded by fg_cutoff
     assert np.array_equal(territory, (residual_foreground > params.fg_cutoff).astype(np.uint8))
-    # atoms matches extract_atoms_stack
+    # ridge is exactly the contour residual thresholded by contour_floor
+    assert np.array_equal(ridge, (residual_contour > params.contour_floor).astype(np.uint8))
+    # atoms matches extract_atoms_stack (which unpacks just the first element)
     assert np.array_equal(atoms, extract_atoms_stack(fg, contour, params))
-    # territory is binary (0 or 1)
+    # territory and ridge are binary (0 or 1)
     assert set(np.unique(territory)).issubset({0, 1})
+    assert set(np.unique(ridge)).issubset({0, 1})
 
 
 from cellflow.tracking_ultrack.atoms import atom_adjacency, enum_connected_unions

@@ -170,7 +170,6 @@ def test_build_atom_union_database_segments_then_links(monkeypatch, tmp_path):
     assert isinstance(report, db_build.AtomUnionDatabaseBuildReport)
     assert report.n_frames == 2
     assert report.total_nodes > 0
-    assert report.stale_atoms is False
 
 
 def test_db_build_segments_then_links(monkeypatch, tmp_path):
