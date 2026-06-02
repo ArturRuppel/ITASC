@@ -9,12 +9,18 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari.widgets import PipelineFilesWidget
 
-# Canonical file groups for the project-wide status view.
-# Paths match the authoritative contracts in cellflow.napari._paths.
+# Canonical file groups for the project-wide status view. This rolls up the
+# per-stage pipeline files that each subwidget tracks, so it must stay in sync
+# with their PipelineFilesWidget contracts:
+#   Cellpose          → cellpose_widget._PIPELINE_FILES
+#   Nucleus Workflow  → nucleus_workflow_widget._NUCLEUS_PIPELINE_FILE_GROUPS
+#   Cell Workflow     → cell_workflow_widget (CellWorkflowWidget._setup_ui)
+#   Contact Analysis  → contact_analysis_widget (ContactAnalysisWidget)
 _TRACKED_FILE_GROUPS = [
     ("Input Data", [
         ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
         ("0_input/cell_zavg.tif", "Cell z-avg"),
+        ("0_input/NLS_zavg.tif", "NLS z-avg"),
         ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
         ("0_input/cell_3dt.tif", "Cell 3D+t"),
     ]),
@@ -29,14 +35,11 @@ _TRACKED_FILE_GROUPS = [
         ("1_cellpose/cell_foreground.tif", "Cell foreground"),
     ]),
     ("Nucleus Workflow", [
+        ("2_nucleus/atoms.tif", "Atoms"),
         ("2_nucleus/ultrack_workdir/data.db", "Ultrack DB"),
         ("2_nucleus/tracked_labels.tif", "Tracked labels"),
     ]),
     ("Cell Workflow", [
-        ("3_cell/filtered_dp.tif", "Filtered flow vectors"),
-        ("3_cell/foreground_masks.tif", "Foreground masks"),
-        ("3_cell/contours.tif", "Contours"),
-        ("3_cell/foreground_scores.tif", "Foreground scores"),
         ("3_cell/tracked_labels.tif", "Tracked labels"),
     ]),
     ("Contact Analysis", [
