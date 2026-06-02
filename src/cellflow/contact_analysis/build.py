@@ -272,31 +272,7 @@ def _extract_frame_cell_edges(frame: np.ndarray, frame_idx: int) -> list[EdgeRec
 
 
 def _extract_frame_border_edges(frame: np.ndarray, frame_idx: int) -> list[EdgeRecord]:
-    points_by_cell: dict[int, list[tuple[float, float]]] = {}
-    h, w = frame.shape
-
-    for y in range(h):
-        for x in range(w):
-            cell_id = int(frame[y, x])
-            if cell_id <= 0:
-                continue
-            if y == 0:
-                points_by_cell.setdefault(cell_id, []).append((float(y) - 0.5, float(x)))
-            if y == h - 1:
-                points_by_cell.setdefault(cell_id, []).append((float(y) + 0.5, float(x)))
-            if x == 0:
-                points_by_cell.setdefault(cell_id, []).append((float(y), float(x) - 0.5))
-            if x == w - 1:
-                points_by_cell.setdefault(cell_id, []).append((float(y), float(x) + 0.5))
-
-            if y > 0 and frame[y - 1, x] == 0:
-                points_by_cell.setdefault(cell_id, []).append((float(y) - 0.5, float(x)))
-            if y < h - 1 and frame[y + 1, x] == 0:
-                points_by_cell.setdefault(cell_id, []).append((float(y) + 0.5, float(x)))
-            if x > 0 and frame[y, x - 1] == 0:
-                points_by_cell.setdefault(cell_id, []).append((float(y), float(x) - 0.5))
-            if x < w - 1 and frame[y, x + 1] == 0:
-                points_by_cell.setdefault(cell_id, []).append((float(y), float(x) + 0.5))
+    points_by_cell = _border_points_by_cell(frame)
 
     rows = []
     for cell_id in sorted(points_by_cell):
@@ -304,6 +280,76 @@ def _extract_frame_border_edges(frame: np.ndarray, frame_idx: int) -> list[EdgeR
             coords = _order_coordinates(segment)
             rows.append(_edge_record(frame_idx, (cell_id, 0), "border", "border", coords))
     return rows
+
+
+def _border_points_by_cell(frame: np.ndarray) -> dict[int, np.ndarray]:
+    """Per-cell half-pixel boundary points against the image edge and background.
+
+    Vectorised replacement for the per-pixel double loop: for each of the four
+    image borders and the four background-adjacency directions, the relevant
+    foreground pixels and their half-pixel offset points are collected with
+    array ops, then grouped by cell id.  Downstream consumers deduplicate, so
+    point order within a cell is irrelevant.
+    """
+    h, w = frame.shape
+    fg = frame > 0
+
+    cids: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
+    xs: list[np.ndarray] = []
+
+    def _add(mask: np.ndarray, dy: float, dx: float) -> None:
+        yy, xx = np.nonzero(mask)
+        if yy.size == 0:
+            return
+        cids.append(frame[yy, xx])
+        ys.append(yy.astype(float) + dy)
+        xs.append(xx.astype(float) + dx)
+
+    # Image-border pixels (offset half a pixel outward).
+    if h > 0:
+        top = np.zeros_like(fg)
+        top[0] = fg[0]
+        _add(top, -0.5, 0.0)
+        bottom = np.zeros_like(fg)
+        bottom[h - 1] = fg[h - 1]
+        _add(bottom, 0.5, 0.0)
+    if w > 0:
+        left = np.zeros_like(fg)
+        left[:, 0] = fg[:, 0]
+        _add(left, 0.0, -0.5)
+        right = np.zeros_like(fg)
+        right[:, w - 1] = fg[:, w - 1]
+        _add(right, 0.0, 0.5)
+
+    # Foreground pixels with a background (0) 4-neighbour.
+    up = np.zeros_like(fg)
+    up[1:] = fg[1:] & (frame[:-1] == 0)
+    _add(up, -0.5, 0.0)
+    down = np.zeros_like(fg)
+    down[:-1] = fg[:-1] & (frame[1:] == 0)
+    _add(down, 0.5, 0.0)
+    left_bg = np.zeros_like(fg)
+    left_bg[:, 1:] = fg[:, 1:] & (frame[:, :-1] == 0)
+    _add(left_bg, 0.0, -0.5)
+    right_bg = np.zeros_like(fg)
+    right_bg[:, :-1] = fg[:, :-1] & (frame[:, 1:] == 0)
+    _add(right_bg, 0.0, 0.5)
+
+    if not cids:
+        return {}
+
+    cid_all = np.concatenate(cids)
+    pts = np.column_stack([np.concatenate(ys), np.concatenate(xs)])
+    order = np.argsort(cid_all, kind="stable")
+    cid_sorted = cid_all[order]
+    pts = pts[order]
+    uniq, starts = np.unique(cid_sorted, return_index=True)
+    bounds = np.append(starts, cid_sorted.size)
+    return {
+        int(cell_id): pts[starts[i]:bounds[i + 1]]
+        for i, cell_id in enumerate(uniq)
+    }
 
 
 def _edge_record(
@@ -330,15 +376,16 @@ def _assign_ids_to_records(
     records: list[EdgeRecord],
 ) -> tuple[list[dict[tuple[int, int], int]], list[T1Record]]:
     max_frame = max((record.frame for record in records), default=-1)
-    frame_cell_edges: list[set[tuple[int, int]]] = []
-    for frame_idx in range(max_frame + 1):
-        frame_cell_edges.append(
-            {
-                record.pair
-                for record in records
-                if record.frame == frame_idx and record.kind == "cell_cell"
-            }
-        )
+    # Group records by frame in a single pass instead of rescanning the full
+    # record list per frame (and, below, per frame*border-pair).
+    frame_cell_edges: list[set[tuple[int, int]]] = [set() for _ in range(max_frame + 1)]
+    frame_border_pairs: list[set[tuple[int, int]]] = [set() for _ in range(max_frame + 1)]
+    for record in records:
+        if record.kind == "cell_cell":
+            frame_cell_edges[record.frame].add(record.pair)
+        elif record.kind == "border":
+            frame_border_pairs[record.frame].add(record.pair)
+
     assignments, events = assign_persistent_edge_ids(frame_cell_edges)
     border_next_id = (
         max((edge_id for frame in assignments for edge_id in frame.values()), default=0) + 1
@@ -352,9 +399,8 @@ def _assign_ids_to_records(
     merged = []
     for frame_idx, frame_assignment in enumerate(assignments):
         full = dict(frame_assignment)
-        for pair, edge_id in border_ids.items():
-            if any(record.frame == frame_idx and record.pair == pair for record in records):
-                full[pair] = edge_id
+        for pair in frame_border_pairs[frame_idx]:
+            full[pair] = border_ids[pair]
         merged.append(full)
 
     t1_by_key = {(event.frame, event.losing_pair): event for event in events}

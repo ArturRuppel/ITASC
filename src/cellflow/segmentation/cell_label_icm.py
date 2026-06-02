@@ -109,9 +109,11 @@ class CellICMState:
     label_ids: np.ndarray = field(repr=False)
     """(K,) uint32 — sorted global set of label (track) IDs."""
 
-    unary_dense: np.ndarray = field(repr=False)
-    """(T, Y, X, K) float32 — dense unary cost array.  Dead / background
-    entries are ``_INF``."""
+    unary_dense: np.ndarray | None = field(default=None, repr=False)
+    """Deprecated. Previously held the dense ``(T, Y, X, K)`` unary cost
+    volume; initial labels are now computed with a streaming argmin
+    (:func:`_argmin_init_from_dict`) so this is left ``None`` to avoid the
+    multi-gigabyte allocation."""
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -172,23 +174,35 @@ def _compute_frame_geodesic(
         contours_t, fg_t, alpha_unary, fg_scores_t, gamma_unary
     )
 
-    alive = [int(k) for k in label_ids if np.any(nuc_t == k)]
-    if not alive:
+    # Locate every nucleus pixel in a single pass and group by label, rather
+    # than rescanning the whole frame once per label (which was O(K * Y * X)).
+    nz_y, nz_x = np.nonzero(nuc_t)
+    if nz_y.size == 0:
         return {}
+    nz_lab = nuc_t[nz_y, nz_x]
+    order = np.argsort(nz_lab, kind="stable")  # stable → row-major within label
+    nz_lab = nz_lab[order]
+    nz_y = nz_y[order]
+    nz_x = nz_x[order]
+    uniq, starts_idx = np.unique(nz_lab, return_index=True)
+    bounds = np.append(starts_idx, nz_lab.size)
+    alive = [int(k) for k in uniq]
 
     # Single MCP object reused for all labels in this frame
     mcp = MCP_Geometric(cost_field, fully_connected=True)
 
     raw: dict[int, np.ndarray] = {}
-    for k in alive:
-        coords = np.argwhere(nuc_t == k)
+    for i, k in enumerate(alive):
+        s, e = int(starts_idx[i]), int(bounds[i + 1])
+        ys = nz_y[s:e]
+        xs = nz_x[s:e]
         # Seed the geodesic front from the nucleus centroid only, not the
         # whole body, so pixels are drawn toward the centre rather than
         # captured by the nearest point of the full nucleus footprint.
-        centroid = coords.mean(axis=0)
-        nearest = int(np.argmin(((coords - centroid) ** 2).sum(axis=1)))
-        starts = [tuple(int(v) for v in coords[nearest])]
-        cum, _ = mcp.find_costs(starts)
+        cy = ys.mean()
+        cx = xs.mean()
+        nearest = int(np.argmin((ys - cy) ** 2 + (xs - cx) ** 2))
+        cum, _ = mcp.find_costs([(int(ys[nearest]), int(xs[nearest]))])
         d = cum.astype(np.float32)
         d[~fg_t] = np.inf
         raw[k] = d
@@ -205,14 +219,12 @@ def _compute_frame_geodesic(
         nd[~np.isfinite(nd)] = _INF
         result[k] = nd
 
-    # Hard nucleus anchors within this frame
+    # Hard nucleus anchors within this frame: each label is forbidden (_INF)
+    # on every *other* label's nucleus pixels.  O(K) full-frame writes instead
+    # of the previous O(K^2) label-pair loop.
+    nuc_pos = nuc_t > 0
     for k in alive:
-        k_pix = nuc_t == k
-        if not k_pix.any():
-            continue
-        for j in alive:
-            if j != k and j in result:
-                result[j][k_pix] = _INF
+        result[k][nuc_pos & (nuc_t != k)] = _INF
 
     return result
 
@@ -387,21 +399,32 @@ def _apply_nucleus_anchors(
     return unary
 
 
-def _dict_to_dense_unary(
+def _argmin_init_from_dict(
     unary: dict[tuple[int, int], np.ndarray],
     fg_mask: np.ndarray,
     label_ids: np.ndarray,
 ) -> np.ndarray:
-    """Convert sparse ``{(t, k): (Y, X)}`` to ``(T, Y, X, K)`` float32."""
+    """Per-pixel nearest-seed assignment over the sparse unary dict.
+
+    Equivalent to ``argmin`` over the label axis of the dense
+    ``(T, Y, X, K)`` cost volume, but computed as a running minimum so the
+    full volume is never materialised (it can be tens of GB for large
+    stacks with many labels).  Missing ``(t, k)`` entries are treated as
+    ``_INF``, matching the dense fill value.
+    """
     T, Y, X = fg_mask.shape
-    K = len(label_ids)
-    dense = np.full((T, Y, X, K), _INF, dtype=np.float32)
+    best_cost = np.full((T, Y, X), _INF, dtype=np.float32)
+    best_ki = np.zeros((T, Y, X), dtype=np.intp)
     for ki, k in enumerate(label_ids):
         for t in range(T):
             u = unary.get((t, int(k)))
-            if u is not None:
-                dense[t, :, :, ki] = u
-    return dense
+            if u is None:
+                continue
+            # Strict ``<`` keeps the lowest ki on ties, matching np.argmin.
+            better = u < best_cost[t]
+            np.copyto(best_cost[t], u, where=better)
+            best_ki[t][better] = ki
+    return np.where(fg_mask, label_ids[best_ki], 0).astype(np.uint32)
 
 
 # ── Internal: HDF5 unary cache ───────────────────────────────────────────────
@@ -464,17 +487,6 @@ def _write_unary_cache(
         if tmp.exists():
             tmp.unlink()
         raise
-
-
-# ── Internal: initialisation helpers ─────────────────────────────────────────
-
-def _argmin_init(
-    unary_dense: np.ndarray,
-    fg_mask: np.ndarray,
-    label_ids: np.ndarray,
-) -> np.ndarray:
-    best_ki = np.argmin(unary_dense, axis=3)
-    return np.where(fg_mask, label_ids[best_ki], 0).astype(np.uint32)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -554,14 +566,10 @@ def initialize_icm(
 
     _apply_nucleus_anchors(unary_dict, nuc_tracks, label_ids)
 
-    # ── Dense unary ───────────────────────────────────────────────────
-    _report("Building dense unary array...")
-    unary_dense = _dict_to_dense_unary(unary_dict, fg_mask, label_ids)
-    del unary_dict
-
-    # ── Initial labels ────────────────────────────────────────────────
+    # ── Initial labels (streaming argmin; no dense (T, Y, X, K) volume) ──
     _report("Initialising labels from unary argmin...")
-    init_labels = _argmin_init(unary_dense, fg_mask, label_ids)
+    init_labels = _argmin_init_from_dict(unary_dict, fg_mask, label_ids)
+    del unary_dict
 
     nuc_mask = nuc_tracks > 0
     init_labels[nuc_mask] = nuc_tracks[nuc_mask].astype(np.uint32)
@@ -570,7 +578,6 @@ def initialize_icm(
         fg_mask=fg_mask.astype(bool, copy=False),
         nuc_tracks=nuc_tracks.astype(np.uint32, copy=False),
         label_ids=label_ids,
-        unary_dense=unary_dense,
     )
 
     _report("Initialisation complete.")

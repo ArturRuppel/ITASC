@@ -3,13 +3,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.segmentation.flow_following import (
-    FlowFollowingParams,
-    compute_filtered_flow_vectors,
-    compute_flow_following_frame,
-    compute_flow_following_movie,
-)
-
 from cellflow.segmentation.contour_filtering import (
     ContourFilterParams,
     compute_filtered_contour_maps,
@@ -52,7 +45,6 @@ __all__ = [
     "ContourFilterParams",
     "ContourWatershedParams",
     "DivergenceMapsReport",
-    "FlowFollowingParams",
     "apply_gamma",
     "assemble_cost_field",
     "balance_strength_to_weights",
@@ -61,9 +53,6 @@ __all__ = [
     "commit_labels",
     "compute_contour_watershed",
     "compute_filtered_contour_maps",
-    "compute_filtered_flow_vectors",
-    "compute_flow_following_frame",
-    "compute_flow_following_movie",
     "initialize_icm",
     "segment_cells_divergence",
     "_fill_and_close_labels",
