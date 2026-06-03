@@ -236,7 +236,11 @@ class CorrectionWidget(QWidget):
         status_label(self._status, italic=True, muted=True)
         root.addWidget(self._status)
 
+        # Hold a reference even when the group is not added to the layout
+        # (show_inspector=False): otherwise Python GCs the QGroupBox and its
+        # children, deleting the C++ QSpinBox that goto/Shift-± still drive.
         inspect_group = QGroupBox("Inspect cell")
+        self._inspect_group = inspect_group
         inspect_lay = QVBoxLayout(inspect_group)
 
         id_row = QHBoxLayout()
