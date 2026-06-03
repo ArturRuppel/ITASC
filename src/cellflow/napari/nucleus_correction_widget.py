@@ -10,8 +10,6 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker as _thread_worker
-from qtpy.QtCore import Qt
-from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -20,7 +18,6 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QShortcut,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -236,6 +233,12 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.retrack_fwd_btn = _tool_btn(
             "↷", "Retrack all labels forward from current frame (E)."
+        )
+        self.swap_smaller_btn = _tool_btn(
+            "⮂", "Swap selected cell with the next smaller candidate fragment (Z)."
+        )
+        self.swap_larger_btn = _tool_btn(
+            "⮀", "Swap selected cell with the next larger candidate fragment (C)."
         )
         self.reassign_ids_btn = _tool_btn(
             "#", "Reassign cell IDs to contiguous range 1-N."
@@ -455,6 +458,7 @@ class NucleusCorrectionWidget(QWidget):
             (self.save_tracked_btn,),
             (self.extend_back_btn, self.extend_fwd_btn),
             (self.retrack_back_btn, self.retrack_fwd_btn),
+            (self.swap_smaller_btn, self.swap_larger_btn),
             (self.validate_track_btn, self.anchor_here_btn),
             (self.annotate_db_btn,),
             (self.reassign_ids_btn, self.remove_unvalidated_btn),
@@ -525,6 +529,12 @@ class NucleusCorrectionWidget(QWidget):
         self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
         self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
         self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
+        self.swap_smaller_btn.clicked.connect(
+            lambda: self._on_swap_step(direction="smaller")
+        )
+        self.swap_larger_btn.clicked.connect(
+            lambda: self._on_swap_step(direction="larger")
+        )
         self.remove_unvalidated_btn.clicked.connect(
             self._on_remove_unvalidated_labels
         )
@@ -1399,24 +1409,60 @@ class NucleusCorrectionWidget(QWidget):
         logger.exception("Correction worker error", exc_info=exc)
 
     def _install_correction_shortcuts(self) -> None:
-        specs = [
+        # Correction hotkeys are bound on the active tracked Labels layer via
+        # napari's keymap (see _bind_correction_keys), NOT Qt QShortcuts. The
+        # single-letter keys collide with napari's built-in keybindings
+        # (Z=pan_zoom, E=erase, B=preserve_labels, C=auto_contrast, S=select,
+        # A=select_all, D=direct_mode). A Qt ApplicationShortcut only wins that
+        # race intermittently — once it goes ambiguous (e.g. the widget is
+        # recreated and its app-global QShortcuts linger) the keypress falls
+        # through to napari, which flips the layer mode instead of swapping.
+        # layer.bind_key(overwrite=True) is the only mechanism that
+        # deterministically takes precedence. "V" is intentionally omitted: it
+        # is already bound at the viewer level (NucleusWorkflowWidget) and
+        # surfaces here while the tracked layer is active.
+        self._correction_key_specs = [
             ("A", lambda: self._on_extend(direction="backward")),
             ("D", lambda: self._on_extend(direction="forward")),
             ("Q", self._on_retrack_backward),
             ("E", self._on_retrack_forward),
             ("B", self._on_anchor_here),
-            ("V", lambda: self._kb_toggle_cell_validation(None)),
             ("S", self._on_save_tracked),
             ("Z", lambda: self._on_swap_step(direction="smaller")),
             ("C", lambda: self._on_swap_step(direction="larger")),
         ]
-        self._correction_shortcuts: list[QShortcut] = []
-        for key, slot in specs:
-            sc = QShortcut(QKeySequence(key), self)
-            sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-            sc.setEnabled(False)
-            sc.activated.connect(slot)
-            self._correction_shortcuts.append(sc)
+        self._bound_correction_keys: list[str] = []
+        self._correction_keys_layer = None
+
+    def _bind_correction_keys(self) -> None:
+        """Bind correction hotkeys on the active tracked Labels layer.
+
+        Layer-level keymap entries take precedence over both napari's built-in
+        class keybindings and the viewer keymap, so this overrides the
+        conflicting defaults (Z, E, B, …) only while correction is active.
+        """
+        self._unbind_correction_keys()
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            return
+        for key, slot in self._correction_key_specs:
+            def handler(_layer, _slot=slot):
+                _slot()
+
+            layer.bind_key(key, handler, overwrite=True)
+            self._bound_correction_keys.append(key)
+        self._correction_keys_layer = layer
+
+    def _unbind_correction_keys(self) -> None:
+        layer = self._correction_keys_layer
+        for key in self._bound_correction_keys:
+            try:
+                if layer is not None:
+                    layer.bind_key(key, None)
+            except Exception:
+                pass
+        self._bound_correction_keys = []
+        self._correction_keys_layer = None
 
     def _on_correction_active_button_toggled(self, active: bool) -> None:
         if active:
@@ -1455,8 +1501,7 @@ class NucleusCorrectionWidget(QWidget):
         self._set_checked_without_signal(self.active_btn, False)
         self._correction_active_content_visible = False
         self.correction_widget.deactivate()
-        for sc in getattr(self, "_correction_shortcuts", []):
-            sc.setEnabled(False)
+        self._unbind_correction_keys()
         # Refresh the main Tracked layer from disk so a subsequent re-solve
         # picks up any corrections the user saved during this session.
         self._refresh_tracked_layer_from_disk()
@@ -1495,8 +1540,10 @@ class NucleusCorrectionWidget(QWidget):
             self._swap_cursor = None
             self._clear_track_path_overlay()
             self._teardown_film_strip()
-        for sc in self._correction_shortcuts:
-            sc.setEnabled(active)
+        if active:
+            self._bind_correction_keys()
+        else:
+            self._unbind_correction_keys()
 
     def _kb_toggle_cell_validation(self, _viewer) -> None:
         if self._pos_dir is None:

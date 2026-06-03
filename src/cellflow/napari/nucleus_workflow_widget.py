@@ -291,6 +291,8 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self.extend_fwd_btn = correction.extend_fwd_btn
         self.retrack_back_btn = correction.retrack_back_btn
         self.retrack_fwd_btn = correction.retrack_fwd_btn
+        self.swap_smaller_btn = correction.swap_smaller_btn
+        self.swap_larger_btn = correction.swap_larger_btn
         self.reassign_ids_btn = correction.reassign_ids_btn
         self.validate_track_btn = correction.validate_track_btn
         self.anchor_here_btn = correction.anchor_here_btn
@@ -359,13 +361,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
             "_frames_with_cell",
         ):
             setattr(self, name, getattr(correction, name))
-
-        # Qt 5 skips shortcuts whose parent widget is hidden, even for
-        # ApplicationShortcut context.  Reparent them to this widget (which
-        # stays visible) so they continue to fire once correction mode is
-        # activated.
-        for sc in correction._correction_shortcuts:
-            sc.setParent(self)
 
     # -- Atom Extraction ---------------------------------------------------
 
