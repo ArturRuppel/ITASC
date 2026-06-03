@@ -23,6 +23,7 @@ def _stub_widget() -> SimpleNamespace:
         _validated_overlay=SimpleNamespace(on_cells_edited=MagicMock()),
         validation_counter_lbl=object(),
         _refresh_lineage_canvas_if_shown=MagicMock(),
+        _refresh_candidate_gallery_if_shown=MagicMock(),
     )
 
 
@@ -34,5 +35,7 @@ def test_cells_edited_rebuilds_canvas() -> None:
     # The pre-existing refreshes still fire …
     stub._refresh_correction_label_visuals_for_edit.assert_called_once_with(3, {7})
     stub._validated_overlay.on_cells_edited.assert_called_once()
-    # … and the canvas gets a live rebuild on every edit (gated inside the helper).
+    # … and the canvas + candidate gallery get a live rebuild on every edit
+    # (each gated inside its helper).
     stub._refresh_lineage_canvas_if_shown.assert_called_once_with()
+    stub._refresh_candidate_gallery_if_shown.assert_called_once_with()

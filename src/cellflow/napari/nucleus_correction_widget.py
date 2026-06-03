@@ -94,6 +94,7 @@ from cellflow.napari.validated_overlay_controller import (
 )
 from cellflow.napari.track_path_controller import TrackPathController
 from cellflow.napari.lineage_canvas_controller import LineageCanvasController
+from cellflow.napari.candidate_gallery_controller import CandidateGalleryController
 from cellflow.napari._correction_takeover import (
     hide_native_docks,
     restore_native_docks,
@@ -199,6 +200,22 @@ class NucleusCorrectionWidget(QWidget):
             current_t_provider=self._current_t,
             on_activate=self._navigate_to_error,
             pos_dir_provider=lambda: self._pos_dir,
+        )
+        self._candidate_gallery = CandidateGalleryController(
+            self.viewer,
+            tracked_data_provider=self._ensure_tracked_layer_data,
+            tracked_layer_provider=self._correction_tracked_layer,
+            intensity_layer_provider=self._film_strip_intensity_layer,
+            selected_label_provider=lambda: int(
+                getattr(self.correction_widget, "_selected_label", 0) or 0
+            ),
+            current_t_provider=self._current_t,
+            db_path_provider=self._ultrack_db_path,
+            protected_mask_provider=self._gallery_protected_mask,
+            extend_kwargs_provider=self._extend_kwargs,
+            apply_swap=self._apply_swap_candidate,
+            apply_extend=self._apply_extend_candidate,
+            status_callback=self._correction_status,
         )
 
     @property
@@ -407,6 +424,14 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.lineage_canvas_check.setVisible(False)
         group_lay.addWidget(self.lineage_canvas_check)
+        self.candidate_gallery_check = QCheckBox("Show candidate gallery")
+        self.candidate_gallery_check.setToolTip(
+            "Dock three thumbnail columns — extend-backward, swap, extend-forward — "
+            "of the candidate segmentations for the selected cell at this frame. "
+            "Click a thumbnail to apply that extend/swap."
+        )
+        self.candidate_gallery_check.setVisible(False)
+        group_lay.addWidget(self.candidate_gallery_check)
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
         group_lay.addWidget(self.correction_widget._attrib_lbl)
@@ -458,6 +483,7 @@ class NucleusCorrectionWidget(QWidget):
         self.commit_btn.clicked.connect(self._on_commit)
         self.track_path_check.toggled.connect(self._on_toggle_track_path)
         self.lineage_canvas_check.toggled.connect(self._on_toggle_lineage_canvas)
+        self.candidate_gallery_check.toggled.connect(self._on_toggle_candidate_gallery)
         self.params_btn.toggled.connect(
             self._on_correction_params_button_toggled
         )
@@ -491,6 +517,7 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_widget._attrib_lbl.setVisible(show_active)
         self.track_path_check.setVisible(show_active)
         self.lineage_canvas_check.setVisible(show_active)
+        self.candidate_gallery_check.setVisible(show_active)
 
         if show_params or show_shortcuts or show_active:
             self.section.expand()
@@ -1140,6 +1167,134 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_widget._record_history(layer, t, before)
         layer.refresh()
 
+    # ── candidate gallery (clickable extend / swap thumbnails) ─────────────────
+
+    def _extend_kwargs(self) -> dict:
+        """Scoring knobs shared by extend_track_from_db and list_extend_candidates."""
+        return dict(
+            d_max=float(self.extend_max_dist_spin.value()),
+            area_weight=float(self.extend_area_weight_spin.value()),
+            iou_weight=float(self.extend_iou_weight_spin.value()),
+            distance_weight=float(self.extend_distance_weight_spin.value()),
+            overlap_penalty=float(self.extend_overlap_penalty_spin.value()),
+        )
+
+    def _gallery_protected_mask(self, t: int) -> np.ndarray | None:
+        """Protected-pixel mask at ``t`` for swap candidates (excludes the source)."""
+        pos_dir = self._pos_dir
+        layer = self._correction_tracked_layer()
+        if pos_dir is None or layer is None:
+            return None
+        frame = frame_view_2d(np.asarray(layer.data), t)
+        if frame is None:
+            return None
+        source_id = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        validated_tracks = read_validated_tracks(pos_dir)
+        corrections = read_corrections(pos_dir)
+        protected_ids = protected_cell_ids_at_frame(
+            validated_tracks,
+            corrections,
+            frame=t,
+            exclude_cell_id=source_id,
+        )
+        return protected_cell_mask(frame, protected_ids)
+
+    def _refresh_candidate_gallery_if_shown(self) -> None:
+        if self.candidate_gallery_check.isChecked():
+            self._candidate_gallery.refresh()
+
+    def _apply_swap_candidate(self, candidate) -> None:
+        """Apply a swap candidate picked from the gallery (mirrors Z/C apply)."""
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No tracked layer loaded."); return
+        source_id = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        if not source_id:
+            self._correction_status("Swap: no cell selected (left-click first)."); return
+        t = self._current_t()
+        validated_tracks = (
+            read_validated_tracks(self._pos_dir) if self._pos_dir is not None else {}
+        )
+        if source_id in validated_tracks:
+            self._correction_status("Cannot swap a validated cell."); return
+        # A direct gallery pick is independent of any in-flight Z/C cursor.
+        self._swap_cursor = None
+        self._apply_swap(layer, t, source_id, candidate, validated_tracks)
+        self._refresh_swap_visuals_live()
+        self._correction_status(
+            f"Swapped cell {source_id} -> candidate (area={int(candidate.area)} px). Unsaved."
+        )
+
+    def _apply_extend_candidate(self, which: str, target_frame: int, assignment) -> None:
+        """Apply an extend candidate picked from the gallery (mirrors A/D apply)."""
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No tracked layer loaded."); return
+        if target_frame < 0 or target_frame >= layer.data.shape[0]:
+            self._correction_status("Extend target frame out of range."); return
+        changed_ids = self._paint_extend_assignment(
+            layer,
+            target_frame,
+            assignment,
+            greedy=self.extend_greedy_overwrite_check.isChecked(),
+        )
+        if not changed_ids:
+            self._correction_status(
+                f"Extend skipped: cell {int(assignment.cell_id)} is protected "
+                f"at t={target_frame}."
+            )
+            return
+        step = list(self.viewer.dims.current_step)
+        if step:
+            step[0] = int(target_frame)
+            self.viewer.dims.current_step = tuple(step)
+        self._refresh_track_visuals_live()
+        self._correction_status(
+            f"Extended cell {int(assignment.cell_id)} -> t={target_frame} "
+            f"(iou={float(assignment.centroid_corrected_iou):.2f}, "
+            f"dist={float(assignment.centroid_distance):.1f}px). Unsaved."
+        )
+
+    def _paint_extend_assignment(
+        self, layer, target_frame: int, assignment, *, greedy: bool
+    ) -> set[int]:
+        """Paint one extend assignment at ``target_frame`` honoring protection.
+
+        Returns the set of changed cell ids (empty when the source is protected
+        at the target, or nothing changed).
+        """
+        frame = layer.data[target_frame]
+        before = np.asarray(frame).copy()
+        validated_tracks = (
+            read_validated_tracks(self._pos_dir) if self._pos_dir is not None else {}
+        )
+        corrections = (
+            read_corrections(self._pos_dir) if self._pos_dir is not None else []
+        )
+        protected_ids = protected_cell_ids_at_frame(
+            validated_tracks, corrections, frame=target_frame
+        )
+        cid = int(assignment.cell_id)
+        if cid in protected_ids:
+            return set()
+        protected_mask = protected_cell_mask(frame, protected_ids)
+        frame[frame == cid] = 0
+        if greedy:
+            frame[assignment.mask_2d & ~protected_mask] = cid
+        else:
+            frame[assignment.mask_2d & (frame == 0)] = cid
+        changed = before != frame
+        changed_ids = (
+            set(int(v) for v in np.unique(before[changed]))
+            | set(int(v) for v in np.unique(np.asarray(frame)[changed]))
+        )
+        changed_ids.discard(0)
+        if not changed_ids:
+            return set()
+        layer.refresh()
+        self._refresh_correction_label_visuals_for_edit(target_frame, changed_ids)
+        return changed_ids
+
     def _on_retrack_forward(self) -> None:
         if self._pos_dir is None:
             self._correction_status("No project open."); return
@@ -1398,6 +1553,8 @@ class NucleusCorrectionWidget(QWidget):
             # The lineage canvas is the headline focus-mode view: open it by
             # default (checking the box docks + renders it via its toggle).
             self.lineage_canvas_check.setChecked(True)
+            # The candidate galleries open alongside it as the action surface.
+            self.candidate_gallery_check.setChecked(True)
             return
 
         if not self._confirm_deactivate_with_unsaved_changes():
@@ -1451,6 +1608,7 @@ class NucleusCorrectionWidget(QWidget):
             self._swap_cursor = None
             self._clear_track_path_overlay()
             self._lineage_canvas.teardown()
+            self._candidate_gallery.teardown()
         if active:
             self._bind_correction_keys()
         else:
@@ -1499,6 +1657,9 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_validation_counter()
         if self.lineage_canvas_check.isChecked():
             self._lineage_canvas.set_current_frame(self._current_t())
+        # Candidates are frame-specific (the swap lattice + adjacent-frame extend),
+        # so a frame change invalidates them — recompute for the new frame.
+        self._refresh_candidate_gallery_if_shown()
 
     def _refresh_validated_overlay(self) -> None:
         self._validated_overlay.refresh_overlay(frame_view_2d)
@@ -1524,6 +1685,7 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_track_path_overlay()
         if self.lineage_canvas_check.isChecked():
             self._lineage_canvas.set_selection(_lab)
+        self._refresh_candidate_gallery_if_shown()
 
     def _refresh_track_visuals_live(self) -> None:
         """Rebuild the comet overlay and film strip after an edit.
@@ -1535,6 +1697,7 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_track_path_overlay()
             self._refresh_track_path_spotlight()
         self._refresh_lineage_canvas_if_shown()
+        self._refresh_candidate_gallery_if_shown()
 
     def _refresh_swap_visuals_live(self) -> None:
         """Cheap post-swap refresh used while stepping candidates with Z / C.
@@ -1549,6 +1712,7 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_track_path_spotlight()
         if self.lineage_canvas_check.isChecked():
             self._lineage_canvas.refresh_detail()
+        self._refresh_candidate_gallery_if_shown()
 
     def _refresh_lineage_canvas_if_shown(self) -> None:
         """Rebuild the lineage canvas (overview + detail) after a label change."""
@@ -1594,6 +1758,12 @@ class NucleusCorrectionWidget(QWidget):
         else:
             self._lineage_canvas.teardown()
 
+    def _on_toggle_candidate_gallery(self, checked: bool) -> None:
+        if checked:
+            self._candidate_gallery.refresh()
+        else:
+            self._candidate_gallery.teardown()
+
     def _navigate_to_error(self, t: int, cell_id: int) -> None:
         """Jump the viewer to frame ``t`` and select ``cell_id`` (lineage canvas)."""
         try:
@@ -1609,9 +1779,11 @@ class NucleusCorrectionWidget(QWidget):
             logger.exception("focus-mode navigation: cell select failed")
 
     def _teardown_focus_panels(self) -> None:
-        """Undock the lineage canvas and clear its toggle."""
+        """Undock the focus-mode panels (lineage canvas, candidate gallery)."""
         self._set_checked_without_signal(self.lineage_canvas_check, False)
         self._lineage_canvas.teardown()
+        self._set_checked_without_signal(self.candidate_gallery_check, False)
+        self._candidate_gallery.teardown()
 
     def _refresh_validation_counter(self) -> None:
         self._validated_overlay.refresh_counter(self.validation_counter_lbl)
@@ -1628,6 +1800,7 @@ class NucleusCorrectionWidget(QWidget):
         # here, so rebuild the canvas too (its overview presence + detail strip
         # go stale otherwise) — the retrack/extend paths do this separately.
         self._refresh_lineage_canvas_if_shown()
+        self._refresh_candidate_gallery_if_shown()
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
         return self._validated_overlay.frames_with_cell(cell_id)
