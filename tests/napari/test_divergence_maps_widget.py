@@ -379,6 +379,8 @@ def test_worker_emits_granular_progress_for_nucleus_and_cell(tmp_path, monkeypat
         contour_z_reduction,
         smoothing_sigma,
         median_radius,
+        foreground_smoothing_sigma=0.0,
+        foreground_median_radius=0,
         progress_cb=None,
         cancel=None,
     ):

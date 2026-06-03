@@ -12,9 +12,6 @@ import tifffile
 from napari.qt.threading import thread_worker as _thread_worker
 from qtpy.QtWidgets import (
     QCheckBox,
-    QFrame,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -35,10 +32,6 @@ from cellflow.napari._correction_centroids import (
     refresh_centroid_cross_layer,
     refresh_label_colormap,
     update_centroid_cross_layer_for_edit,
-)
-from cellflow.napari._correction_track_path import (
-    build_track_film_strip,
-    build_track_path_overlay,
 )
 from cellflow.napari._correction_anchor import (
     anchor_correction,
@@ -97,13 +90,19 @@ from cellflow.napari.ui_style import (
     add_block_pair_row,
     block_grid,
     danger_button,
-    stage_header_action_button,
-    stage_header_label,
 )
 from cellflow.napari.validated_overlay_controller import (
     ValidatedOverlayController,
 )
+from cellflow.napari.film_strip_controller import FilmStripController
+from cellflow.napari.track_path_controller import TrackPathController
 from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari._correction_ui import (
+    build_correction_header,
+    build_correction_toolbar,
+    build_shortcuts_widget,
+    flatten_embedded_section,
+)
 from cellflow.tracking_ultrack.corrections import (
     Correction,
     corrections_from_validated_tracks,
@@ -131,11 +130,7 @@ _CORRECTION_CENTROID_LAYER = "[Correction] Nucleus Centroids"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
-_CORRECTION_TRACK_PATH_LAYER = "[Correction] Track Path"
-_CORRECTION_TRACK_PATH_NUMBERS_LAYER = "[Correction] Track Path Numbers"
 _NUCLEUS_TRACK_COLOR_SCALE = 0.65
-# Slightly transparent so the underlying labels stay readable through the comet.
-_TRACK_PATH_OPACITY = 0.8
 
 _DEFAULT_DEPENDENCIES = {
     "annotate_database_from_corrections": _annotate_database_from_corrections,
@@ -180,6 +175,27 @@ class NucleusCorrectionWidget(QWidget):
             owned_layers=self._correction_owned_layers,
         )
         self._setup_ui()
+        self._film_strip = FilmStripController(
+            self.viewer,
+            tracked_layer_provider=self._correction_tracked_layer,
+            intensity_layer_provider=self._film_strip_intensity_layer,
+            pos_dir_provider=lambda: self._pos_dir,
+            current_t_provider=self._current_t,
+            selected_label_provider=lambda: int(
+                getattr(self.correction_widget, "_selected_label", 0) or 0
+            ),
+            tile_px=self.film_strip_size_spin.value(),
+        )
+        self._track_path = TrackPathController(
+            self.viewer,
+            tracked_layer_provider=self._correction_tracked_layer,
+            selected_label_provider=lambda: int(
+                getattr(self.correction_widget, "_selected_label", 0) or 0
+            ),
+            enabled_provider=self.track_path_check.isChecked,
+            status_callback=self._correction_status,
+            owned_layers=self._correction_owned_layers,
+        )
 
     @property
     def _pos_dir(self):
@@ -342,7 +358,7 @@ class NucleusCorrectionWidget(QWidget):
             expanded=False,
 
         )
-        self._flatten_embedded_correction_section(self.extend_retrack_params_section)
+        flatten_embedded_section(self.extend_retrack_params_section)
         self.extend_retrack_params_section.setVisible(False)
         self.extend_params_section = self.extend_retrack_params_section
         self.retrack_params_section = self.extend_retrack_params_section
@@ -350,16 +366,27 @@ class NucleusCorrectionWidget(QWidget):
 
         self.shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
-            self._build_shortcuts_widget(),
+            build_shortcuts_widget(),
             expanded=False,
 
         )
-        self._flatten_embedded_correction_section(self.shortcuts_section)
+        flatten_embedded_section(self.shortcuts_section)
         self.shortcuts_section.setVisible(False)
         group_lay.addWidget(self.shortcuts_section)
         group_lay.addWidget(self.correction_widget)
         self.correction_widget.setVisible(False)
-        self.toolbar = self._build_correction_toolbar()
+        self.toolbar = build_correction_toolbar(
+            self,
+            [
+                (self.save_tracked_btn,),
+                (self.extend_back_btn, self.extend_fwd_btn),
+                (self.retrack_back_btn, self.retrack_fwd_btn),
+                (self.swap_smaller_btn, self.swap_larger_btn),
+                (self.validate_track_btn, self.anchor_here_btn),
+                (self.annotate_db_btn,),
+                (self.reassign_ids_btn, self.remove_unvalidated_btn),
+            ],
+        )
         self.toolbar.setVisible(False)
         group_lay.addWidget(self.toolbar)
         self.track_path_check = QCheckBox("Show track path")
@@ -396,7 +423,12 @@ class NucleusCorrectionWidget(QWidget):
         self.validation_counter_lbl.setVisible(False)
         self.correction_widget._attrib_lbl.setVisible(False)
 
-        self.header = self._build_correction_header()
+        self.header, self.header_lbl = build_correction_header(
+            self,
+            shortcuts_btn=self.shortcuts_btn,
+            params_btn=self.params_btn,
+            active_btn=self.active_btn,
+        )
 
         self.section = CollapsibleSection(
             "Correction",
@@ -413,111 +445,6 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_mode_section = self.section
         self._correction_active_content_visible = False
         self._connect_signals()
-
-    @staticmethod
-    def _flatten_embedded_correction_section(section: CollapsibleSection) -> None:
-        section.set_header_visible(False)
-        section.layout().setContentsMargins(0, 0, 0, 0)
-        section._content_frame.layout().setContentsMargins(0, 0, 0, 0)
-        section._content_frame.setStyleSheet(
-            "QFrame#collapsible_content { border: none; margin: 0px; }"
-        )
-
-    def _build_correction_header(self) -> QWidget:
-        """Build the stage-style correction header with top-level controls."""
-        header = QWidget(self)
-        row = QHBoxLayout(header)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
-
-        self.header_lbl = QLabel("Correction")
-        stage_header_label(self.header_lbl, "nucleus")
-        for button in (self.shortcuts_btn, self.params_btn, self.active_btn):
-            stage_header_action_button(button, "nucleus")
-        row.addWidget(self.header_lbl)
-        row.addWidget(self.shortcuts_btn)
-        row.addWidget(self.params_btn)
-        row.addWidget(self.active_btn)
-        row.addStretch(1)
-        return header
-
-    def _build_correction_toolbar(self) -> QWidget:
-        """Build the active-only correction action toolbar."""
-        toolbar = QWidget(self)
-        row = QHBoxLayout(toolbar)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
-
-        def _sep() -> QFrame:
-            line = QFrame()
-            line.setFrameShape(QFrame.VLine)
-            line.setFrameShadow(QFrame.Sunken)
-            return line
-
-        groups: list[tuple] = [
-            (self.save_tracked_btn,),
-            (self.extend_back_btn, self.extend_fwd_btn),
-            (self.retrack_back_btn, self.retrack_fwd_btn),
-            (self.swap_smaller_btn, self.swap_larger_btn),
-            (self.validate_track_btn, self.anchor_here_btn),
-            (self.annotate_db_btn,),
-            (self.reassign_ids_btn, self.remove_unvalidated_btn),
-        ]
-        for i, group in enumerate(groups):
-            if i > 0:
-                row.addWidget(_sep())
-            for b in group:
-                row.addWidget(b)
-        row.addStretch(1)
-        return toolbar
-
-    def _build_shortcuts_widget(self) -> QWidget:
-        group = QGroupBox("Correction shortcuts")
-        grid = QGridLayout(group)
-        grid.setContentsMargins(8, 6, 8, 6)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(2)
-        row = 0
-        row = CorrectionWidget._add_shortcut_group(
-            grid,
-            "Track Workflow",
-            [
-                ("V", "Validate selected track"),
-                ("B", "Anchor selected cell at current frame"),
-                ("A / D", "Extend selected track backward / forward"),
-                ("Q / E", "Retrack backward / forward"),
-                ("Z / C", "Swap with smaller / larger candidate fragment"),
-                ("S", "Save tracked labels"),
-            ],
-            start_row=row,
-            is_first=True,
-        )
-        row = CorrectionWidget._add_shortcut_group(
-            grid,
-            "Selection",
-            [
-                ("Left-click", "Select / highlight cell"),
-                ("Shift+Left / Shift+Right", "Previous / next cell"),
-            ],
-            start_row=row,
-        )
-        row = CorrectionWidget._add_shortcut_group(
-            grid,
-            "Manual Labels",
-            [
-                ("Middle-click or Delete", "Erase cell"),
-                ("Ctrl+Left-click", "Merge selected with clicked cell"),
-                ("Right-click variants", "Swap labels"),
-                ("Shift+Left-drag", "Draw / extend cell path"),
-                ("Shift+Right-drag", "Split by drawn line"),
-            ],
-            start_row=row,
-        )
-        row = CorrectionWidget._add_shortcut_group(
-            grid, "History", [("Ctrl+Z", "Undo")], start_row=row
-        )
-        grid.setColumnStretch(1, 1)
-        return group
 
     def _connect_signals(self) -> None:
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
@@ -639,9 +566,6 @@ class NucleusCorrectionWidget(QWidget):
 
     def _nls_zavg_path(self):
         return self._paths.nls_zavg if self._paths else None
-
-    def _ultrack_db_path(self):
-        return self._paths.ultrack_db if self._paths else None
 
     def _current_t(self) -> int:
         step = self.viewer.dims.current_step
@@ -1586,9 +1510,8 @@ class NucleusCorrectionWidget(QWidget):
         self._swap_cursor = None
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
-        panel = getattr(self, "_film_strip_panel", None)
-        if panel is not None and self.film_strip_check.isChecked():
-            panel.set_current_frame(self._current_t())
+        if self.film_strip_check.isChecked():
+            self._film_strip.set_current_frame(self._current_t())
 
     def _refresh_validated_overlay(self) -> None:
         self._validated_overlay.refresh_overlay(frame_view_2d)
@@ -1634,17 +1557,7 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_film_strip()
 
     def _track_path_spotlight_mask(self, _t: int, lab: int, _default_mask):
-        """Spotlight the union of the selected track's masks while the comet is on."""
-        if not self.track_path_check.isChecked() or not lab:
-            return None
-        layer = self._correction_tracked_layer()
-        if layer is None:
-            return None
-        data = np.asarray(layer.data)
-        if data.ndim != 3:
-            return None
-        union = np.any(data == int(lab), axis=0)
-        return union if union.any() else None
+        return self._track_path.spotlight_mask(_t, lab, _default_mask)
 
     def _refresh_track_path_spotlight(self) -> None:
         """Re-run the inner highlight so the spotlight mask provider is consulted."""
@@ -1658,71 +1571,18 @@ class NucleusCorrectionWidget(QWidget):
             logger.exception("track path spotlight refresh failed")
 
     def _refresh_track_path_overlay(self) -> None:
-        lab = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
-        if not self.track_path_check.isChecked() or not lab:
-            self._clear_track_path_overlay()
-            return
-        layer = self._correction_tracked_layer()
-        if layer is None:
-            self._clear_track_path_overlay()
-            return
-        overlay = build_track_path_overlay(np.asarray(layer.data), lab)
-        if overlay.is_empty():
-            self._clear_track_path_overlay()
-            return
-        self._update_track_path_layers(overlay)
-        self._correction_status(
-            f"Track path: cell {lab} across {len(overlay.frames)} frame(s)."
-        )
-
-    def _update_track_path_layers(self, overlay) -> None:
-        from napari.layers import Image
-
-        name = _CORRECTION_TRACK_PATH_LAYER
-        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Image):
-            layer = self.viewer.layers[name]
-            layer.data = overlay.overlay
-            layer.opacity = _TRACK_PATH_OPACITY
-        else:
-            if name in self.viewer.layers:
-                self.viewer.layers.remove(name)
-            self.viewer.add_image(
-                overlay.overlay,
-                name=name,
-                rgb=True,
-                blending="translucent",
-                opacity=_TRACK_PATH_OPACITY,
-            )
-        self._correction_owned_layers.add(name)
-
-        # The per-frame number labels are intentionally not drawn anymore; drop
-        # any layer left over from an earlier session.
-        nname = _CORRECTION_TRACK_PATH_NUMBERS_LAYER
-        if nname in self.viewer.layers:
-            self.viewer.layers.remove(nname)
-        self._correction_owned_layers.discard(nname)
-
-        try:
-            self.viewer.layers.selection.active = self._correction_tracked_layer()
-        except Exception:
-            pass
+        self._track_path.refresh()
 
     def _clear_track_path_overlay(self) -> None:
-        for name in (
-            _CORRECTION_TRACK_PATH_LAYER,
-            _CORRECTION_TRACK_PATH_NUMBERS_LAYER,
-        ):
-            if name in self.viewer.layers:
-                self.viewer.layers.remove(self.viewer.layers[name])
-            self._correction_owned_layers.discard(name)
+        self._track_path.clear()
 
     # -- Film strip (docked per-frame crops of the selected track) ---------
 
     def _on_toggle_film_strip(self, checked: bool) -> None:
         if checked:
-            self._refresh_film_strip()
+            self._film_strip.refresh()
         else:
-            self._teardown_film_strip()
+            self._film_strip.teardown()
 
     def _film_strip_intensity_layer(self):
         """Best raw layer to crop tiles from (nucleus, then cell, then NLS)."""
@@ -1735,114 +1595,14 @@ class NucleusCorrectionWidget(QWidget):
                 return self.viewer.layers[name]
         return None
 
-    def _ensure_film_strip_panel(self):
-        panel = getattr(self, "_film_strip_panel", None)
-        if panel is not None:
-            return panel
-        from cellflow.napari._correction_film_strip import TrackFilmStripPanel
-
-        panel = TrackFilmStripPanel(tile_px=self.film_strip_size_spin.value())
-        panel.frame_clicked.connect(self._on_film_strip_frame_clicked)
-        self._film_strip_panel = panel
-        try:
-            self._film_strip_dock = self.viewer.window.add_dock_widget(
-                panel, name="Track film strip", area="bottom"
-            )
-        except Exception:
-            logger.exception("could not dock the track film strip")
-            self._film_strip_dock = None
-        return panel
-
     def _refresh_film_strip(self) -> None:
-        lab = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
-        tracked = self._correction_tracked_layer()
-        intensity = self._film_strip_intensity_layer()
-        if not lab or tracked is None or intensity is None:
-            panel = getattr(self, "_film_strip_panel", None)
-            if panel is not None:
-                from cellflow.napari._correction_track_path import TrackFilmStrip
-
-                panel.set_strip(TrackFilmStrip(tiles=()), title="No track selected")
-            return
-        validated_frames, anchored_frames = self._track_validated_anchored_frames(lab)
-        strip = build_track_film_strip(
-            np.asarray(tracked.data),
-            np.asarray(intensity.data),
-            lab,
-            colormap=self._film_strip_colormap(intensity),
-            outline_color=self._track_outline_color(lab),
-            validated_frames=validated_frames,
-            anchored_frames=anchored_frames,
-        )
-        panel = self._ensure_film_strip_panel()
-        panel.set_strip(strip, title=f"Track {lab} — {len(strip.frames)} frame(s)")
-        panel.set_current_frame(self._current_t())
-
-    def _track_outline_color(self, lab: int):
-        """RGB (0..1) the tracked labels layer paints cell ``lab`` with, or None."""
-        layer = self._correction_tracked_layer()
-        color_dict = getattr(getattr(layer, "colormap", None), "color_dict", None)
-        try:
-            raw = color_dict.get(int(lab)) if color_dict is not None else None
-        except Exception:
-            raw = None
-        if raw is None or isinstance(raw, str):
-            return None
-        rgba = np.asarray(raw, dtype=float).ravel()
-        if rgba.size < 3:
-            return None
-        return (float(rgba[0]), float(rgba[1]), float(rgba[2]))
-
-    def _track_validated_anchored_frames(self, lab: int) -> tuple[set[int], set[int]]:
-        """Frames where cell ``lab`` is validated / anchored (empty if no project)."""
-        if self._pos_dir is None:
-            return set(), set()
-        validated = {
-            int(f) for f in read_validated_tracks(self._pos_dir).get(int(lab), set())
-        }
-        anchored = {
-            int(correction.t)
-            for correction in read_corrections(self._pos_dir)
-            if correction.kind == "anchor" and int(correction.cell_id) == int(lab)
-        }
-        return validated, anchored
-
-    @staticmethod
-    def _film_strip_colormap(layer):
-        """Adapt the intensity layer's colormap (e.g. 'I Purple') to a (h,w)->RGB map."""
-        cmap = getattr(layer, "colormap", None)
-        if cmap is None or not hasattr(cmap, "map"):
-            return None
-
-        def _map(values: np.ndarray) -> np.ndarray:
-            flat = np.asarray(values, dtype=float).ravel()
-            mapped = np.asarray(cmap.map(flat), dtype=float)
-            return mapped.reshape(values.shape + (mapped.shape[-1],))
-
-        return _map
+        self._film_strip.refresh()
 
     def _on_film_strip_size_changed(self, value: int) -> None:
-        panel = getattr(self, "_film_strip_panel", None)
-        if panel is not None:
-            panel.set_tile_size(int(value))
-
-    def _on_film_strip_frame_clicked(self, frame: int) -> None:
-        try:
-            step = list(self.viewer.dims.current_step)
-            step[0] = int(frame)
-            self.viewer.dims.current_step = tuple(step)
-        except Exception:
-            logger.exception("film strip frame jump failed")
+        self._film_strip.set_tile_size(value)
 
     def _teardown_film_strip(self) -> None:
-        dock = getattr(self, "_film_strip_dock", None)
-        if dock is not None:
-            try:
-                self.viewer.window.remove_dock_widget(dock)
-            except Exception:
-                logger.exception("could not remove the track film strip dock")
-        self._film_strip_dock = None
-        self._film_strip_panel = None
+        self._film_strip.teardown()
 
     def _refresh_validation_counter(self) -> None:
         self._validated_overlay.refresh_counter(self.validation_counter_lbl)
