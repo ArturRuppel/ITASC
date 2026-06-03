@@ -1,23 +1,19 @@
-"""Combined correction canvas — a dense swimlane overview plus a focus strip.
+"""Correction swimlane overview — one column per track on a shared time axis.
 
 The thumbnails-for-every-track layout did not scale: long tracks turned into
-columns of mostly-uninformative tiles. This replaces it with an
-overview-plus-detail pattern, kept as two non-overlapping regions so the summary
-stays a clean graph view (room to grow in-place editing later).
+columns of mostly-uninformative tiles. This is the dense graph overview that
+replaced it; the selected track's per-frame film strip now lives in its own
+docked panel (:class:`~cellflow.napari._correction_film_strip.TrackFilmStripPanel`).
 
-* **Overview** (top): one thin *column* per track, ``y`` is time running
-  downward so all tracks share a single global frame axis. A track's present
-  runs draw as bars and a gap (a vanish/return — a likely ID swap) reads as a
-  break. Per-frame status paints into the column: green = validated, orange =
-  anchored. Because the time axis is shared, the
-  current-frame cursor is one horizontal guide line across every column, and the
-  selected track is marked by a vertical cursor line down its column.
-* **Detail** (bottom): the *selected* track's film strip — the only place
-  per-frame crops are built, so cost is O(1 track) regardless of track count.
+One thin *column* per track, ``y`` is time running downward so all tracks share a
+single global frame axis. A track's present runs draw as bars and a gap (a
+vanish/return — a likely ID swap) reads as a break. Per-frame status paints into
+the column: green = validated, orange = anchored. Because the time axis is shared,
+the current-frame cursor is one horizontal guide line across every column, and the
+selected track is marked by a vertical cursor line down its column.
 
-The panel is a pure renderer: the controller hands it ready ``LaneView`` structs
-and a prepared :class:`TrackFilmStrip`; click a column (or a tile) to jump there
-and select the cell via :attr:`node_activated`.
+The panel is a pure renderer: the controller hands it ready ``LaneView`` structs;
+click a column to jump there and select the cell via :attr:`node_activated`.
 """
 from __future__ import annotations
 
@@ -29,13 +25,9 @@ from qtpy.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QLabel,
-    QSplitter,
     QVBoxLayout,
     QWidget,
 )
-
-from cellflow.napari._correction_film_strip import TrackFilmStripPanel
-from cellflow.napari._correction_track_path import TrackFilmStrip
 
 _CLICK_SLOP = 6  # max drag (px) still treated as a click, not a pan
 _ZOOM_STEP = 1.15
@@ -98,18 +90,9 @@ class LineageCanvasPanel(QWidget):
         self._title.setContentsMargins(6, 2, 6, 2)
         outer.addWidget(self._title)
 
-        split = QSplitter(Qt.Vertical)
         self._scene = QGraphicsScene(self)
         self._view = _OverviewView(self)
-        split.addWidget(self._view)
-        self._detail = TrackFilmStripPanel(tile_px=72)
-        self._detail.frame_clicked.connect(self._on_detail_frame_clicked)
-        split.addWidget(self._detail)
-        # Graph view takes 25% of the height by default; the film strip gets 75%.
-        split.setStretchFactor(0, 1)
-        split.setStretchFactor(1, 3)
-        split.setSizes([100, 300])
-        outer.addWidget(split)
+        outer.addWidget(self._view)
 
     # -- overview -----------------------------------------------------------
     def set_overview(
@@ -154,10 +137,9 @@ class LineageCanvasPanel(QWidget):
         self._apply_column_highlight()
 
     def set_current_frame(self, frame: int) -> None:
-        """Move the shared current-frame guide and the detail-strip highlight."""
+        """Move the shared current-frame guide line."""
         self._current_frame = int(frame)
         self._apply_frame_guide()
-        self._detail.set_current_frame(int(frame))
 
     def _apply_column_highlight(self) -> None:
         if self._col_item is not None:
@@ -181,16 +163,6 @@ class LineageCanvasPanel(QWidget):
         y = self._current_frame * _CELL_H + _CELL_H / 2.0
         right = len(self._col_to_cell) * _COL_W
         self._guide_item = self._scene.addLine(0, y, right, y, QPen(_FRAME_GUIDE, 1.5))
-
-    # -- detail -------------------------------------------------------------
-    def set_detail(self, strip: TrackFilmStrip, *, title: str = "") -> None:
-        """Show the selected track's film strip in the detail band."""
-        self._detail.set_strip(strip, title=title)
-        self._detail.set_current_frame(self._current_frame)
-
-    def _on_detail_frame_clicked(self, frame: int) -> None:
-        if self._selected:
-            self.node_activated.emit(int(frame), int(self._selected))
 
     # -- hit-testing --------------------------------------------------------
     def _activate_at(self, scene_x: float, scene_y: float) -> None:

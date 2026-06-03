@@ -67,3 +67,18 @@ def test_clear_empties_every_column(_app):
     panel.clear()
     for which in (panel.EXTEND_BACKWARD, panel.SWAP, panel.EXTEND_FORWARD):
         assert panel.column(which).tiles() == []
+
+
+def test_blocks_stack_vertically_and_tiles_wrap(_app):
+    from cellflow.napari._flow_layout import FlowLayout
+
+    panel = CandidateGalleryPanel()
+    cols = [
+        panel.column(w)
+        for w in (panel.EXTEND_BACKWARD, panel.SWAP, panel.EXTEND_FORWARD)
+    ]
+    # The three blocks are stacked top-to-bottom (ascending y), not side by side.
+    ys = [c.mapTo(panel, c.rect().topLeft()).y() for c in cols]
+    assert ys == sorted(ys) and len(set(ys)) == 3
+    # Each block flows its thumbnails with the wrapping FlowLayout.
+    assert isinstance(cols[0]._body_lay, FlowLayout)

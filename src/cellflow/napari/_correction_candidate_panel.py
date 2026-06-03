@@ -1,9 +1,10 @@
 """Qt view for the extend / swap candidate galleries.
 
-Three :class:`CandidateColumn`s sit side by side — extend-backward · swap ·
-extend-forward — each a titled, scrollable stack of clickable thumbnails built
-from a :class:`~cellflow.napari._correction_candidates.CandidateStrip`. Clicking
-a thumbnail emits ``candidate_activated(which, key)`` so the controller can apply
+Three :class:`CandidateColumn` blocks are stacked top-to-bottom — extend-backward
+· swap · extend-forward — each a titled block whose clickable thumbnails (built
+from a :class:`~cellflow.napari._correction_candidates.CandidateStrip`) flow
+left→right and wrap onto new rows. The whole strip scrolls as one. Clicking a
+thumbnail emits ``candidate_activated(which, key)`` so the controller can apply
 that extend/swap; the pixels themselves come from the pure builder, so this stays
 a thin view. ``rgb_to_qimage`` is the only import-safe symbol without a running
 QApplication.
@@ -14,7 +15,6 @@ from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QFrame,
-    QHBoxLayout,
     QLabel,
     QScrollArea,
     QVBoxLayout,
@@ -23,8 +23,9 @@ from qtpy.QtWidgets import (
 
 from cellflow.napari._correction_candidates import CandidateStrip, CandidateTile
 from cellflow.napari._correction_film_strip import rgb_to_qimage
+from cellflow.napari._flow_layout import FlowLayout
 
-_TILE_PX = 72
+_TILE_PX = 64
 
 
 class _ClickableTile(QFrame):
@@ -73,7 +74,7 @@ class _ClickableTile(QFrame):
 
 
 class CandidateColumn(QWidget):
-    """A titled, scrollable vertical stack of clickable candidate thumbnails."""
+    """A titled block whose candidate thumbnails flow left→right and wrap."""
 
     candidate_clicked = Signal(int)  # key
 
@@ -93,16 +94,9 @@ class CandidateColumn(QWidget):
         self._title.setContentsMargins(4, 2, 4, 2)
         outer.addWidget(self._title)
 
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._body = QWidget()
-        self._body_lay = QVBoxLayout(self._body)
-        self._body_lay.setContentsMargins(2, 2, 2, 2)
-        self._body_lay.setSpacing(4)
-        self._body_lay.addStretch(1)
-        self._scroll.setWidget(self._body)
-        outer.addWidget(self._scroll)
+        self._body_lay = FlowLayout(self._body, margin=2, h_spacing=4, v_spacing=4)
+        outer.addWidget(self._body)
 
     def set_strip(self, strip: CandidateStrip, *, title: str | None = None) -> None:
         """Replace the column's thumbnails (an empty strip shows a placeholder)."""
@@ -124,12 +118,10 @@ class CandidateColumn(QWidget):
         return out
 
     def _clear_body(self) -> None:
-        # Drop every widget but keep the trailing stretch item.
         for i in reversed(range(self._body_lay.count())):
-            item = self._body_lay.itemAt(i)
-            widget = item.widget()
+            item = self._body_lay.takeAt(i)
+            widget = item.widget() if item is not None else None
             if widget is not None:
-                self._body_lay.takeAt(i)
                 widget.deleteLater()
 
     def _rebuild(self) -> None:
@@ -142,16 +134,20 @@ class CandidateColumn(QWidget):
             placeholder = QLabel("—")
             placeholder.setAlignment(Qt.AlignCenter)
             placeholder.setStyleSheet("color: #707070;")
-            self._body_lay.insertWidget(0, placeholder)
+            self._body_lay.addWidget(placeholder)
             return
         for tile in self._strip.tiles:
             widget = _ClickableTile(tile, tile_px=self._tile_px, parent=self._body)
             widget.clicked.connect(self.candidate_clicked)
-            self._body_lay.insertWidget(self._body_lay.count() - 1, widget)
+            self._body_lay.addWidget(widget)
 
 
 class CandidateGalleryPanel(QWidget):
-    """Three candidate columns: extend-backward · swap · extend-forward."""
+    """Three stacked candidate blocks: extend-backward · swap · extend-forward.
+
+    The blocks stack top-to-bottom and the whole strip scrolls as one; each
+    block wraps its thumbnails onto new rows (see :class:`CandidateColumn`).
+    """
 
     EXTEND_BACKWARD = "extend_backward"
     SWAP = "swap"
@@ -162,9 +158,17 @@ class CandidateGalleryPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None, *, tile_px: int = _TILE_PX) -> None:
         super().__init__(parent)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget()
+        stack = QVBoxLayout(body)
+        stack.setContentsMargins(2, 2, 2, 2)
+        stack.setSpacing(6)
 
         self._columns: dict[str, CandidateColumn] = {}
         for which, title in (
@@ -177,7 +181,10 @@ class CandidateGalleryPanel(QWidget):
                 lambda key, _which=which: self.candidate_activated.emit(_which, int(key))
             )
             self._columns[which] = column
-            row.addWidget(column)
+            stack.addWidget(column)
+        stack.addStretch(1)
+        scroll.setWidget(body)
+        outer.addWidget(scroll)
 
     def column(self, which: str) -> CandidateColumn:
         return self._columns[which]

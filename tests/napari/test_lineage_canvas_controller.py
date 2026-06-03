@@ -22,9 +22,14 @@ from cellflow.segmentation.lineage import LineageModel, TrackLane, TrackSegment
 
 @pytest.fixture
 def stubbed(monkeypatch):
-    """Stub the Qt panel and the pure builders the controller composes."""
+    """Stub the Qt panels and the pure builders the controller composes.
+
+    Returns the *overview* panel factory; the film-strip panel factory is
+    available as ``lcc.TrackFilmStripPanel`` (also a MagicMock).
+    """
     panel_factory = MagicMock(name="LineageCanvasPanel")
     monkeypatch.setattr(lcc, "LineageCanvasPanel", panel_factory)
+    monkeypatch.setattr(lcc, "TrackFilmStripPanel", MagicMock(name="TrackFilmStripPanel"))
 
     # One track (id 7) present at frames 0 and 1.
     model = LineageModel(
@@ -83,7 +88,8 @@ def test_refresh_assembles_lanes_and_docks(stubbed):
     # Selection + current frame are pushed after the overview is built.
     panel.set_current_frame.assert_called_with(1)
     panel.set_selection.assert_called_with(7)
-    panel.set_detail.assert_called_once()
+    # The detail strip is rendered onto the separately-docked film panel.
+    lcc.TrackFilmStripPanel.return_value.set_strip.assert_called_once()
 
 
 def test_refresh_without_stack_clears_panel(stubbed):
@@ -151,7 +157,7 @@ def test_refresh_detail_rebuilds_strip_without_rescanning_overview(stubbed):
 
     lcc.build_lineage.assert_not_called()
     lcc.build_track_film_strip.assert_called_once()
-    stubbed.return_value.set_detail.assert_called()
+    lcc.TrackFilmStripPanel.return_value.set_strip.assert_called()
 
 
 def test_refresh_detail_is_a_noop_before_the_panel_exists(stubbed):

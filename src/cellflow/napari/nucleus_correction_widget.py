@@ -176,6 +176,10 @@ class NucleusCorrectionWidget(QWidget):
         self._correction_dirty: bool = False
         self._swap_cursor: _SwapCursor | None = None
         self._native_dock_state: dict[str, bool] = {}
+        # The rightmost workspace strip (correction header + lineage overview +
+        # controls), built on activate by reparenting header/section out of the
+        # plugin dock; None while correction mode is off.
+        self._workspace_dock = None
         self._validated_overlay = ValidatedOverlayController(
             self.viewer,
             tracked_layer_provider=self._correction_tracked_layer,
@@ -1563,8 +1567,10 @@ class NucleusCorrectionWidget(QWidget):
             self.lineage_canvas_check.setChecked(True)
             # The candidate galleries open alongside it as the action surface.
             self.candidate_gallery_check.setChecked(True)
-            # Hand the right column to the workspace: the host hides its other
-            # workflow sections now that activation has fully succeeded.
+            # Build the rightmost strip (header + lineage overview + controls),
+            # reparenting the controls out of the plugin dock; then hand the whole
+            # window to the workspace by hiding the now-empty plugin dock.
+            self._build_workspace_controls_dock()
             self._focus_takeover(True)
             self._arrange_workspace_docks()
             return
@@ -1583,10 +1589,14 @@ class NucleusCorrectionWidget(QWidget):
         # picks up any corrections the user saved during this session.
         self._refresh_tracked_layer_from_disk()
         self._remove_correction_owned_layers()
+        # Reparent the correction header + controls back into the plugin dock and
+        # show it again *before* removing the now-empty workspace strip (so those
+        # widgets aren't deleted with the strip's container), then tear panels down.
+        self._focus_takeover(False)
+        self._teardown_workspace_controls_dock()
         self._teardown_focus_panels()
         restore_native_docks(self.viewer, self._native_dock_state)
         self._native_dock_state = {}
-        self._focus_takeover(False)
         self._restore_correction_view_state()
         self._set_checked_without_signal(self.params_btn, False)
         self._set_checked_without_signal(self.shortcuts_btn, False)
@@ -1770,7 +1780,9 @@ class NucleusCorrectionWidget(QWidget):
             self._lineage_canvas.refresh()
             self._arrange_workspace_docks()
         else:
-            self._lineage_canvas.teardown()
+            # Toggle-off removes only the film strip; the swimlane overview is
+            # structural in the controls dock and stays put for the session.
+            self._lineage_canvas.teardown_film()
 
     def _on_toggle_candidate_gallery(self, checked: bool) -> None:
         if checked:
@@ -1793,16 +1805,41 @@ class NucleusCorrectionWidget(QWidget):
         except Exception:
             logger.exception("focus-mode navigation: cell select failed")
 
-    def _controls_dock(self):
-        """The QDockWidget hosting this workflow panel (napari's plugin dock)."""
-        from qtpy.QtWidgets import QDockWidget
+    def _build_workspace_controls_dock(self):
+        """Dock the rightmost strip: correction header + lineage overview + controls.
 
-        widget = self.parentWidget()
-        while widget is not None:
-            if isinstance(widget, QDockWidget):
-                return widget
-            widget = widget.parentWidget()
-        return None
+        Reparents ``self.header`` and ``self.section`` (the toolbar / params /
+        shortcuts / correction widget) out of the plugin dock into a single
+        container, with the lineage swimlane overview embedded between them. The
+        reparent reuses every existing button + signal as-is; the plugin dock is
+        hidden by the caller once this succeeds. Idempotent.
+        """
+        if self._workspace_dock is not None:
+            return self._workspace_dock
+        container = QWidget()
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addWidget(self.header)
+        lay.addWidget(self._lineage_canvas.overview_panel(), stretch=1)
+        lay.addWidget(self.section)
+        try:
+            self._workspace_dock = self.viewer.window.add_dock_widget(
+                container, name="Correction", area="right"
+            )
+        except Exception:
+            logger.exception("could not dock the correction controls strip")
+            self._workspace_dock = None
+        return self._workspace_dock
+
+    def _teardown_workspace_controls_dock(self) -> None:
+        """Remove the rightmost controls strip (header/section already reparented out)."""
+        if self._workspace_dock is not None:
+            try:
+                self.viewer.window.remove_dock_widget(self._workspace_dock)
+            except Exception:
+                logger.exception("could not remove the correction controls strip")
+        self._workspace_dock = None
 
     def _arrange_workspace_docks(self) -> None:
         """Lay the right-column panels out as side-by-side vertical strips.
@@ -1810,22 +1847,23 @@ class NucleusCorrectionWidget(QWidget):
         napari force-stacks extra right-area docks into one vertical column
         (``resizeDocks(..., Vertical)`` in ``_add_viewer_dock_widget``). Re-split
         the active workspace docks horizontally so they read as parallel strips,
-        left→right: correction controls · candidate gallery · lineage canvas.
+        left→right: candidate gallery · film strip · lineage overview + controls.
 
-        Both galleries are docked eagerly via ``ensure_docked`` — their
-        ``refresh`` skips docking until a cell is selected, so without this the
-        candidate dock would not exist yet and the split would be a no-op. This
-        also re-runs whenever a panel is toggled back on, so a teardown/recreate
-        can't leave them stacked again.
+        The candidate + film panels are docked eagerly via ``ensure_docked`` —
+        their ``refresh`` skips docking until a cell is selected, so without this
+        those docks would not exist yet and the split would be a no-op. This also
+        re-runs whenever a panel is toggled back on, so a teardown/recreate can't
+        leave them stacked again.
         """
         qt_window = getattr(self.viewer.window, "_qt_window", None)
         if qt_window is None:
             return
-        docks = [self._controls_dock()]
+        docks = []
         if self.candidate_gallery_check.isChecked():
             docks.append(self._candidate_gallery.ensure_docked())
         if self.lineage_canvas_check.isChecked():
             docks.append(self._lineage_canvas.ensure_docked())
+        docks.append(self._workspace_dock)
         docks = [dock for dock in docks if dock is not None]
         if len(docks) < 2:
             return

@@ -279,36 +279,41 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         root.addWidget(self.correction_header)
         root.addWidget(self.correction_mode_section)
 
+    def _plugin_dock(self):
+        """The napari QDockWidget hosting this whole workflow panel, if any."""
+        from qtpy.QtWidgets import QDockWidget
+
+        widget = self.parentWidget()
+        while widget is not None:
+            if isinstance(widget, QDockWidget):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
     def _set_correction_focus_takeover(self, on: bool) -> None:
-        """Hide every workflow section but Correction for a full-window focus mode.
+        """Hand the whole window to the correction workspace, or give it back.
 
         Driven by NucleusCorrectionWidget once activation succeeds (and again,
-        with ``False``, on deactivate). Prior visibility is captured so deactivate
-        restores exactly what the user had open, and the correction header +
-        section are always kept.
+        with ``False``, on deactivate). In focus mode the correction controls are
+        reparented out into their own workspace dock, so we hide this entire
+        plugin dock; deactivate re-inserts the correction header + section into
+        this layout (their original trailing position) and shows the dock again.
         """
         layout = self.layout()
-        if layout is None:
-            return
-        keep = {
-            getattr(self, "correction_header", None),
-            getattr(self, "correction_mode_section", None),
-        }
+        dock = self._plugin_dock()
         if on:
-            self._pre_focus_visibility = {}
-            for i in range(layout.count()):
-                widget = layout.itemAt(i).widget()
-                if widget is None or widget in keep:
-                    continue
-                self._pre_focus_visibility[widget] = bool(widget.isVisible())
-                widget.setVisible(False)
+            if dock is not None:
+                dock.setVisible(False)
             return
-        for widget, was_visible in getattr(self, "_pre_focus_visibility", {}).items():
-            try:
-                widget.setVisible(was_visible)
-            except RuntimeError:  # widget was deleted meanwhile
-                pass
-        self._pre_focus_visibility = {}
+        if layout is not None:
+            for widget in (
+                getattr(self, "correction_header", None),
+                getattr(self, "correction_mode_section", None),
+            ):
+                if widget is not None:
+                    layout.addWidget(widget)
+        if dock is not None:
+            dock.setVisible(True)
 
     def _alias_correction_controls(self) -> None:
         correction = self.nucleus_correction_widget

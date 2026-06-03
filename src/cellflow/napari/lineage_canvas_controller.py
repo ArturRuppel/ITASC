@@ -20,6 +20,7 @@ from typing import Callable
 import numpy as np
 
 from cellflow.database.validation import read_corrections, read_validated_tracks
+from cellflow.napari._correction_film_strip import TrackFilmStripPanel
 from cellflow.napari._correction_lineage_canvas import LaneView, LineageCanvasPanel
 from cellflow.napari._correction_track_path import (
     TrackFilmStrip,
@@ -55,8 +56,11 @@ class LineageCanvasController:
         self._current_t_provider = current_t_provider
         self._on_activate = on_activate
         self._pos_dir_provider = pos_dir_provider
-        self._panel: LineageCanvasPanel | None = None
-        self._dock = None
+        # The swimlane overview is embedded into the controls dock by the host;
+        # the per-track film strip is self-docked as its own workspace strip.
+        self._overview_panel: LineageCanvasPanel | None = None
+        self._film_panel: TrackFilmStripPanel | None = None
+        self._film_dock = None
         # Cached from the last refresh so a selection can rebuild only the detail.
         self._occupied: dict[int, list[int]] = {}
         self._validated_map: dict[int, set[int]] = {}
@@ -66,19 +70,19 @@ class LineageCanvasController:
         """Rebuild the overview and the detail strip for the current selection."""
         tracked = self._tracked_data_provider()
         if tracked is None:
-            if self._panel is not None:
-                self._panel.set_overview([], n_frames=0)
+            if self._overview_panel is not None:
+                self._overview_panel.set_overview([], n_frames=0)
             return
         try:
             lanes, n_frames = self._assemble(np.asarray(tracked))
         except Exception:
             logger.exception("lineage overview assembly failed")
             return
-        panel = self._ensure_panel()
-        panel.set_overview(
+        self._ensure_panels()
+        self._overview_panel.set_overview(
             lanes, n_frames=n_frames, title=f"{len(lanes)} track(s)",
         )
-        panel.set_current_frame(self._current_t_provider())
+        self.set_current_frame(self._current_t_provider())
         self.set_selection(int(self._selected_label_provider() or 0))
 
     def _assemble(self, tracked: np.ndarray) -> tuple[list[LaneView], int]:
@@ -104,15 +108,21 @@ class LineageCanvasController:
     def set_selection(self, cell_id: int) -> None:
         """Highlight the selected lane and rebuild only its detail film strip."""
         cell_id = int(cell_id or 0)
-        if self._panel is None:
+        if self._overview_panel is None:
             return
-        self._panel.set_selection(cell_id)
-        self._panel.set_detail(self._build_detail(cell_id), title=self._detail_title(cell_id))
+        self._overview_panel.set_selection(cell_id)
+        self._film_panel.set_strip(
+            self._build_detail(cell_id), title=self._detail_title(cell_id)
+        )
+        self._film_panel.set_current_frame(self._current_t_provider())
 
     def set_current_frame(self, frame: int) -> None:
-        """Move the shared frame guide without rebuilding the canvas."""
-        if self._panel is not None:
-            self._panel.set_current_frame(int(frame))
+        """Move the shared frame guide / film highlight without rebuilding."""
+        frame = int(frame)
+        if self._overview_panel is not None:
+            self._overview_panel.set_current_frame(frame)
+        if self._film_panel is not None:
+            self._film_panel.set_current_frame(frame)
 
     def refresh_detail(self) -> None:
         """Rebuild only the selected track's detail strip (no overview rescan).
@@ -124,29 +134,49 @@ class LineageCanvasController:
         on every keystroke). The overview is left as-is until the next
         full refresh (selection change, validate/anchor, reload).
         """
-        if self._panel is None:
+        if self._overview_panel is None:
             return
         self.set_selection(int(self._selected_label_provider() or 0))
 
     @property
     def dock(self):
-        """The QDockWidget hosting the panel, or None when not docked."""
-        return self._dock
+        """The QDockWidget hosting the film strip, or None when not docked."""
+        return self._film_dock
+
+    def overview_panel(self) -> LineageCanvasPanel:
+        """The swimlane overview widget (created on first access) to embed."""
+        self._ensure_panels()
+        return self._overview_panel
 
     def ensure_docked(self):
-        """Create and dock the (possibly empty) panel, returning its dock."""
-        self._ensure_panel()
-        return self._dock
+        """Create the panels and dock the film strip, returning its dock."""
+        self._ensure_panels()
+        return self._film_dock
+
+    def teardown_film(self) -> None:
+        """Undock just the film strip, keeping the embedded overview alive.
+
+        Used when the film strip is toggled off mid-session: the overview lives
+        in the controls dock (owned by the host), so re-toggling rebuilds only
+        the film panel and reuses the same overview.
+        """
+        if self._film_dock is not None:
+            try:
+                self.viewer.window.remove_dock_widget(self._film_dock)
+            except Exception:
+                logger.exception("could not remove the film strip dock")
+        self._film_dock = None
+        self._film_panel = None
 
     def teardown(self) -> None:
-        """Undock and forget the panel (next refresh re-creates it)."""
-        if self._dock is not None:
-            try:
-                self.viewer.window.remove_dock_widget(self._dock)
-            except Exception:
-                logger.exception("could not remove the lineage canvas dock")
-        self._dock = None
-        self._panel = None
+        """Full teardown for deactivate — drop the film dock and both panels.
+
+        The overview panel is owned by the controls dock that embeds it and is
+        deleted with that dock; here we just drop our reference to it so a later
+        re-activate recreates it.
+        """
+        self.teardown_film()
+        self._overview_panel = None
 
     # -- assembly helpers ---------------------------------------------------
     def _validated_anchored_maps(
@@ -224,26 +254,35 @@ class LineageCanvasController:
 
         return _map
 
-    def _ensure_panel(self) -> LineageCanvasPanel:
-        if self._panel is not None:
-            return self._panel
-        panel = LineageCanvasPanel()
-        panel.node_activated.connect(self._on_node_activated)
-        self._panel = panel
-        try:
-            self._dock = self.viewer.window.add_dock_widget(
-                panel, name="Lineage canvas", area="right"
-            )
-        except Exception:
-            logger.exception("could not dock the lineage canvas")
-            self._dock = None
-        return panel
+    def _ensure_panels(self) -> None:
+        """Create the overview + film panels and dock the film strip (idempotent)."""
+        if self._overview_panel is None:
+            overview = LineageCanvasPanel()
+            overview.node_activated.connect(self._on_node_activated)
+            self._overview_panel = overview
+        if self._film_panel is None:
+            film = TrackFilmStripPanel(tile_px=72)
+            film.frame_clicked.connect(self._on_film_frame_clicked)
+            self._film_panel = film
+            try:
+                self._film_dock = self.viewer.window.add_dock_widget(
+                    film, name="Film strip", area="right"
+                )
+            except Exception:
+                logger.exception("could not dock the film strip")
+                self._film_dock = None
 
     def _on_node_activated(self, frame: int, cell_id: int) -> None:
         try:
             self._on_activate(int(frame), int(cell_id))
         except Exception:
             logger.exception("lineage canvas navigation failed")
+
+    def _on_film_frame_clicked(self, frame: int) -> None:
+        cell_id = int(self._selected_label_provider() or 0)
+        if not cell_id:
+            return
+        self._on_node_activated(int(frame), cell_id)
 
 
 __all__ = ["LineageCanvasController"]
