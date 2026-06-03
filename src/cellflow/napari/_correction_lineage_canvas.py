@@ -9,7 +9,7 @@ stays a clean graph view (room to grow in-place editing later).
   downward so all tracks share a single global frame axis. A track's present
   runs draw as bars and a gap (a vanish/return — a likely ID swap) reads as a
   break. Per-frame status paints into the column: green = validated, orange =
-  anchored, red = a flagged error frame. Because the time axis is shared, the
+  anchored. Because the time axis is shared, the
   current-frame cursor is one horizontal guide line across every column, and the
   selected track is marked by a vertical cursor line down its column.
 * **Detail** (bottom): the *selected* track's film strip — the only place
@@ -21,7 +21,6 @@ and select the cell via :attr:`node_activated`.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from qtpy.QtCore import Qt, Signal
@@ -35,7 +34,6 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari._correction_error_style import severity_rgba
 from cellflow.napari._correction_film_strip import TrackFilmStripPanel
 from cellflow.napari._correction_track_path import TrackFilmStrip
 
@@ -55,18 +53,13 @@ _COL_SELECT = QColor(255, 255, 255)    # selected-track vertical cursor line
 
 @dataclass(frozen=True)
 class LaneView:
-    """One track's column: present runs plus the frames flagged in each state.
-
-    ``errors`` maps a flagged frame to its severity ``score`` in ``[0, 1]`` so the
-    overview can paint it as graded heat rather than a flat mark.
-    """
+    """One track's column: present runs plus the frames flagged in each state."""
 
     cell_id: int
     column: int
     segments: tuple[tuple[int, int], ...]  # inclusive [start, end] present runs
     validated: frozenset[int] = field(default_factory=frozenset)
     anchored: frozenset[int] = field(default_factory=frozenset)
-    errors: Mapping[int, float] = field(default_factory=dict)
 
     def present(self, frame: int) -> bool:
         return any(s <= frame <= e for s, e in self.segments)
@@ -146,14 +139,11 @@ class LineageCanvasPanel(QWidget):
             self._scene.addRect(
                 x, s * _CELL_H, w, (e - s + 1) * _CELL_H, _no_pen(), _PRESENT,
             )
-        # Sparse per-frame status marks, drawn over the bars (error wins on top).
+        # Sparse per-frame status marks, drawn over the bars.
         for frame in lane.validated:
             self._fill_cell(x, w, frame, _VALIDATED)
         for frame in lane.anchored:
             self._fill_cell(x, w, frame, _ANCHOR)
-        # Errors as severity heat: faint warm for low score, bold red for high.
-        for frame, score in lane.errors.items():
-            self._fill_cell(x, w, frame, QColor(*severity_rgba(score)))
 
     def _fill_cell(self, x: float, w: float, frame: int, color: QColor) -> None:
         self._scene.addRect(x, frame * _CELL_H, w, _CELL_H, _no_pen(), color)

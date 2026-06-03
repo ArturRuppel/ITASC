@@ -8,9 +8,9 @@ import pytest
 
 from cellflow.tracking_ultrack.swap_candidate import (
     SwapCandidate,
+    cycle_index,
     list_swap_candidates,
-    step_larger,
-    step_smaller,
+    nearest_area_index,
 )
 
 
@@ -109,12 +109,12 @@ def _insert_hierarchy(engine):
 # ---------------------------------------------------------------------------
 
 class TestListSwapCandidatesReturnsLatticeBranch:
-    def test_returns_full_root_subtree(self, tmp_path):
+    def test_returns_matched_node_lineage_excluding_siblings(self, tmp_path):
         db_path = tmp_path / "data.db"
         engine = _make_engine(db_path)
         _insert_hierarchy(engine)
 
-        # source mask matches node 4 exactly
+        # source mask matches leaf node 4 exactly
         candidates = list_swap_candidates(
             db_path=db_path,
             frame=0,
@@ -122,25 +122,46 @@ class TestListSwapCandidatesReturnsLatticeBranch:
             frame_shape=(H, W),
         )
         node_ids = {c.node_id for c in candidates}
-        # whole lattice tree of the matched node: root + all descendants
-        assert node_ids == {1, 2, 3, 4, 5}
-        # the unrelated lattice is excluded
-        assert 9 not in node_ids
+        # lineage of node 4: itself + ancestors (2, 1). No descendants (leaf).
+        assert node_ids == {1, 2, 4}
+        # sibling (5), cousin (3) and the unrelated lattice (9) are excluded
+        assert node_ids.isdisjoint({3, 5, 9})
+
+    def test_includes_descendants_of_matched_node(self, tmp_path):
+        db_path = tmp_path / "data.db"
+        engine = _make_engine(db_path)
+        _insert_hierarchy(engine)
+
+        # source mask matches interior node 2 exactly
+        candidates = list_swap_candidates(
+            db_path=db_path,
+            frame=0,
+            source_mask=_full_mask(0, 0, 20, 10),  # == node 2
+            frame_shape=(H, W),
+        )
+        node_ids = {c.node_id for c in candidates}
+        # lineage of node 2: itself, ancestor (1) and descendants (4, 5).
+        assert node_ids == {1, 2, 4, 5}
+        # node 2's sibling (3) is excluded
+        assert 3 not in node_ids
 
     def test_match_is_by_overlap_not_proximity(self, tmp_path):
         db_path = tmp_path / "data.db"
         engine = _make_engine(db_path)
         _insert_hierarchy(engine)
 
-        # A mask overlapping node 3's region matches that branch — same tree,
-        # so the full subtree is still returned.
+        # A mask overlapping node 3's region matches that branch; node 3 is a
+        # leaf-ish node whose only ancestor is the root.
         candidates = list_swap_candidates(
             db_path=db_path,
             frame=0,
             source_mask=_full_mask(0, 10, 20, 20),  # == node 3
             frame_shape=(H, W),
         )
-        assert {c.node_id for c in candidates} == {1, 2, 3, 4, 5}
+        node_ids = {c.node_id for c in candidates}
+        assert node_ids == {1, 3}
+        # node 3's nephews (4, 5) and sibling subtree (2) are excluded
+        assert node_ids.isdisjoint({2, 4, 5})
 
     def test_no_overlap_returns_empty(self, tmp_path):
         db_path = tmp_path / "data.db"
@@ -193,7 +214,7 @@ class TestListSwapCandidatesEmptyWhenDbMissing:
 
 
 # ---------------------------------------------------------------------------
-# test_directional_step_z_finds_strictly_smaller
+# Cursor seeding + cycling
 # ---------------------------------------------------------------------------
 
 def _make_candidates(areas: list[int]) -> tuple[SwapCandidate, ...]:
@@ -209,63 +230,42 @@ def _make_candidates(areas: list[int]) -> tuple[SwapCandidate, ...]:
     )
 
 
-class TestDirectionalStepZ:
-    def test_finds_strictly_smaller(self):
-        # Areas sorted ASC: [10, 20, 30, 50]
-        # displayed_area=35 → largest area < 35 is 30 at index 2
+class TestNearestAreaIndex:
+    def test_exact_match(self):
         candidates = _make_candidates([10, 20, 30, 50])
-        idx = step_smaller(candidates, displayed_area=35)
-        assert idx == 2
-        assert candidates[idx].area == 30
+        assert nearest_area_index(candidates, 30) == 2
 
-    def test_finds_largest_strictly_smaller(self):
-        # displayed_area=25 → largest strictly smaller is 20 at index 1
+    def test_closest_when_no_exact(self):
+        # 23 is closer to 20 (index 1) than 30 (index 2)
         candidates = _make_candidates([10, 20, 30, 50])
-        idx = step_smaller(candidates, displayed_area=25)
-        assert idx == 1
-        assert candidates[idx].area == 20
+        assert nearest_area_index(candidates, 23) == 1
 
-
-# ---------------------------------------------------------------------------
-# test_directional_step_c_finds_strictly_larger
-# ---------------------------------------------------------------------------
-
-class TestDirectionalStepC:
-    def test_finds_strictly_larger(self):
-        # Areas: [10, 20, 30, 50]
-        # displayed_area=25 → smallest area > 25 is 30 at index 2
-        candidates = _make_candidates([10, 20, 30, 50])
-        idx = step_larger(candidates, displayed_area=25)
-        assert idx == 2
-        assert candidates[idx].area == 30
-
-    def test_finds_smallest_strictly_larger(self):
-        # displayed_area=10 → smallest > 10 is 20 at index 1
-        candidates = _make_candidates([10, 20, 30, 50])
-        idx = step_larger(candidates, displayed_area=10)
-        assert idx == 1
-        assert candidates[idx].area == 20
-
-
-# ---------------------------------------------------------------------------
-# test_directional_step_bounds
-# ---------------------------------------------------------------------------
-
-class TestDirectionalStepBounds:
-    def test_z_at_bottom_returns_none(self):
-        # displayed_area=10 == smallest candidate — no smaller exists
+    def test_clamps_to_ends(self):
         candidates = _make_candidates([10, 20, 30])
-        assert step_smaller(candidates, displayed_area=10) is None
+        assert nearest_area_index(candidates, 5) == 0
+        assert nearest_area_index(candidates, 999) == 2
 
-    def test_z_below_all_returns_none(self):
-        candidates = _make_candidates([10, 20, 30])
-        assert step_smaller(candidates, displayed_area=5) is None
 
-    def test_c_at_top_returns_none(self):
-        # displayed_area=30 == largest candidate — no larger exists
-        candidates = _make_candidates([10, 20, 30])
-        assert step_larger(candidates, displayed_area=30) is None
+class TestCycleIndex:
+    def test_larger_steps_up(self):
+        # area-sorted, so "larger" moves toward higher index
+        assert cycle_index(4, 1, larger=True) == 2
 
-    def test_c_above_all_returns_none(self):
-        candidates = _make_candidates([10, 20, 30])
-        assert step_larger(candidates, displayed_area=100) is None
+    def test_smaller_steps_down(self):
+        assert cycle_index(4, 2, larger=False) == 1
+
+    def test_larger_wraps_at_top(self):
+        assert cycle_index(4, 3, larger=True) == 0
+
+    def test_smaller_wraps_at_bottom(self):
+        assert cycle_index(4, 0, larger=False) == 3
+
+    def test_full_cycle_visits_every_index(self):
+        # Repeated "larger" steps reach all four indices including ties-free wrap
+        seen = []
+        idx = 0
+        for _ in range(4):
+            seen.append(idx)
+            idx = cycle_index(4, idx, larger=True)
+        assert sorted(seen) == [0, 1, 2, 3]
+        assert idx == 0  # back to start

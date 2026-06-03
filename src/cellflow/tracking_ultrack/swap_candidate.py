@@ -21,11 +21,8 @@ class SwapCandidate:
 class _SwapCursor:
     source_id: int
     frame: int
-    source_centroid: tuple[float, float]
-    source_area: int
     candidates: tuple[SwapCandidate, ...]
-    displayed_area: int
-    cursor: int | None
+    index: int
     baseline_frame: np.ndarray | None = None
 
 
@@ -44,13 +41,15 @@ def list_swap_candidates(
     frame_shape: tuple[int, int],
     protected_mask: np.ndarray | None = None,
 ) -> list[SwapCandidate]:
-    """Return the segmentation-hierarchy branch around ``source_mask``.
+    """Return the matched node's nesting lineage around ``source_mask``.
 
     Matches ``source_mask`` to the best-overlapping Ultrack node at ``frame``,
-    then walks the hierarchy lattice — the matched node, its ancestors up to the
-    root (larger merged segments) and all descendants (smaller fragments) — and
-    returns them sorted by area. ``Z``/``C`` step through that area-ordered
-    branch, so siblings at a level are visited in size order before descending.
+    then collects that node's *lineage* — itself, every ancestor up to the root
+    (larger merged segments that contain it) and every descendant (smaller
+    fragments contained within it) — and returns them sorted by area. Siblings
+    and cousins are excluded: they are spatially disjoint pieces of a shared
+    parent, so swapping onto them would relocate the cell rather than resize it.
+    ``Z``/``C`` cycle through this area-sorted lineage by index.
     """
     if not Path(db_path).exists():
         return []
@@ -115,17 +114,21 @@ def list_swap_candidates(
             if matched_id is None:
                 return []
 
-            # Walk up to the root of the matched node's lattice, then collect the
-            # root's entire subtree so siblings at every level are reachable.
-            root = matched_id
+            # Collect the matched node's nesting lineage: itself, every ancestor
+            # up to the root (larger merged segments) and every descendant
+            # (smaller fragments). Siblings/cousins are disjoint regions and are
+            # intentionally excluded.
+            branch: set[int] = {matched_id}
+
+            ancestor = matched_id
             while True:
-                parent = parent_by_id.get(root, NO_PARENT)
+                parent = parent_by_id.get(ancestor, NO_PARENT)
                 if parent == NO_PARENT or parent not in parent_by_id:
                     break
-                root = parent
+                branch.add(parent)
+                ancestor = parent
 
-            branch: set[int] = {root}
-            stack = [root]
+            stack = [matched_id]
             while stack:
                 cur = stack.pop()
                 for child in children.get(cur, ()):
@@ -177,22 +180,24 @@ def list_swap_candidates(
     return results
 
 
-def step_smaller(
+def nearest_area_index(
     candidates: tuple[SwapCandidate, ...] | list[SwapCandidate],
-    displayed_area: int,
-) -> int | None:
-    best: int | None = None
-    for i, c in enumerate(candidates):
-        if c.area < displayed_area:
-            best = i
-    return best
+    area: int,
+) -> int:
+    """Index of the candidate whose area is closest to ``area``.
+
+    Used to seed the cursor on the lineage member that best matches the
+    currently displayed (matched) cell, so the first ``Z``/``C`` step moves
+    relative to it.
+    """
+    return min(range(len(candidates)), key=lambda i: abs(candidates[i].area - area))
 
 
-def step_larger(
-    candidates: tuple[SwapCandidate, ...] | list[SwapCandidate],
-    displayed_area: int,
-) -> int | None:
-    for i, c in enumerate(candidates):
-        if c.area > displayed_area:
-            return i
-    return None
+def cycle_index(count: int, current: int, *, larger: bool) -> int:
+    """Next index when cycling an area-sorted candidate list.
+
+    ``larger`` steps toward bigger areas (higher index), otherwise toward
+    smaller areas (lower index); both directions wrap around.
+    """
+    step = 1 if larger else -1
+    return (current + step) % count

@@ -93,7 +93,6 @@ from cellflow.napari.validated_overlay_controller import (
     ValidatedOverlayController,
 )
 from cellflow.napari.track_path_controller import TrackPathController
-from cellflow.napari.worklist_controller import WorklistController
 from cellflow.napari.lineage_canvas_controller import LineageCanvasController
 from cellflow.napari._correction_takeover import (
     hide_native_docks,
@@ -119,8 +118,8 @@ from cellflow.tracking_ultrack.swap_candidate import (
     SwapCandidate as _SwapCandidate,
     _SwapCursor,
     list_swap_candidates,
-    step_larger as _step_larger,
-    step_smaller as _step_smaller,
+    cycle_index as _cycle_index,
+    nearest_area_index as _nearest_area_index,
 )
 from cellflow.tracking_ultrack.retracker import retrack_frame_constrained
 
@@ -171,7 +170,6 @@ class NucleusCorrectionWidget(QWidget):
         self._correction_dirty: bool = False
         self._swap_cursor: _SwapCursor | None = None
         self._native_dock_state: dict[str, bool] = {}
-        self._contours_cache: tuple[float, np.ndarray] | None = None
         self._validated_overlay = ValidatedOverlayController(
             self.viewer,
             tracked_layer_provider=self._correction_tracked_layer,
@@ -190,12 +188,6 @@ class NucleusCorrectionWidget(QWidget):
             status_callback=self._correction_status,
             owned_layers=self._correction_owned_layers,
         )
-        self._worklist = WorklistController(
-            self.viewer,
-            tracked_data_provider=self._ensure_tracked_layer_data,
-            contours_provider=self._contours_map,
-            on_activate=self._navigate_to_error,
-        )
         self._lineage_canvas = LineageCanvasController(
             self.viewer,
             tracked_data_provider=self._ensure_tracked_layer_data,
@@ -207,7 +199,6 @@ class NucleusCorrectionWidget(QWidget):
             current_t_provider=self._current_t,
             on_activate=self._navigate_to_error,
             pos_dir_provider=lambda: self._pos_dir,
-            contours_provider=self._contours_map,
         )
 
     @property
@@ -407,19 +398,11 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.track_path_check.setVisible(False)
         group_lay.addWidget(self.track_path_check)
-        self.worklist_check = QCheckBox("Show error worklist")
-        self.worklist_check.setToolTip(
-            "Open a docked, ranked list of likely correction errors (high "
-            "boundary divergence, area jumps, track gaps). Click a row to jump "
-            "to that frame and select the cell."
-        )
-        self.worklist_check.setVisible(False)
-        group_lay.addWidget(self.worklist_check)
         self.lineage_canvas_check = QCheckBox("Show lineage canvas")
         self.lineage_canvas_check.setToolTip(
             "Open the docked correction canvas: a swimlane overview of every "
             "track (time across, gaps flag likely ID swaps; green=validated, "
-            "orange=anchored, red=flagged error) over the selected track's "
+            "orange=anchored) over the selected track's "
             "per-frame film strip. Click a lane or tile to jump there."
         )
         self.lineage_canvas_check.setVisible(False)
@@ -474,7 +457,6 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.commit_btn.clicked.connect(self._on_commit)
         self.track_path_check.toggled.connect(self._on_toggle_track_path)
-        self.worklist_check.toggled.connect(self._on_toggle_worklist)
         self.lineage_canvas_check.toggled.connect(self._on_toggle_lineage_canvas)
         self.params_btn.toggled.connect(
             self._on_correction_params_button_toggled
@@ -508,7 +490,6 @@ class NucleusCorrectionWidget(QWidget):
         self.validation_counter_lbl.setVisible(show_active)
         self.correction_widget._attrib_lbl.setVisible(show_active)
         self.track_path_check.setVisible(show_active)
-        self.worklist_check.setVisible(show_active)
         self.lineage_canvas_check.setVisible(show_active)
 
         if show_params or show_shortcuts or show_active:
@@ -1069,10 +1050,8 @@ class NucleusCorrectionWidget(QWidget):
             from skimage.measure import regionprops as _regionprops
             props = _regionprops(source_mask.astype(np.uint8))
             if not props:
-                self._correction_status("Cannot compute centroid for source cell."); return
-            src_cy, src_cx = props[0].centroid
+                self._correction_status("Cannot compute area for source cell."); return
             src_area = int(props[0].area)
-            source_centroid = (float(src_cy), float(src_cx))
 
             if self._pos_dir is not None:
                 corrections = read_corrections(self._pos_dir)
@@ -1101,32 +1080,27 @@ class NucleusCorrectionWidget(QWidget):
             self._swap_cursor = _SwapCursor(
                 source_id=source_id,
                 frame=t,
-                source_centroid=source_centroid,
-                source_area=src_area,
                 candidates=tuple(candidates),
-                displayed_area=src_area,
-                cursor=None,
+                index=_nearest_area_index(candidates, src_area),
                 baseline_frame=tracked[t].copy(),
             )
 
         cursor = self._swap_cursor
-        if direction == "smaller":
-            idx = _step_smaller(cursor.candidates, cursor.displayed_area)
-            no_move_msg = "No smaller candidate."
-        else:
-            idx = _step_larger(cursor.candidates, cursor.displayed_area)
-            no_move_msg = "No larger candidate."
+        if len(cursor.candidates) <= 1:
+            self._correction_status(
+                "Only one node in this lattice branch — nothing to cycle."
+            ); return
 
-        if idx is None:
-            self._correction_status(no_move_msg); return
+        idx = _cycle_index(
+            len(cursor.candidates), cursor.index, larger=(direction != "smaller")
+        )
 
         candidate = cursor.candidates[idx]
         validated_tracks_full = (
             read_validated_tracks(self._pos_dir) if self._pos_dir is not None else {}
         )
         self._apply_swap(layer, t, source_id, candidate, validated_tracks_full)
-        cursor.cursor = idx
-        cursor.displayed_area = candidate.area
+        cursor.index = idx
         self._refresh_swap_visuals_live()
         self._correction_status(
             f"Swapped cell {source_id} -> candidate {idx + 1}/{len(cursor.candidates)}"
@@ -1566,9 +1540,9 @@ class NucleusCorrectionWidget(QWidget):
         """Cheap post-swap refresh used while stepping candidates with Z / C.
 
         Updates the comet and the selected track's detail strip only. The full
-        :meth:`_refresh_lineage_canvas_if_shown` re-runs the error scan and
-        lineage build over the *whole* stack, which froze the GUI when fired on
-        every swap keystroke; the overview catches up on the next full refresh.
+        :meth:`_refresh_lineage_canvas_if_shown` re-runs the lineage build over
+        the *whole* stack, which froze the GUI when fired on every swap
+        keystroke; the overview catches up on the next full refresh.
         """
         if self.track_path_check.isChecked():
             self._refresh_track_path_overlay()
@@ -1612,13 +1586,7 @@ class NucleusCorrectionWidget(QWidget):
                 return self.viewer.layers[name]
         return None
 
-    # -- Focus-mode panels (error worklist + lineage canvas) ---------------
-
-    def _on_toggle_worklist(self, checked: bool) -> None:
-        if checked:
-            self._worklist.refresh()
-        else:
-            self._worklist.teardown()
+    # -- Focus-mode panels (lineage canvas) --------------------------------
 
     def _on_toggle_lineage_canvas(self, checked: bool) -> None:
         if checked:
@@ -1626,22 +1594,8 @@ class NucleusCorrectionWidget(QWidget):
         else:
             self._lineage_canvas.teardown()
 
-    def _contours_map(self) -> np.ndarray | None:
-        """The nucleus divergence ``contours`` stack, cached by file mtime."""
-        path = self._paths.nucleus_contours if self._paths else None
-        if path is None or not path.exists():
-            return None
-        mtime = path.stat().st_mtime
-        if self._contours_cache is not None and self._contours_cache[0] == mtime:
-            return self._contours_cache[1]
-        data = np.asarray(tifffile.imread(str(path)), dtype=np.float32)
-        if data.ndim == 4 and data.shape[1] == 1:
-            data = data[:, 0]
-        self._contours_cache = (mtime, data)
-        return data
-
     def _navigate_to_error(self, t: int, cell_id: int) -> None:
-        """Jump the viewer to frame ``t`` and select ``cell_id`` (worklist/lineage)."""
+        """Jump the viewer to frame ``t`` and select ``cell_id`` (lineage canvas)."""
         try:
             step = list(self.viewer.dims.current_step)
             if step:
@@ -1655,10 +1609,8 @@ class NucleusCorrectionWidget(QWidget):
             logger.exception("focus-mode navigation: cell select failed")
 
     def _teardown_focus_panels(self) -> None:
-        """Undock the worklist + lineage canvas and clear their toggles."""
-        self._set_checked_without_signal(self.worklist_check, False)
+        """Undock the lineage canvas and clear its toggle."""
         self._set_checked_without_signal(self.lineage_canvas_check, False)
-        self._worklist.teardown()
         self._lineage_canvas.teardown()
 
     def _refresh_validation_counter(self) -> None:
@@ -1676,10 +1628,6 @@ class NucleusCorrectionWidget(QWidget):
         # here, so rebuild the canvas too (its overview presence + detail strip
         # go stale otherwise) — the retrack/extend paths do this separately.
         self._refresh_lineage_canvas_if_shown()
-        # Strike the edited cells off the worklist (they've been worked on).
-        if self.worklist_check.isChecked():
-            for cell_id in changed_ids:
-                self._worklist.mark_resolved(t, int(cell_id))
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
         return self._validated_overlay.frames_with_cell(cell_id)

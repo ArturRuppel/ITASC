@@ -36,11 +36,6 @@ from cellflow.segmentation.divergence_maps import (
     build_divergence_maps,
 )
 
-from cellflow.segmentation.error_scan import (
-    CellError,
-    scan_errors,
-)
-
 from cellflow.segmentation.lineage import (
     LineageModel,
     TrackLane,
@@ -52,7 +47,6 @@ __all__ = [
     "CancelledError",
     "CellDivergenceParams",
     "CellDivergenceResult",
-    "CellError",
     "CellICMState",
     "CellLabelICMParams",
     "ContourFilterParams",
@@ -71,7 +65,6 @@ __all__ = [
     "compute_contour_watershed",
     "compute_filtered_contour_maps",
     "initialize_icm",
-    "scan_errors",
     "segment_cells_divergence",
     "_fill_and_close_labels",
 ]

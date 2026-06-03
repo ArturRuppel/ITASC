@@ -2,8 +2,7 @@
 
 Owns the bottom-docked correction canvas: it builds the per-track swimlane
 overview (present runs from :func:`~cellflow.segmentation.lineage.build_lineage`,
-status frames from the project's validation records, flagged frames from
-:func:`~cellflow.segmentation.error_scan.scan_errors`) and, for the *selected*
+status frames from the project's validation records) and, for the *selected*
 track only, the film-strip detail band (via
 :func:`~cellflow.napari._correction_track_path.build_track_film_strip`). Building
 crops for a single track keeps refresh cheap no matter how many tracks exist.
@@ -26,7 +25,6 @@ from cellflow.napari._correction_track_path import (
     TrackFilmStrip,
     build_track_film_strip,
 )
-from cellflow.segmentation.error_scan import scan_errors
 from cellflow.segmentation.lineage import build_lineage
 
 logger = logging.getLogger(__name__)
@@ -48,7 +46,6 @@ class LineageCanvasController:
         current_t_provider: Callable[[], int],
         on_activate: Callable[[int, int], None],
         pos_dir_provider: Callable[[], Path | None] | None = None,
-        contours_provider: Callable[[], np.ndarray | None] | None = None,
     ) -> None:
         self.viewer = viewer
         self._tracked_data_provider = tracked_data_provider
@@ -58,7 +55,6 @@ class LineageCanvasController:
         self._current_t_provider = current_t_provider
         self._on_activate = on_activate
         self._pos_dir_provider = pos_dir_provider
-        self._contours_provider = contours_provider
         self._panel: LineageCanvasPanel | None = None
         self._dock = None
         # Cached from the last refresh so a selection can rebuild only the detail.
@@ -88,7 +84,6 @@ class LineageCanvasController:
     def _assemble(self, tracked: np.ndarray) -> tuple[list[LaneView], int]:
         model = build_lineage(tracked)
         self._validated_map, self._anchored_map = self._validated_anchored_maps()
-        errors_map = self._error_map(tracked)
         self._occupied = {}
         lanes: list[LaneView] = []
         for column, lane in enumerate(model.lanes):
@@ -103,7 +98,6 @@ class LineageCanvasController:
                 segments=segments,
                 validated=frozenset(self._validated_map.get(cid, ())),
                 anchored=frozenset(self._anchored_map.get(cid, ())),
-                errors=dict(errors_map.get(cid, {})),
             ))
         return lanes, model.n_frames
 
@@ -125,9 +119,9 @@ class LineageCanvasController:
 
         Used after a rapid live edit (stepping swap candidates with Z / C): it
         re-crops just the selected track from the cached frame set, so the strip
-        reflects the new pixels *without* re-running the whole-stack error scan
-        and lineage build that the full :meth:`refresh` does (those froze the GUI
-        when fired on every keystroke). The overview is left as-is until the next
+        reflects the new pixels *without* re-running the whole-stack lineage
+        build that the full :meth:`refresh` does (that froze the GUI when fired
+        on every keystroke). The overview is left as-is until the next
         full refresh (selection change, validate/anchor, reload).
         """
         if self._panel is None:
@@ -165,25 +159,6 @@ class LineageCanvasController:
             logger.exception("could not read validated/anchored frames for the canvas")
             return {}, {}
         return validated, anchored
-
-    def _error_map(self, tracked: np.ndarray) -> dict[int, dict[int, float]]:
-        """Per-track ``{frame: score}`` from the error scan (empty if it fails).
-
-        Scores are kept (not collapsed to a bare frame set) so the overview can
-        grade each flagged frame by severity; the max is taken per ``(cell,
-        frame)`` though ``scan_errors`` already dedups each key to its top score.
-        """
-        contours = self._contours_provider() if self._contours_provider else None
-        try:
-            errors: dict[int, dict[int, float]] = {}
-            for err in scan_errors(tracked, contours):
-                by_frame = errors.setdefault(int(err.cell_id), {})
-                t = int(err.t)
-                by_frame[t] = max(by_frame.get(t, 0.0), float(err.score))
-        except Exception:
-            logger.exception("error scan for the canvas failed")
-            return {}
-        return errors
 
     def _build_detail(self, cell_id: int) -> TrackFilmStrip:
         tracked = self._tracked_data_provider()

@@ -1,7 +1,7 @@
 """Behavioural coverage for the docked combined-canvas controller.
 
 Pins the glue the correction widget relies on: refresh assembles ``LaneView``
-rows from the swimlane model + validation records + the error scan and docks a
+rows from the swimlane model + validation records and docks a
 populated overview synced to the selection + current frame; selecting a track
 rebuilds only that track's detail strip; an absent stack clears it; a click
 drives the navigate callback; teardown removes the dock. The Qt panel and the
@@ -32,7 +32,6 @@ def stubbed(monkeypatch):
         lanes=(TrackLane(cell_id=7, segments=(TrackSegment(0, 1),)),),
     )
     monkeypatch.setattr(lcc, "build_lineage", MagicMock(return_value=model))
-    monkeypatch.setattr(lcc, "scan_errors", MagicMock(return_value=[]))
     monkeypatch.setattr(
         lcc, "build_track_film_strip",
         MagicMock(return_value=SimpleNamespace(tiles=(), frames=())),
@@ -97,15 +96,11 @@ def test_refresh_without_stack_clears_panel(stubbed):
     stubbed.assert_not_called()
 
 
-def test_validated_anchored_and_error_frames_flag_lanes(stubbed, monkeypatch):
+def test_validated_and_anchored_frames_flag_lanes(stubbed, monkeypatch):
     monkeypatch.setattr(lcc, "read_validated_tracks", lambda _p: {7: {0}})
     monkeypatch.setattr(
         lcc, "read_corrections",
         lambda _p: [SimpleNamespace(kind="anchor", cell_id=7, t=1)],
-    )
-    monkeypatch.setattr(
-        lcc, "scan_errors",
-        lambda *_a, **_k: [SimpleNamespace(t=1, cell_id=7, score=0.8)],
     )
     viewer = _viewer()
     ctrl = _controller(
@@ -120,8 +115,6 @@ def test_validated_anchored_and_error_frames_flag_lanes(stubbed, monkeypatch):
     lane = stubbed.return_value.set_overview.call_args.args[0][0]
     assert lane.validated == frozenset({0})
     assert lane.anchored == frozenset({1})
-    # Errors carry their severity score so the overview can grade the heat.
-    assert lane.errors == {1: 0.8}
 
 
 def test_set_selection_builds_detail_for_occupied_frames(stubbed):
@@ -142,8 +135,8 @@ def test_set_selection_builds_detail_for_occupied_frames(stubbed):
 
 
 def test_refresh_detail_rebuilds_strip_without_rescanning_overview(stubbed):
-    # The rapid swap path must not re-run the whole-stack error scan / lineage
-    # build (that froze the GUI on every Z/C); it only re-crops the detail strip.
+    # The rapid swap path must not re-run the whole-stack lineage build (that
+    # froze the GUI on every Z/C); it only re-crops the detail strip.
     viewer = _viewer()
     ctrl = _controller(
         viewer,
@@ -152,13 +145,11 @@ def test_refresh_detail_rebuilds_strip_without_rescanning_overview(stubbed):
     )
     ctrl.refresh()
     lcc.build_lineage.reset_mock()
-    lcc.scan_errors.reset_mock()
     lcc.build_track_film_strip.reset_mock()
 
     ctrl.refresh_detail()
 
     lcc.build_lineage.assert_not_called()
-    lcc.scan_errors.assert_not_called()
     lcc.build_track_film_strip.assert_called_once()
     stubbed.return_value.set_detail.assert_called()
 
