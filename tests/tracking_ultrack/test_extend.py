@@ -294,3 +294,130 @@ class TestExtendTrack:
 
         assert result is not None
         assert calls == 1
+
+
+class TestListExtendCandidates:
+    def _seed_two_candidates(self, tmp_path):
+        """A frame-1 DB with two overlapping candidates near a frame-0 source."""
+        from sqlalchemy.orm import Session
+        from ultrack.core.database import NodeDB
+        from tests.tracking_ultrack.test_reseed import _make_engine
+
+        engine = _make_engine(tmp_path / "data.db")
+
+        def add_node(session, node_id, y0, x0, y1, x1):
+            mask_2d = np.ones((y1 - y0, x1 - x0), dtype=bool)
+            session.add(
+                NodeDB(
+                    id=node_id,
+                    t=1,
+                    t_node_id=node_id,
+                    t_hier_id=0,
+                    z=0,
+                    y=(y0 + y1) / 2.0,
+                    x=(x0 + x1) / 2.0,
+                    area=int(mask_2d.sum()),
+                    pickle=make_node_pickle(
+                        1,
+                        mask_2d,
+                        np.array([y0, x0, y1, x1], dtype=np.int64),
+                        node_id,
+                    ),
+                )
+            )
+
+        with Session(engine) as session:
+            add_node(session, 101, 5, 5, 10, 10)   # area 25, aligned with source
+            add_node(session, 102, 6, 6, 12, 12)   # area 36, offset + larger
+            session.commit()
+
+    def test_lists_ranked_candidates_with_masks(self, tmp_path):
+        """The gallery API returns every scored candidate, best-first, with masks."""
+        pytest.importorskip("ultrack")
+        from cellflow.tracking_ultrack.extend import list_extend_candidates
+
+        self._seed_two_candidates(tmp_path)
+        tracked = np.zeros((2, 64, 64), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+
+        result = list_extend_candidates(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+            d_max=10.0,
+        )
+
+        assert result.target_frame == 1
+        assert not result.is_empty()
+        labels = [a.candidate_label for a in result.assignments]
+        assert set(labels) == {101, 102}
+        # Best-first: scores are non-increasing.
+        scores = [a.score for a in result.assignments]
+        assert scores == sorted(scores, reverse=True)
+        # The aligned, same-area node should win.
+        assert labels[0] == 101
+        for a in result.assignments:
+            assert a.mask_2d.shape == tracked.shape[1:]
+            assert a.mask_2d.any()
+
+    def test_winner_matches_extend_track_from_db(self, tmp_path):
+        """The top gallery candidate is the one extend_track_from_db would apply."""
+        pytest.importorskip("ultrack")
+        from cellflow.tracking_ultrack.extend import (
+            extend_track_from_db,
+            list_extend_candidates,
+        )
+
+        self._seed_two_candidates(tmp_path)
+        tracked = np.zeros((2, 64, 64), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+
+        kw = dict(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+            d_max=10.0,
+        )
+        chosen = extend_track_from_db(**kw)
+        listed = list_extend_candidates(**kw)
+        assert chosen is not None
+        assert listed.assignments[0].candidate_label == chosen.candidate_label
+
+    def test_empty_when_target_frame_out_of_range(self, tmp_path):
+        """Backward from frame 0 has no target frame: empty, but target_frame kept."""
+        pytest.importorskip("ultrack")
+        from cellflow.tracking_ultrack.extend import list_extend_candidates
+
+        self._seed_two_candidates(tmp_path)
+        tracked = np.zeros((2, 64, 64), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+
+        result = list_extend_candidates(
+            source_id=7,
+            source_frame=0,
+            direction="backward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "data.db",
+        )
+        assert result.is_empty()
+        assert result.target_frame == -1
+
+    def test_empty_when_db_missing(self, tmp_path):
+        """A missing DB yields an empty shortlist rather than raising."""
+        from cellflow.tracking_ultrack.extend import list_extend_candidates
+
+        tracked = np.zeros((2, 64, 64), dtype=np.uint32)
+        tracked[0, 5:10, 5:10] = 7
+        result = list_extend_candidates(
+            source_id=7,
+            source_frame=0,
+            direction="forward",
+            tracked_labels=tracked,
+            db_path=tmp_path / "does_not_exist.db",
+        )
+        assert result.is_empty()
+        assert result.target_frame == 1

@@ -12,6 +12,8 @@ from cellflow.tracking_ultrack._node_geometry import node_bbox_and_mask
 
 _D_MAX_DEFAULT = 40.0
 _GREEDY_CANDIDATE_LIMIT = 5
+# How many ranked candidates the gallery API surfaces per direction.
+_EXTEND_CANDIDATE_LIMIT = 6
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,22 @@ class ExtendResult:
     centroid_corrected_iou: float
     existing_overlap: float   # candidate ∩ (other cells at target) / candidate_area
     assignments: tuple[ExtendAssignment, ...] = ()
+
+
+@dataclass(frozen=True)
+class ExtendCandidates:
+    """Ranked extend shortlist for one direction, best-first, for a gallery.
+
+    ``target_frame`` is the adjacent frame the candidates live on (one step in
+    ``direction`` from the source); ``assignments`` carries each candidate's
+    full-frame mask, bbox and score so the UI can render clickable thumbnails.
+    """
+
+    target_frame: int
+    assignments: tuple[ExtendAssignment, ...] = ()
+
+    def is_empty(self) -> bool:
+        return not self.assignments
 
 
 def _extend_score(
@@ -184,6 +202,126 @@ def _top_assignments_for_cell(
     return assignments[:limit]
 
 
+def _query_db_candidates(
+    *,
+    db_path: Path,
+    target_frame: int,
+    center: tuple[float, float],
+    d_max: float,
+    frame_shape: tuple[int, int],
+) -> list[_DbCandidate]:
+    """Read every node at ``target_frame`` within ``d_max`` of ``center``.
+
+    The y/x window is applied in SQL so masks for distant nodes are never
+    deserialized; each surviving node becomes a full-frame ``_DbCandidate``.
+    """
+    import sqlalchemy as sqla
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import NodeDB
+
+    cy, cx = center
+    engine = sqla.create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    candidates: list[_DbCandidate] = []
+    try:
+        with Session(engine) as session:
+            rows = (
+                session.query(NodeDB)
+                .filter(
+                    NodeDB.t == target_frame,
+                    NodeDB.y >= cy - d_max,
+                    NodeDB.y <= cy + d_max,
+                    NodeDB.x >= cx - d_max,
+                    NodeDB.x <= cx + d_max,
+                )
+                .all()
+            )
+            for node in rows:
+                try:
+                    (y0, x0, y1, x1), mask_2d = node_bbox_and_mask(int(node.id), node.pickle)
+                except Exception:
+                    continue
+                if mask_2d.shape != (y1 - y0, x1 - x0):
+                    continue
+                full_mask = np.zeros(frame_shape, dtype=bool)
+                full_mask[y0:y1, x0:x1] = mask_2d
+                if not full_mask.any():
+                    continue
+                candidates.append(
+                    _DbCandidate(
+                        candidate_label=int(node.id),
+                        candidate_partition=0,
+                        mask_2d=full_mask,
+                        bbox=(y0, x0, y1, x1),
+                        centroid=(float(node.y), float(node.x)),
+                    )
+                )
+    finally:
+        engine.dispose()
+    return candidates
+
+
+def _ranked_extend_assignments(
+    *,
+    source_id: int,
+    source_frame: int,
+    direction: Literal["forward", "backward"],
+    tracked_labels: np.ndarray,
+    db_path: Path,
+    d_max: float,
+    area_weight: float,
+    iou_weight: float,
+    distance_weight: float,
+    overlap_penalty: float,
+    limit: int,
+) -> tuple[int, list[ExtendAssignment]]:
+    """Shared core: ``(target_frame, ranked assignments)`` for the adjacent frame.
+
+    Returns an empty assignment list (with the computed ``target_frame``) when
+    the DB is missing, the target frame is out of range, the source cell is
+    absent, or nothing scores within ``d_max``.
+    """
+    target_frame = source_frame + (1 if direction == "forward" else -1)
+    if not Path(db_path).exists():
+        return target_frame, []
+    if target_frame < 0 or target_frame >= tracked_labels.shape[0]:
+        return target_frame, []
+
+    source_mask = tracked_labels[source_frame] == source_id
+    if not source_mask.any():
+        return target_frame, []
+    source_stats = _mask_centroid_area(source_mask)
+    if source_stats is None:
+        return target_frame, []
+    src_cy, src_cx, _src_area = source_stats
+
+    candidates = _query_db_candidates(
+        db_path=Path(db_path),
+        target_frame=target_frame,
+        center=(src_cy, src_cx),
+        d_max=d_max,
+        frame_shape=tracked_labels.shape[1:],
+    )
+    if not candidates:
+        return target_frame, []
+
+    assignments = _top_assignments_for_cell(
+        cell_id=source_id,
+        reference_mask=source_mask,
+        reference_stats=source_stats,
+        target_frame_labels=tracked_labels[target_frame],
+        candidates=candidates,
+        d_max=d_max,
+        area_weight=area_weight,
+        iou_weight=iou_weight,
+        distance_weight=distance_weight,
+        overlap_penalty=overlap_penalty,
+        limit=limit,
+    )
+    return target_frame, assignments
+
+
 def extend_track_from_db(
     *,
     source_id: int,
@@ -205,92 +343,12 @@ def extend_track_from_db(
     candidate within d_max is found.  Widget caller should show a local status
     message on None.
     """
-    import sqlalchemy as sqla
-    from sqlalchemy.orm import Session
-    from ultrack.core.database import NodeDB
-
-    if not db_path.exists():
-        return None
-
-    T = tracked_labels.shape[0]
-    target_frame = source_frame + (1 if direction == "forward" else -1)
-    if target_frame < 0 or target_frame >= T:
-        return None
-
-    source_mask = tracked_labels[source_frame] == source_id
-    if not source_mask.any():
-        return None
-    source_stats = _mask_centroid_area(source_mask)
-    if source_stats is None:
-        return None
-    src_cy, src_cx, _src_area = source_stats
-
-    target_frame_labels = tracked_labels[target_frame]
-
-    engine = sqla.create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
-    candidates: list[_DbCandidate] = []
-
-    with Session(engine) as session:
-        rows = (
-            session.query(NodeDB)
-            .filter(
-                NodeDB.t == target_frame,
-                NodeDB.y >= src_cy - d_max,
-                NodeDB.y <= src_cy + d_max,
-                NodeDB.x >= src_cx - d_max,
-                NodeDB.x <= src_cx + d_max,
-            )
-            .all()
-        )
-        for node in rows:
-            try:
-                (y0, x0, y1, x1), mask_2d = node_bbox_and_mask(int(node.id), node.pickle)
-            except Exception:
-                continue
-            if mask_2d.shape != (y1 - y0, x1 - x0):
-                continue
-            full_mask = np.zeros(tracked_labels.shape[1:], dtype=bool)
-            full_mask[y0:y1, x0:x1] = mask_2d
-            if not full_mask.any():
-                continue
-            candidates.append(
-                _DbCandidate(
-                    candidate_label=int(node.id),
-                    candidate_partition=0,
-                    mask_2d=full_mask,
-                    bbox=(y0, x0, y1, x1),
-                    centroid=(float(node.y), float(node.x)),
-                )
-            )
-    engine.dispose()
-
-    if not candidates:
-        return None
-
-    if greedy_overwrite:
-        assignments = _top_assignments_for_cell(
-            cell_id=source_id,
-            reference_mask=source_mask,
-            reference_stats=source_stats,
-            target_frame_labels=target_frame_labels,
-            candidates=candidates,
-            d_max=d_max,
-            area_weight=area_weight,
-            iou_weight=iou_weight,
-            distance_weight=distance_weight,
-            overlap_penalty=overlap_penalty,
-            limit=1,
-        )
-        if not assignments:
-            return None
-        return _result_from_assignment(assignments[0], target_frame)
-
-    assignments = _top_assignments_for_cell(
-        cell_id=source_id,
-        reference_mask=source_mask,
-        reference_stats=source_stats,
-        target_frame_labels=target_frame_labels,
-        candidates=candidates,
+    target_frame, assignments = _ranked_extend_assignments(
+        source_id=source_id,
+        source_frame=source_frame,
+        direction=direction,
+        tracked_labels=tracked_labels,
+        db_path=db_path,
         d_max=d_max,
         area_weight=area_weight,
         iou_weight=iou_weight,
@@ -301,3 +359,42 @@ def extend_track_from_db(
     if not assignments:
         return None
     return _result_from_assignment(assignments[0], target_frame)
+
+
+def list_extend_candidates(
+    *,
+    source_id: int,
+    source_frame: int,
+    direction: Literal["forward", "backward"],
+    tracked_labels: np.ndarray,   # (T, Y, X) uint32
+    db_path: Path,
+    d_max: float = _D_MAX_DEFAULT,
+    area_weight: float = 1.0,
+    iou_weight: float = 1.0,
+    distance_weight: float = 0.25,
+    overlap_penalty: float = 1.0,
+    limit: int = _EXTEND_CANDIDATE_LIMIT,
+) -> ExtendCandidates:
+    """Ranked extend candidates at the adjacent frame, best-first, for a gallery.
+
+    Same matching and scoring as :func:`extend_track_from_db`, but returns the
+    whole ranked shortlist (each with its full-frame mask) instead of only the
+    winner, so the correction UI can render clickable candidate thumbnails.
+    Returns an empty :class:`ExtendCandidates` (still carrying ``target_frame``)
+    when the DB is missing, the target frame is out of range, the source cell is
+    absent, or nothing scores within ``d_max``.
+    """
+    target_frame, assignments = _ranked_extend_assignments(
+        source_id=source_id,
+        source_frame=source_frame,
+        direction=direction,
+        tracked_labels=tracked_labels,
+        db_path=db_path,
+        d_max=d_max,
+        area_weight=area_weight,
+        iou_weight=iou_weight,
+        distance_weight=distance_weight,
+        overlap_penalty=overlap_penalty,
+        limit=limit,
+    )
+    return ExtendCandidates(target_frame=target_frame, assignments=tuple(assignments))
