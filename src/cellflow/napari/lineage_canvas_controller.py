@@ -13,10 +13,12 @@ cropping and layout are all pure/testable; this is the glue, mirroring
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
+from cellflow.database.validation import read_corrections, read_validated_tracks
 from cellflow.napari._correction_lineage_canvas import (
     EdgeView,
     LineageCanvasPanel,
@@ -44,6 +46,7 @@ class LineageCanvasController:
         selected_label_provider: Callable[[], int],
         current_t_provider: Callable[[], int],
         on_activate: Callable[[int, int], None],
+        pos_dir_provider: Callable[[], Path | None] | None = None,
     ) -> None:
         self.viewer = viewer
         self._tracked_data_provider = tracked_data_provider
@@ -51,6 +54,8 @@ class LineageCanvasController:
         self._selected_label_provider = selected_label_provider
         self._current_t_provider = current_t_provider
         self._on_activate = on_activate
+        self._pos_dir_provider = pos_dir_provider
+        self._rotated = False
         self._panel: LineageCanvasPanel | None = None
         self._dock = None
 
@@ -70,6 +75,7 @@ class LineageCanvasController:
             logger.exception("lineage canvas assembly failed")
             return
         panel = self._ensure_panel()
+        panel.set_orientation(track_vertical=not self._rotated)
         panel.set_scene(
             nodes, edges, row_height=row_h, scene_width=scene_w,
             title=f"{len({n.cell_id for n in nodes})} track(s), {len(nodes)} node(s)",
@@ -82,24 +88,36 @@ class LineageCanvasController:
     ) -> tuple[list[NodeView], list[EdgeView], float, float]:
         graph = build_lineage_graph(tracked)
         columns = assign_columns(graph)
-        # Crop every track's per-frame thumbnails once (the film-strip tiles).
+        by_track = graph.nodes_by_track()
+        validated_of, anchored_of = self._validated_anchored_maps()
+        # Crop every track's per-frame thumbnails once. The graph already knows
+        # which frames each track occupies, so we hand those to the cropper and
+        # it skips re-scanning every empty frame per track (the old hot path).
         rgb_of: dict[tuple[int, int], np.ndarray] = {}
         max_w = max_h = 1
         for cell_id in columns:
+            occupied = [node.t for node in by_track.get(cell_id, ())]
             strip = build_track_film_strip(
-                tracked, intensity, cell_id, outline_color=_NODE_OUTLINE,
+                tracked, intensity, cell_id,
+                outline_color=_NODE_OUTLINE, frames=occupied,
             )
             for tile in strip.tiles:
                 rgb_of[(cell_id, tile.frame)] = tile.rgb
                 max_w = max(max_w, tile.width)
                 max_h = max(max_h, tile.height)
         col_spacing = max_w + _COL_GAP
-        row_height = max_h + _ROW_GAP
+        row_spacing = max_h + _ROW_GAP
 
         def _center(cell_id: int, t: int) -> tuple[float, float]:
+            # Default: track → column (x), frame → row (y). Rotated: swap so
+            # frames run across (x) and tracks stack as rows (y).
+            track_pos = columns[cell_id] * row_spacing + row_spacing / 2.0
+            frame_pos = t * col_spacing + col_spacing / 2.0
+            if self._rotated:
+                return frame_pos, track_pos
             return (
                 columns[cell_id] * col_spacing + col_spacing / 2.0,
-                t * row_height + row_height / 2.0,
+                t * row_spacing + row_spacing / 2.0,
             )
 
         nodes: list[NodeView] = []
@@ -108,7 +126,11 @@ class LineageCanvasController:
             if rgb is None:
                 continue
             x, y = _center(node.cell_id, node.t)
-            nodes.append(NodeView(cell_id=node.cell_id, t=node.t, x=x, y=y, rgb=rgb))
+            nodes.append(NodeView(
+                cell_id=node.cell_id, t=node.t, x=x, y=y, rgb=rgb,
+                validated=node.t in validated_of.get(node.cell_id, ()),
+                anchored=node.t in anchored_of.get(node.cell_id, ()),
+            ))
 
         edges: list[EdgeView] = []
         for edge in graph.edges:
@@ -117,7 +139,33 @@ class LineageCanvasController:
             edges.append(EdgeView(cell_id=edge.cell_id, x0=x0, y0=y0, x1=x1, y1=y1))
 
         scene_width = len(columns) * col_spacing
-        return nodes, edges, row_height, scene_width
+        return nodes, edges, row_spacing, scene_width
+
+    def _validated_anchored_maps(
+        self,
+    ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+        """Per-track validated / anchored frame sets, read once per refresh.
+
+        Reads the project's validation + corrections records a single time (not
+        per track) and buckets them by cell id, so the per-node status border is
+        cheap to look up while assembling the canvas.
+        """
+        pos_dir = self._pos_dir_provider() if self._pos_dir_provider else None
+        if pos_dir is None:
+            return {}, {}
+        try:
+            validated = {
+                int(cell_id): {int(f) for f in frames}
+                for cell_id, frames in (read_validated_tracks(pos_dir) or {}).items()
+            }
+            anchored: dict[int, set[int]] = {}
+            for corr in read_corrections(pos_dir):
+                if getattr(corr, "kind", None) == "anchor":
+                    anchored.setdefault(int(corr.cell_id), set()).add(int(corr.t))
+        except Exception:
+            logger.exception("could not read validated/anchored frames for the canvas")
+            return {}, {}
+        return validated, anchored
 
     def set_selection(self, cell_id: int) -> None:
         """Highlight ``cell_id``'s nodes without rebuilding the canvas."""
@@ -144,6 +192,7 @@ class LineageCanvasController:
             return self._panel
         panel = LineageCanvasPanel()
         panel.node_activated.connect(self._on_node_activated)
+        panel.rotate_requested.connect(self._on_rotate_requested)
         self._panel = panel
         try:
             self._dock = self.viewer.window.add_dock_widget(
@@ -153,6 +202,11 @@ class LineageCanvasController:
             logger.exception("could not dock the lineage canvas")
             self._dock = None
         return panel
+
+    def _on_rotate_requested(self) -> None:
+        """Flip the layout axes and rebuild (tracks↔frames swap rows/columns)."""
+        self._rotated = not self._rotated
+        self.refresh()
 
     def _on_node_activated(self, frame: int, cell_id: int) -> None:
         try:

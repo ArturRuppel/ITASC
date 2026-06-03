@@ -279,6 +279,24 @@ def test_film_strip_flags_validated_and_anchored_frames():
     assert not by_frame[1].validated and not by_frame[1].anchored
 
 
+def test_film_strip_frames_restricts_the_scan():
+    # Handing the known occupied frames keeps only those tiles (and lets the
+    # canvas skip re-scanning every empty frame per track).
+    tracked, intensity = _film_stacks()
+
+    strip = build_track_film_strip(tracked, intensity, 8, margin=2, frames=[0, 2])
+
+    assert strip.frames == (0, 2)
+
+
+def test_film_strip_frames_ignores_out_of_range_indices():
+    tracked, intensity = _film_stacks()
+
+    strip = build_track_film_strip(tracked, intensity, 8, margin=2, frames=[0, 99, -1])
+
+    assert strip.frames == (0,)
+
+
 def test_film_strip_absent_track_is_empty():
     tracked, intensity = _film_stacks()
 

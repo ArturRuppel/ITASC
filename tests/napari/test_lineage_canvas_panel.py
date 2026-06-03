@@ -79,6 +79,56 @@ def test_changing_selection_clears_previous_track_highlight(_app):
     assert len(panel._track_hl_items) == 2  # track 9 has a single node
 
 
+def test_validated_and_anchored_nodes_get_status_borders(_app):
+    from qtpy.QtWidgets import QGraphicsRectItem
+
+    from cellflow.napari._correction_lineage_canvas import (
+        _ANCHOR_BORDER,
+        _VALIDATED_BORDER,
+    )
+
+    rgb = np.zeros((8, 8, 3), np.uint8)
+    nodes = [
+        NodeView(cell_id=1, t=0, x=40, y=40, rgb=rgb, validated=True),
+        NodeView(cell_id=2, t=0, x=90, y=40, rgb=rgb, anchored=True),
+        NodeView(cell_id=3, t=0, x=140, y=40, rgb=rgb),  # plain
+    ]
+    panel = LineageCanvasPanel()
+    panel.set_scene(nodes, [], row_height=50, scene_width=200)
+
+    rects = [it for it in panel._scene.items() if isinstance(it, QGraphicsRectItem)]
+    colours = {it.pen().color().name() for it in rects}
+    # One green + one orange border; the plain node draws none.
+    assert len(rects) == 2
+    assert colours == {_VALIDATED_BORDER.name(), _ANCHOR_BORDER.name()}
+
+
+def test_rotation_swaps_which_sides_each_cursor_lights(_app):
+    panel = LineageCanvasPanel()
+    panel.set_scene(_nodes(), [], row_height=50, scene_width=140)
+    panel.set_orientation(track_vertical=False)
+
+    panel.set_selection(7)  # track now runs across rows → horizontal sides
+    for line in panel._track_hl_items:
+        ln = line.line()
+        assert ln.y1() == ln.y2()  # horizontal
+
+    panel.set_current_frame(0)  # frames now run down columns → vertical sides
+    for line in panel._frame_hl_items:
+        ln = line.line()
+        assert ln.x1() == ln.x2()  # vertical
+
+
+def test_rotate_button_emits_rotate_requested(_app):
+    panel = LineageCanvasPanel()
+    fired: list[int] = []
+    panel.rotate_requested.connect(lambda: fired.append(1))
+
+    panel._rotate_btn.click()
+
+    assert fired == [1]
+
+
 def test_node_click_emits_frame_and_cell(_app):
     panel = LineageCanvasPanel()
     panel.set_scene(_nodes(), [], row_height=50, scene_width=140)

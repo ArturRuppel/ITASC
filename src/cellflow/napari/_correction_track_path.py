@@ -14,6 +14,7 @@ Pure module: no Qt, no napari, so it is unit-testable on its own.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -227,6 +228,7 @@ def build_track_film_strip(
     spotlight_dilation: int = 2,
     validated_frames: set[int] | None = None,
     anchored_frames: set[int] | None = None,
+    frames: Sequence[int] | None = None,
 ) -> TrackFilmStrip:
     """Build per-frame, nucleus-centered intensity crops for ``track_id``.
 
@@ -246,6 +248,10 @@ def build_track_film_strip(
     ``validated_frames`` / ``anchored_frames`` (sets of frame indices) flag each
     tile so the view can mark validated/anchored frames. ``margin`` pads the
     window around the largest nucleus.
+
+    ``frames`` optionally restricts the scan to a known set of occupied frame
+    indices (e.g. supplied by the lineage graph), so callers building strips for
+    many tracks at once avoid re-scanning every empty frame per track.
     """
     tracked = np.asarray(tracked_stack)
     intensity = np.asarray(intensity_stack)
@@ -262,11 +268,16 @@ def build_track_film_strip(
 
     track_id = int(track_id)
 
+    if frames is None:
+        scan = range(tracked.shape[0])
+    else:
+        scan = [int(f) for f in frames if 0 <= int(f) < tracked.shape[0]]
+
     occupied: list[int] = []
     masks: list[np.ndarray] = []
     centroids: list[tuple[int, int]] = []
     extents: list[int] = []
-    for t in range(tracked.shape[0]):
+    for t in scan:
         mask = tracked[t] == track_id
         if not mask.any():
             continue

@@ -55,7 +55,7 @@ def _viewer():
     return SimpleNamespace(window=window)
 
 
-def _controller(viewer, *, tracked=None, intensity=None, on_activate=None):
+def _controller(viewer, *, tracked=None, intensity=None, on_activate=None, pos_dir=None):
     intensity_layer = None if intensity is None else SimpleNamespace(data=intensity)
     return LineageCanvasController(
         viewer,
@@ -64,6 +64,7 @@ def _controller(viewer, *, tracked=None, intensity=None, on_activate=None):
         selected_label_provider=lambda: 7,
         current_t_provider=lambda: 1,
         on_activate=on_activate or (lambda t, c: None),
+        pos_dir_provider=(lambda: pos_dir),
     )
 
 
@@ -114,6 +115,63 @@ def test_node_activation_invokes_navigate_callback(stubbed):
     ctrl._on_node_activated(1, 7)
 
     on_activate.assert_called_once_with(1, 7)
+
+
+def test_refresh_restricts_crop_scan_to_occupied_frames(stubbed):
+    # The graph (track 7 at frames 0,1) should drive the crop scan, so the
+    # cropper is handed those frames instead of re-scanning the whole stack.
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+
+    ctrl.refresh()
+
+    import cellflow.napari.lineage_canvas_controller as mod
+    _, kwargs = mod.build_track_film_strip.call_args
+    assert kwargs["frames"] == [0, 1]
+
+
+def test_validated_and_anchored_frames_flag_nodes(stubbed, monkeypatch):
+    monkeypatch.setattr(lcc, "read_validated_tracks", lambda _p: {7: {0}})
+    monkeypatch.setattr(
+        lcc, "read_corrections",
+        lambda _p: [SimpleNamespace(kind="anchor", cell_id=7, t=1)],
+    )
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+        pos_dir=object(),
+    )
+
+    ctrl.refresh()
+
+    nodes = stubbed.return_value.set_scene.call_args.args[0]
+    by_frame = {n.t: n for n in nodes}
+    assert by_frame[0].validated and not by_frame[0].anchored
+    assert by_frame[1].anchored and not by_frame[1].validated
+
+
+def test_rotate_request_flips_orientation_and_rebuilds(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+    ctrl.refresh()
+    panel = stubbed.return_value
+
+    ctrl._on_rotate_requested()
+
+    assert ctrl._rotated is True
+    # The panel is told to flip its highlight axes and the scene is rebuilt.
+    panel.set_orientation.assert_called_with(track_vertical=False)
+    assert panel.set_scene.call_count == 2
 
 
 def test_teardown_removes_dock(stubbed):

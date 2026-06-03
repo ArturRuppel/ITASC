@@ -229,6 +229,7 @@ class NucleusCorrectionWidget(QWidget):
             ),
             current_t_provider=self._current_t,
             on_activate=self._navigate_to_error,
+            pos_dir_provider=lambda: self._pos_dir,
         )
 
     @property

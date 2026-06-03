@@ -1,12 +1,15 @@
 """Pannable/zoomable lineage canvas — the unified correction *view*.
 
 One big ``QGraphicsView`` that folds the film strip and lineage graph into a
-single picture: every track is a vertical chain of nodes (time runs downward),
-each node is that frame's nucleus crop (the film-strip tile), and consecutive
-present frames are joined by a plain connector (which skips rows across a gap).
-The node box edges carry two orthogonal cursors: its vertical sides light up for
-the selected track, its horizontal sides for the current frame. Drag to pan,
-wheel to zoom, click a node to jump there and select the cell.
+single picture: every track is a chain of nodes (by default in a column with
+time running downward; the toolbar "rotate" button swaps the axes so frames run
+across and tracks stack as rows), each node is that frame's nucleus crop (the
+film-strip tile), and consecutive present frames are joined by a plain connector
+(which skips across a gap). Each node carries a status border around the crop
+window — green when that frame is validated, orange when anchored. The box edges
+carry two orthogonal cursors that follow the layout: one runs along the track to
+mark the selected track, the other along the frame to mark the current frame.
+Drag to pan, wheel to zoom, click a node to jump there and select the cell.
 
 The view is a pure renderer: it is handed ready-to-blit :class:`NodeView` /
 :class:`EdgeView` structs (pixels, positions, colours) by its controller, so the
@@ -22,23 +25,31 @@ from qtpy.QtGui import QColor, QImage, QPen, QPixmap
 from qtpy.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 _CLICK_SLOP = 6  # max drag (px) still treated as a click, not a pan
 _ZOOM_STEP = 1.15
-# Confidence rides on the *cell outline* baked into each crop (by the
-# controller). The node's box edges are free for the two orthogonal highlights:
-# the box is a column cell, so its *vertical* sides mark the selected track and
-# its *horizontal* sides mark the current frame (one node lit on all four edges
-# is the selected cell at the current frame).
-_TRACK_HL = QColor(255, 255, 255)   # vertical sides → selected track
-_FRAME_HL = QColor(255, 210, 70)    # horizontal sides → current frame
+# Each node's box edges carry the two orthogonal cursors. In the default layout
+# (tracks in columns, time running down) the box is a column cell, so its
+# *vertical* sides mark the selected track and its *horizontal* sides mark the
+# current frame; when the canvas is rotated the two swap. One node lit on all
+# four edges is the selected cell at the current frame.
+_TRACK_HL = QColor(255, 255, 255)
+_FRAME_HL = QColor(255, 210, 70)
 _HL_WIDTH = 4
 _EDGE_COLOR = QColor(170, 170, 170)  # plain connector between consecutive frames
 _EDGE_WIDTH = 2
+# Per-node status border drawn around the whole crop window (not the nucleus):
+# green for a validated frame, orange for an anchored one (matches the film strip
+# / in-canvas overlay vocabulary).
+_VALIDATED_BORDER = QColor("#00ff00")
+_ANCHOR_BORDER = QColor("#ff8c00")
+_STATUS_WIDTH = 3
 
 
 def _rgb_to_pixmap(rgb: np.ndarray) -> QPixmap:
@@ -57,6 +68,8 @@ class NodeView:
     x: float
     y: float
     rgb: np.ndarray  # (h, w, 3) uint8
+    validated: bool = False
+    anchored: bool = False
 
 
 @dataclass(frozen=True)
@@ -74,6 +87,7 @@ class LineageCanvasPanel(QWidget):
     """The docked pannable/zoomable lineage canvas with click-to-navigate."""
 
     node_activated = Signal(int, int)  # (frame, cell_id)
+    rotate_requested = Signal()        # the toolbar "rotate" button was clicked
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -82,6 +96,10 @@ class LineageCanvasPanel(QWidget):
         self._row_height = 1.0
         self._node_border = 3
         self._scene_width = 0.0
+        # True (default) when tracks run down columns: the selected track then
+        # lights the *vertical* box sides and the current frame the horizontal
+        # ones. Flipped when the canvas is rotated (tracks become rows).
+        self._track_vertical = True
         # Node box geometry, indexed for the two highlights. Highlight line items
         # are added/removed on demand (only the lit track/frame carry items).
         self._boxes_by_track: dict[int, list[QRectF]] = {}
@@ -93,9 +111,15 @@ class LineageCanvasPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(2)
 
+        header = QHBoxLayout()
+        header.setContentsMargins(6, 2, 6, 2)
         self._title = QLabel("No lineage")
-        self._title.setContentsMargins(6, 2, 6, 2)
-        outer.addWidget(self._title)
+        header.addWidget(self._title, 1)
+        self._rotate_btn = QPushButton("⟳ Rotate")
+        self._rotate_btn.setToolTip("Swap the axes: frames across, tracks down (and back).")
+        self._rotate_btn.clicked.connect(self.rotate_requested)
+        header.addWidget(self._rotate_btn, 0)
+        outer.addLayout(header)
 
         self._scene = QGraphicsScene(self)
         self._view = _CanvasView(self)
@@ -137,48 +161,81 @@ class LineageCanvasPanel(QWidget):
             item.setOffset(left, top)
             item.setData(0, int(node.cell_id))
             item.setData(1, int(node.t))
-            item.setToolTip(f"frame {node.t}, cell {node.cell_id}")
+            tags = []
+            if node.validated:
+                tags.append("validated")
+            if node.anchored:
+                tags.append("anchored")
+            suffix = f" — {', '.join(tags)}" if tags else ""
+            item.setToolTip(f"frame {node.t}, cell {node.cell_id}{suffix}")
+            # Status border around the crop window (validated wins over anchored).
+            status = (
+                _VALIDATED_BORDER if node.validated
+                else _ANCHOR_BORDER if node.anchored
+                else None
+            )
+            if status is not None:
+                self._scene.addRect(box, QPen(status, _STATUS_WIDTH))
         self._scene.setSceneRect(self._scene.itemsBoundingRect())
         self._apply_track_highlight()
         self._apply_frame_highlight()
 
+    def set_orientation(self, track_vertical: bool) -> None:
+        """Pick which box sides each cursor lights, following the canvas layout.
+
+        ``track_vertical`` True (tracks down columns) lights the selected track's
+        vertical sides and the current frame's horizontal sides; False (rotated,
+        tracks across rows) swaps them so each cursor still runs *along* its axis.
+        """
+        self._track_vertical = bool(track_vertical)
+        self._apply_track_highlight()
+        self._apply_frame_highlight()
+
     def set_selection(self, cell_id: int) -> None:
-        """Light the vertical sides of the selected track's node boxes."""
+        """Light the selected track's node boxes along the track axis."""
         self._selected = int(cell_id or 0)
         self._apply_track_highlight()
 
     def set_current_frame(self, frame: int) -> None:
-        """Light the horizontal sides of the current frame's node boxes."""
+        """Light the current frame's node boxes along the frame axis."""
         self._current_frame = int(frame)
         self._apply_frame_highlight()
 
+    @staticmethod
+    def _vertical_sides(box: QRectF) -> tuple[tuple[float, float, float, float], ...]:
+        return (
+            (box.left(), box.top(), box.left(), box.bottom()),
+            (box.right(), box.top(), box.right(), box.bottom()),
+        )
+
+    @staticmethod
+    def _horizontal_sides(box: QRectF) -> tuple[tuple[float, float, float, float], ...]:
+        return (
+            (box.left(), box.top(), box.right(), box.top()),
+            (box.left(), box.bottom(), box.right(), box.bottom()),
+        )
+
     def _apply_track_highlight(self) -> None:
-        """Vertical sides (left/right) of the selected track's boxes."""
+        """Light the selected track's boxes along the track axis."""
         for item in self._track_hl_items:
             self._scene.removeItem(item)
         self._track_hl_items = []
         pen = QPen(_TRACK_HL, _HL_WIDTH)
+        sides = self._vertical_sides if self._track_vertical else self._horizontal_sides
         for box in self._boxes_by_track.get(self._selected, ()):
-            self._track_hl_items.append(
-                self._scene.addLine(box.left(), box.top(), box.left(), box.bottom(), pen)
-            )
-            self._track_hl_items.append(
-                self._scene.addLine(box.right(), box.top(), box.right(), box.bottom(), pen)
-            )
+            for x0, y0, x1, y1 in sides(box):
+                self._track_hl_items.append(self._scene.addLine(x0, y0, x1, y1, pen))
 
     def _apply_frame_highlight(self) -> None:
-        """Horizontal sides (top/bottom) of the current frame's boxes."""
+        """Light the current frame's boxes along the frame axis."""
         for item in self._frame_hl_items:
             self._scene.removeItem(item)
         self._frame_hl_items = []
         pen = QPen(_FRAME_HL, _HL_WIDTH)
+        sides = self._horizontal_sides if self._track_vertical else self._vertical_sides
         for box in self._boxes_by_frame.get(self._current_frame, ()):
-            self._frame_hl_items.append(
-                self._scene.addLine(box.left(), box.top(), box.right(), box.top(), pen)
-            )
-            self._frame_hl_items.append(
-                self._scene.addLine(box.left(), box.bottom(), box.right(), box.bottom(), pen)
-            )
+            for x0, y0, x1, y1 in sides(box):
+                self._frame_hl_items.append(self._scene.addLine(x0, y0, x1, y1, pen))
 
 
 class _CanvasView(QGraphicsView):
