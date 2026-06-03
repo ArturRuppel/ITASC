@@ -17,7 +17,7 @@ from cellflow.napari._correction_track_path import build_track_path_overlay
 
 TRACK_PATH_LAYER = "[Correction] Track Path"
 TRACK_PATH_NUMBERS_LAYER = "[Correction] Track Path Numbers"
-TRACK_PATH_OPACITY = 0.8
+TRACK_PATH_OPACITY = 1.0
 
 
 class TrackPathController:

@@ -120,6 +120,20 @@ class LineageCanvasController:
         if self._panel is not None:
             self._panel.set_current_frame(int(frame))
 
+    def refresh_detail(self) -> None:
+        """Rebuild only the selected track's detail strip (no overview rescan).
+
+        Used after a rapid live edit (stepping swap candidates with Z / C): it
+        re-crops just the selected track from the cached frame set, so the strip
+        reflects the new pixels *without* re-running the whole-stack error scan
+        and lineage build that the full :meth:`refresh` does (those froze the GUI
+        when fired on every keystroke). The overview is left as-is until the next
+        full refresh (selection change, validate/anchor, reload).
+        """
+        if self._panel is None:
+            return
+        self.set_selection(int(self._selected_label_provider() or 0))
+
     def teardown(self) -> None:
         """Undock and forget the panel (next refresh re-creates it)."""
         if self._dock is not None:

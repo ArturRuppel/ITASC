@@ -140,6 +140,38 @@ def test_set_selection_builds_detail_for_occupied_frames(stubbed):
     assert kwargs["frames"] == [0, 1]
 
 
+def test_refresh_detail_rebuilds_strip_without_rescanning_overview(stubbed):
+    # The rapid swap path must not re-run the whole-stack error scan / lineage
+    # build (that froze the GUI on every Z/C); it only re-crops the detail strip.
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+    ctrl.refresh()
+    lcc.build_lineage.reset_mock()
+    lcc.scan_errors.reset_mock()
+    lcc.build_track_film_strip.reset_mock()
+
+    ctrl.refresh_detail()
+
+    lcc.build_lineage.assert_not_called()
+    lcc.scan_errors.assert_not_called()
+    lcc.build_track_film_strip.assert_called_once()
+    stubbed.return_value.set_detail.assert_called()
+
+
+def test_refresh_detail_is_a_noop_before_the_panel_exists(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(viewer, tracked=np.zeros((2, 12, 12), np.uint32))
+
+    ctrl.refresh_detail()  # never refreshed → no panel yet
+
+    viewer.window.add_dock_widget.assert_not_called()
+    lcc.build_track_film_strip.assert_not_called()
+
+
 def test_node_activation_invokes_navigate_callback(stubbed):
     viewer = _viewer()
     on_activate = MagicMock()

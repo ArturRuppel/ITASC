@@ -1,13 +1,13 @@
 """Build the whole-track temporal "comet" overlay for correction mode.
 
-Given a tracked label stack and one track id, outline that track's mask from
-every frame it appears in onto a single plane, colored start->finish with
-viridis (earliest frame dark, latest yellow). Only the mask boundary is painted
-so every frame's footprint stays visible instead of later frames burying earlier
-ones; where outlines overlap, the newest frame is drawn on top. Also return the
-boolean union of all the track's (filled) masks (used to enlarge the correction
-spotlight to the whole trajectory) and the per-frame centroids (used to place a
-frame number inside each mask).
+Given a tracked label stack and one track id, draw that *selected* track's
+**trajectory** onto a single plane: a thick polyline through the per-frame
+nucleus centroids, complete across every frame the track appears in, colored
+start->finish with viridis (earliest frame dark, latest yellow) so time reads
+straight off the line. The nucleus masks themselves are not drawn — just the
+track. Also return the boolean union of all the track's (filled) masks (used to
+enlarge the correction spotlight to the whole trajectory) and the per-frame
+centroids (used to place the path / a frame number).
 
 Pure module: no Qt, no napari, so it is unit-testable on its own.
 """
@@ -30,7 +30,7 @@ class TrackPathOverlay:
 
     frames: tuple[int, ...]      # occupied frame indices, ascending
     colors: np.ndarray           # (N, 4) RGBA, frames[0] dark -> frames[-1] yellow
-    overlay: np.ndarray          # (H, W, 4) RGBA float, mask outlines, newest on top
+    overlay: np.ndarray          # (H, W, 4) RGBA float, the trajectory polyline
     union_mask: np.ndarray       # (H, W) bool, union of all the track's filled masks
     centroids: np.ndarray        # (N, 2) (y, x) centroid per occupied frame
 
@@ -75,14 +75,48 @@ def _mask_outline(mask: np.ndarray) -> np.ndarray:
     return mask & ~interior
 
 
+def _stamp(overlay: np.ndarray, y: float, x: float, half: int, color) -> None:
+    """Paint a ``(2*half+1)`` square of ``color`` centered on ``(y, x)``."""
+    h, w = overlay.shape[:2]
+    yi, xi = int(round(y)), int(round(x))
+    y0, y1 = max(yi - half, 0), min(yi + half + 1, h)
+    x0, x1 = max(xi - half, 0), min(xi + half + 1, w)
+    if y0 < y1 and x0 < x1:
+        overlay[y0:y1, x0:x1] = color
+
+
+def _draw_track_path(
+    overlay: np.ndarray, centroids, colors: np.ndarray, half: int
+) -> None:
+    """Rasterise the trajectory polyline through ``centroids``.
+
+    Segments are walked oldest-first with the colour interpolated between the
+    two endpoints' time colours, so the line is a smooth viridis gradient and,
+    where the path crosses itself, the newest pixels land on top. A single
+    occupied frame draws one thick dot at its centroid.
+    """
+    n = len(centroids)
+    if n == 1:
+        _stamp(overlay, centroids[0][0], centroids[0][1], half, colors[0])
+        return
+    for i in range(n - 1):
+        (y0, x0), (y1, x1) = centroids[i], centroids[i + 1]
+        steps = int(max(abs(y1 - y0), abs(x1 - x0), 1)) + 1
+        for t in np.linspace(0.0, 1.0, steps):
+            y = y0 + (y1 - y0) * t
+            x = x0 + (x1 - x0) * t
+            _stamp(overlay, y, x, half, colors[i] * (1.0 - t) + colors[i + 1] * t)
+
+
 def build_track_path_overlay(
-    tracked_stack: np.ndarray, track_id: int
+    tracked_stack: np.ndarray, track_id: int, *, thickness: int = 2
 ) -> TrackPathOverlay:
-    """Paint the comet for ``track_id`` across all frames of ``tracked_stack``.
+    """Draw the trajectory of ``track_id`` across all frames of ``tracked_stack``.
 
     ``tracked_stack`` is a ``(T, H, W)`` label array (a bare ``(H, W)`` plane is
-    treated as a single frame). The painted label value equals ``track_id``,
-    matching the exported tracked stack convention.
+    treated as a single frame). A ``thickness``-pixel-wide viridis polyline is
+    rasterised through the per-frame nucleus centroids; the masks themselves are
+    not painted.
     """
     stack = np.asarray(tracked_stack)
     if stack.ndim == 2:
@@ -119,11 +153,10 @@ def build_track_path_overlay(
         )
 
     colors = _viridis_colors(len(occupied))
-    # Oldest-first so larger t overwrites where outlines overlap (newest on top).
-    # union_mask stays the filled union (spotlight covers the whole trajectory).
-    for mask, color in zip(masks, colors, strict=True):
-        overlay[_mask_outline(mask)] = color
-        union_mask |= mask
+    for mask in masks:
+        union_mask |= mask  # filled union drives the spotlight, not the drawing
+    # Draw the trajectory itself: a thick viridis polyline through the centroids.
+    _draw_track_path(overlay, centroids, colors, max(int(thickness) // 2, 1))
 
     return TrackPathOverlay(
         frames=tuple(occupied),

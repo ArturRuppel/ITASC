@@ -62,14 +62,19 @@ def test_current_frame_is_one_horizontal_guide(_app):
     assert ln.y1() == ln.y2() == pytest.approx(2 * _CELL_H + _CELL_H / 2.0)
 
 
-def test_selected_column_highlight_replaces_not_accumulates(_app):
+def test_selected_column_is_a_vertical_line_that_replaces_not_accumulates(_app):
     panel = LineageCanvasPanel()
     panel.set_overview(_lanes(), n_frames=6)
 
     panel.set_selection(7)
     first = panel._col_item
-    panel.set_selection(9)
+    # The selection marker is a vertical line centered on the track's column.
+    assert isinstance(first, QGraphicsLineItem)
+    ln = first.line()
+    assert ln.x1() == ln.x2() == pytest.approx(0 * _COL_W + _COL_W / 2.0)
+    assert (ln.y1(), ln.y2()) == pytest.approx((0.0, 6 * _CELL_H))
 
+    panel.set_selection(9)
     assert first is not panel._col_item
     assert panel._col_item is not None
     panel.set_selection(0)

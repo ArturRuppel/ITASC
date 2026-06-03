@@ -1131,7 +1131,7 @@ class NucleusCorrectionWidget(QWidget):
         self._apply_swap(layer, t, source_id, candidate, validated_tracks_full)
         cursor.cursor = idx
         cursor.displayed_area = candidate.area
-        self._refresh_track_visuals_live()
+        self._refresh_swap_visuals_live()
         self._correction_status(
             f"Swapped cell {source_id} -> candidate {idx + 1}/{len(cursor.candidates)}"
             f" (area={candidate.area} px)"
@@ -1565,6 +1565,20 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_track_path_overlay()
             self._refresh_track_path_spotlight()
         self._refresh_lineage_canvas_if_shown()
+
+    def _refresh_swap_visuals_live(self) -> None:
+        """Cheap post-swap refresh used while stepping candidates with Z / C.
+
+        Updates the comet and the selected track's detail strip only. The full
+        :meth:`_refresh_lineage_canvas_if_shown` re-runs the error scan and
+        lineage build over the *whole* stack, which froze the GUI when fired on
+        every swap keystroke; the overview catches up on the next full refresh.
+        """
+        if self.track_path_check.isChecked():
+            self._refresh_track_path_overlay()
+            self._refresh_track_path_spotlight()
+        if self.lineage_canvas_check.isChecked():
+            self._lineage_canvas.refresh_detail()
 
     def _refresh_lineage_canvas_if_shown(self) -> None:
         """Rebuild the lineage canvas (overview + detail) after a label change."""

@@ -11,7 +11,7 @@ stays a clean graph view (room to grow in-place editing later).
   break. Per-frame status paints into the column: green = validated, orange =
   anchored, red = a flagged error frame. Because the time axis is shared, the
   current-frame cursor is one horizontal guide line across every column, and the
-  selected track is just a highlighted column.
+  selected track is marked by a vertical cursor line down its column.
 * **Detail** (bottom): the *selected* track's film strip — the only place
   per-frame crops are built, so cost is O(1 track) regardless of track count.
 
@@ -49,7 +49,7 @@ _VALIDATED = QColor("#00ff00")
 _ANCHOR = QColor("#ff8c00")
 _ERROR = QColor("#ff3b30")
 _FRAME_GUIDE = QColor(255, 210, 70)    # the current-frame horizontal cursor
-_COL_SELECT = QColor(255, 255, 255, 45)  # selected-track column wash
+_COL_SELECT = QColor(255, 255, 255)    # selected-track vertical cursor line
 
 
 @dataclass(frozen=True)
@@ -170,11 +170,11 @@ class LineageCanvasPanel(QWidget):
         lane = self._lanes_by_cell.get(self._selected)
         if lane is None or self._n_frames <= 0:
             return
-        self._col_item = self._scene.addRect(
-            lane.column * _COL_W, 0, _COL_W, self._n_frames * _CELL_H,
-            _no_pen(), _COL_SELECT,
+        x = lane.column * _COL_W + _COL_W / 2.0
+        self._col_item = self._scene.addLine(
+            x, 0, x, self._n_frames * _CELL_H, QPen(_COL_SELECT, 1.5),
         )
-        self._col_item.setZValue(-1)  # behind the lane bars
+        self._col_item.setZValue(2)  # over the lane bars, like a cursor
 
     def _apply_frame_guide(self) -> None:
         if self._guide_item is not None:

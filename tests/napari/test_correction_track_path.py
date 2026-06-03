@@ -87,30 +87,42 @@ def test_absent_track_returns_empty_overlay():
     assert overlay.centroids.shape == (0, 2)
 
 
-def test_overlay_is_transparent_outside_track_masks():
-    stack = np.zeros((1, 3, 3), dtype=np.uint32)
+def test_overlay_is_transparent_away_from_the_path():
+    stack = np.zeros((1, 11, 11), dtype=np.uint32)
     stack[0, 0, 0] = 3
 
-    overlay = build_track_path_overlay(stack, 3)
+    overlay = build_track_path_overlay(stack, 3, thickness=2)
 
-    # Painted pixel non-zero, untouched pixels stay fully transparent (all-zero).
+    # The trajectory point is painted; pixels well away from it stay transparent.
     assert overlay.overlay[0, 0].any()
-    assert not overlay.overlay[2, 2].any()
+    assert not overlay.overlay[10, 10].any()
 
 
-def test_filled_blob_paints_only_its_outline():
-    # A solid 3x3 mask sitting inside a larger plane: the border is painted,
-    # the interior pixel stays transparent, but the union stays filled.
-    stack = np.zeros((1, 5, 5), dtype=np.uint32)
-    stack[0, 1:4, 1:4] = 2
+def test_path_only_draws_the_track_not_its_mask():
+    # A solid 3x3 mask: the overlay draws the trajectory (a thick dot at the
+    # centroid), not the nucleus mask — but union_mask still tracks the footprint.
+    stack = np.zeros((1, 9, 9), dtype=np.uint32)
+    stack[0, 1:4, 1:4] = 2  # centroid at (2, 2)
 
-    overlay = build_track_path_overlay(stack, 2)
+    overlay = build_track_path_overlay(stack, 2, thickness=2)
 
-    assert overlay.overlay[1, 1].any()      # corner of the blob (border)
-    assert overlay.overlay[1, 2].any()      # edge of the blob (border)
-    assert not overlay.overlay[2, 2].any()  # interior pixel stays transparent
-    assert overlay.union_mask[2, 2]         # union is still filled
-    assert overlay.union_mask.sum() == 9
+    assert overlay.overlay[2, 2].any()   # the centroid (the track) is painted
+    assert not overlay.overlay[8, 8].any()
+    assert overlay.union_mask.sum() == 9  # union still covers the whole mask
+
+
+def test_path_bridges_centroids_across_frames():
+    # Cell present in frames 0 and 2 (gap at 1), far apart on the same row. The
+    # trajectory line connects them, painting pixels that lie on no mask.
+    stack = np.zeros((3, 5, 9), dtype=np.uint32)
+    stack[0, 2, 0] = 6   # centroid (2, 0)
+    stack[2, 2, 8] = 6   # centroid (2, 8)
+
+    overlay = build_track_path_overlay(stack, 6, thickness=2)
+
+    assert overlay.frames == (0, 2)
+    assert overlay.overlay[2, 4].any()    # midpoint of the bridge, not a mask pixel
+    assert overlay.union_mask.sum() == 2  # only the two single-pixel masks
 
 
 def test_2d_plane_treated_as_single_frame():

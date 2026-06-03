@@ -36,7 +36,7 @@ _TILE_PX_MAX = 512
 _ZOOM_STEP = 8       # px added/removed from the tile size per Ctrl+wheel notch
 _GAP = 2             # gap between stacked crops (px)
 _COL_GAP = 8         # gap between wrapped columns (px)
-_HEADER_PX = 12      # room above each column for its starting-frame label
+_HEADER_PX = 18      # room above each column for its starting-frame label
 _DEFAULT_COL_HEIGHT = 600  # column height used before the view has a real size
 
 # Border drawn around the tile for the frame the viewer is currently on.
@@ -161,7 +161,7 @@ class TrackFilmStripPanel(QWidget):
         font = text.font()
         font.setPointSizeF(max(6.0, _HEADER_PX - 4))
         text.setFont(font)
-        text.setPos(x - 2, -2)
+        text.setPos(x - 2, -8)
 
     def _tile_pixmap(self, tile) -> QPixmap:
         pm = QPixmap.fromImage(rgb_to_qimage(tile.rgb)).scaledToHeight(
