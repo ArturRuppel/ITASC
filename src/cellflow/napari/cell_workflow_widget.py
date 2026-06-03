@@ -546,6 +546,7 @@ class CellWorkflowWidget(QWidget):
                 "expand_max_px": self.expand_max_px_spin.value(),
                 "hole_radius": self.hole_radius_spin.value(),
                 "semihole_opening": self.semihole_opening_spin.value(),
+                "scope": self.correction_scope_combo.currentText(),
             },
         }
 
@@ -584,6 +585,11 @@ class CellWorkflowWidget(QWidget):
             for key, spin in widgets.items():
                 if key in group:
                     spin.setValue(group[key])
+        correction = state.get("correction", {})
+        if isinstance(correction, dict) and "scope" in correction:
+            idx = self.correction_scope_combo.findText(correction["scope"])
+            if idx >= 0:
+                self.correction_scope_combo.setCurrentIndex(idx)
 
     def set_selection_callback(self, fn) -> None:
         self.correction_widget.set_selection_callback(fn)

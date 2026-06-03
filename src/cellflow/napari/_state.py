@@ -62,6 +62,13 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "contour_strength": w.atom_extraction_widget.contour_strength_spin.value(),
             "atom_min_area": w.atom_extraction_widget.atom_min_area_spin.value(),
         },
+        "correction": {
+            "swap_radius": w.swap_radius_spin.value(),
+            "retrack_max_distance": w.retrack_max_dist_spin.value(),
+            "show_track_path": w.nucleus_correction_widget.track_path_check.isChecked(),
+            "show_film_strip": w.nucleus_correction_widget.film_strip_check.isChecked(),
+            "film_strip_size": w.nucleus_correction_widget.film_strip_size_spin.value(),
+        },
     }
 
 
@@ -136,3 +143,11 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "contour_floor" in ae: aw.contour_floor_spin.setValue(ae["contour_floor"])
         if "contour_strength" in ae: aw.contour_strength_spin.setValue(ae["contour_strength"])
         if "atom_min_area" in ae: aw.atom_min_area_spin.setValue(ae["atom_min_area"])
+    if "correction" in state:
+        cor = state["correction"]
+        cw = w.nucleus_correction_widget
+        if "swap_radius" in cor: w.swap_radius_spin.setValue(cor["swap_radius"])
+        if "retrack_max_distance" in cor: w.retrack_max_dist_spin.setValue(cor["retrack_max_distance"])
+        if "show_track_path" in cor: cw.track_path_check.setChecked(cor["show_track_path"])
+        if "show_film_strip" in cor: cw.film_strip_check.setChecked(cor["show_film_strip"])
+        if "film_strip_size" in cor: cw.film_strip_size_spin.setValue(cor["film_strip_size"])

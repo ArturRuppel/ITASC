@@ -243,6 +243,7 @@ def test_get_set_state_roundtrip(monkeypatch):
         "cleanup": {"fg_strength": 0.3, "fg_threshold": 0.2, "contour_window": 71},
         "temporal": {"memory_tau": 0.05},
         "segmentation": {"balance": 0.5, "feature_strength": 250.0, "n_workers": 1},
+        "correction": {"hole_radius": 4, "scope": "All frames"},
     })
     state = widget.get_state()
     assert state["cleanup"]["fg_strength"] == 0.3
@@ -251,6 +252,8 @@ def test_get_set_state_roundtrip(monkeypatch):
     assert state["temporal"]["memory_tau"] == 0.05
     assert state["segmentation"]["balance"] == 0.5
     assert state["segmentation"]["feature_strength"] == 250.0
+    assert state["correction"]["hole_radius"] == 4
+    assert state["correction"]["scope"] == "All frames"
 
     widget.deleteLater()
     app.processEvents()

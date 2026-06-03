@@ -144,12 +144,12 @@ def test_summary_text_reports_node_and_edge_probability_statistics(tmp_path):
     assert any(line.startswith("Node annotations:") for line in lines)
     assert any(line.startswith("Link annotations:") for line in lines)
     assert any(line.startswith("Frame 0:") for line in lines)
-    assert "node prob 4/5 scored" in text
+    assert "node prob:" in text
     assert "min 0.100" in text
     assert "median 0.500" in text
     assert "mean 0.500" in text
     assert "max 0.900" in text
-    assert "edge weight 2 links" in text
+    assert "edge weight:" in text
     assert "min 0.250" in text
     assert "median 0.500" in text
     assert "max 0.750" in text

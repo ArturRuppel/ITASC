@@ -267,12 +267,12 @@ def _finite_values(rows) -> list[float]:
     return values
 
 
-def _stats_text(label: str, values: list[float], prefix: str) -> str | None:
+def _stats_text(label: str, values: list[float]) -> str | None:
     if not values:
         return None
     arr = np.asarray(values, dtype=np.float64)
     return (
-        f"{label} {prefix}: "
+        f"{label}: "
         f"min {float(np.min(arr)):.3f}, "
         f"median {float(np.median(arr)):.3f}, "
         f"mean {float(np.mean(arr)):.3f}, "
@@ -317,7 +317,6 @@ def summary_text(db_path: Path, frame: int) -> str:
                 .scalar()
                 or 0
             )
-            n_unknown = max(n_nodes - n_real - n_fake, 0)
             link_annotation_rows = (
                 session.query(LinkDB.annotation, func.count(LinkDB.source_id))
                 .group_by(LinkDB.annotation)
@@ -327,20 +326,8 @@ def summary_text(db_path: Path, frame: int) -> str:
             frame_nodes = session.query(NodeDB).filter(NodeDB.t == frame).all()
             selected = sum(1 for n in frame_nodes if getattr(n, "selected", False))
             node_ids = [int(n.id) for n in frame_nodes]
-            outgoing = incoming = overlaps = 0
+            overlaps = 0
             if node_ids:
-                outgoing = int(
-                    session.query(func.count(LinkDB.source_id))
-                    .filter(LinkDB.source_id.in_(node_ids))
-                    .scalar()
-                    or 0
-                )
-                incoming = int(
-                    session.query(func.count(LinkDB.target_id))
-                    .filter(LinkDB.target_id.in_(node_ids))
-                    .scalar()
-                    or 0
-                )
                 if OverlapDB is not None:
                     try:
                         overlaps = int(
@@ -357,31 +344,19 @@ def summary_text(db_path: Path, frame: int) -> str:
         stats_parts = [
             text
             for text in (
-                _stats_text(
-                    "node prob",
-                    node_prob_values,
-                    f"{len(node_prob_values)}/{n_nodes} scored",
-                ),
-                _stats_text(
-                    "edge weight",
-                    link_weight_values,
-                    f"{len(link_weight_values)} links",
-                ),
+                _stats_text("node prob", node_prob_values),
+                _stats_text("edge weight", link_weight_values),
             )
             if text is not None
         ]
         lines = [
             f"Database: {n_nodes} nodes, {n_links} links",
-            f"Node annotations: REAL {n_real}, FAKE {n_fake}, UNKNOWN {n_unknown}",
+            f"Node annotations: REAL {n_real}, FAKE {n_fake}",
             (
                 f"Link annotations: REAL links {link_annotations['REAL']}, "
-                f"FAKE links {link_annotations['FAKE']}, "
-                f"UNKNOWN links {link_annotations['UNKNOWN']}"
+                f"FAKE links {link_annotations['FAKE']}"
             ),
-            (
-                f"Frame {frame}: {len(node_ids)} nodes, {selected} selected, "
-                f"{incoming} in/{outgoing} out links, {overlaps} overlaps"
-            ),
+            f"Frame {frame}: {selected} selected, {overlaps} overlaps",
         ]
         if stats_parts:
             lines.extend(stats_parts)

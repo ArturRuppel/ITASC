@@ -1808,6 +1808,10 @@ class NucleusCorrectionWidget(QWidget):
             frame_view_2d=frame_view_2d,
             counter_label=self.validation_counter_lbl,
         )
+        # Mask edits (draw / merge / relabel / redraw / fill) all funnel through
+        # here, so refresh the film strip too — otherwise it only tracks the
+        # retrack/extend paths and goes stale when the pixels are edited by hand.
+        self._refresh_film_strip_if_shown()
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
         return self._validated_overlay.frames_with_cell(cell_id)
