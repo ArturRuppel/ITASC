@@ -222,7 +222,7 @@ class LineageCanvasController:
         self._panel = panel
         try:
             self._dock = self.viewer.window.add_dock_widget(
-                panel, name="Lineage canvas", area="left"
+                panel, name="Lineage canvas", area="right"
             )
         except Exception:
             logger.exception("could not dock the lineage canvas")
