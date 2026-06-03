@@ -77,6 +77,31 @@ def _frame_divergence_means(
     return {int(i): float(contour_frame[frame == int(i)].mean()) for i in ids}
 
 
+def _divergence_bounds(values: np.ndarray, k: float) -> tuple[float, float]:
+    """Robust ``(threshold, high)`` for the divergence reason.
+
+    A cell is flagged only above ``threshold = median + k·MAD`` — a robust
+    outlier test that adapts to each run's contrast instead of always flagging a
+    fixed top-decile — and the score is anchored by ``high`` (the 99th
+    percentile) so a just-over-threshold cell reads faint and the strongest
+    divergence reads bold. When the spread is degenerate (more than half the
+    values identical, e.g. lots of zeros) it falls back to the midpoint between
+    the median and the peak: a lone clear outlier above a sea of zeros is still
+    caught, while a genuinely uniform field flags nothing (median == peak leaves
+    the band empty).
+    """
+    if values.size == 0:
+        return float("inf"), 0.0
+    med = float(np.median(values))
+    mad = float(np.median(np.abs(values - med)))
+    peak = float(values.max())
+    threshold = med + k * 1.4826 * mad if mad > 0.0 else 0.5 * (med + peak)
+    high = float(np.percentile(values, 99.0))
+    if high <= threshold:
+        high = peak
+    return threshold, high
+
+
 def scan_errors(
     tracked: np.ndarray,
     contours: np.ndarray | None = None,
@@ -84,14 +109,22 @@ def scan_errors(
     max_results: int = 200,
     orphan_max_frames: int = 2,
     area_jump_ratio: float = 2.0,
-    divergence_percentile: float = 90.0,
+    area_floor: int = 5,
+    divergence_k: float = 3.0,
 ) -> list[CellError]:
     """Rank likely correction errors in a tracked label stack.
 
     ``tracked`` is the ``(T, Y, X)`` (or ``(T, 1, Y, X)``) integer label stack;
     ``contours`` is the matching ``(T, Y, X)`` positive-divergence map, or
     ``None`` to skip the divergence reason. Returns up to ``max_results``
-    :class:`CellError` entries sorted by descending score.
+    :class:`CellError` entries sorted by descending score (all scores in
+    ``[0, 1]`` so they grade comparably across reasons).
+
+    Tuning knobs: ``divergence_k`` sets the robust outlier threshold for the
+    divergence reason (median + k·MAD); ``area_floor`` is the smallest mask area
+    (px) an area jump must reach to count, so sub-resolution wobble is ignored;
+    short tracks touching the first/last frame of a multi-frame stack are treated
+    as field-of-view entry/exit and not flagged.
     """
     arr = _as_tyx(tracked)
     n_t = arr.shape[0]
@@ -125,10 +158,8 @@ def scan_errors(
                 div_t[cell_id] = cmeans[cell_id]
                 all_div.append(cmeans[cell_id])
 
-    div_norm = max(all_div) if all_div else 0.0
-    div_threshold = (
-        float(np.percentile(all_div, divergence_percentile)) if all_div else float("inf")
-    )
+    div_values = np.asarray(all_div, dtype=float)
+    div_threshold, div_high = _divergence_bounds(div_values, divergence_k)
 
     entries: dict[tuple[int, int], _Entry] = {}
 
@@ -142,19 +173,27 @@ def scan_errors(
                 score=max(prev.score, score), reasons=prev.reasons + (reason,)
             )
 
-    # Reason: high boundary divergence.
-    if div_norm > 0.0:
+    # Reason: high boundary divergence — a robust outlier above the frame's own
+    # spread, scored by how far past the threshold it sits (not a fixed decile).
+    if div_high > div_threshold:
+        div_span = div_high - div_threshold
         for t, by_id in div_mean.items():
             for cell_id, value in by_id.items():
-                if value >= div_threshold and value > 0.0:
-                    _flag(t, cell_id, min(value / div_norm, 1.0), "high boundary divergence")
+                if value > div_threshold:
+                    _flag(
+                        t, cell_id, min((value - div_threshold) / div_span, 1.0),
+                        "high boundary divergence",
+                    )
 
     # Reasons derived from per-track frame spans (gaps, orphans, area jumps).
     for cell_id, frames in frames_of.items():
         frames.sort()
         span = frames[-1] - frames[0] + 1
-        # Orphan: track exists for only a frame or two.
-        if len(frames) <= orphan_max_frames:
+        # Orphan: a very short track — unless it touches the first/last frame of
+        # a multi-frame stack, where it is probably a cell entering or leaving
+        # the field of view rather than a tracking error.
+        touches_bound = frames[0] == 0 or frames[-1] == n_t - 1
+        if len(frames) <= orphan_max_frames and not (n_t > 1 and touches_bound):
             _flag(
                 frames[0], cell_id,
                 min(1.0, (orphan_max_frames - len(frames) + 1) / orphan_max_frames),
@@ -181,7 +220,9 @@ def scan_errors(
             a0 = area[prev_t][cell_id]
             a1 = area[t][cell_id]
             lo, hi = sorted((a0, a1))
-            if lo > 0 and hi / lo >= area_jump_ratio:
+            # Ignore jumps among sub-resolution masks (a 1->3 px wobble is noise,
+            # not a merge/split): require the larger mask to clear ``area_floor``.
+            if lo > 0 and hi >= area_floor and hi / lo >= area_jump_ratio:
                 ratio = hi / lo
                 _flag(
                     t, cell_id, min(1.0, ratio / (area_jump_ratio * 2.0)),

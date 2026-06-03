@@ -63,7 +63,6 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "atom_min_area": w.atom_extraction_widget.atom_min_area_spin.value(),
         },
         "correction": {
-            "swap_radius": w.swap_radius_spin.value(),
             "retrack_max_distance": w.retrack_max_dist_spin.value(),
             "show_track_path": w.nucleus_correction_widget.track_path_check.isChecked(),
         },
@@ -144,6 +143,5 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
     if "correction" in state:
         cor = state["correction"]
         cw = w.nucleus_correction_widget
-        if "swap_radius" in cor: w.swap_radius_spin.setValue(cor["swap_radius"])
         if "retrack_max_distance" in cor: w.retrack_max_dist_spin.setValue(cor["retrack_max_distance"])
         if "show_track_path" in cor: cw.track_path_check.setChecked(cor["show_track_path"])

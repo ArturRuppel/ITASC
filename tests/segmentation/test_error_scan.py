@@ -86,7 +86,7 @@ def test_max_results_is_respected() -> None:
 
 def test_singleton_z_axis_is_squeezed() -> None:
     arr = np.zeros((3, 1, 8, 8), dtype=np.uint32)
-    arr[0, 0, 5, 5] = 9
+    arr[1, 0, 5, 5] = 9  # interior frame so the short-track flag still fires
 
     errors = scan_errors(arr, None)
 
@@ -99,3 +99,75 @@ def test_no_errors_on_clean_stable_stack() -> None:
         arr[t, 0:3, 0:3] = 1  # one stable cell, no gaps/jumps
     errors = scan_errors(arr, None)
     assert errors == []
+
+
+def _stable_cells(*, n: int, t: int = 3, size: int = 16) -> np.ndarray:
+    """``n`` stable 2x2 cells present in every frame (no gaps/jumps/orphans)."""
+    arr = np.zeros((t, size, size), dtype=np.uint32)
+    for i in range(n):
+        y, x = 1 + 3 * (i // 4), 1 + 3 * (i % 4)
+        arr[:, y : y + 2, x : x + 2] = i + 1
+    return arr
+
+
+def test_uniform_divergence_flags_nothing() -> None:
+    # A genuinely uniform contour field must not flag a fixed top-decile: with
+    # every cell equally "divergent" there is no outlier to surface.
+    arr = _stable_cells(n=6)
+    contours = np.full_like(arr, 5.0, dtype=np.float32)
+
+    errors = scan_errors(arr, contours)
+
+    assert not any("high boundary divergence" in e.reasons for e in errors)
+
+
+def test_only_a_clear_divergence_outlier_is_flagged() -> None:
+    # Most cells sit on low contour; one sits on a strong boundary. Only the
+    # outlier is flagged for divergence — not the low-signal majority.
+    arr = _stable_cells(n=6)
+    contours = np.ones_like(arr, dtype=np.float32)  # baseline signal under all
+    contours[:, 1:3, 1:3] = 50.0  # cell 1 sits on a strong boundary
+
+    errors = scan_errors(arr, contours)
+
+    div = [e for e in errors if "high boundary divergence" in e.reasons]
+    assert {e.cell_id for e in div} == {1}
+
+
+def test_short_track_at_fov_boundary_is_not_flagged() -> None:
+    # 1-frame tracks at the first/last frame are field-of-view entry/exit, not
+    # errors; an interior 1-frame track still is.
+    arr = _stack(t=4)
+    arr[0, 1, 1] = 10   # touches first frame
+    arr[3, 2, 2] = 11   # touches last frame
+    arr[1, 3, 3] = 12   # interior
+
+    errors = scan_errors(arr, None)
+    flagged = {e.cell_id for e in errors}
+
+    assert 10 not in flagged and 11 not in flagged
+    assert 12 in flagged
+
+
+def test_tiny_area_wobble_is_not_flagged() -> None:
+    # A 1->3 px wobble clears the ratio but not the area floor: it's noise, not
+    # a merge/split, so nothing is flagged.
+    arr = _stack(t=2)
+    arr[0, 0, 0] = 4          # area 1
+    arr[1, 0:1, 0:3] = 4      # area 3 (-> ×3, but max mask is sub-floor)
+
+    errors = scan_errors(arr, None)
+
+    assert errors == []
+
+
+def test_all_scores_are_within_the_unit_interval() -> None:
+    arr = _stable_cells(n=6)
+    contours = np.ones_like(arr, dtype=np.float32)
+    contours[:, 1:3, 1:3] = 50.0
+    arr[1, 12, 12] = 99  # add an interior orphan for reason variety
+
+    errors = scan_errors(arr, contours)
+
+    assert errors  # the fixture produces at least one flag
+    assert all(0.0 <= e.score <= 1.0 for e in errors)

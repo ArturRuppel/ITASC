@@ -21,18 +21,17 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.napari._correction_error_style import severity_rgba
 from cellflow.segmentation.error_scan import CellError
-
-# Score 0 → green-ish, 1 → red: a simple two-stop ramp for the score cell.
-_LOW = (90, 160, 90)
-_HIGH = (200, 70, 70)
 
 
 def _score_color(score: float) -> QColor:
-    s = max(0.0, min(1.0, float(score)))
-    r = int(_LOW[0] + (_HIGH[0] - _LOW[0]) * s)
-    g = int(_LOW[1] + (_HIGH[1] - _LOW[1]) * s)
-    b = int(_LOW[2] + (_HIGH[2] - _LOW[2]) * s)
+    """Severity heat colour for the score cell (shared ramp; alpha dropped).
+
+    The worklist colours score *text*, so it ignores the ramp's alpha (faded
+    text would be hard to read) and uses the solid ``(r, g, b)``.
+    """
+    r, g, b, _ = severity_rgba(score)
     return QColor(r, g, b)
 
 

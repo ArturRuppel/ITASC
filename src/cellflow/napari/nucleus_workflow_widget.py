@@ -307,7 +307,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self.extend_distance_weight_spin = correction.extend_distance_weight_spin
         self.extend_overlap_penalty_spin = correction.extend_overlap_penalty_spin
         self.extend_greedy_overwrite_check = correction.extend_greedy_overwrite_check
-        self.swap_radius_spin = correction.swap_radius_spin
         self.retrack_max_dist_spin = correction.retrack_max_dist_spin
         self.extend_retrack_params_section = correction.extend_retrack_params_section
         self.extend_params_section = correction.extend_params_section

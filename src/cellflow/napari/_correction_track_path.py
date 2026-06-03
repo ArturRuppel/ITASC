@@ -1,13 +1,18 @@
-"""Build the whole-track temporal "comet" overlay for correction mode.
+"""Build the whole-track overlay for correction mode.
 
-Given a tracked label stack and one track id, draw that *selected* track's
-**trajectory** onto a single plane: a thick polyline through the per-frame
-nucleus centroids, complete across every frame the track appears in, colored
-start->finish with viridis (earliest frame dark, latest yellow) so time reads
-straight off the line. The nucleus masks themselves are not drawn — just the
-track. Also return the boolean union of all the track's (filled) masks (used to
-enlarge the correction spotlight to the whole trajectory) and the per-frame
-centroids (used to place the path / a frame number).
+Given a tracked label stack and one track id, draw that *selected* track onto a
+single plane in two superimposed layers, both colour-coded by time with viridis
+(earliest frame dark, latest yellow):
+
+* the **trajectory polyline** through the per-frame nucleus centroids, oldest to
+  newest, so the path of travel reads straight off the line; and
+* the **merged-footprint outline**: the boundary of the union of every frame's
+  nucleus mask, with each outline pixel coloured by the last frame to occupy it,
+  so you can see when each part of the footprint was visited.
+
+The filled masks themselves are not drawn. Also return the boolean union (used
+to enlarge the correction spotlight to the whole trajectory) and the per-frame
+centroids.
 
 Pure module: no Qt, no napari, so it is unit-testable on its own.
 """
@@ -22,7 +27,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class TrackPathOverlay:
-    """Rendered comet for one track.
+    """Rendered trajectory + footprint outline for one track.
 
     ``frames`` lists the occupied frame indices in ascending (oldest-first)
     order; ``colors``, ``centroids`` are aligned with it row-for-row.
@@ -30,7 +35,7 @@ class TrackPathOverlay:
 
     frames: tuple[int, ...]      # occupied frame indices, ascending
     colors: np.ndarray           # (N, 4) RGBA, frames[0] dark -> frames[-1] yellow
-    overlay: np.ndarray          # (H, W, 4) RGBA float, the trajectory polyline
+    overlay: np.ndarray          # (H, W, 4) RGBA float: polyline + footprint outline
     union_mask: np.ndarray       # (H, W) bool, union of all the track's filled masks
     centroids: np.ndarray        # (N, 2) (y, x) centroid per occupied frame
 
@@ -93,7 +98,7 @@ def _draw_track_path(
     Segments are walked oldest-first with the colour interpolated between the
     two endpoints' time colours, so the line is a smooth viridis gradient and,
     where the path crosses itself, the newest pixels land on top. A single
-    occupied frame draws one thick dot at its centroid.
+    occupied frame draws one dot at its centroid.
     """
     n = len(centroids)
     if n == 1:
@@ -109,14 +114,16 @@ def _draw_track_path(
 
 
 def build_track_path_overlay(
-    tracked_stack: np.ndarray, track_id: int, *, thickness: int = 2
+    tracked_stack: np.ndarray, track_id: int, *, thickness: int = 1
 ) -> TrackPathOverlay:
-    """Draw the trajectory of ``track_id`` across all frames of ``tracked_stack``.
+    """Draw the trajectory and merged footprint of ``track_id``.
 
     ``tracked_stack`` is a ``(T, H, W)`` label array (a bare ``(H, W)`` plane is
     treated as a single frame). A ``thickness``-pixel-wide viridis polyline is
-    rasterised through the per-frame nucleus centroids; the masks themselves are
-    not painted.
+    rasterised through the per-frame nucleus centroids, and the outline of the
+    union of every frame's mask is traced on top, each outline pixel coloured by
+    the last frame to occupy it. Both encode time with viridis; the filled masks
+    themselves are not painted.
     """
     stack = np.asarray(tracked_stack)
     if stack.ndim == 2:
@@ -153,10 +160,27 @@ def build_track_path_overlay(
         )
 
     colors = _viridis_colors(len(occupied))
-    for mask in masks:
-        union_mask |= mask  # filled union drives the spotlight, not the drawing
-    # Draw the trajectory itself: a thick viridis polyline through the centroids.
-    _draw_track_path(overlay, centroids, colors, max(int(thickness) // 2, 1))
+    # Per-pixel time map over the footprint: the index of the *last* occupied
+    # frame to cover each pixel (later frames overwrite earlier ones), so the
+    # outline's colour reads as "when was this last visited".
+    time_map = np.full((height, width), -1, dtype=int)
+    for i, mask in enumerate(masks):
+        union_mask |= mask
+        time_map[mask] = i
+
+    # Trace the outline of the merged footprint as a thin contour. ``thickness``
+    # is the line width in pixels; widths above 1 grow the contour inward so it
+    # never spills past the footprint. Each outline pixel takes the viridis time
+    # colour of the last frame that occupied it; interiors stay transparent.
+    outline = _mask_outline(union_mask)
+    if thickness > 1:
+        outline = _binary_dilate(outline, int(thickness) - 1) & union_mask
+    oy, ox = np.nonzero(outline)
+    overlay[oy, ox] = colors[time_map[oy, ox]]
+
+    # Draw the trajectory polyline on top, so the path stays legible where it
+    # crosses the footprint outline.
+    _draw_track_path(overlay, centroids, colors, max(int(thickness) // 2, 0))
 
     return TrackPathOverlay(
         frames=tuple(occupied),

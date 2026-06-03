@@ -105,7 +105,7 @@ def test_validated_anchored_and_error_frames_flag_lanes(stubbed, monkeypatch):
     )
     monkeypatch.setattr(
         lcc, "scan_errors",
-        lambda *_a, **_k: [SimpleNamespace(t=1, cell_id=7)],
+        lambda *_a, **_k: [SimpleNamespace(t=1, cell_id=7, score=0.8)],
     )
     viewer = _viewer()
     ctrl = _controller(
@@ -120,7 +120,8 @@ def test_validated_anchored_and_error_frames_flag_lanes(stubbed, monkeypatch):
     lane = stubbed.return_value.set_overview.call_args.args[0][0]
     assert lane.validated == frozenset({0})
     assert lane.anchored == frozenset({1})
-    assert lane.errors == frozenset({1})
+    # Errors carry their severity score so the overview can grade the heat.
+    assert lane.errors == {1: 0.8}
 
 
 def test_set_selection_builds_detail_for_occupied_frames(stubbed):

@@ -21,6 +21,7 @@ and select the cell via :attr:`node_activated`.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from qtpy.QtCore import Qt, Signal
@@ -34,6 +35,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.napari._correction_error_style import severity_rgba
 from cellflow.napari._correction_film_strip import TrackFilmStripPanel
 from cellflow.napari._correction_track_path import TrackFilmStrip
 
@@ -47,21 +49,24 @@ _COL_PAD = 1.5   # horizontal padding inside a column
 _PRESENT = QColor(95, 95, 95)          # a present frame with nothing flagged
 _VALIDATED = QColor("#00ff00")
 _ANCHOR = QColor("#ff8c00")
-_ERROR = QColor("#ff3b30")
 _FRAME_GUIDE = QColor(255, 210, 70)    # the current-frame horizontal cursor
 _COL_SELECT = QColor(255, 255, 255)    # selected-track vertical cursor line
 
 
 @dataclass(frozen=True)
 class LaneView:
-    """One track's column: present runs plus the frames flagged in each state."""
+    """One track's column: present runs plus the frames flagged in each state.
+
+    ``errors`` maps a flagged frame to its severity ``score`` in ``[0, 1]`` so the
+    overview can paint it as graded heat rather than a flat mark.
+    """
 
     cell_id: int
     column: int
     segments: tuple[tuple[int, int], ...]  # inclusive [start, end] present runs
     validated: frozenset[int] = field(default_factory=frozenset)
     anchored: frozenset[int] = field(default_factory=frozenset)
-    errors: frozenset[int] = field(default_factory=frozenset)
+    errors: Mapping[int, float] = field(default_factory=dict)
 
     def present(self, frame: int) -> bool:
         return any(s <= frame <= e for s, e in self.segments)
@@ -146,8 +151,9 @@ class LineageCanvasPanel(QWidget):
             self._fill_cell(x, w, frame, _VALIDATED)
         for frame in lane.anchored:
             self._fill_cell(x, w, frame, _ANCHOR)
-        for frame in lane.errors:
-            self._fill_cell(x, w, frame, _ERROR)
+        # Errors as severity heat: faint warm for low score, bold red for high.
+        for frame, score in lane.errors.items():
+            self._fill_cell(x, w, frame, QColor(*severity_rgba(score)))
 
     def _fill_cell(self, x: float, w: float, frame: int, color: QColor) -> None:
         self._scene.addRect(x, frame * _CELL_H, w, _CELL_H, _no_pen(), color)

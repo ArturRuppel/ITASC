@@ -349,14 +349,12 @@ class NucleusCorrectionWidget(QWidget):
             "Distance weight:",
             self.extend_distance_weight_spin,
         )
-        self.swap_radius_spin = _dslider(0, 500, 40.0, 1.0, 1)
         add_block_pair_row(
             g,
             2,
             "Overlap penalty:",
             self.extend_overlap_penalty_spin,
         )
-        add_block_pair_row(g, 3, "Swap radius:", self.swap_radius_spin)
         add_block_checkbox_row(g, 4, self.extend_greedy_overwrite_check)
         extend_retrack_lay.addLayout(g)
 
@@ -1088,18 +1086,16 @@ class NucleusCorrectionWidget(QWidget):
             )
             protected_mask = protected_cell_mask(tracked[t], protected_ids)
 
-            radius_px = float(self.swap_radius_spin.value())
             candidates = list_swap_candidates(
                 db_path=db_path,
                 frame=t,
-                source_centroid=source_centroid,
-                radius_px=radius_px,
+                source_mask=source_mask,
                 frame_shape=tuple(tracked.shape[1:]),
                 protected_mask=protected_mask,
             )
             if not candidates:
                 self._correction_status(
-                    f"No swap candidates within {radius_px:g}px."
+                    "No swap candidates in the segmentation hierarchy."
                 ); return
 
             self._swap_cursor = _SwapCursor(

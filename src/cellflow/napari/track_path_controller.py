@@ -1,11 +1,11 @@
-"""Whole-track temporal overlay ("comet") for the nucleus correction workflow.
+"""Whole-track overlay for the nucleus correction workflow.
 
-This owns the in-canvas comet: the fading viridis image layer that paints the
-selected track's entire trajectory (oldest→newest), plus the spotlight mask the
-inner correction widget consults to highlight that track's union footprint. The
-pixels come from the pure :func:`build_track_path_overlay` helper; this
-controller is the layer-lifecycle glue the correction widget used to carry
-inline.
+This owns the in-canvas overlay: the image layer that paints the selected
+track's viridis trajectory polyline together with the time-coloured outline of
+its merged footprint (the union of every frame's mask), plus the spotlight mask
+the inner correction widget consults to highlight that same union. The pixels
+come from the pure :func:`build_track_path_overlay` helper; this controller is
+the layer-lifecycle glue the correction widget used to carry inline.
 """
 from __future__ import annotations
 

@@ -103,7 +103,7 @@ class LineageCanvasController:
                 segments=segments,
                 validated=frozenset(self._validated_map.get(cid, ())),
                 anchored=frozenset(self._anchored_map.get(cid, ())),
-                errors=frozenset(errors_map.get(cid, ())),
+                errors=dict(errors_map.get(cid, {})),
             ))
         return lanes, model.n_frames
 
@@ -166,13 +166,20 @@ class LineageCanvasController:
             return {}, {}
         return validated, anchored
 
-    def _error_map(self, tracked: np.ndarray) -> dict[int, set[int]]:
-        """Per-track flagged frames from the error scan (empty if it fails)."""
+    def _error_map(self, tracked: np.ndarray) -> dict[int, dict[int, float]]:
+        """Per-track ``{frame: score}`` from the error scan (empty if it fails).
+
+        Scores are kept (not collapsed to a bare frame set) so the overview can
+        grade each flagged frame by severity; the max is taken per ``(cell,
+        frame)`` though ``scan_errors`` already dedups each key to its top score.
+        """
         contours = self._contours_provider() if self._contours_provider else None
         try:
-            errors: dict[int, set[int]] = {}
+            errors: dict[int, dict[int, float]] = {}
             for err in scan_errors(tracked, contours):
-                errors.setdefault(int(err.cell_id), set()).add(int(err.t))
+                by_frame = errors.setdefault(int(err.cell_id), {})
+                t = int(err.t)
+                by_frame[t] = max(by_frame.get(t, 0.0), float(err.score))
         except Exception:
             logger.exception("error scan for the canvas failed")
             return {}
