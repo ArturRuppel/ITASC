@@ -36,24 +36,55 @@ from cellflow.segmentation.divergence_maps import (
     build_divergence_maps,
 )
 
+from cellflow.segmentation.error_scan import (
+    CellError,
+    scan_errors,
+)
+
+from cellflow.segmentation.lineage import (
+    LineageModel,
+    TrackLane,
+    TrackSegment,
+    build_lineage,
+)
+
+from cellflow.segmentation.lineage_graph import (
+    GraphEdge,
+    GraphNode,
+    LineageGraph,
+    assign_columns,
+    build_lineage_graph,
+)
+
 __all__ = [
     "CancelledError",
     "CellDivergenceParams",
     "CellDivergenceResult",
+    "CellError",
     "CellICMState",
     "CellLabelICMParams",
     "ContourFilterParams",
     "ContourWatershedParams",
     "DivergenceMapsReport",
+    "GraphEdge",
+    "GraphNode",
+    "LineageGraph",
+    "LineageModel",
+    "TrackLane",
+    "TrackSegment",
     "apply_gamma",
     "assemble_cost_field",
+    "assign_columns",
     "balance_strength_to_weights",
     "build_divergence_maps",
+    "build_lineage",
+    "build_lineage_graph",
     "clean_and_smooth_contours",
     "commit_labels",
     "compute_contour_watershed",
     "compute_filtered_contour_maps",
     "initialize_icm",
+    "scan_errors",
     "segment_cells_divergence",
     "_fill_and_close_labels",
 ]

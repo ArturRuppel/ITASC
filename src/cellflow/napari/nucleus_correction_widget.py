@@ -96,6 +96,13 @@ from cellflow.napari.validated_overlay_controller import (
 )
 from cellflow.napari.film_strip_controller import FilmStripController
 from cellflow.napari.track_path_controller import TrackPathController
+from cellflow.napari.worklist_controller import WorklistController
+from cellflow.napari.lineage_controller import LineageController
+from cellflow.napari.lineage_canvas_controller import LineageCanvasController
+from cellflow.napari._correction_takeover import (
+    hide_native_docks,
+    restore_native_docks,
+)
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.napari._correction_ui import (
     build_correction_header,
@@ -167,6 +174,8 @@ class NucleusCorrectionWidget(QWidget):
         self._correction_view_state: LayerViewState | None = None
         self._correction_dirty: bool = False
         self._swap_cursor: _SwapCursor | None = None
+        self._native_dock_state: dict[str, bool] = {}
+        self._contours_cache: tuple[float, np.ndarray] | None = None
         self._validated_overlay = ValidatedOverlayController(
             self.viewer,
             tracked_layer_provider=self._correction_tracked_layer,
@@ -195,6 +204,31 @@ class NucleusCorrectionWidget(QWidget):
             enabled_provider=self.track_path_check.isChecked,
             status_callback=self._correction_status,
             owned_layers=self._correction_owned_layers,
+        )
+        self._worklist = WorklistController(
+            self.viewer,
+            tracked_data_provider=self._ensure_tracked_layer_data,
+            contours_provider=self._contours_map,
+            on_activate=self._navigate_to_error,
+        )
+        self._lineage = LineageController(
+            self.viewer,
+            tracked_data_provider=self._ensure_tracked_layer_data,
+            selected_label_provider=lambda: int(
+                getattr(self.correction_widget, "_selected_label", 0) or 0
+            ),
+            current_t_provider=self._current_t,
+            on_activate=self._navigate_to_error,
+        )
+        self._lineage_canvas = LineageCanvasController(
+            self.viewer,
+            tracked_data_provider=self._ensure_tracked_layer_data,
+            intensity_layer_provider=self._film_strip_intensity_layer,
+            selected_label_provider=lambda: int(
+                getattr(self.correction_widget, "_selected_label", 0) or 0
+            ),
+            current_t_provider=self._current_t,
+            on_activate=self._navigate_to_error,
         )
 
     @property
@@ -417,6 +451,30 @@ class NucleusCorrectionWidget(QWidget):
         film_strip_lay.addWidget(self.film_strip_size_spin)
         self.film_strip_row.setVisible(False)
         group_lay.addWidget(self.film_strip_row)
+        self.worklist_check = QCheckBox("Show error worklist")
+        self.worklist_check.setToolTip(
+            "Open a docked, ranked list of likely correction errors (high "
+            "boundary divergence, area jumps, track gaps). Click a row to jump "
+            "to that frame and select the cell."
+        )
+        self.worklist_check.setVisible(False)
+        group_lay.addWidget(self.worklist_check)
+        self.lineage_check = QCheckBox("Show lineage")
+        self.lineage_check.setToolTip(
+            "Open a docked swimlane view of every track's frame presence; gaps "
+            "(broken bars) flag likely ID swaps. Click a lane to jump there."
+        )
+        self.lineage_check.setVisible(False)
+        group_lay.addWidget(self.lineage_check)
+        self.lineage_canvas_check = QCheckBox("Show lineage canvas")
+        self.lineage_canvas_check.setToolTip(
+            "Open a pannable/zoomable canvas combining the film strip, lineage "
+            "and worklist: each track is a column of its per-frame crops "
+            "(time downward), bordered green→red by confidence, joined by edges "
+            "thicker the faster the cell moves. Click a node to jump there."
+        )
+        self.lineage_canvas_check.setVisible(False)
+        group_lay.addWidget(self.lineage_canvas_check)
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
         group_lay.addWidget(self.correction_widget._attrib_lbl)
@@ -471,6 +529,9 @@ class NucleusCorrectionWidget(QWidget):
         self.film_strip_size_spin.valueChanged.connect(
             self._on_film_strip_size_changed
         )
+        self.worklist_check.toggled.connect(self._on_toggle_worklist)
+        self.lineage_check.toggled.connect(self._on_toggle_lineage)
+        self.lineage_canvas_check.toggled.connect(self._on_toggle_lineage_canvas)
         self.params_btn.toggled.connect(
             self._on_correction_params_button_toggled
         )
@@ -504,6 +565,9 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_widget._attrib_lbl.setVisible(show_active)
         self.track_path_check.setVisible(show_active)
         self.film_strip_row.setVisible(show_active)
+        self.worklist_check.setVisible(show_active)
+        self.lineage_check.setVisible(show_active)
+        self.lineage_canvas_check.setVisible(show_active)
 
         if show_params or show_shortcuts or show_active:
             self.section.expand()
@@ -1408,12 +1472,18 @@ class NucleusCorrectionWidget(QWidget):
             layer.visible = True
             self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
+            # Focus mode: hand the correction panels the right column by hiding
+            # napari's native layer-list / layer-controls docks.
+            self._native_dock_state = hide_native_docks(self.viewer)
             self._set_checked_without_signal(self.params_btn, False)
             self._set_checked_without_signal(self.shortcuts_btn, False)
             self.extend_retrack_params_section._toggle.setChecked(False)
             self.shortcuts_section._toggle.setChecked(False)
             self._correction_active_content_visible = True
             self._sync_correction_panel_visibility()
+            # The lineage canvas is the headline focus-mode view: open it by
+            # default (checking the box docks + renders it via its toggle).
+            self.lineage_canvas_check.setChecked(True)
             return
 
         if not self._confirm_deactivate_with_unsaved_changes():
@@ -1430,6 +1500,9 @@ class NucleusCorrectionWidget(QWidget):
         # picks up any corrections the user saved during this session.
         self._refresh_tracked_layer_from_disk()
         self._remove_correction_owned_layers()
+        self._teardown_focus_panels()
+        restore_native_docks(self.viewer, self._native_dock_state)
+        self._native_dock_state = {}
         self._restore_correction_view_state()
         self._set_checked_without_signal(self.params_btn, False)
         self._set_checked_without_signal(self.shortcuts_btn, False)
@@ -1512,6 +1585,10 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_validation_counter()
         if self.film_strip_check.isChecked():
             self._film_strip.set_current_frame(self._current_t())
+        if self.lineage_check.isChecked():
+            self._lineage.set_current_frame(self._current_t())
+        if self.lineage_canvas_check.isChecked():
+            self._lineage_canvas.set_current_frame(self._current_t())
 
     def _refresh_validated_overlay(self) -> None:
         self._validated_overlay.refresh_overlay(frame_view_2d)
@@ -1537,6 +1614,10 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_track_path_overlay()
         if self.film_strip_check.isChecked():
             self._refresh_film_strip()
+        if self.lineage_check.isChecked():
+            self._lineage.set_selection(_lab)
+        if self.lineage_canvas_check.isChecked():
+            self._lineage_canvas.set_selection(_lab)
 
     def _refresh_track_visuals_live(self) -> None:
         """Rebuild the comet overlay and film strip after an edit.
@@ -1549,12 +1630,18 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_track_path_spotlight()
         if self.film_strip_check.isChecked():
             self._refresh_film_strip()
+        self._refresh_lineage_canvas_if_shown()
 
     def _refresh_film_strip_if_shown(self) -> None:
         """Rebuild only the film strip (e.g. after validate/anchor changes its
         per-frame markers but leaves the trajectory untouched)."""
         if self.film_strip_check.isChecked():
             self._refresh_film_strip()
+
+    def _refresh_lineage_canvas_if_shown(self) -> None:
+        """Rebuild the lineage canvas after a label change, if it's open."""
+        if self.lineage_canvas_check.isChecked():
+            self._lineage_canvas.refresh()
 
     def _track_path_spotlight_mask(self, _t: int, lab: int, _default_mask):
         return self._track_path.spotlight_mask(_t, lab, _default_mask)
@@ -1604,6 +1691,63 @@ class NucleusCorrectionWidget(QWidget):
     def _teardown_film_strip(self) -> None:
         self._film_strip.teardown()
 
+    # -- Focus-mode panels (error worklist + lineage swimlanes) ------------
+
+    def _on_toggle_worklist(self, checked: bool) -> None:
+        if checked:
+            self._worklist.refresh()
+        else:
+            self._worklist.teardown()
+
+    def _on_toggle_lineage(self, checked: bool) -> None:
+        if checked:
+            self._lineage.refresh()
+        else:
+            self._lineage.teardown()
+
+    def _on_toggle_lineage_canvas(self, checked: bool) -> None:
+        if checked:
+            self._lineage_canvas.refresh()
+        else:
+            self._lineage_canvas.teardown()
+
+    def _contours_map(self) -> np.ndarray | None:
+        """The nucleus divergence ``contours`` stack, cached by file mtime."""
+        path = self._paths.nucleus_contours if self._paths else None
+        if path is None or not path.exists():
+            return None
+        mtime = path.stat().st_mtime
+        if self._contours_cache is not None and self._contours_cache[0] == mtime:
+            return self._contours_cache[1]
+        data = np.asarray(tifffile.imread(str(path)), dtype=np.float32)
+        if data.ndim == 4 and data.shape[1] == 1:
+            data = data[:, 0]
+        self._contours_cache = (mtime, data)
+        return data
+
+    def _navigate_to_error(self, t: int, cell_id: int) -> None:
+        """Jump the viewer to frame ``t`` and select ``cell_id`` (worklist/lineage)."""
+        try:
+            step = list(self.viewer.dims.current_step)
+            if step:
+                step[0] = int(t)
+                self.viewer.dims.current_step = tuple(step)
+        except Exception:
+            logger.exception("focus-mode navigation: frame jump failed")
+        try:
+            self.correction_widget.select_label(int(t), int(cell_id))
+        except Exception:
+            logger.exception("focus-mode navigation: cell select failed")
+
+    def _teardown_focus_panels(self) -> None:
+        """Undock the worklist + lineage panels and clear their toggles."""
+        self._set_checked_without_signal(self.worklist_check, False)
+        self._set_checked_without_signal(self.lineage_check, False)
+        self._set_checked_without_signal(self.lineage_canvas_check, False)
+        self._worklist.teardown()
+        self._lineage.teardown()
+        self._lineage_canvas.teardown()
+
     def _refresh_validation_counter(self) -> None:
         self._validated_overlay.refresh_counter(self.validation_counter_lbl)
 
@@ -1619,6 +1763,14 @@ class NucleusCorrectionWidget(QWidget):
         # here, so refresh the film strip too — otherwise it only tracks the
         # retrack/extend paths and goes stale when the pixels are edited by hand.
         self._refresh_film_strip_if_shown()
+        # Strike the edited cells off the worklist (they've been worked on) and
+        # let the lineage swimlanes pick up any presence change.
+        if self.worklist_check.isChecked():
+            for cell_id in changed_ids:
+                self._worklist.mark_resolved(t, int(cell_id))
+        if self.lineage_check.isChecked():
+            self._lineage.refresh()
+        self._refresh_lineage_canvas_if_shown()
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
         return self._validated_overlay.frames_with_cell(cell_id)
