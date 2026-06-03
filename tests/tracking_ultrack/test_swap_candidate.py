@@ -28,17 +28,12 @@ def _make_engine(db_path: Path):
     return engine
 
 
-def _make_node_row(
-    node_id: int,
-    t: int,
-    y0: int,
-    x0: int,
-    y1: int,
-    x1: int,
-    *,
-    hier_parent_id: int | None = None,
-    height: float = 0.0,
-):
+def _make_node_row(node_id: int, t: int, y0: int, x0: int, y1: int, x1: int):
+    """A NodeDB row with ``hier_parent_id`` left at NO_PARENT.
+
+    This mirrors the atom-union database builder, which never populates the
+    hierarchy parent link — structure lives entirely in OverlapDB.
+    """
     from ultrack.core.database import NodeDB
     from ultrack.core.segmentation.node import Node
     from ultrack.utils.constants import NO_PARENT
@@ -55,8 +50,8 @@ def _make_node_row(
         t=t,
         t_node_id=node_id,
         t_hier_id=1,
-        hier_parent_id=NO_PARENT if hier_parent_id is None else hier_parent_id,
-        height=height,
+        hier_parent_id=NO_PARENT,
+        height=0.0,
         z=0,
         y=cy,
         x=cx,
@@ -79,29 +74,54 @@ def _insert_nodes(engine, nodes):
         session.commit()
 
 
+def _insert_overlaps(engine, rects: dict[int, tuple[int, int, int, int]]):
+    """Insert an OverlapDB row for every pair of rectangles that intersect."""
+    from sqlalchemy.orm import Session
+    from ultrack.core.database import OverlapDB
+
+    def _overlaps(a, b):
+        ay0, ax0, ay1, ax1 = a
+        by0, bx0, by1, bx1 = b
+        return max(ay0, by0) < min(ay1, by1) and max(ax0, bx0) < min(ax1, bx1)
+
+    ids = sorted(rects)
+    rows = []
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            if _overlaps(rects[a], rects[b]):
+                rows.append(OverlapDB(node_id=a, ancestor_id=b))
+    with Session(engine) as session:
+        session.bulk_save_objects(rows)
+        session.commit()
+
+
 # Frame shape used throughout
 H, W = 100, 100
 
 
 # ---------------------------------------------------------------------------
-# Hierarchy fixture
+# Containment-lattice fixture (atom-union style: structure via OverlapDB only)
 # ---------------------------------------------------------------------------
-# root 1: (0:20, 0:20)  area 400
-#   node 2: (0:20, 0:10)  area 200   parent 1
-#     node 4: (0:10, 0:10) area 100  parent 2   <- source matches here
-#     node 5: (10:20, 0:10) area 100 parent 2
-#   node 3: (0:20, 10:20) area 200   parent 1
-# unrelated root 9: (50:70, 50:70) area 400 (separate lattice)
+# node 1: (0:20, 0:20)  area 400  (superset of all below)
+#   node 2: (0:20, 0:10)  area 200   (subset of 1; superset of 4, 5)
+#     node 4: (0:10, 0:10) area 100  (subset of 2)   <- source matches here
+#     node 5: (10:20, 0:10) area 100 (subset of 2; disjoint from 4)
+#   node 3: (0:20, 10:20) area 200   (subset of 1; disjoint from 2, 4, 5)
+# unrelated node 9: (50:70, 50:70) area 400 (no overlap with anything)
+
+_RECTS = {
+    1: (0, 0, 20, 20),
+    2: (0, 0, 20, 10),
+    3: (0, 10, 20, 20),
+    4: (0, 0, 10, 10),
+    5: (10, 0, 20, 10),
+    9: (50, 50, 70, 70),
+}
+
 
 def _insert_hierarchy(engine):
-    _insert_nodes(engine, [
-        _make_node_row(1, 0, 0, 0, 20, 20, height=3.0),
-        _make_node_row(2, 0, 0, 0, 20, 10, hier_parent_id=1, height=2.0),
-        _make_node_row(3, 0, 0, 10, 20, 20, hier_parent_id=1, height=2.0),
-        _make_node_row(4, 0, 0, 0, 10, 10, hier_parent_id=2, height=1.0),
-        _make_node_row(5, 0, 10, 0, 20, 10, hier_parent_id=2, height=1.0),
-        _make_node_row(9, 0, 50, 50, 70, 70, height=3.0),
-    ])
+    _insert_nodes(engine, [_make_node_row(nid, 0, *rect) for nid, rect in _RECTS.items()])
+    _insert_overlaps(engine, _RECTS)
 
 
 # ---------------------------------------------------------------------------

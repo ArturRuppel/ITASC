@@ -5,7 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
-from cellflow.tracking_ultrack._node_geometry import node_bbox_and_mask, raw_iou
+from cellflow.tracking_ultrack._node_geometry import (
+    intersection_area,
+    node_bbox_and_mask,
+    raw_iou,
+)
 
 
 @dataclass(frozen=True)
@@ -44,12 +48,17 @@ def list_swap_candidates(
     """Return the matched node's nesting lineage around ``source_mask``.
 
     Matches ``source_mask`` to the best-overlapping Ultrack node at ``frame``,
-    then collects that node's *lineage* — itself, every ancestor up to the root
-    (larger merged segments that contain it) and every descendant (smaller
-    fragments contained within it) — and returns them sorted by area. Siblings
-    and cousins are excluded: they are spatially disjoint pieces of a shared
-    parent, so swapping onto them would relocate the cell rather than resize it.
-    ``Z``/``C`` cycle through this area-sorted lineage by index.
+    then walks the candidate **containment lattice** recorded in ``OverlapDB``:
+    every node that overlaps the matched node *and* is nested with it — a
+    superset (larger merged segment that contains it) or a subset (smaller
+    fragment it contains) — plus the matched node itself, returned sorted by
+    area. Partially-overlapping neighbours (siblings/cousins) are excluded: they
+    are different cells, so swapping onto them would relocate the cell rather
+    than resize it. ``Z``/``C`` cycle through this area-sorted lineage by index.
+
+    ``OverlapDB`` is populated by both database builders (atom-union enumeration
+    and canonical Ultrack segmentation), whereas ``hier_parent_id`` is only set
+    by the latter — so the overlap lattice is the portable source of structure.
     """
     if not Path(db_path).exists():
         return []
@@ -61,9 +70,9 @@ def list_swap_candidates(
     src_crop = np.ascontiguousarray(source_mask[sy0:sy1, sx0:sx1], dtype=bool)
 
     import sqlalchemy as sqla
+    from sqlalchemy import or_
     from sqlalchemy.orm import Session
-    from ultrack.core.database import NodeDB
-    from ultrack.utils.constants import NO_PARENT
+    from ultrack.core.database import NodeDB, OverlapDB
 
     engine = sqla.create_engine(
         f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
@@ -71,21 +80,6 @@ def list_swap_candidates(
 
     try:
         with Session(engine) as session:
-            # Light query: id/parent for every node at the frame to build the tree.
-            parent_by_id: dict[int, int] = {}
-            for nid, pid in session.query(NodeDB.id, NodeDB.hier_parent_id).filter(
-                NodeDB.t == frame
-            ):
-                parent = NO_PARENT if pid is None else int(pid)
-                parent_by_id[int(nid)] = parent
-            if not parent_by_id:
-                return []
-
-            children: dict[int, list[int]] = {}
-            for child_id, parent_id in parent_by_id.items():
-                if parent_id != NO_PARENT and parent_id in parent_by_id:
-                    children.setdefault(parent_id, []).append(child_id)
-
             # Match source mask to a node by max IoU. Prefilter to nodes whose
             # centroid falls inside the source bounding box to avoid deserializing
             # every mask in the frame.
@@ -102,6 +96,7 @@ def list_swap_candidates(
             )
             matched_id: int | None = None
             best_iou = 0.0
+            matched_geom: tuple[tuple[int, int, int, int], np.ndarray] | None = None
             for nid, blob in match_rows:
                 try:
                     bbox, mask_crop = node_bbox_and_mask(int(nid), blob)
@@ -111,34 +106,28 @@ def list_swap_candidates(
                 if iou > best_iou:
                     best_iou = iou
                     matched_id = int(nid)
-            if matched_id is None:
+                    matched_geom = (bbox, mask_crop)
+            if matched_id is None or matched_geom is None:
                 return []
+            matched_bbox, matched_mask = matched_geom
+            matched_area = int(matched_mask.sum())
 
-            # Collect the matched node's nesting lineage: itself, every ancestor
-            # up to the root (larger merged segments) and every descendant
-            # (smaller fragments). Siblings/cousins are disjoint regions and are
-            # intentionally excluded.
-            branch: set[int] = {matched_id}
-
-            ancestor = matched_id
-            while True:
-                parent = parent_by_id.get(ancestor, NO_PARENT)
-                if parent == NO_PARENT or parent not in parent_by_id:
-                    break
-                branch.add(parent)
-                ancestor = parent
-
-            stack = [matched_id]
-            while stack:
-                cur = stack.pop()
-                for child in children.get(cur, ()):
-                    if child not in branch:
-                        branch.add(child)
-                        stack.append(child)
+            # Candidate set = the matched node plus everything that overlaps it
+            # (shares atoms) per OverlapDB. The pair direction is not meaningful
+            # here, so match the id on either column.
+            overlap_ids: set[int] = set()
+            for node_id, ancestor_id in session.query(
+                OverlapDB.node_id, OverlapDB.ancestor_id
+            ).filter(
+                or_(OverlapDB.node_id == matched_id, OverlapDB.ancestor_id == matched_id)
+            ):
+                overlap_ids.add(int(node_id))
+                overlap_ids.add(int(ancestor_id))
+            overlap_ids.add(matched_id)
 
             node_rows = (
                 session.query(NodeDB)
-                .filter(NodeDB.t == frame, NodeDB.id.in_(branch))
+                .filter(NodeDB.t == frame, NodeDB.id.in_(overlap_ids))
                 .all()
             )
 
@@ -152,6 +141,18 @@ def list_swap_candidates(
                     continue
                 if mask_crop.shape != (y1 - y0, x1 - x0):
                     continue
+
+                # Keep only nodes nested with the matched node: one mask must be
+                # a subset of the other. Partially-overlapping neighbours (which
+                # share atoms but each hold unique ones) are different cells.
+                if int(node.id) != matched_id:
+                    inter = intersection_area(
+                        matched_bbox, matched_mask, (y0, x0, y1, x1), mask_crop
+                    )
+                    cand_area = int(mask_crop.sum())
+                    nested = inter == matched_area or inter == cand_area
+                    if not nested:
+                        continue
 
                 full_mask = np.zeros(frame_shape, dtype=bool)
                 full_mask[y0:y1, x0:x1] = mask_crop

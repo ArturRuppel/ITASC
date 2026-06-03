@@ -48,22 +48,31 @@ def intersects(
     return bool(np.logical_and(lhs_crop, rhs_crop).any())
 
 
+def intersection_area(
+    lhs_bbox: tuple[int, int, int, int],
+    lhs_mask: np.ndarray,
+    rhs_bbox: tuple[int, int, int, int],
+    rhs_mask: np.ndarray,
+) -> int:
+    """Number of pixels where the two cropped masks overlap."""
+    ly0, lx0, ly1, lx1 = lhs_bbox
+    ry0, rx0, ry1, rx1 = rhs_bbox
+    oy0, ox0 = max(ly0, ry0), max(lx0, rx0)
+    oy1, ox1 = min(ly1, ry1), min(lx1, rx1)
+    if oy0 >= oy1 or ox0 >= ox1:
+        return 0
+    lhs_crop = lhs_mask[oy0 - ly0: oy1 - ly0, ox0 - lx0: ox1 - lx0]
+    rhs_crop = rhs_mask[oy0 - ry0: oy1 - ry0, ox0 - rx0: ox1 - rx0]
+    return int(np.logical_and(lhs_crop, rhs_crop).sum())
+
+
 def raw_iou(
     lhs_bbox: tuple[int, int, int, int],
     lhs_mask: np.ndarray,
     rhs_bbox: tuple[int, int, int, int],
     rhs_mask: np.ndarray,
 ) -> float:
-    ly0, lx0, ly1, lx1 = lhs_bbox
-    ry0, rx0, ry1, rx1 = rhs_bbox
-    oy0, ox0 = max(ly0, ry0), max(lx0, rx0)
-    oy1, ox1 = min(ly1, ry1), min(lx1, rx1)
-    intersection = 0
-    if oy0 < oy1 and ox0 < ox1:
-        lhs_crop = lhs_mask[oy0 - ly0: oy1 - ly0, ox0 - lx0: ox1 - lx0]
-        rhs_crop = rhs_mask[oy0 - ry0: oy1 - ry0, ox0 - rx0: ox1 - rx0]
-        intersection = int(np.logical_and(lhs_crop, rhs_crop).sum())
-
+    intersection = intersection_area(lhs_bbox, lhs_mask, rhs_bbox, rhs_mask)
     union = int(lhs_mask.sum()) + int(rhs_mask.sum()) - intersection
     if union <= 0:
         return 0.0

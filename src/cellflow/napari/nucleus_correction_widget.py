@@ -1768,12 +1768,14 @@ class NucleusCorrectionWidget(QWidget):
     def _on_toggle_lineage_canvas(self, checked: bool) -> None:
         if checked:
             self._lineage_canvas.refresh()
+            self._arrange_workspace_docks()
         else:
             self._lineage_canvas.teardown()
 
     def _on_toggle_candidate_gallery(self, checked: bool) -> None:
         if checked:
             self._candidate_gallery.refresh()
+            self._arrange_workspace_docks()
         else:
             self._candidate_gallery.teardown()
 
@@ -1791,22 +1793,50 @@ class NucleusCorrectionWidget(QWidget):
         except Exception:
             logger.exception("focus-mode navigation: cell select failed")
 
+    def _controls_dock(self):
+        """The QDockWidget hosting this workflow panel (napari's plugin dock)."""
+        from qtpy.QtWidgets import QDockWidget
+
+        widget = self.parentWidget()
+        while widget is not None:
+            if isinstance(widget, QDockWidget):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
     def _arrange_workspace_docks(self) -> None:
         """Lay the right-column panels out as side-by-side vertical strips.
 
-        napari stacks extra right-area docks vertically (one column). Re-split
-        them horizontally so the workspace reads as parallel strips — candidates
-        nearest the canvas, then the lineage canvas to its right.
+        napari force-stacks extra right-area docks into one vertical column
+        (``resizeDocks(..., Vertical)`` in ``_add_viewer_dock_widget``). Re-split
+        the active workspace docks horizontally so they read as parallel strips,
+        left→right: correction controls · candidate gallery · lineage canvas.
+
+        Both galleries are docked eagerly via ``ensure_docked`` — their
+        ``refresh`` skips docking until a cell is selected, so without this the
+        candidate dock would not exist yet and the split would be a no-op. This
+        also re-runs whenever a panel is toggled back on, so a teardown/recreate
+        can't leave them stacked again.
         """
         qt_window = getattr(self.viewer.window, "_qt_window", None)
-        candidates = self._candidate_gallery.dock
-        lineage = self._lineage_canvas.dock
-        if qt_window is None or candidates is None or lineage is None:
+        if qt_window is None:
+            return
+        docks = [self._controls_dock()]
+        if self.candidate_gallery_check.isChecked():
+            docks.append(self._candidate_gallery.ensure_docked())
+        if self.lineage_canvas_check.isChecked():
+            docks.append(self._lineage_canvas.ensure_docked())
+        docks = [dock for dock in docks if dock is not None]
+        if len(docks) < 2:
             return
         try:
             from qtpy.QtCore import Qt
 
-            qt_window.splitDockWidget(candidates, lineage, Qt.Horizontal)
+            for left, right in zip(docks, docks[1:]):
+                qt_window.splitDockWidget(left, right, Qt.Horizontal)
+            # Even widths so the three panels read as equal vertical strips
+            # rather than inheriting napari's lopsided vertical-stack sizing.
+            qt_window.resizeDocks(docks, [1] * len(docks), Qt.Horizontal)
         except Exception:
             logger.exception("could not arrange correction workspace docks")
 

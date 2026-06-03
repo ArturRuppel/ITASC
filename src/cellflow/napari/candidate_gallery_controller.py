@@ -105,6 +105,16 @@ class CandidateGalleryController:
         """The QDockWidget hosting the gallery, or None when not docked."""
         return self._dock
 
+    def ensure_docked(self):
+        """Create and dock the (possibly empty) panel, returning its dock.
+
+        ``refresh`` skips docking until a cell is selected, so the workspace
+        layout calls this to materialise the dock eagerly and split it into a
+        strip before any selection exists.
+        """
+        self._ensure_panel()
+        return self._dock
+
     def teardown(self) -> None:
         """Undock and forget the panel (next refresh re-creates it)."""
         if self._dock is not None:
