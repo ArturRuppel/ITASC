@@ -161,7 +161,6 @@ class NucleusCorrectionWidget(QWidget):
         edit_callback=None,
         pos_dir_provider: Callable[[], Path | None] | None = None,
         ultrack_config_provider: Callable[[], TrackingConfig] | None = None,
-        refresh_refinement_callback: Callable[[], None] | None = None,
         dependencies: dict[str, Callable] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -170,7 +169,6 @@ class NucleusCorrectionWidget(QWidget):
         self._pos_dir_provider = pos_dir_provider
         self._ultrack_config_provider = ultrack_config_provider
         self._local_pos_dir: Path | None = None
-        self._refresh_refinement_callback = refresh_refinement_callback or (lambda: None)
         self._dependencies = {**_DEFAULT_DEPENDENCIES, **(dependencies or {})}
         self._edit_callback = edit_callback or self._on_cells_edited
         self._correction_owned_layers: set[str] = set()
@@ -1435,7 +1433,6 @@ class NucleusCorrectionWidget(QWidget):
                 self.correction_widget.deactivate()
                 self._correction_active_content_visible = False
                 self._sync_correction_panel_visibility()
-                self._refresh_refinement_widget()
                 return
             layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
             layer.visible = True
@@ -1447,14 +1444,12 @@ class NucleusCorrectionWidget(QWidget):
             self.shortcuts_section._toggle.setChecked(False)
             self._correction_active_content_visible = True
             self._sync_correction_panel_visibility()
-            self._refresh_refinement_widget()
             return
 
         if not self._confirm_deactivate_with_unsaved_changes():
             self._set_checked_without_signal(self.active_btn, True)
             self._correction_active_content_visible = True
             self._sync_correction_panel_visibility()
-            self._refresh_refinement_widget()
             return
 
         self._set_checked_without_signal(self.active_btn, False)
@@ -1472,7 +1467,6 @@ class NucleusCorrectionWidget(QWidget):
         self.extend_retrack_params_section._toggle.setChecked(False)
         self.shortcuts_section._toggle.setChecked(False)
         self._sync_correction_panel_visibility()
-        self._refresh_refinement_widget()
 
     def _confirm_deactivate_with_unsaved_changes(self) -> bool:
         if not self._correction_dirty:
@@ -1495,9 +1489,6 @@ class NucleusCorrectionWidget(QWidget):
         elif choice == QMessageBox.Discard:
             self._correction_dirty = False
         return True
-
-    def _refresh_refinement_widget(self) -> None:
-        self._refresh_refinement_callback()
 
     def _on_correction_mode_toggled(self, active: bool) -> None:
         if not active:

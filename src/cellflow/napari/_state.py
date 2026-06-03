@@ -20,6 +20,10 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
     return {
         "db_generation": {
             "min_area": w.db_gen_min_area_spin.value(),
+            "max_area": w.db_gen_max_area_spin.value(),
+            "min_frontier": w.db_gen_min_frontier_spin.value(),
+            "ws_hierarchy": w.db_gen_ws_hierarchy_combo.currentText(),
+            "n_workers": w.db_gen_n_workers_spin.value(),
             "atom_union_max_area": w.atom_union_max_area_spin.value(),
             "max_atoms": w.atom_union_max_atoms_spin.value(),
             "max_distance": w.db_gen_max_dist_spin.value(),
@@ -73,6 +77,10 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
     if "db_generation" in state:
         dbg = state["db_generation"]
         if "min_area" in dbg: w.db_gen_min_area_spin.setValue(dbg["min_area"])
+        if "max_area" in dbg: w.db_gen_max_area_spin.setValue(dbg["max_area"])
+        if "min_frontier" in dbg: w.db_gen_min_frontier_spin.setValue(dbg["min_frontier"])
+        if "ws_hierarchy" in dbg: _set_combo(w.db_gen_ws_hierarchy_combo, dbg["ws_hierarchy"])
+        if "n_workers" in dbg: w.db_gen_n_workers_spin.setValue(dbg["n_workers"])
         if "atom_union_max_area" in dbg: w.atom_union_max_area_spin.setValue(dbg["atom_union_max_area"])
         if "max_atoms" in dbg: w.atom_union_max_atoms_spin.setValue(dbg["max_atoms"])
         if "max_distance" in dbg: w.db_gen_max_dist_spin.setValue(dbg["max_distance"])

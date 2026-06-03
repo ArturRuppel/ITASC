@@ -38,7 +38,6 @@ from cellflow.napari.nucleus_segmentation_inputs_widget import (
     NucleusSegmentationInputsWidget,
 )
 from cellflow.napari.nucleus_tracking_inputs_widget import NucleusTrackingInputsWidget
-from cellflow.napari.radial_refinement_widget import RadialRefinementWidget
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._state import dump_state, load_state
@@ -154,9 +153,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         # ── Ultrack Database Browser ─────────────────────────────────
         self._build_db_browser_section(root)
 
-        # ── Refinement (deprecated; widget no longer rendered) ───────
-        # self._build_refinement_section(root)
-
         # ── Correction (group box) ───────────────────────────────────
         self._build_correction_section(root)
 
@@ -209,6 +205,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self.tracking_db_section = ti.db_section
         self.tracking_solve_section = ti.solve_section
         self.db_gen_min_area_spin = ti.db_gen_min_area_spin
+        self.db_gen_max_area_spin = ti.db_gen_max_area_spin
+        self.db_gen_min_frontier_spin = ti.db_gen_min_frontier_spin
+        self.db_gen_ws_hierarchy_combo = ti.db_gen_ws_hierarchy_combo
+        self.db_gen_n_workers_spin = ti.db_gen_n_workers_spin
         self.atom_union_max_atoms_spin = ti.atom_union_max_atoms_spin
         self.atom_union_max_area_spin = ti.atom_union_max_area_spin
         self.db_gen_max_dist_spin = ti.db_gen_max_dist_spin
@@ -259,29 +259,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
     # -- Ultrack Database Browser ------------------------------------------
 
-    # -- Refinement --------------------------------------------------------
-
-    def _build_refinement_section(self, root: QVBoxLayout) -> None:
-        self.refinement_widget = RadialRefinementWidget(
-            self.viewer,
-            pos_dir_provider=lambda: self._pos_dir,
-            gate=self.gate,
-        )
-        self.refinement_widget.set_on_promoted_callback(
-            self._on_refinement_promoted
-        )
-        self.refinement_section = CollapsibleSection(
-            "Refinement",
-            self.refinement_widget,
-            expanded=False,
-
-        )
-        root.addWidget(self.refinement_section)
-
-    def _on_refinement_promoted(self) -> None:
-        if self._pos_dir is not None:
-            self._files_widget.refresh(self._pos_dir)
-
     # -- Correction --------------------------------------------------------
 
     def _build_correction_section(self, root: QVBoxLayout) -> None:
@@ -289,7 +266,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
             self.viewer,
             pos_dir_provider=lambda: self._pos_dir,
             ultrack_config_provider=lambda: self._ultrack_config_from_controls(),
-            refresh_refinement_callback=lambda: None,
             parent=self,
         )
         self._alias_correction_controls()
@@ -509,6 +485,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         # effect — so they stay available during modes and runs.
         for button in (self.seg_params_btn, self.db_params_btn, self.solve_params_btn):
             g.register(button, ControlClass.HARMLESS)
+        self._register_atom_gate_controls()
         g.changed.connect(self._update_activity_banner)
         g.recompute()
 
@@ -563,8 +540,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
         self._files_widget.refresh(pos_dir)
-        if hasattr(self, "refinement_widget"):
-            self.refinement_widget.refresh()
         if pos_dir is None:
             if self.correction_active_btn.isChecked():
                 self.correction_active_btn.setChecked(False)

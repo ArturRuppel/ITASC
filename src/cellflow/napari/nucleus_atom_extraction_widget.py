@@ -27,6 +27,7 @@ from cellflow.napari.ui_style import (
     stage_header_action_button as _stage_header_action_button,
     stage_header_label as _stage_header_label,
 )
+from cellflow.napari.ui_gate import ControlClass
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.tracking_ultrack.atoms import (
     AtomParams,
@@ -233,6 +234,32 @@ class NucleusAtomExtractionMixin:
             lambda checked: self._set_atom_group_visible(_ATOM_CONTOUR_GROUP_LAYERS, checked)
         )
 
+    def _register_atom_gate_controls(self) -> None:
+        """Register the atom extraction section with the app-wide UI gate.
+
+        The ◉ live atom preview is a mutually-exclusive viewer owner, shared
+        across every section (correction, db browser, the cell/divergence live
+        previews): turning it on must disable the others and vice versa. ▶ run
+        rewrites the atom layers in the viewer, so it is blocked while any owner
+        is active; ⚙ params just toggles a parameter panel and stays available.
+        """
+        g = self.gate
+        w = self.atom_extraction_widget
+        ready = lambda: self._atom_fg_path() is not None  # noqa: E731
+        g.register_owner(
+            "atom_preview",
+            "atom live preview",
+            exit_fn=lambda: w.active_btn.setChecked(False),
+        )
+        g.register(w.params_btn, ControlClass.HARMLESS)
+        g.register(
+            w.active_btn,
+            ControlClass.VIEWER_OWNER,
+            owner_token="atom_preview",
+            when=ready,
+        )
+        g.register(w.run_btn, ControlClass.RUN_VIEWER, when=ready)
+
     def _atom_params(self) -> AtomParams:
         w = self.atom_extraction_widget
         return AtomParams(
@@ -258,12 +285,17 @@ class NucleusAtomExtractionMixin:
 
     def _on_atom_activate(self, checked: bool) -> None:
         self._atom_preview_active = bool(checked)
+        # The live preview owns the viewer; the gate derives cross-section
+        # exclusivity (correction, db browser, other live previews) from this
+        # claim.
         if checked:
+            self.gate.claim_viewer("atom_preview")
             # _refresh_atom_preview creates the layers synchronously (before the
             # worker starts), so the default visibility can be applied right away.
             self._refresh_atom_preview()
             self._apply_atom_default_visibility()
         else:
+            self.gate.release_viewer("atom_preview")
             self._atom_preview_pending = False
             for name in _ATOM_LAYERS:
                 if name in self.viewer.layers:
