@@ -10,6 +10,7 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker as _thread_worker
+from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QGridLayout,
@@ -245,6 +246,17 @@ class NucleusCorrectionWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        # Searching + rendering the candidate gallery is expensive, so debounce
+        # it: every refresh request (re)starts this timer and the actual rebuild
+        # only fires once the frame has been still for the interval — fast
+        # scrubbing no longer recomputes candidates for every frame it sweeps.
+        self._candidate_refresh_timer = QTimer(self)
+        self._candidate_refresh_timer.setSingleShot(True)
+        self._candidate_refresh_timer.setInterval(200)
+        self._candidate_refresh_timer.timeout.connect(
+            self._refresh_candidate_gallery_now
+        )
 
         inner = QWidget(self)
         group_lay = QVBoxLayout(inner)
@@ -1230,6 +1242,16 @@ class NucleusCorrectionWidget(QWidget):
         return protected_cell_mask(frame, protected_ids)
 
     def _refresh_candidate_gallery_if_shown(self) -> None:
+        # Debounced: (re)start the timer so a burst of frame/selection changes
+        # collapses into a single rebuild once things settle (see the timer
+        # set-up in _setup_ui). The fired handler re-checks visibility.
+        if self.candidate_gallery_check.isChecked():
+            self._candidate_refresh_timer.start()
+        else:
+            self._candidate_refresh_timer.stop()
+
+    def _refresh_candidate_gallery_now(self) -> None:
+        """Do the actual (expensive) gallery rebuild — only via the debounce timer."""
         if self.candidate_gallery_check.isChecked():
             self._candidate_gallery.refresh()
 
