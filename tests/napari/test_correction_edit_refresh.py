@@ -1,10 +1,11 @@
-"""Regression: a hand mask edit must refresh the film strip, not just overlays.
+"""Regression: a hand mask edit must rebuild the lineage canvas, not just overlays.
 
-Retrack / extend rebuild the film strip via ``_refresh_track_visuals_live``, but
+Retrack / extend rebuild the canvas via ``_refresh_track_visuals_live``, but
 ordinary pixel edits (draw / merge / relabel / redraw / fill) all funnel through
 the shared ``_on_cells_edited`` callback.  That callback used to refresh only the
-label visuals and the validated overlay, so the film strip went stale whenever a
-mask was edited by hand.  This pins the callback to also refresh the strip.
+label visuals and the validated overlay, so the canvas (overview presence + the
+selected track's detail strip) went stale whenever a mask was edited by hand.
+This pins the callback to also rebuild the canvas and strike the worklist.
 """
 
 from __future__ import annotations
@@ -15,24 +16,19 @@ from unittest.mock import MagicMock
 from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
 
 
-def _stub_widget(
-    *, worklist_on: bool = False, lineage_on: bool = False,
-) -> SimpleNamespace:
+def _stub_widget(*, worklist_on: bool = False) -> SimpleNamespace:
     """A minimal object exposing only what ``_on_cells_edited`` touches."""
     return SimpleNamespace(
         _refresh_correction_label_visuals_for_edit=MagicMock(),
         _validated_overlay=SimpleNamespace(on_cells_edited=MagicMock()),
         validation_counter_lbl=object(),
-        _refresh_film_strip_if_shown=MagicMock(),
         worklist_check=SimpleNamespace(isChecked=lambda: worklist_on),
-        lineage_check=SimpleNamespace(isChecked=lambda: lineage_on),
         _worklist=SimpleNamespace(mark_resolved=MagicMock()),
-        _lineage=SimpleNamespace(refresh=MagicMock()),
         _refresh_lineage_canvas_if_shown=MagicMock(),
     )
 
 
-def test_cells_edited_refreshes_film_strip() -> None:
+def test_cells_edited_rebuilds_canvas() -> None:
     stub = _stub_widget()
 
     NucleusCorrectionWidget._on_cells_edited(stub, t=3, changed_ids={7})
@@ -40,19 +36,15 @@ def test_cells_edited_refreshes_film_strip() -> None:
     # The pre-existing refreshes still fire …
     stub._refresh_correction_label_visuals_for_edit.assert_called_once_with(3, {7})
     stub._validated_overlay.on_cells_edited.assert_called_once()
-    # … and the film strip is now refreshed on every mask edit.
-    stub._refresh_film_strip_if_shown.assert_called_once_with()
-    # The lineage canvas gets a live refresh on every edit (gated inside the helper).
+    # … and the canvas gets a live rebuild on every edit (gated inside the helper).
     stub._refresh_lineage_canvas_if_shown.assert_called_once_with()
-    # Focus-mode panels stay untouched when their toggles are off.
+    # The worklist stays untouched when its toggle is off.
     stub._worklist.mark_resolved.assert_not_called()
-    stub._lineage.refresh.assert_not_called()
 
 
-def test_cells_edited_strikes_worklist_and_refreshes_lineage_when_shown() -> None:
-    stub = _stub_widget(worklist_on=True, lineage_on=True)
+def test_cells_edited_strikes_worklist_when_shown() -> None:
+    stub = _stub_widget(worklist_on=True)
 
     NucleusCorrectionWidget._on_cells_edited(stub, t=3, changed_ids={7})
 
     stub._worklist.mark_resolved.assert_called_once_with(3, 7)
-    stub._lineage.refresh.assert_called_once_with()

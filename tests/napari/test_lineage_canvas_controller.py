@@ -1,10 +1,11 @@
-"""Behavioural coverage for the docked lineage-canvas controller.
+"""Behavioural coverage for the docked combined-canvas controller.
 
-Pins the glue the correction widget relies on — refresh assembles node/edge
-views from the graph + cropped tiles and docks a populated canvas synced to the
-selection + current frame, an absent stack/intensity clears it, a node click
-drives the navigate callback, and teardown removes the dock. The Qt panel and
-the pure builders are stubbed so only the controller's assembly is under test.
+Pins the glue the correction widget relies on: refresh assembles ``LaneView``
+rows from the swimlane model + validation records + the error scan and docks a
+populated overview synced to the selection + current frame; selecting a track
+rebuilds only that track's detail strip; an absent stack clears it; a click
+drives the navigate callback; teardown removes the dock. The Qt panel and the
+pure builders are stubbed so only the controller's assembly is under test.
 """
 from __future__ import annotations
 
@@ -16,11 +17,7 @@ import pytest
 
 from cellflow.napari import lineage_canvas_controller as lcc
 from cellflow.napari.lineage_canvas_controller import LineageCanvasController
-from cellflow.segmentation.lineage_graph import (
-    GraphEdge,
-    GraphNode,
-    LineageGraph,
-)
+from cellflow.segmentation.lineage import LineageModel, TrackLane, TrackSegment
 
 
 @pytest.fixture
@@ -30,20 +27,18 @@ def stubbed(monkeypatch):
     monkeypatch.setattr(lcc, "LineageCanvasPanel", panel_factory)
 
     # One track (id 7) present at frames 0 and 1.
-    graph = LineageGraph(
+    model = LineageModel(
         n_frames=2,
-        nodes=(GraphNode(7, 0), GraphNode(7, 1)),
-        edges=(GraphEdge(7, 0, 1),),
+        lanes=(TrackLane(cell_id=7, segments=(TrackSegment(0, 1),)),),
     )
-    monkeypatch.setattr(lcc, "build_lineage_graph", MagicMock(return_value=graph))
-    monkeypatch.setattr(lcc, "assign_columns", MagicMock(return_value={7: 0}))
-
-    tile0 = SimpleNamespace(frame=0, rgb=np.zeros((8, 8, 3), np.uint8), width=8, height=8)
-    tile1 = SimpleNamespace(frame=1, rgb=np.zeros((8, 8, 3), np.uint8), width=8, height=8)
+    monkeypatch.setattr(lcc, "build_lineage", MagicMock(return_value=model))
+    monkeypatch.setattr(lcc, "scan_errors", MagicMock(return_value=[]))
     monkeypatch.setattr(
         lcc, "build_track_film_strip",
-        MagicMock(return_value=SimpleNamespace(tiles=(tile0, tile1))),
+        MagicMock(return_value=SimpleNamespace(tiles=(), frames=())),
     )
+    monkeypatch.setattr(lcc, "read_validated_tracks", lambda _p: {})
+    monkeypatch.setattr(lcc, "read_corrections", lambda _p: [])
     return panel_factory
 
 
@@ -60,6 +55,7 @@ def _controller(viewer, *, tracked=None, intensity=None, on_activate=None, pos_d
     return LineageCanvasController(
         viewer,
         tracked_data_provider=lambda: tracked,
+        tracked_layer_provider=lambda: None,
         intensity_layer_provider=lambda: intensity_layer,
         selected_label_provider=lambda: 7,
         current_t_provider=lambda: 1,
@@ -68,7 +64,7 @@ def _controller(viewer, *, tracked=None, intensity=None, on_activate=None, pos_d
     )
 
 
-def test_refresh_assembles_nodes_edges_and_docks(stubbed):
+def test_refresh_assembles_lanes_and_docks(stubbed):
     viewer = _viewer()
     ctrl = _controller(
         viewer,
@@ -80,25 +76,68 @@ def test_refresh_assembles_nodes_edges_and_docks(stubbed):
 
     viewer.window.add_dock_widget.assert_called_once()
     panel = stubbed.return_value
-    panel.set_scene.assert_called_once()
-    nodes = panel.set_scene.call_args.args[0]
-    edges = panel.set_scene.call_args.args[1]
-    assert {n.t for n in nodes} == {0, 1}
-    assert nodes[0].cell_id == 7
-    assert len(edges) == 1
-    # Selection + current frame are pushed after the scene is built.
-    panel.set_selection.assert_called_once_with(7)
-    panel.set_current_frame.assert_called_once_with(1)
+    panel.set_overview.assert_called_once()
+    lanes = panel.set_overview.call_args.args[0]
+    assert [ln.cell_id for ln in lanes] == [7]
+    assert lanes[0].segments == ((0, 1),)
+    assert panel.set_overview.call_args.kwargs["n_frames"] == 2
+    # Selection + current frame are pushed after the overview is built.
+    panel.set_current_frame.assert_called_with(1)
+    panel.set_selection.assert_called_with(7)
+    panel.set_detail.assert_called_once()
 
 
-def test_refresh_without_inputs_clears_panel(stubbed):
+def test_refresh_without_stack_clears_panel(stubbed):
     viewer = _viewer()
-    ctrl = _controller(viewer, tracked=None, intensity=None)
+    ctrl = _controller(viewer, tracked=None)
 
     ctrl.refresh()
 
     viewer.window.add_dock_widget.assert_not_called()
     stubbed.assert_not_called()
+
+
+def test_validated_anchored_and_error_frames_flag_lanes(stubbed, monkeypatch):
+    monkeypatch.setattr(lcc, "read_validated_tracks", lambda _p: {7: {0}})
+    monkeypatch.setattr(
+        lcc, "read_corrections",
+        lambda _p: [SimpleNamespace(kind="anchor", cell_id=7, t=1)],
+    )
+    monkeypatch.setattr(
+        lcc, "scan_errors",
+        lambda *_a, **_k: [SimpleNamespace(t=1, cell_id=7)],
+    )
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+        pos_dir=object(),
+    )
+
+    ctrl.refresh()
+
+    lane = stubbed.return_value.set_overview.call_args.args[0][0]
+    assert lane.validated == frozenset({0})
+    assert lane.anchored == frozenset({1})
+    assert lane.errors == frozenset({1})
+
+
+def test_set_selection_builds_detail_for_occupied_frames(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+    ctrl.refresh()
+    lcc.build_track_film_strip.reset_mock()
+
+    ctrl.set_selection(7)
+
+    stubbed.return_value.set_selection.assert_called_with(7)
+    _, kwargs = lcc.build_track_film_strip.call_args
+    assert kwargs["frames"] == [0, 1]
 
 
 def test_node_activation_invokes_navigate_callback(stubbed):
@@ -115,63 +154,6 @@ def test_node_activation_invokes_navigate_callback(stubbed):
     ctrl._on_node_activated(1, 7)
 
     on_activate.assert_called_once_with(1, 7)
-
-
-def test_refresh_restricts_crop_scan_to_occupied_frames(stubbed):
-    # The graph (track 7 at frames 0,1) should drive the crop scan, so the
-    # cropper is handed those frames instead of re-scanning the whole stack.
-    viewer = _viewer()
-    ctrl = _controller(
-        viewer,
-        tracked=np.zeros((2, 12, 12), np.uint32),
-        intensity=np.zeros((2, 12, 12), np.float32),
-    )
-
-    ctrl.refresh()
-
-    import cellflow.napari.lineage_canvas_controller as mod
-    _, kwargs = mod.build_track_film_strip.call_args
-    assert kwargs["frames"] == [0, 1]
-
-
-def test_validated_and_anchored_frames_flag_nodes(stubbed, monkeypatch):
-    monkeypatch.setattr(lcc, "read_validated_tracks", lambda _p: {7: {0}})
-    monkeypatch.setattr(
-        lcc, "read_corrections",
-        lambda _p: [SimpleNamespace(kind="anchor", cell_id=7, t=1)],
-    )
-    viewer = _viewer()
-    ctrl = _controller(
-        viewer,
-        tracked=np.zeros((2, 12, 12), np.uint32),
-        intensity=np.zeros((2, 12, 12), np.float32),
-        pos_dir=object(),
-    )
-
-    ctrl.refresh()
-
-    nodes = stubbed.return_value.set_scene.call_args.args[0]
-    by_frame = {n.t: n for n in nodes}
-    assert by_frame[0].validated and not by_frame[0].anchored
-    assert by_frame[1].anchored and not by_frame[1].validated
-
-
-def test_rotate_request_flips_orientation_and_rebuilds(stubbed):
-    viewer = _viewer()
-    ctrl = _controller(
-        viewer,
-        tracked=np.zeros((2, 12, 12), np.uint32),
-        intensity=np.zeros((2, 12, 12), np.float32),
-    )
-    ctrl.refresh()
-    panel = stubbed.return_value
-
-    ctrl._on_rotate_requested()
-
-    assert ctrl._rotated is True
-    # The panel is told to flip its highlight axes and the scene is rebuilt.
-    panel.set_orientation.assert_called_with(track_vertical=False)
-    assert panel.set_scene.call_count == 2
 
 
 def test_teardown_removes_dock(stubbed):

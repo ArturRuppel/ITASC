@@ -63,17 +63,11 @@ def test_panel_tile_size_param_drives_rendered_pixmap_height(_qapp):
     panel = TrackFilmStripPanel(tile_px=64)
     panel.set_strip(strip)
 
-    def _first_pixmap_height():
-        # tiles are laid out in order in the wrapping flow layout
-        cell = panel._row.itemAt(0).widget()
-        thumb = cell.layout().itemAt(0).widget()
-        return thumb.pixmap().height()
-
-    assert _first_pixmap_height() == 64
+    assert panel._frame_items[0].pixmap().height() == 64
 
     panel.set_tile_size(128)
     assert panel._tile_px == 128
-    assert _first_pixmap_height() == 128
+    assert panel._frame_items[0].pixmap().height() == 128
 
 
 def test_panel_tile_size_is_clamped(_qapp):
@@ -84,6 +78,26 @@ def test_panel_tile_size_is_clamped(_qapp):
     assert panel._tile_px == 512  # _TILE_PX_MAX
     panel.set_tile_size(1)
     assert panel._tile_px == 20  # _TILE_PX_MIN
+
+
+def test_tiles_stack_top_to_bottom_within_a_column(_qapp):
+    # Time runs down a column: the second frame sits below the first.
+    from cellflow.napari._correction_film_strip import TrackFilmStripPanel
+    from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip
+
+    strip = TrackFilmStrip(
+        tiles=(
+            FilmStripTile(frame=0, rgb=np.zeros((5, 5, 3), np.uint8)),
+            FilmStripTile(frame=1, rgb=np.zeros((5, 5, 3), np.uint8)),
+        )
+    )
+    panel = TrackFilmStripPanel(tile_px=32)
+    panel.set_strip(strip)
+
+    r0 = panel._tile_rects[0]
+    r1 = panel._tile_rects[1]
+    assert r1.top() > r0.bottom() - 1   # frame 1 is below frame 0
+    assert r1.left() == r0.left()       # same column
 
 
 def test_panel_highlights_current_frame_with_a_border(_qapp):
@@ -100,44 +114,12 @@ def test_panel_highlights_current_frame_with_a_border(_qapp):
     panel.set_strip(strip)
     panel.set_current_frame(5)
 
-    # The current frame's cell gets a visible white border; others stay clear.
-    assert "#ffffff" in panel._tile_cells[5][0].styleSheet()
-    assert "transparent" in panel._tile_cells[2][0].styleSheet()
+    # The border item sits on the current frame's tile, and moves on change.
+    assert panel._border_item is not None
+    assert panel._border_item.rect() == panel._tile_rects[5]
 
     panel.set_current_frame(2)
-    assert "#ffffff" in panel._tile_cells[2][0].styleSheet()
-    assert "transparent" in panel._tile_cells[5][0].styleSheet()
-
-
-def test_resetting_same_frames_reuses_tile_widgets(_qapp):
-    # Swapping a single track rebuilds the strip on every keypress. As long as
-    # the frame set is unchanged, the tiles must be repainted in place rather
-    # than destroyed and recreated -- that per-keypress widget churn is what
-    # flashed transient popups in the docked strip. Same frames => same widgets.
-    from cellflow.napari._correction_film_strip import TrackFilmStripPanel
-    from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip
-
-    def _strip(pixel):
-        return TrackFilmStrip(
-            tiles=(
-                FilmStripTile(frame=0, rgb=np.full((5, 5, 3), pixel, dtype=np.uint8)),
-                FilmStripTile(frame=1, rgb=np.full((5, 5, 3), pixel, dtype=np.uint8)),
-            )
-        )
-
-    panel = TrackFilmStripPanel(tile_px=32)
-    panel.set_strip(_strip(10))
-    cells_before = [panel._row.itemAt(i).widget() for i in range(panel._row.count())]
-    thumbs_before = list(panel._thumbs)
-
-    # A swap changes the pixels but keeps the same frames.
-    panel.set_strip(_strip(200))
-
-    cells_after = [panel._row.itemAt(i).widget() for i in range(panel._row.count())]
-    assert cells_after == cells_before  # no widgets torn down / recreated
-    assert panel._thumbs == thumbs_before
-    # ...and the repaint actually took effect.
-    assert panel._thumbs[0].pixmap().height() == 32
+    assert panel._border_item.rect() == panel._tile_rects[2]
 
 
 def test_changing_frames_rebuilds_tiles(_qapp):
@@ -148,9 +130,8 @@ def test_changing_frames_rebuilds_tiles(_qapp):
     panel.set_strip(
         TrackFilmStrip(tiles=(FilmStripTile(frame=0, rgb=np.zeros((5, 5, 3), np.uint8)),))
     )
-    first = panel._thumbs[0]
+    first = panel._frame_items[0]
 
-    # Selecting a track with a different frame set must rebuild the row.
     panel.set_strip(
         TrackFilmStrip(
             tiles=(
@@ -159,8 +140,8 @@ def test_changing_frames_rebuilds_tiles(_qapp):
             )
         )
     )
-    assert len(panel._thumbs) == 2
-    assert first not in panel._thumbs
+    assert set(panel._frame_items) == {3, 4}
+    assert first is not panel._frame_items.get(3)
 
 
 def test_panel_tooltip_notes_validated_and_anchored(_qapp):
@@ -178,7 +159,5 @@ def test_panel_tooltip_notes_validated_and_anchored(_qapp):
     panel = TrackFilmStripPanel()
     panel.set_strip(strip)
 
-    cell = panel._tile_cells[0][0]
-    thumb = cell.layout().itemAt(0).widget()
-    tip = thumb.toolTip()
+    tip = panel._frame_items[0].toolTip()
     assert "validated" in tip and "anchored" in tip

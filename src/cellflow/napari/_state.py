@@ -66,8 +66,6 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "swap_radius": w.swap_radius_spin.value(),
             "retrack_max_distance": w.retrack_max_dist_spin.value(),
             "show_track_path": w.nucleus_correction_widget.track_path_check.isChecked(),
-            "show_film_strip": w.nucleus_correction_widget.film_strip_check.isChecked(),
-            "film_strip_size": w.nucleus_correction_widget.film_strip_size_spin.value(),
         },
     }
 
@@ -149,5 +147,3 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "swap_radius" in cor: w.swap_radius_spin.setValue(cor["swap_radius"])
         if "retrack_max_distance" in cor: w.retrack_max_dist_spin.setValue(cor["retrack_max_distance"])
         if "show_track_path" in cor: cw.track_path_check.setChecked(cor["show_track_path"])
-        if "show_film_strip" in cor: cw.film_strip_check.setChecked(cor["show_film_strip"])
-        if "film_strip_size" in cor: cw.film_strip_size_spin.setValue(cor["film_strip_size"])

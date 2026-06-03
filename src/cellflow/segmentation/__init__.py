@@ -48,14 +48,6 @@ from cellflow.segmentation.lineage import (
     build_lineage,
 )
 
-from cellflow.segmentation.lineage_graph import (
-    GraphEdge,
-    GraphNode,
-    LineageGraph,
-    assign_columns,
-    build_lineage_graph,
-)
-
 __all__ = [
     "CancelledError",
     "CellDivergenceParams",
@@ -66,19 +58,14 @@ __all__ = [
     "ContourFilterParams",
     "ContourWatershedParams",
     "DivergenceMapsReport",
-    "GraphEdge",
-    "GraphNode",
-    "LineageGraph",
     "LineageModel",
     "TrackLane",
     "TrackSegment",
     "apply_gamma",
     "assemble_cost_field",
-    "assign_columns",
     "balance_strength_to_weights",
     "build_divergence_maps",
     "build_lineage",
-    "build_lineage_graph",
     "clean_and_smooth_contours",
     "commit_labels",
     "compute_contour_watershed",

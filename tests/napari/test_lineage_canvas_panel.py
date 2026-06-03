@@ -1,20 +1,24 @@
-"""Rendering coverage for the lineage canvas panel (needs an offscreen Qt).
+"""Rendering coverage for the combined canvas panel (needs an offscreen Qt).
 
-Pins the visual contract: the selected track lights the *vertical* box sides
-while the current frame lights the *horizontal* ones, changing the selection
-clears the previous highlight, and a click on a node reports ``(frame, cell_id)``.
+Pins the visual contract of the swimlane overview: each track is a column with
+time running down, present runs draw as bars, per-frame status cells paint over
+them (green/orange/red), the current frame is a single horizontal guide across
+all columns, the selected track is a highlighted column, and a click reports
+``(frame, cell_id)`` (snapping into the nearest present frame inside a gap).
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 pytest.importorskip("qtpy")
-from qtpy.QtWidgets import QApplication  # noqa: E402
+from qtpy.QtWidgets import QApplication, QGraphicsLineItem, QGraphicsRectItem  # noqa: E402
 
+from cellflow.napari._correction_film_strip import TrackFilmStrip  # noqa: E402
 from cellflow.napari._correction_lineage_canvas import (  # noqa: E402
+    _CELL_H,
+    _COL_W,
+    LaneView,
     LineageCanvasPanel,
-    NodeView,
 )
 
 
@@ -23,122 +27,92 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-def _nodes():
-    rgb = np.zeros((8, 8, 3), np.uint8)
+def _lanes():
     return [
-        NodeView(cell_id=7, t=0, x=40, y=40, rgb=rgb),
-        NodeView(cell_id=7, t=1, x=40, y=90, rgb=rgb),
-        NodeView(cell_id=9, t=0, x=90, y=40, rgb=rgb),
+        LaneView(
+            cell_id=7, column=0, segments=((0, 2), (4, 5)),
+            validated=frozenset({0}), anchored=frozenset({4}), errors=frozenset({5}),
+        ),
+        LaneView(cell_id=9, column=1, segments=((0, 5),), errors=frozenset({3})),
     ]
 
 
-def test_set_scene_indexes_boxes_by_track_and_frame(_app):
+def _rects(panel):
+    return [it for it in panel._scene.items() if isinstance(it, QGraphicsRectItem)]
+
+
+def test_overview_draws_bars_and_status_cells(_app):
     panel = LineageCanvasPanel()
-    panel.set_scene(_nodes(), [], row_height=50, scene_width=140)
+    panel.set_overview(_lanes(), n_frames=6)
 
-    # Track 7 has two nodes (frames 0,1); frame 0 has two nodes (tracks 7,9).
-    assert len(panel._boxes_by_track[7]) == 2
-    assert len(panel._boxes_by_track[9]) == 1
-    assert len(panel._boxes_by_frame[0]) == 2
-    assert len(panel._boxes_by_frame[1]) == 1
+    # lane 7: 2 bars + 1 validated + 1 anchored + 1 error = 5; lane 9: 1 bar + 1 error.
+    assert len(_rects(panel)) == 7
+    assert panel._col_to_cell == [7, 9]
 
 
-def test_track_highlight_lights_vertical_sides(_app):
+def test_current_frame_is_one_horizontal_guide(_app):
     panel = LineageCanvasPanel()
-    panel.set_scene(_nodes(), [], row_height=50, scene_width=140)
+    panel.set_overview(_lanes(), n_frames=6)
+
+    panel.set_current_frame(2)
+
+    lines = [it for it in panel._scene.items() if isinstance(it, QGraphicsLineItem)]
+    assert len(lines) == 1
+    ln = lines[0].line()
+    assert ln.y1() == ln.y2() == pytest.approx(2 * _CELL_H + _CELL_H / 2.0)
+
+
+def test_selected_column_highlight_replaces_not_accumulates(_app):
+    panel = LineageCanvasPanel()
+    panel.set_overview(_lanes(), n_frames=6)
 
     panel.set_selection(7)
-
-    # Two nodes × (left + right) vertical lines = 4 highlight items.
-    assert len(panel._track_hl_items) == 4
-    for line in panel._track_hl_items:
-        ln = line.line()
-        assert ln.x1() == ln.x2()  # vertical
-
-
-def test_frame_highlight_lights_horizontal_sides(_app):
-    panel = LineageCanvasPanel()
-    panel.set_scene(_nodes(), [], row_height=50, scene_width=140)
-
-    panel.set_current_frame(0)
-
-    # Two nodes at frame 0 × (top + bottom) horizontal lines = 4 items.
-    assert len(panel._frame_hl_items) == 4
-    for line in panel._frame_hl_items:
-        ln = line.line()
-        assert ln.y1() == ln.y2()  # horizontal
-
-
-def test_changing_selection_clears_previous_track_highlight(_app):
-    panel = LineageCanvasPanel()
-    panel.set_scene(_nodes(), [], row_height=50, scene_width=140)
-
-    panel.set_selection(7)
+    first = panel._col_item
     panel.set_selection(9)
 
-    assert len(panel._track_hl_items) == 2  # track 9 has a single node
+    assert first is not panel._col_item
+    assert panel._col_item is not None
+    panel.set_selection(0)
+    assert panel._col_item is None
 
 
-def test_validated_and_anchored_nodes_get_status_borders(_app):
-    from qtpy.QtWidgets import QGraphicsRectItem
-
-    from cellflow.napari._correction_lineage_canvas import (
-        _ANCHOR_BORDER,
-        _VALIDATED_BORDER,
-    )
-
-    rgb = np.zeros((8, 8, 3), np.uint8)
-    nodes = [
-        NodeView(cell_id=1, t=0, x=40, y=40, rgb=rgb, validated=True),
-        NodeView(cell_id=2, t=0, x=90, y=40, rgb=rgb, anchored=True),
-        NodeView(cell_id=3, t=0, x=140, y=40, rgb=rgb),  # plain
-    ]
+def test_lane_click_emits_frame_and_cell(_app):
     panel = LineageCanvasPanel()
-    panel.set_scene(nodes, [], row_height=50, scene_width=200)
-
-    rects = [it for it in panel._scene.items() if isinstance(it, QGraphicsRectItem)]
-    colours = {it.pen().color().name() for it in rects}
-    # One green + one orange border; the plain node draws none.
-    assert len(rects) == 2
-    assert colours == {_VALIDATED_BORDER.name(), _ANCHOR_BORDER.name()}
-
-
-def test_rotation_swaps_which_sides_each_cursor_lights(_app):
-    panel = LineageCanvasPanel()
-    panel.set_scene(_nodes(), [], row_height=50, scene_width=140)
-    panel.set_orientation(track_vertical=False)
-
-    panel.set_selection(7)  # track now runs across rows → horizontal sides
-    for line in panel._track_hl_items:
-        ln = line.line()
-        assert ln.y1() == ln.y2()  # horizontal
-
-    panel.set_current_frame(0)  # frames now run down columns → vertical sides
-    for line in panel._frame_hl_items:
-        ln = line.line()
-        assert ln.x1() == ln.x2()  # vertical
-
-
-def test_rotate_button_emits_rotate_requested(_app):
-    panel = LineageCanvasPanel()
-    fired: list[int] = []
-    panel.rotate_requested.connect(lambda: fired.append(1))
-
-    panel._rotate_btn.click()
-
-    assert fired == [1]
-
-
-def test_node_click_emits_frame_and_cell(_app):
-    panel = LineageCanvasPanel()
-    panel.set_scene(_nodes(), [], row_height=50, scene_width=140)
+    panel.set_overview(_lanes(), n_frames=6)
     captured: list[tuple[int, int]] = []
     panel.node_activated.connect(lambda t, c: captured.append((t, c)))
 
-    # Drive the view's click path directly via the scene hit-test the view uses.
-    from qtpy.QtCore import QPointF
+    # column 0 (cell 7), frame 1 — present.
+    panel._activate_at(0 * _COL_W + 1, 1 * _CELL_H + 1)
+    assert captured == [(1, 7)]
 
-    item = panel._scene.itemAt(QPointF(40, 40), panel._view.transform())
-    panel.node_activated.emit(int(item.data(1)), int(item.data(0)))
 
-    assert captured == [(0, 7)]
+def test_click_in_a_gap_snaps_to_nearest_present_frame(_app):
+    panel = LineageCanvasPanel()
+    panel.set_overview(_lanes(), n_frames=6)
+    captured: list[tuple[int, int]] = []
+    panel.node_activated.connect(lambda t, c: captured.append((t, c)))
+
+    # column 0 (cell 7), frame 3 — a gap between runs (0,2) and (4,5); snaps to 2.
+    panel._activate_at(0 * _COL_W + 1, 3 * _CELL_H + 1)
+    assert captured == [(2, 7)]
+
+
+def test_detail_tile_click_reports_selected_cell(_app):
+    panel = LineageCanvasPanel()
+    panel.set_overview(_lanes(), n_frames=6)
+    panel.set_selection(9)
+    captured: list[tuple[int, int]] = []
+    panel.node_activated.connect(lambda t, c: captured.append((t, c)))
+
+    panel._on_detail_frame_clicked(3)
+    assert captured == [(3, 9)]
+
+
+def test_set_detail_forwards_to_film_strip(_app):
+    panel = LineageCanvasPanel()
+    strip = TrackFilmStrip(tiles=())
+
+    panel.set_detail(strip, title="Track 9")
+
+    assert panel._detail._strip is strip

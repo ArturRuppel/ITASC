@@ -1,25 +1,27 @@
-"""Qt dock panel that shows a track's per-frame crops as a film strip.
+"""Qt panel that shows a track's per-frame crops as a vertical film strip.
 
-This is the *view* half of the track-validation film strip: the pixels are
-produced by the pure :func:`build_track_film_strip` helper, and this panel just
-lays the tiles out in a wrapping grid with frame-number captions — tiles flow
-left-to-right and wrap onto a new line when they don't fit the panel width.
-Clicking a tile emits :attr:`TrackFilmStripPanel.frame_clicked` so the host can
-jump the viewer to that frame.
+This is the *view* half of the track film strip: the pixels are produced by the
+pure :func:`build_track_film_strip` helper, and this panel lays the tiles out
+**column-major, top-to-bottom** in a ``QGraphicsView`` — time runs down a column
+and, when a column fills the visible height, it continues at the top of the next
+column to the right (a "line break"). The arrow of time is shown by a faint frame
+index at the head of each column plus a ``time ↓ →`` hint in the title, so the
+reading order survives the wraps without a number under every tile.
 
-Only ``rgb_to_qimage`` is import-safe without a running QApplication; the panel
-itself needs Qt up (as any widget does).
+Ctrl+wheel zooms the tiles smaller/bigger; clicking a tile emits
+:attr:`TrackFilmStripPanel.frame_clicked` so the host can jump the viewer there.
+Only ``rgb_to_qimage`` is import-safe without a running QApplication.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from qtpy.QtCore import QPoint, QRect, QSize, Qt, Signal
-from qtpy.QtGui import QColor, QImage, QPainter, QPixmap
+from qtpy.QtCore import QRectF, Qt, Signal
+from qtpy.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import (
+    QGraphicsScene,
+    QGraphicsView,
     QLabel,
-    QLayout,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -28,14 +30,18 @@ from cellflow.napari._correction_track_path import TrackFilmStrip
 
 # Default on-screen height each (small) crop is scaled up to, with
 # nearest-neighbour so the segmentation stays crisp instead of blurring.
-_TILE_PX = 96
+_TILE_PX = 72
 _TILE_PX_MIN = 20
 _TILE_PX_MAX = 512
+_ZOOM_STEP = 8       # px added/removed from the tile size per Ctrl+wheel notch
+_GAP = 2             # gap between stacked crops (px)
+_COL_GAP = 8         # gap between wrapped columns (px)
+_HEADER_PX = 12      # room above each column for its starting-frame label
+_DEFAULT_COL_HEIGHT = 600  # column height used before the view has a real size
 
 # Border drawn around the tile for the frame the viewer is currently on.
-_CURRENT_FRAME_BORDER = "#ffffff"
-# Top marker strips for validated / anchored frames (match the in-canvas
-# validated- and anchor-overlay colours).
+_CURRENT_FRAME_BORDER = QColor("#ffffff")
+# Marker strip for validated / anchored frames (match the overview vocabulary).
 _VALIDATED_STRIP_COLOR = "#00ff00"
 _ANCHOR_STRIP_COLOR = "#b39400"
 _MARKER_STRIP_PX = 4
@@ -55,103 +61,8 @@ def rgb_to_qimage(rgb: np.ndarray) -> QImage:
     return image.copy()
 
 
-class _FlowLayout(QLayout):
-    """A layout that arranges children left-to-right, wrapping onto new lines.
-
-    Qt ships no wrapping layout, so this is the canonical Qt ``FlowLayout``
-    example adapted to qtpy: it lets the film strip break onto extra rows when
-    the tiles don't fit the available width, instead of scrolling sideways.
-    """
-
-    def __init__(self, parent: QWidget | None = None, *, spacing: int = 6) -> None:
-        super().__init__(parent)
-        self._items: list = []
-        self.setSpacing(spacing)
-
-    def addItem(self, item) -> None:  # noqa: N802 (Qt override)
-        self._items.append(item)
-
-    def count(self) -> int:
-        return len(self._items)
-
-    def itemAt(self, index: int):  # noqa: N802 (Qt override)
-        if 0 <= index < len(self._items):
-            return self._items[index]
-        return None
-
-    def takeAt(self, index: int):  # noqa: N802 (Qt override)
-        if 0 <= index < len(self._items):
-            return self._items.pop(index)
-        return None
-
-    def expandingDirections(self):  # noqa: N802 (Qt override)
-        return Qt.Orientations(Qt.Orientation(0))
-
-    def hasHeightForWidth(self) -> bool:  # noqa: N802 (Qt override)
-        return True
-
-    def heightForWidth(self, width: int) -> int:  # noqa: N802 (Qt override)
-        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
-
-    def setGeometry(self, rect: QRect) -> None:  # noqa: N802 (Qt override)
-        super().setGeometry(rect)
-        self._do_layout(rect, test_only=False)
-
-    def sizeHint(self) -> QSize:  # noqa: N802 (Qt override)
-        return self.minimumSize()
-
-    def minimumSize(self) -> QSize:  # noqa: N802 (Qt override)
-        size = QSize()
-        for item in self._items:
-            size = size.expandedTo(item.minimumSize())
-        margins = self.contentsMargins()
-        size += QSize(
-            margins.left() + margins.right(), margins.top() + margins.bottom()
-        )
-        return size
-
-    def _do_layout(self, rect: QRect, *, test_only: bool) -> int:
-        margins = self.contentsMargins()
-        effective = rect.adjusted(
-            margins.left(), margins.top(), -margins.right(), -margins.bottom()
-        )
-        x = effective.x()
-        y = effective.y()
-        line_height = 0
-        spacing = self.spacing()
-        for item in self._items:
-            hint = item.sizeHint()
-            next_x = x + hint.width() + spacing
-            if next_x - spacing > effective.right() and line_height > 0:
-                x = effective.x()
-                y = y + line_height + spacing
-                next_x = x + hint.width() + spacing
-                line_height = 0
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), hint))
-            x = next_x
-            line_height = max(line_height, hint.height())
-        return y + line_height - rect.y() + margins.bottom()
-
-
-class _ClickableTile(QLabel):
-    """A pixmap label that reports its frame index when clicked."""
-
-    clicked = Signal(int)
-
-    def __init__(self, frame: int, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._frame = frame
-        self.setCursor(Qt.PointingHandCursor)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        if event.button() == Qt.LeftButton:
-            self.clicked.emit(self._frame)
-        super().mousePressEvent(event)
-
-
 class TrackFilmStripPanel(QWidget):
-    """Wrapping grid of a track's per-frame crops (breaks onto new lines)."""
+    """A track's per-frame crops, stacked top-to-bottom and wrapped into columns."""
 
     frame_clicked = Signal(int)
 
@@ -161,114 +72,123 @@ class TrackFilmStripPanel(QWidget):
         self._strip = TrackFilmStrip(tiles=())
         self._title_text = ""
         self._current_frame: int | None = None
-        self._tile_cells: dict[int, list[QWidget]] = {}
-        # Thumbs in tile order, parallel to ``self._strip.tiles``; lets a swap
-        # repaint the existing tiles in place instead of tearing the whole row
-        # down and rebuilding it on every keypress.
-        self._thumbs: list[_ClickableTile] = []
+        self._frame_items: dict[int, object] = {}   # frame -> QGraphicsPixmapItem
+        self._tile_rects: dict[int, QRectF] = {}
+        self._border_item = None
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
 
         self._title = QLabel("No track selected")
         self._title.setContentsMargins(6, 2, 6, 2)
         outer.addWidget(self._title)
 
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        outer.addWidget(self._scroll)
-
-        self._row_host = QWidget()
-        self._row = _FlowLayout(self._row_host, spacing=6)
-        self._row.setContentsMargins(4, 4, 4, 4)
-        self._scroll.setWidget(self._row_host)
+        self._scene = QGraphicsScene(self)
+        self._view = _StripView(self)
+        outer.addWidget(self._view)
 
     def set_strip(self, strip: TrackFilmStrip, title: str = "") -> None:
-        """Show ``strip``'s tiles (empty strip clears it).
-
-        When the new strip covers the same frames as the one on screen (the
-        common case while swapping a single track), the existing tiles are
-        repainted in place. Only a change in the frame set rebuilds the row, so
-        repeated swaps no longer churn the dock's widgets — which is what made
-        transient popups flash on every keypress.
-        """
-        previous = self._strip
+        """Show ``strip``'s tiles (an empty strip clears the panel)."""
         self._strip = strip
         self._title_text = title
-        if title:
-            self._title.setText(title)
         if strip.is_empty():
             self.clear()
             self._title.setText(title or "No frames for this track")
             return
-        if self._same_frames(previous, strip):
-            for thumb, tile in zip(self._thumbs, strip.tiles):
-                self._render_thumb(thumb, tile)
-            return
-        self.clear()
-        for tile in strip.tiles:
-            self._row.addWidget(self._make_tile(tile))
-
-    @staticmethod
-    def _same_frames(a: TrackFilmStrip, b: TrackFilmStrip) -> bool:
-        """True when both strips list the same frames in the same order."""
-        return tuple(t.frame for t in a.tiles) == tuple(t.frame for t in b.tiles)
+        self._relayout()
 
     def set_tile_size(self, tile_px: int) -> None:
-        """Change the on-screen render size of each tile and re-lay the strip."""
+        """Change the on-screen size of each tile and re-lay the strip."""
         tile_px = max(_TILE_PX_MIN, min(int(tile_px), _TILE_PX_MAX))
         if tile_px == self._tile_px:
             return
         self._tile_px = tile_px
-        self.set_strip(self._strip, self._title_text)
+        if not self._strip.is_empty():
+            self._relayout()
 
     def set_current_frame(self, frame: int | None) -> None:
         """Highlight the tile for ``frame`` (live, without rebuilding the strip)."""
-        frame = None if frame is None else int(frame)
-        if frame == self._current_frame:
+        self._current_frame = None if frame is None else int(frame)
+        self._apply_current_border()
+
+    # -- layout -------------------------------------------------------------
+    def _relayout(self) -> None:
+        """Place every tile column-major, wrapping when a column fills the view."""
+        self._scene.clear()
+        self._frame_items = {}
+        self._tile_rects = {}
+        self._border_item = None
+        if self._strip.is_empty():
             return
-        previous = self._current_frame
-        self._current_frame = frame
-        for value in (previous, frame):
-            if value is None:
-                continue
-            for cell in self._tile_cells.get(value, ()):
-                self._apply_border(cell, value == frame)
 
-    def _make_tile(self, tile) -> QWidget:
-        cell = QWidget()
-        cell.setObjectName("filmTileCell")
-        col = QVBoxLayout(cell)
-        col.setContentsMargins(2, 2, 2, 2)
-        col.setSpacing(1)
+        viewport_h = self._view.viewport().height()
+        col_height = (
+            viewport_h if viewport_h >= self._tile_px + _HEADER_PX
+            else _DEFAULT_COL_HEIGHT
+        )
+        x = 0.0
+        y = float(_HEADER_PX)
+        col_w = 0.0
+        col_first = True
+        for tile in self._strip.tiles:
+            pm = self._tile_pixmap(tile)
+            w, h = pm.width(), pm.height()
+            if not col_first and y + h > col_height:
+                x += col_w + _COL_GAP          # wrap into the next column
+                y = float(_HEADER_PX)
+                col_w = 0.0
+                col_first = True
+            if col_first:
+                self._add_column_header(x, tile.frame)
+                col_first = False
+            item = self._scene.addPixmap(pm)
+            item.setOffset(x, y)
+            item.setData(0, int(tile.frame))
+            item.setToolTip(self._tile_tooltip(tile))
+            self._frame_items[int(tile.frame)] = item
+            self._tile_rects[int(tile.frame)] = QRectF(x, y, w, h)
+            y += h + _GAP
+            col_w = max(col_w, w)
+        self._scene.setSceneRect(self._scene.itemsBoundingRect())
+        self._title.setText(self._title_with_hint())
+        self._apply_current_border()
 
-        thumb = _ClickableTile(tile.frame)
-        self._render_thumb(thumb, tile)
-        thumb.clicked.connect(self.frame_clicked)
-        col.addWidget(thumb, alignment=Qt.AlignHCenter)
-        self._thumbs.append(thumb)
+    def _add_column_header(self, x: float, frame: int) -> None:
+        """A faint starting-frame index at the head of a column."""
+        text = self._scene.addText(str(int(frame)))
+        text.setDefaultTextColor(QColor(160, 160, 160))
+        font = text.font()
+        font.setPointSizeF(max(6.0, _HEADER_PX - 4))
+        text.setFont(font)
+        text.setPos(x - 2, -2)
 
-        caption = QLabel(str(tile.frame))
-        caption.setAlignment(Qt.AlignHCenter)
-        col.addWidget(caption)
-
-        self._tile_cells.setdefault(int(tile.frame), []).append(cell)
-        self._apply_border(cell, int(tile.frame) == self._current_frame)
-        return cell
-
-    def _render_thumb(self, thumb: "_ClickableTile", tile) -> None:
-        """Paint ``tile``'s crop (plus validated/anchored markers) onto ``thumb``."""
-        pixmap = QPixmap.fromImage(rgb_to_qimage(tile.rgb)).scaledToHeight(
+    def _tile_pixmap(self, tile) -> QPixmap:
+        pm = QPixmap.fromImage(rgb_to_qimage(tile.rgb)).scaledToHeight(
             self._tile_px, Qt.FastTransformation
         )
         self._draw_marker_strips(
-            pixmap,
+            pm,
             validated=getattr(tile, "validated", False),
             anchored=getattr(tile, "anchored", False),
         )
-        thumb.setPixmap(pixmap)
-        thumb.setToolTip(self._tile_tooltip(tile))
+        return pm
+
+    def _apply_current_border(self) -> None:
+        if self._border_item is not None:
+            self._scene.removeItem(self._border_item)
+            self._border_item = None
+        if self._current_frame is None:
+            return
+        rect = self._tile_rects.get(self._current_frame)
+        if rect is None:
+            return
+        pen = QPen(_CURRENT_FRAME_BORDER, 2)
+        self._border_item = self._scene.addRect(rect, pen)
+
+    def _title_with_hint(self) -> str:
+        base = self._title_text or f"{len(self._strip.tiles)} frame(s)"
+        return f"{base}  ·  time ↓ →"
 
     @staticmethod
     def _tile_tooltip(tile) -> str:
@@ -279,14 +199,6 @@ class TrackFilmStripPanel(QWidget):
             tags.append("anchored")
         suffix = f" ({', '.join(tags)})" if tags else ""
         return f"Frame {tile.frame}{suffix} — click to jump"
-
-    @staticmethod
-    def _apply_border(cell: QWidget, is_current: bool) -> None:
-        # Reserve the border width even when off so the layout never shifts.
-        color = _CURRENT_FRAME_BORDER if is_current else "transparent"
-        cell.setStyleSheet(
-            f"QWidget#filmTileCell {{ border: 2px solid {color}; border-radius: 2px; }}"
-        )
 
     @staticmethod
     def _draw_marker_strips(pixmap: QPixmap, *, validated: bool, anchored: bool) -> None:
@@ -307,11 +219,37 @@ class TrackFilmStripPanel(QWidget):
 
     def clear(self) -> None:
         """Remove every tile from the strip."""
-        self._tile_cells = {}
-        self._thumbs = []
-        while self._row.count():
-            item = self._row.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        self._scene.clear()
+        self._frame_items = {}
+        self._tile_rects = {}
+        self._border_item = None
+
+
+class _StripView(QGraphicsView):
+    """Scrollable strip view: Ctrl+wheel zooms tiles, a click reports its frame."""
+
+    def __init__(self, panel: TrackFilmStripPanel) -> None:
+        super().__init__(panel._scene, panel)
+        self._panel = panel
+        self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if event.modifiers() & Qt.ControlModifier:
+            step = _ZOOM_STEP if event.angleDelta().y() > 0 else -_ZOOM_STEP
+            self._panel.set_tile_size(self._panel._tile_px + step)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        # Re-wrap so columns track the available height.
+        if not self._panel._strip.is_empty():
+            self._panel._relayout()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().mouseReleaseEvent(event)
+        item = self.itemAt(event.pos())
+        frame = None if item is None else item.data(0)
+        if frame is not None:
+            self._panel.frame_clicked.emit(int(frame))

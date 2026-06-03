@@ -1,245 +1,222 @@
-"""Pannable/zoomable lineage canvas — the unified correction *view*.
+"""Combined correction canvas — a dense swimlane overview plus a focus strip.
 
-One big ``QGraphicsView`` that folds the film strip and lineage graph into a
-single picture: every track is a chain of nodes (by default in a column with
-time running downward; the toolbar "rotate" button swaps the axes so frames run
-across and tracks stack as rows), each node is that frame's nucleus crop (the
-film-strip tile), and consecutive present frames are joined by a plain connector
-(which skips across a gap). Each node carries a status border around the crop
-window — green when that frame is validated, orange when anchored. The box edges
-carry two orthogonal cursors that follow the layout: one runs along the track to
-mark the selected track, the other along the frame to mark the current frame.
-Drag to pan, wheel to zoom, click a node to jump there and select the cell.
+The thumbnails-for-every-track layout did not scale: long tracks turned into
+columns of mostly-uninformative tiles. This replaces it with an
+overview-plus-detail pattern, kept as two non-overlapping regions so the summary
+stays a clean graph view (room to grow in-place editing later).
 
-The view is a pure renderer: it is handed ready-to-blit :class:`NodeView` /
-:class:`EdgeView` structs (pixels, positions, colours) by its controller, so the
-heavy lifting — cropping tiles, scoring, layout — stays testable outside Qt.
+* **Overview** (top): one thin *column* per track, ``y`` is time running
+  downward so all tracks share a single global frame axis. A track's present
+  runs draw as bars and a gap (a vanish/return — a likely ID swap) reads as a
+  break. Per-frame status paints into the column: green = validated, orange =
+  anchored, red = a flagged error frame. Because the time axis is shared, the
+  current-frame cursor is one horizontal guide line across every column, and the
+  selected track is just a highlighted column.
+* **Detail** (bottom): the *selected* track's film strip — the only place
+  per-frame crops are built, so cost is O(1 track) regardless of track count.
+
+The panel is a pure renderer: the controller hands it ready ``LaneView`` structs
+and a prepared :class:`TrackFilmStrip`; click a column (or a tile) to jump there
+and select the cell via :attr:`node_activated`.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-import numpy as np
-from qtpy.QtCore import QRectF, Signal
-from qtpy.QtGui import QColor, QImage, QPen, QPixmap
+from qtpy.QtCore import Qt, Signal
+from qtpy.QtGui import QColor, QPen
 from qtpy.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
-    QHBoxLayout,
     QLabel,
-    QPushButton,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
 
+from cellflow.napari._correction_film_strip import TrackFilmStripPanel
+from cellflow.napari._correction_track_path import TrackFilmStrip
+
 _CLICK_SLOP = 6  # max drag (px) still treated as a click, not a pan
 _ZOOM_STEP = 1.15
-# Each node's box edges carry the two orthogonal cursors. In the default layout
-# (tracks in columns, time running down) the box is a column cell, so its
-# *vertical* sides mark the selected track and its *horizontal* sides mark the
-# current frame; when the canvas is rotated the two swap. One node lit on all
-# four edges is the selected cell at the current frame.
-_TRACK_HL = QColor(255, 255, 255)
-_FRAME_HL = QColor(255, 210, 70)
-_HL_WIDTH = 4
-_EDGE_COLOR = QColor(170, 170, 170)  # plain connector between consecutive frames
-_EDGE_WIDTH = 2
-# Per-node status border drawn around the whole crop window (not the nucleus):
-# green for a validated frame, orange for an anchored one (matches the film strip
-# / in-canvas overlay vocabulary).
-_VALIDATED_BORDER = QColor("#00ff00")
-_ANCHOR_BORDER = QColor("#ff8c00")
-_STATUS_WIDTH = 3
 
+_COL_W = 12.0    # scene width of one track column
+_CELL_H = 6.0    # scene height of one frame within a column
+_COL_PAD = 1.5   # horizontal padding inside a column
 
-def _rgb_to_pixmap(rgb: np.ndarray) -> QPixmap:
-    arr = np.ascontiguousarray(rgb, dtype=np.uint8)
-    h, w, _ = arr.shape
-    image = QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
-    return QPixmap.fromImage(image)
+_PRESENT = QColor(95, 95, 95)          # a present frame with nothing flagged
+_VALIDATED = QColor("#00ff00")
+_ANCHOR = QColor("#ff8c00")
+_ERROR = QColor("#ff3b30")
+_FRAME_GUIDE = QColor(255, 210, 70)    # the current-frame horizontal cursor
+_COL_SELECT = QColor(255, 255, 255, 45)  # selected-track column wash
 
 
 @dataclass(frozen=True)
-class NodeView:
-    """A ready-to-blit node: a frame crop centred at ``(x, y)`` in scene units."""
+class LaneView:
+    """One track's column: present runs plus the frames flagged in each state."""
 
     cell_id: int
-    t: int
-    x: float
-    y: float
-    rgb: np.ndarray  # (h, w, 3) uint8
-    validated: bool = False
-    anchored: bool = False
+    column: int
+    segments: tuple[tuple[int, int], ...]  # inclusive [start, end] present runs
+    validated: frozenset[int] = field(default_factory=frozenset)
+    anchored: frozenset[int] = field(default_factory=frozenset)
+    errors: frozenset[int] = field(default_factory=frozenset)
 
+    def present(self, frame: int) -> bool:
+        return any(s <= frame <= e for s, e in self.segments)
 
-@dataclass(frozen=True)
-class EdgeView:
-    """A plain connector between two node centres."""
-
-    cell_id: int
-    x0: float
-    y0: float
-    x1: float
-    y1: float
+    def nearest_present(self, frame: int) -> int:
+        """The present frame closest to ``frame`` (for jumping into a gap)."""
+        best, best_d = self.segments[0][0], None
+        for s, e in self.segments:
+            cand = min(max(frame, s), e)
+            d = abs(cand - frame)
+            if best_d is None or d < best_d:
+                best, best_d = cand, d
+        return best
 
 
 class LineageCanvasPanel(QWidget):
-    """The docked pannable/zoomable lineage canvas with click-to-navigate."""
+    """Swimlane overview stacked over the selected track's film strip."""
 
     node_activated = Signal(int, int)  # (frame, cell_id)
-    rotate_requested = Signal()        # the toolbar "rotate" button was clicked
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._selected = 0
         self._current_frame = 0
-        self._row_height = 1.0
-        self._node_border = 3
-        self._scene_width = 0.0
-        # True (default) when tracks run down columns: the selected track then
-        # lights the *vertical* box sides and the current frame the horizontal
-        # ones. Flipped when the canvas is rotated (tracks become rows).
-        self._track_vertical = True
-        # Node box geometry, indexed for the two highlights. Highlight line items
-        # are added/removed on demand (only the lit track/frame carry items).
-        self._boxes_by_track: dict[int, list[QRectF]] = {}
-        self._boxes_by_frame: dict[int, list[QRectF]] = {}
-        self._track_hl_items: list = []
-        self._frame_hl_items: list = []
+        self._n_frames = 0
+        self._lanes_by_cell: dict[int, LaneView] = {}
+        self._col_to_cell: list[int] = []
+        self._guide_item = None
+        self._col_item = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(2)
 
-        header = QHBoxLayout()
-        header.setContentsMargins(6, 2, 6, 2)
         self._title = QLabel("No lineage")
-        header.addWidget(self._title, 1)
-        self._rotate_btn = QPushButton("⟳ Rotate")
-        self._rotate_btn.setToolTip("Swap the axes: frames across, tracks down (and back).")
-        self._rotate_btn.clicked.connect(self.rotate_requested)
-        header.addWidget(self._rotate_btn, 0)
-        outer.addLayout(header)
+        self._title.setContentsMargins(6, 2, 6, 2)
+        outer.addWidget(self._title)
 
+        split = QSplitter(Qt.Vertical)
         self._scene = QGraphicsScene(self)
-        self._view = _CanvasView(self)
-        outer.addWidget(self._view)
+        self._view = _OverviewView(self)
+        split.addWidget(self._view)
+        self._detail = TrackFilmStripPanel(tile_px=72)
+        self._detail.frame_clicked.connect(self._on_detail_frame_clicked)
+        split.addWidget(self._detail)
+        # Graph view takes 25% of the height by default; the film strip gets 75%.
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 3)
+        split.setSizes([100, 300])
+        outer.addWidget(split)
 
-    def set_scene(
-        self,
-        nodes: list[NodeView],
-        edges: list[EdgeView],
-        *,
-        row_height: float,
-        scene_width: float,
-        title: str = "",
+    # -- overview -----------------------------------------------------------
+    def set_overview(
+        self, lanes: list[LaneView], *, n_frames: int, title: str = ""
     ) -> None:
-        """Render ``nodes`` + ``edges`` (replacing whatever was shown)."""
+        """Render the swimlane overview (replacing whatever was shown)."""
         self._scene.clear()
-        self._boxes_by_track.clear()
-        self._boxes_by_frame.clear()
-        self._track_hl_items = []
-        self._frame_hl_items = []
-        self._row_height = max(1.0, float(row_height))
-        self._scene_width = float(scene_width)
-        self._title.setText(title or f"{len(nodes)} node(s)")
-        if not nodes:
-            return
-        # Edges first so node thumbnails sit on top of their connectors.
-        edge_pen = QPen(_EDGE_COLOR, _EDGE_WIDTH)
-        for edge in edges:
-            self._scene.addLine(edge.x0, edge.y0, edge.x1, edge.y1, edge_pen)
-        b = self._node_border
-        for node in nodes:
-            pm = _rgb_to_pixmap(node.rgb)
-            w, h = pm.width(), pm.height()
-            left, top = node.x - w / 2.0, node.y - h / 2.0
-            box = QRectF(left - b, top - b, w + 2 * b, h + 2 * b)
-            self._boxes_by_track.setdefault(int(node.cell_id), []).append(box)
-            self._boxes_by_frame.setdefault(int(node.t), []).append(box)
-            item = self._scene.addPixmap(pm)
-            item.setOffset(left, top)
-            item.setData(0, int(node.cell_id))
-            item.setData(1, int(node.t))
-            tags = []
-            if node.validated:
-                tags.append("validated")
-            if node.anchored:
-                tags.append("anchored")
-            suffix = f" — {', '.join(tags)}" if tags else ""
-            item.setToolTip(f"frame {node.t}, cell {node.cell_id}{suffix}")
-            # Status border around the crop window (validated wins over anchored).
-            status = (
-                _VALIDATED_BORDER if node.validated
-                else _ANCHOR_BORDER if node.anchored
-                else None
-            )
-            if status is not None:
-                self._scene.addRect(box, QPen(status, _STATUS_WIDTH))
+        self._guide_item = None
+        self._col_item = None
+        self._n_frames = int(n_frames)
+        self._lanes_by_cell = {int(ln.cell_id): ln for ln in lanes}
+        self._col_to_cell = [
+            int(ln.cell_id) for ln in sorted(lanes, key=lambda x: x.column)
+        ]
+        self._title.setText(title or f"{len(lanes)} track(s)")
+        for lane in lanes:
+            self._draw_lane(lane)
         self._scene.setSceneRect(self._scene.itemsBoundingRect())
-        self._apply_track_highlight()
-        self._apply_frame_highlight()
+        self._apply_column_highlight()
+        self._apply_frame_guide()
 
-    def set_orientation(self, track_vertical: bool) -> None:
-        """Pick which box sides each cursor lights, following the canvas layout.
+    def _draw_lane(self, lane: LaneView) -> None:
+        x = lane.column * _COL_W + _COL_PAD
+        w = _COL_W - 2 * _COL_PAD
+        # Present runs as one bar each (cheap: a few rects per track, not per frame).
+        for s, e in lane.segments:
+            self._scene.addRect(
+                x, s * _CELL_H, w, (e - s + 1) * _CELL_H, _no_pen(), _PRESENT,
+            )
+        # Sparse per-frame status marks, drawn over the bars (error wins on top).
+        for frame in lane.validated:
+            self._fill_cell(x, w, frame, _VALIDATED)
+        for frame in lane.anchored:
+            self._fill_cell(x, w, frame, _ANCHOR)
+        for frame in lane.errors:
+            self._fill_cell(x, w, frame, _ERROR)
 
-        ``track_vertical`` True (tracks down columns) lights the selected track's
-        vertical sides and the current frame's horizontal sides; False (rotated,
-        tracks across rows) swaps them so each cursor still runs *along* its axis.
-        """
-        self._track_vertical = bool(track_vertical)
-        self._apply_track_highlight()
-        self._apply_frame_highlight()
+    def _fill_cell(self, x: float, w: float, frame: int, color: QColor) -> None:
+        self._scene.addRect(x, frame * _CELL_H, w, _CELL_H, _no_pen(), color)
 
     def set_selection(self, cell_id: int) -> None:
-        """Light the selected track's node boxes along the track axis."""
+        """Highlight the selected track's column."""
         self._selected = int(cell_id or 0)
-        self._apply_track_highlight()
+        self._apply_column_highlight()
 
     def set_current_frame(self, frame: int) -> None:
-        """Light the current frame's node boxes along the frame axis."""
+        """Move the shared current-frame guide and the detail-strip highlight."""
         self._current_frame = int(frame)
-        self._apply_frame_highlight()
+        self._apply_frame_guide()
+        self._detail.set_current_frame(int(frame))
 
-    @staticmethod
-    def _vertical_sides(box: QRectF) -> tuple[tuple[float, float, float, float], ...]:
-        return (
-            (box.left(), box.top(), box.left(), box.bottom()),
-            (box.right(), box.top(), box.right(), box.bottom()),
+    def _apply_column_highlight(self) -> None:
+        if self._col_item is not None:
+            self._scene.removeItem(self._col_item)
+            self._col_item = None
+        lane = self._lanes_by_cell.get(self._selected)
+        if lane is None or self._n_frames <= 0:
+            return
+        self._col_item = self._scene.addRect(
+            lane.column * _COL_W, 0, _COL_W, self._n_frames * _CELL_H,
+            _no_pen(), _COL_SELECT,
         )
+        self._col_item.setZValue(-1)  # behind the lane bars
 
-    @staticmethod
-    def _horizontal_sides(box: QRectF) -> tuple[tuple[float, float, float, float], ...]:
-        return (
-            (box.left(), box.top(), box.right(), box.top()),
-            (box.left(), box.bottom(), box.right(), box.bottom()),
-        )
+    def _apply_frame_guide(self) -> None:
+        if self._guide_item is not None:
+            self._scene.removeItem(self._guide_item)
+            self._guide_item = None
+        if not self._col_to_cell:
+            return
+        y = self._current_frame * _CELL_H + _CELL_H / 2.0
+        right = len(self._col_to_cell) * _COL_W
+        self._guide_item = self._scene.addLine(0, y, right, y, QPen(_FRAME_GUIDE, 1.5))
 
-    def _apply_track_highlight(self) -> None:
-        """Light the selected track's boxes along the track axis."""
-        for item in self._track_hl_items:
-            self._scene.removeItem(item)
-        self._track_hl_items = []
-        pen = QPen(_TRACK_HL, _HL_WIDTH)
-        sides = self._vertical_sides if self._track_vertical else self._horizontal_sides
-        for box in self._boxes_by_track.get(self._selected, ()):
-            for x0, y0, x1, y1 in sides(box):
-                self._track_hl_items.append(self._scene.addLine(x0, y0, x1, y1, pen))
+    # -- detail -------------------------------------------------------------
+    def set_detail(self, strip: TrackFilmStrip, *, title: str = "") -> None:
+        """Show the selected track's film strip in the detail band."""
+        self._detail.set_strip(strip, title=title)
+        self._detail.set_current_frame(self._current_frame)
 
-    def _apply_frame_highlight(self) -> None:
-        """Light the current frame's boxes along the frame axis."""
-        for item in self._frame_hl_items:
-            self._scene.removeItem(item)
-        self._frame_hl_items = []
-        pen = QPen(_FRAME_HL, _HL_WIDTH)
-        sides = self._horizontal_sides if self._track_vertical else self._vertical_sides
-        for box in self._boxes_by_frame.get(self._current_frame, ()):
-            for x0, y0, x1, y1 in sides(box):
-                self._frame_hl_items.append(self._scene.addLine(x0, y0, x1, y1, pen))
+    def _on_detail_frame_clicked(self, frame: int) -> None:
+        if self._selected:
+            self.node_activated.emit(int(frame), int(self._selected))
+
+    # -- hit-testing --------------------------------------------------------
+    def _activate_at(self, scene_x: float, scene_y: float) -> None:
+        """Translate a click in the overview into a ``(frame, cell)`` jump."""
+        col = int(scene_x // _COL_W)
+        if col < 0 or col >= len(self._col_to_cell):
+            return
+        cell_id = self._col_to_cell[col]
+        lane = self._lanes_by_cell[cell_id]
+        frame = int(scene_y // _CELL_H)
+        frame = min(max(frame, 0), max(self._n_frames - 1, 0))
+        if not lane.present(frame):
+            frame = lane.nearest_present(frame)
+        self.node_activated.emit(int(frame), int(cell_id))
 
 
-class _CanvasView(QGraphicsView):
-    """Drag-to-pan, wheel-to-zoom view that reports node clicks."""
+def _no_pen() -> QPen:
+    return QPen(Qt.NoPen)
+
+
+class _OverviewView(QGraphicsView):
+    """Drag-to-pan, wheel-to-zoom view that reports column clicks."""
 
     def __init__(self, panel: LineageCanvasPanel) -> None:
         super().__init__(panel._scene, panel)
@@ -265,13 +242,8 @@ class _CanvasView(QGraphicsView):
         self._press_pos = None
         if moved > _CLICK_SLOP:
             return  # a pan, not a click
-        item = self.itemAt(event.pos())
-        if item is None:
-            return
-        cell_id, t = item.data(0), item.data(1)
-        if cell_id is None or t is None:
-            return
-        self._panel.node_activated.emit(int(t), int(cell_id))
+        pt = self.mapToScene(event.pos())
+        self._panel._activate_at(pt.x(), pt.y())
 
 
-__all__ = ["EdgeView", "LineageCanvasPanel", "NodeView"]
+__all__ = ["LaneView", "LineageCanvasPanel"]

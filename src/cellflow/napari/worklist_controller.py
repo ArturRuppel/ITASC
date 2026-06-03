@@ -5,7 +5,7 @@ Owns the *docked panel* half of the error worklist: scanning the tracked stack
 undocking the panel, and turning a row activation into a viewer jump + cell
 selection via the host-supplied ``on_activate`` callback. The scoring itself is
 the pure :func:`~cellflow.segmentation.error_scan.scan_errors`; this controller
-is the glue, mirroring :class:`~cellflow.napari.film_strip_controller`.
+is the glue, mirroring :class:`~cellflow.napari.lineage_canvas_controller`.
 """
 from __future__ import annotations
 
