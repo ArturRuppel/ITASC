@@ -212,15 +212,12 @@ class CellCorrectionWidget(QWidget):
         group_lay.addWidget(self.correction_params_section)
 
         # ── Inline CorrectionWidget ───────────────────────────────────
-        # Nucleus correction uses the default spotlight_scale (3.0). For cells
-        # we want a noticeably larger spotlight halo (≈3× nucleus radius).
         self.correction_widget = CorrectionWidget(
             self.viewer,
             show_activate_btn=False,
             show_shortcuts=False,
             inspector_first=True,
             spotlight=True,
-            spotlight_scale=9.0,
             show_cleanup=False,
         )
 

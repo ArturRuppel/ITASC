@@ -52,9 +52,10 @@ def test_colors_run_viridis_start_dark_to_finish_yellow():
     assert not np.allclose(overlay.colors[0], overlay.colors[-1])
 
 
-def test_outline_pixel_takes_the_last_occupying_frames_color():
-    # Both frames occupy the same pixel; that footprint pixel is coloured by the
-    # last (newest) frame to occupy it.
+def test_polyline_endpoint_takes_its_frames_color():
+    # The footprint is no longer outlined; the trajectory polyline is drawn
+    # through the centroids. Its newest endpoint carries the latest viridis
+    # colour (later stamps overwrite earlier ones where the path overlaps).
     stack = np.zeros((2, 3, 3), dtype=np.uint32)
     stack[0, 1, 1] = 7
     stack[1, 1, 1] = 7
@@ -62,22 +63,6 @@ def test_outline_pixel_takes_the_last_occupying_frames_color():
     overlay = build_track_path_overlay(stack, 7)
 
     np.testing.assert_allclose(overlay.overlay[1, 1], overlay.colors[-1])
-
-
-def test_outline_encodes_time_across_the_footprint():
-    # Two disjoint 3x3 blocks occupied in different frames. Each block's outline
-    # is coloured by its own frame's viridis time colour, so the merged footprint
-    # carries when each part was visited. Corners lie off the centroid polyline,
-    # so they isolate the outline's colour.
-    stack = np.zeros((2, 4, 8), dtype=np.uint32)
-    stack[0, 0:3, 0:3] = 6   # earliest frame, left block
-    stack[1, 0:3, 5:8] = 6   # latest frame, right block
-
-    overlay = build_track_path_overlay(stack, 6)
-
-    np.testing.assert_allclose(overlay.overlay[0, 0], overlay.colors[0])   # frame 0
-    np.testing.assert_allclose(overlay.overlay[0, 7], overlay.colors[1])   # frame 1
-    assert not np.allclose(overlay.colors[0], overlay.colors[1])
 
 
 def test_only_occupied_frames_are_kept():
@@ -104,62 +89,60 @@ def test_absent_track_returns_empty_overlay():
     assert overlay.centroids.shape == (0, 2)
 
 
-def test_overlay_is_transparent_away_from_the_outline():
+def test_overlay_is_transparent_away_from_the_polyline():
     stack = np.zeros((1, 11, 11), dtype=np.uint32)
     stack[0, 0, 0] = 3
 
     overlay = build_track_path_overlay(stack, 3)
 
-    # The footprint pixel is on its own outline; pixels away from it stay clear.
+    # The lone centroid carries the polyline dot; pixels away from it stay clear.
     assert overlay.overlay[0, 0].any()
     assert not overlay.overlay[10, 10].any()
 
 
-def test_outline_draws_the_footprint_boundary_not_its_interior():
-    # A solid 5x5 mask: only the boundary of the merged footprint is traced, plus
-    # the centroid dot of the polyline; an off-path interior pixel stays clear.
+def test_footprint_is_not_outlined_only_the_polyline_is_drawn():
+    # A solid 5x5 mask: the merged footprint is no longer outlined, so only the
+    # centroid dot of the polyline is painted; the boundary and interior stay
+    # clear. The boolean union still covers the whole footprint for the spotlight.
     stack = np.zeros((1, 9, 9), dtype=np.uint32)
     stack[0, 1:6, 1:6] = 2  # filled block, centroid at (3, 3)
 
     overlay = build_track_path_overlay(stack, 2)
 
-    assert overlay.overlay[1, 1].any()       # a boundary pixel is painted
     assert overlay.overlay[3, 3].any()       # the centroid dot of the polyline
+    assert not overlay.overlay[1, 1].any()   # a former boundary pixel stays clear
     assert not overlay.overlay[2, 2].any()   # an interior, off-path pixel stays clear
     assert not overlay.overlay[8, 8].any()
     assert overlay.union_mask.sum() == 25    # union covers the whole mask
 
 
-def test_outline_traces_the_merge_of_all_frames_masks():
+def test_polyline_bridges_the_centroids_of_all_frames():
     # Cell present in frames 0 and 2 (gap at 1), two disjoint pixels far apart.
-    # The outline traces each footprint pixel, and the polyline bridges them.
+    # The polyline runs through both centroids and bridges the gap between them.
     stack = np.zeros((3, 5, 9), dtype=np.uint32)
-    stack[0, 2, 0] = 6   # footprint pixel (2, 0)
-    stack[2, 2, 8] = 6   # footprint pixel (2, 8)
+    stack[0, 2, 0] = 6   # centroid (2, 0)
+    stack[2, 2, 8] = 6   # centroid (2, 8)
 
     overlay = build_track_path_overlay(stack, 6)
 
     assert overlay.frames == (0, 2)
-    assert overlay.overlay[2, 0].any()    # both footprint pixels are outlined
+    assert overlay.overlay[2, 0].any()    # the polyline endpoints are painted
     assert overlay.overlay[2, 8].any()
-    assert overlay.overlay[2, 4].any()    # and the polyline bridges the gap
+    assert overlay.overlay[2, 4].any()    # and the line bridges the gap
     assert overlay.union_mask.sum() == 2  # union is only the two single-pixel masks
 
 
-def test_thickness_widens_the_outline_inward():
-    # A solid 5x5 footprint: width-1 traces just the boundary ring; a wider line
-    # grows inward, painting more pixels but never beyond the footprint.
-    stack = np.zeros((1, 9, 9), dtype=np.uint32)
-    stack[0, 2:7, 2:7] = 4
+def test_thickness_widens_the_polyline():
+    # Two disjoint single-pixel frames so the polyline spans a clear line; a wider
+    # thickness stamps a fatter line, painting more pixels.
+    stack = np.zeros((2, 7, 7), dtype=np.uint32)
+    stack[0, 3, 1] = 4
+    stack[1, 3, 5] = 4
 
     thin = build_track_path_overlay(stack, 4, thickness=1).overlay
     thick = build_track_path_overlay(stack, 4, thickness=3).overlay
 
-    n_thin = thin.any(axis=-1).sum()
-    n_thick = thick.any(axis=-1).sum()
-    assert n_thick > n_thin
-    # The widened contour never spills past the footprint (the 5x5 block = 25 px).
-    assert n_thick <= 25
+    assert thick.any(axis=-1).sum() > thin.any(axis=-1).sum()
 
 
 def test_2d_plane_treated_as_single_frame():
