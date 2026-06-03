@@ -137,3 +137,14 @@ def test_no_selection_clears_without_docking(_app):
     controller = _make_controller({}, selected=0)
     controller.refresh()
     assert controller._panel is None  # nothing docked when nothing is selected
+
+
+def test_ensure_docked_creates_dock_without_selection(_app):
+    # The workspace strip layout needs the dock to exist before any cell is
+    # picked; refresh() bails when nothing is selected, so ensure_docked() must
+    # materialise it regardless (otherwise the side-by-side split is a no-op).
+    controller = _make_controller({}, selected=0)
+    dock = controller.ensure_docked()
+    assert dock is not None
+    assert controller.dock is dock
+    assert dock in controller.viewer.window.docked
