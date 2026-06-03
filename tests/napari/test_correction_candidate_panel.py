@@ -69,6 +69,22 @@ def test_clear_empties_every_column(_app):
         assert panel.column(which).tiles() == []
 
 
+def test_set_tile_size_resizes_thumbnails_and_clamps(_app):
+    panel = CandidateGalleryPanel(tile_px=64)
+    panel.set_column(panel.SWAP, _strip([1, 2]))
+
+    panel.set_tile_size(96)
+    assert panel._tile_px == 96
+    tile = panel.column(panel.SWAP).tiles()[0]
+    image = tile.layout().itemAt(0).widget()  # the thumbnail QLabel
+    assert image.pixmap().height() == 96
+
+    panel.set_tile_size(99999)
+    assert panel._tile_px == 256  # _TILE_PX_MAX
+    panel.set_tile_size(1)
+    assert panel._tile_px == 20   # _TILE_PX_MIN
+
+
 def test_blocks_stack_vertically_and_tiles_wrap(_app):
     from cellflow.napari._flow_layout import FlowLayout
 

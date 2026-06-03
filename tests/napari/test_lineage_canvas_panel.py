@@ -1,10 +1,11 @@
 """Rendering coverage for the swimlane overview panel (needs an offscreen Qt).
 
-Pins the visual contract of the overview: each track is a column with time
-running down, present runs draw as bars, per-frame status cells paint over them
-(green = validated, orange = anchored), the current frame is a single horizontal
-guide across all columns, the selected track is a highlighted column, and a click
-reports ``(frame, cell_id)`` (snapping into the nearest present frame in a gap).
+Pins the visual contract of the overview: each track is a row with time
+running left→right, present runs draw as bars, per-frame status cells paint over
+them (green = validated, orange = anchored), the current frame is a single
+vertical guide across all rows, the selected track is a highlighted row, and a
+click reports ``(frame, cell_id)`` (snapping into the nearest present frame in a
+gap).
 """
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ pytest.importorskip("qtpy")
 from qtpy.QtWidgets import QApplication, QGraphicsLineItem, QGraphicsRectItem  # noqa: E402
 
 from cellflow.napari._correction_lineage_canvas import (  # noqa: E402
-    _CELL_H,
-    _COL_W,
+    _CELL_W,
+    _LANE_H,
     LaneView,
     LineageCanvasPanel,
 )
@@ -49,7 +50,7 @@ def test_overview_draws_bars_and_status_cells(_app):
     assert panel._col_to_cell == [7, 9]
 
 
-def test_current_frame_is_one_horizontal_guide(_app):
+def test_current_frame_is_one_vertical_guide(_app):
     panel = LineageCanvasPanel()
     panel.set_overview(_lanes(), n_frames=6)
 
@@ -58,20 +59,20 @@ def test_current_frame_is_one_horizontal_guide(_app):
     lines = [it for it in panel._scene.items() if isinstance(it, QGraphicsLineItem)]
     assert len(lines) == 1
     ln = lines[0].line()
-    assert ln.y1() == ln.y2() == pytest.approx(2 * _CELL_H + _CELL_H / 2.0)
+    assert ln.x1() == ln.x2() == pytest.approx(2 * _CELL_W + _CELL_W / 2.0)
 
 
-def test_selected_column_is_a_vertical_line_that_replaces_not_accumulates(_app):
+def test_selected_row_is_a_horizontal_line_that_replaces_not_accumulates(_app):
     panel = LineageCanvasPanel()
     panel.set_overview(_lanes(), n_frames=6)
 
     panel.set_selection(7)
     first = panel._col_item
-    # The selection marker is a vertical line centered on the track's column.
+    # The selection marker is a horizontal line centered on the track's row.
     assert isinstance(first, QGraphicsLineItem)
     ln = first.line()
-    assert ln.x1() == ln.x2() == pytest.approx(0 * _COL_W + _COL_W / 2.0)
-    assert (ln.y1(), ln.y2()) == pytest.approx((0.0, 6 * _CELL_H))
+    assert ln.y1() == ln.y2() == pytest.approx(0 * _LANE_H + _LANE_H / 2.0)
+    assert (ln.x1(), ln.x2()) == pytest.approx((0.0, 6 * _CELL_W))
 
     panel.set_selection(9)
     assert first is not panel._col_item
@@ -86,8 +87,8 @@ def test_lane_click_emits_frame_and_cell(_app):
     captured: list[tuple[int, int]] = []
     panel.node_activated.connect(lambda t, c: captured.append((t, c)))
 
-    # column 0 (cell 7), frame 1 — present.
-    panel._activate_at(0 * _COL_W + 1, 1 * _CELL_H + 1)
+    # row 0 (cell 7), frame 1 — present.
+    panel._activate_at(1 * _CELL_W + 1, 0 * _LANE_H + 1)
     assert captured == [(1, 7)]
 
 
@@ -97,6 +98,6 @@ def test_click_in_a_gap_snaps_to_nearest_present_frame(_app):
     captured: list[tuple[int, int]] = []
     panel.node_activated.connect(lambda t, c: captured.append((t, c)))
 
-    # column 0 (cell 7), frame 3 — a gap between runs (0,2) and (4,5); snaps to 2.
-    panel._activate_at(0 * _COL_W + 1, 3 * _CELL_H + 1)
+    # row 0 (cell 7), frame 3 — a gap between runs (0,2) and (4,5); snaps to 2.
+    panel._activate_at(3 * _CELL_W + 1, 0 * _LANE_H + 1)
     assert captured == [(2, 7)]

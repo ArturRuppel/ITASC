@@ -80,8 +80,8 @@ def test_panel_tile_size_is_clamped(_qapp):
     assert panel._tile_px == 20  # _TILE_PX_MIN
 
 
-def test_tiles_stack_top_to_bottom_within_a_column(_qapp):
-    # Time runs down a column: the second frame sits below the first.
+def test_tiles_flow_left_to_right_within_a_row(_qapp):
+    # Time runs across a row: the second frame sits to the right of the first.
     from cellflow.napari._correction_film_strip import TrackFilmStripPanel
     from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip
 
@@ -96,8 +96,8 @@ def test_tiles_stack_top_to_bottom_within_a_column(_qapp):
 
     r0 = panel._tile_rects[0]
     r1 = panel._tile_rects[1]
-    assert r1.top() > r0.bottom() - 1   # frame 1 is below frame 0
-    assert r1.left() == r0.left()       # same column
+    assert r1.left() > r0.right() - 1   # frame 1 is right of frame 0
+    assert r1.top() == r0.top()         # same row
 
 
 def test_panel_highlights_current_frame_with_a_border(_qapp):

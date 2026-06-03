@@ -26,6 +26,9 @@ from cellflow.napari._correction_film_strip import rgb_to_qimage
 from cellflow.napari._flow_layout import FlowLayout
 
 _TILE_PX = 64
+_TILE_PX_MIN = 20
+_TILE_PX_MAX = 256
+_ZOOM_STEP = 8       # px added/removed from the tile size per Ctrl+wheel notch
 
 
 class _ClickableTile(QFrame):
@@ -105,6 +108,14 @@ class CandidateColumn(QWidget):
             self._title_text = title
         self._rebuild()
 
+    def set_tile_size(self, tile_px: int) -> None:
+        """Change the thumbnail size and re-render the column's tiles."""
+        tile_px = max(_TILE_PX_MIN, min(int(tile_px), _TILE_PX_MAX))
+        if tile_px == self._tile_px:
+            return
+        self._tile_px = tile_px
+        self._rebuild()
+
     def clear(self) -> None:
         self.set_strip(CandidateStrip())
 
@@ -158,11 +169,12 @@ class CandidateGalleryPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None, *, tile_px: int = _TILE_PX) -> None:
         super().__init__(parent)
+        self._tile_px = int(tile_px)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        scroll = QScrollArea()
+        scroll = _GalleryScroll(self)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body = QWidget()
@@ -192,9 +204,34 @@ class CandidateGalleryPanel(QWidget):
     def set_column(self, which: str, strip: CandidateStrip) -> None:
         self._columns[which].set_strip(strip)
 
+    def set_tile_size(self, tile_px: int) -> None:
+        """Resize every column's thumbnails (Ctrl+wheel zoom, like the film strip)."""
+        tile_px = max(_TILE_PX_MIN, min(int(tile_px), _TILE_PX_MAX))
+        if tile_px == self._tile_px:
+            return
+        self._tile_px = tile_px
+        for column in self._columns.values():
+            column.set_tile_size(tile_px)
+
     def clear(self) -> None:
         for column in self._columns.values():
             column.clear()
+
+
+class _GalleryScroll(QScrollArea):
+    """Scroll area whose Ctrl+wheel zooms the gallery thumbnails."""
+
+    def __init__(self, panel: CandidateGalleryPanel) -> None:
+        super().__init__()
+        self._panel = panel
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if event.modifiers() & Qt.ControlModifier:
+            step = _ZOOM_STEP if event.angleDelta().y() > 0 else -_ZOOM_STEP
+            self._panel.set_tile_size(self._panel._tile_px + step)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
 
 __all__ = ["CandidateColumn", "CandidateGalleryPanel"]

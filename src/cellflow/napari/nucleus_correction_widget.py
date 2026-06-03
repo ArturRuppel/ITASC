@@ -12,6 +12,7 @@ import tifffile
 from napari.qt.threading import thread_worker as _thread_worker
 from qtpy.QtWidgets import (
     QCheckBox,
+    QGridLayout,
     QLabel,
     QMessageBox,
     QVBoxLayout,
@@ -310,6 +311,9 @@ class NucleusCorrectionWidget(QWidget):
         )
 
         self.status_lbl = _make_status()
+        # Drop the smaller status font so the status line reads at the same
+        # size as the rest of the controls column.
+        self.status_lbl.setStyleSheet("")
 
         self.validation_counter_lbl = QLabel("")
         self.validation_counter_lbl.setWordWrap(True)
@@ -393,7 +397,6 @@ class NucleusCorrectionWidget(QWidget):
         self.extend_retrack_params_section.setVisible(False)
         self.extend_params_section = self.extend_retrack_params_section
         self.retrack_params_section = self.extend_retrack_params_section
-        group_lay.addWidget(self.extend_retrack_params_section)
 
         self.shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
@@ -403,30 +406,26 @@ class NucleusCorrectionWidget(QWidget):
         )
         flatten_embedded_section(self.shortcuts_section)
         self.shortcuts_section.setVisible(False)
-        group_lay.addWidget(self.shortcuts_section)
-        group_lay.addWidget(self.correction_widget)
         self.correction_widget.setVisible(False)
+        # Extend / swap are driven by clicking into the candidate gallery now,
+        # so they're dropped from the toolbar (the A/D/Z/C shortcuts still work).
         self.toolbar = build_correction_toolbar(
             self,
             [
                 (self.save_tracked_btn,),
-                (self.extend_back_btn, self.extend_fwd_btn),
                 (self.retrack_back_btn, self.retrack_fwd_btn),
-                (self.swap_smaller_btn, self.swap_larger_btn),
                 (self.validate_track_btn, self.anchor_here_btn),
                 (self.annotate_db_btn,),
                 (self.reassign_ids_btn, self.remove_unvalidated_btn),
             ],
         )
         self.toolbar.setVisible(False)
-        group_lay.addWidget(self.toolbar)
         self.track_path_check = QCheckBox("Show track path")
         self.track_path_check.setToolTip(
             "Paint the selected track's whole trajectory as a fading comet "
             "(viridis, oldest→newest) with a frame number in each mask."
         )
         self.track_path_check.setVisible(False)
-        group_lay.addWidget(self.track_path_check)
         self.lineage_canvas_check = QCheckBox("Show lineage canvas")
         self.lineage_canvas_check.setToolTip(
             "Open the docked correction canvas: a swimlane overview of every "
@@ -435,7 +434,6 @@ class NucleusCorrectionWidget(QWidget):
             "per-frame film strip. Click a lane or tile to jump there."
         )
         self.lineage_canvas_check.setVisible(False)
-        group_lay.addWidget(self.lineage_canvas_check)
         self.candidate_gallery_check = QCheckBox("Show candidate gallery")
         self.candidate_gallery_check.setToolTip(
             "Dock three thumbnail columns — extend-backward, swap, extend-forward — "
@@ -443,12 +441,32 @@ class NucleusCorrectionWidget(QWidget):
             "Click a thumbnail to apply that extend/swap."
         )
         self.candidate_gallery_check.setVisible(False)
-        group_lay.addWidget(self.candidate_gallery_check)
+        self.validation_counter_lbl.setVisible(False)
+        self.correction_widget._attrib_lbl.setVisible(False)
+
+        # Lay the controls column out top→bottom: the action toolbar, the
+        # collapsible params / shortcuts panels (they expand just below it),
+        # the per-frame correction tools, the view-toggle checkboxes in two
+        # columns, then the status line. The swimlane track renders are
+        # appended below this whole section in _build_workspace_controls_dock.
+        group_lay.addWidget(self.toolbar)
+        group_lay.addWidget(self.extend_retrack_params_section)
+        group_lay.addWidget(self.shortcuts_section)
+        group_lay.addWidget(self.correction_widget)
+
+        self._view_toggle_grid = QGridLayout()
+        self._view_toggle_grid.setContentsMargins(0, 0, 0, 0)
+        self._view_toggle_grid.setHorizontalSpacing(12)
+        self._view_toggle_grid.addWidget(self.track_path_check, 0, 0)
+        self._view_toggle_grid.addWidget(self.lineage_canvas_check, 0, 1)
+        self._view_toggle_grid.addWidget(self.candidate_gallery_check, 1, 0)
+        self._view_toggle_grid.setColumnStretch(0, 1)
+        self._view_toggle_grid.setColumnStretch(1, 1)
+        group_lay.addLayout(self._view_toggle_grid)
+
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
         group_lay.addWidget(self.correction_widget._attrib_lbl)
-        self.validation_counter_lbl.setVisible(False)
-        self.correction_widget._attrib_lbl.setVisible(False)
 
         self.header, self.header_lbl = build_correction_header(
             self,
@@ -1806,13 +1824,14 @@ class NucleusCorrectionWidget(QWidget):
             logger.exception("focus-mode navigation: cell select failed")
 
     def _build_workspace_controls_dock(self):
-        """Dock the rightmost strip: correction header + lineage overview + controls.
+        """Dock the rightmost strip: correction header + controls + lineage overview.
 
         Reparents ``self.header`` and ``self.section`` (the toolbar / params /
-        shortcuts / correction widget) out of the plugin dock into a single
-        container, with the lineage swimlane overview embedded between them. The
-        reparent reuses every existing button + signal as-is; the plugin dock is
-        hidden by the caller once this succeeds. Idempotent.
+        shortcuts / correction widget / checkboxes / status) out of the plugin
+        dock into a single container, with the lineage swimlane overview (the
+        track renders) embedded *below* them. The reparent reuses every existing
+        button + signal as-is; the plugin dock is hidden by the caller once this
+        succeeds. Idempotent.
         """
         if self._workspace_dock is not None:
             return self._workspace_dock
@@ -1821,8 +1840,8 @@ class NucleusCorrectionWidget(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
         lay.addWidget(self.header)
-        lay.addWidget(self._lineage_canvas.overview_panel(), stretch=1)
         lay.addWidget(self.section)
+        lay.addWidget(self._lineage_canvas.overview_panel(), stretch=1)
         try:
             self._workspace_dock = self.viewer.window.add_dock_widget(
                 container, name="Correction", area="right"

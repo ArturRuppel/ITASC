@@ -5,15 +5,15 @@ columns of mostly-uninformative tiles. This is the dense graph overview that
 replaced it; the selected track's per-frame film strip now lives in its own
 docked panel (:class:`~cellflow.napari._correction_film_strip.TrackFilmStripPanel`).
 
-One thin *column* per track, ``y`` is time running downward so all tracks share a
+One thin *row* per track, ``x`` is time running left→right so all tracks share a
 single global frame axis. A track's present runs draw as bars and a gap (a
 vanish/return — a likely ID swap) reads as a break. Per-frame status paints into
-the column: green = validated, orange = anchored. Because the time axis is shared,
-the current-frame cursor is one horizontal guide line across every column, and the
-selected track is marked by a vertical cursor line down its column.
+the row: green = validated, orange = anchored. Because the time axis is shared,
+the current-frame cursor is one vertical guide line across every row, and the
+selected track is marked by a horizontal cursor line along its row.
 
 The panel is a pure renderer: the controller hands it ready ``LaneView`` structs;
-click a column to jump there and select the cell via :attr:`node_activated`.
+click a row to jump there and select the cell via :attr:`node_activated`.
 """
 from __future__ import annotations
 
@@ -32,15 +32,15 @@ from qtpy.QtWidgets import (
 _CLICK_SLOP = 6  # max drag (px) still treated as a click, not a pan
 _ZOOM_STEP = 1.15
 
-_COL_W = 12.0    # scene width of one track column
-_CELL_H = 6.0    # scene height of one frame within a column
-_COL_PAD = 1.5   # horizontal padding inside a column
+_LANE_H = 12.0   # scene height of one track row
+_CELL_W = 6.0    # scene width of one frame within a row
+_LANE_PAD = 1.5  # vertical padding inside a row
 
 _PRESENT = QColor(95, 95, 95)          # a present frame with nothing flagged
 _VALIDATED = QColor("#00ff00")
 _ANCHOR = QColor("#ff8c00")
-_FRAME_GUIDE = QColor(255, 210, 70)    # the current-frame horizontal cursor
-_COL_SELECT = QColor(255, 255, 255)    # selected-track vertical cursor line
+_FRAME_GUIDE = QColor(255, 210, 70)    # the current-frame vertical cursor
+_COL_SELECT = QColor(255, 255, 255)    # selected-track horizontal cursor line
 
 
 @dataclass(frozen=True)
@@ -68,7 +68,7 @@ class LaneView:
 
 
 class LineageCanvasPanel(QWidget):
-    """Swimlane overview stacked over the selected track's film strip."""
+    """Swimlane overview — one row per track on a shared left→right time axis."""
 
     node_activated = Signal(int, int)  # (frame, cell_id)
 
@@ -115,24 +115,24 @@ class LineageCanvasPanel(QWidget):
         self._apply_frame_guide()
 
     def _draw_lane(self, lane: LaneView) -> None:
-        x = lane.column * _COL_W + _COL_PAD
-        w = _COL_W - 2 * _COL_PAD
+        y = lane.column * _LANE_H + _LANE_PAD
+        h = _LANE_H - 2 * _LANE_PAD
         # Present runs as one bar each (cheap: a few rects per track, not per frame).
         for s, e in lane.segments:
             self._scene.addRect(
-                x, s * _CELL_H, w, (e - s + 1) * _CELL_H, _no_pen(), _PRESENT,
+                s * _CELL_W, y, (e - s + 1) * _CELL_W, h, _no_pen(), _PRESENT,
             )
         # Sparse per-frame status marks, drawn over the bars.
         for frame in lane.validated:
-            self._fill_cell(x, w, frame, _VALIDATED)
+            self._fill_cell(y, h, frame, _VALIDATED)
         for frame in lane.anchored:
-            self._fill_cell(x, w, frame, _ANCHOR)
+            self._fill_cell(y, h, frame, _ANCHOR)
 
-    def _fill_cell(self, x: float, w: float, frame: int, color: QColor) -> None:
-        self._scene.addRect(x, frame * _CELL_H, w, _CELL_H, _no_pen(), color)
+    def _fill_cell(self, y: float, h: float, frame: int, color: QColor) -> None:
+        self._scene.addRect(frame * _CELL_W, y, _CELL_W, h, _no_pen(), color)
 
     def set_selection(self, cell_id: int) -> None:
-        """Highlight the selected track's column."""
+        """Highlight the selected track's row."""
         self._selected = int(cell_id or 0)
         self._apply_column_highlight()
 
@@ -148,9 +148,9 @@ class LineageCanvasPanel(QWidget):
         lane = self._lanes_by_cell.get(self._selected)
         if lane is None or self._n_frames <= 0:
             return
-        x = lane.column * _COL_W + _COL_W / 2.0
+        y = lane.column * _LANE_H + _LANE_H / 2.0
         self._col_item = self._scene.addLine(
-            x, 0, x, self._n_frames * _CELL_H, QPen(_COL_SELECT, 1.5),
+            0, y, self._n_frames * _CELL_W, y, QPen(_COL_SELECT, 1.5),
         )
         self._col_item.setZValue(2)  # over the lane bars, like a cursor
 
@@ -160,19 +160,19 @@ class LineageCanvasPanel(QWidget):
             self._guide_item = None
         if not self._col_to_cell:
             return
-        y = self._current_frame * _CELL_H + _CELL_H / 2.0
-        right = len(self._col_to_cell) * _COL_W
-        self._guide_item = self._scene.addLine(0, y, right, y, QPen(_FRAME_GUIDE, 1.5))
+        x = self._current_frame * _CELL_W + _CELL_W / 2.0
+        bottom = len(self._col_to_cell) * _LANE_H
+        self._guide_item = self._scene.addLine(x, 0, x, bottom, QPen(_FRAME_GUIDE, 1.5))
 
     # -- hit-testing --------------------------------------------------------
     def _activate_at(self, scene_x: float, scene_y: float) -> None:
         """Translate a click in the overview into a ``(frame, cell)`` jump."""
-        col = int(scene_x // _COL_W)
-        if col < 0 or col >= len(self._col_to_cell):
+        row = int(scene_y // _LANE_H)
+        if row < 0 or row >= len(self._col_to_cell):
             return
-        cell_id = self._col_to_cell[col]
+        cell_id = self._col_to_cell[row]
         lane = self._lanes_by_cell[cell_id]
-        frame = int(scene_y // _CELL_H)
+        frame = int(scene_x // _CELL_W)
         frame = min(max(frame, 0), max(self._n_frames - 1, 0))
         if not lane.present(frame):
             frame = lane.nearest_present(frame)
