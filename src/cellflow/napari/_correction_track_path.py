@@ -1,18 +1,14 @@
 """Build the whole-track overlay for correction mode.
 
-Given a tracked label stack and one track id, draw that *selected* track onto a
-single plane in two superimposed layers, both colour-coded by time with viridis
-(earliest frame dark, latest yellow):
+Given a tracked label stack and one track id, draw that *selected* track's
+**trajectory polyline** through the per-frame nucleus centroids, oldest to
+newest, colour-coded by time with viridis (earliest frame dark, latest yellow)
+so the path of travel reads straight off the line.
 
-* the **trajectory polyline** through the per-frame nucleus centroids, oldest to
-  newest, so the path of travel reads straight off the line; and
-* the **merged-footprint outline**: the boundary of the union of every frame's
-  nucleus mask, with each outline pixel coloured by the last frame to occupy it,
-  so you can see when each part of the footprint was visited.
-
-The filled masks themselves are not drawn. Also return the boolean union (used
-to enlarge the correction spotlight to the whole trajectory) and the per-frame
-centroids.
+The filled masks themselves are not drawn, and the merged footprint is no longer
+outlined here: the correction spotlight renders the union directly (bright
+inside, darkened outside). We still return the boolean union (used to enlarge
+that spotlight to the whole trajectory) and the per-frame centroids.
 
 Pure module: no Qt, no napari, so it is unit-testable on its own.
 """
@@ -35,7 +31,7 @@ class TrackPathOverlay:
 
     frames: tuple[int, ...]      # occupied frame indices, ascending
     colors: np.ndarray           # (N, 4) RGBA, frames[0] dark -> frames[-1] yellow
-    overlay: np.ndarray          # (H, W, 4) RGBA float: polyline + footprint outline
+    overlay: np.ndarray          # (H, W, 4) RGBA float: the viridis trajectory polyline
     union_mask: np.ndarray       # (H, W) bool, union of all the track's filled masks
     centroids: np.ndarray        # (N, 2) (y, x) centroid per occupied frame
 
@@ -120,10 +116,10 @@ def build_track_path_overlay(
 
     ``tracked_stack`` is a ``(T, H, W)`` label array (a bare ``(H, W)`` plane is
     treated as a single frame). A ``thickness``-pixel-wide viridis polyline is
-    rasterised through the per-frame nucleus centroids, and the outline of the
-    union of every frame's mask is traced on top, each outline pixel coloured by
-    the last frame to occupy it. Both encode time with viridis; the filled masks
-    themselves are not painted.
+    rasterised through the per-frame nucleus centroids (earliest frame dark,
+    latest yellow); the filled masks themselves are not painted. The boolean
+    union of every frame's mask is returned so the caller can spotlight the whole
+    footprint.
     """
     stack = np.asarray(tracked_stack)
     if stack.ndim == 2:
@@ -160,26 +156,13 @@ def build_track_path_overlay(
         )
 
     colors = _viridis_colors(len(occupied))
-    # Per-pixel time map over the footprint: the index of the *last* occupied
-    # frame to cover each pixel (later frames overwrite earlier ones), so the
-    # outline's colour reads as "when was this last visited".
-    time_map = np.full((height, width), -1, dtype=int)
-    for i, mask in enumerate(masks):
+    for mask in masks:
         union_mask |= mask
-        time_map[mask] = i
 
-    # Trace the outline of the merged footprint as a thin contour. ``thickness``
-    # is the line width in pixels; widths above 1 grow the contour inward so it
-    # never spills past the footprint. Each outline pixel takes the viridis time
-    # colour of the last frame that occupied it; interiors stay transparent.
-    outline = _mask_outline(union_mask)
-    if thickness > 1:
-        outline = _binary_dilate(outline, int(thickness) - 1) & union_mask
-    oy, ox = np.nonzero(outline)
-    overlay[oy, ox] = colors[time_map[oy, ox]]
-
-    # Draw the trajectory polyline on top, so the path stays legible where it
-    # crosses the footprint outline.
+    # Draw the trajectory polyline. The merged footprint is no longer outlined
+    # here: the correction spotlight renders the union directly (full brightness
+    # inside, darkened outside with a sharp boundary), which reads more clearly
+    # than the time-coloured contour did.
     _draw_track_path(overlay, centroids, colors, max(int(thickness) // 2, 0))
 
     return TrackPathOverlay(
@@ -270,6 +253,48 @@ def _apply_colormap(normalized: np.ndarray, colormap) -> np.ndarray:
     mapped = np.asarray(colormap(normalized), dtype=float)
     # ascontiguousarray guarantees a writable copy (the builder mutates rgb).
     return np.ascontiguousarray(mapped[..., :3], dtype=float)
+
+
+def render_crop_tile(
+    intensity_2d: np.ndarray,
+    mask: np.ndarray,
+    cy: int,
+    cx: int,
+    size: int,
+    *,
+    lo: float,
+    hi: float,
+    colormap=None,
+    outline_color: tuple[float, float, float],
+    outline_width: int = 2,
+    spotlight_dim: float = 0.35,
+    spotlight_dilation: int = 2,
+) -> np.ndarray:
+    """Render one spotlighted, outlined crop centered on ``(cy, cx)``.
+
+    Crops ``intensity_2d`` to a ``size``x``size`` window, contrast-stretches it
+    against the shared ``[lo, hi]`` range, colors it through ``colormap``
+    (grayscale if ``None``), dims everything outside ``mask`` by ``spotlight_dim``,
+    and draws a ``outline_width``-thick ``outline_color`` border on the inner edge
+    of the bright region. Returns ``(size, size, 3)`` uint8.
+
+    Shared by the per-frame film strip and the per-candidate gallery so both read
+    identically; callers own the window ``size``, contrast range, and outline
+    colour (e.g. the film strip falls back to a per-frame viridis colour).
+    """
+    crop = _centered_crop(intensity_2d, cy, cx, size).astype(float)
+    norm = np.zeros_like(crop) if hi <= lo else np.clip((crop - lo) / (hi - lo), 0, 1)
+    rgb = _apply_colormap(norm, colormap)
+
+    mask_crop = _centered_crop(mask, cy, cx, size)
+    spotlight = _binary_dilate(mask_crop, spotlight_dilation)
+    rgb[~spotlight] *= spotlight_dim
+
+    # Border on the inner edge of the bright spotlight, so the coloured contour
+    # lands exactly on the bright/dim boundary (no bright ring left outside it).
+    border = _binary_dilate(_mask_outline(spotlight), outline_width - 1) & spotlight
+    rgb[border] = outline_color
+    return (np.clip(rgb, 0.0, 1.0) * 255.0).round().astype(np.uint8)
 
 
 def build_track_film_strip(
@@ -369,25 +394,26 @@ def build_track_film_strip(
     for t, mask, (cy, cx), color in zip(
         occupied, masks, centroids, colors, strict=True
     ):
-        crop = _centered_crop(intensity[t], cy, cx, size).astype(float)
-        norm = np.zeros_like(crop) if hi <= lo else np.clip((crop - lo) / (hi - lo), 0, 1)
-        rgb = _apply_colormap(norm, colormap)
-
-        mask_crop = _centered_crop(mask, cy, cx, size)
-        spotlight = _binary_dilate(mask_crop, spotlight_dilation)
-        rgb[~spotlight] *= spotlight_dim
-
-        # Border on the inner edge of the bright spotlight, so the coloured
-        # contour lands exactly on the bright/dim boundary (no bright ring left
-        # outside it). Grown inward from the boundary so it stays robust even
-        # when the spotlight fills the whole crop.
-        border = _binary_dilate(_mask_outline(spotlight), outline_width - 1) & spotlight
-        rgb[border] = outline_color if outline_color is not None else color[:3]
-
+        # Per-frame outline colour falls back to the viridis time colour; the
+        # bright/dim spotlight and inner-edge border are handled by the renderer.
+        rgb = render_crop_tile(
+            intensity[t],
+            mask,
+            cy,
+            cx,
+            size,
+            lo=lo,
+            hi=hi,
+            colormap=colormap,
+            outline_color=outline_color if outline_color is not None else tuple(color[:3]),
+            outline_width=outline_width,
+            spotlight_dim=spotlight_dim,
+            spotlight_dilation=spotlight_dilation,
+        )
         tiles.append(
             FilmStripTile(
                 frame=t,
-                rgb=(np.clip(rgb, 0.0, 1.0) * 255.0).round().astype(np.uint8),
+                rgb=rgb,
                 validated=t in validated,
                 anchored=t in anchored,
             )
