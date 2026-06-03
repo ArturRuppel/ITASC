@@ -10,12 +10,13 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker as _thread_worker
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
     QGridLayout,
     QLabel,
     QMessageBox,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -178,10 +179,14 @@ class NucleusCorrectionWidget(QWidget):
         self._correction_dirty: bool = False
         self._swap_cursor: _SwapCursor | None = None
         self._native_dock_state: dict[str, bool] = {}
-        # The rightmost workspace strip (correction header + lineage overview +
-        # controls), built on activate by reparenting header/section out of the
-        # plugin dock; None while correction mode is off.
+        # The single right-side workspace dock and the horizontal splitter it
+        # hosts (candidate gallery · film strip · controls strip), built on
+        # activate; both None while correction mode is off. The controls strip
+        # holds the correction header + section + lineage overview, reparented
+        # out of the plugin dock.
         self._workspace_dock = None
+        self._workspace_splitter: QSplitter | None = None
+        self._controls_container: QWidget | None = None
         self._validated_overlay = ValidatedOverlayController(
             self.viewer,
             tracked_layer_provider=self._correction_tracked_layer,
@@ -1602,14 +1607,18 @@ class NucleusCorrectionWidget(QWidget):
             self.shortcuts_section._toggle.setChecked(False)
             self._correction_active_content_visible = True
             self._sync_correction_panel_visibility()
-            # The lineage canvas is the headline focus-mode view: open it by
-            # default (checking the box docks + renders it via its toggle).
-            self.lineage_canvas_check.setChecked(True)
-            # The candidate galleries open alongside it as the action surface.
-            self.candidate_gallery_check.setChecked(True)
-            # Build the rightmost strip (header + lineage overview + controls),
+            # Open both focus-mode panels by default: the lineage canvas is the
+            # headline view, the candidate galleries are the action surface.
+            # Set the boxes silently and render explicitly so the splitter is
+            # built once, below, rather than on every box's toggle signal.
+            self._set_checked_without_signal(self.lineage_canvas_check, True)
+            self._set_checked_without_signal(self.candidate_gallery_check, True)
+            self._lineage_canvas.refresh()
+            self._candidate_gallery.refresh()
+            # Build the controls strip (header + lineage overview + controls),
             # reparenting the controls out of the plugin dock; then hand the whole
-            # window to the workspace by hiding the now-empty plugin dock.
+            # window to the workspace by hiding the now-empty plugin dock and lay
+            # the panels out as one splitter so they resize independently.
             self._build_workspace_controls_dock()
             self._focus_takeover(True)
             self._arrange_workspace_docks()
@@ -1816,20 +1825,17 @@ class NucleusCorrectionWidget(QWidget):
     # -- Focus-mode panels (lineage canvas) --------------------------------
 
     def _on_toggle_lineage_canvas(self, checked: bool) -> None:
+        # Toggle-on rebuilds the film strip; the swimlane overview is structural
+        # in the controls strip and stays put. _arrange_workspace_docks slots the
+        # panel into the splitter (if needed) and shows/hides it to match.
         if checked:
             self._lineage_canvas.refresh()
-            self._arrange_workspace_docks()
-        else:
-            # Toggle-off removes only the film strip; the swimlane overview is
-            # structural in the controls dock and stays put for the session.
-            self._lineage_canvas.teardown_film()
+        self._arrange_workspace_docks()
 
     def _on_toggle_candidate_gallery(self, checked: bool) -> None:
         if checked:
             self._candidate_gallery.refresh()
-            self._arrange_workspace_docks()
-        else:
-            self._candidate_gallery.teardown()
+        self._arrange_workspace_docks()
 
     def _navigate_to_error(self, t: int, cell_id: int) -> None:
         """Jump the viewer to frame ``t`` and select ``cell_id`` (lineage canvas)."""
@@ -1846,17 +1852,18 @@ class NucleusCorrectionWidget(QWidget):
             logger.exception("focus-mode navigation: cell select failed")
 
     def _build_workspace_controls_dock(self):
-        """Dock the rightmost strip: correction header + controls + lineage overview.
+        """Build the controls strip: correction header + controls + lineage overview.
 
         Reparents ``self.header`` and ``self.section`` (the toolbar / params /
         shortcuts / correction widget / checkboxes / status) out of the plugin
         dock into a single container, with the lineage swimlane overview (the
         track renders) embedded *below* them. The reparent reuses every existing
-        button + signal as-is; the plugin dock is hidden by the caller once this
-        succeeds. Idempotent.
+        button + signal as-is. The container is the rightmost panel of the
+        workspace splitter built by :meth:`_arrange_workspace_docks`; the plugin
+        dock is hidden by the caller once this succeeds. Idempotent.
         """
-        if self._workspace_dock is not None:
-            return self._workspace_dock
+        if self._controls_container is not None:
+            return self._controls_container
         container = QWidget()
         lay = QVBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1864,60 +1871,78 @@ class NucleusCorrectionWidget(QWidget):
         lay.addWidget(self.header)
         lay.addWidget(self.section)
         lay.addWidget(self._lineage_canvas.overview_panel(), stretch=1)
-        try:
-            self._workspace_dock = self.viewer.window.add_dock_widget(
-                container, name="Correction", area="right"
-            )
-        except Exception:
-            logger.exception("could not dock the correction controls strip")
-            self._workspace_dock = None
-        return self._workspace_dock
+        self._controls_container = container
+        return container
 
     def _teardown_workspace_controls_dock(self) -> None:
-        """Remove the rightmost controls strip (header/section already reparented out)."""
+        """Remove the single workspace dock (header/section already reparented out).
+
+        Destroying the dock also deletes the splitter and every embedded panel
+        (candidate gallery, film strip, controls strip); the controllers drop
+        their stale references in their own ``teardown``.
+        """
         if self._workspace_dock is not None:
             try:
                 self.viewer.window.remove_dock_widget(self._workspace_dock)
             except Exception:
-                logger.exception("could not remove the correction controls strip")
+                logger.exception("could not remove the correction workspace dock")
         self._workspace_dock = None
+        self._workspace_splitter = None
+        self._controls_container = None
 
     def _arrange_workspace_docks(self) -> None:
-        """Lay the right-column panels out as side-by-side vertical strips.
+        """Lay the right-column panels out as one splitter of side-by-side strips.
 
-        napari force-stacks extra right-area docks into one vertical column
-        (``resizeDocks(..., Vertical)`` in ``_add_viewer_dock_widget``). Re-split
-        the active workspace docks horizontally so they read as parallel strips,
-        left→right: candidate gallery · film strip · lineage overview + controls.
+        All three panels live in a single ``QSplitter`` inside one napari dock,
+        left→right: candidate gallery · film strip · controls (header + lineage
+        overview). Hosting them in a splitter — rather than three separate
+        napari docks — is what makes resizing intuitive: napari's dock area
+        redistributes the canvas/dock boundary across *all* docks proportionally,
+        whereas a splitter handle moves only the two panels it sits between, and
+        the leftmost panel (the only one with a non-zero stretch factor) absorbs
+        any change to the dock's outer width.
 
-        The candidate + film panels are docked eagerly via ``ensure_docked`` —
-        their ``refresh`` skips docking until a cell is selected, so without this
-        those docks would not exist yet and the split would be a no-op. This also
-        re-runs whenever a panel is toggled back on, so a teardown/recreate can't
-        leave them stacked again.
+        The splitter is created on first call (panels are materialised eagerly
+        as bare widgets via the controllers) and reused afterwards; each call
+        also shows/hides the candidate and film panels to match their toggles.
         """
-        qt_window = getattr(self.viewer.window, "_qt_window", None)
-        if qt_window is None:
+        splitter = self._ensure_workspace_splitter()
+        if splitter is None:
             return
-        docks = []
-        if self.candidate_gallery_check.isChecked():
-            docks.append(self._candidate_gallery.ensure_docked())
-        if self.lineage_canvas_check.isChecked():
-            docks.append(self._lineage_canvas.ensure_docked())
-        docks.append(self._workspace_dock)
-        docks = [dock for dock in docks if dock is not None]
-        if len(docks) < 2:
-            return
-        try:
-            from qtpy.QtCore import Qt
+        self._candidate_gallery.widget().setVisible(
+            self.candidate_gallery_check.isChecked()
+        )
+        self._lineage_canvas.film_widget().setVisible(
+            self.lineage_canvas_check.isChecked()
+        )
 
-            for left, right in zip(docks, docks[1:]):
-                qt_window.splitDockWidget(left, right, Qt.Horizontal)
-            # Even widths so the three panels read as equal vertical strips
-            # rather than inheriting napari's lopsided vertical-stack sizing.
-            qt_window.resizeDocks(docks, [1] * len(docks), Qt.Horizontal)
+    def _ensure_workspace_splitter(self) -> QSplitter | None:
+        """Create the workspace splitter + dock once, returning it (or None)."""
+        if self._workspace_splitter is not None:
+            return self._workspace_splitter
+        if self._controls_container is None:
+            self._build_workspace_controls_dock()
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        # left→right: candidate gallery · film strip · controls strip.
+        splitter.addWidget(self._candidate_gallery.widget())
+        splitter.addWidget(self._lineage_canvas.film_widget())
+        splitter.addWidget(self._controls_container)
+        # Only the leftmost panel grows when the dock's outer edge is dragged;
+        # the others keep their width until a handle between them is moved.
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setStretchFactor(2, 0)
+        try:
+            self._workspace_dock = self.viewer.window.add_dock_widget(
+                splitter, name="Correction", area="right"
+            )
         except Exception:
-            logger.exception("could not arrange correction workspace docks")
+            logger.exception("could not dock the correction workspace splitter")
+            self._workspace_dock = None
+            return None
+        self._workspace_splitter = splitter
+        return splitter
 
     def _teardown_focus_panels(self) -> None:
         """Undock the focus-mode panels (lineage canvas, candidate gallery)."""

@@ -8,8 +8,9 @@ track only, the film-strip detail band (via
 crops for a single track keeps refresh cheap no matter how many tracks exist.
 
 The overview, lane assembly and crops are pure/testable; this is the glue that
-reads layers, docks the panel, and turns a lane/tile click into a viewer jump +
-cell selection via ``on_activate``.
+reads layers, owns the overview + film-strip widgets (embedded by the host into
+its workspace splitter), and turns a lane/tile click into a viewer jump + cell
+selection via ``on_activate``.
 """
 from __future__ import annotations
 
@@ -56,11 +57,11 @@ class LineageCanvasController:
         self._current_t_provider = current_t_provider
         self._on_activate = on_activate
         self._pos_dir_provider = pos_dir_provider
-        # The swimlane overview is embedded into the controls dock by the host;
-        # the per-track film strip is self-docked as its own workspace strip.
+        # Both the swimlane overview and the per-track film strip are embedded as
+        # bare widgets into the host's workspace splitter; the controller no
+        # longer owns napari docks.
         self._overview_panel: LineageCanvasPanel | None = None
         self._film_panel: TrackFilmStripPanel | None = None
-        self._film_dock = None
         # Cached from the last refresh so a selection can rebuild only the detail.
         self._occupied: dict[int, list[int]] = {}
         self._validated_map: dict[int, set[int]] = {}
@@ -111,6 +112,8 @@ class LineageCanvasController:
         if self._overview_panel is None:
             return
         self._overview_panel.set_selection(cell_id)
+        if self._film_panel is None:
+            return
         self._film_panel.set_strip(
             self._build_detail(cell_id), title=self._detail_title(cell_id)
         )
@@ -138,44 +141,24 @@ class LineageCanvasController:
             return
         self.set_selection(int(self._selected_label_provider() or 0))
 
-    @property
-    def dock(self):
-        """The QDockWidget hosting the film strip, or None when not docked."""
-        return self._film_dock
-
     def overview_panel(self) -> LineageCanvasPanel:
         """The swimlane overview widget (created on first access) to embed."""
         self._ensure_panels()
         return self._overview_panel
 
-    def ensure_docked(self):
-        """Create the panels and dock the film strip, returning its dock."""
+    def film_widget(self) -> TrackFilmStripPanel:
+        """The per-track film strip widget (created on first access) to embed."""
         self._ensure_panels()
-        return self._film_dock
-
-    def teardown_film(self) -> None:
-        """Undock just the film strip, keeping the embedded overview alive.
-
-        Used when the film strip is toggled off mid-session: the overview lives
-        in the controls dock (owned by the host), so re-toggling rebuilds only
-        the film panel and reuses the same overview.
-        """
-        if self._film_dock is not None:
-            try:
-                self.viewer.window.remove_dock_widget(self._film_dock)
-            except Exception:
-                logger.exception("could not remove the film strip dock")
-        self._film_dock = None
-        self._film_panel = None
+        return self._film_panel
 
     def teardown(self) -> None:
-        """Full teardown for deactivate — drop the film dock and both panels.
+        """Drop references to both panels for deactivate.
 
-        The overview panel is owned by the controls dock that embeds it and is
-        deleted with that dock; here we just drop our reference to it so a later
-        re-activate recreates it.
+        Both panels are embedded as bare widgets in the host's workspace
+        splitter and are deleted when that dock is torn down; here we just drop
+        our references so a later re-activate recreates them.
         """
-        self.teardown_film()
+        self._film_panel = None
         self._overview_panel = None
 
     # -- assembly helpers ---------------------------------------------------
@@ -255,7 +238,7 @@ class LineageCanvasController:
         return _map
 
     def _ensure_panels(self) -> None:
-        """Create the overview + film panels and dock the film strip (idempotent)."""
+        """Create the overview + film panels as bare widgets (idempotent)."""
         if self._overview_panel is None:
             overview = LineageCanvasPanel()
             overview.node_activated.connect(self._on_node_activated)
@@ -264,13 +247,6 @@ class LineageCanvasController:
             film = TrackFilmStripPanel(tile_px=72)
             film.frame_clicked.connect(self._on_film_frame_clicked)
             self._film_panel = film
-            try:
-                self._film_dock = self.viewer.window.add_dock_widget(
-                    film, name="Film strip", area="right"
-                )
-            except Exception:
-                logger.exception("could not dock the film strip")
-                self._film_dock = None
 
     def _on_node_activated(self, frame: int, cell_id: int) -> None:
         try:

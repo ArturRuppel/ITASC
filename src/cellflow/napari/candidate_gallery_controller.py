@@ -79,7 +79,6 @@ class CandidateGalleryController:
         self._list_extend = list_extend
 
         self._panel: CandidateGalleryPanel | None = None
-        self._dock = None
         # key caches for click routing, rebuilt each refresh
         self._swap_by_key: dict[int, object] = {}
         self._extend_cache: dict[str, tuple[int, dict[int, object]]] = {}
@@ -91,38 +90,24 @@ class CandidateGalleryController:
         panel = CandidateGalleryPanel()
         panel.candidate_activated.connect(self._on_activated)
         self._panel = panel
-        try:
-            self._dock = self.viewer.window.add_dock_widget(
-                panel, name="Candidates", area="right"
-            )
-        except Exception:
-            logger.exception("could not dock the candidate gallery")
-            self._dock = None
         return panel
 
-    @property
-    def dock(self):
-        """The QDockWidget hosting the gallery, or None when not docked."""
-        return self._dock
+    def widget(self) -> CandidateGalleryPanel:
+        """The gallery widget (created on first access) to embed in the splitter.
 
-    def ensure_docked(self):
-        """Create and dock the (possibly empty) panel, returning its dock.
-
-        ``refresh`` skips docking until a cell is selected, so the workspace
-        layout calls this to materialise the dock eagerly and split it into a
-        strip before any selection exists.
+        ``refresh`` skips populating until a cell is selected, so the workspace
+        layout calls this to materialise the (possibly empty) panel eagerly and
+        slot it into the splitter strip before any selection exists.
         """
-        self._ensure_panel()
-        return self._dock
+        return self._ensure_panel()
 
     def teardown(self) -> None:
-        """Undock and forget the panel (next refresh re-creates it)."""
-        if self._dock is not None:
-            try:
-                self.viewer.window.remove_dock_widget(self._dock)
-            except Exception:
-                logger.exception("could not remove the candidate gallery dock")
-        self._dock = None
+        """Forget the panel (next refresh re-creates it).
+
+        The panel is embedded as a bare widget in the host's workspace splitter
+        and is deleted when that dock is torn down; here we only drop the
+        reference so a later re-activate rebuilds it.
+        """
         self._panel = None
         self._swap_by_key = {}
         self._extend_cache = {}
