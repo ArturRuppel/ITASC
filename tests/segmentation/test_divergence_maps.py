@@ -265,6 +265,51 @@ def test_build_divergence_maps_respects_cancel(tmp_path):
         )
 
 
+def test_build_divergence_maps_reads_frames_lazily(tmp_path, monkeypatch):
+    """Progress must start before the whole stack is read (no 0% stall).
+
+    Spies on the per-frame reader and asserts that when the first foreground
+    progress callback fires, only frame 0 has been touched — i.e. inputs stream
+    in instead of being decompressed whole up front.
+    """
+    import tifffile
+    import cellflow.segmentation.divergence_maps as dm
+
+    prob = np.zeros((4, 2, 5, 6), dtype=np.float32)
+    dp = np.zeros((4, 2, 2, 5, 6), dtype=np.float32)
+    prob_path = tmp_path / "prob.tif"
+    dp_path = tmp_path / "dp.tif"
+    tifffile.imwrite(str(prob_path), prob, compression="zlib")
+    tifffile.imwrite(str(dp_path), dp, compression="zlib")
+
+    reads: list[int] = []
+    orig_frame = dm._LazyTiffStack.frame
+
+    def _spy_frame(self, t):
+        reads.append(int(t))
+        return orig_frame(self, t)
+
+    monkeypatch.setattr(dm._LazyTiffStack, "frame", _spy_frame)
+
+    reads_at_first_progress: list[int] = []
+
+    def _progress(done, total, msg):
+        if not reads_at_first_progress:
+            reads_at_first_progress.append(len(reads))
+
+    dm.build_divergence_maps(
+        prob_path, dp_path,
+        tmp_path / "c.tif", tmp_path / "f.tif",
+        foreground_z_reduction="mean", contour_z_reduction="mean",
+        smoothing_sigma=0.0, median_radius=0,
+        progress_cb=_progress,
+    )
+
+    # First callback is the frame-0 foreground step: exactly one frame read so
+    # far, proving we did not eagerly load all 4 frames before reporting.
+    assert reads_at_first_progress == [1]
+
+
 def test_build_divergence_maps_validates_shapes(tmp_path):
     import tifffile
     from cellflow.segmentation.divergence_maps import build_divergence_maps

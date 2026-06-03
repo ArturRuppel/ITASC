@@ -162,6 +162,10 @@ class TrackFilmStripPanel(QWidget):
         self._title_text = ""
         self._current_frame: int | None = None
         self._tile_cells: dict[int, list[QWidget]] = {}
+        # Thumbs in tile order, parallel to ``self._strip.tiles``; lets a swap
+        # repaint the existing tiles in place instead of tearing the whole row
+        # down and rebuilding it on every keypress.
+        self._thumbs: list[_ClickableTile] = []
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -181,17 +185,35 @@ class TrackFilmStripPanel(QWidget):
         self._scroll.setWidget(self._row_host)
 
     def set_strip(self, strip: TrackFilmStrip, title: str = "") -> None:
-        """Rebuild the row of tiles from ``strip`` (empty strip clears it)."""
+        """Show ``strip``'s tiles (empty strip clears it).
+
+        When the new strip covers the same frames as the one on screen (the
+        common case while swapping a single track), the existing tiles are
+        repainted in place. Only a change in the frame set rebuilds the row, so
+        repeated swaps no longer churn the dock's widgets — which is what made
+        transient popups flash on every keypress.
+        """
+        previous = self._strip
         self._strip = strip
         self._title_text = title
-        self.clear()
         if title:
             self._title.setText(title)
         if strip.is_empty():
+            self.clear()
             self._title.setText(title or "No frames for this track")
             return
+        if self._same_frames(previous, strip):
+            for thumb, tile in zip(self._thumbs, strip.tiles):
+                self._render_thumb(thumb, tile)
+            return
+        self.clear()
         for tile in strip.tiles:
             self._row.addWidget(self._make_tile(tile))
+
+    @staticmethod
+    def _same_frames(a: TrackFilmStrip, b: TrackFilmStrip) -> bool:
+        """True when both strips list the same frames in the same order."""
+        return tuple(t.frame for t in a.tiles) == tuple(t.frame for t in b.tiles)
 
     def set_tile_size(self, tile_px: int) -> None:
         """Change the on-screen render size of each tile and re-lay the strip."""
@@ -221,19 +243,11 @@ class TrackFilmStripPanel(QWidget):
         col.setContentsMargins(2, 2, 2, 2)
         col.setSpacing(1)
 
-        pixmap = QPixmap.fromImage(rgb_to_qimage(tile.rgb)).scaledToHeight(
-            self._tile_px, Qt.FastTransformation
-        )
-        self._draw_marker_strips(
-            pixmap,
-            validated=getattr(tile, "validated", False),
-            anchored=getattr(tile, "anchored", False),
-        )
         thumb = _ClickableTile(tile.frame)
-        thumb.setPixmap(pixmap)
-        thumb.setToolTip(self._tile_tooltip(tile))
+        self._render_thumb(thumb, tile)
         thumb.clicked.connect(self.frame_clicked)
         col.addWidget(thumb, alignment=Qt.AlignHCenter)
+        self._thumbs.append(thumb)
 
         caption = QLabel(str(tile.frame))
         caption.setAlignment(Qt.AlignHCenter)
@@ -242,6 +256,19 @@ class TrackFilmStripPanel(QWidget):
         self._tile_cells.setdefault(int(tile.frame), []).append(cell)
         self._apply_border(cell, int(tile.frame) == self._current_frame)
         return cell
+
+    def _render_thumb(self, thumb: "_ClickableTile", tile) -> None:
+        """Paint ``tile``'s crop (plus validated/anchored markers) onto ``thumb``."""
+        pixmap = QPixmap.fromImage(rgb_to_qimage(tile.rgb)).scaledToHeight(
+            self._tile_px, Qt.FastTransformation
+        )
+        self._draw_marker_strips(
+            pixmap,
+            validated=getattr(tile, "validated", False),
+            anchored=getattr(tile, "anchored", False),
+        )
+        thumb.setPixmap(pixmap)
+        thumb.setToolTip(self._tile_tooltip(tile))
 
     @staticmethod
     def _tile_tooltip(tile) -> str:
@@ -281,6 +308,7 @@ class TrackFilmStripPanel(QWidget):
     def clear(self) -> None:
         """Remove every tile from the strip."""
         self._tile_cells = {}
+        self._thumbs = []
         while self._row.count():
             item = self._row.takeAt(0)
             widget = item.widget()

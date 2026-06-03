@@ -109,6 +109,60 @@ def test_panel_highlights_current_frame_with_a_border(_qapp):
     assert "transparent" in panel._tile_cells[5][0].styleSheet()
 
 
+def test_resetting_same_frames_reuses_tile_widgets(_qapp):
+    # Swapping a single track rebuilds the strip on every keypress. As long as
+    # the frame set is unchanged, the tiles must be repainted in place rather
+    # than destroyed and recreated -- that per-keypress widget churn is what
+    # flashed transient popups in the docked strip. Same frames => same widgets.
+    from cellflow.napari._correction_film_strip import TrackFilmStripPanel
+    from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip
+
+    def _strip(pixel):
+        return TrackFilmStrip(
+            tiles=(
+                FilmStripTile(frame=0, rgb=np.full((5, 5, 3), pixel, dtype=np.uint8)),
+                FilmStripTile(frame=1, rgb=np.full((5, 5, 3), pixel, dtype=np.uint8)),
+            )
+        )
+
+    panel = TrackFilmStripPanel(tile_px=32)
+    panel.set_strip(_strip(10))
+    cells_before = [panel._row.itemAt(i).widget() for i in range(panel._row.count())]
+    thumbs_before = list(panel._thumbs)
+
+    # A swap changes the pixels but keeps the same frames.
+    panel.set_strip(_strip(200))
+
+    cells_after = [panel._row.itemAt(i).widget() for i in range(panel._row.count())]
+    assert cells_after == cells_before  # no widgets torn down / recreated
+    assert panel._thumbs == thumbs_before
+    # ...and the repaint actually took effect.
+    assert panel._thumbs[0].pixmap().height() == 32
+
+
+def test_changing_frames_rebuilds_tiles(_qapp):
+    from cellflow.napari._correction_film_strip import TrackFilmStripPanel
+    from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip
+
+    panel = TrackFilmStripPanel(tile_px=32)
+    panel.set_strip(
+        TrackFilmStrip(tiles=(FilmStripTile(frame=0, rgb=np.zeros((5, 5, 3), np.uint8)),))
+    )
+    first = panel._thumbs[0]
+
+    # Selecting a track with a different frame set must rebuild the row.
+    panel.set_strip(
+        TrackFilmStrip(
+            tiles=(
+                FilmStripTile(frame=3, rgb=np.zeros((5, 5, 3), np.uint8)),
+                FilmStripTile(frame=4, rgb=np.zeros((5, 5, 3), np.uint8)),
+            )
+        )
+    )
+    assert len(panel._thumbs) == 2
+    assert first not in panel._thumbs
+
+
 def test_panel_tooltip_notes_validated_and_anchored(_qapp):
     from cellflow.napari._correction_film_strip import TrackFilmStripPanel
     from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip

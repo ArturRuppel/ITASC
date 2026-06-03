@@ -177,22 +177,42 @@ def _positive_divergence_z_stack(
     return pos
 
 
-def _as_tzyx(stack: np.ndarray, name: str) -> np.ndarray:
-    arr = np.asarray(stack, dtype=np.float32)
-    if arr.ndim == 3:
-        arr = arr[np.newaxis, ...]
-    if arr.ndim != 4:
-        raise ValueError(f"{name} must be Z×Y×X or T×Z×Y×X.")
-    return arr
+class _LazyTiffStack:
+    """Frame-at-a-time reader for a (T,Z,Y,X) / (T,Z,2,Y,X) TIFF stack.
 
+    Reads only the TIFF header on construction (so callers can validate shapes
+    without paying for a full decompress) and decodes one frame's pages per
+    :meth:`frame` call. Compressed stacks store one page per 2D plane, so a
+    per-frame ``key`` slice touches only that frame's pages — this is what lets
+    :func:`build_divergence_maps` start reporting progress immediately instead
+    of stalling while both whole stacks are read up front.
+    """
 
-def _as_tzcyx(stack: np.ndarray, name: str) -> np.ndarray:
-    arr = np.asarray(stack, dtype=np.float32)
-    if arr.ndim == 4:
-        arr = arr[np.newaxis, ...]
-    if arr.ndim != 5 or arr.shape[2] != 2:
-        raise ValueError(f"{name} must be Z×2×Y×X or T×Z×2×Y×X.")
-    return arr
+    def __init__(self, path: str | Path, *, ndim: int, name: str) -> None:
+        self._path = Path(path)
+        self._name = name
+        with tifffile.TiffFile(str(self._path)) as tf:
+            shape = tuple(int(x) for x in tf.series[0].shape)
+        # A frameless 3D/4D stack is a single timepoint: prepend T=1.
+        if len(shape) == ndim - 1:
+            shape = (1,) + shape
+        if len(shape) != ndim:
+            label = "Z×Y×X or T×Z×Y×X" if ndim == 4 else "Z×2×Y×X or T×Z×2×Y×X"
+            raise ValueError(f"{name} must be {label}.")
+        if ndim == 5 and shape[2] != 2:
+            raise ValueError(f"{name} must be Z×2×Y×X or T×Z×2×Y×X.")
+        self.shape = shape
+        self._frame_shape = shape[1:]
+        # Pages per frame = product of the non-(Y,X) per-frame axes (Z, or Z*2).
+        self._pages_per_frame = int(np.prod(shape[1:-2], dtype=int))
+
+    def frame(self, t: int) -> np.ndarray:
+        """Frame ``t`` as float32, shaped ``(Z,Y,X)`` or ``(Z,2,Y,X)``."""
+        start = t * self._pages_per_frame
+        arr = tifffile.imread(
+            str(self._path), key=slice(start, start + self._pages_per_frame),
+        )
+        return np.asarray(arr, dtype=np.float32).reshape(self._frame_shape)
 
 
 def build_divergence_maps(
@@ -217,8 +237,8 @@ def build_divergence_maps(
     ``median_radius`` filter the flow before divergence (contours); the
     ``foreground_*`` knobs filter the reduced foreground map independently.
     """
-    prob_stack = _as_tzyx(tifffile.imread(str(prob_path)), "prob")
-    dp_stack = _as_tzcyx(tifffile.imread(str(dp_path)), "dp")
+    prob_stack = _LazyTiffStack(prob_path, ndim=4, name="prob")
+    dp_stack = _LazyTiffStack(dp_path, ndim=5, name="dp")
     if prob_stack.shape[0] != dp_stack.shape[0]:
         raise ValueError("prob and dp must have the same frame count.")
     if prob_stack.shape[1] != dp_stack.shape[1]:
@@ -235,7 +255,7 @@ def build_divergence_maps(
     for t in range(n_t):
         _check_cancel(cancel)
         fg = foreground_from_prob(
-            prob_stack[t : t + 1],
+            prob_stack.frame(t)[np.newaxis],
             reduction=foreground_z_reduction,
             smoothing_sigma=foreground_smoothing_sigma,
             median_radius=foreground_median_radius,
@@ -265,7 +285,7 @@ def build_divergence_maps(
                 )
 
         pos_div = _positive_divergence_z_stack(
-            dp_stack[t],
+            dp_stack.frame(t),
             smoothing_sigma=smoothing_sigma,
             median_radius=median_radius,
             progress_cb=_progress_z,
