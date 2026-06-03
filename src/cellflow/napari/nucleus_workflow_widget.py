@@ -266,6 +266,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
             self.viewer,
             pos_dir_provider=lambda: self._pos_dir,
             ultrack_config_provider=lambda: self._ultrack_config_from_controls(),
+            focus_takeover_callback=self._set_correction_focus_takeover,
             parent=self,
         )
         self._alias_correction_controls()
@@ -277,6 +278,37 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         root.addWidget(self.ultrack_db_browser_section)
         root.addWidget(self.correction_header)
         root.addWidget(self.correction_mode_section)
+
+    def _set_correction_focus_takeover(self, on: bool) -> None:
+        """Hide every workflow section but Correction for a full-window focus mode.
+
+        Driven by NucleusCorrectionWidget once activation succeeds (and again,
+        with ``False``, on deactivate). Prior visibility is captured so deactivate
+        restores exactly what the user had open, and the correction header +
+        section are always kept.
+        """
+        layout = self.layout()
+        if layout is None:
+            return
+        keep = {
+            getattr(self, "correction_header", None),
+            getattr(self, "correction_mode_section", None),
+        }
+        if on:
+            self._pre_focus_visibility = {}
+            for i in range(layout.count()):
+                widget = layout.itemAt(i).widget()
+                if widget is None or widget in keep:
+                    continue
+                self._pre_focus_visibility[widget] = bool(widget.isVisible())
+                widget.setVisible(False)
+            return
+        for widget, was_visible in getattr(self, "_pre_focus_visibility", {}).items():
+            try:
+                widget.setVisible(was_visible)
+            except RuntimeError:  # widget was deleted meanwhile
+                pass
+        self._pre_focus_visibility = {}
 
     def _alias_correction_controls(self) -> None:
         correction = self.nucleus_correction_widget

@@ -157,12 +157,17 @@ class NucleusCorrectionWidget(QWidget):
         pos_dir_provider: Callable[[], Path | None] | None = None,
         ultrack_config_provider: Callable[[], TrackingConfig] | None = None,
         dependencies: dict[str, Callable] | None = None,
+        focus_takeover_callback: Callable[[bool], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self._pos_dir_provider = pos_dir_provider
         self._ultrack_config_provider = ultrack_config_provider
+        # Called with True once correction-mode activation succeeds and False on
+        # deactivate, so the host can hide its other workflow sections for a
+        # full-window focus mode (the widget deliberately holds no sibling refs).
+        self._focus_takeover = focus_takeover_callback or (lambda _on: None)
         self._local_pos_dir: Path | None = None
         self._dependencies = {**_DEFAULT_DEPENDENCIES, **(dependencies or {})}
         self._edit_callback = edit_callback or self._on_cells_edited
@@ -1555,6 +1560,9 @@ class NucleusCorrectionWidget(QWidget):
             self.lineage_canvas_check.setChecked(True)
             # The candidate galleries open alongside it as the action surface.
             self.candidate_gallery_check.setChecked(True)
+            # Hand the right column to the workspace: the host hides its other
+            # workflow sections now that activation has fully succeeded.
+            self._focus_takeover(True)
             return
 
         if not self._confirm_deactivate_with_unsaved_changes():
@@ -1574,6 +1582,7 @@ class NucleusCorrectionWidget(QWidget):
         self._teardown_focus_panels()
         restore_native_docks(self.viewer, self._native_dock_state)
         self._native_dock_state = {}
+        self._focus_takeover(False)
         self._restore_correction_view_state()
         self._set_checked_without_signal(self.params_btn, False)
         self._set_checked_without_signal(self.shortcuts_btn, False)
