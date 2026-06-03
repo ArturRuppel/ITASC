@@ -56,6 +56,7 @@ from cellflow.napari._widget_helpers import (
     tool_btn as _tool_btn,
 )
 from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import (
     add_section_header,
     add_section_pair_row,
@@ -144,9 +145,16 @@ class CellWorkflowWidget(QWidget):
 
     _run_progress = Signal(str)
 
-    def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        viewer: napari.Viewer,
+        parent: QWidget | None = None,
+        gate: UiGate | None = None,
+    ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        #: App-wide UI gate; a private one is created for standalone use.
+        self.gate = gate if gate is not None else UiGate(self)
         self._pos_dir: Path | None = None
 
         # Live preview state — a compute is in flight (None when idle); rapid
@@ -185,6 +193,7 @@ class CellWorkflowWidget(QWidget):
 
         self._setup_ui()
         self._connect_signals()
+        self._register_gate_controls()
         self._run_progress.connect(self._set_status)
 
     # ================================================================
@@ -426,6 +435,53 @@ class CellWorkflowWidget(QWidget):
             except Exception:
                 pass
 
+    def _register_gate_controls(self) -> None:
+        """Register this section's controls with the app-wide UI gate.
+
+        Live preview and cell correction are mutually-exclusive viewer owners
+        (across sections too, since the gate is shared). The full-run button
+        rebuilds the data those owners view, so it is blocked while either is
+        active.
+        """
+        g = self.gate
+        g.register_owner(
+            "cell_preview",
+            "cell live preview",
+            exit_fn=lambda: self.active_btn.setChecked(False),
+        )
+        g.register_owner(
+            "correction:cell",
+            "cell correction mode",
+            exit_fn=lambda: self.correction_active_btn.setChecked(False),
+        )
+        g.register(
+            self.active_btn,
+            ControlClass.VIEWER_OWNER,
+            owner_token="cell_preview",
+            when=lambda: not self._running,
+        )
+        g.register(
+            self.correction_active_btn,
+            ControlClass.VIEWER_OWNER,
+            owner_token="correction:cell",
+            when=lambda: not self._running,
+        )
+        g.register(
+            self.labels_btn,
+            ControlClass.MODE_LOCAL,
+            owner_token="cell_preview",
+            when=lambda: not self._running and self._labels_worker is None,
+        )
+        g.register(self.run_btn, ControlClass.RUN_VIEWER)
+        self.correction_active_btn.toggled.connect(self._on_cell_correction_gate)
+        g.recompute()
+
+    def _on_cell_correction_gate(self, checked: bool) -> None:
+        if checked:
+            self.gate.claim_viewer("correction:cell")
+        else:
+            self.gate.release_viewer("correction:cell")
+
     # ================================================================
     # Params / paths
     # ================================================================
@@ -599,8 +655,12 @@ class CellWorkflowWidget(QWidget):
 
     def _on_activate(self, checked: bool) -> None:
         self._preview_active = bool(checked)
-        # The on-demand labels button only makes sense against a live preview.
-        self.labels_btn.setEnabled(checked and not self._running)
+        # The live preview owns the viewer; the gate derives labels_btn (and
+        # cross-section exclusivity) from this claim.
+        if checked:
+            self.gate.claim_viewer("cell_preview")
+        else:
+            self.gate.release_viewer("cell_preview")
         if checked:
             self._refresh_preview()
         else:
@@ -818,11 +878,11 @@ class CellWorkflowWidget(QWidget):
             self._set_status(
                 f"Frame {t}: {coverage:.0f}% fill, {n_labels} cell labels."
             )
-        self.labels_btn.setEnabled(self._preview_active and not self._running)
+        self.gate.recompute()
 
     def _on_labels_error(self, exc: Exception) -> None:
         self._labels_worker = None
-        self.labels_btn.setEnabled(self._preview_active and not self._running)
+        self.gate.recompute()
         self._set_status(f"Cell labels failed: {exc}")
         logger.exception("Cell labels worker error", exc_info=exc)
 
@@ -1011,16 +1071,16 @@ class CellWorkflowWidget(QWidget):
     def _set_run_running(self) -> None:
         self.run_btn.setText("✕")
         self.run_btn.setToolTip("Cancel.")
-        self.active_btn.setEnabled(False)
-        self.labels_btn.setEnabled(False)
+        # ``self._running`` is set by the caller before this runs; the gate
+        # derives active_btn / labels_btn enablement from it.
+        self.gate.set_task("cell_run", True)
 
     def _set_run_idle(self) -> None:
         self.run_btn.setText("▶")
         self.run_btn.setToolTip(
             "Run the full pipeline over all frames and write tracked_labels.tif."
         )
-        self.active_btn.setEnabled(True)
-        self.labels_btn.setEnabled(self._preview_active)
+        self.gate.set_task("cell_run", False)
 
     def _clear_progress(self) -> None:
         self.pipeline_progress_bar.setRange(0, 100)

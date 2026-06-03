@@ -39,6 +39,8 @@ class DivergenceMapsReport:
     median_radius: int
     contours_path: Path
     foreground_path: Path
+    foreground_smoothing_sigma: float = 0.0
+    foreground_median_radius: int = 0
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
@@ -55,12 +57,43 @@ def _reduce_z(arr_tzyx: np.ndarray, reduction: ZReduction) -> np.ndarray:
     raise ValueError(f"reduction must be 'mean' or 'max', got {reduction!r}")
 
 
-def foreground_from_prob(
-    prob_tzyx: np.ndarray, *, reduction: ZReduction
+def _filter_2d(
+    arr_yx: np.ndarray, *, smoothing_sigma: float, median_radius: int,
 ) -> np.ndarray:
-    """``sigmoid(prob)`` reduced across z. Returns ``(T, Y, X)`` float32 in [0, 1]."""
+    """Apply median -> gaussian to a single ``(Y, X)`` map. Order matters (spec)."""
+    out = np.asarray(arr_yx, dtype=np.float32)
+    if median_radius > 0:
+        out = median_filter(out, size=2 * int(median_radius) + 1)
+    if smoothing_sigma > 0.0:
+        out = gaussian_filter(out, sigma=float(smoothing_sigma))
+    return out.astype(np.float32, copy=False)
+
+
+def foreground_from_prob(
+    prob_tzyx: np.ndarray,
+    *,
+    reduction: ZReduction,
+    smoothing_sigma: float = 0.0,
+    median_radius: int = 0,
+) -> np.ndarray:
+    """``sigmoid(prob)`` reduced across z, optionally smoothed.
+
+    Returns ``(T, Y, X)`` float32 in [0, 1]. When ``smoothing_sigma`` or
+    ``median_radius`` is set, each reduced frame is median- then gaussian-
+    filtered (defaults of ``0`` leave the foreground untouched).
+    """
     p = sigmoid(prob_tzyx)
-    return _reduce_z(p, reduction)
+    fg = _reduce_z(p, reduction)
+    if smoothing_sigma > 0.0 or median_radius > 0:
+        fg = np.stack(
+            [
+                _filter_2d(
+                    fg[t], smoothing_sigma=smoothing_sigma, median_radius=median_radius,
+                )
+                for t in range(fg.shape[0])
+            ]
+        )
+    return fg
 
 
 def divergence_2d(flow_yx: np.ndarray) -> np.ndarray:
@@ -172,13 +205,17 @@ def build_divergence_maps(
     contour_z_reduction: ZReduction,
     smoothing_sigma: float,
     median_radius: int,
+    foreground_smoothing_sigma: float = 0.0,
+    foreground_median_radius: int = 0,
     progress_cb: Callable[[int, int, str], None] | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> DivergenceMapsReport:
     """Compute and write ``contours`` and ``foreground`` from Cellpose prob/dp.
 
     Output stacks are ``T x Y x X`` float32. ``progress_cb`` is called for each
-    foreground frame, contour z-slice, and output write.
+    foreground frame, contour z-slice, and output write. ``smoothing_sigma`` /
+    ``median_radius`` filter the flow before divergence (contours); the
+    ``foreground_*`` knobs filter the reduced foreground map independently.
     """
     prob_stack = _as_tzyx(tifffile.imread(str(prob_path)), "prob")
     dp_stack = _as_tzcyx(tifffile.imread(str(dp_path)), "dp")
@@ -198,7 +235,10 @@ def build_divergence_maps(
     for t in range(n_t):
         _check_cancel(cancel)
         fg = foreground_from_prob(
-            prob_stack[t : t + 1], reduction=foreground_z_reduction,
+            prob_stack[t : t + 1],
+            reduction=foreground_z_reduction,
+            smoothing_sigma=foreground_smoothing_sigma,
+            median_radius=foreground_median_radius,
         )
         foreground_frames.append(fg[0])
         progress_done += 1

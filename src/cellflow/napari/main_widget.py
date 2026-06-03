@@ -31,6 +31,7 @@ from cellflow.napari.widgets import (
     pipeline_status_from_files,
 )
 from cellflow.napari._widget_helpers import tool_btn
+from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import (
     active_theme_name,
     icon_button,
@@ -51,6 +52,12 @@ class CellFlowMainWidget(QWidget):
     def __init__(self, napari_viewer: napari.Viewer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = napari_viewer
+
+        # Single app-wide UI gate shared by all sections. It is the one source
+        # of truth for control enablement: viewer-owner mutual exclusion (only
+        # one of correction / db-browser / live preview at a time) and the
+        # context-change guard for position / config loading.
+        self.gate = UiGate(self)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
@@ -83,7 +90,7 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("project_status"),
         )
 
-        self._cellpose_widget = CellposeWidget(self.viewer)
+        self._cellpose_widget = CellposeWidget(self.viewer, gate=self.gate)
         self.cellpose_section = CollapsibleSection(
             "Cellpose",
             self._cellpose_widget,
@@ -92,7 +99,7 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("cellpose"),
         )
 
-        self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer)
+        self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer, gate=self.gate)
         self.nucleus_section = CollapsibleSection(
             "Nucleus Segmentation & Tracking",
             self.nucleus_workflow_widget,
@@ -101,7 +108,7 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("nucleus"),
         )
 
-        self.cell_workflow_widget = CellWorkflowWidget(self.viewer)
+        self.cell_workflow_widget = CellWorkflowWidget(self.viewer, gate=self.gate)
         self.cell_section = CollapsibleSection(
             "Cell Segmentation",
             self.cell_workflow_widget,
@@ -110,9 +117,8 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("cell"),
         )
         self._connect_label_selection_sync()
-        self._connect_correction_position_lock()
 
-        self.contact_analysis_widget = ContactAnalysisWidget(self.viewer)
+        self.contact_analysis_widget = ContactAnalysisWidget(self.viewer, gate=self.gate)
         self.contact_analysis_section = CollapsibleSection(
             "Contact Analysis",
             self.contact_analysis_widget,
@@ -146,10 +152,13 @@ class CellFlowMainWidget(QWidget):
         self.save_as_btn.clicked.connect(lambda: self._on_save_config_as())
         self.load_btn.clicked.connect(lambda: self._on_load_config())
         self.load_from_btn.clicked.connect(lambda: self._on_load_config_from())
-        
+
         self.refresh_btn.clicked.connect(lambda: self._refresh_all())
-        self.pos_spin.valueChanged.connect(lambda: self._refresh_all())
-        self._sync_position_controls_enabled()
+        # The last position the user committed; used to revert the spinbox when
+        # a context change is declined mid-mode.
+        self._committed_pos = self.pos_spin.value()
+        self.pos_spin.valueChanged.connect(self._on_pos_changed)
+        self._register_gate_controls()
 
     def _connect_label_selection_sync(self) -> None:
         """Synchronize selected cell/nucleus IDs across correction widgets."""
@@ -162,34 +171,30 @@ class CellFlowMainWidget(QWidget):
                 lambda t, label: self.nucleus_workflow_widget.select_matching_nucleus_label(t, label)
             )
 
-    def _connect_correction_position_lock(self) -> None:
-        """Disable top-level position changes while correction mode is active."""
-        for workflow in (self.nucleus_workflow_widget, self.cell_workflow_widget):
-            button = getattr(workflow, "correction_active_btn", None)
-            if button is not None:
-                button.toggled.connect(
-                    lambda _checked=False: self._sync_position_controls_enabled()
-                )
+    def _register_gate_controls(self) -> None:
+        """Register top-level controls with the app-wide UI gate.
 
-    def _correction_mode_active(self) -> bool:
-        for workflow in (self.nucleus_workflow_widget, self.cell_workflow_widget):
-            button = getattr(workflow, "correction_active_btn", None)
-            if button is not None and button.isChecked():
-                return True
-        return False
+        Position / project / config-load swap the underlying data, so they are
+        ``CONTEXT_CHANGING``: they stay enabled, but clicking one while a viewer
+        owner (correction / live preview / db-browser) is active first offers to
+        exit that owner (see ``_change_context``). Save Config is harmless and
+        needs no gating.
+        """
+        for control in (
+            self.pos_spin,
+            self.project_btn,
+            self.load_btn,
+            self.load_from_btn,
+        ):
+            self.gate.register(control, ControlClass.CONTEXT_CHANGING)
+        self.gate.recompute()
 
-    def _sync_position_controls_enabled(self) -> None:
-        if not hasattr(self, "_position_spin_idle_tooltip"):
-            self._position_spin_idle_tooltip = self.pos_spin.toolTip()
-        active = self._correction_mode_active()
-        self.pos_spin.setEnabled(not active)
-        if active:
-            self.pos_spin.setToolTip(
-                "Position cannot be changed while correction mode is active. "
-                "Exit correction mode before switching positions."
-            )
-        else:
-            self.pos_spin.setToolTip(self._position_spin_idle_tooltip)
+    def _change_context(self, action) -> bool:
+        """Run *action*, offering to exit the active viewer owner first.
+
+        Returns ``True`` if the action ran, ``False`` if the user declined.
+        """
+        return self.gate.confirm_context_change(self, action)
 
     def _setup_theme_selector(self, layout: QVBoxLayout) -> None:
         footer = QHBoxLayout()
@@ -308,17 +313,22 @@ class CellFlowMainWidget(QWidget):
     def _on_set_project_directory(self) -> None:
         """Set the project directory and load config if present."""
         path = QFileDialog.getExistingDirectory(self, "Select Project Directory")
-        if path:
+        if not path:
+            return
+
+        def action() -> None:
             p = Path(path)
             self.path_label.setText(str(p))
             self.path_label.setToolTip(str(p))
-            
+
             # Look for config file
             config_path = p / "cellflow_config.json"
             if config_path.exists():
                 self._load_config(str(config_path))
-            
+
             self._refresh_all()
+
+        self._change_context(action)
 
     def get_state(self) -> dict:
         """Return the current UI state as a dictionary."""
@@ -372,10 +382,10 @@ class CellFlowMainWidget(QWidget):
         path_text = self.path_label.text()
         if not path_text or path_text == "[no project]":
             return
-        
+
         config_path = Path(path_text) / "cellflow_config.json"
         if config_path.exists():
-            self._load_config(str(config_path))
+            self._change_context(lambda: self._load_config(str(config_path)))
         else:
             print(f"Config not found: {config_path}")
 
@@ -383,7 +393,31 @@ class CellFlowMainWidget(QWidget):
         """Load configuration from a specific file."""
         path = QFileDialog.getOpenFileName(self, "Load Config From", filter="JSON (*.json)")[0]
         if path:
-            self._load_config(path)
+            self._change_context(lambda: self._load_config(path))
+
+    def _on_pos_changed(self) -> None:
+        """Apply a position change, guarding against active viewer owners.
+
+        The position spinbox stays enabled during a mode (per the context-change
+        UX), so a change here may need to exit the active owner first. If the
+        user declines, the spinbox is reverted to the last committed value.
+        """
+        if self.gate.can_change_context():
+            self._committed_pos = self.pos_spin.value()
+            self._refresh_all()
+            return
+
+        new_pos = self.pos_spin.value()
+
+        def action() -> None:
+            self._committed_pos = new_pos
+            self._refresh_all()
+
+        if not self._change_context(action):
+            # Declined — restore the previous value without re-triggering.
+            self.pos_spin.blockSignals(True)
+            self.pos_spin.setValue(self._committed_pos)
+            self.pos_spin.blockSignals(False)
 
     def _save_config(self, path: str) -> None:
         """Save state to a JSON file."""
@@ -397,6 +431,13 @@ class CellFlowMainWidget(QWidget):
 
     def _load_config(self, path: str) -> None:
         """Load state from a JSON file."""
+        # Defense-in-depth: loading rewrites position + every section's params,
+        # which would corrupt an in-progress correction. Callers route through
+        # ``_change_context`` (which exits the owner first); refuse any path
+        # that reaches here while a viewer owner is still active.
+        if not self.gate.can_change_context():
+            print("Refusing to load config while a viewer mode is active.")
+            return
         try:
             with open(path) as f:
                 state = json.load(f)

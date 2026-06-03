@@ -39,6 +39,7 @@ from cellflow.napari.nucleus_segmentation_inputs_widget import (
 )
 from cellflow.napari.nucleus_tracking_inputs_widget import NucleusTrackingInputsWidget
 from cellflow.napari.radial_refinement_widget import RadialRefinementWidget
+from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._state import dump_state, load_state
 from cellflow.napari.widgets import (
@@ -77,9 +78,17 @@ _NUCLEUS_PIPELINE_FILE_GROUPS = [
 class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionMixin, QWidget):
     """Nucleus candidate generation and tracking — flat action-button layout."""
 
-    def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        viewer: napari.Viewer,
+        parent: QWidget | None = None,
+        gate: UiGate | None = None,
+    ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        #: App-wide UI gate. A private gate is created when none is injected so
+        #: the widget still works standalone (tests, isolated use).
+        self.gate = gate if gate is not None else UiGate(self)
         self._pos_dir: Path | None = None
         self._stop_flag: bool = False
         self._dims_step_refresh_pending: bool = False
@@ -89,6 +98,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
         self._setup_ui()
         self._connect_signals()
+        self._register_gate_controls()
 
     # ================================================================
     # UI
@@ -170,7 +180,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
             tracking_inputs_provider=lambda: self.nucleus_tracking_inputs_widget,
             refresh_files_callback=lambda pos: self._files_widget.refresh(pos),
             refresh_db_browser_callback=lambda: self._refresh_ultrack_db_browser(),
-            sync_viewer_activity_callback=lambda: self._sync_viewer_activity_controls(),
+            sync_viewer_activity_callback=lambda: self.gate.recompute(),
             parent=self,
         )
         self._alias_pipeline_controls()
@@ -243,7 +253,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
             "_progress",
             "_on_progress",
             "_clear_progress",
-            "_set_pipeline_buttons_enabled",
             "_set_running_stage",
         ):
             setattr(self, name, getattr(pl, name))
@@ -256,9 +265,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self.refinement_widget = RadialRefinementWidget(
             self.viewer,
             pos_dir_provider=lambda: self._pos_dir,
-        )
-        self.refinement_widget.set_correction_active_provider(
-            lambda: self.correction_active_btn.isChecked()
+            gate=self.gate,
         )
         self.refinement_widget.set_on_promoted_callback(
             self._on_refinement_promoted
@@ -444,33 +451,12 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         solver = _select_solver()
         solver_display = "Gurobi (licensed)" if solver == "GUROBI" else "CBC"
         self.ultrack_solver_lbl.setText(solver_display)
-        self._sync_viewer_activity_controls()
+        # Initial enablement is applied by ``_register_gate_controls`` (called
+        # right after ``_connect_signals`` in ``__init__``).
 
     # ================================================================
-    # Viewer activity guard
+    # Viewer activity guard (driven by the shared UI gate)
     # ================================================================
-    @staticmethod
-    def _set_checked_without_signal(button, checked: bool) -> None:
-        old = button.blockSignals(True)
-        try:
-            button.setChecked(checked)
-        finally:
-            button.blockSignals(old)
-
-    def _active_viewer_activity(self, *, ignore: str | None = None) -> str | None:
-        activities = (
-            (
-                "db_browser",
-                self.ultrack_db_active_btn.isChecked()
-                or self._ultrack_db_browser_active,
-            ),
-            ("correction", self.correction_active_btn.isChecked()),
-        )
-        for name, active in activities:
-            if active and name != ignore:
-                return name
-        return None
-
     def _set_viewer_activity_banner(self, text: str) -> None:
         visible = bool(text)
         if self.viewer_activity_banner.text() != text:
@@ -478,111 +464,77 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         if self.viewer_activity_banner.isVisible() != visible:
             self.viewer_activity_banner.setVisible(visible)
 
-    def _sync_viewer_activity_controls(self) -> None:
-        active = self._active_viewer_activity()
-        db_active = active == "db_browser"
-        correction_active = active == "correction"
-        idle = active is None
+    def _register_gate_controls(self) -> None:
+        """Register this section's controls with the app-wide UI gate.
 
-        activity_labels = {
-            "db_browser": "Database browser active",
-            "correction": "Correction mode active",
-        }
-        activity_names = {
-            "db_browser": "database browser mode",
-            "correction": "correction mode",
-        }
-        active_label = activity_labels.get(active)
-        active_name = activity_names.get(active)
-        if active_label is None:
-            self._set_viewer_activity_banner("")
-        else:
-            self._set_viewer_activity_banner(
-                f"{active_label}. Exit {active_name} to use disabled workflow controls."
-            )
-
-        self.ultrack_db_active_btn.setEnabled(idle or db_active)
-        self.correction_active_btn.setEnabled(idle or correction_active)
-
-        pipeline_buttons = (
-            self.seg_run_btn,
-            self.db_run_btn,
-            self.solve_run_btn,
-            self.seg_params_btn,
-            self.db_params_btn,
-            self.solve_params_btn,
+        Correction and the database browser are mutually-exclusive viewer
+        owners; the pipeline run/params buttons rebuild the data those owners
+        view, so they are blocked while either owner is active. All enablement
+        flows from :class:`~cellflow.napari.ui_gate.UiGate` from here on.
+        """
+        g = self.gate
+        g.register_owner(
+            "correction:nucleus",
+            "correction mode",
+            exit_fn=lambda: self.correction_active_btn.setChecked(False),
         )
-        if not hasattr(self, "_pipeline_button_idle_tooltips"):
-            self._pipeline_button_idle_tooltips = {
-                button: button.toolTip() for button in pipeline_buttons
-            }
-        if active is not None:
-            reason = (
-                f"Unavailable while {active_name} is active. "
-                f"Exit {active_name} to use this control."
+        g.register_owner(
+            "db_browser",
+            "database browser mode",
+            exit_fn=lambda: self.ultrack_db_active_btn.setChecked(False),
+        )
+        g.register(
+            self.correction_active_btn,
+            ControlClass.VIEWER_OWNER,
+            owner_token="correction:nucleus",
+        )
+        g.register(
+            self.ultrack_db_active_btn,
+            ControlClass.VIEWER_OWNER,
+            owner_token="db_browser",
+        )
+        pl = self.nucleus_pipeline_widget
+        run_stage_of = {
+            self.seg_run_btn: "seg",
+            self.db_run_btn: "db",
+            self.solve_run_btn: "ultrack",
+        }
+        for button, stage in run_stage_of.items():
+            g.register(
+                button,
+                ControlClass.RUN_VIEWER,
+                when=lambda s=stage: pl._running_stage in (None, s),
             )
-            for button in pipeline_buttons:
-                button.setEnabled(False)
-                button.setToolTip(reason)
-        elif self.nucleus_pipeline_widget._running_stage is None:
-            for button in pipeline_buttons:
-                button.setEnabled(True)
-                button.setToolTip(self._pipeline_button_idle_tooltips.get(button, ""))
+        # ⚙ params just open/close a parameter panel — no viewer/context side
+        # effect — so they stay available during modes and runs.
+        for button in (self.seg_params_btn, self.db_params_btn, self.solve_params_btn):
+            g.register(button, ControlClass.HARMLESS)
+        g.changed.connect(self._update_activity_banner)
+        g.recompute()
 
-        if db_active:
-            self.ultrack_db_active_btn.setToolTip(
-                "Database browser mode active. Turn it off to restore workflow controls."
-            )
-            self.correction_active_btn.setToolTip(
-                "Unavailable while database browser mode is active. Exit database browser mode before activating correction mode."
-            )
-        elif correction_active:
-            self.correction_active_btn.setToolTip(
-                "Correction mode active. Turn it off to restore workflow controls."
-            )
-            self.ultrack_db_active_btn.setToolTip(
-                "Unavailable while correction mode is active. Exit correction mode before activating the database browser."
+    def _update_activity_banner(self) -> None:
+        label = self.gate.owner_label()
+        if label:
+            self._set_viewer_activity_banner(
+                f"{label[0].upper()}{label[1:]} active. "
+                "Exit it to use disabled workflow controls."
             )
         else:
-            self.ultrack_db_active_btn.setToolTip("Activate database browser.")
-            self.correction_active_btn.setToolTip(
-                "Activate correction mode and show correction layers and controls."
-            )
-
-    def _reject_conflicting_viewer_activity(
-        self,
-        *,
-        activity: str,
-        button,
-        checked: bool,
-    ) -> bool:
-        if not checked:
-            return False
-        if self._active_viewer_activity(ignore=activity) is None:
-            return False
-        self._set_checked_without_signal(button, False)
-        self._sync_viewer_activity_controls()
-        return True
+            self._set_viewer_activity_banner("")
 
     def _on_guarded_ultrack_db_activate(self, checked: bool) -> None:
-        if self._reject_conflicting_viewer_activity(
-            activity="db_browser",
-            button=self.ultrack_db_active_btn,
-            checked=checked,
-        ):
-            return
         self._on_ultrack_db_activate(checked)
-        self._sync_viewer_activity_controls()
+        if checked:
+            self.gate.claim_viewer("db_browser")
+        else:
+            self.gate.release_viewer("db_browser")
 
     def _on_guarded_correction_active_button_toggled(self, checked: bool) -> None:
-        if self._reject_conflicting_viewer_activity(
-            activity="correction",
-            button=self.correction_active_btn,
-            checked=checked,
-        ):
-            return
         self._on_correction_active_button_toggled(checked)
-        self._sync_viewer_activity_controls()
+        if checked:
+            self.gate.claim_viewer("correction:nucleus")
+        else:
+            self.gate.release_viewer("correction:nucleus")
 
     # ================================================================
     # Path helpers

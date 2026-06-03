@@ -12,6 +12,7 @@ from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QCheckBox, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
 
 from cellflow.contact_analysis import build_position_contact_analysis
+from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import (
     CollapsibleSection,
@@ -48,9 +49,16 @@ class ContactAnalysisWidget(QWidget):
 
     _contact_analysis_layer_prefix = "[Contact Analysis] "
 
-    def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        viewer: object | None = None,
+        parent: QWidget | None = None,
+        gate: UiGate | None = None,
+    ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        #: App-wide UI gate; a private one is created for standalone use.
+        self.gate = gate if gate is not None else UiGate(self)
         self._pos_dir: Path | None = None
         self._build_worker = None
         self._build_completion_pending = False
@@ -143,7 +151,35 @@ class ContactAnalysisWidget(QWidget):
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
         self.show_contact_analysis_btn.clicked.connect(self._on_show_contact_analysis)
         self.clear_contact_analysis_btn.clicked.connect(self._on_clear_contact_analysis_layers)
+        self._register_gate_controls()
         self.refresh(None)
+
+    def _register_gate_controls(self) -> None:
+        """Register contact-analysis actions with the app-wide UI gate.
+
+        Build/cancel are headless (disk only), so they run regardless of viewer
+        ownership. Show/clear write the viewer, so they are blocked while a
+        viewer owner (correction / live preview) is active.
+        """
+        g = self.gate
+        running = lambda: self._build_worker is not None  # noqa: E731
+        g.register(
+            self.build_contact_analysis_btn,
+            ControlClass.RUN_HEADLESS,
+            when=lambda: self._inputs_ready() and not running(),
+        )
+        g.register(self.cancel_build_btn, ControlClass.RUN_HEADLESS, when=running)
+        g.register(
+            self.show_contact_analysis_btn,
+            ControlClass.RUN_VIEWER,
+            when=lambda: self._contact_analysis_ready() and not running(),
+        )
+        g.register(
+            self.clear_contact_analysis_btn,
+            ControlClass.RUN_VIEWER,
+            when=lambda: self.viewer is not None and not running(),
+        )
+        g.recompute()
 
     @property
     def cell_labels_path(self) -> Path | None:
@@ -176,24 +212,26 @@ class ContactAnalysisWidget(QWidget):
         elif not self.contact_analysis_status_lbl.text():
             self._set_contact_analysis_status("Status: ready.")
 
-    def _update_action_states(self) -> None:
-        inputs_ready = (
+    def _inputs_ready(self) -> bool:
+        return (
             self._pos_dir is not None
             and self.cell_labels_path is not None
             and self.cell_labels_path.exists()
             and self.nucleus_labels_path is not None
             and self.nucleus_labels_path.exists()
         )
-        contact_analysis_ready = (
+
+    def _contact_analysis_ready(self) -> bool:
+        return (
             self.viewer is not None
             and self.contact_analysis_out_path is not None
             and self.contact_analysis_out_path.exists()
         )
-        running = self._build_worker is not None
-        self.build_contact_analysis_btn.setEnabled(inputs_ready and not running)
-        self.cancel_build_btn.setEnabled(running)
-        self.show_contact_analysis_btn.setEnabled(contact_analysis_ready and not running)
-        self.clear_contact_analysis_btn.setEnabled(self.viewer is not None and not running)
+
+    def _update_action_states(self) -> None:
+        # Enablement is owned by the UI gate; its ``when`` predicates read the
+        # readiness helpers and ``self._build_worker``.
+        self.gate.recompute()
 
     def _set_build_running(self, running: bool) -> None:
         self.contact_analysis_progress_bar.setVisible(running)

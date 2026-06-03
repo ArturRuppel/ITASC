@@ -284,8 +284,10 @@ def test_set_running_stage_disables_other_row(_mock_cellpose, monkeypatch):
     assert w.nucleus_run_btn.text() == "✕"
     assert w.nucleus_run_btn.isEnabled()
     assert not w.cell_run_btn.isEnabled()
-    assert not w.cell_params_btn.isEnabled()
     assert not w.cell_preview_btn.isEnabled()
+    # ⚙ params just toggle a parameter panel — harmless — so they stay enabled
+    # even while the other channel is running.
+    assert w.cell_params_btn.isEnabled()
     w._set_running_stage(None)
     assert w.nucleus_run_btn.text() == "▶"
     assert w.cell_run_btn.isEnabled()
@@ -380,6 +382,8 @@ def test_embeds_divergence_maps_subwidget_and_state(_mock_cellpose, monkeypatch,
         contour_z_reduction,
         smoothing_sigma,
         median_radius,
+        foreground_smoothing_sigma=0.0,
+        foreground_median_radius=0,
         progress_cb=None,
         cancel=None,
     ):

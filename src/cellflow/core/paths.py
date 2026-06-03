@@ -18,3 +18,9 @@ def pos_dir(root: Path | str, pos: int) -> Path:
     return Path(root) / f"pos{pos:02d}"
 
 
+def stage_dir(root: Path | str, pos: int, stage: str) -> Path:
+    """Return the output directory for *stage* at position *pos*."""
+    dirname = STAGE_DIRS.get(stage, stage)
+    return pos_dir(root, pos) / dirname
+
+

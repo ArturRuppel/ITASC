@@ -5,10 +5,11 @@ section and the correction section. Operates on the active project's
 ``2_nucleus/`` directory provided by ``pos_dir_provider``.
 
 The widget is fully self-contained: it owns its parameters, its worker, its
-status label, and the napari layers it creates. The host wires it in via
-``set_correction_active_provider`` (to lock actions while correction is on) and
-``set_on_promoted_callback`` (to refresh the correction tracked layer after a
-promote).
+status label, and the napari layers it creates. Action enablement is governed
+by the shared :class:`~cellflow.napari.ui_gate.UiGate` (its refine actions are
+blocked while any viewer owner — correction or a live preview — is active); the
+host wires it in via ``set_on_promoted_callback`` (to refresh the correction
+tracked layer after a promote).
 """
 from __future__ import annotations
 
@@ -45,6 +46,7 @@ from cellflow.napari.ui_style import (
     parameter_heading,
     status_label,
 )
+from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.tracking_ultrack.radial_refine import (
     PRESETS,
@@ -131,11 +133,13 @@ class RadialRefinementWidget(QWidget):
         viewer: napari.Viewer,
         pos_dir_provider: Callable[[], Path | None],
         parent: QWidget | None = None,
+        gate: UiGate | None = None,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self._pos_dir_provider = pos_dir_provider
-        self._correction_active_provider: Callable[[], bool] | None = None
+        #: App-wide UI gate; a private one is created for standalone use.
+        self.gate = gate if gate is not None else UiGate(self)
         self._on_promoted_callback: Callable[[], None] | None = None
 
         self._worker = None
@@ -146,14 +150,39 @@ class RadialRefinementWidget(QWidget):
         self._setup_ui()
         self._connect_signals()
         self._apply_preset(self.preset_combo.currentText())
-        self._refresh_button_states()
+        self._register_gate_controls()
 
     # -- Public wiring -----------------------------------------------------
 
-    def set_correction_active_provider(self, fn: Callable[[], bool]) -> None:
-        """Host supplies a callable returning True if correction mode is on."""
-        self._correction_active_provider = fn
-        self._refresh_button_states()
+    def _register_gate_controls(self) -> None:
+        """Register refinement actions with the app-wide UI gate.
+
+        Refinement rewrites tracked labels and repaints the viewer, so its
+        actions are blocked while any viewer owner (correction / live preview)
+        is active — replacing the old correction-only lock with the general
+        rule. Cancel stays available whenever a refinement worker is running.
+        """
+        g = self.gate
+        g.register(self.preview_btn, ControlClass.RUN_VIEWER, when=self._can_refine)
+        g.register(self.refine_all_btn, ControlClass.RUN_VIEWER, when=self._can_refine)
+        g.register(
+            self.promote_btn,
+            ControlClass.RUN_VIEWER,
+            when=lambda: (
+                self._can_refine()
+                and self._last_refined_path is not None
+                and self._last_refined_path.exists()
+            ),
+        )
+        g.register(
+            self.cancel_btn,
+            ControlClass.RUN_HEADLESS,
+            when=lambda: self._worker is not None,
+        )
+        g.recompute()
+
+    def _can_refine(self) -> bool:
+        return self._pos_dir() is not None and self._worker is None
 
     def set_on_promoted_callback(self, fn: Callable[[], None]) -> None:
         """Host supplies a callable invoked after a successful promote."""
@@ -447,30 +476,12 @@ class RadialRefinementWidget(QWidget):
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
 
-    def _is_correction_active(self) -> bool:
-        if self._correction_active_provider is None:
-            return False
-        try:
-            return bool(self._correction_active_provider())
-        except Exception:
-            return False
-
     def _refresh_button_states(self) -> None:
-        running = self._worker is not None
-        correction_on = self._is_correction_active()
-        has_pos = self._pos_dir() is not None
-        can_run = has_pos and not running and not correction_on
-
-        self.preview_btn.setEnabled(can_run)
-        self.refine_all_btn.setEnabled(can_run)
-        self.promote_btn.setEnabled(
-            can_run and self._last_refined_path is not None
-            and self._last_refined_path.exists()
-        )
-        self.cancel_btn.setEnabled(running)
-
-        if correction_on:
-            self._status("Deactivate correction to refine.")
+        """Re-apply enablement via the gate, and surface a blocking hint."""
+        self.gate.recompute()
+        owner_label = self.gate.owner_label()
+        if owner_label is not None and self._pos_dir() is not None:
+            self._status(f"Exit {owner_label} to refine.")
 
     # -- Validated-mask lookup --------------------------------------------
 
@@ -539,8 +550,8 @@ class RadialRefinementWidget(QWidget):
             return 0
 
     def _on_preview(self) -> None:
-        if self._is_correction_active():
-            self._status("Deactivate correction to refine.")
+        if self.gate.owner is not None:
+            self._status(f"Exit {self.gate.owner_label()} to refine.")
             return
         loaded = self._load_inputs()
         if loaded is None:
@@ -573,8 +584,8 @@ class RadialRefinementWidget(QWidget):
     # -- Actions: refine all ----------------------------------------------
 
     def _on_refine_all(self) -> None:
-        if self._is_correction_active():
-            self._status("Deactivate correction to refine.")
+        if self.gate.owner is not None:
+            self._status(f"Exit {self.gate.owner_label()} to refine.")
             return
         loaded = self._load_inputs()
         if loaded is None:
@@ -674,8 +685,8 @@ class RadialRefinementWidget(QWidget):
     # -- Actions: promote / cancel ----------------------------------------
 
     def _on_promote(self) -> None:
-        if self._is_correction_active():
-            self._status("Deactivate correction before promoting.")
+        if self.gate.owner is not None:
+            self._status(f"Exit {self.gate.owner_label()} before promoting.")
             return
         if self._last_refined_path is None or not self._last_refined_path.exists():
             self._status("No refinement to promote.")

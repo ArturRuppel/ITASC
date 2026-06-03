@@ -76,29 +76,83 @@ def test_main_widget_constructs_new_cellpose_widget():
     w.deleteLater()
 
 
-def test_main_widget_disables_position_spin_while_correction_is_active():
+def test_position_change_during_correction_prompts_and_can_be_declined():
+    """The position spinbox stays enabled during correction; a change there is
+    guarded by a confirm-and-exit prompt and reverts when declined."""
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")
     w = main_mod.CellFlowMainWidget(_fake_viewer())
 
+    # Position is always usable now (context-changing controls stay enabled).
     assert w.pos_spin.isEnabled()
+    w._committed_pos = w.pos_spin.value()
 
-    w.nucleus_workflow_widget._set_checked_without_signal(
-        w.nucleus_workflow_widget.correction_active_btn,
-        True,
-    )
-    w._sync_position_controls_enabled()
-
-    assert not w.pos_spin.isEnabled()
-    assert "correction mode" in w.pos_spin.toolTip().lower()
-
-    w.nucleus_workflow_widget._set_checked_without_signal(
-        w.nucleus_workflow_widget.correction_active_btn,
-        False,
-    )
-    w._sync_position_controls_enabled()
-
+    # A viewer owner becomes active.
+    w.gate.claim_viewer("correction:nucleus")
     assert w.pos_spin.isEnabled()
+    assert not w.gate.can_change_context()
+
+    # Decline the prompt → the spinbox reverts and the owner is untouched.
+    w.gate.confirm_handler = lambda parent, label: False
+    w.pos_spin.setValue(w.pos_spin.value() + 1)
+    assert w.pos_spin.value() == w._committed_pos
+    assert w.gate.owner == "correction:nucleus"
+
+    w.deleteLater()
+
+
+def test_load_config_is_refused_while_owner_active_and_declined(tmp_path):
+    """Load Config stays clickable during a mode, but a declined prompt must
+    not mutate state underneath the active viewer owner."""
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+
+    cfg = tmp_path / "cellflow_config.json"
+    cfg.write_text('{"metadata": {"position": 7}}')
+    w.path_label.setText(str(tmp_path))
+    w._committed_pos = w.pos_spin.value()
+
+    w.gate.register_owner("stub_owner", "stub mode", exit_fn=lambda: None)
+    w.gate.claim_viewer("stub_owner")
+
+    prompted = []
+    w.gate.confirm_handler = lambda parent, label: prompted.append(label) or False
+    w._on_load_config()
+
+    assert prompted == ["stub mode"]  # the user was asked
+    assert w.pos_spin.value() == w._committed_pos  # but nothing was loaded
+    assert w.gate.owner == "stub_owner"
+
+    w.deleteLater()
+
+
+def test_position_change_during_correction_exits_owner_when_confirmed():
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w._committed_pos = w.pos_spin.value()
+
+    # Stub owner with a lightweight exit (the real correction teardown needs a
+    # live viewer); the point under test is the main-widget confirm wiring.
+    exited = []
+
+    def _exit():
+        exited.append(True)
+        w.gate.release_viewer("stub_owner")
+
+    w.gate.register_owner("stub_owner", "stub mode", exit_fn=_exit)
+    w.gate.claim_viewer("stub_owner")
+    assert not w.gate.can_change_context()
+
+    # Confirm the prompt → the owner is exited and the new position commits.
+    w.gate.confirm_handler = lambda parent, label: True
+    target = w.pos_spin.value() + 1
+    w.pos_spin.setValue(target)
+    assert exited == [True]
+    assert w.pos_spin.value() == target
+    assert w._committed_pos == target
+    assert w.gate.can_change_context()
 
     w.deleteLater()
 

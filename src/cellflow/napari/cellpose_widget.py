@@ -25,6 +25,7 @@ from cellflow.napari._widget_helpers import (
     tool_btn as _tool_btn,
 )
 from cellflow.napari.divergence_maps_widget import DivergenceMapsWidget
+from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import (
     add_section_full_row,
     add_section_pair_row,
@@ -91,9 +92,16 @@ class CellposeWidget(QWidget):
 
     _progress_signal = Signal(int, int, str)
 
-    def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        viewer: napari.Viewer,
+        parent: QWidget | None = None,
+        gate: UiGate | None = None,
+    ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        #: App-wide UI gate; a private one is created for standalone use.
+        self.gate = gate if gate is not None else UiGate(self)
         self._pos_dir: Path | None = None
         self._running_stage: str | None = None
         self._worker = None
@@ -101,6 +109,7 @@ class CellposeWidget(QWidget):
 
         self._setup_ui()
         self._connect_signals()
+        self._register_gate_controls()
         self._progress_signal.connect(self._progress)
 
     # ------------------------------------------------------------------
@@ -191,6 +200,7 @@ class CellposeWidget(QWidget):
         self.divergence_maps_widget = DivergenceMapsWidget(
             self.viewer,
             show_pipeline_files=False,
+            gate=self.gate,
         )
         root.addWidget(self.divergence_maps_widget)
 
@@ -668,43 +678,46 @@ class CellposeWidget(QWidget):
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
 
+    def _register_gate_controls(self) -> None:
+        """Register the two channel rows with the app-wide UI gate.
+
+        Cellpose writes to the viewer, so its run/preview/params are blocked
+        while any viewer owner (correction / live preview) is active. Within
+        the widget, the active channel's row stays usable while the other is
+        disabled — expressed via ``when`` predicates over ``_running_stage``.
+        """
+        g = self.gate
+        idle = lambda: self._running_stage is None  # noqa: E731
+        for channel, params_btn, preview_btn, run_btn in (
+            ("nucleus", self.nucleus_params_btn, self.nucleus_preview_btn, self.nucleus_run_btn),
+            ("cell", self.cell_params_btn, self.cell_preview_btn, self.cell_run_btn),
+        ):
+            own = lambda c=channel: self._running_stage in (None, c)
+            # ⚙ params just toggle a parameter panel — always available.
+            g.register(params_btn, ControlClass.HARMLESS)
+            g.register(preview_btn, ControlClass.RUN_VIEWER, when=idle)
+            g.register(run_btn, ControlClass.RUN_VIEWER, when=own)
+        g.recompute()
+
     def _set_running_stage(self, stage_key: str | None) -> None:
-        """``None`` means idle; ``'nucleus'`` or ``'cell'`` claims the row."""
+        """Swap the active row's ▶/✕ glyph; enablement is owned by the gate.
+
+        ``None`` means idle; ``'nucleus'`` or ``'cell'`` claims that row. The
+        gate's ``when`` predicates read ``self._running_stage`` to disable the
+        other row and the active row's preview while a job is in flight.
+        """
         self._running_stage = stage_key
-        rows = {
-            "nucleus": (
-                self.nucleus_params_btn,
-                self.nucleus_preview_btn,
-                self.nucleus_run_btn,
-                "Run nucleus Cellpose on all frames.",
-            ),
-            "cell": (
-                self.cell_params_btn,
-                self.cell_preview_btn,
-                self.cell_run_btn,
-                "Run cell Cellpose on all frames.",
-            ),
-        }
         if stage_key is None:
-            for params_btn, preview_btn, run_btn, tooltip in rows.values():
-                params_btn.setEnabled(True)
-                preview_btn.setEnabled(True)
-                run_btn.setEnabled(True)
-                run_btn.setText("▶")
-                run_btn.setToolTip(tooltip)
+            self.nucleus_run_btn.setText("▶")
+            self.nucleus_run_btn.setToolTip("Run nucleus Cellpose on all frames.")
+            self.cell_run_btn.setText("▶")
+            self.cell_run_btn.setToolTip("Run cell Cellpose on all frames.")
             self._cancel_requested = False
-            return
-        for key, (params_btn, preview_btn, run_btn, _tooltip) in rows.items():
-            if key == stage_key:
-                params_btn.setEnabled(True)
-                preview_btn.setEnabled(False)
-                run_btn.setEnabled(True)
-                run_btn.setText("✕")
-                run_btn.setToolTip("Cancel.")
-            else:
-                params_btn.setEnabled(False)
-                preview_btn.setEnabled(False)
-                run_btn.setEnabled(False)
+        else:
+            run_btn = self.nucleus_run_btn if stage_key == "nucleus" else self.cell_run_btn
+            run_btn.setText("✕")
+            run_btn.setToolTip("Cancel.")
+        self.gate.recompute()
 
     # ------------------------------------------------------------------
     # Layer helper (mirrors CellWorkflowWidget._show_layer)

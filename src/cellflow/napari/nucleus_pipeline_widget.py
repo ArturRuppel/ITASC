@@ -245,21 +245,15 @@ class NucleusPipelineWidget(QWidget):
         self.pipeline_progress_bar.setVisible(False)
 
     def _set_running_stage(self, stage_key: str | None) -> None:
-        """Update run/cancel button states based on which stage is running.
+        """Swap the run buttons' ▶/✕ affordance for the active stage.
 
-        ``None`` means idle: all ▶ enabled, no ✕.
-        ``"seg" | "db" | "ultrack"`` means that stage shows ✕, others disabled.
+        ``None`` means idle (all ▶); ``"seg" | "db" | "ultrack"`` shows ✕ on
+        that row. Button *enablement* is owned by the UI gate — this only
+        updates the cancel/run glyph and tooltip, then notifies the gate to
+        recompute (the gate's predicates read ``self._running_stage``).
         """
         self._running_stage = stage_key
-        _rows = {
-            "seg":    (self.seg_params_btn,   self.seg_run_btn),
-            "db":     (self.db_params_btn,    self.db_run_btn),
-            "ultrack":(self.solve_params_btn, self.solve_run_btn),
-        }
         if stage_key is None:
-            for params_btn, run_btn in _rows.values():
-                params_btn.setEnabled(True)
-                run_btn.setEnabled(True)
             self.seg_run_btn.setText("▶")
             self.seg_run_btn.setToolTip("Run segmentation inputs.")
             self.db_run_btn.setText("▶")
@@ -267,27 +261,15 @@ class NucleusPipelineWidget(QWidget):
             self.solve_run_btn.setText("▶")
             self.solve_run_btn.setToolTip("Run Ultrack solve.")
         else:
-            for key, (params_btn, run_btn) in _rows.items():
-                if key == stage_key:
-                    run_btn.setText("✕")
-                    run_btn.setToolTip("Cancel.")
-                    run_btn.setEnabled(True)
-                    params_btn.setEnabled(True)
-                else:
-                    params_btn.setEnabled(False)
-                    run_btn.setEnabled(False)
+            run_btn = {
+                "seg": self.seg_run_btn,
+                "db": self.db_run_btn,
+                "ultrack": self.solve_run_btn,
+            }[stage_key]
+            run_btn.setText("✕")
+            run_btn.setToolTip("Cancel.")
         if self._sync_viewer_activity_callback is not None:
             self._sync_viewer_activity_callback()
-
-    def _set_pipeline_buttons_enabled(self, enabled: bool) -> None:
-        """Backward-compat shim — delegates to _set_running_stage."""
-        if enabled:
-            self._set_running_stage(None)
-        else:
-            # Disable all run buttons without showing any ✕
-            for btn in (self.seg_run_btn, self.db_run_btn, self.solve_run_btn,
-                        self.seg_params_btn, self.db_params_btn, self.solve_params_btn):
-                btn.setEnabled(False)
 
     # ── Config delegation ─────────────────────────────────────────────────────
 
