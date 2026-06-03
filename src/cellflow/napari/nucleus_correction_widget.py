@@ -316,6 +316,9 @@ class NucleusCorrectionWidget(QWidget):
             show_shortcuts=False,
             inspector_first=True,
             show_cleanup=False,
+            # The lineage canvas is the navigation surface now — drop the
+            # redundant "Inspect cell" group from the correction column.
+            show_inspector=False,
         )
         self.correction_widget.set_edit_callback(self._edit_callback)
         self.correction_widget.set_protected_mask_callback(

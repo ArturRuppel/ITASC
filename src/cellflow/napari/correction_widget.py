@@ -24,7 +24,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from scipy.ndimage import distance_transform_edt
 from skimage.measure import find_contours
 
 from cellflow.correction.labels import (
@@ -62,7 +61,6 @@ _DRAW_LAYER      = "[Correction] CorrectionDraw"
 _HIGHLIGHT_LAYER = "[Correction] CellHighlight"
 _SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
 _SPOTLIGHT_OPACITY = 0.7
-_SPOTLIGHT_SCALE = 3.0
 
 
 class CorrectionWidget(QWidget):
@@ -77,8 +75,8 @@ class CorrectionWidget(QWidget):
         show_shortcuts: bool = True,
         inspector_first: bool = False,
         spotlight: bool = True,
-        spotlight_scale: float = _SPOTLIGHT_SCALE,
         show_cleanup: bool = True,
+        show_inspector: bool = True,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
@@ -86,8 +84,11 @@ class CorrectionWidget(QWidget):
         self._show_shortcuts = show_shortcuts
         self._inspector_first = inspector_first
         self._spotlight = spotlight
-        self._spotlight_scale = float(spotlight_scale)
         self._show_cleanup = show_cleanup
+        # The "Inspect cell" group is redundant where a lineage canvas provides
+        # navigation; the spinbox/label still back the goto + Shift-±/step logic
+        # even when the group is not added to the layout.
+        self._show_inspector = show_inspector
 
         self._layer: napari.layers.Labels | None = None
 
@@ -257,13 +258,15 @@ class CorrectionWidget(QWidget):
         ref_group = self.build_shortcuts_widget()
 
         if self._inspector_first:
-            root.addWidget(inspect_group)
+            if self._show_inspector:
+                root.addWidget(inspect_group)
             if self._show_shortcuts:
                 root.addWidget(ref_group)
         else:
             if self._show_shortcuts:
                 root.addWidget(ref_group)
-            root.addWidget(inspect_group)
+            if self._show_inspector:
+                root.addWidget(inspect_group)
 
         self._attrib_lbl = attrib
         if self._show_activate_btn:
@@ -798,21 +801,11 @@ class CorrectionWidget(QWidget):
         return override
 
     def _update_spotlight(self, mask: np.ndarray) -> None:
+        # Sharp spotlight: full brightness inside the mask (alpha 0), uniformly
+        # dimmed everywhere outside it, with no soft transition ring. The mask is
+        # the selected cell, or the whole track's union when a provider widens it.
         spotlight = self._get_spotlight_layer()
-        outer_mask = self._scaled_mask(mask, scale=self._spotlight_scale)
-        ring = outer_mask & ~mask
         alpha = np.full(mask.shape, _SPOTLIGHT_OPACITY, dtype=np.float32)
-        if np.any(ring):
-            inner_dist = distance_transform_edt(~mask)
-            outer_dist = distance_transform_edt(outer_mask)
-            denom = inner_dist + outer_dist
-            ramp = np.divide(
-                inner_dist,
-                denom,
-                out=np.zeros_like(inner_dist, dtype=np.float64),
-                where=denom > 0,
-            )
-            alpha[ring] = (ramp[ring] * _SPOTLIGHT_OPACITY).astype(np.float32)
         alpha[mask] = 0.0
         data = np.zeros(mask.shape + (4,), dtype=np.float32)
         data[..., 3] = alpha
@@ -820,19 +813,6 @@ class CorrectionWidget(QWidget):
         spotlight.visible = True
         if self._layer is not None:
             self.viewer.layers.selection.active = self._layer
-
-    @staticmethod
-    def _scaled_mask(mask: np.ndarray, *, scale: float) -> np.ndarray:
-        coords = np.argwhere(mask)
-        if coords.size == 0:
-            return np.zeros_like(mask, dtype=bool)
-        center = coords.mean(axis=0)
-        yy, xx = np.indices(mask.shape)
-        src_y = np.rint(center[0] + (yy - center[0]) / scale).astype(int)
-        src_x = np.rint(center[1] + (xx - center[1]) / scale).astype(int)
-        np.clip(src_y, 0, mask.shape[0] - 1, out=src_y)
-        np.clip(src_x, 0, mask.shape[1] - 1, out=src_x)
-        return mask[src_y, src_x]
 
     def _clear_spotlight(self) -> None:
         if _SPOTLIGHT_LAYER in self.viewer.layers:
