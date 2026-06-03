@@ -1566,6 +1566,7 @@ class NucleusCorrectionWidget(QWidget):
             # Hand the right column to the workspace: the host hides its other
             # workflow sections now that activation has fully succeeded.
             self._focus_takeover(True)
+            self._arrange_workspace_docks()
             return
 
         if not self._confirm_deactivate_with_unsaved_changes():
@@ -1789,6 +1790,25 @@ class NucleusCorrectionWidget(QWidget):
             self.correction_widget.select_label(int(t), int(cell_id))
         except Exception:
             logger.exception("focus-mode navigation: cell select failed")
+
+    def _arrange_workspace_docks(self) -> None:
+        """Lay the right-column panels out as side-by-side vertical strips.
+
+        napari stacks extra right-area docks vertically (one column). Re-split
+        them horizontally so the workspace reads as parallel strips — candidates
+        nearest the canvas, then the lineage canvas to its right.
+        """
+        qt_window = getattr(self.viewer.window, "_qt_window", None)
+        candidates = self._candidate_gallery.dock
+        lineage = self._lineage_canvas.dock
+        if qt_window is None or candidates is None or lineage is None:
+            return
+        try:
+            from qtpy.QtCore import Qt
+
+            qt_window.splitDockWidget(candidates, lineage, Qt.Horizontal)
+        except Exception:
+            logger.exception("could not arrange correction workspace docks")
 
     def _teardown_focus_panels(self) -> None:
         """Undock the focus-mode panels (lineage canvas, candidate gallery)."""

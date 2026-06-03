@@ -100,6 +100,11 @@ class CandidateGalleryController:
             self._dock = None
         return panel
 
+    @property
+    def dock(self):
+        """The QDockWidget hosting the gallery, or None when not docked."""
+        return self._dock
+
     def teardown(self) -> None:
         """Undock and forget the panel (next refresh re-creates it)."""
         if self._dock is not None:

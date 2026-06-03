@@ -128,6 +128,11 @@ class LineageCanvasController:
             return
         self.set_selection(int(self._selected_label_provider() or 0))
 
+    @property
+    def dock(self):
+        """The QDockWidget hosting the panel, or None when not docked."""
+        return self._dock
+
     def teardown(self) -> None:
         """Undock and forget the panel (next refresh re-creates it)."""
         if self._dock is not None:
