@@ -17,8 +17,8 @@ import numpy as np
 
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari._correction_centroids import (
+    FOCUS_CROSS_COLOR,
     centroid_focus_colors,
-    _viridis_colors,
 )
 from cellflow.napari.nucleus_correction_widget import (
     NucleusCorrectionWidget,
@@ -83,10 +83,9 @@ def test_focus_hides_comet_keeps_selected_cross():
     # centroid layer stays visible; only cell 7's crosses are shown
     assert centroids.visible is True
     np.testing.assert_array_equal(centroids.shown, [True, False, True])
-    # cell 7's two crosses (frames 0, 1) get the viridis time gradient
-    viridis = _viridis_colors(2)
-    np.testing.assert_allclose(centroids.face_color[0], viridis[0])
-    np.testing.assert_allclose(centroids.face_color[2], viridis[1])
+    # cell 7's two crosses (frames 0, 1) are uniform white
+    np.testing.assert_allclose(centroids.face_color[0], FOCUS_CROSS_COLOR)
+    np.testing.assert_allclose(centroids.face_color[2], FOCUS_CROSS_COLOR)
     np.testing.assert_array_equal(centroids.border_color, centroids.face_color)
     # other cells' labels stay visible: the mask layer is left untouched
     assert labels.show_selected_label is False
@@ -167,21 +166,18 @@ def test_no_spotlight_draws_border():
 # --------------------------------------------------------------------------- #
 
 
-def test_focused_cell_gets_viridis_gradient_by_frame():
-    # cell 7 occupies frames 2 and 5 (out of order in the input)
+def test_focused_cell_gets_uniform_white():
+    # cell 7 occupies two frames; both crosses are white regardless of frame
     colors = centroid_focus_colors([7, 8, 7], [5, 0, 2], 7)
-    viridis = _viridis_colors(2)
-    # earliest frame (2, at index 2) -> viridis[0]; latest (5, index 0) -> viridis[1]
-    np.testing.assert_allclose(colors[2], viridis[0])
-    np.testing.assert_allclose(colors[0], viridis[1])
-    # the non-focused cell keeps its per-label color (not a viridis sample)
-    assert not np.allclose(colors[1], viridis[0])
-    assert not np.allclose(colors[1], viridis[1])
+    np.testing.assert_allclose(colors[0], FOCUS_CROSS_COLOR)
+    np.testing.assert_allclose(colors[2], FOCUS_CROSS_COLOR)
+    # the non-focused cell keeps its per-label color (not white)
+    assert not np.allclose(colors[1], FOCUS_CROSS_COLOR)
 
 
 def test_no_focus_gives_all_label_colors():
     focused = centroid_focus_colors([7, 8, 7], [5, 0, 2], 7)
     overview = centroid_focus_colors([7, 8, 7], [5, 0, 2], 0)
-    # cell 8's color is unaffected by focus; cell 7's reverts away from viridis
+    # cell 8's color is unaffected by focus; cell 7's reverts away from white
     np.testing.assert_allclose(overview[1], focused[1])
     assert not np.allclose(overview[0], focused[0])

@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Optional, Union
+from typing import Union
 
 from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QMessageBox, QWidget
@@ -74,8 +74,8 @@ class ControlClass(Enum):
 class _Registration:
     control: object
     klass: ControlClass
-    owner_token: Optional[str] = None
-    when: Optional[Callable[[], bool]] = None
+    owner_token: str | None = None
+    when: Callable[[], bool] | None = None
     reason: ReasonSource = None
 
 
@@ -87,7 +87,7 @@ class _Owner:
 
 @dataclass
 class _GateState:
-    owner: Optional[str] = None
+    owner: str | None = None
     tasks: set[str] = field(default_factory=set)
     owners: dict[str, _Owner] = field(default_factory=dict)
 
@@ -105,7 +105,7 @@ class UiGate(QObject):
         self._idle_tooltips: dict[int, str] = {}
         #: Overridable in tests; returns True if the user confirms exiting the
         #: active owner. Defaults to a modal yes/no dialog.
-        self.confirm_handler: Callable[[Optional[QWidget], str], bool] = (
+        self.confirm_handler: Callable[[QWidget | None, str], bool] = (
             self._default_confirm
         )
 

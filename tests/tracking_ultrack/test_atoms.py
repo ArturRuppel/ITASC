@@ -3,7 +3,17 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.tracking_ultrack.atoms import residual
+from cellflow.tracking_ultrack.atoms import (
+    AtomParams,
+    atom_adjacency,
+    enum_connected_unions,
+    extract_atoms_frame,
+    extract_atoms_stack,
+    params_fingerprint,
+    read_atoms_params,
+    residual,
+    write_atoms_tif,
+)
 
 
 def test_residual_is_zero_on_flat_input():
@@ -41,9 +51,6 @@ def test_residual_strength_blends_to_raw_map():
     full = residual(frame, window=11, strength=1.0)
     half = residual(frame, window=11, strength=0.5)
     assert np.all(half <= raw + 1e-6) and np.all(half >= full - 1e-6)
-
-
-from cellflow.tracking_ultrack.atoms import extract_atoms_frame
 
 
 def _two_blob_frame():
@@ -102,9 +109,6 @@ def test_extract_atoms_frame_returns_ridge_as_the_threshold_wall():
     assert np.array_equal(ridge, ridge2)
 
 
-from cellflow.tracking_ultrack.atoms import AtomParams, extract_atoms_stack
-
-
 def test_atom_params_defaults_match_spec():
     p = AtomParams()
     assert p.fg_window == 51
@@ -125,13 +129,6 @@ def test_extract_atoms_stack_shape_and_determinism():
     assert a1.shape == (3, 40, 40)
     assert a1.dtype == np.int32
     assert np.array_equal(a1, a2)  # deterministic
-
-
-from cellflow.tracking_ultrack.atoms import (
-    params_fingerprint,
-    write_atoms_tif,
-    read_atoms_params,
-)
 
 
 def test_params_fingerprint_is_stable_and_param_sensitive():
@@ -209,9 +206,6 @@ def test_extract_atoms_stack_with_maps_dtypes_and_consistency():
     # territory and ridge are binary (0 or 1)
     assert set(np.unique(territory)).issubset({0, 1})
     assert set(np.unique(ridge)).issubset({0, 1})
-
-
-from cellflow.tracking_ultrack.atoms import atom_adjacency, enum_connected_unions
 
 
 def test_atom_adjacency_two_adjacent_labels():

@@ -115,6 +115,9 @@ def build_centroid_points(
     )
 
 
+FOCUS_CROSS_COLOR = (1.0, 1.0, 1.0, 1.0)  # uniform white for the focused cell
+
+
 def centroid_focus_colors(
     label_ids: Iterable[int],
     frames: Iterable[int],
@@ -124,13 +127,13 @@ def centroid_focus_colors(
 ) -> np.ndarray:
     """Per-point cross colors when a single cell is focused.
 
-    The focused cell's crosses get a viridis time gradient (earliest frame dark,
-    latest yellow) matching the whole-track comet; every other cross keeps its
-    deterministic per-label color. With ``focused_lab`` falsy, all crosses get
-    their per-label color (used to restore the overview on deselect).
+    The focused cell's crosses are a uniform white so they stay correct as the
+    track extends or changes; every other cross keeps its deterministic per-label
+    color. With ``focused_lab`` falsy, all crosses get their per-label color
+    (used to restore the overview on deselect). ``frames`` is unused but kept in
+    the signature for callers that pass the centroid frame feature.
     """
     label_ids = [int(value) for value in label_ids]
-    frames = [int(value) for value in frames]
     n = len(label_ids)
     colors = np.empty((n, 4), dtype=float)
     for idx, label_id in enumerate(label_ids):
@@ -138,22 +141,10 @@ def centroid_focus_colors(
         rgba[:3] *= float(color_scale)
         colors[idx] = rgba
     if focused_lab:
-        focused = [idx for idx, lid in enumerate(label_ids) if lid == int(focused_lab)]
-        order = sorted(focused, key=lambda idx: frames[idx])
-        viridis = _viridis_colors(len(order))
-        for rank, idx in enumerate(order):
-            colors[idx] = viridis[rank]
+        for idx, label_id in enumerate(label_ids):
+            if label_id == int(focused_lab):
+                colors[idx] = FOCUS_CROSS_COLOR
     return colors
-
-
-def _viridis_colors(n: int) -> np.ndarray:
-    """``n`` RGBA viridis samples from dark (0.0) to yellow (1.0)."""
-    if n <= 0:
-        return np.empty((0, 4), dtype=float)
-    from matplotlib import colormaps
-
-    positions = np.linspace(0.0, 1.0, n)
-    return np.asarray(colormaps["viridis"](positions), dtype=float)
 
 
 def refresh_centroid_cross_layer(

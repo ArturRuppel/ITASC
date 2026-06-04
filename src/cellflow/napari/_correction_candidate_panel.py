@@ -33,15 +33,19 @@ _ZOOM_STEP = 8       # px added/removed from the tile size per Ctrl+wheel notch
 
 # Draggable handle between the stacked regions. Mirrors the workspace splitter
 # that sizes the strip widths (see nucleus_correction_widget), but oriented
-# vertically: a mid-grey grip inset against the dark dock background.
+# vertically: a mid-grey grip inset against the dark dock background. Qt adds
+# the border *on top of* the handle width for vertical handles (it insets it for
+# horizontal ones), so to land the same ~10 px total thickness as the workspace
+# grabbers we pair a 3 px border with a thin handle width (see _HANDLE_WIDTH).
 _HANDLE_STYLE = (
     "QSplitter::handle:vertical {"
     " background: #5a606b;"
-    " border-top: 2px solid #2e3440;"
-    " border-bottom: 2px solid #2e3440;"
+    " border-top: 3px solid #2e3440;"
+    " border-bottom: 3px solid #2e3440;"
     " }"
     "QSplitter::handle:vertical:hover { background: #7a828f; }"
 )
+_HANDLE_WIDTH = 2
 
 
 class _ClickableTile(QFrame):
@@ -63,8 +67,8 @@ class _ClickableTile(QFrame):
         )
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(2, 2, 2, 2)
-        lay.setSpacing(1)
+        lay.setContentsMargins(1, 1, 1, 1)
+        lay.setSpacing(0)
 
         pixmap = QPixmap.fromImage(rgb_to_qimage(tile.rgb)).scaledToHeight(
             tile_px, Qt.FastTransformation
@@ -73,11 +77,6 @@ class _ClickableTile(QFrame):
         image.setPixmap(pixmap)
         image.setAlignment(Qt.AlignCenter)
         lay.addWidget(image)
-
-        caption = QLabel(tile.caption)
-        caption.setAlignment(Qt.AlignCenter)
-        caption.setStyleSheet("color: #b0b0b0; font-size: 9px;")
-        lay.addWidget(caption)
 
     @property
     def key(self) -> int:
@@ -111,8 +110,11 @@ class CandidateColumn(QWidget):
         outer.addWidget(self._title)
 
         self._body = QWidget()
-        self._body_lay = FlowLayout(self._body, margin=2, h_spacing=4, v_spacing=4)
+        self._body_lay = FlowLayout(self._body, margin=1, h_spacing=1, v_spacing=1)
         outer.addWidget(self._body)
+        # Pin content to the top so a region dragged taller than its tiles
+        # leaves empty space at the bottom rather than floating them centred.
+        outer.addStretch(1)
 
     def set_strip(self, strip: CandidateStrip, *, title: str | None = None) -> None:
         """Replace the column's thumbnails (an empty strip shows a placeholder)."""
@@ -192,7 +194,7 @@ class CandidateGalleryPanel(QWidget):
 
         splitter = QSplitter(Qt.Vertical, self)
         splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(6)
+        splitter.setHandleWidth(_HANDLE_WIDTH)
         splitter.setStyleSheet(_HANDLE_STYLE)
 
         self._columns: dict[str, CandidateColumn] = {}

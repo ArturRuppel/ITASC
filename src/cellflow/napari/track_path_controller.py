@@ -95,8 +95,15 @@ class TrackPathController:
         name = TRACK_PATH_LAYER
         if name in self.viewer.layers and isinstance(self.viewer.layers[name], Tracks):
             layer = self.viewer.layers[name]
+            # Park color_by on the always-present 'track_id' before swapping data:
+            # assigning ``data`` resets features to the default, so leaving it on
+            # 'time' makes napari warn about a missing key and fall back. Restore
+            # 'time' once the new properties carry it again.
+            layer.color_by = "track_id"
             layer.data = data
             layer.properties = properties
+            layer.color_by = "time"
+            layer.colormap = "viridis"
             layer.tail_length = span
             layer.head_length = span
         else:
