@@ -18,7 +18,9 @@ from unittest.mock import MagicMock
 import numpy as np
 from napari.layers import Points
 
+from cellflow.napari._correction_centroids import NEUTRAL_OVERLAY_COLOR
 from cellflow.napari.track_path_controller import (
+    FILLED_OVERVIEW_OPACITY,
     OVERVIEW_OPACITY,
     TRACK_LAYER,
     TRACK_TIP_LAYER,
@@ -115,6 +117,44 @@ def test_no_selection_is_overview_colouring():
     assert layer.opacity == OVERVIEW_OPACITY
     # No tip cross without a selection.
     assert TRACK_TIP_LAYER not in viewer.layers
+
+
+def test_overview_default_is_one_neutral_colour():
+    viewer = _FakeViewer()
+    ctrl, _, _ = _controller(viewer, selected_label=0)
+
+    ctrl.refresh()
+
+    layer = viewer.layers[TRACK_LAYER]
+    # The default (outline) overview is translucent and paints every vertex the
+    # one neutral colour, regardless of track id.
+    assert layer.opacity == OVERVIEW_OPACITY
+    colors = np.asarray(layer.track_colors)
+    assert colors.shape[0] == 3  # 2 rows cell 5 + 1 row cell 9
+    for row in colors:
+        np.testing.assert_allclose(row, NEUTRAL_OVERLAY_COLOR, atol=1e-6)
+
+
+def test_filled_mode_overview_is_opaque_and_colours_by_id():
+    viewer = _FakeViewer()
+    ctrl, _, _ = _controller(viewer, selected_label=0)
+    ctrl.refresh()
+
+    ctrl.set_filled_mode(True)
+
+    layer = viewer.layers[TRACK_LAYER]
+    assert layer.opacity == FILLED_OVERVIEW_OPACITY
+    # By-id colouring: the neutral single-colour override is cleared and the two
+    # tracks now differ in colour.
+    assert layer.colormaps_dict == {}
+    colors = np.asarray(layer.track_colors)
+    assert not np.allclose(colors[0], colors[-1])
+
+    # Flipping back restores the neutral, translucent overview.
+    ctrl.set_filled_mode(False)
+    assert layer.opacity == OVERVIEW_OPACITY
+    for row in np.asarray(layer.track_colors):
+        np.testing.assert_allclose(row, NEUTRAL_OVERLAY_COLOR, atol=1e-6)
 
 
 def test_focus_keeps_only_the_selected_track_fully_opaque():

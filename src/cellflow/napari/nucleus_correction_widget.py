@@ -29,6 +29,7 @@ from cellflow.napari._widget_helpers import (
     tool_btn as _tool_btn,
 )
 from cellflow.napari._correction_centroids import (
+    apply_neutral_label_colormap,
     ensure_label_colormap_entries,
     refresh_label_colormap,
 )
@@ -502,6 +503,13 @@ class NucleusCorrectionWidget(QWidget):
             "Click a thumbnail to apply that extend/swap."
         )
         self.candidate_gallery_check.setVisible(False)
+        self.filled_view_check = QCheckBox("Filled labels (by ID)")
+        self.filled_view_check.setToolTip(
+            "Second viewer mode: hide the cell + nucleus images and draw the "
+            "labels and tracks opaque and filled (not outlines), coloured by ID. "
+            "Off = the default outline view in one neutral colour."
+        )
+        self.filled_view_check.setVisible(False)
         self.validation_counter_lbl.setVisible(False)
         self.correction_widget._attrib_lbl.setVisible(False)
 
@@ -525,6 +533,7 @@ class NucleusCorrectionWidget(QWidget):
         self._view_toggle_grid.addWidget(self.track_path_check, 0, 0)
         self._view_toggle_grid.addWidget(self.lineage_canvas_check, 1, 0)
         self._view_toggle_grid.addWidget(self.candidate_gallery_check, 2, 0)
+        self._view_toggle_grid.addWidget(self.filled_view_check, 3, 0)
         self._view_toggle_grid.setColumnStretch(0, 1)
         group_lay.addLayout(self._view_toggle_grid)
 
@@ -555,6 +564,7 @@ class NucleusCorrectionWidget(QWidget):
         self.track_path_check.toggled.connect(self._on_toggle_track_path)
         self.lineage_canvas_check.toggled.connect(self._on_toggle_lineage_canvas)
         self.candidate_gallery_check.toggled.connect(self._on_toggle_candidate_gallery)
+        self.filled_view_check.toggled.connect(self._on_toggle_filled_view)
         self.params_btn.toggled.connect(
             self._on_correction_params_button_toggled
         )
@@ -589,6 +599,7 @@ class NucleusCorrectionWidget(QWidget):
         self.track_path_check.setVisible(show_active)
         self.lineage_canvas_check.setVisible(show_active)
         self.candidate_gallery_check.setVisible(show_active)
+        self.filled_view_check.setVisible(show_active)
 
         if show_params or show_shortcuts or show_active:
             self.section.expand()
@@ -1602,6 +1613,10 @@ class NucleusCorrectionWidget(QWidget):
             layer.visible = True
             self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
+            # Start every session in the default outline view: neutral-coloured
+            # outlines + tracks over the visible reference images.
+            self._set_checked_without_signal(self.filled_view_check, False)
+            self._apply_label_view_mode(filled=False)
             # Drop any pre-loaded higher-rank stack (e.g. a raw T,Z,Y,X z-stack)
             # so the viewer collapses to one frame slider that matches the
             # correction frames; re-added verbatim on deactivate. Same-rank
@@ -1890,6 +1905,41 @@ class NucleusCorrectionWidget(QWidget):
         if checked:
             self._candidate_gallery.refresh()
         self._arrange_workspace_docks()
+
+    # ── label / track view mode (outline-neutral ↔ filled-by-id) ──────────────
+
+    def _filled_view_active(self) -> bool:
+        return self.filled_view_check.isChecked()
+
+    def _on_toggle_filled_view(self, checked: bool) -> None:
+        self._apply_label_view_mode(filled=checked)
+
+    def _apply_label_view_mode(self, *, filled: bool) -> None:
+        """Switch between the outline (neutral) and filled (by-id) viewer modes.
+
+        Outline mode shows the cell + nucleus reference images and draws the
+        labels as outlines and the tracks overview in one neutral colour. Filled
+        mode hides those images and draws the labels filled + opaque and the
+        tracks overview coloured by ID.
+        """
+        for name in (_CORRECTION_CELL_ZAVG_LAYER, _CORRECTION_NUC_ZAVG_LAYER):
+            if name in self.viewer.layers:
+                self.viewer.layers[name].visible = not filled
+        layer = self._correction_tracked_layer()
+        if layer is not None:
+            try:
+                layer.contour = 0 if filled else 2
+            except Exception:
+                pass
+            if filled:
+                refresh_label_colormap(
+                    layer,
+                    np.asarray(layer.data),
+                    color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
+                )
+            else:
+                apply_neutral_label_colormap(layer)
+        self._all_tracks.set_filled_mode(filled)
 
     def _navigate_to_error(self, t: int, cell_id: int) -> None:
         """Lineage-canvas click handler: jump to frame ``t``, select and center.
@@ -2201,11 +2251,15 @@ class NucleusCorrectionWidget(QWidget):
         if _CORRECTION_TRACKED_LAYER not in self.viewer.layers:
             return
         layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
-        ensure_label_colormap_entries(
-            layer,
-            changed_ids,
-            color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
-        )
+        # In the neutral (outline) view the single-colour colormap already covers
+        # any new ids via its ``None`` default, so only extend the per-id map in
+        # the filled (by-id) view.
+        if self._filled_view_active():
+            ensure_label_colormap_entries(
+                layer,
+                changed_ids,
+                color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
+            )
         try:
             self.viewer.layers.selection.active = layer
         except Exception:
@@ -2242,11 +2296,14 @@ class NucleusCorrectionWidget(QWidget):
             return
         layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
         data = np.asarray(layer.data)
-        refresh_label_colormap(
-            layer,
-            data,
-            color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
-        )
+        if self._filled_view_active():
+            refresh_label_colormap(
+                layer,
+                data,
+                color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
+            )
+        else:
+            apply_neutral_label_colormap(layer)
         # The all-tracks overlay's geometry follows the labels — rebuild it so a
         # reassign / remove-unvalidated / retrack reshapes the trajectories too.
         self._all_tracks.refresh()

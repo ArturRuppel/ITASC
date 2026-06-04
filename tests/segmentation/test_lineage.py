@@ -44,7 +44,9 @@ def test_gap_splits_into_two_segments() -> None:
     assert lane.n_frames == 3
 
 
-def test_lanes_sorted_by_first_appearance_then_id() -> None:
+def test_lanes_sorted_by_track_id() -> None:
+    # Order follows track id, not first appearance, so a cell keeps its row
+    # regardless of when it shows up (correction actions relabel by id).
     arr = _stack()
     arr[2, 0, 0] = 5  # appears at frame 2
     arr[0, 1, 1] = 9  # appears at frame 0
@@ -52,7 +54,7 @@ def test_lanes_sorted_by_first_appearance_then_id() -> None:
 
     order = [lane.cell_id for lane in build_lineage(arr).lanes]
 
-    assert order == [3, 9, 5]
+    assert order == [3, 5, 9]
 
 
 def test_singleton_z_axis_is_squeezed() -> None:

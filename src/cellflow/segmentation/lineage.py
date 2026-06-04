@@ -82,7 +82,9 @@ def build_lineage(tracked: np.ndarray) -> LineageModel:
     """Build a :class:`LineageModel` from a ``(T, Y, X)`` tracked label stack.
 
     A singleton Z axis (``(T, 1, Y, X)``) is squeezed; a single 2D frame is
-    treated as one timepoint. Lanes are sorted by first appearance, then id.
+    treated as one timepoint. Lanes are sorted by track id so a cell keeps its
+    row across refreshes; correction actions (retrack, extend, relabel, …) that
+    change a track's id move it to its new sorted position on the next refresh.
     """
     arr = np.asarray(tracked)
     if arr.ndim == 4 and arr.shape[1] == 1:
@@ -104,7 +106,7 @@ def build_lineage(tracked: np.ndarray) -> LineageModel:
         TrackLane(cell_id=cell_id, segments=_segments_from_frames(frames))
         for cell_id, frames in frames_of.items()
     ]
-    lanes.sort(key=lambda lane: (lane.first_frame, lane.cell_id))
+    lanes.sort(key=lambda lane: lane.cell_id)
     return LineageModel(n_frames=n_t, lanes=tuple(lanes))
 
 

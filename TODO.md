@@ -25,3 +25,4 @@
 - [x] Fix custom button icon disabled/inactive styling: inactive custom buttons get a darker background pill, which is good, but the icon itself gets brighter, which is bad.
 - [x] Remove superseded correction-mode activation logic: the "activate correction mode" banner and the disabling of widgets have been superseded by completely hiding the label layers and the original widget, so the old activation/disable logic can be removed. This stale logic also causes a bug — when there is no data to correct yet, the widget stays in an "activated" but frozen state.
 - [x] Fix shift+arrow track navigation: shift+arrow should recenter both the lineage viewer and the main viewer, exactly as if the track had been clicked. It should also not scan for the next track in the current frame, but simply move to the next track in the list.
+- [ ] Fix "reassign IDs to contiguous": it makes a mess with validated track numbers. It seems to work when all nodes are validated, though (duh).

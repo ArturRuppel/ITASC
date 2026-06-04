@@ -26,7 +26,10 @@ from collections.abc import Callable
 import numpy as np
 
 from cellflow.napari._correction_track_path import build_all_tracks_data
-from cellflow.napari._correction_centroids import FOCUS_CROSS_COLOR
+from cellflow.napari._correction_centroids import (
+    FOCUS_CROSS_COLOR,
+    NEUTRAL_OVERLAY_COLOR,
+)
 
 TRACK_LAYER = "[Correction] Nucleus tracks"
 TRACK_TIP_LAYER = "[Correction] Track Tip"
@@ -37,8 +40,29 @@ TRACK_TAIL_LENGTH = 15
 OVERVIEW_COLORMAP = "hsv"
 FOCUS_COLORMAP = "viridis"
 OVERVIEW_OPACITY = 0.55
+# The filled (by-id) view draws the overview fully opaque to match the filled,
+# image-hidden labels; the default (outline) view keeps it translucent.
+FILLED_OVERVIEW_OPACITY = 1.0
 FOCUS_OPACITY = 1.0
 TIP_CROSS_SIZE = 5
+
+_NEUTRAL_TRACKS_COLORMAP = None
+
+
+def _neutral_tracks_colormap():
+    """A single-colour colormap so every track vertex reads :data:`NEUTRAL_OVERLAY_COLOR`.
+
+    A ``Tracks`` layer always colours by a property through a colormap; mapping
+    every value to one colour (two identical stops) yields a uniform neutral
+    overview regardless of ``color_by``. Built lazily and cached.
+    """
+    global _NEUTRAL_TRACKS_COLORMAP
+    if _NEUTRAL_TRACKS_COLORMAP is None:
+        from napari.utils.colormaps import Colormap
+
+        rgba = list(NEUTRAL_OVERLAY_COLOR)
+        _NEUTRAL_TRACKS_COLORMAP = Colormap([rgba, rgba], name="neutral_overview")
+    return _NEUTRAL_TRACKS_COLORMAP
 
 # Backwards-compatible aliases (the layer name is also referenced by the widget).
 TRACK_PATH_LAYER = TRACK_LAYER
@@ -107,6 +131,10 @@ class AllTracksController:
         self._properties: dict[str, np.ndarray] = {}
         self._row_index: dict[int, np.ndarray] = {}
         self._span: int = 1
+        # False = default outline view (neutral single colour, translucent);
+        # True = filled view (per-id hsv colour, opaque). Only changes the
+        # *overview* presentation — a focused track stays viridis-by-time.
+        self._filled_mode: bool = False
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -142,6 +170,39 @@ class AllTracksController:
         self._properties = {}
         self._row_index = {}
 
+    # ── view mode (outline-neutral ↔ filled-by-id overview) ───────────────────
+
+    def set_filled_mode(self, filled: bool) -> None:
+        """Switch the overview between neutral (outline view) and by-id (filled view).
+
+        Re-applies the current focus so the live layer picks up the new overview
+        colour/opacity; a focused single track is unaffected (still by time).
+        """
+        self._filled_mode = bool(filled)
+        if self._tracks_layer() is not None:
+            self.set_focus(int(self._selected_label_provider() or 0))
+
+    def _overview_opacity(self) -> float:
+        return FILLED_OVERVIEW_OPACITY if self._filled_mode else OVERVIEW_OPACITY
+
+    def _apply_overview_coloring(self, layer) -> None:
+        """Colour the overview by mode: per-id hsv (filled) or one neutral colour.
+
+        A ``Tracks`` layer's ``colormap`` is a *registered name*, so the single
+        neutral colour is supplied through ``colormaps_dict`` (keyed by the
+        ``color_by`` property, which bypasses the name registry and the
+        property normalisation). Assigning ``color_by`` re-runs the recolour.
+        """
+        if self._filled_mode:
+            layer.colormaps_dict = {}
+            try:
+                layer.colormap = OVERVIEW_COLORMAP
+            except Exception:
+                pass
+        else:
+            layer.colormaps_dict = {"track_id": _neutral_tracks_colormap()}
+            layer.color_by = "track_id"
+
     # ── focus / current-frame presentation ───────────────────────────────────
 
     def set_focus(self, lab: int) -> None:
@@ -167,13 +228,10 @@ class AllTracksController:
             layer.data = self._data
             layer.properties = self._properties
             layer.color_by = "track_id"
-            try:
-                layer.colormap = OVERVIEW_COLORMAP
-            except Exception:
-                pass
+            self._apply_overview_coloring(layer)
             layer.tail_length = min(TRACK_TAIL_LENGTH, self._span)
             layer.head_length = 0
-            layer.opacity = OVERVIEW_OPACITY
+            layer.opacity = self._overview_opacity()
             self._hide_tip()
             return
 
@@ -270,9 +328,13 @@ class AllTracksController:
             tail_length=min(TRACK_TAIL_LENGTH, self._span),
             head_length=0,
             blending="translucent",
-            opacity=OVERVIEW_OPACITY,
+            opacity=self._overview_opacity(),
         )
         self.viewer.add_layer(layer)
+        # Construction takes a registered colormap *name*; apply the mode's real
+        # overview colouring (the neutral colormaps_dict, etc.) now. The
+        # ``set_focus`` that follows ``refresh`` re-applies it for the live state.
+        self._apply_overview_coloring(layer)
         self._owned_layers.add(TRACK_LAYER)
         self._restore_active_layer()
 

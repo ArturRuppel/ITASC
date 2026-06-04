@@ -9,6 +9,36 @@ import numpy as np
 # Uniform white used for the focused track's current-frame tip cross.
 FOCUS_CROSS_COLOR = (1.0, 1.0, 1.0, 1.0)
 
+# Single neutral colour shared by the labels outline and the all-tracks overview
+# in the default ("outline") view. A saturated green reads clearly against both
+# the white cell z-avg and the purple nucleus z-avg, where per-id colours were
+# just noise on the thin outlines. The filled (by-id) view uses the per-id
+# colormap instead — see ``correction_label_color_map`` / the tracks controller.
+NEUTRAL_OVERLAY_COLOR = (0.18, 0.95, 0.32, 1.0)
+
+
+def neutral_label_color_map() -> dict[int | None, tuple[float, float, float, float] | str]:
+    """Colour every non-zero label with the single :data:`NEUTRAL_OVERLAY_COLOR`.
+
+    The ``None`` key is napari's catch-all default colour, so every label maps to
+    the neutral colour without enumerating ids; ``0`` stays transparent.
+    """
+    return {None: NEUTRAL_OVERLAY_COLOR, 0: "transparent"}
+
+
+def apply_neutral_label_colormap(
+    labels_layer: Any,
+) -> dict[int | None, tuple[float, float, float, float] | str]:
+    """Set a labels layer to the single-colour neutral colormap; return the dict."""
+    color_map = neutral_label_color_map()
+    try:
+        from napari.utils.colormaps import DirectLabelColormap
+
+        labels_layer.colormap = DirectLabelColormap(color_dict=dict(color_map))
+    except Exception:
+        pass
+    return color_map
+
 
 def correction_label_color_map(
     labels: np.ndarray,
