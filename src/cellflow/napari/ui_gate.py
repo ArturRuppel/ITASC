@@ -26,12 +26,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Union
 
 from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QMessageBox, QWidget
 
-ReasonSource = Union[str, Callable[[], str], None]
+ReasonSource = str | Callable[[], str] | None
 
 
 class ControlClass(Enum):

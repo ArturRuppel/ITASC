@@ -23,7 +23,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
-from typing import Callable
+from collections.abc import Callable
 
 import h5py
 import numpy as np

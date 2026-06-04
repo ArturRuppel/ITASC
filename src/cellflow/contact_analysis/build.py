@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 from collections.abc import Iterable
 
 import h5py
