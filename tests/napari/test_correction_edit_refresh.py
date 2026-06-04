@@ -22,6 +22,9 @@ def _stub_widget() -> SimpleNamespace:
         _refresh_correction_label_visuals_for_edit=MagicMock(),
         _validated_overlay=SimpleNamespace(on_cells_edited=MagicMock()),
         validation_counter_lbl=object(),
+        # No cell is selected, so the track-path rebuild branch is skipped and
+        # this test stays focused on the canvas/gallery refresh it pins.
+        correction_widget=SimpleNamespace(_selected_label=0),
         _refresh_lineage_canvas_if_shown=MagicMock(),
         _refresh_candidate_gallery_if_shown=MagicMock(),
     )
