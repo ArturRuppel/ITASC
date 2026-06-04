@@ -41,6 +41,7 @@ from cellflow.napari._correction_utils import (
     frame_view_2d,
     reassign_ids_ordered,
     retrack_stack_direction,
+    track_order_by_frame_and_size,
 )
 from cellflow.napari._correction_commit import (
     prepare_committed_labels,
@@ -349,7 +350,9 @@ class NucleusCorrectionWidget(QWidget):
             "⮀", "Swap selected cell with the next larger candidate fragment (C)."
         )
         self.reassign_ids_btn = _tool_btn(
-            "#", "Reassign cell IDs to contiguous range 1-N (validated tracks first)."
+            "#",
+            "Reassign cell IDs to contiguous range 1-N (validated tracks first, "
+            "then by earliest start frame, then by longest track).",
         )
         self.validate_track_btn = _tool_btn(
             "✓", "Lock selected cell geometry in every frame where it appears (V)."
@@ -802,8 +805,8 @@ class NucleusCorrectionWidget(QWidget):
     def _on_load_tracked(self) -> None:
         self._load_correction_layers_from_disk()
 
-    def _validated_track_order(self) -> list[int]:
-        """Validated track IDs in ascending order, for reassign priority."""
+    def _validated_track_ids(self) -> list[int]:
+        """Validated track IDs, used to group reassign priority."""
         if self._pos_dir is None:
             return []
         read_validated_tracks_fn = self._dependency("read_validated_tracks")
@@ -815,7 +818,7 @@ class NucleusCorrectionWidget(QWidget):
         if layer is None:
             self._correction_status("No tracked layer loaded."); return
         stack = np.asarray(layer.data)
-        order = self._validated_track_order()
+        validated = self._validated_track_ids()
         self._correction_status("Reassigning cell IDs...")
 
         @self._dependency("thread_worker")(connect={
@@ -823,6 +826,7 @@ class NucleusCorrectionWidget(QWidget):
             "errored": self._on_correction_worker_error,
         })
         def _worker():
+            order = track_order_by_frame_and_size(stack, validated)
             return reassign_ids_ordered(stack, order)
 
         _worker()
@@ -841,9 +845,9 @@ class NucleusCorrectionWidget(QWidget):
         )
 
     def _commit_reassign_ids(self, layer) -> int:
-        remapped, n_cells, old_to_new = reassign_ids_ordered(
-            np.asarray(layer.data), self._validated_track_order()
-        )
+        stack = np.asarray(layer.data)
+        order = track_order_by_frame_and_size(stack, self._validated_track_ids())
+        remapped, n_cells, old_to_new = reassign_ids_ordered(stack, order)
         layer.data = remapped
         self._refresh_correction_label_visuals()
         if self._pos_dir is not None and old_to_new:

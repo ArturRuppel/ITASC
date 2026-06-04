@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -56,6 +56,38 @@ def reassign_ids_ordered(
         lut[old_id] = new_id
         old_to_new[old_id] = new_id
     return lut[stack], len(ordered_ids), old_to_new
+
+
+def track_order_by_frame_and_size(
+    stack: np.ndarray, priority_ids: Iterable[int] = ()
+) -> list[int]:
+    """Order present track IDs for ID reassignment.
+
+    Tracks listed in *priority_ids* (e.g. validated tracks) form the first
+    group and the remaining present tracks the second; the two groups stay
+    separate so validated tracks always receive the lower IDs. Within each
+    group, IDs are sorted by starting frame (earliest first), then by track
+    length in frames (longest first), with the numeric ID as a final tiebreaker
+    for determinism.
+    """
+    stack = np.asarray(stack)
+    frames = stack if stack.ndim >= 3 else stack[None, ...]
+    start_frame: dict[int, int] = {}
+    length: dict[int, int] = {}
+    for t, frame in enumerate(frames):
+        for cid in np.unique(frame):
+            cid = int(cid)
+            if cid == 0:
+                continue
+            start_frame.setdefault(cid, t)
+            length[cid] = length.get(cid, 0) + 1
+
+    def sort_key(cid: int) -> tuple[int, int, int]:
+        return (start_frame[cid], -length[cid], cid)
+
+    present = set(start_frame)
+    priority = {int(cid) for cid in priority_ids} & present
+    return sorted(priority, key=sort_key) + sorted(present - priority, key=sort_key)
 
 
 def reassign_ids_stack(stack: np.ndarray) -> tuple[np.ndarray, int, dict[int, int]]:

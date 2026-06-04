@@ -9,6 +9,7 @@ from cellflow.napari._correction_utils import (
     reorder_stack_by_quality,
     retrack_stack_direction,
     remove_unvalidated_labels,
+    track_order_by_frame_and_size,
 )
 
 
@@ -239,6 +240,46 @@ def test_reassign_ids_ordered_empty_order_matches_compaction() -> None:
 
     assert old_to_new == {7: 1, 42: 2}
     np.testing.assert_array_equal(remapped, np.array([[0, 1], [2, 1]]))
+
+
+def test_track_order_sorts_by_start_frame_then_length() -> None:
+    # Track 1: frames 0-2 (len 3, start 0); 2: frame 0 only (len 1, start 0);
+    # 3: frames 1-2 (len 2, start 1).
+    stack = np.zeros((3, 1, 3), dtype=np.uint32)
+    stack[0, 0, 0] = 1
+    stack[0, 0, 1] = 2
+    stack[1, 0, 0] = 1
+    stack[2, 0, 0] = 1
+    stack[1, 0, 2] = 3
+    stack[2, 0, 2] = 3
+
+    # Start frame wins: 1 and 2 (start 0) precede 3 (start 1); within start 0
+    # the longer track 1 comes before 2.
+    assert track_order_by_frame_and_size(stack) == [1, 2, 3]
+
+
+def test_track_order_keeps_priority_group_first() -> None:
+    stack = np.zeros((2, 1, 3), dtype=np.uint32)
+    stack[0, 0, 0] = 1  # unvalidated, starts at frame 0
+    stack[1, 0, 1] = 2  # validated, starts at frame 1
+    stack[1, 0, 2] = 3  # validated, starts at frame 1
+
+    # Validated tracks lead despite their later start frame; within the group
+    # they still follow start frame / length order.
+    assert track_order_by_frame_and_size(stack, priority_ids=[3, 2]) == [2, 3, 1]
+
+
+def test_track_order_ignores_absent_priority_ids() -> None:
+    stack = np.array([[1, 2], [0, 1]], dtype=np.uint32)
+
+    assert track_order_by_frame_and_size(stack, priority_ids=[99]) == [1, 2]
+
+
+def test_track_order_handles_2d_single_frame() -> None:
+    labels = np.array([[0, 5, 5], [8, 8, 8]], dtype=np.uint32)
+
+    # Equal start frame and length -> numeric id breaks the tie.
+    assert track_order_by_frame_and_size(labels) == [5, 8]
 
 
 def test_reorder_stack_by_quality_relabels_best_track_to_one() -> None:

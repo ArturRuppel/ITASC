@@ -2,9 +2,9 @@
 
 When the user reassigns cell IDs to a contiguous 1-N range, validated tracks
 should claim ``1, 2, …`` ahead of any unvalidated tracks, so the well-curated
-tracks get the stable low numbers. ``_validated_track_order`` builds that
-priority list and both the interactive and commit reassign paths feed it to
-``reassign_ids_ordered``.
+tracks get the stable low numbers. ``_validated_track_ids`` lists the priority
+group and both the interactive and commit reassign paths feed it (with the
+stack) to ``track_order_by_frame_and_size`` and ``reassign_ids_ordered``.
 """
 
 from __future__ import annotations
@@ -23,18 +23,18 @@ def _stub_with_validated(validated: dict[int, set[int]]) -> SimpleNamespace:
     )
 
 
-def test_validated_track_order_is_sorted_ids() -> None:
+def test_validated_track_ids_is_sorted_ids() -> None:
     stub = _stub_with_validated({7: {0}, 3: {0, 1}, 5: {2}})
 
-    order = NucleusCorrectionWidget._validated_track_order(stub)
+    order = NucleusCorrectionWidget._validated_track_ids(stub)
 
     assert order == [3, 5, 7]
 
 
-def test_validated_track_order_empty_without_project() -> None:
+def test_validated_track_ids_empty_without_project() -> None:
     stub = SimpleNamespace(_pos_dir=None)
 
-    assert NucleusCorrectionWidget._validated_track_order(stub) == []
+    assert NucleusCorrectionWidget._validated_track_ids(stub) == []
 
 
 def test_commit_reassign_gives_validated_tracks_low_ids() -> None:
@@ -45,7 +45,7 @@ def test_commit_reassign_gives_validated_tracks_low_ids() -> None:
     stub = SimpleNamespace(
         _pos_dir=object(),
         _refresh_correction_label_visuals=lambda: None,
-        _validated_track_order=lambda: [9],
+        _validated_track_ids=lambda: [9],
     )
 
     captured: dict = {}

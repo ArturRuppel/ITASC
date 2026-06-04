@@ -213,6 +213,9 @@ class _OverviewView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
     def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if not (event.modifiers() & Qt.ControlModifier):
+            super().wheelEvent(event)  # plain wheel scrolls, like everywhere else
+            return
         factor = _ZOOM_STEP if event.angleDelta().y() > 0 else 1.0 / _ZOOM_STEP
         self.scale(factor, factor)
 
