@@ -817,6 +817,7 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_correction_label_visuals()
         if self._pos_dir is not None and old_to_new:
             remap_validated_tracks(self._pos_dir, old_to_new)
+        self._refresh_lineage_canvas_if_shown()
         self._correction_status(
             f"Reassigned {n_cells} cell IDs to range 1-{n_cells}. Unsaved."
         )
@@ -1465,6 +1466,7 @@ class NucleusCorrectionWidget(QWidget):
                 self.correction_widget.select_label(ct, 0)
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
+        self._refresh_lineage_canvas_if_shown()
         self._correction_status(
             f"Removed unvalidated labels in {result.changed_frames} frame(s), "
             f"{result.changed_pixels} px changed. Unsaved."
@@ -1519,6 +1521,7 @@ class NucleusCorrectionWidget(QWidget):
                     self.correction_widget.select_label(ct, 0)
             self._refresh_validated_overlay()
             self._refresh_validation_counter()
+            self._refresh_lineage_canvas_if_shown()
         for t in range(int(layer.data.shape[0])):
             write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
         self._correction_status(
