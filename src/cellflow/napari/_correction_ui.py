@@ -13,6 +13,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QWidget,
 )
 
@@ -23,6 +24,39 @@ from cellflow.napari.ui_style import (
     stage_header_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
+
+
+def set_checked_without_signal(button: QWidget, checked: bool) -> None:
+    """Toggle a checkable button's state without emitting its ``toggled`` signal."""
+    old = button.blockSignals(True)
+    try:
+        button.setChecked(checked)
+    finally:
+        button.blockSignals(old)
+
+
+def confirm_unsaved_before_deactivate(parent: QWidget, *, save_noun: str) -> str:
+    """Prompt before leaving correction mode with unsaved changes.
+
+    ``save_noun`` names what would be saved (e.g. ``"tracked labels"``). Returns
+    ``"save"``, ``"discard"``, or ``"cancel"``; the caller performs the actual
+    save and clears its dirty flag.
+    """
+    choice = QMessageBox.question(
+        parent,
+        "Save correction changes?",
+        (
+            "Correction mode has unsaved changes. "
+            f"Save {save_noun} before turning correction mode off?"
+        ),
+        QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+        QMessageBox.Save,
+    )
+    if choice == QMessageBox.Cancel:
+        return "cancel"
+    if choice == QMessageBox.Save:
+        return "save"
+    return "discard"
 
 
 def flatten_embedded_section(section: CollapsibleSection) -> None:

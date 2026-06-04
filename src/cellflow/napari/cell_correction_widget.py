@@ -12,7 +12,6 @@ from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +29,17 @@ from cellflow.napari._widget_helpers import (
     button_grid as _button_grid,
     make_status as _make_status,
     tool_btn as _tool_btn,
+)
+from cellflow.napari._correction_layer_lifecycle import (
+    LayerViewState,
+    capture_layer_view_state,
+    hide_all_layers,
+    remove_owned_layers,
+    restore_layer_view_state,
+)
+from cellflow.napari._correction_ui import (
+    confirm_unsaved_before_deactivate,
+    set_checked_without_signal,
 )
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
@@ -92,7 +102,7 @@ class CellCorrectionWidget(QWidget):
         self._pos_dir_provider = pos_dir_provider
         self._local_pos_dir: Path | None = None
         self._files_widget_refresh = files_widget_refresh_callback or (lambda _pd: None)
-        self._correction_view_state: dict | None = None
+        self._correction_view_state: LayerViewState | None = None
         self._correction_owned_layers: set[str] = set()
         self._correction_dirty: bool = False
         self._setup_ui()
@@ -301,11 +311,7 @@ class CellCorrectionWidget(QWidget):
 
     @staticmethod
     def _set_checked_without_signal(button, checked: bool) -> None:
-        old = button.blockSignals(True)
-        try:
-            button.setChecked(checked)
-        finally:
-            button.blockSignals(old)
+        set_checked_without_signal(button, checked)
 
     def _sync_correction_panel_visibility(self) -> None:
         show_params = self.params_btn.isChecked()
@@ -324,8 +330,7 @@ class CellCorrectionWidget(QWidget):
     def _on_active_button_toggled(self, active: bool) -> None:
         if active:
             self._capture_correction_view_state()
-            for layer in list(self.viewer.layers):
-                layer.visible = False
+            hide_all_layers(self.viewer.layers)
 
             if not self._load_correction_layers_from_disk():
                 self._restore_correction_view_state()
@@ -358,30 +363,16 @@ class CellCorrectionWidget(QWidget):
     def _confirm_deactivate_with_unsaved_changes(self) -> bool:
         if not self._correction_dirty:
             return True
-        choice = QMessageBox.question(
-            self,
-            "Save correction changes?",
-            (
-                "Correction mode has unsaved changes. "
-                "Save cell labels before turning correction mode off?"
-            ),
-            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
-            QMessageBox.Save,
-        )
-        if choice == QMessageBox.Cancel:
+        action = confirm_unsaved_before_deactivate(self, save_noun="cell labels")
+        if action == "cancel":
             return False
-        if choice == QMessageBox.Save:
+        if action == "save":
             self._on_save_labels()
-            self._correction_dirty = False
-        elif choice == QMessageBox.Discard:
-            self._correction_dirty = False
+        self._correction_dirty = False
         return True
 
     def _remove_correction_owned_layers(self) -> None:
-        for name in list(self._correction_owned_layers):
-            if name in self.viewer.layers:
-                self.viewer.layers.remove(self.viewer.layers[name])
-        self._correction_owned_layers.clear()
+        remove_owned_layers(self.viewer.layers, self._correction_owned_layers)
 
     def _correction_tracked_layer(self):
         """Return the [Correction] Cell Labels layer, or None if absent."""
@@ -390,32 +381,14 @@ class CellCorrectionWidget(QWidget):
         return None
 
     # ------------------------------------------------------------------ #
-    # View state capture / restore (mirrors NucleusCorrectionWidget)     #
+    # View state capture / restore (shared with NucleusCorrectionWidget) #
     # ------------------------------------------------------------------ #
 
     def _capture_correction_view_state(self) -> None:
-        selected = [layer.name for layer in self.viewer.layers.selection]
-        active = self.viewer.layers.selection.active
-        self._correction_view_state = {
-            "visibility": {
-                layer.name: bool(layer.visible) for layer in self.viewer.layers
-            },
-            "active": active.name if active is not None else None,
-            "selected": selected,
-        }
+        self._correction_view_state = capture_layer_view_state(self.viewer.layers)
 
     def _restore_correction_view_state(self) -> None:
-        state = self._correction_view_state or {}
-        for name, visible in state.get("visibility", {}).items():
-            if name in self.viewer.layers:
-                self.viewer.layers[name].visible = bool(visible)
-        self.viewer.layers.selection.clear()
-        for name in state.get("selected", ()):
-            if name in self.viewer.layers:
-                self.viewer.layers.selection.add(self.viewer.layers[name])
-        active_name = state.get("active")
-        if active_name in self.viewer.layers:
-            self.viewer.layers.selection.active = self.viewer.layers[active_name]
+        restore_layer_view_state(self.viewer.layers, self._correction_view_state)
         self._correction_view_state = None
 
     def _load_correction_layers_from_disk(self) -> bool:

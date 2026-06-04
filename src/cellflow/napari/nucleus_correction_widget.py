@@ -262,6 +262,40 @@ class NucleusCorrectionWidget(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        self._init_candidate_refresh_timer()
+
+        inner = QWidget(self)
+        group_lay = QVBoxLayout(inner)
+        group_lay.setContentsMargins(0, 0, 0, 0)
+        group_lay.setSpacing(6)
+
+        self._build_action_buttons()
+        self._build_status_labels()
+        self._build_correction_subwidget()
+        self._build_extend_retrack_section()
+        self._build_shortcuts_section()
+        self._build_toolbar()
+        self._build_view_toggle_checkboxes()
+        self._assemble_controls_column(group_lay)
+
+        self.header, self.header_lbl = build_correction_header(
+            self,
+            shortcuts_btn=self.shortcuts_btn,
+            params_btn=self.params_btn,
+            active_btn=self.active_btn,
+        )
+        self.section = CollapsibleSection("Correction", inner, expanded=False)
+        self.section._toggle.setVisible(False)
+        self.section._toggle.setEnabled(False)
+
+        self.correction_active_btn = self.active_btn
+        self.correction_shortcuts_btn = self.shortcuts_btn
+        self.correction_status_lbl = self.status_lbl
+        self.correction_mode_section = self.section
+        self._correction_active_content_visible = False
+        self._connect_signals()
+
+    def _init_candidate_refresh_timer(self) -> None:
         # Searching + rendering the candidate gallery is expensive, so debounce
         # it: every refresh request (re)starts this timer and the actual rebuild
         # only fires once the frame has been still for the interval — fast
@@ -273,11 +307,7 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_candidate_gallery_now
         )
 
-        inner = QWidget(self)
-        group_lay = QVBoxLayout(inner)
-        group_lay.setContentsMargins(0, 0, 0, 0)
-        group_lay.setSpacing(6)
-
+    def _build_action_buttons(self) -> None:
         self.active_btn = _tool_btn(
             "⏻",
             "Activate correction mode and show correction layers and controls.",
@@ -337,6 +367,7 @@ class NucleusCorrectionWidget(QWidget):
             "Reassign cell IDs, remove unvalidated labels, and save tracked labels.",
         )
 
+    def _build_status_labels(self) -> None:
         self.status_lbl = _make_status()
         # Drop the smaller status font so the status line reads at the same
         # size as the rest of the controls column.
@@ -345,6 +376,7 @@ class NucleusCorrectionWidget(QWidget):
         self.validation_counter_lbl = QLabel("")
         self.validation_counter_lbl.setWordWrap(True)
 
+    def _build_correction_subwidget(self) -> None:
         self.correction_widget = CorrectionWidget(
             self.viewer,
             show_activate_btn=False,
@@ -370,6 +402,7 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.correction_widget._status.setVisible(False)
 
+    def _build_extend_retrack_section(self) -> None:
         extend_retrack_inner = QWidget(self)
         extend_retrack_lay = QVBoxLayout(extend_retrack_inner)
         extend_retrack_lay.setContentsMargins(0, 0, 0, 0)
@@ -421,6 +454,7 @@ class NucleusCorrectionWidget(QWidget):
         self.extend_params_section = self.extend_retrack_params_section
         self.retrack_params_section = self.extend_retrack_params_section
 
+    def _build_shortcuts_section(self) -> None:
         self.shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
             build_shortcuts_widget(),
@@ -430,6 +464,8 @@ class NucleusCorrectionWidget(QWidget):
         flatten_embedded_section(self.shortcuts_section)
         self.shortcuts_section.setVisible(False)
         self.correction_widget.setVisible(False)
+
+    def _build_toolbar(self) -> None:
         # Extend / swap are driven by clicking into the candidate gallery now,
         # so they're dropped from the toolbar (the A/D/Z/C shortcuts still work).
         self.toolbar = build_correction_toolbar(
@@ -443,6 +479,8 @@ class NucleusCorrectionWidget(QWidget):
             ],
         )
         self.toolbar.setVisible(False)
+
+    def _build_view_toggle_checkboxes(self) -> None:
         self.track_path_check = QCheckBox("Track path")
         self.track_path_check.setToolTip(
             "Paint the selected track's whole trajectory as a fading comet "
@@ -467,6 +505,7 @@ class NucleusCorrectionWidget(QWidget):
         self.validation_counter_lbl.setVisible(False)
         self.correction_widget._attrib_lbl.setVisible(False)
 
+    def _assemble_controls_column(self, group_lay: QVBoxLayout) -> None:
         # Lay the controls column out top→bottom: the action toolbar, the
         # collapsible params / shortcuts panels (they expand just below it),
         # the per-frame correction tools, the view-toggle checkboxes in two
@@ -492,29 +531,6 @@ class NucleusCorrectionWidget(QWidget):
         group_lay.addWidget(self.status_lbl)
         group_lay.addWidget(self.validation_counter_lbl)
         group_lay.addWidget(self.correction_widget._attrib_lbl)
-
-        self.header, self.header_lbl = build_correction_header(
-            self,
-            shortcuts_btn=self.shortcuts_btn,
-            params_btn=self.params_btn,
-            active_btn=self.active_btn,
-        )
-
-        self.section = CollapsibleSection(
-            "Correction",
-            inner,
-            expanded=False,
-
-        )
-        self.section._toggle.setVisible(False)
-        self.section._toggle.setEnabled(False)
-
-        self.correction_active_btn = self.active_btn
-        self.correction_shortcuts_btn = self.shortcuts_btn
-        self.correction_status_lbl = self.status_lbl
-        self.correction_mode_section = self.section
-        self._correction_active_content_visible = False
-        self._connect_signals()
 
     def _connect_signals(self) -> None:
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
