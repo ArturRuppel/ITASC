@@ -100,6 +100,41 @@ def test_deselect_restores_overview():
     np.testing.assert_array_equal(centroids.shown, [True, True, True])
 
 
+def _reapply_stub(selected_label, *, with_layer=True):
+    centroids = _FakeLayer(features={"label_id": [7, 8, 7], "frame": [0, 0, 1]})
+    layers = _FakeLayers(
+        {_CORRECTION_CENTROID_LAYER: centroids} if with_layer else {}
+    )
+    obj = types.SimpleNamespace(
+        viewer=types.SimpleNamespace(layers=layers),
+        correction_widget=types.SimpleNamespace(_selected_label=selected_label),
+        _apply_centroid_focus=NucleusCorrectionWidget._apply_centroid_focus,
+    )
+    return obj, centroids
+
+
+def test_reapply_centroid_focus_restores_filter_after_rebuild():
+    # Simulate an edit refresh that rebuilt the layer: shown reset to all-True
+    # and the focused cell's white crosses lost to per-label colors.
+    obj, centroids = _reapply_stub(7)
+    centroids.shown = np.array([True, True, True])
+    NucleusCorrectionWidget._reapply_centroid_focus(obj)
+    np.testing.assert_array_equal(centroids.shown, [True, False, True])
+    np.testing.assert_allclose(centroids.face_color[0], FOCUS_CROSS_COLOR)
+    np.testing.assert_allclose(centroids.face_color[2], FOCUS_CROSS_COLOR)
+
+
+def test_reapply_centroid_focus_noop_without_selection():
+    obj, centroids = _reapply_stub(0)
+    NucleusCorrectionWidget._reapply_centroid_focus(obj)
+    assert centroids.shown is None  # untouched when nothing is focused
+
+
+def test_reapply_centroid_focus_tolerates_missing_layer():
+    obj, _ = _reapply_stub(7, with_layer=False)
+    NucleusCorrectionWidget._reapply_centroid_focus(obj)  # must not raise
+
+
 def test_missing_overlay_layers_are_tolerated():
     obj = types.SimpleNamespace(
         viewer=types.SimpleNamespace(layers=_FakeLayers()),

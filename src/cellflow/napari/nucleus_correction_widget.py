@@ -2073,9 +2073,17 @@ class NucleusCorrectionWidget(QWidget):
             frame_view_2d=frame_view_2d,
             counter_label=self.validation_counter_lbl,
         )
-        # Mask edits (draw / merge / relabel / redraw / fill) all funnel through
-        # here, so rebuild the canvas too (its overview presence + detail strip
-        # go stale otherwise) — the retrack/extend paths do this separately.
+        # Mask edits (draw / merge / relabel / redraw / fill / split) funnel
+        # through here, while retrack/extend/swap drive their own *_visuals_live
+        # paths. If the focused cell's pixels changed, its track-path comet +
+        # spotlight are now stale, so rebuild them here too.
+        sel = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        if sel and sel in {int(v) for v in changed_ids}:
+            if self.track_path_check.isChecked():
+                self._refresh_track_path_overlay()
+                self._refresh_track_path_spotlight()
+        # Rebuild the canvas too (its overview presence + detail strip go stale
+        # otherwise) — the retrack/extend paths do this separately.
         self._refresh_lineage_canvas_if_shown()
         self._refresh_candidate_gallery_if_shown()
 
@@ -2098,6 +2106,20 @@ class NucleusCorrectionWidget(QWidget):
             frame=t,
         )
         return protected_cell_mask(frame, protected_ids)
+
+    def _reapply_centroid_focus(self) -> None:
+        """Restore the focused cell's cross styling after the centroid layer rebuilt.
+
+        Editing actions rebuild the centroid cross layer with per-label colors and
+        reset the per-point ``shown`` filter, which drops the focused cell's white
+        cross and single-cell filter. Re-run the focus presentation so the
+        highlighted cell's cross keeps tracking it. A no-op when nothing is focused
+        (the overview already shows every cross in its per-label color).
+        """
+        lab = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        if not lab or _CORRECTION_CENTROID_LAYER not in self.viewer.layers:
+            return
+        self._apply_centroid_focus(self.viewer.layers[_CORRECTION_CENTROID_LAYER], lab)
 
     def _refresh_correction_label_visuals_for_edit(
         self,
@@ -2122,6 +2144,7 @@ class NucleusCorrectionWidget(QWidget):
             frame=t,
             changed_ids=changed_ids,
         )
+        self._reapply_centroid_focus()
         try:
             self.viewer.layers.selection.active = layer
         except Exception:
@@ -2170,6 +2193,7 @@ class NucleusCorrectionWidget(QWidget):
             name=_CORRECTION_CENTROID_LAYER,
             owned_layer_names=self._correction_owned_layers,
         )
+        self._reapply_centroid_focus()
         try:
             self.viewer.layers.selection.active = layer
         except Exception:
