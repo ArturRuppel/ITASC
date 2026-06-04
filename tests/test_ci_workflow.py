@@ -24,7 +24,7 @@ def test_ci_workflow_runs_on_push_and_pull_request() -> None:
 def test_ci_workflow_tests_declared_python_range() -> None:
     workflow = _workflow_text()
 
-    assert "python-version: [\"3.9\", \"3.13\"]" in workflow
+    assert "python-version: [\"3.10\", \"3.13\"]" in workflow
     assert "actions/checkout@v6" in workflow
     assert "actions/setup-python@v6" in workflow
 
