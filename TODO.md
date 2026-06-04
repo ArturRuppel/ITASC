@@ -27,3 +27,4 @@
 - [x] Fix shift+arrow track navigation: shift+arrow should recenter both the lineage viewer and the main viewer, exactly as if the track had been clicked. It should also not scan for the next track in the current frame, but simply move to the next track in the list.
 - [x] Fix "reassign IDs to contiguous": it makes a mess with validated track numbers. It seems to work when all nodes are validated, though (duh).
 - [x] Add shortcut to correction widget: space bar should play/stop the movie.
+- [x] Reassign by ID should assign IDs such that validated tracks get assigned first.

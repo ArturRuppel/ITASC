@@ -39,7 +39,7 @@ from cellflow.napari._correction_anchor import (
 )
 from cellflow.napari._correction_utils import (
     frame_view_2d,
-    reassign_ids_stack,
+    reassign_ids_ordered,
     retrack_stack_direction,
 )
 from cellflow.napari._correction_commit import (
@@ -135,6 +135,9 @@ _CORRECTION_TRACK_LAYER = "[Correction] Nucleus tracks"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _NUCLEUS_TRACK_COLOR_SCALE = 0.65
+# Fraction of the canvas a navigated-to track's bounding box should span in each
+# direction (≈25% of the canvas area), leaving margin around the track.
+_TRACK_VIEWPORT_FRACTION = 0.5
 
 _DEFAULT_DEPENDENCIES = {
     "annotate_database_from_corrections": _annotate_database_from_corrections,
@@ -346,7 +349,7 @@ class NucleusCorrectionWidget(QWidget):
             "⮀", "Swap selected cell with the next larger candidate fragment (C)."
         )
         self.reassign_ids_btn = _tool_btn(
-            "#", "Reassign cell IDs to contiguous range 1-N."
+            "#", "Reassign cell IDs to contiguous range 1-N (validated tracks first)."
         )
         self.validate_track_btn = _tool_btn(
             "✓", "Lock selected cell geometry in every frame where it appears (V)."
@@ -799,11 +802,20 @@ class NucleusCorrectionWidget(QWidget):
     def _on_load_tracked(self) -> None:
         self._load_correction_layers_from_disk()
 
+    def _validated_track_order(self) -> list[int]:
+        """Validated track IDs in ascending order, for reassign priority."""
+        if self._pos_dir is None:
+            return []
+        read_validated_tracks_fn = self._dependency("read_validated_tracks")
+        validated_tracks = read_validated_tracks_fn(self._pos_dir) or {}
+        return sorted(int(cid) for cid in validated_tracks)
+
     def _on_reassign_ids(self) -> None:
         layer = self._correction_tracked_layer()
         if layer is None:
             self._correction_status("No tracked layer loaded."); return
         stack = np.asarray(layer.data)
+        order = self._validated_track_order()
         self._correction_status("Reassigning cell IDs...")
 
         @self._dependency("thread_worker")(connect={
@@ -811,7 +823,7 @@ class NucleusCorrectionWidget(QWidget):
             "errored": self._on_correction_worker_error,
         })
         def _worker():
-            return reassign_ids_stack(stack)
+            return reassign_ids_ordered(stack, order)
 
         _worker()
 
@@ -829,7 +841,9 @@ class NucleusCorrectionWidget(QWidget):
         )
 
     def _commit_reassign_ids(self, layer) -> int:
-        remapped, n_cells, old_to_new = reassign_ids_stack(np.asarray(layer.data))
+        remapped, n_cells, old_to_new = reassign_ids_ordered(
+            np.asarray(layer.data), self._validated_track_order()
+        )
         layer.data = remapped
         self._refresh_correction_label_visuals()
         if self._pos_dir is not None and old_to_new:
@@ -2030,27 +2044,78 @@ class NucleusCorrectionWidget(QWidget):
         self._navigate_to_cell(t, nxt, from_lineage=False)
 
     def _center_viewer_on_cell(self, t: int, cell_id: int) -> None:
-        """Pan the napari camera onto cell ``cell_id`` at frame ``t``."""
+        """Frame the whole selected track in the image viewer.
+
+        Centers the napari camera on the track's full spatial bounding box —
+        its union across *every* frame it appears in, not just frame ``t`` —
+        and zooms so that box spans about :data:`_TRACK_VIEWPORT_FRACTION` of
+        the canvas in both directions (≈25% of the canvas area), leaving margin
+        around the track. ``t`` only fixes the camera's non-spatial axes (the
+        current frame); the y/x framing comes from the whole track.
+        """
         layer = self._correction_tracked_layer()
         if layer is None or not cell_id:
             return
         try:
-            seg2d = frame_view_2d(np.asarray(layer.data), int(t))
-            if seg2d is None:
+            data = np.asarray(layer.data)
+            coords = np.nonzero(data == int(cell_id))
+            if coords[-1].size == 0:
                 return
-            ys, xs = np.nonzero(seg2d == int(cell_id))
-            if ys.size == 0:
-                return
-            cy, cx = float(ys.mean()), float(xs.mean())
-            data_coord = (
-                (int(t), cy, cx) if np.asarray(layer.data).ndim >= 3 else (cy, cx)
-            )
-            world = layer.data_to_world(data_coord)
+            ys, xs = coords[-2], coords[-1]
+            ymin, ymax = float(ys.min()), float(ys.max())
+            xmin, xmax = float(xs.min()), float(xs.max())
+
+            def to_world(y: float, x: float):
+                coord = (int(t), y, x) if data.ndim >= 3 else (y, x)
+                return layer.data_to_world(coord)
+
+            world_c = to_world((ymin + ymax) / 2.0, (xmin + xmax) / 2.0)
             center = list(self.viewer.camera.center)
-            center[-2:] = [float(world[-2]), float(world[-1])]
+            center[-2:] = [float(world_c[-2]), float(world_c[-1])]
             self.viewer.camera.center = tuple(center)
+            self._zoom_to_track_bbox(ymin, ymax, xmin, xmax, to_world)
         except Exception:
-            logger.exception("lineage navigation: camera centering failed")
+            logger.exception("lineage navigation: camera framing failed")
+
+    def _zoom_to_track_bbox(self, ymin, ymax, xmin, xmax, to_world) -> None:
+        """Zoom so the track's world bbox fills ~:data:`_TRACK_VIEWPORT_FRACTION`.
+
+        napari's ``camera.zoom`` is canvas pixels per world unit, so the world
+        span visible along an axis is ``canvas_px / zoom``. Picking the smaller
+        of the per-axis zooms keeps the larger bbox side at exactly the target
+        fraction and the other side within it (the camera zoom is uniform).
+        Degenerate (zero-extent) sides are skipped; if no canvas size is
+        available the zoom is left untouched.
+        """
+        canvas = self._canvas_size_px()
+        if canvas is None:
+            return
+        canvas_h, canvas_w = canvas
+        w0, w1 = to_world(ymin, xmin), to_world(ymax, xmax)
+        bbox_h = abs(float(w1[-2]) - float(w0[-2]))
+        bbox_w = abs(float(w1[-1]) - float(w0[-1]))
+        candidates = []
+        if bbox_h > 0:
+            candidates.append(_TRACK_VIEWPORT_FRACTION * canvas_h / bbox_h)
+        if bbox_w > 0:
+            candidates.append(_TRACK_VIEWPORT_FRACTION * canvas_w / bbox_w)
+        if candidates:
+            self.viewer.camera.zoom = min(candidates)
+
+    def _canvas_size_px(self):
+        """``(height, width)`` of the viewer canvas in pixels, or ``None``.
+
+        napari's ``_qt_viewer.canvas`` is private and its shape varies across
+        versions, so a missing/odd attribute degrades to "leave the zoom alone".
+        """
+        try:
+            h, w = self.viewer.window._qt_viewer.canvas.size
+            h, w = int(h), int(w)
+            if h > 0 and w > 0:
+                return h, w
+        except Exception:
+            logger.debug("track framing: canvas size unavailable", exc_info=True)
+        return None
 
     def _find_plugin_dock(self):
         """The QDockWidget hosting the correction header, walking up from it.

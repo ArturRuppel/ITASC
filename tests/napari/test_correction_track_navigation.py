@@ -93,6 +93,86 @@ def test_step_track_on_empty_stack_does_not_navigate():
     assert obj._status  # reported "no cells"
 
 
+# ── Whole-track camera framing (_center_viewer_on_cell) ─────────────────────
+
+
+def _framing_stub(data, *, canvas):
+    """Stand-in exposing what ``_center_viewer_on_cell`` reaches for.
+
+    ``data_to_world`` is identity (unit scale), so world bbox == data bbox.
+    The three framing helpers are bound to the stub so the real logic runs.
+    """
+    layer = types.SimpleNamespace(
+        data=data,
+        data_to_world=lambda coord: np.asarray(coord, dtype=float),
+    )
+    camera = types.SimpleNamespace(center=(0.0, 0.0, 0.0), zoom=1.0)
+    canvas_obj = (
+        None if canvas is None
+        else types.SimpleNamespace(size=canvas)
+    )
+    viewer = types.SimpleNamespace(
+        camera=camera,
+        window=types.SimpleNamespace(
+            _qt_viewer=types.SimpleNamespace(canvas=canvas_obj)
+        ),
+    )
+    obj = types.SimpleNamespace(
+        _correction_tracked_layer=lambda: layer,
+        viewer=viewer,
+    )
+    obj._zoom_to_track_bbox = types.MethodType(
+        NucleusCorrectionWidget._zoom_to_track_bbox, obj
+    )
+    obj._canvas_size_px = types.MethodType(
+        NucleusCorrectionWidget._canvas_size_px, obj
+    )
+    return obj
+
+
+def _track_bbox_stack():
+    # Track 7 spans frames 0 and 2; its union bbox is y∈[10,30], x∈[10,50],
+    # centered at (20, 30) with extents 20 (y) and 40 (x).
+    data = np.zeros((3, 100, 100), dtype=int)
+    data[0, 10, 10] = 7
+    data[2, 30, 50] = 7
+    return data
+
+
+def test_center_frames_whole_track_bbox_not_just_current_frame():
+    obj = _framing_stub(_track_bbox_stack(), canvas=(200, 400))
+    NucleusCorrectionWidget._center_viewer_on_cell(obj, 0, 7)
+    # Camera centers on the full-track bbox center (20, 30), not frame 0's cell.
+    assert obj.viewer.camera.center == (0.0, 20.0, 30.0)
+    # zoom = min(0.5*200/20, 0.5*400/40) = min(5, 5) = 5 → bbox fills ~50%.
+    assert obj.viewer.camera.zoom == 5.0
+
+
+def test_center_zoom_picks_the_limiting_dimension():
+    # Wide-but-short track: x extent dominates, so it caps the zoom.
+    data = np.zeros((1, 100, 100), dtype=int)
+    data[0, 40, 0] = 3
+    data[0, 50, 80] = 3  # y∈[40,50] (10), x∈[0,80] (80)
+    obj = _framing_stub(data, canvas=(200, 400))
+    NucleusCorrectionWidget._center_viewer_on_cell(obj, 0, 3)
+    # zoom_y = 0.5*200/10 = 10, zoom_x = 0.5*400/80 = 2.5 → min = 2.5.
+    assert obj.viewer.camera.zoom == 2.5
+
+
+def test_center_without_canvas_size_still_pans_but_leaves_zoom():
+    obj = _framing_stub(_track_bbox_stack(), canvas=None)
+    NucleusCorrectionWidget._center_viewer_on_cell(obj, 0, 7)
+    assert obj.viewer.camera.center == (0.0, 20.0, 30.0)
+    assert obj.viewer.camera.zoom == 1.0  # untouched
+
+
+def test_center_on_absent_cell_is_a_noop():
+    obj = _framing_stub(_track_bbox_stack(), canvas=(200, 400))
+    NucleusCorrectionWidget._center_viewer_on_cell(obj, 0, 999)
+    assert obj.viewer.camera.center == (0.0, 0.0, 0.0)
+    assert obj.viewer.camera.zoom == 1.0
+
+
 # ── Space-bar movie play/stop (_toggle_movie_playback) ──────────────────────
 
 
