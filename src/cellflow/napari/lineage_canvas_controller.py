@@ -66,6 +66,10 @@ class LineageCanvasController:
         self._occupied: dict[int, list[int]] = {}
         self._validated_map: dict[int, set[int]] = {}
         self._anchored_map: dict[int, set[int]] = {}
+        # Structural lanes (cell_id, column, segments) from the last full assemble,
+        # so a flag-only change can recolour without re-running build_lineage.
+        self._lane_structure: list[tuple[int, int, tuple[tuple[int, int], ...]]] | None = None
+        self._n_frames: int = 0
 
     def refresh(self) -> None:
         """Rebuild the overview and the detail strip for the current selection."""
@@ -104,6 +108,10 @@ class LineageCanvasController:
                 validated=frozenset(self._validated_map.get(cid, ())),
                 anchored=frozenset(self._anchored_map.get(cid, ())),
             ))
+        self._lane_structure = [
+            (ln.cell_id, ln.column, ln.segments) for ln in lanes
+        ]
+        self._n_frames = model.n_frames
         return lanes, model.n_frames
 
     def set_selection(self, cell_id: int) -> None:
@@ -131,6 +139,39 @@ class LineageCanvasController:
         """Scroll the overview so ``cell_id``'s row is vertically centered."""
         if self._overview_panel is not None:
             self._overview_panel.center_on_track(int(cell_id or 0))
+
+    def refresh_status(self) -> None:
+        """Recolour validated/anchored flags without rescanning the stack.
+
+        Validation and anchoring change only per-frame *status*, never track
+        topology, so the expensive whole-stack ``build_lineage`` in
+        :meth:`refresh` is unnecessary. This re-reads the validation records and
+        re-applies them to the lanes cached by the last full refresh, keeping
+        the GUI responsive on long tracks (the per-frame ``build_lineage`` froze
+        it for seconds). Falls back to a full :meth:`refresh` when no structure
+        has been cached yet.
+        """
+        if self._overview_panel is None:
+            return
+        if self._lane_structure is None:
+            self.refresh()
+            return
+        self._validated_map, self._anchored_map = self._validated_anchored_maps()
+        lanes = [
+            LaneView(
+                cell_id=cid,
+                column=column,
+                segments=segments,
+                validated=frozenset(self._validated_map.get(cid, ())),
+                anchored=frozenset(self._anchored_map.get(cid, ())),
+            )
+            for cid, column, segments in self._lane_structure
+        ]
+        self._overview_panel.set_overview(
+            lanes, n_frames=self._n_frames, title=f"{len(lanes)} track(s)",
+        )
+        self.set_current_frame(self._current_t_provider())
+        self.set_selection(int(self._selected_label_provider() or 0))
 
     def refresh_detail(self) -> None:
         """Rebuild only the selected track's detail strip (no overview rescan).
@@ -165,6 +206,7 @@ class LineageCanvasController:
         """
         self._film_panel = None
         self._overview_panel = None
+        self._lane_structure = None
 
     # -- assembly helpers ---------------------------------------------------
     def _validated_anchored_maps(

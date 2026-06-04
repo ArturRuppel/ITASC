@@ -79,6 +79,7 @@ from cellflow.database.tracked import (
 from cellflow.database.validation import (
     add_anchor,
     add_correction,
+    add_corrections,
     invalidate_track,
     is_track_validated,
     read_corrections,
@@ -895,15 +896,17 @@ class NucleusCorrectionWidget(QWidget):
         frames = self._frames_with_cell(cell_id)
         if not frames:
             self._correction_status(f"Cell {cell_id} not present in tracked labels."); return
-        for correction in corrections_for_label_frames(
-            data,
-            cell_id=cell_id,
-            frames=frames,
-        ):
-            add_correction(self._pos_dir, correction)
+        add_corrections(
+            self._pos_dir,
+            corrections_for_label_frames(
+                data,
+                cell_id=cell_id,
+                frames=frames,
+            ),
+        )
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
-        self._refresh_lineage_canvas_if_shown()
+        self._refresh_lineage_canvas_status_if_shown()
         self._correction_status(
             f"Validated track {cell_id} across {len(frames)} frame(s)."
         )
@@ -1901,6 +1904,17 @@ class NucleusCorrectionWidget(QWidget):
         """
         if self._workspace_splitter is not None:
             self._lineage_canvas.refresh()
+
+    def _refresh_lineage_canvas_status_if_shown(self) -> None:
+        """Lightweight lineage refresh for flag-only changes (validate/anchor).
+
+        Validation changes per-frame status, not topology, so this recolours the
+        cached lanes instead of re-running the whole-stack lineage build that
+        :meth:`_refresh_lineage_canvas_if_shown` does (which froze the GUI for
+        seconds when validating a long track).
+        """
+        if self._workspace_splitter is not None:
+            self._lineage_canvas.refresh_status()
 
     def _track_path_spotlight_mask(self, _t: int, lab: int, _default_mask):
         return self._all_tracks.spotlight_mask(_t, lab, _default_mask)

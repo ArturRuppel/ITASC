@@ -163,6 +163,56 @@ def test_refresh_detail_rebuilds_strip_without_rescanning_overview(stubbed):
     lcc.TrackFilmStripPanel.return_value.set_strip.assert_called()
 
 
+def test_refresh_status_recolours_without_rescanning_overview(stubbed, monkeypatch):
+    # Validation/anchoring only flips per-frame flags; recolour the cached lanes
+    # instead of re-running the whole-stack build (which froze the GUI).
+    validated = {7: set()}
+    monkeypatch.setattr(lcc, "read_validated_tracks", lambda _p: validated)
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+        pos_dir=object(),
+    )
+    ctrl.refresh()
+    lcc.build_lineage.reset_mock()
+
+    # Now the track gets validated at both frames.
+    validated[7] = {0, 1}
+    ctrl.refresh_status()
+
+    lcc.build_lineage.assert_not_called()
+    lane = stubbed.return_value.set_overview.call_args.args[0][0]
+    assert lane.cell_id == 7
+    assert lane.segments == ((0, 1),)
+    assert lane.validated == frozenset({0, 1})
+
+
+def test_refresh_status_falls_back_to_full_refresh_when_uncached(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+    # Force a panel to exist without a cached structure (never fully refreshed).
+    ctrl._ensure_panels()
+
+    ctrl.refresh_status()
+
+    lcc.build_lineage.assert_called_once()
+
+
+def test_refresh_status_is_a_noop_before_the_panel_exists(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(viewer, tracked=np.zeros((2, 12, 12), np.uint32))
+
+    ctrl.refresh_status()  # never refreshed → no panel yet
+
+    lcc.build_lineage.assert_not_called()
+
+
 def test_refresh_detail_is_a_noop_before_the_panel_exists(stubbed):
     viewer = _viewer()
     ctrl = _controller(viewer, tracked=np.zeros((2, 12, 12), np.uint32))

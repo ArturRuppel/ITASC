@@ -270,20 +270,44 @@ def add_correction(pos_dir: Path, correction: Correction) -> None:
     ``anchor`` correction for that cell — validation is whole-track and
     supersedes any anchor pinning on the same cell.
     """
-    cell_id = int(correction.cell_id)
-    t = int(correction.t)
-    kind = correction.kind
+    add_corrections(pos_dir, [correction])
+
+
+def add_corrections(pos_dir: Path, corrections: Iterable[Correction]) -> None:
+    """Add or replace several corrections with a single read+write.
+
+    Each correction replaces any existing one for the same cell, frame, and
+    kind (later entries in *corrections* win over earlier ones). As with
+    :func:`add_correction`, a ``validated`` correction for a cell additionally
+    drops every ``anchor`` correction for that cell.
+
+    Unlike calling :func:`add_correction` in a loop, this reads and writes
+    ``corrections.json`` exactly once, so validating a long track stays cheap
+    instead of re-parsing and re-serialising the whole file per frame.
+    """
+    new = list(corrections)
+    if not new:
+        return
+
+    # Keys (cell_id, t, kind) being written; cell_ids whose anchors validation drops.
+    replaced_keys = {(int(c.cell_id), int(c.t), c.kind) for c in new}
+    validated_cells = {int(c.cell_id) for c in new if c.kind == "validated"}
 
     def _keep(c: Correction) -> bool:
-        if int(c.cell_id) == cell_id and int(c.t) == t and c.kind == kind:
+        if (int(c.cell_id), int(c.t), c.kind) in replaced_keys:
             return False
-        if kind == "validated" and int(c.cell_id) == cell_id and c.kind == "anchor":
+        if c.kind == "anchor" and int(c.cell_id) in validated_cells:
             return False
         return True
 
     existing = [c for c in read_corrections(pos_dir) if _keep(c)]
-    existing.append(correction)
-    write_corrections(pos_dir, existing)
+
+    # Dedupe within the batch itself (last wins for a repeated key).
+    deduped: dict[tuple[int, int, str], Correction] = {}
+    for c in new:
+        deduped[(int(c.cell_id), int(c.t), c.kind)] = c
+
+    write_corrections(pos_dir, existing + list(deduped.values()))
 
 
 def _centroid_of(mask: np.ndarray) -> tuple[float, float] | None:

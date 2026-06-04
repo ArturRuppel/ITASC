@@ -3,8 +3,10 @@
 Both operations rewrite the tracked label stack (reassigning cell IDs to a
 contiguous range, or dropping every pixel of an unvalidated track), so the
 lineage swimlane overview goes stale unless it is rebuilt.  Like every other
-label-changing handler (``_on_validate_track``, ``_on_cells_edited``), these two
-must call ``_refresh_lineage_canvas_if_shown``.  This pins that behaviour.
+*topology*-changing handler (e.g. ``_on_cells_edited``), these two must call
+``_refresh_lineage_canvas_if_shown``.  This pins that behaviour.  (Flag-only
+handlers like ``_on_validate_track`` instead use the lighter
+``_refresh_lineage_canvas_status_if_shown``, which recolours without a rescan.)
 """
 
 from __future__ import annotations
@@ -63,6 +65,34 @@ def test_remove_unvalidated_rebuilds_canvas(monkeypatch) -> None:
     NucleusCorrectionWidget._on_remove_unvalidated_labels(stub)
 
     stub._refresh_lineage_canvas_if_shown.assert_called_once_with()
+
+
+def test_validate_track_uses_lightweight_status_refresh(monkeypatch) -> None:
+    """Validation is flag-only, so it must recolour, not rescan the whole stack.
+
+    Rebuilding the lineage over the whole stack on every validation froze the
+    GUI for seconds on long tracks; the status refresh skips ``build_lineage``.
+    """
+    layer = SimpleNamespace(data=np.ones((2, 2, 2), dtype=int))
+    stub = SimpleNamespace(
+        _pos_dir=object(),
+        _correction_tracked_layer=MagicMock(return_value=layer),
+        _frames_with_cell=MagicMock(return_value=[0, 1]),
+        _refresh_validated_overlay=MagicMock(),
+        _refresh_validation_counter=MagicMock(),
+        _refresh_lineage_canvas_if_shown=MagicMock(),
+        _refresh_lineage_canvas_status_if_shown=MagicMock(),
+        _correction_status=MagicMock(),
+        correction_widget=SimpleNamespace(_selected_label=7),
+    )
+
+    monkeypatch.setattr(mod, "corrections_for_label_frames", lambda *a, **k: [])
+    monkeypatch.setattr(mod, "add_corrections", MagicMock())
+
+    NucleusCorrectionWidget._on_validate_track(stub)
+
+    stub._refresh_lineage_canvas_status_if_shown.assert_called_once_with()
+    stub._refresh_lineage_canvas_if_shown.assert_not_called()
 
 
 def test_refresh_overview_when_film_strip_toggled_off() -> None:

@@ -5,6 +5,7 @@ import pytest
 
 from cellflow.database.validation import (
     add_correction,
+    add_corrections,
     invalidate_frame,
     invalidate_track,
     is_track_validated,
@@ -243,6 +244,53 @@ def test_add_correction_replaces_same_cell_frame_kind(pos_dir):
 
     assert read_corrections(pos_dir) == [
         Correction(cell_id=7, t=0, kind="anchor", y=3.0, x=4.0)
+    ]
+
+
+def test_add_corrections_empty_is_noop(pos_dir):
+    add_corrections(pos_dir, [])
+    assert read_corrections(pos_dir) == []
+
+
+def test_add_corrections_matches_per_call_add(pos_dir):
+    batch = [
+        Correction(cell_id=5, t=t, kind="validated", y=float(t), x=float(t))
+        for t in range(4)
+    ]
+    add_corrections(pos_dir, batch)
+    assert read_corrections(pos_dir) == sorted(
+        batch, key=lambda c: (c.t, c.cell_id, c.kind)
+    )
+
+
+def test_add_corrections_replaces_existing_key_and_dedupes_last_wins(pos_dir):
+    add_correction(pos_dir, Correction(cell_id=7, t=0, kind="anchor", y=1.0, x=2.0))
+    add_corrections(
+        pos_dir,
+        [
+            Correction(cell_id=7, t=0, kind="anchor", y=3.0, x=4.0),
+            Correction(cell_id=7, t=0, kind="anchor", y=5.0, x=6.0),
+        ],
+    )
+    assert read_corrections(pos_dir) == [
+        Correction(cell_id=7, t=0, kind="anchor", y=5.0, x=6.0)
+    ]
+
+
+def test_add_corrections_validated_drops_existing_anchors_for_cell(pos_dir):
+    write_corrections(
+        pos_dir,
+        [
+            Correction(cell_id=7, t=0, kind="anchor", y=1.0, x=2.0),
+            Correction(cell_id=8, t=0, kind="anchor", y=3.0, x=4.0),
+        ],
+    )
+    add_corrections(
+        pos_dir, [Correction(cell_id=7, t=0, kind="validated", y=9.0, x=9.0)]
+    )
+    assert [(c.cell_id, c.t, c.kind) for c in read_corrections(pos_dir)] == [
+        (7, 0, "validated"),
+        (8, 0, "anchor"),
     ]
 
 
