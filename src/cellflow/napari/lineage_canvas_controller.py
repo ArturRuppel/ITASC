@@ -127,6 +127,11 @@ class LineageCanvasController:
         if self._film_panel is not None:
             self._film_panel.set_current_frame(frame)
 
+    def center_on_track(self, cell_id: int) -> None:
+        """Scroll the overview so ``cell_id``'s row is vertically centered."""
+        if self._overview_panel is not None:
+            self._overview_panel.center_on_track(int(cell_id or 0))
+
     def refresh_detail(self) -> None:
         """Rebuild only the selected track's detail strip (no overview rescan).
 

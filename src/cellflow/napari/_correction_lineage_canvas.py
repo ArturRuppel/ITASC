@@ -141,6 +141,24 @@ class LineageCanvasPanel(QWidget):
         self._current_frame = int(frame)
         self._apply_frame_guide()
 
+    def center_on_track(self, cell_id: int) -> None:
+        """Scroll the overview vertically so the track's row is centered.
+
+        Used when a cell is selected in the image viewer: the matching lane
+        scrolls to the vertical middle so the user sees it without hunting. The
+        horizontal (time) position is preserved, and ``centerOn`` clamps to the
+        scroll range — so a row near the top/bottom stops at the edge rather
+        than scrolling past the content.
+        """
+        lane = self._lanes_by_cell.get(int(cell_id or 0))
+        if lane is None:
+            return
+        y = lane.column * _LANE_H + _LANE_H / 2.0
+        viewport_center = self._view.mapToScene(
+            self._view.viewport().rect().center()
+        )
+        self._view.centerOn(viewport_center.x(), y)
+
     def _apply_column_highlight(self) -> None:
         if self._col_item is not None:
             self._scene.removeItem(self._col_item)

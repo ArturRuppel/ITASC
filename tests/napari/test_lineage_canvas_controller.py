@@ -189,6 +189,29 @@ def test_node_activation_invokes_navigate_callback(stubbed):
     on_activate.assert_called_once_with(1, 7)
 
 
+def test_center_on_track_delegates_to_overview_panel(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+    ctrl.refresh()
+
+    ctrl.center_on_track(7)
+
+    stubbed.return_value.center_on_track.assert_called_with(7)
+
+
+def test_center_on_track_is_a_noop_before_the_panel_exists(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(viewer, tracked=np.zeros((2, 12, 12), np.uint32))
+
+    ctrl.center_on_track(7)  # never refreshed → no panel yet
+
+    stubbed.assert_not_called()
+
+
 def test_teardown_drops_panels(stubbed):
     # The panels are embedded as bare widgets in the host's workspace splitter
     # and deleted when that dock is torn down; teardown only drops references so

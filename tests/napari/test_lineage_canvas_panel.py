@@ -81,6 +81,30 @@ def test_selected_row_is_a_horizontal_line_that_replaces_not_accumulates(_app):
     assert panel._col_item is None
 
 
+def test_center_on_track_scrolls_row_to_vertical_middle(_app):
+    # Many lanes so the scene is taller than the viewport and can actually scroll.
+    lanes = [LaneView(cell_id=c, column=c, segments=((0, 5),)) for c in range(60)]
+    panel = LineageCanvasPanel()
+    panel.set_overview(lanes, n_frames=6)
+    panel._view.resize(200, 120)
+
+    panel.center_on_track(40)
+
+    target_y = 40 * _LANE_H + _LANE_H / 2.0
+    center_y = panel._view.mapToScene(
+        panel._view.viewport().rect().center()
+    ).y()
+    assert center_y == pytest.approx(target_y, abs=_LANE_H)
+
+
+def test_center_on_track_ignores_unknown_track(_app):
+    panel = LineageCanvasPanel()
+    panel.set_overview(_lanes(), n_frames=6)
+    # No matching lane → no-op, no exception.
+    panel.center_on_track(999)
+    panel.center_on_track(0)
+
+
 def test_lane_click_emits_frame_and_cell(_app):
     panel = LineageCanvasPanel()
     panel.set_overview(_lanes(), n_frames=6)

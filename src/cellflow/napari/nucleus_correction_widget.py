@@ -178,6 +178,11 @@ class NucleusCorrectionWidget(QWidget):
         self._correction_owned_layers: set[str] = set()
         self._correction_view_state: LayerViewState | None = None
         self._correction_dirty: bool = False
+        # True only while a lineage-canvas click is driving the selection, so the
+        # selection listener does not scroll the lineage canvas back onto the row
+        # the user just clicked there (image-viewer clicks should recenter it;
+        # lineage clicks should not yank the canvas around).
+        self._navigating_from_lineage: bool = False
         self._swap_cursor: _SwapCursor | None = None
         self._native_dock_state: dict[str, bool] = {}
         # The single right-side workspace dock and the horizontal splitter it
@@ -1764,6 +1769,10 @@ class NucleusCorrectionWidget(QWidget):
             self._refresh_track_path_overlay()
         if self.lineage_canvas_check.isChecked():
             self._lineage_canvas.set_selection(_lab)
+            # Recenter the canvas on the selected track only when the selection
+            # came from the image viewer; a lineage click already shows the row.
+            if not self._navigating_from_lineage:
+                self._lineage_canvas.center_on_track(_lab)
         self._refresh_candidate_gallery_if_shown()
 
     def _apply_focus_presentation(self, lab: int) -> None:
@@ -1893,7 +1902,12 @@ class NucleusCorrectionWidget(QWidget):
         self._arrange_workspace_docks()
 
     def _navigate_to_error(self, t: int, cell_id: int) -> None:
-        """Jump the viewer to frame ``t`` and select ``cell_id`` (lineage canvas)."""
+        """Jump the viewer to frame ``t``, select ``cell_id`` and center on it.
+
+        Called when a track is clicked in the lineage canvas: besides stepping
+        to the clicked frame and selecting the cell, this pans the image-viewer
+        camera so the cell sits in the middle of the canvas.
+        """
         try:
             step = list(self.viewer.dims.current_step)
             if step:
@@ -1901,10 +1915,39 @@ class NucleusCorrectionWidget(QWidget):
                 self.viewer.dims.current_step = tuple(step)
         except Exception:
             logger.exception("focus-mode navigation: frame jump failed")
+        # Guard so the resulting selection callback does not scroll the lineage
+        # canvas off the row the user just clicked there.
+        self._navigating_from_lineage = True
         try:
             self.correction_widget.select_label(int(t), int(cell_id))
         except Exception:
             logger.exception("focus-mode navigation: cell select failed")
+        finally:
+            self._navigating_from_lineage = False
+        self._center_viewer_on_cell(int(t), int(cell_id))
+
+    def _center_viewer_on_cell(self, t: int, cell_id: int) -> None:
+        """Pan the napari camera onto cell ``cell_id`` at frame ``t``."""
+        layer = self._correction_tracked_layer()
+        if layer is None or not cell_id:
+            return
+        try:
+            seg2d = frame_view_2d(np.asarray(layer.data), int(t))
+            if seg2d is None:
+                return
+            ys, xs = np.nonzero(seg2d == int(cell_id))
+            if ys.size == 0:
+                return
+            cy, cx = float(ys.mean()), float(xs.mean())
+            data_coord = (
+                (int(t), cy, cx) if np.asarray(layer.data).ndim >= 3 else (cy, cx)
+            )
+            world = layer.data_to_world(data_coord)
+            center = list(self.viewer.camera.center)
+            center[-2:] = [float(world[-2]), float(world[-1])]
+            self.viewer.camera.center = tuple(center)
+        except Exception:
+            logger.exception("lineage navigation: camera centering failed")
 
     def _build_workspace_controls_dock(self):
         """Build the controls strip: correction header + controls + lineage overview.
