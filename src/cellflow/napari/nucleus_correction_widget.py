@@ -48,7 +48,9 @@ from cellflow.napari._correction_commit import (
 from cellflow.napari._correction_layer_lifecycle import (
     LayerViewState,
     capture_layer_view_state,
+    detach_higher_dim_stacks,
     hide_all_layers,
+    reattach_layers,
     remove_owned_layers,
     restore_layer_view_state,
 )
@@ -187,6 +189,14 @@ class NucleusCorrectionWidget(QWidget):
         self._workspace_dock = None
         self._workspace_splitter: QSplitter | None = None
         self._controls_container: QWidget | None = None
+        # Higher-dim stacks (e.g. a raw T,Z,Y,X z-stack) removed on activate so
+        # the viewer collapses to a single frame slider, kept verbatim here to
+        # re-append on deactivate. The plugin dock + its pre-correction width are
+        # captured so the dock, blown up to half-window for focus mode, can be
+        # shrunk back when correction turns off.
+        self._detached_stack_layers: list = []
+        self._pre_correction_dock = None
+        self._pre_correction_dock_width: int | None = None
         self._validated_overlay = ValidatedOverlayController(
             self.viewer,
             tracked_layer_provider=self._correction_tracked_layer,
@@ -1564,6 +1574,14 @@ class NucleusCorrectionWidget(QWidget):
 
     def _on_correction_active_button_toggled(self, active: bool) -> None:
         if active:
+            # Capture the plugin dock + width now, before the focus takeover
+            # reparents the header out of it, so its width can be restored later.
+            self._pre_correction_dock = self._find_plugin_dock()
+            self._pre_correction_dock_width = (
+                self._pre_correction_dock.width()
+                if self._pre_correction_dock is not None
+                else None
+            )
             self._capture_correction_view_state()
             hide_all_layers(self.viewer.layers)
 
@@ -1582,6 +1600,15 @@ class NucleusCorrectionWidget(QWidget):
             layer.visible = True
             self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
+            # Drop any pre-loaded higher-rank stack (e.g. a raw T,Z,Y,X z-stack)
+            # so the viewer collapses to one frame slider that matches the
+            # correction frames; re-added verbatim on deactivate. Same-rank
+            # layers are left alone so nothing essential is removed.
+            self._detached_stack_layers = detach_higher_dim_stacks(
+                self.viewer.layers,
+                max_ndim=int(np.asarray(layer.data).ndim),
+                keep_names=self._correction_owned_layers,
+            )
             # Focus mode: hand the correction panels the right column by hiding
             # napari's native layer-list / layer-controls docks.
             self._native_dock_state = hide_native_docks(self.viewer)
@@ -1610,6 +1637,10 @@ class NucleusCorrectionWidget(QWidget):
             self._build_workspace_controls_dock()
             self._focus_takeover(True)
             self._arrange_workspace_docks()
+            # Open the workspace at half the window width with its three strips
+            # (candidate gallery · film strip · controls) split in equal thirds.
+            # Deferred so the dock is laid out before resizeDocks runs.
+            QTimer.singleShot(0, self._size_workspace_dock)
             return
 
         if not self._confirm_deactivate_with_unsaved_changes():
@@ -1637,7 +1668,12 @@ class NucleusCorrectionWidget(QWidget):
         self._teardown_focus_panels()
         restore_native_docks(self.viewer, self._native_dock_state)
         self._native_dock_state = {}
+        # Put back any higher-dim stack removed on activate (data/contrast/
+        # colormap intact) before restoring visibility/selection over it.
+        reattach_layers(self.viewer.layers, self._detached_stack_layers)
+        self._detached_stack_layers = []
         self._restore_correction_view_state()
+        self._restore_pre_correction_dock_width()
         self._set_checked_without_signal(self.params_btn, False)
         self._set_checked_without_signal(self.shortcuts_btn, False)
         self.extend_retrack_params_section._toggle.setChecked(False)
@@ -1900,6 +1936,62 @@ class NucleusCorrectionWidget(QWidget):
             self.viewer.camera.center = tuple(center)
         except Exception:
             logger.exception("lineage navigation: camera centering failed")
+
+    def _find_plugin_dock(self):
+        """The QDockWidget hosting the correction header, walking up from it.
+
+        Resolved from ``self.header`` (still parented into the plugin dock at
+        activation start, before the focus takeover reparents it out).
+        """
+        from qtpy.QtWidgets import QDockWidget
+
+        widget = self.header.parentWidget()
+        while widget is not None:
+            if isinstance(widget, QDockWidget):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def _main_window(self):
+        return getattr(getattr(self.viewer, "window", None), "_qt_window", None)
+
+    def _size_workspace_dock(self) -> None:
+        """Open the workspace at half the window width, panels split in thirds."""
+        win = self._main_window()
+        dock = self._workspace_dock
+        splitter = self._workspace_splitter
+        if win is None or dock is None or splitter is None:
+            return
+        try:
+            target = max(int(win.width()) // 2, 1)
+            win.resizeDocks([dock], [target], Qt.Horizontal)
+            third = max(target // 3, 1)
+            splitter.setSizes([third, third, third])
+        except Exception:
+            logger.exception("could not size the correction workspace dock")
+
+    def _restore_pre_correction_dock_width(self) -> None:
+        """Shrink the plugin dock back to its pre-correction (focus-mode) width."""
+        dock = self._pre_correction_dock
+        width = self._pre_correction_dock_width
+        self._pre_correction_dock = None
+        self._pre_correction_dock_width = None
+        win = self._main_window()
+        if dock is None or width is None or win is None:
+            return
+        # Deferred: the plugin dock has only just been re-shown, so let Qt lay it
+        # back out before forcing its width.
+        QTimer.singleShot(
+            0,
+            lambda: self._apply_dock_width(win, dock, int(width)),
+        )
+
+    @staticmethod
+    def _apply_dock_width(win, dock, width: int) -> None:
+        try:
+            win.resizeDocks([dock], [width], Qt.Horizontal)
+        except Exception:
+            logger.exception("could not restore the plugin dock width")
 
     def _build_workspace_controls_dock(self):
         """Build the controls strip: correction header + controls + lineage overview.

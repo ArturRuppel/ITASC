@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import numpy as np
+
 from cellflow.napari._correction_layer_lifecycle import (
     capture_layer_view_state,
+    detach_higher_dim_stacks,
     hide_all_layers,
+    reattach_layers,
     remove_owned_layers,
     restore_layer_view_state,
 )
 
 
 class _Layer:
-    def __init__(self, name: str, visible: bool = True) -> None:
+    def __init__(self, name: str, visible: bool = True, data=None) -> None:
         self.name = name
         self.visible = visible
+        self.data = data
 
 
 class _Selection:
@@ -50,6 +55,9 @@ class _Layers:
 
     def remove(self, layer: _Layer) -> None:
         self._layers.remove(layer)
+
+    def append(self, layer: _Layer) -> None:
+        self._layers.append(layer)
 
     @property
     def names(self) -> list[str]:
@@ -93,6 +101,42 @@ def test_restore_layer_view_state_ignores_layers_removed_during_mode() -> None:
     assert image.visible is True
     assert list(layers.selection) == []
     assert layers.selection.active is None
+
+
+def test_detach_higher_dim_stacks_drops_only_higher_rank_layers() -> None:
+    # Correction stack is (T, Y, X) — rank 3. Same-rank intensity/label layers
+    # are kept (even a differently-framed one); only the rank-4 z-stack goes.
+    frames_3d = _Layer("tracked", data=np.zeros((5, 8, 8)))  # T,Y,X — kept
+    other_3d = _Layer("raw 2d+t", data=np.zeros((9, 8, 8)))  # diff frames — kept
+    zstack_4d = _Layer("raw z-stack", data=np.zeros((5, 4, 8, 8)))  # rank 4 — detach
+    flat_2d = _Layer("mask", data=np.zeros((8, 8)))  # broadcasts — kept
+    owned = _Layer("[Correction] z-avg", data=np.zeros((5, 4, 8, 8)))  # kept by name
+    layers = _Layers([frames_3d, other_3d, zstack_4d, flat_2d, owned])
+
+    detached = detach_higher_dim_stacks(
+        layers, max_ndim=3, keep_names={"[Correction] z-avg"}
+    )
+
+    assert [layer.name for layer in detached] == ["raw z-stack"]
+    assert layers.names == ["tracked", "raw 2d+t", "mask", "[Correction] z-avg"]
+
+
+def test_reattach_layers_readds_verbatim_and_is_idempotent() -> None:
+    image = _Layer("image", data=np.zeros((8, 8)))
+    zstack = _Layer("raw z-stack", data=np.zeros((3, 4, 8, 8)))
+    layers = _Layers([image, zstack])
+
+    detached = detach_higher_dim_stacks(layers, max_ndim=3)
+    assert layers.names == ["image"]
+
+    reattach_layers(layers, detached)
+    assert layers.names == ["image", "raw z-stack"]
+    # Same object back, data preserved (no reload).
+    assert layers["raw z-stack"] is zstack
+
+    # Idempotent: a second restore does not duplicate.
+    reattach_layers(layers, detached)
+    assert layers.names == ["image", "raw z-stack"]
 
 
 def test_remove_owned_layers_removes_only_registered_names_and_clears_set() -> None:
