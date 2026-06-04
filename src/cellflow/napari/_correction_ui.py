@@ -168,6 +168,7 @@ def build_shortcuts_widget() -> QWidget:
             ("Q / E", "Retrack backward / forward"),
             ("Z / C", "Swap with smaller / larger candidate fragment"),
             ("S", "Save tracked labels"),
+            ("Space", "Play / stop the movie"),
         ],
         start_row=row,
         is_first=True,

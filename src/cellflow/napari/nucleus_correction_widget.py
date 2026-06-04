@@ -1546,6 +1546,7 @@ class NucleusCorrectionWidget(QWidget):
             ("S", self._on_save_tracked),
             ("Z", lambda: self._on_swap_step(direction="smaller")),
             ("C", lambda: self._on_swap_step(direction="larger")),
+            ("Space", self._toggle_movie_playback),
             # Override the inner widget's frame-local Shift-±/step navigation:
             # in focus mode Shift-arrow walks the global track list and recenters
             # both the lineage canvas and the image viewer (like a track click).
@@ -1673,6 +1674,8 @@ class NucleusCorrectionWidget(QWidget):
         self._apply_focus_presentation(0)
         self.correction_widget.deactivate()
         self._unbind_correction_keys()
+        # Stop any in-progress movie playback before the layers are torn down.
+        self._stop_movie_playback()
         # Refresh the main Tracked layer from disk so a subsequent re-solve
         # picks up any corrections the user saved during this session.
         self._refresh_tracked_layer_from_disk()
@@ -1766,6 +1769,26 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
         self._refresh_lineage_canvas_if_shown()
+
+    def _toggle_movie_playback(self) -> None:
+        """Space: start/stop animating the frame (time) slider like a movie."""
+        try:
+            qt_dims = self.viewer.window._qt_viewer.dims
+        except AttributeError:
+            return
+        if qt_dims.is_playing:
+            qt_dims.stop()
+        else:
+            # Time is axis 0 (see _current_t); fps=None uses napari's setting.
+            qt_dims.play(axis=0)
+
+    def _stop_movie_playback(self) -> None:
+        try:
+            qt_dims = self.viewer.window._qt_viewer.dims
+        except AttributeError:
+            return
+        if qt_dims.is_playing:
+            qt_dims.stop()
 
     def on_dims_step_changed(self) -> None:
         self._swap_cursor = None

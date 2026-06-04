@@ -93,6 +93,40 @@ def test_step_track_on_empty_stack_does_not_navigate():
     assert obj._status  # reported "no cells"
 
 
+# ── Space-bar movie play/stop (_toggle_movie_playback) ──────────────────────
+
+
+def _playback_stub(*, is_playing):
+    calls: list = []
+    qt_dims = types.SimpleNamespace(
+        is_playing=is_playing,
+        play=lambda **kw: calls.append(("play", kw)),
+        stop=lambda: calls.append(("stop", {})),
+    )
+    viewer = types.SimpleNamespace(
+        window=types.SimpleNamespace(_qt_viewer=types.SimpleNamespace(dims=qt_dims))
+    )
+    return types.SimpleNamespace(viewer=viewer, _calls=calls)
+
+
+def test_toggle_movie_starts_playback_on_axis_0_when_stopped():
+    obj = _playback_stub(is_playing=False)
+    NucleusCorrectionWidget._toggle_movie_playback(obj)
+    assert obj._calls == [("play", {"axis": 0})]
+
+
+def test_toggle_movie_stops_playback_when_playing():
+    obj = _playback_stub(is_playing=True)
+    NucleusCorrectionWidget._toggle_movie_playback(obj)
+    assert obj._calls == [("stop", {})]
+
+
+def test_stop_movie_is_a_noop_when_not_playing():
+    obj = _playback_stub(is_playing=False)
+    NucleusCorrectionWidget._stop_movie_playback(obj)
+    assert obj._calls == []
+
+
 # ── Gate-claim guard on activation bail-out ─────────────────────────────────
 
 
