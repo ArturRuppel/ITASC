@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.napari._flow_layout import FlowLayout
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
     stage_header_action_button,
@@ -59,27 +60,59 @@ def build_correction_header(
     return header, header_lbl
 
 
+# Glyphs are scaled up by this factor (relative to each button's default
+# font) so the icon-only action toolbar reads clearly.
+_TOOLBAR_ICON_SCALE = 1.35
+
+
+def _enlarge_glyph(button: QWidget) -> None:
+    """Bump a tool button's glyph font, leaving any stylesheet untouched."""
+    font = button.font()
+    if font.pointSizeF() > 0:
+        font.setPointSizeF(font.pointSizeF() * _TOOLBAR_ICON_SCALE)
+    else:
+        font.setPixelSize(max(1, round(font.pixelSize() * _TOOLBAR_ICON_SCALE)))
+    button.setFont(font)
+
+
 def build_correction_toolbar(
     parent: QWidget, button_groups: list[tuple[QWidget, ...]]
 ) -> QWidget:
-    """Lay out groups of action buttons with vertical separators between groups."""
+    """Lay out groups of action buttons in a wrapping flow, ruled between groups.
+
+    Buttons reflow onto new rows as the controls strip narrows; a plain
+    ``QHBoxLayout`` would instead pin the strip — and the whole right dock — to
+    the summed button width, so the dock could never be dragged narrow. The
+    toolbar advertises ``heightForWidth`` so its parent column grants the extra
+    height a wrapped row needs.
+    """
     toolbar = QWidget(parent)
-    row = QHBoxLayout(toolbar)
-    row.setContentsMargins(0, 0, 0, 0)
-    row.setSpacing(4)
+    flow = FlowLayout(toolbar, margin=0, h_spacing=4, v_spacing=4)
+    policy = toolbar.sizePolicy()
+    policy.setHeightForWidth(True)
+    toolbar.setSizePolicy(policy)
+
+    glyph_height = 0
+    for group in button_groups:
+        for b in group:
+            _enlarge_glyph(b)
+            glyph_height = max(glyph_height, b.sizeHint().height())
 
     def _sep() -> QFrame:
         line = QFrame()
         line.setFrameShape(QFrame.VLine)
         line.setFrameShadow(QFrame.Sunken)
+        # Flow items are sized from their hint; pin the rule to the row height
+        # so it doesn't collapse to a stub between wrapped buttons.
+        if glyph_height:
+            line.setFixedHeight(glyph_height)
         return line
 
     for i, group in enumerate(button_groups):
         if i > 0:
-            row.addWidget(_sep())
+            flow.addWidget(_sep())
         for b in group:
-            row.addWidget(b)
-    row.addStretch(1)
+            flow.addWidget(b)
     return toolbar
 
 

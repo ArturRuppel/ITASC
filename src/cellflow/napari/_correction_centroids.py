@@ -115,6 +115,47 @@ def build_centroid_points(
     )
 
 
+def centroid_focus_colors(
+    label_ids: Iterable[int],
+    frames: Iterable[int],
+    focused_lab: int,
+    *,
+    color_scale: float = 0.65,
+) -> np.ndarray:
+    """Per-point cross colors when a single cell is focused.
+
+    The focused cell's crosses get a viridis time gradient (earliest frame dark,
+    latest yellow) matching the whole-track comet; every other cross keeps its
+    deterministic per-label color. With ``focused_lab`` falsy, all crosses get
+    their per-label color (used to restore the overview on deselect).
+    """
+    label_ids = [int(value) for value in label_ids]
+    frames = [int(value) for value in frames]
+    n = len(label_ids)
+    colors = np.empty((n, 4), dtype=float)
+    for idx, label_id in enumerate(label_ids):
+        rgba = _label_color(label_id)
+        rgba[:3] *= float(color_scale)
+        colors[idx] = rgba
+    if focused_lab:
+        focused = [idx for idx, lid in enumerate(label_ids) if lid == int(focused_lab)]
+        order = sorted(focused, key=lambda idx: frames[idx])
+        viridis = _viridis_colors(len(order))
+        for rank, idx in enumerate(order):
+            colors[idx] = viridis[rank]
+    return colors
+
+
+def _viridis_colors(n: int) -> np.ndarray:
+    """``n`` RGBA viridis samples from dark (0.0) to yellow (1.0)."""
+    if n <= 0:
+        return np.empty((0, 4), dtype=float)
+    from matplotlib import colormaps
+
+    positions = np.linspace(0.0, 1.0, n)
+    return np.asarray(colormaps["viridis"](positions), dtype=float)
+
+
 def refresh_centroid_cross_layer(
     viewer: Any,
     labels: np.ndarray,

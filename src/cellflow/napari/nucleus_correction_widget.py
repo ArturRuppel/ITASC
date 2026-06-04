@@ -29,6 +29,7 @@ from cellflow.napari._widget_helpers import (
     tool_btn as _tool_btn,
 )
 from cellflow.napari._correction_centroids import (
+    centroid_focus_colors,
     ensure_label_colormap_entries,
     refresh_centroid_cross_layer,
     refresh_label_colormap,
@@ -437,13 +438,13 @@ class NucleusCorrectionWidget(QWidget):
             ],
         )
         self.toolbar.setVisible(False)
-        self.track_path_check = QCheckBox("Show track path")
+        self.track_path_check = QCheckBox("Track path")
         self.track_path_check.setToolTip(
             "Paint the selected track's whole trajectory as a fading comet "
             "(viridis, oldest→newest) with a frame number in each mask."
         )
         self.track_path_check.setVisible(False)
-        self.lineage_canvas_check = QCheckBox("Show lineage canvas")
+        self.lineage_canvas_check = QCheckBox("Lineage canvas")
         self.lineage_canvas_check.setToolTip(
             "Open the docked correction canvas: a swimlane overview of every "
             "track (time across, gaps flag likely ID swaps; green=validated, "
@@ -451,7 +452,7 @@ class NucleusCorrectionWidget(QWidget):
             "per-frame film strip. Click a lane or tile to jump there."
         )
         self.lineage_canvas_check.setVisible(False)
-        self.candidate_gallery_check = QCheckBox("Show candidate gallery")
+        self.candidate_gallery_check = QCheckBox("Candidate gallery")
         self.candidate_gallery_check.setToolTip(
             "Dock three thumbnail columns — extend-backward, swap, extend-forward — "
             "of the candidate segmentations for the selected cell at this frame. "
@@ -471,14 +472,16 @@ class NucleusCorrectionWidget(QWidget):
         group_lay.addWidget(self.shortcuts_section)
         group_lay.addWidget(self.correction_widget)
 
+        # One checkbox per row: a two-wide grid pinned the controls strip (and
+        # so the whole right dock) to the summed label width — the dominant
+        # floor on how narrow the dock can be dragged.
         self._view_toggle_grid = QGridLayout()
         self._view_toggle_grid.setContentsMargins(0, 0, 0, 0)
-        self._view_toggle_grid.setHorizontalSpacing(12)
+        self._view_toggle_grid.setVerticalSpacing(2)
         self._view_toggle_grid.addWidget(self.track_path_check, 0, 0)
-        self._view_toggle_grid.addWidget(self.lineage_canvas_check, 0, 1)
-        self._view_toggle_grid.addWidget(self.candidate_gallery_check, 1, 0)
+        self._view_toggle_grid.addWidget(self.lineage_canvas_check, 1, 0)
+        self._view_toggle_grid.addWidget(self.candidate_gallery_check, 2, 0)
         self._view_toggle_grid.setColumnStretch(0, 1)
-        self._view_toggle_grid.setColumnStretch(1, 1)
         group_lay.addLayout(self._view_toggle_grid)
 
         group_lay.addWidget(self.status_lbl)
@@ -1632,6 +1635,9 @@ class NucleusCorrectionWidget(QWidget):
 
         self._set_checked_without_signal(self.active_btn, False)
         self._correction_active_content_visible = False
+        # Reset the single-cell focus presentation before tearing layers down so
+        # the show_selected_label flag and overview visibility don't leak.
+        self._apply_focus_presentation(0)
         self.correction_widget.deactivate()
         self._unbind_correction_keys()
         # Refresh the main Tracked layer from disk so a subsequent re-solve
@@ -1753,11 +1759,60 @@ class NucleusCorrectionWidget(QWidget):
 
     def _on_track_selection_changed(self, _t: int, _lab: int) -> None:
         """Rebuild the comet / canvas detail when the selected track changes."""
+        self._apply_focus_presentation(_lab)
         if self.track_path_check.isChecked():
             self._refresh_track_path_overlay()
         if self.lineage_canvas_check.isChecked():
             self._lineage_canvas.set_selection(_lab)
         self._refresh_candidate_gallery_if_shown()
+
+    def _apply_focus_presentation(self, lab: int) -> None:
+        """Spotlight a single cell: hide the whole-track comet and keep only the
+        focused cell's centroid cross. With no cell selected (``lab == 0``) the
+        overview is restored.
+
+        The other cells' labels stay visible (the spotlight dims them); the
+        spotlight and the dropped highlight border are handled by the inner
+        correction widget. This only manages the nucleus-side overlay layers.
+        """
+        focused = bool(lab)
+        if _CORRECTION_TRACK_LAYER in self.viewer.layers:
+            self.viewer.layers[_CORRECTION_TRACK_LAYER].visible = not focused
+        if _CORRECTION_CENTROID_LAYER in self.viewer.layers:
+            self._apply_centroid_focus(
+                self.viewer.layers[_CORRECTION_CENTROID_LAYER], lab
+            )
+
+    @staticmethod
+    def _apply_centroid_focus(layer, lab: int) -> None:
+        """Show only the selected cell's centroid crosses (all crosses if 0).
+
+        The centroid layer stays visible; per-point ``shown`` flags filter it so
+        the focused cell keeps its cross while the others fall away, and the
+        focused cell's crosses are recolored with a viridis time gradient to
+        match the whole-track comet.
+        """
+        features = getattr(layer, "features", None)
+        try:
+            label_ids = [int(value) for value in features["label_id"]]
+            frames = [int(value) for value in features["frame"]]
+        except Exception:
+            return
+        if not label_ids:
+            return
+        if lab:
+            shown = np.asarray([lid == int(lab) for lid in label_ids], dtype=bool)
+        else:
+            shown = np.ones(len(label_ids), dtype=bool)
+        colors = centroid_focus_colors(
+            label_ids, frames, lab, color_scale=_NUCLEUS_TRACK_COLOR_SCALE
+        )
+        try:
+            layer.border_color = colors
+            layer.face_color = colors
+            layer.shown = shown
+        except Exception:
+            logger.exception("centroid focus: per-point styling failed")
 
     def _refresh_track_visuals_live(self) -> None:
         """Rebuild the comet overlay and film strip after an edit.
@@ -1924,6 +1979,19 @@ class NucleusCorrectionWidget(QWidget):
             self._build_workspace_controls_dock()
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
+        # Default handles are a ~3 px sliver and near-invisible on the dark
+        # theme. Widen them and paint a centred grip so they're easy to grab.
+        # Explicit greys (not palette roles, which napari leaves unset — they
+        # resolved to white): a mid-grey grip inset against the dark dock bg.
+        splitter.setHandleWidth(10)
+        splitter.setStyleSheet(
+            "QSplitter::handle:horizontal {"
+            " background: #5a606b;"
+            " border-left: 4px solid #2e3440;"
+            " border-right: 4px solid #2e3440;"
+            " }"
+            "QSplitter::handle:horizontal:hover { background: #7a828f; }"
+        )
         # left→right: candidate gallery · film strip · controls strip.
         splitter.addWidget(self._candidate_gallery.widget())
         splitter.addWidget(self._lineage_canvas.film_widget())

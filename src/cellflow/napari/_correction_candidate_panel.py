@@ -17,6 +17,7 @@ from qtpy.QtWidgets import (
     QFrame,
     QLabel,
     QScrollArea,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +30,18 @@ _TILE_PX = 64
 _TILE_PX_MIN = 20
 _TILE_PX_MAX = 256
 _ZOOM_STEP = 8       # px added/removed from the tile size per Ctrl+wheel notch
+
+# Draggable handle between the stacked regions. Mirrors the workspace splitter
+# that sizes the strip widths (see nucleus_correction_widget), but oriented
+# vertically: a mid-grey grip inset against the dark dock background.
+_HANDLE_STYLE = (
+    "QSplitter::handle:vertical {"
+    " background: #5a606b;"
+    " border-top: 2px solid #2e3440;"
+    " border-bottom: 2px solid #2e3440;"
+    " }"
+    "QSplitter::handle:vertical:hover { background: #7a828f; }"
+)
 
 
 class _ClickableTile(QFrame):
@@ -156,8 +169,11 @@ class CandidateColumn(QWidget):
 class CandidateGalleryPanel(QWidget):
     """Three stacked candidate blocks: extend-backward · swap · extend-forward.
 
-    The blocks stack top-to-bottom and the whole strip scrolls as one; each
-    block wraps its thumbnails onto new rows (see :class:`CandidateColumn`).
+    The blocks stack top-to-bottom inside a vertical :class:`QSplitter`, so a
+    draggable handle between each pair resizes the regions (the same grip style
+    as the workspace strip-width splitter). Each block scrolls independently
+    when its thumbnails overflow the height it has been given, and wraps them
+    onto new rows (see :class:`CandidateColumn`).
     """
 
     EXTEND_BACKWARD = "extend_backward"
@@ -174,13 +190,10 @@ class CandidateGalleryPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        scroll = _GalleryScroll(self)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        body = QWidget()
-        stack = QVBoxLayout(body)
-        stack.setContentsMargins(2, 2, 2, 2)
-        stack.setSpacing(6)
+        splitter = QSplitter(Qt.Vertical, self)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(6)
+        splitter.setStyleSheet(_HANDLE_STYLE)
 
         self._columns: dict[str, CandidateColumn] = {}
         for which, title in (
@@ -193,10 +206,17 @@ class CandidateGalleryPanel(QWidget):
                 lambda key, _which=which: self.candidate_activated.emit(_which, int(key))
             )
             self._columns[which] = column
-            stack.addWidget(column)
-        stack.addStretch(1)
-        scroll.setWidget(body)
-        outer.addWidget(scroll)
+
+            pane = _GalleryScroll(self)
+            pane.setWidgetResizable(True)
+            pane.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            pane.setWidget(column)
+            splitter.addWidget(pane)
+
+        # Start the three regions at equal height; the user drags from there.
+        splitter.setSizes([1, 1, 1])
+        self._splitter = splitter
+        outer.addWidget(splitter)
 
     def column(self, which: str) -> CandidateColumn:
         return self._columns[which]
@@ -219,10 +239,10 @@ class CandidateGalleryPanel(QWidget):
 
 
 class _GalleryScroll(QScrollArea):
-    """Scroll area whose Ctrl+wheel zooms the gallery thumbnails."""
+    """Per-region scroll area whose Ctrl+wheel zooms the gallery thumbnails."""
 
     def __init__(self, panel: CandidateGalleryPanel) -> None:
-        super().__init__()
+        super().__init__(panel)
         self._panel = panel
 
     def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)

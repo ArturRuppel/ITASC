@@ -1,12 +1,13 @@
 """Whole-track overlay for the nucleus correction workflow.
 
-This owns the in-canvas overlay: the image layer that paints the selected
-track's viridis trajectory polyline, plus the spotlight mask the inner
-correction widget consults to highlight the union of every frame's mask (full
-brightness inside that footprint, darkened outside, with a sharp boundary). The
-pixels come from the pure :func:`build_track_path_overlay` helper; this
-controller is the layer-lifecycle glue the correction widget used to carry
-inline.
+This owns the in-canvas overlay: a napari Tracks layer that draws the selected
+track's trajectory as a vector polyline through the per-frame nucleus centroids,
+coloured by time with viridis (earliest frame dark, latest yellow), plus the
+spotlight mask the inner correction widget consults to highlight the union of
+every frame's mask (full brightness inside that footprint, darkened outside,
+with a sharp boundary). The geometry comes from the pure
+:func:`build_track_path_overlay` helper; this controller is the layer-lifecycle
+glue the correction widget used to carry inline.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from cellflow.napari._correction_track_path import build_track_path_overlay
 TRACK_PATH_LAYER = "[Correction] Track Path"
 TRACK_PATH_NUMBERS_LAYER = "[Correction] Track Path Numbers"
 TRACK_PATH_OPACITY = 1.0
+TRACK_PATH_TAIL_WIDTH = 4
 
 
 class TrackPathController:
@@ -51,11 +53,13 @@ class TrackPathController:
         if layer is None:
             self.clear()
             return
-        overlay = build_track_path_overlay(np.asarray(layer.data), lab)
+        data = np.asarray(layer.data)
+        overlay = build_track_path_overlay(data, lab)
         if overlay.is_empty():
             self.clear()
             return
-        self._update_layers(overlay)
+        n_frames = int(data.shape[0]) if data.ndim == 3 else 1
+        self._update_layers(overlay, lab, n_frames)
         self._status(
             f"Track path: cell {lab} across {len(overlay.frames)} frame(s)."
         )
@@ -80,21 +84,33 @@ class TrackPathController:
         union = np.any(data == int(lab), axis=0)
         return union if union.any() else None
 
-    def _update_layers(self, overlay) -> None:
-        from napari.layers import Image
+    def _update_layers(self, overlay, lab: int, n_frames: int) -> None:
+        from napari.layers import Tracks
+
+        data, properties = self._tracks_data(overlay, lab)
+        # Long tail + head so the whole trajectory stays visible on every frame,
+        # rather than growing/shrinking as the time slider moves.
+        span = max(int(n_frames), 1)
 
         name = TRACK_PATH_LAYER
-        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Image):
+        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Tracks):
             layer = self.viewer.layers[name]
-            layer.data = overlay.overlay
-            layer.opacity = TRACK_PATH_OPACITY
+            layer.data = data
+            layer.properties = properties
+            layer.tail_length = span
+            layer.head_length = span
         else:
             if name in self.viewer.layers:
                 self.viewer.layers.remove(name)
-            self.viewer.add_image(
-                overlay.overlay,
+            self.viewer.add_tracks(
+                data,
                 name=name,
-                rgb=True,
+                properties=properties,
+                color_by="time",
+                colormap="viridis",
+                tail_width=TRACK_PATH_TAIL_WIDTH,
+                tail_length=span,
+                head_length=span,
                 blending="translucent",
                 opacity=TRACK_PATH_OPACITY,
             )
@@ -111,3 +127,19 @@ class TrackPathController:
             self.viewer.layers.selection.active = self._tracked_layer_provider()
         except Exception:
             pass
+
+    @staticmethod
+    def _tracks_data(overlay, lab: int):
+        """Build napari Tracks ``data`` + ``properties`` from the overlay.
+
+        ``data`` rows are ``[track_id, t, y, x]`` (one per occupied frame) and
+        ``properties['time']`` carries the frame index so the layer can colour
+        the polyline by time with viridis.
+        """
+        frames = np.asarray(overlay.frames, dtype=float)
+        centroids = np.asarray(overlay.centroids, dtype=float).reshape((-1, 2))
+        track_ids = np.full(len(frames), float(int(lab)))
+        data = np.column_stack(
+            [track_ids, frames, centroids[:, 0], centroids[:, 1]]
+        )
+        return data, {"time": frames}

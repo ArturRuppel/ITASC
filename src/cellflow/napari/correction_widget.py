@@ -768,11 +768,16 @@ class CorrectionWidget(QWidget):
                 self._notify_selection_changed(t, 0, previous_label)
             return
         if self._spotlight:                                        # ← NEW
+            # The spotlight is the selection indicator; the contour border would
+            # be redundant, so render the spotlight and leave the highlight hidden.
             self._update_spotlight(self._resolve_spotlight_mask(t, lab, mask.astype(bool)))
-        contour = max(contours, key=len)
-        hl.data = [contour]
-        hl.shape_type = ["polygon"]
-        hl.visible = True
+            hl.data = []
+            hl.visible = False
+        else:
+            contour = max(contours, key=len)
+            hl.data = [contour]
+            hl.shape_type = ["polygon"]
+            hl.visible = True
         self.viewer.layers.selection.active = self._layer
         if notify:
             self._notify_selection_changed(t, lab, previous_label)

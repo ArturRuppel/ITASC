@@ -44,6 +44,33 @@ class _FakeViewer:
         self.layers._layers[name] = layer
         return layer
 
+    def add_tracks(
+        self,
+        data,
+        *,
+        name,
+        properties=None,
+        color_by=None,
+        colormap=None,
+        tail_width=None,
+        tail_length=None,
+        head_length=None,
+        blending=None,
+        opacity=1.0,
+    ):
+        layer = SimpleNamespace(
+            name=name,
+            data=data,
+            properties=properties,
+            color_by=color_by,
+            colormap=colormap,
+            tail_length=tail_length,
+            head_length=head_length,
+            opacity=opacity,
+        )
+        self.layers._layers[name] = layer
+        return layer
+
 
 def _stack():
     """A (3, 4, 4) label stack where cell 5 appears in frames 0 and 1."""
@@ -80,6 +107,26 @@ def test_refresh_adds_comet_layer_for_selected_track():
     assert TRACK_PATH_LAYER in ctrl._owned_layers
     # Selection is handed back to the tracked layer so the user keeps editing it.
     assert viewer.layers.selection.active is tracked
+
+
+def test_comet_is_a_time_coloured_tracks_layer():
+    viewer = _FakeViewer()
+    ctrl, _ = _controller(viewer, enabled=True, selected_label=5)
+
+    ctrl.refresh()
+
+    layer = viewer.layers[TRACK_PATH_LAYER]
+    # One [track_id, t, y, x] row per occupied frame (cell 5 in frames 0 and 1).
+    np.testing.assert_allclose(
+        layer.data,
+        [[5.0, 0.0, 0.5, 0.5], [5.0, 1.0, 1.5, 1.5]],
+    )
+    np.testing.assert_allclose(layer.properties["time"], [0.0, 1.0])
+    assert layer.color_by == "time"
+    assert layer.colormap == "viridis"
+    # Tail/head span the whole stack so the full trajectory stays visible.
+    assert layer.tail_length == 3
+    assert layer.head_length == 3
 
 
 def test_refresh_clears_when_disabled():
