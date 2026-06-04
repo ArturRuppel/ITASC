@@ -86,7 +86,9 @@ def test_add_correction_image_layer_normalizes_data_and_records_ownership() -> N
     assert owned == {"[Correction] image"}
 
 
-def test_add_tracked_labels_and_track_layer_adds_labels_track_and_ownership() -> None:
+def test_add_tracked_labels_and_track_layer_adds_only_labels_and_colormap() -> None:
+    # The trajectory overlay is now a live Tracks layer owned by the controller;
+    # the loader just lays down the labels layer and returns the shared colormap.
     viewer = _Viewer()
     owned = set()
     labels = np.zeros((2, 4, 4), dtype=np.uint32)
@@ -97,24 +99,17 @@ def test_add_tracked_labels_and_track_layer_adds_labels_track_and_ownership() ->
         viewer,
         labels,
         labels_layer_name="[Correction] Nucleus Labels",
-        track_layer_name="[Correction] Nucleus tracks",
         owned_layer_names=owned,
     )
 
     assert result.labels_layer is viewer.layers["[Correction] Nucleus Labels"]
     assert result.labels_layer.blending == "additive"
-    assert viewer.layers["[Correction] Nucleus tracks"].kwargs["rgb"] is True
-    assert viewer.layers["[Correction] Nucleus tracks"].kwargs["opacity"] == 0.9
-    assert viewer.layers["[Correction] Nucleus tracks"].kwargs["blending"] == "additive"
-    assert viewer.layers["[Correction] Nucleus tracks"].data.shape == (2, 4, 4, 4)
-    assert np.count_nonzero(viewer.layers["[Correction] Nucleus tracks"].data[..., 3]) > 0
+    # No rasterised track image / centroid layer is added anymore.
+    assert viewer.layers.names == ["[Correction] Nucleus Labels"]
     assert result.color_map[None] == "transparent"
     assert result.color_map[0] == "transparent"
     assert 7 in result.color_map
-    assert owned == {
-        "[Correction] Nucleus Labels",
-        "[Correction] Nucleus tracks",
-    }
+    assert owned == {"[Correction] Nucleus Labels"}
 
 
 def test_remove_other_correction_label_layers_keeps_owned_and_non_label_layers() -> None:

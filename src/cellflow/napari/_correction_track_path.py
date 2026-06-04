@@ -1,16 +1,12 @@
-"""Build the whole-track overlay for correction mode.
+"""Pure geometry/colour helpers for correction-mode track rendering.
 
-Given a tracked label stack and one track id, draw that *selected* track's
-**trajectory polyline** through the per-frame nucleus centroids, oldest to
-newest, colour-coded by time with viridis (earliest frame dark, latest yellow)
-so the path of travel reads straight off the line.
+Two concerns live here, both Qt/napari-free so they unit-test on their own:
 
-The filled masks themselves are not drawn, and the merged footprint is no longer
-outlined here: the correction spotlight renders the union directly (bright
-inside, darkened outside). We still return the boolean union (used to enlarge
-that spotlight to the whole trajectory) and the per-frame centroids.
-
-Pure module: no Qt, no napari, so it is unit-testable on its own.
+* :func:`build_all_tracks_data` feeds a single napari ``Tracks`` layer that draws
+  *every* track as the overview; focus mode then slices out the selected track's
+  vertices (by ``row_index``) and colours them by time.
+* :func:`build_track_film_strip` and the crop helpers build the per-frame film
+  strip used by the lineage canvas / candidate gallery.
 """
 
 from __future__ import annotations
@@ -20,27 +16,68 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from cellflow.napari.contact_analysis_visualization import (
+    _nucleus_centroids_by_track,
+)
 
-@dataclass(frozen=True)
-class TrackPathOverlay:
-    """Rendered trajectory + footprint outline for one track.
 
-    ``frames`` lists the occupied frame indices in ascending (oldest-first)
-    order; ``colors``, ``centroids`` are aligned with it row-for-row.
+def build_all_tracks_data(
+    tracked_stack: np.ndarray,
+) -> tuple[np.ndarray, dict[str, np.ndarray], dict[int, np.ndarray]]:
+    """Build napari ``Tracks`` ``data`` + ``properties`` for *every* track.
+
+    ``tracked_stack`` is a ``(T, H, W)`` label array (a bare ``(H, W)`` plane is
+    treated as a single frame). Returns ``(data, properties, row_index)``:
+
+    * ``data`` — ``(N, 4)`` float rows ``[track_id, t, y, x]`` through each
+      track's per-frame nucleus centroids, grouped by track and time-ascending.
+    * ``properties`` — ``track_id`` (per vertex) for the overview colouring and
+      ``time`` (per-track normalised 0→1 oldest→newest) for the focused track's
+      viridis time gradient.
+    * ``row_index`` — ``{track_id: row positions into data}`` so focus can slice
+      out a single track's vertices without rescanning the stack.
+
+    Every returned array shares one row order, so ``row_index`` indexes both
+    ``data`` and the property arrays.
     """
+    centroids = _nucleus_centroids_by_track(tracked_stack)
 
-    frames: tuple[int, ...]      # occupied frame indices, ascending
-    colors: np.ndarray           # (N, 4) RGBA, frames[0] dark -> frames[-1] yellow
-    overlay: np.ndarray          # (H, W, 4) RGBA float: the viridis trajectory polyline
-    union_mask: np.ndarray       # (H, W) bool, union of all the track's filled masks
-    centroids: np.ndarray        # (N, 2) (y, x) centroid per occupied frame
+    rows: list[tuple[float, float, float, float]] = []
+    track_ids: list[float] = []
+    times: list[float] = []
+    row_index: dict[int, np.ndarray] = {}
 
-    def is_empty(self) -> bool:
-        return len(self.frames) == 0
+    cursor = 0
+    for track_id in sorted(centroids):
+        points = sorted(centroids[track_id])  # by frame (already, but be explicit)
+        n = len(points)
+        row_index[int(track_id)] = np.arange(cursor, cursor + n)
+        cursor += n
 
-    def frame_number_labels(self) -> list[str]:
-        """Text labels (the frame numbers) aligned with :attr:`centroids`."""
-        return [str(f) for f in self.frames]
+        frames = np.asarray([p[0] for p in points], dtype=float)
+        if n > 1 and frames.max() > frames.min():
+            norm = (frames - frames.min()) / (frames.max() - frames.min())
+        else:
+            norm = np.zeros(n, dtype=float)
+
+        for (t, y, x), nt in zip(points, norm):
+            rows.append((float(track_id), float(t), float(y), float(x)))
+            track_ids.append(float(track_id))
+            times.append(float(nt))
+
+    if not rows:
+        empty = np.empty(0, dtype=float)
+        return (
+            np.empty((0, 4), dtype=float),
+            {"track_id": empty, "time": empty},
+            {},
+        )
+
+    properties = {
+        "track_id": np.asarray(track_ids, dtype=float),
+        "time": np.asarray(times, dtype=float),
+    }
+    return np.asarray(rows, dtype=float), properties, row_index
 
 
 def _viridis_colors(n: int) -> np.ndarray:
@@ -74,104 +111,6 @@ def _mask_outline(mask: np.ndarray) -> np.ndarray:
     interior[:, 0] = False
     interior[:, -1] = False
     return mask & ~interior
-
-
-def _stamp(overlay: np.ndarray, y: float, x: float, half: int, color) -> None:
-    """Paint a ``(2*half+1)`` square of ``color`` centered on ``(y, x)``."""
-    h, w = overlay.shape[:2]
-    yi, xi = int(round(y)), int(round(x))
-    y0, y1 = max(yi - half, 0), min(yi + half + 1, h)
-    x0, x1 = max(xi - half, 0), min(xi + half + 1, w)
-    if y0 < y1 and x0 < x1:
-        overlay[y0:y1, x0:x1] = color
-
-
-def _draw_track_path(
-    overlay: np.ndarray, centroids, colors: np.ndarray, half: int
-) -> None:
-    """Rasterise the trajectory polyline through ``centroids``.
-
-    Segments are walked oldest-first with the colour interpolated between the
-    two endpoints' time colours, so the line is a smooth viridis gradient and,
-    where the path crosses itself, the newest pixels land on top. A single
-    occupied frame draws one dot at its centroid.
-    """
-    n = len(centroids)
-    if n == 1:
-        _stamp(overlay, centroids[0][0], centroids[0][1], half, colors[0])
-        return
-    for i in range(n - 1):
-        (y0, x0), (y1, x1) = centroids[i], centroids[i + 1]
-        steps = int(max(abs(y1 - y0), abs(x1 - x0), 1)) + 1
-        for t in np.linspace(0.0, 1.0, steps):
-            y = y0 + (y1 - y0) * t
-            x = x0 + (x1 - x0) * t
-            _stamp(overlay, y, x, half, colors[i] * (1.0 - t) + colors[i + 1] * t)
-
-
-def build_track_path_overlay(
-    tracked_stack: np.ndarray, track_id: int, *, thickness: int = 1
-) -> TrackPathOverlay:
-    """Draw the trajectory and merged footprint of ``track_id``.
-
-    ``tracked_stack`` is a ``(T, H, W)`` label array (a bare ``(H, W)`` plane is
-    treated as a single frame). A ``thickness``-pixel-wide viridis polyline is
-    rasterised through the per-frame nucleus centroids (earliest frame dark,
-    latest yellow); the filled masks themselves are not painted. The boolean
-    union of every frame's mask is returned so the caller can spotlight the whole
-    footprint.
-    """
-    stack = np.asarray(tracked_stack)
-    if stack.ndim == 2:
-        stack = stack[np.newaxis, ...]
-    if stack.ndim != 3:
-        raise ValueError(
-            f"tracked_stack must be 2D or 3D, got {stack.ndim}D"
-        )
-
-    track_id = int(track_id)
-    height, width = stack.shape[1], stack.shape[2]
-
-    occupied: list[int] = []
-    masks: list[np.ndarray] = []
-    centroids: list[tuple[float, float]] = []
-    for t in range(stack.shape[0]):
-        mask = stack[t] == track_id
-        if not mask.any():
-            continue
-        ys, xs = np.nonzero(mask)
-        occupied.append(t)
-        masks.append(mask)
-        centroids.append((float(ys.mean()), float(xs.mean())))
-
-    overlay = np.zeros((height, width, 4), dtype=float)
-    union_mask = np.zeros((height, width), dtype=bool)
-    if not occupied:
-        return TrackPathOverlay(
-            frames=(),
-            colors=np.empty((0, 4), dtype=float),
-            overlay=overlay,
-            union_mask=union_mask,
-            centroids=np.empty((0, 2), dtype=float),
-        )
-
-    colors = _viridis_colors(len(occupied))
-    for mask in masks:
-        union_mask |= mask
-
-    # Draw the trajectory polyline. The merged footprint is no longer outlined
-    # here: the correction spotlight renders the union directly (full brightness
-    # inside, darkened outside with a sharp boundary), which reads more clearly
-    # than the time-coloured contour did.
-    _draw_track_path(overlay, centroids, colors, max(int(thickness) // 2, 0))
-
-    return TrackPathOverlay(
-        frames=tuple(occupied),
-        colors=colors,
-        overlay=overlay,
-        union_mask=union_mask,
-        centroids=np.asarray(centroids, dtype=float),
-    )
 
 
 @dataclass(frozen=True)

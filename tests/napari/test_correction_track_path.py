@@ -4,155 +4,63 @@ import numpy as np
 import pytest
 
 from cellflow.napari._correction_track_path import (
+    build_all_tracks_data,
     build_track_film_strip,
-    build_track_path_overlay,
 )
 
 
-def _viridis_endpoints():
-    from matplotlib import colormaps
-
-    cmap = colormaps["viridis"]
-    return np.asarray(cmap(0.0), dtype=float), np.asarray(cmap(1.0), dtype=float)
+# --- all-tracks data --------------------------------------------------------
 
 
-def test_three_frame_track_returns_one_entry_per_occupied_frame():
+def test_build_all_tracks_data_groups_rows_by_track():
+    stack = np.zeros((3, 6, 6), dtype=np.uint32)
+    stack[0, 0, 0] = 5
+    stack[1, 1, 1] = 5
+    stack[2, 2, 2] = 5
+    stack[0, 4, 4] = 9  # a second, single-frame track
+
+    data, props, row_index = build_all_tracks_data(stack)
+
+    # One row per (track, occupied frame): 3 for track 5, 1 for track 9.
+    assert data.shape == (4, 4)
+    assert sorted(row_index) == [5, 9]
+    # Rows are [track_id, t, y, x] and time-ascending within a track.
+    track5 = data[row_index[5]]
+    np.testing.assert_array_equal(track5[:, 0], [5, 5, 5])
+    np.testing.assert_array_equal(track5[:, 1], [0, 1, 2])
+    np.testing.assert_allclose(track5[:, 2:], [[0, 0], [1, 1], [2, 2]])
+    # Every property array aligns with data row-for-row.
+    for key in ("track_id", "time"):
+        assert len(props[key]) == len(data)
+
+
+def test_time_property_is_normalised_per_track():
     stack = np.zeros((3, 4, 4), dtype=np.uint32)
     stack[0, 0, 0] = 5
     stack[1, 1, 1] = 5
     stack[2, 2, 2] = 5
 
-    overlay = build_track_path_overlay(stack, 5)
+    _, props, row_index = build_all_tracks_data(stack)
 
-    assert overlay.frames == (0, 1, 2)
-    assert overlay.colors.shape == (3, 4)
-    assert overlay.centroids.shape == (3, 2)
-    np.testing.assert_allclose(
-        overlay.centroids, [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]
-    )
-    assert overlay.frame_number_labels() == ["0", "1", "2"]
-    # Union covers every frame's mask.
-    assert overlay.union_mask.sum() == 3
-    assert overlay.union_mask[0, 0]
-    assert overlay.union_mask[2, 2]
+    time5 = props["time"][row_index[5]]
+    np.testing.assert_allclose(time5, [0.0, 0.5, 1.0])
 
 
-def test_colors_run_viridis_start_dark_to_finish_yellow():
-    stack = np.zeros((3, 4, 4), dtype=np.uint32)
-    stack[0, 0, 0] = 5
-    stack[1, 1, 1] = 5
-    stack[2, 2, 2] = 5
-
-    overlay = build_track_path_overlay(stack, 5)
-
-    dark, yellow = _viridis_endpoints()
-    np.testing.assert_allclose(overlay.colors[0], dark)
-    np.testing.assert_allclose(overlay.colors[-1], yellow)
-    # Distinct endpoints -> the comet visibly fades start to finish.
-    assert not np.allclose(overlay.colors[0], overlay.colors[-1])
-
-
-def test_polyline_endpoint_takes_its_frames_color():
-    # The footprint is no longer outlined; the trajectory polyline is drawn
-    # through the centroids. Its newest endpoint carries the latest viridis
-    # colour (later stamps overwrite earlier ones where the path overlaps).
-    stack = np.zeros((2, 3, 3), dtype=np.uint32)
+def test_single_frame_track_gets_zero_time():
+    stack = np.zeros((1, 4, 4), dtype=np.uint32)
     stack[0, 1, 1] = 7
-    stack[1, 1, 1] = 7
 
-    overlay = build_track_path_overlay(stack, 7)
+    _, props, row_index = build_all_tracks_data(stack)
 
-    np.testing.assert_allclose(overlay.overlay[1, 1], overlay.colors[-1])
-
-
-def test_only_occupied_frames_are_kept():
-    stack = np.zeros((4, 3, 3), dtype=np.uint32)
-    stack[1, 0, 0] = 9  # gap at t=0, present at t=1 and t=3
-    stack[3, 2, 2] = 9
-
-    overlay = build_track_path_overlay(stack, 9)
-
-    assert overlay.frames == (1, 3)
-    assert overlay.frame_number_labels() == ["1", "3"]
+    np.testing.assert_array_equal(props["time"][row_index[7]], [0.0])
 
 
-def test_absent_track_returns_empty_overlay():
-    stack = np.zeros((2, 3, 3), dtype=np.uint32)
-    stack[0, 0, 0] = 1
+def test_build_all_tracks_data_empty_stack():
+    data, props, row_index = build_all_tracks_data(np.zeros((2, 3, 3), dtype=np.uint32))
 
-    overlay = build_track_path_overlay(stack, 999)
-
-    assert overlay.is_empty()
-    assert overlay.frames == ()
-    assert overlay.overlay.shape == (3, 3, 4)
-    assert not overlay.union_mask.any()
-    assert overlay.centroids.shape == (0, 2)
-
-
-def test_overlay_is_transparent_away_from_the_polyline():
-    stack = np.zeros((1, 11, 11), dtype=np.uint32)
-    stack[0, 0, 0] = 3
-
-    overlay = build_track_path_overlay(stack, 3)
-
-    # The lone centroid carries the polyline dot; pixels away from it stay clear.
-    assert overlay.overlay[0, 0].any()
-    assert not overlay.overlay[10, 10].any()
-
-
-def test_footprint_is_not_outlined_only_the_polyline_is_drawn():
-    # A solid 5x5 mask: the merged footprint is no longer outlined, so only the
-    # centroid dot of the polyline is painted; the boundary and interior stay
-    # clear. The boolean union still covers the whole footprint for the spotlight.
-    stack = np.zeros((1, 9, 9), dtype=np.uint32)
-    stack[0, 1:6, 1:6] = 2  # filled block, centroid at (3, 3)
-
-    overlay = build_track_path_overlay(stack, 2)
-
-    assert overlay.overlay[3, 3].any()       # the centroid dot of the polyline
-    assert not overlay.overlay[1, 1].any()   # a former boundary pixel stays clear
-    assert not overlay.overlay[2, 2].any()   # an interior, off-path pixel stays clear
-    assert not overlay.overlay[8, 8].any()
-    assert overlay.union_mask.sum() == 25    # union covers the whole mask
-
-
-def test_polyline_bridges_the_centroids_of_all_frames():
-    # Cell present in frames 0 and 2 (gap at 1), two disjoint pixels far apart.
-    # The polyline runs through both centroids and bridges the gap between them.
-    stack = np.zeros((3, 5, 9), dtype=np.uint32)
-    stack[0, 2, 0] = 6   # centroid (2, 0)
-    stack[2, 2, 8] = 6   # centroid (2, 8)
-
-    overlay = build_track_path_overlay(stack, 6)
-
-    assert overlay.frames == (0, 2)
-    assert overlay.overlay[2, 0].any()    # the polyline endpoints are painted
-    assert overlay.overlay[2, 8].any()
-    assert overlay.overlay[2, 4].any()    # and the line bridges the gap
-    assert overlay.union_mask.sum() == 2  # union is only the two single-pixel masks
-
-
-def test_thickness_widens_the_polyline():
-    # Two disjoint single-pixel frames so the polyline spans a clear line; a wider
-    # thickness stamps a fatter line, painting more pixels.
-    stack = np.zeros((2, 7, 7), dtype=np.uint32)
-    stack[0, 3, 1] = 4
-    stack[1, 3, 5] = 4
-
-    thin = build_track_path_overlay(stack, 4, thickness=1).overlay
-    thick = build_track_path_overlay(stack, 4, thickness=3).overlay
-
-    assert thick.any(axis=-1).sum() > thin.any(axis=-1).sum()
-
-
-def test_2d_plane_treated_as_single_frame():
-    plane = np.zeros((3, 3), dtype=np.uint32)
-    plane[1, 1] = 4
-
-    overlay = build_track_path_overlay(plane, 4)
-
-    assert overlay.frames == (0,)
-    np.testing.assert_allclose(overlay.centroids, [[1.0, 1.0]])
+    assert data.shape == (0, 4)
+    assert row_index == {}
+    assert all(len(props[key]) == 0 for key in ("track_id", "time"))
 
 
 # --- film strip -------------------------------------------------------------

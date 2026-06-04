@@ -24,8 +24,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from skimage.measure import find_contours
-
 from cellflow.correction.labels import (
     _label_at,
     draw_cell_path,
@@ -58,7 +56,6 @@ if os.environ.get("CELLFLOW_DEBUG"):
         log.addHandler(_h)
 
 _DRAW_LAYER      = "[Correction] CorrectionDraw"
-_HIGHLIGHT_LAYER = "[Correction] CellHighlight"
 _SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
 _SPOTLIGHT_OPACITY = 0.7
 
@@ -74,7 +71,6 @@ class CorrectionWidget(QWidget):
         show_activate_btn: bool = True,
         show_shortcuts: bool = True,
         inspector_first: bool = False,
-        spotlight: bool = True,
         show_cleanup: bool = True,
         show_inspector: bool = True,
     ) -> None:
@@ -83,7 +79,6 @@ class CorrectionWidget(QWidget):
         self._show_activate_btn = show_activate_btn
         self._show_shortcuts = show_shortcuts
         self._inspector_first = inspector_first
-        self._spotlight = spotlight
         self._show_cleanup = show_cleanup
         # The "Inspect cell" group is redundant where a lineage canvas provides
         # navigation; the spinbox/label still back the goto + Shift-±/step logic
@@ -391,9 +386,7 @@ class CorrectionWidget(QWidget):
 
         self.viewer.layers.selection.active = layer
         self._get_draw_layer()
-        if self._spotlight:                                        # ← NEW
-            self._get_spotlight_layer()
-        self._get_highlight_layer()
+        self._get_spotlight_layer()
 
         self.viewer.dims.events.current_step.connect(self._on_dims_change)
         layer.events.data.connect(self._on_layer_data_changed)
@@ -468,9 +461,7 @@ class CorrectionWidget(QWidget):
         self._inspect_frames_label.setText("")
         self._set_status("Inactive")
         self._cleanup_draw_layer()
-        self._cleanup_highlight_layer()
-        if self._spotlight:                                        # ← NEW
-            self._cleanup_spotlight_layer()
+        self._cleanup_spotlight_layer()
 
     def activate_layer(self, layer: napari.layers.Labels) -> None:
         """Activate correction on a specific Labels layer (bypasses the UI button)."""
@@ -676,22 +667,7 @@ class CorrectionWidget(QWidget):
         if _DRAW_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[_DRAW_LAYER])
 
-    # ── highlight layer ───────────────────────────────────────────────────────
-
-    def _get_highlight_layer(self):
-        if _HIGHLIGHT_LAYER in self.viewer.layers:
-            return self.viewer.layers[_HIGHLIGHT_LAYER]
-        hl = self.viewer.add_shapes(
-            name=_HIGHLIGHT_LAYER,
-            ndim=2,
-            edge_color="cyan",
-            edge_width=2,
-            face_color="transparent",
-        )
-        hl.visible = False
-        if self._layer is not None:
-            self.viewer.layers.selection.active = self._layer
-        return hl
+    # ── selection spotlight ──────────────────────────────────────────────────
 
     def _get_spotlight_layer(self):
         if _SPOTLIGHT_LAYER in self.viewer.layers:
@@ -727,6 +703,12 @@ class CorrectionWidget(QWidget):
                 )
 
     def _update_highlight(self, t: int, lab: int, *, notify: bool = True) -> None:
+        """Spotlight the selected cell (or clear it when nothing is selected).
+
+        The spotlight is the sole selection indicator: full brightness inside
+        the selected cell's mask (or a provider-widened mask, e.g. a whole
+        track's union), uniformly dimmed everywhere outside.
+        """
         previous_label = self._selected_label
         self._selected_label = lab
         self._selected_t = t if lab != 0 else -1
@@ -735,56 +717,24 @@ class CorrectionWidget(QWidget):
             self._goto_cell_id.setValue(int(lab))
         finally:
             self._goto_cell_id.blockSignals(old)
-        hl = self._get_highlight_layer()
         if lab == 0 or self._layer is None:
-            hl.data = []
-            hl.visible = False
-            if self._spotlight:                                    # ← NEW
-                self._clear_spotlight()
+            self._clear_spotlight()
             if notify:
                 self._notify_selection_changed(t, lab, previous_label)
             return
         seg2d = self._frame_view(self._layer, t)
-        if not np.any(seg2d == lab):
+        mask = seg2d == lab
+        if not mask.any():
             self._selected_label = 0
             self._selected_t = -1
-            hl.data = []
-            hl.visible = False
-            if self._spotlight:                                    # ← NEW
-                self._clear_spotlight()
+            self._clear_spotlight()
             if notify:
                 self._notify_selection_changed(t, 0, previous_label)
             return
-        mask = (seg2d == lab).astype(np.uint8)
-        contours = find_contours(mask, level=0.5)
-        if not contours:
-            self._selected_label = 0
-            self._selected_t = -1
-            hl.data = []
-            hl.visible = False
-            if self._spotlight:                                    # ← NEW
-                self._clear_spotlight()
-            if notify:
-                self._notify_selection_changed(t, 0, previous_label)
-            return
-        if self._spotlight:                                        # ← NEW
-            # The spotlight is the selection indicator; the contour border would
-            # be redundant, so render the spotlight and leave the highlight hidden.
-            self._update_spotlight(self._resolve_spotlight_mask(t, lab, mask.astype(bool)))
-            hl.data = []
-            hl.visible = False
-        else:
-            contour = max(contours, key=len)
-            hl.data = [contour]
-            hl.shape_type = ["polygon"]
-            hl.visible = True
+        self._update_spotlight(self._resolve_spotlight_mask(t, lab, mask))
         self.viewer.layers.selection.active = self._layer
         if notify:
             self._notify_selection_changed(t, lab, previous_label)
-
-    def _cleanup_highlight_layer(self) -> None:
-        if _HIGHLIGHT_LAYER in self.viewer.layers:
-            self.viewer.layers.remove(self.viewer.layers[_HIGHLIGHT_LAYER])
 
     def _resolve_spotlight_mask(
         self, t: int, lab: int, default_mask: np.ndarray
@@ -877,10 +827,8 @@ class CorrectionWidget(QWidget):
     def _on_layer_removed(self, event=None) -> None:
         removed = getattr(event, "value", None)
         removed_name = getattr(removed, "name", None)
-        helper_names = {_DRAW_LAYER, _HIGHLIGHT_LAYER}             # ← CHANGED
-        if self._spotlight:                                        # ← NEW
-            helper_names.add(_SPOTLIGHT_LAYER)                     # ← NEW
-        if removed is self._layer or removed_name in helper_names: # ← CHANGED
+        helper_names = {_DRAW_LAYER, _SPOTLIGHT_LAYER}
+        if removed is self._layer or removed_name in helper_names:
             log.debug("_on_layer_removed: '%s' removed, deactivating", removed_name)
             self._deactivate()
 

@@ -10,7 +10,6 @@ from napari.utils.colormaps import direct_colormap
 from cellflow.database.validation import (
     invalidate_track,
     read_corrections,
-    read_validated_cells_at_frame,
     read_validated_tracks,
 )
 
@@ -33,20 +32,28 @@ class ValidatedOverlayController:
         *,
         tracked_layer_provider: Callable[[], object | None],
         pos_dir_provider: Callable[[], Path | None],
-        current_t_provider: Callable[[], int],
         owned_layers: set[str],
     ) -> None:
         self.viewer = viewer
         self._tracked_layer_provider = tracked_layer_provider
         self._pos_dir_provider = pos_dir_provider
-        self._current_t_provider = current_t_provider
         self._owned_layers = owned_layers
 
-    def refresh_overlay(self, frame_view_2d: Callable[[np.ndarray, int], np.ndarray | None]) -> None:
-        self.refresh_validated_overlay(frame_view_2d)
-        self.refresh_anchor_overlay(frame_view_2d)
+    def refresh_overlay(self, frame_view_2d=None) -> None:
+        # ``frame_view_2d`` is accepted (and ignored) for call-site compatibility:
+        # the overlays are whole-stack masks now, so napari slices the current
+        # frame for us — no per-frame rebuild needed. See refresh_validated_overlay.
+        self.refresh_validated_overlay()
+        self.refresh_anchor_overlay()
 
-    def refresh_validated_overlay(self, frame_view_2d: Callable[[np.ndarray, int], np.ndarray | None]) -> None:
+    def refresh_validated_overlay(self, frame_view_2d=None) -> None:
+        """Paint validated cells across *every* frame they're validated in.
+
+        Builds the whole ``(T, H, W)`` mask once from the validated-tracks store
+        rather than just the current frame, so scrubbing the time slider does not
+        trigger a rebuild — napari shows the right slice itself. Re-run only when
+        the validations or the labels actually change.
+        """
         tracked = self._tracked_layer_provider()
         pos_dir = self._pos_dir_provider()
         if pos_dir is None or tracked is None:
@@ -55,29 +62,18 @@ class ValidatedOverlayController:
         data = getattr(tracked, "data", None)
         if data is None or data.ndim < 3:
             return
-        t = self._current_t_provider()
-        if t >= data.shape[0]:
-            return
-        frame = frame_view_2d(data, t)
-        if frame is None:
-            return
-        validated_ids = read_validated_cells_at_frame(pos_dir, t)
+        validated_tracks = read_validated_tracks(pos_dir)
         overlay_exists = VALIDATED_OVERLAY in self.viewer.layers
-        if not validated_ids and not overlay_exists:
+        if not validated_tracks and not overlay_exists:
             return
-        mask2d = (
-            np.isin(frame, list(validated_ids)).astype(np.uint8)
-            if validated_ids
-            else np.zeros(frame.shape, dtype=np.uint8)
-        )
-        full = np.zeros(data.shape, dtype=np.uint8)
-        full[t] = mask2d
+        full = self._mask_stack(np.asarray(data), validated_tracks)
         if overlay_exists:
             self.viewer.layers[VALIDATED_OVERLAY].data = full
         else:
             self.add_overlay(full)
 
-    def refresh_anchor_overlay(self, frame_view_2d: Callable[[np.ndarray, int], np.ndarray | None]) -> None:
+    def refresh_anchor_overlay(self, frame_view_2d=None) -> None:
+        """Paint anchored cells across every frame they're anchored in (whole stack)."""
         tracked = self._tracked_layer_provider()
         pos_dir = self._pos_dir_provider()
         if pos_dir is None or tracked is None:
@@ -86,31 +82,32 @@ class ValidatedOverlayController:
         data = getattr(tracked, "data", None)
         if data is None or data.ndim < 3:
             return
-        t = self._current_t_provider()
-        if t >= data.shape[0]:
-            return
-        frame = frame_view_2d(data, t)
-        if frame is None:
-            return
-        anchor_ids = {
-            int(correction.cell_id)
-            for correction in read_corrections(pos_dir)
-            if correction.kind == "anchor" and int(correction.t) == int(t)
-        }
+        anchor_tracks: dict[int, set[int]] = {}
+        for correction in read_corrections(pos_dir):
+            if correction.kind == "anchor":
+                anchor_tracks.setdefault(int(correction.cell_id), set()).add(
+                    int(correction.t)
+                )
         overlay_exists = ANCHOR_OVERLAY in self.viewer.layers
-        if not anchor_ids and not overlay_exists:
+        if not anchor_tracks and not overlay_exists:
             return
-        mask2d = (
-            np.isin(frame, list(anchor_ids)).astype(np.uint8)
-            if anchor_ids
-            else np.zeros(frame.shape, dtype=np.uint8)
-        )
-        full = np.zeros(data.shape, dtype=np.uint8)
-        full[t] = mask2d
+        full = self._mask_stack(np.asarray(data), anchor_tracks)
         if overlay_exists:
             self.viewer.layers[ANCHOR_OVERLAY].data = full
         else:
             self.add_anchor_overlay(full)
+
+    @staticmethod
+    def _mask_stack(data: np.ndarray, tracks: dict[int, set[int]]) -> np.ndarray:
+        """A ``(T, H, W)`` uint8 mask: 1 where ``cell_id`` lives in its frames."""
+        full = np.zeros(data.shape, dtype=np.uint8)
+        n_frames = data.shape[0]
+        for cell_id, frames in tracks.items():
+            for frame in frames:
+                frame = int(frame)
+                if 0 <= frame < n_frames:
+                    full[frame][data[frame] == int(cell_id)] = 1
+        return full
 
     def add_overlay(self, data: np.ndarray) -> None:
         if VALIDATED_OVERLAY in self.viewer.layers:

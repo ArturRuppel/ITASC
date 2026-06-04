@@ -7,13 +7,7 @@ import numpy as np
 from napari.utils.colormaps import Colormap
 
 from cellflow.napari._correction_centroids import (
-    correction_label_color_map,
-    refresh_centroid_cross_layer,
     refresh_label_colormap,
-)
-from cellflow.napari.contact_analysis_visualization import (
-    _nucleus_centroids_by_track,
-    _rasterize_track_image,
 )
 
 
@@ -49,12 +43,16 @@ def add_tracked_labels_and_track_layer(
     labels: np.ndarray,
     *,
     labels_layer_name: str,
-    track_layer_name: str,
     owned_layer_names: set[str],
     color_scale: float = 0.65,
-    centroid_layer_name: str | None = None,
 ) -> TrackedLayerLoadResult:
-    """Add correction labels and the matching fading nucleus-track image."""
+    """Add the correction labels layer with its deterministic colormap.
+
+    The trajectory overlay is no longer rasterised here — it's a live napari
+    ``Tracks`` layer owned by ``AllTracksController`` (built on demand from this
+    same label data), so this just lays down the labels and returns the colour
+    map both share.
+    """
     labels_arr = np.asarray(labels)
     labels_layer = viewer.add_labels(
         labels_arr,
@@ -68,58 +66,7 @@ def add_tracked_labels_and_track_layer(
         labels_arr,
         color_scale=color_scale,
     )
-
-    add_correction_track_layer(
-        viewer,
-        labels_arr,
-        name=track_layer_name,
-        owned_layer_names=owned_layer_names,
-        color_scale=color_scale,
-    )
-
-    if centroid_layer_name is not None:
-        refresh_centroid_cross_layer(
-            viewer,
-            labels_arr,
-            color_map=color_map,
-            name=centroid_layer_name,
-            owned_layer_names=owned_layer_names,
-        )
-
     return TrackedLayerLoadResult(labels_layer=labels_layer, color_map=color_map)
-
-
-def add_correction_track_layer(
-    viewer: Any,
-    labels: np.ndarray,
-    *,
-    name: str,
-    owned_layer_names: set[str],
-    color_scale: float = 0.65,
-) -> dict[int | None, tuple[float, float, float, float] | str]:
-    """Add the correction-owned fading nucleus-track image layer."""
-    labels_arr = np.asarray(labels)
-    color_map = correction_label_color_map(labels_arr, color_scale=color_scale)
-
-    shape = (
-        (1, int(labels_arr.shape[0]), int(labels_arr.shape[1]))
-        if labels_arr.ndim == 2
-        else tuple(int(value) for value in labels_arr.shape[:3])
-    )
-    track_image = _rasterize_track_image(
-        _nucleus_centroids_by_track(labels_arr),
-        color_map,
-        shape,
-    )
-    viewer.add_image(
-        track_image,
-        name=name,
-        rgb=True,
-        opacity=0.9,
-        blending="additive",
-    )
-    owned_layer_names.add(name)
-    return color_map
 
 
 def remove_other_correction_label_layers(

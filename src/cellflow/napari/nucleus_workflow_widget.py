@@ -360,7 +360,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
             "_restore_correction_view_state",
             "_remove_correction_owned_layers",
             "_add_correction_image_layer",
-            "_add_correction_track_layer",
             "_on_save_tracked",
             "_load_correction_layers_from_disk",
             "_remove_other_correction_prefix_layers",

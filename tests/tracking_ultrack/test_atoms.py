@@ -164,6 +164,33 @@ def test_read_atoms_params_returns_none_when_absent(tmp_path):
     assert params is None and fp is None
 
 
+def test_merge_small_atoms_keeps_isolated_small_atom_beside_a_large_one():
+    from cellflow.tracking_ultrack.atoms import _merge_small_atoms
+
+    atoms = np.zeros((20, 40), dtype=np.int32)
+    atoms[2:18, 2:18] = 1   # large atom (256 px)
+    atoms[8:12, 30:34] = 2  # small isolated atom (16 px), not touching label 1
+    merged = _merge_small_atoms(atoms, atom_min_area=100)
+    # no neighbour to merge into -> the small atom survives, nothing blanked
+    assert set(np.unique(merged).tolist()) == {0, 1, 2}
+    assert np.array_equal(merged, atoms)
+
+
+def test_merge_small_atoms_folds_into_longest_border_neighbour():
+    from cellflow.tracking_ultrack.atoms import _merge_small_atoms
+
+    atoms = np.zeros((20, 20), dtype=np.int32)
+    atoms[:, :8] = 1       # large left neighbour
+    atoms[:4, :] = 1       # ...wrapping over the top, too
+    atoms[:, 12:] = 2      # large right neighbour
+    atoms[4:8, 8:12] = 3   # small sliver (16 px)
+    # sliver 3 borders label 1 on its top + left edges (8 px) and label 2 on its
+    # right edge (4 px) -> it must fold into label 1, the longest-border neighbour.
+    merged = _merge_small_atoms(atoms, atom_min_area=50)
+    assert np.all(merged[4:8, 8:12] == 1)
+    assert 3 not in set(np.unique(merged).tolist())
+
+
 def test_extract_atoms_frame_keeps_labels_when_all_atoms_below_min_area():
     territory = np.zeros((20, 20), dtype=bool)
     territory[8:12, 8:12] = True  # a single 16-px atom

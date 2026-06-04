@@ -1,13 +1,23 @@
-"""Whole-track overlay for the nucleus correction workflow.
+"""Single all-tracks overlay for the nucleus correction workflow.
 
-This owns the in-canvas overlay: a napari Tracks layer that draws the selected
-track's trajectory as a vector polyline through the per-frame nucleus centroids,
-coloured by time with viridis (earliest frame dark, latest yellow), plus the
-spotlight mask the inner correction widget consults to highlight the union of
-every frame's mask (full brightness inside that footprint, darkened outside,
-with a sharp boundary). The geometry comes from the pure
-:func:`build_track_path_overlay` helper; this controller is the layer-lifecycle
-glue the correction widget used to carry inline.
+This owns one in-canvas napari ``Tracks`` layer that draws *every* track's
+trajectory through the per-frame nucleus centroids, plus a small "tip" Points
+layer that marks the focused track's position in the current frame with a cross.
+
+Two presentation states share the one tracks layer:
+
+* **overview** (nothing selected) — all tracks coloured by id, moderately
+  transparent;
+* **focus** (a cell selected) — the selected track recoloured bright
+  viridis-by-time while every other track fades to a faint translucent grey.
+
+The focus switch only rewrites the layer's ``properties``/``color_by`` (an
+O(track) write), never its geometry, so selecting cells stays cheap. The
+geometry is rebuilt (:meth:`refresh`) only when the label stack itself changes.
+
+The pure geometry/colour maths lives in
+:mod:`cellflow.napari._correction_track_path`; this controller is the
+layer-lifecycle glue.
 """
 from __future__ import annotations
 
@@ -15,16 +25,63 @@ from collections.abc import Callable
 
 import numpy as np
 
-from cellflow.napari._correction_track_path import build_track_path_overlay
+from cellflow.napari._correction_track_path import build_all_tracks_data
+from cellflow.napari._correction_centroids import FOCUS_CROSS_COLOR
 
-TRACK_PATH_LAYER = "[Correction] Track Path"
-TRACK_PATH_NUMBERS_LAYER = "[Correction] Track Path Numbers"
-TRACK_PATH_OPACITY = 1.0
-TRACK_PATH_TAIL_WIDTH = 4
+TRACK_LAYER = "[Correction] Nucleus tracks"
+TRACK_TIP_LAYER = "[Correction] Track Tip"
+TRACK_TAIL_WIDTH = 4
+# Trailing history shown behind the current frame, in frames. Short so the
+# overview reads as a comet around the current frame instead of the whole path.
+TRACK_TAIL_LENGTH = 15
+OVERVIEW_COLORMAP = "hsv"
+FOCUS_COLORMAP = "viridis"
+OVERVIEW_OPACITY = 0.55
+FOCUS_OPACITY = 1.0
+TIP_CROSS_SIZE = 5
+
+# Backwards-compatible aliases (the layer name is also referenced by the widget).
+TRACK_PATH_LAYER = TRACK_LAYER
+
+_CORRECTION_TRACKS_CLS = None
 
 
-class TrackPathController:
-    """Own the comet overlay layer and its spotlight mask for one track."""
+def _correction_tracks_cls():
+    """A ``Tracks`` subclass whose temporal tail fade can be forced on/off.
+
+    napari's ``Tracks.use_fade`` is read-only (it fades whenever the time axis
+    is hidden, i.e. always in a T/Y/X viewer). We need the focused track to be
+    fully opaque end-to-end (``use_fade`` off → the shader pins every vertex's
+    alpha to 1.0) while the overview keeps its fading comet, so the layer carries
+    an override flag the controller toggles per focus state. Built lazily so the
+    module stays import-light. ``use_fade`` is read back by the vispy layer on
+    the appearance events (tail/head/color_by) the controller fires anyway.
+    """
+    global _CORRECTION_TRACKS_CLS
+    if _CORRECTION_TRACKS_CLS is None:
+        from napari.layers import Tracks
+
+        class _CorrectionTracks(Tracks):
+            def __init__(self, *args, **kwargs) -> None:
+                self._fade_override: bool | None = None
+                super().__init__(*args, **kwargs)
+
+            @property
+            def use_fade(self) -> bool:
+                if self._fade_override is not None:
+                    return self._fade_override
+                return 0 in self._slice_input.not_displayed
+
+            @use_fade.setter
+            def use_fade(self, value: bool | None) -> None:
+                self._fade_override = None if value is None else bool(value)
+
+        _CORRECTION_TRACKS_CLS = _CorrectionTracks
+    return _CORRECTION_TRACKS_CLS
+
+
+class AllTracksController:
+    """Own the single all-tracks layer and its current-frame tip cross."""
 
     def __init__(
         self,
@@ -33,6 +90,7 @@ class TrackPathController:
         tracked_layer_provider: Callable[[], object | None],
         selected_label_provider: Callable[[], int],
         enabled_provider: Callable[[], bool],
+        current_t_provider: Callable[[], int],
         status_callback: Callable[[str], None],
         owned_layers: set[str],
     ) -> None:
@@ -40,13 +98,21 @@ class TrackPathController:
         self._tracked_layer_provider = tracked_layer_provider
         self._selected_label_provider = selected_label_provider
         self._enabled_provider = enabled_provider
+        self._current_t_provider = current_t_provider
         self._status = status_callback
         self._owned_layers = owned_layers
+        # Cached from the last refresh so focusing a track can slice its vertices
+        # out of the full data without rescanning the stack. All share one order.
+        self._data: np.ndarray = np.empty((0, 4), dtype=float)
+        self._properties: dict[str, np.ndarray] = {}
+        self._row_index: dict[int, np.ndarray] = {}
+        self._span: int = 1
+
+    # ── lifecycle ──────────────────────────────────────────────────────────
 
     def refresh(self) -> None:
-        """Rebuild the comet for the selected track (clears it if off/empty)."""
-        lab = int(self._selected_label_provider() or 0)
-        if not self._enabled_provider() or not lab:
+        """Rebuild the tracks layer from the current stack, then re-apply focus."""
+        if not self._enabled_provider():
             self.clear()
             return
         layer = self._tracked_layer_provider()
@@ -54,25 +120,111 @@ class TrackPathController:
             self.clear()
             return
         data = np.asarray(layer.data)
-        overlay = build_track_path_overlay(data, lab)
-        if overlay.is_empty():
+        rows, properties, row_index = build_all_tracks_data(data)
+        self._data = rows
+        self._properties = properties
+        self._row_index = row_index
+        if len(rows) == 0:
             self.clear()
             return
-        n_frames = int(data.shape[0]) if data.ndim == 3 else 1
-        self._update_layers(overlay, lab, n_frames)
-        self._status(
-            f"Track path: cell {lab} across {len(overlay.frames)} frame(s)."
-        )
+        self._span = max(int(data.shape[0]) if data.ndim == 3 else 1, 1)
+        self._ensure_layer()
+        self.set_focus(int(self._selected_label_provider() or 0))
+        self._status(f"Tracks: {len(row_index)} track(s).")
 
     def clear(self) -> None:
-        """Remove the comet layers from the viewer."""
-        for name in (TRACK_PATH_LAYER, TRACK_PATH_NUMBERS_LAYER):
+        """Remove the tracks + tip layers from the viewer."""
+        for name in (TRACK_LAYER, TRACK_TIP_LAYER):
             if name in self.viewer.layers:
                 self.viewer.layers.remove(self.viewer.layers[name])
             self._owned_layers.discard(name)
+        self._data = np.empty((0, 4), dtype=float)
+        self._properties = {}
+        self._row_index = {}
+
+    # ── focus / current-frame presentation ───────────────────────────────────
+
+    def set_focus(self, lab: int) -> None:
+        """Switch the layer between the overview and a single focused track.
+
+        Focus mode draws *only* the selected track (the surrounding tracks are
+        dropped from the layer entirely — a Tracks layer has no per-track
+        visibility) coloured by time and fully opaque, image-like. ``lab == 0``
+        (or an absent track) restores the all-tracks overview and hides the tip
+        cross. A no-op when the tracks layer is not present (toggle off).
+        """
+        lab = int(lab or 0)
+        layer = self._tracks_layer()
+        if layer is None:
+            return
+        if not lab or lab not in self._row_index:
+            # Overview: every track, a short trailing comet that fades out behind
+            # the current frame (no forward head), all dimmed together. Park
+            # color_by on the always-present 'track_id' before the data swap so
+            # napari doesn't warn about the old key vanishing.
+            layer.use_fade = None  # default (fade on, scaled by tail_length)
+            layer.color_by = "track_id"
+            layer.data = self._data
+            layer.properties = self._properties
+            layer.color_by = "track_id"
+            try:
+                layer.colormap = OVERVIEW_COLORMAP
+            except Exception:
+                pass
+            layer.tail_length = min(TRACK_TAIL_LENGTH, self._span)
+            layer.head_length = 0
+            layer.opacity = OVERVIEW_OPACITY
+            self._hide_tip()
+            return
+
+        # Focus: keep only the selected track's vertices, coloured by its time
+        # gradient. use_fade off pins every vertex's alpha to 1.0 so the whole
+        # trajectory reads fully opaque (image-like) on every frame; set it before
+        # the tail/head/color_by writes the vispy layer reads use_fade back from.
+        rows = self._row_index[lab]
+        layer.use_fade = False
+        # Park color_by on 'track_id' (always present) across the data swap so
+        # napari doesn't warn about the previous key vanishing, then colour by time.
+        layer.color_by = "track_id"
+        layer.data = self._data[rows]
+        layer.properties = {
+            "track_id": self._properties["track_id"][rows],
+            "time": self._properties["time"][rows],
+        }
+        layer.color_by = "time"
+        try:
+            layer.colormap = FOCUS_COLORMAP
+        except Exception:
+            pass
+        layer.tail_length = self._span
+        layer.head_length = self._span
+        layer.opacity = FOCUS_OPACITY
+        self.set_current_frame(int(self._current_t_provider()))
+        self._restore_active_layer()
+
+    def set_current_frame(self, t: int) -> None:
+        """Move/show the tip cross at the focused track's centroid in frame ``t``."""
+        lab = int(self._selected_label_provider() or 0)
+        if not self._enabled_provider() or not lab:
+            self._hide_tip()
+            return
+        layer = self._tracked_layer_provider()
+        if layer is None:
+            self._hide_tip()
+            return
+        data = np.asarray(layer.data)
+        if data.ndim != 3 or not (0 <= int(t) < data.shape[0]):
+            self._hide_tip()
+            return
+        mask = data[int(t)] == lab
+        if not mask.any():
+            self._hide_tip()
+            return
+        ys, xs = np.nonzero(mask)
+        self._update_tip(np.asarray([[float(ys.mean()), float(xs.mean())]]))
 
     def spotlight_mask(self, _t: int, lab: int, _default_mask):
-        """Spotlight the union of the selected track's masks while the comet is on."""
+        """Widen the inner widget's spotlight to the selected track's whole union."""
         if not self._enabled_provider() or not lab:
             return None
         layer = self._tracked_layer_provider()
@@ -84,69 +236,71 @@ class TrackPathController:
         union = np.any(data == int(lab), axis=0)
         return union if union.any() else None
 
-    def _update_layers(self, overlay, lab: int, n_frames: int) -> None:
+    # ── layer plumbing ───────────────────────────────────────────────────────
+
+    def _tracks_layer(self):
         from napari.layers import Tracks
 
-        data, properties = self._tracks_data(overlay, lab)
-        # Long tail + head so the whole trajectory stays visible on every frame,
-        # rather than growing/shrinking as the time slider moves.
-        span = max(int(n_frames), 1)
+        if TRACK_LAYER in self.viewer.layers:
+            layer = self.viewer.layers[TRACK_LAYER]
+            if isinstance(layer, Tracks):
+                return layer
+        return None
 
-        name = TRACK_PATH_LAYER
-        if name in self.viewer.layers and isinstance(self.viewer.layers[name], Tracks):
-            layer = self.viewer.layers[name]
-            # Park color_by on the always-present 'track_id' before swapping data:
-            # assigning ``data`` resets features to the default, so leaving it on
-            # 'time' makes napari warn about a missing key and fall back. Restore
-            # 'time' once the new properties carry it again.
-            layer.color_by = "track_id"
-            layer.data = data
-            layer.properties = properties
-            layer.color_by = "time"
-            layer.colormap = "viridis"
-            layer.tail_length = span
-            layer.head_length = span
+    def _ensure_layer(self) -> None:
+        """Create the tracks layer if absent; ``set_focus`` sets its data/colours.
+
+        Built from the cached full data with overview defaults so there's no
+        flash before the ``set_focus`` call that follows every refresh.
+        """
+        if self._tracks_layer() is not None:
+            return
+        if TRACK_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(TRACK_LAYER)
+        # Build the fade-controllable Tracks subclass directly (rather than
+        # viewer.add_tracks, which always makes a plain Tracks) so focus mode can
+        # pin the focused track fully opaque.
+        layer = _correction_tracks_cls()(
+            self._data,
+            name=TRACK_LAYER,
+            properties=self._properties,
+            color_by="track_id",
+            colormap=OVERVIEW_COLORMAP,
+            tail_width=TRACK_TAIL_WIDTH,
+            tail_length=min(TRACK_TAIL_LENGTH, self._span),
+            head_length=0,
+            blending="translucent",
+            opacity=OVERVIEW_OPACITY,
+        )
+        self.viewer.add_layer(layer)
+        self._owned_layers.add(TRACK_LAYER)
+        self._restore_active_layer()
+
+    def _update_tip(self, points: np.ndarray) -> None:
+        if TRACK_TIP_LAYER in self.viewer.layers:
+            layer = self.viewer.layers[TRACK_TIP_LAYER]
+            layer.data = points
+            layer.visible = True
         else:
-            if name in self.viewer.layers:
-                self.viewer.layers.remove(name)
-            self.viewer.add_tracks(
-                data,
-                name=name,
-                properties=properties,
-                color_by="time",
-                colormap="viridis",
-                tail_width=TRACK_PATH_TAIL_WIDTH,
-                tail_length=span,
-                head_length=span,
-                blending="translucent",
-                opacity=TRACK_PATH_OPACITY,
+            self.viewer.add_points(
+                points,
+                name=TRACK_TIP_LAYER,
+                ndim=2,
+                symbol="cross",
+                size=TIP_CROSS_SIZE,
+                face_color=[FOCUS_CROSS_COLOR],
+                border_color=[FOCUS_CROSS_COLOR],
+                opacity=1.0,
             )
-        self._owned_layers.add(name)
+        self._owned_layers.add(TRACK_TIP_LAYER)
+        self._restore_active_layer()
 
-        # The per-frame number labels are intentionally not drawn anymore; drop
-        # any layer left over from an earlier session.
-        nname = TRACK_PATH_NUMBERS_LAYER
-        if nname in self.viewer.layers:
-            self.viewer.layers.remove(nname)
-        self._owned_layers.discard(nname)
+    def _hide_tip(self) -> None:
+        if TRACK_TIP_LAYER in self.viewer.layers:
+            self.viewer.layers[TRACK_TIP_LAYER].visible = False
 
+    def _restore_active_layer(self) -> None:
         try:
             self.viewer.layers.selection.active = self._tracked_layer_provider()
         except Exception:
             pass
-
-    @staticmethod
-    def _tracks_data(overlay, lab: int):
-        """Build napari Tracks ``data`` + ``properties`` from the overlay.
-
-        ``data`` rows are ``[track_id, t, y, x]`` (one per occupied frame) and
-        ``properties['time']`` carries the frame index so the layer can colour
-        the polyline by time with viridis.
-        """
-        frames = np.asarray(overlay.frames, dtype=float)
-        centroids = np.asarray(overlay.centroids, dtype=float).reshape((-1, 2))
-        track_ids = np.full(len(frames), float(int(lab)))
-        data = np.column_stack(
-            [track_ids, frames, centroids[:, 0], centroids[:, 1]]
-        )
-        return data, {"time": frames}

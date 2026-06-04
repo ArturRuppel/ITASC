@@ -217,7 +217,6 @@ class CellCorrectionWidget(QWidget):
             show_activate_btn=False,
             show_shortcuts=False,
             inspector_first=True,
-            spotlight=True,
             show_cleanup=False,
         )
 

@@ -29,11 +29,8 @@ from cellflow.napari._widget_helpers import (
     tool_btn as _tool_btn,
 )
 from cellflow.napari._correction_centroids import (
-    centroid_focus_colors,
     ensure_label_colormap_entries,
-    refresh_centroid_cross_layer,
     refresh_label_colormap,
-    update_centroid_cross_layer_for_edit,
 )
 from cellflow.napari._correction_anchor import (
     anchor_correction,
@@ -57,7 +54,6 @@ from cellflow.napari._correction_layer_lifecycle import (
 )
 from cellflow.napari._correction_layer_loader import (
     add_correction_image_layer,
-    add_correction_track_layer,
     add_tracked_labels_and_track_layer,
     remove_other_correction_label_layers,
 )
@@ -96,7 +92,7 @@ from cellflow.napari.ui_style import (
 from cellflow.napari.validated_overlay_controller import (
     ValidatedOverlayController,
 )
-from cellflow.napari.track_path_controller import TrackPathController
+from cellflow.napari.track_path_controller import AllTracksController
 from cellflow.napari.lineage_canvas_controller import LineageCanvasController
 from cellflow.napari.candidate_gallery_controller import CandidateGalleryController
 from cellflow.napari._correction_takeover import (
@@ -133,10 +129,8 @@ logger = logging.getLogger(__name__)
 _TRACKED_LAYER = "Tracked: Nucleus"
 _CORRECTION_TRACKED_LAYER = "[Correction] Nucleus Labels"
 _CORRECTION_TRACK_LAYER = "[Correction] Nucleus tracks"
-_CORRECTION_CENTROID_LAYER = "[Correction] Nucleus Centroids"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
-_CORRECTION_NLS_ZAVG_LAYER = "[Correction] NLS z-avg"
 _NUCLEUS_TRACK_COLOR_SCALE = 0.65
 
 _DEFAULT_DEPENDENCIES = {
@@ -197,17 +191,17 @@ class NucleusCorrectionWidget(QWidget):
             self.viewer,
             tracked_layer_provider=self._correction_tracked_layer,
             pos_dir_provider=lambda: self._pos_dir,
-            current_t_provider=self._current_t,
             owned_layers=self._correction_owned_layers,
         )
         self._setup_ui()
-        self._track_path = TrackPathController(
+        self._all_tracks = AllTracksController(
             self.viewer,
             tracked_layer_provider=self._correction_tracked_layer,
             selected_label_provider=lambda: int(
                 getattr(self.correction_widget, "_selected_label", 0) or 0
             ),
             enabled_provider=self.track_path_check.isChecked,
+            current_t_provider=self._current_t,
             status_callback=self._correction_status,
             owned_layers=self._correction_owned_layers,
         )
@@ -633,9 +627,6 @@ class NucleusCorrectionWidget(QWidget):
     def _nucleus_foreground_path(self):
         return self._paths.nucleus_foreground if self._paths else None
 
-    def _nls_zavg_path(self):
-        return self._paths.nls_zavg if self._paths else None
-
     def _current_t(self) -> int:
         step = self.viewer.dims.current_step
         return int(step[0]) if len(step) >= 1 else 0
@@ -673,15 +664,6 @@ class NucleusCorrectionWidget(QWidget):
             name=name,
             colormap=colormap,
             owned_layer_names=self._correction_owned_layers,
-        )
-
-    def _add_correction_track_layer(self, labels: np.ndarray) -> dict:
-        return add_correction_track_layer(
-            self.viewer,
-            labels,
-            name=_CORRECTION_TRACK_LAYER,
-            owned_layer_names=self._correction_owned_layers,
-            color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
         )
 
     def _correction_status(self, msg: str) -> None:
@@ -760,25 +742,16 @@ class NucleusCorrectionWidget(QWidget):
                     owned_layer_names=self._correction_owned_layers,
                 )
 
-        nls_path = self._nls_zavg_path()
-        if nls_path is not None and nls_path.exists():
-            add_correction_image_layer(
-                self.viewer,
-                np.asarray(tifffile.imread(str(nls_path)), dtype=np.float32),
-                name=_CORRECTION_NLS_ZAVG_LAYER,
-                colormap="I Orange",
-                owned_layer_names=self._correction_owned_layers,
-            )
-
         add_tracked_labels_and_track_layer(
             self.viewer,
             stack,
             labels_layer_name=_CORRECTION_TRACKED_LAYER,
-            track_layer_name=_CORRECTION_TRACK_LAYER,
-            centroid_layer_name=_CORRECTION_CENTROID_LAYER,
             owned_layer_names=self._correction_owned_layers,
             color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
         )
+        # Build the live all-tracks overlay from the labels just loaded (a no-op
+        # while the "Track path" toggle is off).
+        self._all_tracks.refresh()
 
         self._correction_status(f"Loaded tracked stack {stack.shape} into correction mode.")
         return True
@@ -1626,6 +1599,10 @@ class NucleusCorrectionWidget(QWidget):
             self._set_checked_without_signal(self.candidate_gallery_check, True)
             self._lineage_canvas.refresh()
             self._candidate_gallery.refresh()
+            # Build the whole-stack validated / anchor overlays once now; they're
+            # only rebuilt on validation or label changes afterwards (not per frame).
+            self._refresh_validated_overlay()
+            self._refresh_validation_counter()
             # Build the controls strip (header + lineage overview + controls),
             # reparenting the controls out of the plugin dock; then hand the whole
             # window to the workspace by hiding the now-empty plugin dock and lay
@@ -1739,8 +1716,11 @@ class NucleusCorrectionWidget(QWidget):
 
     def on_dims_step_changed(self) -> None:
         self._swap_cursor = None
-        self._refresh_validated_overlay()
-        self._refresh_validation_counter()
+        # The validated / anchor overlays are whole-stack masks (built on
+        # activation and on each validation/label change), so napari already
+        # shows the right slice — no per-frame rebuild here.
+        # Keep the focused track's tip cross on the cell in the new frame.
+        self._all_tracks.set_current_frame(self._current_t())
         if self.lineage_canvas_check.isChecked():
             self._lineage_canvas.set_current_frame(self._current_t())
         # Candidates are frame-specific (the swap lattice + adjacent-frame extend),
@@ -1766,10 +1746,8 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_track_path_spotlight()
 
     def _on_track_selection_changed(self, _t: int, _lab: int) -> None:
-        """Rebuild the comet / canvas detail when the selected track changes."""
+        """Recolour the all-tracks layer / canvas detail when selection changes."""
         self._apply_focus_presentation(_lab)
-        if self.track_path_check.isChecked():
-            self._refresh_track_path_overlay()
         if self.lineage_canvas_check.isChecked():
             self._lineage_canvas.set_selection(_lab)
             # Recenter the canvas on the selected track only when the selection
@@ -1779,55 +1757,18 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_candidate_gallery_if_shown()
 
     def _apply_focus_presentation(self, lab: int) -> None:
-        """Spotlight a single cell: hide the whole-track comet and keep only the
-        focused cell's centroid cross. With no cell selected (``lab == 0``) the
-        overview is restored.
+        """Focus a single cell in the all-tracks layer.
 
-        The other cells' labels stay visible (the spotlight dims them); the
-        spotlight and the dropped highlight border are handled by the inner
-        correction widget. This only manages the nucleus-side overlay layers.
+        The selected track is recoloured bright viridis-by-time and gets a
+        current-frame tip cross while every other track fades to a faint grey;
+        ``lab == 0`` restores the overview. The label spotlight (dimming the
+        other cells' masks) is handled by the inner correction widget; this only
+        drives the nucleus-side track overlay.
         """
-        focused = bool(lab)
-        if _CORRECTION_TRACK_LAYER in self.viewer.layers:
-            self.viewer.layers[_CORRECTION_TRACK_LAYER].visible = not focused
-        if _CORRECTION_CENTROID_LAYER in self.viewer.layers:
-            self._apply_centroid_focus(
-                self.viewer.layers[_CORRECTION_CENTROID_LAYER], lab
-            )
-
-    @staticmethod
-    def _apply_centroid_focus(layer, lab: int) -> None:
-        """Show only the selected cell's centroid crosses (all crosses if 0).
-
-        The centroid layer stays visible; per-point ``shown`` flags filter it so
-        the focused cell keeps its cross while the others fall away, and the
-        focused cell's crosses are recolored with a viridis time gradient to
-        match the whole-track comet.
-        """
-        features = getattr(layer, "features", None)
-        try:
-            label_ids = [int(value) for value in features["label_id"]]
-            frames = [int(value) for value in features["frame"]]
-        except Exception:
-            return
-        if not label_ids:
-            return
-        if lab:
-            shown = np.asarray([lid == int(lab) for lid in label_ids], dtype=bool)
-        else:
-            shown = np.ones(len(label_ids), dtype=bool)
-        colors = centroid_focus_colors(
-            label_ids, frames, lab, color_scale=_NUCLEUS_TRACK_COLOR_SCALE
-        )
-        try:
-            layer.border_color = colors
-            layer.face_color = colors
-            layer.shown = shown
-        except Exception:
-            logger.exception("centroid focus: per-point styling failed")
+        self._all_tracks.set_focus(int(lab or 0))
 
     def _refresh_track_visuals_live(self) -> None:
-        """Rebuild the comet overlay and film strip after an edit.
+        """Rebuild the all-tracks overlay + film strip after an edit.
 
         Called when the selected track's pixels change (swap / extend / retrack)
         so both views reflect the new trajectory without reselecting the cell.
@@ -1841,10 +1782,10 @@ class NucleusCorrectionWidget(QWidget):
     def _refresh_swap_visuals_live(self) -> None:
         """Cheap post-swap refresh used while stepping candidates with Z / C.
 
-        Updates the comet and the selected track's detail strip only. The full
-        :meth:`_refresh_lineage_canvas_if_shown` re-runs the lineage build over
-        the *whole* stack, which froze the GUI when fired on every swap
-        keystroke; the overview catches up on the next full refresh.
+        Updates the all-tracks overlay and the selected track's detail strip
+        only. The full :meth:`_refresh_lineage_canvas_if_shown` re-runs the
+        lineage build over the *whole* stack, which froze the GUI when fired on
+        every swap keystroke; the overview catches up on the next full refresh.
         """
         if self.track_path_check.isChecked():
             self._refresh_track_path_overlay()
@@ -1868,7 +1809,7 @@ class NucleusCorrectionWidget(QWidget):
             self._lineage_canvas.refresh()
 
     def _track_path_spotlight_mask(self, _t: int, lab: int, _default_mask):
-        return self._track_path.spotlight_mask(_t, lab, _default_mask)
+        return self._all_tracks.spotlight_mask(_t, lab, _default_mask)
 
     def _refresh_track_path_spotlight(self) -> None:
         """Re-run the inner highlight so the spotlight mask provider is consulted."""
@@ -1882,17 +1823,16 @@ class NucleusCorrectionWidget(QWidget):
             logger.exception("track path spotlight refresh failed")
 
     def _refresh_track_path_overlay(self) -> None:
-        self._track_path.refresh()
+        self._all_tracks.refresh()
 
     def _clear_track_path_overlay(self) -> None:
-        self._track_path.clear()
+        self._all_tracks.clear()
 
     def _film_strip_intensity_layer(self):
-        """Best raw layer to crop tiles from (nucleus, then cell, then NLS)."""
+        """Best raw layer to crop tiles from (nucleus, then cell)."""
         for name in (
             _CORRECTION_NUC_ZAVG_LAYER,
             _CORRECTION_CELL_ZAVG_LAYER,
-            _CORRECTION_NLS_ZAVG_LAYER,
         ):
             if name in self.viewer.layers:
                 return self.viewer.layers[name]
@@ -2119,20 +2059,6 @@ class NucleusCorrectionWidget(QWidget):
         )
         return protected_cell_mask(frame, protected_ids)
 
-    def _reapply_centroid_focus(self) -> None:
-        """Restore the focused cell's cross styling after the centroid layer rebuilt.
-
-        Editing actions rebuild the centroid cross layer with per-label colors and
-        reset the per-point ``shown`` filter, which drops the focused cell's white
-        cross and single-cell filter. Re-run the focus presentation so the
-        highlighted cell's cross keeps tracking it. A no-op when nothing is focused
-        (the overview already shows every cross in its per-label color).
-        """
-        lab = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
-        if not lab or _CORRECTION_CENTROID_LAYER not in self.viewer.layers:
-            return
-        self._apply_centroid_focus(self.viewer.layers[_CORRECTION_CENTROID_LAYER], lab)
-
     def _refresh_correction_label_visuals_for_edit(
         self,
         t: int,
@@ -2141,22 +2067,11 @@ class NucleusCorrectionWidget(QWidget):
         if _CORRECTION_TRACKED_LAYER not in self.viewer.layers:
             return
         layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
-        data = np.asarray(layer.data)
-        color_map = ensure_label_colormap_entries(
+        ensure_label_colormap_entries(
             layer,
             changed_ids,
             color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
         )
-        update_centroid_cross_layer_for_edit(
-            self.viewer,
-            data,
-            color_map=color_map,
-            name=_CORRECTION_CENTROID_LAYER,
-            owned_layer_names=self._correction_owned_layers,
-            frame=t,
-            changed_ids=changed_ids,
-        )
-        self._reapply_centroid_focus()
         try:
             self.viewer.layers.selection.active = layer
         except Exception:
@@ -2193,19 +2108,14 @@ class NucleusCorrectionWidget(QWidget):
             return
         layer = self.viewer.layers[_CORRECTION_TRACKED_LAYER]
         data = np.asarray(layer.data)
-        color_map = refresh_label_colormap(
+        refresh_label_colormap(
             layer,
             data,
             color_scale=_NUCLEUS_TRACK_COLOR_SCALE,
         )
-        refresh_centroid_cross_layer(
-            self.viewer,
-            data,
-            color_map=color_map,
-            name=_CORRECTION_CENTROID_LAYER,
-            owned_layer_names=self._correction_owned_layers,
-        )
-        self._reapply_centroid_focus()
+        # The all-tracks overlay's geometry follows the labels — rebuild it so a
+        # reassign / remove-unvalidated / retrack reshapes the trajectories too.
+        self._all_tracks.refresh()
         try:
             self.viewer.layers.selection.active = layer
         except Exception:

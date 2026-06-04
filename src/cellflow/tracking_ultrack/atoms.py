@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import numpy as np
+from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from scipy import ndimage as ndi
@@ -62,14 +63,15 @@ def extract_atoms_frame(
     ``ridge`` is where the residual contour exceeds ``contour_floor`` (a noise
     cutoff). Cores (ridge-free territory) seed a watershed that floods the
     residual-contour elevation, so a broken faint ridge still meets at the crest.
-    Atoms smaller than ``atom_min_area`` are merged into a neighbour by dropping
-    their markers and re-flooding, leaving no holes in the territory.
+    Atoms smaller than ``atom_min_area`` are merged into the neighbouring atom
+    they share the longest border with (see ``_merge_small_atoms``); an atom that
+    touches no other label is kept as-is, so no territory pixel is ever blanked.
 
     Returns ``(atoms, ridge)``: ``atoms`` is the ``int32`` label image; ``ridge``
     is the boolean wall ``residual_contour > contour_floor`` returned as ``uint8``
     ``(Y, X)`` — the exact array the watershed carves out of territory, surfaced
-    so it can be tuned against directly. ``atom_min_area`` re-flooding does not
-    move the ridge, so it is captured once up front.
+    so it can be tuned against directly. Small-atom merging only relabels pixels,
+    so it does not move the ridge.
     """
     residual_contour = np.asarray(residual_contour, dtype=np.float32)
     territory = np.asarray(territory, dtype=bool)
@@ -78,15 +80,64 @@ def extract_atoms_frame(
     markers, _ = ndi.label(cores)
     atoms = watershed(residual_contour, markers=markers, mask=territory)
     if atom_min_area > 0:
-        ids, counts = np.unique(atoms, return_counts=True)
-        small = set(ids[(counts < atom_min_area) & (ids != 0)].tolist())
-        if small:
-            keep_markers = np.where(np.isin(atoms, list(small)), 0, atoms)
-            # Only re-flood if some marker survives pruning; otherwise keeping the
-            # original labels avoids silently blanking the whole territory.
-            if keep_markers[territory].any():
-                atoms = watershed(residual_contour, markers=keep_markers, mask=territory)
+        atoms = _merge_small_atoms(atoms, atom_min_area)
     return atoms.astype(np.int32), ridge.astype(np.uint8)
+
+
+def _merge_small_atoms(atoms: np.ndarray, atom_min_area: int) -> np.ndarray:
+    """Fold each atom below ``atom_min_area`` into the neighbour it shares the
+    longest border with, repeating until no undersized atom touches another label.
+
+    Smallest-first: the most undersized atom that has a neighbour is merged into
+    its longest-shared-border neighbour (ties broken by larger neighbour area,
+    then smaller id), its area and adjacency folded into the survivor, and the
+    process re-run. An atom with no neighbouring label is left in place — so an
+    isolated small territory keeps its label rather than being removed. Merging
+    only relabels pixels, leaving no holes.
+    """
+    ids, counts = np.unique(atoms, return_counts=True)
+    area = {int(i): int(c) for i, c in zip(ids.tolist(), counts.tolist()) if i != 0}
+    if len(area) < 2:
+        return atoms
+
+    # Shared 4-connected border length between each adjacent pair of labels.
+    border: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    for a, b in ((atoms[:-1, :], atoms[1:, :]), (atoms[:, :-1], atoms[:, 1:])):
+        m = (a != b) & (a != 0) & (b != 0)
+        for u, v in zip(a[m].tolist(), b[m].tolist()):
+            border[u][v] += 1
+            border[v][u] += 1
+
+    remap: dict[int, int] = {}
+    while True:
+        candidates = [lbl for lbl, ar in area.items()
+                      if ar < atom_min_area and border[lbl]]
+        if not candidates:
+            break
+        small = min(candidates, key=lambda l: (area[l], l))
+        target = max(border[small],
+                     key=lambda n: (border[small][n], area[n], -n))
+        remap[small] = target
+        area[target] += area.pop(small)
+        for n, length in border.pop(small).items():
+            border[n].pop(small, None)
+            if n != target:
+                border[target][n] += length
+                border[n][target] += length
+        border[target].pop(small, None)
+
+    if not remap:
+        return atoms
+
+    def resolve(label: int) -> int:
+        while label in remap:
+            label = remap[label]
+        return label
+
+    lut = np.arange(int(atoms.max()) + 1, dtype=atoms.dtype)
+    for label in remap:
+        lut[label] = resolve(label)
+    return lut[atoms]
 
 
 def extract_atoms_stack_with_maps(
