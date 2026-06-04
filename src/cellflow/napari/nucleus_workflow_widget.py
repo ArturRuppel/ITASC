@@ -536,7 +536,12 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
     def _on_guarded_correction_active_button_toggled(self, checked: bool) -> None:
         self._on_correction_active_button_toggled(checked)
-        if checked:
+        # Activation can bail out — e.g. no tracked data on disk yet — reverting
+        # the button to unchecked from inside the handler. Claim/release the
+        # viewer from the *resulting* button state, not the incoming toggle, so a
+        # bailed-out activation never leaves the gate owning the viewer with the
+        # button already off (banner + disabled controls and no way to release).
+        if self.correction_active_btn.isChecked():
             self.gate.claim_viewer("correction:nucleus")
         else:
             self.gate.release_viewer("correction:nucleus")

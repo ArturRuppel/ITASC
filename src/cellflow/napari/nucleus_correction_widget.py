@@ -1535,6 +1535,11 @@ class NucleusCorrectionWidget(QWidget):
             ("S", self._on_save_tracked),
             ("Z", lambda: self._on_swap_step(direction="smaller")),
             ("C", lambda: self._on_swap_step(direction="larger")),
+            # Override the inner widget's frame-local Shift-±/step navigation:
+            # in focus mode Shift-arrow walks the global track list and recenters
+            # both the lineage canvas and the image viewer (like a track click).
+            ("Shift-Left", lambda: self._step_track(-1)),
+            ("Shift-Right", lambda: self._step_track(1)),
         ]
         self._bound_correction_keys: list[str] = []
         self._correction_keys_layer = None
@@ -1887,11 +1892,22 @@ class NucleusCorrectionWidget(QWidget):
         self._arrange_workspace_docks()
 
     def _navigate_to_error(self, t: int, cell_id: int) -> None:
-        """Jump the viewer to frame ``t``, select ``cell_id`` and center on it.
+        """Lineage-canvas click handler: jump to frame ``t``, select and center.
 
-        Called when a track is clicked in the lineage canvas: besides stepping
-        to the clicked frame and selecting the cell, this pans the image-viewer
-        camera so the cell sits in the middle of the canvas.
+        The clicked row is already in view, so the canvas recenter is suppressed
+        (``from_lineage=True``) while the image viewer is still panned onto the
+        cell.
+        """
+        self._navigate_to_cell(int(t), int(cell_id), from_lineage=True)
+
+    def _navigate_to_cell(self, t: int, cell_id: int, *, from_lineage: bool) -> None:
+        """Jump to frame ``t``, select ``cell_id`` and center both views on it.
+
+        Besides stepping to the frame and selecting the cell, this pans the
+        image-viewer camera so the cell sits in the middle of the canvas. With
+        ``from_lineage=False`` (keyboard track stepping) the resulting selection
+        callback also recenters the lineage canvas on the track; a lineage click
+        passes ``from_lineage=True`` because the clicked row is already shown.
         """
         try:
             step = list(self.viewer.dims.current_step)
@@ -1900,9 +1916,7 @@ class NucleusCorrectionWidget(QWidget):
                 self.viewer.dims.current_step = tuple(step)
         except Exception:
             logger.exception("focus-mode navigation: frame jump failed")
-        # Guard so the resulting selection callback does not scroll the lineage
-        # canvas off the row the user just clicked there.
-        self._navigating_from_lineage = True
+        self._navigating_from_lineage = from_lineage
         try:
             self.correction_widget.select_label(int(t), int(cell_id))
         except Exception:
@@ -1910,6 +1924,37 @@ class NucleusCorrectionWidget(QWidget):
         finally:
             self._navigating_from_lineage = False
         self._center_viewer_on_cell(int(t), int(cell_id))
+
+    def _step_track(self, direction: int) -> None:
+        """Select the next/previous track in the global list and recenter on it.
+
+        Bound to Shift-Left / Shift-Right in focus mode. Unlike a frame-local
+        scan, this walks the sorted list of every track ID in the stack and
+        navigates to the chosen track exactly as a lineage-canvas click would —
+        landing on a frame where it exists, selecting it, and recentering both
+        the lineage canvas and the image viewer.
+        """
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            return
+        data = np.asarray(layer.data)
+        all_ids = sorted(set(int(v) for v in np.unique(data)) - {0})
+        if not all_ids:
+            self._correction_status("No cells in any frame.")
+            return
+        cur = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
+        if cur in all_ids:
+            nxt = all_ids[(all_ids.index(cur) + direction) % len(all_ids)]
+        else:
+            nxt = all_ids[0] if direction > 0 else all_ids[-1]
+        # Stay on the current frame if the track is present there; otherwise jump
+        # to the first frame that contains it so it can be selected and centered.
+        t = self._current_t()
+        if nxt not in self._current_cell_ids(t):
+            frames = [i for i in range(data.shape[0]) if np.any(data[i] == nxt)]
+            if frames:
+                t = frames[0]
+        self._navigate_to_cell(t, nxt, from_lineage=False)
 
     def _center_viewer_on_cell(self, t: int, cell_id: int) -> None:
         """Pan the napari camera onto cell ``cell_id`` at frame ``t``."""
