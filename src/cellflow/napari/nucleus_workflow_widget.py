@@ -338,11 +338,9 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self.commit_btn = correction.commit_btn
         self.correction_status_lbl = correction.status_lbl
         self.validation_counter_lbl = correction.validation_counter_lbl
-        self.extend_max_dist_spin = correction.extend_max_dist_spin
         self.extend_area_weight_spin = correction.extend_area_weight_spin
         self.extend_iou_weight_spin = correction.extend_iou_weight_spin
         self.extend_distance_weight_spin = correction.extend_distance_weight_spin
-        self.extend_overlap_penalty_spin = correction.extend_overlap_penalty_spin
         self.extend_greedy_overwrite_check = correction.extend_greedy_overwrite_check
         self.retrack_max_dist_spin = correction.retrack_max_dist_spin
         self.extend_retrack_params_section = correction.extend_retrack_params_section

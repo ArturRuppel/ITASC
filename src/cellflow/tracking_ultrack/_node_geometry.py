@@ -79,6 +79,62 @@ def raw_iou(
     return float(intersection) / float(union)
 
 
+def mask_bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
+    """Tight ``(y0, x0, y1, x1)`` bounding box of a boolean mask, or ``None`` if empty."""
+    ys, xs = np.where(mask)
+    if ys.size == 0:
+        return None
+    return int(ys.min()), int(xs.min()), int(ys.max()) + 1, int(xs.max()) + 1
+
+
+def match_mask_to_node(
+    session, frame: int, source_mask: np.ndarray
+) -> tuple[int, tuple[int, int, int, int], np.ndarray] | None:
+    """Best-IoU Ultrack node at ``frame`` overlapping ``source_mask``.
+
+    Returns ``(node_id, bbox, mask_crop)`` for the node whose mask has the
+    highest IoU with ``source_mask``, or ``None`` if the mask is empty or
+    nothing overlaps. Prefilters NodeDB by the source bounding box so only
+    plausibly-overlapping masks are deserialized.
+    """
+    from ultrack.core.database import NodeDB
+
+    src_bbox = mask_bbox(source_mask)
+    if src_bbox is None:
+        return None
+    sy0, sx0, sy1, sx1 = src_bbox
+    src_crop = np.ascontiguousarray(source_mask[sy0:sy1, sx0:sx1], dtype=bool)
+
+    rows = (
+        session.query(NodeDB.id, NodeDB.pickle)
+        .filter(
+            NodeDB.t == frame,
+            NodeDB.y >= sy0,
+            NodeDB.y <= sy1,
+            NodeDB.x >= sx0,
+            NodeDB.x <= sx1,
+        )
+        .all()
+    )
+    matched_id: int | None = None
+    best_iou = 0.0
+    matched_geom: tuple[tuple[int, int, int, int], np.ndarray] | None = None
+    for nid, blob in rows:
+        try:
+            bbox, mask_crop = node_bbox_and_mask(int(nid), blob)
+        except Exception:
+            continue
+        iou = raw_iou(src_bbox, src_crop, bbox, mask_crop)
+        if iou > best_iou:
+            best_iou = iou
+            matched_id = int(nid)
+            matched_geom = (bbox, mask_crop)
+    if matched_id is None or matched_geom is None:
+        return None
+    bbox, mask_crop = matched_geom
+    return matched_id, bbox, mask_crop
+
+
 def node_pickle_ndim(node) -> int:
     if isinstance(node, (bytes, memoryview)):
         node = pickle.loads(bytes(node))

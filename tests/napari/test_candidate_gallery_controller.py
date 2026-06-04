@@ -73,8 +73,7 @@ def _make_controller(applied, *, selected=7, t=1):
         a = SimpleNamespace(
             candidate_label=key,
             mask_2d=_square(shape, 6, 6, 4),
-            centroid_corrected_iou=0.8,
-            centroid_distance=3.0,
+            weight=0.8,
         )
         return SimpleNamespace(target_frame=tf, assignments=(a,))
 

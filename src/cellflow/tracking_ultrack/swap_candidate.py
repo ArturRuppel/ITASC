@@ -7,8 +7,9 @@ import numpy as np
 
 from cellflow.tracking_ultrack._node_geometry import (
     intersection_area,
+    mask_bbox,
+    match_mask_to_node,
     node_bbox_and_mask,
-    raw_iou,
 )
 
 
@@ -28,13 +29,6 @@ class _SwapCursor:
     candidates: tuple[SwapCandidate, ...]
     index: int
     baseline_frame: np.ndarray | None = None
-
-
-def _mask_bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
-    ys, xs = np.where(mask)
-    if ys.size == 0:
-        return None
-    return int(ys.min()), int(xs.min()), int(ys.max()) + 1, int(xs.max()) + 1
 
 
 def list_swap_candidates(
@@ -63,11 +57,8 @@ def list_swap_candidates(
     if not Path(db_path).exists():
         return []
 
-    src_bbox = _mask_bbox(source_mask)
-    if src_bbox is None:
+    if mask_bbox(source_mask) is None:
         return []
-    sy0, sx0, sy1, sx1 = src_bbox
-    src_crop = np.ascontiguousarray(source_mask[sy0:sy1, sx0:sx1], dtype=bool)
 
     import sqlalchemy as sqla
     from sqlalchemy import or_
@@ -80,36 +71,12 @@ def list_swap_candidates(
 
     try:
         with Session(engine) as session:
-            # Match source mask to a node by max IoU. Prefilter to nodes whose
-            # centroid falls inside the source bounding box to avoid deserializing
-            # every mask in the frame.
-            match_rows = (
-                session.query(NodeDB.id, NodeDB.pickle)
-                .filter(
-                    NodeDB.t == frame,
-                    NodeDB.y >= sy0,
-                    NodeDB.y <= sy1,
-                    NodeDB.x >= sx0,
-                    NodeDB.x <= sx1,
-                )
-                .all()
-            )
-            matched_id: int | None = None
-            best_iou = 0.0
-            matched_geom: tuple[tuple[int, int, int, int], np.ndarray] | None = None
-            for nid, blob in match_rows:
-                try:
-                    bbox, mask_crop = node_bbox_and_mask(int(nid), blob)
-                except Exception:
-                    continue
-                iou = raw_iou(src_bbox, src_crop, bbox, mask_crop)
-                if iou > best_iou:
-                    best_iou = iou
-                    matched_id = int(nid)
-                    matched_geom = (bbox, mask_crop)
-            if matched_id is None or matched_geom is None:
+            # Match source mask to a node by max IoU (prefiltered by bbox so only
+            # plausibly-overlapping masks are deserialized).
+            matched = match_mask_to_node(session, frame, source_mask)
+            if matched is None:
                 return []
-            matched_bbox, matched_mask = matched_geom
+            matched_id, matched_bbox, matched_mask = matched
             matched_area = int(matched_mask.sum())
 
             # Candidate set = the matched node plus everything that overlaps it

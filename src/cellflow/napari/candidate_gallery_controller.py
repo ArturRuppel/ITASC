@@ -223,9 +223,8 @@ class CandidateGalleryController:
 
     @staticmethod
     def _extend_caption(assignment) -> str:
-        iou = float(getattr(assignment, "centroid_corrected_iou", 0.0))
-        dist = float(getattr(assignment, "centroid_distance", 0.0))
-        return f"iou {iou:.2f} · {dist:.0f}px"
+        weight = float(getattr(assignment, "weight", 0.0))
+        return f"w {weight:.2f}"
 
     # -- click routing ------------------------------------------------------
     def _on_activated(self, which: str, key: int) -> None:

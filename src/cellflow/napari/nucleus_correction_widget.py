@@ -378,17 +378,26 @@ class NucleusCorrectionWidget(QWidget):
 
         extend_retrack_lay.addWidget(_heading("Extend"))
         g = block_grid(horizontal_spacing=12)
-        self.extend_max_dist_spin = _dslider(0, 500, 40.0, 1.0, 1)
+        # Extend follows precomputed LinkDB edges (no geometric scoring knobs);
+        # only the paint behavior remains tunable.
+        self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
+        add_block_checkbox_row(g, 0, self.extend_greedy_overwrite_check)
+        extend_retrack_lay.addLayout(g)
+
+        extend_retrack_lay.addWidget(_heading("Retrack"))
+        g = block_grid(horizontal_spacing=12)
+        self.retrack_max_dist_spin = _dslider(0, 500, 20.0, 1.0, 1)
+        # Scoring weights for the retrack frame matcher. Kept under the
+        # ``extend_*`` attribute names for settings back-compat; extend no longer
+        # uses them.
         self.extend_area_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.extend_iou_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.extend_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 3)
-        self.extend_overlap_penalty_spin = _dslider(0, 10, 1.0, 0.1, 2)
-        self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
         add_block_pair_row(
             g,
             0,
             "Max distance:",
-            self.extend_max_dist_spin,
+            self.retrack_max_dist_spin,
             "Area weight:",
             self.extend_area_weight_spin,
         )
@@ -400,19 +409,6 @@ class NucleusCorrectionWidget(QWidget):
             "Distance weight:",
             self.extend_distance_weight_spin,
         )
-        add_block_pair_row(
-            g,
-            2,
-            "Overlap penalty:",
-            self.extend_overlap_penalty_spin,
-        )
-        add_block_checkbox_row(g, 4, self.extend_greedy_overwrite_check)
-        extend_retrack_lay.addLayout(g)
-
-        extend_retrack_lay.addWidget(_heading("Retrack"))
-        g = block_grid(horizontal_spacing=12)
-        self.retrack_max_dist_spin = _dslider(0, 500, 20.0, 1.0, 1)
-        add_block_pair_row(g, 0, "Max distance:", self.retrack_max_dist_spin)
         extend_retrack_lay.addLayout(g)
         self.extend_retrack_params_section = CollapsibleSection(
             "Extend / Retrack Parameters",
@@ -1011,18 +1007,11 @@ class NucleusCorrectionWidget(QWidget):
         result = self._dependency("extend_track_from_db")(
             source_id=source_id, source_frame=t, direction=direction,
             tracked_labels=tracked, db_path=db_path,
-            d_max=float(self.extend_max_dist_spin.value()),
-            area_weight=float(self.extend_area_weight_spin.value()),
-            iou_weight=float(self.extend_iou_weight_spin.value()),
-            distance_weight=float(self.extend_distance_weight_spin.value()),
-            overlap_penalty=float(self.extend_overlap_penalty_spin.value()),
-            greedy_overwrite=self.extend_greedy_overwrite_check.isChecked(),
-            validated_tracks=validated_tracks,
         )
 
         if result is None:
             self._correction_status(
-                f"No candidate within {self.extend_max_dist_spin.value():g}px at t={target_frame}."
+                f"No DB link to extend cell {source_id} to t={target_frame}."
             ); return
 
         assignments = result.assignments or ()
@@ -1079,8 +1068,7 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_track_visuals_live()
         self._correction_status(
             f"Extended cell {source_id} -> t={result.target_frame} "
-            f"(dist={result.centroid_distance:.1f}px, area={result.area_ratio:.2f}, "
-            f"iou={result.centroid_corrected_iou:.2f}, overlap={result.existing_overlap:.2f})"
+            f"(link weight={result.weight:.2f})"
         )
 
     def _on_swap_step(self, direction: str) -> None:
@@ -1209,14 +1197,8 @@ class NucleusCorrectionWidget(QWidget):
     # ── candidate gallery (clickable extend / swap thumbnails) ─────────────────
 
     def _extend_kwargs(self) -> dict:
-        """Scoring knobs shared by extend_track_from_db and list_extend_candidates."""
-        return dict(
-            d_max=float(self.extend_max_dist_spin.value()),
-            area_weight=float(self.extend_area_weight_spin.value()),
-            iou_weight=float(self.extend_iou_weight_spin.value()),
-            distance_weight=float(self.extend_distance_weight_spin.value()),
-            overlap_penalty=float(self.extend_overlap_penalty_spin.value()),
-        )
+        """Extra kwargs for list_extend_candidates (none: extend is LinkDB-driven)."""
+        return {}
 
     def _gallery_protected_mask(self, t: int) -> np.ndarray | None:
         """Protected-pixel mask at ``t`` for swap candidates (excludes the source)."""
@@ -1300,8 +1282,7 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_track_visuals_live()
         self._correction_status(
             f"Extended cell {int(assignment.cell_id)} -> t={target_frame} "
-            f"(iou={float(assignment.centroid_corrected_iou):.2f}, "
-            f"dist={float(assignment.centroid_distance):.1f}px). Unsaved."
+            f"(link weight={float(assignment.weight):.2f}). Unsaved."
         )
 
     def _paint_extend_assignment(

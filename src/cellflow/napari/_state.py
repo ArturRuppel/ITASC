@@ -37,11 +37,9 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "circularity_weight": w.db_gen_circularity_weight_spin.value(),
         },
         "extend": {
-            "max_distance": w.extend_max_dist_spin.value(),
             "area_weight": w.extend_area_weight_spin.value(),
             "iou_weight": w.extend_iou_weight_spin.value(),
             "distance_weight": w.extend_distance_weight_spin.value(),
-            "overlap_penalty": w.extend_overlap_penalty_spin.value(),
             "greedy_overwrite": w.extend_greedy_overwrite_check.isChecked(),
         },
         "ultrack": {
@@ -98,11 +96,9 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "circularity_weight" in dbg: w.db_gen_circularity_weight_spin.setValue(dbg["circularity_weight"])
     if "extend" in state:
         ext = state["extend"]
-        if "max_distance" in ext: w.extend_max_dist_spin.setValue(ext["max_distance"])
         if "area_weight" in ext: w.extend_area_weight_spin.setValue(ext["area_weight"])
         if "iou_weight" in ext: w.extend_iou_weight_spin.setValue(ext["iou_weight"])
         if "distance_weight" in ext: w.extend_distance_weight_spin.setValue(ext["distance_weight"])
-        if "overlap_penalty" in ext: w.extend_overlap_penalty_spin.setValue(ext["overlap_penalty"])
         if "greedy_overwrite" in ext: w.extend_greedy_overwrite_check.setChecked(ext["greedy_overwrite"])
     if "ultrack" in state:
         ul = state["ultrack"]
