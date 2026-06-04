@@ -65,6 +65,38 @@ def test_remove_unvalidated_rebuilds_canvas(monkeypatch) -> None:
     stub._refresh_lineage_canvas_if_shown.assert_called_once_with()
 
 
+def test_refresh_overview_when_film_strip_toggled_off() -> None:
+    """The always-visible overview must rebuild even with the detail strip off.
+
+    ``lineage_canvas_check`` only toggles the film-strip *detail*; the swimlane
+    overview stays docked the whole time focus mode is active. So the rebuild is
+    gated on the workspace splitter, not on that checkbox.
+    """
+    canvas = SimpleNamespace(refresh=MagicMock())
+    stub = SimpleNamespace(
+        _workspace_splitter=object(),  # focus mode active → overview visible
+        lineage_canvas_check=SimpleNamespace(isChecked=lambda: False),
+        _lineage_canvas=canvas,
+    )
+
+    NucleusCorrectionWidget._refresh_lineage_canvas_if_shown(stub)
+
+    canvas.refresh.assert_called_once_with()
+
+
+def test_refresh_overview_skipped_when_not_in_focus_mode() -> None:
+    canvas = SimpleNamespace(refresh=MagicMock())
+    stub = SimpleNamespace(
+        _workspace_splitter=None,  # focus mode off → nothing docked
+        lineage_canvas_check=SimpleNamespace(isChecked=lambda: True),
+        _lineage_canvas=canvas,
+    )
+
+    NucleusCorrectionWidget._refresh_lineage_canvas_if_shown(stub)
+
+    canvas.refresh.assert_not_called()
+
+
 def test_remove_unvalidated_noop_skips_canvas(monkeypatch) -> None:
     """When nothing changes the overview is already current; don't rebuild it."""
     layer = SimpleNamespace(data=np.ones((1, 2, 2), dtype=int), refresh=MagicMock())

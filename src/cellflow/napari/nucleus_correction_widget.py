@@ -1854,8 +1854,17 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_candidate_gallery_if_shown()
 
     def _refresh_lineage_canvas_if_shown(self) -> None:
-        """Rebuild the lineage canvas (overview + detail) after a label change."""
-        if self.lineage_canvas_check.isChecked():
+        """Rebuild the lineage canvas (overview + detail) after a label change.
+
+        The swimlane overview is structural in the controls strip and stays
+        visible the whole time focus mode is active — independent of the
+        ``lineage_canvas_check`` toggle, which only shows/hides the film-strip
+        *detail*. So the rebuild is gated on the workspace being docked, not on
+        that checkbox; otherwise the overview goes stale after a label change
+        (reassign IDs, remove unvalidated, validate, …) whenever the detail
+        strip happens to be toggled off.
+        """
+        if self._workspace_splitter is not None:
             self._lineage_canvas.refresh()
 
     def _track_path_spotlight_mask(self, _t: int, lab: int, _default_mask):
