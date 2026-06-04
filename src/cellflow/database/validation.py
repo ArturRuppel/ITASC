@@ -187,6 +187,12 @@ def remap_validated_tracks(pos_dir: Path, old_to_new: dict[int, int]) -> None:
     IDs not present in the mapping are dropped.
     """
     corrections = read_corrections(pos_dir)
+    # Read the legacy store *directly* (not via ``read_validated_tracks``, which
+    # merges in the corrections we are about to rewrite) so each store is remapped
+    # exactly once. Reading the merged view here would remap the corrections-derived
+    # IDs a second time and inject phantom validations whenever the mapping is not
+    # the identity — i.e. for any real contiguous compaction with gaps.
+    legacy = _read_legacy_validated_tracks(pos_dir)
     if corrections:
         write_corrections(
             pos_dir,
@@ -202,10 +208,9 @@ def remap_validated_tracks(pos_dir: Path, old_to_new: dict[int, int]) -> None:
                 if int(c.cell_id) in old_to_new
             ],
         )
-    data = read_validated_tracks(pos_dir)
     remapped = {
         old_to_new[cell_id]: frames
-        for cell_id, frames in data.items()
+        for cell_id, frames in legacy.items()
         if cell_id in old_to_new
     }
     _write_validated_tracks(pos_dir, remapped)

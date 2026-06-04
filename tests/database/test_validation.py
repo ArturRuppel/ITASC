@@ -282,6 +282,30 @@ def test_remap_validated_tracks_remaps_flat_corrections(pos_dir):
     ]
 
 
+def test_remap_validated_tracks_no_phantom_on_partial_compaction(pos_dir):
+    """Contiguous compaction with gaps must remap each store exactly once.
+
+    Regression: ``remap_validated_tracks`` used to write the remapped
+    corrections and then re-read them through ``read_validated_tracks`` (which
+    merges corrections + legacy) and remap a *second* time into the legacy
+    store. When the mapping is not the identity — i.e. any real reassign-to-
+    contiguous where new IDs overlap old IDs — the second pass injected phantom
+    validations. Here old IDs ``{1,3,5}`` compact to ``{1,2,3}``: track 3→2
+    (validated only at t=0) must not inherit track 5's t=9.
+    """
+    write_corrections(
+        pos_dir,
+        [
+            Correction(cell_id=3, t=0, kind="validated", y=1.0, x=1.0),
+            Correction(cell_id=5, t=9, kind="validated", y=1.0, x=1.0),
+        ],
+    )
+
+    remap_validated_tracks(pos_dir, {1: 1, 3: 2, 5: 3})
+
+    assert read_validated_tracks(pos_dir) == {2: {0}, 3: {9}}
+
+
 def test_read_corrections_corrupt_json_returns_empty(pos_dir):
     json_file = pos_dir / "2_nucleus" / "corrections.json"
     json_file.parent.mkdir(parents=True, exist_ok=True)
