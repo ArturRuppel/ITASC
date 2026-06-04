@@ -259,6 +259,33 @@ def add_contact_analysis_layers(
     nucleus_track_centroids: dict | None = None,
     track_tail_length: int = _DEFAULT_TRACK_TAIL,
 ) -> list[Any]:
+    """Add contact-analysis overlays as napari-native layers.
+
+    Cells and nuclei are label images; nucleus tracks use a GPU ``Tracks``
+    layer (native temporal tail-fade, no per-frame rebuild); cell-cell edges
+    and T1 transition edges are drawn as antialiased ``path`` shapes for the
+    *current* frame only, swapped on the time slider so the Shapes layer never
+    holds more than one frame's worth of polylines.
+    """
+    # --- edges + T1 edges as per-frame path shapes ---------------------------
+    edge_lines, edge_colors, edge_features = build_edge_shapes(
+        contact_analysis,
+        hide_border_edges=hide_border_edges,
+        color_by_id=color_edges_by_id,
+        color_by_label=color_edges_by_label,
+    )
+    edge_cache = _frame_shape_cache(edge_lines, edge_colors, edge_features)
+    cur_edge_lines, cur_edge_colors, cur_edge_features = _cached_frame_shapes(
+        edge_cache, _current_frame(viewer)
+    )
+
+    t1_lines, t1_colors, t1_features = build_t1_edge_shapes(contact_analysis)
+    t1_cache = _frame_shape_cache(t1_lines, t1_colors, t1_features)
+    cur_t1_lines, cur_t1_colors, cur_t1_features = _cached_frame_shapes(
+        t1_cache, _current_frame(viewer)
+    )
+
+    # --- label images --------------------------------------------------------
     if cell_labels is None:
         cell_labels = _read_label_image(
             _contact_analysis_label_path(contact_analysis, "cell_tracked_labels_path")
@@ -268,45 +295,11 @@ def add_contact_analysis_layers(
             _contact_analysis_label_path(contact_analysis, "nucleus_tracked_labels_path")
         )
 
-    shape = cell_labels.shape
-    if len(shape) == 2:
-        shape = (1, shape[0], shape[1])
-    T, H, W = shape[:3]
-
-    edge_labels, edge_color_dict = _rasterize_edge_labels(
-        contact_analysis,
-        (T, H, W),
-        hide_border_edges=hide_border_edges,
-        color_by_id=color_edges_by_id,
-        color_by_label=color_edges_by_label,
-    )
-
-    t1_labels, t1_color_dict = _rasterize_t1_edge_labels(
-        contact_analysis, (T, H, W)
-    )
-
-    track_centroids = (
-        nucleus_track_centroids
-        if nucleus_track_centroids is not None
-        else _nucleus_centroids_by_track(nucleus_labels)
-    )
-    track_color_map = _cell_color_map(
-        contact_analysis, color_by_label=color_cells_by_label
-    )
-    track_image = _rasterize_track_image(
-        track_centroids,
-        track_color_map,
-        (T, H, W),
-        tail_length=track_tail_length,
-    )
-
     cell_color_dict = _cell_color_map(
         contact_analysis, color_by_label=color_cells_by_label
     )
     cell_kwargs: dict[str, Any] = {}
     nucleus_kwargs: dict[str, Any] = {}
-    edge_kwargs: dict[str, Any] = {}
-    t1_kwargs: dict[str, Any] = {}
     try:
         from napari.utils.colormaps import DirectLabelColormap
     except Exception:  # pragma: no cover – napari compatibility
@@ -315,10 +308,17 @@ def add_contact_analysis_layers(
         cell_cmap = DirectLabelColormap(color_dict=cell_color_dict)
         cell_kwargs["colormap"] = cell_cmap
         nucleus_kwargs["colormap"] = cell_cmap
-        edge_kwargs["colormap"] = DirectLabelColormap(color_dict=edge_color_dict)
-        t1_kwargs["colormap"] = DirectLabelColormap(color_dict=t1_color_dict)
 
-    layers = [
+    # --- nucleus tracks as a native GPU Tracks layer -------------------------
+    track_centroids = (
+        nucleus_track_centroids
+        if nucleus_track_centroids is not None
+        else _nucleus_centroids_by_track(nucleus_labels)
+    )
+    tracks_data, tracks_props = _nucleus_tracks_data(track_centroids)
+    tail = max(1, int(track_tail_length))
+
+    layers: list[Any] = [
         viewer.add_labels(
             cell_labels,
             name=f"{prefix}Cell labels",
@@ -333,29 +333,207 @@ def add_contact_analysis_layers(
             blending="translucent",
             **nucleus_kwargs,
         ),
-        viewer.add_image(
-            track_image,
-            name=f"{prefix}Nucleus tracks",
-            rgb=True,
-            opacity=0.9,
-            blending="additive",
-        ),
-        viewer.add_labels(
-            edge_labels,
-            name=f"{prefix}Edges",
-            opacity=0.8,
-            blending="translucent",
-            **edge_kwargs,
-        ),
-        viewer.add_labels(
-            t1_labels,
-            name=f"{prefix}T1 edges",
-            opacity=0.8,
-            blending="translucent",
-            **t1_kwargs,
-        ),
     ]
+    # napari's Tracks layer rejects empty data, so only add it when present.
+    if len(tracks_data):
+        layers.append(
+            viewer.add_tracks(
+                tracks_data,
+                name=f"{prefix}Nucleus tracks",
+                properties=tracks_props,
+                color_by="track_id",
+                tail_width=2,
+                tail_length=tail,
+                head_length=0,
+                blending="translucent",
+                opacity=0.9,
+            )
+        )
+
+    edge_layer = viewer.add_shapes(
+        cur_edge_lines,
+        ndim=3,
+        name=f"{prefix}Edges",
+        shape_type="path",
+        features=cur_edge_features,
+        edge_width=1,
+        face_color="transparent",
+        blending="translucent",
+        **_edge_color_kwargs(cur_edge_colors),
+    )
+    t1_layer = viewer.add_shapes(
+        cur_t1_lines,
+        ndim=3,
+        name=f"{prefix}T1 edges",
+        shape_type="path",
+        features=cur_t1_features,
+        edge_width=1,
+        face_color="transparent",
+        blending="translucent",
+        **_edge_color_kwargs(cur_t1_colors),
+    )
+    layers.append(edge_layer)
+    layers.append(t1_layer)
+
+    _connect_frame_shape_layer_to_dims(viewer, edge_layer, frame_cache=edge_cache)
+    _connect_frame_shape_layer_to_dims(viewer, t1_layer, frame_cache=t1_cache)
     return layers
+
+
+# =====================================================================
+# Per-frame path-shape layers (edges & T1 edges)
+# =====================================================================
+
+
+def _current_frame(viewer: Any) -> int:
+    step = getattr(getattr(viewer, "dims", None), "current_step", ())
+    if not step:
+        return 0
+    try:
+        return int(step[0])
+    except Exception:
+        return 0
+
+
+def _edge_color_kwargs(colors: np.ndarray) -> dict[str, np.ndarray]:
+    if len(colors) == 0:
+        return {}
+    return {"edge_color": colors}
+
+
+def _nucleus_tracks_data(
+    centroids: dict[int, list[tuple[int, float, float]]],
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Build napari ``Tracks`` ``data`` (``[track_id, t, y, x]``) + properties.
+
+    Rows are sorted by track then time, as the Tracks layer requires.
+    """
+    rows: list[tuple[float, float, float, float]] = []
+    for cell_id in sorted(centroids):
+        for frame, y, x in sorted(centroids[cell_id]):
+            rows.append((float(int(cell_id)), float(frame), float(y), float(x)))
+    if not rows:
+        empty = np.empty((0, 4), dtype=float)
+        return empty, {"track_id": np.empty(0, dtype=int), "time": np.empty(0, dtype=float)}
+    data = np.asarray(rows, dtype=float)
+    return data, {"track_id": data[:, 0].astype(int), "time": data[:, 1]}
+
+
+def _frame_shape_cache(
+    lines: list[np.ndarray],
+    colors: np.ndarray,
+    features: dict[str, np.ndarray],
+) -> dict[int, tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]]:
+    """Index path shapes by frame so the Shapes layer holds one frame at a time."""
+    frames = np.asarray(
+        features.get("frame", np.asarray([], dtype=int))
+    ).astype(int, copy=False)
+    cache: dict[int, tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]] = {}
+    for frame in sorted(set(frames.tolist())):
+        indexes = np.flatnonzero(frames == int(frame))
+        cache[int(frame)] = (
+            [lines[int(idx)] for idx in indexes],
+            colors[indexes] if len(colors) else np.empty((0, 4), dtype=float),
+            {name: values[indexes] for name, values in features.items()},
+        )
+    return cache
+
+
+def _empty_frame_shapes(
+    frame_cache: dict[int, tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]],
+) -> tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]:
+    feature_names: list[str] = []
+    for _lines, _colors, features in frame_cache.values():
+        feature_names = list(features)
+        break
+    return (
+        [],
+        np.empty((0, 4), dtype=float),
+        {name: np.asarray([], dtype=object) for name in feature_names},
+    )
+
+
+def _cached_frame_shapes(
+    frame_cache: dict[int, tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]],
+    frame: int,
+) -> tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]:
+    return frame_cache.get(int(frame), _empty_frame_shapes(frame_cache))
+
+
+def _connect_frame_shape_layer_to_dims(
+    viewer: Any,
+    layer: Any,
+    *,
+    frame_cache: dict[int, tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]],
+) -> None:
+    """Swap ``layer.data`` to the current frame on every time-slider change.
+
+    The connection is torn down when the layer is removed; a ``cleanup`` closure
+    is stashed on the layer so external clears can disconnect it eagerly.
+    """
+    dims = getattr(viewer, "dims", None)
+    events = getattr(dims, "events", None)
+    current_step_event = getattr(events, "current_step", None)
+    connect = getattr(current_step_event, "connect", None)
+    if not callable(connect):
+        return
+    current_disconnect = getattr(current_step_event, "disconnect", None)
+
+    def _update(_event=None) -> None:
+        viewer_layers = getattr(viewer, "layers", None)
+        if viewer_layers is not None:
+            try:
+                if layer not in viewer_layers:
+                    return
+            except Exception:
+                pass
+        lines, colors, features = _cached_frame_shapes(
+            frame_cache, _current_frame(viewer)
+        )
+        layer.data = lines
+        layer.features = features
+        layer.edge_color = colors if len(colors) else "transparent"
+        refresh = getattr(layer, "refresh", None)
+        if callable(refresh):
+            refresh()
+
+    def _disconnect() -> None:
+        if callable(current_disconnect):
+            try:
+                current_disconnect(_update)
+            except Exception:
+                pass
+        if callable(removed_disconnect):
+            try:
+                removed_disconnect(_on_removed)
+            except Exception:
+                pass
+        try:
+            frame_cache.clear()
+        except Exception:
+            pass
+
+    def _on_removed(event=None) -> None:
+        removed = getattr(event, "value", None)
+        if removed is layer or getattr(removed, "name", None) == getattr(
+            layer, "name", None
+        ):
+            _disconnect()
+
+    layers = getattr(viewer, "layers", None)
+    layer_events = getattr(layers, "events", None)
+    removed_event = getattr(layer_events, "removed", None)
+    removed_connect = getattr(removed_event, "connect", None)
+    removed_disconnect = getattr(removed_event, "disconnect", None)
+
+    connect(_update)
+    if callable(removed_connect):
+        removed_connect(_on_removed)
+    try:
+        layer._cellflow_frame_shape_update = _update
+        layer._cellflow_frame_shape_cleanup = _disconnect
+    except Exception:
+        pass
 
 
 # =====================================================================
@@ -386,160 +564,6 @@ def _line_pixels(
         xs = np.concatenate([center_xs, center_xs])
 
     return ys, xs
-
-
-def _draw_polyline_label(
-    canvas: np.ndarray,
-    ys: np.ndarray,
-    xs: np.ndarray,
-    value: int,
-) -> None:
-    """Rasterise a polyline into a (H, W) integer label array."""
-    h, w = canvas.shape[:2]
-    for i in range(len(ys) - 1):
-        py, px = _line_pixels(
-            int(round(ys[i])),
-            int(round(xs[i])),
-            int(round(ys[i + 1])),
-            int(round(xs[i + 1])),
-        )
-        valid = (py >= 0) & (py < h) & (px >= 0) & (px < w)
-        canvas[py[valid], px[valid]] = value
-
-
-# =====================================================================
-# Edge rasterisation
-# =====================================================================
-
-
-def _rasterize_edge_labels(
-    contact_analysis: Any,
-    shape: tuple[int, int, int],
-    *,
-    hide_border_edges: bool = False,
-    color_by_id: bool = False,
-    color_by_label: bool = False,
-) -> tuple[np.ndarray, dict]:
-    """Rasterise edge polylines into a ``(T, H, W)`` label array.
-
-    Returns ``(labels, color_dict)`` ready for
-    :class:`~napari.utils.colormaps.DirectLabelColormap`.
-    """
-    edges = _section(contact_analysis, "edges")
-    coord_y = np.asarray(_value(contact_analysis, "coord_y"), dtype=float)
-    coord_x = np.asarray(_value(contact_analysis, "coord_x"), dtype=float)
-
-    frame_col = _column(edges, "frame")
-    edge_id_col = _column(edges, "edge_id")
-    kind_col = _column(edges, "kind")
-    edge_label_col = _column(edges, "edge_label")
-    coord_offset_col = _column(edges, "coord_offset")
-    coord_count_col = _column(edges, "coord_count")
-
-    T, H, W = shape
-    labels = np.zeros((T, H, W), dtype=np.int32)
-
-    edge_kind: dict[int, str] = {}
-    edge_elabel: dict[int, str] = {}
-
-    for idx in range(len(frame_col)):
-        k = str(kind_col[idx])
-        if hide_border_edges and k == "border":
-            continue
-        f = int(frame_col[idx])
-        eid = int(edge_id_col[idx])
-        if eid == 0:
-            continue
-        start = int(coord_offset_col[idx])
-        count = int(coord_count_col[idx])
-        if count < 2 or f < 0 or f >= T:
-            continue
-        _draw_polyline_label(
-            labels[f], coord_y[start : start + count], coord_x[start : start + count], eid
-        )
-        if eid not in edge_kind:
-            edge_kind[eid] = k
-            edge_elabel[eid] = str(edge_label_col[idx])
-
-    color_dict: dict[int | None, Any] = {None: "transparent", 0: "transparent"}
-    if color_by_label:
-        unique_labels = sorted({v for v in edge_elabel.values() if v})
-        palette = {lab: _palette_color(i) for i, lab in enumerate(unique_labels)}
-        for eid, lab in edge_elabel.items():
-            color_dict[eid] = tuple(
-                float(c) for c in palette.get(lab, _UNLABELED_COLOR)
-            )
-    elif color_by_id:
-        sorted_ids = sorted(edge_kind)
-        id_colors = _categorical_colors(np.asarray(sorted_ids))
-        for eid, color in zip(sorted_ids, id_colors):
-            color_dict[eid] = tuple(float(c) for c in color)
-    else:
-        for eid, k in edge_kind.items():
-            color_dict[eid] = tuple(float(c) for c in _edge_color_for_kind(k))
-
-    return labels, color_dict
-
-
-# =====================================================================
-# T1-edge rasterisation
-# =====================================================================
-
-
-def _rasterize_t1_edge_labels(
-    contact_analysis: Any,
-    shape: tuple[int, int, int],
-) -> tuple[np.ndarray, dict]:
-    """Rasterise T1 transition edges into a ``(T, H, W)`` label array."""
-    edges = _section(contact_analysis, "edges")
-    t1_events = _section(contact_analysis, "t1_events")
-    coord_y = np.asarray(_value(contact_analysis, "coord_y"), dtype=float)
-    coord_x = np.asarray(_value(contact_analysis, "coord_x"), dtype=float)
-
-    edge_frame = _column(edges, "frame")
-    edge_id_col = _column(edges, "edge_id")
-    coord_offset = _column(edges, "coord_offset")
-    coord_count = _column(edges, "coord_count")
-
-    event_ids = _column(t1_events, "t1_event_id")
-    event_frame = _column(t1_events, "frame")
-    event_edge_id = _column(t1_events, "edge_id")
-
-    # fast (frame, edge_id) → row lookup
-    edge_lookup: dict[tuple[int, int], int] = {}
-    for idx in range(len(edge_frame)):
-        edge_lookup.setdefault((int(edge_frame[idx]), int(edge_id_col[idx])), idx)
-
-    T, H, W = shape
-    labels = np.zeros((T, H, W), dtype=np.int32)
-    used_ids: set[int] = set()
-
-    for event_idx in range(len(event_ids)):
-        t1_id = int(event_ids[event_idx])
-        if t1_id == 0:
-            continue
-        transition_frame = int(event_frame[event_idx])
-        eid = int(event_edge_id[event_idx])
-        for f in (transition_frame, transition_frame + 1):
-            if f < 0 or f >= T:
-                continue
-            row_idx = edge_lookup.get((f, eid))
-            if row_idx is None:
-                continue
-            start = int(coord_offset[row_idx])
-            count = int(coord_count[row_idx])
-            if count < 2:
-                continue
-            _draw_polyline_label(
-                labels[f], coord_y[start : start + count], coord_x[start : start + count], t1_id
-            )
-            used_ids.add(t1_id)
-
-    t1_color = tuple(float(c) for c in _T1_EDGE_COLOR)
-    color_dict: dict[int | None, Any] = {None: "transparent", 0: "transparent"}
-    for t1_id in used_ids:
-        color_dict[t1_id] = t1_color
-    return labels, color_dict
 
 
 # =====================================================================

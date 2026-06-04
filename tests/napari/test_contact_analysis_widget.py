@@ -44,6 +44,11 @@ class _FakeViewer:
         self.layers[name] = layer
         return layer
 
+    def add_tracks(self, data, *, name, **kwargs):
+        layer = types.SimpleNamespace(data=np.asarray(data), name=name, **kwargs)
+        self.layers[name] = layer
+        return layer
+
 
 class _FakeWorker:
     def __init__(self) -> None:

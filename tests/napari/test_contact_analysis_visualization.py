@@ -82,6 +82,12 @@ class _FakeViewer:
         self.calls.append(("shapes", name, list(data), {"shape_type": shape_type, **kwargs}))
         return layer
 
+    def add_tracks(self, data, *, name, **kwargs):
+        layer = SimpleNamespace(data=np.asarray(data), name=name, **kwargs)
+        self.layers[name] = layer
+        self.calls.append(("tracks", name, np.asarray(data), kwargs))
+        return layer
+
 
 def _load_module(monkeypatch):
     package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
@@ -415,10 +421,11 @@ def test_build_t1_edge_shapes_returns_before_and_after_transition_edges(monkeypa
     np.testing.assert_array_equal(features["edge_id"], [102, 102])
 
 
-def test_add_contact_analysis_layers_uses_fake_viewer_and_styles_t1_edges(monkeypatch, tmp_path):
+def test_add_contact_analysis_layers_uses_native_vector_layers(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
+    viewer.dims.current_step = (0, 0, 0)
 
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
 
@@ -429,50 +436,75 @@ def test_add_contact_analysis_layers_uses_fake_viewer_and_styles_t1_edges(monkey
         "[Contact Analysis] Edges",
         "[Contact Analysis] T1 edges",
     ]
-    assert [call[0] for call in viewer.calls] == ["labels", "labels", "image", "labels", "labels"]
+    # cells/nuclei stay raster; tracks use a native Tracks layer; edges + T1
+    # edges are vector path Shapes.
+    assert [call[0] for call in viewer.calls] == [
+        "labels",
+        "labels",
+        "tracks",
+        "shapes",
+        "shapes",
+    ]
     cell_call = viewer.calls[0]
     nucleus_call = viewer.calls[1]
     assert cell_call[2].shape == (2, 4, 4)
     assert nucleus_call[2].shape == (2, 4, 4)
-    track_call = viewer.calls[2]
-    assert track_call[3]["rgb"] is True
-    assert track_call[2].shape == (2, 4, 4, 4)
-    edge_call = viewer.calls[3]
-    assert edge_call[2].shape == (2, 4, 4)
-    assert set(np.unique(edge_call[2])) == {0, 102}
-    assert viewer.calls[4][2].shape == (2, 4, 4)
-    assert "[Contact Analysis] Cell labels" in viewer.layers
-    assert "[Contact Analysis] Nucleus labels" in viewer.layers
+    edge_layer = layers[3]
+    t1_layer = layers[4]
+    assert edge_layer.shape_type == "path"
+    assert t1_layer.shape_type == "path"
     assert "[Contact Analysis] Nucleus tracks" in viewer.layers
     assert "[Contact Analysis] Edges" in viewer.layers
     assert "[Contact Analysis] T1 edges" in viewer.layers
 
 
-def test_add_contact_analysis_layers_adds_rasterized_nucleus_track_layer(monkeypatch, tmp_path):
+def test_nucleus_tracks_use_native_tracks_layer(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
 
-    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
+    mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
 
-    assert [layer.name for layer in layers] == [
-        "[Contact Analysis] Cell labels",
-        "[Contact Analysis] Nucleus labels",
-        "[Contact Analysis] Nucleus tracks",
-        "[Contact Analysis] Edges",
-        "[Contact Analysis] T1 edges",
-    ]
     track_call = viewer.calls[2]
-    assert track_call[0] == "image"
+    assert track_call[0] == "tracks"
     assert track_call[1] == "[Contact Analysis] Nucleus tracks"
-    assert track_call[3]["rgb"] is True
-    assert track_call[2].shape == (3, 8, 8, 4)
-    assert np.count_nonzero(track_call[2][0]) == 0
-    assert np.count_nonzero(track_call[2][1]) > 0
-    assert np.count_nonzero(track_call[2][2]) > 0
+    assert track_call[3]["color_by"] == "track_id"
+    data = track_call[2]
+    # data rows are [track_id, t, y, x]; two tracks (11, 12) over three frames.
+    assert data.shape == (6, 4)
+    assert set(np.unique(data[:, 0]).astype(int)) == {11, 12}
+    track11 = data[data[:, 0] == 11]
+    np.testing.assert_array_equal(track11[:, 1], [0, 1, 2])
+    np.testing.assert_array_equal(track11[:, 2], [1, 2, 3])
+
+
+def test_tracks_data_is_sorted_by_track_then_time(monkeypatch):
+    mod = _load_module(monkeypatch)
+    centroids = {
+        12: [(2, 6.0, 6.0), (0, 4.0, 4.0)],
+        11: [(1, 2.0, 2.0), (0, 1.0, 1.0)],
+    }
+
+    data, props = mod._nucleus_tracks_data(centroids)
+
+    np.testing.assert_array_equal(data[:, 0], [11, 11, 12, 12])
+    np.testing.assert_array_equal(data[:, 1], [0, 1, 0, 2])
+    np.testing.assert_array_equal(props["track_id"], [11, 11, 12, 12])
+    np.testing.assert_array_equal(props["time"], [0, 1, 0, 2])
+
+
+def test_tracks_data_handles_empty_centroids(monkeypatch):
+    mod = _load_module(monkeypatch)
+
+    data, props = mod._nucleus_tracks_data({})
+
+    assert data.shape == (0, 4)
+    assert props["track_id"].shape == (0,)
+    assert props["time"].shape == (0,)
 
 
 def test_rasterized_nucleus_tracks_use_one_pixel_lines(monkeypatch):
+    # The fade-to-black raster image is still used by the correction loader.
     mod = _load_module(monkeypatch)
 
     image = mod._rasterize_track_image(
@@ -484,86 +516,67 @@ def test_rasterized_nucleus_tracks_use_one_pixel_lines(monkeypatch):
     assert np.count_nonzero(image[1, :, :, 3]) == 3
 
 
-def test_add_contact_analysis_layers_adds_rasterized_edge_layer(monkeypatch, tmp_path):
+def test_edge_layer_shows_only_current_frame_paths(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
+    viewer.dims.current_step = (0, 0, 0)
 
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     edge_layer = layers[3]
 
-    assert edge_layer.data.shape == (2, 4, 4)
-    assert 102 in edge_layer.data[1]
-    assert 102 not in edge_layer.data[0]
+    # frame 0 carries edge 101 only (a single 3-point path)
+    assert len(edge_layer.data) == 1
+    np.testing.assert_allclose(
+        edge_layer.data[0], [[0.0, 1.0, 4.0], [0.0, 1.0, 5.0], [0.0, 2.0, 5.0]]
+    )
 
 
-def test_edge_layer_is_rasterized_once_without_frame_callbacks(monkeypatch, tmp_path):
+def test_edge_layer_swaps_paths_on_frame_change(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    calls = 0
-    original = mod._rasterize_edge_labels
+    viewer.dims.current_step = (0, 0, 0)
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
+    edge_layer = layers[3]
 
-    def _counting_edge_labels(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(mod, "_rasterize_edge_labels", _counting_edge_labels)
-
-    mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     viewer.dims.current_step = (1, 0, 0)
     viewer.current_step_event.emit()
 
-    assert calls == 1
-    assert viewer.current_step_event.callbacks == []
+    # frame 1 carries the border edge 102 instead
+    assert len(edge_layer.data) == 1
+    np.testing.assert_allclose(
+        edge_layer.data[0], [[1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [1.0, 0.0, 2.0]]
+    )
 
 
-def test_add_contact_analysis_layers_adds_rasterized_t1_edge_layer(monkeypatch, tmp_path):
+def test_t1_edge_layer_shows_and_swaps_current_frame_paths(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     _add_t1_edge_pair(contact_analysis)
-    cell_labels = np.zeros((6, 12, 12), dtype=np.uint16)
-    nucleus_labels = np.zeros((6, 12, 12), dtype=np.uint16)
-    import tifffile
-
-    tifffile.imwrite(contact_analysis["cell_tracked_labels_path"], cell_labels)
-    tifffile.imwrite(contact_analysis["nucleus_tracked_labels_path"], nucleus_labels)
     viewer = _FakeViewer()
+    viewer.dims.current_step = (4, 0, 0)
 
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     t1_layer = layers[4]
 
-    assert t1_layer.data.shape == (6, 12, 12)
-    assert 7 in t1_layer.data[4]
-    assert 7 in t1_layer.data[5]
-    assert 7 not in t1_layer.data[3]
+    # frame 4 = the "before" transition edge
+    assert len(t1_layer.data) == 1
+    np.testing.assert_allclose(
+        t1_layer.data[0], [[4.0, 9.0, 8.0], [4.0, 9.0, 9.0], [4.0, 10.0, 9.0]]
+    )
 
-
-def test_t1_edge_layer_is_rasterized_once_without_frame_callbacks(monkeypatch, tmp_path):
-    mod = _load_module(monkeypatch)
-    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
-    _add_t1_edge_pair(contact_analysis)
-    viewer = _FakeViewer()
-    calls = 0
-    original = mod._rasterize_t1_edge_labels
-
-    def _counting_t1_labels(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(mod, "_rasterize_t1_edge_labels", _counting_t1_labels)
-
-    mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     viewer.dims.current_step = (5, 0, 0)
     viewer.current_step_event.emit()
 
-    assert calls == 1
-    assert viewer.current_step_event.callbacks == []
+    # frame 5 = the "after" transition edge
+    assert len(t1_layer.data) == 1
+    np.testing.assert_allclose(
+        t1_layer.data[0], [[5.0, 8.0, 8.5], [5.0, 8.0, 9.5], [5.0, 9.0, 9.5]]
+    )
 
 
-def test_add_contact_analysis_layers_omits_empty_rasterized_edge_labels(monkeypatch, tmp_path):
+def test_edge_layer_is_empty_when_no_edges_have_coords(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     contact_analysis["edges"]["coord_count"] = np.asarray([1, 1], dtype=int)
@@ -572,10 +585,10 @@ def test_add_contact_analysis_layers_omits_empty_rasterized_edge_labels(monkeypa
     mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
 
     edge_layer = viewer.layers["[Contact Analysis] Edges"]
-    assert np.count_nonzero(edge_layer.data) == 0
+    assert list(edge_layer.data) == []
 
 
-def test_track_layer_reuses_centroids_for_rasterized_stack(monkeypatch, tmp_path):
+def test_track_layer_computes_centroids_once(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
@@ -594,7 +607,7 @@ def test_track_layer_reuses_centroids_for_rasterized_stack(monkeypatch, tmp_path
     assert calls == 1
 
 
-def test_track_layer_uses_precomputed_centroids_for_rasterized_stack(monkeypatch, tmp_path):
+def test_track_layer_uses_precomputed_centroids(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
@@ -619,20 +632,19 @@ def test_track_layer_uses_precomputed_centroids_for_rasterized_stack(monkeypatch
     assert calls == 0
 
 
-def test_track_layer_disconnects_when_removed(monkeypatch, tmp_path):
+def test_tracks_layer_registers_no_frame_callback(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-    viewer.dims.current_step = (1, 0, 0)
+    viewer.dims.current_step = (0, 0, 0)
+
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     track_layer = layers[2]
 
-    viewer.layers.remove(track_layer)
-    viewer.dims.current_step = (2, 0, 0)
-    viewer.current_step_event.emit()
-
-    assert viewer.current_step_event.callbacks == []
-    assert track_layer.name not in viewer.layers
+    # Only the edge + T1 path Shapes need a time-slider callback; the native
+    # Tracks layer fades on its own.
+    assert len(viewer.current_step_event.callbacks) == 2
+    assert not hasattr(track_layer, "_cellflow_frame_shape_cleanup")
 
 
 def test_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
@@ -642,13 +654,16 @@ def test_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
     viewer.dims.current_step = (0, 0, 0)
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
     edge_layer = layers[3]
+    t1_layer = layers[4]
 
     viewer.layers.remove(edge_layer)
     viewer.dims.current_step = (1, 0, 0)
     viewer.current_step_event.emit()
 
-    assert viewer.current_step_event.callbacks == []
+    # the edge callback is gone; the T1 callback remains
+    assert len(viewer.current_step_event.callbacks) == 1
     assert edge_layer.name not in viewer.layers
+    assert t1_layer.name in viewer.layers
 
 
 def test_t1_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
@@ -658,26 +673,27 @@ def test_t1_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
     viewer = _FakeViewer()
     viewer.dims.current_step = (4, 0, 0)
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
+    edge_layer = layers[3]
     t1_layer = layers[4]
 
     viewer.layers.remove(t1_layer)
     viewer.dims.current_step = (5, 0, 0)
     viewer.current_step_event.emit()
 
-    assert viewer.current_step_event.callbacks == []
+    assert len(viewer.current_step_event.callbacks) == 1
     assert t1_layer.name not in viewer.layers
+    assert edge_layer.name in viewer.layers
 
 
-def test_nucleus_track_layer_contains_full_rasterized_time_stack(monkeypatch, tmp_path):
+def test_clear_hook_disconnects_frame_shape_callback(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
-    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     viewer = _FakeViewer()
-
+    viewer.dims.current_step = (0, 0, 0)
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
-    track_layer = layers[2]
+    edge_layer = layers[3]
 
-    assert track_layer.data.shape == (3, 8, 8, 4)
-    assert np.count_nonzero(track_layer.data[0]) == 0
-    assert np.count_nonzero(track_layer.data[1]) > 0
-    assert np.count_nonzero(track_layer.data[2]) > 0
-    assert track_layer.data[2, :, :, 3].max() == 255
+    # the widget's clear path invokes this stashed cleanup before removal
+    edge_layer._cellflow_frame_shape_cleanup()
+
+    assert len(viewer.current_step_event.callbacks) == 1
