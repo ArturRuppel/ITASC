@@ -1,11 +1,12 @@
-"""Behavioural coverage for the docked combined-canvas controller.
+"""Behavioural coverage for the combined-canvas controller.
 
 Pins the glue the correction widget relies on: refresh assembles ``LaneView``
-rows from the swimlane model + validation records and docks a
-populated overview synced to the selection + current frame; selecting a track
-rebuilds only that track's detail strip; an absent stack clears it; a click
-drives the navigate callback; teardown removes the dock. The Qt panel and the
-pure builders are stubbed so only the controller's assembly is under test.
+rows from the swimlane model + validation records and populates the overview
+widget synced to the selection + current frame; selecting a track rebuilds only
+that track's detail strip; an absent stack clears it; a click drives the
+navigate callback; teardown drops the panel references (the host owns the dock).
+The Qt panel and the pure builders are stubbed so only the controller's assembly
+is under test.
 """
 from __future__ import annotations
 
@@ -78,7 +79,9 @@ def test_refresh_assembles_lanes_and_docks(stubbed):
 
     ctrl.refresh()
 
-    viewer.window.add_dock_widget.assert_called_once()
+    # Panels are bare widgets embedded by the host splitter — the controller no
+    # longer owns napari docks.
+    viewer.window.add_dock_widget.assert_not_called()
     panel = stubbed.return_value
     panel.set_overview.assert_called_once()
     lanes = panel.set_overview.call_args.args[0]
@@ -88,7 +91,7 @@ def test_refresh_assembles_lanes_and_docks(stubbed):
     # Selection + current frame are pushed after the overview is built.
     panel.set_current_frame.assert_called_with(1)
     panel.set_selection.assert_called_with(7)
-    # The detail strip is rendered onto the separately-docked film panel.
+    # The detail strip is rendered onto the separate film panel widget.
     lcc.TrackFilmStripPanel.return_value.set_strip.assert_called_once()
 
 
@@ -186,7 +189,10 @@ def test_node_activation_invokes_navigate_callback(stubbed):
     on_activate.assert_called_once_with(1, 7)
 
 
-def test_teardown_removes_dock(stubbed):
+def test_teardown_drops_panels(stubbed):
+    # The panels are embedded as bare widgets in the host's workspace splitter
+    # and deleted when that dock is torn down; teardown only drops references so
+    # a later re-activate rebuilds them (no napari dock is owned here).
     viewer = _viewer()
     ctrl = _controller(
         viewer,
@@ -194,8 +200,9 @@ def test_teardown_removes_dock(stubbed):
         intensity=np.zeros((2, 12, 12), np.float32),
     )
     ctrl.refresh()
-    dock = viewer.window.add_dock_widget.return_value
 
     ctrl.teardown()
 
-    viewer.window.remove_dock_widget.assert_called_once_with(dock)
+    viewer.window.remove_dock_widget.assert_not_called()
+    assert ctrl._overview_panel is None
+    assert ctrl._film_panel is None
