@@ -18,7 +18,6 @@ import napari
 import numpy as np
 from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import (
-    QLabel,
     QVBoxLayout,
     QSizePolicy,
     QWidget,
@@ -129,19 +128,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         )
         root.addWidget(self.pipeline_files_header)
         root.addWidget(self._pipeline_files_section)
-
-        self.viewer_activity_banner = QLabel("")
-        self.viewer_activity_banner.setWordWrap(True)
-        self.viewer_activity_banner.setVisible(False)
-        self.viewer_activity_banner.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Fixed,
-        )
-        self.viewer_activity_banner.setStyleSheet(
-            "QLabel { font-weight: 700; padding: 4px 6px; "
-            "border: 1px solid #f9e2af; background: rgba(249, 226, 175, 35); }"
-        )
-        root.addWidget(self.viewer_activity_banner)
 
         # ── Atom Extraction ──────────────────────────────────────────
         self._build_atom_extraction_section(root)
@@ -461,13 +447,6 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     # ================================================================
     # Viewer activity guard (driven by the shared UI gate)
     # ================================================================
-    def _set_viewer_activity_banner(self, text: str) -> None:
-        visible = bool(text)
-        if self.viewer_activity_banner.text() != text:
-            self.viewer_activity_banner.setText(text)
-        if self.viewer_activity_banner.isVisible() != visible:
-            self.viewer_activity_banner.setVisible(visible)
-
     def _register_gate_controls(self) -> None:
         """Register this section's controls with the app-wide UI gate.
 
@@ -514,18 +493,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         for button in (self.seg_params_btn, self.db_params_btn, self.solve_params_btn):
             g.register(button, ControlClass.HARMLESS)
         self._register_atom_gate_controls()
-        g.changed.connect(self._update_activity_banner)
         g.recompute()
-
-    def _update_activity_banner(self) -> None:
-        label = self.gate.owner_label()
-        if label:
-            self._set_viewer_activity_banner(
-                f"{label[0].upper()}{label[1:]} active. "
-                "Exit it to use disabled workflow controls."
-            )
-        else:
-            self._set_viewer_activity_banner("")
 
     def _on_guarded_ultrack_db_activate(self, checked: bool) -> None:
         self._on_ultrack_db_activate(checked)

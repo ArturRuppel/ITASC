@@ -115,7 +115,7 @@ def _existing_color_dict(
 
 def _label_color(label_id: int) -> np.ndarray:
     hue = ((int(label_id) - 1) * 0.618033988749895) % 1.0
-    return np.asarray((*_hsv_to_rgb(hue, 0.65, 0.9), 1.0), dtype=float)
+    return np.asarray((*_hsv_to_rgb(hue, 0.9, 1.0), 1.0), dtype=float)
 
 
 def _hsv_to_rgb(

@@ -127,6 +127,22 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("contact_analysis"),
         )
 
+        # Viewer-activity banner sits at the top level, above Project Status, so
+        # the "exit the active mode" hint is visible regardless of which section
+        # holds the active viewer owner (correction / db-browser / live preview).
+        self.viewer_activity_banner = QLabel("")
+        self.viewer_activity_banner.setWordWrap(True)
+        self.viewer_activity_banner.setVisible(False)
+        self.viewer_activity_banner.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.viewer_activity_banner.setStyleSheet(
+            "QLabel { font-weight: 700; padding: 4px 6px; "
+            "border: 1px solid #f9e2af; background: rgba(249, 226, 175, 35); }"
+        )
+        self.scroll_layout.addWidget(self.viewer_activity_banner)
+
         self.scroll_layout.addWidget(self.data_section)
         self.scroll_layout.addWidget(self.cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
@@ -160,6 +176,9 @@ class CellFlowMainWidget(QWidget):
         self.pos_spin.valueChanged.connect(self._on_pos_changed)
         self._register_gate_controls()
 
+        self.gate.changed.connect(self._update_activity_banner)
+        self._update_activity_banner()
+
     def _connect_label_selection_sync(self) -> None:
         """Synchronize selected cell/nucleus IDs across correction widgets."""
         if hasattr(self.nucleus_workflow_widget, "set_selection_callback"):
@@ -188,6 +207,23 @@ class CellFlowMainWidget(QWidget):
         ):
             self.gate.register(control, ControlClass.CONTEXT_CHANGING)
         self.gate.recompute()
+
+    def _set_viewer_activity_banner(self, text: str) -> None:
+        visible = bool(text)
+        if self.viewer_activity_banner.text() != text:
+            self.viewer_activity_banner.setText(text)
+        if self.viewer_activity_banner.isVisible() != visible:
+            self.viewer_activity_banner.setVisible(visible)
+
+    def _update_activity_banner(self) -> None:
+        label = self.gate.owner_label()
+        if label:
+            self._set_viewer_activity_banner(
+                f"{label[0].upper()}{label[1:]} active. "
+                "Exit it to use disabled workflow controls."
+            )
+        else:
+            self._set_viewer_activity_banner("")
 
     def _change_context(self, action) -> bool:
         """Run *action*, offering to exit the active viewer owner first.

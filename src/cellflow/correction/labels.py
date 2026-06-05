@@ -360,7 +360,11 @@ def merge_cells(
     if remaining_la.any():
         seg[remaining_la] = lb
 
-    clean_stranded_pixels(seg)
+    # Clean up strays created by the closing, but never fragment-clean the
+    # merge target itself: its components may be intentionally disconnected
+    # (e.g. a fragmented nucleus merged earlier via the non-touching branch),
+    # and dropping all but the largest would silently delete those regions.
+    clean_stranded_pixels(seg, exclude={lb})
     return True
 
 
@@ -690,7 +694,12 @@ def fix_label_semiholes(
     return result
 
 
-def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int:
+def clean_stranded_pixels(
+    seg: np.ndarray,
+    min_size: int = MIN_CELL_SIZE,
+    *,
+    exclude: set[int] | None = None,
+) -> int:
     """Remove disconnected same-label fragments, keeping each label's largest component.
 
     Fragments are cleared and then ``expand_labels`` is used to propose a new
@@ -698,12 +707,18 @@ def clean_stranded_pixels(seg: np.ndarray, min_size: int = MIN_CELL_SIZE) -> int
     fragment pixels are 8-connected to an existing component of that same
     label — this prevents ``expand_labels`` from recreating a disconnected
     fragment.
+
+    Labels in *exclude* are left untouched. This is used by ``merge_cells`` to
+    preserve a merge target whose components are intentionally disconnected
+    (e.g. after merging a fragmented nucleus).
     """
     from skimage.measure import label as _cc_label
     cleared = 0
 
     for cell_id in np.unique(seg):
         if cell_id == 0:
+            continue
+        if exclude is not None and int(cell_id) in exclude:
             continue
         mask = seg == cell_id
         labeled, n_comp = _cc_label(mask, return_num=True, connectivity=2)

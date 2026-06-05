@@ -136,7 +136,11 @@ _CORRECTION_TRACKED_LAYER = "[Correction] Nucleus Labels"
 _CORRECTION_TRACK_LAYER = "[Correction] Nucleus tracks"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
-_NUCLEUS_TRACK_COLOR_SCALE = 0.65
+_NUCLEUS_TRACK_COLOR_SCALE = 1.0
+# Filled (by-ID) view draws cells solid; outline view keeps them semi-transparent
+# so the reference images underneath stay visible through the contours.
+_FILLED_LABEL_OPACITY = 1.0
+_OUTLINE_LABEL_OPACITY = 0.7
 # Fraction of the canvas a navigated-to track's bounding box should span in each
 # direction (≈25% of the canvas area), leaving margin around the track.
 _TRACK_VIEWPORT_FRACTION = 0.5
@@ -1577,11 +1581,12 @@ class NucleusCorrectionWidget(QWidget):
             ("Z", lambda: self._on_swap_step(direction="smaller")),
             ("C", lambda: self._on_swap_step(direction="larger")),
             ("Space", self._toggle_movie_playback),
-            # Override the inner widget's frame-local Shift-±/step navigation:
-            # in focus mode Shift-arrow walks the global track list and recenters
-            # both the lineage canvas and the image viewer (like a track click).
-            ("Shift-Left", lambda: self._step_track(-1)),
-            ("Shift-Right", lambda: self._step_track(1)),
+            # Override the inner widget's frame-local Up/Down navigation:
+            # in focus mode the up/down arrows walk the global track list and
+            # recenter both the lineage canvas and the image viewer (like a
+            # track click).
+            ("Up", lambda: self._step_track(-1)),
+            ("Down", lambda: self._step_track(1)),
         ]
         self._bound_correction_keys: list[str] = []
         self._correction_keys_layer = None
@@ -2000,6 +2005,9 @@ class NucleusCorrectionWidget(QWidget):
         if layer is not None:
             try:
                 layer.contour = 0 if filled else 2
+                layer.opacity = (
+                    _FILLED_LABEL_OPACITY if filled else _OUTLINE_LABEL_OPACITY
+                )
             except Exception:
                 pass
             if filled:
@@ -2052,7 +2060,7 @@ class NucleusCorrectionWidget(QWidget):
     def _step_track(self, direction: int) -> None:
         """Select the next/previous track in the global list and recenter on it.
 
-        Bound to Shift-Left / Shift-Right in focus mode. Unlike a frame-local
+        Bound to the Up / Down arrows in focus mode. Unlike a frame-local
         scan, this walks the sorted list of every track ID in the stack and
         navigates to the chosen track exactly as a lineage-canvas click would —
         landing on a frame where it exists, selecting it, and recentering both

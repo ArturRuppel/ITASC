@@ -178,7 +178,7 @@ def build_shortcuts_widget() -> QWidget:
         "Selection",
         [
             ("Left-click", "Select / highlight cell"),
-            ("Shift+Left / Shift+Right", "Previous / next cell"),
+            ("↑ / ↓", "Previous / next track"),
         ],
         start_row=row,
     )
@@ -186,7 +186,8 @@ def build_shortcuts_widget() -> QWidget:
         grid,
         "Manual Labels",
         [
-            ("Middle-click or Delete", "Erase cell"),
+            ("Middle-click empty space", "Spawn new cell"),
+            ("Middle-click on cell or Delete", "Erase cell"),
             ("Ctrl+Left-click", "Merge selected with clicked cell"),
             ("Right-click variants", "Swap labels"),
             ("Shift+Left-drag", "Draw / extend cell path"),
