@@ -399,6 +399,9 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_widget.set_protected_mask_callback(
             self._manual_correction_protected_mask
         )
+        self.correction_widget.set_intensity_frame_callback(
+            self._correction_intensity_frame
+        )
         # Use an additive listener, not set_selection_callback: the workflow
         # widget owns that single slot and would otherwise clobber the comet's
         # rebuild-on-selection (so it would only build on first checkbox tick).
@@ -451,6 +454,12 @@ class NucleusCorrectionWidget(QWidget):
             self.extend_distance_weight_spin,
         )
         extend_retrack_lay.addLayout(g)
+
+        extend_retrack_lay.addWidget(_heading("Manual edit"))
+        # Reuse the embedded correction widget's spawn controls (cell radius for
+        # middle-click cell creation), relocated here next to the other params.
+        extend_retrack_lay.addWidget(self.correction_widget._spawn_controls)
+
         self.extend_retrack_params_section = CollapsibleSection(
             "Extend / Retrack Parameters",
             extend_retrack_inner,
@@ -1936,6 +1945,13 @@ class NucleusCorrectionWidget(QWidget):
     def _clear_track_path_overlay(self) -> None:
         self._all_tracks.clear()
 
+    def _correction_intensity_frame(self, t: int):
+        """2-D nucleus frame at time *t* used to snap spawned cells to signal."""
+        if _CORRECTION_NUC_ZAVG_LAYER not in self.viewer.layers:
+            return None
+        layer = self.viewer.layers[_CORRECTION_NUC_ZAVG_LAYER]
+        return frame_view_2d(np.asarray(layer.data), int(t))
+
     def _film_strip_intensity_layer(self):
         """Best raw layer to crop tiles from (nucleus, then cell)."""
         for name in (
@@ -1994,6 +2010,9 @@ class NucleusCorrectionWidget(QWidget):
                 )
             else:
                 apply_neutral_label_colormap(layer)
+        # In filled-by-ID mode the green/anchor wash would hide the per-ID
+        # colours, so draw validated/anchor cells as a coloured border instead.
+        self._validated_overlay.set_border_mode(filled)
         self._all_tracks.set_filled_mode(filled)
 
     def _navigate_to_error(self, t: int, cell_id: int) -> None:

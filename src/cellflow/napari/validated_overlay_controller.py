@@ -21,6 +21,9 @@ SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
 VALIDATED_OVERLAY_OPACITY = 0.4
 VALIDATED_OVERLAY_COLOR = "#00ff00"
 ANCHOR_OVERLAY_COLOR = "#b39400"
+# In the filled-by-ID view (images hidden) a translucent wash would hide the
+# per-ID colours, so the overlay is drawn as an opaque border of this thickness.
+VALIDATED_OVERLAY_CONTOUR = 2
 
 
 class ValidatedOverlayController:
@@ -38,6 +41,32 @@ class ValidatedOverlayController:
         self._tracked_layer_provider = tracked_layer_provider
         self._pos_dir_provider = pos_dir_provider
         self._owned_layers = owned_layers
+        # When True, overlays render as an opaque border instead of a wash.
+        self._border_mode = False
+
+    def set_border_mode(self, enabled: bool) -> None:
+        """Switch overlays between translucent wash and opaque border.
+
+        Used by the filled-by-ID viewer mode: a wash would obscure the per-ID
+        label colours, so validated/anchor cells are shown as a coloured border.
+        Applies to existing overlay layers immediately and is remembered so
+        later overlay rebuilds keep the chosen style.
+        """
+        self._border_mode = bool(enabled)
+        for name in (VALIDATED_OVERLAY, ANCHOR_OVERLAY):
+            if name in self.viewer.layers:
+                self._apply_overlay_style(self.viewer.layers[name])
+
+    def _apply_overlay_style(self, layer) -> None:
+        try:
+            if self._border_mode:
+                layer.contour = VALIDATED_OVERLAY_CONTOUR
+                layer.opacity = 1.0
+            else:
+                layer.contour = 0
+                layer.opacity = VALIDATED_OVERLAY_OPACITY
+        except Exception:
+            pass
 
     def refresh_overlay(self, frame_view_2d=None) -> None:
         # ``frame_view_2d`` is accepted (and ignored) for call-site compatibility:
@@ -113,16 +142,16 @@ class ValidatedOverlayController:
         if VALIDATED_OVERLAY in self.viewer.layers:
             layer = self.viewer.layers[VALIDATED_OVERLAY]
             layer.data = data
-            layer.opacity = VALIDATED_OVERLAY_OPACITY
             layer.colormap = direct_colormap(
                 {None: (0, 0, 0, 0), 1: VALIDATED_OVERLAY_COLOR}
             )
+            self._apply_overlay_style(layer)
             self._owned_layers.add(VALIDATED_OVERLAY)
             self.place_below_spotlight()
             return
         if LEGACY_VALIDATED_OVERLAY in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[LEGACY_VALIDATED_OVERLAY])
-        self.viewer.add_labels(
+        layer = self.viewer.add_labels(
             data,
             name=VALIDATED_OVERLAY,
             opacity=VALIDATED_OVERLAY_OPACITY,
@@ -130,6 +159,7 @@ class ValidatedOverlayController:
                 {None: (0, 0, 0, 0), 1: VALIDATED_OVERLAY_COLOR}
             ),
         )
+        self._apply_overlay_style(layer)
         self._owned_layers.add(VALIDATED_OVERLAY)
         self.place_below_spotlight()
         tracked = self._tracked_layer_provider()
@@ -140,21 +170,22 @@ class ValidatedOverlayController:
         if ANCHOR_OVERLAY in self.viewer.layers:
             layer = self.viewer.layers[ANCHOR_OVERLAY]
             layer.data = data
-            layer.opacity = VALIDATED_OVERLAY_OPACITY
             layer.colormap = direct_colormap(
                 {None: (0, 0, 0, 0), 1: ANCHOR_OVERLAY_COLOR}
             )
+            self._apply_overlay_style(layer)
             self._owned_layers.add(ANCHOR_OVERLAY)
             self.place_below_spotlight()
             return
         if LEGACY_ANCHOR_OVERLAY in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[LEGACY_ANCHOR_OVERLAY])
-        self.viewer.add_labels(
+        layer = self.viewer.add_labels(
             data,
             name=ANCHOR_OVERLAY,
             opacity=VALIDATED_OVERLAY_OPACITY,
             colormap=direct_colormap({None: (0, 0, 0, 0), 1: ANCHOR_OVERLAY_COLOR}),
         )
+        self._apply_overlay_style(layer)
         self._owned_layers.add(ANCHOR_OVERLAY)
         self.place_below_spotlight()
         tracked = self._tracked_layer_provider()

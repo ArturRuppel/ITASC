@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
 )
 from cellflow.correction.labels import (
     _label_at,
+    add_cell,
     draw_cell_path,
     erase_cell,
     clean_stranded_pixels,
@@ -113,6 +114,12 @@ class CorrectionWidget(QWidget):
         ) = None
         self._protected_mask_callback: (
             Callable[[int, np.ndarray], np.ndarray | None] | None
+        ) = None
+        # Optional provider of a 2-D intensity frame (e.g. the nucleus image)
+        # used to snap spawned cells to the underlying signal. None → always
+        # stamp a plain disk.
+        self._intensity_frame_callback: (
+            Callable[[int], np.ndarray | None] | None
         ) = None
 
         self._setup_ui()
@@ -225,6 +232,30 @@ class CorrectionWidget(QWidget):
 
         if self._show_cleanup:
             root.addWidget(self._cleanup_container)
+
+        # ── spawn-cell controls ───────────────────────────────────────────────
+        # Middle-clicking empty space spawns a cell; this sets its fallback size
+        # when the nucleus signal is too weak to snap to. Wrapped in a container
+        # so an embedder (e.g. the nucleus widget) can relocate it into its own
+        # parameter panel; shown here when not relocated.
+        self._cell_radius_spin = _islider(1, 999, 6)
+        self._cell_radius_spin.setToolTip(
+            "Radius (px) of a cell spawned by middle-clicking empty space. "
+            "Used as a fallback size when the nucleus signal is too weak to snap to."
+        )
+        self._spawn_controls = QWidget()
+        spawn_lay = QVBoxLayout(self._spawn_controls)
+        spawn_lay.setContentsMargins(0, 0, 0, 0)
+        spawn_lay.setSpacing(6)
+        spawn_grid = block_grid(horizontal_spacing=12)
+        add_block_pair_row(
+            spawn_grid,
+            0,
+            "Cell radius:",
+            self._cell_radius_spin,
+        )
+        spawn_lay.addLayout(spawn_grid)
+        root.addWidget(self._spawn_controls)
 
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -516,6 +547,27 @@ class CorrectionWidget(QWidget):
         fn: Callable[[int, np.ndarray], np.ndarray | None] | None,
     ) -> None:
         self._protected_mask_callback = fn
+
+    def set_intensity_frame_callback(
+        self,
+        fn: Callable[[int], np.ndarray | None] | None,
+    ) -> None:
+        """Provide a per-frame 2-D intensity image to guide spawned cells.
+
+        ``fn(t)`` returns the nucleus/intensity frame for time ``t`` (matching
+        the label frame shape) or None. When unset, middle-clicking empty space
+        stamps a plain disk instead of snapping to the signal.
+        """
+        self._intensity_frame_callback = fn
+
+    def _intensity_frame(self, t: int) -> np.ndarray | None:
+        if self._intensity_frame_callback is None:
+            return None
+        try:
+            frame = self._intensity_frame_callback(t)
+        except Exception:
+            return None
+        return None if frame is None else np.asarray(frame)
 
     def select_label(self, t: int, label: int, *, notify: bool = True) -> None:
         self._update_highlight(t, label, notify=notify)
@@ -974,6 +1026,21 @@ class CorrectionWidget(QWidget):
                 if btn == 3 and not mods:
                     lab = _label_at(seg2d, pos)
                     if lab == 0:
+                        before = seg2d.copy()
+                        ok = add_cell(
+                            seg2d,
+                            pos,
+                            new_label=self._next_free_label(),
+                            radius=int(self._cell_radius_spin.value()),
+                            image=self._intensity_frame(t),
+                            protected_mask=self._protected_mask(t, seg2d),
+                        )
+                        if ok:
+                            self._record_history(_layer, t, before)
+                            _layer.refresh()
+                            self._set_status(f"Added cell — Active on '{_layer.name}'")
+                        else:
+                            self._set_status("Add cell failed — no room here")
                         return
                     before = seg2d.copy()
                     if erase_cell(seg2d, label=lab):

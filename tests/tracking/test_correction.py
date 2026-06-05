@@ -1,5 +1,6 @@
 
 from cellflow.correction.labels import (
+    add_cell,
     clean_stranded_pixels,
     draw_cell_path,
     expand_label_to_foreground,
@@ -126,20 +127,46 @@ def test_clean_stranded_pixels_cleans_fragments_without_filling_background_holes
     assert seg[0, 7] != 2
 
 
-def test_fill_label_holes_expands_cells_into_enclosed_gaps_by_radius():
+def test_fill_label_holes_fills_hole_enclosed_by_single_cell():
+    seg = np.zeros((12, 12), dtype=np.uint32)
+    seg[2:10, 2:10] = 1
+    seg[5:7, 5:7] = 0  # background hole fully inside cell 1
+
+    result = fill_label_holes(seg, radius=999)
+
+    assert np.all(result[5:7, 5:7] == 1)
+    # surrounding background outside the cell is untouched
+    assert result[0, 0] == 0
+
+
+def test_fill_label_holes_leaves_gap_between_two_cells_unchanged():
+    # The enclosed background here borders both cell 1 and cell 2, so it is an
+    # inter-cellular gap, not a hole within one cell: it must NOT be filled
+    # (no expanding cells into the space between them).
     seg = np.zeros((12, 12), dtype=np.uint32)
     seg[1:11, 1:4] = 1
     seg[1:11, 8:11] = 2
     seg[1:3, 4:8] = 1
     seg[9:11, 4:8] = 2
     seg[3:9, 4:8] = 0
+    before = seg.copy()
 
-    result = fill_label_holes(seg, radius=1)
+    result = fill_label_holes(seg, radius=999)
 
-    assert np.any(result[3:9, 4:8] == 1)
-    assert np.any(result[3:9, 4:8] == 2)
-    assert np.any(result[3:9, 4:8] == 0)
-    np.testing.assert_array_equal(result[0, :], np.zeros(12, dtype=np.uint32))
+    np.testing.assert_array_equal(result, before)
+
+
+def test_fill_label_holes_respects_radius_depth_guard():
+    seg = np.zeros((16, 16), dtype=np.uint32)
+    seg[2:14, 2:14] = 1
+    seg[5:11, 5:11] = 0  # 6x6 hole: deepest pixel is 3 px from the wall
+
+    # Too shallow a radius leaves the hole untouched...
+    shallow = fill_label_holes(seg.copy(), radius=2)
+    assert np.any(shallow[5:11, 5:11] == 0)
+    # ...a large enough radius fills it completely.
+    deep = fill_label_holes(seg.copy(), radius=3)
+    assert np.all(deep[5:11, 5:11] == 1)
 
 
 def test_fill_label_holes_zero_radius_is_noop():
@@ -184,6 +211,23 @@ def test_fix_label_semiholes_leaves_wide_border_opening_unchanged():
     result = fix_label_semiholes(seg, radius=999, max_opening=1)
 
     np.testing.assert_array_equal(result, seg)
+
+
+def test_fix_label_semiholes_leaves_gap_between_two_cells_unchanged():
+    # A narrow border opening, but the gap is bordered by both cell 1 and cell 2
+    # -> inter-cellular gap, not a hole within one cell. Must stay background
+    # (the old expand-based code wrongly filled it from both sides).
+    seg = np.zeros((8, 8), dtype=np.uint32)
+    seg[:, 0:3] = 1
+    seg[:, 4:8] = 2
+    seg[1:7, 3] = 0   # vertical gap between the cells
+    seg[0, 3] = 0     # narrow (1 px) opening to the top border
+    seg[7, 3] = 2     # closed at the bottom
+    before = seg.copy()
+
+    result = fix_label_semiholes(seg, radius=999, max_opening=1)
+
+    np.testing.assert_array_equal(result, before)
 
 
 def test_fix_label_semiholes_zero_radius_or_opening_is_noop():
@@ -287,3 +331,48 @@ def test_expand_label_to_foreground_returns_zero_without_mutation_when_absent_or
     np.testing.assert_array_equal(seg, before)
     assert expand_label_to_foreground(seg, foreground, 6, max_distance=0) == 0
     np.testing.assert_array_equal(seg, before)
+
+
+def test_add_cell_stamps_disk_on_empty_space_without_image():
+    seg = np.zeros((40, 40), dtype=np.uint32)
+    assert add_cell(seg, (20, 20), new_label=7, radius=5)
+    assert seg[20, 20] == 7
+    # disk(5) covers 81 px
+    assert int((seg == 7).sum()) == 81
+
+
+def test_add_cell_rejects_click_on_existing_cell():
+    seg = np.zeros((40, 40), dtype=np.uint32)
+    seg[10:15, 10:15] = 3
+    before = seg.copy()
+    assert not add_cell(seg, (12, 12), new_label=9, radius=4)
+    np.testing.assert_array_equal(seg, before)
+
+
+def test_add_cell_never_overwrites_neighbours_or_protected():
+    seg = np.zeros((40, 40), dtype=np.uint32)
+    seg[18:23, 18:23] = 4
+    prot = np.zeros((40, 40), dtype=bool)
+    prot[:, :15] = True
+    assert add_cell(seg, (25, 25), new_label=8, radius=8, protected_mask=prot)
+    assert int((seg == 4).sum()) == 25  # neighbour intact
+    assert int(((seg == 8) & (seg == 4)).sum()) == 0
+    assert int(((seg == 8) & prot).sum()) == 0
+
+
+def test_add_cell_snaps_to_nucleus_signal_when_present():
+    img = np.zeros((40, 40), dtype=np.float32)
+    yy, xx = np.ogrid[:40, :40]
+    img[(yy - 20) ** 2 + (xx - 20) ** 2 <= 16] = 100.0  # radius-4 bright blob
+    seg = np.zeros((40, 40), dtype=np.uint32)
+    assert add_cell(seg, (20, 20), new_label=5, radius=10, image=img)
+    # Snapped to the ~49 px blob, not the 317 px disk that radius=10 would stamp.
+    assert int((seg == 5).sum()) < 100
+    assert seg[20, 20] == 5
+
+
+def test_add_cell_falls_back_to_disk_when_signal_is_flat():
+    flat = np.full((40, 40), 50.0, dtype=np.float32)
+    seg = np.zeros((40, 40), dtype=np.uint32)
+    assert add_cell(seg, (20, 20), new_label=6, radius=5, image=flat)
+    assert int((seg == 6).sum()) == 81  # disk fallback

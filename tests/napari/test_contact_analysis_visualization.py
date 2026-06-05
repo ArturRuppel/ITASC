@@ -468,7 +468,16 @@ def test_nucleus_tracks_use_native_tracks_layer(monkeypatch, tmp_path):
     track_call = viewer.calls[2]
     assert track_call[0] == "tracks"
     assert track_call[1] == "[Contact Analysis] Nucleus tracks"
-    assert track_call[3]["color_by"] == "track_id"
+    kwargs = track_call[3]
+    # Tracks are coloured to match the cell labels via a per-vertex label_pos
+    # property mapped through a custom step colormap, and styled like the nucleus
+    # correction widget's comet (short, wide tail; no head).
+    assert kwargs["color_by"] == "label_pos"
+    assert "label_pos" in kwargs["colormaps_dict"]
+    assert "label_pos" in kwargs["properties"]
+    assert kwargs["tail_width"] == mod._TRACK_TAIL_WIDTH
+    assert kwargs["tail_length"] == mod._TRACK_TAIL_LENGTH
+    assert kwargs["head_length"] == mod._TRACK_HEAD_LENGTH
     data = track_call[2]
     # data rows are [track_id, t, y, x]; two tracks (11, 12) over three frames.
     assert data.shape == (6, 4)
@@ -476,6 +485,30 @@ def test_nucleus_tracks_use_native_tracks_layer(monkeypatch, tmp_path):
     track11 = data[data[:, 0] == 11]
     np.testing.assert_array_equal(track11[:, 1], [0, 1, 2])
     np.testing.assert_array_equal(track11[:, 2], [1, 2, 3])
+
+
+def test_track_label_color_styling_reproduces_cell_label_colors(monkeypatch):
+    mod = _load_module(monkeypatch)
+    color_map = {
+        None: "transparent",
+        0: "transparent",
+        11: (1.0, 0.0, 0.0, 1.0),
+        12: (0.0, 1.0, 0.0, 1.0),
+        20: (0.0, 0.0, 1.0, 1.0),
+    }
+    track_ids = np.array([12, 12, 11, 20, 20], dtype=int)
+
+    cmap, label_pos = mod._track_label_color_styling(track_ids, color_map)
+
+    # Each vertex maps, through the colormap, back to its cell-label colour.
+    for cell_id, pos in zip(track_ids, label_pos):
+        mapped = np.asarray(cmap.map(np.array([pos]))[0])
+        np.testing.assert_allclose(mapped, color_map[int(cell_id)], atol=1e-6)
+
+
+def test_track_label_color_styling_handles_no_tracks(monkeypatch):
+    mod = _load_module(monkeypatch)
+    assert mod._track_label_color_styling(np.array([], dtype=int), {}) is None
 
 
 def test_tracks_data_is_sorted_by_track_then_time(monkeypatch):

@@ -135,26 +135,48 @@ def test_overview_default_is_one_neutral_colour():
         np.testing.assert_allclose(row, NEUTRAL_OVERLAY_COLOR, atol=1e-6)
 
 
-def test_filled_mode_overview_is_opaque_and_colours_by_id():
+def test_filled_mode_overview_colours_each_track_like_its_label():
     viewer = _FakeViewer()
-    ctrl, _, _ = _controller(viewer, selected_label=0)
+    ctrl, tracked, _ = _controller(viewer, selected_label=0)
+    # Filled-view labels carry a per-id colour dict (as refresh_label_colormap
+    # sets): cell 5 red, cell 9 blue. The tracks should reproduce those exactly.
+    tracked.colormap = SimpleNamespace(
+        color_dict={
+            None: (0.0, 0.0, 0.0, 0.0),
+            0: (0.0, 0.0, 0.0, 0.0),
+            5: (1.0, 0.0, 0.0, 1.0),
+            9: (0.0, 0.0, 1.0, 1.0),
+        }
+    )
     ctrl.refresh()
 
     ctrl.set_filled_mode(True)
 
     layer = viewer.layers[TRACK_LAYER]
     assert layer.opacity == FILLED_OVERVIEW_OPACITY
-    # By-id colouring: the neutral single-colour override is cleared and the two
-    # tracks now differ in colour.
-    assert layer.colormaps_dict == {}
+    # Coloured by the per-vertex label_pos through a label-matching colormap.
+    assert layer.color_by == "label_pos"
+    assert "label_pos" in layer.colormaps_dict
     colors = np.asarray(layer.track_colors)
-    assert not np.allclose(colors[0], colors[-1])
+    ids = layer.data[:, 0].astype(int)
+    np.testing.assert_allclose(colors[ids == 5][0], (1.0, 0.0, 0.0, 1.0), atol=1e-6)
+    np.testing.assert_allclose(colors[ids == 9][0], (0.0, 0.0, 1.0, 1.0), atol=1e-6)
 
-    # Flipping back restores the neutral, translucent overview.
+    # Flipping back restores the neutral overview (matching the neutral outlines).
     ctrl.set_filled_mode(False)
-    assert layer.opacity == OVERVIEW_OPACITY
     for row in np.asarray(layer.track_colors):
         np.testing.assert_allclose(row, NEUTRAL_OVERLAY_COLOR, atol=1e-6)
+
+
+def test_overview_opacity_is_opaque_in_both_modes():
+    viewer = _FakeViewer()
+    ctrl, _, _ = _controller(viewer, selected_label=0)
+    ctrl.refresh()
+
+    layer = viewer.layers[TRACK_LAYER]
+    assert layer.opacity == 1.0  # outline overview
+    ctrl.set_filled_mode(True)
+    assert layer.opacity == 1.0  # filled overview
 
 
 def test_focus_keeps_only_the_selected_track_fully_opaque():

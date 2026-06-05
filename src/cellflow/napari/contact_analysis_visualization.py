@@ -24,6 +24,13 @@ _MIN_TRACK_ALPHA = 0.12
 _DEFAULT_TRACK_TAIL = 50
 _TRACK_RGB_FLOOR = 0.05
 _TRACK_ALPHA_FLOOR = 0.15
+# Match the nucleus correction widget's track-overview styling so the two views
+# read the same (cellflow.napari.track_path_controller.TRACK_TAIL_WIDTH /
+# TRACK_TAIL_LENGTH): a short, moderately wide comet rather than a long thin tail.
+_TRACK_TAIL_WIDTH = 4
+_TRACK_TAIL_LENGTH = 15
+_TRACK_HEAD_LENGTH = 0
+_TRACK_OPACITY = 0.9
 
 
 # =====================================================================
@@ -257,7 +264,7 @@ def add_contact_analysis_layers(
     cell_labels: np.ndarray | None = None,
     nucleus_labels: np.ndarray | None = None,
     nucleus_track_centroids: dict | None = None,
-    track_tail_length: int = _DEFAULT_TRACK_TAIL,
+    track_tail_length: int = _TRACK_TAIL_LENGTH,
 ) -> list[Any]:
     """Add contact-analysis overlays as napari-native layers.
 
@@ -317,6 +324,17 @@ def add_contact_analysis_layers(
     )
     tracks_data, tracks_props = _nucleus_tracks_data(track_centroids)
     tail = max(1, int(track_tail_length))
+    track_styling = _track_label_color_styling(
+        tracks_props["track_id"], cell_color_dict
+    )
+    track_color_kwargs: dict[str, Any] = {"color_by": "track_id"}
+    if track_styling is not None:
+        track_cmap, label_pos = track_styling
+        tracks_props = {**tracks_props, "label_pos": label_pos}
+        track_color_kwargs = {
+            "color_by": "label_pos",
+            "colormaps_dict": {"label_pos": track_cmap},
+        }
 
     layers: list[Any] = [
         viewer.add_labels(
@@ -341,12 +359,12 @@ def add_contact_analysis_layers(
                 tracks_data,
                 name=f"{prefix}Nucleus tracks",
                 properties=tracks_props,
-                color_by="track_id",
-                tail_width=2,
+                tail_width=_TRACK_TAIL_WIDTH,
                 tail_length=tail,
-                head_length=0,
+                head_length=_TRACK_HEAD_LENGTH,
                 blending="translucent",
-                opacity=0.9,
+                opacity=_TRACK_OPACITY,
+                **track_color_kwargs,
             )
         )
 
@@ -417,6 +435,52 @@ def _nucleus_tracks_data(
         return empty, {"track_id": np.empty(0, dtype=int), "time": np.empty(0, dtype=float)}
     data = np.asarray(rows, dtype=float)
     return data, {"track_id": data[:, 0].astype(int), "time": data[:, 1]}
+
+
+def _track_label_color_styling(
+    track_ids: np.ndarray,
+    color_map: dict[int | None, tuple[float, float, float, float] | str],
+) -> tuple[Any, np.ndarray] | None:
+    """Colour each track exactly like its cell label.
+
+    A ``Tracks`` layer colours by mapping a property through a colormap. When a
+    custom colormap is supplied via ``colormaps_dict`` napari feeds it the *raw*
+    property values (no normalisation), so we build a per-vertex ``label_pos``
+    property in ``[0, 1]`` plus a step (``interpolation="zero"``) colormap whose
+    bins reproduce ``color_map`` for each track. Returns ``(colormap, label_pos)``
+    or ``None`` when there are no tracks / napari is unavailable.
+    """
+    ids = sorted({int(i) for i in np.asarray(track_ids).tolist()})
+    if not ids:
+        return None
+    try:
+        from napari.utils.colormaps import Colormap
+    except Exception:  # pragma: no cover - napari compatibility
+        return None
+
+    def _color(cell_id: int) -> tuple[float, float, float, float]:
+        raw = color_map.get(int(cell_id))
+        if isinstance(raw, (tuple, list)) and len(raw) == 4:
+            return tuple(float(c) for c in raw)
+        return tuple(float(c) for c in _UNLABELED_COLOR)
+
+    colors = [_color(i) for i in ids]
+    if len(ids) == 1:
+        cmap = Colormap([colors[0], colors[0]], controls=[0.0, 1.0])
+        pos_by_id = {ids[0]: 0.0}
+    else:
+        vals = [k / (len(ids) - 1) for k in range(len(ids))]
+        pos_by_id = {ids[k]: vals[k] for k in range(len(ids))}
+        edges = (
+            [0.0]
+            + [(vals[k - 1] + vals[k]) / 2 for k in range(1, len(ids))]
+            + [1.0]
+        )
+        cmap = Colormap(colors, controls=edges, interpolation="zero")
+    label_pos = np.array(
+        [pos_by_id[int(i)] for i in np.asarray(track_ids).tolist()], dtype=float
+    )
+    return cmap, label_pos
 
 
 def _frame_shape_cache(

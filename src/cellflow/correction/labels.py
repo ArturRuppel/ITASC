@@ -207,6 +207,122 @@ def erase_cell(seg: np.ndarray, pos: tuple | None = None, *, label: int | None =
     return True
 
 
+def _snap_cell_mask(
+    image: np.ndarray,
+    r: int,
+    c: int,
+    radius: int,
+) -> np.ndarray | None:
+    """Try to carve a single nucleus out of *image* around (r, c).
+
+    Returns a full-frame boolean mask, or ``None`` when the local signal is too
+    weak/ambiguous to trust (flat window, no bright blob under the click, or a
+    blob that spills past the search window — i.e. background, not one nucleus).
+    The caller falls back to a plain disk in that case.
+    """
+    try:
+        win = max(int(radius * 2.5), 12)
+        r0, c0 = max(0, r - win), max(0, c - win)
+        r1, c1 = min(image.shape[0], r + win + 1), min(image.shape[1], c + win + 1)
+        crop = np.asarray(image[r0:r1, c0:c1], dtype=np.float64)
+        if crop.size == 0:
+            return None
+
+        lo, hi = float(crop.min()), float(crop.max())
+        # Flat / no contrast → image gives no guidance here.
+        if hi - lo < 1e-6:
+            return None
+
+        from skimage.filters import threshold_otsu
+
+        thr = float(threshold_otsu(crop))
+        fg = crop > thr
+        lr, lc = r - r0, c - c0
+        # The click itself must land on bright signal.
+        if not fg[lr, lc]:
+            return None
+        # Mostly-bright window → no distinct nucleus, treat as no signal.
+        if fg.mean() > 0.6:
+            return None
+
+        labelled, _ = nd_label(fg)
+        comp = labelled[lr, lc]
+        if comp == 0:
+            return None
+        blob = labelled == comp
+        if blob.sum() < MIN_CELL_SIZE:
+            return None
+        # A blob touching the window edge is larger than we searched: that means
+        # the click is in a bright background region, not on one nucleus.
+        if (
+            blob[0, :].any() or blob[-1, :].any()
+            or blob[:, 0].any() or blob[:, -1].any()
+        ):
+            return None
+
+        mask = np.zeros(image.shape, dtype=bool)
+        mask[r0:r1, c0:c1] = blob
+        return mask
+    except Exception:
+        return None
+
+
+def add_cell(
+    seg: np.ndarray,
+    pos: tuple,
+    *,
+    new_label: int,
+    radius: int = 6,
+    image: np.ndarray | None = None,
+    protected_mask: np.ndarray | None = None,
+) -> bool:
+    """Spawn a new cell at *pos* in empty space.
+
+    When *image* (a nucleus/intensity frame the same shape as *seg*) carries a
+    clear local signal the new cell snaps to it; otherwise a disk of *radius* is
+    stamped. Only background pixels are written — existing cells and any
+    *protected_mask* pixels are never overwritten — so the result can't clobber
+    neighbours. Returns ``False`` when *pos* is on an existing cell or nothing
+    paintable remains.
+    """
+    r, c = int(round(float(pos[-2]))), int(round(float(pos[-1])))
+    if not (0 <= r < seg.shape[0] and 0 <= c < seg.shape[1]):
+        return False
+    if seg[r, c] != 0:
+        return False
+    if new_label <= 0:
+        return False
+
+    mask = None
+    if image is not None and np.asarray(image).shape == seg.shape:
+        mask = _snap_cell_mask(np.asarray(image), r, c, max(1, radius))
+    if mask is None:
+        rad = max(1, radius)
+        d = disk(rad)
+        size = 2 * rad + 1
+        rr0, cc0 = r - rad, c - rad
+        sr0, sc0 = max(0, rr0), max(0, cc0)
+        sr1 = min(seg.shape[0], rr0 + size)
+        sc1 = min(seg.shape[1], cc0 + size)
+        mask = np.zeros(seg.shape, dtype=bool)
+        mask[sr0:sr1, sc0:sc1] = d[
+            sr0 - rr0 : sr0 - rr0 + (sr1 - sr0),
+            sc0 - cc0 : sc0 - cc0 + (sc1 - sc0),
+        ].astype(bool)
+
+    # Never overwrite existing cells or protected pixels.
+    allowed = seg == 0
+    if protected_mask is not None:
+        allowed &= ~protected_mask.astype(bool)
+    mask &= allowed
+    if mask.sum() < MIN_CELL_SIZE:
+        return False
+
+    log.debug("add_cell: label=%s pos=(%d,%d) px=%d", new_label, r, c, int(mask.sum()))
+    seg[mask] = new_label
+    return True
+
+
 def merge_cells(
     seg: np.ndarray,
     pos_start: tuple,
@@ -484,14 +600,24 @@ def relabel_cell(seg: np.ndarray, pos: tuple, new_label: int) -> bool:
 
 
 def fill_label_holes(labels: np.ndarray, radius: int = 5) -> np.ndarray:
-    """Expand labels into fully enclosed background gaps up to ``radius`` pixels."""
+    """Fill background holes enclosed within a single cell.
+
+    A "hole" is a background component that does not touch the image border and
+    is surrounded by exactly one label; it is filled with that label. Background
+    bordered by two or more cells is an inter-cellular gap, not a hole, and is
+    left untouched (so cells are never expanded into the space between them).
+    ``radius`` caps the hole depth: a hole is only filled when its deepest pixel
+    lies within ``radius`` of the surrounding cell. ``radius <= 0`` is a no-op.
+    """
     if radius <= 0:
         return labels
 
     result = labels.copy()
     background = labels == 0
     bg_cc, n_cc = nd_label(background)
-    expanded = expand_labels(labels, distance=int(radius))
+    if n_cc == 0:
+        return result
+    depth = distance_transform_edt(background)
 
     for comp_id in range(1, n_cc + 1):
         comp = bg_cc == comp_id
@@ -502,8 +628,14 @@ def fill_label_holes(labels: np.ndarray, radius: int = 5) -> np.ndarray:
             or np.any(comp[:, -1])
         ):
             continue
-        fill = comp & (expanded > 0)
-        result[fill] = expanded[fill]
+        ring = binary_dilation(comp) & ~comp
+        neighbours = np.unique(labels[ring])
+        neighbours = neighbours[neighbours != 0]
+        if neighbours.size != 1:
+            continue  # gap between cells, not a hole within one cell
+        if depth[comp].max() > radius:
+            continue
+        result[comp] = neighbours[0]
 
     return result
 
@@ -513,14 +645,26 @@ def fix_label_semiholes(
     radius: int = 5,
     max_opening: int = 3,
 ) -> np.ndarray:
-    """Repair border-connected background gaps with a narrow image-edge opening."""
+    """Fill a hole enclosed by a single cell except for a narrow image-edge opening.
+
+    Like :func:`fill_label_holes`, but for background that escapes to the image
+    border through a thin gap (up to ``max_opening`` pixels of edge contact).
+    The opening's edge flanks are ignored; the hole is filled only when its
+    interior is enclosed by exactly one label, so cells are never expanded into
+    inter-cellular gaps. ``radius`` caps the hole depth as in
+    :func:`fill_label_holes`. ``radius <= 0`` or ``max_opening <= 0`` is a no-op.
+    """
     if max_opening <= 0 or radius <= 0:
         return labels
 
     result = labels.copy()
     background = labels == 0
     bg_cc, n_cc = nd_label(background)
-    expanded = expand_labels(labels, distance=int(radius))
+    if n_cc == 0:
+        return result
+    depth = distance_transform_edt(background)
+    edge = np.zeros(labels.shape, dtype=bool)
+    edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
 
     for comp_id in range(1, n_cc + 1):
         comp = bg_cc == comp_id
@@ -532,8 +676,16 @@ def fix_label_semiholes(
         )
         if border_contact == 0 or border_contact > max_opening:
             continue
-        fill = comp & (expanded > 0)
-        result[fill] = expanded[fill]
+        # Ignore ring pixels on the image edge: those flank the opening, not the
+        # interior wall, and may belong to a different (outside) label.
+        ring = binary_dilation(comp) & ~comp & ~edge
+        neighbours = np.unique(labels[ring])
+        neighbours = neighbours[neighbours != 0]
+        if neighbours.size != 1:
+            continue  # gap between cells, not a hole within one cell
+        if depth[comp].max() > radius:
+            continue
+        result[comp] = neighbours[0]
 
     return result
 

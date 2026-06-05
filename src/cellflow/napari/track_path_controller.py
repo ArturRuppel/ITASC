@@ -21,11 +21,12 @@ layer-lifecycle glue.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import numpy as np
 
 from cellflow.napari._correction_track_path import build_all_tracks_data
+from cellflow.napari.contact_analysis_visualization import _track_label_color_styling
 from cellflow.napari._correction_centroids import (
     FOCUS_CROSS_COLOR,
     NEUTRAL_OVERLAY_COLOR,
@@ -39,9 +40,9 @@ TRACK_TAIL_WIDTH = 4
 TRACK_TAIL_LENGTH = 15
 OVERVIEW_COLORMAP = "hsv"
 FOCUS_COLORMAP = "viridis"
-OVERVIEW_OPACITY = 0.55
-# The filled (by-id) view draws the overview fully opaque to match the filled,
-# image-hidden labels; the default (outline) view keeps it translucent.
+# The overview is drawn fully opaque in both view modes so the tracks read as
+# strongly as the labels they're coloured to match.
+OVERVIEW_OPACITY = 1.0
 FILLED_OVERVIEW_OPACITY = 1.0
 FOCUS_OPACITY = 1.0
 TIP_CROSS_SIZE = 5
@@ -149,6 +150,12 @@ class AllTracksController:
             return
         data = np.asarray(layer.data)
         rows, properties, row_index = build_all_tracks_data(data)
+        # Per-vertex position in [0, 1] used to colour each track by its label
+        # colour (see _apply_overview_coloring). Colour-independent, so it is
+        # cached once with the geometry; the colormap is rebuilt per view mode.
+        styling = _track_label_color_styling(properties.get("track_id", []), {})
+        if styling is not None:
+            properties = {**properties, "label_pos": styling[1]}
         self._data = rows
         self._properties = properties
         self._row_index = row_index
@@ -185,20 +192,35 @@ class AllTracksController:
     def _overview_opacity(self) -> float:
         return FILLED_OVERVIEW_OPACITY if self._filled_mode else OVERVIEW_OPACITY
 
-    def _apply_overview_coloring(self, layer) -> None:
-        """Colour the overview by mode: per-id hsv (filled) or one neutral colour.
+    def _label_color_dict(self):
+        """The active labels layer's per-id colour dict, or None."""
+        layer = self._tracked_layer_provider()
+        raw = getattr(getattr(layer, "colormap", None), "color_dict", None)
+        return raw if isinstance(raw, Mapping) else None
 
-        A ``Tracks`` layer's ``colormap`` is a *registered name*, so the single
-        neutral colour is supplied through ``colormaps_dict`` (keyed by the
-        ``color_by`` property, which bypasses the name registry and the
-        property normalisation). Assigning ``color_by`` re-runs the recolour.
+    def _apply_overview_coloring(self, layer) -> None:
+        """Colour the overview by mode: per-id label colours (filled) or one neutral colour.
+
+        A ``Tracks`` layer's ``colormap`` is a *registered name*, so custom
+        colours are supplied through ``colormaps_dict`` (keyed by the ``color_by``
+        property, which bypasses the name registry and the property
+        normalisation). Assigning ``color_by`` re-runs the recolour.
+
+        Filled mode colours each track to match its cell label by reproducing the
+        labels layer's colour dict through a step colormap over ``label_pos``
+        (same technique as the contact-analysis tracks). Outline mode keeps the
+        single neutral colour that matches the neutral label outlines.
         """
-        if self._filled_mode:
-            layer.colormaps_dict = {}
-            try:
-                layer.colormap = OVERVIEW_COLORMAP
-            except Exception:
-                pass
+        styling = None
+        if self._filled_mode and "label_pos" in self._properties:
+            color_dict = self._label_color_dict()
+            if color_dict:
+                styling = _track_label_color_styling(
+                    self._properties["track_id"], color_dict
+                )
+        if styling is not None:
+            layer.colormaps_dict = {"label_pos": styling[0]}
+            layer.color_by = "label_pos"
         else:
             layer.colormaps_dict = {"track_id": _neutral_tracks_colormap()}
             layer.color_by = "track_id"
