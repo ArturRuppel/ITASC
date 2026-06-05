@@ -221,8 +221,13 @@ def merge_cells(
     log.debug("merge_cells: la=%s lb=%s", la, lb)
     if la == 0 or lb == 0 or la == lb:
         return False
+
     if not _touches(seg, la, lb):
-        return False
+        # Cells don't touch: just give them the same id without painting any
+        # new pixels. Skip clean_stranded_pixels, which would otherwise erase
+        # one of the now-disconnected components of the shared label.
+        seg[seg == la] = lb
+        return True
 
     bbox = _bbox_of_two(seg, la, lb)
     bbox = _extend_bbox(bbox, 1.25, seg.shape)

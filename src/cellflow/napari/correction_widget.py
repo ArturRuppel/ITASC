@@ -1066,7 +1066,7 @@ class CorrectionWidget(QWidget):
                         )
                         self._set_status(
                             f"Merged — Active on '{_layer.name}'"
-                            if ok else "Merge failed — labels not touching"
+                            if ok else "Merge failed"
                         )
                         if ok:
                             self._record_history(_layer, t, before)
