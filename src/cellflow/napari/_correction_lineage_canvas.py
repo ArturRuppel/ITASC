@@ -40,7 +40,7 @@ _PRESENT = QColor(95, 95, 95)          # a present frame with nothing flagged
 _VALIDATED = QColor("#00ff00")
 _ANCHOR = QColor("#ff8c00")
 _FRAME_GUIDE = QColor(255, 210, 70)    # the current-frame vertical cursor
-_COL_SELECT = QColor(255, 255, 255)    # selected-track horizontal cursor line
+_COL_SELECT = QColor(255, 210, 70)     # selected-track horizontal cursor line
 
 
 @dataclass(frozen=True)

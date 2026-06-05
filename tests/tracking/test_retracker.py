@@ -123,6 +123,33 @@ def test_iou_term_disambiguates_size_matched_cells():
     assert ids == {2}
 
 
+def test_greedy_keeps_obvious_match_over_global_tradeoff():
+    """A near-perfect overlap must not be traded away to give another target a
+    home. A global min-cost solver minimises the *total* cost: here it pushes
+    target A off its perfect ref so target B (whose only reachable ref is that
+    same one) is not left unmatched. Greedy best-first instead keeps A on its
+    true reference and lets B fall through to a fresh id."""
+    shape = (100, 100)
+    # ref 1 at (40,40); ref 2 far to the right at (40,70).
+    ref = _add(_sq(shape, 40, 40, 8, 1), _sq(shape, 40, 70, 8, 2))
+    # tgt A overlaps ref 1 perfectly (obvious match -> id 1) and is also within
+    # range of ref 2. tgt B sits left of ref 1: it can reach ref 1 but NOT ref 2.
+    # A global solver assigns A->ref2 + B->ref1 (total cost lower than leaving B
+    # unmatched); greedy gives ref 1 to A and B gets a fresh id.
+    tgt = _add(_sq(shape, 40, 40, 8, 50), _sq(shape, 40, 30, 8, 60))
+
+    result = retrack_frame_constrained(
+        ref, tgt, locked_target_ids=set(), max_dist_px=35.0
+    )
+    ids = set(int(i) for i in np.unique(result) if i != 0)
+    # A keeps its obvious match; ref 2 is never pulled in to rehome B.
+    assert result[40, 40] == 1
+    assert 2 not in ids
+    # B (left cell) gets a fresh id, not ref 1's id stolen from A.
+    assert result[40, 30] != 1
+    assert result[40, 30] > max(int(ref.max()), int(tgt.max()))
+
+
 def test_zero_iou_and_area_weight_recovers_distance_only_match():
     """With only the distance term active, the nearest reference wins."""
     shape = (100, 100)

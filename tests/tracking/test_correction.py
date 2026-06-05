@@ -371,6 +371,33 @@ def test_add_cell_snaps_to_nucleus_signal_when_present():
     assert seg[20, 20] == 5
 
 
+def test_add_cell_snaps_to_large_nucleus_by_growing_window():
+    # A nucleus far larger than the initial radius*2.5 window: snapping should
+    # grow the window until the whole blob is enclosed instead of falling back
+    # to a tiny disk.
+    img = np.zeros((120, 120), dtype=np.float32)
+    yy, xx = np.ogrid[:120, :120]
+    big = (yy - 60) ** 2 + (xx - 60) ** 2 <= 30 ** 2  # radius-30 blob
+    img[big] = 100.0
+    seg = np.zeros((120, 120), dtype=np.uint32)
+    assert add_cell(seg, (60, 60), new_label=5, radius=4, image=img)
+    snapped = int((seg == 5).sum())
+    # Close to the ~2827 px blob, far more than the disk(4) = 49 px fallback.
+    assert snapped > 2000
+    assert seg[60, 60] == 5
+
+
+def test_add_cell_does_not_snap_to_bright_background_sheet():
+    # A bright region covering almost the whole frame is a sheet, not one
+    # nucleus: once the grown window encloses it, the "mostly foreground" guard
+    # rejects it and we fall back to the plain disk.
+    img = np.full((120, 120), 100.0, dtype=np.float32)
+    img[:3, :] = img[-3:, :] = img[:, :3] = img[:, -3:] = 0.0  # thin dark border
+    seg = np.zeros((120, 120), dtype=np.uint32)
+    assert add_cell(seg, (60, 60), new_label=7, radius=5, image=img)
+    assert int((seg == 7).sum()) == 81  # disk(5) fallback, not a huge blob
+
+
 def test_add_cell_falls_back_to_disk_when_signal_is_flat():
     flat = np.full((40, 40), 50.0, dtype=np.float32)
     seg = np.zeros((40, 40), dtype=np.uint32)

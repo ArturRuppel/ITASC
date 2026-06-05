@@ -215,54 +215,81 @@ def _snap_cell_mask(
 ) -> np.ndarray | None:
     """Try to carve a single nucleus out of *image* around (r, c).
 
-    Returns a full-frame boolean mask, or ``None`` when the local signal is too
-    weak/ambiguous to trust (flat window, no bright blob under the click, or a
-    blob that spills past the search window — i.e. background, not one nucleus).
-    The caller falls back to a plain disk in that case.
+    Starts from a small window around the click and, whenever the blob spills
+    past it, grows the window and retries — so a nucleus much larger than
+    *radius* still snaps to its full contour instead of falling back to a tiny
+    disk. The same Otsu + connected-component logic runs at every size; only the
+    window grows. Returns a full-frame boolean mask, or ``None`` when the local
+    signal is too weak/ambiguous to trust (flat window, no bright blob under the
+    click, or a blob that never closes within the largest window — i.e.
+    background, not one nucleus). The caller falls back to a plain disk then.
     """
     try:
-        win = max(int(radius * 2.5), 12)
-        r0, c0 = max(0, r - win), max(0, c - win)
-        r1, c1 = min(image.shape[0], r + win + 1), min(image.shape[1], c + win + 1)
-        crop = np.asarray(image[r0:r1, c0:c1], dtype=np.float64)
-        if crop.size == 0:
-            return None
-
-        lo, hi = float(crop.min()), float(crop.max())
-        # Flat / no contrast → image gives no guidance here.
-        if hi - lo < 1e-6:
-            return None
-
         from skimage.filters import threshold_otsu
 
-        thr = float(threshold_otsu(crop))
-        fg = crop > thr
-        lr, lc = r - r0, c - c0
-        # The click itself must land on bright signal.
-        if not fg[lr, lc]:
-            return None
-        # Mostly-bright window → no distinct nucleus, treat as no signal.
-        if fg.mean() > 0.6:
-            return None
+        h, w = image.shape
+        win = max(int(radius * 2.5), 12)
+        # A handful of geometric growth steps. Capped so a bright *background*
+        # region — which never closes inside the window — can't snap to a giant
+        # blob; it spills at every size and we fall through to ``None``.
+        for _ in range(6):
+            r0, c0 = max(0, r - win), max(0, c - win)
+            r1, c1 = min(h, r + win + 1), min(w, c + win + 1)
+            full = r0 == 0 and c0 == 0 and r1 == h and c1 == w
+            crop = np.asarray(image[r0:r1, c0:c1], dtype=np.float64)
+            if crop.size == 0:
+                return None
 
-        labelled, _ = nd_label(fg)
-        comp = labelled[lr, lc]
-        if comp == 0:
-            return None
-        blob = labelled == comp
-        if blob.sum() < MIN_CELL_SIZE:
-            return None
-        # A blob touching the window edge is larger than we searched: that means
-        # the click is in a bright background region, not on one nucleus.
-        if (
-            blob[0, :].any() or blob[-1, :].any()
-            or blob[:, 0].any() or blob[:, -1].any()
-        ):
-            return None
+            lo, hi = float(crop.min()), float(crop.max())
+            # Flat / no contrast: the window may sit entirely inside the
+            # nucleus — grow to reach its edge. If it already spans the whole
+            # image there's nothing more to see, so give up.
+            if hi - lo < 1e-6:
+                if full:
+                    return None
+                win = int(win * 1.6) + 1
+                continue
 
-        mask = np.zeros(image.shape, dtype=bool)
-        mask[r0:r1, c0:c1] = blob
-        return mask
+            thr = float(threshold_otsu(crop))
+            fg = crop > thr
+            lr, lc = r - r0, c - c0
+            # The click itself must land on bright signal.
+            if not fg[lr, lc]:
+                return None
+
+            labelled, _ = nd_label(fg)
+            comp = labelled[lr, lc]
+            if comp == 0:
+                return None
+            blob = labelled == comp
+
+            # Does the blob run off an *interior* crop edge — i.e. spill into
+            # image we didn't search? Edges that coincide with the image border
+            # don't count; the nucleus genuinely ends there. While it spills,
+            # grow and retry; once the window covers the whole image it can't
+            # spill any further, so we accept what we have.
+            spills = (
+                (r0 > 0 and blob[0, :].any())
+                or (r1 < h and blob[-1, :].any())
+                or (c0 > 0 and blob[:, 0].any())
+                or (c1 < w and blob[:, -1].any())
+            )
+            if spills:
+                win = int(win * 1.6) + 1
+                continue
+
+            if blob.sum() < MIN_CELL_SIZE:
+                return None
+            # An enclosed blob filling almost the entire window is a bright
+            # sheet, not one nucleus (a real nucleus leaves background margin
+            # on the sides it doesn't touch).
+            if fg.mean() > 0.85:
+                return None
+
+            mask = np.zeros(image.shape, dtype=bool)
+            mask[r0:r1, c0:c1] = blob
+            return mask
+        return None
     except Exception:
         return None
 

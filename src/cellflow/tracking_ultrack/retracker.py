@@ -1,22 +1,22 @@
-"""Constrained LAP retracker using the shared linker similarity score.
+"""Constrained greedy retracker using the shared linker similarity score.
 
 Each unlocked target cell is matched to a reference cell by the same
 ``scoring.similarity_score`` (area ratio + centroid-corrected IoU - distance)
 used by the linker and the Extend tool, gated only by centroid distance.
+
+Matching is greedy best-first rather than a global minimum-cost assignment: a
+target always takes its highest-scoring still-free reference. A global
+``linear_sum_assignment`` minimises the *total* cost and will trade a cell's
+obvious best match away to lower another cell's cost, which in practice handed
+cells a far, worse reference; best-first never does that.
 """
 from __future__ import annotations
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from skimage.measure import regionprops
 
 from cellflow.tracking_ultrack import scoring
-
-# Cost for a pair the distance gate forbids. Far larger than any real
-# ``-similarity_score`` (distance_weight * max_dist plus O(weights)), so the
-# assignment never prefers a gated pair over an allowed one.
-_FORBIDDEN_COST = 1e9
 
 
 def _label_props(
@@ -57,11 +57,11 @@ def retrack_frame_constrained(
     Those IDs, plus any ``reserved_ids``, are protected from assignment to
     unlocked target cells even if a matching reference cell exists.
 
-    Unlocked target cells are matched to available reference cells by solving a
-    linear assignment problem over ``-similarity_score``. A pair is only eligible
-    when its centroid distance is ``<= max_dist_px``; area ratio and
-    centroid-corrected IoU contribute as soft score terms (no hard gate),
-    matching the Extend tool's behaviour.
+    Unlocked target cells are matched to available reference cells greedily in
+    descending ``similarity_score`` order: each target takes its best still-free
+    reference. A pair is only eligible when its centroid distance is
+    ``<= max_dist_px``; area ratio and centroid-corrected IoU contribute as soft
+    score terms (no hard gate), matching the Extend tool's behaviour.
     """
     locked_target_ids = set(locked_target_ids)
     reserved_ids = set(reserved_ids or set())
@@ -110,8 +110,9 @@ def retrack_frame_constrained(
     dist = cdist(tgt_centroids, ref_centroids)
     gate = dist <= max_dist_px
 
-    n_tgt, n_ref = dist.shape
-    cost = np.full((n_tgt, n_ref), _FORBIDDEN_COST, dtype=np.float64)
+    # Score every distance-eligible (target, reference) pair.
+    n_tgt, _ = dist.shape
+    scored: list[tuple[float, float, int, int]] = []
     for ti in range(n_tgt):
         t_centroid, t_area, t_coords = tgt_props[unlocked_tgt_ids[ti]]
         for ri in np.nonzero(gate[ti])[0]:
@@ -120,7 +121,7 @@ def retrack_frame_constrained(
             iou = scoring.centroid_corrected_iou_from_coords(
                 r_coords, r_centroid, t_coords, t_centroid
             )
-            cost[ti, ri] = -scoring.similarity_score(
+            score = scoring.similarity_score(
                 area_ratio=area_ratio,
                 centroid_corrected_iou=iou,
                 distance=float(dist[ti, ri]),
@@ -128,13 +129,22 @@ def retrack_frame_constrained(
                 iou_weight=iou_weight,
                 distance_weight=distance_weight,
             )
+            scored.append((score, float(dist[ti, ri]), ti, int(ri)))
 
-    row_ind, col_ind = linear_sum_assignment(cost)
+    # Greedy best-first: highest score wins, nearer centroid breaks ties. Each
+    # target and reference is consumed once, so a target always lands on its
+    # best still-available reference instead of being traded away by a global
+    # min-cost solver.
+    scored.sort(key=lambda item: (-item[0], item[1]))
 
     remap: dict[int, int] = {}
-    for ti, ri in zip(row_ind, col_ind):
-        if gate[ti, ri]:
-            remap[unlocked_tgt_ids[ti]] = available_ref_ids[ri]
+    used_refs: set[int] = set()
+    for _score, _d, ti, ri in scored:
+        tid = unlocked_tgt_ids[ti]
+        if tid in remap or ri in used_refs:
+            continue
+        remap[tid] = available_ref_ids[ri]
+        used_refs.add(ri)
 
     remap = _assign_fresh(remap)
     for tid, new_id in remap.items():
