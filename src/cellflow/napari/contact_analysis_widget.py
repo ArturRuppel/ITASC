@@ -50,6 +50,22 @@ except ImportError:  # pragma: no cover - tests monkeypatch this when absent
         raise ImportError("cellflow.napari.contact_analysis_visualization is unavailable")
 
 
+def make_contact_analysis_widget(napari_viewer=None):
+    """napari plugin entry point: a standalone Contact Analysis dock widget.
+
+    Used by the ``cellflow-contact`` distribution's manifest. Runs the napari
+    layer-delegate patch (normally done by the orchestrator package) and returns
+    the widget in standalone mode with its own file pickers + config.
+    """
+    try:
+        from cellflow.napari._napari_compat import patch_napari_layer_delegate
+
+        patch_napari_layer_delegate()
+    except Exception:  # pragma: no cover - patch is best-effort
+        pass
+    return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
+
+
 class _ProgressEmitter(QObject):
     progress = Signal(int, int, str)
 

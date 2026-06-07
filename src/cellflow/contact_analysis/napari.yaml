@@ -1,0 +1,10 @@
+name: cellflow-contact
+display_name: CellFlow Contact Analysis
+contributions:
+  commands:
+    - id: cellflow-contact.widget
+      title: "Contact Analysis"
+      python_name: cellflow.napari.contact_analysis_widget:make_contact_analysis_widget
+  widgets:
+    - command: cellflow-contact.widget
+      display_name: "Contact Analysis"

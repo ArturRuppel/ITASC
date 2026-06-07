@@ -52,3 +52,32 @@ jobs:
 
       - name: Build package
         run: python -m build --sdist --wheel --outdir dist
+
+      - name: Build extracted distributions
+        run: |
+          python -m build --wheel packages/cellflow-core --outdir dist
+          python -m build --wheel packages/cellflow-contact --outdir dist
+
+      - name: Verify isolated install (PEP 420 namespace + headless core)
+        run: |
+          python -m venv /tmp/cf-verify
+          . /tmp/cf-verify/bin/activate
+          pip install --upgrade pip
+          pip install h5py numpy scipy scikit-image tifffile
+          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_contact-*.whl
+          python - <<'PY'
+          import os, tempfile, numpy as np, tifffile, h5py
+          import cellflow            # PEP 420 namespace, no orchestrator present
+          import cellflow.core.tiff
+          from cellflow.contact_analysis import build_contact_analysis
+          d = tempfile.mkdtemp()
+          labels = np.zeros((2, 5, 6), dtype=np.uint16)
+          labels[:, :, :3] = 1
+          labels[:, :, 3:] = 2
+          cp = os.path.join(d, "cells.tif")
+          tifffile.imwrite(cp, labels)
+          out = build_contact_analysis(cell_labels_path=cp, output_path=os.path.join(d, "ca.h5"))
+          with h5py.File(out) as h5:
+              assert h5["cells/table/cell_id"][:].tolist() == [1, 2, 1, 2]
+          print("isolated cellflow-contact install OK")
+          PY
