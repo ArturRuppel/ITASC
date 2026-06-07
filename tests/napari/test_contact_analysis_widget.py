@@ -115,30 +115,43 @@ def _set_pos(widget, pos_dir):
     )
 
 
+def _staged_pos(tmp_path, name, *, cell=True, nucleus=True, h5=False):
+    pos_dir = tmp_path / name
+    (pos_dir / "2_nucleus").mkdir(parents=True)
+    (pos_dir / "3_cell").mkdir()
+    if nucleus:
+        (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
+    if cell:
+        (pos_dir / "3_cell" / "tracked_labels.tif").touch()
+    if h5:
+        out = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"h5")
+    return pos_dir
+
+
 def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.ContactAnalysisWidget()
 
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "3_cell").mkdir()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-
+    pos_dir = _staged_pos(tmp_path, "pos00", cell=False, nucleus=True)
     _set_pos(widget, pos_dir)
 
     assert widget.cell_labels_path == pos_dir / "3_cell" / "tracked_labels.tif"
     assert widget.nucleus_labels_path == pos_dir / "2_nucleus" / "tracked_labels.tif"
     assert widget.contact_analysis_out_path == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     assert hasattr(widget, "_files_widget")
-    assert widget.build_contact_analysis_btn.isEnabled() is False
-    assert widget.show_contact_analysis_btn.isEnabled() is False
+    # Cell labels not on disk yet -> Visualize/Recompute disabled.
+    assert widget.visualize_btn.isEnabled() is False
+    assert widget.recompute_btn.isEnabled() is False
     assert widget.clear_contact_analysis_btn.isEnabled() is False
 
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
     _set_pos(widget, pos_dir)
 
-    assert widget.build_contact_analysis_btn.isEnabled() is True
+    assert widget.visualize_btn.isEnabled() is True
+    assert widget.recompute_btn.isEnabled() is True
 
     widget.deleteLater()
     app.processEvents()
@@ -160,47 +173,115 @@ def test_contact_analysis_widget_does_not_embed_personal_nls_classification(monk
     app.processEvents()
 
 
-def test_contact_analysis_widget_build_runs_in_worker_and_reports_progress(monkeypatch, tmp_path):
+def test_visualize_builds_when_missing_then_shows(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
 
-    pos_dir = tmp_path / "pos03"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "3_cell").mkdir()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
+    pos_dir = _staged_pos(tmp_path, "pos03", cell=True, nucleus=True)
 
     progress_events: list[tuple[int, int, str]] = []
     captured: dict[str, object] = {}
 
-    def fake_build(*, cell_labels_path, output_path, nucleus_labels_path=None,
-                   source_path=None, progress_cb, **kwargs):
+    def fake_ensure(*, cell_labels_path, output_path, nucleus_labels_path=None,
+                    overwrite=False, progress_cb=None, **kwargs):
         captured["cell_labels_path"] = cell_labels_path
         captured["output_path"] = output_path
         captured["nucleus_labels_path"] = nucleus_labels_path
-        captured["progress_cb"] = progress_cb
+        captured["overwrite"] = overwrite
         progress_cb(2, 5, "Indexing records")
         progress_events.append((2, 5, "Indexing records"))
         assert widget.contact_analysis_progress_bar.maximum() == 5
         assert widget.contact_analysis_progress_bar.value() == 2
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"h5")
-        return output_path
+        return output_path, True
 
-    monkeypatch.setattr(mod, "build_contact_analysis", fake_build)
+    add_calls = []
 
-    widget = mod.ContactAnalysisWidget()
+    def fake_add(viewer_arg, contact_analysis_arg, **kwargs):
+        add_calls.append(kwargs)
+        viewer_arg.layers[f"{kwargs['prefix']}Cells"] = types.SimpleNamespace(
+            name=f"{kwargs['prefix']}Cells"
+        )
+
+    monkeypatch.setattr(mod, "ensure_contact_analysis", fake_ensure)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _p: {"cells": [1]})
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
+
+    viewer = _FakeViewer()
+    widget = mod.ContactAnalysisWidget(viewer)
     _set_pos(widget, pos_dir)
-    widget._on_build_contact_analysis()
+    widget._on_visualize(overwrite=False)
 
+    # Built (missing -> compute) then showed.
     assert progress_events == [(2, 5, "Indexing records")]
     assert captured["output_path"] == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     assert captured["cell_labels_path"] == pos_dir / "3_cell" / "tracked_labels.tif"
     assert captured["nucleus_labels_path"] == pos_dir / "2_nucleus" / "tracked_labels.tif"
-    assert callable(captured["progress_cb"])
-    assert "Wrote" in widget.contact_analysis_status_lbl.text()
+    assert captured["overwrite"] is False
     assert widget.contact_analysis_out_path.exists()
+    assert len(add_calls) == 1
+    assert "[Contact Analysis] Cells" in viewer.layers
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_visualize_uses_existing_h5_without_rebuild(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    pos_dir = _staged_pos(tmp_path, "pos05", cell=True, nucleus=True, h5=True)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("ensure_contact_analysis must not be called when .h5 exists")
+
+    add_calls = []
+
+    def fake_add(viewer_arg, contact_analysis_arg, **kwargs):
+        add_calls.append(kwargs)
+
+    monkeypatch.setattr(mod, "ensure_contact_analysis", boom)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _p: {"cells": [1]})
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
+
+    viewer = _FakeViewer()
+    widget = mod.ContactAnalysisWidget(viewer)
+    _set_pos(widget, pos_dir)
+    widget.visualize_btn.click()
+
+    # Fast path: no rebuild, straight to show.
+    assert len(add_calls) == 1
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_recompute_forces_rebuild_even_when_h5_exists(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = _staged_pos(tmp_path, "pos06", cell=True, nucleus=True, h5=True)
+
+    captured: dict[str, object] = {}
+
+    def fake_ensure(*, cell_labels_path, output_path, nucleus_labels_path=None,
+                    overwrite=False, progress_cb=None, **kwargs):
+        captured["overwrite"] = overwrite
+        return output_path, True
+
+    monkeypatch.setattr(mod, "ensure_contact_analysis", fake_ensure)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _p: {"cells": [1]})
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", lambda *a, **k: None)
+
+    viewer = _FakeViewer()
+    widget = mod.ContactAnalysisWidget(viewer)
+    _set_pos(widget, pos_dir)
+    widget.recompute_btn.click()
+
+    assert captured["overwrite"] is True
 
     widget.deleteLater()
     app.processEvents()
@@ -230,17 +311,11 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     viewer = _FakeViewer()
     widget = mod.ContactAnalysisWidget(viewer)
 
-    pos_dir = tmp_path / "pos08"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "3_cell").mkdir()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
+    pos_dir = _staged_pos(tmp_path, "pos08", cell=True, nucleus=True, h5=True)
     contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
-    contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
-    contact_analysis_path.write_bytes(b"h5")
     _set_pos(widget, pos_dir)
 
-    assert widget.show_contact_analysis_btn.isEnabled() is True
+    assert widget.visualize_btn.isEnabled() is True
     assert widget.clear_contact_analysis_btn.isEnabled() is True
 
     contact_analysis = {"cells": [1, 2, 3]}
@@ -265,7 +340,7 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     monkeypatch.setattr(mod, "read_position_contact_analysis", fake_read)
     monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
-    widget.show_contact_analysis_btn.click()
+    widget.visualize_btn.click()
 
     assert read_calls == [contact_analysis_path]
     assert add_calls == [
@@ -281,7 +356,7 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
             },
         )
     ]
-    assert f"[Contact Analysis] Cells" in viewer.layers
+    assert "[Contact Analysis] Cells" in viewer.layers
     assert "Background" in viewer.layers
 
     widget.clear_contact_analysis_btn.click()
@@ -300,14 +375,7 @@ def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_pa
     viewer = _FakeViewer()
     widget = mod.ContactAnalysisWidget(viewer)
 
-    pos_dir = tmp_path / "pos10"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "3_cell").mkdir()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
-    contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
-    contact_analysis_path.write_bytes(b"h5")
+    pos_dir = _staged_pos(tmp_path, "pos10", cell=True, nucleus=True, h5=True)
     _set_pos(widget, pos_dir)
 
     contact_analysis = {"cells": [1]}
@@ -326,7 +394,7 @@ def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_pa
     widget.color_edges_by_id_cb.setChecked(True)
     widget.color_edges_by_label_cb.setChecked(True)
     widget.hide_border_edges_cb.setChecked(True)
-    widget.show_contact_analysis_btn.click()
+    widget.visualize_btn.click()
 
     assert add_calls == [
         (
@@ -347,20 +415,13 @@ def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_pa
 
 
 def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(monkeypatch, tmp_path):
-    """Checkboxes no longer trigger automatic reloads; user must click Show Contact Analysis."""
+    """Checkboxes no longer trigger automatic reloads; the user must click Visualize."""
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
     widget = mod.ContactAnalysisWidget(viewer)
 
-    pos_dir = tmp_path / "pos11"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "3_cell").mkdir()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
-    contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
-    contact_analysis_path.write_bytes(b"h5")
+    pos_dir = _staged_pos(tmp_path, "pos11", cell=True, nucleus=True, h5=True)
     _set_pos(widget, pos_dir)
 
     contact_analysis = {"cells": [1]}
@@ -375,15 +436,15 @@ def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(mon
 
     monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
-    # First show with default settings
-    widget.show_contact_analysis_btn.click()
-    # Changing checkbox must NOT trigger a reload on its own
+    # First Visualize with default settings
+    widget.visualize_btn.click()
+    # Changing a checkbox must NOT trigger a reload on its own
     widget.color_cells_by_label_cb.setChecked(True)
     assert len(add_calls) == 1, "checkbox change must not auto-reload"
     assert add_calls[0]["color_cells_by_label"] is False
 
-    # Clicking Show Contact Analysis again picks up the updated checkbox state
-    widget.show_contact_analysis_btn.click()
+    # Clicking Visualize again picks up the updated checkbox state
+    widget.visualize_btn.click()
     assert len(add_calls) == 2
     assert add_calls[1]["color_cells_by_label"] is True
 
@@ -391,7 +452,7 @@ def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(mon
     app.processEvents()
 
 
-def test_contact_analysis_widget_show_contact_analysis_uses_real_reader_and_visualizer(monkeypatch, tmp_path):
+def test_contact_analysis_widget_show_uses_real_reader_and_visualizer(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
@@ -416,7 +477,7 @@ def test_contact_analysis_widget_show_contact_analysis_uses_real_reader_and_visu
     )
     _set_pos(widget, pos_dir)
 
-    widget._on_show_contact_analysis()
+    widget._show_from_disk()
 
     assert "[Contact Analysis] Cell labels" in viewer.layers
     assert "[Contact Analysis] Nucleus labels" in viewer.layers
@@ -430,24 +491,26 @@ def test_contact_analysis_widget_show_contact_analysis_uses_real_reader_and_visu
     app.processEvents()
 
 
-def test_contact_analysis_widget_standalone_uses_pickers_and_optional_nucleus(monkeypatch, tmp_path):
+def test_contact_analysis_widget_standalone_pickers_optional_nucleus_and_auto_output(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.ContactAnalysisWidget(standalone=True)
 
-    # Standalone shows explicit pickers and hides the orchestrator's staged panel.
+    # Standalone shows explicit pickers + the batch panel and hides the staged panel.
     assert widget._pickers_container.isVisibleTo(widget) is True
+    assert widget._batch_section.isVisibleTo(widget) is True
     assert widget._pipeline_files_section.isVisibleTo(widget) is False
 
     cell_path = tmp_path / "cells.tif"
     cell_path.touch()
-    out_path = tmp_path / "out.h5"
 
-    # Cell labels alone (no nucleus) are sufficient to be build-ready.
-    widget.set_context(cell_labels=cell_path, out_path=out_path)
+    # No explicit output: it auto-derives next to the cell-labels file.
+    widget.set_context(cell_labels=cell_path)
     assert widget.nucleus_labels_path is None
+    assert widget.contact_analysis_out_path == tmp_path / "contact_analysis.h5"
     assert widget._cell_labels_edit.text() == str(cell_path)
-    assert widget.build_contact_analysis_btn.isEnabled() is True
+    # Cell labels alone (no nucleus) are enough to be visualize-ready.
+    assert widget.visualize_btn.isEnabled() is True
 
     widget.deleteLater()
     app.processEvents()

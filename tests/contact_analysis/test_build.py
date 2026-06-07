@@ -6,11 +6,50 @@ import tifffile
 from cellflow.contact_analysis.build import (
     build_contact_analysis,
     build_position_contact_analysis,
+    ensure_contact_analysis,
     assign_persistent_edge_ids,
     _coordinate_segments,
     _extract_frame_cell_edges,
     _order_coordinates,
 )
+
+
+def _write_cell_labels(path):
+    labels = np.zeros((1, 4, 4), dtype=np.uint16)
+    labels[0, :, :2] = 1
+    labels[0, :, 2:] = 2
+    tifffile.imwrite(path, labels)
+
+
+def test_ensure_contact_analysis_builds_when_missing_and_skips_when_present(tmp_path):
+    cell_path = tmp_path / "cells.tif"
+    _write_cell_labels(cell_path)
+    out = tmp_path / "contact.h5"
+
+    path, built = ensure_contact_analysis(cell_labels_path=cell_path, output_path=out)
+    assert built is True
+    assert path == out and out.exists()
+    mtime = out.stat().st_mtime_ns
+
+    # Second call must not rebuild (missing-only policy).
+    path2, built2 = ensure_contact_analysis(cell_labels_path=cell_path, output_path=out)
+    assert built2 is False
+    assert out.stat().st_mtime_ns == mtime
+
+
+def test_ensure_contact_analysis_overwrite_rebuilds(tmp_path):
+    cell_path = tmp_path / "cells.tif"
+    _write_cell_labels(cell_path)
+    out = tmp_path / "contact.h5"
+    out.write_bytes(b"stale")
+
+    path, built = ensure_contact_analysis(
+        cell_labels_path=cell_path, output_path=out, overwrite=True
+    )
+    assert built is True
+    # A real HDF5 now, not the stale sentinel.
+    with h5py.File(out, "r") as h5:
+        assert h5["cells/table/cell_id"][:].tolist() == [1, 2]
 
 
 def test_build_contact_analysis_is_position_agnostic_with_explicit_paths(tmp_path):

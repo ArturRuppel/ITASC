@@ -127,6 +127,38 @@ def build_contact_analysis(
     return output_path
 
 
+def ensure_contact_analysis(
+    *,
+    cell_labels_path: str | Path,
+    output_path: str | Path,
+    nucleus_labels_path: str | Path | None = None,
+    overwrite: bool = False,
+    edge_extraction_params: dict | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+) -> tuple[Path, bool]:
+    """Build the contact-analysis HDF5 only when it is missing (or ``overwrite``).
+
+    The ``.h5`` is a pure derived artifact of the label inputs, so callers that
+    only need it present (the visualizer, the batch runner) should go through
+    this guard rather than rebuilding unconditionally. Returns
+    ``(output_path, built)`` where ``built`` is ``False`` when an existing file
+    was reused.
+    """
+    output_path = Path(output_path)
+    if output_path.exists() and not overwrite:
+        return output_path, False
+    cell_labels_path = Path(cell_labels_path)
+    build_contact_analysis(
+        cell_labels_path=cell_labels_path,
+        output_path=output_path,
+        nucleus_labels_path=nucleus_labels_path,
+        source_path=cell_labels_path.parent,
+        edge_extraction_params=edge_extraction_params,
+        progress_cb=progress_cb,
+    )
+    return output_path, True
+
+
 def build_position_contact_analysis(
     position_path: str | Path,
     output_path: str | Path,

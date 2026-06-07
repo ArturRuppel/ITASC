@@ -22,7 +22,12 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.contact_analysis import build_contact_analysis
+from cellflow.contact_analysis import (
+    build_contact_analysis,  # noqa: F401 - re-exported for tests that build directly
+    discover_contact_batch_jobs,
+    ensure_contact_analysis,
+    run_contact_batch,
+)
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import (
@@ -104,10 +109,15 @@ class ContactAnalysisWidget(QWidget):
         self._nucleus_labels_path: Path | None = None
         self._out_path: Path | None = None
         self._build_worker = None
+        self._batch_worker = None
         self._build_completion_pending = False
         self._build_error_pending = False
         self._progress_emitter = _ProgressEmitter(self)
         self._progress_emitter.progress.connect(self._on_build_progress)
+        self._batch_progress_emitter = _ProgressEmitter(self)
+        self._batch_progress_emitter.progress.connect(self._on_batch_progress)
+        self._batch_completion_pending = False
+        self._batch_cancel = False
         self._cached_contact_analysis_path: Path | None = None
         self._cached_contact_analysis: Any = None
         self._cached_cell_labels: np.ndarray | None = None
@@ -179,18 +189,20 @@ class ContactAnalysisWidget(QWidget):
         self.contact_analysis_progress_bar.setTextVisible(True)
         layout.addWidget(self.contact_analysis_progress_bar)
 
-        self.build_contact_analysis_btn = QPushButton("Build Contact Analysis")
-        action_button(self.build_contact_analysis_btn, expand=True)
-        layout.addWidget(self.build_contact_analysis_btn)
+        # Visualize is the primary action: it computes the .h5 on demand only if
+        # it is missing, then shows the overlays. Recompute forces a rebuild.
+        self.visualize_btn = QPushButton("Visualize")
+        action_button(self.visualize_btn, expand=True)
+        layout.addWidget(self.visualize_btn)
+
+        self.recompute_btn = QPushButton("Recompute")
+        action_button(self.recompute_btn)
+        layout.addWidget(self.recompute_btn)
 
         self.cancel_build_btn = QPushButton("Cancel")
         action_button(self.cancel_build_btn)
         self.cancel_build_btn.setEnabled(False)
         layout.addWidget(self.cancel_build_btn)
-
-        self.show_contact_analysis_btn = QPushButton("Show Contact Analysis")
-        action_button(self.show_contact_analysis_btn, expand=True)
-        layout.addWidget(self.show_contact_analysis_btn)
 
         self.color_cells_by_label_cb = QCheckBox("Color cells by label")
         layout.addWidget(self.color_cells_by_label_cb)
@@ -204,15 +216,17 @@ class ContactAnalysisWidget(QWidget):
         self.hide_border_edges_cb = QCheckBox("Hide border edges")
         layout.addWidget(self.hide_border_edges_cb)
 
-        self.clear_contact_analysis_btn = QPushButton("Clear Contact Analysis Layers")
+        self.clear_contact_analysis_btn = QPushButton("Clear Layers")
         action_button(self.clear_contact_analysis_btn, expand=True)
         layout.addWidget(self.clear_contact_analysis_btn)
 
+        self._build_batch_section(layout)
+
         layout.addStretch()
 
-        self.build_contact_analysis_btn.clicked.connect(self._on_build_contact_analysis)
+        self.visualize_btn.clicked.connect(lambda: self._on_visualize(overwrite=False))
+        self.recompute_btn.clicked.connect(lambda: self._on_visualize(overwrite=True))
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
-        self.show_contact_analysis_btn.clicked.connect(self._on_show_contact_analysis)
         self.clear_contact_analysis_btn.clicked.connect(self._on_clear_contact_analysis_layers)
         self._register_gate_controls()
         if self._standalone:
@@ -235,6 +249,75 @@ class ContactAnalysisWidget(QWidget):
         row.addWidget(lbl)
         row.addWidget(edit, 1)
         row.addWidget(browse)
+        layout.addLayout(row)
+        return edit
+
+    def _build_batch_section(self, layout) -> None:
+        """Standalone-only batch panel: name-based discovery under a top folder.
+
+        Hidden when embedded in the orchestrator (which has its own multi-position
+        handling). Runs headlessly — never touches the viewer.
+        """
+        content = QWidget()
+        col = QVBoxLayout(content)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+
+        self._batch_root_edit = self._make_picker_row(
+            col, "Top folder:", self._on_browse_batch_root
+        )
+        self._batch_cell_name_edit = self._make_name_row(
+            col, "Cell labels name:", "cell_labels.tif"
+        )
+        self._batch_nucleus_name_edit = self._make_name_row(
+            col, "Nucleus name (optional):", "nucleus_labels.tif"
+        )
+        self._batch_h5_name_edit = self._make_name_row(
+            col, "Output .h5 name:", "contact_analysis.h5"
+        )
+
+        self.batch_overwrite_cb = QCheckBox("Overwrite existing")
+        col.addWidget(self.batch_overwrite_cb)
+
+        self.run_batch_btn = QPushButton("Run batch")
+        action_button(self.run_batch_btn, expand=True)
+        col.addWidget(self.run_batch_btn)
+
+        self.cancel_batch_btn = QPushButton("Cancel batch")
+        action_button(self.cancel_batch_btn)
+        self.cancel_batch_btn.setEnabled(False)
+        col.addWidget(self.cancel_batch_btn)
+
+        self.batch_progress_bar = QProgressBar()
+        self.batch_progress_bar.setRange(0, 100)
+        self.batch_progress_bar.setValue(0)
+        self.batch_progress_bar.setVisible(False)
+        self.batch_progress_bar.setTextVisible(True)
+        col.addWidget(self.batch_progress_bar)
+
+        self.batch_status_lbl = QLabel("")
+        self.batch_status_lbl.setWordWrap(True)
+        status_label(self.batch_status_lbl)
+        col.addWidget(self.batch_status_lbl)
+
+        self._batch_section = CollapsibleSection("Batch", content, expanded=False)
+        self._batch_section.setVisible(self._standalone)
+        layout.addWidget(self._batch_section)
+
+        self.run_batch_btn.clicked.connect(self._on_run_batch)
+        self.cancel_batch_btn.clicked.connect(self._on_cancel_batch)
+
+    def _make_name_row(self, layout, label: str, default: str) -> QLineEdit:
+        """Add a ``label / editable filename`` row pre-filled with *default*."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        lbl = QLabel(label)
+        lbl.setFixedWidth(150)
+        edit = QLineEdit()
+        edit.setText(default)
+        row.addWidget(lbl)
+        row.addWidget(edit, 1)
         layout.addLayout(row)
         return edit
 
@@ -318,22 +401,30 @@ class ContactAnalysisWidget(QWidget):
         """
         g = self.gate
         running = lambda: self._build_worker is not None  # noqa: E731
+        batch_running = lambda: self._batch_worker is not None  # noqa: E731
+        # Visualize/Recompute write the viewer (they show overlays) and may build
+        # first; both need inputs and no in-flight build.
         g.register(
-            self.build_contact_analysis_btn,
-            ControlClass.RUN_HEADLESS,
+            self.visualize_btn,
+            ControlClass.RUN_VIEWER,
+            when=lambda: self._inputs_ready() and not running(),
+        )
+        g.register(
+            self.recompute_btn,
+            ControlClass.RUN_VIEWER,
             when=lambda: self._inputs_ready() and not running(),
         )
         g.register(self.cancel_build_btn, ControlClass.RUN_HEADLESS, when=running)
-        g.register(
-            self.show_contact_analysis_btn,
-            ControlClass.RUN_VIEWER,
-            when=lambda: self._contact_analysis_ready() and not running(),
-        )
         g.register(
             self.clear_contact_analysis_btn,
             ControlClass.RUN_VIEWER,
             when=lambda: self.viewer is not None and not running(),
         )
+        # Batch is headless (disk only); it runs regardless of viewer ownership.
+        g.register(
+            self.run_batch_btn, ControlClass.RUN_HEADLESS, when=lambda: not batch_running()
+        )
+        g.register(self.cancel_batch_btn, ControlClass.RUN_HEADLESS, when=batch_running)
         g.recompute()
 
     @property
@@ -365,6 +456,11 @@ class ContactAnalysisWidget(QWidget):
         cell = Path(cell_labels) if cell_labels else None
         nucleus = Path(nucleus_labels) if nucleus_labels else None
         out = Path(out_path) if out_path else None
+        # The .h5 is a derived artifact; when no explicit output is given, default
+        # it next to the cell-labels file. Orchestrated callers always pass an
+        # explicit out_path, so this only fires for the standalone pickers.
+        if out is None and cell is not None:
+            out = cell.parent / "contact_analysis.h5"
         if (cell, nucleus, out) != (
             self._cell_labels_path,
             self._nucleus_labels_path,
@@ -407,13 +503,6 @@ class ContactAnalysisWidget(QWidget):
             return False
         return self._out_path is not None
 
-    def _contact_analysis_ready(self) -> bool:
-        return (
-            self.viewer is not None
-            and self._out_path is not None
-            and self._out_path.exists()
-        )
-
     def _update_action_states(self) -> None:
         # Enablement is owned by the UI gate; its ``when`` predicates read the
         # readiness helpers and ``self._build_worker``.
@@ -438,12 +527,16 @@ class ContactAnalysisWidget(QWidget):
             self.contact_analysis_progress_bar.setValue(done)
         self._set_contact_analysis_status(f"Status: {message}")
 
-    def _on_build_done(self, output_path: Path) -> None:
+    def _on_compute_done(self, result: tuple[Path, bool]) -> None:
+        output_path, built = result
         self._build_completion_pending = True
         self._build_worker = None
         self._set_build_running(False)
-        self._set_contact_analysis_status(f"Status: Wrote {output_path}")
+        self._set_contact_analysis_status(
+            f"Status: {'Wrote' if built else 'Using'} {output_path}"
+        )
         self._update_status()
+        self._show_from_disk()
 
     def _on_build_error(self, exc: Exception) -> None:
         self._build_error_pending = True
@@ -452,12 +545,18 @@ class ContactAnalysisWidget(QWidget):
         self._set_contact_analysis_status(f"Status: error: {exc}")
         self._update_status()
 
-    def _on_build_contact_analysis(self) -> None:
+    def _on_visualize(self, *, overwrite: bool = False) -> None:
+        """Visualize the contact analysis, computing the .h5 only if needed.
+
+        With ``overwrite=False`` (Visualize) an existing .h5 is shown as-is and a
+        missing one is built first. With ``overwrite=True`` (Recompute) the .h5 is
+        always rebuilt. The build runs in a worker; the show happens afterwards.
+        """
         cell = self._cell_labels_path
         out = self._out_path
         if cell is None or out is None:
             self._set_contact_analysis_status(
-                "Status: choose cell labels and an output path."
+                "Status: choose a cell-labels file."
                 if self._standalone
                 else "Status: no project open."
             )
@@ -473,6 +572,14 @@ class ContactAnalysisWidget(QWidget):
             self._update_status()
             return
 
+        # Fast path: the artifact already exists and no rebuild was requested, so
+        # skip the worker and show immediately. ensure_contact_analysis remains the
+        # authority on the missing-only policy for the build path below.
+        if out.exists() and not overwrite:
+            self._set_contact_analysis_status(f"Status: Using {out}")
+            self._show_from_disk()
+            return
+
         self._build_completion_pending = False
         self._build_error_pending = False
         self._set_contact_analysis_status("Status: building contact analysis...")
@@ -480,16 +587,16 @@ class ContactAnalysisWidget(QWidget):
 
         @thread_worker(
             connect={
-                "returned": self._on_build_done,
+                "returned": self._on_compute_done,
                 "errored": self._on_build_error,
             }
         )
         def _worker():
-            return build_contact_analysis(
+            return ensure_contact_analysis(
                 cell_labels_path=cell,
                 output_path=out,
                 nucleus_labels_path=nucleus,
-                source_path=cell.parent,
+                overwrite=overwrite,
                 progress_cb=self._progress_emitter.progress.emit,
             )
 
@@ -510,7 +617,100 @@ class ContactAnalysisWidget(QWidget):
         self._set_contact_analysis_status("Status: build cancelled.")
         self._update_status()
 
-    def _on_show_contact_analysis(self) -> None:
+    # ------------------------------------------------------------------- batch
+    def _on_browse_batch_root(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select top-level folder")
+        if path:
+            self._batch_root_edit.setText(path)
+            self._update_action_states()
+
+    def _on_batch_progress(self, done: int, total: int, label: str) -> None:
+        if total > 0:
+            self.batch_progress_bar.setRange(0, total)
+            self.batch_progress_bar.setValue(done)
+        self.batch_status_lbl.setText(f"Batch: {done}/{total} {label}")
+
+    def _on_batch_done(self, results: list) -> None:
+        self._batch_completion_pending = True
+        self._batch_worker = None
+        self.batch_progress_bar.setVisible(False)
+        built = sum(1 for r in results if r.status == "built")
+        skipped = sum(1 for r in results if r.status == "skipped")
+        failed = sum(1 for r in results if r.status == "failed")
+        self.batch_status_lbl.setText(
+            f"Batch done: built {built} / skipped {skipped} / failed {failed}"
+        )
+        self._update_action_states()
+
+    def _on_batch_error(self, exc: Exception) -> None:
+        self._batch_completion_pending = True
+        self._batch_worker = None
+        self.batch_progress_bar.setVisible(False)
+        self.batch_status_lbl.setText(f"Batch error: {exc}")
+        self._update_action_states()
+
+    def _on_run_batch(self) -> None:
+        root = self._batch_root_edit.text().strip()
+        cell_name = self._batch_cell_name_edit.text().strip()
+        h5_name = self._batch_h5_name_edit.text().strip()
+        nucleus_name = self._batch_nucleus_name_edit.text().strip() or None
+        if not root:
+            self.batch_status_lbl.setText("Batch: choose a top-level folder.")
+            return
+        if not cell_name or not h5_name:
+            self.batch_status_lbl.setText(
+                "Batch: cell-labels and output names are required."
+            )
+            return
+        jobs = discover_contact_batch_jobs(
+            root, cell_name=cell_name, h5_name=h5_name, nucleus_name=nucleus_name
+        )
+        if not jobs:
+            self.batch_status_lbl.setText(
+                f"Batch: no '{cell_name}' files found under {root}."
+            )
+            return
+
+        overwrite = self.batch_overwrite_cb.isChecked()
+        self._batch_cancel = False
+        self._batch_completion_pending = False
+        self.batch_progress_bar.setRange(0, len(jobs))
+        self.batch_progress_bar.setValue(0)
+        self.batch_progress_bar.setVisible(True)
+        self.batch_status_lbl.setText(f"Batch: {len(jobs)} positions...")
+
+        @thread_worker(
+            connect={
+                "returned": self._on_batch_done,
+                "errored": self._on_batch_error,
+            }
+        )
+        def _worker():
+            return run_contact_batch(
+                jobs,
+                overwrite=overwrite,
+                progress_cb=self._batch_progress_emitter.progress.emit,
+                cancel=lambda: self._batch_cancel,
+            )
+
+        worker = _worker()
+        self._batch_worker = worker
+        if self._batch_completion_pending:
+            self._batch_worker = None
+            self._batch_completion_pending = False
+        self._update_action_states()
+
+    def _on_cancel_batch(self) -> None:
+        self._batch_cancel = True
+        worker = self._batch_worker
+        if worker is not None:
+            self._batch_worker = None
+            worker.quit()
+        self.batch_progress_bar.setVisible(False)
+        self.batch_status_lbl.setText("Batch: cancelled.")
+        self._update_action_states()
+
+    def _show_from_disk(self) -> None:
         if self.viewer is None:
             self._set_contact_analysis_status("Status: no viewer available.")
             self._update_action_states()
