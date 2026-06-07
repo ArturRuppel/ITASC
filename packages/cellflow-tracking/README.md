@@ -21,14 +21,19 @@ correction-only use does not require the `[solve]` extra.
 ## Use
 
 - **napari plugin:** launch napari and add the *Nucleus Tracking & Correction*
-  widget. Pick a **working directory** that holds `foreground.tif` and
-  `contours.tif` (2D+t); every output is written back into it.
-- **Working-directory contract (standalone, flat layout):**
+  widget. It exposes three path fields:
+  - **Foreground** — the foreground probability/intensity `.tif` (2D+t),
+  - **Contours** — the contour/boundary `.tif` (2D+t),
+  - **Output dir** — where every artifact is written (defaults to the
+    foreground file's folder when left blank).
+
+  The two inputs can have any name and live anywhere.
+- **Standalone path contract:**
 
   ```text
-  workdir/
-    foreground.tif            (in)
-    contours.tif              (in)
+  <foreground.tif>            (in, any name/location)
+  <contours.tif>             (in, any name/location)
+  output_dir/
     atoms.tif                 (out)
     ultrack_workdir/data.db   (out)
     tracked_labels.tif        (out)
@@ -38,7 +43,8 @@ correction-only use does not require the `[solve]` extra.
 
 The full `cellflow` orchestrator drives the same widget through its staged
 `<pos>/1_cellpose` + `<pos>/2_nucleus` layout instead; the piece supports both
-via `cellflow.napari._paths.NucleusWorkspace` (`flat()` vs `staged()`).
+via `cellflow.napari._paths.NucleusWorkspace` (`files()` / `flat()` vs
+`staged()`).
 
 ## Backend
 

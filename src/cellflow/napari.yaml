@@ -5,6 +5,21 @@ contributions:
     - id: cellflow.main_widget
       title: "CellFlow"
       python_name: cellflow.napari:CellFlowWidget
+    # The full install folds the extracted pieces' widgets into this single
+    # manifest. npe2 requires a manifest's name to match the providing
+    # distribution, so the standalone cellflow-contact / cellflow-tracking
+    # manifests cannot be re-registered from the cellflow distribution; their
+    # contributions are mirrored here instead.
+    - id: cellflow.contact_analysis_widget
+      title: "Contact Analysis"
+      python_name: cellflow.napari.contact_analysis_widget:make_contact_analysis_widget
+    - id: cellflow.nucleus_tracking_widget
+      title: "Nucleus Tracking & Correction"
+      python_name: cellflow.napari.nucleus_workflow_widget:make_nucleus_tracking_widget
   widgets:
     - command: cellflow.main_widget
       display_name: "CellFlow"
+    - command: cellflow.contact_analysis_widget
+      display_name: "Contact Analysis"
+    - command: cellflow.nucleus_tracking_widget
+      display_name: "Nucleus Tracking & Correction"

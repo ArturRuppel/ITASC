@@ -121,12 +121,15 @@ class NucleusWorkspace:
     annotation store (validation/correction JSONs) live directly under
     ``nucleus_dir``; the two foreground/contour *inputs* are explicit paths.
 
-    Two layouts are supported via the constructors:
+    Three layouts are supported via the constructors:
 
     * :meth:`staged` — the full orchestrator: ``nucleus_dir`` is
       ``<pos>/2_nucleus`` and the inputs come from ``<pos>/1_cellpose``.
-    * :meth:`flat` — the standalone tracking piece: one working directory that
-      holds ``foreground.tif`` + ``contours.tif`` and receives every output.
+    * :meth:`flat` — a standalone working directory that holds
+      ``foreground.tif`` + ``contours.tif`` and receives every output.
+    * :meth:`files` — the standalone tracking piece: explicit foreground and
+      contour file paths (any name, any location) plus an output directory that
+      receives every output.
     """
 
     nucleus_dir: Path
@@ -153,6 +156,29 @@ class NucleusWorkspace:
             nucleus_dir=work_dir,
             foreground=work_dir / "foreground.tif",
             contours=work_dir / "contours.tif",
+        )
+
+    @classmethod
+    def files(
+        cls,
+        *,
+        foreground: Path | str,
+        contours: Path | str,
+        output_dir: Path | str | None = None,
+    ) -> NucleusWorkspace:
+        """Explicit foreground/contour file paths + an output directory.
+
+        The two inputs may have any name and live anywhere; every output is
+        written under ``output_dir`` (defaulting to the foreground file's parent
+        when omitted).
+        """
+        foreground = Path(foreground)
+        contours = Path(contours)
+        nucleus_dir = Path(output_dir) if output_dir else foreground.parent
+        return cls(
+            nucleus_dir=nucleus_dir,
+            foreground=foreground,
+            contours=contours,
         )
 
     # Artifacts (outputs), all directly under nucleus_dir

@@ -245,7 +245,7 @@ class NucleusAtomExtractionMixin:
         """
         g = self.gate
         w = self.atom_extraction_widget
-        ready = lambda: self._atom_fg_path() is not None  # noqa: E731
+        ready = self._atom_inputs_ready
         g.register_owner(
             "atom_preview",
             "atom live preview",
@@ -259,6 +259,22 @@ class NucleusAtomExtractionMixin:
             when=ready,
         )
         g.register(w.run_btn, ControlClass.RUN_VIEWER, when=ready)
+
+    def _atom_inputs_ready(self) -> bool:
+        """True only when both input maps are set *and* present on disk.
+
+        The live preview and ▶ run both read the foreground/contour TIFFs, so
+        gating on path-not-None alone enables them for paths that don't exist
+        (e.g. a stale foreground/contour pair restored from QSettings), and the
+        first click then crashes in ``tifffile``. Requiring the files to exist
+        keeps the controls disabled until there is something real to read.
+        """
+        fg = self._atom_fg_path()
+        contour = self._atom_contour_path()
+        return (
+            fg is not None and fg.exists()
+            and contour is not None and contour.exists()
+        )
 
     def _atom_params(self) -> AtomParams:
         w = self.atom_extraction_widget
@@ -328,7 +344,7 @@ class NucleusAtomExtractionMixin:
     def _atom_map_shape(self):
         """(T, Y, X) of the foreground map, from the TIFF header (no pixel load)."""
         fg_path = self._atom_fg_path()
-        if fg_path is None:
+        if fg_path is None or not fg_path.exists():
             return None
         with tifffile.TiffFile(str(fg_path)) as tf:
             n_frames = len(tf.pages)

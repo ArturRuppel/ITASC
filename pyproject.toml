@@ -72,13 +72,12 @@ dev = [
 ]
 
 [project.entry-points."napari.manifest"]
+# A Python distribution may register exactly one napari manifest, and npe2
+# requires its name to match the distribution. The full install therefore
+# exposes the extracted pieces' widgets by folding their contributions into the
+# single cellflow manifest (see src/cellflow/napari.yaml) rather than
+# registering the standalone cellflow-contact / cellflow-tracking manifests.
 cellflow = "cellflow:napari.yaml"
-# The full install also exposes each extracted piece's standalone widget as its
-# own napari plugin entry, so the sub-distributions are reachable without
-# installing them separately. These reuse the same manifests the standalone
-# cellflow-contact / cellflow-tracking distributions register.
-cellflow-contact = "cellflow.contact_analysis:napari.yaml"
-cellflow-tracking = "cellflow.tracking_ultrack:napari.yaml"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cellflow"]

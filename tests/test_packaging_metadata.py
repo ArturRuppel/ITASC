@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 try:
@@ -30,24 +31,37 @@ def test_heavy_workflow_dependencies_are_optional_extras() -> None:
     assert "tomli>=2.0; python_version < '3.11'" in extras["dev"]
 
 
-def test_full_install_registers_each_extracted_piece_as_napari_subentry() -> None:
-    # The full cellflow distribution exposes the standalone widget of every
-    # extracted piece as its own napari.manifest entry point, so the pieces are
-    # reachable from the full install without installing their distributions.
+def _python_names(manifest_text: str) -> set[str]:
+    return set(re.findall(r"python_name:\s*(\S+)", manifest_text))
+
+
+def test_full_install_folds_extracted_pieces_into_single_napari_manifest() -> None:
+    # A Python distribution may register exactly one napari manifest, and npe2
+    # requires its name to match the distribution. The full cellflow install
+    # therefore cannot re-register the standalone cellflow-contact /
+    # cellflow-tracking manifests; instead it folds their widgets into the single
+    # cellflow manifest so every extracted piece stays reachable from the full
+    # install without installing the sub-distributions.
     manifests = _pyproject()["project"]["entry-points"]["napari.manifest"]
+    assert manifests == {"cellflow": "cellflow:napari.yaml"}
 
-    assert manifests["cellflow"] == "cellflow:napari.yaml"
-    assert manifests["cellflow-contact"] == "cellflow.contact_analysis:napari.yaml"
-    assert manifests["cellflow-tracking"] == "cellflow.tracking_ultrack:napari.yaml"
+    folded = (Path("src") / "cellflow" / "napari.yaml").read_text(encoding="utf-8")
+    assert "name: cellflow" in folded
+    folded_factories = _python_names(folded)
 
-    # Each referenced manifest exists in the shipped source tree and names itself
-    # consistently with its entry point.
-    for entry, value in manifests.items():
-        module, _, filename = value.partition(":")
-        rel = Path(*module.split(".")[1:]) if "." in module else Path()
-        manifest_path = Path("src") / "cellflow" / rel / filename
-        text = manifest_path.read_text(encoding="utf-8")
-        assert f"name: {entry}" in text
+    # The orchestrator's own widget is registered alongside the folded pieces.
+    assert "cellflow.napari:CellFlowWidget" in folded_factories
+
+    # Every standalone piece's widget factory is mirrored verbatim in the folded
+    # manifest, so the full install and a standalone install expose the same
+    # callable for each piece.
+    for piece in ("contact_analysis", "tracking_ultrack"):
+        standalone = (
+            Path("src") / "cellflow" / piece / "napari.yaml"
+        ).read_text(encoding="utf-8")
+        standalone_factories = _python_names(standalone)
+        assert standalone_factories
+        assert standalone_factories <= folded_factories
 
 
 def test_publication_metadata_includes_repository_readme_and_classifiers() -> None:

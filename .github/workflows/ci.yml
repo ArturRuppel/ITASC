@@ -105,10 +105,25 @@ jobs:
           python - <<'PY'
           from npe2 import PluginManifest
           for path, name in [
+              ("src/cellflow/napari.yaml", "cellflow"),
               ("src/cellflow/contact_analysis/napari.yaml", "cellflow-contact"),
               ("src/cellflow/tracking_ultrack/napari.yaml", "cellflow-tracking"),
           ]:
               m = PluginManifest.from_file(path)
               assert m.name == name, (m.name, name)
               print("manifest OK:", m.name)
+
+          # The full install folds each extracted piece's widget factory into the
+          # single cellflow manifest; assert it mirrors the standalone factories.
+          def factories(path):
+              m = PluginManifest.from_file(path)
+              return {c.python_name for c in m.contributions.commands}
+
+          folded = factories("src/cellflow/napari.yaml")
+          for path in (
+              "src/cellflow/contact_analysis/napari.yaml",
+              "src/cellflow/tracking_ultrack/napari.yaml",
+          ):
+              assert factories(path) <= folded, path
+          print("folded manifest mirrors standalone factories OK")
           PY

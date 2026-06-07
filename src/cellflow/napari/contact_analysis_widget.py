@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import tifffile
 
+import napari
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import QObject, QSettings, Signal
 from qtpy.QtWidgets import (
@@ -63,6 +64,11 @@ def make_contact_analysis_widget(napari_viewer=None):
         patch_napari_layer_delegate()
     except Exception:  # pragma: no cover - patch is best-effort
         pass
+    # napari does not inject the viewer into function-based widget factories
+    # (only into class-based callables / magicgui types), so ``napari_viewer``
+    # arrives as ``None``. Fall back to the active viewer.
+    if napari_viewer is None:
+        napari_viewer = napari.current_viewer()
     return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
 
 

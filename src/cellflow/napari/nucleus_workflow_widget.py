@@ -16,7 +16,7 @@ from pathlib import Path
 
 import napari
 import numpy as np
-from qtpy.QtCore import QSettings, QTimer
+from qtpy.QtCore import Qt, QSettings, QTimer
 from qtpy.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -122,26 +122,55 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(6)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        # Embedded in the full app, the widget lives inside main_widget's
+        # AlignTop scroll layout, which pins it to the top; a Maximum vertical
+        # policy keeps each section compact. Standalone, napari docks the widget
+        # directly with no such wrapper — a Maximum policy then lets the dock
+        # centre the widget vertically once a section collapse shrinks its
+        # sizeHint below the dock height. So standalone instead fills the dock
+        # (Preferred) and pins content to the top with a trailing stretch.
+        if self._standalone:
+            root.setAlignment(Qt.AlignTop)
+            self.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred
+            )
+        else:
+            self.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+            )
 
-        # ── Standalone working-directory picker ───────────────────────
+        # ── Standalone input/output path pickers ──────────────────────
         # Only shown when the piece runs on its own; the orchestrator drives the
-        # workspace through refresh()/set_context() instead.
-        self._workdir_container = QWidget()
-        workdir_row = QHBoxLayout(self._workdir_container)
-        workdir_row.setContentsMargins(0, 0, 0, 0)
-        workdir_row.addWidget(QLabel("Working dir:"))
-        self._workdir_edit = QLineEdit()
-        self._workdir_edit.setPlaceholderText(
-            "Folder with foreground.tif + contours.tif"
+        # workspace through refresh()/set_context() instead. Three explicit
+        # fields: the two input files (any name/location) and an output dir.
+        self._paths_container = QWidget()
+        paths_col = QVBoxLayout(self._paths_container)
+        paths_col.setContentsMargins(0, 0, 0, 0)
+        paths_col.setSpacing(2)
+
+        self._foreground_edit = self._add_path_row(
+            paths_col,
+            "Foreground:",
+            "Foreground probability/intensity .tif",
+            self._on_browse_foreground,
+            self._on_paths_edited,
         )
-        self._workdir_edit.editingFinished.connect(self._on_workdir_edited)
-        workdir_row.addWidget(self._workdir_edit, 1)
-        browse_btn = QPushButton("Browse…")
-        browse_btn.clicked.connect(self._on_browse_work_dir)
-        workdir_row.addWidget(browse_btn)
-        root.addWidget(self._workdir_container)
-        self._workdir_container.setVisible(self._standalone)
+        self._contours_edit = self._add_path_row(
+            paths_col,
+            "Contours:",
+            "Contour/boundary .tif",
+            self._on_browse_contours,
+            self._on_paths_edited,
+        )
+        self._output_dir_edit = self._add_path_row(
+            paths_col,
+            "Output dir:",
+            "Folder for outputs (defaults to foreground's folder)",
+            self._on_browse_output_dir,
+            self._on_paths_edited,
+        )
+        root.addWidget(self._paths_container)
+        self._paths_container.setVisible(self._standalone)
 
         # ── Pipeline files (single deduplicated panel) ────────────────
         self._files_widget = PipelineFilesWidget(
@@ -181,6 +210,11 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
         # ── Correction (group box) ───────────────────────────────────
         self._build_correction_section(root)
+
+        # Standalone fills the dock, so absorb any slack at the bottom to keep
+        # the sections top-aligned (see the size-policy note above).
+        if self._standalone:
+            root.addStretch(1)
 
     # -- Parameters --------------------------------------------------------
 
@@ -337,9 +371,24 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
                 getattr(self, "correction_mode_section", None),
             ):
                 if widget is not None:
-                    layout.addWidget(widget)
+                    self._add_before_trailing_stretch(layout, widget)
         if dock is not None:
             dock.setVisible(True)
+
+    @staticmethod
+    def _add_before_trailing_stretch(layout, widget) -> None:
+        """Append *widget*, keeping any trailing stretch last.
+
+        Standalone adds a trailing stretch to top-anchor the sections; a plain
+        ``addWidget`` would drop re-inserted controls (the correction header +
+        section returning from focus takeover) *below* that stretch and shove
+        them to the bottom. Insert before the stretch when one is present.
+        """
+        count = layout.count()
+        if count > 0 and layout.itemAt(count - 1).spacerItem() is not None:
+            layout.insertWidget(count - 1, widget)
+        else:
+            layout.addWidget(widget)
 
     def _alias_correction_controls(self) -> None:
         correction = self.nucleus_correction_widget
@@ -582,19 +631,41 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         )
         self._apply_workspace(workspace, files_root=pos_dir)
 
-    def set_context(self, *, work_dir: Path | str | None) -> None:
-        """Standalone seam: drive the piece from one flat working directory.
+    def set_context(
+        self,
+        *,
+        foreground: Path | str | None = None,
+        contours: Path | str | None = None,
+        output_dir: Path | str | None = None,
+        work_dir: Path | str | None = None,
+    ) -> None:
+        """Standalone seam: drive the piece from explicit input/output paths.
 
-        The directory holds ``foreground.tif`` + ``contours.tif`` and receives
-        every output (``data.db``, ``tracked_labels.tif``, ``atoms.tif``, the
-        ``*.json`` annotations). There is no staged ``2_nucleus`` subfolder.
+        Two forms are accepted:
+
+        * ``foreground`` + ``contours`` (+ optional ``output_dir``): the two
+          input files may have any name/location; every output (``data.db``,
+          ``tracked_labels.tif``, ``atoms.tif``, the ``*.json`` annotations) is
+          written under ``output_dir`` (defaulting to the foreground's folder).
+        * ``work_dir``: a flat working directory holding ``foreground.tif`` +
+          ``contours.tif`` that also receives every output. Retained for
+          convenience and backward compatibility.
+
+        There is no staged ``2_nucleus`` subfolder in either form.
         """
         self._pos_dir = None
-        workspace = (
-            NucleusWorkspace.flat(work_dir) if work_dir else None
-        )
+        if work_dir:
+            workspace = NucleusWorkspace.flat(work_dir)
+        elif foreground and contours:
+            workspace = NucleusWorkspace.files(
+                foreground=foreground,
+                contours=contours,
+                output_dir=output_dir or None,
+            )
+        else:
+            workspace = None
         if self._standalone:
-            self._workdir_edit.setText(str(work_dir) if work_dir else "")
+            self._sync_path_fields(workspace)
             self._save_standalone_settings()
         # The staged files panel is meaningless without a position dir.
         self._apply_workspace(workspace, files_root=None)
@@ -604,6 +675,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     ) -> None:
         self._workspace = workspace
         self._files_widget.refresh(files_root)
+        # The atom-extraction controls gate on inputs being present
+        # (``when=ready`` → ``_atom_fg_path() is not None``); re-derive the gate
+        # now that the workspace — and therefore input availability — changed.
+        self.gate.recompute()
         if workspace is None:
             if self.correction_active_btn.isChecked():
                 self.correction_active_btn.setChecked(False)
@@ -615,25 +690,104 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self._refresh_validation_counter()
 
     # ── Standalone helpers ────────────────────────────────────────────────────
-    def _on_browse_work_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select working directory")
-        if path:
-            self.set_context(work_dir=path)
+    def _add_path_row(
+        self,
+        column: QVBoxLayout,
+        label: str,
+        placeholder: str,
+        on_browse,
+        on_edited,
+    ) -> QLineEdit:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(label)
+        lbl.setMinimumWidth(80)
+        row.addWidget(lbl)
+        edit = QLineEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.editingFinished.connect(on_edited)
+        row.addWidget(edit, 1)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(on_browse)
+        row.addWidget(browse_btn)
+        column.addLayout(row)
+        return edit
 
-    def _on_workdir_edited(self) -> None:
-        text = self._workdir_edit.text().strip()
-        self.set_context(work_dir=text or None)
+    def _apply_paths_from_fields(self) -> None:
+        self.set_context(
+            foreground=self._foreground_edit.text().strip() or None,
+            contours=self._contours_edit.text().strip() or None,
+            output_dir=self._output_dir_edit.text().strip() or None,
+        )
+
+    def _on_browse_foreground(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select foreground image", filter="Images (*.tif *.tiff);;All files (*)"
+        )
+        if path:
+            self._foreground_edit.setText(path)
+            self._apply_paths_from_fields()
+
+    def _on_browse_contours(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select contours image", filter="Images (*.tif *.tiff);;All files (*)"
+        )
+        if path:
+            self._contours_edit.setText(path)
+            self._apply_paths_from_fields()
+
+    def _on_browse_output_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select output directory")
+        if path:
+            self._output_dir_edit.setText(path)
+            self._apply_paths_from_fields()
+
+    def _on_paths_edited(self) -> None:
+        self._apply_paths_from_fields()
+
+    def _sync_path_fields(self, workspace: NucleusWorkspace | None) -> None:
+        """Reflect the active workspace back into the three input fields.
+
+        Guards against editingFinished re-entrancy by blocking signals while the
+        text is updated programmatically. The flat ``work_dir`` form resolves to
+        ``<dir>/foreground.tif`` etc., so reading the workspace fields covers
+        both forms uniformly.
+        """
+        if workspace is None:
+            fg = ct = out = ""
+        else:
+            fg = str(workspace.foreground)
+            ct = str(workspace.contours)
+            out = str(workspace.nucleus_dir)
+        for edit, value in (
+            (self._foreground_edit, fg),
+            (self._contours_edit, ct),
+            (self._output_dir_edit, out),
+        ):
+            blocked = edit.blockSignals(True)
+            edit.setText(value)
+            edit.blockSignals(blocked)
 
     def _settings(self) -> QSettings:
         return QSettings("cellflow", "cellflow_tracking")
 
     def _load_standalone_settings(self) -> None:
-        work_dir = self._settings().value("work_dir", "", type=str)
-        if work_dir:
-            self.set_context(work_dir=work_dir)
+        s = self._settings()
+        foreground = s.value("foreground", "", type=str)
+        contours = s.value("contours", "", type=str)
+        output_dir = s.value("output_dir", "", type=str)
+        if foreground and contours:
+            self.set_context(
+                foreground=foreground,
+                contours=contours,
+                output_dir=output_dir or None,
+            )
 
     def _save_standalone_settings(self) -> None:
-        self._settings().setValue("work_dir", self._workdir_edit.text().strip())
+        s = self._settings()
+        s.setValue("foreground", self._foreground_edit.text().strip())
+        s.setValue("contours", self._contours_edit.text().strip())
+        s.setValue("output_dir", self._output_dir_edit.text().strip())
 
     def get_state(self) -> dict:
         return dump_state(self)
@@ -740,4 +894,10 @@ def make_nucleus_tracking_widget(napari_viewer=None):
         patch_napari_layer_delegate()
     except Exception:
         pass
+    # napari does not inject the viewer into function-based widget factories
+    # (only into class-based callables / magicgui types), so ``napari_viewer``
+    # arrives as ``None``. The widget needs a live viewer (dims events, key
+    # bindings), so fall back to the active one.
+    if napari_viewer is None:
+        napari_viewer = napari.current_viewer()
     return NucleusWorkflowWidget(viewer=napari_viewer, standalone=True)
