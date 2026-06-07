@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -123,6 +124,8 @@ class ContactAnalysisWidget(QWidget):
         self._cached_cell_labels: np.ndarray | None = None
         self._cached_nucleus_labels: np.ndarray | None = None
         self._cached_track_centroids: dict | None = None
+        #: Positions discovered under the standalone top folder (row index ↔ job).
+        self._discovered_jobs: list = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -155,27 +158,14 @@ class ContactAnalysisWidget(QWidget):
             parent=self,
         )
         # The staged "Pipeline Files" panel is an orchestrator concept; standalone
-        # use replaces it with explicit input/output pickers.
+        # use replaces it with the discovery panel below.
         self.pipeline_files_header.setVisible(not self._standalone)
         self._pipeline_files_section.setVisible(not self._standalone)
         layout.addWidget(self.pipeline_files_header)
         layout.addWidget(self._pipeline_files_section)
 
-        self._pickers_container = QWidget()
-        pickers_layout = QVBoxLayout(self._pickers_container)
-        pickers_layout.setContentsMargins(0, 0, 0, 0)
-        pickers_layout.setSpacing(2)
-        self._cell_labels_edit = self._make_picker_row(
-            pickers_layout, "Cell labels (2D+t .tif):", self._on_browse_cell_labels
-        )
-        self._nucleus_labels_edit = self._make_picker_row(
-            pickers_layout, "Nucleus labels (optional .tif):", self._on_browse_nucleus_labels
-        )
-        self._out_edit = self._make_picker_row(
-            pickers_layout, "Output (.h5):", self._on_browse_out
-        )
-        self._pickers_container.setVisible(self._standalone)
-        layout.addWidget(self._pickers_container)
+        # Standalone: enter a top folder + file names → discovered positions list.
+        self._build_discovery_section(layout)
 
         self.contact_analysis_status_lbl = QLabel("")
         self.contact_analysis_status_lbl.setWordWrap(True)
@@ -220,8 +210,6 @@ class ContactAnalysisWidget(QWidget):
         action_button(self.clear_contact_analysis_btn, expand=True)
         layout.addWidget(self.clear_contact_analysis_btn)
 
-        self._build_batch_section(layout)
-
         layout.addStretch()
 
         self.visualize_btn.clicked.connect(lambda: self._on_visualize(overwrite=False))
@@ -233,8 +221,10 @@ class ContactAnalysisWidget(QWidget):
             self._load_standalone_settings()
         self._update_status()
 
-    # ------------------------------------------------------------------ pickers
-    def _make_picker_row(self, layout, label: str, on_browse) -> QLineEdit:
+    # --------------------------------------------------------------- discovery UI
+    def _make_picker_row(
+        self, layout, label: str, on_browse, *, read_only: bool = True
+    ) -> QLineEdit:
         """Add a ``label / line-edit / Browse`` row to *layout*; return the edit."""
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -242,7 +232,7 @@ class ContactAnalysisWidget(QWidget):
         lbl = QLabel(label)
         lbl.setFixedWidth(150)
         edit = QLineEdit()
-        edit.setReadOnly(True)
+        edit.setReadOnly(read_only)
         browse = QPushButton("Browse...")
         action_button(browse)
         browse.clicked.connect(on_browse)
@@ -252,20 +242,20 @@ class ContactAnalysisWidget(QWidget):
         layout.addLayout(row)
         return edit
 
-    def _build_batch_section(self, layout) -> None:
-        """Standalone-only batch panel: name-based discovery under a top folder.
-
-        Hidden when embedded in the orchestrator (which has its own multi-position
-        handling). Runs headlessly — never touches the viewer.
+    def _build_discovery_section(self, layout) -> None:
+        """Standalone discovery panel: a top folder + file names → a list of
+        discovered positions to pick from. Hidden when embedded in the
+        orchestrator (which drives the widget per-position via ``set_context``).
         """
-        content = QWidget()
-        col = QVBoxLayout(content)
+        container = QWidget()
+        col = QVBoxLayout(container)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
 
         self._batch_root_edit = self._make_picker_row(
-            col, "Top folder:", self._on_browse_batch_root
+            col, "Top folder:", self._on_browse_batch_root, read_only=False
         )
+        self._batch_root_edit.editingFinished.connect(self._rediscover)
         self._batch_cell_name_edit = self._make_name_row(
             col, "Cell labels name:", "cell_labels.tif"
         )
@@ -275,11 +265,22 @@ class ContactAnalysisWidget(QWidget):
         self._batch_h5_name_edit = self._make_name_row(
             col, "Output .h5 name:", "contact_analysis.h5"
         )
+        for edit in (
+            self._batch_cell_name_edit,
+            self._batch_nucleus_name_edit,
+            self._batch_h5_name_edit,
+        ):
+            edit.editingFinished.connect(self._rediscover)
+
+        self._discovery_list = QListWidget()
+        self._discovery_list.itemSelectionChanged.connect(self._on_job_selected)
+        self._discovery_list.itemDoubleClicked.connect(self._on_job_activated)
+        col.addWidget(self._discovery_list, 1)
 
         self.batch_overwrite_cb = QCheckBox("Overwrite existing")
         col.addWidget(self.batch_overwrite_cb)
 
-        self.run_batch_btn = QPushButton("Run batch")
+        self.run_batch_btn = QPushButton("Process all")
         action_button(self.run_batch_btn, expand=True)
         col.addWidget(self.run_batch_btn)
 
@@ -300,12 +301,9 @@ class ContactAnalysisWidget(QWidget):
         status_label(self.batch_status_lbl)
         col.addWidget(self.batch_status_lbl)
 
-        # Batch is the default standalone workflow, so open it expanded.
-        self._batch_section = CollapsibleSection(
-            "Batch", content, expanded=self._standalone
-        )
-        self._batch_section.setVisible(self._standalone)
-        layout.addWidget(self._batch_section)
+        self._discovery_container = container
+        container.setVisible(self._standalone)
+        layout.addWidget(container)
 
         self.run_batch_btn.clicked.connect(self._on_run_batch)
         self.cancel_batch_btn.clicked.connect(self._on_cancel_batch)
@@ -324,45 +322,86 @@ class ContactAnalysisWidget(QWidget):
         layout.addLayout(row)
         return edit
 
-    def _sync_picker_edits(self) -> None:
-        self._cell_labels_edit.setText(str(self._cell_labels_path or ""))
-        self._nucleus_labels_edit.setText(str(self._nucleus_labels_path or ""))
-        self._out_edit.setText(str(self._out_path or ""))
-
-    def _on_browse_cell_labels(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select cell-labels TIFF (2D+t)", "", "TIFF (*.tif *.tiff)"
+    # ------------------------------------------------------------ discovery logic
+    def _discovery_fields(self) -> tuple[str, str, str, str | None]:
+        return (
+            self._batch_root_edit.text().strip(),
+            self._batch_cell_name_edit.text().strip(),
+            self._batch_h5_name_edit.text().strip(),
+            self._batch_nucleus_name_edit.text().strip() or None,
         )
-        if path:
-            out = self._out_path or (Path(path).parent / "contact_analysis.h5")
-            self.set_context(
-                cell_labels=path, nucleus_labels=self._nucleus_labels_path, out_path=out
-            )
-            self._save_standalone_settings()
 
-    def _on_browse_nucleus_labels(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select nucleus-labels TIFF (optional)", "", "TIFF (*.tif *.tiff)"
-        )
-        if path:
-            self.set_context(
-                cell_labels=self._cell_labels_path,
-                nucleus_labels=path,
-                out_path=self._out_path,
-            )
-            self._save_standalone_settings()
+    def _job_label(self, job) -> str:
+        kind = "cell+nucleus" if job.nucleus_labels else "cell only"
+        built = "built" if job.output.exists() else "missing"
+        return f"{job.group_dir.name}    {kind}    [{built}]"
 
-    def _on_browse_out(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Select output HDF5", "contact_analysis.h5", "HDF5 (*.h5 *.hdf5)"
-        )
-        if path:
-            self.set_context(
-                cell_labels=self._cell_labels_path,
-                nucleus_labels=self._nucleus_labels_path,
-                out_path=path,
+    def _populate_discovery_list(self) -> None:
+        self._discovery_list.clear()
+        for job in self._discovered_jobs:
+            self._discovery_list.addItem(self._job_label(job))
+
+    def _refresh_discovery_status(self) -> None:
+        """Re-evaluate built/missing badges (outputs may have appeared)."""
+        for row, job in enumerate(self._discovered_jobs):
+            item = self._discovery_list.item(row)
+            if item is not None:
+                item.setText(self._job_label(job))
+
+    def _rediscover(self) -> None:
+        """Re-scan the top folder and repopulate the discovered-positions list."""
+        root, cell_name, h5_name, nucleus_name = self._discovery_fields()
+        self._discovered_jobs = []
+        self._discovery_list.clear()
+        if not (root and cell_name and h5_name):
+            self.batch_status_lbl.setText(
+                "Enter a top folder and file names to discover positions."
             )
-            self._save_standalone_settings()
+            return
+        try:
+            jobs = discover_contact_batch_jobs(
+                root, cell_name=cell_name, h5_name=h5_name, nucleus_name=nucleus_name
+            )
+        except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI
+            self.batch_status_lbl.setText(f"Discovery error: {exc}")
+            return
+        self._discovered_jobs = jobs
+        self._populate_discovery_list()
+        self.batch_status_lbl.setText(
+            f"Discovered {len(jobs)} position(s); double-click one to visualize."
+            if jobs
+            else f"No '{cell_name}' files found under {root}."
+        )
+        self._save_standalone_settings()
+
+    def _selected_job(self):
+        row = self._discovery_list.currentRow()
+        if 0 <= row < len(self._discovered_jobs):
+            return self._discovered_jobs[row]
+        return None
+
+    def _on_job_selected(self) -> None:
+        job = self._selected_job()
+        if job is None:
+            return
+        # Target the selected position so Visualize/Recompute act on it.
+        self.set_context(
+            cell_labels=job.cell_labels,
+            nucleus_labels=job.nucleus_labels,
+            out_path=job.output,
+        )
+
+    def _on_job_activated(self, item) -> None:
+        row = self._discovery_list.row(item)
+        if not (0 <= row < len(self._discovered_jobs)):
+            return
+        job = self._discovered_jobs[row]
+        self.set_context(
+            cell_labels=job.cell_labels,
+            nucleus_labels=job.nucleus_labels,
+            out_path=job.output,
+        )
+        self._on_visualize(overwrite=False)
 
     # ------------------------------------------------------------------- config
     def get_state(self) -> dict:
@@ -387,13 +426,34 @@ class ContactAnalysisWidget(QWidget):
             self.hide_border_edges_cb.setChecked(bool(state["hide_border_edges"]))
 
     def _load_standalone_settings(self) -> None:
-        raw = QSettings().value(self._SETTINGS_KEY)
+        s = QSettings()
+        raw = s.value(self._SETTINGS_KEY)
         if isinstance(raw, dict):
             self.set_state(raw)
+        cell = s.value("cellflow_contact/cell_name", "", type=str)
+        nucleus = s.value("cellflow_contact/nucleus_name", "", type=str)
+        h5 = s.value("cellflow_contact/h5_name", "", type=str)
+        root = s.value("cellflow_contact/root", "", type=str)
+        if cell:
+            self._batch_cell_name_edit.setText(cell)
+        if nucleus:
+            self._batch_nucleus_name_edit.setText(nucleus)
+        if h5:
+            self._batch_h5_name_edit.setText(h5)
+        if root:
+            self._batch_root_edit.setText(root)
+        self._rediscover()
 
     def _save_standalone_settings(self) -> None:
-        if self._standalone:
-            QSettings().setValue(self._SETTINGS_KEY, self.get_state())
+        if not self._standalone:
+            return
+        s = QSettings()
+        s.setValue(self._SETTINGS_KEY, self.get_state())
+        root, cell_name, h5_name, nucleus_name = self._discovery_fields()
+        s.setValue("cellflow_contact/root", root)
+        s.setValue("cellflow_contact/cell_name", cell_name)
+        s.setValue("cellflow_contact/nucleus_name", nucleus_name or "")
+        s.setValue("cellflow_contact/h5_name", h5_name)
 
     def _register_gate_controls(self) -> None:
         """Register contact-analysis actions with the app-wide UI gate.
@@ -454,14 +514,15 @@ class ContactAnalysisWidget(QWidget):
 
         The orchestrator supplies explicit staged paths plus ``status_root``
         (the position directory) to drive the "Pipeline Files" panel. Standalone
-        callers/pickers omit ``status_root``; the file pickers reflect the paths.
+        use targets a position by selecting it in the discovered-positions list,
+        which calls this without ``status_root``.
         """
         cell = Path(cell_labels) if cell_labels else None
         nucleus = Path(nucleus_labels) if nucleus_labels else None
         out = Path(out_path) if out_path else None
         # The .h5 is a derived artifact; when no explicit output is given, default
         # it next to the cell-labels file. Orchestrated callers always pass an
-        # explicit out_path, so this only fires for the standalone pickers.
+        # explicit out_path, so this only fires for standalone selections.
         if out is None and cell is not None:
             out = cell.parent / "contact_analysis.h5"
         if (cell, nucleus, out) != (
@@ -473,9 +534,7 @@ class ContactAnalysisWidget(QWidget):
         self._cell_labels_path = cell
         self._nucleus_labels_path = nucleus
         self._out_path = out
-        if self._standalone:
-            self._sync_picker_edits()
-        else:
+        if not self._standalone:
             self._files_widget.refresh(Path(status_root) if status_root else None)
         self._update_status()
 
@@ -490,7 +549,7 @@ class ContactAnalysisWidget(QWidget):
         self._update_action_states()
         if self._cell_labels_path is None:
             self._set_contact_analysis_status(
-                "Status: choose a cell-labels file."
+                "Status: pick a position from the list."
                 if self._standalone
                 else "Status: no project open."
             )
@@ -539,6 +598,7 @@ class ContactAnalysisWidget(QWidget):
             f"Status: {'Wrote' if built else 'Using'} {output_path}"
         )
         self._update_status()
+        self._refresh_discovery_status()
         self._show_from_disk()
 
     def _on_build_error(self, exc: Exception) -> None:
@@ -559,7 +619,7 @@ class ContactAnalysisWidget(QWidget):
         out = self._out_path
         if cell is None or out is None:
             self._set_contact_analysis_status(
-                "Status: choose a cell-labels file."
+                "Status: pick a position from the list."
                 if self._standalone
                 else "Status: no project open."
             )
@@ -625,7 +685,7 @@ class ContactAnalysisWidget(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Select top-level folder")
         if path:
             self._batch_root_edit.setText(path)
-            self._update_action_states()
+            self._rediscover()
 
     def _on_batch_progress(self, done: int, total: int, label: str) -> None:
         if total > 0:
@@ -641,8 +701,9 @@ class ContactAnalysisWidget(QWidget):
         skipped = sum(1 for r in results if r.status == "skipped")
         failed = sum(1 for r in results if r.status == "failed")
         self.batch_status_lbl.setText(
-            f"Batch done: built {built} / skipped {skipped} / failed {failed}"
+            f"Processed all: built {built} / skipped {skipped} / failed {failed}"
         )
+        self._refresh_discovery_status()
         self._update_action_states()
 
     def _on_batch_error(self, exc: Exception) -> None:
@@ -653,25 +714,10 @@ class ContactAnalysisWidget(QWidget):
         self._update_action_states()
 
     def _on_run_batch(self) -> None:
-        root = self._batch_root_edit.text().strip()
-        cell_name = self._batch_cell_name_edit.text().strip()
-        h5_name = self._batch_h5_name_edit.text().strip()
-        nucleus_name = self._batch_nucleus_name_edit.text().strip() or None
-        if not root:
-            self.batch_status_lbl.setText("Batch: choose a top-level folder.")
-            return
-        if not cell_name or not h5_name:
-            self.batch_status_lbl.setText(
-                "Batch: cell-labels and output names are required."
-            )
-            return
-        jobs = discover_contact_batch_jobs(
-            root, cell_name=cell_name, h5_name=h5_name, nucleus_name=nucleus_name
-        )
+        # Re-scan so the run matches the list the user is looking at.
+        self._rediscover()
+        jobs = self._discovered_jobs
         if not jobs:
-            self.batch_status_lbl.setText(
-                f"Batch: no '{cell_name}' files found under {root}."
-            )
             return
 
         overwrite = self.batch_overwrite_cb.isChecked()

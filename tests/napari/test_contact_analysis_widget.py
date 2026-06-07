@@ -491,26 +491,157 @@ def test_contact_analysis_widget_show_uses_real_reader_and_visualizer(monkeypatc
     app.processEvents()
 
 
-def test_contact_analysis_widget_standalone_pickers_optional_nucleus_and_auto_output(monkeypatch, tmp_path):
+def _flat_pos(tmp_path, name, *, nucleus=False, h5=False):
+    pos = tmp_path / name
+    pos.mkdir(parents=True)
+    labels = np.zeros((1, 4, 4), dtype=np.uint16)
+    labels[0, :, :2] = 1
+    labels[0, :, 2:] = 2
+    import tifffile
+
+    tifffile.imwrite(pos / "cell_labels.tif", labels)
+    if nucleus:
+        tifffile.imwrite(pos / "nucleus_labels.tif", labels)
+    if h5:
+        (pos / "contact_analysis.h5").write_bytes(b"h5")
+    return pos
+
+
+def _discover(widget, root):
+    widget._batch_root_edit.setText(str(root))
+    widget._rediscover()
+
+
+def test_standalone_shows_discovery_panel_and_hides_staged(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     widget = mod.ContactAnalysisWidget(standalone=True)
 
-    # Standalone shows explicit pickers + the batch panel and hides the staged panel.
-    assert widget._pickers_container.isVisibleTo(widget) is True
-    assert widget._batch_section.isVisibleTo(widget) is True
+    assert widget._discovery_container.isVisibleTo(widget) is True
     assert widget._pipeline_files_section.isVisibleTo(widget) is False
+    # The old single-file pickers are gone.
+    assert not hasattr(widget, "_pickers_container")
 
-    cell_path = tmp_path / "cells.tif"
-    cell_path.touch()
+    widget.deleteLater()
+    app.processEvents()
 
-    # No explicit output: it auto-derives next to the cell-labels file.
-    widget.set_context(cell_labels=cell_path)
-    assert widget.nucleus_labels_path is None
-    assert widget.contact_analysis_out_path == tmp_path / "contact_analysis.h5"
-    assert widget._cell_labels_edit.text() == str(cell_path)
-    # Cell labels alone (no nucleus) are enough to be visualize-ready.
-    assert widget.visualize_btn.isEnabled() is True
+
+def test_discovery_populates_list_with_status(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.ContactAnalysisWidget(standalone=True)
+
+    _flat_pos(tmp_path, "posA", nucleus=True, h5=True)
+    _flat_pos(tmp_path, "posB", nucleus=False)
+    _discover(widget, tmp_path)
+
+    assert widget._discovery_list.count() == 2
+    labels = [widget._discovery_list.item(i).text() for i in range(2)]
+    assert labels[0] == "posA    cell+nucleus    [built]"
+    assert labels[1] == "posB    cell only    [missing]"
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_double_click_visualizes_and_computes_when_missing(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    _flat_pos(tmp_path, "posB", nucleus=False)  # no .h5 yet
+
+    captured = {}
+
+    def fake_ensure(*, cell_labels_path, output_path, nucleus_labels_path=None,
+                    overwrite=False, progress_cb=None, **kwargs):
+        captured["output_path"] = output_path
+        captured["overwrite"] = overwrite
+        output_path.write_bytes(b"h5")
+        return output_path, True
+
+    add_calls = []
+
+    def fake_add(viewer_arg, contact_analysis_arg, **kwargs):
+        add_calls.append(kwargs)
+        viewer_arg.layers[f"{kwargs['prefix']}Cells"] = types.SimpleNamespace(
+            name=f"{kwargs['prefix']}Cells"
+        )
+
+    monkeypatch.setattr(mod, "ensure_contact_analysis", fake_ensure)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _p: {"cells": [1]})
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
+
+    viewer = _FakeViewer()
+    widget = mod.ContactAnalysisWidget(viewer, standalone=True)
+    _discover(widget, tmp_path)
+
+    item = widget._discovery_list.item(0)
+    widget._on_job_activated(item)
+
+    assert captured["output_path"] == tmp_path / "posB" / "contact_analysis.h5"
+    assert captured["overwrite"] is False
+    assert (tmp_path / "posB" / "contact_analysis.h5").exists()
+    assert len(add_calls) == 1
+    # Badge flips to built.
+    assert widget._discovery_list.item(0).text().endswith("[built]")
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_recompute_selected_forces_rebuild(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    _flat_pos(tmp_path, "posA", nucleus=True, h5=True)  # .h5 already present
+
+    captured = {}
+
+    def fake_ensure(*, overwrite=False, output_path, **kwargs):
+        captured["overwrite"] = overwrite
+        return output_path, True
+
+    monkeypatch.setattr(mod, "ensure_contact_analysis", fake_ensure)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _p: {"cells": [1]})
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", lambda *a, **k: None)
+
+    viewer = _FakeViewer()
+    widget = mod.ContactAnalysisWidget(viewer, standalone=True)
+    _discover(widget, tmp_path)
+    widget._discovery_list.setCurrentRow(0)  # selects -> set_context
+    widget.recompute_btn.click()
+
+    assert captured["overwrite"] is True
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_process_all_builds_every_position_and_refreshes_badges(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    _flat_pos(tmp_path, "posA", nucleus=True)
+    _flat_pos(tmp_path, "posB", nucleus=False)
+
+    widget = mod.ContactAnalysisWidget(standalone=True)
+    _discover(widget, tmp_path)
+    assert all(
+        widget._discovery_list.item(i).text().endswith("[missing]") for i in range(2)
+    )
+
+    widget.run_batch_btn.click()
+
+    # Real backend ran on the synthetic stacks: both .h5 written, badges flipped.
+    assert (tmp_path / "posA" / "contact_analysis.h5").exists()
+    assert (tmp_path / "posB" / "contact_analysis.h5").exists()
+    assert all(
+        widget._discovery_list.item(i).text().endswith("[built]") for i in range(2)
+    )
+    assert "built 2" in widget.batch_status_lbl.text()
 
     widget.deleteLater()
     app.processEvents()

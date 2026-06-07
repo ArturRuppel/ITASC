@@ -17,23 +17,21 @@ the full CellFlow orchestrator is present.
 
 ## Use
 
-The widget is **visualizer-first**: the `.h5` is a derived artifact, so you point
-at the inputs and hit **Visualize** — the file is computed on demand only when it
-is missing, then shown. **Recompute** forces a rebuild.
+The widget is **discovery-first**: you give it a top folder and the names of the
+three files (cell labels, optional nucleus labels, output `.h5`); it lists every
+discovered **position** and you pick which to view. The `.h5` is a derived
+artifact, computed on demand only when missing.
 
-- **napari plugin (single position):** add the *Contact Analysis* widget, pick a
-  cell-labels TIFF (2D+t) and an optional nucleus-labels TIFF. The output `.h5`
-  defaults to `<cell_labels_dir>/contact_analysis.h5` (override with the optional
-  output picker). Click **Visualize**.
-- **napari plugin (batch — the default standalone workflow):** in the **Batch**
-  panel, name the three files (cell labels, optional nucleus labels, output `.h5`)
-  and pick a top-level folder. Each **position** — a top-level subfolder of that
-  folder — becomes one job; the named files are discovered recursively within it,
-  so the cell and nucleus may live in different subfolders (e.g. `pos01/3_cell/`
-  and `pos01/2_nucleus/`). The nucleus is associated only when exactly one is
-  found in the position (zero or several → cell-only). Outputs land at
-  `<position>/<h5_name>` and are skipped unless **Overwrite** is checked. Runs
-  headlessly (no visualization).
+- **napari plugin:** add the *Contact Analysis* widget and set the **Top folder**
+  plus the three file names. Each **position** — a top-level subfolder of that
+  folder — appears as a row showing whether a nucleus was paired and whether its
+  `.h5` is built. The named files are discovered recursively within a position, so
+  the cell and nucleus may live in different subfolders (e.g. `pos01/3_cell/` and
+  `pos01/2_nucleus/`); the nucleus is associated only when exactly one is found
+  (zero or several → cell-only). **Double-click a row** to visualize it (its `.h5`
+  is computed first if missing); **Recompute** forces a rebuild of the selection.
+- **Process all:** computes every discovered `.h5` at once (skip existing unless
+  **Overwrite**), headlessly, with progress.
 - **Headless / scripting:**
 
   ```python
