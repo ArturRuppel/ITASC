@@ -495,7 +495,19 @@ class CellFlowMainWidget(QWidget):
         self._cellpose_widget.refresh(pos_dir)
         self.nucleus_workflow_widget.refresh(pos_dir)
         self.cell_workflow_widget.refresh(pos_dir)
-        self.contact_analysis_widget.refresh(pos_dir)
+        # The contact piece is position-agnostic; the orchestrator maps the
+        # staged layout onto its explicit working context.
+        if pos_dir is not None:
+            self.contact_analysis_widget.set_context(
+                cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
+                nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
+                out_path=pos_dir / "4_contact_analysis" / "contact_analysis.h5",
+                status_root=pos_dir,
+            )
+        else:
+            self.contact_analysis_widget.set_context(
+                cell_labels=None, nucleus_labels=None, out_path=None, status_root=None
+            )
         self._update_section_statuses()
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)

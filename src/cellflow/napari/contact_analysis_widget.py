@@ -8,10 +8,20 @@ import numpy as np
 import tifffile
 
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import QObject, Signal
-from qtpy.QtWidgets import QCheckBox, QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtCore import QObject, QSettings, Signal
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QProgressBar,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from cellflow.contact_analysis import build_position_contact_analysis
+from cellflow.contact_analysis import build_contact_analysis
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import (
@@ -40,6 +50,22 @@ except ImportError:  # pragma: no cover - tests monkeypatch this when absent
         raise ImportError("cellflow.napari.contact_analysis_visualization is unavailable")
 
 
+def make_contact_analysis_widget(napari_viewer=None):
+    """napari plugin entry point: a standalone Contact Analysis dock widget.
+
+    Used by the ``cellflow-contact`` distribution's manifest. Runs the napari
+    layer-delegate patch (normally done by the orchestrator package) and returns
+    the widget in standalone mode with its own file pickers + config.
+    """
+    try:
+        from cellflow.napari._napari_compat import patch_napari_layer_delegate
+
+        patch_napari_layer_delegate()
+    except Exception:  # pragma: no cover - patch is best-effort
+        pass
+    return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
+
+
 class _ProgressEmitter(QObject):
     progress = Signal(int, int, str)
 
@@ -49,17 +75,28 @@ class ContactAnalysisWidget(QWidget):
 
     _contact_analysis_layer_prefix = "[Contact Analysis] "
 
+    #: QSettings key used to persist display options in standalone mode.
+    _SETTINGS_KEY = "cellflow_contact/state"
+
     def __init__(
         self,
         viewer: object | None = None,
         parent: QWidget | None = None,
         gate: UiGate | None = None,
+        standalone: bool = False,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         #: App-wide UI gate; a private one is created for standalone use.
         self.gate = gate if gate is not None else UiGate(self)
-        self._pos_dir: Path | None = None
+        #: When standalone, the widget owns its own file pickers + config and
+        #: hides the orchestrator's staged "Pipeline Files" panel. When
+        #: orchestrated, the parent injects paths via :meth:`set_context`.
+        self._standalone = standalone
+        #: Explicit working context (set via :meth:`set_context` or the pickers).
+        self._cell_labels_path: Path | None = None
+        self._nucleus_labels_path: Path | None = None
+        self._out_path: Path | None = None
         self._build_worker = None
         self._build_completion_pending = False
         self._build_error_pending = False
@@ -101,8 +138,28 @@ class ContactAnalysisWidget(QWidget):
             stage_key="contact_analysis",
             parent=self,
         )
+        # The staged "Pipeline Files" panel is an orchestrator concept; standalone
+        # use replaces it with explicit input/output pickers.
+        self.pipeline_files_header.setVisible(not self._standalone)
+        self._pipeline_files_section.setVisible(not self._standalone)
         layout.addWidget(self.pipeline_files_header)
         layout.addWidget(self._pipeline_files_section)
+
+        self._pickers_container = QWidget()
+        pickers_layout = QVBoxLayout(self._pickers_container)
+        pickers_layout.setContentsMargins(0, 0, 0, 0)
+        pickers_layout.setSpacing(2)
+        self._cell_labels_edit = self._make_picker_row(
+            pickers_layout, "Cell labels (2D+t .tif):", self._on_browse_cell_labels
+        )
+        self._nucleus_labels_edit = self._make_picker_row(
+            pickers_layout, "Nucleus labels (optional .tif):", self._on_browse_nucleus_labels
+        )
+        self._out_edit = self._make_picker_row(
+            pickers_layout, "Output (.h5):", self._on_browse_out
+        )
+        self._pickers_container.setVisible(self._standalone)
+        layout.addWidget(self._pickers_container)
 
         self.contact_analysis_status_lbl = QLabel("")
         self.contact_analysis_status_lbl.setWordWrap(True)
@@ -152,7 +209,99 @@ class ContactAnalysisWidget(QWidget):
         self.show_contact_analysis_btn.clicked.connect(self._on_show_contact_analysis)
         self.clear_contact_analysis_btn.clicked.connect(self._on_clear_contact_analysis_layers)
         self._register_gate_controls()
-        self.refresh(None)
+        if self._standalone:
+            self._load_standalone_settings()
+        self._update_status()
+
+    # ------------------------------------------------------------------ pickers
+    def _make_picker_row(self, layout, label: str, on_browse) -> QLineEdit:
+        """Add a ``label / line-edit / Browse`` row to *layout*; return the edit."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        lbl = QLabel(label)
+        lbl.setFixedWidth(150)
+        edit = QLineEdit()
+        edit.setReadOnly(True)
+        browse = QPushButton("Browse...")
+        action_button(browse)
+        browse.clicked.connect(on_browse)
+        row.addWidget(lbl)
+        row.addWidget(edit, 1)
+        row.addWidget(browse)
+        layout.addLayout(row)
+        return edit
+
+    def _sync_picker_edits(self) -> None:
+        self._cell_labels_edit.setText(str(self._cell_labels_path or ""))
+        self._nucleus_labels_edit.setText(str(self._nucleus_labels_path or ""))
+        self._out_edit.setText(str(self._out_path or ""))
+
+    def _on_browse_cell_labels(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select cell-labels TIFF (2D+t)", "", "TIFF (*.tif *.tiff)"
+        )
+        if path:
+            out = self._out_path or (Path(path).parent / "contact_analysis.h5")
+            self.set_context(
+                cell_labels=path, nucleus_labels=self._nucleus_labels_path, out_path=out
+            )
+            self._save_standalone_settings()
+
+    def _on_browse_nucleus_labels(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select nucleus-labels TIFF (optional)", "", "TIFF (*.tif *.tiff)"
+        )
+        if path:
+            self.set_context(
+                cell_labels=self._cell_labels_path,
+                nucleus_labels=path,
+                out_path=self._out_path,
+            )
+            self._save_standalone_settings()
+
+    def _on_browse_out(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Select output HDF5", "contact_analysis.h5", "HDF5 (*.h5 *.hdf5)"
+        )
+        if path:
+            self.set_context(
+                cell_labels=self._cell_labels_path,
+                nucleus_labels=self._nucleus_labels_path,
+                out_path=path,
+            )
+            self._save_standalone_settings()
+
+    # ------------------------------------------------------------------- config
+    def get_state(self) -> dict:
+        """Serialize display options (the seam shared by orchestrator + standalone)."""
+        return {
+            "color_cells_by_label": self.color_cells_by_label_cb.isChecked(),
+            "color_edges_by_id": self.color_edges_by_id_cb.isChecked(),
+            "color_edges_by_label": self.color_edges_by_label_cb.isChecked(),
+            "hide_border_edges": self.hide_border_edges_cb.isChecked(),
+        }
+
+    def set_state(self, state: dict) -> None:
+        if not isinstance(state, dict):
+            return
+        if "color_cells_by_label" in state:
+            self.color_cells_by_label_cb.setChecked(bool(state["color_cells_by_label"]))
+        if "color_edges_by_id" in state:
+            self.color_edges_by_id_cb.setChecked(bool(state["color_edges_by_id"]))
+        if "color_edges_by_label" in state:
+            self.color_edges_by_label_cb.setChecked(bool(state["color_edges_by_label"]))
+        if "hide_border_edges" in state:
+            self.hide_border_edges_cb.setChecked(bool(state["hide_border_edges"]))
+
+    def _load_standalone_settings(self) -> None:
+        raw = QSettings().value(self._SETTINGS_KEY)
+        if isinstance(raw, dict):
+            self.set_state(raw)
+
+    def _save_standalone_settings(self) -> None:
+        if self._standalone:
+            QSettings().setValue(self._SETTINGS_KEY, self.get_state())
 
     def _register_gate_controls(self) -> None:
         """Register contact-analysis actions with the app-wide UI gate.
@@ -183,49 +332,80 @@ class ContactAnalysisWidget(QWidget):
 
     @property
     def cell_labels_path(self) -> Path | None:
-        return self._pos_dir / "3_cell" / "tracked_labels.tif" if self._pos_dir else None
+        return self._cell_labels_path
 
     @property
     def nucleus_labels_path(self) -> Path | None:
-        return self._pos_dir / "2_nucleus" / "tracked_labels.tif" if self._pos_dir else None
+        return self._nucleus_labels_path
 
     @property
     def contact_analysis_out_path(self) -> Path | None:
-        return self._pos_dir / "4_contact_analysis" / "contact_analysis.h5" if self._pos_dir else None
+        return self._out_path
 
-    def refresh(self, pos_dir: Path | str | None) -> None:
-        new_pos_dir = Path(pos_dir) if pos_dir is not None else None
-        if new_pos_dir != self._pos_dir:
-            self._cached_contact_analysis_path = None
-            self._cached_contact_analysis = None
-            self._cached_cell_labels = None
-            self._cached_nucleus_labels = None
-            self._cached_track_centroids = None
-        self._pos_dir = new_pos_dir
-        self._files_widget.refresh(new_pos_dir)
+    def set_context(
+        self,
+        *,
+        cell_labels: Path | str | None,
+        nucleus_labels: Path | str | None = None,
+        out_path: Path | str | None = None,
+        status_root: Path | str | None = None,
+    ) -> None:
+        """Set the working context for both orchestrated and standalone use.
+
+        The orchestrator supplies explicit staged paths plus ``status_root``
+        (the position directory) to drive the "Pipeline Files" panel. Standalone
+        callers/pickers omit ``status_root``; the file pickers reflect the paths.
+        """
+        cell = Path(cell_labels) if cell_labels else None
+        nucleus = Path(nucleus_labels) if nucleus_labels else None
+        out = Path(out_path) if out_path else None
+        if (cell, nucleus, out) != (
+            self._cell_labels_path,
+            self._nucleus_labels_path,
+            self._out_path,
+        ):
+            self._invalidate_caches()
+        self._cell_labels_path = cell
+        self._nucleus_labels_path = nucleus
+        self._out_path = out
+        if self._standalone:
+            self._sync_picker_edits()
+        else:
+            self._files_widget.refresh(Path(status_root) if status_root else None)
         self._update_status()
+
+    def _invalidate_caches(self) -> None:
+        self._cached_contact_analysis_path = None
+        self._cached_contact_analysis = None
+        self._cached_cell_labels = None
+        self._cached_nucleus_labels = None
+        self._cached_track_centroids = None
 
     def _update_status(self) -> None:
         self._update_action_states()
-        if self._pos_dir is None:
-            self._set_contact_analysis_status("Status: no project open.")
+        if self._cell_labels_path is None:
+            self._set_contact_analysis_status(
+                "Status: choose a cell-labels file."
+                if self._standalone
+                else "Status: no project open."
+            )
         elif not self.contact_analysis_status_lbl.text():
             self._set_contact_analysis_status("Status: ready.")
 
     def _inputs_ready(self) -> bool:
-        return (
-            self._pos_dir is not None
-            and self.cell_labels_path is not None
-            and self.cell_labels_path.exists()
-            and self.nucleus_labels_path is not None
-            and self.nucleus_labels_path.exists()
-        )
+        cell = self._cell_labels_path
+        if cell is None or not cell.exists():
+            return False
+        nucleus = self._nucleus_labels_path
+        if nucleus is not None and not nucleus.exists():
+            return False
+        return self._out_path is not None
 
     def _contact_analysis_ready(self) -> bool:
         return (
             self.viewer is not None
-            and self.contact_analysis_out_path is not None
-            and self.contact_analysis_out_path.exists()
+            and self._out_path is not None
+            and self._out_path.exists()
         )
 
     def _update_action_states(self) -> None:
@@ -267,16 +447,23 @@ class ContactAnalysisWidget(QWidget):
         self._update_status()
 
     def _on_build_contact_analysis(self) -> None:
-        if self._pos_dir is None or self.contact_analysis_out_path is None:
-            self._set_contact_analysis_status("Status: no project open.")
+        cell = self._cell_labels_path
+        out = self._out_path
+        if cell is None or out is None:
+            self._set_contact_analysis_status(
+                "Status: choose cell labels and an output path."
+                if self._standalone
+                else "Status: no project open."
+            )
             self._update_action_states()
             return
-        if self.cell_labels_path is None or not self.cell_labels_path.exists():
-            self._set_contact_analysis_status("Status: missing 3_cell/tracked_labels.tif.")
+        if not cell.exists():
+            self._set_contact_analysis_status(f"Status: missing cell labels: {cell}")
             self._update_status()
             return
-        if self.nucleus_labels_path is None or not self.nucleus_labels_path.exists():
-            self._set_contact_analysis_status("Status: missing 2_nucleus/tracked_labels.tif.")
+        nucleus = self._nucleus_labels_path
+        if nucleus is not None and not nucleus.exists():
+            self._set_contact_analysis_status(f"Status: missing nucleus labels: {nucleus}")
             self._update_status()
             return
 
@@ -292,11 +479,11 @@ class ContactAnalysisWidget(QWidget):
             }
         )
         def _worker():
-            return build_position_contact_analysis(
-                self._pos_dir,
-                self.contact_analysis_out_path,
-                cell_tracked_labels_path=self.cell_labels_path,
-                nucleus_tracked_labels_path=self.nucleus_labels_path,
+            return build_contact_analysis(
+                cell_labels_path=cell,
+                output_path=out,
+                nucleus_labels_path=nucleus,
+                source_path=cell.parent,
                 progress_cb=self._progress_emitter.progress.emit,
             )
 

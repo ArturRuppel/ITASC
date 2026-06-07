@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cellflow-core"
+version = "0.2.0"
+description = "Shared CellFlow substrate: TIFF/path/logging helpers and reusable napari UI primitives"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-3.0"}
+authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
+keywords = ["cell-tracking", "microscopy", "napari"]
+dependencies = [
+    "napari[all]>=0.4.18",
+    "qtpy>=2.3.0",
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "tifffile",
+    "pyqtgraph>=0.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/ArturRuppel/CellFlow"
+Repository = "https://github.com/ArturRuppel/CellFlow"
+
+# Built from the shared source tree without moving files. The wheel deliberately
+# omits cellflow/__init__.py and cellflow/napari/__init__.py so cellflow and
+# cellflow.napari install as PEP 420 namespace packages, letting sibling
+# distributions (cellflow-contact, the orchestrator) contribute their own
+# submodules under the same namespace.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/cellflow/core" = "cellflow/core"
+"../../src/cellflow/napari/ui_gate.py" = "cellflow/napari/ui_gate.py"
+"../../src/cellflow/napari/ui_style.py" = "cellflow/napari/ui_style.py"
+"../../src/cellflow/napari/_widget_helpers.py" = "cellflow/napari/_widget_helpers.py"
+"../../src/cellflow/napari/_flow_layout.py" = "cellflow/napari/_flow_layout.py"
+"../../src/cellflow/napari/_napari_compat.py" = "cellflow/napari/_napari_compat.py"
+"../../src/cellflow/napari/widgets.py" = "cellflow/napari/widgets.py"

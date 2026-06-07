@@ -13,6 +13,18 @@ installation details, and public API should still be treated as provisional.
 Claims in this README are descriptive only; no benchmarking or performance
 superiority is claimed here.
 
+## Independent packages
+
+CellFlow is being factored into independently-installable pieces that share the
+`cellflow.*` namespace (PEP 420), so others can install just the part they need.
+The full plugin orchestrates them into the unified workflow described below.
+
+- [`cellflow-contact`](packages/cellflow-contact) — contact analysis (cell-cell
+  edges, T1 events) + napari visualization. Headless I/O: 2D+t cell labels
+  (optional nucleus labels) → HDF5. Depends on `cellflow-core`.
+- [`cellflow-core`](packages/cellflow-core) — shared TIFF/path helpers and
+  reusable napari UI primitives.
+
 ## Main Capabilities
 
 - napari plugin UI with a unified `CellFlow` workflow widget.
