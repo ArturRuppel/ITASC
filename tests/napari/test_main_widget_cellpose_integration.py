@@ -174,13 +174,11 @@ def test_main_widget_theme_picker_restyles_stage_subheaders():
         f"background-color: {ui_style.stage_header_pill_background('cellpose')};"
         in w._cellpose_widget.pipeline_files_header_lbl.styleSheet()
     )
-    assert (
-        f"color: {ui_style.muted_stage_accent('nucleus')};"
-        in w.nucleus_workflow_widget.correction_header_lbl.styleSheet()
-    )
-    assert (
-        f"background-color: {ui_style.stage_header_pill_background('nucleus')};"
-        in w.nucleus_workflow_widget.correction_header_lbl.styleSheet()
+    # The nucleus correction title was redesigned into a plain workspace title
+    # (a bold heading, not a stage pill), so it is intentionally outside the
+    # theme-restyled stage-subheader set. The cell correction header still pills.
+    assert "font-weight: bold" in (
+        w.nucleus_workflow_widget.correction_header_lbl.styleSheet()
     )
     assert (
         f"color: {ui_style.muted_stage_accent('cell')};"

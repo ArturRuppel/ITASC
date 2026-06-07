@@ -12,7 +12,7 @@ from napari.qt.threading import thread_worker as _thread_worker
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QCheckBox,
-    QGridLayout,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QSplitter,
@@ -105,6 +105,7 @@ from cellflow.napari._correction_takeover import (
 )
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.napari._correction_ui import (
+    CollapsiblePane,
     build_correction_header,
     build_correction_toolbar,
     build_shortcuts_widget,
@@ -143,6 +144,9 @@ _OUTLINE_LABEL_OPACITY = 0.7
 # Fraction of the canvas a navigated-to track's bounding box should span in each
 # direction (≈25% of the canvas area), leaving margin around the track.
 _TRACK_VIEWPORT_FRACTION = 0.5
+# Width a collapsed workspace pane (gallery / accordion) shrinks to — must match
+# the slim show-tab in CollapsiblePane.
+_PANEL_STRIP_W = 24
 
 _DEFAULT_DEPENDENCIES = {
     "annotate_database_from_corrections": _annotate_database_from_corrections,
@@ -190,14 +194,20 @@ class NucleusCorrectionWidget(QWidget):
         self._navigating_from_lineage: bool = False
         self._swap_cursor: _SwapCursor | None = None
         self._native_dock_state: dict[str, bool] = {}
-        # The single right-side workspace dock and the horizontal splitter it
-        # hosts (candidate gallery · film strip · controls strip), built on
-        # activate; both None while correction mode is off. The controls strip
-        # holds the correction header + section + lineage overview, reparented
-        # out of the plugin dock.
+        # The single right-side workspace dock, its container (top bar + reveal
+        # area + body splitter), and the horizontal body splitter it hosts
+        # (toolbar · candidate gallery · accordion); all None while correction
+        # mode is off. The top bar + reveal area are reparented out of the plugin
+        # dock into the container on activate. ``_workspace_splitter`` doubles as
+        # the "focus mode is docked" sentinel the refresh paths gate on.
         self._workspace_dock = None
         self._workspace_splitter: QSplitter | None = None
-        self._controls_container: QWidget | None = None
+        self._workspace_container: QWidget | None = None
+        # Collapsible wrappers around the candidate gallery and the accordion;
+        # each carries a ✕ hide button and collapses to a slim show-tab. None
+        # until the body splitter is built on activate.
+        self._gallery_pane: CollapsiblePane | None = None
+        self._accordion_pane: CollapsiblePane | None = None
         # Higher-dim stacks (e.g. a raw T,Z,Y,X z-stack) removed on activate so
         # the viewer collapses to a single frame slider, kept verbatim here to
         # re-append on deactivate. The plugin dock + its pre-correction width are
@@ -219,7 +229,7 @@ class NucleusCorrectionWidget(QWidget):
             selected_label_provider=lambda: int(
                 getattr(self.correction_widget, "_selected_label", 0) or 0
             ),
-            enabled_provider=self.track_path_check.isChecked,
+            enabled_provider=self.track_path_btn.isChecked,
             current_t_provider=self._current_t,
             status_callback=self._correction_status,
             owned_layers=self._correction_owned_layers,
@@ -295,15 +305,28 @@ class NucleusCorrectionWidget(QWidget):
         self._build_extend_retrack_section()
         self._build_shortcuts_section()
         self._build_toolbar()
-        self._build_view_toggle_checkboxes()
-        self._assemble_controls_column(group_lay)
+        self._build_view_toggle_buttons()
+        self._assemble_reveal_area(group_lay)
 
+        # The full-width top bar carries the title, the activate / shortcuts /
+        # params toggles, the checkable view toggles, and the status (with the
+        # validation counter) right-aligned. The status moved out of the section
+        # body so the bar shows it over the whole workspace.
         self.header, self.header_lbl = build_correction_header(
             self,
             shortcuts_btn=self.shortcuts_btn,
             params_btn=self.params_btn,
             active_btn=self.active_btn,
+            view_toggle_btns=(
+                self.track_path_btn,
+                self.filled_view_btn,
+            ),
+            status_lbl=self.status_lbl,
+            validation_counter_lbl=self.validation_counter_lbl,
         )
+        # ``section`` is the full-width reveal area (params + shortcuts) shown
+        # below the top bar; both it and the header are reparented between the
+        # plugin dock (inactive) and the workspace dock (active).
         self.section = CollapsibleSection("Correction", inner, expanded=False)
         self.section._toggle.setVisible(False)
         self.section._toggle.setEnabled(False)
@@ -314,6 +337,9 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_mode_section = self.section
         self._correction_active_content_visible = False
         self._connect_signals()
+        # Start collapsed: the inactive plugin-dock entry point shows only the
+        # on/off button (title + toggles appear once correction is active).
+        self._sync_correction_panel_visibility()
 
     def _init_candidate_refresh_timer(self) -> None:
         # Searching + rendering the candidate gallery is expensive, so debounce
@@ -428,22 +454,38 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_widget._status.setVisible(False)
 
     def _build_extend_retrack_section(self) -> None:
+        # Laid wide-and-short for the full-width reveal area: the outline toggle
+        # spans the top, then the Extend / Retrack / Manual-edit blocks sit
+        # side by side in columns rather than as one tall stack.
         extend_retrack_inner = QWidget(self)
         extend_retrack_lay = QVBoxLayout(extend_retrack_inner)
         extend_retrack_lay.setContentsMargins(0, 0, 0, 0)
         extend_retrack_lay.setSpacing(6)
         extend_retrack_lay.addWidget(self.correction_widget._outline_btn)
 
-        extend_retrack_lay.addWidget(_heading("Extend"))
-        g = block_grid(horizontal_spacing=12)
+        columns = QHBoxLayout()
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setSpacing(16)
+
+        def _column(*items) -> QWidget:
+            col = QWidget()
+            lay = QVBoxLayout(col)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(4)
+            for item in items:
+                if isinstance(item, QWidget):
+                    lay.addWidget(item)
+                else:
+                    lay.addLayout(item)
+            lay.addStretch(1)
+            return col
+
         # Extend follows precomputed LinkDB edges (no geometric scoring knobs);
         # only the paint behavior remains tunable.
         self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
-        add_block_checkbox_row(g, 0, self.extend_greedy_overwrite_check)
-        extend_retrack_lay.addLayout(g)
+        g_extend = block_grid(horizontal_spacing=12)
+        add_block_checkbox_row(g_extend, 0, self.extend_greedy_overwrite_check)
 
-        extend_retrack_lay.addWidget(_heading("Retrack"))
-        g = block_grid(horizontal_spacing=12)
         self.retrack_max_dist_spin = _dslider(0, 500, 20.0, 1.0, 1)
         # Scoring weights for the retrack frame matcher. Kept under the
         # ``extend_*`` attribute names for settings back-compat; extend no longer
@@ -451,8 +493,9 @@ class NucleusCorrectionWidget(QWidget):
         self.extend_area_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.extend_iou_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.extend_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 3)
+        g_retrack = block_grid(horizontal_spacing=12)
         add_block_pair_row(
-            g,
+            g_retrack,
             0,
             "Max distance:",
             self.retrack_max_dist_spin,
@@ -460,19 +503,23 @@ class NucleusCorrectionWidget(QWidget):
             self.extend_area_weight_spin,
         )
         add_block_pair_row(
-            g,
+            g_retrack,
             1,
             "IoU weight:",
             self.extend_iou_weight_spin,
             "Distance weight:",
             self.extend_distance_weight_spin,
         )
-        extend_retrack_lay.addLayout(g)
 
-        extend_retrack_lay.addWidget(_heading("Manual edit"))
+        columns.addWidget(_column(_heading("Extend"), g_extend))
+        columns.addWidget(_column(_heading("Retrack"), g_retrack))
         # Reuse the embedded correction widget's spawn controls (cell radius for
         # middle-click cell creation), relocated here next to the other params.
-        extend_retrack_lay.addWidget(self.correction_widget._spawn_controls)
+        columns.addWidget(
+            _column(_heading("Manual edit"), self.correction_widget._spawn_controls)
+        )
+        columns.addStretch(1)
+        extend_retrack_lay.addLayout(columns)
 
         self.extend_retrack_params_section = CollapsibleSection(
             "Extend / Retrack Parameters",
@@ -486,9 +533,11 @@ class NucleusCorrectionWidget(QWidget):
         self.retrack_params_section = self.extend_retrack_params_section
 
     def _build_shortcuts_section(self) -> None:
+        # The disclaimer / attribution label rides at the bottom of the wide
+        # shortcuts panel now (reparented out of the embedded correction widget).
         self.shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
-            build_shortcuts_widget(),
+            build_shortcuts_widget(self.correction_widget._attrib_lbl),
             expanded=False,
 
         )
@@ -511,65 +560,42 @@ class NucleusCorrectionWidget(QWidget):
         )
         self.toolbar.setVisible(False)
 
-    def _build_view_toggle_checkboxes(self) -> None:
-        self.track_path_check = QCheckBox("Track path")
-        self.track_path_check.setToolTip(
-            "Paint the selected track's whole trajectory as a fading comet "
-            "(viridis, oldest→newest) with a frame number in each mask."
+    def _build_view_toggle_buttons(self) -> None:
+        # View toggles ride in the top bar as checkable icon tool-buttons; the
+        # old "Lineage canvas" toggle is gone — the accordion is the always-on
+        # main surface. Tooltips carry the longer descriptions the old check
+        # captions spelled out.
+        self.track_path_btn = _tool_btn(
+            "👁",
+            "Track path: paint the selected track's whole trajectory as a fading "
+            "comet (viridis, oldest→newest) with a frame number in each mask.",
+            checkable=True,
         )
-        self.track_path_check.setVisible(False)
-        self.lineage_canvas_check = QCheckBox("Lineage canvas")
-        self.lineage_canvas_check.setToolTip(
-            "Open the docked correction canvas: a swimlane overview of every "
-            "track (time across, gaps flag likely ID swaps; green=validated, "
-            "orange=anchored) over the selected track's "
-            "per-frame film strip. Click a lane or tile to jump there."
-        )
-        self.lineage_canvas_check.setVisible(False)
-        self.candidate_gallery_check = QCheckBox("Candidate gallery")
-        self.candidate_gallery_check.setToolTip(
-            "Dock three thumbnail columns — extend-backward, swap, extend-forward — "
-            "of the candidate segmentations for the selected cell at this frame. "
-            "Click a thumbnail to apply that extend/swap."
-        )
-        self.candidate_gallery_check.setVisible(False)
-        self.filled_view_check = QCheckBox("Filled labels (by ID)")
-        self.filled_view_check.setToolTip(
-            "Second viewer mode: hide the cell + nucleus images and draw the "
+        self.filled_view_btn = _tool_btn(
+            "🎨",
+            "Filled labels (by ID): hide the cell + nucleus images and draw the "
             "labels and tracks opaque and filled (not outlines), coloured by ID. "
-            "Off = the default outline view in one neutral colour."
+            "Off = the default outline view in one neutral colour.",
+            checkable=True,
         )
-        self.filled_view_check.setVisible(False)
+        # The candidate gallery is shown/hidden by its own ✕ button + slim
+        # show-tab (see CollapsiblePane), not a top-bar toggle.
+        for button in (self.track_path_btn, self.filled_view_btn):
+            button.setVisible(False)
         self.validation_counter_lbl.setVisible(False)
-        self.correction_widget._attrib_lbl.setVisible(False)
 
-    def _assemble_controls_column(self, group_lay: QVBoxLayout) -> None:
-        # Lay the controls column out top→bottom: the action toolbar, the
-        # collapsible params / shortcuts panels (they expand just below it),
-        # the per-frame correction tools, the view-toggle checkboxes in two
-        # columns, then the status line. The swimlane track renders are
-        # appended below this whole section in _build_workspace_controls_dock.
-        group_lay.addWidget(self.toolbar)
+    def _assemble_reveal_area(self, group_lay: QVBoxLayout) -> None:
+        # The section body is the full-width reveal area below the top bar: the
+        # params and shortcuts panels, openable independently. The toolbar, the
+        # view toggles and the status now live elsewhere (the toolbar in the body
+        # splitter's thin left column, the toggles + status in the top bar). The
+        # embedded correction widget is a logic holder only — its visible bits
+        # (outline + spawn controls, attribution label) were reparented into the
+        # params / shortcuts panels — so it is kept hidden here to stay owned.
         group_lay.addWidget(self.extend_retrack_params_section)
         group_lay.addWidget(self.shortcuts_section)
+        self.correction_widget.setVisible(False)
         group_lay.addWidget(self.correction_widget)
-
-        # One checkbox per row: a two-wide grid pinned the controls strip (and
-        # so the whole right dock) to the summed label width — the dominant
-        # floor on how narrow the dock can be dragged.
-        self._view_toggle_grid = QGridLayout()
-        self._view_toggle_grid.setContentsMargins(0, 0, 0, 0)
-        self._view_toggle_grid.setVerticalSpacing(2)
-        self._view_toggle_grid.addWidget(self.track_path_check, 0, 0)
-        self._view_toggle_grid.addWidget(self.lineage_canvas_check, 1, 0)
-        self._view_toggle_grid.addWidget(self.candidate_gallery_check, 2, 0)
-        self._view_toggle_grid.addWidget(self.filled_view_check, 3, 0)
-        self._view_toggle_grid.setColumnStretch(0, 1)
-        group_lay.addLayout(self._view_toggle_grid)
-
-        group_lay.addWidget(self.status_lbl)
-        group_lay.addWidget(self.validation_counter_lbl)
-        group_lay.addWidget(self.correction_widget._attrib_lbl)
 
     def _connect_signals(self) -> None:
         self.save_tracked_btn.clicked.connect(self._on_save_tracked)
@@ -591,10 +617,8 @@ class NucleusCorrectionWidget(QWidget):
             self._on_remove_unvalidated_labels
         )
         self.commit_btn.clicked.connect(self._on_commit)
-        self.track_path_check.toggled.connect(self._on_toggle_track_path)
-        self.lineage_canvas_check.toggled.connect(self._on_toggle_lineage_canvas)
-        self.candidate_gallery_check.toggled.connect(self._on_toggle_candidate_gallery)
-        self.filled_view_check.toggled.connect(self._on_toggle_filled_view)
+        self.track_path_btn.toggled.connect(self._on_toggle_track_path)
+        self.filled_view_btn.toggled.connect(self._on_toggle_filled_view)
         self.params_btn.toggled.connect(
             self._on_correction_params_button_toggled
         )
@@ -622,14 +646,16 @@ class NucleusCorrectionWidget(QWidget):
 
         self.extend_retrack_params_section.setVisible(show_params)
         self.shortcuts_section.setVisible(show_shortcuts)
-        self.correction_widget.setVisible(show_active)
         self.toolbar.setVisible(show_active)
         self.validation_counter_lbl.setVisible(show_active)
-        self.correction_widget._attrib_lbl.setVisible(show_active)
-        self.track_path_check.setVisible(show_active)
-        self.lineage_canvas_check.setVisible(show_active)
-        self.candidate_gallery_check.setVisible(show_active)
-        self.filled_view_check.setVisible(show_active)
+        # The inactive plugin-dock entry point is just the on/off button: the
+        # title, the shortcuts / params toggles and the view toggles only appear
+        # once correction mode is active (in the workspace top bar).
+        self.header_lbl.setVisible(show_active)
+        self.shortcuts_btn.setVisible(show_active)
+        self.params_btn.setVisible(show_active)
+        self.track_path_btn.setVisible(show_active)
+        self.filled_view_btn.setVisible(show_active)
 
         if show_params or show_shortcuts or show_active:
             self.section.expand()
@@ -637,17 +663,13 @@ class NucleusCorrectionWidget(QWidget):
             self.section.collapse()
 
     def _on_correction_params_button_toggled(self, checked: bool) -> None:
+        # 📖 and ⚙ are independent: both can be open at once — the reveal area
+        # simply grows to fit. No mutual exclusion.
         self.extend_retrack_params_section._toggle.setChecked(checked)
-        if checked:
-            self._set_checked_without_signal(self.shortcuts_btn, False)
-            self.shortcuts_section._toggle.setChecked(False)
         self._sync_correction_panel_visibility()
 
     def _on_correction_shortcuts_button_toggled(self, checked: bool) -> None:
         self.shortcuts_section._toggle.setChecked(checked)
-        if checked:
-            self._set_checked_without_signal(self.params_btn, False)
-            self.extend_retrack_params_section._toggle.setChecked(False)
         self._sync_correction_panel_visibility()
 
     def _tracked_path(self):
@@ -1293,18 +1315,22 @@ class NucleusCorrectionWidget(QWidget):
         )
         return protected_cell_mask(frame, protected_ids)
 
+    def _gallery_is_shown(self) -> bool:
+        """True while the candidate gallery pane is built and not collapsed."""
+        return self._gallery_pane is not None and not self._gallery_pane.is_collapsed()
+
     def _refresh_candidate_gallery_if_shown(self) -> None:
         # Debounced: (re)start the timer so a burst of frame/selection changes
         # collapses into a single rebuild once things settle (see the timer
         # set-up in _setup_ui). The fired handler re-checks visibility.
-        if self.candidate_gallery_check.isChecked():
+        if self._gallery_is_shown():
             self._candidate_refresh_timer.start()
         else:
             self._candidate_refresh_timer.stop()
 
     def _refresh_candidate_gallery_now(self) -> None:
         """Do the actual (expensive) gallery rebuild — only via the debounce timer."""
-        if self.candidate_gallery_check.isChecked():
+        if self._gallery_is_shown():
             self._candidate_gallery.refresh()
 
     def _apply_swap_candidate(self, candidate) -> None:
@@ -1663,7 +1689,7 @@ class NucleusCorrectionWidget(QWidget):
             self.correction_widget.activate_layer(layer)
             # Start every session in the default outline view: neutral-coloured
             # outlines + tracks over the visible reference images.
-            self._set_checked_without_signal(self.filled_view_check, False)
+            self._set_checked_without_signal(self.filled_view_btn, False)
             self._apply_label_view_mode(filled=False)
             # Drop any pre-loaded higher-rank stack (e.g. a raw T,Z,Y,X z-stack)
             # so the viewer collapses to one frame slider that matches the
@@ -1683,28 +1709,24 @@ class NucleusCorrectionWidget(QWidget):
             self.shortcuts_section._toggle.setChecked(False)
             self._correction_active_content_visible = True
             self._sync_correction_panel_visibility()
-            # Open both focus-mode panels by default: the lineage canvas is the
-            # headline view, the candidate galleries are the action surface.
-            # Set the boxes silently and render explicitly so the splitter is
-            # built once, below, rather than on every box's toggle signal.
-            self._set_checked_without_signal(self.lineage_canvas_check, True)
-            self._set_checked_without_signal(self.candidate_gallery_check, True)
+            # The accordion is the always-on main surface; the candidate gallery
+            # is the action surface, both opened by default (each collapsible via
+            # its own ✕). Render both explicitly so the body splitter is built once.
             self._lineage_canvas.refresh()
             self._candidate_gallery.refresh()
             # Build the whole-stack validated / anchor overlays once now; they're
             # only rebuilt on validation or label changes afterwards (not per frame).
             self._refresh_validated_overlay()
             self._refresh_validation_counter()
-            # Build the controls strip (header + lineage overview + controls),
-            # reparenting the controls out of the plugin dock; then hand the whole
-            # window to the workspace by hiding the now-empty plugin dock and lay
-            # the panels out as one splitter so they resize independently.
-            self._build_workspace_controls_dock()
+            # Hand the whole window to the workspace: reparent the top bar +
+            # reveal area out of the plugin dock, hide the now-empty plugin dock,
+            # and lay the body panels out as one splitter so they resize
+            # independently.
             self._focus_takeover(True)
             self._arrange_workspace_docks()
-            # Open the workspace at half the window width with its three strips
-            # (candidate gallery · film strip · controls) split in equal thirds.
-            # Deferred so the dock is laid out before resizeDocks runs.
+            # Open the workspace at half the window width; the body splitter sizes
+            # its toolbar · gallery · accordion strips. Deferred so the dock is
+            # laid out before resizeDocks runs.
             QTimer.singleShot(0, self._size_workspace_dock)
             return
 
@@ -1844,7 +1866,7 @@ class NucleusCorrectionWidget(QWidget):
         # shows the right slice — no per-frame rebuild here.
         # Keep the focused track's tip cross on the cell in the new frame.
         self._all_tracks.set_current_frame(self._current_t())
-        if self.lineage_canvas_check.isChecked():
+        if self._workspace_splitter is not None:
             self._lineage_canvas.set_current_frame(self._current_t())
         # Candidates are frame-specific (the swap lattice + adjacent-frame extend),
         # so a frame change invalidates them — recompute for the new frame.
@@ -1869,12 +1891,13 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_track_path_spotlight()
 
     def _on_track_selection_changed(self, _t: int, _lab: int) -> None:
-        """Recolour the all-tracks layer / canvas detail when selection changes."""
+        """Recolour the all-tracks layer / accordion when selection changes."""
         self._apply_focus_presentation(_lab)
-        if self.lineage_canvas_check.isChecked():
+        if self._workspace_splitter is not None:
+            # Selection drives the accordion: the picked track expands inline.
             self._lineage_canvas.set_selection(_lab)
-            # Recenter the canvas on the selected track only when the selection
-            # came from the image viewer; a lineage click already shows the row.
+            # Recenter on the selected track only when the selection came from
+            # the image viewer; an accordion click already shows the row.
             if not self._navigating_from_lineage:
                 self._lineage_canvas.center_on_track(_lab)
         self._refresh_candidate_gallery_if_shown()
@@ -1896,7 +1919,7 @@ class NucleusCorrectionWidget(QWidget):
         Called when the selected track's pixels change (swap / extend / retrack)
         so both views reflect the new trajectory without reselecting the cell.
         """
-        if self.track_path_check.isChecked():
+        if self.track_path_btn.isChecked():
             self._refresh_track_path_overlay()
             self._refresh_track_path_spotlight()
         self._refresh_lineage_canvas_if_shown()
@@ -1910,23 +1933,20 @@ class NucleusCorrectionWidget(QWidget):
         lineage build over the *whole* stack, which froze the GUI when fired on
         every swap keystroke; the overview catches up on the next full refresh.
         """
-        if self.track_path_check.isChecked():
+        if self.track_path_btn.isChecked():
             self._refresh_track_path_overlay()
             self._refresh_track_path_spotlight()
-        if self.lineage_canvas_check.isChecked():
+        if self._workspace_splitter is not None:
             self._lineage_canvas.refresh_detail()
         self._refresh_candidate_gallery_if_shown()
 
     def _refresh_lineage_canvas_if_shown(self) -> None:
-        """Rebuild the lineage canvas (overview + detail) after a label change.
+        """Rebuild the accordion (bars + expanded band) after a label change.
 
-        The swimlane overview is structural in the controls strip and stays
-        visible the whole time focus mode is active — independent of the
-        ``lineage_canvas_check`` toggle, which only shows/hides the film-strip
-        *detail*. So the rebuild is gated on the workspace being docked, not on
-        that checkbox; otherwise the overview goes stale after a label change
-        (reassign IDs, remove unvalidated, validate, …) whenever the detail
-        strip happens to be toggled off.
+        The accordion is the always-on main surface for the whole time focus
+        mode is active, so the rebuild is gated on the workspace being docked;
+        otherwise the bars go stale after a label change (reassign IDs, remove
+        unvalidated, validate, …).
         """
         if self._workspace_splitter is not None:
             self._lineage_canvas.refresh()
@@ -1979,25 +1999,33 @@ class NucleusCorrectionWidget(QWidget):
                 return self.viewer.layers[name]
         return None
 
-    # -- Focus-mode panels (lineage canvas) --------------------------------
+    def _on_workspace_panel_toggled(self, pane, collapsed: bool) -> None:
+        """A pane's ✕ / show-tab flipped: keep ≥1 open and resize the splitter.
 
-    def _on_toggle_lineage_canvas(self, checked: bool) -> None:
-        # Toggle-on rebuilds the film strip; the swimlane overview is structural
-        # in the controls strip and stays put. _arrange_workspace_docks slots the
-        # panel into the splitter (if needed) and shows/hides it to match.
-        if checked:
-            self._lineage_canvas.refresh()
-        self._arrange_workspace_docks()
-
-    def _on_toggle_candidate_gallery(self, checked: bool) -> None:
-        if checked:
-            self._candidate_gallery.refresh()
-        self._arrange_workspace_docks()
+        Hiding one of the gallery / accordion panes while the other is already
+        collapsed re-opens that other one, so the workspace never goes blank.
+        Re-showing the gallery also repopulates it for the current selection.
+        """
+        gallery = self._gallery_pane
+        accordion = self._accordion_pane
+        if (
+            collapsed
+            and gallery is not None
+            and accordion is not None
+            and gallery.is_collapsed()
+            and accordion.is_collapsed()
+        ):
+            other = accordion if pane is gallery else gallery
+            other.set_collapsed(False)  # re-enters here with one pane open
+            return
+        self._apply_workspace_panel_sizes()
+        if not collapsed and self._gallery_is_shown():
+            self._refresh_candidate_gallery_if_shown()
 
     # ── label / track view mode (outline-neutral ↔ filled-by-id) ──────────────
 
     def _filled_view_active(self) -> bool:
-        return self.filled_view_check.isChecked()
+        return self.filled_view_btn.isChecked()
 
     def _on_toggle_filled_view(self, checked: bool) -> None:
         self._apply_label_view_mode(filled=checked)
@@ -2193,7 +2221,12 @@ class NucleusCorrectionWidget(QWidget):
         return getattr(getattr(self.viewer, "window", None), "_qt_window", None)
 
     def _size_workspace_dock(self) -> None:
-        """Open the workspace at half the window width, panels split in thirds."""
+        """Open the workspace at half the window width; size the body splitter.
+
+        The dock opens at half the window; ``_apply_workspace_panel_sizes`` then
+        distributes the toolbar · gallery · accordion strips (honouring any
+        already-collapsed pane).
+        """
         win = self._main_window()
         dock = self._workspace_dock
         splitter = self._workspace_splitter
@@ -2202,8 +2235,7 @@ class NucleusCorrectionWidget(QWidget):
         try:
             target = max(int(win.width()) // 2, 1)
             win.resizeDocks([dock], [target], Qt.Horizontal)
-            third = max(target // 3, 1)
-            splitter.setSizes([third, third, third])
+            self._apply_workspace_panel_sizes()
         except Exception:
             logger.exception("could not size the correction workspace dock")
 
@@ -2230,36 +2262,17 @@ class NucleusCorrectionWidget(QWidget):
         except Exception:
             logger.exception("could not restore the plugin dock width")
 
-    def _build_workspace_controls_dock(self):
-        """Build the controls strip: correction header + controls + lineage overview.
-
-        Reparents ``self.header`` and ``self.section`` (the toolbar / params /
-        shortcuts / correction widget / checkboxes / status) out of the plugin
-        dock into a single container, with the lineage swimlane overview (the
-        track renders) embedded *below* them. The reparent reuses every existing
-        button + signal as-is. The container is the rightmost panel of the
-        workspace splitter built by :meth:`_arrange_workspace_docks`; the plugin
-        dock is hidden by the caller once this succeeds. Idempotent.
-        """
-        if self._controls_container is not None:
-            return self._controls_container
-        container = QWidget()
-        lay = QVBoxLayout(container)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
-        lay.addWidget(self.header)
-        lay.addWidget(self.section)
-        lay.addWidget(self._lineage_canvas.overview_panel(), stretch=1)
-        self._controls_container = container
-        return container
-
     def _teardown_workspace_controls_dock(self) -> None:
-        """Remove the single workspace dock (header/section already reparented out).
+        """Remove the workspace dock (top bar / reveal already reparented out).
 
-        Destroying the dock also deletes the splitter and every embedded panel
-        (candidate gallery, film strip, controls strip); the controllers drop
+        The toolbar is rescued back onto ``self`` first — it is built once and
+        must survive the dock teardown to be re-used on a later activate.
+        Destroying the dock then deletes the container, the body splitter and the
+        embedded panels (candidate gallery, accordion); the controllers drop
         their stale references in their own ``teardown``.
         """
+        self.toolbar.setParent(self)
+        self.toolbar.setVisible(False)
         if self._workspace_dock is not None:
             try:
                 self.viewer.window.remove_dock_widget(self._workspace_dock)
@@ -2267,40 +2280,31 @@ class NucleusCorrectionWidget(QWidget):
                 logger.exception("could not remove the correction workspace dock")
         self._workspace_dock = None
         self._workspace_splitter = None
-        self._controls_container = None
+        self._workspace_container = None
+        self._gallery_pane = None
+        self._accordion_pane = None
 
     def _arrange_workspace_docks(self) -> None:
-        """Lay the right-column panels out as one splitter of side-by-side strips.
+        """Build the workspace dock once.
 
-        All three panels live in a single ``QSplitter`` inside one napari dock,
-        left→right: candidate gallery · film strip · controls (header + lineage
-        overview). Hosting them in a splitter — rather than three separate
-        napari docks — is what makes resizing intuitive: napari's dock area
-        redistributes the canvas/dock boundary across *all* docks proportionally,
-        whereas a splitter handle moves only the two panels it sits between, and
-        the leftmost panel (the only one with a non-zero stretch factor) absorbs
-        any change to the dock's outer width.
-
-        The splitter is created on first call (panels are materialised eagerly
-        as bare widgets via the controllers) and reused afterwards; each call
-        also shows/hides the candidate and film panels to match their toggles.
+        The dock holds one container: the full-width top bar and reveal area
+        stacked over a horizontal body splitter (toolbar · candidate gallery ·
+        accordion). The gallery and accordion are each wrapped in a
+        ``CollapsiblePane`` so they hide/show via their own ✕ / show-tab; the
+        accordion is the main surface but can be collapsed just the same.
         """
-        splitter = self._ensure_workspace_splitter()
-        if splitter is None:
-            return
-        self._candidate_gallery.widget().setVisible(
-            self.candidate_gallery_check.isChecked()
-        )
-        self._lineage_canvas.film_widget().setVisible(
-            self.lineage_canvas_check.isChecked()
-        )
+        self._ensure_workspace_splitter()
 
     def _ensure_workspace_splitter(self) -> QSplitter | None:
-        """Create the workspace splitter + dock once, returning it (or None)."""
+        """Create the body splitter, the container + dock once (or return None).
+
+        Reparents the top bar (``self.header``) and reveal area (``self.section``)
+        out of the plugin dock into the container, with the body splitter beneath
+        them. The reparent reuses every existing button + signal as-is.
+        """
         if self._workspace_splitter is not None:
             return self._workspace_splitter
-        if self._controls_container is None:
-            self._build_workspace_controls_dock()
+
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
         # Default handles are a ~3 px sliver and near-invisible on the dark
@@ -2316,31 +2320,84 @@ class NucleusCorrectionWidget(QWidget):
             " }"
             "QSplitter::handle:horizontal:hover { background: #7a828f; }"
         )
-        # left→right: candidate gallery · film strip · controls strip.
-        splitter.addWidget(self._candidate_gallery.widget())
-        splitter.addWidget(self._lineage_canvas.film_widget())
-        splitter.addWidget(self._controls_container)
-        # Only the leftmost panel grows when the dock's outer edge is dragged;
-        # the others keep their width until a handle between them is moved.
-        splitter.setStretchFactor(0, 1)
+        # left→right: thin toolbar · candidate gallery · accordion. The gallery
+        # and accordion are wrapped in collapsible panes; the accordion pane is
+        # the stretch panel that absorbs outer-width changes.
+        self._gallery_pane = CollapsiblePane(
+            self._candidate_gallery.widget(), title="Candidate gallery"
+        )
+        self._accordion_pane = CollapsiblePane(
+            self._lineage_canvas.panel(), title="Tracking overview"
+        )
+        self._gallery_pane.collapsed_changed.connect(
+            lambda collapsed: self._on_workspace_panel_toggled(
+                self._gallery_pane, collapsed
+            )
+        )
+        self._accordion_pane.collapsed_changed.connect(
+            lambda collapsed: self._on_workspace_panel_toggled(
+                self._accordion_pane, collapsed
+            )
+        )
+        self.toolbar.setVisible(True)
+        splitter.addWidget(self.toolbar)
+        splitter.addWidget(self._gallery_pane)
+        splitter.addWidget(self._accordion_pane)
+        splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 0)
-        splitter.setStretchFactor(2, 0)
+        splitter.setStretchFactor(2, 1)
+
+        container = QWidget()
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addWidget(self.header)
+        lay.addWidget(self.section)
+        lay.addWidget(splitter, stretch=1)
+        self._workspace_container = container
+
         try:
             self._workspace_dock = self.viewer.window.add_dock_widget(
-                splitter, name="Correction", area="right"
+                container, name="Tracking Correction", area="right"
             )
         except Exception:
-            logger.exception("could not dock the correction workspace splitter")
+            logger.exception("could not dock the correction workspace")
             self._workspace_dock = None
+            self._workspace_container = None
+            self._gallery_pane = None
+            self._accordion_pane = None
             return None
         self._workspace_splitter = splitter
         return splitter
 
+    def _apply_workspace_panel_sizes(self) -> None:
+        """Size the body splitter from the panes' collapsed state.
+
+        The toolbar keeps its thin hint width; a collapsed pane shrinks to its
+        slim show-tab; the expanded pane(s) share the remainder (the accordion
+        favoured when both are open).
+        """
+        splitter = self._workspace_splitter
+        if splitter is None or self._gallery_pane is None or self._accordion_pane is None:
+            return
+        total = max(splitter.size().width(), 300)
+        toolbar_w = max(self.toolbar.sizeHint().width(), 1)
+        rest = max(total - toolbar_w, 2)
+        strip = _PANEL_STRIP_W
+        gallery_collapsed = self._gallery_pane.is_collapsed()
+        accordion_collapsed = self._accordion_pane.is_collapsed()
+        if gallery_collapsed:
+            gallery_w, accordion_w = strip, rest - strip
+        elif accordion_collapsed:
+            gallery_w, accordion_w = rest - strip, strip
+        else:
+            gallery_w = max(rest // 3, 1)
+            accordion_w = rest - gallery_w
+        splitter.setSizes([toolbar_w, gallery_w, accordion_w])
+
     def _teardown_focus_panels(self) -> None:
-        """Undock the focus-mode panels (lineage canvas, candidate gallery)."""
-        self._set_checked_without_signal(self.lineage_canvas_check, False)
+        """Undock the focus-mode panels (accordion, candidate gallery)."""
         self._lineage_canvas.teardown()
-        self._set_checked_without_signal(self.candidate_gallery_check, False)
         self._candidate_gallery.teardown()
 
     def _refresh_validation_counter(self) -> None:
@@ -2360,7 +2417,7 @@ class NucleusCorrectionWidget(QWidget):
         # spotlight are now stale, so rebuild them here too.
         sel = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
         if sel and sel in {int(v) for v in changed_ids}:
-            if self.track_path_check.isChecked():
+            if self.track_path_btn.isChecked():
                 self._refresh_track_path_overlay()
                 self._refresh_track_path_spotlight()
         # Rebuild the canvas too (its overview presence + detail strip go stale

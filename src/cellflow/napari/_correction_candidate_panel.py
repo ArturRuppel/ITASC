@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.napari._correction_candidates import CandidateStrip, CandidateTile
-from cellflow.napari._correction_film_strip import rgb_to_qimage
+from cellflow.napari._correction_track_accordion import rgb_to_qimage
 from cellflow.napari._flow_layout import FlowLayout
 
 _TILE_PX = 64

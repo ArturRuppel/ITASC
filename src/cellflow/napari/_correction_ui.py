@@ -7,6 +7,7 @@ host stays responsible for owning the resulting widgets and wiring their signals
 """
 from __future__ import annotations
 
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -14,14 +15,16 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QSizePolicy,
+    QStackedWidget,
+    QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
-from cellflow.napari._flow_layout import FlowLayout
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
     stage_header_action_button,
-    stage_header_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
 
@@ -59,6 +62,81 @@ def confirm_unsaved_before_deactivate(parent: QWidget, *, save_noun: str) -> str
     return "discard"
 
 
+# Width of the slim show-tab a collapsed pane shrinks to.
+_PANE_STRIP_W = 24
+
+
+class CollapsiblePane(QWidget):
+    """Wrap a content panel with a titled header whose ✕ collapses it to a tab.
+
+    Expanded, the pane shows a header row (title + a ✕ hide button) over the
+    content. Hiding swaps in a slim full-height ``▸`` show-tab and pins the pane
+    narrow; clicking the tab expands it again. ``collapsed_changed`` lets the host
+    redistribute the surrounding splitter when the state flips.
+    """
+
+    collapsed_changed = Signal(bool)
+
+    def __init__(self, content: QWidget, *, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._collapsed = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._stack = QStackedWidget(self)
+        outer.addWidget(self._stack)
+
+        page = QWidget()
+        page_lay = QVBoxLayout(page)
+        page_lay.setContentsMargins(0, 0, 0, 0)
+        page_lay.setSpacing(2)
+
+        header = QWidget()
+        header_lay = QHBoxLayout(header)
+        header_lay.setContentsMargins(6, 2, 2, 2)
+        header_lay.setSpacing(4)
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("font-weight: bold;")
+        hide_btn = QToolButton()
+        hide_btn.setText("✕")
+        hide_btn.setToolTip(f"Hide {title}")
+        hide_btn.setAutoRaise(True)
+        hide_btn.clicked.connect(lambda: self.set_collapsed(True))
+        header_lay.addWidget(title_lbl)
+        header_lay.addStretch(1)
+        header_lay.addWidget(hide_btn)
+
+        page_lay.addWidget(header)
+        page_lay.addWidget(content, stretch=1)
+        self._stack.addWidget(page)
+
+        strip = QToolButton()
+        strip.setText("▸")
+        strip.setToolTip(f"Show {title}")
+        strip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        strip.clicked.connect(lambda: self.set_collapsed(False))
+        self._strip = strip
+        self._stack.addWidget(strip)
+
+    def is_collapsed(self) -> bool:
+        return self._collapsed
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        collapsed = bool(collapsed)
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        self._stack.setCurrentIndex(1 if collapsed else 0)
+        if collapsed:
+            self.setMinimumWidth(_PANE_STRIP_W)
+            self.setMaximumWidth(_PANE_STRIP_W)
+        else:
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
+        self.collapsed_changed.emit(collapsed)
+
+
 def flatten_embedded_section(section: CollapsibleSection) -> None:
     """Strip a section's header/margins so it nests flush inside another panel."""
     section.set_header_visible(False)
@@ -75,28 +153,49 @@ def build_correction_header(
     shortcuts_btn: QWidget,
     params_btn: QWidget,
     active_btn: QWidget,
+    view_toggle_btns: tuple[QWidget, ...] = (),
+    status_lbl: QWidget | None = None,
+    validation_counter_lbl: QWidget | None = None,
 ) -> tuple[QWidget, QLabel]:
-    """Build the stage-style correction header; returns ``(header, title_label)``."""
+    """Build the full-width correction top bar; returns ``(header, title_label)``.
+
+    Left→right: the stage title, the activate / shortcuts / params toggles, the
+    checkable view-toggle tool-buttons, a stretch, then the status label (and the
+    validation counter) right-aligned at the end of the bar. The bar spans the
+    whole workspace dock — over the toolbar, gallery, and accordion below it.
+    """
     header = QWidget(parent)
     row = QHBoxLayout(header)
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(4)
 
-    header_lbl = QLabel("Correction")
-    stage_header_label(header_lbl, "nucleus")
-    for button in (shortcuts_btn, params_btn, active_btn):
+    # A proper workspace title (not the stage "pill") — the active correction
+    # workspace reads as its own surface, not a collapsed stage chip.
+    header_lbl = QLabel("Tracking Correction")
+    header_lbl.setStyleSheet("font-weight: bold; font-size: 12pt;")
+    for button in (active_btn, shortcuts_btn, params_btn, *view_toggle_btns):
         stage_header_action_button(button, "nucleus")
     row.addWidget(header_lbl)
+    # Activate first, then the reveal toggles, so correction mode can be exited
+    # even while the plugin dock is hidden.
+    row.addWidget(active_btn)
     row.addWidget(shortcuts_btn)
     row.addWidget(params_btn)
-    row.addWidget(active_btn)
+    if view_toggle_btns:
+        row.addSpacing(8)
+        for button in view_toggle_btns:
+            row.addWidget(button)
     row.addStretch(1)
+    if status_lbl is not None:
+        row.addWidget(status_lbl)
+    if validation_counter_lbl is not None:
+        row.addWidget(validation_counter_lbl)
     return header, header_lbl
 
 
-# Glyphs are scaled up by this factor (relative to each button's default
-# font) so the icon-only action toolbar reads clearly.
-_TOOLBAR_ICON_SCALE = 1.35
+# Glyphs are scaled up by this factor (relative to each button's default font)
+# so the thin vertical action toolbar reads clearly at its narrow width.
+_TOOLBAR_ICON_SCALE = 1.6
 
 
 def _enlarge_glyph(button: QWidget) -> None:
@@ -112,91 +211,112 @@ def _enlarge_glyph(button: QWidget) -> None:
 def build_correction_toolbar(
     parent: QWidget, button_groups: list[tuple[QWidget, ...]]
 ) -> QWidget:
-    """Lay out groups of action buttons in a wrapping flow, ruled between groups.
+    """Stack groups of action buttons vertically in a thin column, ruled between.
 
-    Buttons reflow onto new rows as the controls strip narrows; a plain
-    ``QHBoxLayout`` would instead pin the strip — and the whole right dock — to
-    the summed button width, so the dock could never be dragged narrow. The
-    toolbar advertises ``heightForWidth`` so its parent column grants the extra
-    height a wrapped row needs.
+    The toolbar is the narrow leftmost panel of the workspace body splitter, so
+    its buttons run top-to-bottom in a single column with bigger glyphs; group
+    separators become horizontal rules. The column hugs its buttons' width so it
+    stays thin while the accordion to its right absorbs the spare width.
     """
     toolbar = QWidget(parent)
-    flow = FlowLayout(toolbar, margin=0, h_spacing=4, v_spacing=4)
-    policy = toolbar.sizePolicy()
-    policy.setHeightForWidth(True)
-    toolbar.setSizePolicy(policy)
-
-    glyph_height = 0
-    for group in button_groups:
-        for b in group:
-            _enlarge_glyph(b)
-            glyph_height = max(glyph_height, b.sizeHint().height())
+    col = QVBoxLayout(toolbar)
+    col.setContentsMargins(2, 2, 2, 2)
+    col.setSpacing(4)
 
     def _sep() -> QFrame:
         line = QFrame()
-        line.setFrameShape(QFrame.VLine)
+        line.setFrameShape(QFrame.HLine)
         line.setFrameShadow(QFrame.Sunken)
-        # Flow items are sized from their hint; pin the rule to the row height
-        # so it doesn't collapse to a stub between wrapped buttons.
-        if glyph_height:
-            line.setFixedHeight(glyph_height)
         return line
 
     for i, group in enumerate(button_groups):
         if i > 0:
-            flow.addWidget(_sep())
+            col.addWidget(_sep())
         for b in group:
-            flow.addWidget(b)
+            _enlarge_glyph(b)
+            col.addWidget(b)
+    col.addStretch(1)
     return toolbar
 
 
-def build_shortcuts_widget() -> QWidget:
-    """Build the static correction-shortcuts reference panel."""
-    group = QGroupBox("Correction shortcuts")
-    grid = QGridLayout(group)
+# The shortcut groups, split into side-by-side columns so the reveal area below
+# the top bar reads wide-and-short instead of as one tall stack.
+_SHORTCUT_COLUMNS = (
+    (
+        (
+            "Track Workflow",
+            (
+                ("V", "Validate selected track"),
+                ("B", "Anchor selected cell at current frame"),
+                ("A / D", "Extend selected track backward / forward"),
+                ("Q / E", "Retrack backward / forward"),
+                ("Z / C", "Swap with smaller / larger candidate fragment"),
+                ("S", "Save tracked labels"),
+                ("Space", "Play / stop the movie"),
+            ),
+        ),
+        (
+            "Selection",
+            (
+                ("Left-click", "Select / highlight cell"),
+                ("↑ / ↓", "Previous / next track"),
+            ),
+        ),
+    ),
+    (
+        (
+            "Manual Labels",
+            (
+                ("Middle-click empty space", "Spawn new cell"),
+                ("Middle-click on cell or Delete", "Erase cell"),
+                ("Ctrl+Left-click", "Merge selected with clicked cell"),
+                ("Right-click variants", "Swap labels"),
+                ("Shift+Left-drag", "Draw / extend cell path"),
+                ("Shift+Right-drag", "Split by drawn line"),
+            ),
+        ),
+        ("History", (("Ctrl+Z", "Undo"),)),
+    ),
+)
+
+
+def _shortcut_column(groups) -> QWidget:
+    """One vertical column of shortcut groups in its own grid."""
+    column = QWidget()
+    grid = QGridLayout(column)
     grid.setContentsMargins(8, 6, 8, 6)
     grid.setHorizontalSpacing(10)
     grid.setVerticalSpacing(2)
     row = 0
-    row = CorrectionWidget._add_shortcut_group(
-        grid,
-        "Track Workflow",
-        [
-            ("V", "Validate selected track"),
-            ("B", "Anchor selected cell at current frame"),
-            ("A / D", "Extend selected track backward / forward"),
-            ("Q / E", "Retrack backward / forward"),
-            ("Z / C", "Swap with smaller / larger candidate fragment"),
-            ("S", "Save tracked labels"),
-            ("Space", "Play / stop the movie"),
-        ],
-        start_row=row,
-        is_first=True,
-    )
-    row = CorrectionWidget._add_shortcut_group(
-        grid,
-        "Selection",
-        [
-            ("Left-click", "Select / highlight cell"),
-            ("↑ / ↓", "Previous / next track"),
-        ],
-        start_row=row,
-    )
-    row = CorrectionWidget._add_shortcut_group(
-        grid,
-        "Manual Labels",
-        [
-            ("Middle-click empty space", "Spawn new cell"),
-            ("Middle-click on cell or Delete", "Erase cell"),
-            ("Ctrl+Left-click", "Merge selected with clicked cell"),
-            ("Right-click variants", "Swap labels"),
-            ("Shift+Left-drag", "Draw / extend cell path"),
-            ("Shift+Right-drag", "Split by drawn line"),
-        ],
-        start_row=row,
-    )
-    row = CorrectionWidget._add_shortcut_group(
-        grid, "History", [("Ctrl+Z", "Undo")], start_row=row
-    )
+    for i, (title, items) in enumerate(groups):
+        row = CorrectionWidget._add_shortcut_group(
+            grid, title, list(items), start_row=row, is_first=(i == 0)
+        )
     grid.setColumnStretch(1, 1)
+    grid.setRowStretch(row, 1)
+    return column
+
+
+def build_shortcuts_widget(attrib_lbl: QWidget | None = None) -> QWidget:
+    """Build the wide multi-column correction-shortcuts reference panel.
+
+    The shortcut groups are arranged in side-by-side columns (so the panel is
+    wide and short under the top bar), with the disclaimer / attribution label,
+    when supplied, pinned to the bottom of the panel.
+    """
+    group = QGroupBox("Correction shortcuts")
+    outer = QVBoxLayout(group)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(2)
+
+    columns = QHBoxLayout()
+    columns.setContentsMargins(0, 0, 0, 0)
+    columns.setSpacing(12)
+    for col_groups in _SHORTCUT_COLUMNS:
+        columns.addWidget(_shortcut_column(col_groups), alignment=Qt.AlignTop)
+    columns.addStretch(1)
+    outer.addLayout(columns)
+
+    if attrib_lbl is not None:
+        outer.addWidget(attrib_lbl)
     return group

@@ -95,17 +95,15 @@ def test_validate_track_uses_lightweight_status_refresh(monkeypatch) -> None:
     stub._refresh_lineage_canvas_if_shown.assert_not_called()
 
 
-def test_refresh_overview_when_film_strip_toggled_off() -> None:
-    """The always-visible overview must rebuild even with the detail strip off.
+def test_refresh_accordion_rebuilds_while_focus_mode_active() -> None:
+    """The always-on accordion must rebuild whenever focus mode is docked.
 
-    ``lineage_canvas_check`` only toggles the film-strip *detail*; the swimlane
-    overview stays docked the whole time focus mode is active. So the rebuild is
-    gated on the workspace splitter, not on that checkbox.
+    The accordion is the main surface for the whole time focus mode is active,
+    so the rebuild is gated on the workspace splitter being present.
     """
     canvas = SimpleNamespace(refresh=MagicMock())
     stub = SimpleNamespace(
-        _workspace_splitter=object(),  # focus mode active → overview visible
-        lineage_canvas_check=SimpleNamespace(isChecked=lambda: False),
+        _workspace_splitter=object(),  # focus mode active → accordion docked
         _lineage_canvas=canvas,
     )
 
@@ -114,11 +112,10 @@ def test_refresh_overview_when_film_strip_toggled_off() -> None:
     canvas.refresh.assert_called_once_with()
 
 
-def test_refresh_overview_skipped_when_not_in_focus_mode() -> None:
+def test_refresh_accordion_skipped_when_not_in_focus_mode() -> None:
     canvas = SimpleNamespace(refresh=MagicMock())
     stub = SimpleNamespace(
         _workspace_splitter=None,  # focus mode off → nothing docked
-        lineage_canvas_check=SimpleNamespace(isChecked=lambda: True),
         _lineage_canvas=canvas,
     )
 

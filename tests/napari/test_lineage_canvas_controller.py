@@ -1,12 +1,12 @@
-"""Behavioural coverage for the combined-canvas controller.
+"""Behavioural coverage for the unified-accordion controller.
 
 Pins the glue the correction widget relies on: refresh assembles ``LaneView``
-rows from the swimlane model + validation records and populates the overview
-widget synced to the selection + current frame; selecting a track rebuilds only
-that track's detail strip; an absent stack clears it; a click drives the
-navigate callback; teardown drops the panel references (the host owns the dock).
-The Qt panel and the pure builders are stubbed so only the controller's assembly
-is under test.
+rows from the swimlane model + validation records and populates the single
+accordion panel synced to the selection + current frame; selecting a track
+rebuilds only that track's expanded band; an absent stack clears it; a click
+drives the navigate callback; teardown drops the panel reference (the host owns
+the dock). The Qt panel and the pure builders are stubbed so only the
+controller's assembly is under test.
 """
 from __future__ import annotations
 
@@ -23,14 +23,12 @@ from cellflow.segmentation.lineage import LineageModel, TrackLane, TrackSegment
 
 @pytest.fixture
 def stubbed(monkeypatch):
-    """Stub the Qt panels and the pure builders the controller composes.
+    """Stub the Qt accordion panel and the pure builders the controller composes.
 
-    Returns the *overview* panel factory; the film-strip panel factory is
-    available as ``lcc.TrackFilmStripPanel`` (also a MagicMock).
+    Returns the ``TrackAccordionPanel`` factory (a MagicMock).
     """
-    panel_factory = MagicMock(name="LineageCanvasPanel")
-    monkeypatch.setattr(lcc, "LineageCanvasPanel", panel_factory)
-    monkeypatch.setattr(lcc, "TrackFilmStripPanel", MagicMock(name="TrackFilmStripPanel"))
+    panel_factory = MagicMock(name="TrackAccordionPanel")
+    monkeypatch.setattr(lcc, "TrackAccordionPanel", panel_factory)
 
     # One track (id 7) present at frames 0 and 1.
     model = LineageModel(
@@ -69,7 +67,7 @@ def _controller(viewer, *, tracked=None, intensity=None, on_activate=None, pos_d
     )
 
 
-def test_refresh_assembles_lanes_and_docks(stubbed):
+def test_refresh_assembles_lanes_and_populates_panel(stubbed):
     viewer = _viewer()
     ctrl = _controller(
         viewer,
@@ -79,8 +77,8 @@ def test_refresh_assembles_lanes_and_docks(stubbed):
 
     ctrl.refresh()
 
-    # Panels are bare widgets embedded by the host splitter — the controller no
-    # longer owns napari docks.
+    # The panel is a bare widget embedded by the host splitter — the controller
+    # no longer owns napari docks.
     viewer.window.add_dock_widget.assert_not_called()
     panel = stubbed.return_value
     panel.set_overview.assert_called_once()
@@ -88,11 +86,11 @@ def test_refresh_assembles_lanes_and_docks(stubbed):
     assert [ln.cell_id for ln in lanes] == [7]
     assert lanes[0].segments == ((0, 1),)
     assert panel.set_overview.call_args.kwargs["n_frames"] == 2
-    # Selection + current frame are pushed after the overview is built.
+    # Selection + current frame are pushed after the bars are built.
     panel.set_current_frame.assert_called_with(1)
     panel.set_selection.assert_called_with(7)
-    # The detail strip is rendered onto the separate film panel widget.
-    lcc.TrackFilmStripPanel.return_value.set_strip.assert_called_once()
+    # The selected track's expanded band is rendered onto the same panel.
+    panel.set_strip.assert_called_once()
 
 
 def test_refresh_without_stack_clears_panel(stubbed):
@@ -126,7 +124,7 @@ def test_validated_and_anchored_frames_flag_lanes(stubbed, monkeypatch):
     assert lane.anchored == frozenset({1})
 
 
-def test_set_selection_builds_detail_for_occupied_frames(stubbed):
+def test_set_selection_builds_band_for_occupied_frames(stubbed):
     viewer = _viewer()
     ctrl = _controller(
         viewer,
@@ -143,9 +141,9 @@ def test_set_selection_builds_detail_for_occupied_frames(stubbed):
     assert kwargs["frames"] == [0, 1]
 
 
-def test_refresh_detail_rebuilds_strip_without_rescanning_overview(stubbed):
+def test_refresh_detail_rebuilds_band_without_rescanning_bars(stubbed):
     # The rapid swap path must not re-run the whole-stack lineage build (that
-    # froze the GUI on every Z/C); it only re-crops the detail strip.
+    # froze the GUI on every Z/C); it only re-crops the expanded band.
     viewer = _viewer()
     ctrl = _controller(
         viewer,
@@ -160,10 +158,10 @@ def test_refresh_detail_rebuilds_strip_without_rescanning_overview(stubbed):
 
     lcc.build_lineage.assert_not_called()
     lcc.build_track_film_strip.assert_called_once()
-    lcc.TrackFilmStripPanel.return_value.set_strip.assert_called()
+    stubbed.return_value.set_strip.assert_called()
 
 
-def test_refresh_status_recolours_without_rescanning_overview(stubbed, monkeypatch):
+def test_refresh_status_recolours_without_rescanning_bars(stubbed, monkeypatch):
     # Validation/anchoring only flips per-frame flags; recolour the cached lanes
     # instead of re-running the whole-stack build (which froze the GUI).
     validated = {7: set()}
@@ -197,7 +195,7 @@ def test_refresh_status_falls_back_to_full_refresh_when_uncached(stubbed):
         intensity=np.zeros((2, 12, 12), np.float32),
     )
     # Force a panel to exist without a cached structure (never fully refreshed).
-    ctrl._ensure_panels()
+    ctrl._ensure_panel()
 
     ctrl.refresh_status()
 
@@ -239,7 +237,7 @@ def test_node_activation_invokes_navigate_callback(stubbed):
     on_activate.assert_called_once_with(1, 7)
 
 
-def test_center_on_track_delegates_to_overview_panel(stubbed):
+def test_center_on_track_delegates_to_panel(stubbed):
     viewer = _viewer()
     ctrl = _controller(
         viewer,
@@ -262,10 +260,10 @@ def test_center_on_track_is_a_noop_before_the_panel_exists(stubbed):
     stubbed.assert_not_called()
 
 
-def test_teardown_drops_panels(stubbed):
-    # The panels are embedded as bare widgets in the host's workspace splitter
-    # and deleted when that dock is torn down; teardown only drops references so
-    # a later re-activate rebuilds them (no napari dock is owned here).
+def test_teardown_drops_panel(stubbed):
+    # The panel is embedded as a bare widget in the host's workspace splitter and
+    # deleted when that dock is torn down; teardown only drops the reference so a
+    # later re-activate rebuilds it (no napari dock is owned here).
     viewer = _viewer()
     ctrl = _controller(
         viewer,
@@ -277,5 +275,4 @@ def test_teardown_drops_panels(stubbed):
     ctrl.teardown()
 
     viewer.window.remove_dock_widget.assert_not_called()
-    assert ctrl._overview_panel is None
-    assert ctrl._film_panel is None
+    assert ctrl._panel is None

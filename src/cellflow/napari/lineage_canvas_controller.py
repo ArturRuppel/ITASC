@@ -1,16 +1,16 @@
-"""Docked combined-canvas state — assembles the overview + focus detail.
+"""Unified-accordion state — assembles the track bars + selected-track band.
 
-Owns the bottom-docked correction canvas: it builds the per-track swimlane
-overview (present runs from :func:`~cellflow.segmentation.lineage.build_lineage`,
-status frames from the project's validation records) and, for the *selected*
-track only, the film-strip detail band (via
+Owns the correction accordion panel: it builds the per-track swimlane bars
+(present runs from :func:`~cellflow.segmentation.lineage.build_lineage`, status
+frames from the project's validation records) and, for the *selected* track only,
+the per-frame thumbnail band (via
 :func:`~cellflow.napari._correction_track_path.build_track_film_strip`). Building
 crops for a single track keeps refresh cheap no matter how many tracks exist.
 
-The overview, lane assembly and crops are pure/testable; this is the glue that
-reads layers, owns the overview + film-strip widgets (embedded by the host into
-its workspace splitter), and turns a lane/tile click into a viewer jump + cell
-selection via ``on_activate``.
+The bar assembly and crops are pure/testable; this is the glue that reads layers,
+owns the single :class:`~cellflow.napari._correction_track_accordion.TrackAccordionPanel`
+(embedded by the host into its workspace splitter), and turns a bar/thumbnail
+click into a viewer jump + cell selection via ``on_activate``.
 """
 from __future__ import annotations
 
@@ -21,8 +21,7 @@ from collections.abc import Callable
 import numpy as np
 
 from cellflow.tracking_ultrack.validation_state import read_corrections, read_validated_tracks
-from cellflow.napari._correction_film_strip import TrackFilmStripPanel
-from cellflow.napari._correction_lineage_canvas import LaneView, LineageCanvasPanel
+from cellflow.napari._correction_track_accordion import LaneView, TrackAccordionPanel
 from cellflow.napari._correction_track_path import (
     TrackFilmStrip,
     build_track_film_strip,
@@ -35,7 +34,7 @@ _NODE_OUTLINE = (0.75, 0.75, 0.75)  # fallback neutral cell outline for the deta
 
 
 class LineageCanvasController:
-    """Own the docked overview + focus-detail canvas for a correction session."""
+    """Own the unified track-accordion panel for a correction session."""
 
     def __init__(
         self,
@@ -57,11 +56,9 @@ class LineageCanvasController:
         self._current_t_provider = current_t_provider
         self._on_activate = on_activate
         self._pos_dir_provider = pos_dir_provider
-        # Both the swimlane overview and the per-track film strip are embedded as
-        # bare widgets into the host's workspace splitter; the controller no
-        # longer owns napari docks.
-        self._overview_panel: LineageCanvasPanel | None = None
-        self._film_panel: TrackFilmStripPanel | None = None
+        # The unified accordion panel is embedded as a bare widget into the
+        # host's workspace splitter; the controller no longer owns napari docks.
+        self._panel: TrackAccordionPanel | None = None
         # Cached from the last refresh so a selection can rebuild only the detail.
         self._occupied: dict[int, list[int]] = {}
         self._validated_map: dict[int, set[int]] = {}
@@ -72,19 +69,19 @@ class LineageCanvasController:
         self._n_frames: int = 0
 
     def refresh(self) -> None:
-        """Rebuild the overview and the detail strip for the current selection."""
+        """Rebuild the track bars and the selected track's band."""
         tracked = self._tracked_data_provider()
         if tracked is None:
-            if self._overview_panel is not None:
-                self._overview_panel.set_overview([], n_frames=0)
+            if self._panel is not None:
+                self._panel.set_overview([], n_frames=0)
             return
         try:
             lanes, n_frames = self._assemble(np.asarray(tracked))
         except Exception:
             logger.exception("lineage overview assembly failed")
             return
-        self._ensure_panels()
-        self._overview_panel.set_overview(
+        self._ensure_panel()
+        self._panel.set_overview(
             lanes, n_frames=n_frames, title=f"{len(lanes)} track(s)",
         )
         self.set_current_frame(self._current_t_provider())
@@ -115,30 +112,26 @@ class LineageCanvasController:
         return lanes, model.n_frames
 
     def set_selection(self, cell_id: int) -> None:
-        """Highlight the selected lane and rebuild only its detail film strip."""
+        """Mark the selected track and rebuild only its expanded thumbnail band."""
         cell_id = int(cell_id or 0)
-        if self._overview_panel is None:
+        if self._panel is None:
             return
-        self._overview_panel.set_selection(cell_id)
-        if self._film_panel is None:
-            return
-        self._film_panel.set_strip(
+        self._panel.set_selection(cell_id)
+        self._panel.set_strip(
             self._build_detail(cell_id), title=self._detail_title(cell_id)
         )
-        self._film_panel.set_current_frame(self._current_t_provider())
+        self._panel.set_current_frame(self._current_t_provider())
 
     def set_current_frame(self, frame: int) -> None:
-        """Move the shared frame guide / film highlight without rebuilding."""
+        """Move the shared frame guide / tile highlight without rebuilding."""
         frame = int(frame)
-        if self._overview_panel is not None:
-            self._overview_panel.set_current_frame(frame)
-        if self._film_panel is not None:
-            self._film_panel.set_current_frame(frame)
+        if self._panel is not None:
+            self._panel.set_current_frame(frame)
 
     def center_on_track(self, cell_id: int) -> None:
-        """Scroll the overview so ``cell_id``'s row is vertically centered."""
-        if self._overview_panel is not None:
-            self._overview_panel.center_on_track(int(cell_id or 0))
+        """Scroll the panel so ``cell_id``'s bar row is vertically centered."""
+        if self._panel is not None:
+            self._panel.center_on_track(int(cell_id or 0))
 
     def refresh_status(self) -> None:
         """Recolour validated/anchored flags without rescanning the stack.
@@ -151,7 +144,7 @@ class LineageCanvasController:
         it for seconds). Falls back to a full :meth:`refresh` when no structure
         has been cached yet.
         """
-        if self._overview_panel is None:
+        if self._panel is None:
             return
         if self._lane_structure is None:
             self.refresh()
@@ -167,7 +160,7 @@ class LineageCanvasController:
             )
             for cid, column, segments in self._lane_structure
         ]
-        self._overview_panel.set_overview(
+        self._panel.set_overview(
             lanes, n_frames=self._n_frames, title=f"{len(lanes)} track(s)",
         )
         self.set_current_frame(self._current_t_provider())
@@ -183,29 +176,23 @@ class LineageCanvasController:
         on every keystroke). The overview is left as-is until the next
         full refresh (selection change, validate/anchor, reload).
         """
-        if self._overview_panel is None:
+        if self._panel is None:
             return
         self.set_selection(int(self._selected_label_provider() or 0))
 
-    def overview_panel(self) -> LineageCanvasPanel:
-        """The swimlane overview widget (created on first access) to embed."""
-        self._ensure_panels()
-        return self._overview_panel
-
-    def film_widget(self) -> TrackFilmStripPanel:
-        """The per-track film strip widget (created on first access) to embed."""
-        self._ensure_panels()
-        return self._film_panel
+    def panel(self) -> TrackAccordionPanel:
+        """The unified accordion widget (created on first access) to embed."""
+        self._ensure_panel()
+        return self._panel
 
     def teardown(self) -> None:
-        """Drop references to both panels for deactivate.
+        """Drop the reference to the panel for deactivate.
 
-        Both panels are embedded as bare widgets in the host's workspace
-        splitter and are deleted when that dock is torn down; here we just drop
-        our references so a later re-activate recreates them.
+        The panel is embedded as a bare widget in the host's workspace splitter
+        and is deleted when that dock is torn down; here we just drop our
+        reference so a later re-activate recreates it.
         """
-        self._film_panel = None
-        self._overview_panel = None
+        self._panel = None
         self._lane_structure = None
 
     # -- assembly helpers ---------------------------------------------------
@@ -284,16 +271,13 @@ class LineageCanvasController:
 
         return _map
 
-    def _ensure_panels(self) -> None:
-        """Create the overview + film panels as bare widgets (idempotent)."""
-        if self._overview_panel is None:
-            overview = LineageCanvasPanel()
-            overview.node_activated.connect(self._on_node_activated)
-            self._overview_panel = overview
-        if self._film_panel is None:
-            film = TrackFilmStripPanel(tile_px=72)
-            film.frame_clicked.connect(self._on_film_frame_clicked)
-            self._film_panel = film
+    def _ensure_panel(self) -> None:
+        """Create the unified accordion panel as a bare widget (idempotent)."""
+        if self._panel is None:
+            panel = TrackAccordionPanel(tile_px=72)
+            panel.node_activated.connect(self._on_node_activated)
+            panel.frame_clicked.connect(self._on_film_frame_clicked)
+            self._panel = panel
 
     def _on_node_activated(self, frame: int, cell_id: int) -> None:
         try:

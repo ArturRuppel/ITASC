@@ -62,7 +62,7 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
         },
         "correction": {
             "retrack_max_distance": w.retrack_max_dist_spin.value(),
-            "show_track_path": w.nucleus_correction_widget.track_path_check.isChecked(),
+            "show_track_path": w.nucleus_correction_widget.track_path_btn.isChecked(),
         },
     }
 
@@ -140,4 +140,4 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         cor = state["correction"]
         cw = w.nucleus_correction_widget
         if "retrack_max_distance" in cor: w.retrack_max_dist_spin.setValue(cor["retrack_max_distance"])
-        if "show_track_path" in cor: cw.track_path_check.setChecked(cor["show_track_path"])
+        if "show_track_path" in cor: cw.track_path_btn.setChecked(cor["show_track_path"])
