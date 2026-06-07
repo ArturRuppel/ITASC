@@ -1,4 +1,4 @@
-"""Unit tests for cellflow.segmentation.divergence_maps."""
+"""Unit tests for cellflow.cellpose.divergence_maps."""
 from __future__ import annotations
 
 import numpy as np
@@ -6,7 +6,7 @@ import pytest
 
 
 def test_sigmoid_clamps_extreme_logits():
-    from cellflow.segmentation.divergence_maps import sigmoid
+    from cellflow.cellpose.divergence_maps import sigmoid
 
     x = np.array([-1e6, 0.0, 1e6], dtype=np.float32)
     out = sigmoid(x)
@@ -17,7 +17,7 @@ def test_sigmoid_clamps_extreme_logits():
 
 
 def test_foreground_from_prob_mean_matches_sigmoid_mean():
-    from cellflow.segmentation.divergence_maps import foreground_from_prob
+    from cellflow.cellpose.divergence_maps import foreground_from_prob
 
     rng = np.random.default_rng(0)
     prob = rng.normal(0, 3, size=(2, 4, 5, 6)).astype(np.float32)
@@ -29,7 +29,7 @@ def test_foreground_from_prob_mean_matches_sigmoid_mean():
 
 
 def test_foreground_from_prob_max_matches_sigmoid_max():
-    from cellflow.segmentation.divergence_maps import foreground_from_prob
+    from cellflow.cellpose.divergence_maps import foreground_from_prob
 
     prob = np.array(
         [[[[-2.0, 2.0]], [[0.0, -3.0]]]],  # T=1, Z=2, Y=1, X=2
@@ -42,7 +42,7 @@ def test_foreground_from_prob_max_matches_sigmoid_max():
 
 
 def test_foreground_from_prob_rejects_unknown_reduction():
-    from cellflow.segmentation.divergence_maps import foreground_from_prob
+    from cellflow.cellpose.divergence_maps import foreground_from_prob
 
     prob = np.zeros((1, 1, 1, 1), dtype=np.float32)
     with pytest.raises(ValueError, match="reduction"):
@@ -50,7 +50,7 @@ def test_foreground_from_prob_rejects_unknown_reduction():
 
 
 def test_divergence_2d_linear_field_returns_constant():
-    from cellflow.segmentation.divergence_maps import divergence_2d
+    from cellflow.cellpose.divergence_maps import divergence_2d
 
     # dy(y, x) = 2y -> d_dy/d_y = 2; dx(y, x) = 3x -> d_dx/d_x = 3; sum = 5.
     y, x = np.mgrid[0:8, 0:8].astype(np.float32)
@@ -63,7 +63,7 @@ def test_divergence_2d_linear_field_returns_constant():
 
 
 def test_divergence_2d_rejects_wrong_shape():
-    from cellflow.segmentation.divergence_maps import divergence_2d
+    from cellflow.cellpose.divergence_maps import divergence_2d
 
     with pytest.raises(ValueError, match=r"\(2, Y, X\)"):
         divergence_2d(np.zeros((3, 4, 5), dtype=np.float32))
@@ -72,7 +72,7 @@ def test_divergence_2d_rejects_wrong_shape():
 
 
 def test_contour_from_dp_skips_filters_when_off(monkeypatch):
-    import cellflow.segmentation.divergence_maps as dm
+    import cellflow.cellpose.divergence_maps as dm
 
     calls = {"median": 0, "gaussian": 0}
 
@@ -99,7 +99,7 @@ def test_contour_from_dp_skips_filters_when_off(monkeypatch):
 
 
 def test_contour_from_dp_clips_negative_divergence():
-    from cellflow.segmentation.divergence_maps import contour_from_dp
+    from cellflow.cellpose.divergence_maps import contour_from_dp
 
     # Construct a convergent field (div < 0 interior) -- all output should be 0.
     y, x = np.mgrid[0:6, 0:6].astype(np.float32)
@@ -115,7 +115,7 @@ def test_contour_from_dp_clips_negative_divergence():
 
 
 def test_contour_from_dp_invokes_filters_in_order(monkeypatch):
-    import cellflow.segmentation.divergence_maps as dm
+    import cellflow.cellpose.divergence_maps as dm
 
     order: list[str] = []
 
@@ -141,7 +141,7 @@ def test_contour_from_dp_invokes_filters_in_order(monkeypatch):
 
 
 def test_contour_from_dp_reduces_max_vs_mean():
-    from cellflow.segmentation.divergence_maps import contour_from_dp
+    from cellflow.cellpose.divergence_maps import contour_from_dp
 
     # T=1, Z=2; z=0 has zero div, z=1 has +1 div.
     y, x = np.mgrid[0:6, 0:6].astype(np.float32)
@@ -159,7 +159,7 @@ def test_contour_from_dp_reduces_max_vs_mean():
 
 def test_build_divergence_maps_writes_and_reports(tmp_path):
     import tifffile
-    from cellflow.segmentation.divergence_maps import (
+    from cellflow.cellpose.divergence_maps import (
         DivergenceMapsReport, build_divergence_maps,
     )
 
@@ -206,7 +206,7 @@ def test_build_divergence_maps_writes_and_reports(tmp_path):
 
 def test_build_divergence_maps_reports_per_z_contour_progress(tmp_path):
     import tifffile
-    from cellflow.segmentation.divergence_maps import build_divergence_maps
+    from cellflow.cellpose.divergence_maps import build_divergence_maps
 
     prob = np.zeros((1, 3, 4, 4), dtype=np.float32)
     dp = np.zeros((1, 3, 2, 4, 4), dtype=np.float32)
@@ -241,8 +241,8 @@ def test_build_divergence_maps_reports_per_z_contour_progress(tmp_path):
 
 def test_build_divergence_maps_respects_cancel(tmp_path):
     import tifffile
-    from cellflow.segmentation.divergence_maps import build_divergence_maps
-    from cellflow.segmentation import CancelledError
+    from cellflow.cellpose.divergence_maps import build_divergence_maps
+    from cellflow.core.cancellation import CancelledError
 
     prob = np.zeros((3, 1, 2, 2), dtype=np.float32)
     dp = np.zeros((3, 1, 2, 2, 2), dtype=np.float32)
@@ -273,7 +273,7 @@ def test_build_divergence_maps_reads_frames_lazily(tmp_path, monkeypatch):
     in instead of being decompressed whole up front.
     """
     import tifffile
-    import cellflow.segmentation.divergence_maps as dm
+    import cellflow.cellpose.divergence_maps as dm
 
     prob = np.zeros((4, 2, 5, 6), dtype=np.float32)
     dp = np.zeros((4, 2, 2, 5, 6), dtype=np.float32)
@@ -312,7 +312,7 @@ def test_build_divergence_maps_reads_frames_lazily(tmp_path, monkeypatch):
 
 def test_build_divergence_maps_validates_shapes(tmp_path):
     import tifffile
-    from cellflow.segmentation.divergence_maps import build_divergence_maps
+    from cellflow.cellpose.divergence_maps import build_divergence_maps
 
     prob = np.zeros((2, 3, 5, 6), dtype=np.float32)
     dp = np.zeros((3, 3, 2, 5, 6), dtype=np.float32)  # T mismatch

@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.napari._standalone_paths import StandalonePathsMixin
 from cellflow.napari._widget_helpers import (
     dslider as _dslider,
     islider as _islider,
@@ -39,7 +40,7 @@ from cellflow.napari.widgets import (
     PipelineFilesWidget,
     make_pipeline_files_header,
 )
-from cellflow.segmentation import cellpose_runner
+from cellflow.cellpose import cellpose_runner
 
 logger = logging.getLogger(__name__)
 
@@ -87,22 +88,32 @@ def _make_progress() -> QProgressBar:
     return bar
 
 
-class CellposeWidget(QWidget):
+class CellposeWidget(StandalonePathsMixin, QWidget):
     """Local Cellpose-SAM runner — two rows (Nucleus, Cell)."""
 
     _progress_signal = Signal(int, int, str)
+
+    #: QSettings application key for the standalone path pickers.
+    _SETTINGS_APP = "cellflow_cellpose"
 
     def __init__(
         self,
         viewer: napari.Viewer,
         parent: QWidget | None = None,
         gate: UiGate | None = None,
+        standalone: bool = False,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         #: App-wide UI gate; a private one is created for standalone use.
         self.gate = gate if gate is not None else UiGate(self)
         self._pos_dir: Path | None = None
+        #: Standalone explicit paths (orchestrated mode leaves these ``None`` and
+        #: derives everything from ``_pos_dir``'s staged subdirectories).
+        self._standalone = standalone
+        self._sa_nucleus: Path | None = None
+        self._sa_cell: Path | None = None
+        self._sa_output_dir: Path | None = None
         self._running_stage: str | None = None
         self._worker = None
         self._cancel_requested = False
@@ -111,6 +122,8 @@ class CellposeWidget(QWidget):
         self._connect_signals()
         self._register_gate_controls()
         self._progress_signal.connect(self._progress)
+        if self._standalone:
+            self._load_standalone_settings()
 
     # ------------------------------------------------------------------
     # UI
@@ -120,6 +133,37 @@ class CellposeWidget(QWidget):
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(6)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+        # ── Standalone input/output pickers (hidden when orchestrated) ──
+        # The full app drives this piece through refresh(pos_dir) and the staged
+        # 0_input/1_cellpose layout; standalone instead takes the two raw input
+        # stacks explicitly and writes every map into a chosen output directory.
+        self._paths_container = QWidget()
+        paths_col = QVBoxLayout(self._paths_container)
+        paths_col.setContentsMargins(0, 0, 0, 0)
+        self._nucleus_edit = self._add_path_row(
+            paths_col,
+            "Nucleus channel",
+            "raw nucleus stack (.tif)",
+            self._on_browse_nucleus,
+            self._apply_standalone_paths,
+        )
+        self._cell_edit = self._add_path_row(
+            paths_col,
+            "Cell channel",
+            "raw cell stack (.tif)",
+            self._on_browse_cell,
+            self._apply_standalone_paths,
+        )
+        self._output_dir_edit = self._add_path_row(
+            paths_col,
+            "Output dir",
+            "directory for Cellpose maps",
+            self._on_browse_output_dir,
+            self._apply_standalone_paths,
+        )
+        root.addWidget(self._paths_container)
+        self._paths_container.setVisible(self._standalone)
 
         # ── Pipeline files ─────────────────────────────────────────────
         self._files_widget = PipelineFilesWidget(_PIPELINE_FILES, viewer=self.viewer)
@@ -298,13 +342,66 @@ class CellposeWidget(QWidget):
     # Path helpers
     # ------------------------------------------------------------------
     def _input_path(self, channel: str) -> Path | None:
+        if self._standalone:
+            return self._sa_nucleus if channel == "nucleus" else self._sa_cell
         if self._pos_dir is None:
             return None
         name = "nucleus_3dt.tif" if channel == "nucleus" else "cell_3dt.tif"
         return self._pos_dir / "0_input" / name
 
     def _output_dir(self) -> Path | None:
+        if self._standalone:
+            return self._sa_output_dir
         return None if self._pos_dir is None else self._pos_dir / "1_cellpose"
+
+    # ── Standalone helpers ─────────────────────────────────────────────
+    # Row building / browse plumbing / QSettings come from StandalonePathsMixin;
+    # the apply step is Cellpose-specific (two explicit input stacks + a flat
+    # output directory that also serves as the divergence widget's maps dir).
+    def _apply_standalone_paths(self) -> None:
+        nuc = self._nucleus_edit.text().strip()
+        cel = self._cell_edit.text().strip()
+        out = self._output_dir_edit.text().strip()
+        self._sa_nucleus = Path(nuc) if nuc else None
+        self._sa_cell = Path(cel) if cel else None
+        self._sa_output_dir = Path(out) if out else None
+        self._save_standalone_settings()
+        # The existing _pos_dir-based guards and the pipeline-files panel expect a
+        # real directory; the output dir doubles as the staged-file root here.
+        self._pos_dir = self._sa_output_dir
+        self._files_widget.refresh(self._sa_output_dir)
+        self.divergence_maps_widget.set_maps_dir(self._sa_output_dir)
+        self.gate.recompute()
+
+    def _on_browse_nucleus(self) -> None:
+        self._browse_file_into(
+            self._nucleus_edit, "Select nucleus channel", self._apply_standalone_paths
+        )
+
+    def _on_browse_cell(self) -> None:
+        self._browse_file_into(
+            self._cell_edit, "Select cell channel", self._apply_standalone_paths
+        )
+
+    def _on_browse_output_dir(self) -> None:
+        self._browse_dir_into(
+            self._output_dir_edit, "Select output directory", self._apply_standalone_paths
+        )
+
+    def _standalone_fields(self) -> dict:
+        return {
+            "nucleus": self._nucleus_edit,
+            "cell": self._cell_edit,
+            "output_dir": self._output_dir_edit,
+        }
+
+    def _load_standalone_settings(self) -> None:
+        self._load_path_settings(self._SETTINGS_APP, self._standalone_fields())
+        if any(edit.text().strip() for edit in self._standalone_fields().values()):
+            self._apply_standalone_paths()
+
+    def _save_standalone_settings(self) -> None:
+        self._save_path_settings(self._SETTINGS_APP, self._standalone_fields())
 
     # ------------------------------------------------------------------
     # Run flow
@@ -346,7 +443,7 @@ class CellposeWidget(QWidget):
             self._set_running_stage(None)
             self._clear_progress()
             self._files_widget.refresh(pos_dir)
-            self.divergence_maps_widget.refresh(pos_dir)
+            self._refresh_divergence(pos_dir)
             label = "Nucleus" if channel == "nucleus" else "Cell"
             self._status(f"{label} Cellpose complete — wrote {channel}_*_3dt.tif")
 
@@ -608,7 +705,18 @@ class CellposeWidget(QWidget):
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
         self._files_widget.refresh(pos_dir)
-        self.divergence_maps_widget.refresh(pos_dir)
+        self._refresh_divergence(pos_dir)
+
+    def _refresh_divergence(self, pos_dir: Path | None) -> None:
+        """Point the embedded divergence widget at the active maps location.
+
+        Orchestrated: maps live under ``<pos_dir>/1_cellpose``. Standalone: maps
+        live directly in the chosen output directory.
+        """
+        if self._standalone:
+            self.divergence_maps_widget.set_maps_dir(self._sa_output_dir)
+        else:
+            self.divergence_maps_widget.refresh(pos_dir)
 
     def get_state(self) -> dict:
         return {
@@ -736,3 +844,25 @@ class CellposeWidget(QWidget):
                 adder(data, name=name, **kwargs)
         else:
             adder(data, name=name, **kwargs)
+
+
+def make_cellpose_widget(napari_viewer=None):
+    """napari plugin factory for the standalone Cellpose piece.
+
+    Patches the napari layer-controls delegate (best-effort) and returns the
+    Cellpose widget in standalone mode, with its own nucleus/cell input stacks
+    and output-directory pickers.
+    """
+    try:
+        from cellflow.napari._napari_compat import patch_napari_layer_delegate
+
+        patch_napari_layer_delegate()
+    except Exception:
+        pass
+    # napari does not inject the viewer into function-based widget factories
+    # (only into class-based callables / magicgui types), so ``napari_viewer``
+    # arrives as ``None``. The widget needs a live viewer, so fall back to the
+    # active one.
+    if napari_viewer is None:
+        napari_viewer = napari.current_viewer()
+    return CellposeWidget(napari_viewer, standalone=True)

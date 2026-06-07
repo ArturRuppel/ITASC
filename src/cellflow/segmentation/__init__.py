@@ -31,11 +31,6 @@ from cellflow.segmentation.nucleus_segmentation import (
     _fill_and_close_labels,
 )
 
-from cellflow.segmentation.divergence_maps import (
-    DivergenceMapsReport,
-    build_divergence_maps,
-)
-
 from cellflow.segmentation.lineage import (
     LineageModel,
     TrackLane,
@@ -51,14 +46,12 @@ __all__ = [
     "CellLabelICMParams",
     "ContourFilterParams",
     "ContourWatershedParams",
-    "DivergenceMapsReport",
     "LineageModel",
     "TrackLane",
     "TrackSegment",
     "apply_gamma",
     "assemble_cost_field",
     "balance_strength_to_weights",
-    "build_divergence_maps",
     "build_lineage",
     "clean_and_smooth_contours",
     "commit_labels",

@@ -36,7 +36,7 @@ def _mock_cellpose(monkeypatch):
     fake_cellpose.models = fake_models
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "cellpose.models", fake_models)
-    monkeypatch.delitem(sys.modules, "cellflow.segmentation.cellpose_runner", raising=False)
+    monkeypatch.delitem(sys.modules, "cellflow.cellpose.cellpose_runner", raising=False)
     monkeypatch.delitem(sys.modules, "cellflow.napari.cellpose_widget", raising=False)
     monkeypatch.delitem(sys.modules, "cellflow.napari.main_widget", raising=False)
 

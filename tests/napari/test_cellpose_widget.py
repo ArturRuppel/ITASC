@@ -97,7 +97,7 @@ def _mock_cellpose(monkeypatch):
     fake_cellpose.models = fake_models
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "cellpose.models", fake_models)
-    monkeypatch.delitem(sys.modules, "cellflow.segmentation.cellpose_runner", raising=False)
+    monkeypatch.delitem(sys.modules, "cellflow.cellpose.cellpose_runner", raising=False)
 
 
 def _load_widget(monkeypatch):
@@ -341,7 +341,7 @@ def test_embeds_divergence_maps_subwidget_and_state(_mock_cellpose, monkeypatch,
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
     divergence_mod = importlib.import_module("cellflow.napari.divergence_maps_widget")
-    from cellflow.segmentation.divergence_maps import DivergenceMapsReport
+    from cellflow.cellpose.divergence_maps import DivergenceMapsReport
     import tifffile
 
     w = mod.CellposeWidget(_FakeViewer())
@@ -710,3 +710,63 @@ def test_preview_reports_missing_input(_mock_cellpose, monkeypatch, tmp_path):
     w.nucleus_preview_btn.click()
     assert "missing" in w.status_lbl.text().lower()
     w.deleteLater()
+
+
+# ── standalone seam (cellflow-cellpose distribution) ───────────────────────────
+
+def test_standalone_shows_pickers_and_keeps_files_panel(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer(), standalone=True)
+
+    # The three standalone input/output pickers exist and are visible …
+    for edit in (w._nucleus_edit, w._cell_edit, w._output_dir_edit):
+        assert edit is not None
+    assert w._paths_container.isVisibleTo(w)
+    # … and the staged pipeline-files panel stays (the 0_input/1_cellpose layout
+    # is the on-disk contract even standalone).
+    assert w.pipeline_files_header.isVisibleTo(w)
+
+    w.deleteLater()
+    app.processEvents()
+
+
+def test_standalone_paths_resolve_to_explicit_files(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer(), standalone=True)
+
+    nuc = tmp_path / "nucleus.tif"
+    cel = tmp_path / "cell.tif"
+    out = tmp_path / "out"
+    w._nucleus_edit.setText(str(nuc))
+    w._cell_edit.setText(str(cel))
+    w._output_dir_edit.setText(str(out))
+    w._apply_standalone_paths()
+
+    assert w._input_path("nucleus") == nuc
+    assert w._input_path("cell") == cel
+    assert w._output_dir() == out
+    # _pos_dir is set to the output dir so the run/preview guards pass, and the
+    # embedded divergence widget resolves its maps flatly under the same dir.
+    assert w._pos_dir == out
+    assert w.divergence_maps_widget._resolved_maps_dir() == out
+
+    w.deleteLater()
+    app.processEvents()
+
+
+def test_standalone_factory_returns_standalone_widget(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    import napari
+
+    monkeypatch.setattr(napari, "current_viewer", lambda: _FakeViewer())
+    w = mod.make_cellpose_widget()
+
+    assert isinstance(w, mod.CellposeWidget)
+    assert w._standalone is True
+    assert w._paths_container.isVisibleTo(w)
+
+    w.deleteLater()
+    app.processEvents()

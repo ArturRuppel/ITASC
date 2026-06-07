@@ -19,6 +19,9 @@ contributions:
     - id: cellflow.cell_segmentation_widget
       title: "Cell Segmentation"
       python_name: cellflow.napari.cell_workflow_widget:make_cell_segmentation_widget
+    - id: cellflow.cellpose_widget
+      title: "Cellpose"
+      python_name: cellflow.napari.cellpose_widget:make_cellpose_widget
   widgets:
     - command: cellflow.main_widget
       display_name: "CellFlow"
@@ -28,3 +31,5 @@ contributions:
       display_name: "Nucleus Tracking & Correction"
     - command: cellflow.cell_segmentation_widget
       display_name: "Cell Segmentation"
+    - command: cellflow.cellpose_widget
+      display_name: "Cellpose"

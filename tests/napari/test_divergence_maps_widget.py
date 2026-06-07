@@ -243,6 +243,41 @@ def test_embedded_widget_can_hide_pipeline_files(monkeypatch):
     w.deleteLater()
 
 
+def test_refresh_resolves_maps_under_staged_cellpose_dir(monkeypatch, tmp_path):
+    """Orchestrated seam: maps live under <pos_dir>/1_cellpose."""
+    _qapp()
+    mod = _load_widget(monkeypatch)
+    w = mod.DivergenceMapsWidget(_FakeViewer(), show_pipeline_files=False)
+
+    w.refresh(tmp_path)
+    prob, dp, contours, fg = w._channel_paths("nucleus")
+    assert prob == tmp_path / "1_cellpose" / "nucleus_prob_3dt.tif"
+    assert dp == tmp_path / "1_cellpose" / "nucleus_dp_3dt.tif"
+    assert contours == tmp_path / "1_cellpose" / "nucleus_contours.tif"
+    assert fg == tmp_path / "1_cellpose" / "nucleus_foreground.tif"
+    w.deleteLater()
+
+
+def test_set_maps_dir_resolves_maps_flatly(monkeypatch, tmp_path):
+    """Standalone seam: maps resolve flatly under an explicit directory, and the
+    run buttons enable without a staged position directory."""
+    _qapp()
+    mod = _load_widget(monkeypatch)
+    w = mod.DivergenceMapsWidget(_FakeViewer(), show_pipeline_files=False)
+
+    w.set_maps_dir(tmp_path)
+    assert w._pos_dir is None
+    prob, dp, contours, fg = w._channel_paths("cell")
+    assert prob == tmp_path / "cell_prob_3dt.tif"
+    assert dp == tmp_path / "cell_dp_3dt.tif"
+    assert contours == tmp_path / "cell_contours.tif"
+    assert fg == tmp_path / "cell_foreground.tif"
+    # Gate enablement keys on resolved maps, not _pos_dir.
+    assert w.nucleus_run_btn.isEnabled()
+    assert w.cell_run_btn.isEnabled()
+    w.deleteLater()
+
+
 def test_widget_state_roundtrip(monkeypatch):
     _qapp()
     mod = _load_widget(monkeypatch)
@@ -274,7 +309,7 @@ def test_widget_state_roundtrip(monkeypatch):
 def test_run_invokes_build_divergence_maps(tmp_path, monkeypatch):
     _qapp()
     mod = _load_widget(monkeypatch)
-    from cellflow.segmentation.divergence_maps import DivergenceMapsReport
+    from cellflow.cellpose.divergence_maps import DivergenceMapsReport
     import tifffile
 
     pos = tmp_path / "pos00"
@@ -351,7 +386,7 @@ def test_run_invokes_build_divergence_maps(tmp_path, monkeypatch):
 def test_worker_emits_granular_progress_for_nucleus_and_cell(tmp_path, monkeypatch):
     _qapp()
     mod = _load_widget(monkeypatch)
-    from cellflow.segmentation.divergence_maps import DivergenceMapsReport
+    from cellflow.cellpose.divergence_maps import DivergenceMapsReport
     import tifffile
 
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())

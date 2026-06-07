@@ -30,8 +30,12 @@ The full plugin orchestrates them into the unified workflow described below.
 - [`cellflow-segmentation`](packages/cellflow-segmentation) — divergence-based
   cell segmentation + interactive correction (napari). Consumes Cellpose-derived
   cell foreground/contours + tracked nucleus seeds → `3_cell/tracked_labels.tif`.
-  The Cellpose probability/flow step is an optional `[cellpose]` extra. Depends
-  on `cellflow-core`.
+  Depends on `cellflow-core`.
+- [`cellflow-cellpose`](packages/cellflow-cellpose) — the shared upstream
+  Cellpose stage (napari): a local Cellpose-SAM runner + divergence-based
+  foreground/contour map building. Raw `0_input` stacks → `1_cellpose/*` prob/flow
+  and foreground/contour maps that both tracking and segmentation consume. The
+  Cellpose model is an optional `[cellpose]` extra. Depends on `cellflow-core`.
 - [`cellflow-core`](packages/cellflow-core) — shared TIFF/path helpers, generic
   image ops + label-stack IO, the shared interactive-correction base, the track
   lineage model, and reusable napari UI primitives.

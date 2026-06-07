@@ -59,6 +59,7 @@ jobs:
           python -m build --wheel packages/cellflow-contact --outdir dist
           python -m build --wheel packages/cellflow-tracking --outdir dist
           python -m build --wheel packages/cellflow-segmentation --outdir dist
+          python -m build --wheel packages/cellflow-cellpose --outdir dist
 
       - name: Verify isolated install (PEP 420 namespace + headless core)
         run: |
@@ -66,7 +67,7 @@ jobs:
           . /tmp/cf-verify/bin/activate
           pip install --upgrade pip
           pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic
-          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_contact-*.whl dist/cellflow_tracking-*.whl dist/cellflow_segmentation-*.whl
+          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_contact-*.whl dist/cellflow_tracking-*.whl dist/cellflow_segmentation-*.whl dist/cellflow_cellpose-*.whl
           python - <<'PY'
           import os, tempfile, numpy as np, tifffile, h5py
           import cellflow            # PEP 420 namespace, no orchestrator present
@@ -115,6 +116,32 @@ jobs:
           res = segment_cells_divergence(contours, foreground, nuc, CellDivergenceParams())
           assert res.labels.shape == (2, 12, 12)
           print("isolated cellflow-segmentation backend OK")
+
+          # cellflow-cellpose composes into the same namespace on cellflow-core
+          # alone. The Cellpose model lib is an optional extra (lazy import), so
+          # the runner module imports without it, and the divergence-map builder
+          # runs headlessly on synthetic prob/dp stacks.
+          import cellflow.cellpose.cellpose_runner  # noqa: F401  (no cellpose lib needed to import)
+          from cellflow.cellpose import build_divergence_maps
+          cp_dir = tempfile.mkdtemp()
+          prob = np.zeros((2, 2, 10, 10), dtype="float32")          # (T, Z, Y, X)
+          dp = np.zeros((2, 2, 2, 10, 10), dtype="float32")         # (T, Z, 2, Y, X)
+          prob_p = os.path.join(cp_dir, "nucleus_prob_3dt.tif")
+          dp_p = os.path.join(cp_dir, "nucleus_dp_3dt.tif")
+          tifffile.imwrite(prob_p, prob)
+          tifffile.imwrite(dp_p, dp)
+          report = build_divergence_maps(
+              prob_p, dp_p,
+              os.path.join(cp_dir, "nucleus_contours.tif"),
+              os.path.join(cp_dir, "nucleus_foreground.tif"),
+              foreground_z_reduction="mean",
+              contour_z_reduction="mean",
+              smoothing_sigma=0.0,
+              median_radius=0,
+          )
+          assert report.frames == 2
+          assert os.path.exists(os.path.join(cp_dir, "nucleus_foreground.tif"))
+          print("isolated cellflow-cellpose backend OK")
           PY
 
       - name: Verify napari manifests validate
@@ -127,6 +154,7 @@ jobs:
               ("src/cellflow/contact_analysis/napari.yaml", "cellflow-contact"),
               ("src/cellflow/tracking_ultrack/napari.yaml", "cellflow-tracking"),
               ("src/cellflow/segmentation/napari.yaml", "cellflow-segmentation"),
+              ("src/cellflow/cellpose/napari.yaml", "cellflow-cellpose"),
           ]:
               m = PluginManifest.from_file(path)
               assert m.name == name, (m.name, name)
@@ -143,6 +171,7 @@ jobs:
               "src/cellflow/contact_analysis/napari.yaml",
               "src/cellflow/tracking_ultrack/napari.yaml",
               "src/cellflow/segmentation/napari.yaml",
+              "src/cellflow/cellpose/napari.yaml",
           ):
               assert factories(path) <= folded, path
           print("folded manifest mirrors standalone factories OK")

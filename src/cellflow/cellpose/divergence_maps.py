@@ -18,11 +18,13 @@ import numpy as np
 import tifffile
 from scipy.ndimage import gaussian_filter, median_filter
 
+from cellflow.core.cancellation import CancelledError
 from cellflow.core.tiff import imwrite_grayscale
-from cellflow.segmentation.nucleus_segmentation import (
-    CancelledError,
-    _check_cancel,
-)
+
+
+def _check_cancel(cancel: Callable[[], bool] | None) -> None:
+    if cancel is not None and cancel():
+        raise CancelledError("Operation cancelled.")
 
 
 ZReduction = Literal["mean", "max"]

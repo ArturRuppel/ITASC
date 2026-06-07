@@ -26,7 +26,6 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._widget_helpers import (
     dslider as _dslider,
     islider as _islider,
@@ -45,8 +44,8 @@ from cellflow.napari.widgets import (
     PipelineFilesWidget,
     make_pipeline_files_header,
 )
-from cellflow.segmentation import CancelledError
-from cellflow.segmentation.divergence_maps import (
+from cellflow.core.cancellation import CancelledError
+from cellflow.cellpose.divergence_maps import (
     build_divergence_maps,
     contour_from_dp,
     foreground_from_prob,
@@ -118,6 +117,9 @@ class DivergenceMapsWidget(QWidget):
         #: App-wide UI gate; a private one is created for standalone use.
         self.gate = gate if gate is not None else UiGate(self)
         self._pos_dir: Path | None = None
+        #: Standalone override: when set, prob/dp/foreground/contour maps resolve
+        #: flatly under this directory instead of ``<pos_dir>/1_cellpose``.
+        self._maps_dir: Path | None = None
         self._running_stage: str | None = None
         self._worker = None
         self._cancel_event: threading.Event | None = None
@@ -324,7 +326,7 @@ class DivergenceMapsWidget(QWidget):
         owner is active. ⚙ params just toggle a panel and stay available.
         """
         g = self.gate
-        has_pos = lambda: self._pos_dir is not None  # noqa: E731
+        has_pos = lambda: self._resolved_maps_dir() is not None  # noqa: E731
         idle = lambda: self._running_stage is None  # noqa: E731
         for channel, params_btn, preview_btn, run_btn in (
             ("nucleus", self.nucleus_params_btn, self.nucleus_preview_btn, self.nucleus_run_btn),
@@ -439,12 +441,15 @@ class DivergenceMapsWidget(QWidget):
         )
 
     def _channel_paths(self, channel: Literal["nucleus", "cell"]):
-        paths = self._paths()
-        if paths is None:
+        d = self._resolved_maps_dir()
+        if d is None:
             return None, None, None, None
-        if channel == "nucleus":
-            return paths.prob, paths.dp, paths.nucleus_contours, paths.nucleus_foreground
-        return paths.cell_prob, paths.cell_dp, paths.cell_contours, paths.cell_foreground
+        return (
+            d / f"{channel}_prob_3dt.tif",
+            d / f"{channel}_dp_3dt.tif",
+            d / f"{channel}_contours.tif",
+            d / f"{channel}_foreground.tif",
+        )
 
     def _set_status(self, msg: str) -> None:
         self.status_lbl.setText(msg)
@@ -753,5 +758,18 @@ class DivergenceMapsWidget(QWidget):
             getattr(self, f"{prefix}_fg_median_spin").setValue(int(state["foreground_median_radius"]))
 
     # ── Path helpers ────────────────────────────────────────────────
-    def _paths(self) -> NucleusArtifactPaths | None:
-        return NucleusArtifactPaths(self._pos_dir) if self._pos_dir else None
+    def set_maps_dir(self, maps_dir: Path | str | None) -> None:
+        """Standalone seam: resolve maps flatly under an explicit directory.
+
+        The orchestrator drives the widget through ``refresh(pos_dir)`` (maps
+        live under ``<pos_dir>/1_cellpose``); the standalone Cellpose piece
+        instead points it at the chosen output directory, where the Cellpose
+        prob/dp stacks and the derived foreground/contour maps live side by side.
+        """
+        self._maps_dir = None if maps_dir is None else Path(maps_dir)
+        self.gate.recompute()
+
+    def _resolved_maps_dir(self) -> Path | None:
+        if self._maps_dir is not None:
+            return self._maps_dir
+        return self._pos_dir / "1_cellpose" if self._pos_dir is not None else None

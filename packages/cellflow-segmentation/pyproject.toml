@@ -21,16 +21,10 @@ dependencies = [
     "tifffile",
 ]
 
-[project.optional-dependencies]
-# Cellpose powers the upstream probability/flow step (cellpose_runner); it is
-# imported lazily and only needed to generate the foreground/contour maps the
-# divergence segmentation consumes. Correction- or segmentation-only use of
-# precomputed maps does not require it.
-cellpose = [
-    "cellpose>=4.0",
-    "torch",
-    "torchvision",
-]
+# The upstream Cellpose probability/flow + foreground/contour-map step now lives
+# in the separate cellflow-cellpose distribution. Cell segmentation consumes the
+# resulting foreground/contour maps as .tif inputs, so it has no Cellpose
+# dependency of its own.
 
 [project.urls]
 Homepage = "https://github.com/ArturRuppel/CellFlow"

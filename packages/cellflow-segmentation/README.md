@@ -8,9 +8,11 @@ with interactive label correction in napari.
 ## Install
 
 ```bash
-pip install cellflow-segmentation          # divergence segmentation + correction
-pip install "cellflow-segmentation[cellpose]"  # + the Cellpose probability/flow step
+pip install cellflow-segmentation   # divergence segmentation + correction
 ```
+
+The upstream Cellpose foreground/contour maps come from the separate
+[`cellflow-cellpose`](../cellflow-cellpose) distribution.
 
 This pulls in `cellflow-core`. Both install into the shared `cellflow.*`
 namespace (PEP 420), so `import cellflow.segmentation` works whether or not the
