@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping
 import numpy as np
 
 from cellflow.napari._correction_track_path import build_all_tracks_data
-from cellflow.napari.contact_analysis_visualization import _track_label_color_styling
+from cellflow.napari._track_render import _track_label_color_styling
 from cellflow.napari._correction_centroids import (
     FOCUS_CROSS_COLOR,
     NEUTRAL_OVERLAY_COLOR,

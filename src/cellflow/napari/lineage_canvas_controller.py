@@ -27,7 +27,7 @@ from cellflow.napari._correction_track_path import (
     TrackFilmStrip,
     build_track_film_strip,
 )
-from cellflow.segmentation.lineage import build_lineage
+from cellflow.core.lineage import build_lineage
 
 logger = logging.getLogger(__name__)
 
