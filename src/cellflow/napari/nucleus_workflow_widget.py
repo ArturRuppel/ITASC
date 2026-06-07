@@ -18,11 +18,6 @@ import napari
 import numpy as np
 from qtpy.QtCore import Qt, QSettings, QTimer
 from qtpy.QtWidgets import (
-    QFileDialog,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
     QVBoxLayout,
     QSizePolicy,
     QWidget,
@@ -42,6 +37,7 @@ from cellflow.napari.nucleus_segmentation_inputs_widget import (
     NucleusSegmentationInputsWidget,
 )
 from cellflow.napari.nucleus_tracking_inputs_widget import NucleusTrackingInputsWidget
+from cellflow.napari._standalone_paths import StandalonePathsMixin
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari._paths import NucleusWorkspace
 from cellflow.napari._state import dump_state, load_state
@@ -78,7 +74,9 @@ _NUCLEUS_PIPELINE_FILE_GROUPS = [
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionMixin, QWidget):
+class NucleusWorkflowWidget(
+    NucleusUltrackDbBrowserMixin, NucleusAtomExtractionMixin, StandalonePathsMixin, QWidget
+):
     """Nucleus candidate generation and tracking — flat action-button layout."""
 
     def __init__(
@@ -690,29 +688,9 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self._refresh_validation_counter()
 
     # ── Standalone helpers ────────────────────────────────────────────────────
-    def _add_path_row(
-        self,
-        column: QVBoxLayout,
-        label: str,
-        placeholder: str,
-        on_browse,
-        on_edited,
-    ) -> QLineEdit:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel(label)
-        lbl.setMinimumWidth(80)
-        row.addWidget(lbl)
-        edit = QLineEdit()
-        edit.setPlaceholderText(placeholder)
-        edit.editingFinished.connect(on_edited)
-        row.addWidget(edit, 1)
-        browse_btn = QPushButton("Browse…")
-        browse_btn.clicked.connect(on_browse)
-        row.addWidget(browse_btn)
-        column.addLayout(row)
-        return edit
-
+    # Row building / browse plumbing / QSettings come from StandalonePathsMixin;
+    # the apply step is nucleus-specific (it builds a NucleusWorkspace through
+    # set_context rather than tracking flat _pos_dir paths).
     def _apply_paths_from_fields(self) -> None:
         self.set_context(
             foreground=self._foreground_edit.text().strip() or None,
@@ -721,26 +699,19 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         )
 
     def _on_browse_foreground(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select foreground image", filter="Images (*.tif *.tiff);;All files (*)"
+        self._browse_file_into(
+            self._foreground_edit, "Select foreground image", self._apply_paths_from_fields
         )
-        if path:
-            self._foreground_edit.setText(path)
-            self._apply_paths_from_fields()
 
     def _on_browse_contours(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select contours image", filter="Images (*.tif *.tiff);;All files (*)"
+        self._browse_file_into(
+            self._contours_edit, "Select contours image", self._apply_paths_from_fields
         )
-        if path:
-            self._contours_edit.setText(path)
-            self._apply_paths_from_fields()
 
     def _on_browse_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select output directory")
-        if path:
-            self._output_dir_edit.setText(path)
-            self._apply_paths_from_fields()
+        self._browse_dir_into(
+            self._output_dir_edit, "Select output directory", self._apply_paths_from_fields
+        )
 
     def _on_paths_edited(self) -> None:
         self._apply_paths_from_fields()

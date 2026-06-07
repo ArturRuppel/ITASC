@@ -38,14 +38,12 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Qt, QSettings, QTimer, Signal
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QProgressBar,
-    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -58,6 +56,7 @@ from cellflow.napari._widget_helpers import (
     islider as _islider,
     tool_btn as _tool_btn,
 )
+from cellflow.napari._standalone_paths import StandalonePathsMixin
 from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import (
@@ -143,7 +142,7 @@ def _make_progress() -> QProgressBar:
 #   2_nucleus/tracked_labels.tif → 3_cell/tracked_labels.tif
 
 
-class CellWorkflowWidget(QWidget):
+class CellWorkflowWidget(StandalonePathsMixin, QWidget):
     """Simplified divergence-based cell segmentation widget."""
 
     _run_progress = Signal(str)
@@ -237,21 +236,26 @@ class CellWorkflowWidget(QWidget):
         paths_col = QVBoxLayout(self._paths_container)
         paths_col.setContentsMargins(0, 0, 0, 0)
         paths_col.setSpacing(2)
+        apply = self._apply_standalone_paths
         self._foreground_edit = self._add_path_row(
             paths_col, "Foreground:", "Cell foreground .tif",
-            lambda: self._on_browse_file(self._foreground_edit, "Select cell foreground image"),
+            lambda: self._browse_file_into(self._foreground_edit, "Select cell foreground image", apply),
+            apply,
         )
         self._contours_edit = self._add_path_row(
             paths_col, "Contours:", "Cell contours .tif",
-            lambda: self._on_browse_file(self._contours_edit, "Select cell contours image"),
+            lambda: self._browse_file_into(self._contours_edit, "Select cell contours image", apply),
+            apply,
         )
         self._nucleus_edit = self._add_path_row(
             paths_col, "Nucleus:", "Tracked nucleus labels .tif",
-            lambda: self._on_browse_file(self._nucleus_edit, "Select tracked nucleus labels"),
+            lambda: self._browse_file_into(self._nucleus_edit, "Select tracked nucleus labels", apply),
+            apply,
         )
         self._output_dir_edit = self._add_path_row(
             paths_col, "Output dir:", "Folder for 3_cell/tracked_labels.tif",
-            self._on_browse_output_dir,
+            lambda: self._browse_dir_into(self._output_dir_edit, "Select output directory", apply),
+            apply,
         )
         root.addWidget(self._paths_container)
         self._paths_container.setVisible(self._standalone)
@@ -589,37 +593,18 @@ class CellWorkflowWidget(QWidget):
     # ================================================================
     # Standalone input/output pickers (only built/used when standalone)
     # ================================================================
-    def _add_path_row(
-        self, column: QVBoxLayout, label: str, placeholder: str, on_browse,
-    ) -> QLineEdit:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel(label)
-        lbl.setMinimumWidth(80)
-        row.addWidget(lbl)
-        edit = QLineEdit()
-        edit.setPlaceholderText(placeholder)
-        edit.editingFinished.connect(self._apply_standalone_paths)
-        row.addWidget(edit, 1)
-        browse_btn = QPushButton("Browse…")
-        browse_btn.clicked.connect(on_browse)
-        row.addWidget(browse_btn)
-        column.addLayout(row)
-        return edit
+    # Row building, browse handlers, and QSettings persistence come from
+    # StandalonePathsMixin; this widget only declares its fields and the
+    # piece-specific step that pushes them into the workspace.
+    _SETTINGS_APP = "cellflow_segmentation"
 
-    def _on_browse_file(self, edit: QLineEdit, title: str) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, title, filter="Images (*.tif *.tiff);;All files (*)"
-        )
-        if path:
-            edit.setText(path)
-            self._apply_standalone_paths()
-
-    def _on_browse_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select output directory")
-        if path:
-            self._output_dir_edit.setText(path)
-            self._apply_standalone_paths()
+    def _standalone_fields(self) -> dict[str, QLineEdit]:
+        return {
+            "foreground": self._foreground_edit,
+            "contours": self._contours_edit,
+            "nucleus": self._nucleus_edit,
+            "output_dir": self._output_dir_edit,
+        }
 
     def _apply_standalone_paths(self) -> None:
         """Push the picker fields into the standalone inputs and re-wire paths.
@@ -639,28 +624,12 @@ class CellWorkflowWidget(QWidget):
         self._save_standalone_settings()
         self.refresh(self._sa_output_dir)
 
-    def _settings(self) -> QSettings:
-        return QSettings("cellflow", "cellflow_segmentation")
-
     def _load_standalone_settings(self) -> None:
-        s = self._settings()
-        for key, edit in (
-            ("foreground", self._foreground_edit),
-            ("contours", self._contours_edit),
-            ("nucleus", self._nucleus_edit),
-            ("output_dir", self._output_dir_edit),
-        ):
-            value = s.value(key, "", type=str)
-            if value:
-                edit.setText(value)
+        self._load_path_settings(self._SETTINGS_APP, self._standalone_fields())
         self._apply_standalone_paths()
 
     def _save_standalone_settings(self) -> None:
-        s = self._settings()
-        s.setValue("foreground", self._foreground_edit.text().strip())
-        s.setValue("contours", self._contours_edit.text().strip())
-        s.setValue("nucleus", self._nucleus_edit.text().strip())
-        s.setValue("output_dir", self._output_dir_edit.text().strip())
+        self._save_path_settings(self._SETTINGS_APP, self._standalone_fields())
 
     def get_state(self) -> dict:
         return {
