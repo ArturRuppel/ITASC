@@ -50,6 +50,13 @@ class ContactBatchResult:
     error: str | None = None
 
 
+def _top_level_dir(path: Path, root: Path) -> Path:
+    """The position folder a discovered file belongs to: the first directory
+    component under ``root`` (or ``root`` itself for files directly in it)."""
+    rel = path.relative_to(root)
+    return root / rel.parts[0] if len(rel.parts) > 1 else root
+
+
 def discover_contact_batch_jobs(
     root: str | Path,
     *,
@@ -57,34 +64,60 @@ def discover_contact_batch_jobs(
     h5_name: str,
     nucleus_name: str | None = None,
 ) -> list[ContactBatchJob]:
-    """Recursively find contact-analysis jobs under ``root`` by file name.
+    """Find contact-analysis jobs under ``root`` by file name.
 
-    Every folder containing a file named ``cell_name`` becomes one job whose
-    output is ``<folder>/<h5_name>``. When ``nucleus_name`` is given and a file
-    of that name exists in the same folder, it is associated as the nucleus
-    input; otherwise the job is cell-only. Nucleus-named files in folders without
-    a cell-labels file are ignored. Jobs are returned sorted by path for
-    deterministic ordering.
+    Files are discovered recursively, then grouped by **position folder** — the
+    first directory under ``root`` on the path to each match (``root`` itself for
+    files lying directly in it). The named files of one position may live in
+    different subfolders (e.g. ``pos01/3_cell/`` and ``pos01/2_nucleus/``); they
+    are still grouped together.
+
+    For a position with exactly one cell-labels file, that file is one job whose
+    output is ``<position>/<h5_name>``; the nucleus is associated only when
+    exactly one ``nucleus_name`` file exists anywhere in that position (zero or
+    several → cell-only, "can't associate → don't assign"). A position holding
+    several cell-labels files is ambiguous to group, so each falls back to a
+    cell-only job written beside its own cell file. Jobs are sorted by cell path.
     """
     root = Path(root)
+    cells = [c for c in root.rglob(cell_name) if c.is_file()]
+
+    groups: dict[Path, list[Path]] = {}
+    for cell in cells:
+        groups.setdefault(_top_level_dir(cell, root), []).append(cell)
+
     jobs: list[ContactBatchJob] = []
-    for cell in sorted(root.rglob(cell_name)):
-        if not cell.is_file():
-            continue
-        group_dir = cell.parent
-        nucleus: Path | None = None
-        if nucleus_name:
-            candidate = group_dir / nucleus_name
-            nucleus = candidate if candidate.is_file() else None
-        jobs.append(
-            ContactBatchJob(
-                group_dir=group_dir,
-                cell_labels=cell,
-                output=group_dir / h5_name,
-                nucleus_labels=nucleus,
+    for position, position_cells in groups.items():
+        if len(position_cells) == 1:
+            cell = position_cells[0]
+            nucleus: Path | None = None
+            if nucleus_name:
+                matches = [
+                    n for n in position.rglob(nucleus_name) if n.is_file()
+                ]
+                if len(matches) == 1:
+                    nucleus = matches[0]
+            jobs.append(
+                ContactBatchJob(
+                    group_dir=position,
+                    cell_labels=cell,
+                    output=position / h5_name,
+                    nucleus_labels=nucleus,
+                )
             )
-        )
-    return jobs
+        else:
+            # Several cell files share a position folder: too ambiguous to pair a
+            # single nucleus or a single output, so keep them independent.
+            for cell in position_cells:
+                jobs.append(
+                    ContactBatchJob(
+                        group_dir=cell.parent,
+                        cell_labels=cell,
+                        output=cell.parent / h5_name,
+                        nucleus_labels=None,
+                    )
+                )
+    return sorted(jobs, key=lambda job: job.cell_labels)
 
 
 def run_contact_batch(

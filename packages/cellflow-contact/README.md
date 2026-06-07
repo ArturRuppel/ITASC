@@ -25,11 +25,15 @@ is missing, then shown. **Recompute** forces a rebuild.
   cell-labels TIFF (2D+t) and an optional nucleus-labels TIFF. The output `.h5`
   defaults to `<cell_labels_dir>/contact_analysis.h5` (override with the optional
   output picker). Click **Visualize**.
-- **napari plugin (batch):** expand the **Batch** panel, name the three files
-  (cell labels, optional nucleus labels, output `.h5`) and pick a top-level folder.
-  Every folder under it that contains a cell-labels file becomes one job; a nucleus
-  file is associated only when it sits in that same folder. Existing outputs are
-  skipped unless **Overwrite** is checked. Runs headlessly (no visualization).
+- **napari plugin (batch — the default standalone workflow):** in the **Batch**
+  panel, name the three files (cell labels, optional nucleus labels, output `.h5`)
+  and pick a top-level folder. Each **position** — a top-level subfolder of that
+  folder — becomes one job; the named files are discovered recursively within it,
+  so the cell and nucleus may live in different subfolders (e.g. `pos01/3_cell/`
+  and `pos01/2_nucleus/`). The nucleus is associated only when exactly one is
+  found in the position (zero or several → cell-only). Outputs land at
+  `<position>/<h5_name>` and are skipped unless **Overwrite** is checked. Runs
+  headlessly (no visualization).
 - **Headless / scripting:**
 
   ```python

@@ -38,6 +38,38 @@ def test_discovery_groups_by_folder_and_pairs_colocated_nucleus(tmp_path):
     assert b.nucleus_labels is None
 
 
+def test_discovery_associates_nucleus_across_subfolders_within_a_position(tmp_path):
+    # Staged-style: cell and nucleus sit in different subfolders of one position.
+    _write_labels(tmp_path / "pos01" / "3_cell" / "cell.tif")
+    _write_labels(tmp_path / "pos01" / "2_nucleus" / "nuc.tif")
+    _write_labels(tmp_path / "pos02" / "3_cell" / "cell.tif")  # no nucleus
+
+    jobs = discover_contact_batch_jobs(
+        tmp_path, cell_name="cell.tif", h5_name="contact.h5", nucleus_name="nuc.tif"
+    )
+    by = {j.group_dir.name: j for j in jobs}
+
+    # pos01: nucleus paired across the sibling subfolder; output at the position.
+    assert by["pos01"].nucleus_labels == tmp_path / "pos01" / "2_nucleus" / "nuc.tif"
+    assert by["pos01"].output == tmp_path / "pos01" / "contact.h5"
+    # pos02: nucleus search is bounded to its own position -> cell-only.
+    assert by["pos02"].nucleus_labels is None
+    assert by["pos02"].output == tmp_path / "pos02" / "contact.h5"
+
+
+def test_discovery_ambiguous_nucleus_in_position_is_not_assigned(tmp_path):
+    # Two nucleus-named files in one position -> can't associate -> cell-only.
+    _write_labels(tmp_path / "pos01" / "3_cell" / "cell.tif")
+    _write_labels(tmp_path / "pos01" / "2_nucleus" / "nuc.tif")
+    _write_labels(tmp_path / "pos01" / "extra" / "nuc.tif")
+
+    jobs = discover_contact_batch_jobs(
+        tmp_path, cell_name="cell.tif", h5_name="contact.h5", nucleus_name="nuc.tif"
+    )
+    assert len(jobs) == 1
+    assert jobs[0].nucleus_labels is None
+
+
 def test_discovery_without_nucleus_name_is_cell_only(tmp_path):
     _write_labels(tmp_path / "posA" / "cells.tif")
     _write_labels(tmp_path / "posA" / "nuc.tif")

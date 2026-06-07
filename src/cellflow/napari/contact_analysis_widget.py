@@ -300,7 +300,10 @@ class ContactAnalysisWidget(QWidget):
         status_label(self.batch_status_lbl)
         col.addWidget(self.batch_status_lbl)
 
-        self._batch_section = CollapsibleSection("Batch", content, expanded=False)
+        # Batch is the default standalone workflow, so open it expanded.
+        self._batch_section = CollapsibleSection(
+            "Batch", content, expanded=self._standalone
+        )
         self._batch_section.setVisible(self._standalone)
         layout.addWidget(self._batch_section)
 
