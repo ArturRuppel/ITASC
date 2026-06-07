@@ -38,7 +38,7 @@ from cellflow.napari.nucleus_segmentation_inputs_widget import (
 )
 from cellflow.napari.nucleus_tracking_inputs_widget import NucleusTrackingInputsWidget
 from cellflow.napari.ui_gate import ControlClass, UiGate
-from cellflow.napari._paths import NucleusArtifactPaths
+from cellflow.napari._paths import NucleusWorkspace
 from cellflow.napari._state import dump_state, load_state
 from cellflow.napari.widgets import (
     CollapsibleSection,
@@ -87,7 +87,12 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         #: App-wide UI gate. A private gate is created when none is injected so
         #: the widget still works standalone (tests, isolated use).
         self.gate = gate if gate is not None else UiGate(self)
+        #: Position directory (orchestrated mode) — drives the staged files panel.
         self._pos_dir: Path | None = None
+        #: The active nucleus workspace (artifacts + annotation store). Derived
+        #: from ``_pos_dir`` in orchestrated mode; set directly to a flat working
+        #: directory by the standalone entry point.
+        self._workspace: NucleusWorkspace | None = None
         self._stop_flag: bool = False
         self._dims_step_refresh_pending: bool = False
 
@@ -157,10 +162,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
         self.nucleus_pipeline_widget = NucleusPipelineWidget(
             self.viewer,
-            pos_dir_provider=lambda: self._pos_dir,
+            workspace_provider=lambda: self._workspace,
             seg_inputs_provider=lambda: self.nucleus_segmentation_inputs_widget,
             tracking_inputs_provider=lambda: self.nucleus_tracking_inputs_widget,
-            refresh_files_callback=lambda pos: self._files_widget.refresh(pos),
+            refresh_files_callback=lambda: self._files_widget.refresh(self._pos_dir),
             refresh_db_browser_callback=lambda: self._refresh_ultrack_db_browser(),
             sync_viewer_activity_callback=lambda: self.gate.recompute(),
             parent=self,
@@ -250,7 +255,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     def _build_correction_section(self, root: QVBoxLayout) -> None:
         self.nucleus_correction_widget = NucleusCorrectionWidget(
             self.viewer,
-            pos_dir_provider=lambda: self._pos_dir,
+            workspace_provider=lambda: self._workspace,
             ultrack_config_provider=lambda: self._ultrack_config_from_controls(),
             focus_takeover_callback=self._set_correction_focus_takeover,
             parent=self,
@@ -391,13 +396,13 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         root.addWidget(self.atom_extraction_widget.section)
 
     def _atom_fg_path(self):
-        return self._paths.nucleus_foreground if self._paths else None
+        return self._workspace.foreground if self._workspace else None
 
     def _atom_contour_path(self):
-        return self._paths.nucleus_contours if self._paths else None
+        return self._workspace.contours if self._workspace else None
 
     def _atom_output_path(self):
-        return self._paths.nucleus_atoms if self._paths else None
+        return self._workspace.atoms if self._workspace else None
 
     # ================================================================
     # Signals
@@ -517,17 +522,13 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     # ================================================================
     # Path helpers
     # ================================================================
-    @property
-    def _paths(self) -> NucleusArtifactPaths | None:
-        return NucleusArtifactPaths(self._pos_dir) if self._pos_dir else None
-
     def _ultrack_db_path(self) -> Path | None:
         # Required by NucleusUltrackDbBrowserMixin.
-        return self._paths.ultrack_db if self._paths else None
+        return self._workspace.ultrack_db if self._workspace else None
 
     def _nucleus_foreground_path(self) -> Path | None:
         # Required by NucleusUltrackDbBrowserMixin.
-        return self._paths.nucleus_foreground if self._paths else None
+        return self._workspace.foreground if self._workspace else None
 
     # These delegate to the pipeline widget so that tests that call path helpers
     # on the workflow widget (legacy seam tests) continue to pass.
@@ -540,6 +541,9 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     # ================================================================
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
+        self._workspace = (
+            NucleusWorkspace.staged(pos_dir) if pos_dir is not None else None
+        )
         self._files_widget.refresh(pos_dir)
         if pos_dir is None:
             if self.correction_active_btn.isChecked():

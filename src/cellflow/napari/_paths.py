@@ -113,3 +113,71 @@ class NucleusArtifactPaths:
         return self.nucleus_dir / "atoms.tif"
 
 
+@dataclass(frozen=True)
+class NucleusWorkspace:
+    """Single base directory for the nucleus tracking/correction piece.
+
+    All artifacts (database, tracked labels, atoms, source maps) and the
+    annotation store (validation/correction JSONs) live directly under
+    ``nucleus_dir``; the two foreground/contour *inputs* are explicit paths.
+
+    Two layouts are supported via the constructors:
+
+    * :meth:`staged` — the full orchestrator: ``nucleus_dir`` is
+      ``<pos>/2_nucleus`` and the inputs come from ``<pos>/1_cellpose``.
+    * :meth:`flat` — the standalone tracking piece: one working directory that
+      holds ``foreground.tif`` + ``contours.tif`` and receives every output.
+    """
+
+    nucleus_dir: Path
+    foreground: Path
+    contours: Path
+    # Optional cross-stage cell foreground, used purely as a correction-mode
+    # background overlay. Only the staged orchestrator supplies it.
+    cell_foreground: Path | None = None
+
+    @classmethod
+    def staged(cls, pos_dir: Path) -> NucleusWorkspace:
+        paths = NucleusArtifactPaths(Path(pos_dir))
+        return cls(
+            nucleus_dir=paths.nucleus_dir,
+            foreground=paths.nucleus_foreground,
+            contours=paths.nucleus_contours,
+            cell_foreground=paths.cell_foreground,
+        )
+
+    @classmethod
+    def flat(cls, work_dir: Path) -> NucleusWorkspace:
+        work_dir = Path(work_dir)
+        return cls(
+            nucleus_dir=work_dir,
+            foreground=work_dir / "foreground.tif",
+            contours=work_dir / "contours.tif",
+        )
+
+    # Artifacts (outputs), all directly under nucleus_dir
+    @property
+    def contour_sources(self) -> Path:
+        return self.nucleus_dir / "contour_sources.tif"
+
+    @property
+    def foreground_sources(self) -> Path:
+        return self.nucleus_dir / "foreground_sources.tif"
+
+    @property
+    def tracked(self) -> Path:
+        return self.nucleus_dir / "tracked_labels.tif"
+
+    @property
+    def ultrack_workdir(self) -> Path:
+        return self.nucleus_dir / "ultrack_workdir"
+
+    @property
+    def ultrack_db(self) -> Path:
+        return self.ultrack_workdir / "data.db"
+
+    @property
+    def atoms(self) -> Path:
+        return self.nucleus_dir / "atoms.tif"
+
+
