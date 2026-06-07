@@ -58,6 +58,7 @@ jobs:
           python -m build --wheel packages/cellflow-core --outdir dist
           python -m build --wheel packages/cellflow-contact --outdir dist
           python -m build --wheel packages/cellflow-tracking --outdir dist
+          python -m build --wheel packages/cellflow-segmentation --outdir dist
 
       - name: Verify isolated install (PEP 420 namespace + headless core)
         run: |
@@ -65,7 +66,7 @@ jobs:
           . /tmp/cf-verify/bin/activate
           pip install --upgrade pip
           pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic
-          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_contact-*.whl dist/cellflow_tracking-*.whl
+          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_contact-*.whl dist/cellflow_tracking-*.whl dist/cellflow_segmentation-*.whl
           python - <<'PY'
           import os, tempfile, numpy as np, tifffile, h5py
           import cellflow            # PEP 420 namespace, no orchestrator present
@@ -85,7 +86,7 @@ jobs:
           # cellflow-tracking composes into the same namespace without the
           # orchestrator or the contact piece, and its headless backend imports.
           import cellflow.tracking_ultrack.db_build  # noqa: F401
-          import cellflow.database.validation as v
+          import cellflow.tracking_ultrack.validation_state as v
           import cellflow.correction.labels  # noqa: F401
           from cellflow.core.lineage import build_lineage
           from cellflow.core.cancellation import CancelledError  # noqa: F401
@@ -97,6 +98,23 @@ jobs:
           lanes = build_lineage(labels)
           assert {lane.cell_id for lane in lanes.lanes} == {1, 2}
           print("isolated cellflow-tracking backend OK")
+
+          # cellflow-segmentation composes into the same namespace on top of
+          # cellflow-core alone (no tracking/contact/orchestrator), and its
+          # headless divergence backend runs.
+          from cellflow.segmentation import (
+              CellDivergenceParams,
+              segment_cells_divergence,
+          )
+          from cellflow.core.imageops import residual  # noqa: F401
+          contours = np.abs(np.random.default_rng(0).normal(0, 1, (2, 12, 12))).astype("float32")
+          foreground = np.clip(np.random.default_rng(1).normal(0.6, 0.1, (2, 12, 12)), 0, 1).astype("float32")
+          nuc = np.zeros((2, 12, 12), np.uint32)
+          nuc[:, 3:5, 3:5] = 1
+          nuc[:, 8:10, 8:10] = 2
+          res = segment_cells_divergence(contours, foreground, nuc, CellDivergenceParams())
+          assert res.labels.shape == (2, 12, 12)
+          print("isolated cellflow-segmentation backend OK")
           PY
 
       - name: Verify napari manifests validate
@@ -108,6 +126,7 @@ jobs:
               ("src/cellflow/napari.yaml", "cellflow"),
               ("src/cellflow/contact_analysis/napari.yaml", "cellflow-contact"),
               ("src/cellflow/tracking_ultrack/napari.yaml", "cellflow-tracking"),
+              ("src/cellflow/segmentation/napari.yaml", "cellflow-segmentation"),
           ]:
               m = PluginManifest.from_file(path)
               assert m.name == name, (m.name, name)
@@ -123,6 +142,7 @@ jobs:
           for path in (
               "src/cellflow/contact_analysis/napari.yaml",
               "src/cellflow/tracking_ultrack/napari.yaml",
+              "src/cellflow/segmentation/napari.yaml",
           ):
               assert factories(path) <= folded, path
           print("folded manifest mirrors standalone factories OK")

@@ -35,6 +35,7 @@ bypass-selection = true
 
 [tool.hatch.build.targets.wheel.force-include]
 "../../src/cellflow/core" = "cellflow/core"
+"../../src/cellflow/correction" = "cellflow/correction"
 "../../src/cellflow/napari/ui_gate.py" = "cellflow/napari/ui_gate.py"
 "../../src/cellflow/napari/ui_style.py" = "cellflow/napari/ui_style.py"
 "../../src/cellflow/napari/_widget_helpers.py" = "cellflow/napari/_widget_helpers.py"
@@ -43,3 +44,10 @@ bypass-selection = true
 "../../src/cellflow/napari/_track_render.py" = "cellflow/napari/_track_render.py"
 "../../src/cellflow/napari/_paths.py" = "cellflow/napari/_paths.py"
 "../../src/cellflow/napari/widgets.py" = "cellflow/napari/widgets.py"
+# Shared correction base: the generic interactive-correction widget + its UI
+# scaffolding and layer lifecycle, reused by both the nucleus (cellflow-tracking)
+# and cell (cellflow-segmentation) correction widgets. The nucleus-specific
+# _correction_* machinery stays in cellflow-tracking.
+"../../src/cellflow/napari/correction_widget.py" = "cellflow/napari/correction_widget.py"
+"../../src/cellflow/napari/_correction_ui.py" = "cellflow/napari/_correction_ui.py"
+"../../src/cellflow/napari/_correction_layer_lifecycle.py" = "cellflow/napari/_correction_layer_lifecycle.py"

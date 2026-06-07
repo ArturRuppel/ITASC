@@ -118,7 +118,7 @@ def reorder_stack_by_quality(
         stack.astype(np.uint32, copy=False), order
     )
     if old_to_new and pos_dir is not None:
-        from cellflow.database.validation import remap_validated_tracks
+        from cellflow.tracking_ultrack.validation_state import remap_validated_tracks
 
         remap_validated_tracks(Path(pos_dir), old_to_new)
     return relabeled, old_to_new

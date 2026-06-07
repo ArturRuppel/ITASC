@@ -302,7 +302,7 @@ def test_reorder_stack_by_quality_no_scores_is_noop() -> None:
 
 
 def test_reorder_stack_by_quality_remaps_validated_tracks(monkeypatch) -> None:
-    import cellflow.database.validation as validation
+    import cellflow.tracking_ultrack.validation_state as validation
 
     calls = {}
 

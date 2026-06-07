@@ -38,11 +38,14 @@ import napari
 import numpy as np
 import tifffile
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import QTimer, Signal
+from qtpy.QtCore import Qt, QSettings, QTimer, Signal
 from qtpy.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QProgressBar,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -150,12 +153,22 @@ class CellWorkflowWidget(QWidget):
         viewer: napari.Viewer,
         parent: QWidget | None = None,
         gate: UiGate | None = None,
+        standalone: bool = False,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         #: App-wide UI gate; a private one is created for standalone use.
         self.gate = gate if gate is not None else UiGate(self)
+        #: When True the piece runs on its own, with its own input/output path
+        #: pickers; the orchestrator drives the embedded widget via refresh().
+        self._standalone = standalone
         self._pos_dir: Path | None = None
+        #: Standalone explicit inputs/output (mirrors the orchestrator's staged
+        #: 1_cellpose/2_nucleus/3_cell layout with arbitrary file locations).
+        self._sa_foreground: Path | None = None
+        self._sa_contours: Path | None = None
+        self._sa_nucleus: Path | None = None
+        self._sa_output_dir: Path | None = None
 
         # Live preview state — a compute is in flight (None when idle); rapid
         # edits while one runs set _preview_pending so exactly one fresh pass
@@ -196,6 +209,9 @@ class CellWorkflowWidget(QWidget):
         self._register_gate_controls()
         self._run_progress.connect(self._set_status)
 
+        if self._standalone:
+            self._load_standalone_settings()
+
     # ================================================================
     # UI
     # ================================================================
@@ -203,7 +219,42 @@ class CellWorkflowWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(6)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        # Embedded, the widget lives in main_widget's AlignTop scroll layout and
+        # a Maximum policy keeps each section compact. Standalone, napari docks it
+        # directly, so fill the dock (Preferred) and pin content to the top with a
+        # trailing stretch (mirrors NucleusWorkflowWidget).
+        if self._standalone:
+            root.setAlignment(Qt.AlignTop)
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        else:
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+        # ── Standalone input/output path pickers ──────────────────────
+        # Only shown when the piece runs on its own; the orchestrator drives the
+        # workspace through refresh() instead. The cell segmentation consumes the
+        # Cellpose-produced foreground/contours plus the tracked nucleus seeds.
+        self._paths_container = QWidget()
+        paths_col = QVBoxLayout(self._paths_container)
+        paths_col.setContentsMargins(0, 0, 0, 0)
+        paths_col.setSpacing(2)
+        self._foreground_edit = self._add_path_row(
+            paths_col, "Foreground:", "Cell foreground .tif",
+            lambda: self._on_browse_file(self._foreground_edit, "Select cell foreground image"),
+        )
+        self._contours_edit = self._add_path_row(
+            paths_col, "Contours:", "Cell contours .tif",
+            lambda: self._on_browse_file(self._contours_edit, "Select cell contours image"),
+        )
+        self._nucleus_edit = self._add_path_row(
+            paths_col, "Nucleus:", "Tracked nucleus labels .tif",
+            lambda: self._on_browse_file(self._nucleus_edit, "Select tracked nucleus labels"),
+        )
+        self._output_dir_edit = self._add_path_row(
+            paths_col, "Output dir:", "Folder for 3_cell/tracked_labels.tif",
+            self._on_browse_output_dir,
+        )
+        root.addWidget(self._paths_container)
+        self._paths_container.setVisible(self._standalone)
 
         # ── Pipeline files ────────────────────────────────────────────
         self._files_widget = PipelineFilesWidget(
@@ -231,6 +282,10 @@ class CellWorkflowWidget(QWidget):
         )
         root.addWidget(self.pipeline_files_header)
         root.addWidget(self._pipeline_files_section)
+        # The staged-files panel lists 1_cellpose/2_nucleus/3_cell paths that
+        # don't exist in the standalone flat layout; the path pickers cover it.
+        self.pipeline_files_header.setVisible(not self._standalone)
+        self._pipeline_files_section.setVisible(not self._standalone)
 
         # ── Stage row: ⚙ params / ◉ live preview / ▶ run ──────────────
         self.params_btn = _tool_btn(
@@ -504,10 +559,19 @@ class CellWorkflowWidget(QWidget):
     def _p(self, *parts: str) -> Path | None:
         return self._pos_dir.joinpath(*parts) if self._pos_dir else None
 
-    def _contours_path(self):   return self._p("1_cellpose", "cell_contours.tif")
-    def _foreground_path(self): return self._p("1_cellpose", "cell_foreground.tif")
-    def _nuc_path(self):        return self._p("2_nucleus", "tracked_labels.tif")
-    def _output_path(self):     return self._p("3_cell", "tracked_labels.tif")
+    def _contours_path(self):
+        return self._sa_contours if self._standalone else self._p("1_cellpose", "cell_contours.tif")
+
+    def _foreground_path(self):
+        return self._sa_foreground if self._standalone else self._p("1_cellpose", "cell_foreground.tif")
+
+    def _nuc_path(self):
+        return self._sa_nucleus if self._standalone else self._p("2_nucleus", "tracked_labels.tif")
+
+    def _output_path(self):
+        if self._standalone:
+            return self._sa_output_dir / "3_cell" / "tracked_labels.tif" if self._sa_output_dir else None
+        return self._p("3_cell", "tracked_labels.tif")
 
     def _maps_present(self) -> bool:
         ct, fg = self._contours_path(), self._foreground_path()
@@ -521,6 +585,82 @@ class CellWorkflowWidget(QWidget):
         self._files_widget.refresh(pos_dir)
         if pos_dir is None:
             self.correction_widget.deactivate()
+
+    # ================================================================
+    # Standalone input/output pickers (only built/used when standalone)
+    # ================================================================
+    def _add_path_row(
+        self, column: QVBoxLayout, label: str, placeholder: str, on_browse,
+    ) -> QLineEdit:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(label)
+        lbl.setMinimumWidth(80)
+        row.addWidget(lbl)
+        edit = QLineEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.editingFinished.connect(self._apply_standalone_paths)
+        row.addWidget(edit, 1)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(on_browse)
+        row.addWidget(browse_btn)
+        column.addLayout(row)
+        return edit
+
+    def _on_browse_file(self, edit: QLineEdit, title: str) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, title, filter="Images (*.tif *.tiff);;All files (*)"
+        )
+        if path:
+            edit.setText(path)
+            self._apply_standalone_paths()
+
+    def _on_browse_output_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select output directory")
+        if path:
+            self._output_dir_edit.setText(path)
+            self._apply_standalone_paths()
+
+    def _apply_standalone_paths(self) -> None:
+        """Push the picker fields into the standalone inputs and re-wire paths.
+
+        ``_pos_dir`` is set to the output dir so the ``_pos_dir is None`` guards
+        (run, preview, correction) pass once an output folder is chosen; the
+        input/output path methods resolve to the explicit files in standalone.
+        """
+        def _val(edit: QLineEdit) -> Path | None:
+            text = edit.text().strip()
+            return Path(text) if text else None
+
+        self._sa_foreground = _val(self._foreground_edit)
+        self._sa_contours = _val(self._contours_edit)
+        self._sa_nucleus = _val(self._nucleus_edit)
+        self._sa_output_dir = _val(self._output_dir_edit)
+        self._save_standalone_settings()
+        self.refresh(self._sa_output_dir)
+
+    def _settings(self) -> QSettings:
+        return QSettings("cellflow", "cellflow_segmentation")
+
+    def _load_standalone_settings(self) -> None:
+        s = self._settings()
+        for key, edit in (
+            ("foreground", self._foreground_edit),
+            ("contours", self._contours_edit),
+            ("nucleus", self._nucleus_edit),
+            ("output_dir", self._output_dir_edit),
+        ):
+            value = s.value(key, "", type=str)
+            if value:
+                edit.setText(value)
+        self._apply_standalone_paths()
+
+    def _save_standalone_settings(self) -> None:
+        s = self._settings()
+        s.setValue("foreground", self._foreground_edit.text().strip())
+        s.setValue("contours", self._contours_edit.text().strip())
+        s.setValue("nucleus", self._nucleus_edit.text().strip())
+        s.setValue("output_dir", self._output_dir_edit.text().strip())
 
     def get_state(self) -> dict:
         return {
@@ -1092,3 +1232,26 @@ class CellWorkflowWidget(QWidget):
         self.pipeline_progress_bar.setRange(0, 100)
         self.pipeline_progress_bar.setValue(0)
         self.pipeline_progress_bar.setVisible(False)
+
+
+def make_cell_segmentation_widget(napari_viewer=None):
+    """napari plugin factory for the standalone cell-segmentation piece.
+
+    Used by the ``cellflow-segmentation`` distribution's manifest. Patches the
+    napari layer-controls delegate (best-effort, normally done by the
+    orchestrator) and returns the workflow widget in standalone mode, with its
+    own foreground/contours/nucleus input pickers and output-dir picker.
+    """
+    try:
+        from cellflow.napari._napari_compat import patch_napari_layer_delegate
+
+        patch_napari_layer_delegate()
+    except Exception:  # pragma: no cover - patch is best-effort
+        pass
+    # napari does not inject the viewer into function-based widget factories
+    # (only into class-based callables / magicgui types), so ``napari_viewer``
+    # arrives as ``None``. The widget needs a live viewer; fall back to the
+    # active one.
+    if napari_viewer is None:
+        napari_viewer = napari.current_viewer()
+    return CellWorkflowWidget(viewer=napari_viewer, standalone=True)

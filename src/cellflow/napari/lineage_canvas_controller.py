@@ -20,7 +20,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from cellflow.database.validation import read_corrections, read_validated_tracks
+from cellflow.tracking_ultrack.validation_state import read_corrections, read_validated_tracks
 from cellflow.napari._correction_film_strip import TrackFilmStripPanel
 from cellflow.napari._correction_lineage_canvas import LaneView, LineageCanvasPanel
 from cellflow.napari._correction_track_path import (

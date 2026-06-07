@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from cellflow.database.validation import (
+from cellflow.tracking_ultrack.validation_state import (
     add_correction,
     add_corrections,
     invalidate_frame,

@@ -38,7 +38,7 @@ from cellflow.segmentation.cell_label_icm import (
     initialize_icm,
 )
 from cellflow.segmentation.contour_filtering import contour_memory_filter
-from cellflow.tracking_ultrack.atoms import residual
+from cellflow.core.imageops import residual
 
 __all__ = [
     "CellDivergenceParams",

@@ -27,8 +27,14 @@ The full plugin orchestrates them into the unified workflow described below.
 - [`cellflow-contact`](packages/cellflow-contact) — contact analysis (cell-cell
   edges, T1 events) + napari visualization. Headless I/O: 2D+t cell labels
   (optional nucleus labels) → HDF5. Depends on `cellflow-core`.
-- [`cellflow-core`](packages/cellflow-core) — shared TIFF/path helpers, the
-  track lineage model, and reusable napari UI primitives.
+- [`cellflow-segmentation`](packages/cellflow-segmentation) — divergence-based
+  cell segmentation + interactive correction (napari). Consumes Cellpose-derived
+  cell foreground/contours + tracked nucleus seeds → `3_cell/tracked_labels.tif`.
+  The Cellpose probability/flow step is an optional `[cellpose]` extra. Depends
+  on `cellflow-core`.
+- [`cellflow-core`](packages/cellflow-core) — shared TIFF/path helpers, generic
+  image ops + label-stack IO, the shared interactive-correction base, the track
+  lineage model, and reusable napari UI primitives.
 
 ## Main Capabilities
 
@@ -138,8 +144,9 @@ and intentionally avoids importing napari, Cellpose, Ultrack, or other heavy
 workflow dependencies.
 
 Programmatic use should import from the relevant subpackages, such as
-`cellflow.segmentation`, `cellflow.tracking_ultrack`, `cellflow.database`,
-`cellflow.correction`, and `cellflow.contact_analysis`. These subpackage APIs
+`cellflow.segmentation`, `cellflow.tracking_ultrack`,
+`cellflow.correction`, and `cellflow.contact_analysis` (with generic
+label-stack IO in `cellflow.core.label_store`). These subpackage APIs
 are useful for scripting and testing, but they should still be treated as
 provisional until the public release and manuscript stabilize.
 

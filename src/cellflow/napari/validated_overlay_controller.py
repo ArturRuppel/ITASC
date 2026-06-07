@@ -7,7 +7,7 @@ from collections.abc import Callable
 import numpy as np
 from napari.utils.colormaps import direct_colormap
 
-from cellflow.database.validation import (
+from cellflow.tracking_ultrack.validation_state import (
     invalidate_track,
     read_corrections,
     read_validated_tracks,

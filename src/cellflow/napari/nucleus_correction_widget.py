@@ -71,11 +71,11 @@ from cellflow.napari._correction_validation import (
 )
 from cellflow.napari._paths import NucleusWorkspace
 from cellflow.napari.correction_widget import CorrectionWidget
-from cellflow.database.tracked import (
+from cellflow.core.label_store import (
     read_full_tracked_stack,
     write_tracked_frame,
 )
-from cellflow.database.validation import (
+from cellflow.tracking_ultrack.validation_state import (
     add_anchor,
     add_correction,
     add_corrections,
@@ -770,7 +770,7 @@ class NucleusCorrectionWidget(QWidget):
         if _TRACKED_LAYER not in self.viewer.layers:
             return
         try:
-            from cellflow.database.tracked import read_full_tracked_stack
+            from cellflow.core.label_store import read_full_tracked_stack
             data = np.asarray(read_full_tracked_stack(tracked_path), dtype=np.uint32)
             self.viewer.layers[_TRACKED_LAYER].data = data
         except Exception:

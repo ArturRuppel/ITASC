@@ -41,34 +41,35 @@ cellflow-tracking = "cellflow.tracking_ultrack:napari.yaml"
 # Built from the shared source tree without moving files. The wheel deliberately
 # omits cellflow/__init__.py and cellflow/napari/__init__.py so cellflow and
 # cellflow.napari install as PEP 420 namespace packages, composing with
-# cellflow-core and the orchestrator. The tracking_ultrack / database /
-# correction subpackages own their own __init__.py (they are real subpackages,
-# not namespace roots).
+# cellflow-core and the orchestrator. The tracking_ultrack / correction
+# subpackages own their own __init__.py (they are real subpackages, not
+# namespace roots). The tracking-only validation state lives in
+# tracking_ultrack/validation_state.py; the generic tracked-label-stack IO now
+# lives in cellflow-core as cellflow.core.label_store.
 [tool.hatch.build.targets.wheel]
 bypass-selection = true
 
 [tool.hatch.build.targets.wheel.force-include]
 "../../src/cellflow/tracking_ultrack" = "cellflow/tracking_ultrack"
-"../../src/cellflow/database" = "cellflow/database"
-"../../src/cellflow/correction" = "cellflow/correction"
+# cellflow/correction and the shared correction base (correction_widget,
+# _correction_ui, _correction_layer_lifecycle) now ship in cellflow-core, which
+# this distribution depends on. Only the nucleus-specific _correction_* machinery
+# is listed below.
 "../../src/cellflow/napari/_correction_anchor.py" = "cellflow/napari/_correction_anchor.py"
 "../../src/cellflow/napari/_correction_candidate_panel.py" = "cellflow/napari/_correction_candidate_panel.py"
 "../../src/cellflow/napari/_correction_candidates.py" = "cellflow/napari/_correction_candidates.py"
 "../../src/cellflow/napari/_correction_centroids.py" = "cellflow/napari/_correction_centroids.py"
 "../../src/cellflow/napari/_correction_commit.py" = "cellflow/napari/_correction_commit.py"
 "../../src/cellflow/napari/_correction_film_strip.py" = "cellflow/napari/_correction_film_strip.py"
-"../../src/cellflow/napari/_correction_layer_lifecycle.py" = "cellflow/napari/_correction_layer_lifecycle.py"
 "../../src/cellflow/napari/_correction_layer_loader.py" = "cellflow/napari/_correction_layer_loader.py"
 "../../src/cellflow/napari/_correction_lineage_canvas.py" = "cellflow/napari/_correction_lineage_canvas.py"
 "../../src/cellflow/napari/_correction_protection.py" = "cellflow/napari/_correction_protection.py"
 "../../src/cellflow/napari/_correction_takeover.py" = "cellflow/napari/_correction_takeover.py"
 "../../src/cellflow/napari/_correction_track_path.py" = "cellflow/napari/_correction_track_path.py"
-"../../src/cellflow/napari/_correction_ui.py" = "cellflow/napari/_correction_ui.py"
 "../../src/cellflow/napari/_correction_utils.py" = "cellflow/napari/_correction_utils.py"
 "../../src/cellflow/napari/_correction_validation.py" = "cellflow/napari/_correction_validation.py"
 "../../src/cellflow/napari/_state.py" = "cellflow/napari/_state.py"
 "../../src/cellflow/napari/candidate_gallery_controller.py" = "cellflow/napari/candidate_gallery_controller.py"
-"../../src/cellflow/napari/correction_widget.py" = "cellflow/napari/correction_widget.py"
 "../../src/cellflow/napari/lineage_canvas_controller.py" = "cellflow/napari/lineage_canvas_controller.py"
 "../../src/cellflow/napari/nucleus_atom_extraction_widget.py" = "cellflow/napari/nucleus_atom_extraction_widget.py"
 "../../src/cellflow/napari/nucleus_correction_widget.py" = "cellflow/napari/nucleus_correction_widget.py"

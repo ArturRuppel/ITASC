@@ -13,10 +13,11 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from scipy import ndimage as ndi
-from skimage.filters import threshold_local
 from skimage.segmentation import watershed
 
 import tifffile
+
+from cellflow.core.imageops import residual
 
 _PARAMS_KEY = "cellflow_atom_params"
 _FINGERPRINT_KEY = "cellflow_atom_fingerprint"
@@ -32,24 +33,6 @@ class AtomParams:
     contour_floor: float = 0.01
     contour_strength: float = 1.0
     atom_min_area: int = 100
-
-
-def residual(frame: np.ndarray, window: int, strength: float = 1.0) -> np.ndarray:
-    """Local-mean-subtracted residual: ``clip(frame - strength*localmean(frame), 0)``.
-
-    Flattens each map's per-nucleus offset so a single global threshold works
-    everywhere while staying ~0 in flat background. ``window`` is forced odd.
-
-    ``strength`` blends between the raw map and the fully-flattened residual:
-    ``1.0`` subtracts the whole local background (default), ``0.0`` subtracts
-    nothing so the result is the raw (non-negative) map, and values in between
-    partially flatten. Lowering it trades uniform-threshold behaviour for
-    keeping more of the original signal where the background is already flat.
-    """
-    window = int(window) | 1
-    frame = np.asarray(frame, dtype=np.float32)
-    local_mean = threshold_local(frame, block_size=window, method="gaussian")
-    return np.clip(frame - strength * local_mean, 0.0, None).astype(np.float32)
 
 
 def extract_atoms_frame(

@@ -49,6 +49,7 @@ via `cellflow.napari._paths.NucleusWorkspace` (`files()` / `flat()` vs
 ## Backend
 
 The headless backend lives under `cellflow.tracking_ultrack` (candidate atoms,
-database build, linking, solving, export, correction primitives),
-`cellflow.database` (validation/correction annotation store), and
-`cellflow.correction` (label-edit helpers).
+database build, linking, solving, export, correction primitives, and the
+`validation_state` validation/correction annotation store) and
+`cellflow.correction` (label-edit helpers). Generic tracked-label-stack IO is
+shared substrate in `cellflow.core.label_store`.

@@ -7,7 +7,7 @@ tweaked parameters — without losing the validated work.
 The contract for `validated_tracks` is `dict[int, set[int]]` where keys are
 cell IDs and values are the set of frames at which that cell is validated.
 This is independent of the on-disk JSON shape (which is managed separately by
-`cellflow.database.validation`).
+`cellflow.tracking_ultrack.validation_state`).
 
 `prune_validated_overlaps` and `_build_frame_masks` are kept for existing
 unit tests and ad hoc use.  `merge_validated_into_export` is called at the

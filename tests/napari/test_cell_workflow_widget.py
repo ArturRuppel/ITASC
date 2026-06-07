@@ -497,3 +497,69 @@ def test_full_run_refuses_without_divergence_maps(monkeypatch, tmp_path):
 
     widget.deleteLater()
     app.processEvents()
+
+
+# ── standalone seam (cellflow-segmentation distribution) ───────────────────────
+
+def test_standalone_shows_pickers_and_hides_staged_files(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer(), standalone=True)
+
+    # The four standalone input/output pickers exist and are visible …
+    for edit in (
+        widget._foreground_edit,
+        widget._contours_edit,
+        widget._nucleus_edit,
+        widget._output_dir_edit,
+    ):
+        assert edit is not None
+    assert widget._paths_container.isVisibleTo(widget)
+    # … and the staged-paths panel (1_cellpose/2_nucleus/3_cell) is hidden.
+    assert not widget.pipeline_files_header.isVisibleTo(widget)
+    assert not widget._pipeline_files_section.isVisibleTo(widget)
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_standalone_paths_resolve_to_explicit_files(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer(), standalone=True)
+
+    fg = tmp_path / "fg.tif"
+    ct = tmp_path / "ct.tif"
+    nuc = tmp_path / "nuc.tif"
+    out = tmp_path / "out"
+    widget._foreground_edit.setText(str(fg))
+    widget._contours_edit.setText(str(ct))
+    widget._nucleus_edit.setText(str(nuc))
+    widget._output_dir_edit.setText(str(out))
+    widget._apply_standalone_paths()
+
+    assert widget._foreground_path() == fg
+    assert widget._contours_path() == ct
+    assert widget._nuc_path() == nuc
+    assert widget._output_path() == out / "3_cell" / "tracked_labels.tif"
+    # _pos_dir is set to the output dir so the run/preview guards pass.
+    assert widget._pos_dir == out
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_standalone_factory_returns_standalone_widget(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    import napari
+
+    monkeypatch.setattr(napari, "current_viewer", lambda: _FakeViewer())
+    widget = mod.make_cell_segmentation_widget()
+
+    assert isinstance(widget, mod.CellWorkflowWidget)
+    assert widget._standalone is True
+    assert widget._paths_container.isVisibleTo(widget)
+
+    widget.deleteLater()
+    app.processEvents()

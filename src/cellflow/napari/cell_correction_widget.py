@@ -23,7 +23,7 @@ from cellflow.correction.labels import (
     fix_label_semiholes,
 )
 from cellflow.core.tiff import imwrite_grayscale
-from cellflow.database.tracked import read_full_tracked_stack
+from cellflow.core.label_store import read_full_tracked_stack
 from cellflow.napari._widget_helpers import (
     btn as _btn,
     button_grid as _button_grid,

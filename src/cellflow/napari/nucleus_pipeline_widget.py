@@ -29,7 +29,7 @@ from cellflow.napari.ui_style import (
     stage_header_action_button as _stage_header_action_button,
     stage_header_label as _stage_header_label,
 )
-from cellflow.database.validation import read_corrections, read_validated_tracks
+from cellflow.tracking_ultrack.validation_state import read_corrections, read_validated_tracks
 from cellflow.core.cancellation import CancelledError
 from cellflow.tracking_ultrack.db_build import (
     apply_annotations_and_score,
