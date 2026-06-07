@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from pathlib import Path
 from types import SimpleNamespace
 
 import napari
@@ -70,7 +69,7 @@ from cellflow.napari._correction_validation import (
     corrections_for_label_frames,
     selected_correction_target,
 )
-from cellflow.napari._paths import NucleusArtifactPaths
+from cellflow.napari._paths import NucleusWorkspace
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.database.tracked import (
     read_full_tracked_stack,
@@ -164,7 +163,7 @@ class NucleusCorrectionWidget(QWidget):
         viewer,
         *,
         edit_callback=None,
-        pos_dir_provider: Callable[[], Path | None] | None = None,
+        workspace_provider: Callable[[], NucleusWorkspace | None] | None = None,
         ultrack_config_provider: Callable[[], TrackingConfig] | None = None,
         dependencies: dict[str, Callable] | None = None,
         focus_takeover_callback: Callable[[bool], None] | None = None,
@@ -172,13 +171,13 @@ class NucleusCorrectionWidget(QWidget):
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
-        self._pos_dir_provider = pos_dir_provider
+        self._workspace_provider = workspace_provider
         self._ultrack_config_provider = ultrack_config_provider
         # Called with True once correction-mode activation succeeds and False on
         # deactivate, so the host can hide its other workflow sections for a
         # full-window focus mode (the widget deliberately holds no sibling refs).
         self._focus_takeover = focus_takeover_callback or (lambda _on: None)
-        self._local_pos_dir: Path | None = None
+        self._local_workspace: NucleusWorkspace | None = None
         self._dependencies = {**_DEFAULT_DEPENDENCIES, **(dependencies or {})}
         self._edit_callback = edit_callback or self._on_cells_edited
         self._correction_owned_layers: set[str] = set()
@@ -255,14 +254,25 @@ class NucleusCorrectionWidget(QWidget):
         )
 
     @property
-    def _pos_dir(self):
-        if self._pos_dir_provider is not None:
-            return self._pos_dir_provider()
-        return self._local_pos_dir
+    def _workspace(self) -> NucleusWorkspace | None:
+        if self._workspace_provider is not None:
+            return self._workspace_provider()
+        return self._local_workspace
 
-    @_pos_dir.setter
-    def _pos_dir(self, value) -> None:
-        self._local_pos_dir = value
+    @_workspace.setter
+    def _workspace(self, value: NucleusWorkspace | None) -> None:
+        self._local_workspace = value
+
+    @property
+    def _pos_dir(self):
+        """The nucleus annotation/store directory (validation JSONs live here).
+
+        Retained under this name because the validation API and child
+        controllers thread it straight through; it now resolves from the active
+        :class:`NucleusWorkspace` rather than a position directory.
+        """
+        ws = self._workspace
+        return ws.nucleus_dir if ws is not None else None
 
     def _dependency(self, name: str):
         return self._dependencies[name]
@@ -640,21 +650,21 @@ class NucleusCorrectionWidget(QWidget):
             self.extend_retrack_params_section._toggle.setChecked(False)
         self._sync_correction_panel_visibility()
 
-    @property
-    def _paths(self) -> NucleusArtifactPaths | None:
-        return NucleusArtifactPaths(self._pos_dir) if self._pos_dir else None
-
     def _tracked_path(self):
-        return self._paths.tracked if self._paths else None
+        ws = self._workspace
+        return ws.tracked if ws is not None else None
 
     def _foreground_path(self):
-        return self._paths.nucleus_foreground if self._paths else None
+        ws = self._workspace
+        return ws.foreground if ws is not None else None
 
     def _ultrack_workdir(self):
-        return self._paths.ultrack_workdir if self._paths else None
+        ws = self._workspace
+        return ws.ultrack_workdir if ws is not None else None
 
     def _ultrack_db_path(self):
-        return self._paths.ultrack_db if self._paths else None
+        ws = self._workspace
+        return ws.ultrack_db if ws is not None else None
 
     def _ultrack_config_from_controls(self):
         if self._ultrack_config_provider is not None:
@@ -675,10 +685,12 @@ class NucleusCorrectionWidget(QWidget):
 
 
     def _cell_foreground_path(self):
-        return self._paths.cell_foreground if self._paths else None
+        ws = self._workspace
+        return ws.cell_foreground if ws is not None else None
 
     def _nucleus_foreground_path(self):
-        return self._paths.nucleus_foreground if self._paths else None
+        ws = self._workspace
+        return ws.foreground if ws is not None else None
 
     def _current_t(self) -> int:
         step = self.viewer.dims.current_step

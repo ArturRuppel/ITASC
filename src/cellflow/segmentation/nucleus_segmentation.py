@@ -7,9 +7,9 @@ from dataclasses import asdict, dataclass
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
+from cellflow.core.cancellation import CancelledError
 
-class CancelledError(Exception):
-    """Raised when a cooperative cancel signal is observed mid-computation."""
+__all__ = ["CancelledError"]
 
 
 def _check_cancel(cancel: Callable[[], bool] | None) -> None:

@@ -19,7 +19,7 @@ from qtpy.QtWidgets import (
 
 from cellflow.core.tiff import imwrite_grayscale
 from cellflow.napari._correction_utils import reorder_stack_by_quality
-from cellflow.napari._paths import NucleusArtifactPaths
+from cellflow.napari._paths import NucleusWorkspace
 from cellflow.napari._widget_helpers import (
     make_progress as _make_progress,
     make_status as _make_status,
@@ -30,7 +30,7 @@ from cellflow.napari.ui_style import (
     stage_header_label as _stage_header_label,
 )
 from cellflow.database.validation import read_corrections, read_validated_tracks
-from cellflow.segmentation import CancelledError
+from cellflow.core.cancellation import CancelledError
 from cellflow.tracking_ultrack.db_build import (
     apply_annotations_and_score,
     build_atom_union_database,
@@ -67,17 +67,17 @@ class NucleusPipelineWidget(QWidget):
         self,
         viewer: napari.Viewer,
         *,
-        pos_dir_provider: Callable[[], Path | None],
+        workspace_provider: Callable[[], NucleusWorkspace | None],
         seg_inputs_provider: Callable,
         tracking_inputs_provider: Callable,
-        refresh_files_callback: Callable[[Path | None], None],
+        refresh_files_callback: Callable[[], None],
         refresh_db_browser_callback: Callable[[], None],
         sync_viewer_activity_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
-        self._pos_dir_provider = pos_dir_provider
+        self._workspace_provider = workspace_provider
         self._seg_inputs_provider = seg_inputs_provider
         self._tracking_inputs_provider = tracking_inputs_provider
         self._refresh_files_callback = refresh_files_callback
@@ -193,30 +193,34 @@ class NucleusPipelineWidget(QWidget):
     # ── Path helpers ──────────────────────────────────────────────────────────
 
     @property
-    def _pos_dir(self) -> Path | None:
-        return self._pos_dir_provider()
+    def _workspace(self) -> NucleusWorkspace | None:
+        return self._workspace_provider()
 
     @property
-    def _paths(self) -> NucleusArtifactPaths | None:
-        pos = self._pos_dir
-        return NucleusArtifactPaths(pos) if pos else None
-
+    def _pos_dir(self) -> Path | None:
+        """The nucleus annotation/store directory (validation JSONs live here)."""
+        ws = self._workspace
+        return ws.nucleus_dir if ws is not None else None
 
     def _contours_path(self) -> Path | None:
-        return self._paths.nucleus_contours if self._paths else None
-
+        ws = self._workspace
+        return ws.contours if ws is not None else None
 
     def _foreground_path(self) -> Path | None:
-        return self._paths.nucleus_foreground if self._paths else None
+        ws = self._workspace
+        return ws.foreground if ws is not None else None
 
     def _ultrack_workdir(self) -> Path | None:
-        return self._paths.ultrack_workdir if self._paths else None
+        ws = self._workspace
+        return ws.ultrack_workdir if ws is not None else None
 
     def _ultrack_db_path(self) -> Path | None:
-        return self._paths.ultrack_db if self._paths else None
+        ws = self._workspace
+        return ws.ultrack_db if ws is not None else None
 
     def _tracked_path(self) -> Path | None:
-        return self._paths.tracked if self._paths else None
+        ws = self._workspace
+        return ws.tracked if ws is not None else None
 
     # ── Status / progress helpers ─────────────────────────────────────────────
 
@@ -341,14 +345,12 @@ class NucleusPipelineWidget(QWidget):
     # ── Pipeline handlers — DB generation ────────────────────────────────────
 
     def _atoms_path(self) -> Path | None:
-        return self._paths.nucleus_atoms if self._paths else None
+        ws = self._workspace
+        return ws.atoms if ws is not None else None
 
     def _on_run_db_generation(self) -> None:
         pos_dir = self._pos_dir
         if pos_dir is None:
-            self._status("No project open."); return
-        paths = self._paths
-        if paths is None:
             self._status("No project open."); return
         atoms_path = self._atoms_path()
         if atoms_path is None or not atoms_path.exists():
@@ -429,7 +431,7 @@ class NucleusPipelineWidget(QWidget):
         self._clear_progress()
         pos_dir, _ = result
         self._status("DB generation complete.")
-        self._refresh_files_callback(pos_dir)
+        self._refresh_files_callback()
         self._refresh_db_browser_callback()
         self._set_running_stage(None)
 
@@ -538,7 +540,7 @@ class NucleusPipelineWidget(QWidget):
             labels = labels[:, 0]
         nt = labels.shape[0]
         self._update_tracked_display(labels)
-        self._refresh_files_callback(self._pos_dir)
+        self._refresh_files_callback()
         self._status(f"Tracking done: {nt} frame(s).")
         self._set_running_stage(None)
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from cellflow.napari.contact_analysis_visualization import (
+from cellflow.napari._track_render import (
     _nucleus_centroids_by_track,
 )
 

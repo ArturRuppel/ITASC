@@ -16,8 +16,13 @@ from pathlib import Path
 
 import napari
 import numpy as np
-from qtpy.QtCore import QTimer
+from qtpy.QtCore import QSettings, QTimer
 from qtpy.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
     QVBoxLayout,
     QSizePolicy,
     QWidget,
@@ -38,7 +43,7 @@ from cellflow.napari.nucleus_segmentation_inputs_widget import (
 )
 from cellflow.napari.nucleus_tracking_inputs_widget import NucleusTrackingInputsWidget
 from cellflow.napari.ui_gate import ControlClass, UiGate
-from cellflow.napari._paths import NucleusArtifactPaths
+from cellflow.napari._paths import NucleusWorkspace
 from cellflow.napari._state import dump_state, load_state
 from cellflow.napari.widgets import (
     CollapsibleSection,
@@ -81,13 +86,22 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         viewer: napari.Viewer,
         parent: QWidget | None = None,
         gate: UiGate | None = None,
+        standalone: bool = False,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        #: Standalone mode: the piece runs on its own (own working-directory
+        #: picker + config), instead of being driven by the orchestrator.
+        self._standalone = standalone
         #: App-wide UI gate. A private gate is created when none is injected so
         #: the widget still works standalone (tests, isolated use).
         self.gate = gate if gate is not None else UiGate(self)
+        #: Position directory (orchestrated mode) — drives the staged files panel.
         self._pos_dir: Path | None = None
+        #: The active nucleus workspace (artifacts + annotation store). Derived
+        #: from ``_pos_dir`` in orchestrated mode; set directly to a flat working
+        #: directory by the standalone entry point.
+        self._workspace: NucleusWorkspace | None = None
         self._stop_flag: bool = False
         self._dims_step_refresh_pending: bool = False
 
@@ -98,6 +112,9 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         self._connect_signals()
         self._register_gate_controls()
 
+        if self._standalone:
+            self._load_standalone_settings()
+
     # ================================================================
     # UI
     # ================================================================
@@ -106,6 +123,25 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(6)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+
+        # ── Standalone working-directory picker ───────────────────────
+        # Only shown when the piece runs on its own; the orchestrator drives the
+        # workspace through refresh()/set_context() instead.
+        self._workdir_container = QWidget()
+        workdir_row = QHBoxLayout(self._workdir_container)
+        workdir_row.setContentsMargins(0, 0, 0, 0)
+        workdir_row.addWidget(QLabel("Working dir:"))
+        self._workdir_edit = QLineEdit()
+        self._workdir_edit.setPlaceholderText(
+            "Folder with foreground.tif + contours.tif"
+        )
+        self._workdir_edit.editingFinished.connect(self._on_workdir_edited)
+        workdir_row.addWidget(self._workdir_edit, 1)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._on_browse_work_dir)
+        workdir_row.addWidget(browse_btn)
+        root.addWidget(self._workdir_container)
+        self._workdir_container.setVisible(self._standalone)
 
         # ── Pipeline files (single deduplicated panel) ────────────────
         self._files_widget = PipelineFilesWidget(
@@ -128,6 +164,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         )
         root.addWidget(self.pipeline_files_header)
         root.addWidget(self._pipeline_files_section)
+        # The staged files panel lists 1_cellpose/2_nucleus paths that don't
+        # exist in the standalone flat layout.
+        self.pipeline_files_header.setVisible(not self._standalone)
+        self._pipeline_files_section.setVisible(not self._standalone)
 
         # ── Atom Extraction ──────────────────────────────────────────
         self._build_atom_extraction_section(root)
@@ -157,10 +197,10 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
 
         self.nucleus_pipeline_widget = NucleusPipelineWidget(
             self.viewer,
-            pos_dir_provider=lambda: self._pos_dir,
+            workspace_provider=lambda: self._workspace,
             seg_inputs_provider=lambda: self.nucleus_segmentation_inputs_widget,
             tracking_inputs_provider=lambda: self.nucleus_tracking_inputs_widget,
-            refresh_files_callback=lambda pos: self._files_widget.refresh(pos),
+            refresh_files_callback=lambda: self._files_widget.refresh(self._pos_dir),
             refresh_db_browser_callback=lambda: self._refresh_ultrack_db_browser(),
             sync_viewer_activity_callback=lambda: self.gate.recompute(),
             parent=self,
@@ -250,7 +290,7 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     def _build_correction_section(self, root: QVBoxLayout) -> None:
         self.nucleus_correction_widget = NucleusCorrectionWidget(
             self.viewer,
-            pos_dir_provider=lambda: self._pos_dir,
+            workspace_provider=lambda: self._workspace,
             ultrack_config_provider=lambda: self._ultrack_config_from_controls(),
             focus_takeover_callback=self._set_correction_focus_takeover,
             parent=self,
@@ -391,13 +431,13 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
         root.addWidget(self.atom_extraction_widget.section)
 
     def _atom_fg_path(self):
-        return self._paths.nucleus_foreground if self._paths else None
+        return self._workspace.foreground if self._workspace else None
 
     def _atom_contour_path(self):
-        return self._paths.nucleus_contours if self._paths else None
+        return self._workspace.contours if self._workspace else None
 
     def _atom_output_path(self):
-        return self._paths.nucleus_atoms if self._paths else None
+        return self._workspace.atoms if self._workspace else None
 
     # ================================================================
     # Signals
@@ -517,17 +557,13 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     # ================================================================
     # Path helpers
     # ================================================================
-    @property
-    def _paths(self) -> NucleusArtifactPaths | None:
-        return NucleusArtifactPaths(self._pos_dir) if self._pos_dir else None
-
     def _ultrack_db_path(self) -> Path | None:
         # Required by NucleusUltrackDbBrowserMixin.
-        return self._paths.ultrack_db if self._paths else None
+        return self._workspace.ultrack_db if self._workspace else None
 
     def _nucleus_foreground_path(self) -> Path | None:
         # Required by NucleusUltrackDbBrowserMixin.
-        return self._paths.nucleus_foreground if self._paths else None
+        return self._workspace.foreground if self._workspace else None
 
     # These delegate to the pipeline widget so that tests that call path helpers
     # on the workflow widget (legacy seam tests) continue to pass.
@@ -539,9 +575,36 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     # Public API
     # ================================================================
     def refresh(self, pos_dir: Path | None) -> None:
+        """Orchestrated seam: drive the piece from a staged position directory."""
         self._pos_dir = pos_dir
-        self._files_widget.refresh(pos_dir)
-        if pos_dir is None:
+        workspace = (
+            NucleusWorkspace.staged(pos_dir) if pos_dir is not None else None
+        )
+        self._apply_workspace(workspace, files_root=pos_dir)
+
+    def set_context(self, *, work_dir: Path | str | None) -> None:
+        """Standalone seam: drive the piece from one flat working directory.
+
+        The directory holds ``foreground.tif`` + ``contours.tif`` and receives
+        every output (``data.db``, ``tracked_labels.tif``, ``atoms.tif``, the
+        ``*.json`` annotations). There is no staged ``2_nucleus`` subfolder.
+        """
+        self._pos_dir = None
+        workspace = (
+            NucleusWorkspace.flat(work_dir) if work_dir else None
+        )
+        if self._standalone:
+            self._workdir_edit.setText(str(work_dir) if work_dir else "")
+            self._save_standalone_settings()
+        # The staged files panel is meaningless without a position dir.
+        self._apply_workspace(workspace, files_root=None)
+
+    def _apply_workspace(
+        self, workspace: NucleusWorkspace | None, *, files_root: Path | None
+    ) -> None:
+        self._workspace = workspace
+        self._files_widget.refresh(files_root)
+        if workspace is None:
             if self.correction_active_btn.isChecked():
                 self.correction_active_btn.setChecked(False)
             else:
@@ -550,6 +613,27 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
             return
         self._refresh_validated_overlay()
         self._refresh_validation_counter()
+
+    # ── Standalone helpers ────────────────────────────────────────────────────
+    def _on_browse_work_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select working directory")
+        if path:
+            self.set_context(work_dir=path)
+
+    def _on_workdir_edited(self) -> None:
+        text = self._workdir_edit.text().strip()
+        self.set_context(work_dir=text or None)
+
+    def _settings(self) -> QSettings:
+        return QSettings("cellflow", "cellflow_tracking")
+
+    def _load_standalone_settings(self) -> None:
+        work_dir = self._settings().value("work_dir", "", type=str)
+        if work_dir:
+            self.set_context(work_dir=work_dir)
+
+    def _save_standalone_settings(self) -> None:
+        self._settings().setValue("work_dir", self._workdir_edit.text().strip())
 
     def get_state(self) -> dict:
         return dump_state(self)
@@ -641,3 +725,19 @@ class NucleusWorkflowWidget(NucleusUltrackDbBrowserMixin, NucleusAtomExtractionM
     def _refresh_after_dims_step_changed(self) -> None:
         self._dims_step_refresh_pending = False
         self.nucleus_correction_widget.on_dims_step_changed()
+
+
+def make_nucleus_tracking_widget(napari_viewer=None):
+    """napari plugin factory for the standalone nucleus tracking/correction piece.
+
+    Patches the napari layer-controls delegate (best-effort) and returns the
+    workflow widget in standalone mode, with its own working-directory picker
+    and config.
+    """
+    try:
+        from cellflow.napari._napari_compat import patch_napari_layer_delegate
+
+        patch_napari_layer_delegate()
+    except Exception:
+        pass
+    return NucleusWorkflowWidget(viewer=napari_viewer, standalone=True)

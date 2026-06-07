@@ -77,12 +77,12 @@ def test_file_persists_across_calls(pos_dir):
 
 def test_json_file_location(pos_dir):
     validate_frame(pos_dir, 0)
-    json_file = pos_dir / "2_nucleus" / "validated_frames.json"
+    json_file = pos_dir / "validated_frames.json"
     assert json_file.exists()
 
 
 def test_corrupt_json_returns_empty(pos_dir):
-    json_file = pos_dir / "2_nucleus" / "validated_frames.json"
+    json_file = pos_dir / "validated_frames.json"
     json_file.parent.mkdir(parents=True, exist_ok=True)
     json_file.write_text("not valid json {{")
     assert read_validated_frames(pos_dir) == set()
@@ -188,7 +188,7 @@ def test_read_validated_cells_at_frame_multiple_cells(pos_dir):
 
 def test_validated_cells_json_location(pos_dir):
     validate_track(pos_dir, 10, [0])
-    json_file = pos_dir / "2_nucleus" / "validated_cells.json"
+    json_file = pos_dir / "validated_cells.json"
     assert json_file.exists()
 
 
@@ -196,7 +196,7 @@ def test_validated_cells_json_schema(pos_dir):
     """Keys are cell ID strings; values are lists of frame ints."""
     validate_track(pos_dir, 47, [10, 11, 12])
     validate_track(pos_dir, 82, [3, 4, 5])
-    raw = json.loads((pos_dir / "2_nucleus" / "validated_cells.json").read_text())
+    raw = json.loads((pos_dir / "validated_cells.json").read_text())
     assert "47" in raw
     assert "82" in raw
     assert raw["47"] == [10, 11, 12]
@@ -204,7 +204,7 @@ def test_validated_cells_json_schema(pos_dir):
 
 
 def test_validated_cells_corrupt_json_returns_empty(pos_dir):
-    json_file = pos_dir / "2_nucleus" / "validated_cells.json"
+    json_file = pos_dir / "validated_cells.json"
     json_file.parent.mkdir(parents=True, exist_ok=True)
     json_file.write_text("not valid json {{{{")
     assert read_validated_tracks(pos_dir) == {}
@@ -231,7 +231,7 @@ def test_write_corrections_roundtrip_flat_schema(pos_dir):
     write_corrections(pos_dir, corrections)
 
     assert read_corrections(pos_dir) == corrections
-    raw = json.loads((pos_dir / "2_nucleus" / "corrections.json").read_text())
+    raw = json.loads((pos_dir / "corrections.json").read_text())
     assert raw == [
         {"cell_id": 7, "t": 0, "kind": "validated", "y": 12.5, "x": 20.25},
         {"cell_id": 9, "t": 1, "kind": "anchor", "y": 30.0, "x": 40.0},
@@ -355,7 +355,7 @@ def test_remap_validated_tracks_no_phantom_on_partial_compaction(pos_dir):
 
 
 def test_read_corrections_corrupt_json_returns_empty(pos_dir):
-    json_file = pos_dir / "2_nucleus" / "corrections.json"
+    json_file = pos_dir / "corrections.json"
     json_file.parent.mkdir(parents=True, exist_ok=True)
     json_file.write_text("not valid json")
 

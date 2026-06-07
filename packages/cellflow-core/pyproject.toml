@@ -40,4 +40,6 @@ bypass-selection = true
 "../../src/cellflow/napari/_widget_helpers.py" = "cellflow/napari/_widget_helpers.py"
 "../../src/cellflow/napari/_flow_layout.py" = "cellflow/napari/_flow_layout.py"
 "../../src/cellflow/napari/_napari_compat.py" = "cellflow/napari/_napari_compat.py"
+"../../src/cellflow/napari/_track_render.py" = "cellflow/napari/_track_render.py"
+"../../src/cellflow/napari/_paths.py" = "cellflow/napari/_paths.py"
 "../../src/cellflow/napari/widgets.py" = "cellflow/napari/widgets.py"

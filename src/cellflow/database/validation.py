@@ -1,16 +1,20 @@
 """Persistent validation metadata for the nucleus workflow.
 
+All functions take ``nucleus_dir`` — the directory that holds the nucleus
+annotation store (``validated_frames.json``, ``validated_cells.json``,
+``corrections.json``). In the full orchestrator this is ``<pos>/2_nucleus``; the
+standalone tracking piece points it at a flat working directory. The annotation
+files live directly in that directory.
+
 Frame-level validation (validated_frames.json):
     A "fully-validated" frame is one where every current (non-zero) cell ID has
     been individually validated.  The file acts as a *cache* so UI counters can
     count fully-validated frames without scanning the whole stack.
-    Used by the cell workflow (3_cell). Stays untouched.
 
     Schema: JSON array of ints, e.g. [0, 3, 7].
 
 Track-level validation (validated_cells.json):
     Tracks which frames have been validated for each cell (track) ID.
-    Used by the nucleus workflow (2_nucleus).
 
     Schema: JSON object keyed by cell ID string, value is a list of frame ints,
     e.g. {"47": [10, 11, 12], "82": [3, 4, 5]}.
@@ -27,13 +31,13 @@ import numpy as np
 from cellflow.tracking_ultrack.corrections import Correction
 
 
-def _path(pos_dir: Path) -> Path:
-    return pos_dir / "2_nucleus" / "validated_frames.json"
+def _path(nucleus_dir: Path) -> Path:
+    return Path(nucleus_dir) / "validated_frames.json"
 
 
-def read_validated_frames(pos_dir: Path) -> set[int]:
+def read_validated_frames(nucleus_dir: Path) -> set[int]:
     """Return the set of validated frame indices, or an empty set if none."""
-    p = _path(pos_dir)
+    p = _path(nucleus_dir)
     if not p.exists():
         return set()
     try:
@@ -43,61 +47,61 @@ def read_validated_frames(pos_dir: Path) -> set[int]:
         return set()
 
 
-def write_validated_frames(pos_dir: Path, frames: set[int]) -> None:
+def write_validated_frames(nucleus_dir: Path, frames: set[int]) -> None:
     """Persist the full set of validated frames."""
-    p = _path(pos_dir)
+    p = _path(nucleus_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(sorted(frames)))
 
 
-def validate_frame(pos_dir: Path, t: int) -> None:
+def validate_frame(nucleus_dir: Path, t: int) -> None:
     """Mark frame t as validated."""
-    frames = read_validated_frames(pos_dir)
+    frames = read_validated_frames(nucleus_dir)
     frames.add(t)
-    write_validated_frames(pos_dir, frames)
+    write_validated_frames(nucleus_dir, frames)
 
 
-def invalidate_frame(pos_dir: Path, t: int) -> None:
+def invalidate_frame(nucleus_dir: Path, t: int) -> None:
     """Remove the validated mark from frame t."""
-    frames = read_validated_frames(pos_dir)
+    frames = read_validated_frames(nucleus_dir)
     frames.discard(t)
-    write_validated_frames(pos_dir, frames)
+    write_validated_frames(nucleus_dir, frames)
 
 
-def is_validated(pos_dir: Path, t: int) -> bool:
+def is_validated(nucleus_dir: Path, t: int) -> bool:
     """Return True if frame t is in the validated set."""
-    return t in read_validated_frames(pos_dir)
+    return t in read_validated_frames(nucleus_dir)
 
 
 # ---------------------------------------------------------------------------
 # Track-level validation (nucleus workflow)
 # ---------------------------------------------------------------------------
 
-def _cells_path(pos_dir: Path) -> Path:
-    return pos_dir / "2_nucleus" / "validated_cells.json"
+def _cells_path(nucleus_dir: Path) -> Path:
+    return Path(nucleus_dir) / "validated_cells.json"
 
 
-def read_validated_tracks(pos_dir: Path) -> dict[int, set[int]]:
+def read_validated_tracks(nucleus_dir: Path) -> dict[int, set[int]]:
     """Return {cell_id: {frames}} for all validated tracks.
 
     Empty dict if the file is missing or corrupt.
     JSON keys are cell ID strings; values are lists of frame ints.
     """
-    corrections = read_corrections(pos_dir)
+    corrections = read_corrections(nucleus_dir)
     if corrections:
         data: dict[int, set[int]] = {}
         for correction in corrections:
             if correction.kind == "validated":
                 data.setdefault(int(correction.cell_id), set()).add(int(correction.t))
-        legacy = _read_legacy_validated_tracks(pos_dir)
+        legacy = _read_legacy_validated_tracks(nucleus_dir)
         for cell_id, frames in legacy.items():
             data.setdefault(cell_id, set()).update(frames)
         return data
-    return _read_legacy_validated_tracks(pos_dir)
+    return _read_legacy_validated_tracks(nucleus_dir)
 
 
-def _read_legacy_validated_tracks(pos_dir: Path) -> dict[int, set[int]]:
-    p = _cells_path(pos_dir)
+def _read_legacy_validated_tracks(nucleus_dir: Path) -> dict[int, set[int]]:
+    p = _cells_path(nucleus_dir)
     if not p.exists():
         return {}
     try:
@@ -107,9 +111,9 @@ def _read_legacy_validated_tracks(pos_dir: Path) -> dict[int, set[int]]:
         return {}
 
 
-def _write_validated_tracks(pos_dir: Path, data: dict[int, set[int]]) -> None:
+def _write_validated_tracks(nucleus_dir: Path, data: dict[int, set[int]]) -> None:
     """Persist the full {cell_id: {frames}} map. Entries with empty sets are dropped."""
-    p = _cells_path(pos_dir)
+    p = _cells_path(nucleus_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     serialisable = {
         str(cell_id): sorted(frames)
@@ -119,20 +123,20 @@ def _write_validated_tracks(pos_dir: Path, data: dict[int, set[int]]) -> None:
     p.write_text(json.dumps(serialisable))
 
 
-def read_validated_cells_at_frame(pos_dir: Path, t: int) -> set[int]:
+def read_validated_cells_at_frame(nucleus_dir: Path, t: int) -> set[int]:
     """Return all cell IDs that have frame *t* in their validated set.
 
     Derived from the track-keyed store; suitable for overlay rendering.
     """
-    return {cell_id for cell_id, frames in read_validated_tracks(pos_dir).items() if t in frames}
+    return {cell_id for cell_id, frames in read_validated_tracks(nucleus_dir).items() if t in frames}
 
 
-def is_track_validated(pos_dir: Path, cell_id: int) -> bool:
+def is_track_validated(nucleus_dir: Path, cell_id: int) -> bool:
     """Return True if *cell_id* has any entry in the validated-tracks store."""
-    return cell_id in read_validated_tracks(pos_dir)
+    return cell_id in read_validated_tracks(nucleus_dir)
 
 
-def validate_track(pos_dir: Path, cell_id: int, frames: Iterable[int]) -> None:
+def validate_track(nucleus_dir: Path, cell_id: int, frames: Iterable[int]) -> None:
     """Add the given frames to *cell_id*'s validated set (idempotent, accumulates).
 
     Creates an entry for *cell_id* if none exists yet. Any existing per-frame
@@ -143,12 +147,12 @@ def validate_track(pos_dir: Path, cell_id: int, frames: Iterable[int]) -> None:
     frames_set = set(frames)
     if not frames_set:
         return
-    data = read_validated_tracks(pos_dir)
+    data = read_validated_tracks(nucleus_dir)
     existing = data.get(cell_id, set())
     data[cell_id] = existing | frames_set
-    _write_validated_tracks(pos_dir, data)
+    _write_validated_tracks(nucleus_dir, data)
 
-    corrections = read_corrections(pos_dir)
+    corrections = read_corrections(nucleus_dir)
     if corrections:
         filtered = [
             c
@@ -156,46 +160,46 @@ def validate_track(pos_dir: Path, cell_id: int, frames: Iterable[int]) -> None:
             if not (int(c.cell_id) == int(cell_id) and c.kind == "anchor")
         ]
         if len(filtered) != len(corrections):
-            write_corrections(pos_dir, filtered)
+            write_corrections(nucleus_dir, filtered)
 
 
 
-def invalidate_track(pos_dir: Path, cell_id: int) -> None:
+def invalidate_track(nucleus_dir: Path, cell_id: int) -> None:
     """Remove the entire entry for *cell_id* from the validated-tracks store.
 
     No-op if *cell_id* is not present.
     """
-    corrections = read_corrections(pos_dir)
+    corrections = read_corrections(nucleus_dir)
     if corrections:
         write_corrections(
-            pos_dir,
+            nucleus_dir,
             [
                 c
                 for c in corrections
                 if not (int(c.cell_id) == int(cell_id) and c.kind == "validated")
             ],
         )
-    data = read_validated_tracks(pos_dir)
+    data = read_validated_tracks(nucleus_dir)
     if cell_id in data:
         del data[cell_id]
-        _write_validated_tracks(pos_dir, data)
+        _write_validated_tracks(nucleus_dir, data)
 
 
-def remap_validated_tracks(pos_dir: Path, old_to_new: dict[int, int]) -> None:
+def remap_validated_tracks(nucleus_dir: Path, old_to_new: dict[int, int]) -> None:
     """Remap cell IDs in the validated-tracks store using *old_to_new* mapping.
 
     IDs not present in the mapping are dropped.
     """
-    corrections = read_corrections(pos_dir)
+    corrections = read_corrections(nucleus_dir)
     # Read the legacy store *directly* (not via ``read_validated_tracks``, which
     # merges in the corrections we are about to rewrite) so each store is remapped
     # exactly once. Reading the merged view here would remap the corrections-derived
     # IDs a second time and inject phantom validations whenever the mapping is not
     # the identity — i.e. for any real contiguous compaction with gaps.
-    legacy = _read_legacy_validated_tracks(pos_dir)
+    legacy = _read_legacy_validated_tracks(nucleus_dir)
     if corrections:
         write_corrections(
-            pos_dir,
+            nucleus_dir,
             [
                 Correction(
                     cell_id=int(old_to_new[int(c.cell_id)]),
@@ -213,20 +217,20 @@ def remap_validated_tracks(pos_dir: Path, old_to_new: dict[int, int]) -> None:
         for cell_id, frames in legacy.items()
         if cell_id in old_to_new
     }
-    _write_validated_tracks(pos_dir, remapped)
+    _write_validated_tracks(nucleus_dir, remapped)
 
 
 # ---------------------------------------------------------------------------
 # Unified correction list (nucleus workflow)
 # ---------------------------------------------------------------------------
 
-def _corrections_path(pos_dir: Path) -> Path:
-    return pos_dir / "2_nucleus" / "corrections.json"
+def _corrections_path(nucleus_dir: Path) -> Path:
+    return Path(nucleus_dir) / "corrections.json"
 
 
-def read_corrections(pos_dir: Path) -> list[Correction]:
+def read_corrections(nucleus_dir: Path) -> list[Correction]:
     """Return persisted per-frame corrections, or an empty list if unavailable."""
-    p = _corrections_path(pos_dir)
+    p = _corrections_path(nucleus_dir)
     if not p.exists():
         return []
     try:
@@ -246,9 +250,9 @@ def read_corrections(pos_dir: Path) -> list[Correction]:
     return sorted(corrections, key=lambda c: (c.t, c.cell_id, c.kind))
 
 
-def write_corrections(pos_dir: Path, corrections: Iterable[Correction]) -> None:
+def write_corrections(nucleus_dir: Path, corrections: Iterable[Correction]) -> None:
     """Persist the full flat correction list to ``corrections.json``."""
-    p = _corrections_path(pos_dir)
+    p = _corrections_path(nucleus_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     serialisable = [
         {
@@ -263,17 +267,17 @@ def write_corrections(pos_dir: Path, corrections: Iterable[Correction]) -> None:
     p.write_text(json.dumps(serialisable))
 
 
-def add_correction(pos_dir: Path, correction: Correction) -> None:
+def add_correction(nucleus_dir: Path, correction: Correction) -> None:
     """Add or replace a correction for the same cell, frame, and kind.
 
     Writing a ``validated`` correction for a cell additionally drops every
     ``anchor`` correction for that cell — validation is whole-track and
     supersedes any anchor pinning on the same cell.
     """
-    add_corrections(pos_dir, [correction])
+    add_corrections(nucleus_dir, [correction])
 
 
-def add_corrections(pos_dir: Path, corrections: Iterable[Correction]) -> None:
+def add_corrections(nucleus_dir: Path, corrections: Iterable[Correction]) -> None:
     """Add or replace several corrections with a single read+write.
 
     Each correction replaces any existing one for the same cell, frame, and
@@ -300,14 +304,14 @@ def add_corrections(pos_dir: Path, corrections: Iterable[Correction]) -> None:
             return False
         return True
 
-    existing = [c for c in read_corrections(pos_dir) if _keep(c)]
+    existing = [c for c in read_corrections(nucleus_dir) if _keep(c)]
 
     # Dedupe within the batch itself (last wins for a repeated key).
     deduped: dict[tuple[int, int, str], Correction] = {}
     for c in new:
         deduped[(int(c.cell_id), int(c.t), c.kind)] = c
 
-    write_corrections(pos_dir, existing + list(deduped.values()))
+    write_corrections(nucleus_dir, existing + list(deduped.values()))
 
 
 def _centroid_of(mask: np.ndarray) -> tuple[float, float] | None:
@@ -320,7 +324,7 @@ def _centroid_of(mask: np.ndarray) -> tuple[float, float] | None:
 
 
 def add_anchor(
-    pos_dir: Path,
+    nucleus_dir: Path,
     cell_id: int,
     t: int,
     y: float,
@@ -344,7 +348,7 @@ def add_anchor(
     cell_id = int(cell_id)
     t = int(t)
 
-    existing = read_corrections(pos_dir)
+    existing = read_corrections(nucleus_dir)
     other_anchor_frames = sorted(
         int(c.t)
         for c in existing
@@ -352,7 +356,7 @@ def add_anchor(
     )
 
     add_correction(
-        pos_dir,
+        nucleus_dir,
         Correction(cell_id=cell_id, t=t, kind="anchor", y=float(y), x=float(x)),
     )
 
@@ -378,7 +382,7 @@ def add_anchor(
 
     for f, (cy, cx) in centroids.items():
         add_correction(
-            pos_dir,
+            nucleus_dir,
             Correction(cell_id=cell_id, t=f, kind="anchor", y=cy, x=cx),
         )
     return len(centroids)

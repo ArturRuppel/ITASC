@@ -19,11 +19,16 @@ CellFlow is being factored into independently-installable pieces that share the
 `cellflow.*` namespace (PEP 420), so others can install just the part they need.
 The full plugin orchestrates them into the unified workflow described below.
 
+- [`cellflow-tracking`](packages/cellflow-tracking) — Ultrack-based nucleus
+  tracking + interactive correction (napari). Flat working-directory contract:
+  2D+t `foreground.tif` + `contours.tif` → atoms, database, tracked labels, and
+  validated/corrected annotations. The Ultrack solver is an optional `[solve]`
+  extra. Depends on `cellflow-core`.
 - [`cellflow-contact`](packages/cellflow-contact) — contact analysis (cell-cell
   edges, T1 events) + napari visualization. Headless I/O: 2D+t cell labels
   (optional nucleus labels) → HDF5. Depends on `cellflow-core`.
-- [`cellflow-core`](packages/cellflow-core) — shared TIFF/path helpers and
-  reusable napari UI primitives.
+- [`cellflow-core`](packages/cellflow-core) — shared TIFF/path helpers, the
+  track lineage model, and reusable napari UI primitives.
 
 ## Main Capabilities
 

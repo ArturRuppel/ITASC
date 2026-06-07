@@ -57,14 +57,15 @@ jobs:
         run: |
           python -m build --wheel packages/cellflow-core --outdir dist
           python -m build --wheel packages/cellflow-contact --outdir dist
+          python -m build --wheel packages/cellflow-tracking --outdir dist
 
       - name: Verify isolated install (PEP 420 namespace + headless core)
         run: |
           python -m venv /tmp/cf-verify
           . /tmp/cf-verify/bin/activate
           pip install --upgrade pip
-          pip install h5py numpy scipy scikit-image tifffile
-          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_contact-*.whl
+          pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic
+          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_contact-*.whl dist/cellflow_tracking-*.whl
           python - <<'PY'
           import os, tempfile, numpy as np, tifffile, h5py
           import cellflow            # PEP 420 namespace, no orchestrator present
@@ -80,4 +81,34 @@ jobs:
           with h5py.File(out) as h5:
               assert h5["cells/table/cell_id"][:].tolist() == [1, 2, 1, 2]
           print("isolated cellflow-contact install OK")
+
+          # cellflow-tracking composes into the same namespace without the
+          # orchestrator or the contact piece, and its headless backend imports.
+          import cellflow.tracking_ultrack.db_build  # noqa: F401
+          import cellflow.database.validation as v
+          import cellflow.correction.labels  # noqa: F401
+          from cellflow.core.lineage import build_lineage
+          from cellflow.core.cancellation import CancelledError  # noqa: F401
+          from cellflow.tracking_ultrack.corrections import Correction
+          nd = tempfile.mkdtemp()
+          v.add_correction(nd, Correction(cell_id=7, t=0, kind="validated", y=1.0, x=2.0))
+          assert v.read_validated_tracks(nd) == {7: {0}}
+          assert os.path.exists(os.path.join(nd, "corrections.json"))
+          lanes = build_lineage(labels)
+          assert {lane.cell_id for lane in lanes.lanes} == {1, 2}
+          print("isolated cellflow-tracking backend OK")
+          PY
+
+      - name: Verify napari manifests validate
+        run: |
+          pip install npe2
+          python - <<'PY'
+          from npe2 import PluginManifest
+          for path, name in [
+              ("src/cellflow/contact_analysis/napari.yaml", "cellflow-contact"),
+              ("src/cellflow/tracking_ultrack/napari.yaml", "cellflow-tracking"),
+          ]:
+              m = PluginManifest.from_file(path)
+              assert m.name == name, (m.name, name)
+              print("manifest OK:", m.name)
           PY

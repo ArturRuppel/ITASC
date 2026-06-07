@@ -30,6 +30,26 @@ def test_heavy_workflow_dependencies_are_optional_extras() -> None:
     assert "tomli>=2.0; python_version < '3.11'" in extras["dev"]
 
 
+def test_full_install_registers_each_extracted_piece_as_napari_subentry() -> None:
+    # The full cellflow distribution exposes the standalone widget of every
+    # extracted piece as its own napari.manifest entry point, so the pieces are
+    # reachable from the full install without installing their distributions.
+    manifests = _pyproject()["project"]["entry-points"]["napari.manifest"]
+
+    assert manifests["cellflow"] == "cellflow:napari.yaml"
+    assert manifests["cellflow-contact"] == "cellflow.contact_analysis:napari.yaml"
+    assert manifests["cellflow-tracking"] == "cellflow.tracking_ultrack:napari.yaml"
+
+    # Each referenced manifest exists in the shipped source tree and names itself
+    # consistently with its entry point.
+    for entry, value in manifests.items():
+        module, _, filename = value.partition(":")
+        rel = Path(*module.split(".")[1:]) if "." in module else Path()
+        manifest_path = Path("src") / "cellflow" / rel / filename
+        text = manifest_path.read_text(encoding="utf-8")
+        assert f"name: {entry}" in text
+
+
 def test_publication_metadata_includes_repository_readme_and_classifiers() -> None:
     project = _pyproject()["project"]
 
