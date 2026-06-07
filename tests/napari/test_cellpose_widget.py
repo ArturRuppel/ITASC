@@ -227,6 +227,7 @@ def test_get_set_state_round_trips(_mock_cellpose, monkeypatch):
     w = mod.CellposeWidget(_FakeViewer())
     new_state = {
         "nucleus": {
+            "layout": "3D",
             "do_3d": False,
             "anisotropy": 2.25,
             "diameter": 42.0,
@@ -234,6 +235,7 @@ def test_get_set_state_round_trips(_mock_cellpose, monkeypatch):
             "gamma": 1.5,
         },
         "cell": {
+            "layout": "2D+t",
             "diameter": 18.0,
             "min_size": 3,
             "gamma": 0.8,
@@ -770,3 +772,90 @@ def test_standalone_factory_returns_standalone_widget(monkeypatch):
 
     w.deleteLater()
     app.processEvents()
+
+
+# ── input-layout support (2D / 2D+t / 3D / 3D+t) ───────────────────────────────
+
+def test_layout_combos_exist_and_default_to_3dt(_mock_cellpose, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer())
+    for combo in (w.nuc_layout_combo, w.cell_layout_combo):
+        items = [combo.itemText(i) for i in range(combo.count())]
+        assert items == ["2D", "2D+t", "3D", "3D+t"]
+        assert combo.currentText() == "3D+t"
+    w.deleteLater()
+
+
+def test_nucleus_zless_layout_disables_3d_controls_and_forces_2d(_mock_cellpose, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer())
+
+    # A 3D+t layout keeps the true-3D controls live.
+    w.nuc_layout_combo.setCurrentText("3D+t")
+    assert w.nuc_3d_chk.isEnabled()
+    assert w.nuc_anisotropy_spin.isEnabled()
+
+    # A Z-less layout disables them and forces do_3d off even if checked.
+    w.nuc_layout_combo.setCurrentText("2D+t")
+    assert not w.nuc_3d_chk.isEnabled()
+    assert not w.nuc_anisotropy_spin.isEnabled()
+    w.nuc_3d_chk.setChecked(True)
+    assert w._build_nucleus_params().do_3d is False
+    w.deleteLater()
+
+
+def test_run_accepts_2d_input(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    w = mod.CellposeWidget(_FakeViewer())
+    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (6, 6))  # 2-D
+    w.refresh(tmp_path)
+    # ndim 2 is unambiguous → layout auto-selected.
+    assert w.nuc_layout_combo.currentText() == "2D"
+    w.nucleus_run_btn.click()
+    out = tmp_path / "1_cellpose"
+    assert (out / "nucleus_prob_3dt.tif").exists()
+    assert (out / "nucleus_dp_3dt.tif").exists()
+    assert "complete" in w.status_lbl.text().lower()
+    w.deleteLater()
+
+
+def test_run_accepts_3d_zstack_with_explicit_layout(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    w = mod.CellposeWidget(_FakeViewer())
+    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (4, 6, 6))  # 3-D z-stack
+    w.refresh(tmp_path)
+    # ndim 3 is ambiguous → auto-select leaves the default; user disambiguates.
+    w.nuc_layout_combo.setCurrentText("3D")
+    w.nucleus_run_btn.click()
+    out = tmp_path / "1_cellpose"
+    assert (out / "nucleus_prob_3dt.tif").exists()
+    assert (out / "nucleus_dp_3dt.tif").exists()
+    assert "complete" in w.status_lbl.text().lower()
+    w.deleteLater()
+
+
+def test_channels_run_independently_when_only_one_present(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    w = mod.CellposeWidget(_FakeViewer())
+    # Only the cell channel is supplied.
+    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (2, 3, 6, 6))
+    w.refresh(tmp_path)
+
+    # Nucleus has no input → reports missing, writes nothing.
+    w.nucleus_run_btn.click()
+    assert "missing" in w.status_lbl.text().lower()
+    assert not (tmp_path / "1_cellpose" / "nucleus_prob_3dt.tif").exists()
+
+    # Cell still runs to completion.
+    w.cell_run_btn.click()
+    assert (tmp_path / "1_cellpose" / "cell_prob_3dt.tif").exists()
+    assert "complete" in w.status_lbl.text().lower()
+    w.deleteLater()

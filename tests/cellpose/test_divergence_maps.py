@@ -328,3 +328,44 @@ def test_build_divergence_maps_validates_shapes(tmp_path):
             foreground_z_reduction="mean", contour_z_reduction="mean",
             smoothing_sigma=0.0, median_radius=0,
         )
+
+
+# ── singleton-axis round-trip (2D / 2D+t / 3D / 3D+t) ──────────────────────────
+
+@pytest.mark.parametrize(
+    "prob_shape, dp_shape, expected_frames",
+    [
+        ((1, 1, 8, 8), (1, 1, 2, 8, 8), 1),  # 2D single image
+        ((3, 1, 8, 8), (3, 1, 2, 8, 8), 3),  # 2D+t  (T squeezes on disk — must stay T)
+        ((1, 4, 8, 8), (1, 4, 2, 8, 8), 1),  # single 3D z-stack
+        ((2, 4, 8, 8), (2, 4, 2, 8, 8), 2),  # 3D+t
+    ],
+)
+def test_build_divergence_maps_preserves_frames_across_layouts(
+    tmp_path, prob_shape, dp_shape, expected_frames
+):
+    """write_outputs records axis labels so singleton T/Z survive the TIFF
+    round-trip; the builder must recover the right frame count (a 2D+t stack
+    must not be misread as a single z-stack)."""
+    import numpy as np
+    import tifffile
+    from cellflow.cellpose.cellpose_runner import write_outputs
+    from cellflow.cellpose.divergence_maps import build_divergence_maps
+
+    write_outputs(
+        np.zeros(prob_shape, np.float32), np.zeros(dp_shape, np.float32),
+        tmp_path, "nucleus",
+    )
+    report = build_divergence_maps(
+        tmp_path / "nucleus_prob_3dt.tif",
+        tmp_path / "nucleus_dp_3dt.tif",
+        tmp_path / "nucleus_contours.tif",
+        tmp_path / "nucleus_foreground.tif",
+        foreground_z_reduction="mean",
+        contour_z_reduction="mean",
+        smoothing_sigma=0.0,
+        median_radius=0,
+    )
+    assert report.frames == expected_frames
+    fg = tifffile.imread(str(tmp_path / "nucleus_foreground.tif"))
+    assert fg.shape == (expected_frames, 8, 8)

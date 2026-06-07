@@ -194,19 +194,43 @@ class _LazyTiffStack:
         self._path = Path(path)
         self._name = name
         with tifffile.TiffFile(str(self._path)) as tf:
-            shape = tuple(int(x) for x in tf.series[0].shape)
-        # A frameless 3D/4D stack is a single timepoint: prepend T=1.
-        if len(shape) == ndim - 1:
-            shape = (1,) + shape
-        if len(shape) != ndim:
-            label = "Z×Y×X or T×Z×Y×X" if ndim == 4 else "Z×2×Y×X or T×Z×2×Y×X"
-            raise ValueError(f"{name} must be {label}.")
-        if ndim == 5 and shape[2] != 2:
-            raise ValueError(f"{name} must be Z×2×Y×X or T×Z×2×Y×X.")
+            series = tf.series[0]
+            disk_shape = tuple(int(x) for x in series.shape)
+            axes = str(series.axes)
+        shape = self._canonical_shape(disk_shape, axes, ndim, name)
         self.shape = shape
         self._frame_shape = shape[1:]
         # Pages per frame = product of the non-(Y,X) per-frame axes (Z, or Z*2).
         self._pages_per_frame = int(np.prod(shape[1:-2], dtype=int))
+
+    @staticmethod
+    def _canonical_shape(
+        disk_shape: tuple[int, ...], axes: str, ndim: int, name: str,
+    ) -> tuple[int, ...]:
+        """Recover the logical ``(T,Z,Y,X)`` / ``(T,Z,2,Y,X)`` shape.
+
+        TIFF drops singleton leading axes on write, so a 2D+t prob ``(T,1,Y,X)``
+        lands on disk as ``(T,Y,X)`` — indistinguishable from a single z-stack by
+        shape alone. When the writer recorded axis labels (our ``write_outputs``),
+        map the surviving letters back to canonical order, inserting size-1 for
+        any dropped ``T``/``Z``/``C``. Otherwise fall back to the length heuristic
+        for legacy/metadata-less files (which are never singleton-squeezed).
+        """
+        canonical = "TZYX" if ndim == 4 else "TZCYX"
+        label = "Z×Y×X or T×Z×Y×X" if ndim == 4 else "Z×2×Y×X or T×Z×2×Y×X"
+        if len(axes) == len(disk_shape) and set("YX") <= set(axes) <= set(canonical):
+            present = dict(zip(axes, disk_shape))
+            shape = tuple(present.get(a, 1) for a in canonical)
+        else:
+            shape = disk_shape
+            # A frameless 3D/4D stack is a single timepoint: prepend T=1.
+            if len(shape) == ndim - 1:
+                shape = (1,) + shape
+        if len(shape) != ndim:
+            raise ValueError(f"{name} must be {label}.")
+        if ndim == 5 and shape[2] != 2:
+            raise ValueError(f"{name} must be Z×2×Y×X or T×Z×2×Y×X.")
+        return shape
 
     def frame(self, t: int) -> np.ndarray:
         """Frame ``t`` as float32, shaped ``(Z,Y,X)`` or ``(Z,2,Y,X)``."""
@@ -303,14 +327,14 @@ def build_divergence_maps(
     foreground_out.parent.mkdir(parents=True, exist_ok=True)
     imwrite_grayscale(
         contours_out, np.stack(contour_frames).astype(np.float32),
-        compression="zlib",
+        compression="zlib", metadata={"axes": "TYX"},
     )
     progress_done += 1
     if progress_cb is not None:
         progress_cb(progress_done, total_steps, "Divergence maps: writing contours")
     imwrite_grayscale(
         foreground_out, np.stack(foreground_frames).astype(np.float32),
-        compression="zlib",
+        compression="zlib", metadata={"axes": "TYX"},
     )
     progress_done += 1
     if progress_cb is not None:

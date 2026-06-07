@@ -12,6 +12,60 @@ from cellflow.core.tiff import imwrite_grayscale
 
 _NORMALIZE = {"tile_norm_blocksize": 128}
 
+InputLayout = Literal["2D", "2D+t", "3D", "3D+t"]
+
+# layout -> (has_time, has_z); canonical processing shape is always (T, Z, Y, X).
+_LAYOUT_AXES: dict[str, tuple[bool, bool]] = {
+    "2D": (False, False),
+    "2D+t": (True, False),
+    "3D": (False, True),
+    "3D+t": (True, True),
+}
+
+
+def layout_has_time(layout: str) -> bool:
+    return _LAYOUT_AXES[layout][0]
+
+
+def layout_has_z(layout: str) -> bool:
+    return _LAYOUT_AXES[layout][1]
+
+
+def infer_layout_from_ndim(ndim: int) -> str | None:
+    """Best-effort layout from array ndim.
+
+    ``2 -> "2D"`` and ``4 -> "3D+t"`` are unambiguous; ``3`` is ambiguous
+    (``2D+t`` vs ``3D``) so returns ``None`` and the caller keeps the user's
+    explicit choice.
+    """
+    if ndim == 2:
+        return "2D"
+    if ndim == 4:
+        return "3D+t"
+    return None
+
+
+def to_tzyx(arr: np.ndarray, layout: str) -> np.ndarray:
+    """Normalize an input array to canonical ``(T, Z, Y, X)`` for its layout.
+
+    Singleton ``T`` and/or ``Z`` axes are inserted so 2D/2D+t/3D/3D+t inputs all
+    become 4-D; the runner then iterates uniformly over frames and z-slices.
+    """
+    if layout not in _LAYOUT_AXES:
+        raise ValueError(f"unknown input layout {layout!r}")
+    has_time, has_z = _LAYOUT_AXES[layout]
+    arr = np.asarray(arr)
+    expected_ndim = 2 + int(has_time) + int(has_z)
+    if arr.ndim != expected_ndim:
+        raise ValueError(
+            f"{layout} input must be {expected_ndim}-D, got shape {arr.shape}"
+        )
+    if not has_time:
+        arr = arr[np.newaxis]  # add T at axis 0
+    if not has_z:
+        arr = arr[:, np.newaxis]  # add Z at axis 1 (after T)
+    return arr
+
 
 @dataclass(frozen=True)
 class NucleusParams:
@@ -227,6 +281,18 @@ def run_cell_stack(
     return np.stack(prob_frames, axis=0), np.stack(dp_frames, axis=0)
 
 
+def _dp_axes(dp_3dt: np.ndarray) -> str | None:
+    """Axis labels for the flow stack so singleton T/Z survive the TIFF round-trip.
+
+    2D-per-slice flow is ``(T, Z, 2, Y, X)``; true-3D flow is ``(T, 3, Z, Y, X)``.
+    """
+    if dp_3dt.ndim == 5 and dp_3dt.shape[2] == 2:
+        return "TZCYX"
+    if dp_3dt.ndim == 5 and dp_3dt.shape[1] == 3:
+        return "TCZYX"
+    return None
+
+
 def write_outputs(
     prob_3dt: np.ndarray,
     dp_3dt: np.ndarray,
@@ -235,7 +301,9 @@ def write_outputs(
 ) -> None:
     """Write the two canonical TIFFs under output_dir.
 
-    Writes ``{channel}_prob_3dt.tif`` and ``{channel}_dp_3dt.tif``.
+    Writes ``{channel}_prob_3dt.tif`` and ``{channel}_dp_3dt.tif``. Axis labels
+    are recorded as metadata so singleton ``T``/``Z`` axes (2D / 2D+t / single
+    3D-stack inputs) survive the TIFF round-trip and are not misread downstream.
     """
     if channel not in ("nucleus", "cell"):
         raise ValueError(f"channel must be 'nucleus' or 'cell', got {channel!r}")
@@ -245,5 +313,12 @@ def write_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     prob_path = output_dir / f"{channel}_prob_3dt.tif"
     dp_path = output_dir / f"{channel}_dp_3dt.tif"
-    imwrite_grayscale(prob_path, prob_3dt.astype(np.float32), compression="zlib")
-    imwrite_grayscale(dp_path, dp_3dt.astype(np.float32), compression="zlib")
+    imwrite_grayscale(
+        prob_path, prob_3dt.astype(np.float32),
+        compression="zlib", metadata={"axes": "TZYX"},
+    )
+    dp_kwargs: dict = {"compression": "zlib"}
+    dp_axes = _dp_axes(dp_3dt)
+    if dp_axes is not None:
+        dp_kwargs["metadata"] = {"axes": dp_axes}
+    imwrite_grayscale(dp_path, dp_3dt.astype(np.float32), **dp_kwargs)

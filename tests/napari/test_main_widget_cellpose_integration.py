@@ -239,13 +239,14 @@ def test_main_widget_state_round_trips_cellpose():
     w = main_mod.CellFlowMainWidget(_fake_viewer())
     cellpose_state = {
         "nucleus": {
+            "layout": "3D+t",
             "do_3d": False,
             "anisotropy": 1.25,
             "diameter": 33.0,
             "min_size": 9,
             "gamma": 1.2,
         },
-        "cell": {"diameter": 17.0, "min_size": 4, "gamma": 0.9},
+        "cell": {"layout": "3D+t", "diameter": 17.0, "min_size": 4, "gamma": 0.9},
     }
     w.set_state({"cellpose": cellpose_state})
     got = w.get_state()

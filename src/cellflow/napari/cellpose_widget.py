@@ -11,6 +11,7 @@ from napari.qt.threading import thread_worker
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -69,6 +70,17 @@ _REFERENCE_LAYER_NAMES = {
     "nucleus": "Reference: Nucleus 3D+t",
     "cell": "Reference: Cell 3D+t",
 }
+
+# Input dimensionality options; default to 3D+t (the historical assumption).
+_LAYOUT_OPTIONS = ["2D", "2D+t", "3D", "3D+t"]
+_DEFAULT_LAYOUT = "3D+t"
+
+
+def _layout_combo() -> QComboBox:
+    combo = QComboBox()
+    combo.addItems(_LAYOUT_OPTIONS)
+    combo.setCurrentText(_DEFAULT_LAYOUT)
+    return combo
 
 
 def _make_status() -> QLabel:
@@ -253,6 +265,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
         body.setLayout(grid)
+        self.nuc_layout_combo = _layout_combo()
         self.nuc_3d_chk = QCheckBox("3D mode")
         self.nuc_3d_chk.setChecked(True)
         self.nuc_anisotropy_spin = _dslider(0.1, 20.0, 1.5, 0.1, 2)
@@ -260,6 +273,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         self.nuc_min_size_spin = _islider(0, 100000, 15)
         self.nuc_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
         row = 0
+        add_section_pair_row(grid, row, "Input layout:", self.nuc_layout_combo); row += 1
         add_section_full_row(grid, row, self.nuc_3d_chk); row += 1
         add_section_pair_row(
             grid, row,
@@ -271,17 +285,27 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             "Min size:", self.nuc_min_size_spin,
             "Gamma:", self.nuc_gamma_spin,
         )
+        # True-3D segmentation only makes sense when the input has a Z axis.
+        self.nuc_layout_combo.currentTextChanged.connect(self._sync_nucleus_3d_enabled)
+        self._sync_nucleus_3d_enabled(self.nuc_layout_combo.currentText())
         return CollapsibleSection("Nucleus parameters", body, expanded=False)
+
+    def _sync_nucleus_3d_enabled(self, layout: str) -> None:
+        has_z = cellpose_runner.layout_has_z(layout)
+        self.nuc_3d_chk.setEnabled(has_z)
+        self.nuc_anisotropy_spin.setEnabled(has_z)
 
     def _build_cell_params_section(self) -> CollapsibleSection:
         body = QWidget(self)
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
         body.setLayout(grid)
+        self.cell_layout_combo = _layout_combo()
         self.cell_diameter_spin = _dslider(0.0, 500.0, 0.0, 1.0, 1)
         self.cell_min_size_spin = _islider(0, 100000, 0)
         self.cell_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
         row = 0
+        add_section_pair_row(grid, row, "Input layout:", self.cell_layout_combo); row += 1
         add_section_pair_row(
             grid, row,
             "Diameter:", self.cell_diameter_spin,
@@ -375,13 +399,21 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
 
     def _on_browse_nucleus(self) -> None:
         self._browse_file_into(
-            self._nucleus_edit, "Select nucleus channel", self._apply_standalone_paths
+            self._nucleus_edit, "Select nucleus channel", self._on_nucleus_selected
         )
+
+    def _on_nucleus_selected(self) -> None:
+        self._apply_standalone_paths()
+        self._autoselect_layout("nucleus")
 
     def _on_browse_cell(self) -> None:
         self._browse_file_into(
-            self._cell_edit, "Select cell channel", self._apply_standalone_paths
+            self._cell_edit, "Select cell channel", self._on_cell_selected
         )
+
+    def _on_cell_selected(self) -> None:
+        self._apply_standalone_paths()
+        self._autoselect_layout("cell")
 
     def _on_browse_output_dir(self) -> None:
         self._browse_dir_into(
@@ -406,9 +438,37 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
     # ------------------------------------------------------------------
     # Run flow
     # ------------------------------------------------------------------
+    def _channel_layout(self, channel: str) -> str:
+        combo = self.nuc_layout_combo if channel == "nucleus" else self.cell_layout_combo
+        return combo.currentText()
+
+    def _autoselect_layout(self, channel: str) -> None:
+        """Best-effort: preselect the layout from the input file's ndim.
+
+        Only acts on the unambiguous 2-D / 4-D cases; a 3-D file keeps the user's
+        explicit choice. Never raises — a missing/unreadable file is ignored.
+        """
+        path = self._input_path(channel)
+        if path is None:
+            return
+        try:
+            with tifffile.TiffFile(str(path)) as tf:
+                ndim = len(tf.series[0].shape)
+        except Exception:
+            return
+        inferred = cellpose_runner.infer_layout_from_ndim(ndim)
+        if inferred is None:
+            return
+        combo = self.nuc_layout_combo if channel == "nucleus" else self.cell_layout_combo
+        combo.setCurrentText(inferred)
+
     def _build_nucleus_params(self) -> cellpose_runner.NucleusParams:
+        # True-3D segmentation requires a Z axis; a Z-less input forces 2D.
+        do_3d = self.nuc_3d_chk.isChecked() and cellpose_runner.layout_has_z(
+            self._channel_layout("nucleus")
+        )
         return cellpose_runner.NucleusParams(
-            do_3d=self.nuc_3d_chk.isChecked(),
+            do_3d=do_3d,
             anisotropy=float(self.nuc_anisotropy_spin.value()),
             diameter=float(self.nuc_diameter_spin.value()),
             min_size=int(self.nuc_min_size_spin.value()),
@@ -435,6 +495,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             self._build_nucleus_params() if channel == "nucleus"
             else self._build_cell_params()
         )
+        layout = self._channel_layout(channel)
         pos_dir = self._pos_dir
         self._cancel_requested = False
 
@@ -466,11 +527,9 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         })
         def _worker():
             yield (0, 1, "Loading input...")
-            stack = np.asarray(tifffile.imread(str(in_path)))
-            if stack.ndim != 4:
-                raise ValueError(
-                    f"expected 4D (T,Z,Y,X) input, got shape {stack.shape}"
-                )
+            stack = cellpose_runner.to_tzyx(
+                np.asarray(tifffile.imread(str(in_path))), layout
+            )
 
             def _cb_progress(done, total, msg):
                 progress_signal.emit(int(done), int(total), str(msg))
@@ -542,15 +601,14 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             self._build_nucleus_params() if channel == "nucleus"
             else self._build_cell_params()
         )
+        layout = self._channel_layout(channel)
         self._cancel_requested = False
         self._set_running_stage(channel)
         self._progress(0, 0, f"Loading {channel} reference stack for preview...")
         try:
-            stack = np.asarray(tifffile.imread(str(in_path)))
-            if stack.ndim != 4:
-                raise ValueError(
-                    f"expected 4D input (T,Z,Y,X), got {stack.shape}"
-                )
+            stack = cellpose_runner.to_tzyx(
+                np.asarray(tifffile.imread(str(in_path))), layout
+            )
             self._show_reference_stack(channel, stack)
             t, z = self._current_tz()
         except Exception as exc:
@@ -706,6 +764,9 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         self._pos_dir = pos_dir
         self._files_widget.refresh(pos_dir)
         self._refresh_divergence(pos_dir)
+        if pos_dir is not None:
+            self._autoselect_layout("nucleus")
+            self._autoselect_layout("cell")
 
     def _refresh_divergence(self, pos_dir: Path | None) -> None:
         """Point the embedded divergence widget at the active maps location.
@@ -721,6 +782,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
     def get_state(self) -> dict:
         return {
             "nucleus": {
+                "layout": self.nuc_layout_combo.currentText(),
                 "do_3d": self.nuc_3d_chk.isChecked(),
                 "anisotropy": self.nuc_anisotropy_spin.value(),
                 "diameter": self.nuc_diameter_spin.value(),
@@ -728,6 +790,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
                 "gamma": self.nuc_gamma_spin.value(),
             },
             "cell": {
+                "layout": self.cell_layout_combo.currentText(),
                 "diameter": self.cell_diameter_spin.value(),
                 "min_size": self.cell_min_size_spin.value(),
                 "gamma": self.cell_gamma_spin.value(),
@@ -740,6 +803,8 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             return
         nuc = state.get("nucleus", {})
         if isinstance(nuc, dict):
+            if nuc.get("layout") in _LAYOUT_OPTIONS:
+                self.nuc_layout_combo.setCurrentText(nuc["layout"])
             if "do_3d" in nuc:
                 self.nuc_3d_chk.setChecked(bool(nuc["do_3d"]))
             if "anisotropy" in nuc:
@@ -752,6 +817,8 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
                 self.nuc_gamma_spin.setValue(float(nuc["gamma"]))
         cel = state.get("cell", {})
         if isinstance(cel, dict):
+            if cel.get("layout") in _LAYOUT_OPTIONS:
+                self.cell_layout_combo.setCurrentText(cel["layout"])
             if "diameter" in cel:
                 self.cell_diameter_spin.setValue(float(cel["diameter"]))
             if "min_size" in cel:

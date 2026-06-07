@@ -377,3 +377,57 @@ def test_write_outputs_rejects_bad_channel(tmp_path: Path):
     dp = np.zeros((1, 1, 2, 2, 2), dtype=np.float32)
     with pytest.raises(ValueError):
         r.write_outputs(prob, dp, tmp_path, "blah")  # type: ignore[arg-type]
+
+
+# ── input-layout canonicalization ──────────────────────────────────────────────
+
+def test_to_tzyx_normalizes_all_layouts():
+    r = _runner()
+    cases = {
+        "2D": (5, 6),
+        "2D+t": (3, 5, 6),
+        "3D": (4, 5, 6),
+        "3D+t": (2, 4, 5, 6),
+    }
+    for layout, shape in cases.items():
+        out = r.to_tzyx(np.zeros(shape, dtype=np.float32), layout)
+        assert out.ndim == 4, layout
+        assert out.shape[-2:] == (5, 6), layout
+
+
+def test_to_tzyx_places_singleton_axes_correctly():
+    r = _runner()
+    # 2D+t: time preserved, singleton Z inserted at axis 1.
+    out = r.to_tzyx(np.zeros((3, 5, 6), dtype=np.float32), "2D+t")
+    assert out.shape == (3, 1, 5, 6)
+    # 3D: singleton T inserted at axis 0, z preserved.
+    out = r.to_tzyx(np.zeros((4, 5, 6), dtype=np.float32), "3D")
+    assert out.shape == (1, 4, 5, 6)
+    # 2D: both singletons.
+    out = r.to_tzyx(np.zeros((5, 6), dtype=np.float32), "2D")
+    assert out.shape == (1, 1, 5, 6)
+
+
+def test_to_tzyx_rejects_wrong_ndim_for_layout():
+    r = _runner()
+    with pytest.raises(ValueError):
+        r.to_tzyx(np.zeros((5, 6), dtype=np.float32), "3D+t")
+    with pytest.raises(ValueError):
+        r.to_tzyx(np.zeros((2, 4, 5, 6), dtype=np.float32), "2D")
+    with pytest.raises(ValueError):
+        r.to_tzyx(np.zeros((5, 6), dtype=np.float32), "bogus")
+
+
+def test_infer_layout_from_ndim():
+    r = _runner()
+    assert r.infer_layout_from_ndim(2) == "2D"
+    assert r.infer_layout_from_ndim(4) == "3D+t"
+    assert r.infer_layout_from_ndim(3) is None  # ambiguous: 2D+t vs 3D
+
+
+def test_layout_has_z_and_time():
+    r = _runner()
+    assert r.layout_has_z("3D") and r.layout_has_z("3D+t")
+    assert not r.layout_has_z("2D") and not r.layout_has_z("2D+t")
+    assert r.layout_has_time("2D+t") and r.layout_has_time("3D+t")
+    assert not r.layout_has_time("2D") and not r.layout_has_time("3D")
