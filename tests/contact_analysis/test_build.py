@@ -4,12 +4,49 @@ import pytest
 import tifffile
 
 from cellflow.contact_analysis.build import (
+    build_contact_analysis,
     build_position_contact_analysis,
     assign_persistent_edge_ids,
     _coordinate_segments,
     _extract_frame_cell_edges,
     _order_coordinates,
 )
+
+
+def test_build_contact_analysis_is_position_agnostic_with_explicit_paths(tmp_path):
+    labels = np.zeros((1, 4, 4), dtype=np.uint16)
+    labels[0, :, :2] = 1
+    labels[0, :, 2:] = 2
+    cell_path = tmp_path / "my_cells.tif"
+    tifffile.imwrite(cell_path, labels)
+    output_path = tmp_path / "out" / "contact.h5"
+
+    result = build_contact_analysis(cell_labels_path=cell_path, output_path=output_path)
+
+    assert result == output_path
+    with h5py.File(output_path, "r") as h5:
+        # No nucleus supplied: provenance records empty nucleus/source paths.
+        assert h5["provenance"].attrs["cell_tracked_labels_path"] == str(cell_path)
+        assert h5["provenance"].attrs["nucleus_tracked_labels_path"] == ""
+        assert h5["provenance"].attrs["source_position_path"] == ""
+        assert h5["cells/table/cell_id"][:].tolist() == [1, 2]
+
+
+def test_build_contact_analysis_optional_nucleus_skips_identity_check(tmp_path):
+    cell = np.zeros((1, 4, 4), dtype=np.uint16)
+    cell[0, :, :2] = 1
+    cell[0, :, 2:] = 2
+    # A nucleus stack that would FAIL the identity invariant is irrelevant when
+    # nucleus_labels_path is omitted.
+    cell_path = tmp_path / "cells.tif"
+    tifffile.imwrite(cell_path, cell)
+
+    # Should not raise despite no nucleus provided.
+    build_contact_analysis(
+        cell_labels_path=cell_path,
+        output_path=tmp_path / "ok.h5",
+        source_path=tmp_path / "some_position",
+    )
 
 
 def _write_position(tmp_path, cell_stack, nucleus_stack):

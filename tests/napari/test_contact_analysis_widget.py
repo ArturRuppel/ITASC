@@ -105,6 +105,16 @@ def _make_sync_thread_worker():
     return fake_thread_worker
 
 
+def _set_pos(widget, pos_dir):
+    """Drive the widget the way the orchestrator does: staged paths + status root."""
+    widget.set_context(
+        cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
+        nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
+        out_path=pos_dir / "4_contact_analysis" / "contact_analysis.h5",
+        status_root=pos_dir,
+    )
+
+
 def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
@@ -115,9 +125,10 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
     (pos_dir / "3_cell").mkdir()
     (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
 
-    widget.refresh(pos_dir)
+    _set_pos(widget, pos_dir)
 
-    assert widget._pos_dir == pos_dir
+    assert widget.cell_labels_path == pos_dir / "3_cell" / "tracked_labels.tif"
+    assert widget.nucleus_labels_path == pos_dir / "2_nucleus" / "tracked_labels.tif"
     assert widget.contact_analysis_out_path == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     assert hasattr(widget, "_files_widget")
     assert widget.build_contact_analysis_btn.isEnabled() is False
@@ -125,7 +136,7 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
     assert widget.clear_contact_analysis_btn.isEnabled() is False
 
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-    widget.refresh(pos_dir)
+    _set_pos(widget, pos_dir)
 
     assert widget.build_contact_analysis_btn.isEnabled() is True
 
@@ -140,7 +151,7 @@ def test_contact_analysis_widget_does_not_embed_personal_nls_classification(monk
     widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = tmp_path / "pos04"
-    widget.refresh(pos_dir)
+    _set_pos(widget, pos_dir)
 
     assert not hasattr(widget, "nls_classification_widget")
     assert "cellflow.napari.nls_classification_widget" not in sys.modules
@@ -163,11 +174,12 @@ def test_contact_analysis_widget_build_runs_in_worker_and_reports_progress(monke
     progress_events: list[tuple[int, int, str]] = []
     captured: dict[str, object] = {}
 
-    def fake_build(position_path, output_path, **kwargs):
-        captured["position_path"] = position_path
+    def fake_build(*, cell_labels_path, output_path, nucleus_labels_path=None,
+                   source_path=None, progress_cb, **kwargs):
+        captured["cell_labels_path"] = cell_labels_path
         captured["output_path"] = output_path
-        captured["kwargs"] = kwargs
-        progress_cb = kwargs["progress_cb"]
+        captured["nucleus_labels_path"] = nucleus_labels_path
+        captured["progress_cb"] = progress_cb
         progress_cb(2, 5, "Indexing records")
         progress_events.append((2, 5, "Indexing records"))
         assert widget.contact_analysis_progress_bar.maximum() == 5
@@ -176,18 +188,17 @@ def test_contact_analysis_widget_build_runs_in_worker_and_reports_progress(monke
         output_path.write_bytes(b"h5")
         return output_path
 
-    monkeypatch.setattr(mod, "build_position_contact_analysis", fake_build)
+    monkeypatch.setattr(mod, "build_contact_analysis", fake_build)
 
     widget = mod.ContactAnalysisWidget()
-    widget.refresh(pos_dir)
+    _set_pos(widget, pos_dir)
     widget._on_build_contact_analysis()
 
     assert progress_events == [(2, 5, "Indexing records")]
-    assert captured["position_path"] == pos_dir
     assert captured["output_path"] == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
-    assert captured["kwargs"]["cell_tracked_labels_path"] == pos_dir / "3_cell" / "tracked_labels.tif"
-    assert captured["kwargs"]["nucleus_tracked_labels_path"] == pos_dir / "2_nucleus" / "tracked_labels.tif"
-    assert callable(captured["kwargs"]["progress_cb"])
+    assert captured["cell_labels_path"] == pos_dir / "3_cell" / "tracked_labels.tif"
+    assert captured["nucleus_labels_path"] == pos_dir / "2_nucleus" / "tracked_labels.tif"
+    assert callable(captured["progress_cb"])
     assert "Wrote" in widget.contact_analysis_status_lbl.text()
     assert widget.contact_analysis_out_path.exists()
 
@@ -227,7 +238,7 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
     contact_analysis_path.write_bytes(b"h5")
-    widget.refresh(pos_dir)
+    _set_pos(widget, pos_dir)
 
     assert widget.show_contact_analysis_btn.isEnabled() is True
     assert widget.clear_contact_analysis_btn.isEnabled() is True
@@ -297,7 +308,7 @@ def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_pa
     contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
     contact_analysis_path.write_bytes(b"h5")
-    widget.refresh(pos_dir)
+    _set_pos(widget, pos_dir)
 
     contact_analysis = {"cells": [1]}
     add_calls = []
@@ -350,7 +361,7 @@ def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(mon
     contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     contact_analysis_path.parent.mkdir(parents=True, exist_ok=True)
     contact_analysis_path.write_bytes(b"h5")
-    widget.refresh(pos_dir)
+    _set_pos(widget, pos_dir)
 
     contact_analysis = {"cells": [1]}
     monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _path: contact_analysis)
@@ -397,14 +408,13 @@ def test_contact_analysis_widget_show_contact_analysis_uses_real_reader_and_visu
 
     tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", labels)
     tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
-    widget.refresh(pos_dir)
-    mod.build_position_contact_analysis(
-        pos_dir,
-        widget.contact_analysis_out_path,
-        cell_tracked_labels_path=pos_dir / "3_cell" / "tracked_labels.tif",
-        nucleus_tracked_labels_path=pos_dir / "2_nucleus" / "tracked_labels.tif",
+    _set_pos(widget, pos_dir)
+    mod.build_contact_analysis(
+        cell_labels_path=pos_dir / "3_cell" / "tracked_labels.tif",
+        output_path=widget.contact_analysis_out_path,
+        nucleus_labels_path=pos_dir / "2_nucleus" / "tracked_labels.tif",
     )
-    widget.refresh(pos_dir)
+    _set_pos(widget, pos_dir)
 
     widget._on_show_contact_analysis()
 
@@ -415,6 +425,54 @@ def test_contact_analysis_widget_show_contact_analysis_uses_real_reader_and_visu
     assert viewer.layers["[Contact Analysis] Cell labels"].data.shape == (1, 4, 4)
     assert viewer.layers["[Contact Analysis] Nucleus labels"].data.shape == (1, 4, 4)
     assert len(viewer.layers["[Contact Analysis] Edges"].data) >= 1
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_contact_analysis_widget_standalone_uses_pickers_and_optional_nucleus(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.ContactAnalysisWidget(standalone=True)
+
+    # Standalone shows explicit pickers and hides the orchestrator's staged panel.
+    assert widget._pickers_container.isVisibleTo(widget) is True
+    assert widget._pipeline_files_section.isVisibleTo(widget) is False
+
+    cell_path = tmp_path / "cells.tif"
+    cell_path.touch()
+    out_path = tmp_path / "out.h5"
+
+    # Cell labels alone (no nucleus) are sufficient to be build-ready.
+    widget.set_context(cell_labels=cell_path, out_path=out_path)
+    assert widget.nucleus_labels_path is None
+    assert widget._cell_labels_edit.text() == str(cell_path)
+    assert widget.build_contact_analysis_btn.isEnabled() is True
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_contact_analysis_widget_state_round_trips(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.ContactAnalysisWidget()
+
+    widget.set_state(
+        {
+            "color_cells_by_label": True,
+            "color_edges_by_id": True,
+            "color_edges_by_label": False,
+            "hide_border_edges": True,
+        }
+    )
+    state = widget.get_state()
+    assert state == {
+        "color_cells_by_label": True,
+        "color_edges_by_id": True,
+        "color_edges_by_label": False,
+        "hide_border_edges": True,
+    }
 
     widget.deleteLater()
     app.processEvents()

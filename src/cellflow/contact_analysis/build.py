@@ -55,33 +55,36 @@ class T1Record:
         return self.gaining_pair[1]
 
 
-def build_position_contact_analysis(
-    position_path: str | Path,
-    output_path: str | Path,
+def build_contact_analysis(
     *,
-    cell_tracked_labels_path: str | Path | None = None,
-    nucleus_tracked_labels_path: str | Path | None = None,
+    cell_labels_path: str | Path,
+    output_path: str | Path,
+    nucleus_labels_path: str | Path | None = None,
+    source_path: str | Path | None = None,
     edge_extraction_params: dict | None = None,
     progress_cb: Callable[[int, int, str], None] | None = None,
 ) -> Path:
-    """Build the canonical per-position contact-analysis HDF5 file."""
+    """Build the canonical contact-analysis HDF5 file from label stacks.
+
+    Position-agnostic core: takes an explicit cell-label TIFF (2D+t) and an
+    optional nucleus-label TIFF, writing the HDF5 to ``output_path``.
+    ``source_path`` is recorded as provenance only. When ``nucleus_labels_path``
+    is given the ``cell_id == nucleus_id`` invariant is enforced; otherwise
+    nucleus validation is skipped.
+    """
     total = 6
-    position_path = Path(position_path)
+    cell_labels_path = Path(cell_labels_path)
     output_path = Path(output_path)
+    nucleus_labels_path = Path(nucleus_labels_path) if nucleus_labels_path else None
     params = dict(edge_extraction_params or {})
 
-    cell_labels_path = Path(cell_tracked_labels_path) if cell_tracked_labels_path else (
-        position_path / "3_cell" / "tracked_labels.tif"
-    )
-    nucleus_labels_path = (
-        Path(nucleus_tracked_labels_path)
-        if nucleus_tracked_labels_path
-        else position_path / "2_nucleus" / "tracked_labels.tif"
-    )
     cell_stack = _read_label_stack(cell_labels_path)
-    nucleus_stack = _read_label_stack(nucleus_labels_path)
+    nucleus_stack = (
+        _read_label_stack(nucleus_labels_path) if nucleus_labels_path is not None else None
+    )
     _report_progress(progress_cb, 1, total, "read labels")
-    _validate_cell_nucleus_identity(cell_stack, nucleus_stack)
+    if nucleus_stack is not None:
+        _validate_cell_nucleus_identity(cell_stack, nucleus_stack)
     _report_progress(progress_cb, 2, total, "validate IDs")
 
     cell_columns = _extract_cell_columns(cell_stack)
@@ -95,9 +98,11 @@ def build_position_contact_analysis(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(output_path, "w") as h5:
         provenance = h5.create_group("provenance")
-        provenance.attrs["source_position_path"] = str(position_path)
+        provenance.attrs["source_position_path"] = str(source_path) if source_path else ""
         provenance.attrs["cell_tracked_labels_path"] = str(cell_labels_path)
-        provenance.attrs["nucleus_tracked_labels_path"] = str(nucleus_labels_path)
+        provenance.attrs["nucleus_tracked_labels_path"] = (
+            str(nucleus_labels_path) if nucleus_labels_path is not None else ""
+        )
         provenance.attrs["edge_extraction_params_json"] = json.dumps(
             params, sort_keys=True, separators=(",", ":")
         )
@@ -120,6 +125,43 @@ def build_position_contact_analysis(
     _report_progress(progress_cb, 6, total, "write HDF5")
 
     return output_path
+
+
+def build_position_contact_analysis(
+    position_path: str | Path,
+    output_path: str | Path,
+    *,
+    cell_tracked_labels_path: str | Path | None = None,
+    nucleus_tracked_labels_path: str | Path | None = None,
+    edge_extraction_params: dict | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+) -> Path:
+    """Staged-layout wrapper around :func:`build_contact_analysis`.
+
+    Resolves the canonical ``<position>/3_cell`` and ``<position>/2_nucleus``
+    tracked-label paths when explicit paths are not supplied, then delegates to
+    the position-agnostic core. Retained for the orchestrator and out-of-repo
+    consumers that pass a position directory.
+    """
+    position_path = Path(position_path)
+    cell_labels_path = (
+        Path(cell_tracked_labels_path)
+        if cell_tracked_labels_path
+        else position_path / "3_cell" / "tracked_labels.tif"
+    )
+    nucleus_labels_path = (
+        Path(nucleus_tracked_labels_path)
+        if nucleus_tracked_labels_path
+        else position_path / "2_nucleus" / "tracked_labels.tif"
+    )
+    return build_contact_analysis(
+        cell_labels_path=cell_labels_path,
+        output_path=output_path,
+        nucleus_labels_path=nucleus_labels_path,
+        source_path=position_path,
+        edge_extraction_params=edge_extraction_params,
+        progress_cb=progress_cb,
+    )
 
 
 def assign_persistent_edge_ids(
