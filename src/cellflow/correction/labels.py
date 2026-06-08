@@ -572,6 +572,146 @@ def _split_in_crop(
     return _split_in_crop(seg, crop, line, bbox, curlabel, retry + 1, new_label=new_label)
 
 
+def _mask_touches(a: np.ndarray, b: np.ndarray) -> bool:
+    """True if boolean masks *a* and *b* are adjacent (8-connectivity)."""
+    return bool(np.any(binary_dilation(a, disk(1)) & b))
+
+
+def _fragments_along_line(
+    seg: np.ndarray,
+    lab: int,
+    line: np.ndarray,
+) -> list[np.ndarray]:
+    """Split cell *lab* along *line* into its two largest fragments.
+
+    Returns two full-frame boolean masks that together tile the whole cell (the
+    drawn line pixels are handed to the nearest fragment, exactly like
+    ``_split_in_crop``). Returns ``[]`` when the line does not run *all the way*
+    through the cell — i.e. removing it leaves the cell in one piece, or one
+    side is below ``MIN_CELL_SIZE``. ``seg`` is never modified.
+    """
+    bbox = _extend_bbox(_bbox_of_label(seg, lab), 1.0, seg.shape, min_pad=2)
+    r0, c0, r1, c1 = bbox
+    cell = _crop(seg, bbox) == lab
+    crop_line = _crop(line, bbox).astype(bool)
+
+    # Only a hair of dilation, to bridge a 1-px diagonal gap left by the drawn
+    # line. Dilating further would force a split even where the line merely
+    # clips the cell, so a stroke that doesn't run clean through stays a no-op.
+    for retry in range(2):
+        cut = binary_dilation(crop_line, disk(retry)) if retry else crop_line
+        regions, n = nd_label(cell & ~cut)
+        if n < 2:
+            continue
+        sizes = [int(np.sum(regions == i)) for i in range(1, n + 1)]
+        id_a, id_b = sorted(range(1, n + 1), key=lambda i: sizes[i - 1], reverse=True)[:2]
+        if sizes[id_a - 1] < MIN_CELL_SIZE or sizes[id_b - 1] < MIN_CELL_SIZE:
+            continue
+        two = np.zeros_like(regions)
+        two[regions == id_a] = 1
+        two[regions == id_b] = 2
+        expanded = expand_labels(two, distance=max(retry + 2, 3))
+        frags = []
+        for v in (1, 2):
+            full = np.zeros(seg.shape, dtype=bool)
+            full[r0:r1, c0:c1] = (expanded == v) & cell
+            frags.append(full)
+        return frags
+    return []
+
+
+def carve_into_selected(
+    seg: np.ndarray,
+    positions: list,
+    *,
+    selected_label: int,
+) -> bool:
+    """Cut neighbouring cells along the drawn line and annex the near pieces.
+
+    The user draws a line *through* one or more neighbouring cells, starting from
+    (or towards) the selected cell. Every *other* cell the line crosses end to
+    end is split along that line — exactly like the Shift+Right split gesture of
+    the nucleus widget — into two fragments. The fragment that touches the
+    selected cell is then merged into it; if both fragments touch, the smaller
+    one is taken so the neighbour keeps its bulk. A cell the line only clips
+    (without dividing it in two) is left alone.
+
+    Cells are merged iteratively: a fragment that is not adjacent to the
+    selection at first can become adjacent once a cell between them has been
+    annexed, so each pass re-checks adjacency against the grown selection until
+    no further fragment touches it. Only one fragment per neighbour is ever
+    annexed, so the cell label set stays in lock-step with the nuclei — no label
+    is created, deleted or renumbered.
+
+    Cutting clean through the *selected* cell takes priority and is exclusive: if
+    the line divides the selection in two, its smaller piece is removed entirely
+    (set to background), the larger piece stays as the selected cell, and no
+    neighbour is annexed on that stroke.
+
+    A line that divides nothing (e.g. a straight swipe over background, or a
+    stroke that never fully crosses a cell) is a no-op. Returns ``True`` if any
+    pixel changed.
+    """
+    if not selected_label or not np.any(seg == selected_label):
+        return False
+    if len(positions) < 2:
+        return False
+
+    pts = [(float(p[-2]), float(p[-1])) for p in positions]
+    line = _draw_line(seg.shape, _interpolate(pts))
+    line_mask = line.astype(bool)
+    if not line_mask.any():
+        return False
+
+    sel_mask = seg == selected_label
+
+    # A line cutting clean through the selection trims it and nothing else: drop
+    # the smaller piece to background, keep the larger one, and stop here.
+    if (line_mask & sel_mask).any():
+        sel_frags = _fragments_along_line(seg, int(selected_label), line)
+        if len(sel_frags) >= 2:
+            drop = min(sel_frags, key=lambda f: int(f.sum()))
+            seg[drop] = 0
+            return True
+
+    crossed = set(int(v) for v in np.unique(seg[line_mask]))
+    crossed.discard(0)
+    crossed.discard(int(selected_label))
+
+    # Pre-split every neighbour the line fully traverses. Each entry maps the
+    # cell label to the two fragments it was divided into.
+    pending: dict[int, list[np.ndarray]] = {}
+    for lab in crossed:
+        frags = _fragments_along_line(seg, lab, line)
+        if len(frags) >= 2:
+            pending[lab] = frags
+
+    changed = False
+    progress = True
+    while pending and progress:
+        progress = False
+        for lab in list(pending):
+            touching = [f for f in pending[lab] if _mask_touches(f, sel_mask)]
+            if not touching:
+                continue  # may become reachable after a neighbour is annexed
+            annex = min(touching, key=lambda f: int(f.sum()))
+            seg[annex] = selected_label
+            sel_mask = sel_mask | annex
+            del pending[lab]
+            changed = True
+            progress = True
+
+    if not changed:
+        return False
+
+    # Annexing a slice can leave a thin background gap enclosed in the selection;
+    # close only those background holes so the boundary stays clean.
+    holes = binary_fill_holes(sel_mask) & ~sel_mask & (seg == 0)
+    if holes.any():
+        seg[holes] = selected_label
+    return True
+
+
 def draw_cell_path(
     seg: np.ndarray,
     positions: list,

@@ -43,7 +43,9 @@ from cellflow.core.imageops import residual
 __all__ = [
     "CellDivergenceParams",
     "CellDivergenceResult",
+    "CellForegroundResult",
     "clean_and_smooth_contours",
+    "compute_cell_foreground",
     "segment_cells_divergence",
 ]
 
@@ -111,6 +113,23 @@ class CellDivergenceResult:
     labels: np.ndarray | None
     """Cell labels — the unary argmin (tracked nucleus IDs).  ``None`` when the
     geodesic label assignment was skipped (``with_labels=False``)."""
+
+
+@dataclass
+class CellForegroundResult:
+    """Foreground-path intermediates — pipeline stages 1 + 3, foreground only.
+
+    Arrays are ``(T, Y, X)`` for a full-stack run and ``(Y, X)`` for a
+    single-frame (``frame`` given) run.
+    """
+
+    foreground_raw: np.ndarray
+    """Raw input foreground map (sigmoid), clipped to ``[0, 1]``."""
+    foreground_clean: np.ndarray
+    """Foreground after residual cleanup (sigmoid scale)."""
+    foreground_mask: np.ndarray
+    """Fill territory: ``(foreground_clean > fg_threshold)`` unioned with the
+    nucleus seeds when ``nuc`` is supplied."""
 
 
 def _robust_normalize_01(contours: np.ndarray, pct: float) -> np.ndarray:
@@ -188,6 +207,63 @@ def _to_tyx(arr: np.ndarray, dtype) -> np.ndarray:
     return a
 
 
+def compute_cell_foreground(
+    foreground: np.ndarray,
+    params: CellDivergenceParams,
+    nuc: np.ndarray | None = None,
+    *,
+    frame: int | None = None,
+) -> CellForegroundResult:
+    """Foreground cleanup + fill mask, independent of contours and the geodesic.
+
+    Drives the cell widget's dedicated foreground-tuning stage. It runs exactly
+    the foreground half of :func:`segment_cells_divergence` — the local-mean
+    residual cleanup (stage 1) and the fill-mask threshold (stage 3) — with no
+    contour cleanup, cost field, or geodesic walk, so foreground tuning stays
+    cheap and does not require the contour map.
+
+    ``nuc`` is optional: when given, its seeds are unioned into the mask exactly
+    as the full run does (``(foreground_clean > fg_threshold) | (nuc > 0)``), so
+    the previewed mask matches the territory segmentation will fill; when
+    ``None`` the mask is the bare threshold, letting the foreground be tuned
+    before nucleus tracking exists.
+
+    ``frame`` selects a single frame (2-D result); ``None`` processes the whole
+    stack (3-D result).
+    """
+    foreground = _to_tyx(foreground, np.float32)
+    nuc_tyx = _to_tyx(nuc, np.uint32) if nuc is not None else None
+
+    single = frame is not None
+    if single:
+        t = max(0, min(int(frame), foreground.shape[0] - 1))
+        foreground = foreground[t:t + 1]
+        if nuc_tyx is not None:
+            tn = max(0, min(int(frame), nuc_tyx.shape[0] - 1))
+            nuc_tyx = nuc_tyx[tn:tn + 1]
+
+    foreground_raw = np.clip(foreground, 0.0, 1.0).astype(np.float32)
+    foreground_clean = _clean_foreground(foreground, params)
+    foreground_mask = foreground_clean > params.fg_threshold
+    if nuc_tyx is not None:
+        n = min(foreground_mask.shape[0], nuc_tyx.shape[0])
+        foreground_raw = foreground_raw[:n]
+        foreground_clean = foreground_clean[:n]
+        foreground_mask = foreground_mask[:n] | (nuc_tyx[:n] > 0)
+
+    if single:
+        return CellForegroundResult(
+            foreground_raw=foreground_raw[0],
+            foreground_clean=foreground_clean[0],
+            foreground_mask=foreground_mask[0],
+        )
+    return CellForegroundResult(
+        foreground_raw=foreground_raw,
+        foreground_clean=foreground_clean,
+        foreground_mask=foreground_mask,
+    )
+
+
 def segment_cells_divergence(
     contours: np.ndarray,
     foreground: np.ndarray,
@@ -197,6 +273,7 @@ def segment_cells_divergence(
     frame: int | None = None,
     with_labels: bool = True,
     contours_clean_override: np.ndarray | None = None,
+    foreground_mask_override: np.ndarray | None = None,
     progress_cb: Callable[[str], None] | None = None,
 ) -> CellDivergenceResult:
     """Run the unary-only divergence pipeline and return all intermediates.
@@ -227,6 +304,15 @@ def segment_cells_divergence(
         the single-frame cost field / labels match the full run exactly (the
         per-frame path cannot, as it lacks the whole-movie percentile and EMA).
         Ignored when ``frame`` is ``None``.
+    foreground_mask_override : ndarray of bool, optional
+        Precomputed fill mask to segment inside, replacing the internally derived
+        ``(foreground_clean > fg_threshold) | (nuc > 0)``.  The cell widget's
+        Foreground stage writes this mask to disk and the Segmentation stage
+        feeds it back here, so the territory the walk fills is exactly the one
+        tuned in the Foreground stage (not re-derived from the current knobs).
+        ``(T, Y, X)`` for a full-stack run, ``(Y, X)`` (or a ``(T, Y, X)`` stack
+        sliced at ``frame``) for a single-frame run.  ``foreground_clean`` is
+        still computed for the cost field's foreground score regardless.
     progress_cb : callable, optional
         Receives short status strings.
 
@@ -278,7 +364,23 @@ def segment_cells_divergence(
             )
 
     # ── 3. Foreground mask ──────────────────────────────────────────────────
-    foreground_mask = (foreground_clean > params.fg_threshold) | (nuc > 0)
+    if foreground_mask_override is not None:
+        # The Foreground stage already produced the fill territory; segment
+        # inside exactly that mask rather than re-deriving it from the knobs.
+        mask = np.asarray(foreground_mask_override)
+        if single and mask.ndim == 3:
+            mask = mask[t]
+        if mask.ndim == 2:
+            mask = mask[np.newaxis]
+        mask = mask[:foreground_clean.shape[0]].astype(bool)
+        if mask.shape != foreground_clean.shape:
+            raise ValueError(
+                "foreground_mask_override shape "
+                f"{mask.shape} does not match {foreground_clean.shape}"
+            )
+        foreground_mask = mask
+    else:
+        foreground_mask = (foreground_clean > params.fg_threshold) | (nuc > 0)
 
     # ── Weighted cost field (same construction the solver traverses) ────────
     # Cheap (`1 + α·contour + γ·(1 − fg)`); built first so it is available even

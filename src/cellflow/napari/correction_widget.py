@@ -24,9 +24,11 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from scipy.ndimage import binary_dilation as _binary_dilation
 from cellflow.correction.labels import (
     _label_at,
     add_cell,
+    carve_into_selected,
     draw_cell_path,
     erase_cell,
     clean_stranded_pixels,
@@ -74,6 +76,9 @@ class CorrectionWidget(QWidget):
         inspector_first: bool = False,
         show_cleanup: bool = True,
         show_inspector: bool = True,
+        show_spawn_controls: bool = True,
+        contour_only: bool = False,
+        highlight_style: str = "spotlight",
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
@@ -85,6 +90,14 @@ class CorrectionWidget(QWidget):
         # navigation; the spinbox/label still back the goto + Shift-±/step logic
         # even when the group is not added to the layout.
         self._show_inspector = show_inspector
+        # The cell-correction panel is tied to the nucleus label set, so it must
+        # not create / delete / renumber cells. ``contour_only`` restricts the
+        # mouse toolkit to select + extend (Shift-left) + carve (Shift-right) and
+        # hides the spawn radius control; ``highlight_style="border"`` outlines
+        # the selection instead of dimming everything else.
+        self._show_spawn_controls = show_spawn_controls
+        self._contour_only = contour_only
+        self._highlight_style = highlight_style
 
         self._layer: napari.layers.Labels | None = None
 
@@ -255,7 +268,10 @@ class CorrectionWidget(QWidget):
             self._cell_radius_spin,
         )
         spawn_lay.addLayout(spawn_grid)
-        root.addWidget(self._spawn_controls)
+        # Hidden in contour-only mode (no spawning), but kept alive as a member
+        # so any code reading ``_cell_radius_spin`` still finds a live widget.
+        if self._show_spawn_controls:
+            root.addWidget(self._spawn_controls)
 
         self._status = QLabel("Inactive")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -319,10 +335,14 @@ class CorrectionWidget(QWidget):
             start_row=row,
             is_first=True,
         )
-        row = self._add_shortcut_group(
-            grid,
-            "Manual Labels",
-            [
+        if self._contour_only:
+            # Cell labels are tied to the nuclei: only contour edits are allowed.
+            manual_rows = [
+                ("Shift+Left-drag", "Extend the selected cell's contour"),
+                ("Shift+Right-drag", "Draw a line through a neighbour to cut it and merge the near piece into the selected cell"),
+            ]
+        else:
+            manual_rows = [
                 ("Middle-click empty space", "Spawn new cell"),
                 ("Middle-click on cell or Delete", "Erase cell"),
                 ("Ctrl+Left-click", "Merge with clicked cell, or attach it to the selected track (other frame)"),
@@ -330,7 +350,11 @@ class CorrectionWidget(QWidget):
                 ("Right-click variants", "Swap labels (selected cell must be in this frame)"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
-            ],
+            ]
+        row = self._add_shortcut_group(
+            grid,
+            "Contour Edits" if self._contour_only else "Manual Labels",
+            manual_rows,
             start_row=row,
         )
         row = self._add_shortcut_group(
@@ -813,14 +837,21 @@ class CorrectionWidget(QWidget):
         return override
 
     def _update_spotlight(self, mask: np.ndarray) -> None:
-        # Sharp spotlight: full brightness inside the mask (alpha 0), uniformly
-        # dimmed everywhere outside it, with no soft transition ring. The mask is
-        # the selected cell, or the whole track's union when a provider widens it.
+        # The mask is the selected cell, or the whole track's union when a
+        # provider widens it. Two render styles:
+        #   "spotlight" — full brightness inside the mask (alpha 0), uniformly
+        #     dimmed everywhere outside it.
+        #   "border" — a bright opaque ring around the mask, transparent
+        #     elsewhere (leaves the rest of the frame untouched).
         spotlight = self._get_spotlight_layer()
-        alpha = np.full(mask.shape, _SPOTLIGHT_OPACITY, dtype=np.float32)
-        alpha[mask] = 0.0
         data = np.zeros(mask.shape + (4,), dtype=np.float32)
-        data[..., 3] = alpha
+        if self._highlight_style == "border":
+            ring = _binary_dilation(mask, iterations=2) & ~mask
+            data[ring] = (1.0, 1.0, 0.0, 1.0)  # opaque yellow outline
+        else:
+            alpha = np.full(mask.shape, _SPOTLIGHT_OPACITY, dtype=np.float32)
+            alpha[mask] = 0.0
+            data[..., 3] = alpha
         spotlight.data = data
         spotlight.visible = True
         if self._layer is not None:
@@ -1089,9 +1120,10 @@ class CorrectionWidget(QWidget):
             except Exception as exc:
                 show_error(f"delete error: {exc}")
 
-        for key, fn in [
-            ("Delete", key_delete),
-        ]:
+        # Contour-only mode forbids erasing a cell (it would desync from the
+        # nuclei), so the Delete shortcut is not bound.
+        key_bindings = [] if self._contour_only else [("Delete", key_delete)]
+        for key, fn in key_bindings:
             layer.bind_key(key, fn, overwrite=True)
             self._bound_keys.append(key)
 
@@ -1113,6 +1145,15 @@ class CorrectionWidget(QWidget):
                     "on_drag: btn=%s mods=%s t=%d selected=%s",
                     btn, mods, t, self._selected_label,
                 )
+
+                if self._contour_only and not (
+                    (btn == 1 and mods in (set(), {"Shift"}, {"Control", "Shift"}))
+                    or (btn == 2 and mods == {"Shift"})
+                ):
+                    # Cell labels are tied to the nuclei — only select (left-click),
+                    # extend (Shift+left-drag) and carve (Shift+right-drag) are
+                    # allowed. Everything else would create/delete/renumber a cell.
+                    return
 
                 if btn == 3 and mods == {"Control"}:
                     self._spawn_into_selected(seg2d, pos, t, _layer)
@@ -1229,16 +1270,30 @@ class CorrectionWidget(QWidget):
                     self.viewer.layers.selection.active = _layer
                     curlabel = self._selected_label if self._selected_label else None
                     before = seg2d.copy()
-                    ok = split_draw(
-                        seg2d,
-                        pos_list,
-                        curlabel=curlabel,
-                        new_label=self._next_free_label(),
-                    )
-                    self._set_status(
-                        f"Split — Active on '{_layer.name}'"
-                        if ok else "Split draw failed — line did not divide the cell"
-                    )
+                    if self._contour_only:
+                        if not self._selected_label:
+                            self._set_status("Carve — select a cell first")
+                            return
+                        ok = carve_into_selected(
+                            seg2d, pos_list, selected_label=self._selected_label,
+                        )
+                        self._set_status(
+                            f"Carved into cell {self._selected_label} — "
+                            f"Active on '{_layer.name}'"
+                            if ok else
+                            "Carve failed — draw a line all the way through a neighbour"
+                        )
+                    else:
+                        ok = split_draw(
+                            seg2d,
+                            pos_list,
+                            curlabel=curlabel,
+                            new_label=self._next_free_label(),
+                        )
+                        self._set_status(
+                            f"Split — Active on '{_layer.name}'"
+                            if ok else "Split draw failed — line did not divide the cell"
+                        )
                     if ok:
                         self._record_history(_layer, t, before)
                     _layer.refresh()

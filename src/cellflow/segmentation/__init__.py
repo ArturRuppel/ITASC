@@ -20,7 +20,9 @@ from cellflow.segmentation.cell_label_icm import (
 from cellflow.segmentation.cell_divergence_segmentation import (
     CellDivergenceParams,
     CellDivergenceResult,
+    CellForegroundResult,
     clean_and_smooth_contours,
+    compute_cell_foreground,
     segment_cells_divergence,
 )
 
@@ -42,6 +44,7 @@ __all__ = [
     "CancelledError",
     "CellDivergenceParams",
     "CellDivergenceResult",
+    "CellForegroundResult",
     "CellICMState",
     "CellLabelICMParams",
     "ContourFilterParams",
@@ -55,6 +58,7 @@ __all__ = [
     "build_lineage",
     "clean_and_smooth_contours",
     "commit_labels",
+    "compute_cell_foreground",
     "compute_contour_watershed",
     "compute_filtered_contour_maps",
     "initialize_icm",

@@ -1,6 +1,7 @@
 
 from cellflow.correction.labels import (
     add_cell,
+    carve_into_selected,
     clean_stranded_pixels,
     draw_cell_path,
     expand_label_to_foreground,
@@ -112,6 +113,136 @@ def test_draw_cell_path_extension_preserves_protected_pixels():
     assert ok is True
     assert np.all(seg[protected_mask] == 9)
     assert np.any(seg[7:10, 6:9] == 1)
+
+
+def test_carve_into_selected_cuts_neighbour_and_merges_near_piece():
+    # A (selected, cols 0-5) borders neighbour B (cols 6-14). A line drawn the
+    # full height of B at col 10 splits B in two; only the piece touching A joins.
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[:, 0:6] = 1
+    seg[:, 6:15] = 2
+    bg_before = int(np.sum(seg == 0))
+
+    ok = carve_into_selected(seg, [(0, 10), (19, 10)], selected_label=1)
+
+    assert ok is True
+    assert np.all(seg[:, 0:6] == 1)        # selected cell intact
+    assert np.all(seg[:, 6:9] == 1)        # near half of B annexed into A
+    assert np.all(seg[:, 11:15] == 2)      # far half of B survives as B
+    assert sorted(np.unique(seg).tolist()) == [0, 1, 2]  # no label created/deleted
+    assert int(np.sum(seg == 0)) == bg_before  # background never annexed
+
+
+def test_carve_into_selected_merges_smaller_piece_when_both_touch():
+    # A spans the full height alongside B, so both halves of a horizontal cut
+    # touch A. The smaller (top) piece is annexed; B keeps its bulk.
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[:, 0:6] = 1
+    seg[:, 6:15] = 2
+
+    ok = carve_into_selected(seg, [(3, 6), (3, 14)], selected_label=1)
+
+    assert ok is True
+    assert np.all(seg[0:3, 6:15] == 1)     # smaller top piece annexed
+    assert np.all(seg[5:20, 6:15] == 2)    # larger bottom piece stays B
+
+
+def test_carve_into_selected_merges_iteratively_across_two_neighbours():
+    # A (bottom-left block) touches B but not C; B sits between them. One line
+    # cutting both B and C annexes B's lower half first, which then brings C's
+    # lower half into contact with A so it is annexed on the next pass.
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[16:20, 0:5] = 1   # A
+    seg[0:16, 0:5] = 2    # B (above A)
+    seg[0:16, 5:10] = 3   # C (right of B, not touching A)
+
+    ok = carve_into_selected(seg, [(8, 0), (8, 9)], selected_label=1)
+
+    assert ok is True
+    assert np.all(seg[9:16, 0:5] == 1)     # B's near half annexed
+    assert np.all(seg[9:16, 5:10] == 1)    # C's near half annexed only after B's
+    assert np.all(seg[0:8, 0:5] == 2)      # B keeps its far half
+    assert np.all(seg[0:8, 5:10] == 3)     # C keeps its far half
+    assert sorted(np.unique(seg).tolist()) == [0, 1, 2, 3]
+
+
+def test_carve_into_selected_trims_selected_cell_dropping_smaller_piece():
+    # A line drawn clean through the selected cell itself splits it and removes
+    # the smaller piece to background; the larger piece stays as the cell.
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[:, 0:15] = 1  # selected cell spans cols 0-14
+
+    ok = carve_into_selected(seg, [(3, 0), (3, 14)], selected_label=1)
+
+    assert ok is True
+    assert np.all(seg[0:3, 0:15] == 0)     # smaller top piece dropped to bg
+    assert np.all(seg[5:20, 0:15] == 1)    # larger bottom piece stays selected
+    assert sorted(np.unique(seg).tolist()) == [0, 1]
+
+
+def test_carve_into_selected_trim_takes_priority_over_neighbour_cut():
+    # A line crossing both the selected cell and a neighbour only trims the
+    # selection; the neighbour is left completely untouched.
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[:, 0:7] = 1   # selected cell
+    seg[:, 7:15] = 2  # neighbour
+    neighbour_before = seg[:, 7:15].copy()
+
+    ok = carve_into_selected(seg, [(3, 0), (3, 14)], selected_label=1)
+
+    assert ok is True
+    assert np.all(seg[0:3, 0:7] == 0)              # smaller piece of selection dropped
+    assert np.all(seg[5:20, 0:7] == 1)             # larger piece kept
+    assert np.array_equal(seg[:, 7:15], neighbour_before)  # neighbour untouched
+
+
+def test_carve_into_selected_keeps_selected_cell_a_line_only_clips():
+    # A stroke that enters the selected cell without crossing it leaves it whole.
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[:, 0:15] = 1
+    before = seg.copy()
+
+    ok = carve_into_selected(seg, [(5, 0), (5, 7)], selected_label=1)
+
+    assert ok is False
+    assert np.array_equal(seg, before)
+
+
+def test_carve_into_selected_ignores_line_that_only_clips_a_neighbour():
+    # A short stroke that enters B but never runs through it leaves B whole.
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[:, 0:6] = 1
+    seg[:, 6:15] = 2
+    before = seg.copy()
+
+    ok = carve_into_selected(seg, [(5, 6), (5, 9)], selected_label=1)
+
+    assert ok is False
+    assert np.array_equal(seg, before)
+
+
+def test_carve_into_selected_ignores_line_over_background():
+    # A swipe that crosses no other cell is a no-op.
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[:, 0:6] = 1
+    seg[:, 6:10] = 2  # cols 10-19 are background
+    before = seg.copy()
+
+    ok = carve_into_selected(seg, [(5, 17), (14, 17)], selected_label=1)
+
+    assert ok is False
+    assert np.array_equal(seg, before)
+
+
+def test_carve_into_selected_requires_present_selection():
+    seg = np.zeros((20, 20), dtype=np.uint16)
+    seg[:, 0:5] = 2  # only a neighbour, no selected label present
+    before = seg.copy()
+
+    assert carve_into_selected(
+        seg, [(0, 3), (19, 3)], selected_label=1,
+    ) is False
+    assert np.array_equal(seg, before)
 
 
 def test_clean_stranded_pixels_cleans_fragments_without_filling_background_holes():
