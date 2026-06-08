@@ -11,6 +11,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -22,8 +23,6 @@ from cellflow.correction.labels import (
 from cellflow.core.tiff import imwrite_grayscale
 from cellflow.core.label_store import read_full_tracked_stack
 from cellflow.napari._widget_helpers import (
-    btn as _btn,
-    button_grid as _button_grid,
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
@@ -35,6 +34,7 @@ from cellflow.napari._correction_layer_lifecycle import (
     restore_layer_view_state,
 )
 from cellflow.napari._correction_ui import (
+    build_correction_toolbar,
     confirm_unsaved_before_deactivate,
     set_checked_without_signal,
 )
@@ -147,15 +147,28 @@ class CellCorrectionWidget(QWidget):
             "📖", "Show correction shortcuts.", checkable=True
         )
 
-        # ── Action buttons (added later at bottom) ────────────────────
-        self.save_labels_btn = _btn(
-            "Save Labels", "Save tracked cell labels to disk.")
-        self.fill_holes_btn = _btn(
-            "Fill Holes",
+        # ── Action toolbar buttons (icon tool-buttons in the body) ────
+        # Mirror the nucleus correction widget: the main actions read as a thin
+        # vertical icon toolbar beside the editing surface (plain enlarged
+        # glyphs, no stage pill) rather than a stack of text buttons.
+        # ``outline_btn`` is the visible driver for the embedded correction
+        # widget's (now hidden) "Show outlines only" checkbox; the rest are
+        # momentary actions.
+        self.outline_btn = _tool_btn(
+            "◻",
+            "Show outlines only — draw labels as contours so the reference "
+            "images stay visible underneath.",
+            checkable=True,
+        )
+        self.save_labels_btn = _tool_btn(
+            "💾", "Save tracked cell labels to disk."
+        )
+        self.fill_holes_btn = _tool_btn(
+            "🪣",
             "Fill background holes fully enclosed within individual labels.",
         )
-        self.cleanup_btn = _btn(
-            "Remove Stranded Fragments",
+        self.cleanup_btn = _tool_btn(
+            "🧹",
             "Remove disconnected same-label fragments (honours the Scope selector).",
         )
 
@@ -221,6 +234,21 @@ class CellCorrectionWidget(QWidget):
         # its "Unsaved" dirty-tracking. Mark the panel dirty on every edit so the
         # exit confirm fires, just like the nucleus correction widget.
         self.correction_widget.set_edit_callback(self._on_correction_edit)
+        # The outline view is driven from the toolbar ``outline_btn`` toggle now,
+        # so hide the embedded checkbox and keep the two in sync.
+        self.correction_widget._outline_btn.setVisible(False)
+
+        # Thin vertical icon toolbar (nucleus styling: enlarged glyphs, ruled
+        # groups, no pill) shown to the left of the editing surface.
+        self.toolbar = build_correction_toolbar(
+            self,
+            [
+                (self.outline_btn,),
+                (self.save_labels_btn,),
+                (self.fill_holes_btn, self.cleanup_btn),
+            ],
+        )
+        self.toolbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
 
         self.correction_shortcuts_section = CollapsibleSection(
             "Correction Shortcuts",
@@ -236,16 +264,18 @@ class CellCorrectionWidget(QWidget):
         active_lay = QVBoxLayout(self.active_content)
         active_lay.setContentsMargins(0, 0, 0, 0)
         active_lay.setSpacing(6)
-        active_lay.addWidget(self.correction_widget)
+
+        body_row = QHBoxLayout()
+        body_row.setContentsMargins(0, 0, 0, 0)
+        body_row.setSpacing(6)
+        body_row.addWidget(self.toolbar)
+        body_row.addWidget(self.correction_widget, stretch=1)
+        active_lay.addLayout(body_row)
 
         self.correction_status_lbl = _make_status()
         active_lay.addWidget(self.correction_status_lbl)
 
         active_lay.addWidget(self.scope_row)
-        active_lay.addLayout(_button_grid(
-            (self.save_labels_btn,),
-            (self.fill_holes_btn, self.cleanup_btn),
-        ))
         active_lay.addWidget(self.correction_widget._attrib_lbl)
         self.active_content.setVisible(False)
         group_lay.addWidget(self.active_content)
@@ -294,6 +324,10 @@ class CellCorrectionWidget(QWidget):
         self.save_labels_btn.clicked.connect(self._on_save_labels)
         self.fill_holes_btn.clicked.connect(self._on_fill_holes)
         self.cleanup_btn.clicked.connect(self._on_cleanup)
+        self.outline_btn.toggled.connect(self._on_outline_toggled)
+        self.correction_widget._outline_btn.toggled.connect(
+            self._on_embedded_outline_toggled
+        )
         self.active_btn.toggled.connect(self._on_active_button_toggled)
         self.params_btn.toggled.connect(self._on_params_button_toggled)
         self.shortcuts_btn.toggled.connect(self._on_shortcuts_button_toggled)
@@ -316,8 +350,18 @@ class CellCorrectionWidget(QWidget):
         else:
             self.section.collapse()
 
+    def _correction_data_available(self) -> bool:
+        """True when a tracked cell-label stack exists on disk to correct."""
+        lp = self._cell_labels_path()
+        return lp is not None and lp.exists()
+
     def _on_active_button_toggled(self, active: bool) -> None:
         if active:
+            if not self._correction_data_available():
+                self._correction_status("No cell labels available to correct.")
+                self._set_checked_without_signal(self.active_btn, False)
+                self._sync_correction_panel_visibility()
+                return
             self._capture_correction_view_state()
             hide_all_layers(self.viewer.layers)
 
@@ -352,6 +396,18 @@ class CellCorrectionWidget(QWidget):
     def _on_correction_edit(self, t: int, changed_ids: set[int]) -> None:
         """An inline contour edit leaves the cell labels unsaved."""
         self._correction_dirty = True
+
+    def _on_outline_toggled(self, checked: bool) -> None:
+        """Drive the embedded widget's outline view from the toolbar toggle."""
+        self.correction_widget._outline_btn.setChecked(checked)
+
+    def _on_embedded_outline_toggled(self, checked: bool) -> None:
+        """Mirror the embedded outline checkbox onto the toolbar toggle.
+
+        ``activate_layer`` ticks the embedded checkbox on, so this keeps the
+        toolbar toggle in step without re-entering ``_on_outline_toggled``.
+        """
+        self._set_checked_without_signal(self.outline_btn, checked)
 
     def _confirm_deactivate_with_unsaved_changes(self) -> bool:
         if not self._correction_dirty:

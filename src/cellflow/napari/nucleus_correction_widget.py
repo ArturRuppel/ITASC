@@ -1800,8 +1800,18 @@ class NucleusCorrectionWidget(QWidget):
             self._key_repeat_timer.setSingleShot(False)
             self._key_repeat_timer.start(self._nav_repeat_interval_ms())
 
+    def _correction_data_available(self) -> bool:
+        """True when a tracked nucleus stack exists on disk to correct."""
+        tp = self._tracked_path()
+        return tp is not None and tp.exists()
+
     def _on_correction_active_button_toggled(self, active: bool) -> None:
         if active:
+            if not self._correction_data_available():
+                self._correction_status("No tracked labels available to correct.")
+                self._set_checked_without_signal(self.active_btn, False)
+                self._sync_correction_panel_visibility()
+                return
             # Capture the plugin dock + width now, before the focus takeover
             # reparents the header out of it, so its width can be restored later.
             self._pre_correction_dock = self._find_plugin_dock()
