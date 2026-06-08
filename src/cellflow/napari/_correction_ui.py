@@ -282,9 +282,9 @@ _SHORTCUT_COLUMNS = (
             (
                 ("Middle-click empty space", "Spawn new cell"),
                 ("Middle-click on cell or Delete", "Erase cell"),
-                ("Ctrl+Left-click", "Merge selected with clicked cell"),
+                ("Ctrl+Left-click", "Merge with clicked cell, or attach it to the selected track (other frame)"),
                 ("Ctrl+Middle-click", "Grow / link selected track here"),
-                ("Right-click variants", "Swap labels"),
+                ("Right-click variants", "Swap labels (selected cell must be in this frame)"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
             ),

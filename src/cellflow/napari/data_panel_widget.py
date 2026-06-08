@@ -20,7 +20,6 @@ _TRACKED_FILE_GROUPS = [
     ("Input Data", [
         ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
         ("0_input/cell_zavg.tif", "Cell z-avg"),
-        ("0_input/NLS_zavg.tif", "NLS z-avg"),
         ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
         ("0_input/cell_3dt.tif", "Cell 3D+t"),
     ]),

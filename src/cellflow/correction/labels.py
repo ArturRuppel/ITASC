@@ -294,6 +294,32 @@ def _snap_cell_mask(
         return None
 
 
+def _keep_connected_region(
+    mask: np.ndarray, r: int, c: int
+) -> np.ndarray | None:
+    """Reduce *mask* to a single, hole-free connected region.
+
+    Picks the 8-connected component containing the click ``(r, c)`` — falling
+    back to the largest component when the click pixel itself was masked out
+    (e.g. it sits under a protected pixel) — then fills any interior holes.
+    Returns ``None`` when *mask* is empty.
+    """
+    if not mask.any():
+        return None
+    structure = np.ones((3, 3), dtype=bool)  # 8-connectivity
+    labelled, n_comp = nd_label(mask, structure=structure)
+    if n_comp == 0:
+        return None
+    comp = int(labelled[r, c]) if mask[r, c] else 0
+    if comp == 0:
+        # Click pixel isn't part of the mask — keep the largest component.
+        counts = np.bincount(labelled.ravel())
+        counts[0] = 0
+        comp = int(counts.argmax())
+    region = labelled == comp
+    return binary_fill_holes(region)
+
+
 def add_cell(
     seg: np.ndarray,
     pos: tuple,
@@ -345,6 +371,21 @@ def add_cell(
     if mask.sum() < MIN_CELL_SIZE:
         return False
 
+    # Intersecting with `allowed` can fracture the stamped blob into several
+    # disconnected pieces or shed stray pixels (e.g. an existing cell or a
+    # protected region cuts through it). Keep only the single connected
+    # component under the click so the spawned cell is always one contiguous
+    # region, never scattered fragments.
+    mask = _keep_connected_region(mask, r, c)
+    if mask is None:
+        return False
+    # Re-apply `allowed`: hole-filling in the helper may have spanned an
+    # enclosed existing/protected pixel, which must still not be overwritten.
+    # Removing those interior pixels leaves the surrounding region connected.
+    mask &= allowed
+    if mask.sum() < MIN_CELL_SIZE:
+        return False
+
     log.debug("add_cell: label=%s pos=(%d,%d) px=%d", new_label, r, c, int(mask.sum()))
     seg[mask] = new_label
     return True
@@ -367,8 +408,8 @@ def merge_cells(
 
     if not _touches(seg, la, lb):
         # Cells don't touch: just give them the same id without painting any
-        # new pixels. Skip clean_stranded_pixels, which would otherwise erase
-        # one of the now-disconnected components of the shared label.
+        # new pixels. The shared label is left with disconnected components,
+        # which is intentional — merge joins ids, it does not tidy geometry.
         seg[seg == la] = lb
         return True
 
@@ -387,11 +428,6 @@ def merge_cells(
     if remaining_la.any():
         seg[remaining_la] = lb
 
-    # Clean up strays created by the closing, but never fragment-clean the
-    # merge target itself: its components may be intentionally disconnected
-    # (e.g. a fragmented nucleus merged earlier via the non-touching branch),
-    # and dropping all but the largest would silently delete those regions.
-    clean_stranded_pixels(seg, exclude={lb})
     return True
 
 

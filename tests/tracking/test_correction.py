@@ -403,3 +403,40 @@ def test_add_cell_falls_back_to_disk_when_signal_is_flat():
     seg = np.zeros((40, 40), dtype=np.uint32)
     assert add_cell(seg, (20, 20), new_label=6, radius=5, image=flat)
     assert int((seg == 6).sum()) == 81  # disk fallback
+
+
+def test_add_cell_yields_single_connected_region_when_stamp_is_fragmented():
+    # A neighbouring cell forms a full-height wall that slices the radius-8 disk
+    # into a main body (under the click) and a thin sliver on the far side.
+    # The spawned cell must keep only the click's contiguous region — the sliver
+    # is dropped, never written as a stray disjoint fragment.
+    from skimage.measure import label as _cc_label
+
+    seg = np.zeros((40, 40), dtype=np.uint32)
+    seg[:, 14:16] = 3  # vertical wall separating cols <14 from the click side
+    assert add_cell(seg, (20, 20), new_label=8, radius=8)
+    region = seg == 8
+    assert region[20, 20]
+    # Exactly one 8-connected component, all on the click side of the wall.
+    assert _cc_label(region, return_num=True, connectivity=2)[1] == 1
+    assert int((region & (np.arange(40) < 14)[None, :]).sum()) == 0
+    assert int((seg == 3).sum()) == 40 * 2  # wall untouched
+
+
+def test_add_cell_fills_interior_hole_of_snapped_ring_nucleus():
+    # A ring-shaped bright nucleus (dark hole in the middle). Clicking on the
+    # bright ring snaps to the annulus; the enclosed background hole is filled so
+    # the spawned cell is a solid, fully connected region — no donut.
+    img = np.zeros((60, 60), dtype=np.float32)
+    yy, xx = np.ogrid[:60, :60]
+    dist2 = (yy - 30) ** 2 + (xx - 30) ** 2
+    img[(dist2 >= 6 ** 2) & (dist2 <= 11 ** 2)] = 100.0  # bright annulus
+    seg = np.zeros((60, 60), dtype=np.uint32)
+    # Click on the bright ring (dist ~8 from centre), not the dark hole.
+    assert add_cell(seg, (30, 38), new_label=9, radius=4, image=img)
+    region = seg == 9
+    assert region[30, 38]
+    assert region[30, 30]  # the dark centre hole is filled in
+    from skimage.measure import label as _cc_label
+
+    assert _cc_label(region, return_num=True, connectivity=2)[1] == 1

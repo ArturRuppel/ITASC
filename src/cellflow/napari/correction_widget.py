@@ -315,7 +315,6 @@ class CorrectionWidget(QWidget):
             "Selection",
             [
                 ("Left-click", "Select / highlight cell"),
-                ("Shift+Left / Shift+Right", "Previous / next cell"),
             ],
             start_row=row,
             is_first=True,
@@ -326,9 +325,9 @@ class CorrectionWidget(QWidget):
             [
                 ("Middle-click empty space", "Spawn new cell"),
                 ("Middle-click on cell or Delete", "Erase cell"),
-                ("Ctrl+Left-click", "Merge selected with clicked cell"),
+                ("Ctrl+Left-click", "Merge with clicked cell, or attach it to the selected track (other frame)"),
                 ("Ctrl+Middle-click", "Grow / link selected track here"),
-                ("Right-click variants", "Swap labels"),
+                ("Right-click variants", "Swap labels (selected cell must be in this frame)"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
             ],
@@ -921,56 +920,6 @@ class CorrectionWidget(QWidget):
         t = int(step[0]) if len(step) >= 1 else 0
         self._update_highlight(t, lab)
 
-    def _step_cell(self, direction: int) -> None:
-        if self._layer is None:
-            return
-        data = self._layer.data
-        all_ids = sorted(set(int(v) for v in np.unique(data)) - {0})
-        if not all_ids:
-            self._set_status("No cells in any frame")
-            return
-        step = self.viewer.dims.current_step
-        t = int(step[0]) if len(step) >= 1 else 0
-        if 0 <= t < data.shape[0]:
-            frame_ids = sorted(set(int(v) for v in np.unique(data[t])) - {0})
-        else:
-            frame_ids = []
-        cur = self._selected_label
-
-        # Nothing selected: start on the current frame if it has any cells.
-        if cur == 0 and frame_ids:
-            nxt = frame_ids[0] if direction > 0 else frame_ids[-1]
-            self._goto_cell_id.setValue(nxt)
-            self._goto_cell()
-            return
-
-        # Cycle within the current frame first.
-        if direction > 0:
-            nxt = next((i for i in frame_ids if i > cur), None)
-        else:
-            nxt = next((i for i in reversed(frame_ids) if i < cur), None)
-        if nxt is not None:
-            self._goto_cell_id.setValue(nxt)
-            self._goto_cell()
-            return
-
-        # Current frame exhausted: fall back to IDs on other frames.
-        other_ids = [i for i in all_ids if i not in frame_ids]
-        if other_ids:
-            if direction > 0:
-                nxt = next((i for i in other_ids if i > cur), other_ids[0])
-            else:
-                nxt = next((i for i in reversed(other_ids) if i < cur), other_ids[-1])
-        else:
-            nxt = frame_ids[0] if direction > 0 else frame_ids[-1]
-        frames = [i for i in range(data.shape[0]) if np.any(data[i] == nxt)]
-        if frames:
-            step_list = list(self.viewer.dims.current_step)
-            step_list[0] = frames[0]
-            self.viewer.dims.current_step = tuple(step_list)
-        self._goto_cell_id.setValue(nxt)
-        self._goto_cell()
-
     # ── selection-agnostic track edits ────────────────────────────────────────
 
     def _selected_label_pos(self, seg2d: np.ndarray) -> tuple[float, float] | None:
@@ -1074,14 +1023,15 @@ class CorrectionWidget(QWidget):
             )
 
     def _right_click_edit(self, seg2d, pos, t: int, _layer) -> None:
-        """Plain right-click: finish a two-click swap, or link / swap the selection.
+        """Plain right-click: finish a two-click swap, or swap the selection.
 
         With a pending two-click swap, this click is the second cell. Otherwise,
-        with a cell selected, it either *swaps* the clicked cell with the
-        selected one (when the selected cell is present in this frame) or
-        *relabels* the clicked cell to the selected ID (when it is not — linking
-        the track into this frame). The selected cell's position is derived from
-        its label, so both branches work regardless of how it was selected.
+        with a cell selected, it *swaps* the clicked cell with the selected one —
+        but only when the selected cell is present in this frame. When the
+        selected cell lives on another frame there is nothing to swap with here;
+        attaching the clicked cell to that track is the cross-frame
+        Ctrl+left-click action instead. The selected cell's position is derived
+        from its label, so the swap works regardless of how it was selected.
         """
         if self._swap_first_pos is not None:
             if t != self._swap_first_t:
@@ -1102,22 +1052,21 @@ class CorrectionWidget(QWidget):
             return
         if self._selected_label == 0:
             return
-        before = seg2d.copy()
         sel_pos = self._selected_label_pos(seg2d)
         if sel_pos is None:
-            ok = relabel_cell(seg2d, pos, self._selected_label)
-            msg_ok = f"Relabelled → {self._selected_label} — Active on '{_layer.name}'"
-            msg_err = "Relabel failed — click on a different cell"
-        else:
-            ok = swap_labels(seg2d, sel_pos, pos)
-            msg_ok = f"Swapped — Active on '{_layer.name}'"
-            msg_err = "Swap failed — click on a different cell"
+            self._set_status(
+                "Selected cell is on another frame — Ctrl+left-click to attach "
+                "the clicked cell to its track"
+            )
+            return
+        before = seg2d.copy()
+        ok = swap_labels(seg2d, sel_pos, pos)
         if ok:
             self._record_history(_layer, t, before)
             _layer.refresh()
-            self._set_status(msg_ok)
+            self._set_status(f"Swapped — Active on '{_layer.name}'")
         else:
-            self._set_status(msg_err)
+            self._set_status("Swap failed — click on a different cell")
 
     # ── callback registration ─────────────────────────────────────────────────
 
@@ -1140,16 +1089,8 @@ class CorrectionWidget(QWidget):
             except Exception as exc:
                 show_error(f"delete error: {exc}")
 
-        def key_prev_cell(_layer):
-            self._step_cell(-1)
-
-        def key_next_cell(_layer):
-            self._step_cell(1)
-
         for key, fn in [
             ("Delete", key_delete),
-            ("Shift-Left", key_prev_cell),
-            ("Shift-Right", key_next_cell),
         ]:
             layer.bind_key(key, fn, overwrite=True)
             self._bound_keys.append(key)
@@ -1218,12 +1159,11 @@ class CorrectionWidget(QWidget):
                     if lab == 0:
                         self._set_status("Click on a cell, not background")
                         return
-                    if (
-                        self._selected_label != 0
-                        and lab != self._selected_label
-                        and np.any(seg2d == self._selected_label)
-                    ):
-                        before = seg2d.copy()
+                    if self._selected_label == 0 or lab == self._selected_label:
+                        return
+                    before = seg2d.copy()
+                    if np.any(seg2d == self._selected_label):
+                        # Selected cell lives in this frame → merge the two cells.
                         ok = merge_cells(
                             seg2d, pos, pos,
                             label_a=lab, label_b=self._selected_label,
@@ -1239,6 +1179,23 @@ class CorrectionWidget(QWidget):
                         self._selected_pos = None
                         self._selected_t = -1
                         self._update_highlight(t, _label_at(seg2d, pos))
+                    else:
+                        # Selected cell is on another frame → attach (merge track):
+                        # relabel the clicked cell into the selected track so it
+                        # links into this frame.
+                        ok = relabel_cell(seg2d, pos, self._selected_label)
+                        if ok:
+                            self._record_history(_layer, t, before)
+                            _layer.refresh()
+                            self._update_highlight(t, self._selected_label)
+                            self._set_status(
+                                f"Attached to track {self._selected_label} — "
+                                f"Active on '{_layer.name}'"
+                            )
+                        else:
+                            self._set_status(
+                                "Attach failed — click on a different cell"
+                            )
                     return
 
                 if btn == 1 and not mods:
