@@ -499,16 +499,17 @@ class NucleusCorrectionWidget(QWidget):
         self.extend_iou_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.extend_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 3)
 
-        # Each retrack weight + the manual-edit spawn controls gets its own
-        # column (stretch=1) so they fan out across the wide reveal area.
+        # Each retrack weight + the cell-radius control gets its own column
+        # (stretch=1) so they fan out across the wide reveal area. The cell-radius
+        # slider (middle-click cell creation) is reused straight from the embedded
+        # correction widget, dropped under a plain "Cell Radius" heading so it
+        # matches the other sliders rather than carrying its own inline label.
         for heading_text, widget in (
             ("Max distance", self.retrack_max_dist_spin),
             ("Area weight", self.extend_area_weight_spin),
             ("IoU weight", self.extend_iou_weight_spin),
             ("Distance weight", self.extend_distance_weight_spin),
-            # Reuse the embedded correction widget's spawn controls (cell radius
-            # for middle-click cell creation), relocated next to the other params.
-            ("Manual edit", self.correction_widget._spawn_controls),
+            ("Cell Radius", self.correction_widget._cell_radius_spin),
         ):
             columns.addWidget(_column(_heading(heading_text), widget), stretch=1)
         extend_retrack_lay.addLayout(columns)
@@ -2223,6 +2224,13 @@ class NucleusCorrectionWidget(QWidget):
                 self.viewer.dims.current_step = tuple(step)
         except Exception:
             logger.exception("focus-mode navigation: frame jump failed")
+        # When the track is absent at the target frame (e.g. an empty placeholder
+        # thumbnail in an incomplete track's film strip), still step to the frame
+        # but keep the current selection: re-selecting would find no mask there
+        # and clear the track. The frame jump above already moved the canvas
+        # guide via on_dims_step_changed.
+        if int(cell_id) and int(cell_id) not in self._current_cell_ids(int(t)):
+            return
         self._navigating_from_lineage = from_lineage
         try:
             self.correction_widget.select_label(int(t), int(cell_id))
@@ -2497,6 +2505,7 @@ class NucleusCorrectionWidget(QWidget):
         self.toolbar.setVisible(True)
         self.toolbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         body = QWidget()
+        body.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         body_lay = QHBoxLayout(body)
         body_lay.setContentsMargins(0, 0, 0, 0)
         body_lay.setSpacing(4)
@@ -2504,6 +2513,10 @@ class NucleusCorrectionWidget(QWidget):
         body_lay.addWidget(splitter, stretch=1)
 
         container = QWidget()
+        # The body row carries the stretch so the splitter (gallery · accordion)
+        # grows to the full dock height; an explicit Expanding policy keeps the
+        # container itself from shrinking to its hint in packaged builds.
+        container.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         lay = QVBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)

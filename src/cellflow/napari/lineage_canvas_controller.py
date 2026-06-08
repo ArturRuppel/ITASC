@@ -270,6 +270,9 @@ class LineageCanvasController:
                 frames=self._occupied.get(cell_id),
                 validated_frames=self._validated_map.get(cell_id),
                 anchored_frames=self._anchored_map.get(cell_id),
+                # Pad incomplete tracks to the full timeline so frames the track
+                # skips render as empty placeholder thumbnails.
+                total_frames=self._n_frames,
             )
         except Exception:
             logger.exception("detail film strip build failed")

@@ -82,10 +82,19 @@ class CollapsiblePane(QWidget):
         super().__init__(parent)
         self._collapsed = False
 
+        # Claim the full dock height: without an explicit Expanding vertical
+        # policy the pane (and its stack) fall back to their content's size hint,
+        # which on some platforms / packaged builds leaves the workspace panels
+        # bunched at the top instead of filling the dock.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         self._stack = QStackedWidget(self)
+        self._stack.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
         outer.addWidget(self._stack)
 
         page = QWidget()
@@ -274,6 +283,7 @@ _SHORTCUT_COLUMNS = (
                 ("Middle-click empty space", "Spawn new cell"),
                 ("Middle-click on cell or Delete", "Erase cell"),
                 ("Ctrl+Left-click", "Merge selected with clicked cell"),
+                ("Ctrl+Middle-click", "Grow / link selected track here"),
                 ("Right-click variants", "Swap labels"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
@@ -329,7 +339,11 @@ def build_shortcuts_widget(attrib_lbl: QWidget | None = None) -> QWidget:
     """
     group = QGroupBox("Correction shortcuts")
     outer = QVBoxLayout(group)
-    outer.setContentsMargins(0, 0, 0, 0)
+    # A titled group box draws its title inside the top inset, so the top margin
+    # must leave room for it — zeroing all four (as the other panels do) clipped
+    # the title against the first shortcut row. Reserve a title's height up top.
+    title_h = group.fontMetrics().height() + 6
+    outer.setContentsMargins(0, title_h, 0, 0)
     outer.setSpacing(2)
 
     columns = QHBoxLayout()

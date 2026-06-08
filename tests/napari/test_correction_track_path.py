@@ -237,6 +237,38 @@ def test_film_strip_frames_ignores_out_of_range_indices():
     assert strip.frames == (0,)
 
 
+def test_film_strip_total_frames_pads_missing_with_placeholders():
+    # A track present only on frames 0 and 2 of a 3-frame movie: with
+    # total_frames the strip spans every frame, frame 1 a blank placeholder
+    # uniform in size with the rendered tiles.
+    tracked, intensity = _film_stacks()
+    tracked[1] = 0  # drop the track from frame 1
+    intensity[1] = 1000
+
+    strip = build_track_film_strip(
+        tracked, intensity, 8, margin=2, frames=[0, 2], total_frames=3
+    )
+
+    assert strip.frames == (0, 1, 2)
+    by_frame = {tile.frame: tile for tile in strip.tiles}
+    assert not by_frame[0].placeholder and not by_frame[2].placeholder
+    assert by_frame[1].placeholder
+    # Placeholder matches the rendered tiles' size and is blank.
+    assert by_frame[1].rgb.shape == by_frame[0].rgb.shape
+    assert not by_frame[1].rgb.any()
+
+
+def test_film_strip_without_total_frames_has_no_placeholders():
+    tracked, intensity = _film_stacks()
+    tracked[1] = 0
+    intensity[1] = 1000
+
+    strip = build_track_film_strip(tracked, intensity, 8, margin=2, frames=[0, 2])
+
+    assert strip.frames == (0, 2)
+    assert not any(tile.placeholder for tile in strip.tiles)
+
+
 def test_film_strip_absent_track_is_empty():
     tracked, intensity = _film_stacks()
 

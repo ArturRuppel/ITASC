@@ -357,6 +357,9 @@ class TrackAccordionPanel(QWidget):
         pm = QPixmap.fromImage(rgb_to_qimage(tile.rgb)).scaledToHeight(
             self._tile_px, Qt.FastTransformation
         )
+        if getattr(tile, "placeholder", False):
+            _draw_placeholder(pm)
+            return pm
         _draw_marker_strips(
             pm,
             validated=getattr(tile, "validated", False),
@@ -402,6 +405,8 @@ class TrackAccordionPanel(QWidget):
 
     @staticmethod
     def _tile_tooltip(tile) -> str:
+        if getattr(tile, "placeholder", False):
+            return f"Frame {tile.frame} — track absent (no nucleus)"
         tags = []
         if getattr(tile, "validated", False):
             tags.append("validated")
@@ -463,6 +468,25 @@ class TrackAccordionPanel(QWidget):
 
 def _no_pen() -> QPen:
     return QPen(Qt.NoPen)
+
+
+_PLACEHOLDER_FILL = QColor(48, 50, 56)     # empty-tile body (a touch above bg)
+_PLACEHOLDER_BORDER = QColor(90, 96, 107)  # dashed frame marking a missing frame
+
+
+def _draw_placeholder(pixmap: QPixmap) -> None:
+    """Paint a tile for a frame the track skips: a dim body with a dashed frame.
+
+    The blank ``rgb`` would otherwise read as a hole in the band on the dark
+    scene; this gives missing frames a clearly-empty, dashed-outline thumbnail.
+    """
+    painter = QPainter(pixmap)
+    w, h = pixmap.width(), pixmap.height()
+    painter.fillRect(0, 0, w, h, _PLACEHOLDER_FILL)
+    pen = QPen(_PLACEHOLDER_BORDER, 1, Qt.DashLine)
+    painter.setPen(pen)
+    painter.drawRect(0, 0, w - 1, h - 1)
+    painter.end()
 
 
 def _draw_marker_strips(pixmap: QPixmap, *, validated: bool, anchored: bool) -> None:

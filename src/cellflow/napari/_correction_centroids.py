@@ -113,8 +113,24 @@ def _existing_color_dict(
     return color_map
 
 
+# Green / yellow / yellow-orange hues are reserved for the validated (green) and
+# anchored (orange-gold) cell borders + marker strips, so by-ID label colours
+# skip this band: the golden-ratio sequence is wrapped into the remaining arc so
+# no cell is painted a colour that reads as a border state.
+_RESERVED_HUE_BAND = (0.08, 0.45)  # ~orange-yellow (29°) through green (162°)
+
+
+_HUE_INSET = 0.02  # keep colours off the exact band edges (e.g. spring-green)
+
+
 def _label_color(label_id: int) -> np.ndarray:
-    hue = ((int(label_id) - 1) * 0.618033988749895) % 1.0
+    raw = ((int(label_id) - 1) * 0.618033988749895) % 1.0
+    lo, hi = _RESERVED_HUE_BAND
+    # Map [0, 1) into the *interior* of the arc that starts past the reserved
+    # band and wraps back to just below its lower edge, so neither green/yellow
+    # nor the band's edge hues (a green-cyan at hi) are ever produced.
+    allowed = 1.0 - (hi - lo) - 2 * _HUE_INSET
+    hue = (hi + _HUE_INSET + raw * allowed) % 1.0
     return np.asarray((*_hsv_to_rgb(hue, 0.9, 1.0), 1.0), dtype=float)
 
 

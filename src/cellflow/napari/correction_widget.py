@@ -327,6 +327,7 @@ class CorrectionWidget(QWidget):
                 ("Middle-click empty space", "Spawn new cell"),
                 ("Middle-click on cell or Delete", "Erase cell"),
                 ("Ctrl+Left-click", "Merge selected with clicked cell"),
+                ("Ctrl+Middle-click", "Grow / link selected track here"),
                 ("Right-click variants", "Swap labels"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
@@ -970,6 +971,154 @@ class CorrectionWidget(QWidget):
         self._goto_cell_id.setValue(nxt)
         self._goto_cell()
 
+    # ── selection-agnostic track edits ────────────────────────────────────────
+
+    def _selected_label_pos(self, seg2d: np.ndarray) -> tuple[float, float] | None:
+        """A representative ``(y, x)`` of the selected label within *seg2d*.
+
+        The swap edits need a click point for the *selected* cell. Deriving it
+        from the label itself lets them work no matter how the cell became
+        selected — image click, lineage canvas, gallery, or the goto box. Only
+        the image-click path ever recorded a click position, so depending on
+        that stored position made these edits silently no-op for every other
+        selection source. Returns ``None`` when the selected label is absent
+        from this frame (so the caller can fall back to a link/relabel instead
+        of a same-frame swap). The returned pixel is the one nearest the
+        label's centroid, so it always lands inside the mask.
+        """
+        lab = self._selected_label
+        if not lab:
+            return None
+        ys, xs = np.where(seg2d == lab)
+        if ys.size == 0:
+            return None
+        cy, cx = ys.mean(), xs.mean()
+        i = int(np.argmin((ys - cy) ** 2 + (xs - cx) ** 2))
+        return (float(ys[i]), float(xs[i]))
+
+    def _spawn_into_selected(self, seg2d, pos, t: int, _layer) -> None:
+        """Ctrl+middle-click: spawn a cell at *pos* carrying the selected ID.
+
+        The new blob takes the selected cell's label, so it either *merges* into
+        the selected cell (when that cell already lives in this frame) or *links*
+        the selected track into this frame (when the selected cell is on another
+        frame — typically the previous one the user just stepped from). The
+        mechanics are identical — paint a fresh region with the selected ID —
+        only the status wording differs.
+        """
+        sel = self._selected_label
+        if not sel:
+            self._set_status("Ctrl+middle-click: select a cell first")
+            return
+        if _label_at(seg2d, pos) != 0:
+            self._set_status(
+                "Ctrl+middle-click empty space to grow / link the selected cell"
+            )
+            return
+        present_here = bool(np.any(seg2d == sel))
+        before = seg2d.copy()
+        ok = add_cell(
+            seg2d,
+            pos,
+            new_label=sel,
+            radius=int(self._cell_radius_spin.value()),
+            image=self._intensity_frame(t),
+            protected_mask=self._protected_mask(t, seg2d),
+        )
+        if not ok:
+            self._set_status("Spawn failed — no room here")
+            return
+        self._record_history(_layer, t, before)
+        _layer.refresh()
+        self._update_highlight(t, sel)
+        if present_here:
+            self._set_status(f"Merged into cell {sel} — Active on '{_layer.name}'")
+        else:
+            self._set_status(f"Linked cell {sel} → t={t} — Active on '{_layer.name}'")
+
+    def _ctrl_right_click_swap(self, seg2d, pos, t: int, _layer) -> None:
+        """Ctrl+right-click: swap the selected cell with the clicked cell.
+
+        With no usable selection it arms the two-click swap instead (this click
+        becomes the first cell; a following plain right-click picks the second).
+        The selected cell's position is derived from its label, so the swap fires
+        however the cell was selected — not only after a left-click on it.
+        """
+        lab = _label_at(seg2d, pos)
+        if lab == 0:
+            self._set_status("Swap — click on a cell (not background)")
+            return
+        sel_pos = self._selected_label_pos(seg2d)
+        if (
+            self._selected_label != 0
+            and sel_pos is not None
+            and lab != self._selected_label
+        ):
+            before = seg2d.copy()
+            ok = swap_labels(seg2d, sel_pos, pos)
+            if ok:
+                self._record_history(_layer, t, before)
+                _layer.refresh()
+                self._selected_label = 0
+                self._selected_pos = None
+                self._selected_t = -1
+                self._update_highlight(t, 0)
+                self._set_status(f"Swapped — Active on '{_layer.name}'")
+            else:
+                self._set_status("Swap failed — click on two different cells")
+        else:
+            self._swap_first_pos = pos
+            self._swap_first_t = t
+            self._set_status(
+                f"Swap — label {lab} selected, right-click second cell"
+            )
+
+    def _right_click_edit(self, seg2d, pos, t: int, _layer) -> None:
+        """Plain right-click: finish a two-click swap, or link / swap the selection.
+
+        With a pending two-click swap, this click is the second cell. Otherwise,
+        with a cell selected, it either *swaps* the clicked cell with the
+        selected one (when the selected cell is present in this frame) or
+        *relabels* the clicked cell to the selected ID (when it is not — linking
+        the track into this frame). The selected cell's position is derived from
+        its label, so both branches work regardless of how it was selected.
+        """
+        if self._swap_first_pos is not None:
+            if t != self._swap_first_t:
+                self._swap_first_pos = None
+                self._swap_first_t = -1
+                self._set_status("Frame changed — swap cancelled")
+                return
+            before = seg2d.copy()
+            ok = swap_labels(seg2d, self._swap_first_pos, pos)
+            self._swap_first_pos = None
+            self._swap_first_t = -1
+            if ok:
+                self._record_history(_layer, t, before)
+                _layer.refresh()
+                self._set_status(f"Swapped — Active on '{_layer.name}'")
+            else:
+                self._set_status("Swap failed — click on two different cells")
+            return
+        if self._selected_label == 0:
+            return
+        before = seg2d.copy()
+        sel_pos = self._selected_label_pos(seg2d)
+        if sel_pos is None:
+            ok = relabel_cell(seg2d, pos, self._selected_label)
+            msg_ok = f"Relabelled → {self._selected_label} — Active on '{_layer.name}'"
+            msg_err = "Relabel failed — click on a different cell"
+        else:
+            ok = swap_labels(seg2d, sel_pos, pos)
+            msg_ok = f"Swapped — Active on '{_layer.name}'"
+            msg_err = "Swap failed — click on a different cell"
+        if ok:
+            self._record_history(_layer, t, before)
+            _layer.refresh()
+            self._set_status(msg_ok)
+        else:
+            self._set_status(msg_err)
+
     # ── callback registration ─────────────────────────────────────────────────
 
     def _register_callbacks(self) -> None:
@@ -1024,6 +1173,10 @@ class CorrectionWidget(QWidget):
                     btn, mods, t, self._selected_label,
                 )
 
+                if btn == 3 and mods == {"Control"}:
+                    self._spawn_into_selected(seg2d, pos, t, _layer)
+                    return
+
                 if btn == 3 and not mods:
                     lab = _label_at(seg2d, pos)
                     if lab == 0:
@@ -1053,68 +1206,11 @@ class CorrectionWidget(QWidget):
                     return
 
                 if btn == 2 and mods == {"Control"}:
-                    lab = _label_at(seg2d, pos)
-                    if lab == 0:
-                        self._set_status("Swap — click on a cell (not background)")
-                        return
-                    if (
-                        self._selected_label != 0
-                        and self._selected_pos is not None
-                        and lab != self._selected_label
-                    ):
-                        before = seg2d.copy()
-                        ok = swap_labels(seg2d, self._selected_pos, pos)
-                        if ok:
-                            self._record_history(_layer, t, before)
-                            _layer.refresh()
-                            self._selected_label = 0
-                            self._selected_pos = None
-                            self._selected_t = -1
-                            self._update_highlight(t, 0)
-                            self._set_status(f"Swapped — Active on '{_layer.name}'")
-                        else:
-                            self._set_status("Swap failed — click on two different cells")
-                    else:
-                        self._swap_first_pos = pos
-                        self._swap_first_t = t
-                        self._set_status(f"Swap — label {lab} selected, right-click second cell")
+                    self._ctrl_right_click_swap(seg2d, pos, t, _layer)
                     return
 
                 if btn == 2 and not mods:
-                    if self._swap_first_pos is not None:
-                        if t != self._swap_first_t:
-                            self._swap_first_pos = None
-                            self._swap_first_t = -1
-                            self._set_status("Frame changed — swap cancelled")
-                        else:
-                            before = seg2d.copy()
-                            ok = swap_labels(seg2d, self._swap_first_pos, pos)
-                            if ok:
-                                self._record_history(_layer, t, before)
-                                _layer.refresh()
-                                self._swap_first_pos = None
-                                self._swap_first_t = -1
-                                self._set_status(f"Swapped — Active on '{_layer.name}'")
-                            else:
-                                self._set_status("Swap failed — click on two different cells")
-                                self._swap_first_pos = None
-                                self._swap_first_t = -1
-                    elif self._selected_label != 0 and self._selected_t != -1:
-                        before = seg2d.copy()
-                        if t != self._selected_t:
-                            ok = relabel_cell(seg2d, pos, self._selected_label)
-                            msg_ok  = f"Relabelled → {self._selected_label} — Active on '{_layer.name}'"
-                            msg_err = "Relabel failed — click on a different cell"
-                        else:
-                            ok = swap_labels(seg2d, self._selected_pos, pos)
-                            msg_ok  = f"Swapped — Active on '{_layer.name}'"
-                            msg_err = "Swap failed — click on a different cell"
-                        if ok:
-                            self._record_history(_layer, t, before)
-                            _layer.refresh()
-                            self._set_status(msg_ok)
-                        else:
-                            self._set_status(msg_err)
+                    self._right_click_edit(seg2d, pos, t, _layer)
                     return
 
                 if btn == 1 and mods == {"Control"}:

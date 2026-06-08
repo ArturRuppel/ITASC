@@ -94,6 +94,52 @@ def test_step_track_on_empty_stack_does_not_navigate():
     assert obj._status  # reported "no cells"
 
 
+# ── Navigating onto a frame the track skips (_navigate_to_cell) ─────────────
+
+
+def _navigate_stub(*, present_at):
+    """Stand-in exposing what ``_navigate_to_cell`` reaches for.
+
+    ``present_at`` maps frame -> set of present cell ids, so the helper can tell
+    an occupied frame from an empty placeholder frame.
+    """
+    step = [0, 0, 0]
+    dims = types.SimpleNamespace(current_step=tuple(step))
+    viewer = types.SimpleNamespace(dims=dims)
+    select_calls: list = []
+    center_calls: list = []
+    obj = types.SimpleNamespace(
+        viewer=viewer,
+        correction_widget=types.SimpleNamespace(
+            select_label=lambda t, cid: select_calls.append((t, cid))
+        ),
+        _current_cell_ids=lambda t: present_at.get(t, set()),
+        _center_viewer_on_cell=lambda t, cid: center_calls.append((t, cid)),
+        _navigating_from_lineage=False,
+        _select_calls=select_calls,
+        _center_calls=center_calls,
+    )
+    return obj
+
+
+def test_navigate_to_present_frame_selects_and_centers():
+    obj = _navigate_stub(present_at={2: {7}})
+    NucleusCorrectionWidget._navigate_to_cell(obj, 2, 7, from_lineage=True)
+    assert obj.viewer.dims.current_step[0] == 2
+    assert obj._select_calls == [(2, 7)]
+    assert obj._center_calls == [(2, 7)]
+
+
+def test_navigate_to_empty_placeholder_frame_keeps_selection():
+    # Track 7 is absent on frame 2 (an empty film-strip placeholder): jump to the
+    # frame but do not re-select (which would clear the track) or recenter.
+    obj = _navigate_stub(present_at={0: {7}})
+    NucleusCorrectionWidget._navigate_to_cell(obj, 2, 7, from_lineage=True)
+    assert obj.viewer.dims.current_step[0] == 2
+    assert obj._select_calls == []
+    assert obj._center_calls == []
+
+
 # ── Whole-track camera framing (_center_viewer_on_cell) ─────────────────────
 
 

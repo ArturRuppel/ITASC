@@ -120,12 +120,17 @@ class FilmStripTile:
     ``validated`` / ``anchored`` flag whether this frame is a validated or an
     anchored frame for the track; the view draws a coloured marker strip for
     each. They are view metadata, not baked into ``rgb``.
+
+    ``placeholder`` marks a frame the track does *not* occupy: an empty (blank)
+    tile emitted only to keep an incomplete track's strip aligned to the movie
+    timeline, so the gaps read as missing frames rather than a shorter strip.
     """
 
     frame: int            # source frame index
     rgb: np.ndarray       # (h, w, 3) uint8, raw crop with the mask edge drawn on
     validated: bool = False
     anchored: bool = False
+    placeholder: bool = False
 
     @property
     def height(self) -> int:
@@ -250,6 +255,7 @@ def build_track_film_strip(
     validated_frames: set[int] | None = None,
     anchored_frames: set[int] | None = None,
     frames: Sequence[int] | None = None,
+    total_frames: int | None = None,
 ) -> TrackFilmStrip:
     """Build per-frame, nucleus-centered intensity crops for ``track_id``.
 
@@ -273,6 +279,11 @@ def build_track_film_strip(
     ``frames`` optionally restricts the scan to a known set of occupied frame
     indices (e.g. supplied by the lineage graph), so callers building strips for
     many tracks at once avoid re-scanning every empty frame per track.
+
+    ``total_frames``, when given, pads the strip to one tile per movie frame in
+    ``range(total_frames)``: frames the track does not occupy get a blank
+    ``placeholder`` tile, so an *incomplete* track's strip stays aligned to the
+    timeline with its missing frames shown as empty thumbnails.
     """
     tracked = np.asarray(tracked_stack)
     intensity = np.asarray(intensity_stack)
@@ -329,7 +340,7 @@ def build_track_film_strip(
     anchored = {int(f) for f in (anchored_frames or set())}
 
     colors = _viridis_colors(len(occupied))
-    tiles: list[FilmStripTile] = []
+    rendered: dict[int, FilmStripTile] = {}
     for t, mask, (cy, cx), color in zip(
         occupied, masks, centroids, colors, strict=True
     ):
@@ -349,13 +360,29 @@ def build_track_film_strip(
             spotlight_dim=spotlight_dim,
             spotlight_dilation=spotlight_dilation,
         )
-        tiles.append(
-            FilmStripTile(
-                frame=t,
-                rgb=rgb,
-                validated=t in validated,
-                anchored=t in anchored,
-            )
+        rendered[t] = FilmStripTile(
+            frame=t,
+            rgb=rgb,
+            validated=t in validated,
+            anchored=t in anchored,
         )
+
+    # Without ``total_frames`` the strip is just the occupied tiles (oldest-first);
+    # with it, every movie frame gets a tile so missing frames show as empty
+    # placeholders and the strip stays aligned to the timeline.
+    if total_frames is not None and int(total_frames) > 0:
+        display = range(int(total_frames))
+    else:
+        display = occupied
+    tiles = [
+        rendered[t]
+        if t in rendered
+        else FilmStripTile(
+            frame=int(t),
+            rgb=np.zeros((size, size, 3), dtype=np.uint8),
+            placeholder=True,
+        )
+        for t in display
+    ]
 
     return TrackFilmStrip(tiles=tuple(tiles))
