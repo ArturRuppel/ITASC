@@ -1,253 +1,7 @@
-"""Tests for cellflow.meta.catalog.discover_study – study directory discovery."""
+"""Tests for cellflow.meta.catalog – CSV catalog + name-based discovery."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
-def _make_ready_position(root: Path, condition: str, experiment: str, position: str) -> Path:
-    """Create a fully-populated position directory and return its path."""
-    pos_dir = root / condition / experiment / position
-    (pos_dir / "4_contact_analysis").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "3_cell").mkdir()
-    (pos_dir / "4_contact_analysis" / "contact_analysis.h5").touch()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-    return pos_dir
-
-
-def _make_position_missing_contact_analysis(root: Path, condition: str, experiment: str, position: str) -> Path:
-    """Create a position missing the contact-analysis file but with labels present."""
-    pos_dir = root / condition / experiment / position
-    (pos_dir / "4_contact_analysis").mkdir(parents=True)
-    (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "3_cell").mkdir()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-    return pos_dir
-
-
-def _make_position_missing_labels(root: Path, condition: str, experiment: str, position: str) -> Path:
-    """Create a position with the contact-analysis file but no label files."""
-    pos_dir = root / condition / experiment / position
-    (pos_dir / "4_contact_analysis").mkdir(parents=True)
-    (pos_dir / "4_contact_analysis" / "contact_analysis.h5").touch()
-    return pos_dir
-
-
-# ---------------------------------------------------------------------------
-# discovery of a complete study
-# ---------------------------------------------------------------------------
-
-def test_discover_study_returns_ready_records_for_all_positions(tmp_path):
-    """Every position with all three files should appear as contact_analysis_status='ready'."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    _make_ready_position(root, "wildtype", "2024-01-01", "pos00")
-    _make_ready_position(root, "wildtype", "2024-01-01", "pos01")
-    _make_ready_position(root, "mutant", "2024-01-02", "pos00")
-
-    records = discover_study(root)
-
-    assert len(records) == 3
-
-    for rec in records:
-        assert rec["contact_analysis_status"] == "ready"
-        assert rec["position_path"] == root / rec["condition_id"] / rec["experiment_id"] / rec["position_id"]
-        assert rec["contact_analysis_path"] == rec["position_path"] / "4_contact_analysis" / "contact_analysis.h5"
-        assert rec["nucleus_tracked_labels_path"] == rec["position_path"] / "2_nucleus" / "tracked_labels.tif"
-        assert rec["cell_tracked_labels_path"] == rec["position_path"] / "3_cell" / "tracked_labels.tif"
-
-    ids = {(r["condition_id"], r["experiment_id"], r["position_id"]) for r in records}
-    assert ids == {
-        ("wildtype", "2024-01-01", "pos00"),
-        ("wildtype", "2024-01-01", "pos01"),
-        ("mutant", "2024-01-02", "pos00"),
-    }
-
-
-def test_discover_study_returns_sorted_records(tmp_path):
-    """Records should be sorted by condition, experiment, then position."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    _make_ready_position(root, "z_cond", "b_exp", "pos02")
-    _make_ready_position(root, "a_cond", "c_exp", "pos01")
-    _make_ready_position(root, "a_cond", "a_exp", "pos00")
-
-    records = discover_study(root)
-
-    compound = [(r["condition_id"], r["experiment_id"], r["position_id"]) for r in records]
-    assert compound == [
-        ("a_cond", "a_exp", "pos00"),
-        ("a_cond", "c_exp", "pos01"),
-        ("z_cond", "b_exp", "pos02"),
-    ]
-
-
-# ---------------------------------------------------------------------------
-# positions with missing files
-# ---------------------------------------------------------------------------
-
-def test_discover_study_returns_not_ready_when_contact_analysis_is_missing(tmp_path):
-    """If 4_contact_analysis/contact_analysis.h5 is missing, status != 'ready'."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    _make_position_missing_contact_analysis(root, "cond", "exp", "pos00")
-
-    records = discover_study(root)
-
-    assert len(records) == 1
-    assert records[0]["contact_analysis_status"] != "ready"
-    assert records[0]["condition_id"] == "cond"
-    assert records[0]["experiment_id"] == "exp"
-    assert records[0]["position_id"] == "pos00"
-
-
-def test_discover_study_returns_not_ready_when_nucleus_labels_missing(tmp_path):
-    """If 2_nucleus/tracked_labels.tif is missing, status != 'ready'."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    pos_dir = root / "cond" / "exp" / "pos00"
-    (pos_dir / "4_contact_analysis").mkdir(parents=True)
-    (pos_dir / "4_contact_analysis" / "contact_analysis.h5").touch()
-    (pos_dir / "3_cell").mkdir()
-    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
-
-    records = discover_study(root)
-
-    assert len(records) == 1
-    assert records[0]["contact_analysis_status"] != "ready"
-
-
-def test_discover_study_returns_not_ready_when_cell_labels_missing(tmp_path):
-    """If 3_cell/tracked_labels.tif is missing, status != 'ready'."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    pos_dir = root / "cond" / "exp" / "pos00"
-    (pos_dir / "4_contact_analysis").mkdir(parents=True)
-    (pos_dir / "4_contact_analysis" / "contact_analysis.h5").touch()
-    (pos_dir / "2_nucleus").mkdir()
-    (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
-
-    records = discover_study(root)
-
-    assert len(records) == 1
-    assert records[0]["contact_analysis_status"] != "ready"
-
-
-def test_discover_study_mixes_ready_and_not_ready_in_same_study(tmp_path):
-    """Within one root, some positions may be ready and others not."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    _make_ready_position(root, "cond", "exp", "pos00")
-    _make_position_missing_contact_analysis(root, "cond", "exp", "pos01")
-
-    records = discover_study(root)
-
-    assert len(records) == 2
-    by_id = {(r["condition_id"], r["experiment_id"], r["position_id"]): r["contact_analysis_status"] for r in records}
-    assert by_id[("cond", "exp", "pos00")] == "ready"
-    assert by_id[("cond", "exp", "pos01")] != "ready"
-
-
-# ---------------------------------------------------------------------------
-# empty / shallow roots
-# ---------------------------------------------------------------------------
-
-def test_discover_study_returns_empty_list_when_no_study_dirs_exist(tmp_path):
-    """An empty directory produces no records."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    root.mkdir()
-
-    records = discover_study(root)
-
-    assert records == []
-
-
-def test_discover_study_skips_non_directory_children(tmp_path):
-    """Regular files at any level should be skipped."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    root.mkdir()
-    (root / "README.txt").touch()
-
-    records = discover_study(root)
-
-    assert records == []
-
-
-def test_discover_study_skips_condition_with_no_position_dirs(tmp_path):
-    """An empty condition directory should produce no records."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    (root / "empty_cond").mkdir(parents=True)
-
-    records = discover_study(root)
-
-    assert records == []
-
-
-# ---------------------------------------------------------------------------
-# record field completeness
-# ---------------------------------------------------------------------------
-
-def test_discover_study_record_has_all_required_keys(tmp_path):
-    """Every record must contain exactly the expected set of fields."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    _make_ready_position(root, "c", "e", "p")
-
-    records = discover_study(root)
-
-    assert len(records) == 1
-    expected_keys = {
-        "condition_id",
-        "experiment_id",
-        "position_id",
-        "position_path",
-        "contact_analysis_path",
-        "nucleus_tracked_labels_path",
-        "cell_tracked_labels_path",
-        "contact_analysis_status",
-    }
-    assert set(records[0].keys()) == expected_keys
-
-
-def test_discover_study_record_paths_are_pathlib_objects(tmp_path):
-    """Path fields should be Path instances, not strings."""
-    from cellflow.meta.catalog import discover_study
-
-    root = tmp_path / "study"
-    _make_ready_position(root, "c", "e", "p")
-
-    records = discover_study(root)
-
-    rec = records[0]
-    assert isinstance(rec["position_path"], Path)
-    assert isinstance(rec["contact_analysis_path"], Path)
-    assert isinstance(rec["nucleus_tracked_labels_path"], Path)
-    assert isinstance(rec["cell_tracked_labels_path"], Path)
-
-
-# ---------------------------------------------------------------------------
-# CSV catalog helpers
-# ---------------------------------------------------------------------------
 
 def test_save_and_load_meta_catalog_round_trip_with_relative_paths(tmp_path):
     """Saved catalogs should use relative paths and load them as resolved contact-analysis paths."""
@@ -258,32 +12,89 @@ def test_save_and_load_meta_catalog_round_trip_with_relative_paths(tmp_path):
     source.touch()
     csv_path = tmp_path / "catalog.csv"
 
+    cell = tmp_path / "analysis" / "cell_labels.tif"
+    nucleus = tmp_path / "analysis" / "nucleus_labels.tif"
+    cell.touch()
+    nucleus.touch()
+
     save_meta_catalog(csv_path, [{
         "path": source,
         "date": "2026-05-09",
         "condition": "treated",
         "id": "pos01",
-        "labels": "edge,bright",
+        "notes": "edge,bright",
+        "cell_tracked_labels_path": cell,
+        "nucleus_tracked_labels_path": nucleus,
     }])
 
     csv_text = csv_path.read_text()
     assert "analysis/contact_analysis.h5" in csv_text
+    # Label paths are persisted (relative) so a reloaded catalog can recompute.
+    assert "analysis/cell_labels.tif" in csv_text
+    assert "analysis/nucleus_labels.tif" in csv_text
     assert str(source) not in csv_text
 
     records = load_meta_catalog(csv_path)
 
-    assert records == [{
-        "path": source,
-        "date": "2026-05-09",
-        "condition": "treated",
-        "id": "pos01",
-        "labels": "edge,bright",
-        "condition_id": "treated",
-        "experiment_id": "2026-05-09",
-        "position_id": "pos01",
-        "contact_analysis_path": source,
-        "contact_analysis_status": "ready",
-    }]
+    assert len(records) == 1
+    record = records[0]
+    assert record["contact_analysis_path"] == source
+    assert record["cell_tracked_labels_path"] == cell
+    assert record["nucleus_tracked_labels_path"] == nucleus
+    assert record["date"] == "2026-05-09"
+    assert record["condition"] == "treated"
+    assert record["id"] == "pos01"
+    assert record["notes"] == "edge,bright"
+    assert record["contact_analysis_status"] == "ready"
+
+
+def test_save_load_round_trip_without_label_paths(tmp_path):
+    """A record with no label paths round-trips with empty cells and None paths."""
+    from cellflow.meta.catalog import load_meta_catalog, save_meta_catalog
+
+    source = tmp_path / "contact_analysis.h5"
+    source.touch()
+    csv_path = tmp_path / "catalog.csv"
+
+    save_meta_catalog(csv_path, [{
+        "path": source, "date": "d1", "condition": "ctrl", "id": "p1", "notes": "",
+    }])
+
+    record = load_meta_catalog(csv_path)[0]
+    assert record["cell_tracked_labels_path"] is None
+    assert record["nucleus_tracked_labels_path"] is None
+
+
+def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
+    """Discovery anchors on the contact-analysis file and associates labels."""
+    from cellflow.meta.catalog import discover_catalog_entries
+
+    # Two positions in a nested layout; one missing the nucleus labels.
+    p1 = tmp_path / "expA" / "pos01"
+    p2 = tmp_path / "expA" / "pos02"
+    for p in (p1, p2):
+        (p / "4_contact_analysis").mkdir(parents=True)
+        (p / "3_cell").mkdir()
+        (p / "4_contact_analysis" / "contact_analysis.h5").touch()
+        (p / "3_cell" / "tracked_labels.tif").touch()
+    (p1 / "2_nucleus").mkdir()
+    (p1 / "2_nucleus" / "tracked_labels.tif").touch()
+
+    entries = discover_catalog_entries(
+        tmp_path,
+        contact_name="4_contact_analysis/contact_analysis.h5",
+        cell_name="3_cell/tracked_labels.tif",
+        nucleus_name="2_nucleus/tracked_labels.tif",
+    )
+
+    assert [e["id"] for e in entries] == ["pos01", "pos02"]
+    assert all(e["position_path"].name.startswith("pos") for e in entries)
+    assert entries[0]["cell_tracked_labels_path"] == p1 / "3_cell" / "tracked_labels.tif"
+    assert entries[0]["nucleus_tracked_labels_path"] == p1 / "2_nucleus" / "tracked_labels.tif"
+    # pos02 has no nucleus labels -> not associated.
+    assert entries[1]["nucleus_tracked_labels_path"] is None
+    # No metadata is assigned at discovery time.
+    assert "condition" not in entries[0] and "date" not in entries[0]
 
 
 def test_load_meta_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
@@ -350,47 +161,6 @@ def test_load_meta_catalog_marks_missing_h5_as_incomplete(tmp_path):
 
     assert records[0]["contact_analysis_path"] == tmp_path / "missing.h5"
     assert records[0]["contact_analysis_status"] == "incomplete"
-
-
-def test_discover_h5_files_returns_nested_h5_paths_sorted(tmp_path):
-    """Folder discovery should find .h5 files recursively by default."""
-    from cellflow.meta.catalog import discover_h5_files
-
-    nested = tmp_path / "a" / "4_contact_analysis"
-    nested.mkdir(parents=True)
-    first = nested / "contact_analysis.h5"
-    second = tmp_path / "b.h5"
-    ignored = tmp_path / "notes.txt"
-    second.touch()
-    first.touch()
-    ignored.touch()
-
-    assert discover_h5_files(tmp_path) == sorted([first, second])
-    assert discover_h5_files(tmp_path, recursive=False) == [second]
-
-
-def test_records_from_h5_paths_uses_defaults_and_unique_ids(tmp_path):
-    """Generated rows should use conservative defaults and unique identifiers."""
-    from cellflow.meta.catalog import records_from_h5_paths
-
-    first = tmp_path / "a" / "contact_analysis.h5"
-    second = tmp_path / "b" / "contact_analysis.h5"
-    first.parent.mkdir()
-    second.parent.mkdir()
-    first.touch()
-    second.touch()
-
-    records = records_from_h5_paths(
-        [first, second],
-        defaults={"date": "day2", "condition": "treated", "labels": "manual"},
-    )
-
-    assert [record["date"] for record in records] == ["day2", "day2"]
-    assert [record["condition"] for record in records] == ["treated", "treated"]
-    assert [record["labels"] for record in records] == ["manual", "manual"]
-    assert records[0]["id"] == "a"
-    assert records[1]["id"] == "b"
-    assert all(record["contact_analysis_status"] == "ready" for record in records)
 
 
 def test_merge_catalog_records_skips_duplicate_resolved_paths(tmp_path):

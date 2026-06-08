@@ -58,11 +58,15 @@ except ImportError:  # pragma: no cover - tests monkeypatch this when absent
 
 
 def make_contact_analysis_widget(napari_viewer=None):
-    """napari plugin entry point: a standalone Contact Analysis dock widget.
+    """napari plugin entry point: the Contact Analysis dock widget.
 
-    Used by the ``cellflow-contact`` distribution's manifest. Runs the napari
-    layer-delegate patch (normally done by the orchestrator package) and returns
-    the widget in standalone mode with its own file pickers + config.
+    In a full CellFlow install this returns the merged studio — a position
+    catalog + embedded per-position contact view + analysis plugins. The
+    standalone ``cellflow-contact`` wheel does not ship ``cellflow.meta`` /
+    the studio module, so there it falls back to the bare per-position
+    :class:`ContactAnalysisWidget` in standalone mode (own file pickers +
+    config). Runs the napari layer-delegate patch (normally done by the
+    orchestrator package).
     """
     try:
         from cellflow.napari._napari_compat import patch_napari_layer_delegate
@@ -75,7 +79,11 @@ def make_contact_analysis_widget(napari_viewer=None):
     # arrives as ``None``. Fall back to the active viewer.
     if napari_viewer is None:
         napari_viewer = napari.current_viewer()
-    return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
+    try:
+        from cellflow.napari.contact_analysis_studio import ContactAnalysisStudioWidget
+    except ImportError:  # standalone cellflow-contact wheel: no cellflow.meta
+        return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
+    return ContactAnalysisStudioWidget(viewer=napari_viewer)
 
 
 class _ProgressEmitter(QObject):
@@ -182,10 +190,19 @@ class ContactAnalysisWidget(QWidget):
         # Visualize is the primary action: it computes the .h5 on demand only if
         # it is missing, then shows the overlays. Recompute forces a rebuild.
         self.visualize_btn = QPushButton("Visualize")
+        self.visualize_btn.setToolTip(
+            "Show contact-analysis overlays for the current position. "
+            "If the analysis has not been computed yet, it is computed first; "
+            "an existing result is shown as-is."
+        )
         action_button(self.visualize_btn, expand=True)
         layout.addWidget(self.visualize_btn)
 
         self.recompute_btn = QPushButton("Recompute")
+        self.recompute_btn.setToolTip(
+            "Force a fresh contact analysis, overwriting the existing result, "
+            "then show it."
+        )
         action_button(self.recompute_btn)
         layout.addWidget(self.recompute_btn)
 
@@ -595,7 +612,8 @@ class ContactAnalysisWidget(QWidget):
         self._build_worker = None
         self._set_build_running(False)
         self._set_contact_analysis_status(
-            f"Status: {'Wrote' if built else 'Using'} {output_path}"
+            f"Status: {'computed' if built else 'using existing'} contact analysis "
+            f"({output_path.name})."
         )
         self._update_status()
         self._refresh_discovery_status()
@@ -639,13 +657,19 @@ class ContactAnalysisWidget(QWidget):
         # skip the worker and show immediately. ensure_contact_analysis remains the
         # authority on the missing-only policy for the build path below.
         if out.exists() and not overwrite:
-            self._set_contact_analysis_status(f"Status: Using {out}")
+            self._set_contact_analysis_status(
+                f"Status: showing existing contact analysis ({out.name})."
+            )
             self._show_from_disk()
             return
 
         self._build_completion_pending = False
         self._build_error_pending = False
-        self._set_contact_analysis_status("Status: building contact analysis...")
+        self._set_contact_analysis_status(
+            "Status: computing contact analysis (not present yet)..."
+            if not overwrite
+            else "Status: recomputing contact analysis..."
+        )
         self._set_build_running(True)
 
         @thread_worker(
