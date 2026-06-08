@@ -818,16 +818,22 @@ class NucleusCorrectionWidget(QWidget):
         self._remove_other_correction_prefix_layers()
         stack = read_full_tracked_stack(tracked_path)
 
+        # The nucleus reads as "bop purple" on its own, but when the cell z-avg is
+        # also shown (a grey channel beneath it) "I Purple" separates better.
+        cell_path = self._cell_foreground_path()
+        cell_present = cell_path is not None and cell_path.exists()
+        nucleus_cmap = "I Purple" if cell_present else "bop purple"
+
         for data, name, cmap in (
             (
-                self._cell_foreground_path(),
+                cell_path,
                 _CORRECTION_CELL_ZAVG_LAYER,
                 "gray",
             ),
             (
                 self._nucleus_foreground_path(),
                 _CORRECTION_NUC_ZAVG_LAYER,
-                "I Purple",
+                nucleus_cmap,
             ),
         ):
             if data is not None and data.exists():

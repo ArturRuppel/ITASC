@@ -41,6 +41,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.core.lineage import _segments_from_frames
 from cellflow.napari._correction_track_path import TrackFilmStrip
 
 _CLICK_SLOP = 6  # max drag (px) still treated as a click, not a scroll
@@ -313,19 +314,23 @@ class TrackAccordionPanel(QWidget):
     def _draw_bar(self, lane: LaneView, y: float, bar_h: float) -> None:
         top = y + _LANE_PAD
         for s, e in lane.segments:
-            self._scene.addRect(
-                _LEFT_GUTTER + s * self._cell_w, top,
-                (e - s + 1) * self._cell_w, bar_h, _no_pen(), _PRESENT,
-            )
-        for frame in lane.validated:
-            self._fill_cell(top, bar_h, frame, _VALIDATED)
-        for frame in lane.anchored:
-            self._fill_cell(top, bar_h, frame, _ANCHOR)
+            self._fill_run(top, bar_h, s, e, _PRESENT)
+        # Coalesce flagged frames into contiguous runs before drawing: with a
+        # fractional ``cell_w`` and no antialiasing, painting each frame as its
+        # own snapped rect leaves sub-pixel seams that read as a ragged
+        # "indentation" against the single-rect present bar. One rect per run
+        # rounds once and stays flush with the grey bar beneath it.
+        for s, e in _runs(lane.validated):
+            self._fill_run(top, bar_h, s, e, _VALIDATED)
+        for s, e in _runs(lane.anchored):
+            self._fill_run(top, bar_h, s, e, _ANCHOR)
 
-    def _fill_cell(self, top: float, bar_h: float, frame: int, color: QColor) -> None:
+    def _fill_run(
+        self, top: float, bar_h: float, start: int, end: int, color: QColor
+    ) -> None:
         self._scene.addRect(
-            _LEFT_GUTTER + frame * self._cell_w, top, self._cell_w, bar_h,
-            _no_pen(), color,
+            _LEFT_GUTTER + start * self._cell_w, top,
+            (end - start + 1) * self._cell_w, bar_h, _no_pen(), color,
         )
 
     def _draw_band(self, y: float, row_width: float) -> float:
@@ -468,6 +473,15 @@ class TrackAccordionPanel(QWidget):
 
 def _no_pen() -> QPen:
     return QPen(Qt.NoPen)
+
+
+def _runs(frames: frozenset[int]) -> tuple[tuple[int, int], ...]:
+    """Collapse a frame set into inclusive ``(start, end)`` contiguous runs."""
+    if not frames:
+        return ()
+    return tuple(
+        (seg.start, seg.end) for seg in _segments_from_frames(sorted(frames))
+    )
 
 
 _PLACEHOLDER_FILL = QColor(48, 50, 56)     # empty-tile body (a touch above bg)

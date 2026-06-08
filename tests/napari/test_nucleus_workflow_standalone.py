@@ -127,12 +127,23 @@ def test_embedded_widget_keeps_maximum_policy(viewer):
 
 
 def test_correction_takeover_roundtrip_keeps_header_above_stretch(viewer):
-    # Standalone adds a trailing stretch to top-anchor the sections. When
-    # correction focus-takeover deactivates, the header + section are re-inserted
-    # into the layout; they must land *above* that stretch, not below it (which
-    # would shove the correction pill to the bottom).
+    # Standalone adds a trailing stretch to top-anchor the sections, AND napari's
+    # add_dock_widget appends its own — so a docked standalone widget carries two
+    # trailing spacers. When correction focus-takeover deactivates, the header +
+    # section are re-inserted; they must land above *both* spacers, not stranded
+    # between them (which shoves the correction pill to the bottom).
     widget = mod.make_nucleus_tracking_widget(viewer)
+    # Dock it so napari contributes its extra trailing stretch (the regression
+    # only reproduces with more than one spacer at the tail).
+    viewer.window.add_dock_widget(widget, name="Nucleus", area="right")
     layout = widget.layout()
+
+    trailing_spacers = sum(
+        1
+        for i in range(layout.count())
+        if layout.itemAt(i).spacerItem() is not None
+    )
+    assert trailing_spacers >= 2
 
     # Simulate the takeover round-trip: reparent the controls out, then back.
     widget._set_correction_focus_takeover(True)
@@ -140,14 +151,20 @@ def test_correction_takeover_roundtrip_keeps_header_above_stretch(viewer):
         layout.removeWidget(w)
     widget._set_correction_focus_takeover(False)
 
-    # The trailing item is still the stretch, and the header/section sit above it.
-    last = layout.itemAt(layout.count() - 1)
-    assert last.spacerItem() is not None
+    # Every trailing spacer is still last, and the header/section sit above them
+    # all (so the pill keeps its position rather than dropping between spacers).
+    first_trailing_spacer = layout.count()
+    while (
+        first_trailing_spacer > 0
+        and layout.itemAt(first_trailing_spacer - 1).spacerItem() is not None
+    ):
+        first_trailing_spacer -= 1
+    assert first_trailing_spacer < layout.count()  # at least one trailing spacer
     indices = {
         layout.indexOf(widget.correction_header),
         layout.indexOf(widget.correction_mode_section),
     }
-    assert all(i < layout.count() - 1 for i in indices)
+    assert all(i < first_trailing_spacer for i in indices)
 
 
 def test_set_context_defaults_output_dir_to_foreground_folder(viewer, tmp_path):

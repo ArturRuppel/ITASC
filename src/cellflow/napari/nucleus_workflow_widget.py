@@ -375,18 +375,20 @@ class NucleusWorkflowWidget(
 
     @staticmethod
     def _add_before_trailing_stretch(layout, widget) -> None:
-        """Append *widget*, keeping any trailing stretch last.
+        """Append *widget*, keeping any trailing stretch(es) last.
 
-        Standalone adds a trailing stretch to top-anchor the sections; a plain
-        ``addWidget`` would drop re-inserted controls (the correction header +
-        section returning from focus takeover) *below* that stretch and shove
-        them to the bottom. Insert before the stretch when one is present.
+        Both the standalone layout and napari's ``add_dock_widget`` append a
+        trailing stretch to top-anchor the content, so a docked standalone widget
+        carries *two* spacers at the tail. A plain ``addWidget`` would drop the
+        re-inserted controls (the correction header + section returning from focus
+        takeover) below them and shove the pill to the bottom; inserting before
+        only the last spacer would still strand it between the two. Walk back over
+        every trailing spacer and insert before the first one.
         """
-        count = layout.count()
-        if count > 0 and layout.itemAt(count - 1).spacerItem() is not None:
-            layout.insertWidget(count - 1, widget)
-        else:
-            layout.addWidget(widget)
+        index = layout.count()
+        while index > 0 and layout.itemAt(index - 1).spacerItem() is not None:
+            index -= 1
+        layout.insertWidget(index, widget)
 
     def _alias_correction_controls(self) -> None:
         correction = self.nucleus_correction_widget

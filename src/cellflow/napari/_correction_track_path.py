@@ -263,7 +263,7 @@ def build_track_film_strip(
     (bare ``(H, W)`` planes are treated as a single frame). For each occupied
     frame the intensity is cropped to a fixed square window centered on the
     nucleus, contrast-stretched against the track's own nucleus pixels, colored
-    through ``colormap`` (e.g. the layer's "I Purple"; grayscale if ``None``),
+    through ``colormap`` (e.g. the layer's "bop purple"; grayscale if ``None``),
     and dimmed outside the nucleus by ``spotlight_dim`` for a spotlight effect.
 
     A ``outline_width``-thick border is drawn at the *inner edge of the bright

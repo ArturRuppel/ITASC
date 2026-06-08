@@ -37,7 +37,11 @@ def _track_label_color_styling(
 
     def _color(cell_id: int) -> tuple[float, float, float, float]:
         raw = color_map.get(int(cell_id))
-        if isinstance(raw, (tuple, list)) and len(raw) == 4:
+        # ``color_map`` may come straight from a caller (tuple/list values) or be
+        # read back off a napari ``DirectLabelColormap``, which normalises every
+        # entry to an ``np.ndarray``. Accept any length-4 numeric sequence so the
+        # latter doesn't silently fall through to the grey unlabeled colour.
+        if isinstance(raw, (tuple, list, np.ndarray)) and len(raw) == 4:
             return tuple(float(c) for c in raw)
         return tuple(float(c) for c in _UNLABELED_COLOR)
 

@@ -300,7 +300,7 @@ class LineageCanvasController:
 
     @staticmethod
     def _intensity_colormap(layer):
-        """Adapt the intensity layer's colormap (e.g. 'I Purple') to (h,w)->RGB."""
+        """Adapt the intensity layer's colormap (e.g. 'bop purple') to (h,w)->RGB."""
         cmap = getattr(layer, "colormap", None)
         if cmap is None or not hasattr(cmap, "map"):
             return None

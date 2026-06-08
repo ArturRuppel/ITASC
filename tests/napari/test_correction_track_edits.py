@@ -140,7 +140,7 @@ def test_right_click_swaps_with_selection_made_off_image():
     assert "Swapped" in _last_status(stub)
 
 
-def test_right_click_relabels_when_selected_cell_absent_here():
+def test_right_click_noops_when_selected_cell_absent_here():
     seg = np.zeros((10, 10), dtype=int)
     seg[6:9, 6:9] = 7  # selected cell 5 is NOT in this frame
     stub = _edit_stub(selected_label=5)
@@ -148,10 +148,12 @@ def test_right_click_relabels_when_selected_cell_absent_here():
 
     CorrectionWidget._right_click_edit(stub, seg, (7.0, 7.0), 0, layer)
 
-    # Clicked cell 7 takes the selected track's ID (links it into this frame).
-    assert seg[7, 7] == 5
-    assert not np.any(seg == 7)
-    assert "Relabelled" in _last_status(stub)
+    # Plain right-click only *swaps* within a frame; with the selected cell on
+    # another frame there is nothing here to swap with, so the clicked cell is
+    # left untouched and the user is pointed at the cross-frame Ctrl+left-click.
+    assert seg[7, 7] == 7
+    assert "another frame" in _last_status(stub)
+    stub._record_history.assert_not_called()
 
 
 def test_right_click_no_op_without_selection():

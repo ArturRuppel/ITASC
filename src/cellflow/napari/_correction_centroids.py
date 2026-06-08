@@ -113,46 +113,20 @@ def _existing_color_dict(
     return color_map
 
 
-# Green / yellow / yellow-orange hues are reserved for the validated (green) and
-# anchored (orange-gold) cell borders + marker strips, so by-ID label colours
-# skip this band: the golden-ratio sequence is wrapped into the remaining arc so
-# no cell is painted a colour that reads as a border state.
-_RESERVED_HUE_BAND = (0.08, 0.45)  # ~orange-yellow (29°) through green (162°)
-
-
-_HUE_INSET = 0.02  # keep colours off the exact band edges (e.g. spring-green)
+# Per-id label colours reuse napari's own default labels palette (the cyclic
+# colormap a Labels layer is coloured with out of the box) so the nuclei read
+# with the same well-spread, high-contrast hues napari uses everywhere else.
+# The tracks layer mirrors these exact colours by reading the labels layer's
+# colour dict back (see the tracks controller).
+_LABEL_CMAP = None
 
 
 def _label_color(label_id: int) -> np.ndarray:
-    raw = ((int(label_id) - 1) * 0.618033988749895) % 1.0
-    lo, hi = _RESERVED_HUE_BAND
-    # Map [0, 1) into the *interior* of the arc that starts past the reserved
-    # band and wraps back to just below its lower edge, so neither green/yellow
-    # nor the band's edge hues (a green-cyan at hi) are ever produced.
-    allowed = 1.0 - (hi - lo) - 2 * _HUE_INSET
-    hue = (hi + _HUE_INSET + raw * allowed) % 1.0
-    return np.asarray((*_hsv_to_rgb(hue, 0.9, 1.0), 1.0), dtype=float)
+    """RGBA for *label_id* from napari's default cyclic labels colormap."""
+    global _LABEL_CMAP
+    if _LABEL_CMAP is None:
+        from napari.utils.colormaps import label_colormap
 
-
-def _hsv_to_rgb(
-    hue: float,
-    saturation: float,
-    value: float,
-) -> tuple[float, float, float]:
-    h = (float(hue) % 1.0) * 6.0
-    i = int(h)
-    f = h - i
-    p = value * (1.0 - saturation)
-    q = value * (1.0 - saturation * f)
-    t = value * (1.0 - saturation * (1.0 - f))
-    if i == 0:
-        return value, t, p
-    if i == 1:
-        return q, value, p
-    if i == 2:
-        return p, value, t
-    if i == 3:
-        return p, q, value
-    if i == 4:
-        return t, p, value
-    return value, p, q
+        _LABEL_CMAP = label_colormap()
+    rgba = _LABEL_CMAP.map(np.asarray([int(label_id)]))[0]
+    return np.asarray(rgba, dtype=float)
