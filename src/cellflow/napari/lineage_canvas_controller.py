@@ -82,7 +82,7 @@ class LineageCanvasController:
             return
         self._ensure_panel()
         self._panel.set_overview(
-            lanes, n_frames=n_frames, title=f"{len(lanes)} track(s)",
+            lanes, n_frames=n_frames, title=self._overview_title(lanes),
         )
         self.set_current_frame(self._current_t_provider())
         self.set_selection(int(self._selected_label_provider() or 0))
@@ -133,6 +133,33 @@ class LineageCanvasController:
         if self._panel is not None:
             self._panel.center_on_track(int(cell_id or 0))
 
+    def center_on_strip(self, cell_id: int | None = None) -> None:
+        """Scroll the panel so the selected track's film strip is centered.
+
+        Falls back to centering on the bar row when the band is not built yet
+        (no selection / empty strip).
+        """
+        if self._panel is None:
+            return
+        if not self._panel.center_on_strip() and cell_id is not None:
+            self._panel.center_on_track(int(cell_id or 0))
+
+    def step_film_frame(self, *, dx: int = 0, dy: int = 0, wrap: bool = False) -> None:
+        """Move the current frame to the neighbouring thumbnail in the band.
+
+        ``dx`` walks the strip left/right (reading order); ``dy`` jumps a whole
+        wrapped row up/down. ``wrap`` (the viewer's loop mode) makes an off-the-end
+        step return to the opposite end. Navigation reuses the same frame-jump
+        path a thumbnail click takes (select the frame on the selected track).
+        """
+        if self._panel is None:
+            return
+        target = self._panel.grid_neighbor_frame(
+            int(self._current_t_provider()), dx=dx, dy=dy, wrap=wrap
+        )
+        if target is not None:
+            self._on_film_frame_clicked(int(target))
+
     def refresh_status(self) -> None:
         """Recolour validated/anchored flags without rescanning the stack.
 
@@ -161,10 +188,21 @@ class LineageCanvasController:
             for cid, column, segments in self._lane_structure
         ]
         self._panel.set_overview(
-            lanes, n_frames=self._n_frames, title=f"{len(lanes)} track(s)",
+            lanes, n_frames=self._n_frames, title=self._overview_title(lanes),
         )
         self.set_current_frame(self._current_t_provider())
         self.set_selection(int(self._selected_label_provider() or 0))
+
+    @staticmethod
+    def _overview_title(lanes) -> str:
+        """Overview header: total tracks plus how many carry any validation.
+
+        This is the home for the validation summary now that the top status bar
+        is just the one-line save/action status — the count tracks every
+        validate / anchor / edit through the panel's own refresh.
+        """
+        n_validated = sum(1 for lane in lanes if lane.validated)
+        return f"{len(lanes)} track(s), {n_validated} validated"
 
     def refresh_detail(self) -> None:
         """Rebuild only the selected track's detail strip (no overview rescan).

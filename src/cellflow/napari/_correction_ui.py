@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
 from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
     stage_header_action_button,
+    stage_header_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
 
@@ -102,6 +103,7 @@ class CollapsiblePane(QWidget):
         hide_btn.setText("✕")
         hide_btn.setToolTip(f"Hide {title}")
         hide_btn.setAutoRaise(True)
+        hide_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hide_btn.clicked.connect(lambda: self.set_collapsed(True))
         header_lay.addWidget(title_lbl)
         header_lay.addStretch(1)
@@ -111,11 +113,21 @@ class CollapsiblePane(QWidget):
         page_lay.addWidget(content, stretch=1)
         self._stack.addWidget(page)
 
-        strip = QToolButton()
-        strip.setText("▸")
-        strip.setToolTip(f"Show {title}")
-        strip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        strip.clicked.connect(lambda: self.set_collapsed(False))
+        # The show-tab pins the ✕/▸ buttons to the same top edge: a thin column
+        # with the ▸ button at the top and a stretch beneath, rather than a
+        # full-height button whose glyph floats to the vertical centre.
+        strip = QWidget()
+        strip_lay = QVBoxLayout(strip)
+        strip_lay.setContentsMargins(2, 2, 2, 2)
+        strip_lay.setSpacing(0)
+        strip_btn = QToolButton()
+        strip_btn.setText("▸")
+        strip_btn.setToolTip(f"Show {title}")
+        strip_btn.setAutoRaise(True)
+        strip_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        strip_btn.clicked.connect(lambda: self.set_collapsed(False))
+        strip_lay.addWidget(strip_btn, alignment=Qt.AlignTop)
+        strip_lay.addStretch(1)
         self._strip = strip
         self._stack.addWidget(strip)
 
@@ -155,24 +167,25 @@ def build_correction_header(
     active_btn: QWidget,
     view_toggle_btns: tuple[QWidget, ...] = (),
     status_lbl: QWidget | None = None,
-    validation_counter_lbl: QWidget | None = None,
 ) -> tuple[QWidget, QLabel]:
     """Build the full-width correction top bar; returns ``(header, title_label)``.
 
     Left→right: the stage title, the activate / shortcuts / params toggles, the
-    checkable view-toggle tool-buttons, a stretch, then the status label (and the
-    validation counter) right-aligned at the end of the bar. The bar spans the
-    whole workspace dock — over the toolbar, gallery, and accordion below it.
+    checkable view-toggle tool-buttons, a stretch, then a single one-line status
+    label right-aligned at the end of the bar (the save/action status only — the
+    track / validated summary lives in the tracking-overview panel). The bar
+    spans the whole workspace dock — over the toolbar, gallery, and accordion.
     """
     header = QWidget(parent)
     row = QHBoxLayout(header)
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(4)
 
-    # A proper workspace title (not the stage "pill") — the active correction
-    # workspace reads as its own surface, not a collapsed stage chip.
+    # The title doubles as the inactive plugin-dock entry (a stage "pill" next
+    # to the on/off button) and, once correction is active, a proper workspace
+    # title. The host toggles between the two looks; it starts as the pill.
     header_lbl = QLabel("Tracking Correction")
-    header_lbl.setStyleSheet("font-weight: bold; font-size: 12pt;")
+    stage_header_label(header_lbl, "nucleus")
     for button in (active_btn, shortcuts_btn, params_btn, *view_toggle_btns):
         stage_header_action_button(button, "nucleus")
     row.addWidget(header_lbl)
@@ -188,8 +201,6 @@ def build_correction_header(
     row.addStretch(1)
     if status_lbl is not None:
         row.addWidget(status_lbl)
-    if validation_counter_lbl is not None:
-        row.addWidget(validation_counter_lbl)
     return header, header_lbl
 
 
@@ -255,13 +266,6 @@ _SHORTCUT_COLUMNS = (
                 ("Space", "Play / stop the movie"),
             ),
         ),
-        (
-            "Selection",
-            (
-                ("Left-click", "Select / highlight cell"),
-                ("↑ / ↓", "Previous / next track"),
-            ),
-        ),
     ),
     (
         (
@@ -277,13 +281,29 @@ _SHORTCUT_COLUMNS = (
         ),
         ("History", (("Ctrl+Z", "Undo"),)),
     ),
+    (
+        (
+            "Selection",
+            (
+                ("Left-click", "Select / highlight cell"),
+                ("← / →", "Previous / next thumbnail"),
+                ("↑ / ↓", "Thumbnail row up / down"),
+                ("Shift+↑ / ↓", "Previous / next track"),
+            ),
+        ),
+    ),
 )
 
 
-def _shortcut_column(groups) -> QWidget:
-    """One vertical column of shortcut groups in its own grid."""
+def _shortcut_column(groups, footer: QWidget | None = None) -> QWidget:
+    """One vertical column of shortcut groups, with an optional footer below."""
     column = QWidget()
-    grid = QGridLayout(column)
+    col_lay = QVBoxLayout(column)
+    col_lay.setContentsMargins(0, 0, 0, 0)
+    col_lay.setSpacing(4)
+
+    grid_host = QWidget()
+    grid = QGridLayout(grid_host)
     grid.setContentsMargins(8, 6, 8, 6)
     grid.setHorizontalSpacing(10)
     grid.setVerticalSpacing(2)
@@ -293,7 +313,10 @@ def _shortcut_column(groups) -> QWidget:
             grid, title, list(items), start_row=row, is_first=(i == 0)
         )
     grid.setColumnStretch(1, 1)
-    grid.setRowStretch(row, 1)
+    col_lay.addWidget(grid_host)
+    if footer is not None:
+        col_lay.addWidget(footer)
+    col_lay.addStretch(1)
     return column
 
 
@@ -301,8 +324,8 @@ def build_shortcuts_widget(attrib_lbl: QWidget | None = None) -> QWidget:
     """Build the wide multi-column correction-shortcuts reference panel.
 
     The shortcut groups are arranged in side-by-side columns (so the panel is
-    wide and short under the top bar), with the disclaimer / attribution label,
-    when supplied, pinned to the bottom of the panel.
+    wide and short under the top bar). The disclaimer / attribution label, when
+    supplied, rides at the bottom of the last column (alongside Selection).
     """
     group = QGroupBox("Correction shortcuts")
     outer = QVBoxLayout(group)
@@ -312,11 +335,12 @@ def build_shortcuts_widget(attrib_lbl: QWidget | None = None) -> QWidget:
     columns = QHBoxLayout()
     columns.setContentsMargins(0, 0, 0, 0)
     columns.setSpacing(12)
-    for col_groups in _SHORTCUT_COLUMNS:
-        columns.addWidget(_shortcut_column(col_groups), alignment=Qt.AlignTop)
+    last = len(_SHORTCUT_COLUMNS) - 1
+    for i, col_groups in enumerate(_SHORTCUT_COLUMNS):
+        footer = attrib_lbl if i == last else None
+        columns.addWidget(
+            _shortcut_column(col_groups, footer), alignment=Qt.AlignTop
+        )
     columns.addStretch(1)
     outer.addLayout(columns)
-
-    if attrib_lbl is not None:
-        outer.addWidget(attrib_lbl)
     return group

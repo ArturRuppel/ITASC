@@ -231,3 +231,72 @@ def test_thumbnail_click_emits_frame(_app):
     rect = panel._tile_rects[4]
     panel._activate_at(rect.center().x(), rect.center().y())
     assert captured == [4]
+
+
+# ── arrow-key film-strip grid navigation ────────────────────────────────────
+
+
+def _grid_panel(_app):
+    """A panel with a hand-laid two-row band: row0=[0,1,2], row1=[3,4]."""
+    from qtpy.QtCore import QRectF
+
+    panel = TrackAccordionPanel(tile_px=32)
+    panel._tile_rects = {
+        0: QRectF(30, 0, 32, 32),
+        1: QRectF(64, 0, 32, 32),
+        2: QRectF(98, 0, 32, 32),
+        3: QRectF(30, 40, 32, 32),
+        4: QRectF(64, 40, 32, 32),
+    }
+    return panel
+
+
+def test_grid_neighbor_left_right_walk_reading_order(_app):
+    panel = _grid_panel(_app)
+    # Right steps a column, wrapping from a row end into the next row's start.
+    assert panel.grid_neighbor_frame(1, dx=1) == 2
+    assert panel.grid_neighbor_frame(2, dx=1) == 3
+    # Left steps back; nothing before the first tile.
+    assert panel.grid_neighbor_frame(3, dx=-1) == 2
+    assert panel.grid_neighbor_frame(0, dx=-1) is None
+
+
+def test_grid_neighbor_up_down_jump_rows_keeping_column(_app):
+    panel = _grid_panel(_app)
+    assert panel.grid_neighbor_frame(1, dy=1) == 4   # col 1 → row 1 col 1
+    assert panel.grid_neighbor_frame(4, dy=-1) == 1   # back up a row
+    # A shorter last row clamps the column to its final tile.
+    assert panel.grid_neighbor_frame(2, dy=1) == 4
+    # No row beyond the edges.
+    assert panel.grid_neighbor_frame(3, dy=1) is None
+    assert panel.grid_neighbor_frame(0, dy=-1) is None
+
+
+def test_grid_neighbor_off_band_steps_into_first_tile(_app):
+    panel = _grid_panel(_app)
+    assert panel.grid_neighbor_frame(99, dx=1) == 0
+    # An empty band has nowhere to go.
+    panel._tile_rects = {}
+    assert panel.grid_neighbor_frame(0, dx=1) is None
+
+
+def test_grid_neighbor_wrap_loops_around_the_ends(_app):
+    panel = _grid_panel(_app)  # flat order [0,1,2,3,4]; rows [0,1,2] / [3,4]
+    # Reading-order wrap: past the last tile → first, before the first → last.
+    assert panel.grid_neighbor_frame(4, dx=1, wrap=True) == 0
+    assert panel.grid_neighbor_frame(0, dx=-1, wrap=True) == 4
+    # Without wrap the same steps stop at the edge.
+    assert panel.grid_neighbor_frame(4, dx=1, wrap=False) is None
+    # Row wrap: down off the last row → top row (column clamped), up → bottom.
+    assert panel.grid_neighbor_frame(3, dy=1, wrap=True) == 0
+    assert panel.grid_neighbor_frame(0, dy=-1, wrap=True) == 3
+
+
+def test_center_on_strip_reports_whether_a_band_existed(_app):
+    panel = TrackAccordionPanel(tile_px=32)
+    panel.set_overview(_lanes(), n_frames=6)
+    # No selection yet → no band to center on.
+    assert panel.center_on_strip() is False
+    panel.set_selection(7)
+    panel.set_strip(_strip(0, 4))
+    assert panel.center_on_strip() is True

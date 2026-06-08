@@ -194,6 +194,72 @@ class TrackAccordionPanel(QWidget):
                 self._view.centerOn(vc.x(), y)
                 return
 
+    def center_on_strip(self) -> bool:
+        """Scroll vertically so the open thumbnail band is centered.
+
+        Returns ``True`` when a band was present to center on, ``False`` when the
+        selected track has no expanded film strip yet (so the caller can fall
+        back to centering on the bar row).
+        """
+        if self._band_range is None:
+            return False
+        top, bottom = self._band_range
+        y = (top + bottom) / 2.0
+        vc = self._view.mapToScene(self._view.viewport().rect().center())
+        self._view.centerOn(vc.x(), y)
+        return True
+
+    def grid_neighbor_frame(
+        self, current_frame: int, *, dx: int = 0, dy: int = 0, wrap: bool = False
+    ) -> int | None:
+        """Frame of the tile ``dx`` columns / ``dy`` rows from ``current_frame``.
+
+        The thumbnails wrap row-major across the band width, so this reconstructs
+        that grid from the laid-out tile rects: ``dx`` walks the band in reading
+        order (left/right, wrapping at row ends), while ``dy`` jumps a whole row
+        up/down keeping the column position (clamped on a shorter last row).
+        With ``wrap`` (the viewer's loop mode), running off either end returns to
+        the opposite end instead of stopping; otherwise the edge returns ``None``.
+        """
+        if not self._tile_rects:
+            return None
+        ordered = sorted(
+            self._tile_rects.items(), key=lambda kv: (round(kv[1].y(), 1), kv[1].x())
+        )
+        rows: list[list[int]] = []
+        last_y: float | None = None
+        for frame, rect in ordered:
+            ry = round(rect.y(), 1)
+            if last_y is None or ry != last_y:
+                rows.append([])
+                last_y = ry
+            rows[-1].append(int(frame))
+
+        cur = int(current_frame)
+        loc = next(
+            ((r, row.index(cur)) for r, row in enumerate(rows) if cur in row), None
+        )
+        if loc is None:
+            # Off-band (e.g. the viewer is on a frame the track skips): step in.
+            return rows[0][0] if rows and rows[0] else None
+        r, c = loc
+        if dx:
+            flat = [f for row in rows for f in row]
+            j = flat.index(cur) + dx
+            if 0 <= j < len(flat):
+                return flat[j]
+            return flat[j % len(flat)] if wrap and flat else None
+        if dy:
+            nr = r + dy
+            if 0 <= nr < len(rows):
+                row = rows[nr]
+                return row[min(c, len(row) - 1)]
+            if wrap and rows:
+                row = rows[nr % len(rows)]
+                return row[min(c, len(row) - 1)]
+            return None
+        return None
+
     # -- layout -------------------------------------------------------------
     def _row_width(self) -> float:
         vw = self._view.viewport().width()

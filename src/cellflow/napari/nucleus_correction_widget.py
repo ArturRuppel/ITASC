@@ -15,6 +15,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QSizePolicy,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -88,10 +89,8 @@ from cellflow.tracking_ultrack.validation_state import (
     write_corrections,
 )
 from cellflow.napari.ui_style import (
-    add_block_checkbox_row,
-    add_block_pair_row,
-    block_grid,
     danger_button,
+    stage_header_label,
 )
 from cellflow.napari.validated_overlay_controller import (
     ValidatedOverlayController,
@@ -309,9 +308,9 @@ class NucleusCorrectionWidget(QWidget):
         self._assemble_reveal_area(group_lay)
 
         # The full-width top bar carries the title, the activate / shortcuts /
-        # params toggles, the checkable view toggles, and the status (with the
-        # validation counter) right-aligned. The status moved out of the section
-        # body so the bar shows it over the whole workspace.
+        # params toggles, the checkable view toggles, and a single one-line
+        # status (the save/action status only) right-aligned. The track /
+        # validated summary lives in the tracking-overview panel instead.
         self.header, self.header_lbl = build_correction_header(
             self,
             shortcuts_btn=self.shortcuts_btn,
@@ -322,7 +321,6 @@ class NucleusCorrectionWidget(QWidget):
                 self.filled_view_btn,
             ),
             status_lbl=self.status_lbl,
-            validation_counter_lbl=self.validation_counter_lbl,
         )
         # ``section`` is the full-width reveal area (params + shortcuts) shown
         # below the top bar; both it and the header are reparented between the
@@ -418,11 +416,18 @@ class NucleusCorrectionWidget(QWidget):
     def _build_status_labels(self) -> None:
         self.status_lbl = _make_status()
         # Drop the smaller status font so the status line reads at the same
-        # size as the rest of the controls column.
+        # size as the rest of the controls column. Keep it to a single line so
+        # it never wraps and pushes the top-bar title pill onto two rows.
         self.status_lbl.setStyleSheet("")
+        self.status_lbl.setWordWrap(False)
 
-        self.validation_counter_lbl = QLabel("")
-        self.validation_counter_lbl.setWordWrap(True)
+        # The track / validated summary now lives in the tracking-overview title
+        # (see LineageCanvasController). This label is kept as a hidden sink so
+        # the existing counter-refresh plumbing keeps working without surfacing
+        # a second status line in the top bar; it is parented (never shown) so
+        # toggling its visibility can't spawn a stray top-level window.
+        self.validation_counter_lbl = QLabel("", self)
+        self.validation_counter_lbl.setVisible(False)
 
     def _build_correction_subwidget(self) -> None:
         self.correction_widget = CorrectionWidget(
@@ -454,14 +459,14 @@ class NucleusCorrectionWidget(QWidget):
         self.correction_widget._status.setVisible(False)
 
     def _build_extend_retrack_section(self) -> None:
-        # Laid wide-and-short for the full-width reveal area: the outline toggle
-        # spans the top, then the Extend / Retrack / Manual-edit blocks sit
-        # side by side in columns rather than as one tall stack.
+        # Wide-and-short reveal area: each remaining parameter gets its own
+        # column so the sliders spread horizontally across the full-width panel
+        # rather than stacking. Greedy overwrite and the outline view are now
+        # always-on defaults, so neither is surfaced as a control here.
         extend_retrack_inner = QWidget(self)
         extend_retrack_lay = QVBoxLayout(extend_retrack_inner)
         extend_retrack_lay.setContentsMargins(0, 0, 0, 0)
         extend_retrack_lay.setSpacing(6)
-        extend_retrack_lay.addWidget(self.correction_widget._outline_btn)
 
         columns = QHBoxLayout()
         columns.setContentsMargins(0, 0, 0, 0)
@@ -480,11 +485,11 @@ class NucleusCorrectionWidget(QWidget):
             lay.addStretch(1)
             return col
 
-        # Extend follows precomputed LinkDB edges (no geometric scoring knobs);
-        # only the paint behavior remains tunable.
+        # Greedy overwrite is now the always-on default: keep the (hidden)
+        # checkbox checked so the extend/retrack paint paths that read its state
+        # still behave greedily, but drop it from the UI.
         self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
-        g_extend = block_grid(horizontal_spacing=12)
-        add_block_checkbox_row(g_extend, 0, self.extend_greedy_overwrite_check)
+        self.extend_greedy_overwrite_check.setChecked(True)
 
         self.retrack_max_dist_spin = _dslider(0, 500, 20.0, 1.0, 1)
         # Scoring weights for the retrack frame matcher. Kept under the
@@ -493,32 +498,19 @@ class NucleusCorrectionWidget(QWidget):
         self.extend_area_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.extend_iou_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.extend_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 3)
-        g_retrack = block_grid(horizontal_spacing=12)
-        add_block_pair_row(
-            g_retrack,
-            0,
-            "Max distance:",
-            self.retrack_max_dist_spin,
-            "Area weight:",
-            self.extend_area_weight_spin,
-        )
-        add_block_pair_row(
-            g_retrack,
-            1,
-            "IoU weight:",
-            self.extend_iou_weight_spin,
-            "Distance weight:",
-            self.extend_distance_weight_spin,
-        )
 
-        columns.addWidget(_column(_heading("Extend"), g_extend))
-        columns.addWidget(_column(_heading("Retrack"), g_retrack))
-        # Reuse the embedded correction widget's spawn controls (cell radius for
-        # middle-click cell creation), relocated here next to the other params.
-        columns.addWidget(
-            _column(_heading("Manual edit"), self.correction_widget._spawn_controls)
-        )
-        columns.addStretch(1)
+        # Each retrack weight + the manual-edit spawn controls gets its own
+        # column (stretch=1) so they fan out across the wide reveal area.
+        for heading_text, widget in (
+            ("Max distance", self.retrack_max_dist_spin),
+            ("Area weight", self.extend_area_weight_spin),
+            ("IoU weight", self.extend_iou_weight_spin),
+            ("Distance weight", self.extend_distance_weight_spin),
+            # Reuse the embedded correction widget's spawn controls (cell radius
+            # for middle-click cell creation), relocated next to the other params.
+            ("Manual edit", self.correction_widget._spawn_controls),
+        ):
+            columns.addWidget(_column(_heading(heading_text), widget), stretch=1)
         extend_retrack_lay.addLayout(columns)
 
         self.extend_retrack_params_section = CollapsibleSection(
@@ -647,20 +639,37 @@ class NucleusCorrectionWidget(QWidget):
         self.extend_retrack_params_section.setVisible(show_params)
         self.shortcuts_section.setVisible(show_shortcuts)
         self.toolbar.setVisible(show_active)
-        self.validation_counter_lbl.setVisible(show_active)
-        # The inactive plugin-dock entry point is just the on/off button: the
-        # title, the shortcuts / params toggles and the view toggles only appear
-        # once correction mode is active (in the workspace top bar).
-        self.header_lbl.setVisible(show_active)
+        # The title is always shown: as a "Tracking Correction" stage pill next
+        # to the on/off button in the inactive plugin dock, and as a full-size
+        # workspace title once correction mode is active. The shortcuts / params
+        # toggles and the view toggles still only appear when active.
+        self.header_lbl.setVisible(True)
+        self._apply_header_title_style(show_active)
         self.shortcuts_btn.setVisible(show_active)
         self.params_btn.setVisible(show_active)
         self.track_path_btn.setVisible(show_active)
         self.filled_view_btn.setVisible(show_active)
+        # The status line is only meaningful inside the active workspace; hide it
+        # when inactive so it never wraps the plugin-dock title pill to two rows.
+        if not show_active:
+            self.status_lbl.setVisible(False)
 
-        if show_params or show_shortcuts or show_active:
+        # Collapse the reveal area whenever both params and shortcuts are closed
+        # (even while active): it only holds those two panels, so leaving it
+        # expanded just pins dead vertical space and stops the body (gallery /
+        # tracking overview) from growing back to full height.
+        if show_params or show_shortcuts:
             self.section.expand()
         else:
             self.section.collapse()
+
+    def _apply_header_title_style(self, active: bool) -> None:
+        """Style the title as a workspace heading (active) or stage pill (idle)."""
+        if active:
+            self.header_lbl.setProperty("cellflow_stage_key", None)
+            self.header_lbl.setStyleSheet("font-weight: bold; font-size: 12pt;")
+        else:
+            stage_header_label(self.header_lbl, "nucleus")
 
     def _on_correction_params_button_toggled(self, checked: bool) -> None:
         # 📖 and ⚙ are independent: both can be open at once — the reveal area
@@ -1609,25 +1618,43 @@ class NucleusCorrectionWidget(QWidget):
         # deterministically takes precedence. "V" is intentionally omitted: it
         # is already bound at the viewer level (NucleusWorkflowWidget) and
         # surfaces here while the tracked layer is active.
+        # ``(key, slot, repeat)``: ``repeat`` keys keep firing while held (the
+        # navigation arrows, where holding to scrub is natural); the edit / save
+        # keys fire once per press only.
         self._correction_key_specs = [
-            ("A", lambda: self._on_extend(direction="backward")),
-            ("D", lambda: self._on_extend(direction="forward")),
-            ("Q", self._on_retrack_backward),
-            ("E", self._on_retrack_forward),
-            ("B", self._on_anchor_here),
-            ("S", self._on_save_tracked),
-            ("Z", lambda: self._on_swap_step(direction="smaller")),
-            ("C", lambda: self._on_swap_step(direction="larger")),
-            ("Space", self._toggle_movie_playback),
-            # Override the inner widget's frame-local Up/Down navigation:
-            # in focus mode the up/down arrows walk the global track list and
-            # recenter both the lineage canvas and the image viewer (like a
-            # track click).
-            ("Up", lambda: self._step_track(-1)),
-            ("Down", lambda: self._step_track(1)),
+            ("A", lambda: self._on_extend(direction="backward"), False),
+            ("D", lambda: self._on_extend(direction="forward"), False),
+            ("Q", self._on_retrack_backward, False),
+            ("E", self._on_retrack_forward, False),
+            ("B", self._on_anchor_here, False),
+            ("S", self._on_save_tracked, False),
+            ("Z", lambda: self._on_swap_step(direction="smaller"), False),
+            ("C", lambda: self._on_swap_step(direction="larger"), False),
+            ("Space", self._toggle_movie_playback, False),
+            # Arrow keys navigate the selected track's film strip as laid out:
+            # Left/Right walk the thumbnails in reading order (columns), Up/Down
+            # jump a whole wrapped row. Shift+Up/Down switch tracks instead,
+            # walking the global track list and recentering like a track click.
+            # All six auto-repeat while held (see _begin_key_repeat).
+            ("Left", lambda: self._step_film_frame(dx=-1), True),
+            ("Right", lambda: self._step_film_frame(dx=1), True),
+            ("Up", lambda: self._step_film_frame(dy=-1), True),
+            ("Down", lambda: self._step_film_frame(dy=1), True),
+            ("Shift-Up", lambda: self._step_track(-1), True),
+            ("Shift-Down", lambda: self._step_track(1), True),
         ]
         self._bound_correction_keys: list[str] = []
         self._correction_keys_layer = None
+
+        # Auto-repeat for held navigation keys. napari only auto-repeats *bare*
+        # arrows (and not Shift+arrow), so we drive a steady repeat ourselves: a
+        # press fires once and arms this timer; the matching release disarms it.
+        # The repeat cadence matches the viewer's playback fps (see
+        # _nav_repeat_interval_ms), set when the key is pressed.
+        self._key_repeat_timer = QTimer(self)
+        self._key_repeat_timer.timeout.connect(self._on_key_repeat_tick)
+        self._key_repeat_key: str | None = None
+        self._key_repeat_action = None
 
     def _bind_correction_keys(self) -> None:
         """Bind correction hotkeys on the active tracked Labels layer.
@@ -1640,15 +1667,19 @@ class NucleusCorrectionWidget(QWidget):
         layer = self._correction_tracked_layer()
         if layer is None:
             return
-        for key, slot in self._correction_key_specs:
-            def handler(_layer, _slot=slot):
-                _slot()
+        for key, slot, repeat in self._correction_key_specs:
+            if repeat:
+                handler = self._make_repeating_key_handler(key, slot)
+            else:
+                def handler(_layer, _slot=slot):
+                    _slot()
 
             layer.bind_key(key, handler, overwrite=True)
             self._bound_correction_keys.append(key)
         self._correction_keys_layer = layer
 
     def _unbind_correction_keys(self) -> None:
+        self._stop_key_repeat()
         layer = self._correction_keys_layer
         for key in self._bound_correction_keys:
             try:
@@ -1658,6 +1689,109 @@ class NucleusCorrectionWidget(QWidget):
                 pass
         self._bound_correction_keys = []
         self._correction_keys_layer = None
+
+    # ── held-key auto-repeat ───────────────────────────────────────────────
+    # Fires immediately on press, waits an initial delay (so a quick tap fires
+    # exactly once), then repeats at the viewer's playback fps while held.
+    _DEFAULT_NAV_FPS = 10.0  # napari's default when no slider/preference exists
+    _KEY_REPEAT_DELAY_MS = 300  # hold threshold before repeating kicks in
+
+    def _frame_slider_widget(self):
+        """The frame (axis-0) playback slider widget, or ``None`` if absent.
+
+        It carries the viewer's live fps / loop mode (the right-click play-button
+        popup writes here, defaulting from the global preference).
+        """
+        try:
+            sliders = self.viewer.window._qt_viewer.dims.slider_widgets
+            return sliders[0] if sliders else None
+        except Exception:
+            return None
+
+    def _playback_fps(self) -> float:
+        """The viewer's playback fps — the slider's, else the global preference."""
+        slider = self._frame_slider_widget()
+        if slider is not None:
+            try:
+                fps = abs(float(slider.fps))
+                if fps > 0:
+                    return fps
+            except Exception:
+                pass
+        try:
+            from napari.settings import get_settings
+
+            return float(get_settings().application.playback_fps)
+        except Exception:
+            return self._DEFAULT_NAV_FPS
+
+    def _playback_loops(self) -> bool:
+        """True when the viewer's playback loop mode wraps at the ends.
+
+        ``once`` stops at an end; ``loop`` / ``back_and_forth`` both wrap around.
+        """
+        slider = self._frame_slider_widget()
+        mode = getattr(slider, "loop_mode", None) if slider is not None else None
+        if mode is None:
+            try:
+                from napari.settings import get_settings
+
+                mode = get_settings().application.playback_mode
+            except Exception:
+                return True
+        return str(getattr(mode, "value", mode)).lower() != "once"
+
+    def _nav_repeat_interval_ms(self) -> int:
+        """Held-key repeat interval (ms) matching the viewer's playback fps."""
+        fps = max(self._playback_fps(), 1.0)
+        return max(int(round(1000.0 / fps)), 1)
+
+    def _make_repeating_key_handler(self, key: str, slot):
+        """A napari generator keybinding: press starts repeat, release stops it.
+
+        napari runs the pre-``yield`` half on key press and the post-``yield``
+        half on release (it stashes the paused generator per key). Between them
+        the repeat timer drives ``slot`` at a steady rate.
+        """
+        def handler(_layer, _key=key, _slot=slot):
+            self._begin_key_repeat(_key, _slot)
+            yield
+            self._end_key_repeat(_key)
+
+        return handler
+
+    def _begin_key_repeat(self, key: str, action) -> None:
+        # An OS auto-repeat re-press of the same held key would re-enter here;
+        # ignore it so the steady timer stays the single source of repeats.
+        if self._key_repeat_key == key:
+            return
+        self._key_repeat_key = key
+        self._key_repeat_action = action
+        action()
+        # Arm a one-shot for the initial hold delay; a tap released before it
+        # elapses never repeats. The first tick then settles into the steady
+        # fps-paced repeat (see _on_key_repeat_tick).
+        self._key_repeat_timer.setSingleShot(True)
+        self._key_repeat_timer.start(self._KEY_REPEAT_DELAY_MS)
+
+    def _end_key_repeat(self, key: str) -> None:
+        if self._key_repeat_key == key:
+            self._stop_key_repeat()
+
+    def _stop_key_repeat(self) -> None:
+        self._key_repeat_timer.stop()
+        self._key_repeat_key = None
+        self._key_repeat_action = None
+
+    def _on_key_repeat_tick(self) -> None:
+        if self._key_repeat_action is None:
+            return
+        self._key_repeat_action()
+        if self._key_repeat_timer.isSingleShot():
+            # The initial delay just elapsed; from here repeat steadily at the
+            # viewer's playback fps until the key is released.
+            self._key_repeat_timer.setSingleShot(False)
+            self._key_repeat_timer.start(self._nav_repeat_interval_ms())
 
     def _on_correction_active_button_toggled(self, active: bool) -> None:
         if active:
@@ -1896,10 +2030,11 @@ class NucleusCorrectionWidget(QWidget):
         if self._workspace_splitter is not None:
             # Selection drives the accordion: the picked track expands inline.
             self._lineage_canvas.set_selection(_lab)
-            # Recenter on the selected track only when the selection came from
-            # the image viewer; an accordion click already shows the row.
+            # Recenter on the selected track's film strip (the thumbnail band,
+            # not the bar row) when the selection came from the image viewer; an
+            # accordion click already shows the row.
             if not self._navigating_from_lineage:
-                self._lineage_canvas.center_on_track(_lab)
+                self._lineage_canvas.center_on_strip(_lab)
         self._refresh_candidate_gallery_if_shown()
 
     def _apply_focus_presentation(self, lab: int) -> None:
@@ -2097,10 +2232,22 @@ class NucleusCorrectionWidget(QWidget):
             self._navigating_from_lineage = False
         self._center_viewer_on_cell(int(t), int(cell_id))
 
+    def _step_film_frame(self, *, dx: int = 0, dy: int = 0) -> None:
+        """Step the current frame across the selected track's film-strip grid.
+
+        Bound to the bare arrow keys in focus mode: Left/Right move one thumbnail
+        in reading order, Up/Down jump a wrapped row. Running off the end wraps
+        back when the viewer's playback loop mode is on. Delegates to the lineage
+        canvas, which owns the band geometry and the frame-jump path.
+        """
+        if self._workspace_splitter is None:
+            return
+        self._lineage_canvas.step_film_frame(dx=dx, dy=dy, wrap=self._playback_loops())
+
     def _step_track(self, direction: int) -> None:
         """Select the next/previous track in the global list and recenter on it.
 
-        Bound to the Up / Down arrows in focus mode. Unlike a frame-local
+        Bound to Shift+Up / Shift+Down in focus mode. Unlike a frame-local
         scan, this walks the sorted list of every track ID in the stack and
         navigates to the chosen track exactly as a lineage-canvas click would —
         landing on a frame where it exists, selecting it, and recentering both
@@ -2288,10 +2435,11 @@ class NucleusCorrectionWidget(QWidget):
         """Build the workspace dock once.
 
         The dock holds one container: the full-width top bar and reveal area
-        stacked over a horizontal body splitter (toolbar · candidate gallery ·
-        accordion). The gallery and accordion are each wrapped in a
-        ``CollapsiblePane`` so they hide/show via their own ✕ / show-tab; the
-        accordion is the main surface but can be collapsed just the same.
+        stacked over a body row — a fixed-width toolbar column beside a
+        horizontal splitter (candidate gallery · accordion). The gallery and
+        accordion are each wrapped in a ``CollapsiblePane`` so they hide/show via
+        their own ✕ / show-tab; the accordion is the main surface but can be
+        collapsed just the same.
         """
         self._ensure_workspace_splitter()
 
@@ -2320,9 +2468,8 @@ class NucleusCorrectionWidget(QWidget):
             " }"
             "QSplitter::handle:horizontal:hover { background: #7a828f; }"
         )
-        # left→right: thin toolbar · candidate gallery · accordion. The gallery
-        # and accordion are wrapped in collapsible panes; the accordion pane is
-        # the stretch panel that absorbs outer-width changes.
+        # candidate gallery · accordion, each wrapped in a collapsible pane; the
+        # accordion pane is the stretch panel that absorbs outer-width changes.
         self._gallery_pane = CollapsiblePane(
             self._candidate_gallery.widget(), title="Candidate gallery"
         )
@@ -2339,13 +2486,22 @@ class NucleusCorrectionWidget(QWidget):
                 self._accordion_pane, collapsed
             )
         )
-        self.toolbar.setVisible(True)
-        splitter.addWidget(self.toolbar)
         splitter.addWidget(self._gallery_pane)
         splitter.addWidget(self._accordion_pane)
         splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 0)
-        splitter.setStretchFactor(2, 1)
+        splitter.setStretchFactor(1, 1)
+
+        # The toolbar is a fixed-width icon column, not a resizable pane: pin it
+        # beside the splitter in a plain row (no drag handle) so it always hugs
+        # its icons and can't be stretched.
+        self.toolbar.setVisible(True)
+        self.toolbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        body = QWidget()
+        body_lay = QHBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(4)
+        body_lay.addWidget(self.toolbar)
+        body_lay.addWidget(splitter, stretch=1)
 
         container = QWidget()
         lay = QVBoxLayout(container)
@@ -2353,7 +2509,7 @@ class NucleusCorrectionWidget(QWidget):
         lay.setSpacing(4)
         lay.addWidget(self.header)
         lay.addWidget(self.section)
-        lay.addWidget(splitter, stretch=1)
+        lay.addWidget(body, stretch=1)
         self._workspace_container = container
 
         try:
@@ -2373,16 +2529,15 @@ class NucleusCorrectionWidget(QWidget):
     def _apply_workspace_panel_sizes(self) -> None:
         """Size the body splitter from the panes' collapsed state.
 
-        The toolbar keeps its thin hint width; a collapsed pane shrinks to its
-        slim show-tab; the expanded pane(s) share the remainder (the accordion
-        favoured when both are open).
+        The toolbar is a fixed column outside the splitter; here only the two
+        panes are sized: a collapsed pane shrinks to its slim show-tab, and the
+        expanded pane(s) share the remainder (the accordion favoured when both
+        are open).
         """
         splitter = self._workspace_splitter
         if splitter is None or self._gallery_pane is None or self._accordion_pane is None:
             return
-        total = max(splitter.size().width(), 300)
-        toolbar_w = max(self.toolbar.sizeHint().width(), 1)
-        rest = max(total - toolbar_w, 2)
+        rest = max(splitter.size().width(), 300)
         strip = _PANEL_STRIP_W
         gallery_collapsed = self._gallery_pane.is_collapsed()
         accordion_collapsed = self._accordion_pane.is_collapsed()
@@ -2393,7 +2548,7 @@ class NucleusCorrectionWidget(QWidget):
         else:
             gallery_w = max(rest // 3, 1)
             accordion_w = rest - gallery_w
-        splitter.setSizes([toolbar_w, gallery_w, accordion_w])
+        splitter.setSizes([gallery_w, accordion_w])
 
     def _teardown_focus_panels(self) -> None:
         """Undock the focus-mode panels (accordion, candidate gallery)."""

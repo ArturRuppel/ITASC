@@ -8,6 +8,7 @@ same pattern as ``test_correction_selection_listener``.
 from __future__ import annotations
 
 import types
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -205,6 +206,183 @@ def test_stop_movie_is_a_noop_when_not_playing():
     obj = _playback_stub(is_playing=False)
     NucleusCorrectionWidget._stop_movie_playback(obj)
     assert obj._calls == []
+
+
+# ── Held-key auto-repeat (_begin/_end/_tick + generator handler) ────────────
+
+
+def _repeat_stub():
+    """A stub with the auto-repeat methods bound, so the real logic runs.
+
+    The QTimer is mocked (no event loop needed); the methods call one another
+    (``_end`` → ``_stop``, the handler → ``_begin``/``_end``), so all are bound.
+    """
+    obj = types.SimpleNamespace(
+        _key_repeat_timer=MagicMock(),
+        _key_repeat_key=None,
+        _key_repeat_action=None,
+        _KEY_REPEAT_DELAY_MS=NucleusCorrectionWidget._KEY_REPEAT_DELAY_MS,
+        _DEFAULT_NAV_FPS=NucleusCorrectionWidget._DEFAULT_NAV_FPS,
+    )
+    for name in (
+        "_begin_key_repeat",
+        "_end_key_repeat",
+        "_stop_key_repeat",
+        "_on_key_repeat_tick",
+        "_make_repeating_key_handler",
+        # _begin_key_repeat derives the timer interval from the playback fps;
+        # with no viewer on the stub these fall back to napari's default fps.
+        "_nav_repeat_interval_ms",
+        "_playback_fps",
+        "_frame_slider_widget",
+    ):
+        setattr(obj, name, types.MethodType(getattr(NucleusCorrectionWidget, name), obj))
+    return obj
+
+
+def test_begin_key_repeat_fires_once_and_arms_the_timer():
+    obj = _repeat_stub()
+    action = MagicMock()
+    obj._begin_key_repeat("Up", action)
+    action.assert_called_once_with()
+    obj._key_repeat_timer.start.assert_called_once()
+    assert obj._key_repeat_key == "Up"
+    assert obj._key_repeat_action is action
+
+
+def test_begin_key_repeat_ignores_reentrant_same_key():
+    # An OS auto-repeat re-press of a held key must not double-fire; the steady
+    # timer stays the single source of repeats.
+    obj = _repeat_stub()
+    action = MagicMock()
+    obj._begin_key_repeat("Up", action)
+    obj._begin_key_repeat("Up", action)
+    action.assert_called_once_with()
+    assert obj._key_repeat_timer.start.call_count == 1
+
+
+def test_press_arms_the_initial_delay_not_a_steady_repeat():
+    obj = _repeat_stub()
+    action = MagicMock()
+    obj._begin_key_repeat("Up", action)
+    # A press fires once and arms a single-shot for the initial hold delay — so a
+    # quick tap released before it elapses fires exactly once (no double-trigger).
+    action.assert_called_once_with()
+    obj._key_repeat_timer.setSingleShot.assert_called_once_with(True)
+    obj._key_repeat_timer.start.assert_called_once_with(
+        NucleusCorrectionWidget._KEY_REPEAT_DELAY_MS
+    )
+
+
+def test_first_repeat_tick_settles_into_the_steady_fps_interval():
+    obj = _repeat_stub()
+    obj._begin_key_repeat("Up", MagicMock())
+    obj._key_repeat_timer.reset_mock()
+    obj._key_repeat_timer.isSingleShot.side_effect = [True, False]
+    obj._on_key_repeat_tick()  # initial delay elapsed → switch to steady repeat
+    obj._key_repeat_timer.setSingleShot.assert_called_once_with(False)
+    obj._key_repeat_timer.start.assert_called_once_with(100)  # 10 fps → 100 ms
+    obj._on_key_repeat_tick()  # already steady → no second switch
+    obj._key_repeat_timer.setSingleShot.assert_called_once_with(False)
+
+
+def test_repeat_tick_fires_the_armed_action():
+    obj = _repeat_stub()
+    action = MagicMock()
+    obj._begin_key_repeat("Up", action)
+    obj._on_key_repeat_tick()
+    obj._on_key_repeat_tick()
+    assert action.call_count == 3  # 1 on press + 2 ticks
+
+
+def test_end_key_repeat_only_stops_the_matching_key():
+    obj = _repeat_stub()
+    obj._begin_key_repeat("Up", MagicMock())
+    obj._end_key_repeat("Down")  # mismatch → no stop
+    obj._key_repeat_timer.stop.assert_not_called()
+    assert obj._key_repeat_key == "Up"
+    obj._end_key_repeat("Up")
+    obj._key_repeat_timer.stop.assert_called_once()
+    assert obj._key_repeat_key is None
+    assert obj._key_repeat_action is None
+
+
+def test_repeating_key_handler_press_then_release_cycle():
+    obj = _repeat_stub()
+    slot = MagicMock()
+    handler = obj._make_repeating_key_handler("Up", slot)
+    gen = handler("LAYER")  # napari binds the layer as the first arg
+    next(gen)               # press half: fire once + arm
+    slot.assert_called_once_with()
+    obj._key_repeat_timer.start.assert_called_once()
+    try:
+        next(gen)           # release half: disarm
+    except StopIteration:
+        pass
+    obj._key_repeat_timer.stop.assert_called_once()
+    assert obj._key_repeat_key is None
+
+
+# ── Matching the viewer's playback fps + loop mode ──────────────────────────
+
+
+def _playback_settings_stub(*, slider_fps=None, slider_mode=None):
+    """A stub whose viewer exposes a frame slider with the given fps / loop mode.
+
+    Pass ``None`` for either to drop the slider attribute, exercising the
+    fall-through to napari's global preference.
+    """
+    slider = None
+    if slider_fps is not None or slider_mode is not None:
+        slider = types.SimpleNamespace()
+        if slider_fps is not None:
+            slider.fps = slider_fps
+        if slider_mode is not None:
+            slider.loop_mode = slider_mode
+    sliders = [slider] if slider is not None else []
+    viewer = types.SimpleNamespace(
+        window=types.SimpleNamespace(
+            _qt_viewer=types.SimpleNamespace(
+                dims=types.SimpleNamespace(slider_widgets=sliders)
+            )
+        )
+    )
+    obj = types.SimpleNamespace(viewer=viewer, _DEFAULT_NAV_FPS=10.0)
+    for name in (
+        "_frame_slider_widget",
+        "_playback_fps",
+        "_playback_loops",
+        "_nav_repeat_interval_ms",
+    ):
+        setattr(obj, name, types.MethodType(getattr(NucleusCorrectionWidget, name), obj))
+    return obj
+
+
+def test_playback_fps_reads_the_frame_slider():
+    obj = _playback_settings_stub(slider_fps=25.0)
+    assert obj._playback_fps() == 25.0
+    # Reverse playback (negative fps) still yields a positive repeat rate.
+    rev = _playback_settings_stub(slider_fps=-30.0)
+    assert rev._playback_fps() == 30.0
+
+
+def test_nav_repeat_interval_matches_fps():
+    assert _playback_settings_stub(slider_fps=25.0)._nav_repeat_interval_ms() == 40
+    assert _playback_settings_stub(slider_fps=10.0)._nav_repeat_interval_ms() == 100
+    # A zero / bogus slider fps falls through to the default (10 fps → 100 ms).
+    assert _playback_settings_stub(slider_fps=0.0)._nav_repeat_interval_ms() == 100
+
+
+def test_playback_loops_follows_the_loop_mode():
+    assert _playback_settings_stub(slider_mode="once")._playback_loops() is False
+    assert _playback_settings_stub(slider_mode="loop")._playback_loops() is True
+    assert (
+        _playback_settings_stub(slider_mode="back_and_forth")._playback_loops()
+        is True
+    )
+    # A LoopMode-like enum (``.value``) is honoured too.
+    enum_like = types.SimpleNamespace(value="once")
+    assert _playback_settings_stub(slider_mode=enum_like)._playback_loops() is False
 
 
 # ── Gate-claim guard on activation bail-out ─────────────────────────────────

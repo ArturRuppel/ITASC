@@ -260,6 +260,78 @@ def test_center_on_track_is_a_noop_before_the_panel_exists(stubbed):
     stubbed.assert_not_called()
 
 
+def test_center_on_strip_falls_back_to_the_bar_when_no_band(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+    ctrl.refresh()
+    panel = stubbed.return_value
+    panel.center_on_strip.return_value = False
+
+    ctrl.center_on_strip(7)
+
+    panel.center_on_strip.assert_called_once_with()
+    panel.center_on_track.assert_called_once_with(7)
+
+
+def test_center_on_strip_skips_the_bar_fallback_when_band_centered(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+    ctrl.refresh()
+    panel = stubbed.return_value
+    panel.center_on_strip.return_value = True
+
+    ctrl.center_on_strip(7)
+
+    panel.center_on_track.assert_not_called()
+
+
+def test_step_film_frame_delegates_to_panel_and_navigates(stubbed):
+    viewer = _viewer()
+    on_activate = MagicMock()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+        on_activate=on_activate,
+    )
+    ctrl.refresh()
+    panel = stubbed.return_value
+    panel.grid_neighbor_frame.return_value = 0
+
+    ctrl.step_film_frame(dx=1)
+
+    # Queried from the current frame (provider → 1) in the requested direction,
+    # then navigated to via the same path a thumbnail click takes.
+    panel.grid_neighbor_frame.assert_called_once_with(1, dx=1, dy=0, wrap=False)
+    on_activate.assert_called_once_with(0, 7)
+
+
+def test_step_film_frame_is_a_noop_when_no_neighbour(stubbed):
+    viewer = _viewer()
+    on_activate = MagicMock()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+        on_activate=on_activate,
+    )
+    ctrl.refresh()
+    panel = stubbed.return_value
+    panel.grid_neighbor_frame.return_value = None
+
+    ctrl.step_film_frame(dy=-1)
+
+    on_activate.assert_not_called()
+
+
 def test_teardown_drops_panel(stubbed):
     # The panel is embedded as a bare widget in the host's workspace splitter and
     # deleted when that dock is torn down; teardown only drops the reference so a
