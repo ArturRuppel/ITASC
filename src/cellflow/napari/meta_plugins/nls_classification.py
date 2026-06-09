@@ -1,12 +1,12 @@
-"""NLS subpopulation classification plugin for the Contact Analysis studio.
+"""NLS subpopulation classification plugin for the Aggregate Quantification studio.
 
 Classifies the cells of a *single* selected position into a labelled **positive**
 subpopulation vs **negative** by aggregating a nucleus-localised marker image
 (e.g. an NLS reporter) over each nuclear track. The plugin:
 
 * measures one median intensity per nuclear track
-  (:func:`cellflow.contact_analysis.measure_track_nls_intensity`);
-* auto-places a threshold (:func:`~cellflow.contact_analysis.auto_threshold`) the
+  (:func:`cellflow.aggregate_quantification.measure_track_nls_intensity`);
+* auto-places a threshold (:func:`~cellflow.aggregate_quantification.auto_threshold`) the
   user can drag on a per-track scatter to re-classify live;
 * overlays the marker image and the **outlines of positive nuclei** in napari;
 * writes the classification back into the contact-analysis ``.h5`` on *Apply*.
@@ -32,7 +32,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.contact_analysis import (
+from cellflow.aggregate_quantification import (
     NLSClassificationError,
     auto_threshold,
     classify_by_threshold,
@@ -40,7 +40,7 @@ from cellflow.contact_analysis import (
     read_position_cell_ids,
     write_nls_classification,
 )
-from cellflow.contact_analysis.nls_classification import POSITIVE, _read_image_stack
+from cellflow.aggregate_quantification.contacts.nls_classification import POSITIVE, _read_image_stack
 from cellflow.napari.meta_plugins import MetaAnalysisPlugin, MetaContext
 from cellflow.napari.ui_style import action_button, status_label
 

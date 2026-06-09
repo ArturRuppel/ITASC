@@ -1,19 +1,20 @@
-# cellflow-contact
+# cellflow-aggregate
 
-Independent CellFlow piece for **contact analysis**: extract cell-cell edges,
-border edges, and T1 events from 2D+t cell-label stacks (optionally validated
-against nucleus labels) into a self-describing HDF5 file, and visualize the
-result in napari.
+Independent CellFlow piece for **aggregate quantification**. It hosts per-position
+quantifiers; the bundled one is **contacts**: extract cell-cell edges, border
+edges, and T1 events from 2D+t cell-label stacks (optionally validated against
+nucleus labels) into a self-describing HDF5 file, and visualize the result in
+napari.
 
 ## Install
 
 ```bash
-pip install cellflow-contact
+pip install cellflow-aggregate
 ```
 
 This pulls in `cellflow-core`. Both install into the shared `cellflow.*`
-namespace (PEP 420), so `import cellflow.contact_analysis` works whether or not
-the full CellFlow orchestrator is present.
+namespace (PEP 420), so `import cellflow.aggregate_quantification` works whether
+or not the full CellFlow orchestrator is present.
 
 ## Use
 
@@ -22,7 +23,7 @@ three files (cell labels, optional nucleus labels, output `.h5`); it lists every
 discovered **position** and you pick which to view. The `.h5` is a derived
 artifact, computed on demand only when missing.
 
-- **napari plugin:** add the *Contact Analysis* widget and set the **Top folder**
+- **napari plugin:** add the *Aggregate Quantification* widget and set the **Top folder**
   plus the three file names. Each **position** — a top-level subfolder of that
   folder — appears as a row showing whether a nucleus was paired and whether its
   `.h5` is built. The named files are discovered recursively within a position, so
@@ -35,7 +36,7 @@ artifact, computed on demand only when missing.
 - **Headless / scripting:**
 
   ```python
-  from cellflow.contact_analysis import (
+  from cellflow.aggregate_quantification import (
       ensure_contact_analysis,        # build only if missing (or overwrite=True)
       discover_contact_batch_jobs,
       run_contact_batch,

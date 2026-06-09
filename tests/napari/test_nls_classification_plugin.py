@@ -91,7 +91,7 @@ def test_single_position_measures_and_auto_thresholds(tmp_path):
     assert plugin._measure_btn.isEnabled()
 
     # Drive the post-measurement path directly (the worker just does I/O).
-    from cellflow.contact_analysis import measure_track_nls_intensity
+    from cellflow.aggregate_quantification import measure_track_nls_intensity
 
     labels = tifffile.imread(record["nucleus_tracked_labels_path"])
     measurements = measure_track_nls_intensity(tifffile.imread(record["nls_path"]), labels)
@@ -120,7 +120,7 @@ def test_dragging_threshold_reclassifies_and_updates_overlay(tmp_path):
     plugin.set_context(MetaContext(records=[record], viewer=viewer))
     plugin._nls_edit.setText(str(record["nls_path"]))
 
-    from cellflow.contact_analysis import measure_track_nls_intensity
+    from cellflow.aggregate_quantification import measure_track_nls_intensity
 
     labels = tifffile.imread(record["nucleus_tracked_labels_path"])
     measurements = measure_track_nls_intensity(tifffile.imread(record["nls_path"]), labels)
@@ -153,7 +153,7 @@ def test_apply_writes_classification_to_h5(tmp_path):
     plugin._positive_edit.setText("GFP+")
     plugin._negative_edit.setText("GFP-")
 
-    from cellflow.contact_analysis import measure_track_nls_intensity
+    from cellflow.aggregate_quantification import measure_track_nls_intensity
 
     labels = tifffile.imread(record["nucleus_tracked_labels_path"])
     measurements = measure_track_nls_intensity(tifffile.imread(record["nls_path"]), labels)

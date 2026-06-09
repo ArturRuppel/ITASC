@@ -28,7 +28,7 @@ Repository = "https://github.com/ArturRuppel/CellFlow"
 # Built from the shared source tree without moving files. The wheel deliberately
 # omits cellflow/__init__.py and cellflow/napari/__init__.py so cellflow and
 # cellflow.napari install as PEP 420 namespace packages, letting sibling
-# distributions (cellflow-contact, the orchestrator) contribute their own
+# distributions (cellflow-aggregate, the orchestrator) contribute their own
 # submodules under the same namespace.
 [tool.hatch.build.targets.wheel]
 bypass-selection = true

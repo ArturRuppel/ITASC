@@ -94,8 +94,8 @@ def _load_module(monkeypatch):
     napari_pkg = types.ModuleType("cellflow.napari")
     napari_pkg.__path__ = [str(package_root)]
     monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.contact_analysis_visualization", None)
-    return importlib.import_module("cellflow.napari.contact_analysis_visualization")
+    sys.modules.pop("cellflow.napari.contact_visualization", None)
+    return importlib.import_module("cellflow.napari.contact_visualization")
 
 
 def _make_contact_analysis() -> dict[str, dict[str, np.ndarray]]:

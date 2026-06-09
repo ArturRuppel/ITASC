@@ -1,17 +1,22 @@
-"""Per-position contact analysis (cell-cell edges, T1 events, NLS classes)."""
+"""Aggregate Quantification: pool per-position sources into plottable quantities.
 
-from .batch import (
+This package hosts the quantifier seam. For now its one quantifier is contacts
+(cell-cell edges, T1 events, NLS classes), whose public API is re-exported here
+for stability; see :mod:`cellflow.aggregate_quantification.contacts`.
+"""
+
+from .contacts.batch import (
     ContactBatchJob,
     ContactBatchResult,
     discover_contact_batch_jobs,
     run_contact_batch,
 )
-from .build import (
+from .contacts.build import (
     build_contact_analysis,
     build_position_contact_analysis,
     ensure_contact_analysis,
 )
-from .nls_classification import (
+from .contacts.nls_classification import (
     NLSClassificationError,
     NLSClassificationSummary,
     TrackNLSMeasurement,

@@ -63,9 +63,9 @@ def _load_module(monkeypatch):
     napari_pkg = types.ModuleType("cellflow.napari")
     napari_pkg.__path__ = [str(package_root)]
     monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.contact_analysis_widget", None)
+    sys.modules.pop("cellflow.napari.aggregate_quantification_widget", None)
     sys.modules.pop("cellflow.napari.nls_classification_widget", None)
-    return importlib.import_module("cellflow.napari.contact_analysis_widget")
+    return importlib.import_module("cellflow.napari.aggregate_quantification_widget")
 
 
 def _make_sync_thread_worker():
@@ -133,7 +133,7 @@ def _staged_pos(tmp_path, name, *, cell=True, nucleus=True, h5=False):
 def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    widget = mod.ContactAnalysisWidget()
+    widget = mod.AggregateQuantificationWidget()
 
     pos_dir = _staged_pos(tmp_path, "pos00", cell=False, nucleus=True)
     _set_pos(widget, pos_dir)
@@ -160,7 +160,7 @@ def test_contact_analysis_widget_does_not_embed_personal_nls_classification(monk
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer)
+    widget = mod.AggregateQuantificationWidget(viewer)
 
     pos_dir = tmp_path / "pos04"
     _set_pos(widget, pos_dir)
@@ -209,7 +209,7 @@ def test_visualize_builds_when_missing_then_shows(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer)
+    widget = mod.AggregateQuantificationWidget(viewer)
     _set_pos(widget, pos_dir)
     widget._on_visualize(overwrite=False)
 
@@ -246,7 +246,7 @@ def test_visualize_uses_existing_h5_without_rebuild(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer)
+    widget = mod.AggregateQuantificationWidget(viewer)
     _set_pos(widget, pos_dir)
     widget.visualize_btn.click()
 
@@ -276,7 +276,7 @@ def test_recompute_forces_rebuild_even_when_h5_exists(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "add_contact_analysis_layers", lambda *a, **k: None)
 
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer)
+    widget = mod.AggregateQuantificationWidget(viewer)
     _set_pos(widget, pos_dir)
     widget.recompute_btn.click()
 
@@ -289,7 +289,7 @@ def test_recompute_forces_rebuild_even_when_h5_exists(monkeypatch, tmp_path):
 def test_contact_analysis_widget_cancel_calls_worker_quit_when_active(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    widget = mod.ContactAnalysisWidget()
+    widget = mod.AggregateQuantificationWidget()
 
     worker = _FakeWorker()
     widget._build_worker = worker
@@ -308,7 +308,7 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer)
+    widget = mod.AggregateQuantificationWidget(viewer)
 
     pos_dir = _staged_pos(tmp_path, "pos08", cell=True, nucleus=True, h5=True)
     contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
@@ -373,7 +373,7 @@ def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_pa
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer)
+    widget = mod.AggregateQuantificationWidget(viewer)
 
     pos_dir = _staged_pos(tmp_path, "pos10", cell=True, nucleus=True, h5=True)
     _set_pos(widget, pos_dir)
@@ -419,7 +419,7 @@ def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(mon
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer)
+    widget = mod.AggregateQuantificationWidget(viewer)
 
     pos_dir = _staged_pos(tmp_path, "pos11", cell=True, nucleus=True, h5=True)
     _set_pos(widget, pos_dir)
@@ -456,7 +456,7 @@ def test_contact_analysis_widget_show_uses_real_reader_and_visualizer(monkeypatc
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer)
+    widget = mod.AggregateQuantificationWidget(viewer)
 
     pos_dir = tmp_path / "pos09"
     (pos_dir / "2_nucleus").mkdir(parents=True)
@@ -517,7 +517,7 @@ def _discover(widget, root):
 def test_standalone_shows_discovery_panel_and_hides_staged(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    widget = mod.ContactAnalysisWidget(standalone=True)
+    widget = mod.AggregateQuantificationWidget(standalone=True)
 
     assert widget._discovery_container.isVisibleTo(widget) is True
     assert widget._pipeline_files_section.isVisibleTo(widget) is False
@@ -531,7 +531,7 @@ def test_standalone_shows_discovery_panel_and_hides_staged(monkeypatch):
 def test_discovery_populates_list_with_status(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    widget = mod.ContactAnalysisWidget(standalone=True)
+    widget = mod.AggregateQuantificationWidget(standalone=True)
 
     _flat_pos(tmp_path, "posA", nucleus=True, h5=True)
     _flat_pos(tmp_path, "posB", nucleus=False)
@@ -575,7 +575,7 @@ def test_double_click_visualizes_and_computes_when_missing(monkeypatch, tmp_path
     monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer, standalone=True)
+    widget = mod.AggregateQuantificationWidget(viewer, standalone=True)
     _discover(widget, tmp_path)
 
     item = widget._discovery_list.item(0)
@@ -610,7 +610,7 @@ def test_recompute_selected_forces_rebuild(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "add_contact_analysis_layers", lambda *a, **k: None)
 
     viewer = _FakeViewer()
-    widget = mod.ContactAnalysisWidget(viewer, standalone=True)
+    widget = mod.AggregateQuantificationWidget(viewer, standalone=True)
     _discover(widget, tmp_path)
     widget._discovery_list.setCurrentRow(0)  # selects -> set_context
     widget.recompute_btn.click()
@@ -629,7 +629,7 @@ def test_process_all_builds_every_position_and_refreshes_badges(monkeypatch, tmp
     _flat_pos(tmp_path, "posA", nucleus=True)
     _flat_pos(tmp_path, "posB", nucleus=False)
 
-    widget = mod.ContactAnalysisWidget(standalone=True)
+    widget = mod.AggregateQuantificationWidget(standalone=True)
     _discover(widget, tmp_path)
     assert all(
         widget._discovery_list.item(i).text().endswith("[missing]") for i in range(2)
@@ -652,7 +652,7 @@ def test_process_all_builds_every_position_and_refreshes_badges(monkeypatch, tmp
 def test_contact_analysis_widget_state_round_trips(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
-    widget = mod.ContactAnalysisWidget()
+    widget = mod.AggregateQuantificationWidget()
 
     widget.set_state(
         {

@@ -1,4 +1,4 @@
-"""Contact analysis widget for final processing and export in CellFlow v2."""
+"""Aggregate Quantification widget: per-position quantity view (currently contacts)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.contact_analysis import (
+from cellflow.aggregate_quantification import (
     build_contact_analysis,  # noqa: F401 - re-exported for tests that build directly
     discover_contact_batch_jobs,
     ensure_contact_analysis,
@@ -38,33 +38,33 @@ from cellflow.napari.widgets import (
 )
 
 try:  # pragma: no cover - local branch compatibility
-    from cellflow.contact_analysis.reader import read_position_contact_analysis
+    from cellflow.aggregate_quantification.contacts.reader import read_position_contact_analysis
 except ImportError:  # pragma: no cover - tests monkeypatch this when absent
     def read_position_contact_analysis(*_args, **_kwargs):  # type: ignore[no-redef]
-        raise ImportError("cellflow.contact_analysis.reader is unavailable")
+        raise ImportError("cellflow.aggregate_quantification.contacts.reader is unavailable")
 
 
 try:  # pragma: no cover - local branch compatibility
-    from cellflow.napari.contact_analysis_visualization import (
+    from cellflow.napari.contact_visualization import (
         add_contact_analysis_layers,
         _nucleus_centroids_by_track,
     )
 except ImportError:  # pragma: no cover - tests monkeypatch this when absent
     def add_contact_analysis_layers(*_args, **_kwargs):  # type: ignore[no-redef]
-        raise ImportError("cellflow.napari.contact_analysis_visualization is unavailable")
+        raise ImportError("cellflow.napari.contact_visualization is unavailable")
 
     def _nucleus_centroids_by_track(*_args, **_kwargs):  # type: ignore[no-redef]
-        raise ImportError("cellflow.napari.contact_analysis_visualization is unavailable")
+        raise ImportError("cellflow.napari.contact_visualization is unavailable")
 
 
-def make_contact_analysis_widget(napari_viewer=None):
-    """napari plugin entry point: the Contact Analysis dock widget.
+def make_aggregate_quantification_widget(napari_viewer=None):
+    """napari plugin entry point: the Aggregate Quantification dock widget.
 
     In a full CellFlow install this returns the merged studio — a position
-    catalog + embedded per-position contact view + analysis plugins. The
-    standalone ``cellflow-contact`` wheel does not ship ``cellflow.meta`` /
+    catalog + embedded per-position quantity view + analysis plugins. The
+    standalone ``cellflow-aggregate`` wheel does not ship ``cellflow.meta`` /
     the studio module, so there it falls back to the bare per-position
-    :class:`ContactAnalysisWidget` in standalone mode (own file pickers +
+    :class:`AggregateQuantificationWidget` in standalone mode (own file pickers +
     config). Runs the napari layer-delegate patch (normally done by the
     orchestrator package).
     """
@@ -80,17 +80,17 @@ def make_contact_analysis_widget(napari_viewer=None):
     if napari_viewer is None:
         napari_viewer = napari.current_viewer()
     try:
-        from cellflow.napari.contact_analysis_studio import ContactAnalysisStudioWidget
-    except ImportError:  # standalone cellflow-contact wheel: no cellflow.meta
-        return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
-    return ContactAnalysisStudioWidget(viewer=napari_viewer)
+        from cellflow.napari.aggregate_quantification_studio import AggregateQuantificationStudioWidget
+    except ImportError:  # standalone cellflow-aggregate wheel: no cellflow.meta
+        return AggregateQuantificationWidget(viewer=napari_viewer, standalone=True)
+    return AggregateQuantificationStudioWidget(viewer=napari_viewer)
 
 
 class _ProgressEmitter(QObject):
     progress = Signal(int, int, str)
 
 
-class ContactAnalysisWidget(QWidget):
+class AggregateQuantificationWidget(QWidget):
     """Final contact analysis and export."""
 
     _contact_analysis_layer_prefix = "[Contact Analysis] "

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.contact_analysis.nls_classification import (
+from cellflow.aggregate_quantification.contacts.nls_classification import (
     NLSClassificationError,
     auto_threshold,
     classify_by_threshold,

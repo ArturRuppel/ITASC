@@ -1,18 +1,18 @@
-"""Contact Analysis studio: a position catalog + per-position view + analysis plugins.
+"""Aggregate Quantification studio: a position catalog + per-position view + analysis plugins.
 
-This is the merged standalone Contact Analysis tool. It is built from three parts:
+This is the merged standalone Aggregate Quantification tool. It is built from three parts:
 
 * a **catalog** of positions (autodiscover a study tree, add loose ``.h5`` files,
   load/save a CSV catalog);
-* a **per-position contact view** — an embedded :class:`ContactAnalysisWidget`
+* a **per-position quantity view** — an embedded :class:`AggregateQuantificationWidget`
   driven by the single selected position (visualize + compute-if-missing);
 * an **analysis** section that hosts a meta-analysis *plugin* fed with the
   currently-selected catalog rows. All cross-position aggregation lives in
   plugins (see :mod:`cellflow.napari.meta_plugins`).
 
 This module is full-install only (it depends on :mod:`cellflow.meta`); the
-standalone ``cellflow-contact`` wheel falls back to the bare
-:class:`ContactAnalysisWidget` (see ``make_contact_analysis_widget``).
+standalone ``cellflow-aggregate`` wheel falls back to the bare
+:class:`AggregateQuantificationWidget` (see ``make_aggregate_quantification_widget``).
 """
 from __future__ import annotations
 
@@ -36,14 +36,14 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.contact_analysis import ContactBatchJob, run_contact_batch
+from cellflow.aggregate_quantification import ContactBatchJob, run_contact_batch
 from cellflow.meta.catalog import (
     discover_catalog_entries,
     load_meta_catalog,
     merge_catalog_records,
     save_meta_catalog,
 )
-from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget, _ProgressEmitter
+from cellflow.napari.aggregate_quantification_widget import AggregateQuantificationWidget, _ProgressEmitter
 from cellflow.napari.meta_plugins import (
     MetaAnalysisPlugin,
     MetaContext,
@@ -53,13 +53,13 @@ from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
 
 try:  # pragma: no cover - standalone-packaging boundary
-    from cellflow.contact_analysis.reader import read_position_contact_analysis
+    from cellflow.aggregate_quantification.contacts.reader import read_position_contact_analysis
 except ImportError:  # pragma: no cover - tests monkeypatch this when absent
     def read_position_contact_analysis(*_args, **_kwargs):  # type: ignore[no-redef]
-        raise ImportError("cellflow.contact_analysis.reader is unavailable")
+        raise ImportError("cellflow.aggregate_quantification.contacts.reader is unavailable")
 
 
-class ContactAnalysisStudioWidget(QWidget):
+class AggregateQuantificationStudioWidget(QWidget):
     """Position catalog + embedded per-position contact view + analysis plugins."""
 
     _TABLE_COLUMNS = ("condition", "date", "id", "notes", "status")
@@ -225,7 +225,7 @@ class ContactAnalysisStudioWidget(QWidget):
 
     def _build_contact_view_section(self, layout) -> None:
         """Embed the per-position contact visualizer, driven by single selection."""
-        self._contact_widget = ContactAnalysisWidget(viewer=self.viewer, standalone=False)
+        self._contact_widget = AggregateQuantificationWidget(viewer=self.viewer, standalone=False)
         # The embedded widget's own "Pipeline Files" panel is an orchestrator
         # concept; here the catalog table is the position source instead.
         self._contact_widget.pipeline_files_header.setVisible(False)

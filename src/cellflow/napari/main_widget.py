@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.napari.cellpose_widget import CellposeWidget
-from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
+from cellflow.napari.aggregate_quantification_widget import AggregateQuantificationWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
 from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
@@ -118,9 +118,9 @@ class CellFlowMainWidget(QWidget):
         )
         self._connect_label_selection_sync()
 
-        self.contact_analysis_widget = ContactAnalysisWidget(self.viewer, gate=self.gate)
+        self.contact_analysis_widget = AggregateQuantificationWidget(self.viewer, gate=self.gate)
         self.contact_analysis_section = CollapsibleSection(
-            "Contact Analysis",
+            "Aggregate Quantification",
             self.contact_analysis_widget,
             expanded=False,
 

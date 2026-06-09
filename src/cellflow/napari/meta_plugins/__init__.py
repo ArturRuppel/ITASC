@@ -37,7 +37,7 @@ class MetaContext:
     ``records`` are normalized catalog dicts (see :mod:`cellflow.meta.catalog`);
     each has at least ``contact_analysis_path``, ``condition``, ``date``, ``id``
     and ``contact_analysis_status``. ``load`` reads (and caches) the
-    :class:`~cellflow.contact_analysis.reader.PositionContactAnalysis` for a row,
+    :class:`~cellflow.aggregate_quantification.contacts.reader.PositionContactAnalysis` for a row,
     so plugins do not each re-open the same HDF5.
     """
 

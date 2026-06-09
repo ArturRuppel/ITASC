@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication, QLabel
 
-from cellflow.napari import contact_analysis_studio as mod
+from cellflow.napari import aggregate_quantification_studio as mod
 from cellflow.napari.meta_plugins import (
     MetaAnalysisPlugin,
     MetaContext,
@@ -48,7 +48,7 @@ def test_single_contact_analysis_entry_no_meta_or_plugins_in_manifest():
 
     manifest = PluginManifest.from_file(Path(cellflow.__file__).parent / "napari.yaml")
     commands = {cmd.id for cmd in manifest.contributions.commands}
-    assert "cellflow.contact_analysis_widget" in commands  # the merged tool
+    assert "cellflow.aggregate_quantification_widget" in commands  # the merged tool
     assert "cellflow.meta_analysis_widget" not in commands  # merged away
     assert not any(cmd.startswith("cellflow.meta_plugin") for cmd in commands)
 
@@ -58,7 +58,7 @@ def test_single_contact_analysis_entry_no_meta_or_plugins_in_manifest():
 
 def test_widget_mounts_registered_plugin():
     app = _app()
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     assert isinstance(widget._active_plugin, CatalogSummaryPlugin)
     widget.deleteLater()
     app.processEvents()
@@ -78,7 +78,7 @@ def test_selection_scope_forwarded_to_plugin(monkeypatch):
 
     monkeypatch.setattr(mod, "available_meta_plugins", lambda: [_RecordingPlugin])
 
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     widget._records = [
         {"condition": "ctrl", "date": "d1", "id": "p1", "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
         {"condition": "drug", "date": "d1", "id": "p2", "contact_analysis_path": Path("/b.h5"), "contact_analysis_status": "incomplete"},
@@ -98,7 +98,7 @@ def test_selection_scope_forwarded_to_plugin(monkeypatch):
 def test_no_plugins_shows_placeholder(monkeypatch):
     app = _app()
     monkeypatch.setattr(mod, "available_meta_plugins", lambda: [])
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     assert isinstance(widget._active_plugin, QLabel)
     assert "No meta-analysis plugins" in widget._active_plugin.text()
     widget.deleteLater()
@@ -112,7 +112,7 @@ def test_single_selection_drives_contact_view(monkeypatch):
     app = _app()
     monkeypatch.setattr(mod, "available_meta_plugins", lambda: [])
 
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
 
     calls: list[dict] = []
     monkeypatch.setattr(
@@ -153,10 +153,10 @@ def test_single_selection_drives_contact_view(monkeypatch):
 
 def test_factory_resolves_to_studio_in_full_install():
     app = _app()
-    import cellflow.napari.contact_analysis_widget as caw
+    import cellflow.napari.aggregate_quantification_widget as caw
 
-    widget = caw.make_contact_analysis_widget(napari_viewer=None)
-    assert isinstance(widget, mod.ContactAnalysisStudioWidget)
+    widget = caw.make_aggregate_quantification_widget(napari_viewer=None)
+    assert isinstance(widget, mod.AggregateQuantificationStudioWidget)
     widget.deleteLater()
     app.processEvents()
 
@@ -170,7 +170,7 @@ def test_discover_annotate_add_then_csv_roundtrip(tmp_path):
     _make_ready_position(study, "ctrl", "exp1", "pos01")
     _make_ready_position(study, "ctrl", "exp1", "pos02")
 
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     widget._root_edit.setText(str(study))
     widget._contact_name_edit.setText("4_contact_analysis/contact_analysis.h5")
     widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
@@ -222,7 +222,7 @@ def test_add_builds_only_missing_contact_analyses(tmp_path, monkeypatch):
         (p / "cell_labels.tif").touch()
     (p1 / "contact_analysis.h5").touch()
 
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
 
     captured: list = []
     monkeypatch.setattr(
@@ -267,7 +267,7 @@ def test_add_without_build_is_synchronous(tmp_path, monkeypatch):
     (pos / "cell_labels.tif").touch()
     (pos / "contact_analysis.h5").touch()
 
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     widget._root_edit.setText(str(study))
     widget._cell_name_edit.setText("cell_labels.tif")
     widget._on_discover()
@@ -307,7 +307,7 @@ def test_catalog_summary_plugin_reports_counts():
 
 def test_save_csv_appends_csv_extension(tmp_path, monkeypatch):
     app = _app()
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     widget._records = [
         {"condition": "ctrl", "date": "d1", "id": "p1",
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
@@ -329,7 +329,7 @@ def test_save_csv_appends_csv_extension(tmp_path, monkeypatch):
 
 def test_save_csv_keeps_existing_csv_extension(tmp_path, monkeypatch):
     app = _app()
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     widget._records = [
         {"condition": "ctrl", "date": "d1", "id": "p1",
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
@@ -349,7 +349,7 @@ def test_save_csv_keeps_existing_csv_extension(tmp_path, monkeypatch):
 
 def test_remove_selected_drops_only_selected_rows():
     app = _app()
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     widget._records = [
         {"condition": "ctrl", "date": "d1", "id": "p1",
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
@@ -376,7 +376,7 @@ def test_remove_selected_drops_only_selected_rows():
 
 def test_remove_selected_without_selection_is_a_noop():
     app = _app()
-    widget = mod.ContactAnalysisStudioWidget()
+    widget = mod.AggregateQuantificationStudioWidget()
     widget._records = [
         {"condition": "ctrl", "date": "d1", "id": "p1",
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},

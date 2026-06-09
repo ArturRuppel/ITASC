@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.contact_analysis.build import (
+from cellflow.aggregate_quantification.contacts.build import (
     build_contact_analysis,
     build_position_contact_analysis,
     ensure_contact_analysis,

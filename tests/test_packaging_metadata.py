@@ -38,7 +38,7 @@ def _python_names(manifest_text: str) -> set[str]:
 def test_full_install_folds_extracted_pieces_into_single_napari_manifest() -> None:
     # A Python distribution may register exactly one napari manifest, and npe2
     # requires its name to match the distribution. The full cellflow install
-    # therefore cannot re-register the standalone cellflow-contact /
+    # therefore cannot re-register the standalone cellflow-aggregate /
     # cellflow-tracking manifests; instead it folds their widgets into the single
     # cellflow manifest so every extracted piece stays reachable from the full
     # install without installing the sub-distributions.
@@ -55,7 +55,7 @@ def test_full_install_folds_extracted_pieces_into_single_napari_manifest() -> No
     # Every standalone piece's widget factory is mirrored verbatim in the folded
     # manifest, so the full install and a standalone install expose the same
     # callable for each piece.
-    for piece in ("contact_analysis", "tracking_ultrack"):
+    for piece in ("aggregate_quantification", "tracking_ultrack"):
         standalone = (
             Path("src") / "cellflow" / piece / "napari.yaml"
         ).read_text(encoding="utf-8")

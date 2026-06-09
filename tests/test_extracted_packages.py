@@ -1,6 +1,6 @@
 """Contract tests for the independently-installable CellFlow distributions.
 
-The pilot extraction (``cellflow-contact`` + its ``cellflow-core`` substrate) is
+The pilot extraction (``cellflow-aggregate`` + its ``cellflow-core`` substrate) is
 built from the shared ``src/cellflow`` tree via hatchling ``force-include`` and
 must compose with the orchestrator as PEP 420 namespace packages. These tests
 pin that contract without requiring a build.
@@ -23,14 +23,14 @@ def _load(pkg: str) -> dict:
 
 def test_core_and_contact_distributions_exist_and_name_themselves() -> None:
     assert _load("cellflow-core")["project"]["name"] == "cellflow-core"
-    assert _load("cellflow-contact")["project"]["name"] == "cellflow-contact"
+    assert _load("cellflow-aggregate")["project"]["name"] == "cellflow-aggregate"
     assert _load("cellflow-tracking")["project"]["name"] == "cellflow-tracking"
 
 
 def test_extracted_wheels_omit_namespace_roots_for_pep420() -> None:
     # No distribution may ship cellflow/__init__.py or cellflow/napari/__init__.py,
     # or the namespace would stop composing across distributions.
-    for pkg in ("cellflow-core", "cellflow-contact", "cellflow-tracking"):
+    for pkg in ("cellflow-core", "cellflow-aggregate", "cellflow-tracking"):
         force_include = _load(pkg)["tool"]["hatch"]["build"]["targets"]["wheel"][
             "force-include"
         ]
@@ -45,7 +45,7 @@ def test_tracking_depends_on_core_and_keeps_ultrack_optional() -> None:
     assert any(d == "cellflow-core" or d.startswith("cellflow-core") for d in deps)
     # The heavy Ultrack solver is an extra, not a hard dependency, and the piece
     # must never depend on the contact piece or cellpose.
-    assert not any(d.startswith(("ultrack", "cellpose", "torch", "cellflow-contact")) for d in deps)
+    assert not any(d.startswith(("ultrack", "cellpose", "torch", "cellflow-aggregate")) for d in deps)
     assert "ultrack" in project["optional-dependencies"]["solve"]
 
 
@@ -61,7 +61,7 @@ def test_tracking_does_not_ship_core_or_contact_owned_modules() -> None:
         "cellflow/napari/_track_render.py",  # core
         "cellflow/napari/_paths.py",  # core
         "cellflow/napari/widgets.py",  # core
-        "cellflow/napari/contact_analysis_visualization.py",  # contact
+        "cellflow/napari/contact_visualization.py",  # contact
     ):
         assert owned_elsewhere not in targets
 
@@ -86,25 +86,25 @@ def test_tracking_registers_its_own_napari_manifest() -> None:
 
 
 def test_contact_depends_on_core_and_not_on_heavy_deps() -> None:
-    deps = _load("cellflow-contact")["project"]["dependencies"]
+    deps = _load("cellflow-aggregate")["project"]["dependencies"]
     assert any(d == "cellflow-core" or d.startswith("cellflow-core") for d in deps)
     assert not any(d.startswith(("ultrack", "cellpose", "torch")) for d in deps)
 
 
 def test_contact_registers_its_own_napari_manifest() -> None:
-    project = _load("cellflow-contact")["project"]
+    project = _load("cellflow-aggregate")["project"]
     entry = project["entry-points"]["napari.manifest"]
-    assert entry["cellflow-contact"] == "cellflow.contact_analysis:napari.yaml"
+    assert entry["cellflow-aggregate"] == "cellflow.aggregate_quantification:napari.yaml"
 
     manifest = (
         Path(__file__).resolve().parents[1]
         / "src"
         / "cellflow"
-        / "contact_analysis"
+        / "aggregate_quantification"
         / "napari.yaml"
     )
     text = manifest.read_text(encoding="utf-8")
-    assert "name: cellflow-contact" in text
+    assert "name: cellflow-aggregate" in text
     assert (
-        "cellflow.napari.contact_analysis_widget:make_contact_analysis_widget" in text
+        "cellflow.napari.aggregate_quantification_widget:make_aggregate_quantification_widget" in text
     )
