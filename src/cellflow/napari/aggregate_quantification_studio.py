@@ -77,6 +77,16 @@ class _Mounted(NamedTuple):
     body: QWidget
 
 
+def _inputs_label(record: dict) -> str:
+    """Compact ``cell·nuc`` summary of which source inputs a position has."""
+    parts = []
+    if record.get("cell_tracked_labels_path"):
+        parts.append("cell")
+    if record.get("nucleus_tracked_labels_path"):
+        parts.append("nuc")
+    return "·".join(parts) if parts else "—"
+
+
 def _contacts_reader():
     """The contacts quantifier's reader, used by meta-plugin contexts.
 
@@ -96,7 +106,7 @@ def _contacts_reader():
 class AggregateQuantificationStudioWidget(QWidget):
     """Position catalogue + embedded per-position view + a flat plugin list."""
 
-    _TABLE_COLUMNS = ("condition", "date", "id", "notes", "status")
+    _TABLE_COLUMNS = ("condition", "date", "id", "inputs", "notes", "status")
 
     def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -122,9 +132,18 @@ class AggregateQuantificationStudioWidget(QWidget):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6)
 
-        self._build_discover_section(layout)
-        self._build_catalog_section(layout)
-        self._build_contact_view_section(layout)
+        # One Catalogue region: discover/add (nested, collapsed) + the positions
+        # table + the per-position visualizer (nested). Plugins are the second
+        # region.
+        catalogue = QWidget()
+        cat_col = QVBoxLayout(catalogue)
+        cat_col.setContentsMargins(0, 0, 0, 0)
+        cat_col.setSpacing(4)
+        self._build_discover_section(cat_col)
+        self._build_catalog_section(cat_col)
+        self._build_contact_view_section(cat_col)
+        layout.addWidget(CollapsibleSection("Catalogue", catalogue, expanded=True))
+
         self._build_plugins_section(layout)
 
         self._reload_plugins()
@@ -209,7 +228,8 @@ class AggregateQuantificationStudioWidget(QWidget):
         status_label(self._discover_status_lbl)
         col.addWidget(self._discover_status_lbl)
 
-        layout.addWidget(CollapsibleSection("Discover & add", container, expanded=True))
+        # Setup-y and occasional → nested and collapsed by default.
+        layout.addWidget(CollapsibleSection("Discover & add", container, expanded=False))
 
     def _build_catalog_section(self, layout) -> None:
         container = QWidget()
@@ -250,17 +270,18 @@ class AggregateQuantificationStudioWidget(QWidget):
         status_label(self._catalog_status_lbl)
         col.addWidget(self._catalog_status_lbl)
 
-        layout.addWidget(CollapsibleSection("Catalogue", container, expanded=True))
+        # The positions table is the always-visible core of the Catalogue region.
+        layout.addWidget(container)
 
     def _build_contact_view_section(self, layout) -> None:
-        """Embed the per-position contact visualizer, driven by single selection."""
+        """Embed the per-position visualizer, driven by single selection."""
         self._contact_widget = AggregateQuantificationWidget(viewer=self.viewer, standalone=False)
         # The embedded widget's own "Pipeline Files" panel is an orchestrator
         # concept; here the catalog table is the position source instead.
         self._contact_widget.pipeline_files_header.setVisible(False)
         self._contact_widget._pipeline_files_section.setVisible(False)
         layout.addWidget(
-            CollapsibleSection("Contact view", self._contact_widget, expanded=True)
+            CollapsibleSection("Visualize position", self._contact_widget, expanded=True)
         )
 
     def _build_plugins_section(self, layout) -> None:
@@ -514,6 +535,7 @@ class AggregateQuantificationStudioWidget(QWidget):
                 str(record.get("condition", "")),
                 str(record.get("date", "")),
                 str(record.get("id", "")),
+                _inputs_label(record),
                 str(record.get("notes", "")),
                 str(record.get("contact_analysis_status", "")),
             )
