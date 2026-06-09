@@ -424,6 +424,7 @@ def test_build_t1_edge_shapes_returns_before_and_after_transition_edges(monkeypa
 def test_add_contact_analysis_layers_uses_native_vector_layers(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    _add_t1_edge_pair(contact_analysis)  # give the position drawable T1 edges
     viewer = _FakeViewer()
     viewer.dims.current_step = (0, 0, 0)
 
@@ -609,7 +610,7 @@ def test_t1_edge_layer_shows_and_swaps_current_frame_paths(monkeypatch, tmp_path
     )
 
 
-def test_edge_layer_is_empty_when_no_edges_have_coords(monkeypatch, tmp_path):
+def test_edge_layer_skipped_when_no_edges_have_coords(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
     contact_analysis["edges"]["coord_count"] = np.asarray([1, 1], dtype=int)
@@ -617,8 +618,45 @@ def test_edge_layer_is_empty_when_no_edges_have_coords(monkeypatch, tmp_path):
 
     mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
 
-    edge_layer = viewer.layers["[Contact Analysis] Edges"]
-    assert list(edge_layer.data) == []
+    # No edge has >=2 coords, so the cache is empty across every frame: the layer
+    # is skipped rather than added as a permanent blank ("ghost") entry.
+    assert "[Contact Analysis] Edges" not in viewer.layers
+
+
+def test_t1_edge_layer_skipped_when_globally_empty(monkeypatch, tmp_path):
+    mod = _load_module(monkeypatch)
+    # The bare fixture's T1 events reference edge frames absent from the edges
+    # table, so no T1 path is ever drawable: the layer must not be added.
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    viewer = _FakeViewer()
+
+    mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
+
+    assert "[Contact Analysis] T1 edges" not in viewer.layers
+    # The edge layer, which does have shapes, is still present.
+    assert "[Contact Analysis] Edges" in viewer.layers
+
+
+def test_repopulating_emptied_shapes_layer_keeps_path_type(monkeypatch):
+    mod = _load_module(monkeypatch)
+    from napari.layers import Shapes
+
+    # A real napari Shapes layer created empty: the data setter would silently
+    # fall back to the closed "polygon" type when first populated, joining the
+    # endpoints. _set_path_shapes must keep it an open "path".
+    layer = Shapes([], shape_type="path", ndim=3)
+    path = np.asarray([[1.0, 2.0, 2.0], [1.0, 2.0, 3.0], [1.0, 3.0, 3.0]])
+
+    mod._set_path_shapes(layer, [path])
+    assert list(layer.shape_type) == ["path"]
+
+    # Swapping in a different frame's path keeps it open, too.
+    mod._set_path_shapes(layer, [path + 1.0])
+    assert list(layer.shape_type) == ["path"]
+
+    # Empty frames clear the layer without error.
+    mod._set_path_shapes(layer, [])
+    assert len(layer.data) == 0
 
 
 def test_track_layer_computes_centroids_once(monkeypatch, tmp_path):
@@ -668,6 +706,7 @@ def test_track_layer_uses_precomputed_centroids(monkeypatch, tmp_path):
 def test_tracks_layer_registers_no_frame_callback(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
+    _add_t1_edge_pair(contact_analysis)  # ensure a T1 edge layer (+ callback) exists
     viewer = _FakeViewer()
     viewer.dims.current_step = (0, 0, 0)
 
@@ -683,6 +722,7 @@ def test_tracks_layer_registers_no_frame_callback(monkeypatch, tmp_path):
 def test_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    _add_t1_edge_pair(contact_analysis)  # so both edge + T1 shape layers exist
     viewer = _FakeViewer()
     viewer.dims.current_step = (0, 0, 0)
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
@@ -721,6 +761,7 @@ def test_t1_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
 def test_clear_hook_disconnects_frame_shape_callback(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    _add_t1_edge_pair(contact_analysis)  # edge + T1 shape layers => 2 callbacks
     viewer = _FakeViewer()
     viewer.dims.current_step = (0, 0, 0)
     layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")

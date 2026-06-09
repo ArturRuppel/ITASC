@@ -300,3 +300,93 @@ def test_catalog_summary_plugin_reports_counts():
     assert "ctrl: 2" in text
     plugin.deleteLater()
     app.processEvents()
+
+
+# --------------------------------------------------------------- catalog editing
+
+
+def test_save_csv_appends_csv_extension(tmp_path, monkeypatch):
+    app = _app()
+    widget = mod.ContactAnalysisStudioWidget()
+    widget._records = [
+        {"condition": "ctrl", "date": "d1", "id": "p1",
+         "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
+    ]
+
+    # User picks a name without an extension; getSaveFileName returns it verbatim.
+    target = tmp_path / "my_catalog"
+    monkeypatch.setattr(
+        mod.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), "")
+    )
+    widget._on_save_csv()
+
+    assert (tmp_path / "my_catalog.csv").is_file()
+    assert not (tmp_path / "my_catalog").exists()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_save_csv_keeps_existing_csv_extension(tmp_path, monkeypatch):
+    app = _app()
+    widget = mod.ContactAnalysisStudioWidget()
+    widget._records = [
+        {"condition": "ctrl", "date": "d1", "id": "p1",
+         "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
+    ]
+    target = tmp_path / "cat.csv"
+    monkeypatch.setattr(
+        mod.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), "")
+    )
+    widget._on_save_csv()
+
+    assert target.is_file()
+    assert not (tmp_path / "cat.csv.csv").exists()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_remove_selected_drops_only_selected_rows():
+    app = _app()
+    widget = mod.ContactAnalysisStudioWidget()
+    widget._records = [
+        {"condition": "ctrl", "date": "d1", "id": "p1",
+         "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
+        {"condition": "drug", "date": "d1", "id": "p2",
+         "contact_analysis_path": Path("/b.h5"), "contact_analysis_status": "ready"},
+        {"condition": "drug", "date": "d2", "id": "p3",
+         "contact_analysis_path": Path("/c.h5"), "contact_analysis_status": "ready"},
+    ]
+    widget._refresh_table()
+    # Seed the analysis cache so we can confirm dropped rows are evicted.
+    widget._analysis_cache[Path("/b.h5")] = object()
+
+    widget._table.selectRow(1)
+    app.processEvents()
+    widget._on_remove_selected()
+
+    assert [r["id"] for r in widget._records] == ["p1", "p3"]
+    assert widget._table.rowCount() == 2
+    assert Path("/b.h5") not in widget._analysis_cache
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_remove_selected_without_selection_is_a_noop():
+    app = _app()
+    widget = mod.ContactAnalysisStudioWidget()
+    widget._records = [
+        {"condition": "ctrl", "date": "d1", "id": "p1",
+         "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
+    ]
+    widget._refresh_table()
+    widget._table.clearSelection()
+    app.processEvents()
+    widget._on_remove_selected()
+
+    assert [r["id"] for r in widget._records] == ["p1"]
+
+    widget.deleteLater()
+    app.processEvents()

@@ -223,16 +223,11 @@ class ContactAnalysisWidget(QWidget):
         self.hide_border_edges_cb = QCheckBox("Hide border edges")
         layout.addWidget(self.hide_border_edges_cb)
 
-        self.clear_contact_analysis_btn = QPushButton("Clear Layers")
-        action_button(self.clear_contact_analysis_btn, expand=True)
-        layout.addWidget(self.clear_contact_analysis_btn)
-
         layout.addStretch()
 
         self.visualize_btn.clicked.connect(lambda: self._on_visualize(overwrite=False))
         self.recompute_btn.clicked.connect(lambda: self._on_visualize(overwrite=True))
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
-        self.clear_contact_analysis_btn.clicked.connect(self._on_clear_contact_analysis_layers)
         self._register_gate_controls()
         if self._standalone:
             self._load_standalone_settings()
@@ -476,8 +471,8 @@ class ContactAnalysisWidget(QWidget):
         """Register contact-analysis actions with the app-wide UI gate.
 
         Build/cancel are headless (disk only), so they run regardless of viewer
-        ownership. Show/clear write the viewer, so they are blocked while a
-        viewer owner (correction / live preview) is active.
+        ownership. Visualize/Recompute write the viewer, so they are blocked
+        while a viewer owner (correction / live preview) is active.
         """
         g = self.gate
         running = lambda: self._build_worker is not None  # noqa: E731
@@ -495,11 +490,6 @@ class ContactAnalysisWidget(QWidget):
             when=lambda: self._inputs_ready() and not running(),
         )
         g.register(self.cancel_build_btn, ControlClass.RUN_HEADLESS, when=running)
-        g.register(
-            self.clear_contact_analysis_btn,
-            ControlClass.RUN_VIEWER,
-            when=lambda: self.viewer is not None and not running(),
-        )
         # Batch is headless (disk only); it runs regardless of viewer ownership.
         g.register(
             self.run_batch_btn, ControlClass.RUN_HEADLESS, when=lambda: not batch_running()
@@ -851,15 +841,6 @@ class ContactAnalysisWidget(QWidget):
             if isinstance(layer_name, str) and layer_name.startswith(self._contact_analysis_layer_prefix):
                 names.append(layer_name)
         return names
-
-    def _on_clear_contact_analysis_layers(self) -> None:
-        if self.viewer is None:
-            self._set_contact_analysis_status("Status: no viewer available.")
-            self._update_action_states()
-            return
-
-        self._clear_contact_analysis_layers(set_status=True)
-        self._update_action_states()
 
     def _clear_contact_analysis_layers(self, *, set_status: bool) -> int:
         if self.viewer is None:

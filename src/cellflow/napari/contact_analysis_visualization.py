@@ -279,23 +279,16 @@ def add_contact_analysis_layers(
     *current* frame only, swapped on the time slider so the Shapes layer never
     holds more than one frame's worth of polylines.
     """
-    # --- edges + T1 edges as per-frame path shapes ---------------------------
-    edge_lines, edge_colors, edge_features = build_edge_shapes(
-        contact_analysis,
-        hide_border_edges=hide_border_edges,
-        color_by_id=color_edges_by_id,
-        color_by_label=color_edges_by_label,
+    # --- edges + T1 edges as per-frame path shapes (added after labels) ------
+    edge_cache = _frame_shape_cache(
+        *build_edge_shapes(
+            contact_analysis,
+            hide_border_edges=hide_border_edges,
+            color_by_id=color_edges_by_id,
+            color_by_label=color_edges_by_label,
+        )
     )
-    edge_cache = _frame_shape_cache(edge_lines, edge_colors, edge_features)
-    cur_edge_lines, cur_edge_colors, cur_edge_features = _cached_frame_shapes(
-        edge_cache, _current_frame(viewer)
-    )
-
-    t1_lines, t1_colors, t1_features = build_t1_edge_shapes(contact_analysis)
-    t1_cache = _frame_shape_cache(t1_lines, t1_colors, t1_features)
-    cur_t1_lines, cur_t1_colors, cur_t1_features = _cached_frame_shapes(
-        t1_cache, _current_frame(viewer)
-    )
+    t1_cache = _frame_shape_cache(*build_t1_edge_shapes(contact_analysis))
 
     # --- label images --------------------------------------------------------
     if cell_labels is None:
@@ -373,33 +366,17 @@ def add_contact_analysis_layers(
             )
         )
 
-    edge_layer = viewer.add_shapes(
-        cur_edge_lines,
-        ndim=3,
-        name=f"{prefix}Edges",
-        shape_type="path",
-        features=cur_edge_features,
-        edge_width=1,
-        face_color="transparent",
-        blending="translucent",
-        **_edge_color_kwargs(cur_edge_colors),
-    )
-    t1_layer = viewer.add_shapes(
-        cur_t1_lines,
-        ndim=3,
-        name=f"{prefix}T1 edges",
-        shape_type="path",
-        features=cur_t1_features,
-        edge_width=1,
-        face_color="transparent",
-        blending="translucent",
-        **_edge_color_kwargs(cur_t1_colors),
-    )
-    layers.append(edge_layer)
-    layers.append(t1_layer)
-
-    _connect_frame_shape_layer_to_dims(viewer, edge_layer, frame_cache=edge_cache)
-    _connect_frame_shape_layer_to_dims(viewer, t1_layer, frame_cache=t1_cache)
+    # A per-frame Shapes layer whose cache is empty across *every* frame would
+    # render as a permanent blank ("ghost") entry in the layer list that never
+    # shows anything, so skip it. A layer that merely has no shapes in the
+    # current frame is still added — it fills in as the time slider moves.
+    for name, cache in (
+        (f"{prefix}Edges", edge_cache),
+        (f"{prefix}T1 edges", t1_cache),
+    ):
+        layer = _add_frame_shape_layer(viewer, name, cache)
+        if layer is not None:
+            layers.append(layer)
     return layers
 
 
@@ -483,6 +460,54 @@ def _cached_frame_shapes(
     return frame_cache.get(int(frame), _empty_frame_shapes(frame_cache))
 
 
+def _set_path_shapes(layer: Any, lines: list[np.ndarray]) -> None:
+    """Replace a Shapes layer's contents with ``path`` shapes for *lines*.
+
+    napari drops the ``"path"`` shape type when an *emptied* Shapes layer is
+    repopulated through the ``data`` setter — the new shapes fall back to the
+    ``"polygon"`` default, which closes each contour and joins its endpoints with
+    a straight segment. Per-frame edge/T1 layers are empty on the frames between
+    events, so they routinely hit this path; re-adding with an explicit
+    ``shape_type`` keeps them open polylines. Falls back to a plain ``data``
+    assignment for layer stand-ins (e.g. tests) that have no ``add`` method.
+    """
+    adder = getattr(layer, "add", None)
+    if lines and callable(adder):
+        layer.data = []
+        adder(lines, shape_type="path")
+    else:
+        layer.data = lines
+
+
+def _add_frame_shape_layer(
+    viewer: Any,
+    name: str,
+    frame_cache: dict[int, tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]],
+) -> Any | None:
+    """Add a per-frame ``path`` Shapes layer, or skip a globally-empty cache.
+
+    Returns the created layer, or ``None`` when the cache holds no shapes in any
+    frame — adding it would leave a permanent blank entry in the layer list. The
+    layer is seeded with the current frame's shapes and swapped on the slider.
+    """
+    if not frame_cache:
+        return None
+    lines, colors, features = _cached_frame_shapes(frame_cache, _current_frame(viewer))
+    layer = viewer.add_shapes(
+        lines,
+        ndim=3,
+        name=name,
+        shape_type="path",
+        features=features,
+        edge_width=1,
+        face_color="transparent",
+        blending="translucent",
+        **_edge_color_kwargs(colors),
+    )
+    _connect_frame_shape_layer_to_dims(viewer, layer, frame_cache=frame_cache)
+    return layer
+
+
 def _connect_frame_shape_layer_to_dims(
     viewer: Any,
     layer: Any,
@@ -513,7 +538,7 @@ def _connect_frame_shape_layer_to_dims(
         lines, colors, features = _cached_frame_shapes(
             frame_cache, _current_frame(viewer)
         )
-        layer.data = lines
+        _set_path_shapes(layer, lines)
         layer.features = features
         layer.edge_color = colors if len(colors) else "transparent"
         refresh = getattr(layer, "refresh", None)

@@ -145,7 +145,6 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
     # Cell labels not on disk yet -> Visualize/Recompute disabled.
     assert widget.visualize_btn.isEnabled() is False
     assert widget.recompute_btn.isEnabled() is False
-    assert widget.clear_contact_analysis_btn.isEnabled() is False
 
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
     _set_pos(widget, pos_dir)
@@ -316,7 +315,6 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     _set_pos(widget, pos_dir)
 
     assert widget.visualize_btn.isEnabled() is True
-    assert widget.clear_contact_analysis_btn.isEnabled() is True
 
     contact_analysis = {"cells": [1, 2, 3]}
     read_calls = []
@@ -359,7 +357,9 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     assert "[Contact Analysis] Cells" in viewer.layers
     assert "Background" in viewer.layers
 
-    widget.clear_contact_analysis_btn.click()
+    # Visualize clears stale contact-analysis layers before re-adding; exercise
+    # that internal clear directly (the standalone "Clear Layers" button is gone).
+    widget._clear_contact_analysis_layers(set_status=True)
 
     assert "[Contact Analysis] Cells" not in viewer.layers
     assert "[Contact Analysis] Edges" not in viewer.layers
@@ -482,7 +482,9 @@ def test_contact_analysis_widget_show_uses_real_reader_and_visualizer(monkeypatc
     assert "[Contact Analysis] Cell labels" in viewer.layers
     assert "[Contact Analysis] Nucleus labels" in viewer.layers
     assert "[Contact Analysis] Edges" in viewer.layers
-    assert "[Contact Analysis] T1 edges" in viewer.layers
+    # Single-frame data can have no T1 transitions, so the (globally empty) T1
+    # edges layer is skipped rather than added as a blank "ghost" layer.
+    assert "[Contact Analysis] T1 edges" not in viewer.layers
     assert viewer.layers["[Contact Analysis] Cell labels"].data.shape == (1, 4, 4)
     assert viewer.layers["[Contact Analysis] Nucleus labels"].data.shape == (1, 4, 4)
     assert len(viewer.layers["[Contact Analysis] Edges"].data) >= 1

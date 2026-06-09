@@ -205,10 +205,14 @@ class ContactAnalysisStudioWidget(QWidget):
         save_btn = QPushButton("Save CSV…")
         action_button(save_btn)
         save_btn.clicked.connect(self._on_save_csv)
+        remove_btn = QPushButton("Remove selected")
+        remove_btn.setToolTip("Drop the selected position(s) from the catalogue.")
+        action_button(remove_btn)
+        remove_btn.clicked.connect(self._on_remove_selected)
         clear_btn = QPushButton("Clear")
         action_button(clear_btn)
         clear_btn.clicked.connect(self._on_clear_catalog)
-        for btn in (load_btn, save_btn, clear_btn):
+        for btn in (load_btn, save_btn, remove_btn, clear_btn):
             actions_row.addWidget(btn)
         col.addLayout(actions_row)
 
@@ -429,6 +433,10 @@ class ContactAnalysisStudioWidget(QWidget):
             self, "Save catalog CSV", filter="CSV files (*.csv)"
         )
         if path:
+            # getSaveFileName does not always append the filter's suffix (notably
+            # on Linux/Qt), so ensure the file actually ends up as a .csv.
+            if not path.lower().endswith(".csv"):
+                path = f"{path}.csv"
             self._save_csv_to(Path(path))
 
     def _save_csv_to(self, path: Path) -> None:
@@ -438,6 +446,25 @@ class ContactAnalysisStudioWidget(QWidget):
             self._set_catalog_status(f"Save error: {exc}")
             return
         self._set_catalog_status(f"Saved {len(self._records)} record(s) to {path.name}.")
+
+    def _on_remove_selected(self) -> None:
+        rows = self._selected_rows()
+        if not rows:
+            self._set_catalog_status("Select one or more positions to remove first.")
+            return
+        drop = {row for row in rows if 0 <= row < len(self._records)}
+        for record in (self._records[row] for row in drop):
+            path = record.get("contact_analysis_path")
+            if path is not None:
+                self._analysis_cache.pop(Path(path), None)
+        removed = len(drop)
+        self._records = [
+            record for row, record in enumerate(self._records) if row not in drop
+        ]
+        self._refresh_table()
+        self._set_catalog_status(
+            f"Removed {removed} position(s); {len(self._records)} remaining."
+        )
 
     def _on_clear_catalog(self) -> None:
         self._records = []

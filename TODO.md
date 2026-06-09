@@ -7,10 +7,11 @@
 
 ## Contact Analysis Widget
 
-- [ ] Remove the "clear labels" feature — it's hella slow and useless anyway.
-- [ ] Fix visualization bug on contact analysis load: weird ghost layers — non-clickable bars in the layer layout that don't show anything.
-- [ ] Add a way to clear individual rows in the contact analysis study, not just the whole thing.
-- [ ] CSV files it saves are missing the `.csv` extension.
+- [x] Remove the "clear labels" feature — it's hella slow and useless anyway. (Removed the "Clear Layers" button + handler; internal clear-before-redraw stays.)
+- [x] Fix visualization bug on contact analysis load: weird ghost layers — non-clickable bars in the layer layout that don't show anything. (Skip per-frame Edges/T1 Shapes layers whose cache is empty across the whole movie, instead of adding a permanent blank layer.)
+- [x] Fix T1 edges rendering bug: endpoints joined by a straight line. (napari dropped the "path" type to closed "polygon" when an emptied Shapes layer was repopulated via the `data` setter; re-add with explicit `shape_type="path"`.)
+- [x] Add a way to clear individual rows in the contact analysis study, not just the whole thing. ("Remove selected" button in the catalogue.)
+- [x] CSV files it saves are missing the `.csv` extension.
 
 ## Aggregate Quantification (redesign + rename of "Contact Analysis")
 
