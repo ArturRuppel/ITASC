@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cellflow-utils"
+version = "0.1.0"
+description = "Private napari utilities for CellFlow workflows"
+requires-python = ">=3.9"
+license = {text = "GPL-3.0"}
+authors = [{name = "Artur Ruppel"}]
+dependencies = [
+    "cellflow>=0.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff>=0.11",
+]
+
+[project.entry-points."napari.manifest"]
+cellflow-utils = "cellflow_utils:napari.yaml"
+
+[project.scripts]
+cellflow-utils-classify-nls = "cellflow_utils.contact_analysis.nls_classification:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cellflow_utils"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"src/cellflow_utils/napari.yaml" = "cellflow_utils/napari.yaml"
+
+[tool.ruff]
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "F401",
+    "F811",
+]
