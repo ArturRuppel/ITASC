@@ -240,7 +240,7 @@ def test_add_builds_only_missing_contact_analyses(tmp_path, monkeypatch):
     assert len(captured) == 1
     jobs, overwrite = captured[0]
     assert overwrite is False
-    assert [job.group_dir.name for job in jobs] == ["pos02"]
+    assert [job.inputs.position_dir.name for job in jobs] == ["pos02"]
 
     # "Always recompute" rebuilds every position.
     captured.clear()
@@ -249,7 +249,7 @@ def test_add_builds_only_missing_contact_analyses(tmp_path, monkeypatch):
     widget._on_add_to_catalogue()
     jobs, overwrite = captured[0]
     assert overwrite is True
-    assert sorted(job.group_dir.name for job in jobs) == ["pos01", "pos02"]
+    assert sorted(job.inputs.position_dir.name for job in jobs) == ["pos01", "pos02"]
 
     widget.deleteLater()
     app.processEvents()

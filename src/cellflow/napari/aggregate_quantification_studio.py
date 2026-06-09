@@ -17,7 +17,7 @@ standalone ``cellflow-aggregate`` wheel falls back to the bare
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
@@ -36,7 +36,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.aggregate_quantification import ContactBatchJob, run_contact_batch
+from cellflow.aggregate_quantification.quantifier import (
+    PositionInputs,
+    Quantifier,
+    available_quantifiers,
+)
 from cellflow.meta.catalog import (
     discover_catalog_entries,
     load_meta_catalog,
@@ -52,11 +56,31 @@ from cellflow.napari.meta_plugins import (
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
 
-try:  # pragma: no cover - standalone-packaging boundary
-    from cellflow.aggregate_quantification.contacts.reader import read_position_contact_analysis
-except ImportError:  # pragma: no cover - tests monkeypatch this when absent
-    def read_position_contact_analysis(*_args, **_kwargs):  # type: ignore[no-redef]
-        raise ImportError("cellflow.aggregate_quantification.contacts.reader is unavailable")
+
+class _BuildPlan(NamedTuple):
+    """One position queued for a build: its inputs + chosen artifact path."""
+
+    inputs: PositionInputs
+    output: Path
+
+
+class _BuildResult(NamedTuple):
+    position: str
+    status: str  # "built" | "failed"
+
+
+def _default_quantifier() -> Quantifier:
+    """The quantifier the studio drives. One for now (contacts); the registry is
+    the seam through which more quantities plug in later."""
+    classes = available_quantifiers()
+    for cls in classes:
+        if cls.quantity_id == "contacts":
+            return cls()
+    if classes:
+        return classes[0]()
+    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
+
+    return ContactsQuantifier()
 
 
 class AggregateQuantificationStudioWidget(QWidget):
@@ -73,6 +97,10 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._pending_entries: list[dict] = []
         #: Cache so plugins don't each re-open the same HDF5.
         self._analysis_cache: dict[Path, Any] = {}
+        #: The quantity this studio builds/reads. The registry seam (one entry
+        #: today: contacts) is what lets new quantities plug in without touching
+        #: this widget.
+        self._quantifier: Quantifier = _default_quantifier()
         self._active_plugin: QWidget | None = None
         self._plugin_classes: list[type[MetaAnalysisPlugin]] = []
         #: Background build of missing contact analyses triggered by "Add".
@@ -343,47 +371,63 @@ class AggregateQuantificationStudioWidget(QWidget):
         # recompute" is checked. Positions without cell labels can't be built and
         # are added as-is (showing an existing result only).
         overwrite = self._recompute_cb.isChecked()
-        jobs = [job for entry in annotated if (job := self._build_job(entry, overwrite))]
+        jobs = [
+            plan for entry in annotated if (plan := self._build_plan(entry, overwrite))
+        ]
         if jobs:
             self._begin_build(annotated, jobs, overwrite=overwrite)
         else:
             self._finish_add(annotated)
 
-    def _build_job(self, entry: dict, overwrite: bool) -> ContactBatchJob | None:
-        """A build job for *entry* when its contact analysis must be computed."""
-        cell = entry.get("cell_tracked_labels_path")
+    def _build_plan(self, entry: dict, overwrite: bool) -> _BuildPlan | None:
+        """A build plan for *entry* when its quantity must be (re)computed."""
         out = entry.get("contact_analysis_path")
-        if cell is None or out is None:
-            return None
-        if not overwrite and Path(out).is_file():
+        if out is None:
             return None
         nucleus = entry.get("nucleus_tracked_labels_path")
-        return ContactBatchJob(
-            group_dir=Path(entry.get("position_path") or Path(out).parent),
-            cell_labels=Path(cell),
-            output=Path(out),
-            nucleus_labels=Path(nucleus) if nucleus else None,
+        cell = entry.get("cell_tracked_labels_path")
+        inputs = PositionInputs(
+            position_dir=Path(entry.get("position_path") or Path(out).parent),
+            cell_labels_path=Path(cell) if cell else None,
+            nucleus_labels_path=Path(nucleus) if nucleus else None,
         )
+        if not self._quantifier.can_build(inputs):
+            return None
+        if not overwrite and self._quantifier.is_built(Path(out)):
+            return None
+        return _BuildPlan(inputs=inputs, output=Path(out))
 
     def _begin_build(self, annotated: list[dict], jobs: list, *, overwrite: bool) -> None:
         self._pending_annotated = annotated
         self._add_btn.setEnabled(False)
         self._set_discover_status(
-            f"Computing contact analysis for {len(jobs)} position(s)…"
+            f"Computing {self._quantifier.display_name} for {len(jobs)} position(s)…"
         )
+        quantifier = self._quantifier
+        emit = self._build_emitter.progress.emit
 
         @thread_worker(
             connect={"returned": self._on_build_done, "errored": self._on_build_error}
         )
         def _worker():
-            return run_contact_batch(
-                jobs, overwrite=overwrite, progress_cb=self._build_emitter.progress.emit
-            )
+            results: list[_BuildResult] = []
+            total = len(jobs)
+            for index, plan in enumerate(jobs, start=1):
+                name = plan.inputs.position_dir.name
+                emit(index, total, name)
+                try:
+                    quantifier.build(plan.inputs, plan.output)
+                    results.append(_BuildResult(name, "built"))
+                except Exception:  # noqa: BLE001 - reported per-position, not fatal
+                    results.append(_BuildResult(name, "failed"))
+            return results
 
         self._build_worker = _worker()
 
     def _on_build_progress(self, done: int, total: int, label: str) -> None:
-        self._set_discover_status(f"Computing contact analysis: {done}/{total} {label}")
+        self._set_discover_status(
+            f"Computing {self._quantifier.display_name}: {done}/{total} {label}"
+        )
 
     def _on_build_done(self, results: list) -> None:
         self._build_worker = None
@@ -577,7 +621,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         path = Path(path)
         cached = self._analysis_cache.get(path)
         if cached is None:
-            cached = read_position_contact_analysis(path)
+            cached = self._quantifier.read(path)
             self._analysis_cache[path] = cached
         return cached
 
