@@ -142,15 +142,13 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
     assert widget.nucleus_labels_path == pos_dir / "2_nucleus" / "tracked_labels.tif"
     assert widget.contact_analysis_out_path == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     assert hasattr(widget, "_files_widget")
-    # Cell labels not on disk yet -> Visualize/Recompute disabled.
+    # Cell labels not on disk yet -> Visualize disabled.
     assert widget.visualize_btn.isEnabled() is False
-    assert widget.recompute_btn.isEnabled() is False
 
     (pos_dir / "3_cell" / "tracked_labels.tif").touch()
     _set_pos(widget, pos_dir)
 
     assert widget.visualize_btn.isEnabled() is True
-    assert widget.recompute_btn.isEnabled() is True
 
     widget.deleteLater()
     app.processEvents()
@@ -278,7 +276,7 @@ def test_recompute_forces_rebuild_even_when_h5_exists(monkeypatch, tmp_path):
     viewer = _FakeViewer()
     widget = mod.AggregateQuantificationWidget(viewer)
     _set_pos(widget, pos_dir)
-    widget.recompute_btn.click()
+    widget._on_visualize(overwrite=True)  # was the Recompute button
 
     assert captured["overwrite"] is True
 
@@ -613,7 +611,7 @@ def test_recompute_selected_forces_rebuild(monkeypatch, tmp_path):
     widget = mod.AggregateQuantificationWidget(viewer, standalone=True)
     _discover(widget, tmp_path)
     widget._discovery_list.setCurrentRow(0)  # selects -> set_context
-    widget.recompute_btn.click()
+    widget._on_visualize(overwrite=True)  # was the Recompute button
 
     assert captured["overwrite"] is True
 

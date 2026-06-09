@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from napari.qt.threading import thread_worker
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -29,6 +30,8 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QListWidget,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -128,9 +131,22 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._build_emitter = _ProgressEmitter(self)
         self._build_emitter.progress.connect(self._on_build_progress)
 
-        layout = QVBoxLayout(self)
+        # The two regions can grow tall (embedded visualizer + several mounted
+        # plugin collapsibles), so the whole studio scrolls vertically.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_content = QWidget()
+        scroll_content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        scroll.setWidget(scroll_content)
+        outer.addWidget(scroll)
+
+        layout = QVBoxLayout(scroll_content)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6)
+        layout.setAlignment(Qt.AlignTop)
 
         # One Catalogue region: discover/add (nested, collapsed) + the positions
         # table + the per-position visualizer (nested). Plugins are the second

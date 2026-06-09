@@ -187,8 +187,9 @@ class AggregateQuantificationWidget(QWidget):
         self.contact_analysis_progress_bar.setTextVisible(True)
         layout.addWidget(self.contact_analysis_progress_bar)
 
-        # Visualize is the primary action: it computes the .h5 on demand only if
-        # it is missing, then shows the overlays. Recompute forces a rebuild.
+        # Visualize is the only build/show action here: it computes the .h5 on
+        # demand only if it is missing, then shows the overlays. Forcing a rebuild
+        # is the builder plugin's job in the studio, so there is no Recompute.
         self.visualize_btn = QPushButton("Visualize")
         self.visualize_btn.setToolTip(
             "Show contact-analysis overlays for the current position. "
@@ -197,14 +198,6 @@ class AggregateQuantificationWidget(QWidget):
         )
         action_button(self.visualize_btn, expand=True)
         layout.addWidget(self.visualize_btn)
-
-        self.recompute_btn = QPushButton("Recompute")
-        self.recompute_btn.setToolTip(
-            "Force a fresh contact analysis, overwriting the existing result, "
-            "then show it."
-        )
-        action_button(self.recompute_btn)
-        layout.addWidget(self.recompute_btn)
 
         self.cancel_build_btn = QPushButton("Cancel")
         action_button(self.cancel_build_btn)
@@ -226,7 +219,6 @@ class AggregateQuantificationWidget(QWidget):
         layout.addStretch()
 
         self.visualize_btn.clicked.connect(lambda: self._on_visualize(overwrite=False))
-        self.recompute_btn.clicked.connect(lambda: self._on_visualize(overwrite=True))
         self.cancel_build_btn.clicked.connect(self._on_cancel_build)
         self._register_gate_controls()
         if self._standalone:
@@ -477,15 +469,10 @@ class AggregateQuantificationWidget(QWidget):
         g = self.gate
         running = lambda: self._build_worker is not None  # noqa: E731
         batch_running = lambda: self._batch_worker is not None  # noqa: E731
-        # Visualize/Recompute write the viewer (they show overlays) and may build
-        # first; both need inputs and no in-flight build.
+        # Visualize writes the viewer (it shows overlays) and may build first;
+        # it needs inputs and no in-flight build.
         g.register(
             self.visualize_btn,
-            ControlClass.RUN_VIEWER,
-            when=lambda: self._inputs_ready() and not running(),
-        )
-        g.register(
-            self.recompute_btn,
             ControlClass.RUN_VIEWER,
             when=lambda: self._inputs_ready() and not running(),
         )
