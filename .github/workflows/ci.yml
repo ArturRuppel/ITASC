@@ -56,7 +56,7 @@ jobs:
       - name: Build extracted distributions
         run: |
           python -m build --wheel packages/cellflow-core --outdir dist
-          python -m build --wheel packages/cellflow-contact --outdir dist
+          python -m build --wheel packages/cellflow-aggregate --outdir dist
           python -m build --wheel packages/cellflow-tracking --outdir dist
           python -m build --wheel packages/cellflow-segmentation --outdir dist
           python -m build --wheel packages/cellflow-cellpose --outdir dist
@@ -67,12 +67,12 @@ jobs:
           . /tmp/cf-verify/bin/activate
           pip install --upgrade pip
           pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic
-          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_contact-*.whl dist/cellflow_tracking-*.whl dist/cellflow_segmentation-*.whl dist/cellflow_cellpose-*.whl
+          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_aggregate-*.whl dist/cellflow_tracking-*.whl dist/cellflow_segmentation-*.whl dist/cellflow_cellpose-*.whl
           python - <<'PY'
           import os, tempfile, numpy as np, tifffile, h5py
           import cellflow            # PEP 420 namespace, no orchestrator present
           import cellflow.core.tiff
-          from cellflow.contact_analysis import build_contact_analysis
+          from cellflow.aggregate_quantification import build_contact_analysis
           d = tempfile.mkdtemp()
           labels = np.zeros((2, 5, 6), dtype=np.uint16)
           labels[:, :, :3] = 1
@@ -82,7 +82,7 @@ jobs:
           out = build_contact_analysis(cell_labels_path=cp, output_path=os.path.join(d, "ca.h5"))
           with h5py.File(out) as h5:
               assert h5["cells/table/cell_id"][:].tolist() == [1, 2, 1, 2]
-          print("isolated cellflow-contact install OK")
+          print("isolated cellflow-aggregate install OK")
 
           # cellflow-tracking composes into the same namespace without the
           # orchestrator or the contact piece, and its headless backend imports.
@@ -151,7 +151,7 @@ jobs:
           from npe2 import PluginManifest
           for path, name in [
               ("src/cellflow/napari.yaml", "cellflow"),
-              ("src/cellflow/contact_analysis/napari.yaml", "cellflow-contact"),
+              ("src/cellflow/aggregate_quantification/napari.yaml", "cellflow-aggregate"),
               ("src/cellflow/tracking_ultrack/napari.yaml", "cellflow-tracking"),
               ("src/cellflow/segmentation/napari.yaml", "cellflow-segmentation"),
               ("src/cellflow/cellpose/napari.yaml", "cellflow-cellpose"),
@@ -168,7 +168,7 @@ jobs:
 
           folded = factories("src/cellflow/napari.yaml")
           for path in (
-              "src/cellflow/contact_analysis/napari.yaml",
+              "src/cellflow/aggregate_quantification/napari.yaml",
               "src/cellflow/tracking_ultrack/napari.yaml",
               "src/cellflow/segmentation/napari.yaml",
               "src/cellflow/cellpose/napari.yaml",
