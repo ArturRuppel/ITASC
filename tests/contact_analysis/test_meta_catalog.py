@@ -66,7 +66,7 @@ def test_save_load_round_trip_without_label_paths(tmp_path):
 
 
 def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
-    """Discovery anchors on the contact-analysis file and associates labels."""
+    """Discovery anchors on the cell-labels file and derives the contact path."""
     from cellflow.meta.catalog import discover_catalog_entries
 
     # Two positions in a nested layout; one missing the nucleus labels.
@@ -82,19 +82,38 @@ def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
 
     entries = discover_catalog_entries(
         tmp_path,
-        contact_name="4_contact_analysis/contact_analysis.h5",
         cell_name="3_cell/tracked_labels.tif",
+        contact_name="4_contact_analysis/contact_analysis.h5",
         nucleus_name="2_nucleus/tracked_labels.tif",
     )
 
     assert [e["id"] for e in entries] == ["pos01", "pos02"]
     assert all(e["position_path"].name.startswith("pos") for e in entries)
     assert entries[0]["cell_tracked_labels_path"] == p1 / "3_cell" / "tracked_labels.tif"
+    assert entries[0]["contact_analysis_path"] == p1 / "4_contact_analysis" / "contact_analysis.h5"
     assert entries[0]["nucleus_tracked_labels_path"] == p1 / "2_nucleus" / "tracked_labels.tif"
     # pos02 has no nucleus labels -> not associated.
     assert entries[1]["nucleus_tracked_labels_path"] is None
     # No metadata is assigned at discovery time.
     assert "condition" not in entries[0] and "date" not in entries[0]
+
+
+def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
+    """A position with cell labels but no .h5 is still discovered; the contact
+    path is derived from the cell labels so it can be computed later."""
+    from cellflow.meta.catalog import discover_catalog_entries
+
+    pos = tmp_path / "pos01"
+    pos.mkdir()
+    (pos / "cell_labels.tif").touch()  # no contact_analysis.h5 yet
+
+    entries = discover_catalog_entries(tmp_path, cell_name="cell_labels.tif")
+
+    assert len(entries) == 1
+    contact = entries[0]["contact_analysis_path"]
+    assert contact == pos / "contact_analysis.h5"
+    assert not contact.exists()
+    assert entries[0]["cell_tracked_labels_path"] == pos / "cell_labels.tif"
 
 
 def test_load_meta_catalog_resolves_relative_paths_from_csv_parent(tmp_path):

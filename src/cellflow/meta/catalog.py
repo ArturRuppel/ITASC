@@ -137,39 +137,45 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
 def discover_catalog_entries(
     root: Path | str,
     *,
-    contact_name: str,
-    cell_name: str | None = None,
+    cell_name: str,
+    contact_name: str = "contact_analysis.h5",
     nucleus_name: str | None = None,
 ) -> list[dict]:
     """Find catalog entries under *root* by file name / relative path.
 
-    *contact_name* (required) and *cell_name* / *nucleus_name* (optional) are
-    each a bare file name or a path relative to a position folder. Every folder
-    that contains the contact-analysis file is registered as one entry; the
-    position folder is the directory the relative path resolves from (the file's
-    parent for a bare name). Co-located cell / nucleus label files are associated
-    when present. The returned dicts carry the discovered paths but no metadata
-    (date / condition / notes) — that is assigned before adding to the catalog.
+    *cell_name* (required) and *contact_name* / *nucleus_name* are each a bare
+    file name or a path relative to a position folder. Cell labels are the
+    anchor: every folder that contains the cell-labels file is registered as one
+    entry, and its position folder is the directory the relative path resolves
+    from (the file's parent for a bare name). The contact-analysis ``.h5`` is a
+    derived artifact whose path is computed from *contact_name* relative to that
+    position folder; it need not exist yet (it can be computed from the cell
+    labels). Co-located nucleus label files are associated when present. The
+    returned dicts carry the discovered paths but no metadata (date / condition /
+    notes) — that is assigned before adding to the catalog.
     """
     root = Path(root)
-    if not contact_name or not root.is_dir():
+    if not cell_name or not root.is_dir():
         return []
 
-    contact_rel = Path(contact_name)
+    cell_rel = Path(cell_name)
+    contact_rel = Path(contact_name or "contact_analysis.h5")
     entries: list[dict] = []
-    for match in sorted(root.rglob(contact_rel.name)):
+    for match in sorted(root.rglob(cell_rel.name)):
         if not match.is_file():
             continue
-        if len(contact_rel.parts) > 1 and not _path_ends_with(match, contact_rel):
+        if len(cell_rel.parts) > 1 and not _path_ends_with(match, cell_rel):
             continue
         position_dir = match
-        for _ in contact_rel.parts:
+        for _ in cell_rel.parts:
             position_dir = position_dir.parent
+        # The contact analysis is derived from the cell labels, so its path is
+        # computed even when the .h5 does not exist yet (it gets built on add).
         entries.append({
             "id": position_dir.name,
             "position_path": position_dir,
-            "contact_analysis_path": _resolve_path(match),
-            "cell_tracked_labels_path": _member_file(position_dir, cell_name),
+            "contact_analysis_path": _resolve_path(position_dir / contact_rel),
+            "cell_tracked_labels_path": _resolve_path(match),
             "nucleus_tracked_labels_path": _member_file(position_dir, nucleus_name),
         })
     return entries

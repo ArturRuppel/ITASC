@@ -19,8 +19,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -34,13 +36,14 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.contact_analysis import ContactBatchJob, run_contact_batch
 from cellflow.meta.catalog import (
     discover_catalog_entries,
     load_meta_catalog,
     merge_catalog_records,
     save_meta_catalog,
 )
-from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
+from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget, _ProgressEmitter
 from cellflow.napari.meta_plugins import (
     MetaAnalysisPlugin,
     MetaContext,
@@ -72,6 +75,12 @@ class ContactAnalysisStudioWidget(QWidget):
         self._analysis_cache: dict[Path, Any] = {}
         self._active_plugin: QWidget | None = None
         self._plugin_classes: list[type[MetaAnalysisPlugin]] = []
+        #: Background build of missing contact analyses triggered by "Add".
+        self._build_worker = None
+        #: Annotated records held while their contact analyses are computed.
+        self._pending_annotated: list[dict] | None = None
+        self._build_emitter = _ProgressEmitter(self)
+        self._build_emitter.progress.connect(self._on_build_progress)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -122,21 +131,31 @@ class ContactAnalysisStudioWidget(QWidget):
         root_row.addWidget(browse_btn)
         col.addLayout(root_row)
 
-        # Names or relative paths (relative to each position folder).
-        self._contact_name_edit = self._make_field_row(
-            col, "Contact analysis:", default="contact_analysis.h5"
-        )
+        # Names or relative paths (relative to each position folder). Cell labels
+        # are the anchor; the contact analysis is the derived output computed from
+        # them (built on add when missing, or always with the checkbox below).
         self._cell_name_edit = self._make_field_row(
-            col, "Cell labels (optional):", placeholder="e.g. 3_cell/tracked_labels.tif"
+            col, "Cell labels:", placeholder="e.g. 3_cell/tracked_labels.tif"
         )
         self._nucleus_name_edit = self._make_field_row(
             col, "Nucleus labels (optional):", placeholder="e.g. 2_nucleus/tracked_labels.tif"
         )
+        self._contact_name_edit = self._make_field_row(
+            col, "Contact analysis (output):", default="contact_analysis.h5"
+        )
+        self._recompute_cb = QCheckBox("Always recompute contact analysis")
+        self._recompute_cb.setToolTip(
+            "Recompute the contact analysis from the cell labels for every "
+            "position, overwriting any existing result. When unchecked, only "
+            "missing analyses are computed."
+        )
+        col.addWidget(self._recompute_cb)
 
         discover_btn = QPushButton("Discover")
         discover_btn.setToolTip(
-            "Find every folder under the root that contains the contact-analysis "
-            "file; associate co-located cell / nucleus labels."
+            "Find every folder under the root that contains the cell-labels file; "
+            "derive the contact-analysis output path and associate co-located "
+            "nucleus labels."
         )
         action_button(discover_btn, expand=True)
         discover_btn.clicked.connect(self._on_discover)
@@ -253,18 +272,18 @@ class ContactAnalysisStudioWidget(QWidget):
 
     def _on_discover(self) -> None:
         root = self._root_edit.text().strip()
-        contact = self._contact_name_edit.text().strip()
+        cell = self._cell_name_edit.text().strip()
         if not root:
             self._set_discover_status("Enter a root folder to scan first.")
             return
-        if not contact:
-            self._set_discover_status("Enter the contact-analysis file name first.")
+        if not cell:
+            self._set_discover_status("Enter the cell-labels file name first.")
             return
         try:
             entries = discover_catalog_entries(
                 root,
-                contact_name=contact,
-                cell_name=self._cell_name_edit.text().strip() or None,
+                cell_name=cell,
+                contact_name=self._contact_name_edit.text().strip() or "contact_analysis.h5",
                 nucleus_name=self._nucleus_name_edit.text().strip() or None,
             )
         except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI
@@ -276,23 +295,34 @@ class ContactAnalysisStudioWidget(QWidget):
     def _populate_discovered(self) -> None:
         self._discovered_list.clear()
         for entry in self._pending_entries:
-            have_cell = entry.get("cell_tracked_labels_path") is not None
             have_nucleus = entry.get("nucleus_tracked_labels_path") is not None
-            extras = []
-            if have_cell:
-                extras.append("cell")
+            contact = entry.get("contact_analysis_path")
+            built = contact is not None and Path(contact).is_file()
+            badges = ["built" if built else "missing"]
             if have_nucleus:
-                extras.append("nucleus")
-            suffix = f"  (+{', '.join(extras)})" if extras else ""
-            self._discovered_list.addItem(f"{entry['id']}{suffix}")
+                badges.append("nucleus")
+            self._discovered_list.addItem(f"{entry['id']}  [{', '.join(badges)}]")
         n = len(self._pending_entries)
-        self._set_discover_status(
-            f"Discovered {n} position(s); set condition / date / notes and add."
-            if n
-            else "No matching positions found under the root."
+        missing = sum(
+            1
+            for e in self._pending_entries
+            if not (e.get("contact_analysis_path") and Path(e["contact_analysis_path"]).is_file())
         )
+        if not n:
+            self._set_discover_status("No matching positions found under the root.")
+        else:
+            note = (
+                f" ({missing} need the contact analysis computed on add)"
+                if missing
+                else ""
+            )
+            self._set_discover_status(
+                f"Discovered {n} position(s); set condition / date / notes and add.{note}"
+            )
 
     def _on_add_to_catalogue(self) -> None:
+        if self._build_worker is not None:
+            return
         if not self._pending_entries:
             self._set_discover_status("Discover positions before adding.")
             return
@@ -303,11 +333,78 @@ class ContactAnalysisStudioWidget(QWidget):
             {**entry, "condition": condition, "date": date, "notes": notes}
             for entry in self._pending_entries
         ]
+
+        # The contact analysis is derived from the cell labels: build it for any
+        # position whose .h5 is missing, or for every position when "always
+        # recompute" is checked. Positions without cell labels can't be built and
+        # are added as-is (showing an existing result only).
+        overwrite = self._recompute_cb.isChecked()
+        jobs = [job for entry in annotated if (job := self._build_job(entry, overwrite))]
+        if jobs:
+            self._begin_build(annotated, jobs, overwrite=overwrite)
+        else:
+            self._finish_add(annotated)
+
+    def _build_job(self, entry: dict, overwrite: bool) -> ContactBatchJob | None:
+        """A build job for *entry* when its contact analysis must be computed."""
+        cell = entry.get("cell_tracked_labels_path")
+        out = entry.get("contact_analysis_path")
+        if cell is None or out is None:
+            return None
+        if not overwrite and Path(out).is_file():
+            return None
+        nucleus = entry.get("nucleus_tracked_labels_path")
+        return ContactBatchJob(
+            group_dir=Path(entry.get("position_path") or Path(out).parent),
+            cell_labels=Path(cell),
+            output=Path(out),
+            nucleus_labels=Path(nucleus) if nucleus else None,
+        )
+
+    def _begin_build(self, annotated: list[dict], jobs: list, *, overwrite: bool) -> None:
+        self._pending_annotated = annotated
+        self._add_btn.setEnabled(False)
+        self._set_discover_status(
+            f"Computing contact analysis for {len(jobs)} position(s)…"
+        )
+
+        @thread_worker(
+            connect={"returned": self._on_build_done, "errored": self._on_build_error}
+        )
+        def _worker():
+            return run_contact_batch(
+                jobs, overwrite=overwrite, progress_cb=self._build_emitter.progress.emit
+            )
+
+        self._build_worker = _worker()
+
+    def _on_build_progress(self, done: int, total: int, label: str) -> None:
+        self._set_discover_status(f"Computing contact analysis: {done}/{total} {label}")
+
+    def _on_build_done(self, results: list) -> None:
+        self._build_worker = None
+        self._add_btn.setEnabled(True)
+        annotated = self._pending_annotated or []
+        self._pending_annotated = None
+        built = sum(1 for r in results if r.status == "built")
+        failed = sum(1 for r in results if r.status == "failed")
+        extra = f" (computed {built}" + (f", {failed} failed" if failed else "") + ")"
+        self._finish_add(annotated, extra=extra)
+
+    def _on_build_error(self, exc: Exception) -> None:
+        self._build_worker = None
+        self._add_btn.setEnabled(True)
+        self._pending_annotated = None
+        self._set_discover_status(f"Build error: {exc}")
+
+    def _finish_add(self, annotated: list[dict], *, extra: str = "") -> None:
+        # _merge_records re-normalizes, so contact_analysis_status reflects any
+        # files just built.
         added = len(annotated)
         self._merge_records(annotated, source=f"added {added} from discovery")
         self._pending_entries = []
         self._discovered_list.clear()
-        self._set_discover_status(f"Added {added} position(s) to the catalogue.")
+        self._set_discover_status(f"Added {added} position(s) to the catalogue.{extra}")
 
     def _on_load_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

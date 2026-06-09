@@ -207,6 +207,80 @@ def test_discover_annotate_add_then_csv_roundtrip(tmp_path):
     app.processEvents()
 
 
+def test_add_builds_only_missing_contact_analyses(tmp_path, monkeypatch):
+    """Adding computes the .h5 for positions that lack it (or all, with the
+    checkbox), and adds positions whose .h5 already exists without a build."""
+    app = _app()
+    monkeypatch.setattr(mod, "available_meta_plugins", lambda: [])
+
+    study = tmp_path / "study"
+    # pos01 already has a built contact analysis; pos02 only has cell labels.
+    p1 = study / "pos01"
+    p2 = study / "pos02"
+    for p in (p1, p2):
+        p.mkdir(parents=True)
+        (p / "cell_labels.tif").touch()
+    (p1 / "contact_analysis.h5").touch()
+
+    widget = mod.ContactAnalysisStudioWidget()
+
+    captured: list = []
+    monkeypatch.setattr(
+        widget, "_begin_build",
+        lambda annotated, jobs, *, overwrite: captured.append((jobs, overwrite)),
+    )
+
+    widget._root_edit.setText(str(study))
+    widget._cell_name_edit.setText("cell_labels.tif")
+    widget._on_discover()
+    assert len(widget._pending_entries) == 2
+
+    # Default: only the missing one (pos02) is built.
+    widget._on_add_to_catalogue()
+    assert len(captured) == 1
+    jobs, overwrite = captured[0]
+    assert overwrite is False
+    assert [job.group_dir.name for job in jobs] == ["pos02"]
+
+    # "Always recompute" rebuilds every position.
+    captured.clear()
+    widget._on_discover()
+    widget._recompute_cb.setChecked(True)
+    widget._on_add_to_catalogue()
+    jobs, overwrite = captured[0]
+    assert overwrite is True
+    assert sorted(job.group_dir.name for job in jobs) == ["pos01", "pos02"]
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_add_without_build_is_synchronous(tmp_path, monkeypatch):
+    """When every discovered .h5 already exists and recompute is off, add skips
+    the build worker and populates the catalog immediately."""
+    app = _app()
+    monkeypatch.setattr(mod, "available_meta_plugins", lambda: [])
+
+    study = tmp_path / "study"
+    pos = study / "pos01"
+    pos.mkdir(parents=True)
+    (pos / "cell_labels.tif").touch()
+    (pos / "contact_analysis.h5").touch()
+
+    widget = mod.ContactAnalysisStudioWidget()
+    widget._root_edit.setText(str(study))
+    widget._cell_name_edit.setText("cell_labels.tif")
+    widget._on_discover()
+    widget._on_add_to_catalogue()
+
+    assert widget._build_worker is None
+    assert len(widget._records) == 1
+    assert widget._records[0]["contact_analysis_status"] == "ready"
+
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_catalog_summary_plugin_reports_counts():
     app = _app()
     plugin = CatalogSummaryPlugin()

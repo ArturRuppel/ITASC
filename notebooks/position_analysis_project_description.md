@@ -1,6 +1,6 @@
 # Position Analysis HDF5 Project Description
 
-Analysis root: `/home/aruppel/Data/2026-04-30_U251-WT-NLS-mCherry_U251-VimentinKO_circle300um_live_spinning-disk/analysis`
+Analysis root: `/home/aruppel/Data/2026-04-01_U251-WT-NLS-mCherry_U251-VimentinKO_circle300um_live_spinning-disk`
 
 This project explores CellFlow `contact_analysis.h5` files. Each file is a canonical per-position artifact built from tracked cell and nucleus label images. The artifact stores tabular cell measurements, cell-cell edge/contact measurements, T1 transition records, edge coordinate arrays, and provenance attributes.
 
@@ -14,21 +14,21 @@ It intentionally excludes other `.h5` files such as graphcut or ICM unary caches
 
 ## Current Discovery
 
-Discovered position artifacts: 9
+Discovered position artifacts: 14
 
-Positions: pos00, pos01, pos02, pos03, pos04, pos05, pos06, pos07, pos08
+Positions: pos00, pos01, pos02, pos03, pos04, pos05, pos06, pos07, pos08, pos09, pos10, pos11, pos12, pos13
 
-Total cell rows: 20,284
+Total cell rows: 51,563
 
-Total edge rows: 163,438
+Total edge rows: 342,267
 
-Total T1 events: 780
+Total T1 events: 3,232
 
 ## Tables
 
 ### cells/table
 
-Rows: 20,284
+Rows: 51,563
 
 Columns:
 - `frame`
@@ -51,7 +51,7 @@ Columns:
 
 ### edges/table
 
-Rows: 163,438
+Rows: 342,267
 
 Columns:
 - `frame`
@@ -71,7 +71,7 @@ Columns:
 
 ### t1_events/table
 
-Rows: 780
+Rows: 3,232
 
 Columns:
 - `t1_event_id`

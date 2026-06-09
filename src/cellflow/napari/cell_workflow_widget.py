@@ -13,23 +13,26 @@ the unary-only geodesic-Voronoi pipeline from
     4. Unary-only segmentation → ``3_cell/tracked_labels.tif``.
 
 Live preview recomputes the current frame off the GUI thread on any param edit
-or time scrub and surfaces every *cheap* intermediate as a napari layer — up to
-and including the weighted cost field the geodesic walk would traverse. It
-deliberately stops short of the geodesic label assignment (by far the slowest
-step) on every edit, so tuning stays responsive; the cost field already explains
-where the labels would land. A separate on-demand button runs the geodesic walk
-for just the current frame when the user wants to see the actual labels.
+or time scrub. A row of *Compute* checkboxes — Foreground, Contours, Cost,
+Labels — selects which layer groups the preview computes (not merely shows):
+only the ticked groups are calculated, so leaving the slow geodesic *Labels* box
+off (the default) keeps tuning responsive while the cheaper foreground / contour
+/ cost intermediates still update. Each computed frame is cached in memory keyed
+on the params, so scrubbing back to an already-computed frame repaints instantly;
+any param edit clears the cache.
 
 Temporal smoothing (``memory_tau > 0``) needs the whole movie, so the preview
 computes the cleaned-and-smoothed contour stack once, caches it keyed on the
 contour/temporal knobs, and slices the current frame from it for the cost field
 and labels — reusing the cache across frame scrubs and edits to non-smoothing
 knobs. The previewed frame then matches the full run exactly. The full run
-processes all frames in memory, runs the geodesic walk, and persists only the
-labels. Correction is delegated to :class:`CellCorrectionWidget`, unchanged.
+processes all frames in memory (deriving the foreground fill mask in-process),
+runs the geodesic walk, and persists only the labels. Correction is delegated to
+:class:`CellCorrectionWidget`, unchanged.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from pathlib import Path
@@ -40,6 +43,7 @@ import tifffile
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -87,49 +91,46 @@ logger = logging.getLogger(__name__)
 _PREFIX = "[Cell]"
 _FG_RAW_LAYER = f"{_PREFIX} foreground (sigmoid)"
 _FG_CLEAN_LAYER = f"{_PREFIX} foreground cleaned"
+_FG_MASK_LAYER = f"{_PREFIX} foreground mask"
 _CT_RAW_LAYER = f"{_PREFIX} contours raw"
 _CT_CLEAN_LAYER = f"{_PREFIX} contours cleaned"
-_FG_MASK_LAYER = f"{_PREFIX} foreground mask"
 _COST_LAYER = f"{_PREFIX} weighted cost field"
-# The geodesic label assignment is the pipeline's slowest step, so the live
-# preview stops at the cost field and never creates this layer on activation or
-# on a param/time edit. It is filled only when the user explicitly clicks the
-# on-demand labels button (single current frame), and by the full run (as
-# ``_TRACKED_CELL_LAYER``).
 _LABELS_LAYER = f"{_PREFIX} cell labels"
 
 # Tracked pipeline layer the correction widget syncs against.
 _TRACKED_CELL_LAYER = "Tracked: Cell"
-# Persistent layer the Foreground run drops the written fill mask into.
-_CELL_FG_MASK_OUTPUT_LAYER = "Cell foreground mask"
 
-# ── Foreground stage preview layers ───────────────────────────────────────────
-# The foreground creation stage owns the foreground-path intermediates (raw +
-# cleaned sigmoid and the fill mask). Its preview is mutually exclusive with the
-# segmentation preview, so they can share the fill-mask layer name.
-_FG_PREVIEW_IMAGE_LAYERS = (
-    (_FG_RAW_LAYER, "gray"),
-    (_FG_CLEAN_LAYER, "gray"),
+# ── Compute groups ────────────────────────────────────────────────────────────
+# Each checkbox owns one group of preview layers and gates whether that group is
+# *computed at all* (not merely shown). The live preview computes only the
+# groups whose box is ticked and caches the per-frame result so scrubbing back
+# to a frame repaints instantly.
+_FG_GROUP_LAYERS = (_FG_RAW_LAYER, _FG_CLEAN_LAYER, _FG_MASK_LAYER)
+_CONTOUR_GROUP_LAYERS = (_CT_RAW_LAYER, _CT_CLEAN_LAYER)
+_COST_GROUP_LAYERS = (_COST_LAYER,)
+_LABELS_GROUP_LAYERS = (_LABELS_LAYER,)
+_ALL_PREVIEW_LAYERS = (
+    _FG_GROUP_LAYERS + _CONTOUR_GROUP_LAYERS
+    + _COST_GROUP_LAYERS + _LABELS_GROUP_LAYERS
 )
-_FG_PREVIEW_LABEL_LAYERS = (_FG_MASK_LAYER,)
-_FG_PREVIEW_LAYERS = (_FG_RAW_LAYER, _FG_CLEAN_LAYER, _FG_MASK_LAYER)
 
-# ── Segmentation stage preview layers ─────────────────────────────────────────
-# (layer_name, colormap) in pipeline order. The foreground raw/cleaned maps now
-# live on the Foreground stage; the segmentation preview keeps the contour
-# intermediates, the fill mask it segments inside, and the weighted cost field.
-_PREVIEW_IMAGE_LAYERS = (
-    (_CT_RAW_LAYER, "magma"),
-    (_CT_CLEAN_LAYER, "magma"),
-    (_COST_LAYER, "turbo"),
-)
-_PREVIEW_LABEL_LAYERS = (_FG_MASK_LAYER,)
-_PREVIEW_LAYERS = (
-    _CT_RAW_LAYER, _CT_CLEAN_LAYER, _FG_MASK_LAYER, _COST_LAYER,
-)
-# Everything removed when preview deactivates: the always-on intermediates plus
-# the on-demand labels layer (created only if the user asked for labels).
-_PREVIEW_TEARDOWN_LAYERS = _PREVIEW_LAYERS + (_LABELS_LAYER,)
+# Colormap per image layer; the rest are napari Labels layers.
+_IMAGE_COLORMAPS = {
+    _FG_RAW_LAYER: "gray",
+    _FG_CLEAN_LAYER: "gray",
+    _CT_RAW_LAYER: "magma",
+    _CT_CLEAN_LAYER: "magma",
+    _COST_LAYER: "turbo",
+}
+_LABELS_KIND = {_FG_MASK_LAYER, _LABELS_LAYER}
+
+# How much a single-frame compute produces, in increasing cost. The desired
+# level is the max over the ticked checkboxes; a cached frame is reused only when
+# its stored level already covers the desired one.
+_LEVEL_NONE = 0
+_LEVEL_FG = 1       # foreground raw/clean/mask — compute_cell_foreground (cheap)
+_LEVEL_SEG = 2      # + contours raw/clean + cost field (with_labels=False)
+_LEVEL_LABELS = 3   # + the geodesic cell labels (with_labels=True, slow)
 
 
 def _make_status() -> QLabel:
@@ -198,16 +199,12 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self._preview_timer.setInterval(150)
         self._preview_timer.timeout.connect(self._refresh_preview)
 
-        # Foreground-stage live preview state (independent of the segmentation
-        # preview; the two are mutually-exclusive viewer owners). No smoothing
-        # cache — the foreground path is per-frame only.
-        self._fg_preview_active = False
-        self._fg_preview_worker = None
-        self._fg_preview_pending = False
-        self._fg_preview_timer = QTimer(self)
-        self._fg_preview_timer.setSingleShot(True)
-        self._fg_preview_timer.setInterval(150)
-        self._fg_preview_timer.timeout.connect(self._refresh_fg_preview)
+        # Per-frame result cache: frame t → (level, result). Holds whatever the
+        # last compute produced for each visited frame so scrubbing back to an
+        # already-computed frame repaints instantly. Keyed (``_frame_cache_key``)
+        # on the full param tuple — any param edit clears it.
+        self._frame_cache: dict[int, tuple[int, object]] = {}
+        self._frame_cache_key: tuple | None = None
 
         # Cached cleaned+smoothed contour stack for the preview when
         # ``memory_tau > 0`` (the smoothing needs the whole movie). Keyed on the
@@ -219,15 +216,9 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self._smoothed_stack = None
         self._smoothed_key = None
 
-        # On-demand single-frame labels worker (explicit, one-shot — never
-        # fired by param edits or time scrubs).
-        self._labels_worker = None
-
-        # Full-run worker state (segmentation + foreground stages).
+        # Full-run worker state.
         self._run_worker = None
         self._running = False
-        self._fg_run_worker = None
-        self._fg_running = False
 
         self._setup_ui()
         self._connect_signals()
@@ -294,9 +285,6 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
                     ("1_cellpose/cell_foreground.tif", "Cell foreground (sigmoid)"),
                     ("2_nucleus/tracked_labels.tif", "Nucleus tracked labels"),
                 ]),
-                ("Intermediates", [
-                    ("3_cell/cell_foreground_mask.tif", "Cell foreground fill mask"),
-                ]),
                 ("Output", [
                     ("3_cell/tracked_labels.tif", "Cell tracked labels"),
                 ]),
@@ -320,39 +308,6 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self.pipeline_files_header.setVisible(not self._standalone)
         self._pipeline_files_section.setVisible(not self._standalone)
 
-        # ── Foreground stage row: ⚙ params / ◉ live preview ───────────
-        # The foreground fill mask gets its own stage so it can be tuned
-        # independently of (and before) the geodesic segmentation below.
-        self.fg_params_btn = _tool_btn(
-            "⚙", "Toggle foreground parameters.", checkable=True
-        )
-        self.fg_active_btn = _tool_btn(
-            "◉",
-            "Live foreground preview (tune the fill mask against the current "
-            "frame).",
-            checkable=True,
-        )
-        self.fg_run_btn = _tool_btn(
-            "▶",
-            "Build the fill mask over all frames and write "
-            "3_cell/cell_foreground_mask.tif (consumed by Segmentation).",
-        )
-        for button in (self.fg_params_btn, self.fg_active_btn, self.fg_run_btn):
-            stage_header_action_button(button, "cell")
-
-        self.fg_params_section = self._build_foreground_params_section()
-        self.fg_params_section.set_header_visible(False)
-        self.fg_params_section.collapse()
-        self.fg_params_btn.toggled.connect(
-            lambda checked: self.fg_params_section._toggle.setChecked(checked)
-        )
-
-        root.addLayout(self._stage_row(
-            self._stage_label("Foreground"),
-            self.fg_params_btn, self.fg_active_btn, self.fg_run_btn,
-        ))
-        root.addWidget(self.fg_params_section)
-
         # ── Segmentation stage row: ⚙ params / ◉ live preview / ▶ run ──
         self.params_btn = _tool_btn(
             "⚙", "Toggle segmentation parameters.", checkable=True
@@ -360,19 +315,13 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self.active_btn = _tool_btn(
             "◉", "Live preview (tune against the current frame).", checkable=True
         )
-        self.labels_btn = _tool_btn(
-            "▦",
-            "Compute cell labels for the current frame only (the slow geodesic "
-            "step). Available while live preview is active.",
-        )
-        self.labels_btn.setEnabled(False)
         self.run_btn = _tool_btn(
             "▶", "Run the full pipeline over all frames and write tracked_labels.tif."
         )
-        for button in (self.params_btn, self.active_btn, self.labels_btn, self.run_btn):
+        for button in (self.params_btn, self.active_btn, self.run_btn):
             stage_header_action_button(button, "cell")
 
-        self.params_section = self._build_segmentation_params_section()
+        self.params_section = self._build_params_section()
         self.params_section.set_header_visible(False)
         self.params_section.collapse()
         self.params_btn.toggled.connect(
@@ -381,7 +330,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
 
         root.addLayout(self._stage_row(
             self._stage_label("Segmentation"),
-            self.params_btn, self.active_btn, self.labels_btn, self.run_btn,
+            self.params_btn, self.active_btn, self.run_btn,
         ))
         root.addWidget(self.params_section)
 
@@ -401,13 +350,72 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         root.addWidget(self.correction_header)
         root.addWidget(self.correction_mode_section)
 
-    def _build_foreground_params_section(self) -> CollapsibleSection:
-        """Foreground-stage knobs: residual cleanup + fill-mask threshold."""
+    def _build_compute_row(self) -> QWidget:
+        """The "Compute:" checkbox row — one box per preview layer group.
+
+        Each box gates whether its group is *computed* by the live preview (not
+        just shown). ``_compute_groups`` ties each box to its layers and the
+        single-frame compute level it requires; Labels (the slow geodesic walk)
+        is off by default.
+        """
+        self.fg_check = QCheckBox("Foreground")
+        self.fg_check.setChecked(True)
+        self.fg_check.setToolTip(
+            "Compute + show the foreground layers (raw, cleaned, fill mask)."
+        )
+        self.contour_check = QCheckBox("Contours")
+        self.contour_check.setChecked(True)
+        self.contour_check.setToolTip(
+            "Compute + show the contour layers (raw, cleaned)."
+        )
+        self.cost_check = QCheckBox("Cost")
+        self.cost_check.setChecked(True)
+        self.cost_check.setToolTip("Compute + show the weighted cost field.")
+        self.labels_check = QCheckBox("Labels")
+        self.labels_check.setChecked(False)
+        self.labels_check.setToolTip(
+            "Compute the cell labels (the slow geodesic step) for the current "
+            "frame."
+        )
+        # (checkbox, owned layers, single-frame compute level it requires).
+        self._compute_groups = (
+            (self.fg_check, _FG_GROUP_LAYERS, _LEVEL_FG),
+            (self.contour_check, _CONTOUR_GROUP_LAYERS, _LEVEL_SEG),
+            (self.cost_check, _COST_GROUP_LAYERS, _LEVEL_SEG),
+            (self.labels_check, _LABELS_GROUP_LAYERS, _LEVEL_LABELS),
+        )
+
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(8, 0, 4, 0)
+        lay.setSpacing(8)
+        lay.addWidget(QLabel("Compute:"))
+        for check, _layers, _level in self._compute_groups:
+            lay.addWidget(check)
+        lay.addStretch(1)
+        return row
+
+    def _build_params_section(self) -> CollapsibleSection:
+        """One flat panel: the Compute checkboxes on top, then every knob.
+
+        The Compute row gates which layer groups the live preview computes; the
+        grid below holds the cleanup / smoothing / segmentation knobs.
+        """
         body = QWidget(self)
+        outer = QVBoxLayout(body)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+        outer.addWidget(self._build_compute_row())
+
+        grid_widget = QWidget()
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
-        body.setLayout(grid)
+        grid_widget.setLayout(grid)
+        outer.addWidget(grid_widget)
 
+        max_workers = max(1, os.cpu_count() or 1)
+
+        # ── Map cleanup: foreground ──────────────────────────────────
         self.fg_strength_spin = _dslider(
             0, 1, 0.0, 0.05, 2,
             "0 = raw sigmoid, 1 = full local-mean background subtraction.",
@@ -419,26 +427,6 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self.fg_window_spin = _islider(
             3, 201, 51, tooltip="Local-mean window for foreground residual (odd px)."
         )
-
-        row = 0
-        add_section_pair_row(
-            grid, row,
-            "Strength:", self.fg_strength_spin,
-            "Threshold:", self.fg_threshold_spin,
-        ); row += 1
-        add_section_pair_row(grid, row, "Window:", self.fg_window_spin); row += 1
-
-        return CollapsibleSection("Foreground Parameters", body, expanded=False)
-
-    def _build_segmentation_params_section(self) -> CollapsibleSection:
-        """Segmentation-stage knobs: contour cleanup, temporal smoothing, walk."""
-        body = QWidget(self)
-        grid = section_grid()
-        grid.setContentsMargins(8, 4, 4, 4)
-        body.setLayout(grid)
-
-        max_workers = max(1, os.cpu_count() or 1)
-
         # ── Map cleanup: contours ────────────────────────────────────
         self.contour_strength_spin = _dslider(
             0, 1, 1.0, 0.05, 2, "0 = raw, 1 = full local-mean subtraction."
@@ -479,6 +467,14 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         )
 
         row = 0
+        add_section_header(grid, row, _heading("Map cleanup")); row += 1
+        add_section_header(grid, row, _heading("Foreground")); row += 1
+        add_section_pair_row(
+            grid, row,
+            "Strength:", self.fg_strength_spin,
+            "Threshold:", self.fg_threshold_spin,
+        ); row += 1
+        add_section_pair_row(grid, row, "Window:", self.fg_window_spin); row += 1
         add_section_header(grid, row, _heading("Contours")); row += 1
         add_section_pair_row(
             grid, row,
@@ -552,10 +548,11 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         ):
             spin.valueChanged.connect(self._on_param_changed)
         self.active_btn.toggled.connect(self._on_activate)
-        self.fg_active_btn.toggled.connect(self._on_fg_activate)
-        self.fg_run_btn.clicked.connect(self._on_fg_run_clicked)
-        self.labels_btn.clicked.connect(self._on_compute_labels)
         self.run_btn.clicked.connect(self._on_run_clicked)
+        for check, layers, _level in self._compute_groups:
+            check.toggled.connect(
+                lambda checked, lyrs=layers: self._on_compute_toggled(lyrs, checked)
+            )
         if hasattr(self.viewer, "dims") and hasattr(self.viewer.dims, "events"):
             try:
                 self.viewer.dims.events.current_step.connect(self._on_time_changed)
@@ -572,11 +569,6 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         """
         g = self.gate
         g.register_owner(
-            "cell_fg_preview",
-            "cell foreground preview",
-            exit_fn=lambda: self.fg_active_btn.setChecked(False),
-        )
-        g.register_owner(
             "cell_preview",
             "cell live preview",
             exit_fn=lambda: self.active_btn.setChecked(False),
@@ -587,16 +579,10 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             exit_fn=lambda: self.correction_active_btn.setChecked(False),
         )
         g.register(
-            self.fg_active_btn,
-            ControlClass.VIEWER_OWNER,
-            owner_token="cell_fg_preview",
-            when=lambda: not self._running and not self._fg_running,
-        )
-        g.register(
             self.active_btn,
             ControlClass.VIEWER_OWNER,
             owner_token="cell_preview",
-            when=lambda: not self._running and not self._fg_running,
+            when=lambda: not self._running,
         )
         g.register(
             self.correction_active_btn,
@@ -604,18 +590,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             owner_token="correction:cell",
             when=lambda: not self._running,
         )
-        g.register(
-            self.labels_btn,
-            ControlClass.MODE_LOCAL,
-            owner_token="cell_preview",
-            when=lambda: not self._running and self._labels_worker is None,
-        )
-        g.register(
-            self.fg_run_btn,
-            ControlClass.RUN_VIEWER,
-            when=lambda: not self._running,
-        )
-        g.register(self.run_btn, ControlClass.RUN_VIEWER, when=lambda: not self._fg_running)
+        g.register(self.run_btn, ControlClass.RUN_VIEWER)
         self.correction_active_btn.toggled.connect(self._on_cell_correction_gate)
         g.recompute()
 
@@ -661,22 +636,9 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             return self._sa_output_dir / "3_cell" / "tracked_labels.tif" if self._sa_output_dir else None
         return self._p("3_cell", "tracked_labels.tif")
 
-    def _fg_mask_path(self):
-        """Foreground stage output: the binary fill mask Segmentation consumes."""
-        if self._standalone:
-            return (
-                self._sa_output_dir / "3_cell" / "cell_foreground_mask.tif"
-                if self._sa_output_dir else None
-            )
-        return self._p("3_cell", "cell_foreground_mask.tif")
-
     def _maps_present(self) -> bool:
         ct, fg = self._contours_path(), self._foreground_path()
         return ct is not None and ct.exists() and fg is not None and fg.exists()
-
-    def _fg_mask_present(self) -> bool:
-        m = self._fg_mask_path()
-        return m is not None and m.exists()
 
     # ================================================================
     # Public API (consumed by the main widget)
@@ -748,6 +710,12 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
                 "feature_strength": self.feature_strength_spin.value(),
                 "n_workers": self.n_workers_spin.value(),
             },
+            "preview": {
+                "foreground": self.fg_check.isChecked(),
+                "contours": self.contour_check.isChecked(),
+                "cost": self.cost_check.isChecked(),
+                "labels": self.labels_check.isChecked(),
+            },
             "correction": {
                 "hole_radius": self.hole_radius_spin.value(),
                 "scope": self.correction_scope_combo.currentText(),
@@ -787,6 +755,16 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             for key, spin in widgets.items():
                 if key in group:
                     spin.setValue(group[key])
+        preview = state.get("preview", {})
+        if isinstance(preview, dict):
+            for key, check in (
+                ("foreground", self.fg_check),
+                ("contours", self.contour_check),
+                ("cost", self.cost_check),
+                ("labels", self.labels_check),
+            ):
+                if key in preview:
+                    check.setChecked(bool(preview[key]))
         correction = state.get("correction", {})
         if isinstance(correction, dict) and "scope" in correction:
             idx = self.correction_scope_combo.findText(correction["scope"])
@@ -855,237 +833,52 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         return self._shape_of(self._contours_path())
 
     # ================================================================
-    # Foreground stage live preview (single frame: raw / clean / mask)
-    # ================================================================
-    def _on_fg_activate(self, checked: bool) -> None:
-        self._fg_preview_active = bool(checked)
-        if checked:
-            self.gate.claim_viewer("cell_fg_preview")
-            self._refresh_fg_preview()
-        else:
-            self.gate.release_viewer("cell_fg_preview")
-            self._fg_preview_pending = False
-            for name in _FG_PREVIEW_LAYERS:
-                if name in self.viewer.layers:
-                    self.viewer.layers.remove(name)
-            for name, _cmap in _FG_PREVIEW_IMAGE_LAYERS:
-                self._image_needs_autocontrast.discard(name)
-            self._set_status("")
-
-    def _fg_preview_inputs(self):
-        """Validate the foreground preview inputs.
-
-        Needs only the foreground map; the nucleus seeds are optional (unioned
-        into the mask when present, mirroring the run). Sets a status and
-        returns ``None`` on failure, else ``(shape, fg_path, nuc_path_or_None)``.
-        """
-        if not self._fg_preview_active:
-            return None
-        fg_path = self._foreground_path()
-        shape = self._shape_of(fg_path)
-        if shape is None:
-            self._set_status(
-                "Cell foreground map not found — run Divergence Maps first."
-            )
-            return None
-        nuc_path = self._nuc_path()
-        if nuc_path is None or not nuc_path.exists():
-            nuc_path = None
-        return shape, fg_path, nuc_path
-
-    def _refresh_fg_preview(self):
-        """Recompute the current frame's foreground preview off the GUI thread.
-
-        Mirrors :meth:`_refresh_preview`'s coalescing: while a pass is in flight,
-        further edits arm ``_fg_preview_pending`` so one fresh pass fires when the
-        current one returns.
-        """
-        info = self._fg_preview_inputs()
-        if info is None:
-            return None
-        shape, fg_path, nuc_path = info
-        self._ensure_fg_preview_layers(shape)
-        if self._fg_preview_worker is not None:
-            self._fg_preview_pending = True
-            return self._fg_preview_worker
-
-        params = self._params()
-        n_frames = shape[0]
-        t = max(0, min(self._current_t(), n_frames - 1))
-        self._set_status(f"Computing foreground preview for frame {t}…")
-
-        @thread_worker(connect={
-            "returned": self._on_fg_preview_done,
-            "errored": self._on_fg_preview_error,
-        })
-        def _worker():
-            fg = self._read_frame(fg_path, t)[np.newaxis]
-            nuc = (
-                self._read_frame(nuc_path, t, dtype=np.uint32)[np.newaxis]
-                if nuc_path is not None else None
-            )
-            result = compute_cell_foreground(fg, params, nuc, frame=0)
-            return t, result
-
-        self._fg_preview_worker = _worker()
-        return self._fg_preview_worker
-
-    def _on_fg_preview_done(self, payload) -> None:
-        self._fg_preview_worker = None
-        t, result = payload
-        if self._fg_preview_active:
-            self._fill_image_layer(_FG_RAW_LAYER, t, result.foreground_raw)
-            self._fill_image_layer(_FG_CLEAN_LAYER, t, result.foreground_clean)
-            self._fill_labels_layer(
-                _FG_MASK_LAYER, t, result.foreground_mask.astype(np.uint8)
-            )
-            coverage = 100.0 * float(result.foreground_mask.mean())
-            self._set_status(f"Frame {t}: {coverage:.0f}% fill coverage.")
-        if self._fg_preview_pending and self._fg_preview_active:
-            self._fg_preview_pending = False
-            self._refresh_fg_preview()
-        else:
-            self._fg_preview_pending = False
-
-    def _on_fg_preview_error(self, exc: Exception) -> None:
-        self._fg_preview_worker = None
-        self._fg_preview_pending = False
-        self._set_status(f"Foreground preview failed: {exc}")
-        logger.exception("Foreground preview worker error", exc_info=exc)
-
-    def _ensure_fg_preview_layers(self, shape) -> None:
-        for name, colormap in _FG_PREVIEW_IMAGE_LAYERS:
-            self._ensure_image_layer(name, shape, colormap)
-        for name in _FG_PREVIEW_LABEL_LAYERS:
-            self._ensure_labels_layer(name, shape)
-
-    # ── Foreground full run (writes 3_cell/cell_foreground_mask.tif) ──────────
-    def _on_fg_run_clicked(self) -> None:
-        if self._fg_running:
-            self._on_fg_cancel()
-        else:
-            self._on_fg_run()
-
-    def _on_fg_cancel(self) -> None:
-        if self._fg_run_worker is not None and hasattr(self._fg_run_worker, "quit"):
-            self._fg_run_worker.quit()
-        self._fg_run_worker = None
-        self._fg_running = False
-        self._set_fg_run_idle()
-        self._clear_progress()
-        self._set_status("Cancelled.")
-
-    def _on_fg_run(self) -> None:
-        if self._pos_dir is None:
-            self._set_status("No project open.")
-            return
-        fg_path = self._foreground_path()
-        if fg_path is None or not fg_path.exists():
-            self._set_status(
-                "Cell foreground map not found — run Divergence Maps first."
-            )
-            return
-        nuc_path = self._nuc_path()
-        if nuc_path is None or not nuc_path.exists():
-            nuc_path = None
-
-        params = self._params()
-        mask_path = self._fg_mask_path()
-        pos_dir = self._pos_dir
-
-        def _done(result):
-            self._fg_run_worker = None
-            self._fg_running = False
-            self._set_fg_run_idle()
-            self._clear_progress()
-            mask, coverage = result
-            self._show_layer(
-                _CELL_FG_MASK_OUTPUT_LAYER, mask, {"visible": True, "opacity": 0.55},
-                self.viewer.add_labels,
-            )
-            self._files_widget.refresh(pos_dir)
-            self._set_status(
-                f"Foreground mask complete — {coverage:.0f}% fill coverage, "
-                f"saved to {mask_path.name}."
-            )
-
-        def _error(exc):
-            self._fg_run_worker = None
-            self._fg_running = False
-            self._set_fg_run_idle()
-            self._clear_progress()
-            if isinstance(exc, CancelledError):
-                self._set_status("Cancelled.")
-                return
-            self._set_status(f"Error: {exc}")
-            logger.exception("Cell foreground run error", exc_info=exc)
-
-        @thread_worker(connect={"returned": _done, "errored": _error})
-        def _worker():
-            foreground = tifffile.imread(str(fg_path))
-            nuc = tifffile.imread(str(nuc_path)) if nuc_path is not None else None
-            result = compute_cell_foreground(foreground, params, nuc)
-            mask = result.foreground_mask.astype(np.uint8)
-            mask_path.parent.mkdir(parents=True, exist_ok=True)
-            tifffile.imwrite(str(mask_path), mask)
-            coverage = 100.0 * float(mask.mean())
-            return mask, coverage
-
-        self._set_status("Building foreground mask over all frames…")
-        self.pipeline_progress_bar.setRange(0, 0)
-        self.pipeline_progress_bar.setVisible(True)
-        self._fg_running = True
-        self._set_fg_run_running()
-        self._fg_run_worker = _worker()
-
-    def _set_fg_run_running(self) -> None:
-        self.fg_run_btn.setText("✕")
-        self.fg_run_btn.setToolTip("Cancel.")
-        self.gate.set_task("cell_fg_run", True)
-
-    def _set_fg_run_idle(self) -> None:
-        self.fg_run_btn.setText("▶")
-        self.fg_run_btn.setToolTip(
-            "Build the fill mask over all frames and write "
-            "3_cell/cell_foreground_mask.tif (consumed by Segmentation)."
-        )
-        self.gate.set_task("cell_fg_run", False)
-
-    # ================================================================
     # Live preview (single frame, all intermediates)
     # ================================================================
     def _on_param_changed(self, *_args) -> None:
         if self._preview_active:
             self._preview_timer.start()
-        if self._fg_preview_active:
-            self._fg_preview_timer.start()
 
     def _on_time_changed(self, *_args) -> None:
         if self._preview_active:
             self._preview_timer.start()
-        if self._fg_preview_active:
-            self._fg_preview_timer.start()
 
     def _on_activate(self, checked: bool) -> None:
         self._preview_active = bool(checked)
-        # The live preview owns the viewer; the gate derives labels_btn (and
-        # cross-section exclusivity) from this claim.
+        # The live preview owns the viewer; the gate derives cross-section
+        # exclusivity from this claim.
         if checked:
             self.gate.claim_viewer("cell_preview")
-        else:
-            self.gate.release_viewer("cell_preview")
-        if checked:
             self._refresh_preview()
         else:
+            self.gate.release_viewer("cell_preview")
             self._preview_pending = False
-            for name in _PREVIEW_TEARDOWN_LAYERS:
+            for name in _ALL_PREVIEW_LAYERS:
                 if name in self.viewer.layers:
                     self.viewer.layers.remove(name)
             self._image_needs_autocontrast.clear()
-            # Free the resident smoothed stack; the preview session is over.
+            # Free the resident caches; the preview session is over.
             self._smoothed_stack = None
             self._smoothed_key = None
+            self._frame_cache = {}
+            self._frame_cache_key = None
             self._set_status("")
+
+    def _on_compute_toggled(self, group_layers, checked: bool) -> None:
+        """Handle a Compute-checkbox toggle: drop hidden groups, refresh shown.
+
+        Unticking a group removes its layers immediately. Then, while the
+        preview is active, a refresh creates/paints any newly-ticked group —
+        computing only if the cached frame doesn't already cover the new level,
+        so re-ticking a group that was just computed repaints instantly.
+        """
+        if not checked:
+            for name in group_layers:
+                if name in self.viewer.layers:
+                    self.viewer.layers.remove(name)
+                self._image_needs_autocontrast.discard(name)
+        if self._preview_active:
+            self._refresh_preview()
 
     @staticmethod
     def _smooth_key(params: CellDivergenceParams) -> tuple:
@@ -1110,13 +903,28 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             return self._smoothed_stack
         return None
 
+    def _desired_level(self) -> int:
+        """The single-frame compute level needed to fill every ticked group."""
+        level = _LEVEL_NONE
+        for check, _layers, need in self._compute_groups:
+            if check.isChecked():
+                level = max(level, need)
+        return level
+
+    def _checked_layer_names(self) -> list[str]:
+        """Layer names owned by the currently-ticked Compute checkboxes."""
+        names: list[str] = []
+        for check, layers, _need in self._compute_groups:
+            if check.isChecked():
+                names.extend(layers)
+        return names
+
     def _preview_inputs(self):
         """Validate the inputs a single-frame compute needs.
 
         Sets a status message and returns ``None`` on any failure; otherwise
-        returns ``(shape, contours_path, foreground_path, nuc_path, mask_path)``.
-        The segmentation preview segments inside the fill mask the Foreground
-        stage wrote, so that file is now a prerequisite.
+        returns ``(shape, contours_path, foreground_path, nuc_path)``. The
+        foreground fill mask is derived in-process (no disk prerequisite).
         """
         if not self._preview_active:
             return None
@@ -1127,40 +935,36 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         if nuc_path is None or not nuc_path.exists():
             self._set_status("Nucleus tracked_labels.tif not found.")
             return None
-        if not self._fg_mask_present():
-            self._set_status(
-                "Foreground mask not found — run the Foreground stage first."
-            )
-            return None
         shape = self._map_shape()
         if shape is None:
             self._set_status("Cell divergence maps not found — run Divergence Maps first.")
             return None
-        return (
-            shape, self._contours_path(), self._foreground_path(),
-            nuc_path, self._fg_mask_path(),
-        )
+        return shape, self._contours_path(), self._foreground_path(), nuc_path
 
     def _compute_frame(
-        self, *, t, params, contours_path, foreground_path, nuc_path, mask_path,
-        cached_stack, with_labels,
+        self, *, t, level, params, contours_path, foreground_path, nuc_path,
+        cached_stack,
     ):
-        """Worker-thread body shared by the live preview and the labels button.
+        """Worker-thread body: compute frame ``t`` up to ``level`` only.
 
-        Reads frame ``t`` of each map. When ``memory_tau > 0`` the cleaned +
-        smoothed contour stack (whole movie) feeds the frame through
-        ``contours_clean_override`` so the result matches the full run; the
-        stack is taken from ``cached_stack`` when valid, otherwise computed here
-        and returned for the caller to cache. The fill territory is the written
-        foreground mask frame (``foreground_mask_override``) so the preview
-        matches the run. Returns ``(t, result, new_stack)`` where ``new_stack``
-        is non-``None`` only when it was (re)computed.
+        ``_LEVEL_FG`` runs the cheap foreground-only path (no contour read);
+        ``_LEVEL_SEG``/``_LEVEL_LABELS`` run the full divergence pipeline,
+        deriving the fill mask in-process and (for the geodesic) the labels.
+        When ``memory_tau > 0`` the cleaned + smoothed contour stack (whole
+        movie) feeds the frame through ``contours_clean_override`` so the result
+        matches the full run; the stack is taken from ``cached_stack`` when valid,
+        otherwise computed here and returned for the caller to cache. Returns
+        ``(t, result, new_stack)`` where ``new_stack`` is non-``None`` only when
+        it was (re)computed.
         """
         fg = self._read_frame(foreground_path, t)[np.newaxis]
         nuc = self._read_frame(nuc_path, t, dtype=np.uint32)[np.newaxis]
-        contour = self._read_frame(contours_path, t)[np.newaxis]
-        mask = self._read_frame(mask_path, t, dtype=np.uint8)[np.newaxis]
 
+        if level <= _LEVEL_FG:
+            result = compute_cell_foreground(fg, params, nuc, frame=0)
+            return t, result, None
+
+        contour = self._read_frame(contours_path, t)[np.newaxis]
         new_stack = None
         override = None
         if params.memory_tau > 0.0:
@@ -1174,38 +978,60 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             override = stack[t]
 
         result = segment_cells_divergence(
-            contour, fg, nuc, params, frame=0, with_labels=with_labels,
+            contour, fg, nuc, params, frame=0,
+            with_labels=level >= _LEVEL_LABELS,
             contours_clean_override=override,
-            foreground_mask_override=mask.astype(bool),
         )
         return t, result, new_stack
 
     def _refresh_preview(self):
-        """Recompute the current frame's preview off the GUI thread.
+        """Repaint the current frame's preview, computing only what's missing.
 
-        Mirrors the atom widget: while a pass is in flight, further edits arm
-        ``_preview_pending`` so one fresh pass (latest params/frame) fires when
-        the current one returns. Returns the started worker (or ``None``).
+        Clears the per-frame cache when the params changed, then either repaints
+        the current frame from the cache (when it already covers every ticked
+        group's level) or starts a worker for the shortfall. While a pass is in
+        flight, further edits arm ``_preview_pending`` so one fresh pass (latest
+        params/frame) fires when the current one returns. Returns the started
+        worker, or ``None`` when nothing needed computing.
         """
         info = self._preview_inputs()
         if info is None:
             return None
-        shape, contours_path, foreground_path, nuc_path, mask_path = info
-        self._ensure_preview_layers(shape)
+        shape, contours_path, foreground_path, nuc_path = info
+
+        params = self._params()
+        key = dataclasses.astuple(params)
+        if key != self._frame_cache_key:
+            self._frame_cache = {}
+            self._frame_cache_key = key
+        if params.memory_tau <= 0.0:
+            # Smoothing off — release the resident whole-movie stack.
+            self._smoothed_stack = None
+            self._smoothed_key = None
+
+        level = self._desired_level()
+        self._ensure_preview_layers(shape, self._checked_layer_names())
+        if level == _LEVEL_NONE:
+            self._set_status("")
+            return None
+
+        n_frames = shape[0]
+        t = max(0, min(self._current_t(), n_frames - 1))
+
+        cached = self._frame_cache.get(t)
+        if cached is not None and cached[0] >= level:
+            # Already computed to (at least) the needed level — instant repaint.
+            self._apply_result(t, cached[1])
+            self._set_status(self._frame_status(t, cached[1]))
+            return None
+
         if self._preview_worker is not None:
             self._preview_pending = True
             return self._preview_worker
 
-        params = self._params()
-        n_frames = shape[0]
-        t = max(0, min(self._current_t(), n_frames - 1))
-        smooth = params.memory_tau > 0.0
-        cached_stack = self._cached_stack_for(params) if smooth else None
-        if not smooth:
-            # Smoothing turned off — release the resident stack.
-            self._smoothed_stack = None
-            self._smoothed_key = None
-        if smooth and cached_stack is None:
+        need_stack = params.memory_tau > 0.0 and level >= _LEVEL_SEG
+        cached_stack = self._cached_stack_for(params) if need_stack else None
+        if need_stack and cached_stack is None:
             self._set_status(f"Temporal smoothing over {n_frames} frames…")
         else:
             self._set_status(f"Computing cell preview for frame {t}…")
@@ -1216,26 +1042,26 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         })
         def _worker():
             t_, result, new_stack = self._compute_frame(
-                t=t, params=params, contours_path=contours_path,
+                t=t, level=level, params=params, contours_path=contours_path,
                 foreground_path=foreground_path, nuc_path=nuc_path,
-                mask_path=mask_path, cached_stack=cached_stack, with_labels=False,
+                cached_stack=cached_stack,
             )
-            return t_, result, params, new_stack
+            return t_, result, params, new_stack, level
 
         self._preview_worker = _worker()
         return self._preview_worker
 
     def _on_preview_done(self, payload) -> None:
         self._preview_worker = None
-        t, result, params, new_stack = payload
+        t, result, params, new_stack, level = payload
         self._cache_stack(params, new_stack)
+        # Only keep the result if the params still match (an edit mid-flight
+        # cleared and re-keyed the cache; a stale result must not poison it).
+        if dataclasses.astuple(params) == self._frame_cache_key:
+            self._frame_cache[t] = (level, result)
         if self._preview_active:
-            self._apply_intermediates(t, result)
-            coverage = 100.0 * float(result.foreground_mask.mean())
-            self._set_status(
-                f"Frame {t}: {coverage:.0f}% fill coverage "
-                f"(labels on ▦ / Run)."
-            )
+            self._apply_result(t, result)
+            self._set_status(self._frame_status(t, result))
         if self._preview_pending and self._preview_active:
             self._preview_pending = False
             self._refresh_preview()
@@ -1248,90 +1074,45 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self._set_status(f"Cell preview failed: {exc}")
         logger.exception("Cell preview worker error", exc_info=exc)
 
-    # ── On-demand single-frame labels (the slow geodesic step, explicit) ──────
-    def _on_compute_labels(self) -> None:
-        """Run the geodesic Voronoi for the current frame only, on request.
-
-        An explicit action: it never fires on param edits or time scrubs, so
-        tuning stays responsive. Reuses (or fills) the smoothed-stack cache so
-        the previewed labels match the full run for this frame.
-        """
-        if not self._preview_active or self._labels_worker is not None:
-            return
-        info = self._preview_inputs()
-        if info is None:
-            return
-        shape, contours_path, foreground_path, nuc_path, mask_path = info
-        self._ensure_preview_layers(shape)
-        self._ensure_labels_layer(_LABELS_LAYER, shape)
-
-        params = self._params()
-        n_frames = shape[0]
-        t = max(0, min(self._current_t(), n_frames - 1))
-        smooth = params.memory_tau > 0.0
-        cached_stack = self._cached_stack_for(params) if smooth else None
-        self.labels_btn.setEnabled(False)
-        self._set_status(f"Computing cell labels for frame {t}…")
-
-        @thread_worker(connect={
-            "returned": self._on_labels_done,
-            "errored": self._on_labels_error,
-        })
-        def _worker():
-            t_, result, new_stack = self._compute_frame(
-                t=t, params=params, contours_path=contours_path,
-                foreground_path=foreground_path, nuc_path=nuc_path,
-                mask_path=mask_path, cached_stack=cached_stack, with_labels=True,
-            )
-            return t_, result, params, new_stack
-
-        self._labels_worker = _worker()
-
-    def _on_labels_done(self, payload) -> None:
-        self._labels_worker = None
-        t, result, params, new_stack = payload
-        self._cache_stack(params, new_stack)
-        if self._preview_active:
-            self._apply_intermediates(t, result)
-            n_labels = (
-                int(np.unique(result.labels[result.labels > 0]).size)
-                if result.labels is not None else 0
-            )
-            if result.labels is not None:
-                self._fill_labels_layer(
-                    _LABELS_LAYER, t, result.labels.astype(np.int32)
-                )
-            coverage = 100.0 * float(result.foreground_mask.mean())
-            self._set_status(
-                f"Frame {t}: {coverage:.0f}% fill, {n_labels} cell labels."
-            )
-        self.gate.recompute()
-
-    def _on_labels_error(self, exc: Exception) -> None:
-        self._labels_worker = None
-        self.gate.recompute()
-        self._set_status(f"Cell labels failed: {exc}")
-        logger.exception("Cell labels worker error", exc_info=exc)
-
     def _cache_stack(self, params: CellDivergenceParams, new_stack) -> None:
         """Hold a freshly computed smoothed stack resident for later frames/edits."""
         if new_stack is not None:
             self._smoothed_stack = new_stack
             self._smoothed_key = self._smooth_key(params)
 
-    def _apply_intermediates(self, t: int, result) -> None:
-        """Paint the segmentation preview's always-on layers (everything but cell
-        labels) into frame ``t``'s slice. The foreground raw/cleaned maps live on
-        the Foreground stage; here we show the contour intermediates, the fill
-        mask the walk stays inside, and the weighted cost field."""
-        self._fill_image_layer(_CT_RAW_LAYER, t, result.contours_raw)
-        self._fill_image_layer(_CT_CLEAN_LAYER, t, result.contours_clean)
-        self._fill_labels_layer(
-            _FG_MASK_LAYER, t, result.foreground_mask.astype(np.uint8)
-        )
-        self._fill_image_layer(
-            _COST_LAYER, t, self._cost_for_display(result.cost_field)
-        )
+    def _apply_result(self, t: int, result) -> None:
+        """Paint frame ``t``'s slice for every ticked group the result supplies.
+
+        Works for both a ``CellForegroundResult`` (foreground only) and a full
+        ``CellDivergenceResult``; missing fields (e.g. contours on a foreground
+        result) are simply skipped — they are never requested unless the deeper
+        compute that produces them ran.
+        """
+        if self.fg_check.isChecked():
+            self._fill_image_layer(_FG_RAW_LAYER, t, result.foreground_raw)
+            self._fill_image_layer(_FG_CLEAN_LAYER, t, result.foreground_clean)
+            self._fill_labels_layer(
+                _FG_MASK_LAYER, t, result.foreground_mask.astype(np.uint8)
+            )
+        if self.contour_check.isChecked() and hasattr(result, "contours_raw"):
+            self._fill_image_layer(_CT_RAW_LAYER, t, result.contours_raw)
+            self._fill_image_layer(_CT_CLEAN_LAYER, t, result.contours_clean)
+        if self.cost_check.isChecked() and hasattr(result, "cost_field"):
+            self._fill_image_layer(
+                _COST_LAYER, t, self._cost_for_display(result.cost_field)
+            )
+        if self.labels_check.isChecked() and getattr(result, "labels", None) is not None:
+            self._fill_labels_layer(_LABELS_LAYER, t, result.labels.astype(np.int32))
+
+    @staticmethod
+    def _frame_status(t: int, result) -> str:
+        coverage = 100.0 * float(result.foreground_mask.mean())
+        msg = f"Frame {t}: {coverage:.0f}% fill coverage"
+        labels = getattr(result, "labels", None)
+        if labels is not None:
+            n_labels = int(np.unique(labels[labels > 0]).size)
+            msg += f", {n_labels} cell labels"
+        return msg
 
     @staticmethod
     def _cost_for_display(cost: np.ndarray) -> np.ndarray:
@@ -1345,12 +1126,14 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
     # movie layer is open — otherwise ``current_step`` has no temporal entry and
     # the preview is stuck on (and mislabels) frame 0. A time scrub recomputes
     # the newly shown frame (``_on_time_changed``) and paints it into its slice;
-    # previously computed frames stay painted in theirs.
-    def _ensure_preview_layers(self, shape) -> None:
-        for name, colormap in _PREVIEW_IMAGE_LAYERS:
-            self._ensure_image_layer(name, shape, colormap)
-        for name in _PREVIEW_LABEL_LAYERS:
-            self._ensure_labels_layer(name, shape)
+    # previously computed frames stay painted in theirs. Only the layers for the
+    # ticked Compute checkboxes are created.
+    def _ensure_preview_layers(self, shape, names) -> None:
+        for name in names:
+            if name in _LABELS_KIND:
+                self._ensure_labels_layer(name, shape)
+            else:
+                self._ensure_image_layer(name, shape, _IMAGE_COLORMAPS[name])
 
     def _ensure_image_layer(self, name: str, shape, colormap: str) -> None:
         if name in self.viewer.layers:
@@ -1437,16 +1220,10 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         if nuc_path is None or not nuc_path.exists():
             self._set_status("Nucleus tracked_labels.tif not found.")
             return
-        if not self._fg_mask_present():
-            self._set_status(
-                "Foreground mask not found — run the Foreground stage first."
-            )
-            return
 
         params = self._params()
         contours_path = self._contours_path()
         foreground_path = self._foreground_path()
-        mask_path = self._fg_mask_path()
         output_path = self._output_path()
         pos_dir = self._pos_dir
 
@@ -1486,10 +1263,8 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             contours = tifffile.imread(str(contours_path))
             foreground = tifffile.imread(str(foreground_path))
             nuc = tifffile.imread(str(nuc_path))
-            fg_mask = tifffile.imread(str(mask_path)).astype(bool)
             result = segment_cells_divergence(
                 contours, foreground, nuc, params, progress_cb=_cb,
-                foreground_mask_override=fg_mask,
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             commit_labels(result.labels, output_path)
@@ -1507,7 +1282,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self.run_btn.setText("✕")
         self.run_btn.setToolTip("Cancel.")
         # ``self._running`` is set by the caller before this runs; the gate
-        # derives active_btn / labels_btn enablement from it.
+        # derives active_btn enablement from it.
         self.gate.set_task("cell_run", True)
 
     def _set_run_idle(self) -> None:

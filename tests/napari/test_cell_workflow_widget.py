@@ -142,12 +142,11 @@ def _make_sync_thread_worker():
     return fake_thread_worker
 
 
-def _write_inputs(pos_dir: Path, *, T=2, Y=24, X=24, write_mask=True) -> None:
+def _write_inputs(pos_dir: Path, *, T=2, Y=24, X=24) -> None:
     """Write the cached divergence maps + nucleus seeds the widget consumes.
 
-    When ``write_mask`` is set, also writes the foreground fill mask the
-    Foreground stage produces and the Segmentation stage consumes — the default,
-    since most tests exercise the segmentation path that requires it.
+    The foreground fill mask is now derived in-process (no disk prerequisite),
+    so only the three upstream inputs are written.
     """
     rng = np.random.default_rng(0)
     (pos_dir / "1_cellpose").mkdir(parents=True, exist_ok=True)
@@ -160,10 +159,6 @@ def _write_inputs(pos_dir: Path, *, T=2, Y=24, X=24, write_mask=True) -> None:
     tifffile.imwrite(pos_dir / "1_cellpose" / "cell_foreground.tif", fg)
     tifffile.imwrite(pos_dir / "1_cellpose" / "cell_contours.tif", contours)
     tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", nuc)
-    if write_mask:
-        (pos_dir / "3_cell").mkdir(parents=True, exist_ok=True)
-        mask = np.ones((T, Y, X), np.uint8)
-        tifffile.imwrite(pos_dir / "3_cell" / "cell_foreground_mask.tif", mask)
 
 
 # ── construction / layout ─────────────────────────────────────────────────────
@@ -173,30 +168,37 @@ def test_widget_exposes_single_run_and_preview_path(monkeypatch):
     mod = _load_module(monkeypatch)
     widget = mod.CellWorkflowWidget(_FakeViewer())
 
-    for name in (
-        "params_btn", "active_btn", "run_btn",
-        "fg_params_btn", "fg_active_btn", "fg_run_btn",
-    ):
+    # One Segmentation stage: ⚙ params / ◉ preview / ▶ run.
+    for name in ("params_btn", "active_btn", "run_btn"):
         assert isinstance(getattr(widget, name), QToolButton)
 
-    # The foreground creation stage has params + preview + its own run, but no
-    # on-demand labels button (that is the geodesic segmentation's).
-    assert not hasattr(widget, "fg_labels_btn")
+    # The split-out Foreground stage and the on-demand labels button are gone.
+    for name in ("fg_params_btn", "fg_active_btn", "fg_run_btn", "labels_btn"):
+        assert not hasattr(widget, name)
+
+    # The Compute checkboxes select which layer groups compute: foreground,
+    # contours and cost are on by default; the slow geodesic labels are off.
+    from qtpy.QtWidgets import QCheckBox
+    for name in ("fg_check", "contour_check", "cost_check", "labels_check"):
+        assert isinstance(getattr(widget, name), QCheckBox)
+    assert widget.fg_check.isChecked() is True
+    assert widget.contour_check.isChecked() is True
+    assert widget.cost_check.isChecked() is True
+    assert widget.labels_check.isChecked() is False
 
     # Single shared status/progress, hidden until used.
     assert isinstance(widget.pipeline_status_lbl, QLabel)
     assert isinstance(widget.pipeline_progress_bar, QProgressBar)
     assert widget.pipeline_progress_bar.isVisible() is False
 
-    # Primary knobs carry the spec defaults.
+    # Primary knobs carry the spec defaults, all in one flat panel.
     assert widget.fg_strength_spin.value() == 0.0
     assert widget.fg_threshold_spin.value() == 0.1
     assert widget.memory_tau_spin.value() == 0.0
     assert widget.balance_spin.value() == 0.98
     assert widget.feature_strength_spin.value() == 100.0
-
-    # Every knob lives in one flat panel — no separate Advanced block.
     assert not hasattr(widget, "advanced_section")
+    assert not hasattr(widget, "fg_params_section")
 
     widget.deleteLater()
     app.processEvents()
@@ -217,25 +219,6 @@ def test_params_button_toggles_section(monkeypatch):
     app.processEvents()
 
 
-def test_foreground_params_button_toggles_its_own_section(monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    widget = mod.CellWorkflowWidget(_FakeViewer())
-
-    # The foreground stage has its own collapsible params panel, distinct from
-    # the segmentation one, driven by its own ⚙ button.
-    assert widget.fg_params_section is not widget.params_section
-    assert widget.fg_params_section.is_expanded is False
-    widget.fg_params_btn.setChecked(True)
-    assert widget.fg_params_section.is_expanded is True
-    assert widget.params_section.is_expanded is False  # segmentation untouched
-    widget.fg_params_btn.setChecked(False)
-    assert widget.fg_params_section.is_expanded is False
-
-    widget.deleteLater()
-    app.processEvents()
-
-
 def test_pipeline_files_list_divergence_inputs_and_output(monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
@@ -246,6 +229,8 @@ def test_pipeline_files_list_divergence_inputs_and_output(monkeypatch):
     assert "1_cellpose/cell_foreground.tif" in source
     assert "2_nucleus/tracked_labels.tif" in source
     assert "3_cell/tracked_labels.tif" in source
+    # The split-out fill-mask intermediate is gone (derived in-process now).
+    assert "cell_foreground_mask.tif" not in source
 
     widget.deleteLater()
     app.processEvents()
@@ -311,6 +296,7 @@ def test_get_set_state_roundtrip(monkeypatch):
         "cleanup": {"fg_strength": 0.3, "fg_threshold": 0.2, "contour_window": 71},
         "temporal": {"memory_tau": 0.05},
         "segmentation": {"balance": 0.5, "feature_strength": 250.0, "n_workers": 1},
+        "preview": {"foreground": False, "contours": True, "cost": False, "labels": True},
         "correction": {"hole_radius": 4, "scope": "All frames"},
     })
     state = widget.get_state()
@@ -320,6 +306,9 @@ def test_get_set_state_roundtrip(monkeypatch):
     assert state["temporal"]["memory_tau"] == 0.05
     assert state["segmentation"]["balance"] == 0.5
     assert state["segmentation"]["feature_strength"] == 250.0
+    assert state["preview"] == {
+        "foreground": False, "contours": True, "cost": False, "labels": True,
+    }
     assert state["correction"]["hole_radius"] == 4
     assert state["correction"]["scope"] == "All frames"
 
@@ -343,22 +332,27 @@ def test_preview_activation_populates_all_intermediate_layers(monkeypatch, tmp_p
 
     widget.active_btn.setChecked(True)  # triggers _on_activate → _refresh_preview
 
-    for name in mod._PREVIEW_LAYERS:
+    # The default-ticked groups (foreground + contours + cost) all create layers.
+    default_layers = (
+        mod._FG_GROUP_LAYERS + mod._CONTOUR_GROUP_LAYERS + mod._COST_GROUP_LAYERS
+    )
+    for name in default_layers:
         assert name in viewer.layers, f"missing preview layer {name}"
 
-    # Preview stops before the expensive geodesic walk: no cell-labels layer,
-    # but the diagnostic intermediates (incl. the weighted cost field) are shown.
-    # Preview layers are full (T, Y, X) stacks (so the viewer keeps a time slider
-    # even with no movie open), painted one frame at a time.
+    # Preview stops before the expensive geodesic walk: no cell-labels layer
+    # (its checkbox is off), but the diagnostic intermediates (incl. the weighted
+    # cost field) are shown. Preview layers are full (T, Y, X) stacks (so the
+    # viewer keeps a time slider even with no movie open), painted one frame at a
+    # time.
     assert mod._LABELS_LAYER not in viewer.layers
     cost_layer = viewer.layers[mod._COST_LAYER]
     assert cost_layer.data.ndim == 3
     assert cost_layer.data.shape[0] == 2  # T from the input maps
     assert np.isfinite(cost_layer.data[0]).any()  # current frame painted
 
-    # Deactivation tears the preview layers down.
+    # Deactivation tears every preview layer down.
     widget.active_btn.setChecked(False)
-    for name in mod._PREVIEW_LAYERS:
+    for name in mod._ALL_PREVIEW_LAYERS:
         assert name not in viewer.layers
 
     widget.deleteLater()
@@ -383,9 +377,9 @@ def test_preview_reports_missing_maps(monkeypatch, tmp_path):
     app.processEvents()
 
 
-# ── foreground stage live preview ────────────────────────────────────────────
+# ── compute-gating checkboxes ────────────────────────────────────────────────
 
-def test_foreground_preview_populates_and_tears_down_layers(monkeypatch, tmp_path):
+def test_compute_checkboxes_gate_which_layers_compute(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
@@ -396,230 +390,92 @@ def test_foreground_preview_populates_and_tears_down_layers(monkeypatch, tmp_pat
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
 
-    widget.fg_active_btn.setChecked(True)
+    # Only the Foreground group is ticked before activation.
+    widget.contour_check.setChecked(False)
+    widget.cost_check.setChecked(False)
+    widget.labels_check.setChecked(False)
+    widget.active_btn.setChecked(True)
 
-    # Exactly the foreground-path layers appear (raw / cleaned / fill mask), each
-    # a full (T, Y, X) stack with the current frame painted.
-    for name in mod._FG_PREVIEW_LAYERS:
+    for name in mod._FG_GROUP_LAYERS:
         assert name in viewer.layers, f"missing foreground layer {name}"
+    # The unticked groups create no layers at all (not computed, not just hidden).
+    for name in (
+        mod._CONTOUR_GROUP_LAYERS + mod._COST_GROUP_LAYERS + mod._LABELS_GROUP_LAYERS
+    ):
+        assert name not in viewer.layers
     mask = viewer.layers[mod._FG_MASK_LAYER].data
     assert mask.ndim == 3 and mask.shape[0] == 2
     assert mask[0].max() > 0  # nucleus seeds union into the mask
 
-    # The segmentation-only layers (cost / contours / labels) are NOT created.
-    assert mod._COST_LAYER not in viewer.layers
-    assert mod._CT_RAW_LAYER not in viewer.layers
+    # Ticking Contours now upgrades the compute and creates the contour layers.
+    widget._preview_worker = None  # settle the sync worker (see smoothing test)
+    widget.contour_check.setChecked(True)
+    for name in mod._CONTOUR_GROUP_LAYERS:
+        assert name in viewer.layers
+    assert mod._COST_LAYER not in viewer.layers  # cost still unticked
 
-    widget.fg_active_btn.setChecked(False)
-    for name in mod._FG_PREVIEW_LAYERS:
+    # Unticking Foreground drops its layers immediately.
+    widget._preview_worker = None
+    widget.fg_check.setChecked(False)
+    for name in mod._FG_GROUP_LAYERS:
         assert name not in viewer.layers
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_foreground_preview_works_without_nucleus(monkeypatch, tmp_path):
+# ── per-frame cache ───────────────────────────────────────────────────────────
+
+def test_preview_caches_frames_and_clears_on_param_change(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
 
-    # Only the foreground map present — no nucleus tracking yet.
-    pos_dir = tmp_path / "pos00"
-    (pos_dir / "1_cellpose").mkdir(parents=True)
-    rng = np.random.default_rng(0)
-    fg = np.clip(rng.normal(0.6, 0.1, (2, 16, 16)), 0, 1).astype(np.float32)
-    tifffile.imwrite(pos_dir / "1_cellpose" / "cell_foreground.tif", fg)
+    # Count single-frame segmentation computes to prove the cache short-circuits.
+    calls = {"n": 0}
+    real = mod.segment_cells_divergence
 
-    viewer = _FakeViewer()
-    widget = mod.CellWorkflowWidget(viewer)
-    widget.refresh(pos_dir)
+    def _counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
 
-    widget.fg_active_btn.setChecked(True)
-    assert mod._FG_MASK_LAYER in viewer.layers
-    assert "fill coverage" in widget.pipeline_status_lbl.text()
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_foreground_preview_reports_missing_foreground(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+    monkeypatch.setattr(mod, "segment_cells_divergence", _counting)
 
     pos_dir = tmp_path / "pos00"
-    pos_dir.mkdir(parents=True)
-    widget = mod.CellWorkflowWidget(_FakeViewer())
-    widget.refresh(pos_dir)
-    widget.fg_active_btn.setChecked(True)
-
-    assert "Divergence Maps first" in widget.pipeline_status_lbl.text()
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_foreground_and_segmentation_previews_are_mutually_exclusive(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
-
-    pos_dir = tmp_path / "pos00"
-    _write_inputs(pos_dir)
-    viewer = _FakeViewer()
-    widget = mod.CellWorkflowWidget(viewer)
-    widget.refresh(pos_dir)
-
-    # While the foreground preview owns the viewer, the segmentation preview
-    # button is gated off (shared single-owner viewer), and vice versa.
-    widget.fg_active_btn.setChecked(True)
-    assert widget.active_btn.isEnabled() is False
-    widget.fg_active_btn.setChecked(False)
-    assert widget.active_btn.isEnabled() is True
-
-    widget.active_btn.setChecked(True)
-    assert widget.fg_active_btn.isEnabled() is False
-    widget.active_btn.setChecked(False)
-    assert widget.fg_active_btn.isEnabled() is True
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-# ── foreground stage full run (writes the fill mask) ─────────────────────────
-
-def test_foreground_run_writes_mask_file_and_layer(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
-
-    pos_dir = tmp_path / "pos00"
-    _write_inputs(pos_dir, write_mask=False)  # no mask yet — this run creates it
-    viewer = _FakeViewer()
-    widget = mod.CellWorkflowWidget(viewer)
-    widget.refresh(pos_dir)
-
-    widget.fg_run_btn.click()
-
-    out = pos_dir / "3_cell" / "cell_foreground_mask.tif"
-    assert out.exists()
-    mask = tifffile.imread(str(out))
-    assert mask.dtype == np.uint8
-    assert set(np.unique(mask).tolist()) <= {0, 1}
-    assert mask[:, 5:8, 5:8].all()  # nucleus seeds union into the mask
-    assert mod._CELL_FG_MASK_OUTPUT_LAYER in viewer.layers
-    assert "Foreground mask complete" in widget.pipeline_status_lbl.text()
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_foreground_run_refuses_without_foreground_map(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
-
-    pos_dir = tmp_path / "pos00"
-    pos_dir.mkdir(parents=True)
-    widget = mod.CellWorkflowWidget(_FakeViewer())
-    widget.refresh(pos_dir)
-    widget.fg_run_btn.click()
-
-    assert "Divergence Maps first" in widget.pipeline_status_lbl.text()
-    assert not (pos_dir / "3_cell" / "cell_foreground_mask.tif").exists()
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-# ── segmentation consumes the written foreground mask ────────────────────────
-
-def test_segmentation_requires_foreground_mask(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
-
-    pos_dir = tmp_path / "pos00"
-    _write_inputs(pos_dir, write_mask=False)  # maps + nucleus present, mask absent
+    _write_inputs(pos_dir, T=3)
     viewer = _FakeViewer()
     widget = mod.CellWorkflowWidget(viewer)
     widget.refresh(pos_dir)
     widget.set_state({"segmentation": {"n_workers": 1}})
 
-    # The full segmentation run refuses and writes nothing.
-    widget.run_btn.click()
-    assert "Foreground stage first" in widget.pipeline_status_lbl.text()
-    assert not (pos_dir / "3_cell" / "tracked_labels.tif").exists()
+    # The sync test worker leaves a stale _preview_worker handle; clear it so a
+    # forced refresh recomputes rather than coalescing (see smoothing test).
+    def _scrub_to(t):
+        viewer.dims.current_step = (t,)
+        widget._preview_worker = None
+        widget._refresh_preview()
 
-    # The live preview likewise reports the missing prerequisite.
-    widget.active_btn.setChecked(True)
-    assert "Foreground stage first" in widget.pipeline_status_lbl.text()
+    widget.active_btn.setChecked(True)  # computes frame 0
+    assert calls["n"] == 1
 
-    widget.deleteLater()
-    app.processEvents()
+    _scrub_to(1)                        # new frame → compute
+    assert calls["n"] == 2
 
+    _scrub_to(0)                        # cached frame → instant repaint, no compute
+    assert calls["n"] == 2
 
-def test_segmentation_run_consumes_written_mask(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
-
-    pos_dir = tmp_path / "pos00"
-    _write_inputs(pos_dir, write_mask=False)
-    viewer = _FakeViewer()
-    widget = mod.CellWorkflowWidget(viewer)
-    widget.refresh(pos_dir)
-    widget.set_state({"segmentation": {"n_workers": 1}})
-
-    # Restrict the fill territory to the label-1 seed's neighbourhood only. The
-    # walk may only grow inside the written mask, so label 1 spreads across that
-    # region while label 2 (whose territory is masked out) stays pinned to its
-    # bare seed — proving the run honoured the written mask, not the knobs.
-    mask = np.zeros((2, 24, 24), np.uint8)
-    mask[:, 4:9, 4:9] = 1  # around the label-1 seed only
-    (pos_dir / "3_cell").mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(pos_dir / "3_cell" / "cell_foreground_mask.tif", mask)
-    widget.refresh(pos_dir)
-
-    widget.run_btn.click()
-
-    labels = tifffile.imread(str(pos_dir / "3_cell" / "tracked_labels.tif"))
-    seed2 = np.zeros((2, 24, 24), bool)
-    seed2[:, 16:19, 16:19] = True  # the label-2 nucleus seed
-    assert (labels == 1).sum() > int(seed2.sum())   # label 1 grew inside the mask
-    assert (labels == 2).sum() == int(seed2.sum())  # label 2 confined to its seed
-    # Outside the mask the only filled pixels are bare seeds — no growth leaked.
-    leaked = (labels > 0) & (mask == 0)
-    assert np.array_equal(leaked, seed2)
+    # A param edit invalidates the whole cache → the frame recomputes.
+    widget.balance_spin.setValue(0.5)
+    _scrub_to(0)
+    assert calls["n"] == 3
 
     widget.deleteLater()
     app.processEvents()
 
 
-# ── on-demand single-frame labels ───────────────────────────────────────────
+# ── labels checkbox (the slow geodesic, on demand) ───────────────────────────
 
-def test_labels_button_enabled_only_during_preview(monkeypatch, tmp_path):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
-
-    pos_dir = tmp_path / "pos00"
-    _write_inputs(pos_dir)
-    viewer = _FakeViewer()
-    widget = mod.CellWorkflowWidget(viewer)
-    widget.refresh(pos_dir)
-
-    assert widget.labels_btn.isEnabled() is False
-    widget.active_btn.setChecked(True)
-    assert widget.labels_btn.isEnabled() is True
-    widget.active_btn.setChecked(False)
-    assert widget.labels_btn.isEnabled() is False
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_labels_button_fills_cell_labels_for_current_frame(monkeypatch, tmp_path):
+def test_labels_checkbox_computes_and_drops_labels_layer(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
@@ -632,10 +488,11 @@ def test_labels_button_fills_cell_labels_for_current_frame(monkeypatch, tmp_path
     widget.set_state({"segmentation": {"n_workers": 1}})
 
     widget.active_btn.setChecked(True)
-    # Activation alone never creates the (slow) labels layer.
+    # Labels are off by default → the slow geodesic layer is never created.
     assert mod._LABELS_LAYER not in viewer.layers
 
-    widget.labels_btn.click()  # explicit on-demand geodesic for the current frame
+    widget._preview_worker = None  # settle the sync worker
+    widget.labels_check.setChecked(True)
     assert mod._LABELS_LAYER in viewer.layers
     labels = viewer.layers[mod._LABELS_LAYER].data
     assert labels.ndim == 3  # full (T, Y, X) stack, current frame painted
@@ -643,9 +500,10 @@ def test_labels_button_fills_cell_labels_for_current_frame(monkeypatch, tmp_path
     assert labels[0].max() > 0
     assert "cell labels" in widget.pipeline_status_lbl.text()
 
-    # Deactivation tears the labels layer down alongside the intermediates.
-    widget.active_btn.setChecked(False)
+    # Unticking removes the labels layer; the rest of the preview stays.
+    widget.labels_check.setChecked(False)
     assert mod._LABELS_LAYER not in viewer.layers
+    assert mod._COST_LAYER in viewer.layers
 
     widget.deleteLater()
     app.processEvents()
@@ -753,6 +611,8 @@ def test_full_run_writes_tracked_labels(monkeypatch, tmp_path):
     assert labels.max() > 0
     assert mod._TRACKED_CELL_LAYER in viewer.layers
     assert "complete" in widget.pipeline_status_lbl.text()
+    # The fill mask is derived in-process — no disk intermediate is written.
+    assert not (pos_dir / "3_cell" / "cell_foreground_mask.tif").exists()
 
     widget.deleteLater()
     app.processEvents()
