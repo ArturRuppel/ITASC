@@ -66,7 +66,7 @@ def test_save_load_round_trip_without_label_paths(tmp_path):
 
 
 def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
-    """Discovery anchors on the cell-labels file and derives the contact path."""
+    """A folder's inputs are grouped into one entry; the contact path is derived."""
     from cellflow.meta.catalog import discover_catalog_entries
 
     # Two positions in a nested layout; one missing the nucleus labels.
@@ -114,6 +114,71 @@ def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
     assert contact == pos / "contact_analysis.h5"
     assert not contact.exists()
     assert entries[0]["cell_tracked_labels_path"] == pos / "cell_labels.tif"
+
+
+def test_discover_catalog_entries_by_nucleus_only(tmp_path):
+    """Inputs are optional: a folder with only nucleus labels is still a position."""
+    from cellflow.meta.catalog import discover_catalog_entries
+
+    pos = tmp_path / "pos01"
+    pos.mkdir()
+    (pos / "nucleus_labels.tif").touch()  # no cell labels at all
+
+    entries = discover_catalog_entries(tmp_path, nucleus_name="nucleus_labels.tif")
+
+    assert len(entries) == 1
+    assert entries[0]["id"] == "pos01"
+    assert entries[0]["nucleus_tracked_labels_path"] == pos / "nucleus_labels.tif"
+    assert entries[0]["cell_tracked_labels_path"] is None
+    # The contact-analysis output path is still derived even with no cell labels.
+    assert entries[0]["contact_analysis_path"] == pos / "contact_analysis.h5"
+
+
+def test_discover_catalog_entries_groups_inputs_from_different_subfolders(tmp_path):
+    """Cell and nucleus inputs in different subfolders collapse to one entry."""
+    from cellflow.meta.catalog import discover_catalog_entries
+
+    pos = tmp_path / "pos01"
+    (pos / "3_cell").mkdir(parents=True)
+    (pos / "2_nucleus").mkdir()
+    (pos / "3_cell" / "tracked_labels.tif").touch()
+    (pos / "2_nucleus" / "tracked_labels.tif").touch()
+
+    entries = discover_catalog_entries(
+        tmp_path,
+        cell_name="3_cell/tracked_labels.tif",
+        nucleus_name="2_nucleus/tracked_labels.tif",
+    )
+
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["cell_tracked_labels_path"] == pos / "3_cell" / "tracked_labels.tif"
+    assert entry["nucleus_tracked_labels_path"] == pos / "2_nucleus" / "tracked_labels.tif"
+
+
+def test_discover_catalog_entries_skips_folders_without_inputs(tmp_path):
+    """A folder with none of the recognized inputs is not a position."""
+    from cellflow.meta.catalog import discover_catalog_entries
+
+    (tmp_path / "empty").mkdir()
+    (tmp_path / "pos01").mkdir()
+    (tmp_path / "pos01" / "cell_labels.tif").touch()
+
+    entries = discover_catalog_entries(
+        tmp_path, cell_name="cell_labels.tif", nucleus_name="nucleus_labels.tif"
+    )
+
+    assert [e["id"] for e in entries] == ["pos01"]
+
+
+def test_discover_catalog_entries_without_any_input_names_is_empty(tmp_path):
+    """With no input names supplied there is nothing to anchor discovery on."""
+    from cellflow.meta.catalog import discover_catalog_entries
+
+    (tmp_path / "pos01").mkdir()
+    (tmp_path / "pos01" / "cell_labels.tif").touch()
+
+    assert discover_catalog_entries(tmp_path) == []
 
 
 def test_load_meta_catalog_resolves_relative_paths_from_csv_parent(tmp_path):

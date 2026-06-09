@@ -137,60 +137,74 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
 def discover_catalog_entries(
     root: Path | str,
     *,
-    cell_name: str,
+    cell_name: str | None = None,
     contact_name: str = "contact_analysis.h5",
     nucleus_name: str | None = None,
 ) -> list[dict]:
     """Find catalog entries under *root* by file name / relative path.
 
-    *cell_name* (required) and *contact_name* / *nucleus_name* are each a bare
-    file name or a path relative to a position folder. Cell labels are the
-    anchor: every folder that contains the cell-labels file is registered as one
-    entry, and its position folder is the directory the relative path resolves
-    from (the file's parent for a bare name). The contact-analysis ``.h5`` is a
-    derived artifact whose path is computed from *contact_name* relative to that
-    position folder; it need not exist yet (it can be computed from the cell
-    labels). Co-located nucleus label files are associated when present. The
-    returned dicts carry the discovered paths but no metadata (date / condition /
-    notes) — that is assigned before adding to the catalog.
+    A *position* is any folder that contains at least one recognized **input** —
+    cell labels and/or nucleus labels, each optional (*cell_name* / *nucleus_name*
+    are a bare file name or a path relative to the position folder). A folder is
+    registered once and carries whichever inputs it has; the others are ``None``.
+    The contact-analysis ``.h5`` is a derived **output**, not an anchor: its path
+    is computed from *contact_name* relative to the position folder and need not
+    exist yet (it is built later). The returned dicts carry the discovered paths
+    but no metadata (date / condition / notes) — that is assigned before adding to
+    the catalog.
     """
     root = Path(root)
-    if not cell_name or not root.is_dir():
+    if not root.is_dir():
         return []
 
-    cell_rel = Path(cell_name)
     contact_rel = Path(contact_name or "contact_analysis.h5")
+    # position_dir -> {input_key: resolved_path}, grouped so a folder with several
+    # inputs becomes one entry.
+    by_position: dict[Path, dict] = {}
+    for key, name in (
+        ("cell_tracked_labels_path", cell_name),
+        ("nucleus_tracked_labels_path", nucleus_name),
+    ):
+        for position_dir, path in _discover_input(root, name):
+            by_position.setdefault(position_dir, {})[key] = path
+
     entries: list[dict] = []
-    for match in sorted(root.rglob(cell_rel.name)):
-        if not match.is_file():
-            continue
-        if len(cell_rel.parts) > 1 and not _path_ends_with(match, cell_rel):
-            continue
-        position_dir = match
-        for _ in cell_rel.parts:
-            position_dir = position_dir.parent
-        # The contact analysis is derived from the cell labels, so its path is
-        # computed even when the .h5 does not exist yet (it gets built on add).
-        entries.append({
+    for position_dir in sorted(by_position):
+        entry = {
             "id": position_dir.name,
             "position_path": position_dir,
             "contact_analysis_path": _resolve_path(position_dir / contact_rel),
-            "cell_tracked_labels_path": _resolve_path(match),
-            "nucleus_tracked_labels_path": _member_file(position_dir, nucleus_name),
-        })
+            "cell_tracked_labels_path": None,
+            "nucleus_tracked_labels_path": None,
+        }
+        entry.update(by_position[position_dir])
+        entries.append(entry)
     return entries
+
+
+def _discover_input(root: Path, name: str | None):
+    """Yield ``(position_dir, resolved_path)`` for each file matching *name*.
+
+    *name* is a bare file name or a path relative to the position folder; the
+    position folder is the file's parent with the relative parts stripped.
+    """
+    if not name:
+        return
+    rel = Path(name)
+    for match in sorted(root.rglob(rel.name)):
+        if not match.is_file():
+            continue
+        if len(rel.parts) > 1 and not _path_ends_with(match, rel):
+            continue
+        position_dir = match
+        for _ in rel.parts:
+            position_dir = position_dir.parent
+        yield _resolve_path(position_dir), _resolve_path(match)
 
 
 def _path_ends_with(path: Path, rel: Path) -> bool:
     rel_parts = rel.parts
     return len(path.parts) >= len(rel_parts) and path.parts[-len(rel_parts):] == rel_parts
-
-
-def _member_file(position_dir: Path, name: str | None) -> Path | None:
-    if not name:
-        return None
-    candidate = position_dir / name
-    return _resolve_path(candidate) if candidate.is_file() else None
 
 
 def _resolve_path(path: Path) -> Path:
