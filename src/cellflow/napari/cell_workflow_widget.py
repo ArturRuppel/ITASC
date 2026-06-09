@@ -421,7 +421,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             "0 = raw sigmoid, 1 = full local-mean background subtraction.",
         )
         self.fg_threshold_spin = _dslider(
-            0, 1, 0.1, 0.01, 2,
+            0, 1, 0.1, 0.001, 3,
             "Cleaned-foreground cutoff → fill mask (sigmoid scale).",
         )
         self.fg_window_spin = _islider(

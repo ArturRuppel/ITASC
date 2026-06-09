@@ -345,9 +345,9 @@ class CorrectionWidget(QWidget):
             manual_rows = [
                 ("Middle-click empty space", "Spawn new cell"),
                 ("Middle-click on cell or Delete", "Erase cell"),
-                ("Ctrl+Left-click", "Merge with clicked cell, or attach it to the selected track (other frame)"),
+                ("Ctrl+Left-click", "Merge with the clicked cell (same frame)"),
                 ("Ctrl+Middle-click", "Grow / link selected track here"),
-                ("Right-click variants", "Swap labels (selected cell must be in this frame)"),
+                ("Ctrl+Right-click", "Swap with the clicked cell, or attach it to the selected track (other frame)"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
             ]
@@ -1017,53 +1017,24 @@ class CorrectionWidget(QWidget):
             self._set_status(f"Linked cell {sel} → t={t} — Active on '{_layer.name}'")
 
     def _ctrl_right_click_swap(self, seg2d, pos, t: int, _layer) -> None:
-        """Ctrl+right-click: swap the selected cell with the clicked cell.
+        """Ctrl+right-click: swap, attach to a track, or run a two-click swap.
 
-        With no usable selection it arms the two-click swap instead (this click
-        becomes the first cell; a following plain right-click picks the second).
-        The selected cell's position is derived from its label, so the swap fires
-        however the cell was selected — not only after a left-click on it.
+        The selected cell's position is derived from its label, so the action
+        fires however the cell was selected — not only after a left-click on it.
+        Context picks the operation:
+
+        * a pending two-click swap → this click is its second cell;
+        * selected cell present in this frame → swap it with the clicked cell;
+        * selected cell on another frame → attach the clicked cell to its track;
+        * nothing usable selected → arm a two-click swap (this is the first cell;
+          a following Ctrl+right-click picks the second).
         """
         lab = _label_at(seg2d, pos)
         if lab == 0:
             self._set_status("Swap — click on a cell (not background)")
             return
-        sel_pos = self._selected_label_pos(seg2d)
-        if (
-            self._selected_label != 0
-            and sel_pos is not None
-            and lab != self._selected_label
-        ):
-            before = seg2d.copy()
-            ok = swap_labels(seg2d, sel_pos, pos)
-            if ok:
-                self._record_history(_layer, t, before)
-                _layer.refresh()
-                self._selected_label = 0
-                self._selected_pos = None
-                self._selected_t = -1
-                self._update_highlight(t, 0)
-                self._set_status(f"Swapped — Active on '{_layer.name}'")
-            else:
-                self._set_status("Swap failed — click on two different cells")
-        else:
-            self._swap_first_pos = pos
-            self._swap_first_t = t
-            self._set_status(
-                f"Swap — label {lab} selected, right-click second cell"
-            )
 
-    def _right_click_edit(self, seg2d, pos, t: int, _layer) -> None:
-        """Plain right-click: finish a two-click swap, or swap the selection.
-
-        With a pending two-click swap, this click is the second cell. Otherwise,
-        with a cell selected, it *swaps* the clicked cell with the selected one —
-        but only when the selected cell is present in this frame. When the
-        selected cell lives on another frame there is nothing to swap with here;
-        attaching the clicked cell to that track is the cross-frame
-        Ctrl+left-click action instead. The selected cell's position is derived
-        from its label, so the swap works regardless of how it was selected.
-        """
+        # Finish a pending two-click swap.
         if self._swap_first_pos is not None:
             if t != self._swap_first_t:
                 self._swap_first_pos = None
@@ -1081,23 +1052,49 @@ class CorrectionWidget(QWidget):
             else:
                 self._set_status("Swap failed — click on two different cells")
             return
-        if self._selected_label == 0:
-            return
+
         sel_pos = self._selected_label_pos(seg2d)
-        if sel_pos is None:
-            self._set_status(
-                "Selected cell is on another frame — Ctrl+left-click to attach "
-                "the clicked cell to its track"
-            )
+        if self._selected_label != 0 and sel_pos is not None:
+            # Selected cell is in this frame → swap it with the clicked cell.
+            if lab == self._selected_label:
+                return
+            before = seg2d.copy()
+            ok = swap_labels(seg2d, sel_pos, pos)
+            if ok:
+                self._record_history(_layer, t, before)
+                _layer.refresh()
+                self._selected_label = 0
+                self._selected_pos = None
+                self._selected_t = -1
+                self._update_highlight(t, 0)
+                self._set_status(f"Swapped — Active on '{_layer.name}'")
+            else:
+                self._set_status("Swap failed — click on two different cells")
             return
-        before = seg2d.copy()
-        ok = swap_labels(seg2d, sel_pos, pos)
-        if ok:
-            self._record_history(_layer, t, before)
-            _layer.refresh()
-            self._set_status(f"Swapped — Active on '{_layer.name}'")
-        else:
-            self._set_status("Swap failed — click on a different cell")
+
+        if self._selected_label != 0 and sel_pos is None:
+            # Selected cell lives on another frame → attach the clicked cell to
+            # its track by relabelling it into the selected ID.
+            before = seg2d.copy()
+            ok = relabel_cell(seg2d, pos, self._selected_label)
+            if ok:
+                self._record_history(_layer, t, before)
+                _layer.refresh()
+                self._update_highlight(t, self._selected_label)
+                self._set_status(
+                    f"Attached to track {self._selected_label} — "
+                    f"Active on '{_layer.name}'"
+                )
+            else:
+                self._set_status("Attach failed — click on a different cell")
+            return
+
+        # No usable selection → arm a two-click swap.
+        self._swap_first_pos = pos
+        self._swap_first_t = t
+        self._set_status(
+            f"Swap — label {lab} selected, Ctrl+right-click second cell"
+        )
 
     # ── callback registration ─────────────────────────────────────────────────
 
@@ -1191,10 +1188,6 @@ class CorrectionWidget(QWidget):
                     self._ctrl_right_click_swap(seg2d, pos, t, _layer)
                     return
 
-                if btn == 2 and not mods:
-                    self._right_click_edit(seg2d, pos, t, _layer)
-                    return
-
                 if btn == 1 and mods == {"Control"}:
                     lab = _label_at(seg2d, pos)
                     if lab == 0:
@@ -1202,41 +1195,32 @@ class CorrectionWidget(QWidget):
                         return
                     if self._selected_label == 0 or lab == self._selected_label:
                         return
-                    before = seg2d.copy()
-                    if np.any(seg2d == self._selected_label):
-                        # Selected cell lives in this frame → merge the two cells.
-                        ok = merge_cells(
-                            seg2d, pos, pos,
-                            label_a=lab, label_b=self._selected_label,
-                        )
+                    if not np.any(seg2d == self._selected_label):
+                        # Selected cell is on another frame → there is nothing
+                        # here to merge with; attaching the clicked cell to its
+                        # track is the Ctrl+right-click action instead.
                         self._set_status(
-                            f"Merged — Active on '{_layer.name}'"
-                            if ok else "Merge failed"
+                            "Selected cell is on another frame — Ctrl+right-click "
+                            "to attach the clicked cell to its track"
                         )
-                        if ok:
-                            self._record_history(_layer, t, before)
-                        _layer.refresh()
-                        self._selected_label = 0
-                        self._selected_pos = None
-                        self._selected_t = -1
-                        self._update_highlight(t, _label_at(seg2d, pos))
-                    else:
-                        # Selected cell is on another frame → attach (merge track):
-                        # relabel the clicked cell into the selected track so it
-                        # links into this frame.
-                        ok = relabel_cell(seg2d, pos, self._selected_label)
-                        if ok:
-                            self._record_history(_layer, t, before)
-                            _layer.refresh()
-                            self._update_highlight(t, self._selected_label)
-                            self._set_status(
-                                f"Attached to track {self._selected_label} — "
-                                f"Active on '{_layer.name}'"
-                            )
-                        else:
-                            self._set_status(
-                                "Attach failed — click on a different cell"
-                            )
+                        return
+                    # Selected cell lives in this frame → merge the two cells.
+                    before = seg2d.copy()
+                    ok = merge_cells(
+                        seg2d, pos, pos,
+                        label_a=lab, label_b=self._selected_label,
+                    )
+                    self._set_status(
+                        f"Merged — Active on '{_layer.name}'"
+                        if ok else "Merge failed"
+                    )
+                    if ok:
+                        self._record_history(_layer, t, before)
+                    _layer.refresh()
+                    self._selected_label = 0
+                    self._selected_pos = None
+                    self._selected_t = -1
+                    self._update_highlight(t, _label_at(seg2d, pos))
                     return
 
                 if btn == 1 and not mods:

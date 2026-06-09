@@ -122,50 +122,7 @@ def test_spawn_into_selected_rejects_click_on_a_cell():
     stub._record_history.assert_not_called()
 
 
-# ── plain right-click: swap / link regardless of how selection happened ─────
-
-
-def test_right_click_swaps_with_selection_made_off_image():
-    seg = np.zeros((10, 10), dtype=int)
-    seg[1:4, 1:4] = 5
-    seg[6:9, 6:9] = 7
-    stub = _edit_stub(selected_label=5)  # _selected_pos is None
-    layer = _layer()
-
-    CorrectionWidget._right_click_edit(stub, seg, (7.0, 7.0), 0, layer)
-
-    # 5 and 7 exchanged across the frame.
-    assert seg[2, 2] == 7
-    assert seg[7, 7] == 5
-    assert "Swapped" in _last_status(stub)
-
-
-def test_right_click_noops_when_selected_cell_absent_here():
-    seg = np.zeros((10, 10), dtype=int)
-    seg[6:9, 6:9] = 7  # selected cell 5 is NOT in this frame
-    stub = _edit_stub(selected_label=5)
-    layer = _layer()
-
-    CorrectionWidget._right_click_edit(stub, seg, (7.0, 7.0), 0, layer)
-
-    # Plain right-click only *swaps* within a frame; with the selected cell on
-    # another frame there is nothing here to swap with, so the clicked cell is
-    # left untouched and the user is pointed at the cross-frame Ctrl+left-click.
-    assert seg[7, 7] == 7
-    assert "another frame" in _last_status(stub)
-    stub._record_history.assert_not_called()
-
-
-def test_right_click_no_op_without_selection():
-    seg = np.zeros((10, 10), dtype=int)
-    seg[6:9, 6:9] = 7
-    stub = _edit_stub(selected_label=0)
-    CorrectionWidget._right_click_edit(stub, seg, (7.0, 7.0), 0, _layer())
-    assert seg[7, 7] == 7  # untouched
-    stub._record_history.assert_not_called()
-
-
-# ── Ctrl+right-click swap regardless of how selection happened ──────────────
+# ── Ctrl+right-click: swap / attach / two-click, regardless of selection ────
 
 
 def test_ctrl_right_click_swaps_with_selection_made_off_image():
@@ -177,10 +134,27 @@ def test_ctrl_right_click_swaps_with_selection_made_off_image():
 
     CorrectionWidget._ctrl_right_click_swap(stub, seg, (7.0, 7.0), 0, layer)
 
+    # 5 and 7 exchanged across the frame.
     assert seg[2, 2] == 7
     assert seg[7, 7] == 5
     assert stub._selected_label == 0  # selection cleared after the swap
     assert "Swapped" in _last_status(stub)
+
+
+def test_ctrl_right_click_attaches_when_selected_cell_absent_here():
+    seg = np.zeros((10, 10), dtype=int)
+    seg[6:9, 6:9] = 7  # selected cell 5 is NOT in this frame
+    stub = _edit_stub(selected_label=5)
+    layer = _layer()
+
+    CorrectionWidget._ctrl_right_click_swap(stub, seg, (7.0, 7.0), 0, layer)
+
+    # With the selected cell on another frame there is nothing here to swap
+    # with, so the clicked cell is attached to that track (relabelled to 5).
+    assert seg[7, 7] == 5
+    assert not np.any(seg == 7)
+    stub._record_history.assert_called_once()
+    assert "Attached to track 5" in _last_status(stub)
 
 
 def test_ctrl_right_click_arms_two_click_swap_without_selection():
@@ -191,3 +165,20 @@ def test_ctrl_right_click_arms_two_click_swap_without_selection():
     # No selection: this click is remembered as the first swap cell.
     assert stub._swap_first_pos == (7.0, 7.0)
     assert stub._swap_first_t == 2
+
+
+def test_ctrl_right_click_finishes_two_click_swap():
+    seg = np.zeros((10, 10), dtype=int)
+    seg[1:4, 1:4] = 5
+    seg[6:9, 6:9] = 7
+    stub = _edit_stub(selected_label=0)
+    stub._swap_first_pos = (2.0, 2.0)  # first cell already armed at this frame
+    stub._swap_first_t = 0
+    layer = _layer()
+
+    CorrectionWidget._ctrl_right_click_swap(stub, seg, (7.0, 7.0), 0, layer)
+
+    assert seg[2, 2] == 7
+    assert seg[7, 7] == 5
+    assert stub._swap_first_pos is None  # armed swap consumed
+    assert "Swapped" in _last_status(stub)
