@@ -13,6 +13,7 @@ from qtpy.QtCore import QObject, QSettings, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -187,9 +188,26 @@ class AggregateQuantificationWidget(QWidget):
         self.contact_analysis_progress_bar.setTextVisible(True)
         layout.addWidget(self.contact_analysis_progress_bar)
 
+        # Display options, laid out as a two-column grid of toggles.
+        self.color_cells_by_label_cb = QCheckBox("Color cells by label")
+        self.color_edges_by_id_cb = QCheckBox("Color edges by ID")
+        self.color_edges_by_label_cb = QCheckBox("Color edges by label")
+        self.hide_border_edges_cb = QCheckBox("Hide border edges")
+        options_grid = QGridLayout()
+        options_grid.setContentsMargins(0, 0, 0, 0)
+        options_grid.setHorizontalSpacing(12)
+        options_grid.addWidget(self.color_cells_by_label_cb, 0, 0)
+        options_grid.addWidget(self.color_edges_by_id_cb, 0, 1)
+        options_grid.addWidget(self.color_edges_by_label_cb, 1, 0)
+        options_grid.addWidget(self.hide_border_edges_cb, 1, 1)
+        layout.addLayout(options_grid)
+
+        layout.addStretch()
+
         # Visualize is the only build/show action here: it computes the .h5 on
         # demand only if it is missing, then shows the overlays. Forcing a rebuild
-        # is the builder plugin's job in the studio, so there is no Recompute.
+        # is the builder plugin's job in the studio, so there is no Recompute. It
+        # sits at the bottom of the panel, below the display options.
         self.visualize_btn = QPushButton("Visualize")
         self.visualize_btn.setToolTip(
             "Show contact-analysis overlays for the current position. "
@@ -199,27 +217,7 @@ class AggregateQuantificationWidget(QWidget):
         action_button(self.visualize_btn, expand=True)
         layout.addWidget(self.visualize_btn)
 
-        self.cancel_build_btn = QPushButton("Cancel")
-        action_button(self.cancel_build_btn)
-        self.cancel_build_btn.setEnabled(False)
-        layout.addWidget(self.cancel_build_btn)
-
-        self.color_cells_by_label_cb = QCheckBox("Color cells by label")
-        layout.addWidget(self.color_cells_by_label_cb)
-
-        self.color_edges_by_id_cb = QCheckBox("Color edges by ID")
-        layout.addWidget(self.color_edges_by_id_cb)
-
-        self.color_edges_by_label_cb = QCheckBox("Color edges by label")
-        layout.addWidget(self.color_edges_by_label_cb)
-
-        self.hide_border_edges_cb = QCheckBox("Hide border edges")
-        layout.addWidget(self.hide_border_edges_cb)
-
-        layout.addStretch()
-
         self.visualize_btn.clicked.connect(lambda: self._on_visualize(overwrite=False))
-        self.cancel_build_btn.clicked.connect(self._on_cancel_build)
         self._register_gate_controls()
         if self._standalone:
             self._load_standalone_settings()
@@ -476,7 +474,6 @@ class AggregateQuantificationWidget(QWidget):
             ControlClass.RUN_VIEWER,
             when=lambda: self._inputs_ready() and not running(),
         )
-        g.register(self.cancel_build_btn, ControlClass.RUN_HEADLESS, when=running)
         # Batch is headless (disk only); it runs regardless of viewer ownership.
         g.register(
             self.run_batch_btn, ControlClass.RUN_HEADLESS, when=lambda: not batch_running()
@@ -671,15 +668,6 @@ class AggregateQuantificationWidget(QWidget):
             self._build_completion_pending = False
             self._build_error_pending = False
             self._update_action_states()
-
-    def _on_cancel_build(self) -> None:
-        worker = self._build_worker
-        if worker is not None:
-            self._build_worker = None
-            worker.quit()
-        self._set_build_running(False)
-        self._set_contact_analysis_status("Status: build cancelled.")
-        self._update_status()
 
     # ------------------------------------------------------------------- batch
     def _on_browse_batch_root(self) -> None:

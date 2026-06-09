@@ -604,3 +604,46 @@ def test_preview_blocked_during_run(monkeypatch, tmp_path):
     assert w.nucleus_preview_btn.isEnabled()
 
     w.deleteLater()
+
+
+def test_preview_reuses_cached_frames_and_invalidates_on_param_change(monkeypatch, tmp_path):
+    _qapp()
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos = tmp_path / "pos00"
+    _write_prob_dp(pos, "nucleus", T=3)
+    viewer = _PreviewViewer()
+    w = mod.DivergenceMapsWidget(viewer, show_pipeline_files=False)
+    w.refresh(pos)
+
+    # Count actual frame computes; cache hits must not reach the worker body.
+    computes: list[int] = []
+    real_compute = w._compute_channel_frame
+
+    def _counting_compute(prob_path, dp_path, t, params):
+        computes.append(t)
+        return real_compute(prob_path, dp_path, t, params)
+
+    w._compute_channel_frame = _counting_compute
+
+    w.nucleus_preview_btn.setChecked(True)  # activation computes frame 0
+    assert computes == [0]
+
+    # Scrub to frame 2 → a fresh compute.
+    viewer.dims.current_step = (2,)
+    w._refresh_preview()
+    assert computes == [0, 2]
+
+    # Scrub back to frame 0 → served from cache, no recompute.
+    viewer.dims.current_step = (0,)
+    w._refresh_preview()
+    assert computes == [0, 2]
+
+    # A param edit invalidates the cache → frame 0 recomputes.
+    w.nuc_smoothing_spin.setValue(w.nuc_smoothing_spin.value() + 1.0)
+    w._refresh_preview()
+    assert computes == [0, 2, 0]
+
+    w.nucleus_preview_btn.setChecked(False)
+    w.deleteLater()

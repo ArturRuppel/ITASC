@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.napari._preview_cache import FramePreviewCache
 from cellflow.napari._widget_helpers import (
     dslider as _dslider,
     islider as _islider,
@@ -130,6 +131,11 @@ class DivergenceMapsWidget(QWidget):
         self._active_preview_channel: str | None = None
         self._preview_worker = None
         self._preview_pending = False
+        # Per-frame result cache (frame t → (fg, contour)) keyed on the active
+        # channel + its params, so scrubbing back to a computed frame repaints
+        # instantly and any param edit drops every cached frame. Mirrors the
+        # cell-segmentation preview's cache; freed when the preview deactivates.
+        self._preview_cache = FramePreviewCache()
         # Preview layers whose contrast has not yet been seeded from real data.
         self._preview_needs_autocontrast: set[str] = set()
         self._preview_timer = QTimer(self)
@@ -528,6 +534,7 @@ class DivergenceMapsWidget(QWidget):
             self._preview_pending = False
             self.gate.release_viewer(token)
             self._teardown_preview_layers(channel)
+            self._preview_cache.clear()
             self._set_status("")
 
     def _on_param_changed(self, *_args) -> None:
@@ -539,10 +546,13 @@ class DivergenceMapsWidget(QWidget):
             self._preview_timer.start()
 
     def _refresh_preview(self):
-        """Recompute the active channel's current-frame preview off-thread.
+        """Repaint the active channel's current-frame preview, computing if needed.
 
-        While a pass is in flight, further edits arm ``_preview_pending`` so one
-        fresh pass (latest params/frame) fires when the current one returns.
+        Reuses a cached frame (same channel + params) for an instant repaint —
+        even while a worker is in flight — and only starts a compute for a frame
+        the cache doesn't already hold. While a pass is in flight, further edits
+        arm ``_preview_pending`` so one fresh pass (latest params/frame) fires
+        when the current one returns.
         """
         channel = self._active_preview_channel
         if channel is None:
@@ -563,12 +573,22 @@ class DivergenceMapsWidget(QWidget):
         # slider even before any frame is computed; each visited frame fills its
         # own slice on demand.
         self._ensure_preview_layers(channel, shape)
+
+        t = max(0, min(self._current_t(), shape[0] - 1))
+        params = self._channel_state("nuc" if channel == "nucleus" else "cell")
+        key = (channel, tuple(sorted(params.items())))
+        self._preview_cache.sync(key)
+
+        cached = self._preview_cache.get(t)
+        if cached is not None:
+            self._paint_preview(channel, t, *cached)
+            self._set_status(f"{channel.title()} divergence preview — frame {t}.")
+            return None
+
         if self._preview_worker is not None:
             self._preview_pending = True
             return self._preview_worker
 
-        t = max(0, min(self._current_t(), shape[0] - 1))
-        params = self._channel_state("nuc" if channel == "nucleus" else "cell")
         self._set_status(f"Computing {channel} divergence preview for frame {t}…")
 
         @thread_worker(connect={
@@ -577,22 +597,27 @@ class DivergenceMapsWidget(QWidget):
         })
         def _worker():
             fg, contour = self._compute_channel_frame(prob_path, dp_path, t, params)
-            return channel, t, fg, contour
+            return channel, key, t, fg, contour
 
         self._preview_worker = _worker()
         return self._preview_worker
 
     def _preview_done(self, payload) -> None:
         self._preview_worker = None
-        channel, t, fg, contour = payload
+        channel, key, t, fg, contour = payload
+        self._preview_cache.put(key, t, (fg, contour))
         if self._active_preview_channel == channel:
-            fg_name, ct_name = _PREVIEW_LAYER_NAMES[channel]
-            self._fill_image_layer(fg_name, t, fg)
-            self._fill_image_layer(ct_name, t, contour)
+            self._paint_preview(channel, t, fg, contour)
             self._set_status(f"{channel.title()} divergence preview — frame {t}.")
         if self._preview_pending and self._active_preview_channel is not None:
             self._preview_pending = False
             self._refresh_preview()
+
+    def _paint_preview(self, channel, t: int, fg, contour) -> None:
+        """Fill frame ``t``'s slice of the channel's foreground + contour layers."""
+        fg_name, ct_name = _PREVIEW_LAYER_NAMES[channel]
+        self._fill_image_layer(fg_name, t, fg)
+        self._fill_image_layer(ct_name, t, contour)
 
     def _preview_error(self, exc: Exception) -> None:
         self._preview_worker = None

@@ -2,6 +2,7 @@
 """Atom Extraction section for the nucleus workflow widget (stage ①)."""
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 import numpy as np
@@ -16,6 +17,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.napari._preview_cache import FramePreviewCache
 from cellflow.napari._widget_helpers import (
     dslider as _dslider,
     islider as _islider,
@@ -214,6 +216,11 @@ class NucleusAtomExtractionMixin:
         # _atom_preview_pending so exactly one fresh pass fires when it returns.
         self._atom_preview_worker = None
         self._atom_preview_pending = False
+        # Per-frame result cache (frame t → painted slices) keyed on the atom
+        # params, so scrubbing back to a computed frame repaints instantly and
+        # any param edit drops every cached frame. Mirrors the cell-segmentation
+        # preview's cache; freed when the preview deactivates.
+        self._atom_preview_cache = FramePreviewCache()
         self._atom_refresh_timer = QTimer(self)
         self._atom_refresh_timer.setSingleShot(True)
         self._atom_refresh_timer.setInterval(150)
@@ -317,6 +324,7 @@ class NucleusAtomExtractionMixin:
                 if name in self.viewer.layers:
                     self.viewer.layers.remove(name)
             self._atom_image_needs_autocontrast.clear()
+            self._atom_preview_cache.clear()
             self._set_atom_status("")
 
     def _set_atom_group_visible(self, names, visible: bool) -> None:
@@ -380,12 +388,22 @@ class NucleusAtomExtractionMixin:
             self._set_atom_status("Foreground/contour maps not found.")
             return None
         self._ensure_atom_preview_stacks(shape)
+        params = self._atom_params()
+        key = dataclasses.astuple(params)
+        self._atom_preview_cache.sync(key)
+        n_frames = shape[0]
+        t = max(0, min(self._current_t(), n_frames - 1))
+
+        cached = self._atom_preview_cache.get(t)
+        if cached is not None:
+            # Already computed for these params — instant repaint, even while a
+            # worker is busy on another frame.
+            self._paint_atom_preview(t, cached)
+            return None
+
         if self._atom_preview_worker is not None:
             self._atom_preview_pending = True
             return self._atom_preview_worker
-        params = self._atom_params()
-        n_frames = shape[0]
-        t = max(0, min(self._current_t(), n_frames - 1))
         self._set_atom_status(f"Computing atoms for frame {t}…")
 
         @thread_worker(connect={
@@ -402,27 +420,34 @@ class NucleusAtomExtractionMixin:
                 residual_contour, territory,
                 params.contour_floor, params.atom_min_area,
             )
-            return (t, atoms, territory.astype(np.uint8),
-                    residual_foreground, residual_contour, ridge)
+            slices = (atoms, territory.astype(np.uint8),
+                      residual_foreground, residual_contour, ridge)
+            return key, t, slices
 
         self._atom_preview_worker = _worker()
         return self._atom_preview_worker
 
     def _on_atom_preview_done(self, result) -> None:
         self._atom_preview_worker = None
-        t, atoms, territory, residual_foreground, residual_contour, ridge = result
+        key, t, slices = result
+        self._atom_preview_cache.put(key, t, slices)
         if self._atom_preview_active:
-            self._fill_atom_image_slice(_ATOM_FG_RESIDUAL_LAYER, t, residual_foreground)
-            self._fill_atom_labels_slice(_ATOM_TERRITORY_LAYER, t, territory)
-            self._fill_atom_image_slice(_ATOM_CONTOUR_RESIDUAL_LAYER, t, residual_contour)
-            self._fill_atom_labels_slice(_ATOM_RIDGE_LAYER, t, ridge)
-            self._fill_atom_labels_slice(_ATOM_PREVIEW_LAYER, t, atoms)
-            self._set_atom_status(f"Frame {t}: {int(atoms.max())} atoms.")
+            self._paint_atom_preview(t, slices)
         if self._atom_preview_pending and self._atom_preview_active:
             self._atom_preview_pending = False
             self._refresh_atom_preview()
         else:
             self._atom_preview_pending = False
+
+    def _paint_atom_preview(self, t: int, slices) -> None:
+        """Fill frame ``t``'s slice of every atom preview layer + the count status."""
+        atoms, territory, residual_foreground, residual_contour, ridge = slices
+        self._fill_atom_image_slice(_ATOM_FG_RESIDUAL_LAYER, t, residual_foreground)
+        self._fill_atom_labels_slice(_ATOM_TERRITORY_LAYER, t, territory)
+        self._fill_atom_image_slice(_ATOM_CONTOUR_RESIDUAL_LAYER, t, residual_contour)
+        self._fill_atom_labels_slice(_ATOM_RIDGE_LAYER, t, ridge)
+        self._fill_atom_labels_slice(_ATOM_PREVIEW_LAYER, t, atoms)
+        self._set_atom_status(f"Frame {t}: {int(atoms.max())} atoms.")
 
     def _on_atom_preview_error(self, exc: Exception) -> None:
         self._atom_preview_worker = None

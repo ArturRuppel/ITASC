@@ -284,24 +284,6 @@ def test_recompute_forces_rebuild_even_when_h5_exists(monkeypatch, tmp_path):
     app.processEvents()
 
 
-def test_contact_analysis_widget_cancel_calls_worker_quit_when_active(monkeypatch):
-    app = QApplication.instance() or QApplication([])
-    mod = _load_module(monkeypatch)
-    widget = mod.AggregateQuantificationWidget()
-
-    worker = _FakeWorker()
-    widget._build_worker = worker
-    widget.cancel_build_btn.setEnabled(True)
-
-    widget._on_cancel_build()
-
-    assert worker.quit_calls == 1
-    assert widget._build_worker is None
-
-    widget.deleteLater()
-    app.processEvents()
-
-
 def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)

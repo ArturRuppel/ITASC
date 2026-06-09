@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import inspect
 from pathlib import Path
 
 import h5py
@@ -10,6 +11,7 @@ import tifffile
 from qtpy.QtWidgets import QApplication
 
 from cellflow.napari.meta_plugins import MetaContext, available_meta_plugins
+from cellflow.napari.meta_plugins import nls_classification as nls_mod
 from cellflow.napari.meta_plugins.nls_classification import (
     POSITIVE,
     NLSClassificationPlugin,
@@ -18,6 +20,46 @@ from cellflow.napari.meta_plugins.nls_classification import (
 
 def _app():
     return QApplication.instance() or QApplication([])
+
+
+class _FakeWorker:
+    def quit(self) -> None:  # pragma: no cover - parity with the real worker
+        pass
+
+
+def _make_sync_thread_worker():
+    """A drop-in for ``thread_worker`` that runs the body inline (generators too)."""
+
+    def fake_thread_worker(connect=None):
+        def decorator(fn):
+            def wrapper(*args, **kwargs):
+                try:
+                    result = fn(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    if connect and "errored" in connect:
+                        connect["errored"](exc)
+                    return _FakeWorker()
+                if inspect.isgenerator(result):
+                    return_value = None
+                    while True:
+                        try:
+                            yielded = next(result)
+                        except StopIteration as exc:
+                            return_value = exc.value
+                            break
+                        if connect and "yielded" in connect:
+                            connect["yielded"](yielded)
+                    if connect and "returned" in connect:
+                        connect["returned"](return_value)
+                elif connect and "returned" in connect:
+                    connect["returned"](result)
+                return _FakeWorker()
+
+            return wrapper
+
+        return decorator
+
+    return fake_thread_worker
 
 
 class _FakeLayer:
@@ -173,6 +215,25 @@ def test_apply_writes_classification_to_h5(tmp_path):
     app.processEvents()
 
 
+def _make_position_relative(parent: Path, name: str) -> dict:
+    """A position laid out so ``0_input/NLS_zavg.tif`` resolves relative to it."""
+    position = parent / name
+    (position / "0_input").mkdir(parents=True)
+    labels = np.asarray([[[1, 1, 2, 2]]], dtype=np.uint16)
+    nls = np.asarray([[[10.0, 11.0, 100.0, 110.0]]], dtype=np.float32)
+    labels_path = position / "tracked_labels.tif"
+    h5_path = position / "contact_analysis.h5"
+    tifffile.imwrite(labels_path, labels)
+    tifffile.imwrite(position / "0_input" / "NLS_zavg.tif", nls)
+    _write_minimal_position_h5(h5_path, [1, 2])
+    return {
+        "id": name,
+        "position_path": position,
+        "nucleus_tracked_labels_path": labels_path,
+        "contact_analysis_path": h5_path,
+    }
+
+
 def test_multiple_positions_disable_measure(tmp_path):
     app = _app()
     viewer = _FakeViewer()
@@ -182,7 +243,92 @@ def test_multiple_positions_disable_measure(tmp_path):
     plugin.set_context(MetaContext(records=[record, dict(record)], viewer=viewer))
     assert plugin._record is None
     assert not plugin._measure_btn.isEnabled()
-    assert "exactly one" in plugin._scope_lbl.text()
+    assert not plugin._threshold_spin.isEnabled()
+    assert "2 positions selected" in plugin._scope_lbl.text()
+    # Apply switches to the batch label and stays disabled until inputs resolve.
+    assert plugin._apply_btn.text() == "Classify & apply to all H5"
+    assert not plugin._apply_btn.isEnabled()
+
+    plugin.deleteLater()
+    app.processEvents()
+
+
+def test_relative_nls_path_resolves_per_position(tmp_path):
+    app = _app()
+    viewer = _FakeViewer()
+    rec_a = _make_position_relative(tmp_path, "posA")
+    rec_b = _make_position_relative(tmp_path, "posB")
+
+    plugin = NLSClassificationPlugin(viewer=viewer)
+    plugin.set_context(MetaContext(records=[rec_a, rec_b], viewer=viewer))
+
+    # A relative entry resolves under each position's own directory…
+    plugin._nls_edit.setText("0_input/NLS_zavg.tif")
+    assert plugin._resolve_nls_path(rec_a) == rec_a["position_path"] / "0_input" / "NLS_zavg.tif"
+    assert plugin._resolve_nls_path(rec_b) == rec_b["position_path"] / "0_input" / "NLS_zavg.tif"
+    # …and both positions become batch-classifiable, enabling Apply.
+    assert {r["id"] for r in plugin._batch_records()} == {"posA", "posB"}
+    assert plugin._apply_btn.isEnabled()
+
+    # An absolute entry is used verbatim, ignoring position_path.
+    absolute = rec_a["position_path"] / "0_input" / "NLS_zavg.tif"
+    plugin._nls_edit.setText(str(absolute))
+    assert plugin._resolve_nls_path(rec_b) == absolute
+
+    plugin.deleteLater()
+    app.processEvents()
+
+
+def test_batch_apply_classifies_all_selected_positions(tmp_path, monkeypatch):
+    app = _app()
+    viewer = _FakeViewer()
+    rec_a = _make_position_relative(tmp_path, "posA")
+    rec_b = _make_position_relative(tmp_path, "posB")
+
+    monkeypatch.setattr(nls_mod, "thread_worker", _make_sync_thread_worker())
+
+    plugin = NLSClassificationPlugin(viewer=viewer)
+    plugin.set_context(MetaContext(records=[rec_a, rec_b], viewer=viewer))
+    plugin._nls_edit.setText("0_input/NLS_zavg.tif")
+    plugin._positive_edit.setText("GFP+")
+    plugin._negative_edit.setText("GFP-")
+
+    assert plugin._apply_btn.isEnabled()
+    plugin._on_apply()  # batch mode dispatches to _on_apply_batch
+    app.processEvents()
+
+    for record in (rec_a, rec_b):
+        with h5py.File(record["contact_analysis_path"], "r") as h5:
+            cells = h5["cells/table"]
+            assert cells["nls_status"].asstr()[:].tolist() == ["negative", "positive"]
+            assert cells["class_label"].asstr()[:].tolist() == ["GFP-", "GFP+"]
+    assert "2/2" in plugin._status_lbl.text()
+
+    plugin.deleteLater()
+    app.processEvents()
+
+
+def test_batch_apply_reports_per_position_failures(tmp_path, monkeypatch):
+    app = _app()
+    viewer = _FakeViewer()
+    good = _make_position_relative(tmp_path, "good")
+    bad = _make_position_relative(tmp_path, "bad")
+    # Corrupt one position's NLS image so its classification fails mid-batch.
+    (bad["position_path"] / "0_input" / "NLS_zavg.tif").write_bytes(b"not a tiff")
+
+    monkeypatch.setattr(nls_mod, "thread_worker", _make_sync_thread_worker())
+
+    plugin = NLSClassificationPlugin(viewer=viewer)
+    plugin.set_context(MetaContext(records=[good, bad], viewer=viewer))
+    plugin._nls_edit.setText("0_input/NLS_zavg.tif")
+    plugin._on_apply()
+    app.processEvents()
+
+    # The good position is still written; the bad one is surfaced, not fatal.
+    with h5py.File(good["contact_analysis_path"], "r") as h5:
+        assert h5["cells/table"]["nls_status"].asstr()[:].tolist() == ["negative", "positive"]
+    text = plugin._status_lbl.text()
+    assert "1/2" in text and "bad" in text
 
     plugin.deleteLater()
     app.processEvents()

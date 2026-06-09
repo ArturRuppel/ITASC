@@ -1,15 +1,23 @@
 """NLS subpopulation classification plugin for the Aggregate Quantification studio.
 
-Classifies the cells of a *single* selected position into a labelled **positive**
-subpopulation vs **negative** by aggregating a nucleus-localised marker image
-(e.g. an NLS reporter) over each nuclear track. The plugin:
+Classifies cells into a labelled **positive** subpopulation vs **negative** by
+aggregating a nucleus-localised marker image (e.g. an NLS reporter) over each
+nuclear track. It runs in two modes, driven by the catalogue selection:
 
-* measures one median intensity per nuclear track
-  (:func:`cellflow.aggregate_quantification.measure_track_nls_intensity`);
-* auto-places a threshold (:func:`~cellflow.aggregate_quantification.auto_threshold`) the
-  user can drag on a per-track scatter to re-classify live;
-* overlays the marker image and the **outlines of positive nuclei** in napari;
-* writes the classification back into the contact-analysis ``.h5`` on *Apply*.
+* **single position** — measures one median intensity per nuclear track
+  (:func:`cellflow.aggregate_quantification.measure_track_nls_intensity`),
+  auto-places a threshold (:func:`~cellflow.aggregate_quantification.auto_threshold`)
+  the user can drag on a per-track scatter to re-classify live, overlays the
+  marker image and the **outlines of positive nuclei** in napari, and writes the
+  classification back into the contact-analysis ``.h5`` on *Apply*;
+* **multiple positions** — the interactive scatter does not apply, so *Measure &
+  classify* is greyed and *Apply to H5* batch-classifies every selected position
+  with its own auto threshold
+  (:func:`~cellflow.aggregate_quantification.patch_position_contact_analysis_nls_classes`).
+
+The marker-image field accepts a path **relative to each position directory**
+(e.g. ``0_input/NLS_zavg.tif``), so one entry resolves per-position across a
+batch; absolute paths are used verbatim.
 
 Heavy I/O (reading the TIFF stacks + measuring) runs in a ``thread_worker`` so the
 UI stays responsive, mirroring the other CellFlow widgets.
@@ -37,6 +45,7 @@ from cellflow.aggregate_quantification import (
     auto_threshold,
     classify_by_threshold,
     measure_track_nls_intensity,
+    patch_position_contact_analysis_nls_classes,
     read_position_cell_ids,
     write_nls_classification,
 )
@@ -71,6 +80,8 @@ class NLSClassificationPlugin(MetaAnalysisPlugin):
     def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
         super().__init__(viewer=viewer, parent=parent)
 
+        #: All in-scope catalog records (>1 puts the plugin in batch mode).
+        self._records: list[dict] = []
         #: The single in-scope catalog record, or None when scope != 1.
         self._record: dict | None = None
         #: Measurement state for the current position.
@@ -94,7 +105,9 @@ class NLSClassificationPlugin(MetaAnalysisPlugin):
         layout.addWidget(self._scope_lbl)
 
         self._nls_edit = QLineEdit()
-        self._nls_edit.setPlaceholderText("NLS / marker image (matches nucleus labels)…")
+        self._nls_edit.setPlaceholderText(
+            "NLS / marker image — absolute, or relative to each position (e.g. 0_input/NLS_zavg.tif)…"
+        )
         self._nls_edit.textChanged.connect(self._update_enabled)
         nls_browse = QPushButton("Browse…")
         action_button(nls_browse)
@@ -190,6 +203,7 @@ class NLSClassificationPlugin(MetaAnalysisPlugin):
         if ctx.viewer is not None:
             self.viewer = ctx.viewer
         records = list(ctx.records)
+        self._records = records
         record = records[0] if len(records) == 1 else None
         if record is not self._record:
             self._record = record
@@ -204,43 +218,94 @@ class NLSClassificationPlugin(MetaAnalysisPlugin):
         elif scope_count == 0:
             self._scope_lbl.setText("Select a position to classify.")
         else:
-            self._scope_lbl.setText("Select exactly one position to classify.")
+            self._scope_lbl.setText(
+                f"{scope_count} positions selected — batch classify each with its "
+                "own auto threshold (no interactive tuning)."
+            )
 
     def _prefill_nls_path(self) -> None:
-        """Default the NLS field to ``<position>/0_input/NLS_zavg.tif`` if present."""
-        self._nls_edit.clear()
+        """Default the NLS field to the *relative* ``0_input/NLS_zavg.tif`` if present.
+
+        Keep any path the user already typed — a relative entry is what makes one
+        field resolve across every position in a batch, so don't clobber it.
+        """
+        if self._nls_edit.text().strip():
+            return
         if self._record is None:
             return
         position = self._record.get("position_path")
         if not position:
             return
-        candidate = Path(position) / "0_input" / "NLS_zavg.tif"
-        if candidate.is_file():
-            self._nls_edit.setText(str(candidate))
+        relative = Path("0_input") / "NLS_zavg.tif"
+        if (Path(position) / relative).is_file():
+            self._nls_edit.setText(str(relative))
+
+    @staticmethod
+    def _labels_path_for(record: dict) -> Path | None:
+        path = record.get("nucleus_tracked_labels_path")
+        return Path(path) if path else None
 
     def _nucleus_labels_path(self) -> Path | None:
         if self._record is None:
             return None
-        path = self._record.get("nucleus_tracked_labels_path")
-        return Path(path) if path else None
+        return self._labels_path_for(self._record)
+
+    def _resolve_nls_path(self, record: dict | None) -> Path | None:
+        """Resolve the NLS field against *record*: absolute as-is, else per-position.
+
+        A relative entry (e.g. ``0_input/NLS_zavg.tif``) is joined onto the
+        record's ``position_path`` so one field resolves across a batch.
+        """
+        text = self._nls_edit.text().strip()
+        if not text or record is None:
+            return None
+        path = Path(text)
+        if path.is_absolute():
+            return path
+        position = record.get("position_path")
+        return Path(position) / path if position else path
 
     def _nls_path(self) -> Path | None:
-        text = self._nls_edit.text().strip()
-        return Path(text) if text else None
+        return self._resolve_nls_path(self._record)
+
+    def _is_batch(self) -> bool:
+        return len(self._records) > 1
+
+    def _batch_records(self) -> list[dict]:
+        """Selected positions that have every input needed to classify headlessly."""
+        out: list[dict] = []
+        for record in self._records:
+            nls = self._resolve_nls_path(record)
+            labels = self._labels_path_for(record)
+            h5 = record.get("contact_analysis_path")
+            if (
+                nls is not None and nls.is_file()
+                and labels is not None and labels.is_file()
+                and h5 and Path(h5).is_file()
+            ):
+                out.append(record)
+        return out
 
     def _update_enabled(self) -> None:
         running = self._measure_worker is not None
+        batch = self._is_batch()
         labels_path = self._nucleus_labels_path()
         can_measure = (
-            self._record is not None
+            not batch
+            and self._record is not None
             and labels_path is not None
             and labels_path.is_file()
             and self._nls_path() is not None
             and not running
         )
         self._measure_btn.setEnabled(bool(can_measure))
-        self._apply_btn.setEnabled(bool(self._assignments) and not running)
-        self._threshold_spin.setEnabled(self._medians.size > 0)
+        if batch:
+            self._apply_btn.setText("Classify & apply to all H5")
+            self._apply_btn.setEnabled(bool(self._batch_records()) and not running)
+        else:
+            self._apply_btn.setText("Apply to H5")
+            self._apply_btn.setEnabled(bool(self._assignments) and not running)
+        self._threshold_spin.setEnabled(not batch and self._medians.size > 0)
 
     # ------------------------------------------------------------------ measuring
     def _reset_measurement(self) -> None:
@@ -435,6 +500,9 @@ class NLSClassificationPlugin(MetaAnalysisPlugin):
 
     # --------------------------------------------------------------------- apply
     def _on_apply(self) -> None:
+        if self._is_batch():
+            self._on_apply_batch()
+            return
         if not self._assignments or self._record is None:
             return
         h5_path = self._record.get("contact_analysis_path")
@@ -468,3 +536,74 @@ class NLSClassificationPlugin(MetaAnalysisPlugin):
             f"Status: wrote {positive} positive / {negative} negative to "
             f"{Path(h5_path).name}."
         )
+
+    # --------------------------------------------------------------- batch apply
+    def _on_apply_batch(self) -> None:
+        """Classify + write every selected position headlessly, each auto-thresholded."""
+        records = self._batch_records()
+        if not records:
+            self._status_lbl.setText(
+                "Status: no selected position has an NLS image, nucleus labels, and an .h5."
+            )
+            return
+        positive_label = self._positive_edit.text().strip() or "positive"
+        negative_label = self._negative_edit.text().strip() or "negative"
+        # (id, h5, nls, labels) snapshots — read off the worker thread.
+        jobs = [
+            (
+                str(record.get("id", "?")),
+                Path(record["contact_analysis_path"]),
+                self._resolve_nls_path(record),
+                self._labels_path_for(record),
+            )
+            for record in records
+        ]
+        self._status_lbl.setText(f"Status: classifying {len(jobs)} position(s)…")
+        self._measure_worker = object()
+        self._update_enabled()
+
+        @thread_worker(
+            connect={
+                "yielded": self._on_batch_progress,
+                "returned": self._on_batch_done,
+                "errored": self._on_measure_error,
+            }
+        )
+        def _worker():
+            results: list[tuple[str, bool, str]] = []
+            for index, (record_id, h5_path, nls_path, labels_path) in enumerate(jobs, start=1):
+                yield index, len(jobs), record_id
+                try:
+                    summary = patch_position_contact_analysis_nls_classes(
+                        h5_path,
+                        nls_path,
+                        labels_path,
+                        positive_label=positive_label,
+                        negative_label=negative_label,
+                    )
+                    detail = (
+                        f"{summary.positive_track_count} positive / "
+                        f"{summary.negative_track_count} negative"
+                    )
+                    results.append((record_id, True, detail))
+                except Exception as exc:  # noqa: BLE001 - per-position failures are non-fatal
+                    results.append((record_id, False, str(exc)))
+            return results
+
+        self._measure_worker = _worker()
+
+    def _on_batch_progress(self, info: tuple[int, int, str]) -> None:
+        index, total, record_id = info
+        self._status_lbl.setText(f"Status: [{index}/{total}] classifying {record_id}…")
+
+    def _on_batch_done(self, results: list[tuple[str, bool, str]]) -> None:
+        self._measure_worker = None
+        succeeded = [r for r in results if r[1]]
+        failed = [r for r in results if not r[1]]
+        message = f"Status: classified {len(succeeded)}/{len(results)} position(s)."
+        if failed:
+            record_id, _, detail = failed[0]
+            extra = "" if len(failed) == 1 else f" (+{len(failed) - 1} more)"
+            message += f" Failed: {record_id}: {detail}{extra}."
+        self._status_lbl.setText(message)
+        self._update_enabled()
