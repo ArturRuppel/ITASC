@@ -240,11 +240,121 @@ selector that currently has one entry ("Cell–cell contacts"), proving the seam
 6. Update `TODO.md` (check off the three Aggregate Quantification bullets that
    this unit completes; leave "broaden scope" as the follow-on).
 
+> **Status:** Part 1 (the seam) is implemented — commits `c9e41e1` (rename) and
+> `350f001` (registry + adapter + studio routing). The UI redesign below is Part 2,
+> not yet built.
+
+---
+
+# Part 2 — UI redesign
+
+## Why
+
+The studio today is a flat stack of four always-expanded collapsibles (Discover &
+add · Catalogue · Contact view · Analysis). Setup, the table, a single-position
+viewer, and cross-position analysis all compete for height, and the single
+"Analysis" dropdown silently mixes two different operating scopes: `nls_classification`
+is per-position (acts on one row, writes back to its `.h5`) while `catalog_summary`
+is cross-position — distinguished only by how many rows happen to be selected.
+
+## Shape: two regions
+
+Everything collapses to **Catalogue** + **Plugins**.
+
+```
+┌ Aggregate Quantification ─────────────────────────┐
+│ ▼ Catalogue                                        │
+│   Root:[_____][Browse]  Cell:[__] Nuc:[__] …[Discover]
+│   [ discovered list → Add ]                        │
+│   ┌ positions ─────────────────────────────────┐  │
+│   │ cond date  id   inputs        status        │  │
+│   │ WT  06-01 p01   cell·nuc·trk  contacts ✓    │  │
+│   │ WT  06-01 p02   nuc           contacts —    │  │
+│   └─────────────────────────────────────────────┘  │
+│   [Load CSV][Save CSV][Remove][Clear]              │
+│   ┌ visualize (selected position) ──────────────┐  │
+│   │  ☑labels ☑tracks ☑edges …   [Load layers]    │  │
+│   └─────────────────────────────────────────────┘  │
+│ ───────────────────────────────────────────────── │
+│ Plugins   ☑ Contacts (build)  ☑ NLS  ☐ Summary    │
+│ ▼ Contacts (build)          ← mounted collapsible  │
+│      [Build selected]  status…                     │
+│ ▼ NLS classification                               │
+│      …plugin UI…                                    │
+└────────────────────────────────────────────────────┘
+```
+
+### Region 1 — Catalogue (one merged interface)
+
+Merges today's *Discover & add* + *Catalogue* + *Contact view*:
+
+- **Assemble**: discover from a tree / add loose positions / annotate
+  (condition·date·id·notes) / load·save CSV / remove·clear — one block, not two.
+- **Table** of positions. The catalogue **no longer builds** anything; **Add is
+  register-only** (a row may show `contacts —` / missing). An `inputs` column shows
+  which sources a position actually has.
+- **Visualizer**, kept as-is: modifier checkboxes + a **Load layers** button. It
+  loads the position's whole picture and **degrades gracefully** — whatever exists
+  among Cell labels, Nucleus labels, Nucleus tracks, Edges, T1 edges; absent inputs
+  are skipped, never errored.
+
+### Region 2 — Plugins (flat checkbox registry → collapsibles)
+
+- A **flat list of all registered plugins, each a checkbox**. Checking mounts the
+  plugin as its **own collapsible**; unchecking removes it. **Multiple active at
+  once** (replaces the single dropdown + host).
+- Three **roles**, all in the one flat list, each reading the catalogue's current
+  selection (selected rows = scope; empty selection = whole catalogue):
+  - **Builder** — a Qt front over a `Quantifier`: a collapsible with a **Build**
+    button that computes the quantity for the in-scope positions. *Contacts is the
+    first.* **One builder = one quantity**, so the quantity axis needs no separate
+    selector — the plugin list *is* the quantity menu.
+  - **Per-position processor** — e.g. NLS classification; acts on the one selected
+    position and writes back.
+  - **Cross-position aggregator** — e.g. catalogue summary; pools the cohort → table/plot.
+
+## All inputs optional
+
+A position is **a folder with ≥1 recognized input** — cell labels, nucleus labels,
+tracks are each independently optional (no required anchor). Consequences:
+
+- **Discovery** (`meta.catalog.discover_catalog_entries`) is refactored from
+  "cell-labels-anchored" to "union of recognized inputs": register a folder as a
+  position when it contains any recognized input; collect whatever is present.
+- **Every consumer declares its needs and degrades.** A plugin declares required
+  inputs via `requires` (possibly a single one, e.g. `("nucleus_labels_path",)`)
+  and the UI **greys its checkbox / Build** for a selection lacking them
+  (generalises `Quantifier.can_build`). The visualizer has no hard requirement.
+- Backend already fits: `PositionInputs` fields are all `Optional`/`None`-default;
+  `requires` + `can_build` already express single-input needs.
+
+## Backend deltas (small)
+
+- **Unified UI-plugin layer.** One flat registry of collapsible plugin widgets with
+  a `role` (builder | processor | aggregator), a `display_name`, and `requires`.
+  Builder plugins wrap a `Quantifier` (backend untouched); fold the existing
+  `MetaAnalysisPlugin`s (NLS, summary) into this list. The checkbox list renders
+  every registered UI plugin, enabled per the selection's available inputs.
+- **Discovery refactor** to optional/union inputs (above); catalogue table gains an
+  `inputs` column.
+- **Studio**: drop the *Analysis* dropdown + the auto-build-on-Add path; Add becomes
+  register-only; building moves into the Contacts builder plugin (scope = selected
+  rows, else whole catalogue — the existing scope rule).
+
+## Test plan (Part 2)
+
+- Discovery registers positions from any single input; from a mix; from none → skip.
+- Catalogue `inputs`/status columns reflect present sources + per-quantity built state.
+- Plugin registry: checkbox mounts/unmounts a collapsible; multiple coexist;
+  a plugin greys out when the selection lacks its `requires`.
+- Builder plugin builds in-scope positions and updates status; Add no longer builds.
+- Visualizer loads only the layers whose inputs exist (no error on missing).
+
 ## Out of scope / follow-ons
 
 - New quantifiers (nucleus track kinematics, nucleus↔cell centroid offset, cell
-  shape, tissue dynamics) — each a `quantifiers/*.py` module + a napari visualizer
-  + optionally a meta-plugin. The seam from this unit is what makes them additive.
-- Generalizing the napari visualizer registry beyond the single contacts entry.
-- Multi-quantifier studio UX (checkbox set of quantities to build per position).
+  shape, tissue dynamics) — each a `quantifiers/*.py` builder + its overlay/plugin.
+  The seam (Part 1) + the flat plugin list (Part 2) make them additive.
+- Per-quantity visualization beyond the bundled contacts overlay (each quantity's
+  plugin contributing its own overlay layers).
 - Dimensionality support (separate TODO track).
