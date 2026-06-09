@@ -13,6 +13,10 @@
 - [x] Add a way to clear individual rows in the contact analysis study, not just the whole thing. ("Remove selected" button in the catalogue.)
 - [x] CSV files it saves are missing the `.csv` extension.
 
+## NLS Classifier
+
+- [ ] Give the NLS classifier batch capabilities. Possible approach: add support for relative paths and for selecting multiple entries. When multiple entries are selected, grey out `measure_classify` and have **Apply to h5** apply the classification to all selected entries.
+
 ## Live Previews
 
 - [ ] Cell segmentation live previews got a new caching mechanism. Port it to the other live previews.
