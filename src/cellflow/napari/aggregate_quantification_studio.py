@@ -23,7 +23,6 @@ from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -48,10 +47,12 @@ from cellflow.meta.catalog import (
     save_meta_catalog,
 )
 from cellflow.napari.aggregate_quantification_widget import AggregateQuantificationWidget, _ProgressEmitter
-from cellflow.napari.meta_plugins import (
-    MetaAnalysisPlugin,
-    MetaContext,
-    available_meta_plugins,
+from cellflow.napari.meta_plugins import MetaContext
+from cellflow.napari.studio_plugins import (
+    PluginEntry,
+    available_studio_plugins,
+    position_inputs_from_record,
+    records_satisfying,
 )
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
@@ -69,22 +70,31 @@ class _BuildResult(NamedTuple):
     status: str  # "built" | "failed"
 
 
-def _default_quantifier() -> Quantifier:
-    """The quantifier the studio drives. One for now (contacts); the registry is
-    the seam through which more quantities plug in later."""
-    classes = available_quantifiers()
-    for cls in classes:
-        if cls.quantity_id == "contacts":
-            return cls()
-    if classes:
-        return classes[0]()
-    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
+class _Mounted(NamedTuple):
+    """A checked plugin's collapsible section + its body widget."""
 
-    return ContactsQuantifier()
+    section: QWidget
+    body: QWidget
+
+
+def _contacts_reader():
+    """The contacts quantifier's reader, used by meta-plugin contexts.
+
+    Sourced from the registry (contacts is the only quantity today); falls back
+    to the contacts reader import so a context loader is always available.
+    """
+    for cls in available_quantifiers():
+        if cls.quantity_id == "contacts":
+            return cls().read
+    from cellflow.aggregate_quantification.contacts.reader import (
+        read_position_contact_analysis,
+    )
+
+    return read_position_contact_analysis
 
 
 class AggregateQuantificationStudioWidget(QWidget):
-    """Position catalog + embedded per-position contact view + analysis plugins."""
+    """Position catalogue + embedded per-position view + a flat plugin list."""
 
     _TABLE_COLUMNS = ("condition", "date", "id", "notes", "status")
 
@@ -97,16 +107,14 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._pending_entries: list[dict] = []
         #: Cache so plugins don't each re-open the same HDF5.
         self._analysis_cache: dict[Path, Any] = {}
-        #: The quantity this studio builds/reads. The registry seam (one entry
-        #: today: contacts) is what lets new quantities plug in without touching
-        #: this widget.
-        self._quantifier: Quantifier = _default_quantifier()
-        self._active_plugin: QWidget | None = None
-        self._plugin_classes: list[type[MetaAnalysisPlugin]] = []
-        #: Background build of missing contact analyses triggered by "Add".
+        #: Reader feeding meta-plugin contexts (contacts is the only quantity today).
+        self._read_quantity = _contacts_reader()
+        #: Flat plugin list: all entries, their checkboxes, and what's mounted.
+        self._plugin_entries: list[PluginEntry] = []
+        self._plugin_checks: dict[str, Any] = {}
+        self._mounted: dict[str, _Mounted] = {}
+        #: Background build triggered by a builder plugin.
         self._build_worker = None
-        #: Annotated records held while their contact analyses are computed.
-        self._pending_annotated: list[dict] | None = None
         self._build_emitter = _ProgressEmitter(self)
         self._build_emitter.progress.connect(self._on_build_progress)
 
@@ -117,7 +125,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._build_discover_section(layout)
         self._build_catalog_section(layout)
         self._build_contact_view_section(layout)
-        self._build_analysis_section(layout)
+        self._build_plugins_section(layout)
 
         self._reload_plugins()
         self._refresh_table()
@@ -159,11 +167,12 @@ class AggregateQuantificationStudioWidget(QWidget):
         root_row.addWidget(browse_btn)
         col.addLayout(root_row)
 
-        # Names or relative paths (relative to each position folder). Cell labels
-        # are the anchor; the contact analysis is the derived output computed from
-        # them (built on add when missing, or always with the checkbox below).
+        # Names or relative paths (relative to each position folder). All inputs
+        # are optional — a position is any folder with at least one of them. The
+        # contact analysis is the derived output path (built later via a builder
+        # plugin, not on add).
         self._cell_name_edit = self._make_field_row(
-            col, "Cell labels:", placeholder="e.g. 3_cell/tracked_labels.tif"
+            col, "Cell labels (optional):", placeholder="e.g. 3_cell/tracked_labels.tif"
         )
         self._nucleus_name_edit = self._make_field_row(
             col, "Nucleus labels (optional):", placeholder="e.g. 2_nucleus/tracked_labels.tif"
@@ -171,19 +180,11 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._contact_name_edit = self._make_field_row(
             col, "Contact analysis (output):", default="contact_analysis.h5"
         )
-        self._recompute_cb = QCheckBox("Always recompute contact analysis")
-        self._recompute_cb.setToolTip(
-            "Recompute the contact analysis from the cell labels for every "
-            "position, overwriting any existing result. When unchecked, only "
-            "missing analyses are computed."
-        )
-        col.addWidget(self._recompute_cb)
 
         discover_btn = QPushButton("Discover")
         discover_btn.setToolTip(
-            "Find every folder under the root that contains the cell-labels file; "
-            "derive the contact-analysis output path and associate co-located "
-            "nucleus labels."
+            "Find every folder under the root that contains at least one of the "
+            "named inputs; derive the contact-analysis output path."
         )
         action_button(discover_btn, expand=True)
         discover_btn.clicked.connect(self._on_discover)
@@ -262,33 +263,39 @@ class AggregateQuantificationStudioWidget(QWidget):
             CollapsibleSection("Contact view", self._contact_widget, expanded=True)
         )
 
-    def _build_analysis_section(self, layout) -> None:
+    def _build_plugins_section(self, layout) -> None:
         container = QWidget()
         col = QVBoxLayout(container)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
 
-        selector_row = QHBoxLayout()
-        selector_row.setContentsMargins(0, 0, 0, 0)
-        selector_row.setSpacing(2)
-        selector_row.addWidget(QLabel("Analysis:"))
-        self._plugin_combo = QComboBox()
-        self._plugin_combo.currentIndexChanged.connect(self._on_plugin_changed)
-        selector_row.addWidget(self._plugin_combo, 1)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(2)
+        header.addWidget(QLabel("Check a plugin to add it:"))
+        header.addStretch(1)
         reload_btn = QPushButton("↻")
-        reload_btn.setToolTip("Re-scan for meta-analysis plugins.")
+        reload_btn.setToolTip("Re-scan for plugins.")
         action_button(reload_btn)
         reload_btn.clicked.connect(self._reload_plugins)
-        selector_row.addWidget(reload_btn)
-        col.addLayout(selector_row)
+        header.addWidget(reload_btn)
+        col.addLayout(header)
 
+        # The checkbox registry: one row per available plugin.
+        self._plugin_checks_host = QWidget()
+        self._plugin_checks_layout = QVBoxLayout(self._plugin_checks_host)
+        self._plugin_checks_layout.setContentsMargins(0, 0, 0, 0)
+        self._plugin_checks_layout.setSpacing(0)
+        col.addWidget(self._plugin_checks_host)
+
+        # The mounted collapsibles for checked plugins.
         self._plugin_host = QWidget()
         self._plugin_host_layout = QVBoxLayout(self._plugin_host)
         self._plugin_host_layout.setContentsMargins(0, 0, 0, 0)
         self._plugin_host_layout.setSpacing(0)
         col.addWidget(self._plugin_host, 1)
 
-        layout.addWidget(CollapsibleSection("Analysis", container, expanded=True))
+        layout.addWidget(CollapsibleSection("Plugins", container, expanded=True))
 
     # ----------------------------------------------------------- catalog actions
     def _set_catalog_status(self, message: str) -> None:
@@ -305,18 +312,19 @@ class AggregateQuantificationStudioWidget(QWidget):
     def _on_discover(self) -> None:
         root = self._root_edit.text().strip()
         cell = self._cell_name_edit.text().strip()
+        nucleus = self._nucleus_name_edit.text().strip()
         if not root:
             self._set_discover_status("Enter a root folder to scan first.")
             return
-        if not cell:
-            self._set_discover_status("Enter the cell-labels file name first.")
+        if not cell and not nucleus:
+            self._set_discover_status("Enter at least one input file name (cell or nucleus).")
             return
         try:
             entries = discover_catalog_entries(
                 root,
-                cell_name=cell,
+                cell_name=cell or None,
                 contact_name=self._contact_name_edit.text().strip() or "contact_analysis.h5",
-                nucleus_name=self._nucleus_name_edit.text().strip() or None,
+                nucleus_name=nucleus or None,
             )
         except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI
             self._set_discover_status(f"Discover error: {exc}")
@@ -335,26 +343,15 @@ class AggregateQuantificationStudioWidget(QWidget):
                 badges.append("nucleus")
             self._discovered_list.addItem(f"{entry['id']}  [{', '.join(badges)}]")
         n = len(self._pending_entries)
-        missing = sum(
-            1
-            for e in self._pending_entries
-            if not (e.get("contact_analysis_path") and Path(e["contact_analysis_path"]).is_file())
-        )
         if not n:
             self._set_discover_status("No matching positions found under the root.")
         else:
-            note = (
-                f" ({missing} need the contact analysis computed on add)"
-                if missing
-                else ""
-            )
             self._set_discover_status(
-                f"Discovered {n} position(s); set condition / date / notes and add.{note}"
+                f"Discovered {n} position(s); set condition / date / notes and add."
             )
 
     def _on_add_to_catalogue(self) -> None:
-        if self._build_worker is not None:
-            return
+        """Register the discovered positions — building is a builder-plugin action."""
         if not self._pending_entries:
             self._set_discover_status("Discover positions before adding.")
             return
@@ -365,45 +362,44 @@ class AggregateQuantificationStudioWidget(QWidget):
             {**entry, "condition": condition, "date": date, "notes": notes}
             for entry in self._pending_entries
         ]
-
-        # The contact analysis is derived from the cell labels: build it for any
-        # position whose .h5 is missing, or for every position when "always
-        # recompute" is checked. Positions without cell labels can't be built and
-        # are added as-is (showing an existing result only).
-        overwrite = self._recompute_cb.isChecked()
-        jobs = [
-            plan for entry in annotated if (plan := self._build_plan(entry, overwrite))
-        ]
-        if jobs:
-            self._begin_build(annotated, jobs, overwrite=overwrite)
-        else:
-            self._finish_add(annotated)
-
-    def _build_plan(self, entry: dict, overwrite: bool) -> _BuildPlan | None:
-        """A build plan for *entry* when its quantity must be (re)computed."""
-        out = entry.get("contact_analysis_path")
-        if out is None:
-            return None
-        nucleus = entry.get("nucleus_tracked_labels_path")
-        cell = entry.get("cell_tracked_labels_path")
-        inputs = PositionInputs(
-            position_dir=Path(entry.get("position_path") or Path(out).parent),
-            cell_labels_path=Path(cell) if cell else None,
-            nucleus_labels_path=Path(nucleus) if nucleus else None,
-        )
-        if not self._quantifier.can_build(inputs):
-            return None
-        if not overwrite and self._quantifier.is_built(Path(out)):
-            return None
-        return _BuildPlan(inputs=inputs, output=Path(out))
-
-    def _begin_build(self, annotated: list[dict], jobs: list, *, overwrite: bool) -> None:
-        self._pending_annotated = annotated
-        self._add_btn.setEnabled(False)
+        added = len(annotated)
+        self._merge_records(annotated, source=f"added {added} from discovery")
+        self._pending_entries = []
+        self._discovered_list.clear()
         self._set_discover_status(
-            f"Computing {self._quantifier.display_name} for {len(jobs)} position(s)…"
+            f"Added {added} position(s). Check a builder plugin to compute quantities."
         )
-        quantifier = self._quantifier
+
+    # ----------------------------------------------------------------- building
+    def _run_quantity_build(
+        self, quantifier: Quantifier, records: list[dict], overwrite: bool
+    ) -> None:
+        """Build *quantifier* for the in-scope *records* (invoked by a builder plugin)."""
+        if self._build_worker is not None:
+            self._set_catalog_status("A build is already running.")
+            return
+        jobs: list[_BuildPlan] = []
+        for record in records:
+            out = record.get("contact_analysis_path")
+            if not out:
+                continue
+            inputs = position_inputs_from_record(record)
+            if not quantifier.can_build(inputs):
+                continue
+            if not overwrite and quantifier.is_built(Path(out)):
+                continue
+            jobs.append(_BuildPlan(inputs=inputs, output=Path(out)))
+        if not jobs:
+            self._set_catalog_status(
+                "Nothing to build — inputs missing or already built (try Recompute)."
+            )
+            return
+        self._begin_build(quantifier, jobs)
+
+    def _begin_build(self, quantifier: Quantifier, jobs: list[_BuildPlan]) -> None:
+        self._set_catalog_status(
+            f"Computing {quantifier.display_name} for {len(jobs)} position(s)…"
+        )
         emit = self._build_emitter.progress.emit
 
         @thread_worker(
@@ -425,34 +421,22 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._build_worker = _worker()
 
     def _on_build_progress(self, done: int, total: int, label: str) -> None:
-        self._set_discover_status(
-            f"Computing {self._quantifier.display_name}: {done}/{total} {label}"
-        )
+        self._set_catalog_status(f"Computing: {done}/{total} {label}")
 
     def _on_build_done(self, results: list) -> None:
         self._build_worker = None
-        self._add_btn.setEnabled(True)
-        annotated = self._pending_annotated or []
-        self._pending_annotated = None
         built = sum(1 for r in results if r.status == "built")
         failed = sum(1 for r in results if r.status == "failed")
-        extra = f" (computed {built}" + (f", {failed} failed" if failed else "") + ")"
-        self._finish_add(annotated, extra=extra)
+        # Re-normalize so each position's status reflects freshly built files.
+        self._records = merge_catalog_records(self._records, [])
+        self._refresh_table()
+        self._set_catalog_status(
+            f"Built {built}" + (f", {failed} failed" if failed else "") + "."
+        )
 
     def _on_build_error(self, exc: Exception) -> None:
         self._build_worker = None
-        self._add_btn.setEnabled(True)
-        self._pending_annotated = None
-        self._set_discover_status(f"Build error: {exc}")
-
-    def _finish_add(self, annotated: list[dict], *, extra: str = "") -> None:
-        # _merge_records re-normalizes, so contact_analysis_status reflects any
-        # files just built.
-        added = len(annotated)
-        self._merge_records(annotated, source=f"added {added} from discovery")
-        self._pending_entries = []
-        self._discovered_list.clear()
-        self._set_discover_status(f"Added {added} position(s) to the catalogue.{extra}")
+        self._set_catalog_status(f"Build error: {exc}")
 
     def _on_load_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -582,58 +566,93 @@ class AggregateQuantificationStudioWidget(QWidget):
 
     # -------------------------------------------------------------- plugin hosting
     def _reload_plugins(self) -> None:
-        self._plugin_classes = available_meta_plugins()
-        self._plugin_combo.blockSignals(True)
-        self._plugin_combo.clear()
-        for plugin_cls in self._plugin_classes:
-            self._plugin_combo.addItem(plugin_cls.display_name)
-        self._plugin_combo.blockSignals(False)
-        if self._plugin_classes:
-            self._plugin_combo.setCurrentIndex(0)
-            self._mount_plugin(0)
-        else:
-            self._mount_plugin(None)
+        """Rebuild the checkbox registry from the available plugins."""
+        for plugin_id in list(self._mounted):
+            self._unmount_plugin(plugin_id)
+        while self._plugin_checks_layout.count():
+            item = self._plugin_checks_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._plugin_checks = {}
 
-    def _on_plugin_changed(self, index: int) -> None:
-        self._mount_plugin(index if index >= 0 else None)
-
-    def _mount_plugin(self, index: int | None) -> None:
-        # Tear down the previously-mounted plugin.
-        if self._active_plugin is not None:
-            self._plugin_host_layout.removeWidget(self._active_plugin)
-            self._active_plugin.deleteLater()
-            self._active_plugin = None
-
-        if index is None or not (0 <= index < len(self._plugin_classes)):
-            placeholder = QLabel("No meta-analysis plugins found.")
+        self._plugin_entries = available_studio_plugins(
+            build_callback=self._run_quantity_build
+        )
+        if not self._plugin_entries:
+            placeholder = QLabel("No plugins found.")
             status_label(placeholder, muted=True)
-            self._active_plugin = placeholder
-            self._plugin_host_layout.addWidget(placeholder)
+            self._plugin_checks_layout.addWidget(placeholder)
             return
+        for entry in self._plugin_entries:
+            check = QCheckBox(entry.display_name)
+            check.toggled.connect(
+                lambda checked, e=entry: self._on_plugin_toggled(e, checked)
+            )
+            self._plugin_checks[entry.plugin_id] = check
+            self._plugin_checks_layout.addWidget(check)
+        self._update_plugin_availability()
 
-        plugin_cls = self._plugin_classes[index]
-        widget = plugin_cls(self.viewer)
-        self._active_plugin = widget
-        self._plugin_host_layout.addWidget(widget)
-        self._push_context()
+    def _on_plugin_toggled(self, entry: PluginEntry, checked: bool) -> None:
+        if checked:
+            self._mount_plugin(entry)
+        else:
+            self._unmount_plugin(entry.plugin_id)
+
+    def _mount_plugin(self, entry: PluginEntry) -> None:
+        if entry.plugin_id in self._mounted:
+            return
+        body = entry.factory(self.viewer)
+        section = CollapsibleSection(entry.display_name, body, expanded=True)
+        self._plugin_host_layout.addWidget(section)
+        self._mounted[entry.plugin_id] = _Mounted(section=section, body=body)
+        self._push_context_to(body)
+
+    def _unmount_plugin(self, plugin_id: str) -> None:
+        mounted = self._mounted.pop(plugin_id, None)
+        if mounted is None:
+            return
+        self._plugin_host_layout.removeWidget(mounted.section)
+        mounted.section.deleteLater()
 
     def _load_analysis(self, path: Path) -> Any:
         path = Path(path)
         cached = self._analysis_cache.get(path)
         if cached is None:
-            cached = self._quantifier.read(path)
+            cached = self._read_quantity(path)
             self._analysis_cache[path] = cached
         return cached
 
     def _push_context(self) -> None:
-        """Feed the active plugin the current scope, if it accepts a context."""
-        plugin = self._active_plugin
-        set_context = getattr(plugin, "set_context", None)
+        """Feed every mounted plugin the current scope and refresh availability."""
+        for mounted in self._mounted.values():
+            self._push_context_to(mounted.body)
+        self._update_plugin_availability()
+
+    def _push_context_to(self, body: QWidget) -> None:
+        set_context = getattr(body, "set_context", None)
         if not callable(set_context):
             return
-        ctx = MetaContext(
-            records=self._records_in_scope(),
-            viewer=self.viewer,
-            loader=self._load_analysis,
+        set_context(
+            MetaContext(
+                records=self._records_in_scope(),
+                viewer=self.viewer,
+                loader=self._load_analysis,
+            )
         )
-        set_context(ctx)
+
+    def _update_plugin_availability(self) -> None:
+        """Grey a plugin's checkbox when no in-scope position has its inputs."""
+        scope = self._records_in_scope()
+        for entry in self._plugin_entries:
+            check = self._plugin_checks.get(entry.plugin_id)
+            if check is None:
+                continue
+            satisfied = bool(records_satisfying(entry.requires, scope))
+            # Keep a checked plugin toggleable even if it falls out of scope.
+            check.setEnabled(satisfied or check.isChecked())
+            check.setToolTip(
+                ""
+                if satisfied
+                else f"No in-scope position has: {', '.join(entry.requires)}"
+            )

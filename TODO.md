@@ -13,6 +13,10 @@
 - [x] Add a way to clear individual rows in the contact analysis study, not just the whole thing. ("Remove selected" button in the catalogue.)
 - [x] CSV files it saves are missing the `.csv` extension.
 
+## Live Previews
+
+- [ ] Cell segmentation live previews got a new caching mechanism. Port it to the other live previews.
+
 ## Aggregate Quantification (redesign + rename of "Contact Analysis")
 
 - [x] Rename the "contact analysis" study to **Aggregate Quantification** (`contact_analysis/` → `aggregate_quantification/`). (Full rename incl. classes, manifest, and the standalone dist `cellflow-contact` → `cellflow-aggregate`; the contacts artifact `contact_analysis.h5` + stage stay, as that is the contacts quantifier's own storage.)

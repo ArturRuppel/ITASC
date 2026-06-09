@@ -67,8 +67,12 @@ class MetaAnalysisPlugin(QWidget):
 
     #: Stable key; an empty value marks an intermediate (non-registered) base.
     plugin_id: ClassVar[str] = ""
-    #: Human-readable label shown in the Meta Analysis plugin selector.
+    #: Human-readable label shown in the studio plugin list.
     display_name: ClassVar[str] = ""
+    #: ``PositionInputs`` field names this plugin needs; the studio greys its
+    #: checkbox for a selection where no in-scope position supplies them. Empty
+    #: means "always available" (e.g. a cohort summary).
+    requires: ClassVar[tuple[str, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

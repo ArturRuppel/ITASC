@@ -64,6 +64,9 @@ class NLSClassificationPlugin(MetaAnalysisPlugin):
 
     plugin_id = "nls_classification"
     display_name = "NLS Classification"
+    # Per-position; needs nucleus labels to measure marker intensity over tracks.
+    # Names a PositionInputs field (not the catalogue-record key).
+    requires = ("nucleus_labels_path",)
 
     def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
         super().__init__(viewer=viewer, parent=parent)

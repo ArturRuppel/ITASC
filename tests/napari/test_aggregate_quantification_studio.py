@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication, QLabel
 
+from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
 from cellflow.napari import aggregate_quantification_studio as mod
 from cellflow.napari.meta_plugins import (
     MetaAnalysisPlugin,
@@ -56,15 +57,37 @@ def test_single_contact_analysis_entry_no_meta_or_plugins_in_manifest():
 # ---------------------------------------------------------------- plugin hosting
 
 
-def test_widget_mounts_registered_plugin():
+def test_registry_lists_a_checkbox_per_plugin():
     app = _app()
     widget = mod.AggregateQuantificationStudioWidget()
-    assert isinstance(widget._active_plugin, CatalogSummaryPlugin)
+    # A builder per quantifier (contacts) + the meta plugins, all as checkboxes,
+    # and none mounted until checked.
+    assert "build:contacts" in widget._plugin_checks
+    assert "catalog_summary" in widget._plugin_checks
+    assert widget._mounted == {}
     widget.deleteLater()
     app.processEvents()
 
 
-def test_selection_scope_forwarded_to_plugin(monkeypatch):
+def test_checking_a_plugin_mounts_it_as_a_collapsible():
+    app = _app()
+    widget = mod.AggregateQuantificationStudioWidget()
+
+    widget._plugin_checks["catalog_summary"].setChecked(True)
+    assert "catalog_summary" in widget._mounted
+    assert isinstance(widget._mounted["catalog_summary"].body, CatalogSummaryPlugin)
+
+    # Unchecking removes the mounted collapsible; multiple may coexist.
+    widget._plugin_checks["build:contacts"].setChecked(True)
+    assert set(widget._mounted) == {"catalog_summary", "build:contacts"}
+    widget._plugin_checks["catalog_summary"].setChecked(False)
+    assert set(widget._mounted) == {"build:contacts"}
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_selection_scope_forwarded_to_mounted_plugins(monkeypatch):
     app = _app()
 
     received: list[list[dict]] = []
@@ -76,9 +99,16 @@ def test_selection_scope_forwarded_to_plugin(monkeypatch):
         def set_context(self, ctx: MetaContext) -> None:
             received.append(list(ctx.records))
 
-    monkeypatch.setattr(mod, "available_meta_plugins", lambda: [_RecordingPlugin])
+    entry = mod.PluginEntry(
+        plugin_id="recording_test",
+        display_name="Recording",
+        requires=(),
+        factory=lambda viewer: _RecordingPlugin(viewer),
+    )
+    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [entry])
 
     widget = mod.AggregateQuantificationStudioWidget()
+    widget._plugin_checks["recording_test"].setChecked(True)  # mount it
     widget._records = [
         {"condition": "ctrl", "date": "d1", "id": "p1", "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
         {"condition": "drug", "date": "d1", "id": "p2", "contact_analysis_path": Path("/b.h5"), "contact_analysis_status": "incomplete"},
@@ -95,12 +125,39 @@ def test_selection_scope_forwarded_to_plugin(monkeypatch):
     app.processEvents()
 
 
+def test_plugin_checkbox_greyed_when_inputs_missing(monkeypatch):
+    app = _app()
+
+    entry = mod.PluginEntry(
+        plugin_id="needs_nucleus",
+        display_name="Needs nucleus",
+        requires=("nucleus_labels_path",),  # a PositionInputs field name
+        factory=lambda viewer: QLabel("x"),
+    )
+    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [entry])
+
+    widget = mod.AggregateQuantificationStudioWidget()
+    widget._records = [
+        {"condition": "c", "date": "d", "id": "p1", "contact_analysis_path": Path("/a.h5"),
+         "cell_tracked_labels_path": Path("/cells.tif"), "contact_analysis_status": "ready"},
+    ]
+    widget._refresh_table()
+    assert widget._plugin_checks["needs_nucleus"].isEnabled() is False
+
+    widget._records[0]["nucleus_tracked_labels_path"] = Path("/nuc.tif")
+    widget._refresh_table()
+    assert widget._plugin_checks["needs_nucleus"].isEnabled() is True
+
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_no_plugins_shows_placeholder(monkeypatch):
     app = _app()
-    monkeypatch.setattr(mod, "available_meta_plugins", lambda: [])
+    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
     widget = mod.AggregateQuantificationStudioWidget()
-    assert isinstance(widget._active_plugin, QLabel)
-    assert "No meta-analysis plugins" in widget._active_plugin.text()
+    assert widget._plugin_checks == {}
+    assert widget._mounted == {}
     widget.deleteLater()
     app.processEvents()
 
@@ -110,7 +167,7 @@ def test_no_plugins_shows_placeholder(monkeypatch):
 
 def test_single_selection_drives_contact_view(monkeypatch):
     app = _app()
-    monkeypatch.setattr(mod, "available_meta_plugins", lambda: [])
+    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
 
     widget = mod.AggregateQuantificationStudioWidget()
 
@@ -207,75 +264,77 @@ def test_discover_annotate_add_then_csv_roundtrip(tmp_path):
     app.processEvents()
 
 
-def test_add_builds_only_missing_contact_analyses(tmp_path, monkeypatch):
-    """Adding computes the .h5 for positions that lack it (or all, with the
-    checkbox), and adds positions whose .h5 already exists without a build."""
+def test_add_is_register_only_no_build(tmp_path, monkeypatch):
+    """Add registers positions synchronously and never builds (that's a plugin)."""
     app = _app()
-    monkeypatch.setattr(mod, "available_meta_plugins", lambda: [])
+    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
 
     study = tmp_path / "study"
-    # pos01 already has a built contact analysis; pos02 only has cell labels.
     p1 = study / "pos01"
     p2 = study / "pos02"
     for p in (p1, p2):
         p.mkdir(parents=True)
         (p / "cell_labels.tif").touch()
-    (p1 / "contact_analysis.h5").touch()
+    (p1 / "contact_analysis.h5").touch()  # pos01 already built; pos02 missing
 
     widget = mod.AggregateQuantificationStudioWidget()
-
-    captured: list = []
-    monkeypatch.setattr(
-        widget, "_begin_build",
-        lambda annotated, jobs, *, overwrite: captured.append((jobs, overwrite)),
-    )
+    began: list = []
+    monkeypatch.setattr(widget, "_begin_build", lambda *a, **k: began.append(a))
 
     widget._root_edit.setText(str(study))
     widget._cell_name_edit.setText("cell_labels.tif")
     widget._on_discover()
     assert len(widget._pending_entries) == 2
 
-    # Default: only the missing one (pos02) is built.
     widget._on_add_to_catalogue()
-    assert len(captured) == 1
-    jobs, overwrite = captured[0]
-    assert overwrite is False
-    assert [job.inputs.position_dir.name for job in jobs] == ["pos02"]
-
-    # "Always recompute" rebuilds every position.
-    captured.clear()
-    widget._on_discover()
-    widget._recompute_cb.setChecked(True)
-    widget._on_add_to_catalogue()
-    jobs, overwrite = captured[0]
-    assert overwrite is True
-    assert sorted(job.inputs.position_dir.name for job in jobs) == ["pos01", "pos02"]
+    # No build kicked off; both positions registered, statuses reflect reality.
+    assert began == []
+    assert widget._build_worker is None
+    assert len(widget._records) == 2
+    by_id = {r["id"]: r for r in widget._records}
+    assert by_id["pos01"]["contact_analysis_status"] == "ready"
+    assert by_id["pos02"]["contact_analysis_status"] == "incomplete"
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_add_without_build_is_synchronous(tmp_path, monkeypatch):
-    """When every discovered .h5 already exists and recompute is off, add skips
-    the build worker and populates the catalog immediately."""
+def test_builder_build_targets_only_buildable_missing_positions(tmp_path, monkeypatch):
+    """The builder-plugin build path builds missing positions that have inputs,
+    skips already-built ones, and (with overwrite) rebuilds everything."""
     app = _app()
-    monkeypatch.setattr(mod, "available_meta_plugins", lambda: [])
-
-    study = tmp_path / "study"
-    pos = study / "pos01"
-    pos.mkdir(parents=True)
-    (pos / "cell_labels.tif").touch()
-    (pos / "contact_analysis.h5").touch()
+    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
 
     widget = mod.AggregateQuantificationStudioWidget()
-    widget._root_edit.setText(str(study))
-    widget._cell_name_edit.setText("cell_labels.tif")
-    widget._on_discover()
-    widget._on_add_to_catalogue()
+    quantifier = ContactsQuantifier()
 
-    assert widget._build_worker is None
-    assert len(widget._records) == 1
-    assert widget._records[0]["contact_analysis_status"] == "ready"
+    p1, p2, p3 = tmp_path / "p1", tmp_path / "p2", tmp_path / "p3"
+    for p in (p1, p2, p3):
+        p.mkdir()
+    (p1 / "contact_analysis.h5").touch()  # already built
+    records = [
+        # p1: built, has cell labels
+        {"id": "p1", "position_path": p1, "contact_analysis_path": p1 / "contact_analysis.h5",
+         "cell_tracked_labels_path": p1 / "cells.tif"},
+        # p2: missing, has cell labels -> buildable
+        {"id": "p2", "position_path": p2, "contact_analysis_path": p2 / "contact_analysis.h5",
+         "cell_tracked_labels_path": p2 / "cells.tif"},
+        # p3: missing, no cell labels -> not buildable
+        {"id": "p3", "position_path": p3, "contact_analysis_path": p3 / "contact_analysis.h5",
+         "cell_tracked_labels_path": None},
+    ]
+
+    captured: list = []
+    monkeypatch.setattr(widget, "_begin_build", lambda q, jobs: captured.append(jobs))
+
+    # Default: only p2 (missing + buildable).
+    widget._run_quantity_build(quantifier, records, overwrite=False)
+    assert [j.inputs.position_dir.name for j in captured[-1]] == ["p2"]
+
+    # Overwrite: p1 and p2 (both have cell labels); p3 still skipped (no inputs).
+    captured.clear()
+    widget._run_quantity_build(quantifier, records, overwrite=True)
+    assert sorted(j.inputs.position_dir.name for j in captured[-1]) == ["p1", "p2"]
 
     widget.deleteLater()
     app.processEvents()
