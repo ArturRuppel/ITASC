@@ -584,6 +584,55 @@ def test_preview_fills_each_frame_slice_on_scrub(monkeypatch, tmp_path):
     w.deleteLater()
 
 
+def _write_prob_dp_squeezed(pos_dir: Path, channel: str, *, T=3, Y=8, X=8) -> None:
+    """Single-z (``Z=1``) prob/dp written the way Cellpose does — with axes
+    metadata, which makes TIFF squeeze the singleton ``Z`` on disk."""
+    from cellflow.core.tiff import imwrite_grayscale
+
+    rng = np.random.default_rng(0)
+    cp = pos_dir / "1_cellpose"
+    cp.mkdir(parents=True, exist_ok=True)
+    prob = rng.normal(0.0, 1.0, (T, 1, Y, X)).astype(np.float32)
+    dp = rng.normal(0.0, 1.0, (T, 1, 2, Y, X)).astype(np.float32)
+    imwrite_grayscale(
+        cp / f"{channel}_prob_3dt.tif", prob,
+        compression="zlib", metadata={"axes": "TZYX"},
+    )
+    imwrite_grayscale(
+        cp / f"{channel}_dp_3dt.tif", dp,
+        compression="zlib", metadata={"axes": "TZCYX"},
+    )
+
+
+def test_preview_keeps_time_axis_for_single_z_squeezed_stacks(monkeypatch, tmp_path):
+    """Regression: a single-z stack squeezes ``Z`` away on disk, so the surviving
+    leading axis must not be mistaken for ``Z`` (collapsing ``T`` to 1 and leaving
+    the preview black at every frame but the first)."""
+    _qapp()
+    mod = _load_widget(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos = tmp_path / "pos00"
+    _write_prob_dp_squeezed(pos, "nucleus", T=3)
+    viewer = _PreviewViewer()
+    w = mod.DivergenceMapsWidget(viewer, show_pipeline_files=False)
+    w.refresh(pos)
+
+    w.nucleus_preview_btn.setChecked(True)
+    fg_name, _ = mod._PREVIEW_LAYER_NAMES["nucleus"]
+    data = w.viewer.layers[fg_name].data
+    assert data.shape[0] == 3  # full time axis preserved, not collapsed to 1
+
+    # Every frame must paint real (non-black) data when scrubbed to.
+    for t in (0, 1, 2):
+        viewer.dims.current_step = (t,)
+        w._refresh_preview()
+        assert w.viewer.layers[fg_name].data[t].any()
+
+    w.nucleus_preview_btn.setChecked(False)
+    w.deleteLater()
+
+
 def test_preview_blocked_during_run(monkeypatch, tmp_path):
     _qapp()
     mod = _load_widget(monkeypatch)

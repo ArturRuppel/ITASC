@@ -137,7 +137,9 @@ def test_ctrl_right_click_swaps_with_selection_made_off_image():
     # 5 and 7 exchanged across the frame.
     assert seg[2, 2] == 7
     assert seg[7, 7] == 5
-    assert stub._selected_label == 0  # selection cleared after the swap
+    # Track stays selected after the swap (it now lives where 7 was), matching
+    # the attach-to-track path.
+    stub._update_highlight.assert_called_once_with(0, 5)
     assert "Swapped" in _last_status(stub)
 
 

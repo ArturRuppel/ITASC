@@ -13,7 +13,6 @@ from typing import Literal
 
 import napari
 import numpy as np
-import tifffile
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import QTimer, Signal
 from qtpy.QtWidgets import (
@@ -47,6 +46,7 @@ from cellflow.napari.widgets import (
 )
 from cellflow.core.cancellation import CancelledError
 from cellflow.cellpose.divergence_maps import (
+    _LazyTiffStack,
     build_divergence_maps,
     contour_from_dp,
     foreground_from_prob,
@@ -632,8 +632,11 @@ class DivergenceMapsWidget(QWidget):
 
     def _compute_channel_frame(self, prob_path, dp_path, t: int, params: dict):
         """Single-frame foreground + contour maps (worker-thread body)."""
-        prob_t = self._read_t_frame(prob_path, t)  # (Z, Y, X)
-        dp_t = self._read_t_frame(dp_path, t)       # (Z, 2, Y, X)
+        # Read through the same lazy stack the build path uses so singleton
+        # ``Z``/``T`` axes (squeezed on disk for 2D / 2D+t / single-z stacks) are
+        # recovered to canonical ``(Z,Y,X)`` / ``(Z,2,Y,X)`` frames.
+        prob_t = _LazyTiffStack(prob_path, ndim=4, name="prob").frame(t)  # (Z, Y, X)
+        dp_t = _LazyTiffStack(dp_path, ndim=5, name="dp").frame(t)        # (Z, 2, Y, X)
         fg = foreground_from_prob(
             prob_t[np.newaxis],
             reduction=params["foreground_z_reduction"],
@@ -648,36 +651,20 @@ class DivergenceMapsWidget(QWidget):
         )[0]
         return fg, contour
 
-    @staticmethod
-    def _read_t_frame(path, t: int) -> np.ndarray:
-        """Read frame ``t`` of a (T,Z,Y,X) / (T,Z,2,Y,X) stack as float32.
+    def _channel_map_shape(self, prob_path):
+        """``(T, Y, X)`` from the prob-map TIFF header (no pixel load).
 
-        Uses a lazy memmap when the TIFF is uncompressed, falling back to a full
-        read otherwise. A 3D/4D single-frame stack is returned whole.
+        Goes through :class:`_LazyTiffStack` so a singleton ``Z`` that TIFF
+        squeezes on disk (2D / 2D+t / single-z stacks) is still recovered to the
+        canonical ``(T, Z, Y, X)`` shape — otherwise the surviving leading axis is
+        mistaken for ``Z`` and ``T`` collapses to ``1``, leaving the preview a
+        single-frame layer that renders black at every other timepoint.
         """
         try:
-            mm = tifffile.memmap(str(path), mode="r")
-        except (ValueError, OSError, MemoryError):
-            mm = None
-        if mm is not None:
-            try:
-                arr = mm[t] if mm.ndim >= 4 else mm
-                return np.asarray(arr, dtype=np.float32)
-            finally:
-                del mm
-        full = tifffile.imread(str(path))
-        return np.asarray(full[t] if full.ndim >= 4 else full, dtype=np.float32)
-
-    def _channel_map_shape(self, prob_path):
-        """``(T, Y, X)`` from the prob-map TIFF header (no pixel load)."""
-        try:
-            with tifffile.TiffFile(str(prob_path)) as tf:
-                shape = tf.series[0].shape
+            shape = _LazyTiffStack(prob_path, ndim=4, name="prob").shape
         except Exception:
             return None
-        if len(shape) >= 4:  # (T, Z, Y, X)
-            return int(shape[0]), int(shape[-2]), int(shape[-1])
-        return 1, int(shape[-2]), int(shape[-1])
+        return int(shape[0]), int(shape[-2]), int(shape[-1])
 
     def _current_t(self) -> int:
         step = getattr(getattr(self.viewer, "dims", None), "current_step", (0,))

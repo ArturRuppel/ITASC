@@ -1063,10 +1063,10 @@ class CorrectionWidget(QWidget):
             if ok:
                 self._record_history(_layer, t, before)
                 _layer.refresh()
-                self._selected_label = 0
-                self._selected_pos = None
-                self._selected_t = -1
-                self._update_highlight(t, 0)
+                # Keep the track selected after the swap (it now lives where the
+                # clicked cell was), matching the attach-to-track path so the
+                # selection survives whether or not the frame was occupied.
+                self._update_highlight(t, self._selected_label)
                 self._set_status(f"Swapped — Active on '{_layer.name}'")
             else:
                 self._set_status("Swap failed — click on two different cells")
