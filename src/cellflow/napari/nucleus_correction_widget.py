@@ -1,4 +1,9 @@
-"""Correction section widget for the nucleus workflow."""
+"""Correction section widget for the nucleus workflow.
+
+The public class :class:`NucleusCorrectionWidget` is a coordinator over a set of
+focused collaborators (controllers + stateless helper modules + the
+``tracking_ultrack`` algorithms); see its docstring for the architecture map.
+"""
 from __future__ import annotations
 
 import logging
@@ -147,7 +152,45 @@ _DEFAULT_DEPENDENCIES = {
 
 
 class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
-    """Qt controls for nucleus tracking correction workflows."""
+    """Coordinator for the nucleus tracking-correction workflow.
+
+    This class is intentionally a **hub, not a god object**: it owns the controls
+    and orchestrates them, but the actual work lives in focused collaborators.
+    Its size reflects a wide *coordination* surface (many controls, many refresh
+    paths) rather than logic that belongs elsewhere — the heavy logic has been
+    pushed out to the pieces below, and splitting the remaining glue further only
+    relocates ``self.collaborator.…`` calls without reducing the coupling.
+
+    Where the work actually lives
+    -----------------------------
+    * Drawing / contour editing — the embedded :class:`CorrectionWidget`
+      (``self.correction_widget``): brush, redraw, new-shape painting, selection.
+    * Display subsystems, each its own controller:
+      ``self._validated_overlay`` (:class:`ValidatedOverlayController`),
+      ``self._all_tracks`` (:class:`AllTracksController`, the track-path comet),
+      ``self._lineage_canvas`` (:class:`LineageCanvasController`, the accordion +
+      film strip) and ``self._candidate_gallery``
+      (:class:`CandidateGalleryController`).
+    * Stateless helpers in sibling modules: control assembly
+      (:mod:`_correction_ui_nucleus`), label painting (:mod:`_correction_paint`),
+      camera framing (:mod:`_correction_navigation`), playback queries
+      (:mod:`_correction_playback`), held-key auto-repeat
+      (:mod:`_correction_keymap`), label colormaps (:mod:`_correction_centroids`)
+      and the shared view-state / owned-layer lifecycle
+      (:class:`CorrectionViewStateMixin`, also used by the cell widget).
+    * Tracking algorithms — :mod:`cellflow.tracking_ultrack` (extend, swap
+      candidates, retrack, DB annotation, validation/commit). The widget only
+      orchestrates these: read the layer, call the algorithm, paint the result,
+      fan out the refreshes, set status.
+
+    What stays here (the coordinator's own job)
+    -------------------------------------------
+    Building + wiring the controls, the correction-mode lifecycle
+    (activate/deactivate, view-state capture/restore, owned-layer teardown, the
+    focus-mode workspace dock), and translating user actions — mask edits, track
+    selection, navigation, keyboard shortcuts — into calls on the collaborators
+    above followed by the appropriate layer repaint + refresh fan-out.
+    """
 
     def __init__(
         self,
