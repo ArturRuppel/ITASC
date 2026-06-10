@@ -11,9 +11,7 @@ import tifffile
 from napari.qt.threading import thread_worker as _thread_worker
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
-    QCheckBox,
     QHBoxLayout,
-    QLabel,
     QMessageBox,
     QSizePolicy,
     QSplitter,
@@ -21,13 +19,6 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari._widget_helpers import (
-    btn as _btn,
-    dslider as _dslider,
-    heading as _heading,
-    make_status as _make_status,
-    tool_btn as _tool_btn,
-)
 from cellflow.napari._correction_centroids import (
     apply_neutral_label_colormap,
     ensure_label_colormap_entries,
@@ -71,7 +62,6 @@ from cellflow.napari._correction_validation import (
     selected_correction_target,
 )
 from cellflow.napari._paths import NucleusWorkspace
-from cellflow.napari.correction_widget import CorrectionWidget
 from cellflow.core.label_store import (
     read_full_tracked_stack,
     write_tracked_frame,
@@ -89,7 +79,6 @@ from cellflow.tracking_ultrack.validation_state import (
     write_corrections,
 )
 from cellflow.napari.ui_style import (
-    danger_button,
     stage_header_label,
 )
 from cellflow.napari.validated_overlay_controller import (
@@ -102,19 +91,15 @@ from cellflow.napari._correction_takeover import (
     hide_native_docks,
     restore_native_docks,
 )
+from cellflow.napari._correction_ui_nucleus import build_nucleus_correction_ui
 from cellflow.napari._correction_keymap import HeldKeyRepeater
 from cellflow.napari._correction_navigation import center_viewer_on_cell
 from cellflow.napari._correction_playback import (
     nav_repeat_interval_ms,
     playback_loops,
 )
-from cellflow.napari.widgets import CollapsibleSection
 from cellflow.napari._correction_ui import (
     CollapsiblePane,
-    build_correction_header,
-    build_correction_toolbar,
-    build_shortcuts_widget,
-    flatten_embedded_section,
 )
 from cellflow.tracking_ultrack.corrections import (
     Correction,
@@ -290,342 +275,9 @@ class NucleusCorrectionWidget(QWidget):
         return self._dependencies[name]
 
     def _setup_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        self._init_candidate_refresh_timer()
-
-        inner = QWidget(self)
-        group_lay = QVBoxLayout(inner)
-        group_lay.setContentsMargins(0, 0, 0, 0)
-        group_lay.setSpacing(6)
-
-        self._build_action_buttons()
-        self._build_status_labels()
-        self._build_correction_subwidget()
-        self._build_extend_retrack_section()
-        self._build_shortcuts_section()
-        self._build_toolbar()
-        self._build_view_toggle_buttons()
-        self._assemble_reveal_area(group_lay)
-
-        # The full-width top bar carries the title, the activate / shortcuts /
-        # params toggles, the checkable view toggles, and a single one-line
-        # status (the save/action status only) right-aligned. The track /
-        # validated summary lives in the tracking-overview panel instead.
-        self.header, self.header_lbl = build_correction_header(
-            self,
-            shortcuts_btn=self.shortcuts_btn,
-            params_btn=self.params_btn,
-            active_btn=self.active_btn,
-            view_toggle_btns=(
-                self.track_path_btn,
-                self.filled_view_btn,
-            ),
-            status_lbl=self.status_lbl,
-        )
-        # ``section`` is the full-width reveal area (params + shortcuts) shown
-        # below the top bar; both it and the header are reparented between the
-        # plugin dock (inactive) and the workspace dock (active).
-        self.section = CollapsibleSection("Correction", inner, expanded=False)
-        self.section._toggle.setVisible(False)
-        self.section._toggle.setEnabled(False)
-
-        self.correction_active_btn = self.active_btn
-        self.correction_shortcuts_btn = self.shortcuts_btn
-        self.correction_status_lbl = self.status_lbl
-        self.correction_mode_section = self.section
-        self._correction_active_content_visible = False
-        self._connect_signals()
-        # Start collapsed: the inactive plugin-dock entry point shows only the
-        # on/off button (title + toggles appear once correction is active).
-        self._sync_correction_panel_visibility()
-
-    def _init_candidate_refresh_timer(self) -> None:
-        # Searching + rendering the candidate gallery is expensive, so debounce
-        # it: every refresh request (re)starts this timer and the actual rebuild
-        # only fires once the frame has been still for the interval — fast
-        # scrubbing no longer recomputes candidates for every frame it sweeps.
-        self._candidate_refresh_timer = QTimer(self)
-        self._candidate_refresh_timer.setSingleShot(True)
-        self._candidate_refresh_timer.setInterval(200)
-        self._candidate_refresh_timer.timeout.connect(
-            self._refresh_candidate_gallery_now
-        )
-
-    def _build_action_buttons(self) -> None:
-        self.active_btn = _tool_btn(
-            "⏻",
-            "Activate correction mode and show correction layers and controls.",
-            checkable=True,
-        )
-        self.active_btn.setToolTip(
-            "Activate correction mode and show correction layers and controls."
-        )
-        self.params_btn = _tool_btn(
-            "⚙", "Show correction parameters.", checkable=True
-        )
-        self.shortcuts_btn = _tool_btn(
-            "📖", "Show correction shortcuts.", checkable=True
-        )
-
-        self.save_tracked_btn = _tool_btn(
-            "💾", "Save corrected tracked nucleus labels to disk (S)."
-        )
-        self.extend_back_btn = _tool_btn(
-            "◀", "Extend selected track one frame backward (A)."
-        )
-        self.extend_fwd_btn = _tool_btn(
-            "▶", "Extend selected track one frame forward (D)."
-        )
-        self.retrack_back_btn = _tool_btn(
-            "↶", "Retrack all labels backward from current frame (Q)."
-        )
-        self.retrack_fwd_btn = _tool_btn(
-            "↷", "Retrack all labels forward from current frame (E)."
-        )
-        self.swap_smaller_btn = _tool_btn(
-            "⮂", "Swap selected cell with the next smaller candidate fragment (Z)."
-        )
-        self.swap_larger_btn = _tool_btn(
-            "⮀", "Swap selected cell with the next larger candidate fragment (C)."
-        )
-        self.reassign_ids_btn = _tool_btn(
-            "#",
-            "Reassign cell IDs to contiguous range 1-N (validated tracks first, "
-            "then by earliest start frame, then by longest track).",
-        )
-        self.validate_track_btn = _tool_btn(
-            "✓", "Lock selected cell geometry in every frame where it appears (V)."
-        )
-        self.anchor_here_btn = _tool_btn(
-            "⚓", "Anchor selected cell identity at the current frame (B)."
-        )
-        self.annotate_db_btn = _tool_btn(
-            "✎", "Apply saved validations and anchors to the Ultrack database."
-        )
-        self.remove_unvalidated_btn = _tool_btn(
-            "🗑",
-            "Remove nucleus label pixels not marked validated for their frame.",
-        )
-        danger_button(self.remove_unvalidated_btn)
-
-        self.commit_btn = _btn(
-            "Commit",
-            "Reassign cell IDs, remove unvalidated labels, and save tracked labels.",
-        )
-
-    def _build_status_labels(self) -> None:
-        self.status_lbl = _make_status()
-        # Drop the smaller status font so the status line reads at the same
-        # size as the rest of the controls column. Keep it to a single line so
-        # it never wraps and pushes the top-bar title pill onto two rows.
-        self.status_lbl.setStyleSheet("")
-        self.status_lbl.setWordWrap(False)
-
-        # The track / validated summary now lives in the tracking-overview title
-        # (see LineageCanvasController). This label is kept as a hidden sink so
-        # the existing counter-refresh plumbing keeps working without surfacing
-        # a second status line in the top bar; it is parented (never shown) so
-        # toggling its visibility can't spawn a stray top-level window.
-        self.validation_counter_lbl = QLabel("", self)
-        self.validation_counter_lbl.setVisible(False)
-
-    def _build_correction_subwidget(self) -> None:
-        self.correction_widget = CorrectionWidget(
-            self.viewer,
-            show_activate_btn=False,
-            show_shortcuts=False,
-            inspector_first=True,
-            show_cleanup=False,
-            # The lineage canvas is the navigation surface now — drop the
-            # redundant "Inspect cell" group from the correction column.
-            show_inspector=False,
-        )
-        self.correction_widget.set_edit_callback(self._edit_callback)
-        self.correction_widget.set_protected_mask_callback(
-            self._manual_correction_protected_mask
-        )
-        self.correction_widget.set_intensity_frame_callback(
-            self._correction_intensity_frame
-        )
-        # Use an additive listener, not set_selection_callback: the workflow
-        # widget owns that single slot and would otherwise clobber the comet's
-        # rebuild-on-selection (so it would only build on first checkbox tick).
-        self.correction_widget.add_selection_listener(
-            self._on_track_selection_changed
-        )
-        self.correction_widget.set_spotlight_mask_provider(
-            self._track_path_spotlight_mask
-        )
-        self.correction_widget._status.setVisible(False)
-
-    def _build_extend_retrack_section(self) -> None:
-        # Wide-and-short reveal area: each remaining parameter gets its own
-        # column so the sliders spread horizontally across the full-width panel
-        # rather than stacking. Greedy overwrite and the outline view are now
-        # always-on defaults, so neither is surfaced as a control here.
-        extend_retrack_inner = QWidget(self)
-        extend_retrack_lay = QVBoxLayout(extend_retrack_inner)
-        extend_retrack_lay.setContentsMargins(0, 0, 0, 0)
-        extend_retrack_lay.setSpacing(6)
-
-        columns = QHBoxLayout()
-        columns.setContentsMargins(0, 0, 0, 0)
-        columns.setSpacing(16)
-
-        def _column(*items) -> QWidget:
-            col = QWidget()
-            lay = QVBoxLayout(col)
-            lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(4)
-            for item in items:
-                if isinstance(item, QWidget):
-                    lay.addWidget(item)
-                else:
-                    lay.addLayout(item)
-            lay.addStretch(1)
-            return col
-
-        # Greedy overwrite is now the always-on default: keep the (hidden)
-        # checkbox checked so the extend/retrack paint paths that read its state
-        # still behave greedily, but drop it from the UI.
-        self.extend_greedy_overwrite_check = QCheckBox("Greedy overwrite")
-        self.extend_greedy_overwrite_check.setChecked(True)
-
-        self.retrack_max_dist_spin = _dslider(0, 500, 20.0, 1.0, 1)
-        # Scoring weights for the retrack frame matcher. Kept under the
-        # ``extend_*`` attribute names for settings back-compat; extend no longer
-        # uses them.
-        self.extend_area_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
-        self.extend_iou_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
-        self.extend_distance_weight_spin = _dslider(0, 10, 0.05, 0.01, 3)
-
-        # Each retrack weight + the cell-radius control gets its own column
-        # (stretch=1) so they fan out across the wide reveal area. The cell-radius
-        # slider (middle-click cell creation) is reused straight from the embedded
-        # correction widget, dropped under a plain "Cell Radius" heading so it
-        # matches the other sliders rather than carrying its own inline label.
-        for heading_text, widget in (
-            ("Max distance", self.retrack_max_dist_spin),
-            ("Area weight", self.extend_area_weight_spin),
-            ("IoU weight", self.extend_iou_weight_spin),
-            ("Distance weight", self.extend_distance_weight_spin),
-            ("Cell Radius", self.correction_widget._cell_radius_spin),
-        ):
-            columns.addWidget(_column(_heading(heading_text), widget), stretch=1)
-        extend_retrack_lay.addLayout(columns)
-
-        self.extend_retrack_params_section = CollapsibleSection(
-            "Extend / Retrack Parameters",
-            extend_retrack_inner,
-            expanded=False,
-
-        )
-        flatten_embedded_section(self.extend_retrack_params_section)
-        self.extend_retrack_params_section.setVisible(False)
-        self.extend_params_section = self.extend_retrack_params_section
-        self.retrack_params_section = self.extend_retrack_params_section
-
-    def _build_shortcuts_section(self) -> None:
-        # The disclaimer / attribution label rides at the bottom of the wide
-        # shortcuts panel now (reparented out of the embedded correction widget).
-        self.shortcuts_section = CollapsibleSection(
-            "Correction Shortcuts",
-            build_shortcuts_widget(self.correction_widget._attrib_lbl),
-            expanded=False,
-
-        )
-        flatten_embedded_section(self.shortcuts_section)
-        self.shortcuts_section.setVisible(False)
-        self.correction_widget.setVisible(False)
-
-    def _build_toolbar(self) -> None:
-        # Extend / swap are driven by clicking into the candidate gallery now,
-        # so they're dropped from the toolbar (the A/D/Z/C shortcuts still work).
-        self.toolbar = build_correction_toolbar(
-            self,
-            [
-                (self.save_tracked_btn,),
-                (self.retrack_back_btn, self.retrack_fwd_btn),
-                (self.validate_track_btn, self.anchor_here_btn),
-                (self.annotate_db_btn,),
-                (self.reassign_ids_btn, self.remove_unvalidated_btn),
-            ],
-        )
-        self.toolbar.setVisible(False)
-
-    def _build_view_toggle_buttons(self) -> None:
-        # View toggles ride in the top bar as checkable icon tool-buttons; the
-        # old "Lineage canvas" toggle is gone — the accordion is the always-on
-        # main surface. Tooltips carry the longer descriptions the old check
-        # captions spelled out.
-        self.track_path_btn = _tool_btn(
-            "👁",
-            "Track path: paint the selected track's whole trajectory as a fading "
-            "comet (viridis, oldest→newest) with a frame number in each mask.",
-            checkable=True,
-        )
-        self.filled_view_btn = _tool_btn(
-            "🎨",
-            "Filled labels (by ID): hide the cell + nucleus images and draw the "
-            "labels and tracks opaque and filled (not outlines), coloured by ID. "
-            "Off = the default outline view in one neutral colour.",
-            checkable=True,
-        )
-        # The candidate gallery is shown/hidden by its own ✕ button + slim
-        # show-tab (see CollapsiblePane), not a top-bar toggle.
-        for button in (self.track_path_btn, self.filled_view_btn):
-            button.setVisible(False)
-        self.validation_counter_lbl.setVisible(False)
-
-    def _assemble_reveal_area(self, group_lay: QVBoxLayout) -> None:
-        # The section body is the full-width reveal area below the top bar: the
-        # params and shortcuts panels, openable independently. The toolbar, the
-        # view toggles and the status now live elsewhere (the toolbar in the body
-        # splitter's thin left column, the toggles + status in the top bar). The
-        # embedded correction widget is a logic holder only — its visible bits
-        # (outline + spawn controls, attribution label) were reparented into the
-        # params / shortcuts panels — so it is kept hidden here to stay owned.
-        group_lay.addWidget(self.extend_retrack_params_section)
-        group_lay.addWidget(self.shortcuts_section)
-        self.correction_widget.setVisible(False)
-        group_lay.addWidget(self.correction_widget)
-
-    def _connect_signals(self) -> None:
-        self.save_tracked_btn.clicked.connect(self._on_save_tracked)
-        self.reassign_ids_btn.clicked.connect(self._on_reassign_ids)
-        self.validate_track_btn.clicked.connect(self._on_validate_track)
-        self.anchor_here_btn.clicked.connect(self._on_anchor_here)
-        self.annotate_db_btn.clicked.connect(self._on_annotate_database)
-        self.extend_back_btn.clicked.connect(self._on_extend_backward)
-        self.extend_fwd_btn.clicked.connect(self._on_extend_forward)
-        self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
-        self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
-        self.swap_smaller_btn.clicked.connect(
-            lambda: self._on_swap_step(direction="smaller")
-        )
-        self.swap_larger_btn.clicked.connect(
-            lambda: self._on_swap_step(direction="larger")
-        )
-        self.remove_unvalidated_btn.clicked.connect(
-            self._on_remove_unvalidated_labels
-        )
-        self.commit_btn.clicked.connect(self._on_commit)
-        self.track_path_btn.toggled.connect(self._on_toggle_track_path)
-        self.filled_view_btn.toggled.connect(self._on_toggle_filled_view)
-        self.params_btn.toggled.connect(
-            self._on_correction_params_button_toggled
-        )
-        self.shortcuts_btn.toggled.connect(
-            self._on_correction_shortcuts_button_toggled
-        )
-        self.active_btn.toggled.connect(self._on_correction_active_button_toggled)
-        self.correction_widget._activate_btn.toggled.connect(
-            self._on_correction_mode_toggled
-        )
-        self._install_correction_shortcuts()
+        # All one-time control assembly + signal wiring lives in the builder
+        # module so this widget stays focused on behaviour.
+        build_nucleus_correction_ui(self)
 
     @staticmethod
     def _set_checked_without_signal(button, checked: bool) -> None:
@@ -724,8 +376,9 @@ class NucleusCorrectionWidget(QWidget):
         return ws.cell_foreground if ws is not None else None
 
     def _nucleus_foreground_path(self):
-        ws = self._workspace
-        return ws.foreground if ws is not None else None
+        # The nucleus foreground *is* the workspace foreground; named for the
+        # load site, where "nucleus" disambiguates it from the cell foreground.
+        return self._foreground_path()
 
     def _current_t(self) -> int:
         step = self.viewer.dims.current_step
@@ -1443,7 +1096,7 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_correction_label_visuals_for_edit(target_frame, changed_ids)
         return changed_ids
 
-    def _on_retrack_forward(self) -> None:
+    def _on_retrack(self, direction: str) -> None:
         if self._pos_dir is None:
             self._correction_status("No project open."); return
         layer = self._correction_tracked_layer()
@@ -1452,45 +1105,9 @@ class NucleusCorrectionWidget(QWidget):
         if layer.data.ndim != 3 or layer.data.shape[0] < 2:
             self._correction_status("Need >= 2 frames to retrack."); return
         t0 = int(self.viewer.dims.current_step[0])
-        if t0 >= layer.data.shape[0] - 1:
+        if direction == "forward" and t0 >= layer.data.shape[0] - 1:
             self._correction_status("Already at last frame."); return
-
-        before = np.asarray(layer.data).copy()
-        validated_tracks = read_validated_tracks(self._pos_dir)
-        result = retrack_stack_direction(
-            before,
-            start_frame=t0,
-            direction="forward",
-            fully_validated_frames=read_validated_frames(self._pos_dir),
-            validated_cells_at_frame=lambda t: {
-                cid for cid, frames in validated_tracks.items() if t in frames
-            },
-            retrack_frame=retrack_frame_constrained,
-            max_dist_px=float(self.retrack_max_dist_spin.value()),
-            reserved_ids=set(validated_tracks),
-            area_weight=float(self.extend_area_weight_spin.value()),
-            iou_weight=float(self.extend_iou_weight_spin.value()),
-            distance_weight=float(self.extend_distance_weight_spin.value()),
-        )
-        layer.data = result.stack
-        self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
-        self._refresh_track_visuals_live()
-        self._correction_status(
-            f"Retrackedforward from t={result.first_target_frame}: "
-            f"{result.n_retracked} updated, "
-            f"{result.n_skipped} validated skipped. Unsaved."
-        )
-
-    def _on_retrack_backward(self) -> None:
-        if self._pos_dir is None:
-            self._correction_status("No project open."); return
-        layer = self._correction_tracked_layer()
-        if layer is None:
-            self._correction_status("No tracked layer loaded."); return
-        if layer.data.ndim != 3 or layer.data.shape[0] < 2:
-            self._correction_status("Need >= 2 frames to retrack."); return
-        t0 = int(self.viewer.dims.current_step[0])
-        if t0 <= 0:
+        if direction == "backward" and t0 <= 0:
             self._correction_status("Already at first frame."); return
 
         before = np.asarray(layer.data).copy()
@@ -1498,7 +1115,7 @@ class NucleusCorrectionWidget(QWidget):
         result = retrack_stack_direction(
             before,
             start_frame=t0,
-            direction="backward",
+            direction=direction,
             fully_validated_frames=read_validated_frames(self._pos_dir),
             validated_cells_at_frame=lambda t: {
                 cid for cid, frames in validated_tracks.items() if t in frames
@@ -1514,10 +1131,16 @@ class NucleusCorrectionWidget(QWidget):
         self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
         self._refresh_track_visuals_live()
         self._correction_status(
-            f"Retrackedbackward from t={result.first_target_frame}: "
+            f"Retracked {direction} from t={result.first_target_frame}: "
             f"{result.n_retracked} updated, "
             f"{result.n_skipped} validated skipped. Unsaved."
         )
+
+    def _on_retrack_forward(self) -> None:
+        self._on_retrack("forward")
+
+    def _on_retrack_backward(self) -> None:
+        self._on_retrack("backward")
 
     def _on_remove_unvalidated_labels(self) -> None:
         if self._pos_dir is None:
