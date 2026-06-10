@@ -4,15 +4,17 @@ Classifies cells into a labelled **positive** subpopulation vs **negative** by
 aggregating a nucleus-localised marker image (e.g. an NLS reporter) over each
 nuclear track. It runs in two modes, driven by the catalogue selection:
 
-* **single position** — measures one median intensity per nuclear track
+* **single position** — a single stateful action button first reads *Classify*:
+  it measures one median intensity per nuclear track
   (:func:`cellflow.aggregate_quantification.measure_track_nls_intensity`),
-  auto-places a threshold (:func:`~cellflow.aggregate_quantification.auto_threshold`)
-  the user can drag on a per-track scatter to re-classify live, overlays the
-  marker image and the **outlines of positive nuclei** in napari, and writes the
-  classification back into the contact-analysis ``.h5`` on *Apply*;
-* **multiple positions** — the interactive scatter does not apply, so *Measure &
-  classify* is greyed and *Apply to H5* batch-classifies every selected position
-  with its own auto threshold
+  auto-places a threshold (:func:`~cellflow.aggregate_quantification.auto_threshold`),
+  and reveals a results pane with a per-track scatter the user can drag to
+  re-classify live, overlaying the marker image and the **outlines of positive
+  nuclei** in napari. The button then reads *Apply to H5* and writes the
+  classification back into the contact-analysis ``.h5``;
+* **multiple positions** — the interactive scatter does not apply, so the same
+  button reads *Classify & apply to all H5* and batch-classifies every selected
+  position with its own auto threshold
   (:func:`~cellflow.aggregate_quantification.patch_position_contact_analysis_nls_classes`).
 
 The marker-image field accepts a path **relative to each position directory**
@@ -29,6 +31,7 @@ from typing import Any
 
 import numpy as np
 from napari.qt.threading import thread_worker
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
@@ -36,6 +39,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -100,19 +104,31 @@ class NLSClassificationPlugin(AnalysisPlugin):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6)
 
+        # The panel body is a vertical splitter: a top pane of always-visible
+        # controls and a bottom "results" pane that only appears once a position
+        # has been classified, so its scatter never wastes space when empty.
+        self._splitter = QSplitter(Qt.Vertical)
+        layout.addWidget(self._splitter, 1)
+
+        # ----------------------------------------------------------- top pane
+        top = QWidget()
+        top_layout = QVBoxLayout(top)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(6)
+
         self._scope_lbl = QLabel("")
         self._scope_lbl.setWordWrap(True)
-        layout.addWidget(self._scope_lbl)
+        top_layout.addWidget(self._scope_lbl)
 
         self._nls_edit = QLineEdit()
         self._nls_edit.setPlaceholderText(
             "NLS / marker image — absolute, or relative to each position (e.g. 0_input/NLS_zavg.tif)…"
         )
-        self._nls_edit.textChanged.connect(self._update_enabled)
+        self._nls_edit.textChanged.connect(self._on_nls_text_changed)
         nls_browse = QPushButton("Browse…")
         action_button(nls_browse)
         nls_browse.clicked.connect(self._browse_nls)
-        layout.addLayout(self._labelled_row("NLS image:", self._nls_edit, nls_browse))
+        top_layout.addLayout(self._labelled_row("NLS image:", self._nls_edit, nls_browse))
 
         self._positive_edit = QLineEdit("positive")
         self._negative_edit = QLineEdit("negative")
@@ -123,14 +139,30 @@ class NLSClassificationPlugin(AnalysisPlugin):
         labels_row.addWidget(self._positive_edit, 1)
         labels_row.addWidget(QLabel("Negative:"))
         labels_row.addWidget(self._negative_edit, 1)
-        layout.addLayout(labels_row)
+        top_layout.addLayout(labels_row)
 
-        self._measure_btn = QPushButton("Measure & classify")
-        action_button(self._measure_btn, expand=True)
-        self._measure_btn.clicked.connect(self._on_measure)
-        layout.addWidget(self._measure_btn)
+        # One stateful button: *Classify* → *Apply to H5* (single position) or
+        # *Classify & apply to all H5* (batch). Label + action set in _update_enabled.
+        self._action_btn = QPushButton("Classify")
+        action_button(self._action_btn, expand=True)
+        self._action_btn.clicked.connect(self._on_action)
+        top_layout.addWidget(self._action_btn)
 
-        layout.addWidget(self._build_plot())
+        self._status_lbl = QLabel("")
+        self._status_lbl.setWordWrap(True)
+        status_label(self._status_lbl)
+        top_layout.addWidget(self._status_lbl)
+
+        top_layout.addStretch()
+        self._splitter.addWidget(top)
+
+        # ------------------------------------------------------- results pane
+        # Threshold spinbox + scatter + counts: all only meaningful after a
+        # classification, so they share one pane that is hidden until then.
+        self._results_pane = QWidget()
+        results_layout = QVBoxLayout(self._results_pane)
+        results_layout.setContentsMargins(0, 0, 0, 0)
+        results_layout.setSpacing(6)
 
         thr_row = QHBoxLayout()
         thr_row.setContentsMargins(0, 0, 0, 0)
@@ -142,23 +174,16 @@ class NLSClassificationPlugin(AnalysisPlugin):
         self._threshold_spin.setEnabled(False)
         self._threshold_spin.valueChanged.connect(self._on_spin_changed)
         thr_row.addWidget(self._threshold_spin, 1)
-        layout.addLayout(thr_row)
+        results_layout.addLayout(thr_row)
+
+        results_layout.addWidget(self._build_plot(), 1)
 
         self._counts_lbl = QLabel("")
         self._counts_lbl.setWordWrap(True)
-        layout.addWidget(self._counts_lbl)
+        results_layout.addWidget(self._counts_lbl)
 
-        self._apply_btn = QPushButton("Apply to H5")
-        action_button(self._apply_btn, expand=True)
-        self._apply_btn.clicked.connect(self._on_apply)
-        layout.addWidget(self._apply_btn)
-
-        self._status_lbl = QLabel("")
-        self._status_lbl.setWordWrap(True)
-        status_label(self._status_lbl)
-        layout.addWidget(self._status_lbl)
-
-        layout.addStretch()
+        self._splitter.addWidget(self._results_pane)
+        self._results_pane.setVisible(False)
 
         self._update_enabled()
 
@@ -181,7 +206,6 @@ class NLSClassificationPlugin(AnalysisPlugin):
             status_label(placeholder, muted=True)
             return placeholder
         self._plot = pg.PlotWidget()
-        self._plot.setMinimumHeight(220)
         self._plot.setLabel("left", "Median NLS intensity")
         self._plot.getAxis("bottom").setStyle(showValues=False)
         self._plot.setMouseEnabled(x=False, y=True)
@@ -287,25 +311,57 @@ class NLSClassificationPlugin(AnalysisPlugin):
         return out
 
     def _update_enabled(self) -> None:
+        """Drive the single action button's label + enabled-ness per state.
+
+        Batch → *Classify & apply to all H5*. Single position: *Apply to H5* once a
+        classification exists (the *Classified* state), else *Classify* (the *Needs
+        classify* state), enabled only when the inputs resolve.
+        """
         running = self._measure_worker is not None
-        batch = self._is_batch()
-        labels_path = self._nucleus_labels_path()
-        can_measure = (
-            not batch
-            and self._record is not None
-            and labels_path is not None
-            and labels_path.is_file()
-            and self._nls_path() is not None
-            and not running
-        )
-        self._measure_btn.setEnabled(bool(can_measure))
-        if batch:
-            self._apply_btn.setText("Classify & apply to all H5")
-            self._apply_btn.setEnabled(bool(self._batch_records()) and not running)
+        if self._is_batch():
+            self._action_btn.setText("Classify & apply to all H5")
+            self._action_btn.setEnabled(bool(self._batch_records()) and not running)
+            self._threshold_spin.setEnabled(False)
+            return
+        if self._assignments:  # Classified
+            self._action_btn.setText("Apply to H5")
+            self._action_btn.setEnabled(not running)
+        else:  # Needs classify
+            labels_path = self._nucleus_labels_path()
+            can_measure = (
+                self._record is not None
+                and labels_path is not None
+                and labels_path.is_file()
+                and self._nls_path() is not None
+                and not running
+            )
+            self._action_btn.setText("Classify")
+            self._action_btn.setEnabled(bool(can_measure))
+        self._threshold_spin.setEnabled(self._medians.size > 0)
+
+    def _on_action(self) -> None:
+        """Route the one button to measure / write / batch by current state."""
+        if self._is_batch():
+            self._on_apply_batch()
+        elif self._assignments:
+            self._on_apply()
         else:
-            self._apply_btn.setText("Apply to H5")
-            self._apply_btn.setEnabled(bool(self._assignments) and not running)
-        self._threshold_spin.setEnabled(not batch and self._medians.size > 0)
+            self._on_measure()
+
+    def _on_nls_text_changed(self) -> None:
+        # Changing the marker image invalidates any existing classification:
+        # revert to *Needs classify* and hide the now-stale results pane.
+        if self._assignments or self._measurements:
+            self._reset_measurement()
+        self._update_enabled()
+
+    def _show_results_pane(self) -> None:
+        """Reveal the results pane, giving the scatter usable initial height."""
+        if not self._results_pane.isHidden():
+            return
+        self._results_pane.setVisible(True)
+        total = self._splitter.height() or 480
+        self._splitter.setSizes([total // 2, total - total // 2])
 
     # ------------------------------------------------------------------ measuring
     def _reset_measurement(self) -> None:
@@ -319,6 +375,9 @@ class NLSClassificationPlugin(AnalysisPlugin):
             self._scatter.clear()
             self._threshold_line.setVisible(False)
         self._counts_lbl.setText("")
+        # Back to *Needs classify*: hide the results pane and relabel the button.
+        self._results_pane.setVisible(False)
+        self._action_btn.setText("Classify")
 
     def _browse_nls(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -380,6 +439,8 @@ class NLSClassificationPlugin(AnalysisPlugin):
             threshold = float(np.median(self._medians))
 
         self._ensure_image_layer()
+        # First successful classification → reveal the results pane (scatter + counts).
+        self._show_results_pane()
         if _HAS_PYQTGRAPH:
             lo, hi = float(self._medians.min()), float(self._medians.max())
             pad = max((hi - lo) * 0.05, 1e-6)
@@ -440,7 +501,8 @@ class NLSClassificationPlugin(AnalysisPlugin):
         self._paint_scatter()
         if rebuild_outline:
             self._refresh_outline_layer()
-        self._apply_btn.setEnabled(bool(self._assignments) and self._measure_worker is None)
+        # Now in *Classified*: refresh the button label/enable through one place.
+        self._update_enabled()
 
     def _paint_scatter(self) -> None:
         if not _HAS_PYQTGRAPH or self._track_ids.size == 0:

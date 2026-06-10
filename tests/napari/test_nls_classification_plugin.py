@@ -130,7 +130,10 @@ def test_single_position_measures_and_auto_thresholds(tmp_path):
     plugin = NLSClassificationPlugin(viewer=viewer)
     plugin.set_context(AnalysisContext(records=[record], viewer=viewer))
     plugin._nls_edit.setText(str(record["nls_path"]))
-    assert plugin._measure_btn.isEnabled()
+    # Fresh single position with valid inputs → *Classify*, results pane hidden.
+    assert plugin._action_btn.text() == "Classify"
+    assert plugin._action_btn.isEnabled()
+    assert plugin._results_pane.isHidden()
 
     # Drive the post-measurement path directly (the worker just does I/O).
     from cellflow.aggregate_quantification import measure_track_nls_intensity
@@ -140,6 +143,10 @@ def test_single_position_measures_and_auto_thresholds(tmp_path):
     plugin._on_measure_done((labels[np.newaxis, ...] if labels.ndim == 2 else labels, measurements))
     app.processEvents()
 
+    # Classified → button flips to *Apply to H5* and the results pane is revealed.
+    assert plugin._action_btn.text() == "Apply to H5"
+    assert plugin._action_btn.isEnabled()
+    assert not plugin._results_pane.isHidden()
     # Auto threshold lands between the two clusters → track 2 positive.
     assert 11.0 < plugin.current_threshold() < 100.0
     assert plugin._assignments == {1: "negative", 2: POSITIVE}
@@ -148,6 +155,13 @@ def test_single_position_measures_and_auto_thresholds(tmp_path):
     assert {"NLS image", "Positive nuclei"} <= names
     outline = next(layer for layer in viewer.layers if layer.name == "Positive nuclei")
     assert set(np.unique(outline.data)) == {0, 2}
+
+    # Changing the NLS path after a classify reverts to *Needs classify*.
+    plugin._nls_edit.setText(str(tmp_path / "other.tif"))
+    app.processEvents()
+    assert plugin._action_btn.text() == "Classify"
+    assert plugin._results_pane.isHidden()
+    assert plugin._assignments == {}
 
     plugin.deleteLater()
     app.processEvents()
@@ -201,8 +215,9 @@ def test_apply_writes_classification_to_h5(tmp_path):
     measurements = measure_track_nls_intensity(tifffile.imread(record["nls_path"]), labels)
     plugin._on_measure_done((labels, measurements))
 
-    assert plugin._apply_btn.isEnabled()
-    plugin._on_apply()
+    assert plugin._action_btn.text() == "Apply to H5"
+    assert plugin._action_btn.isEnabled()
+    plugin._on_action()
 
     with h5py.File(record["contact_analysis_path"], "r") as h5:
         cells = h5["cells/table"]
@@ -242,12 +257,12 @@ def test_multiple_positions_disable_measure(tmp_path):
     plugin = NLSClassificationPlugin(viewer=viewer)
     plugin.set_context(AnalysisContext(records=[record, dict(record)], viewer=viewer))
     assert plugin._record is None
-    assert not plugin._measure_btn.isEnabled()
     assert not plugin._threshold_spin.isEnabled()
     assert "2 positions selected" in plugin._scope_lbl.text()
-    # Apply switches to the batch label and stays disabled until inputs resolve.
-    assert plugin._apply_btn.text() == "Classify & apply to all H5"
-    assert not plugin._apply_btn.isEnabled()
+    # The action button switches to the batch label and stays disabled until
+    # every selected position's inputs resolve.
+    assert plugin._action_btn.text() == "Classify & apply to all H5"
+    assert not plugin._action_btn.isEnabled()
 
     plugin.deleteLater()
     app.processEvents()
@@ -266,9 +281,9 @@ def test_relative_nls_path_resolves_per_position(tmp_path):
     plugin._nls_edit.setText("0_input/NLS_zavg.tif")
     assert plugin._resolve_nls_path(rec_a) == rec_a["position_path"] / "0_input" / "NLS_zavg.tif"
     assert plugin._resolve_nls_path(rec_b) == rec_b["position_path"] / "0_input" / "NLS_zavg.tif"
-    # …and both positions become batch-classifiable, enabling Apply.
+    # …and both positions become batch-classifiable, enabling the action button.
     assert {r["id"] for r in plugin._batch_records()} == {"posA", "posB"}
-    assert plugin._apply_btn.isEnabled()
+    assert plugin._action_btn.isEnabled()
 
     # An absolute entry is used verbatim, ignoring position_path.
     absolute = rec_a["position_path"] / "0_input" / "NLS_zavg.tif"
@@ -293,8 +308,8 @@ def test_batch_apply_classifies_all_selected_positions(tmp_path, monkeypatch):
     plugin._positive_edit.setText("GFP+")
     plugin._negative_edit.setText("GFP-")
 
-    assert plugin._apply_btn.isEnabled()
-    plugin._on_apply()  # batch mode dispatches to _on_apply_batch
+    assert plugin._action_btn.isEnabled()
+    plugin._on_action()  # batch mode dispatches to _on_apply_batch
     app.processEvents()
 
     for record in (rec_a, rec_b):
@@ -321,7 +336,7 @@ def test_batch_apply_reports_per_position_failures(tmp_path, monkeypatch):
     plugin = NLSClassificationPlugin(viewer=viewer)
     plugin.set_context(AnalysisContext(records=[good, bad], viewer=viewer))
     plugin._nls_edit.setText("0_input/NLS_zavg.tif")
-    plugin._on_apply()
+    plugin._on_action()
     app.processEvents()
 
     # The good position is still written; the bad one is surfaced, not fatal.
