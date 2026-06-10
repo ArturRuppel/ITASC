@@ -33,3 +33,7 @@ class CorrectionEvents(QObject):
     # refresh — comet + the selected track's detail strip + gallery — without
     # the whole-stack lineage rebuild, so keystroke stepping stays responsive.
     swap_stepped = Signal()
+    # The whole label stack was rewritten (reassign IDs / remove-unvalidated /
+    # commit / anchor): full refresh — recolour, validated overlay + counter,
+    # and a whole-stack lineage rebuild.
+    stack_relabeled = Signal()

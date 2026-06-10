@@ -20,12 +20,10 @@ import cellflow.napari.nucleus_correction_widget as mod
 from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
 
 
-def test_reassign_ids_done_rebuilds_canvas() -> None:
+def test_reassign_ids_done_rebuilds_canvas(wired_stub) -> None:
     layer = SimpleNamespace(data=np.zeros((1, 1, 1), dtype=int))
-    stub = SimpleNamespace(
+    stub = wired_stub(
         _correction_tracked_layer=MagicMock(return_value=layer),
-        _refresh_correction_label_visuals=MagicMock(),
-        _refresh_lineage_canvas_if_shown=MagicMock(),
         _correction_status=MagicMock(),
         # No project / no remap, so remap_validated_tracks is never reached.
         _pos_dir=None,
@@ -35,24 +33,21 @@ def test_reassign_ids_done_rebuilds_canvas() -> None:
     NucleusCorrectionWidget._on_reassign_ids_done(stub, (remapped, 1, {}))
 
     assert layer.data is remapped
+    # reassign emits stack_relabeled, which rebuilds the lineage canvas.
     stub._refresh_lineage_canvas_if_shown.assert_called_once_with()
 
 
-def test_remove_unvalidated_rebuilds_canvas(monkeypatch) -> None:
+def test_remove_unvalidated_rebuilds_canvas(monkeypatch, wired_stub) -> None:
     layer = SimpleNamespace(
         data=np.ones((1, 2, 2), dtype=int),
         refresh=MagicMock(),
     )
-    stub = SimpleNamespace(
+    stub = wired_stub(
         _pos_dir=object(),
         _correction_tracked_layer=MagicMock(return_value=layer),
-        _refresh_correction_label_visuals=MagicMock(),
-        _refresh_validated_overlay=MagicMock(),
-        _refresh_validation_counter=MagicMock(),
-        _refresh_lineage_canvas_if_shown=MagicMock(),
         _correction_status=MagicMock(),
-        # No cell selected, so the selection-reset branch is skipped.
-        correction_widget=SimpleNamespace(_selected_label=0),
+        # No cell selected, so the selection-reset branch is a no-op.
+        _deselect_if_selection_gone=MagicMock(),
     )
 
     monkeypatch.setattr(mod, "read_validated_tracks", lambda _pos: set())

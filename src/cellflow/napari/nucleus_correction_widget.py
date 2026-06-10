@@ -325,6 +325,10 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         e.swap_stepped.connect(self._apply_track_path_rebuilt)
         e.swap_stepped.connect(self._refresh_lineage_detail_if_shown)
         e.swap_stepped.connect(self._refresh_candidate_gallery_if_shown)
+        e.stack_relabeled.connect(self._refresh_correction_label_visuals)
+        e.stack_relabeled.connect(self._refresh_validated_overlay)
+        e.stack_relabeled.connect(self._refresh_validation_counter)
+        e.stack_relabeled.connect(self._refresh_lineage_canvas_if_shown)
 
     @property
     def _workspace(self) -> NucleusWorkspace | None:
@@ -606,10 +610,9 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         layer = self._correction_tracked_layer()
         if layer is not None:
             layer.data = remapped
-            self._refresh_correction_label_visuals()
         if self._pos_dir is not None and old_to_new:
             remap_validated_tracks(self._pos_dir, old_to_new)
-        self._refresh_lineage_canvas_if_shown()
+        self.events.stack_relabeled.emit()
         self._correction_status(
             f"Reassigned {n_cells} cell IDs to range 1-{n_cells}. Unsaved."
         )
@@ -687,8 +690,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         removal = without_anchor_correction(corrections, cell_id=cell_id, frame=t)
         if removal.removed:
             write_corrections(self._pos_dir, removal.remaining)
-            self._refresh_validated_overlay()
-            self._refresh_lineage_canvas_if_shown()
+            self.events.stack_relabeled.emit()
             self._correction_status(f"Unanchored cell {cell_id} at t={t}.")
             return
         layer = self._correction_tracked_layer()
@@ -697,8 +699,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
                 self._pos_dir,
                 anchor_correction(cell_id=cell_id, frame=t, y=y, x=x),
             )
-            self._refresh_validated_overlay()
-            self._refresh_lineage_canvas_if_shown()
+            self.events.stack_relabeled.emit()
             self._correction_status(f"Anchored cell {cell_id} at t={t}.")
             return
         filled = add_anchor(
@@ -709,8 +710,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             x=x,
             tracked_labels=np.asarray(layer.data),
         )
-        self._refresh_validated_overlay()
-        self._refresh_lineage_canvas_if_shown()
+        self.events.stack_relabeled.emit()
         suffix = f" (gap-filled {filled} frame(s))" if filled else ""
         self._correction_status(f"Anchored cell {cell_id} at t={t}.{suffix}")
 
@@ -1190,18 +1190,21 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         if not result.changed_pixels:
             self._correction_status("No unvalidated labels found."); return
         layer.refresh()
-        self._refresh_correction_label_visuals()
-        if self.correction_widget._selected_label:
-            ct = self._current_t()
-            if self.correction_widget._selected_label not in self._current_cell_ids(ct):
-                self.correction_widget.select_label(ct, 0)
-        self._refresh_validated_overlay()
-        self._refresh_validation_counter()
-        self._refresh_lineage_canvas_if_shown()
+        self._deselect_if_selection_gone()
+        self.events.stack_relabeled.emit()
         self._correction_status(
             f"Removed unvalidated labels in {result.changed_frames} frame(s), "
             f"{result.changed_pixels} px changed. Unsaved."
         )
+
+    def _deselect_if_selection_gone(self) -> None:
+        """Clear the selection when the selected cell no longer exists at the
+        current frame (a relabel / removal may have dropped it)."""
+        sel = self.correction_widget._selected_label
+        if sel:
+            ct = self._current_t()
+            if sel not in self._current_cell_ids(ct):
+                self.correction_widget.select_label(ct, 0)
 
     def _remove_unvalidated_from_layer(self, layer) -> tuple[int, int]:
         if self._pos_dir is None:
@@ -1245,14 +1248,8 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             remap_validated_tracks(self._pos_dir, result.old_to_new)
         if result.changed_pixels:
             layer.refresh()
-            self._refresh_correction_label_visuals()
-            if self.correction_widget._selected_label:
-                ct = self._current_t()
-                if self.correction_widget._selected_label not in self._current_cell_ids(ct):
-                    self.correction_widget.select_label(ct, 0)
-            self._refresh_validated_overlay()
-            self._refresh_validation_counter()
-            self._refresh_lineage_canvas_if_shown()
+            self._deselect_if_selection_gone()
+            self.events.stack_relabeled.emit()
         for t in range(int(layer.data.shape[0])):
             write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
         self._correction_status(

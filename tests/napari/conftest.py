@@ -11,6 +11,7 @@ import pytest
 # so adding an event only updates this list, not every event test's stub.
 _WIRE_EVENT_SLOTS = (
     "_refresh_correction_label_visuals_for_edit",
+    "_refresh_correction_label_visuals",
     "_apply_overlay_edit",
     "_apply_track_path_edit",
     "_apply_track_path_rebuilt",
