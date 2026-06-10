@@ -25,3 +25,7 @@ class CorrectionEvents(QObject):
     # The selected track's geometry changed across frames (extend / retrack):
     # repaint the live track views (comet, lineage canvas, candidate gallery).
     tracks_rebuilt = Signal()
+    # Per-frame validation / anchor *flags* changed, but not the labels
+    # themselves (validate / invalidate). Flag-only, so the lineage canvas
+    # recolours (status refresh) rather than rebuilding the whole stack.
+    validation_changed = Signal()

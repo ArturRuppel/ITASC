@@ -319,6 +319,9 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         e.tracks_rebuilt.connect(self._apply_track_path_rebuilt)
         e.tracks_rebuilt.connect(self._refresh_lineage_canvas_if_shown)
         e.tracks_rebuilt.connect(self._refresh_candidate_gallery_if_shown)
+        e.validation_changed.connect(self._refresh_validated_overlay)
+        e.validation_changed.connect(self._refresh_validation_counter)
+        e.validation_changed.connect(self._refresh_lineage_canvas_status_if_shown)
 
     @property
     def _workspace(self) -> NucleusWorkspace | None:
@@ -667,9 +670,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
                 frames=frames,
             ),
         )
-        self._refresh_validated_overlay()
-        self._refresh_validation_counter()
-        self._refresh_lineage_canvas_status_if_shown()
+        self.events.validation_changed.emit()
         self._correction_status(
             f"Validated track {cell_id} across {len(frames)} frame(s)."
         )
@@ -1517,9 +1518,10 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             self._correction_status(
                 f"Cell {sel} validated across {len(frames)} frame(s)."
             )
-        self._refresh_validated_overlay()
-        self._refresh_validation_counter()
-        self._refresh_lineage_canvas_if_shown()
+        # Flag-only change, so a light status recolour (was a full lineage
+        # rebuild here — inconsistent with _on_validate_track, which the
+        # event normalises to the lighter, freeze-free path).
+        self.events.validation_changed.emit()
 
     def _toggle_movie_playback(self) -> None:
         """Space: start/stop animating the frame (time) slider like a movie."""

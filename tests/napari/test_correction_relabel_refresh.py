@@ -67,21 +67,17 @@ def test_remove_unvalidated_rebuilds_canvas(monkeypatch) -> None:
     stub._refresh_lineage_canvas_if_shown.assert_called_once_with()
 
 
-def test_validate_track_uses_lightweight_status_refresh(monkeypatch) -> None:
+def test_validate_track_uses_lightweight_status_refresh(monkeypatch, wired_stub) -> None:
     """Validation is flag-only, so it must recolour, not rescan the whole stack.
 
     Rebuilding the lineage over the whole stack on every validation froze the
     GUI for seconds on long tracks; the status refresh skips ``build_lineage``.
     """
     layer = SimpleNamespace(data=np.ones((2, 2, 2), dtype=int))
-    stub = SimpleNamespace(
+    stub = wired_stub(
         _pos_dir=object(),
         _correction_tracked_layer=MagicMock(return_value=layer),
         _frames_with_cell=MagicMock(return_value=[0, 1]),
-        _refresh_validated_overlay=MagicMock(),
-        _refresh_validation_counter=MagicMock(),
-        _refresh_lineage_canvas_if_shown=MagicMock(),
-        _refresh_lineage_canvas_status_if_shown=MagicMock(),
         _correction_status=MagicMock(),
         correction_widget=SimpleNamespace(_selected_label=7),
     )
@@ -91,8 +87,12 @@ def test_validate_track_uses_lightweight_status_refresh(monkeypatch) -> None:
 
     NucleusCorrectionWidget._on_validate_track(stub)
 
+    # validation_changed wires to the light status recolour + overlay/counter,
+    # never the full whole-stack lineage rebuild.
     stub._refresh_lineage_canvas_status_if_shown.assert_called_once_with()
     stub._refresh_lineage_canvas_if_shown.assert_not_called()
+    stub._refresh_validated_overlay.assert_called_once_with()
+    stub._refresh_validation_counter.assert_called_once_with()
 
 
 def test_refresh_accordion_rebuilds_while_focus_mode_active() -> None:
