@@ -95,6 +95,7 @@ from cellflow.napari._correction_takeover import (
 )
 from cellflow.napari._correction_ui_nucleus import build_nucleus_correction_ui
 from cellflow.napari._correction_paint import paint_assignments
+from cellflow.napari._correction_events import CorrectionEvents
 from cellflow.napari._correction_keymap import HeldKeyRepeater
 from cellflow.napari._correction_navigation import center_viewer_on_cell
 from cellflow.napari._correction_playback import (
@@ -205,6 +206,9 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        # Display collaborators subscribe to these; operations emit them instead
+        # of hand-calling each controller's refresh (see _wire_events).
+        self.events = CorrectionEvents()
         self._workspace_provider = workspace_provider
         self._ultrack_config_provider = ultrack_config_provider
         # Called with True once correction-mode activation succeeds and False on
@@ -292,6 +296,26 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             apply_extend=self._apply_extend_candidate,
             status_callback=self._correction_status,
         )
+        self._wire_events()
+
+    def _wire_events(self) -> None:
+        """Subscribe the display collaborators to correction-domain events.
+
+        A label edit fans out to the label colormap, the validated overlay, the
+        focused track's comet, the lineage canvas and the candidate gallery —
+        each self-gating through the providers it already holds. The emitter
+        (:meth:`_on_cells_edited`) no longer needs to know any of these listeners
+        exist; the subscriber map lives here, in one greppable place.
+
+        (Prototype: only ``labels_edited`` is event-driven so far; the other
+        refresh paths still fan out directly until they are migrated too.)
+        """
+        e = self.events
+        e.labels_edited.connect(self._refresh_correction_label_visuals_for_edit)
+        e.labels_edited.connect(self._apply_overlay_edit)
+        e.labels_edited.connect(self._apply_track_path_edit)
+        e.labels_edited.connect(lambda *_: self._refresh_lineage_canvas_if_shown())
+        e.labels_edited.connect(lambda *_: self._refresh_candidate_gallery_if_shown())
 
     @property
     def _workspace(self) -> NucleusWorkspace | None:
@@ -2027,26 +2051,26 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self._validated_overlay.refresh_counter(self.validation_counter_lbl)
 
     def _on_cells_edited(self, t: int, changed_ids: set[int]) -> None:
-        self._refresh_correction_label_visuals_for_edit(t, changed_ids)
+        """A hand mask edit (draw / merge / relabel / redraw / fill / split)
+        landed — announce it; the wired listeners repaint themselves."""
+        self.events.labels_edited.emit(t, changed_ids)
+
+    def _apply_overlay_edit(self, t: int, changed_ids: set[int]) -> None:
+        """``labels_edited`` listener: refresh the validated overlay + counter."""
         self._validated_overlay.on_cells_edited(
             t,
             changed_ids,
             frame_view_2d=frame_view_2d,
             counter_label=self.validation_counter_lbl,
         )
-        # Mask edits (draw / merge / relabel / redraw / fill / split) funnel
-        # through here, while retrack/extend/swap drive their own *_visuals_live
-        # paths. If the focused cell's pixels changed, its track-path comet +
-        # spotlight are now stale, so rebuild them here too.
+
+    def _apply_track_path_edit(self, t: int, changed_ids: set[int]) -> None:
+        """``labels_edited`` listener: rebuild the comet only when the *focused*
+        track's pixels changed and the track-path overlay is on."""
         sel = int(getattr(self.correction_widget, "_selected_label", 0) or 0)
-        if sel and sel in {int(v) for v in changed_ids}:
-            if self.track_path_btn.isChecked():
-                self._refresh_track_path_overlay()
-                self._refresh_track_path_spotlight()
-        # Rebuild the canvas too (its overview presence + detail strip go stale
-        # otherwise) — the retrack/extend paths do this separately.
-        self._refresh_lineage_canvas_if_shown()
-        self._refresh_candidate_gallery_if_shown()
+        if sel and sel in {int(v) for v in changed_ids} and self.track_path_btn.isChecked():
+            self._refresh_track_path_overlay()
+            self._refresh_track_path_spotlight()
 
     def _frames_with_cell(self, cell_id: int) -> list[int]:
         return self._validated_overlay.frames_with_cell(cell_id)
