@@ -10,9 +10,9 @@ import numpy as np
 import tifffile
 from qtpy.QtWidgets import QApplication
 
-from cellflow.napari.meta_plugins import MetaContext, available_meta_plugins
-from cellflow.napari.meta_plugins import nls_classification as nls_mod
-from cellflow.napari.meta_plugins.nls_classification import (
+from cellflow.napari.aggregate_quantification.plugins import AnalysisContext, available_analysis_plugins
+from cellflow.napari.aggregate_quantification.plugins import nls_classification as nls_mod
+from cellflow.napari.aggregate_quantification.plugins.nls_classification import (
     POSITIVE,
     NLSClassificationPlugin,
 )
@@ -118,7 +118,7 @@ def _make_position(tmp_path: Path) -> dict:
 
 
 def test_plugin_is_registered():
-    ids = {cls.plugin_id for cls in available_meta_plugins()}
+    ids = {cls.plugin_id for cls in available_analysis_plugins()}
     assert "nls_classification" in ids
 
 
@@ -128,7 +128,7 @@ def test_single_position_measures_and_auto_thresholds(tmp_path):
     record = _make_position(tmp_path)
 
     plugin = NLSClassificationPlugin(viewer=viewer)
-    plugin.set_context(MetaContext(records=[record], viewer=viewer))
+    plugin.set_context(AnalysisContext(records=[record], viewer=viewer))
     plugin._nls_edit.setText(str(record["nls_path"]))
     assert plugin._measure_btn.isEnabled()
 
@@ -159,7 +159,7 @@ def test_dragging_threshold_reclassifies_and_updates_overlay(tmp_path):
     record = _make_position(tmp_path)
 
     plugin = NLSClassificationPlugin(viewer=viewer)
-    plugin.set_context(MetaContext(records=[record], viewer=viewer))
+    plugin.set_context(AnalysisContext(records=[record], viewer=viewer))
     plugin._nls_edit.setText(str(record["nls_path"]))
 
     from cellflow.aggregate_quantification import measure_track_nls_intensity
@@ -190,7 +190,7 @@ def test_apply_writes_classification_to_h5(tmp_path):
     record = _make_position(tmp_path)
 
     plugin = NLSClassificationPlugin(viewer=viewer)
-    plugin.set_context(MetaContext(records=[record], viewer=viewer))
+    plugin.set_context(AnalysisContext(records=[record], viewer=viewer))
     plugin._nls_edit.setText(str(record["nls_path"]))
     plugin._positive_edit.setText("GFP+")
     plugin._negative_edit.setText("GFP-")
@@ -240,7 +240,7 @@ def test_multiple_positions_disable_measure(tmp_path):
     record = _make_position(tmp_path)
 
     plugin = NLSClassificationPlugin(viewer=viewer)
-    plugin.set_context(MetaContext(records=[record, dict(record)], viewer=viewer))
+    plugin.set_context(AnalysisContext(records=[record, dict(record)], viewer=viewer))
     assert plugin._record is None
     assert not plugin._measure_btn.isEnabled()
     assert not plugin._threshold_spin.isEnabled()
@@ -260,7 +260,7 @@ def test_relative_nls_path_resolves_per_position(tmp_path):
     rec_b = _make_position_relative(tmp_path, "posB")
 
     plugin = NLSClassificationPlugin(viewer=viewer)
-    plugin.set_context(MetaContext(records=[rec_a, rec_b], viewer=viewer))
+    plugin.set_context(AnalysisContext(records=[rec_a, rec_b], viewer=viewer))
 
     # A relative entry resolves under each position's own directory…
     plugin._nls_edit.setText("0_input/NLS_zavg.tif")
@@ -288,7 +288,7 @@ def test_batch_apply_classifies_all_selected_positions(tmp_path, monkeypatch):
     monkeypatch.setattr(nls_mod, "thread_worker", _make_sync_thread_worker())
 
     plugin = NLSClassificationPlugin(viewer=viewer)
-    plugin.set_context(MetaContext(records=[rec_a, rec_b], viewer=viewer))
+    plugin.set_context(AnalysisContext(records=[rec_a, rec_b], viewer=viewer))
     plugin._nls_edit.setText("0_input/NLS_zavg.tif")
     plugin._positive_edit.setText("GFP+")
     plugin._negative_edit.setText("GFP-")
@@ -319,7 +319,7 @@ def test_batch_apply_reports_per_position_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(nls_mod, "thread_worker", _make_sync_thread_worker())
 
     plugin = NLSClassificationPlugin(viewer=viewer)
-    plugin.set_context(MetaContext(records=[good, bad], viewer=viewer))
+    plugin.set_context(AnalysisContext(records=[good, bad], viewer=viewer))
     plugin._nls_edit.setText("0_input/NLS_zavg.tif")
     plugin._on_apply()
     app.processEvents()

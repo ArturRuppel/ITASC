@@ -50,7 +50,7 @@ from cellflow.aggregate_quantification import (
     write_nls_classification,
 )
 from cellflow.aggregate_quantification.contacts.nls_classification import POSITIVE, _read_image_stack
-from cellflow.napari.meta_plugins import MetaAnalysisPlugin, MetaContext
+from cellflow.napari.aggregate_quantification.plugins import AnalysisContext, AnalysisPlugin
 from cellflow.napari.ui_style import action_button, status_label
 
 # pyqtgraph backs the interactive scatter + draggable threshold. Guard the import
@@ -68,7 +68,7 @@ _POSITIVE_RGB = (231, 76, 60)
 _NEGATIVE_RGB = (120, 130, 140)
 
 
-class NLSClassificationPlugin(MetaAnalysisPlugin):
+class NLSClassificationPlugin(AnalysisPlugin):
     """Interactive NLS-marker subpopulation classification for one position."""
 
     plugin_id = "nls_classification"
@@ -199,7 +199,7 @@ class NLSClassificationPlugin(MetaAnalysisPlugin):
         return self._plot
 
     # -------------------------------------------------------------- plugin context
-    def set_context(self, ctx: MetaContext) -> None:
+    def set_context(self, ctx: AnalysisContext) -> None:
         if ctx.viewer is not None:
             self.viewer = ctx.viewer
         records = list(ctx.records)

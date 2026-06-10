@@ -1,16 +1,16 @@
-"""Meta-analysis plugin contract and in-process registry.
+"""Analysis-plugin contract and in-process registry.
 
-The meta-analysis widget is a thin base that manages a *catalog* of positions
-and hosts pluggable analysis views on top. A plugin is a ``QWidget`` subclass of
-:class:`MetaAnalysisPlugin` that declares a ``plugin_id`` + ``display_name`` and
-implements :meth:`~MetaAnalysisPlugin.set_context`; the base instantiates it and
-feeds it the currently-selected catalog records.
+The Aggregate Quantification studio is a thin base that manages a *catalog* of
+positions and hosts pluggable analysis views on top. A plugin is a ``QWidget``
+subclass of :class:`AnalysisPlugin` that declares a ``plugin_id`` +
+``display_name`` and implements :meth:`~AnalysisPlugin.set_context`; the base
+instantiates it and feeds it the currently-selected catalog records.
 
 Plugins are **not** napari manifest contributions — they must not show up as
 top-level dock widgets alongside the real tools. Instead, subclassing
-:class:`MetaAnalysisPlugin` auto-registers the plugin (via ``__init_subclass__``),
-and :func:`available_meta_plugins` imports every module in this package so that
-dropping a new ``*.py`` file here is all it takes to add a plugin.
+:class:`AnalysisPlugin` auto-registers the plugin (via ``__init_subclass__``),
+and :func:`available_analysis_plugins` imports every module in this package so
+that dropping a new ``*.py`` file here is all it takes to add a plugin.
 """
 from __future__ import annotations
 
@@ -24,19 +24,20 @@ from typing import Any, ClassVar
 from qtpy.QtWidgets import QWidget
 
 __all__ = [
-    "MetaContext",
-    "MetaAnalysisPlugin",
-    "available_meta_plugins",
+    "AnalysisContext",
+    "AnalysisPlugin",
+    "available_analysis_plugins",
 ]
 
 
 @dataclass
-class MetaContext:
+class AnalysisContext:
     """What the base hands a plugin: the in-scope catalog rows + a cached loader.
 
-    ``records`` are normalized catalog dicts (see :mod:`cellflow.meta.catalog`);
-    each has at least ``contact_analysis_path``, ``condition``, ``date``, ``id``
-    and ``contact_analysis_status``. ``load`` reads (and caches) the
+    ``records`` are normalized catalog dicts (see
+    :mod:`cellflow.aggregate_quantification.catalog`); each has at least
+    ``contact_analysis_path``, ``condition``, ``date``, ``id`` and
+    ``contact_analysis_status``. ``load`` reads (and caches) the
     :class:`~cellflow.aggregate_quantification.contacts.reader.PositionContactAnalysis` for a row,
     so plugins do not each re-open the same HDF5.
     """
@@ -48,21 +49,21 @@ class MetaContext:
 
     def load(self, record: dict) -> Any:
         if self.loader is None:
-            raise RuntimeError("MetaContext has no loader configured")
+            raise RuntimeError("AnalysisContext has no loader configured")
         return self.loader(Path(record["contact_analysis_path"]))
 
 
 #: plugin_id -> plugin class, populated by ``__init_subclass__``.
-_REGISTRY: dict[str, type[MetaAnalysisPlugin]] = {}
+_REGISTRY: dict[str, type[AnalysisPlugin]] = {}
 
 
-class MetaAnalysisPlugin(QWidget):
-    """Base class for meta-analysis plugins.
+class AnalysisPlugin(QWidget):
+    """Base class for Aggregate Quantification analysis plugins.
 
     Subclasses set the ``plugin_id`` / ``display_name`` class attributes and
     override :meth:`set_context`. Defining a subclass with a non-empty
-    ``plugin_id`` registers it; the Meta Analysis widget discovers it via
-    :func:`available_meta_plugins`.
+    ``plugin_id`` registers it; the Aggregate Quantification studio discovers it
+    via :func:`available_analysis_plugins`.
     """
 
     #: Stable key; an empty value marks an intermediate (non-registered) base.
@@ -83,7 +84,7 @@ class MetaAnalysisPlugin(QWidget):
         super().__init__(parent)
         self.viewer = viewer
 
-    def set_context(self, ctx: MetaContext) -> None:  # pragma: no cover - overridden
+    def set_context(self, ctx: AnalysisContext) -> None:  # pragma: no cover - overridden
         raise NotImplementedError
 
 
@@ -95,7 +96,7 @@ def _import_plugin_modules() -> None:
         importlib.import_module(f"{__name__}.{info.name}")
 
 
-def available_meta_plugins() -> list[type[MetaAnalysisPlugin]]:
+def available_analysis_plugins() -> list[type[AnalysisPlugin]]:
     """Return registered plugin classes, sorted by display name."""
     _import_plugin_modules()
     return sorted(_REGISTRY.values(), key=lambda cls: cls.display_name.lower())

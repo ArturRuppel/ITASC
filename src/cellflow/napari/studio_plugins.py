@@ -4,7 +4,7 @@ One checkbox list hosts three plugin *roles* uniformly:
 
 * **builder** — a Build button over a :class:`Quantifier`; computes that quantity
   for the in-scope positions. One builder per registered quantifier.
-* **processor** / **aggregator** — the existing :class:`MetaAnalysisPlugin`
+* **processor** / **aggregator** — the existing :class:`AnalysisPlugin`
   widgets (per-position, e.g. NLS classification; or cohort, e.g. catalogue
   summary).
 
@@ -27,7 +27,10 @@ from cellflow.aggregate_quantification.quantifier import (
     Quantifier,
     available_quantifiers,
 )
-from cellflow.napari.meta_plugins import MetaContext, available_meta_plugins
+from cellflow.napari.aggregate_quantification.plugins import (
+    AnalysisContext,
+    available_analysis_plugins,
+)
 from cellflow.napari.ui_style import action_button, status_label
 
 #: Signature of the studio callback a builder plugin invokes to run a build:
@@ -86,7 +89,7 @@ def available_studio_plugins(*, build_callback: BuildCallback) -> list[PluginEnt
                 ),
             )
         )
-    for p_cls in available_meta_plugins():
+    for p_cls in available_analysis_plugins():
         entries.append(
             PluginEntry(
                 plugin_id=p_cls.plugin_id,
@@ -141,7 +144,7 @@ class BuilderPlugin(QWidget):
     def overwrite(self) -> bool:
         return self._overwrite_cb.isChecked()
 
-    def set_context(self, ctx: MetaContext) -> None:
+    def set_context(self, ctx: AnalysisContext) -> None:
         self._records = list(ctx.records)
         buildable = records_satisfying(self._quantifier.requires, self._records)
         self._build_btn.setEnabled(bool(buildable))

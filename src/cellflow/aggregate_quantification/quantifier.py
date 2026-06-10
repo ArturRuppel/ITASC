@@ -6,7 +6,7 @@ into a persisted, plottable quantity. Contacts is the first one; new quantities
 modules under :mod:`cellflow.aggregate_quantification.quantifiers` without
 touching the studio.
 
-The mechanics mirror :mod:`cellflow.napari.meta_plugins`: subclassing with a
+The mechanics mirror :mod:`cellflow.napari.aggregate_quantification.plugins`: subclassing with a
 non-empty ``quantity_id`` auto-registers the quantifier, and
 :func:`available_quantifiers` imports every module in the ``quantifiers`` package
 so its plugins self-register. This module stays backend-only (no Qt / napari) so

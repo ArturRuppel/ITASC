@@ -11,8 +11,8 @@ This module is the headless core: it measures per-track medians
 classifies against a (possibly hand-tuned) threshold
 (:func:`classify_by_threshold`), and patches the columns into a contact-analysis
 ``.h5`` (:func:`write_nls_classification`). The interactive tuning lives in the
-``NLS Classification`` meta-analysis plugin
-(:mod:`cellflow.napari.meta_plugins.nls_classification`).
+``NLS Classification`` analysis plugin
+(:mod:`cellflow.napari.aggregate_quantification.plugins.nls_classification`).
 """
 from __future__ import annotations
 

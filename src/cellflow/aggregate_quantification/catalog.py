@@ -1,4 +1,4 @@
-"""Catalog of contact-analysis positions.
+"""Catalog of contact-analysis positions for Aggregate Quantification.
 
 Builds, loads, and saves a catalog of positions (each a contact-analysis ``.h5``
 plus optional cell/nucleus label images) discovered by file name / relative path
@@ -31,8 +31,8 @@ CSV_COLUMNS = (
 )
 
 
-def load_meta_catalog(csv_path: Path | str) -> list[dict]:
-    """Load CSV catalog records and expose meta-browser compatibility keys."""
+def load_catalog(csv_path: Path | str) -> list[dict]:
+    """Load CSV catalog records and expose normalized compatibility keys."""
     catalog_path = Path(csv_path)
     with catalog_path.open(newline="") as handle:
         reader = csv.DictReader(handle)
@@ -40,7 +40,7 @@ def load_meta_catalog(csv_path: Path | str) -> list[dict]:
         missing = [column for column in REQUIRED_CSV_COLUMNS if column not in fieldnames]
         if missing:
             missing_text = ", ".join(missing)
-            raise ValueError(f"Meta catalog is missing required column(s): {missing_text}")
+            raise ValueError(f"Catalog is missing required column(s): {missing_text}")
 
         records = [
             _normalize_catalog_record(row, base_dir=catalog_path.parent)
@@ -50,7 +50,7 @@ def load_meta_catalog(csv_path: Path | str) -> list[dict]:
     return sorted(records, key=_catalog_sort_key)
 
 
-def save_meta_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
+def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
     """Write catalog records to CSV using paths relative to the CSV when possible."""
     catalog_path = Path(csv_path)
     catalog_path.parent.mkdir(parents=True, exist_ok=True)

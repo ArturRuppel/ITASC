@@ -63,8 +63,8 @@ def make_aggregate_quantification_widget(napari_viewer=None):
 
     In a full CellFlow install this returns the merged studio — a position
     catalog + embedded per-position quantity view + analysis plugins. The
-    standalone ``cellflow-aggregate`` wheel does not ship ``cellflow.meta`` /
-    the studio module, so there it falls back to the bare per-position
+    standalone ``cellflow-aggregate`` wheel does not ship the studio module
+    (nor its napari analysis-plugin package), so there it falls back to the bare per-position
     :class:`AggregateQuantificationWidget` in standalone mode (own file pickers +
     config). Runs the napari layer-delegate patch (normally done by the
     orchestrator package).
@@ -82,7 +82,7 @@ def make_aggregate_quantification_widget(napari_viewer=None):
         napari_viewer = napari.current_viewer()
     try:
         from cellflow.napari.aggregate_quantification_studio import AggregateQuantificationStudioWidget
-    except ImportError:  # standalone cellflow-aggregate wheel: no cellflow.meta
+    except ImportError:  # standalone cellflow-aggregate wheel: no studio module
         return AggregateQuantificationWidget(viewer=napari_viewer, standalone=True)
     return AggregateQuantificationStudioWidget(viewer=napari_viewer)
 

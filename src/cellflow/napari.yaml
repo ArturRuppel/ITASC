@@ -22,10 +22,10 @@ contributions:
     # In a full install this single Aggregate Quantification entry resolves to the
     # merged studio (catalog + per-position view + analysis plugins); the standalone
     # cellflow-aggregate wheel resolves the same factory to the bare per-position
-    # widget. Meta-analysis plugins are NOT registered here — they are hosted
+    # widget. Analysis plugins are NOT registered here — they are hosted
     # inside the Aggregate Quantification widget, not exposed as top-level dock
     # widgets, and register in-process by subclassing
-    # cellflow.napari.meta_plugins.MetaAnalysisPlugin.
+    # cellflow.napari.aggregate_quantification.plugins.AnalysisPlugin.
     - id: cellflow.aggregate_quantification_widget
       title: "Aggregate Quantification"
       python_name: cellflow.napari.aggregate_quantification_widget:make_aggregate_quantification_widget

@@ -9,12 +9,12 @@ from qtpy.QtWidgets import QApplication, QLabel
 
 from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
 from cellflow.napari import aggregate_quantification_studio as mod
-from cellflow.napari.meta_plugins import (
-    MetaAnalysisPlugin,
-    MetaContext,
-    available_meta_plugins,
+from cellflow.napari.aggregate_quantification.plugins import (
+    AnalysisPlugin,
+    AnalysisContext,
+    available_analysis_plugins,
 )
-from cellflow.napari.meta_plugins.catalog_summary import CatalogSummaryPlugin
+from cellflow.napari.aggregate_quantification.plugins.catalog_summary import CatalogSummaryPlugin
 
 
 def _app():
@@ -35,7 +35,7 @@ def _make_ready_position(root: Path, condition: str, experiment: str, position: 
 
 
 def test_subclassing_registers_plugin():
-    classes = available_meta_plugins()
+    classes = available_analysis_plugins()
     assert CatalogSummaryPlugin in classes
     ids = {cls.plugin_id for cls in classes}
     assert "catalog_summary" in ids
@@ -92,11 +92,11 @@ def test_selection_scope_forwarded_to_mounted_plugins(monkeypatch):
 
     received: list[list[dict]] = []
 
-    class _RecordingPlugin(MetaAnalysisPlugin):
+    class _RecordingPlugin(AnalysisPlugin):
         plugin_id = "recording_test"
         display_name = "Recording"
 
-        def set_context(self, ctx: MetaContext) -> None:
+        def set_context(self, ctx: AnalysisContext) -> None:
             received.append(list(ctx.records))
 
     entry = mod.PluginEntry(
@@ -344,7 +344,7 @@ def test_catalog_summary_plugin_reports_counts():
     app = _app()
     plugin = CatalogSummaryPlugin()
     plugin.set_context(
-        MetaContext(
+        AnalysisContext(
             records=[
                 {"condition": "ctrl", "contact_analysis_status": "ready"},
                 {"condition": "ctrl", "contact_analysis_status": "incomplete"},

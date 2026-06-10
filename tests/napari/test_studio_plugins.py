@@ -14,7 +14,7 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-def test_available_studio_plugins_has_contacts_builder_and_meta_plugins():
+def test_available_studio_plugins_has_contacts_builder_and_analysis_plugins():
     entries = sp.available_studio_plugins(build_callback=lambda *a: None)
     ids = {e.plugin_id for e in entries}
     assert "build:contacts" in ids  # one builder per quantifier
@@ -50,18 +50,18 @@ def test_records_satisfying_filters_by_requires():
 def test_builder_plugin_build_button_gating_and_callback():
     app = _app()
     from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
-    from cellflow.napari.meta_plugins import MetaContext
+    from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
 
     captured: list = []
     plugin = sp.BuilderPlugin(ContactsQuantifier(), lambda q, recs, ow: captured.append((q, recs, ow)))
 
     # No buildable records -> button disabled.
-    plugin.set_context(MetaContext(records=[{"id": "x", "contact_analysis_path": Path("/x.h5")}]))
+    plugin.set_context(AnalysisContext(records=[{"id": "x", "contact_analysis_path": Path("/x.h5")}]))
     assert plugin._build_btn.isEnabled() is False
 
     # A record with cell labels -> enabled; clicking forwards (quantifier, records, overwrite).
     records = [{"id": "y", "contact_analysis_path": Path("/y.h5"), "cell_tracked_labels_path": Path("/y/c.tif")}]
-    plugin.set_context(MetaContext(records=records))
+    plugin.set_context(AnalysisContext(records=records))
     assert plugin._build_btn.isEnabled() is True
     plugin._overwrite_cb.setChecked(True)
     plugin._on_build()

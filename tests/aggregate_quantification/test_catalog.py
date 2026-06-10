@@ -1,11 +1,11 @@
-"""Tests for cellflow.meta.catalog – CSV catalog + name-based discovery."""
+"""Tests for cellflow.aggregate_quantification.catalog – CSV catalog + name-based discovery."""
 
 from __future__ import annotations
 
 
-def test_save_and_load_meta_catalog_round_trip_with_relative_paths(tmp_path):
+def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     """Saved catalogs should use relative paths and load them as resolved contact-analysis paths."""
-    from cellflow.meta.catalog import load_meta_catalog, save_meta_catalog
+    from cellflow.aggregate_quantification.catalog import load_catalog, save_catalog
 
     source = tmp_path / "analysis" / "contact_analysis.h5"
     source.parent.mkdir()
@@ -17,7 +17,7 @@ def test_save_and_load_meta_catalog_round_trip_with_relative_paths(tmp_path):
     cell.touch()
     nucleus.touch()
 
-    save_meta_catalog(csv_path, [{
+    save_catalog(csv_path, [{
         "path": source,
         "date": "2026-05-09",
         "condition": "treated",
@@ -34,7 +34,7 @@ def test_save_and_load_meta_catalog_round_trip_with_relative_paths(tmp_path):
     assert "analysis/nucleus_labels.tif" in csv_text
     assert str(source) not in csv_text
 
-    records = load_meta_catalog(csv_path)
+    records = load_catalog(csv_path)
 
     assert len(records) == 1
     record = records[0]
@@ -50,24 +50,24 @@ def test_save_and_load_meta_catalog_round_trip_with_relative_paths(tmp_path):
 
 def test_save_load_round_trip_without_label_paths(tmp_path):
     """A record with no label paths round-trips with empty cells and None paths."""
-    from cellflow.meta.catalog import load_meta_catalog, save_meta_catalog
+    from cellflow.aggregate_quantification.catalog import load_catalog, save_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
     csv_path = tmp_path / "catalog.csv"
 
-    save_meta_catalog(csv_path, [{
+    save_catalog(csv_path, [{
         "path": source, "date": "d1", "condition": "ctrl", "id": "p1", "notes": "",
     }])
 
-    record = load_meta_catalog(csv_path)[0]
+    record = load_catalog(csv_path)[0]
     assert record["cell_tracked_labels_path"] is None
     assert record["nucleus_tracked_labels_path"] is None
 
 
 def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
     """A folder's inputs are grouped into one entry; the contact path is derived."""
-    from cellflow.meta.catalog import discover_catalog_entries
+    from cellflow.aggregate_quantification.catalog import discover_catalog_entries
 
     # Two positions in a nested layout; one missing the nucleus labels.
     p1 = tmp_path / "expA" / "pos01"
@@ -101,7 +101,7 @@ def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
 def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
     """A position with cell labels but no .h5 is still discovered; the contact
     path is derived from the cell labels so it can be computed later."""
-    from cellflow.meta.catalog import discover_catalog_entries
+    from cellflow.aggregate_quantification.catalog import discover_catalog_entries
 
     pos = tmp_path / "pos01"
     pos.mkdir()
@@ -118,7 +118,7 @@ def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
 
 def test_discover_catalog_entries_by_nucleus_only(tmp_path):
     """Inputs are optional: a folder with only nucleus labels is still a position."""
-    from cellflow.meta.catalog import discover_catalog_entries
+    from cellflow.aggregate_quantification.catalog import discover_catalog_entries
 
     pos = tmp_path / "pos01"
     pos.mkdir()
@@ -136,7 +136,7 @@ def test_discover_catalog_entries_by_nucleus_only(tmp_path):
 
 def test_discover_catalog_entries_groups_inputs_from_different_subfolders(tmp_path):
     """Cell and nucleus inputs in different subfolders collapse to one entry."""
-    from cellflow.meta.catalog import discover_catalog_entries
+    from cellflow.aggregate_quantification.catalog import discover_catalog_entries
 
     pos = tmp_path / "pos01"
     (pos / "3_cell").mkdir(parents=True)
@@ -158,7 +158,7 @@ def test_discover_catalog_entries_groups_inputs_from_different_subfolders(tmp_pa
 
 def test_discover_catalog_entries_skips_folders_without_inputs(tmp_path):
     """A folder with none of the recognized inputs is not a position."""
-    from cellflow.meta.catalog import discover_catalog_entries
+    from cellflow.aggregate_quantification.catalog import discover_catalog_entries
 
     (tmp_path / "empty").mkdir()
     (tmp_path / "pos01").mkdir()
@@ -173,7 +173,7 @@ def test_discover_catalog_entries_skips_folders_without_inputs(tmp_path):
 
 def test_discover_catalog_entries_without_any_input_names_is_empty(tmp_path):
     """With no input names supplied there is nothing to anchor discovery on."""
-    from cellflow.meta.catalog import discover_catalog_entries
+    from cellflow.aggregate_quantification.catalog import discover_catalog_entries
 
     (tmp_path / "pos01").mkdir()
     (tmp_path / "pos01" / "cell_labels.tif").touch()
@@ -181,9 +181,9 @@ def test_discover_catalog_entries_without_any_input_names_is_empty(tmp_path):
     assert discover_catalog_entries(tmp_path) == []
 
 
-def test_load_meta_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
+def test_load_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
     """Relative path cells should be resolved against the catalog file directory."""
-    from cellflow.meta.catalog import load_meta_catalog
+    from cellflow.aggregate_quantification.catalog import load_catalog
 
     source = tmp_path / "nested" / "contact_analysis.h5"
     source.parent.mkdir()
@@ -194,16 +194,16 @@ def test_load_meta_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
         "nested/contact_analysis.h5,day1,control,pos00,\n"
     )
 
-    records = load_meta_catalog(csv_path)
+    records = load_catalog(csv_path)
 
     assert records[0]["path"] == source
     assert records[0]["contact_analysis_path"] == source
     assert records[0]["contact_analysis_status"] == "ready"
 
 
-def test_load_meta_catalog_preserves_extra_columns(tmp_path):
+def test_load_catalog_preserves_extra_columns(tmp_path):
     """Extra CSV columns should remain available in loaded record dictionaries."""
-    from cellflow.meta.catalog import load_meta_catalog
+    from cellflow.aggregate_quantification.catalog import load_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
@@ -213,27 +213,27 @@ def test_load_meta_catalog_preserves_extra_columns(tmp_path):
         "contact_analysis.h5,day1,control,pos00,,Ada\n"
     )
 
-    records = load_meta_catalog(csv_path)
+    records = load_catalog(csv_path)
 
     assert records[0]["operator"] == "Ada"
 
 
-def test_load_meta_catalog_reports_missing_required_columns(tmp_path):
+def test_load_catalog_reports_missing_required_columns(tmp_path):
     """Catalog validation errors should name missing required columns."""
     import pytest
 
-    from cellflow.meta.catalog import load_meta_catalog
+    from cellflow.aggregate_quantification.catalog import load_catalog
 
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text("path,date,condition,labels\nmissing.h5,day1,c,\n")
 
     with pytest.raises(ValueError, match="id"):
-        load_meta_catalog(csv_path)
+        load_catalog(csv_path)
 
 
-def test_load_meta_catalog_marks_missing_h5_as_incomplete(tmp_path):
+def test_load_catalog_marks_missing_h5_as_incomplete(tmp_path):
     """Explicit CSV records do not require labels, but missing H5 files are incomplete."""
-    from cellflow.meta.catalog import load_meta_catalog
+    from cellflow.aggregate_quantification.catalog import load_catalog
 
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
@@ -241,7 +241,7 @@ def test_load_meta_catalog_marks_missing_h5_as_incomplete(tmp_path):
         "missing.h5,day1,control,pos00,\n"
     )
 
-    records = load_meta_catalog(csv_path)
+    records = load_catalog(csv_path)
 
     assert records[0]["contact_analysis_path"] == tmp_path / "missing.h5"
     assert records[0]["contact_analysis_status"] == "incomplete"
@@ -249,7 +249,7 @@ def test_load_meta_catalog_marks_missing_h5_as_incomplete(tmp_path):
 
 def test_merge_catalog_records_skips_duplicate_resolved_paths(tmp_path):
     """Merging should avoid duplicate H5 sources by resolved contact-analysis path."""
-    from cellflow.meta.catalog import merge_catalog_records
+    from cellflow.aggregate_quantification.catalog import merge_catalog_records
 
     source = tmp_path / "contact_analysis.h5"
     other = tmp_path / "other.h5"

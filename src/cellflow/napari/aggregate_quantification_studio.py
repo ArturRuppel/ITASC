@@ -6,12 +6,13 @@ This is the merged standalone Aggregate Quantification tool. It is built from th
   load/save a CSV catalog);
 * a **per-position quantity view** — an embedded :class:`AggregateQuantificationWidget`
   driven by the single selected position (visualize + compute-if-missing);
-* an **analysis** section that hosts a meta-analysis *plugin* fed with the
+* an **analysis** section that hosts an analysis *plugin* fed with the
   currently-selected catalog rows. All cross-position aggregation lives in
-  plugins (see :mod:`cellflow.napari.meta_plugins`).
+  plugins (see :mod:`cellflow.napari.aggregate_quantification.plugins`).
 
-This module is full-install only (it depends on :mod:`cellflow.meta`); the
-standalone ``cellflow-aggregate`` wheel falls back to the bare
+This module is full-install only (it depends on the napari analysis-plugin
+package, which the standalone ``cellflow-aggregate`` wheel does not ship); the
+standalone wheel falls back to the bare
 :class:`AggregateQuantificationWidget` (see ``make_aggregate_quantification_widget``).
 """
 from __future__ import annotations
@@ -43,14 +44,14 @@ from cellflow.aggregate_quantification.quantifier import (
     Quantifier,
     available_quantifiers,
 )
-from cellflow.meta.catalog import (
+from cellflow.aggregate_quantification.catalog import (
     discover_catalog_entries,
-    load_meta_catalog,
+    load_catalog,
     merge_catalog_records,
-    save_meta_catalog,
+    save_catalog,
 )
+from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
 from cellflow.napari.aggregate_quantification_widget import AggregateQuantificationWidget, _ProgressEmitter
-from cellflow.napari.meta_plugins import MetaContext
 from cellflow.napari.studio_plugins import (
     PluginEntry,
     available_studio_plugins,
@@ -91,7 +92,7 @@ def _inputs_label(record: dict) -> str:
 
 
 def _contacts_reader():
-    """The contacts quantifier's reader, used by meta-plugin contexts.
+    """The contacts quantifier's reader, used by analysis-plugin contexts.
 
     Sourced from the registry (contacts is the only quantity today); falls back
     to the contacts reader import so a context loader is always available.
@@ -114,13 +115,13 @@ class AggregateQuantificationStudioWidget(QWidget):
     def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = viewer
-        #: Full catalog (normalized records from cellflow.meta.catalog).
+        #: Full catalog (normalized records from cellflow.aggregate_quantification.catalog).
         self._records: list[dict] = []
         #: Last discovered (not-yet-added) collection awaiting metadata.
         self._pending_entries: list[dict] = []
         #: Cache so plugins don't each re-open the same HDF5.
         self._analysis_cache: dict[Path, Any] = {}
-        #: Reader feeding meta-plugin contexts (contacts is the only quantity today).
+        #: Reader feeding analysis-plugin contexts (contacts is the only quantity today).
         self._read_quantity = _contacts_reader()
         #: Flat plugin list: all entries, their checkboxes, and what's mounted.
         self._plugin_entries: list[PluginEntry] = []
@@ -484,7 +485,7 @@ class AggregateQuantificationStudioWidget(QWidget):
 
     def _load_csv_from(self, path: Path) -> None:
         try:
-            loaded = load_meta_catalog(path)
+            loaded = load_catalog(path)
         except Exception as exc:  # noqa: BLE001 - surface load errors in the UI
             self._set_catalog_status(f"Load error: {exc}")
             return
@@ -506,7 +507,7 @@ class AggregateQuantificationStudioWidget(QWidget):
 
     def _save_csv_to(self, path: Path) -> None:
         try:
-            save_meta_catalog(path, self._records)
+            save_catalog(path, self._records)
         except Exception as exc:  # noqa: BLE001 - surface save errors in the UI
             self._set_catalog_status(f"Save error: {exc}")
             return
@@ -672,7 +673,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         if not callable(set_context):
             return
         set_context(
-            MetaContext(
+            AnalysisContext(
                 records=self._records_in_scope(),
                 viewer=self.viewer,
                 loader=self._load_analysis,

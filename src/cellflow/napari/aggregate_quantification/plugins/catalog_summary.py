@@ -1,4 +1,4 @@
-"""Trivial meta-analysis plugin: summarise the in-scope catalog.
+"""Trivial analysis plugin: summarise the in-scope catalog.
 
 This plugin does no per-position analysis; it exists to prove the base ↔ plugin
 seam end-to-end. It reports how many positions are in scope, how they break down
@@ -10,11 +10,11 @@ from collections import Counter
 
 from qtpy.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from cellflow.meta.catalog import STATUS_READY
-from cellflow.napari.meta_plugins import MetaAnalysisPlugin, MetaContext
+from cellflow.aggregate_quantification.catalog import STATUS_READY
+from cellflow.napari.aggregate_quantification.plugins import AnalysisContext, AnalysisPlugin
 
 
-class CatalogSummaryPlugin(MetaAnalysisPlugin):
+class CatalogSummaryPlugin(AnalysisPlugin):
     """Show counts for the currently-selected catalog records."""
 
     plugin_id = "catalog_summary"
@@ -30,7 +30,7 @@ class CatalogSummaryPlugin(MetaAnalysisPlugin):
         layout.addWidget(self._summary_lbl)
         layout.addStretch()
 
-    def set_context(self, ctx: MetaContext) -> None:
+    def set_context(self, ctx: AnalysisContext) -> None:
         records = list(ctx.records)
         if not records:
             self._summary_lbl.setText("No positions in scope.")
