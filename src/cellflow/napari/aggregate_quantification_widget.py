@@ -202,11 +202,14 @@ class AggregateQuantificationWidget(QWidget):
         options_grid.addWidget(self.hide_border_edges_cb, 1, 1)
         layout.addLayout(options_grid)
 
-        # Visualize is the only build/show action here: it computes the .h5 on
-        # demand only if it is missing, then shows the overlays. Forcing a rebuild
-        # is the builder plugin's job in the studio, so there is no Recompute. It
-        # sits directly below the display options (no trailing stretch) so the
-        # panel hugs its content instead of leaving a gap before the button.
+        # Two build/show actions sit directly below the display options (no
+        # trailing stretch, so the panel hugs its content). Visualize computes the
+        # .h5 on demand only if it is missing, then shows the overlays; Recompute
+        # forces a rebuild before showing, for when the .h5 is stale relative to
+        # its inputs.
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(6)
         self.visualize_btn = QPushButton("Visualize")
         self.visualize_btn.setToolTip(
             "Show contact-analysis overlays for the current position. "
@@ -214,9 +217,19 @@ class AggregateQuantificationWidget(QWidget):
             "an existing result is shown as-is."
         )
         action_button(self.visualize_btn, expand=True)
-        layout.addWidget(self.visualize_btn)
+        actions_row.addWidget(self.visualize_btn, 1)
+
+        self.recompute_btn = QPushButton("Recompute")
+        self.recompute_btn.setToolTip(
+            "Rebuild the contact-analysis .h5 from the current inputs, then show "
+            "the overlays. Use this when the result is stale."
+        )
+        action_button(self.recompute_btn, expand=True)
+        actions_row.addWidget(self.recompute_btn, 1)
+        layout.addLayout(actions_row)
 
         self.visualize_btn.clicked.connect(lambda: self._on_visualize(overwrite=False))
+        self.recompute_btn.clicked.connect(lambda: self._on_visualize(overwrite=True))
         self._register_gate_controls()
         if self._standalone:
             self._load_standalone_settings()
@@ -466,10 +479,16 @@ class AggregateQuantificationWidget(QWidget):
         g = self.gate
         running = lambda: self._build_worker is not None  # noqa: E731
         batch_running = lambda: self._batch_worker is not None  # noqa: E731
-        # Visualize writes the viewer (it shows overlays) and may build first;
-        # it needs inputs and no in-flight build.
+        # Visualize/Recompute write the viewer (they show overlays) and build
+        # first; both need inputs and no in-flight build. Recompute additionally
+        # forces a rebuild, but its enablement gates the same way.
         g.register(
             self.visualize_btn,
+            ControlClass.RUN_VIEWER,
+            when=lambda: self._inputs_ready() and not running(),
+        )
+        g.register(
+            self.recompute_btn,
             ControlClass.RUN_VIEWER,
             when=lambda: self._inputs_ready() and not running(),
         )
@@ -600,6 +619,12 @@ class AggregateQuantificationWidget(QWidget):
             f"Status: {'computed' if built else 'using existing'} contact analysis "
             f"({output_path.name})."
         )
+        # The .h5 cache is keyed by path, but a build rewrites the file in place
+        # (same path), so a Recompute would otherwise serve the stale cached read.
+        # Drop just the cached analysis so _show_from_disk re-reads the fresh file;
+        # the label TIFFs are inputs the build does not touch, so they stay cached.
+        if built:
+            self._cached_contact_analysis = None
         self._update_status()
         self._refresh_discovery_status()
         self._show_from_disk()
@@ -768,13 +793,21 @@ class AggregateQuantificationWidget(QWidget):
             self._update_action_states()
             return
 
-        # Cache contact analysis to avoid re-reading HDF5 on every Show click
-        if self._cached_contact_analysis_path != contact_analysis_path:
+        # Cache contact analysis to avoid re-reading HDF5 on every Show click.
+        # Re-read when there is no cached analysis (first show, context change, or
+        # a fresh build dropped it) or when the output path changed. A path change
+        # means a different position, so its label/centroid caches are stale too; a
+        # same-path rebuild leaves those inputs untouched, so they stay cached.
+        if (
+            self._cached_contact_analysis is None
+            or self._cached_contact_analysis_path != contact_analysis_path
+        ):
+            if self._cached_contact_analysis_path != contact_analysis_path:
+                self._cached_cell_labels = None
+                self._cached_nucleus_labels = None
+                self._cached_track_centroids = None
             self._cached_contact_analysis = read_position_contact_analysis(contact_analysis_path)
             self._cached_contact_analysis_path = contact_analysis_path
-            self._cached_cell_labels = None
-            self._cached_nucleus_labels = None
-            self._cached_track_centroids = None
 
         # Cache label TIFFs — these are large files whose repeated reading blocks
         # the Qt main thread and causes freezes + ghost layer artifacts

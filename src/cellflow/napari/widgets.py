@@ -400,15 +400,19 @@ class _PipelineFileRow(QWidget):
             viewer.add_image(data, name=layer_name, colormap=colormap)
 
     def _pick_colormap(self) -> str:
-        rel = self._rel_path
-        name = Path(rel).name
-        if rel.startswith("0_input/") or name.endswith(("_zavg.tif", "_3dt.tif")):
-            return "gray"
-        if (
-            rel.startswith("1_cellpose/")
-            or (rel.startswith("2_nucleus/") and name.startswith("foreground_"))
-            or (rel.startswith("3_cell/") and name.startswith("foreground_"))
-        ):
+        """Colormap for non-label intensity TIFFs.
+
+        Mirrors the dedicated cellpose/divergence viewers so a file looks the
+        same however it's loaded: contour/divergence maps → ``magma``, cellpose
+        probability → ``viridis``, flow/dp → ``inferno``, and raw input or
+        foreground intensity → plain grayscale.
+        """
+        name = Path(self._rel_path).name
+        if "contour" in name:
+            return "magma"
+        if "_prob" in name:
+            return "viridis"
+        if "_dp" in name or "flow" in name:
             return "inferno"
         return "gray"
 
@@ -441,6 +445,9 @@ class _PipelineFileRow(QWidget):
         if name == "tracked_labels.tif":
             return "tracked"
         if name == "foreground_masks.tif":
+            return "labels"
+        # atoms.tif is an int32 atom-ID image (stage ① output); load as labels.
+        if name == "atoms.tif":
             return "labels"
         if name.endswith("_labels.tif") or ("labels" in name and name.endswith((".tif", ".tiff"))):
             return "labels"

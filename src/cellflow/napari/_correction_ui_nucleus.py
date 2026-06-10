@@ -71,6 +71,7 @@ def build_nucleus_correction_ui(w) -> None:
         active_btn=w.active_btn,
         view_toggle_btns=(
             w.track_path_btn,
+            w.spotlight_btn,
             w.filled_view_btn,
         ),
         status_lbl=w.status_lbl,
@@ -321,6 +322,15 @@ def _build_view_toggle_buttons(w) -> None:
         "comet (viridis, oldest→newest) with a frame number in each mask.",
         checkable=True,
     )
+    w.spotlight_btn = _tool_btn(
+        "🔦",
+        "Spotlight: dim everything outside the selected cell. Off = mark the "
+        "selection with a plain yellow border instead (the rest of the frame "
+        "stays at full brightness).",
+        checkable=True,
+    )
+    # Spotlight is the default selection indicator, so the toggle starts on.
+    w.spotlight_btn.setChecked(True)
     w.filled_view_btn = _tool_btn(
         "🎨",
         "Filled labels (by ID): hide the cell + nucleus images and draw the "
@@ -330,7 +340,7 @@ def _build_view_toggle_buttons(w) -> None:
     )
     # The candidate gallery is shown/hidden by its own ✕ button + slim
     # show-tab (see CollapsiblePane), not a top-bar toggle.
-    for button in (w.track_path_btn, w.filled_view_btn):
+    for button in (w.track_path_btn, w.spotlight_btn, w.filled_view_btn):
         button.setVisible(False)
     w.validation_counter_lbl.setVisible(False)
 
@@ -368,6 +378,7 @@ def _connect_signals(w) -> None:
     w.remove_unvalidated_btn.clicked.connect(w._on_remove_unvalidated_labels)
     w.commit_btn.clicked.connect(w._on_commit)
     w.track_path_btn.toggled.connect(w._on_toggle_track_path)
+    w.spotlight_btn.toggled.connect(w._on_toggle_spotlight)
     w.filled_view_btn.toggled.connect(w._on_toggle_filled_view)
     w.params_btn.toggled.connect(w._on_correction_params_button_toggled)
     w.shortcuts_btn.toggled.connect(w._on_correction_shortcuts_button_toggled)

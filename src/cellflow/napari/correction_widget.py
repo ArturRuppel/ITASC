@@ -567,6 +567,19 @@ class CorrectionWidget(QWidget):
     ) -> None:
         self._spotlight_mask_provider = fn
 
+    def set_highlight_style(self, style: str) -> None:
+        """Switch the selection indicator between the dimming spotlight and a
+        plain yellow border, re-rendering the current selection."""
+        if style not in ("spotlight", "border"):
+            raise ValueError(f"unknown highlight_style: {style!r}")
+        if style == self._highlight_style:
+            return
+        self._highlight_style = style
+        if self._selected_label and self._layer is not None and self._selected_t >= 0:
+            self._update_highlight(
+                self._selected_t, self._selected_label, notify=False
+            )
+
     def set_protected_mask_callback(
         self,
         fn: Callable[[int, np.ndarray], np.ndarray | None] | None,
@@ -808,7 +821,13 @@ class CorrectionWidget(QWidget):
             if notify:
                 self._notify_selection_changed(t, 0, previous_label)
             return
-        self._update_spotlight(self._resolve_spotlight_mask(t, lab, mask))
+        # The border style outlines just the selected cell; only the dimming
+        # spotlight widens to a provider mask (e.g. a whole track's union).
+        if self._highlight_style == "border":
+            highlight_mask = mask
+        else:
+            highlight_mask = self._resolve_spotlight_mask(t, lab, mask)
+        self._update_spotlight(highlight_mask)
         self.viewer.layers.selection.active = self._layer
         if notify:
             self._notify_selection_changed(t, lab, previous_label)

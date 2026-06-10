@@ -120,7 +120,7 @@ class CellFlowMainWidget(QWidget):
 
         self.contact_analysis_widget = AggregateQuantificationWidget(self.viewer, gate=self.gate)
         self.contact_analysis_section = CollapsibleSection(
-            "Per-Position Visualizer",
+            "Results",
             self.contact_analysis_widget,
             expanded=False,
 

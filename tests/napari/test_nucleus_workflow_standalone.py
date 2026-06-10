@@ -100,6 +100,76 @@ def test_atom_controls_enabled_only_when_inputs_exist_on_disk(viewer, tmp_path):
     assert w.run_btn.isEnabled()
 
 
+def _sync_thread_worker():
+    """A drop-in for ``thread_worker`` that runs the body inline (no Qt thread)."""
+    def fake(connect=None):
+        def decorator(fn):
+            def wrapper(*args, **kwargs):
+                try:
+                    result = fn(*args, **kwargs)
+                except Exception as exc:  # pragma: no cover - defensive
+                    if connect and "errored" in connect:
+                        connect["errored"](exc)
+                    return None
+                if connect and "returned" in connect:
+                    connect["returned"](result)
+                return type("W", (), {"quit": staticmethod(lambda: None)})()
+            return wrapper
+        return decorator
+    return fake
+
+
+def test_atom_compute_checkboxes_gate_which_layers_compute(viewer, tmp_path, monkeypatch):
+    # The atom-extraction live preview computes only the ticked Compute stages
+    # (Foreground, Contour) — an unticked stage's layers are not created at all,
+    # rather than computed-then-hidden.
+    import numpy as np
+    import tifffile
+
+    from cellflow.napari import nucleus_atom_extraction_widget as atom_mod
+
+    monkeypatch.setattr(atom_mod, "thread_worker", _sync_thread_worker())
+
+    cellpose = tmp_path / "1_cellpose"
+    cellpose.mkdir()
+    rng = np.random.default_rng(0)
+    fg = np.clip(rng.normal(0.6, 0.1, (2, 16, 16)), 0, 1).astype(np.float32)
+    contours = np.abs(rng.normal(0, 1, (2, 16, 16))).astype(np.float32)
+    tifffile.imwrite(cellpose / "nucleus_foreground.tif", fg)
+    tifffile.imwrite(cellpose / "nucleus_contours.tif", contours)
+
+    widget = mod.NucleusWorkflowWidget(viewer)
+    widget.refresh(tmp_path)
+    w = widget.atom_extraction_widget
+
+    # Default: only Foreground is ticked. Activating the preview creates the FG
+    # stage's layers and computes nothing for the (unticked) Contour stage.
+    assert w.fg_check.isChecked() and not w.contour_check.isChecked()
+    w.active_btn.setChecked(True)
+    for name in atom_mod._ATOM_FG_GROUP_LAYERS:
+        assert name in viewer.layers, f"missing foreground layer {name}"
+    for name in atom_mod._ATOM_CONTOUR_GROUP_LAYERS:
+        assert name not in viewer.layers
+
+    # Ticking Contour upgrades the compute and creates its layers (residual,
+    # ridge, atoms).
+    widget._atom_preview_worker = None  # settle the synchronous worker
+    w.contour_check.setChecked(True)
+    for name in atom_mod._ATOM_CONTOUR_GROUP_LAYERS:
+        assert name in viewer.layers, f"missing contour layer {name}"
+
+    # Unticking Foreground drops its layers immediately.
+    widget._atom_preview_worker = None
+    w.fg_check.setChecked(False)
+    for name in atom_mod._ATOM_FG_GROUP_LAYERS:
+        assert name not in viewer.layers
+
+    # Deactivation tears every atom layer down.
+    w.active_btn.setChecked(False)
+    for name in atom_mod._ATOM_LAYERS:
+        assert name not in viewer.layers
+
+
 def test_standalone_widget_is_top_anchored(viewer):
     # Standalone docks the widget directly (no AlignTop scroll wrapper), so it
     # must fill the dock vertically and pin its content to the top — otherwise

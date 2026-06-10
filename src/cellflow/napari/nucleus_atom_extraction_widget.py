@@ -71,6 +71,17 @@ _ATOM_LAYERS = (
     _ATOM_PREVIEW_LAYER,
 )
 
+# The residual maps are napari Image layers; the rest are Labels.
+_ATOM_IMAGE_LAYERS = (_ATOM_FG_RESIDUAL_LAYER, _ATOM_CONTOUR_RESIDUAL_LAYER)
+
+# Single-frame compute levels, in increasing cost. The desired level is the max
+# over the ticked Compute checkboxes; a cached frame is reused only when its
+# stored level already covers the desired one. The contour stage's atom
+# watershed runs on the foreground territory, so it implies the FG compute.
+_ATOM_LEVEL_NONE = 0
+_ATOM_LEVEL_FG = 1       # residual_foreground + territory (cheap)
+_ATOM_LEVEL_CONTOUR = 2  # + residual_contour + ridge + atoms (heavier)
+
 
 class NucleusAtomExtractionWidget(QWidget):
     """Qt controls for tuning atom extraction with a live preview."""
@@ -134,14 +145,32 @@ class NucleusAtomExtractionWidget(QWidget):
         self.status_lbl.setWordWrap(True)
         self.status_lbl.setVisible(False)
 
-        # Each tuning stage is a plain group whose checkbox header shows/hides
-        # exactly that stage's layers. Foreground residual (→ territory):
-        self.fg_visible_check = QCheckBox("Foreground")
-        self.fg_visible_check.setChecked(True)
-        self.fg_visible_check.setToolTip(
-            "Show/hide the foreground layers (residual_foreground + territory)."
+        # A "Compute:" checkbox row along the top — one box per tuning stage.
+        # Each box gates whether that stage's layers are *computed at all* by the
+        # live preview (not merely shown): the worker computes only the ticked
+        # stages and an unticked stage's layers are removed. The contour stage's
+        # atom watershed runs on the foreground territory, so ticking Contour
+        # implies the (cheap) FG compute even when FG itself is unticked.
+        self.fg_check = QCheckBox("Foreground")
+        self.fg_check.setChecked(True)
+        self.fg_check.setToolTip(
+            "Compute + show the foreground layers (residual_foreground + territory)."
         )
-        self.fg_visible_check.setStyleSheet("font-weight: bold;")
+        self.contour_check = QCheckBox("Contour")
+        self.contour_check.setChecked(False)
+        self.contour_check.setToolTip(
+            "Compute + show the contour layers (residual_contour + ridge + atoms)."
+        )
+        compute_row = QWidget()
+        compute_lay = QHBoxLayout(compute_row)
+        compute_lay.setContentsMargins(8, 0, 4, 0)
+        compute_lay.setSpacing(8)
+        compute_lay.addWidget(QLabel("Compute:"))
+        compute_lay.addWidget(self.fg_check)
+        compute_lay.addWidget(self.contour_check)
+        compute_lay.addStretch(1)
+
+        # Foreground residual (→ territory) knobs.
         fg_grid = section_grid()
         fg_grid.setContentsMargins(0, 0, 0, 0)
         add_section_pair_row(
@@ -153,14 +182,8 @@ class NucleusAtomExtractionWidget(QWidget):
         fg_grid_w = QWidget()
         fg_grid_w.setLayout(fg_grid)
 
-        # Contour residual (→ ridge → atoms); atom_min_area only post-processes
-        # the atoms, so it lives here too.
-        self.contour_visible_check = QCheckBox("Contour")
-        self.contour_visible_check.setChecked(False)
-        self.contour_visible_check.setToolTip(
-            "Show/hide the contour layers (residual_contour + ridge + atoms)."
-        )
-        self.contour_visible_check.setStyleSheet("font-weight: bold;")
+        # Contour residual (→ ridge → atoms) knobs; atom_min_area only
+        # post-processes the atoms, so it lives here too.
         contour_grid = section_grid()
         contour_grid.setContentsMargins(0, 0, 0, 0)
         add_section_pair_row(
@@ -180,9 +203,8 @@ class NucleusAtomExtractionWidget(QWidget):
         inner_body_lay = QVBoxLayout(inner_body)
         inner_body_lay.setContentsMargins(0, 0, 0, 0)
         inner_body_lay.setSpacing(4)
-        inner_body_lay.addWidget(self.fg_visible_check)
+        inner_body_lay.addWidget(compute_row)
         inner_body_lay.addWidget(fg_grid_w)
-        inner_body_lay.addWidget(self.contour_visible_check)
         inner_body_lay.addWidget(contour_grid_w)
         inner_body_lay.addWidget(self.status_lbl)
 
@@ -234,11 +256,11 @@ class NucleusAtomExtractionMixin:
             spin.valueChanged.connect(self._on_atom_param_changed)
         w.active_btn.toggled.connect(self._on_atom_activate)
         w.run_btn.clicked.connect(self._run_atom_extraction)
-        w.fg_visible_check.toggled.connect(
-            lambda checked: self._set_atom_group_visible(_ATOM_FG_GROUP_LAYERS, checked)
+        w.fg_check.toggled.connect(
+            lambda checked: self._on_atom_compute_toggled(_ATOM_FG_GROUP_LAYERS, checked)
         )
-        w.contour_visible_check.toggled.connect(
-            lambda checked: self._set_atom_group_visible(_ATOM_CONTOUR_GROUP_LAYERS, checked)
+        w.contour_check.toggled.connect(
+            lambda checked: self._on_atom_compute_toggled(_ATOM_CONTOUR_GROUP_LAYERS, checked)
         )
 
     def _register_atom_gate_controls(self) -> None:
@@ -313,10 +335,9 @@ class NucleusAtomExtractionMixin:
         # claim.
         if checked:
             self.gate.claim_viewer("atom_preview")
-            # _refresh_atom_preview creates the layers synchronously (before the
-            # worker starts), so the default visibility can be applied right away.
+            # Respect whatever the Compute checkboxes are set to — the refresh
+            # creates and computes only the ticked stages' layers.
             self._refresh_atom_preview()
-            self._apply_atom_default_visibility()
         else:
             self.gate.release_viewer("atom_preview")
             self._atom_preview_pending = False
@@ -327,24 +348,45 @@ class NucleusAtomExtractionMixin:
             self._atom_preview_cache.clear()
             self._set_atom_status("")
 
-    def _set_atom_group_visible(self, names, visible: bool) -> None:
-        """Show/hide a tuning stage's layers together."""
-        for name in names:
-            if name in self.viewer.layers:
-                self.viewer.layers[name].visible = bool(visible)
+    def _on_atom_compute_toggled(self, group_layers, checked: bool) -> None:
+        """Handle a Compute-checkbox toggle: drop unticked groups, refresh ticked.
 
-    def _apply_atom_default_visibility(self) -> None:
-        """Default on activation/run: Foreground pair visible, Contour group hidden.
-
-        Sets the checkboxes to match and applies the visibility directly (a
-        ``setChecked`` to an unchanged state emits no signal, so we must apply it
-        explicitly rather than relying on the toggle handler).
+        Unticking a stage removes its layers immediately. Then, while the preview
+        is active, a refresh creates/paints any newly-ticked stage — computing
+        only if the cached frame doesn't already cover the new level, so
+        re-ticking a stage that was just computed repaints instantly.
         """
+        if not checked:
+            for name in group_layers:
+                if name in self.viewer.layers:
+                    self.viewer.layers.remove(name)
+                self._atom_image_needs_autocontrast.discard(name)
+        if self._atom_preview_active:
+            self._refresh_atom_preview()
+
+    def _atom_compute_groups(self):
+        """(checkbox, owned layers, compute level) for each tuning stage."""
         w = self.atom_extraction_widget
-        w.fg_visible_check.setChecked(True)
-        w.contour_visible_check.setChecked(False)
-        self._set_atom_group_visible(_ATOM_FG_GROUP_LAYERS, True)
-        self._set_atom_group_visible(_ATOM_CONTOUR_GROUP_LAYERS, False)
+        return (
+            (w.fg_check, _ATOM_FG_GROUP_LAYERS, _ATOM_LEVEL_FG),
+            (w.contour_check, _ATOM_CONTOUR_GROUP_LAYERS, _ATOM_LEVEL_CONTOUR),
+        )
+
+    def _desired_atom_level(self) -> int:
+        """The single-frame compute level needed to fill every ticked stage."""
+        level = _ATOM_LEVEL_NONE
+        for check, _layers, need in self._atom_compute_groups():
+            if check.isChecked():
+                level = max(level, need)
+        return level
+
+    def _checked_atom_layer_names(self) -> list[str]:
+        """Layer names owned by the currently-ticked Compute checkboxes."""
+        names: list[str] = []
+        for check, layers, _need in self._atom_compute_groups():
+            if check.isChecked():
+                names.extend(layers)
+        return names
 
     def _read_frame(self, path, t: int) -> np.ndarray:
         return np.asarray(tifffile.imread(str(path), key=t), dtype=np.float32)
@@ -387,18 +429,22 @@ class NucleusAtomExtractionMixin:
         if shape is None:
             self._set_atom_status("Foreground/contour maps not found.")
             return None
-        self._ensure_atom_preview_stacks(shape)
         params = self._atom_params()
         key = dataclasses.astuple(params)
         self._atom_preview_cache.sync(key)
+        level = self._desired_atom_level()
+        self._ensure_atom_preview_stacks(shape, self._checked_atom_layer_names())
+        if level == _ATOM_LEVEL_NONE:
+            self._set_atom_status("")
+            return None
         n_frames = shape[0]
         t = max(0, min(self._current_t(), n_frames - 1))
 
         cached = self._atom_preview_cache.get(t)
-        if cached is not None:
-            # Already computed for these params — instant repaint, even while a
-            # worker is busy on another frame.
-            self._paint_atom_preview(t, cached)
+        if cached is not None and cached[0] >= level:
+            # Already computed to (at least) the needed level for these params —
+            # instant repaint, even while a worker is busy on another frame.
+            self._paint_atom_preview(t, cached[1])
             return None
 
         if self._atom_preview_worker is not None:
@@ -411,26 +457,33 @@ class NucleusAtomExtractionMixin:
             "errored": self._on_atom_preview_error,
         })
         def _worker():
+            # The FG residual + territory is always cheap and the atom watershed
+            # needs the territory as its mask, so it runs at every level; the
+            # contour stage (residual + ridge + atoms) runs only when reached.
             fg = self._read_frame(fg_path, t)
-            contour = self._read_frame(contour_path, t)
             residual_foreground = residual(fg, params.fg_window, params.fg_strength)
             territory = residual_foreground > params.fg_cutoff
-            residual_contour = residual(contour, params.contour_window, params.contour_strength)
-            atoms, ridge = extract_atoms_frame(
-                residual_contour, territory,
-                params.contour_floor, params.atom_min_area,
-            )
+            atoms = residual_contour = ridge = None
+            if level >= _ATOM_LEVEL_CONTOUR:
+                contour = self._read_frame(contour_path, t)
+                residual_contour = residual(
+                    contour, params.contour_window, params.contour_strength
+                )
+                atoms, ridge = extract_atoms_frame(
+                    residual_contour, territory,
+                    params.contour_floor, params.atom_min_area,
+                )
             slices = (atoms, territory.astype(np.uint8),
                       residual_foreground, residual_contour, ridge)
-            return key, t, slices
+            return key, t, level, slices
 
         self._atom_preview_worker = _worker()
         return self._atom_preview_worker
 
     def _on_atom_preview_done(self, result) -> None:
         self._atom_preview_worker = None
-        key, t, slices = result
-        self._atom_preview_cache.put(key, t, slices)
+        key, t, level, slices = result
+        self._atom_preview_cache.put(key, t, (level, slices))
         if self._atom_preview_active:
             self._paint_atom_preview(t, slices)
         if self._atom_preview_pending and self._atom_preview_active:
@@ -440,14 +493,27 @@ class NucleusAtomExtractionMixin:
             self._atom_preview_pending = False
 
     def _paint_atom_preview(self, t: int, slices) -> None:
-        """Fill frame ``t``'s slice of every atom preview layer + the count status."""
+        """Fill frame ``t``'s slice for every stage the result supplies.
+
+        The contour stage's slices are ``None`` when only the foreground level
+        was computed; those are skipped (their layers don't exist either). Each
+        ``_fill_*`` is itself a no-op for an absent layer, so painting a value
+        whose stage is computed-but-unticked is harmless.
+        """
         atoms, territory, residual_foreground, residual_contour, ridge = slices
-        self._fill_atom_image_slice(_ATOM_FG_RESIDUAL_LAYER, t, residual_foreground)
-        self._fill_atom_labels_slice(_ATOM_TERRITORY_LAYER, t, territory)
-        self._fill_atom_image_slice(_ATOM_CONTOUR_RESIDUAL_LAYER, t, residual_contour)
-        self._fill_atom_labels_slice(_ATOM_RIDGE_LAYER, t, ridge)
-        self._fill_atom_labels_slice(_ATOM_PREVIEW_LAYER, t, atoms)
-        self._set_atom_status(f"Frame {t}: {int(atoms.max())} atoms.")
+        if residual_foreground is not None:
+            self._fill_atom_image_slice(_ATOM_FG_RESIDUAL_LAYER, t, residual_foreground)
+        if territory is not None:
+            self._fill_atom_labels_slice(_ATOM_TERRITORY_LAYER, t, territory)
+        if residual_contour is not None:
+            self._fill_atom_image_slice(_ATOM_CONTOUR_RESIDUAL_LAYER, t, residual_contour)
+        if ridge is not None:
+            self._fill_atom_labels_slice(_ATOM_RIDGE_LAYER, t, ridge)
+        if atoms is not None:
+            self._fill_atom_labels_slice(_ATOM_PREVIEW_LAYER, t, atoms)
+            self._set_atom_status(f"Frame {t}: {int(atoms.max())} atoms.")
+        else:
+            self._set_atom_status(f"Frame {t}: territory only.")
 
     def _on_atom_preview_error(self, exc: Exception) -> None:
         self._atom_preview_worker = None
@@ -457,14 +523,18 @@ class NucleusAtomExtractionMixin:
 
     # ── preview stacks (one zero-filled (T, Y, X) layer per map) ─────────────
 
-    def _ensure_atom_preview_stacks(self, shape) -> None:
-        # Created bottom → top so napari stacks each mask directly above the
-        # residual image it is judged against (§ fixed stack order).
-        self._ensure_atom_image_stack(_ATOM_FG_RESIDUAL_LAYER, shape)
-        self._ensure_atom_labels_stack(_ATOM_TERRITORY_LAYER, shape)
-        self._ensure_atom_image_stack(_ATOM_CONTOUR_RESIDUAL_LAYER, shape)
-        self._ensure_atom_labels_stack(_ATOM_RIDGE_LAYER, shape)
-        self._ensure_atom_labels_stack(_ATOM_PREVIEW_LAYER, shape)
+    def _ensure_atom_preview_stacks(self, shape, names) -> None:
+        # Walk the fixed bottom → top order and create only the requested layers,
+        # so napari stacks each mask directly above the residual image it is
+        # judged against (§ fixed stack order) even when a stage is unticked.
+        wanted = set(names)
+        for name in _ATOM_LAYERS:
+            if name not in wanted:
+                continue
+            if name in _ATOM_IMAGE_LAYERS:
+                self._ensure_atom_image_stack(name, shape)
+            else:
+                self._ensure_atom_labels_stack(name, shape)
 
     def _ensure_atom_labels_stack(self, name: str, shape) -> None:
         from napari.layers import Labels
@@ -548,15 +618,19 @@ class NucleusAtomExtractionMixin:
         except Exception as exc:
             self._set_atom_status(f"Atom computation failed: {exc}")
             return
-        # Reuse the preview layers, replacing each with its full (T, Y, X) stack.
+        # The run computed every stage, so show them all: tick both Compute
+        # boxes (so their layers exist) and replace each with its full (T, Y, X)
+        # stack.
+        w = self.atom_extraction_widget
+        w.fg_check.setChecked(True)
+        w.contour_check.setChecked(True)
         shape = atoms.shape
-        self._ensure_atom_preview_stacks(shape)
+        self._ensure_atom_preview_stacks(shape, _ATOM_LAYERS)
         self.viewer.layers[_ATOM_PREVIEW_LAYER].data = atoms
         self.viewer.layers[_ATOM_TERRITORY_LAYER].data = territory.astype(np.int32)
         self.viewer.layers[_ATOM_RIDGE_LAYER].data = ridge.astype(np.int32)
         self._set_atom_image_stack(_ATOM_FG_RESIDUAL_LAYER, residual_foreground)
         self._set_atom_image_stack(_ATOM_CONTOUR_RESIDUAL_LAYER, residual_contour)
-        self._apply_atom_default_visibility()
         self._set_atom_status(f"Wrote {atoms.shape[0]} frames → atoms.tif.")
 
     def _set_atom_image_stack(self, name: str, data: np.ndarray) -> None:

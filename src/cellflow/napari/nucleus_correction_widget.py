@@ -380,6 +380,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self.shortcuts_btn.setVisible(show_active)
         self.params_btn.setVisible(show_active)
         self.track_path_btn.setVisible(show_active)
+        self.spotlight_btn.setVisible(show_active)
         self.filled_view_btn.setVisible(show_active)
         # The status line is only meaningful inside the active workspace; hide it
         # when inactive so it never wraps the plugin-dock title pill to two rows.
@@ -1385,6 +1386,11 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             # outlines + tracks over the visible reference images.
             self._set_checked_without_signal(self.filled_view_btn, False)
             self._apply_label_view_mode(filled=False)
+            # Sync the inner widget's selection indicator to the (possibly
+            # persisted) spotlight toggle so they never drift apart.
+            self.correction_widget.set_highlight_style(
+                "spotlight" if self.spotlight_btn.isChecked() else "border"
+            )
             # Drop any pre-loaded higher-rank stack (e.g. a raw T,Z,Y,X z-stack)
             # so the viewer collapses to one frame slider that matches the
             # correction frames; re-added verbatim on deactivate. Same-rank
@@ -1573,6 +1579,12 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         else:
             self._clear_track_path_overlay()
         self._refresh_track_path_spotlight()
+
+    def _on_toggle_spotlight(self, checked: bool) -> None:
+        """Spotlight on → dim outside the selection; off → plain yellow border."""
+        self.correction_widget.set_highlight_style(
+            "spotlight" if checked else "border"
+        )
 
     def _on_track_selection_changed(self, _t: int, _lab: int) -> None:
         """Recolour the all-tracks layer / accordion when selection changes."""

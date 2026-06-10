@@ -299,9 +299,59 @@ def test_recompute_forces_rebuild_even_when_h5_exists(monkeypatch, tmp_path):
     viewer = _FakeViewer()
     widget = mod.AggregateQuantificationWidget(viewer)
     _set_pos(widget, pos_dir)
-    widget._on_visualize(overwrite=True)  # was the Recompute button
+    assert widget.recompute_btn.isEnabled() is True
+    widget.recompute_btn.click()
 
     assert captured["overwrite"] is True
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_recompute_rereads_h5_instead_of_serving_stale_cache(monkeypatch, tmp_path):
+    """A same-path rebuild must invalidate the path-keyed .h5 cache.
+
+    The cache is keyed by output path, but Recompute rewrites the .h5 in place, so
+    without invalidation _show_from_disk would serve the stale cached read.
+    """
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = _staged_pos(tmp_path, "pos07", cell=True, nucleus=True, h5=True)
+
+    def fake_ensure(*, cell_labels_path, output_path, nucleus_labels_path=None,
+                    overwrite=False, progress_cb=None, **kwargs):
+        return output_path, True
+
+    # Each read returns a distinct payload so a stale cache is observable.
+    reads: dict[str, int] = {"n": 0}
+
+    def fake_read(_p):
+        reads["n"] += 1
+        return {"cells": [reads["n"]]}
+
+    shown: list = []
+    monkeypatch.setattr(mod, "ensure_contact_analysis", fake_ensure)
+    monkeypatch.setattr(mod, "read_position_contact_analysis", fake_read)
+    monkeypatch.setattr(
+        mod, "add_contact_analysis_layers", lambda _v, ca, **k: shown.append(ca)
+    )
+
+    viewer = _FakeViewer()
+    widget = mod.AggregateQuantificationWidget(viewer)
+    _set_pos(widget, pos_dir)
+
+    # First Visualize: existing .h5 is read once and shown.
+    widget.visualize_btn.click()
+    assert reads["n"] == 1
+    assert shown[-1] == {"cells": [1]}
+
+    # Recompute rewrites the same path → the cache must be dropped and re-read,
+    # so the freshly built analysis is shown rather than the stale {"cells": [1]}.
+    widget.recompute_btn.click()
+    assert reads["n"] == 2
+    assert shown[-1] == {"cells": [2]}
 
     widget.deleteLater()
     app.processEvents()

@@ -33,25 +33,31 @@
 
 # 
 
-- [ ] Pipeline Files loading: `atoms.tif` should load as a **labels** layer,
-  not a grayscale image. In `napari/widgets.py`, `_infer_load_kind` doesn't
-  recognize `atoms.tif` (it isn't `tracked_labels.tif`/`foreground_masks.tif`/
-  `*_labels.tif` and has no "labels" in the name), so it falls through to the
-  generic `"tiff"` kind and `_load_file_into_viewer` calls
-  `viewer.add_image(..., colormap="gray")`. Atoms are integer atom IDs — they
-  should go through `add_labels`.
-- [ ] While here, audit the other load paths for appropriate layer types and
-  colormaps: `_infer_load_kind` + `_pick_colormap` in `napari/widgets.py`,
-  plus the direct `add_image`/`add_labels` calls in the other widgets that
-  load pipeline outputs (`nucleus_pipeline_widget.py`,
-  `nucleus_atom_extraction_widget.py`, `cellpose_widget.py`,
-  `cell_workflow_widget.py`, `cell_correction_widget.py`,
-  `divergence_maps_widget.py`, `main_widget.py`). Confirm label images use
-  `add_labels` and intensity/scalar images use `add_image` with a sensible
-  colormap (e.g. divergence maps likely want a diverging colormap, not gray).
+- [x] Pipeline Files loading: `atoms.tif` should load as a **labels** layer,
+  not a grayscale image. (`_infer_load_kind` now maps `atoms.tif` → `"labels"`,
+  so the load button goes through `add_labels` instead of falling through to a
+  gray `add_image`.)
+- [x] While here, audit the other load paths for appropriate layer types and
+  colormaps. (The direct `add_image`/`add_labels` calls in the other widgets
+  were already correct — atom extraction loads atoms via `add_labels`; cellpose
+  uses viridis/inferno/gray for prob/flow/reference; divergence uses gray for
+  foreground + magma for contours; cell workflow/correction load label stacks
+  via `add_labels`. Only `_PipelineFileRow` was wrong. Rewrote `_pick_colormap`
+  to be filename-semantic and match those viewers: contour/divergence → magma,
+  cellpose prob → viridis, flow/dp → inferno, raw input + foreground → gray.
+  Note: divergence/contour maps are *positive* ridge signal, so a sequential
+  map (magma, as the divergence widget uses) is right — not a diverging one.)
 
-- [ ] Atom extractor: do the checkbox situation like the cell segmentation widget's
+- [x] Atom extractor: do the checkbox situation like the cell segmentation widget's
   preview. Put the checkboxes in a row along the top and only compute what is
-  checked (skip computing unchecked items entirely, rather than computing
-  everything and just toggling visibility).
+  checked. (The two stage checkboxes (Foreground, Contour) are now a "Compute:"
+  row at the top of the params panel and gate *computation*, not just visibility:
+  the live-preview worker runs a level system (`_ATOM_LEVEL_FG` = residual_fg +
+  territory; `_ATOM_LEVEL_CONTOUR` adds residual_contour + ridge + atoms) sized to
+  the max ticked stage, so an unticked stage is skipped entirely and its layers
+  removed. Per-frame cache now stores `(level, slices)` and only reuses a frame
+  whose stored level covers the desired one. Contour implies the cheap FG compute
+  since the atom watershed runs on the foreground territory. ▶ run still computes
+  the full stack and now ticks both boxes so every layer shows. Covered by a new
+  compute-gating test in `test_nucleus_workflow_standalone.py`.)
 
