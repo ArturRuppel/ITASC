@@ -48,6 +48,48 @@ def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     assert record["contact_analysis_status"] == "ready"
 
 
+def test_save_catalog_stores_absolute_position_and_relative_files(tmp_path):
+    """A record with a position folder stores it absolute and files relative to it."""
+    from cellflow.aggregate_quantification.catalog import load_catalog, save_catalog
+
+    position = tmp_path / "expA" / "pos00"
+    (position / "4_contact_analysis").mkdir(parents=True)
+    (position / "3_cell").mkdir()
+    (position / "2_nucleus").mkdir()
+    contact = position / "4_contact_analysis" / "contact_analysis.h5"
+    cell = position / "3_cell" / "tracked_labels.tif"
+    nucleus = position / "2_nucleus" / "tracked_labels.tif"
+    for p in (contact, cell, nucleus):
+        p.touch()
+    csv_path = tmp_path / "catalog.csv"
+
+    save_catalog(csv_path, [{
+        "position_path": position,
+        "path": contact,
+        "date": "2026-05-09",
+        "condition": "treated",
+        "id": "pos00",
+        "notes": "",
+        "cell_tracked_labels_path": cell,
+        "nucleus_tracked_labels_path": nucleus,
+    }])
+
+    csv_text = csv_path.read_text()
+    # Position folder is absolute; files are relative to it.
+    assert str(position) in csv_text
+    assert "4_contact_analysis/contact_analysis.h5" in csv_text
+    assert "3_cell/tracked_labels.tif" in csv_text
+    assert "2_nucleus/tracked_labels.tif" in csv_text
+    assert str(contact) not in csv_text
+
+    record = load_catalog(csv_path)[0]
+    assert record["position_path"] == position
+    assert record["contact_analysis_path"] == contact
+    assert record["cell_tracked_labels_path"] == cell
+    assert record["nucleus_tracked_labels_path"] == nucleus
+    assert record["contact_analysis_status"] == "ready"
+
+
 def test_save_load_round_trip_without_label_paths(tmp_path):
     """A record with no label paths round-trips with empty cells and None paths."""
     from cellflow.aggregate_quantification.catalog import load_catalog, save_catalog

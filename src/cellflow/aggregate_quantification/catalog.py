@@ -3,6 +3,14 @@
 Builds, loads, and saves a catalog of positions (each a contact-analysis ``.h5``
 plus optional cell/nucleus label images) discovered by file name / relative path
 via :func:`discover_catalog_entries`.
+
+Each row anchors on a ``position_path`` — the **absolute** path to the position
+folder — and stores every file (the contact-analysis ``.h5``, cell labels,
+nucleus labels) as a path **relative to that folder** (e.g.
+``4_contact_analysis/contact_analysis.h5``). Persisting the position folder lets
+downstream tools (notably the NLS classifier) resolve their own per-position
+relative paths against it. Older catalogs that lack ``position_path`` still load:
+their file paths are resolved relative to the CSV file's directory.
 """
 
 from __future__ import annotations
@@ -15,12 +23,16 @@ from collections.abc import Iterable
 STATUS_READY = "ready"
 STATUS_INCOMPLETE = "incomplete"
 
-# Columns that identify a catalog row; validated on load. The label-path and
-# notes columns are optional so older catalogs (and hand-written ones) still load.
+# Columns that identify a catalog row; validated on load. ``position_path``, the
+# label-path and notes columns are optional so older catalogs (and hand-written
+# ones) still load.
 REQUIRED_CSV_COLUMNS = ("path", "date", "condition", "id")
-# Full column order written on save: contact-analysis path, metadata, the two
-# (optional) label-image paths needed to re-run analysis, and free-text notes.
+# Full column order written on save: the absolute position folder, the
+# contact-analysis path (relative to it), metadata, the two (optional)
+# label-image paths (relative to it) needed to re-run analysis, and free-text
+# notes.
 CSV_COLUMNS = (
+    "position_path",
     "path",
     "date",
     "condition",
@@ -51,7 +63,12 @@ def load_catalog(csv_path: Path | str) -> list[dict]:
 
 
 def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
-    """Write catalog records to CSV using paths relative to the CSV when possible."""
+    """Write catalog records to CSV.
+
+    Each row stores the absolute ``position_path`` and the position's files as
+    paths relative to that folder. Records without a known position folder
+    (legacy / hand-made) fall back to paths relative to the CSV file.
+    """
     catalog_path = Path(csv_path)
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -60,17 +77,21 @@ def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
         writer.writeheader()
         for record in records:
             normalized = _normalize_catalog_record(record, base_dir=catalog_path.parent)
-            base = catalog_path.parent
+            position_path = normalized.get("position_path")
+            # Files are written relative to the position folder when one is
+            # known; otherwise relative to the CSV file's directory.
+            file_base = position_path if position_path is not None else catalog_path.parent
             row = {
-                "path": _path_for_csv(normalized["contact_analysis_path"], base),
+                "position_path": str(position_path) if position_path is not None else "",
+                "path": _path_for_csv(normalized["contact_analysis_path"], file_base),
                 "date": normalized["date"],
                 "condition": normalized["condition"],
                 "id": normalized["id"],
                 "cell_labels": _optional_path_for_csv(
-                    normalized.get("cell_tracked_labels_path"), base
+                    normalized.get("cell_tracked_labels_path"), file_base
                 ),
                 "nucleus_labels": _optional_path_for_csv(
-                    normalized.get("nucleus_tracked_labels_path"), base
+                    normalized.get("nucleus_tracked_labels_path"), file_base
                 ),
                 "notes": normalized["notes"],
             }
@@ -98,8 +119,20 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
     """Return a record with required CSV fields and widget compatibility keys."""
     normalized = dict(record)
 
+    # Absolute position folder; the anchor for this position's relative file
+    # paths. Resolved against the CSV directory when given as a relative path.
+    raw_position = normalized.get("position_path")
+    position_path = (
+        _resolve_with_base(raw_position, base_dir)
+        if raw_position not in (None, "")
+        else None
+    )
+    # File paths in a catalog row are relative to the position folder when one is
+    # known; older catalogs (no position_path) stored them relative to the CSV.
+    file_base = position_path if position_path is not None else base_dir
+
     contact_analysis_path = _resolve_with_base(
-        normalized.get("path", normalized.get("contact_analysis_path", "")), base_dir
+        normalized.get("path", normalized.get("contact_analysis_path", "")), file_base
     )
 
     date = str(normalized.get("date", normalized.get("experiment_id", "unknown_date")))
@@ -110,11 +143,11 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
     # ``notes`` is the free-text field; accept the legacy ``labels`` column too.
     notes = str(normalized.get("notes", normalized.get("labels", "")))
     cell_labels_path = _resolve_optional_with_base(
-        normalized.get("cell_tracked_labels_path", normalized.get("cell_labels")), base_dir
+        normalized.get("cell_tracked_labels_path", normalized.get("cell_labels")), file_base
     )
     nucleus_labels_path = _resolve_optional_with_base(
         normalized.get("nucleus_tracked_labels_path", normalized.get("nucleus_labels")),
-        base_dir,
+        file_base,
     )
 
     normalized.update({
@@ -126,6 +159,7 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         "condition_id": condition,
         "experiment_id": date,
         "position_id": source_id,
+        "position_path": position_path,
         "contact_analysis_path": contact_analysis_path,
         "cell_tracked_labels_path": cell_labels_path,
         "nucleus_tracked_labels_path": nucleus_labels_path,

@@ -7,6 +7,8 @@ output_dir=...)`` — three explicit path fields in the widget.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import napari
 import pytest
 
@@ -21,6 +23,49 @@ def viewer():
         yield v
     finally:
         v.close()
+
+
+class _LayerCollection(dict):
+    """Stand-in for napari's ``LayerList``, keyed by layer name.
+
+    Covers exactly the operations the atom-preview path uses — ``name in
+    layers``, ``layers[name]`` and ``layers.remove(name)`` — so the widget can
+    manage layers without a GL-backed viewer.
+    """
+
+    def remove(self, item) -> None:
+        # The widget removes by name; tolerate a layer object too.
+        name = item if isinstance(item, str) else getattr(item, "name", item)
+        self.pop(name, None)
+
+
+class _HeadlessViewer:
+    """A viewer that builds genuine napari layer *models* but never a canvas.
+
+    The atom live-preview only needs to add/remove layers and read the current
+    frame index. Constructing real ``Image``/``Labels`` keeps the widget's
+    ``isinstance``/``.visible``/``.contrast_limits``/``.refresh()`` logic honest
+    while sidestepping the vispy GL context a real ``napari.Viewer`` demands —
+    which a headless CI box (no xvfb / software GL) can't provide.
+    """
+
+    def __init__(self) -> None:
+        self.layers = _LayerCollection()
+        self.dims = SimpleNamespace(current_step=(0, 0))
+
+    def add_image(self, data, *, name, **kwargs):
+        from napari.layers import Image
+
+        layer = Image(data, name=name, **kwargs)
+        self.layers[name] = layer
+        return layer
+
+    def add_labels(self, data, *, name, **kwargs):
+        from napari.layers import Labels
+
+        layer = Labels(data, name=name, **kwargs)
+        self.layers[name] = layer
+        return layer
 
 
 def test_factory_builds_standalone_widget_with_path_pickers(viewer):
@@ -140,6 +185,12 @@ def test_atom_compute_checkboxes_gate_which_layers_compute(viewer, tmp_path, mon
 
     widget = mod.NucleusWorkflowWidget(viewer)
     widget.refresh(tmp_path)
+    # The preview path reads ``self.viewer`` dynamically, so swap in a headless
+    # viewer for it: adding real Image/Labels layers to a live napari canvas
+    # needs a GL context that CI hasn't got, and the preview doesn't render —
+    # it only manages layer membership and reads the current frame.
+    widget.viewer = _HeadlessViewer()
+    layers = widget.viewer.layers
     w = widget.atom_extraction_widget
 
     # Default: only Foreground is ticked. Activating the preview creates the FG
@@ -147,27 +198,27 @@ def test_atom_compute_checkboxes_gate_which_layers_compute(viewer, tmp_path, mon
     assert w.fg_check.isChecked() and not w.contour_check.isChecked()
     w.active_btn.setChecked(True)
     for name in atom_mod._ATOM_FG_GROUP_LAYERS:
-        assert name in viewer.layers, f"missing foreground layer {name}"
+        assert name in layers, f"missing foreground layer {name}"
     for name in atom_mod._ATOM_CONTOUR_GROUP_LAYERS:
-        assert name not in viewer.layers
+        assert name not in layers
 
     # Ticking Contour upgrades the compute and creates its layers (residual,
     # ridge, atoms).
     widget._atom_preview_worker = None  # settle the synchronous worker
     w.contour_check.setChecked(True)
     for name in atom_mod._ATOM_CONTOUR_GROUP_LAYERS:
-        assert name in viewer.layers, f"missing contour layer {name}"
+        assert name in layers, f"missing contour layer {name}"
 
     # Unticking Foreground drops its layers immediately.
     widget._atom_preview_worker = None
     w.fg_check.setChecked(False)
     for name in atom_mod._ATOM_FG_GROUP_LAYERS:
-        assert name not in viewer.layers
+        assert name not in layers
 
     # Deactivation tears every atom layer down.
     w.active_btn.setChecked(False)
     for name in atom_mod._ATOM_LAYERS:
-        assert name not in viewer.layers
+        assert name not in layers
 
 
 def test_standalone_widget_is_top_anchored(viewer):
