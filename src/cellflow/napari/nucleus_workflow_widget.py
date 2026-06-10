@@ -267,8 +267,8 @@ class NucleusWorkflowWidget(
         self.db_gen_min_frontier_spin = ti.db_gen_min_frontier_spin
         self.db_gen_ws_hierarchy_combo = ti.db_gen_ws_hierarchy_combo
         self.db_gen_n_workers_spin = ti.db_gen_n_workers_spin
-        self.atom_union_max_atoms_spin = ti.atom_union_max_atoms_spin
         self.atom_union_max_area_spin = ti.atom_union_max_area_spin
+        self.atom_overlap_budget_spin = ti.atom_overlap_budget_spin
         self.db_gen_max_dist_spin = ti.db_gen_max_dist_spin
         self.db_gen_max_neighbors_spin = ti.db_gen_max_neighbors_spin
         self.db_gen_linking_mode_combo = ti.db_gen_linking_mode_combo

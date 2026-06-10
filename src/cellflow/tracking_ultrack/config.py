@@ -23,9 +23,15 @@ class TrackingConfig(BaseModel):
     contour_strength: float = 1.0
     atom_min_area: int = 100
 
-    # Atom-union candidate enumeration (stage ②)
-    atom_union_max_atoms: int = 3
+    # Atom-union candidate generation (stage ②)
+    # Backbone merge tree (always built) + branch candidates admitted
+    # most-ambiguous-first up to a single per-frame overlap-pair budget.
+    # The budget is the one branching knob: 0 → nested hierarchy, large →
+    # full lattice. ``atom_union_max_area`` stays a hard physical cap on any
+    # candidate union. ``atom_union_max_atoms`` is removed — union depth is
+    # governed by the area cap and the maximal-merge-always guarantee.
     atom_union_max_area: int = 8000
+    atom_overlap_budget: int = 300_000
 
     # Linking
     # Ultrack's multiprocessing_apply activates a Pool only when n_workers > 1,

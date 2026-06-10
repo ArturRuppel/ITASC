@@ -25,7 +25,7 @@ def dump_state(w: NucleusWorkflowWidget) -> dict:
             "ws_hierarchy": w.db_gen_ws_hierarchy_combo.currentText(),
             "n_workers": w.db_gen_n_workers_spin.value(),
             "atom_union_max_area": w.atom_union_max_area_spin.value(),
-            "max_atoms": w.atom_union_max_atoms_spin.value(),
+            "overlap_budget": w.atom_overlap_budget_spin.value(),
             "max_distance": w.db_gen_max_dist_spin.value(),
             "max_neighbors": w.db_gen_max_neighbors_spin.value(),
             "linking_mode": w.db_gen_linking_mode_combo.currentText(),
@@ -84,7 +84,8 @@ def load_state(w: NucleusWorkflowWidget, state: dict) -> None:
         if "ws_hierarchy" in dbg: _set_combo(w.db_gen_ws_hierarchy_combo, dbg["ws_hierarchy"])
         if "n_workers" in dbg: w.db_gen_n_workers_spin.setValue(dbg["n_workers"])
         if "atom_union_max_area" in dbg: w.atom_union_max_area_spin.setValue(dbg["atom_union_max_area"])
-        if "max_atoms" in dbg: w.atom_union_max_atoms_spin.setValue(dbg["max_atoms"])
+        if "overlap_budget" in dbg: w.atom_overlap_budget_spin.setValue(dbg["overlap_budget"])
+        # "max_atoms" (removed) in older snapshots is intentionally ignored.
         if "max_distance" in dbg: w.db_gen_max_dist_spin.setValue(dbg["max_distance"])
         if "max_neighbors" in dbg: w.db_gen_max_neighbors_spin.setValue(dbg["max_neighbors"])
         if "linking_mode" in dbg: _set_combo(w.db_gen_linking_mode_combo, dbg["linking_mode"])

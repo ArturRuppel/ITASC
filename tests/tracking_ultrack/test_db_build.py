@@ -172,6 +172,86 @@ def test_build_atom_union_database_segments_then_links(monkeypatch, tmp_path):
     assert report.total_nodes > 0
 
 
+def test_build_atom_union_database_uses_contour_for_ridge_weights(monkeypatch, tmp_path):
+    """With a contour map provided, the build recomputes the residual contour and
+    runs the ridge-weighted merge-tree path to completion, producing candidates."""
+    import tifffile
+
+    from cellflow.tracking_ultrack import db_build
+    from cellflow.tracking_ultrack.atoms import AtomParams, write_atoms_tif
+
+    _install_ultrack_stubs(monkeypatch)
+
+    # Real on-disk inputs so read_atoms_params + residual recompute run for real.
+    atoms = np.zeros((2, 4, 6), dtype=np.int32)
+    atoms[:, :, :3] = 1
+    atoms[:, :, 3:] = 2
+    atoms_path = tmp_path / "atoms.tif"
+    write_atoms_tif(atoms_path, atoms, AtomParams(contour_window=11, contour_strength=1.0))
+
+    contour = np.zeros((2, 4, 6), dtype=np.float32)
+    contour[:, :, 2:4] = 1.0  # a ridge on the shared wall
+    contour_path = tmp_path / "contours.tif"
+    tifffile.imwrite(contour_path, contour)
+
+    class _FakeDataConfig:
+        database_path = f"sqlite:///{tmp_path / 'data.db'}"
+
+        def metadata_add(self, _meta):
+            pass
+
+    class _FakeUltrackConfig:
+        data_config = _FakeDataConfig()
+
+    monkeypatch.setattr(db_build, "_build_ultrack_config", lambda *_a: _FakeUltrackConfig())
+
+    import sqlalchemy
+    import sqlalchemy.orm
+
+    added: list = []
+
+    class _FakeEngine:
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *_a, **_kw: _FakeEngine())
+
+    class _FakeSession:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def add_all(self, rows):
+            added.extend(rows)
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(sqlalchemy.orm, "Session", _FakeSession)
+    monkeypatch.setattr(
+        db_build, "run_linking", lambda *_a, **_kw: iter([(1, 1, "linked")])
+    )
+
+    from cellflow.tracking_ultrack.config import TrackingConfig
+
+    report = db_build.build_atom_union_database(
+        atoms_path,
+        tmp_path / "work",
+        TrackingConfig(min_area=0),
+        contour_maps_path=contour_path,
+    )
+
+    assert report.n_frames == 2
+    # per frame: singletons {1},{2} + merged {1,2} = 3 nodes; 2 frames -> 6.
+    assert report.total_nodes == 6
+    assert report.total_overlaps == 4
+
+
 def test_db_build_segments_then_links(monkeypatch, tmp_path):
     """Candidate-only build: segment + link, no annotations, no scoring."""
     from cellflow.tracking_ultrack import db_build

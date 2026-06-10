@@ -42,10 +42,12 @@ class NucleusTrackingInputsWidget(QWidget):
         # ─── DB Generation — Atom-Union Candidates ──────────────────
         self.db_gen_min_area_spin = _islider(
             0, 1_000_000, 100, tooltip="Minimum single-atom candidate area in pixels.")
-        self.atom_union_max_atoms_spin = _islider(
-            1, 10, 3, tooltip="Maximum number of atoms per candidate union.")
         self.atom_union_max_area_spin = _islider(
             0, 100_000, 8000, tooltip="Maximum total pixel area of a candidate union.")
+        self.atom_overlap_budget_spin = _islider(
+            0, 5_000_000, 300_000, step=10_000,
+            tooltip="Per-frame overlap-pair budget — the single branching knob. "
+                    "0 = nested hierarchy, larger = richer non-nested alternatives.")
 
         # ─── Retained for backward compat (not surfaced in UI) ──────
         self.db_gen_min_frontier_spin = _dslider(0, 1, 0.0, 0.01, 2, "")
@@ -118,11 +120,11 @@ class NucleusTrackingInputsWidget(QWidget):
         add_section_pair_row(
             db_grid, row,
             "Min area:", self.db_gen_min_area_spin,
-            "Max atoms:", self.atom_union_max_atoms_spin,
+            "Max union area:", self.atom_union_max_area_spin,
         ); row += 1
         add_section_pair_row(
             db_grid, row,
-            "Max union area:", self.atom_union_max_area_spin,
+            "Overlap budget:", self.atom_overlap_budget_spin,
         ); row += 1
 
         add_section_header(db_grid, row, _heading("Linking")); row += 1
@@ -206,8 +208,8 @@ class NucleusTrackingInputsWidget(QWidget):
             min_area=self.db_gen_min_area_spin.value(),
             seg_min_area=self.db_gen_min_area_spin.value(),
             seg_foreground_threshold=0.0,
-            atom_union_max_atoms=self.atom_union_max_atoms_spin.value(),
             atom_union_max_area=self.atom_union_max_area_spin.value(),
+            atom_overlap_budget=self.atom_overlap_budget_spin.value(),
             max_distance=self.db_gen_max_dist_spin.value(),
             max_neighbors=self.db_gen_max_neighbors_spin.value(),
             linking_mode=self.db_gen_linking_mode_combo.currentText(),

@@ -362,6 +362,7 @@ class NucleusPipelineWidget(QWidget):
         cfg = self._db_gen_config_from_controls()
         working_dir = self._ultrack_workdir()
         foreground_path = self._foreground_path()
+        contour_path = self._contours_path()
 
         self.pipeline_progress_bar.setRange(0, 0)
         self.pipeline_progress_bar.setVisible(True)
@@ -393,6 +394,7 @@ class NucleusPipelineWidget(QWidget):
                         working_dir,
                         cfg,
                         _progress_cb,
+                        contour_maps_path=contour_path,
                     )
                     if cancel_event.is_set():
                         raise CancelledError("Operation cancelled.")

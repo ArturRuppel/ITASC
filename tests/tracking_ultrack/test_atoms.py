@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from cellflow.tracking_ultrack.atoms import (
     AtomParams,
     atom_adjacency,
+    atom_adjacency_weighted,
+    branch_unions,
+    build_atom_merge_tree,
     enum_connected_unions,
     extract_atoms_frame,
     extract_atoms_stack,
@@ -286,3 +290,182 @@ def test_enum_connected_unions_respects_max_atoms_and_max_area():
     # max_area=15 forbids any multi-atom union (each pair sums to 20 > 15)
     capped_area = enum_connected_unions(adj, areas, max_atoms=3, max_area=15)
     assert set(capped_area) == {frozenset({1}), frozenset({2}), frozenset({3})}
+
+
+# ── ridge-weighted adjacency ──────────────────────────────────────────────
+
+
+def test_atom_adjacency_weighted_mean_ridge_on_border():
+    # left/right atoms sharing the wall between cols 2 and 3 (4 border pixel-pairs).
+    atoms = np.zeros((4, 6), dtype=np.int32)
+    atoms[:, :3] = 1
+    atoms[:, 3:] = 2
+    rc = np.zeros((4, 6), dtype=np.float32)
+    rc[:, 2] = 0.2  # left side of the wall
+    rc[:, 3] = 0.4  # right side of the wall
+    adj, weights = atom_adjacency_weighted(atoms, rc)
+    assert adj == {1: {2}, 2: {1}}
+    # wall value per pixel-pair = mean(0.2, 0.4) = 0.3, averaged over the border.
+    assert weights[(1, 2)] == pytest.approx(0.3)
+
+
+# ── backbone merge tree ───────────────────────────────────────────────────
+
+
+def _chain_3():
+    # 1-2-3 chain, weak wall {1,2} (0.1), strong wall {2,3} (0.5).
+    adj = {1: {2}, 2: {1, 3}, 3: {2}}
+    weights = {(1, 2): 0.1, (2, 3): 0.5}
+    areas = {1: 10, 2: 10, 3: 10}
+    return adj, weights, areas
+
+
+def test_build_atom_merge_tree_keeps_singletons_and_root():
+    adj, weights, areas = _chain_3()
+    tree = build_atom_merge_tree(
+        adj, weights, areas, min_area=0, max_area=10_000, min_frontier=0.0
+    )
+    # every atom is a leaf; the maximal connected merge is the root.
+    for a in areas:
+        assert frozenset({a}) in tree
+    assert frozenset({1, 2, 3}) in tree
+
+
+def test_build_atom_merge_tree_merges_weakest_wall_first():
+    adj, weights, areas = _chain_3()
+    tree = build_atom_merge_tree(
+        adj, weights, areas, min_area=0, max_area=10_000, min_frontier=0.0
+    )
+    # the tree merges across the weak wall first -> {1,2} is a node, {2,3} is not.
+    assert frozenset({1, 2}) in tree
+    assert frozenset({2, 3}) not in tree
+
+
+def test_build_atom_merge_tree_is_nested_ancestor_descendant_only():
+    adj, weights, areas = _chain_3()
+    tree = build_atom_merge_tree(
+        adj, weights, areas, min_area=0, max_area=10_000, min_frontier=0.0
+    )
+    # any two tree nodes are nested or disjoint (so overlaps are ancestor↔descendant)
+    for a in tree:
+        for b in tree:
+            if a is b:
+                continue
+            inter = a & b
+            assert inter == frozenset() or inter == a or inter == b
+
+
+def test_build_atom_merge_tree_max_area_drops_root():
+    adj, weights, areas = _chain_3()
+    # cap below the full merge area (30) but above a pair (20): root dropped,
+    # singletons still kept.
+    tree = build_atom_merge_tree(
+        adj, weights, areas, min_area=0, max_area=25, min_frontier=0.0
+    )
+    assert frozenset({1, 2, 3}) not in tree
+    assert frozenset({1, 2}) in tree
+    for a in areas:
+        assert frozenset({a}) in tree
+
+
+# ── branch admission ──────────────────────────────────────────────────────
+
+
+def _triangle():
+    # complete triangle with distinct walls: (1,2)=0.1 weakest, (2,3)=0.2, (1,3)=0.9.
+    adj = {1: {2, 3}, 2: {1, 3}, 3: {1, 2}}
+    weights = {(1, 2): 0.1, (2, 3): 0.2, (1, 3): 0.9}
+    areas = {1: 10, 2: 10, 3: 10}
+    return adj, weights, areas
+
+
+def _backbone(adj, weights, areas, **kw):
+    kw.setdefault("min_area", 0)
+    kw.setdefault("max_area", 10_000)
+    kw.setdefault("min_frontier", 0.0)
+    return build_atom_merge_tree(adj, weights, areas, **kw)
+
+
+def _count_overlap_pairs(candidates):
+    atom_to_ids = {}
+    for i, fs in enumerate(candidates):
+        for a in fs:
+            atom_to_ids.setdefault(a, []).append(i)
+    pairs = set()
+    for ids in atom_to_ids.values():
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                pairs.add((ids[i], ids[j]))
+    return len(pairs)
+
+
+def test_branch_unions_budget_zero_admits_nothing():
+    adj, weights, areas = _triangle()
+    backbone = _backbone(adj, weights, areas)
+    branches, report = branch_unions(
+        adj, weights, areas, backbone, max_area=10_000, overlap_budget=0
+    )
+    assert branches == []
+    assert report.admitted == 0
+
+
+def test_branch_unions_large_budget_equals_full_lattice():
+    adj, weights, areas = _triangle()
+    backbone = _backbone(adj, weights, areas)
+    branches, _ = branch_unions(
+        adj, weights, areas, backbone, max_area=10_000, overlap_budget=10**9
+    )
+    full = set(enum_connected_unions(adj, areas, max_atoms=99, max_area=10_000))
+    assert set(backbone) | set(branches) == full
+
+
+def test_branch_unions_admits_most_ambiguous_first():
+    adj, weights, areas = _triangle()
+    backbone = _backbone(adj, weights, areas)
+    # {2,3} (wall 0.2) is more ambiguous than {1,3} (wall 0.9): with a budget that
+    # fits only one branch, the lower-wall one is admitted.
+    full = set(enum_connected_unions(adj, areas, max_atoms=99, max_area=10_000))
+    assert {frozenset({2, 3}), frozenset({1, 3})} == full - set(backbone)
+    branches, report = branch_unions(
+        adj, weights, areas, backbone, max_area=10_000, overlap_budget=5
+    )
+    assert branches == [frozenset({2, 3})]
+    assert report.budget_hit
+
+
+def test_branch_unions_candidate_and_overlap_counts_are_monotone():
+    adj, weights, areas = _triangle()
+    backbone = _backbone(adj, weights, areas)
+    counts = []
+    overlaps = []
+    for budget in (0, 5, 10**9):
+        branches, _ = branch_unions(
+            adj, weights, areas, backbone, max_area=10_000, overlap_budget=budget
+        )
+        counts.append(len(backbone) + len(branches))
+        overlaps.append(_count_overlap_pairs(backbone + branches))
+    assert counts == sorted(counts)
+    assert overlaps == sorted(overlaps)
+
+
+def test_branch_unions_overlap_charge_never_exceeds_budget():
+    # dense clump (complete K5): the branch-introduced overlaps stay within budget,
+    # and the backbone is fully present even when the budget is hit.
+    atoms = list(range(1, 6))
+    adj = {a: set(atoms) - {a} for a in atoms}
+    weights = {}
+    w = 0.0
+    for i in range(len(atoms)):
+        for j in range(i + 1, len(atoms)):
+            w += 0.01
+            weights[(atoms[i], atoms[j])] = w
+    areas = {a: 10 for a in atoms}
+    backbone = _backbone(adj, weights, areas)
+    budget = 12
+    branches, report = branch_unions(
+        adj, weights, areas, backbone, max_area=10_000, overlap_budget=budget
+    )
+    new_overlaps = _count_overlap_pairs(backbone + branches) - _count_overlap_pairs(backbone)
+    assert new_overlaps <= budget
+    assert report.budget_hit
+    assert set(backbone).issubset(set(backbone + branches))

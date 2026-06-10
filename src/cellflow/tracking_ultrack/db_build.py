@@ -221,18 +221,42 @@ def _notify(progress_cb: Callable[[str], None] | None, message: str) -> None:
         progress_cb(message)
 
 
+# Rows are streamed to the DB in fixed-size chunks (committed per chunk) so peak
+# memory stays flat regardless of how many candidates/overlaps a frame produces.
+_INSERT_CHUNK = 50_000
+
+
+def _stream_insert(Session, engine, rows: list) -> None:
+    """Add ``rows`` to the DB in ``_INSERT_CHUNK``-sized batches, one commit each."""
+    for start in range(0, len(rows), _INSERT_CHUNK):
+        with Session(engine) as session:
+            session.add_all(rows[start:start + _INSERT_CHUNK])
+            session.commit()
+
+
 def build_atom_union_database(
     atoms_path: str | Path,
     working_dir: str | Path,
     cfg: TrackingConfig,
     progress_cb: Callable[[str], None] | None = None,
+    *,
+    contour_maps_path: str | Path | None = None,
 ) -> AtomUnionDatabaseBuildReport:
-    """Build candidate ``data.db`` from ``atoms.tif`` via connected-union enumeration.
+    """Build candidate ``data.db`` from ``atoms.tif`` via a merge tree + branching.
 
-    Reads ``atoms.tif`` (written by stage ①), builds NodeDB + OverlapDB rows for
-    every connected union of ≤ ``cfg.atom_union_max_atoms`` atoms whose total area is
-    ≤ ``cfg.atom_union_max_area``, then runs linking. Warns if the embedded fingerprint
-    differs from the current atom params in ``cfg``.
+    Reads ``atoms.tif`` (written by stage ①). Per frame it builds a backbone
+    watershed-style merge tree over the atom RAG (atoms as leaves, walls weighted
+    by ridge strength) plus branch candidates admitted most-ambiguous-first up to
+    ``cfg.atom_overlap_budget`` overlap pairs — see ``atoms.build_atom_merge_tree``
+    / ``atoms.branch_unions``. Every candidate's total area is capped at
+    ``cfg.atom_union_max_area``. NodeDB + OverlapDB rows are stream-inserted in
+    chunks, then linking runs.
+
+    ``contour_maps_path`` supplies the ridge weights: the residual contour is
+    recomputed from it using the ``AtomParams`` embedded in ``atoms.tif`` (the
+    stage-① output contract is unchanged — ``atoms.tif`` remains the sole
+    artifact). When omitted, walls are treated as equally weighted, so the
+    backbone degrades to a deterministic area-ordered tree.
     """
     import pickle
 
@@ -242,9 +266,14 @@ def build_atom_union_database(
     from ultrack.core.database import Base, NodeDB, OverlapDB, clear_all_data
     from ultrack.core.segmentation.node import Node
 
+    from cellflow.core.imageops import residual
     from cellflow.tracking_ultrack.atoms import (
+        AtomParams,
         atom_adjacency,
-        enum_connected_unions,
+        atom_adjacency_weighted,
+        branch_unions,
+        build_atom_merge_tree,
+        read_atoms_params,
     )
 
     atoms_path = Path(atoms_path)
@@ -256,6 +285,19 @@ def build_atom_union_database(
     if atoms_stack.ndim == 2:
         atoms_stack = atoms_stack[np.newaxis]
 
+    # Ridge weights: recompute the residual contour from the contour map using
+    # the AtomParams stage ① embedded in atoms.tif (so weights match extraction).
+    contours = None
+    if contour_maps_path is not None and Path(contour_maps_path).exists():
+        _notify(progress_cb, "Reading contour maps for ridge weights...")
+        contours = np.asarray(tifffile.imread(str(contour_maps_path)), dtype=np.float32)
+        if contours.ndim == 4 and contours.shape[1] == 1:
+            contours = contours[:, 0]
+        if contours.ndim == 2:
+            contours = contours[np.newaxis]
+        stored_params, _fp = read_atoms_params(atoms_path)
+        atom_params = AtomParams(**stored_params) if stored_params else AtomParams()
+
     ultrack_cfg = _build_ultrack_config(cfg, working_dir)
     db_path = ultrack_cfg.data_config.database_path
     clear_all_data(db_path)
@@ -265,9 +307,10 @@ def build_atom_union_database(
 
     n_frames = atoms_stack.shape[0]
     max_seg = cfg.max_segments_per_time
-    max_atoms = cfg.atom_union_max_atoms
     max_area = cfg.atom_union_max_area
     min_area = cfg.min_area
+    min_frontier = cfg.seg_min_frontier
+    overlap_budget = cfg.atom_overlap_budget
     total_nodes = total_overlaps = 0
 
     for t in range(n_frames):
@@ -280,12 +323,31 @@ def build_atom_union_database(
         slices = ndi.find_objects(frame_atoms)
         ids, counts = np.unique(frame_atoms, return_counts=True)
         areas = {int(i): int(c) for i, c in zip(ids, counts) if i != 0}
-        adj = atom_adjacency(frame_atoms)
-        unions = enum_connected_unions(adj, areas, max_atoms, max_area)
-        unions = [
-            u for u in unions
-            if sum(areas[m] for m in u) >= min_area or len(u) > 1
-        ]
+
+        if contours is not None and t < contours.shape[0]:
+            rc = residual(contours[t], atom_params.contour_window, atom_params.contour_strength)
+            adj, weights = atom_adjacency_weighted(frame_atoms, rc)
+        else:
+            adj = atom_adjacency(frame_atoms)
+            weights = dict.fromkeys(
+                ((u, v) if u < v else (v, u) for u in adj for v in adj[u]), 0.0
+            )
+
+        backbone = build_atom_merge_tree(
+            adj, weights, areas,
+            min_area=min_area, max_area=max_area, min_frontier=min_frontier,
+        )
+        branches, report = branch_unions(
+            adj, weights, areas, backbone,
+            max_area=max_area, overlap_budget=overlap_budget,
+        )
+        unions = backbone + branches
+        if report.budget_hit:
+            _notify(
+                progress_cb,
+                f"frame {t}: overlap budget hit — admitted {report.admitted} "
+                f"branch candidate(s), ≥{report.skipped} skipped.",
+            )
 
         nodes: list[NodeDB] = []
         atom_to_node_ids: dict[int, list[int]] = {a: [] for a in areas}
@@ -327,10 +389,8 @@ def build_atom_union_database(
                         seen_pairs.add(key)
                         overlaps.append(OverlapDB(node_id=key[0], ancestor_id=key[1]))
 
-        with Session(engine) as session:
-            session.add_all(nodes)
-            session.add_all(overlaps)
-            session.commit()
+        _stream_insert(Session, engine, nodes)
+        _stream_insert(Session, engine, overlaps)
         engine.dispose()
 
         total_nodes += len(nodes)
