@@ -316,6 +316,9 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         e.labels_edited.connect(self._apply_track_path_edit)
         e.labels_edited.connect(lambda *_: self._refresh_lineage_canvas_if_shown())
         e.labels_edited.connect(lambda *_: self._refresh_candidate_gallery_if_shown())
+        e.tracks_rebuilt.connect(self._apply_track_path_rebuilt)
+        e.tracks_rebuilt.connect(self._refresh_lineage_canvas_if_shown)
+        e.tracks_rebuilt.connect(self._refresh_candidate_gallery_if_shown)
 
     @property
     def _workspace(self) -> NucleusWorkspace | None:
@@ -861,7 +864,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         step[0] = result.target_frame
         self.viewer.dims.current_step = tuple(step)
 
-        self._refresh_track_visuals_live()
+        self.events.tracks_rebuilt.emit()
         self._correction_status(
             f"Extended cell {source_id} -> t={result.target_frame} "
             f"(link weight={result.weight:.2f})"
@@ -1079,7 +1082,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         if step:
             step[0] = int(target_frame)
             self.viewer.dims.current_step = tuple(step)
-        self._refresh_track_visuals_live()
+        self.events.tracks_rebuilt.emit()
         self._correction_status(
             f"Extended cell {int(assignment.cell_id)} -> t={target_frame} "
             f"(link weight={float(assignment.weight):.2f}). Unsaved."
@@ -1148,7 +1151,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         )
         layer.data = result.stack
         self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
-        self._refresh_track_visuals_live()
+        self.events.tracks_rebuilt.emit()
         self._correction_status(
             f"Retracked {direction} from t={result.first_target_frame}: "
             f"{result.n_retracked} updated, "
@@ -1593,17 +1596,17 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         """
         self._all_tracks.set_focus(int(lab or 0))
 
-    def _refresh_track_visuals_live(self) -> None:
-        """Rebuild the all-tracks overlay + film strip after an edit.
+    def _apply_track_path_rebuilt(self) -> None:
+        """``tracks_rebuilt`` listener: redraw the comet + spotlight when on.
 
-        Called when the selected track's pixels change (swap / extend / retrack)
-        so both views reflect the new trajectory without reselecting the cell.
+        The all-tracks overlay's geometry follows the selected track, so an
+        extend/retrack that reshaped it must repaint the comet (and re-run the
+        spotlight so its mask provider is consulted) — but only while the
+        track-path overlay is toggled on.
         """
         if self.track_path_btn.isChecked():
             self._refresh_track_path_overlay()
             self._refresh_track_path_spotlight()
-        self._refresh_lineage_canvas_if_shown()
-        self._refresh_candidate_gallery_if_shown()
 
     def _refresh_swap_visuals_live(self) -> None:
         """Cheap post-swap refresh used while stepping candidates with Z / C.

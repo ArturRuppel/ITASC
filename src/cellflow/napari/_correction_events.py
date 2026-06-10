@@ -22,3 +22,6 @@ class CorrectionEvents(QObject):
 
     # A hand mask edit landed at one frame: ``(t, changed_ids)``.
     labels_edited = Signal(object, object)
+    # The selected track's geometry changed across frames (extend / retrack):
+    # repaint the live track views (comet, lineage canvas, candidate gallery).
+    tracks_rebuilt = Signal()

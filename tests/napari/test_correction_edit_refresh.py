@@ -39,7 +39,7 @@ def _stub_widget() -> _Stub:
     stub._refresh_lineage_canvas_if_shown = MagicMock()
     stub._refresh_candidate_gallery_if_shown = MagicMock()
     for name in ("_wire_events", "_on_cells_edited", "_apply_overlay_edit",
-                 "_apply_track_path_edit"):
+                 "_apply_track_path_edit", "_apply_track_path_rebuilt"):
         setattr(stub, name, MethodType(getattr(NucleusCorrectionWidget, name), stub))
     return stub
 
