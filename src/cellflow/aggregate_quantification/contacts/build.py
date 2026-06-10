@@ -477,7 +477,6 @@ def _assign_ids_to_records(
             full[pair] = border_ids[pair]
         merged.append(full)
 
-    t1_by_key = {(event.frame, event.losing_pair): event for event in events}
     records_by_key = {(record.frame, record.pair): record for record in records}
     resolved_events = []
     for event in events:

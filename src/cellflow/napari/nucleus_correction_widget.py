@@ -102,6 +102,12 @@ from cellflow.napari._correction_takeover import (
     hide_native_docks,
     restore_native_docks,
 )
+from cellflow.napari._correction_keymap import HeldKeyRepeater
+from cellflow.napari._correction_navigation import center_viewer_on_cell
+from cellflow.napari._correction_playback import (
+    nav_repeat_interval_ms,
+    playback_loops,
+)
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.napari._correction_ui import (
     CollapsiblePane,
@@ -140,9 +146,6 @@ _NUCLEUS_TRACK_COLOR_SCALE = 1.0
 # so the reference images underneath stay visible through the contours.
 _FILLED_LABEL_OPACITY = 1.0
 _OUTLINE_LABEL_OPACITY = 0.7
-# Fraction of the canvas a navigated-to track's bounding box should span in each
-# direction (≈25% of the canvas area), leaving margin around the track.
-_TRACK_VIEWPORT_FRACTION = 0.5
 # Width a collapsed workspace pane (gallery / accordion) shrinks to — must match
 # the slim show-tab in CollapsiblePane.
 _PANEL_STRIP_W = 24
@@ -1642,7 +1645,7 @@ class NucleusCorrectionWidget(QWidget):
             # Left/Right walk the thumbnails in reading order (columns), Up/Down
             # jump a whole wrapped row. Shift+Up/Down switch tracks instead,
             # walking the global track list and recentering like a track click.
-            # All six auto-repeat while held (see _begin_key_repeat).
+            # All six auto-repeat while held (see HeldKeyRepeater).
             ("Left", lambda: self._step_film_frame(dx=-1), True),
             ("Right", lambda: self._step_film_frame(dx=1), True),
             ("Up", lambda: self._step_film_frame(dy=-1), True),
@@ -1653,15 +1656,12 @@ class NucleusCorrectionWidget(QWidget):
         self._bound_correction_keys: list[str] = []
         self._correction_keys_layer = None
 
-        # Auto-repeat for held navigation keys. napari only auto-repeats *bare*
-        # arrows (and not Shift+arrow), so we drive a steady repeat ourselves: a
-        # press fires once and arms this timer; the matching release disarms it.
-        # The repeat cadence matches the viewer's playback fps (see
-        # _nav_repeat_interval_ms), set when the key is pressed.
-        self._key_repeat_timer = QTimer(self)
-        self._key_repeat_timer.timeout.connect(self._on_key_repeat_tick)
-        self._key_repeat_key: str | None = None
-        self._key_repeat_action = None
+        # Auto-repeat for held navigation keys, paced to the viewer's playback
+        # fps (see HeldKeyRepeater); napari only auto-repeats bare arrows itself.
+        self._key_repeater = HeldKeyRepeater(
+            QTimer(self),
+            interval_provider=lambda: nav_repeat_interval_ms(self.viewer),
+        )
 
     def _bind_correction_keys(self) -> None:
         """Bind correction hotkeys on the active tracked Labels layer.
@@ -1676,7 +1676,7 @@ class NucleusCorrectionWidget(QWidget):
             return
         for key, slot, repeat in self._correction_key_specs:
             if repeat:
-                handler = self._make_repeating_key_handler(key, slot)
+                handler = self._key_repeater.key_handler(key, slot)
             else:
                 def handler(_layer, _slot=slot):
                     _slot()
@@ -1686,7 +1686,7 @@ class NucleusCorrectionWidget(QWidget):
         self._correction_keys_layer = layer
 
     def _unbind_correction_keys(self) -> None:
-        self._stop_key_repeat()
+        self._key_repeater.stop()
         layer = self._correction_keys_layer
         for key in self._bound_correction_keys:
             try:
@@ -1696,109 +1696,6 @@ class NucleusCorrectionWidget(QWidget):
                 pass
         self._bound_correction_keys = []
         self._correction_keys_layer = None
-
-    # ── held-key auto-repeat ───────────────────────────────────────────────
-    # Fires immediately on press, waits an initial delay (so a quick tap fires
-    # exactly once), then repeats at the viewer's playback fps while held.
-    _DEFAULT_NAV_FPS = 10.0  # napari's default when no slider/preference exists
-    _KEY_REPEAT_DELAY_MS = 300  # hold threshold before repeating kicks in
-
-    def _frame_slider_widget(self):
-        """The frame (axis-0) playback slider widget, or ``None`` if absent.
-
-        It carries the viewer's live fps / loop mode (the right-click play-button
-        popup writes here, defaulting from the global preference).
-        """
-        try:
-            sliders = self.viewer.window._qt_viewer.dims.slider_widgets
-            return sliders[0] if sliders else None
-        except Exception:
-            return None
-
-    def _playback_fps(self) -> float:
-        """The viewer's playback fps — the slider's, else the global preference."""
-        slider = self._frame_slider_widget()
-        if slider is not None:
-            try:
-                fps = abs(float(slider.fps))
-                if fps > 0:
-                    return fps
-            except Exception:
-                pass
-        try:
-            from napari.settings import get_settings
-
-            return float(get_settings().application.playback_fps)
-        except Exception:
-            return self._DEFAULT_NAV_FPS
-
-    def _playback_loops(self) -> bool:
-        """True when the viewer's playback loop mode wraps at the ends.
-
-        ``once`` stops at an end; ``loop`` / ``back_and_forth`` both wrap around.
-        """
-        slider = self._frame_slider_widget()
-        mode = getattr(slider, "loop_mode", None) if slider is not None else None
-        if mode is None:
-            try:
-                from napari.settings import get_settings
-
-                mode = get_settings().application.playback_mode
-            except Exception:
-                return True
-        return str(getattr(mode, "value", mode)).lower() != "once"
-
-    def _nav_repeat_interval_ms(self) -> int:
-        """Held-key repeat interval (ms) matching the viewer's playback fps."""
-        fps = max(self._playback_fps(), 1.0)
-        return max(int(round(1000.0 / fps)), 1)
-
-    def _make_repeating_key_handler(self, key: str, slot):
-        """A napari generator keybinding: press starts repeat, release stops it.
-
-        napari runs the pre-``yield`` half on key press and the post-``yield``
-        half on release (it stashes the paused generator per key). Between them
-        the repeat timer drives ``slot`` at a steady rate.
-        """
-        def handler(_layer, _key=key, _slot=slot):
-            self._begin_key_repeat(_key, _slot)
-            yield
-            self._end_key_repeat(_key)
-
-        return handler
-
-    def _begin_key_repeat(self, key: str, action) -> None:
-        # An OS auto-repeat re-press of the same held key would re-enter here;
-        # ignore it so the steady timer stays the single source of repeats.
-        if self._key_repeat_key == key:
-            return
-        self._key_repeat_key = key
-        self._key_repeat_action = action
-        action()
-        # Arm a one-shot for the initial hold delay; a tap released before it
-        # elapses never repeats. The first tick then settles into the steady
-        # fps-paced repeat (see _on_key_repeat_tick).
-        self._key_repeat_timer.setSingleShot(True)
-        self._key_repeat_timer.start(self._KEY_REPEAT_DELAY_MS)
-
-    def _end_key_repeat(self, key: str) -> None:
-        if self._key_repeat_key == key:
-            self._stop_key_repeat()
-
-    def _stop_key_repeat(self) -> None:
-        self._key_repeat_timer.stop()
-        self._key_repeat_key = None
-        self._key_repeat_action = None
-
-    def _on_key_repeat_tick(self) -> None:
-        if self._key_repeat_action is None:
-            return
-        self._key_repeat_action()
-        if self._key_repeat_timer.isSingleShot():
-            # The initial delay just elapsed; from here repeat steadily at the
-            # viewer's playback fps until the key is released.
-            self._key_repeat_timer.setSingleShot(False)
-            self._key_repeat_timer.start(self._nav_repeat_interval_ms())
 
     def _correction_data_available(self) -> bool:
         """True when a tracked nucleus stack exists on disk to correct."""
@@ -2266,7 +2163,9 @@ class NucleusCorrectionWidget(QWidget):
         """
         if self._workspace_splitter is None:
             return
-        self._lineage_canvas.step_film_frame(dx=dx, dy=dy, wrap=self._playback_loops())
+        self._lineage_canvas.step_film_frame(
+            dx=dx, dy=dy, wrap=playback_loops(self.viewer)
+        )
 
     def _step_track(self, direction: int) -> None:
         """Select the next/previous track in the global list and recenter on it.
@@ -2300,78 +2199,11 @@ class NucleusCorrectionWidget(QWidget):
         self._navigate_to_cell(t, nxt, from_lineage=False)
 
     def _center_viewer_on_cell(self, t: int, cell_id: int) -> None:
-        """Frame the whole selected track in the image viewer.
-
-        Centers the napari camera on the track's full spatial bounding box —
-        its union across *every* frame it appears in, not just frame ``t`` —
-        and zooms so that box spans about :data:`_TRACK_VIEWPORT_FRACTION` of
-        the canvas in both directions (≈25% of the canvas area), leaving margin
-        around the track. ``t`` only fixes the camera's non-spatial axes (the
-        current frame); the y/x framing comes from the whole track.
-        """
-        layer = self._correction_tracked_layer()
-        if layer is None or not cell_id:
-            return
-        try:
-            data = np.asarray(layer.data)
-            coords = np.nonzero(data == int(cell_id))
-            if coords[-1].size == 0:
-                return
-            ys, xs = coords[-2], coords[-1]
-            ymin, ymax = float(ys.min()), float(ys.max())
-            xmin, xmax = float(xs.min()), float(xs.max())
-
-            def to_world(y: float, x: float):
-                coord = (int(t), y, x) if data.ndim >= 3 else (y, x)
-                return layer.data_to_world(coord)
-
-            world_c = to_world((ymin + ymax) / 2.0, (xmin + xmax) / 2.0)
-            center = list(self.viewer.camera.center)
-            center[-2:] = [float(world_c[-2]), float(world_c[-1])]
-            self.viewer.camera.center = tuple(center)
-            self._zoom_to_track_bbox(ymin, ymax, xmin, xmax, to_world)
-        except Exception:
-            logger.exception("lineage navigation: camera framing failed")
-
-    def _zoom_to_track_bbox(self, ymin, ymax, xmin, xmax, to_world) -> None:
-        """Zoom so the track's world bbox fills ~:data:`_TRACK_VIEWPORT_FRACTION`.
-
-        napari's ``camera.zoom`` is canvas pixels per world unit, so the world
-        span visible along an axis is ``canvas_px / zoom``. Picking the smaller
-        of the per-axis zooms keeps the larger bbox side at exactly the target
-        fraction and the other side within it (the camera zoom is uniform).
-        Degenerate (zero-extent) sides are skipped; if no canvas size is
-        available the zoom is left untouched.
-        """
-        canvas = self._canvas_size_px()
-        if canvas is None:
-            return
-        canvas_h, canvas_w = canvas
-        w0, w1 = to_world(ymin, xmin), to_world(ymax, xmax)
-        bbox_h = abs(float(w1[-2]) - float(w0[-2]))
-        bbox_w = abs(float(w1[-1]) - float(w0[-1]))
-        candidates = []
-        if bbox_h > 0:
-            candidates.append(_TRACK_VIEWPORT_FRACTION * canvas_h / bbox_h)
-        if bbox_w > 0:
-            candidates.append(_TRACK_VIEWPORT_FRACTION * canvas_w / bbox_w)
-        if candidates:
-            self.viewer.camera.zoom = min(candidates)
-
-    def _canvas_size_px(self):
-        """``(height, width)`` of the viewer canvas in pixels, or ``None``.
-
-        napari's ``_qt_viewer.canvas`` is private and its shape varies across
-        versions, so a missing/odd attribute degrades to "leave the zoom alone".
-        """
-        try:
-            h, w = self.viewer.window._qt_viewer.canvas.size
-            h, w = int(h), int(w)
-            if h > 0 and w > 0:
-                return h, w
-        except Exception:
-            logger.debug("track framing: canvas size unavailable", exc_info=True)
-        return None
+        """Frame the selected track in the viewer (camera math lives in
+        :func:`cellflow.napari._correction_navigation.center_viewer_on_cell`)."""
+        center_viewer_on_cell(
+            self.viewer, self._correction_tracked_layer(), t, cell_id
+        )
 
     def _find_plugin_dock(self):
         """The QDockWidget hosting the correction header, walking up from it.
