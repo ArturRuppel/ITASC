@@ -29,3 +29,7 @@ class CorrectionEvents(QObject):
     # themselves (validate / invalidate). Flag-only, so the lineage canvas
     # recolours (status refresh) rather than rebuilding the whole stack.
     validation_changed = Signal()
+    # One swap candidate was stepped to (Z / C, or a gallery pick). A cheap
+    # refresh — comet + the selected track's detail strip + gallery — without
+    # the whole-stack lineage rebuild, so keystroke stepping stays responsive.
+    swap_stepped = Signal()

@@ -18,6 +18,7 @@ _WIRE_EVENT_SLOTS = (
     "_refresh_validation_counter",
     "_refresh_lineage_canvas_if_shown",
     "_refresh_lineage_canvas_status_if_shown",
+    "_refresh_lineage_detail_if_shown",
     "_refresh_candidate_gallery_if_shown",
 )
 

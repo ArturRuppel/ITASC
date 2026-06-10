@@ -322,6 +322,9 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         e.validation_changed.connect(self._refresh_validated_overlay)
         e.validation_changed.connect(self._refresh_validation_counter)
         e.validation_changed.connect(self._refresh_lineage_canvas_status_if_shown)
+        e.swap_stepped.connect(self._apply_track_path_rebuilt)
+        e.swap_stepped.connect(self._refresh_lineage_detail_if_shown)
+        e.swap_stepped.connect(self._refresh_candidate_gallery_if_shown)
 
     @property
     def _workspace(self) -> NucleusWorkspace | None:
@@ -955,7 +958,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         )
         self._apply_swap(layer, t, source_id, candidate, validated_tracks_full)
         cursor.index = idx
-        self._refresh_swap_visuals_live()
+        self.events.swap_stepped.emit()
         self._correction_status(
             f"Swapped cell {source_id} -> candidate {idx + 1}/{len(cursor.candidates)}"
             f" (area={candidate.area} px)"
@@ -1055,7 +1058,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         # A direct gallery pick is independent of any in-flight Z/C cursor.
         self._swap_cursor = None
         self._apply_swap(layer, t, source_id, candidate, validated_tracks)
-        self._refresh_swap_visuals_live()
+        self.events.swap_stepped.emit()
         self._correction_status(
             f"Swapped cell {source_id} -> candidate (area={int(candidate.area)} px). Unsaved."
         )
@@ -1610,20 +1613,13 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             self._refresh_track_path_overlay()
             self._refresh_track_path_spotlight()
 
-    def _refresh_swap_visuals_live(self) -> None:
-        """Cheap post-swap refresh used while stepping candidates with Z / C.
-
-        Updates the all-tracks overlay and the selected track's detail strip
-        only. The full :meth:`_refresh_lineage_canvas_if_shown` re-runs the
-        lineage build over the *whole* stack, which froze the GUI when fired on
-        every swap keystroke; the overview catches up on the next full refresh.
-        """
-        if self.track_path_btn.isChecked():
-            self._refresh_track_path_overlay()
-            self._refresh_track_path_spotlight()
+    def _refresh_lineage_detail_if_shown(self) -> None:
+        """``swap_stepped`` listener: refresh only the selected track's detail
+        strip — not the whole-stack lineage build, which froze the GUI when fired
+        on every swap keystroke (the overview catches up on the next full
+        refresh)."""
         if self._workspace_splitter is not None:
             self._lineage_canvas.refresh_detail()
-        self._refresh_candidate_gallery_if_shown()
 
     def _refresh_lineage_canvas_if_shown(self) -> None:
         """Rebuild the accordion (bars + expanded band) after a label change.
