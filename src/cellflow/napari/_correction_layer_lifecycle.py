@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -91,3 +94,44 @@ def reattach_layers(layers: Any, detached: list) -> None:
     for layer in detached:
         if getattr(layer, "name", None) not in layers:
             layers.append(layer)
+
+
+class CorrectionViewStateMixin:
+    """Shared correction-mode view-state + owned-layer handling.
+
+    Mixed into both the cell and nucleus correction widgets, which were carrying
+    byte-identical copies of these methods. The host must expose ``self.viewer``
+    and ``self.correction_status_lbl``, and track ``self._correction_view_state``
+    (captured on activate, restored + cleared on deactivate),
+    ``self._correction_owned_layers`` (the layer names the widget added and must
+    tear down) and the ``self._correction_dirty`` flag.
+    """
+
+    _correction_view_state: LayerViewState | None
+    _correction_owned_layers: set[str]
+    _correction_dirty: bool
+
+    def _capture_correction_view_state(self) -> None:
+        self._correction_view_state = capture_layer_view_state(self.viewer.layers)
+
+    def _restore_correction_view_state(self) -> None:
+        restore_layer_view_state(self.viewer.layers, self._correction_view_state)
+        self._correction_view_state = None
+
+    def _remove_correction_owned_layers(self) -> None:
+        remove_owned_layers(self.viewer.layers, self._correction_owned_layers)
+
+    def _current_t(self) -> int:
+        step = getattr(getattr(self.viewer, "dims", None), "current_step", (0,))
+        return int(step[0]) if len(step) >= 1 else 0
+
+    def _correction_status(self, msg: str) -> None:
+        self.correction_status_lbl.setText(msg)
+        self.correction_status_lbl.setVisible(bool(msg))
+        lowered = msg.lower()
+        if "unsaved" in lowered:
+            self._correction_dirty = True
+        elif lowered.startswith("saved") or lowered.startswith("loaded"):
+            self._correction_dirty = False
+        if msg:
+            logger.info(msg)

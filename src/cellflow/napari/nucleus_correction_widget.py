@@ -12,7 +12,6 @@ from napari.qt.threading import thread_worker as _thread_worker
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtWidgets import (
     QHBoxLayout,
-    QMessageBox,
     QSizePolicy,
     QSplitter,
     QVBoxLayout,
@@ -39,13 +38,11 @@ from cellflow.napari._correction_commit import (
     remove_unvalidated_from_data,
 )
 from cellflow.napari._correction_layer_lifecycle import (
+    CorrectionViewStateMixin,
     LayerViewState,
-    capture_layer_view_state,
     detach_higher_dim_stacks,
     hide_all_layers,
     reattach_layers,
-    remove_owned_layers,
-    restore_layer_view_state,
 )
 from cellflow.napari._correction_layer_loader import (
     add_correction_image_layer,
@@ -92,6 +89,7 @@ from cellflow.napari._correction_takeover import (
     restore_native_docks,
 )
 from cellflow.napari._correction_ui_nucleus import build_nucleus_correction_ui
+from cellflow.napari._correction_paint import paint_assignments
 from cellflow.napari._correction_keymap import HeldKeyRepeater
 from cellflow.napari._correction_navigation import center_viewer_on_cell
 from cellflow.napari._correction_playback import (
@@ -100,6 +98,8 @@ from cellflow.napari._correction_playback import (
 )
 from cellflow.napari._correction_ui import (
     CollapsiblePane,
+    confirm_unsaved_before_deactivate,
+    set_checked_without_signal,
 )
 from cellflow.tracking_ultrack.corrections import (
     Correction,
@@ -146,7 +146,7 @@ _DEFAULT_DEPENDENCIES = {
 }
 
 
-class NucleusCorrectionWidget(QWidget):
+class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
     """Qt controls for nucleus tracking correction workflows."""
 
     def __init__(
@@ -281,11 +281,7 @@ class NucleusCorrectionWidget(QWidget):
 
     @staticmethod
     def _set_checked_without_signal(button, checked: bool) -> None:
-        old = button.blockSignals(True)
-        try:
-            button.setChecked(checked)
-        finally:
-            button.blockSignals(old)
+        set_checked_without_signal(button, checked)
 
     def _sync_correction_panel_visibility(self) -> None:
         show_params = self.params_btn.isChecked()
@@ -380,9 +376,6 @@ class NucleusCorrectionWidget(QWidget):
         # load site, where "nucleus" disambiguates it from the cell foreground.
         return self._foreground_path()
 
-    def _current_t(self) -> int:
-        step = self.viewer.dims.current_step
-        return int(step[0]) if len(step) >= 1 else 0
 
     def _current_cell_ids(self, t: int) -> set[int]:
         layer = self._correction_tracked_layer()
@@ -400,15 +393,6 @@ class NucleusCorrectionWidget(QWidget):
             return self.viewer.layers[_TRACKED_LAYER]
         return None
 
-    def _capture_correction_view_state(self) -> None:
-        self._correction_view_state = capture_layer_view_state(self.viewer.layers)
-
-    def _restore_correction_view_state(self) -> None:
-        restore_layer_view_state(self.viewer.layers, self._correction_view_state)
-        self._correction_view_state = None
-
-    def _remove_correction_owned_layers(self) -> None:
-        remove_owned_layers(self.viewer.layers, self._correction_owned_layers)
 
     def _add_correction_image_layer(self, data: np.ndarray, name: str, colormap: str) -> None:
         add_correction_image_layer(
@@ -419,16 +403,6 @@ class NucleusCorrectionWidget(QWidget):
             owned_layer_names=self._correction_owned_layers,
         )
 
-    def _correction_status(self, msg: str) -> None:
-        self.status_lbl.setText(msg)
-        self.status_lbl.setVisible(bool(msg))
-        lowered = msg.lower()
-        if "unsaved" in lowered:
-            self._correction_dirty = True
-        elif lowered.startswith("saved") or lowered.startswith("loaded"):
-            self._correction_dirty = False
-        if msg:
-            logger.info(msg)
 
     def _on_save_tracked(self) -> None:
         tracked_path = self._tracked_path()
@@ -786,7 +760,6 @@ class NucleusCorrectionWidget(QWidget):
             assignments = (SimpleNamespace(cell_id=source_id, mask_2d=result.mask_2d),)
 
         frame = layer.data[result.target_frame]
-        before = np.asarray(frame).copy()
         corrections = (
             read_corrections_fn(self._pos_dir) if self._pos_dir is not None else []
         )
@@ -807,21 +780,10 @@ class NucleusCorrectionWidget(QWidget):
             )
             return
 
-        changed_ids = {int(a.cell_id) for a in assignments}
-        for cid in changed_ids:
-            frame[frame == cid] = 0
-        if self.extend_greedy_overwrite_check.isChecked():
-            for a in assignments:
-                frame[a.mask_2d & ~protected_mask] = int(a.cell_id)
-        else:
-            for a in assignments:
-                frame[a.mask_2d & (frame == 0)] = int(a.cell_id)
-        changed = before != frame
-        changed_ids = (
-            set(int(v) for v in np.unique(before[changed]))
-            | set(int(v) for v in np.unique(np.asarray(frame)[changed]))
+        changed_ids = paint_assignments(
+            frame, assignments, protected_mask,
+            greedy=self.extend_greedy_overwrite_check.isChecked(),
         )
-        changed_ids.discard(0)
         layer.refresh()
         self._refresh_correction_label_visuals_for_edit(
             result.target_frame,
@@ -1065,7 +1027,6 @@ class NucleusCorrectionWidget(QWidget):
         at the target, or nothing changed).
         """
         frame = layer.data[target_frame]
-        before = np.asarray(frame).copy()
         validated_tracks = (
             read_validated_tracks(self._pos_dir) if self._pos_dir is not None else {}
         )
@@ -1075,21 +1036,12 @@ class NucleusCorrectionWidget(QWidget):
         protected_ids = protected_cell_ids_at_frame(
             validated_tracks, corrections, frame=target_frame
         )
-        cid = int(assignment.cell_id)
-        if cid in protected_ids:
+        if int(assignment.cell_id) in protected_ids:
             return set()
         protected_mask = protected_cell_mask(frame, protected_ids)
-        frame[frame == cid] = 0
-        if greedy:
-            frame[assignment.mask_2d & ~protected_mask] = cid
-        else:
-            frame[assignment.mask_2d & (frame == 0)] = cid
-        changed = before != frame
-        changed_ids = (
-            set(int(v) for v in np.unique(before[changed]))
-            | set(int(v) for v in np.unique(np.asarray(frame)[changed]))
+        changed_ids = paint_assignments(
+            frame, (assignment,), protected_mask, greedy=greedy
         )
-        changed_ids.discard(0)
         if not changed_ids:
             return set()
         layer.refresh()
@@ -1443,23 +1395,12 @@ class NucleusCorrectionWidget(QWidget):
     def _confirm_deactivate_with_unsaved_changes(self) -> bool:
         if not self._correction_dirty:
             return True
-        choice = QMessageBox.question(
-            self,
-            "Save correction changes?",
-            (
-                "Correction mode has unsaved changes. "
-                "Save tracked labels before turning correction mode off?"
-            ),
-            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
-            QMessageBox.Save,
-        )
-        if choice == QMessageBox.Cancel:
+        action = confirm_unsaved_before_deactivate(self, save_noun="tracked labels")
+        if action == "cancel":
             return False
-        if choice == QMessageBox.Save:
+        if action == "save":
             self._on_save_tracked()
-            self._correction_dirty = False
-        elif choice == QMessageBox.Discard:
-            self._correction_dirty = False
+        self._correction_dirty = False
         return True
 
     def _on_correction_mode_toggled(self, active: bool) -> None:

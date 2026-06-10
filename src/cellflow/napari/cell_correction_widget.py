@@ -27,11 +27,9 @@ from cellflow.napari._widget_helpers import (
     tool_btn as _tool_btn,
 )
 from cellflow.napari._correction_layer_lifecycle import (
+    CorrectionViewStateMixin,
     LayerViewState,
-    capture_layer_view_state,
     hide_all_layers,
-    remove_owned_layers,
-    restore_layer_view_state,
 )
 from cellflow.napari._correction_ui import (
     build_correction_toolbar,
@@ -63,7 +61,7 @@ _NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _PIPELINE_TRACKED_CELL_LAYER = "Tracked: Cell"
 
 
-class CellCorrectionWidget(QWidget):
+class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
     """Qt controls for cell tracking correction workflows.
 
     Owns the correction group-box UI, all correction-scoped button handlers,
@@ -420,25 +418,11 @@ class CellCorrectionWidget(QWidget):
         self._correction_dirty = False
         return True
 
-    def _remove_correction_owned_layers(self) -> None:
-        remove_owned_layers(self.viewer.layers, self._correction_owned_layers)
-
     def _correction_tracked_layer(self):
         """Return the [Correction] Cell Labels layer, or None if absent."""
         if _TRACKED_CELL_LAYER in self.viewer.layers:
             return self.viewer.layers[_TRACKED_CELL_LAYER]
         return None
-
-    # ------------------------------------------------------------------ #
-    # View state capture / restore (shared with NucleusCorrectionWidget) #
-    # ------------------------------------------------------------------ #
-
-    def _capture_correction_view_state(self) -> None:
-        self._correction_view_state = capture_layer_view_state(self.viewer.layers)
-
-    def _restore_correction_view_state(self) -> None:
-        restore_layer_view_state(self.viewer.layers, self._correction_view_state)
-        self._correction_view_state = None
 
     def _load_correction_layers_from_disk(self) -> bool:
         lp = self._cell_labels_path()
@@ -500,16 +484,6 @@ class CellCorrectionWidget(QWidget):
     # Status helper                                                        #
     # ------------------------------------------------------------------ #
 
-    def _correction_status(self, msg: str) -> None:
-        self.correction_status_lbl.setText(msg)
-        self.correction_status_lbl.setVisible(bool(msg))
-        lowered = msg.lower()
-        if "unsaved" in lowered:
-            self._correction_dirty = True
-        elif lowered.startswith("saved") or lowered.startswith("loaded"):
-            self._correction_dirty = False
-        if msg:
-            logger.info(msg)
 
     # ------------------------------------------------------------------ #
     # Path helpers (delegate to _pos_dir)                                 #
@@ -531,9 +505,6 @@ class CellCorrectionWidget(QWidget):
     # Frame helpers                                                        #
     # ------------------------------------------------------------------ #
 
-    def _current_t(self) -> int:
-        step = getattr(getattr(self.viewer, "dims", None), "current_step", (0,))
-        return int(step[0]) if len(step) >= 1 else 0
 
     def _correction_frame_indices(self, layer) -> list[int]:
         """Return frame indices based on the correction scope combo."""
