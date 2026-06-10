@@ -202,12 +202,11 @@ class AggregateQuantificationWidget(QWidget):
         options_grid.addWidget(self.hide_border_edges_cb, 1, 1)
         layout.addLayout(options_grid)
 
-        layout.addStretch()
-
         # Visualize is the only build/show action here: it computes the .h5 on
         # demand only if it is missing, then shows the overlays. Forcing a rebuild
         # is the builder plugin's job in the studio, so there is no Recompute. It
-        # sits at the bottom of the panel, below the display options.
+        # sits directly below the display options (no trailing stretch) so the
+        # panel hugs its content instead of leaving a gap before the button.
         self.visualize_btn = QPushButton("Visualize")
         self.visualize_btn.setToolTip(
             "Show contact-analysis overlays for the current position. "
@@ -547,12 +546,24 @@ class AggregateQuantificationWidget(QWidget):
         elif not self.contact_analysis_status_lbl.text():
             self._set_contact_analysis_status("Status: ready.")
 
+    def _effective_nucleus_path(self) -> Path | None:
+        """Nucleus labels to use, or ``None`` if absent.
+
+        The orchestrator always wires a nucleus path, but the file may not exist
+        yet (e.g. only cell labels have been produced). Nucleus labels are
+        optional for contact analysis, so a missing file is treated as "no
+        nucleus" rather than a blocking error.
+        """
+        nucleus = self._nucleus_labels_path
+        if nucleus is not None and nucleus.exists():
+            return nucleus
+        return None
+
     def _inputs_ready(self) -> bool:
+        # Cell labels are the only required input; nucleus is optional, so a
+        # set-but-missing nucleus path must not gate Visualize.
         cell = self._cell_labels_path
         if cell is None or not cell.exists():
-            return False
-        nucleus = self._nucleus_labels_path
-        if nucleus is not None and not nucleus.exists():
             return False
         return self._out_path is not None
 
@@ -621,11 +632,9 @@ class AggregateQuantificationWidget(QWidget):
             self._set_contact_analysis_status(f"Status: missing cell labels: {cell}")
             self._update_status()
             return
-        nucleus = self._nucleus_labels_path
-        if nucleus is not None and not nucleus.exists():
-            self._set_contact_analysis_status(f"Status: missing nucleus labels: {nucleus}")
-            self._update_status()
-            return
+        # Nucleus is optional: if its file is not present yet, compute contacts
+        # from cell labels alone instead of refusing to run.
+        nucleus = self._effective_nucleus_path()
 
         # Fast path: the artifact already exists and no rebuild was requested, so
         # skip the worker and show immediately. ensure_contact_analysis remains the

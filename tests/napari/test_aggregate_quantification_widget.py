@@ -154,6 +154,29 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
     app.processEvents()
 
 
+def test_contact_analysis_widget_visualize_enabled_with_only_cell_labels(monkeypatch, tmp_path):
+    """Nucleus is optional: cell labels alone should enable Visualize.
+
+    The orchestrator always wires a nucleus path, but it may point at a file
+    that does not exist yet. A missing nucleus file must not gate Visualize.
+    """
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.AggregateQuantificationWidget()
+
+    # cell present, nucleus file absent (path is still wired by _set_pos).
+    pos_dir = _staged_pos(tmp_path, "pos00", cell=True, nucleus=False)
+    _set_pos(widget, pos_dir)
+
+    assert widget.nucleus_labels_path == pos_dir / "2_nucleus" / "tracked_labels.tif"
+    assert not widget.nucleus_labels_path.exists()
+    assert widget._effective_nucleus_path() is None
+    assert widget.visualize_btn.isEnabled() is True
+
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_contact_analysis_widget_does_not_embed_personal_nls_classification(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)

@@ -1,5 +1,9 @@
 # TODO
 
+## Bugs
+
+- [ ] Database building: cancelling doesn't work.
+
 ## Dimensionality Support
 
 - [ ] Check that the nucleus divergence map path works on 2D, 2Dt, 3D, and 3Dt inputs.
@@ -26,3 +30,28 @@
 - [x] Rename the "contact analysis" study to **Aggregate Quantification** (`contact_analysis/` → `aggregate_quantification/`). (Full rename incl. classes, manifest, and the standalone dist `cellflow-contact` → `cellflow-aggregate`; the contacts artifact `contact_analysis.h5` + stage stay, as that is the contacts quantifier's own storage.)
 - [x] Redesign the interface — the quantifier seam. (Added `Quantifier` registry + `PositionInputs` in `aggregate_quantification/quantifier.py`; contacts is now one registered quantifier (`quantifiers/contacts.py`) that owns its persistence; the studio builds/reads through `available_quantifiers()`, so new quantities plug in without touching it. See `notes/aggregate_quantification_spec.md`.)
 - [ ] Broaden scope beyond contacts: nucleus track analysis, nucleus-vs-cell centroid offset, cell shape analysis, tissue dynamics, etc. (Each a new `quantifiers/*.py` module + napari visualizer; the seam above is what makes them additive.)
+
+# 
+
+- [ ] Pipeline Files loading: `atoms.tif` should load as a **labels** layer,
+  not a grayscale image. In `napari/widgets.py`, `_infer_load_kind` doesn't
+  recognize `atoms.tif` (it isn't `tracked_labels.tif`/`foreground_masks.tif`/
+  `*_labels.tif` and has no "labels" in the name), so it falls through to the
+  generic `"tiff"` kind and `_load_file_into_viewer` calls
+  `viewer.add_image(..., colormap="gray")`. Atoms are integer atom IDs — they
+  should go through `add_labels`.
+- [ ] While here, audit the other load paths for appropriate layer types and
+  colormaps: `_infer_load_kind` + `_pick_colormap` in `napari/widgets.py`,
+  plus the direct `add_image`/`add_labels` calls in the other widgets that
+  load pipeline outputs (`nucleus_pipeline_widget.py`,
+  `nucleus_atom_extraction_widget.py`, `cellpose_widget.py`,
+  `cell_workflow_widget.py`, `cell_correction_widget.py`,
+  `divergence_maps_widget.py`, `main_widget.py`). Confirm label images use
+  `add_labels` and intensity/scalar images use `add_image` with a sensible
+  colormap (e.g. divergence maps likely want a diverging colormap, not gray).
+
+- [ ] Atom extractor: do the checkbox situation like the cell segmentation widget's
+  preview. Put the checkboxes in a row along the top and only compute what is
+  checked (skip computing unchecked items entirely, rather than computing
+  everything and just toggling visibility).
+
