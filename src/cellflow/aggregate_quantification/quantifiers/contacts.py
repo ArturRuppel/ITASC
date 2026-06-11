@@ -53,7 +53,8 @@ class ContactsQuantifier(Quantifier):
         return read_position_contact_analysis(output_path)
 
     def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
-        """The per-cell ``cells`` table — carries the NLS classification columns
-        (``class_label`` / ``nls_status``) the plotting backend joins by
-        ``(frame, cell_id)``."""
+        """The per-cell ``cells`` table (``frame`` · ``cell_id`` · morphometry).
+
+        The subpopulation label is no longer carried here — it lives in the NLS
+        sidecar CSV and is joined by ``cell_id`` at pool time."""
         return read_position_contact_analysis(output_path).cells

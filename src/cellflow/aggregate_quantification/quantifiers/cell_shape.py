@@ -1,23 +1,23 @@
-"""Cell-shape quantifier — the registry adapter over the cell_shape core.
+"""Cell-shape quantifier — the registry adapter over the shape core.
 
-Wraps :mod:`cellflow.aggregate_quantification.cell_shape` so the studio can build
-and read per-cell morphology through the generic :class:`Quantifier` interface.
-Its persistence is ``cell_shape.h5`` (a tidy ``shape/table``); :meth:`object_table`
-exposes that table to the plotting backend.
+Wraps :mod:`cellflow.aggregate_quantification.shape` so the studio can build and
+read per-cell morphology through the generic :class:`Quantifier` interface. Its
+persistence is a tidy ``aggregate_quantification/cell_shape.csv``;
+:meth:`object_table` exposes that table to the plotting backend. The object-key
+column is ``cell_id`` (the shared track id).
 """
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
-from cellflow.aggregate_quantification.cell_shape.build import (
-    build_cell_shape,
-    read_cell_shape,
-)
 from cellflow.aggregate_quantification.quantifier import PositionInputs, Quantifier
+from cellflow.aggregate_quantification.shape import (
+    build_object_shape,
+    read_shape_table,
+)
 
 
 class CellShapeQuantifier(Quantifier):
@@ -30,8 +30,9 @@ class CellShapeQuantifier(Quantifier):
     # buildable until one is supplied.
     requires = ("cell_labels_path", "pixel_size_um")
 
-    #: Default artifact name when a position does not dictate one.
-    default_output_name = "cell_shape.h5"
+    #: Default artifact name; ``default_output`` nests it under the shared
+    #: ``aggregate_quantification/`` folder. The builder mkdirs the parent.
+    default_output_name = "cell_shape.csv"
 
     def build(
         self,
@@ -41,17 +42,19 @@ class CellShapeQuantifier(Quantifier):
         params: dict | None = None,
         progress_cb: Callable[[int, int, str], None] | None = None,
     ) -> Path:
-        return build_cell_shape(
-            cell_labels_path=inputs.cell_labels_path,
-            output_path=output_path,
+        return build_object_shape(
+            inputs.cell_labels_path,
+            output_path,
             pixel_size_um=inputs.pixel_size_um,
+            object_key="cell_id",
             source_path=inputs.position_dir,
             params=params,
+            quantity_id=self.quantity_id,
             progress_cb=progress_cb,
         )
 
     def read(self, output_path: Path) -> dict[str, np.ndarray]:
-        return read_cell_shape(output_path)
+        return read_shape_table(output_path)
 
     def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
-        return read_cell_shape(output_path)
+        return read_shape_table(output_path)

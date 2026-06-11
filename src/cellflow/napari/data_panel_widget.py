@@ -42,7 +42,7 @@ _TRACKED_FILE_GROUPS = [
         ("3_cell/tracked_labels.tif", "Tracked labels"),
     ]),
     ("Contact Analysis", [
-        ("4_contact_analysis/contact_analysis.h5", "Contact analysis"),
+        ("aggregate_quantification/contact_analysis.h5", "Contact analysis"),
     ]),
 ]
 

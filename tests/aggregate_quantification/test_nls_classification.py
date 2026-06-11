@@ -1,4 +1,3 @@
-import h5py
 import numpy as np
 import pytest
 import tifffile
@@ -7,26 +6,13 @@ from cellflow.aggregate_quantification.contacts.nls_classification import (
     NLSClassificationError,
     auto_threshold,
     classify_by_threshold,
+    classify_position_nls_to_csv,
     measure_track_nls_intensity,
-    patch_position_contact_analysis_nls_classes,
+    read_nls_classification_csv,
     split_tracks_otsu,
     split_tracks_two_clusters,
-    write_nls_classification,
+    write_nls_classification_csv,
 )
-
-
-def _write_minimal_position_h5(path, cell_ids):
-    string_dtype = h5py.string_dtype(encoding="utf-8")
-    with h5py.File(path, "w") as h5:
-        cells = h5.create_group("cells/table")
-        cells.create_dataset("frame", data=np.zeros(len(cell_ids), dtype=np.int64))
-        cells.create_dataset("cell_id", data=np.asarray(cell_ids, dtype=np.int64))
-        cells.create_dataset(
-            "class_label",
-            data=np.asarray(["old"] * len(cell_ids), dtype=object),
-            dtype=string_dtype,
-        )
-        h5.create_group("cells/measurements")
 
 
 # ------------------------------------------------------------------- measurement
@@ -138,90 +124,63 @@ def test_classify_by_threshold_is_strictly_above_threshold():
     assert assignments == {1: "negative", 2: "negative", 3: "positive"}
 
 
-# ------------------------------------------------------------------ write to H5
+# ------------------------------------------------------------------ sidecar CSV
 
 
-def test_write_nls_classification_round_trips_custom_labels(tmp_path):
-    h5_path = tmp_path / "contact_analysis.h5"
-    _write_minimal_position_h5(h5_path, [1, 2, 99])
-    measurements = measure_track_nls_intensity(
-        np.asarray([[[10.0, 11.0, 100.0, 110.0]]]),
-        np.asarray([[[1, 1, 2, 2]]], dtype=np.uint16),
-    )
-    assignments = classify_by_threshold(measurements, 50.0)
-
-    write_nls_classification(
-        h5_path,
-        cell_ids=np.asarray([1, 2, 99]),
-        measurements=measurements,
-        assignments=assignments,
-        threshold=50.0,
+def test_write_and_read_nls_classification_csv_round_trips_two_columns(tmp_path):
+    csv_path = tmp_path / "nls_classification.csv"
+    # assignments map track id -> positive/negative status; the row label is the
+    # caller's positive/negative string.
+    write_nls_classification_csv(
+        csv_path,
+        {2: "positive", 1: "negative"},
         positive_label="GFP+",
         negative_label="GFP-",
-        nls_path="nls.tif",
-        labels_path="labels.tif",
     )
 
-    with h5py.File(h5_path, "r") as h5:
-        cells = h5["cells/table"]
-        assert cells["class_label"].asstr()[:].tolist() == ["GFP-", "GFP+", ""]
-        assert cells["nls_status"].asstr()[:].tolist() == ["negative", "positive", ""]
-        np.testing.assert_allclose(cells["nls_track_intensity"][:2], [10.5, 105.0])
-        assert np.isnan(cells["nls_track_intensity"][2])
-        meta = h5["cells/measurements/nls_classification"].attrs
-        assert meta["positive_label"] == "GFP+"
-        assert meta["negative_label"] == "GFP-"
-        assert meta["positive_track_count"] == 1
-        assert meta["negative_track_count"] == 1
-        assert meta["threshold"] == 50.0
+    # Exactly two columns, sorted by id.
+    lines = csv_path.read_text().splitlines()
+    assert lines == ["id,label", "1,GFP-", "2,GFP+"]
+    assert read_nls_classification_csv(csv_path) == {1: "GFP-", 2: "GFP+"}
 
 
-def test_patch_position_contact_analysis_uses_auto_threshold(tmp_path):
-    h5_path = tmp_path / "contact_analysis.h5"
-    _write_minimal_position_h5(h5_path, [1, 2])
+def test_classify_position_nls_to_csv_uses_auto_threshold(tmp_path):
+    csv_path = tmp_path / "nls_classification.csv"
     nls_path = tmp_path / "NLS_zavg.tif"
     labels_path = tmp_path / "tracked_labels.tif"
     tifffile.imwrite(labels_path, np.asarray([[[1, 2]]], dtype=np.uint16))
     tifffile.imwrite(nls_path, np.asarray([[[10.0, 100.0]]], dtype=np.float32))
 
-    summary = patch_position_contact_analysis_nls_classes(h5_path, nls_path, labels_path)
+    summary = classify_position_nls_to_csv(csv_path, nls_path, labels_path)
 
+    assert summary.csv_path == csv_path
     assert summary.positive_track_count == 1
     assert summary.negative_track_count == 1
-    with h5py.File(h5_path, "r") as h5:
-        assert h5["cells/table/nls_status"].asstr()[:].tolist() == ["negative", "positive"]
+    # No .h5 is touched — only the sidecar CSV is written.
+    assert read_nls_classification_csv(csv_path) == {1: "negative", 2: "positive"}
 
 
-def test_patch_position_contact_analysis_honours_explicit_threshold(tmp_path):
-    h5_path = tmp_path / "contact_analysis.h5"
-    _write_minimal_position_h5(h5_path, [1, 2])
+def test_classify_position_nls_to_csv_honours_explicit_threshold(tmp_path):
+    csv_path = tmp_path / "nls_classification.csv"
     nls_path = tmp_path / "NLS_zavg.tif"
     labels_path = tmp_path / "tracked_labels.tif"
     tifffile.imwrite(labels_path, np.asarray([[[1, 2]]], dtype=np.uint16))
     tifffile.imwrite(nls_path, np.asarray([[[10.0, 100.0]]], dtype=np.float32))
 
     # A threshold above both track intensities forces everything negative.
-    summary = patch_position_contact_analysis_nls_classes(
-        h5_path, nls_path, labels_path, threshold=200.0
-    )
+    summary = classify_position_nls_to_csv(csv_path, nls_path, labels_path, threshold=200.0)
 
     assert summary.positive_track_count == 0
-    with h5py.File(h5_path, "r") as h5:
-        assert h5["cells/table/nls_status"].asstr()[:].tolist() == ["negative", "negative"]
+    assert read_nls_classification_csv(csv_path) == {1: "negative", 2: "negative"}
 
 
-def test_write_nls_classification_validates_before_mutating(tmp_path):
-    h5_path = tmp_path / "contact_analysis.h5"
-    with h5py.File(h5_path, "w") as h5:
-        h5.create_group("provenance")  # no cells/table
+def test_classify_position_nls_to_csv_creates_missing_parent_dir(tmp_path):
+    csv_path = tmp_path / "aggregate_quantification" / "nls_classification.csv"
+    nls_path = tmp_path / "NLS_zavg.tif"
+    labels_path = tmp_path / "tracked_labels.tif"
+    tifffile.imwrite(labels_path, np.asarray([[[1, 2]]], dtype=np.uint16))
+    tifffile.imwrite(nls_path, np.asarray([[[10.0, 100.0]]], dtype=np.float32))
 
-    with pytest.raises(NLSClassificationError, match="missing cells/table"):
-        write_nls_classification(
-            h5_path,
-            cell_ids=np.asarray([1]),
-            measurements={},
-            assignments={1: "positive"},
-            threshold=1.0,
-            nls_path="nls.tif",
-            labels_path="labels.tif",
-        )
+    classify_position_nls_to_csv(csv_path, nls_path, labels_path)
+
+    assert csv_path.is_file()

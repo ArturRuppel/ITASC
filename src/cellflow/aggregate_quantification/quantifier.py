@@ -21,7 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-__all__ = ["PositionInputs", "Quantifier", "available_quantifiers"]
+__all__ = ["OUTPUT_SUBDIR", "PositionInputs", "Quantifier", "available_quantifiers"]
+
+#: Per-position subfolder that holds **every** Aggregate Quantification output
+#: (contacts ``.h5``, the shape-family CSVs, and the NLS classification CSV). A
+#: single home keeps a position's derived artifacts together and decoupled from
+#: the raw input layout.
+OUTPUT_SUBDIR = "aggregate_quantification"
 
 
 @dataclass(frozen=True)
@@ -76,15 +82,17 @@ class Quantifier:
     def default_output(self, inputs: PositionInputs) -> Path:
         """Where this quantifier's artifact lives for *inputs*, by default.
 
-        ``position_dir / default_output_name``. The studio uses this to decide a
-        build's destination, so a second quantifier no longer inherits the
-        contacts artifact path. Subclasses may override for richer layouts.
+        ``position_dir / OUTPUT_SUBDIR / default_output_name`` — every quantity
+        lands in the shared :data:`OUTPUT_SUBDIR` folder, so each subclass sets
+        just a bare file name. The studio uses this to decide a build's
+        destination, so a second quantifier no longer inherits the contacts
+        artifact path. Subclasses may override for richer layouts.
         """
         if not self.default_output_name:
             raise NotImplementedError(
                 f"{type(self).__name__} sets no default_output_name"
             )
-        return inputs.position_dir / self.default_output_name
+        return inputs.position_dir / OUTPUT_SUBDIR / self.default_output_name
 
     def is_built(self, output_path: Path) -> bool:
         """True when the artifact at *output_path* already exists."""

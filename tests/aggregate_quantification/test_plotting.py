@@ -62,6 +62,27 @@ def test_pool_prepends_metadata_and_joins_class_per_position():
     assert set(df[df["position_id"] == "p3"]["class_label"]) == {UNCLASSIFIED}
 
 
+def test_pool_joins_cell_id_only_label_broadcasts_across_frames():
+    """An NLS-style join table keyed on ``cell_id`` alone (one row per track)
+    broadcasts its label across every frame of that cell."""
+    source = PositionSource(
+        metadata={"condition": "A", "date": "d1", "position_id": "p1"},
+        table={
+            "frame": np.array([0, 1, 0, 1], dtype=np.int64),
+            "cell_id": np.array([1, 1, 2, 2], dtype=np.int64),
+            "area": np.array([10.0, 11.0, 20.0, 21.0]),
+        },
+        join_table={
+            "cell_id": np.array([1, 2]),
+            "class_label": np.array(["pos", "neg"], dtype=object),
+        },
+        join_columns=("class_label",),
+    )
+    df = pool_object_tables([source]).sort_values(["cell_id", "frame"])
+    assert df[df["cell_id"] == 1]["class_label"].tolist() == ["pos", "pos"]
+    assert df[df["cell_id"] == 2]["class_label"].tolist() == ["neg", "neg"]
+
+
 def test_pool_empty_sources_is_empty_frame():
     assert pool_object_tables([]).empty
 
@@ -165,6 +186,60 @@ def test_each_style_field_measurably_changes_the_figure():
     labelled = build_figure(df, spec, StyleSpec(xlabel="XX", ylabel="YY"))
     assert labelled.axes[0].get_xlabel() == "XX"
     assert labelled.axes[0].get_ylabel() == "YY"
+
+
+def _box_df():
+    """A two-group frame whose group A carries a single high outlier, so the
+    box-plot knobs have something to act on."""
+    return pd.DataFrame({
+        "condition": ["A"] * 8 + ["B"] * 8,
+        "area": [10, 11, 12, 13, 14, 15, 16, 100, 20, 21, 22, 23, 24, 25, 26, 27.0],
+    })
+
+
+def _flier_count(ax) -> int:
+    """Outlier markers a box plot drew — fliers are marker-only Line2D artists."""
+    return sum(
+        len(line.get_ydata())
+        for line in ax.lines
+        if line.get_marker() not in ("", "none", None)
+    )
+
+
+def test_box_outliers_can_be_hidden():
+    df = _box_df()
+    spec = PlotSpec(value="area", group_by=("condition",), plot="box")
+    shown = build_figure(df, spec, StyleSpec(box_showfliers=True))
+    hidden = build_figure(df, spec, StyleSpec(box_showfliers=False))
+    assert _flier_count(shown.axes[0]) > 0
+    assert _flier_count(hidden.axes[0]) == 0
+
+
+def test_box_wider_whiskers_swallow_outliers():
+    # Stretching the whiskers to the full range leaves nothing flagged as an outlier.
+    df = _box_df()
+    spec = PlotSpec(value="area", group_by=("condition",), plot="box")
+    tukey = build_figure(df, spec, StyleSpec(box_whis=1.5))
+    full = build_figure(df, spec, StyleSpec(box_whis=100.0))
+    assert _flier_count(tukey.axes[0]) > _flier_count(full.axes[0])
+
+
+def test_box_notch_changes_box_geometry():
+    # A notched box is a richer polygon (the median pinch adds vertices).
+    df = _box_df()
+    spec = PlotSpec(value="area", group_by=("condition",), plot="box")
+    plain = build_figure(df, spec, StyleSpec(box_notch=False))
+    notched = build_figure(df, spec, StyleSpec(box_notch=True))
+    plain_verts = max(len(p.get_path().vertices) for p in plain.axes[0].patches)
+    notched_verts = max(len(p.get_path().vertices) for p in notched.axes[0].patches)
+    assert notched_verts > plain_verts
+
+
+def test_box_defaults_match_tukey_look():
+    style = StyleSpec()
+    assert style.box_whis == 1.5
+    assert style.box_showfliers is True
+    assert style.box_notch is False
 
 
 def test_legend_can_be_turned_off():

@@ -10,12 +10,13 @@ nuclear track. It runs in two modes, driven by the catalogue selection:
   auto-places a threshold (:func:`~cellflow.aggregate_quantification.auto_threshold`),
   and reveals a results pane with a per-track scatter the user can drag to
   re-classify live, overlaying the marker image and the **outlines of positive
-  nuclei** in napari. The button then reads *Apply to H5* and writes the
-  classification back into the contact-analysis ``.h5``;
+  nuclei** in napari. The button then reads *Save CSV* and writes the
+  classification to the position's ``aggregate_quantification/nls_classification.csv``
+  sidecar (two columns, ``id,label``) — it never touches the contact-analysis ``.h5``;
 * **multiple positions** — the interactive scatter does not apply, so the same
-  button reads *Classify & apply to all H5* and batch-classifies every selected
-  position with its own auto threshold
-  (:func:`~cellflow.aggregate_quantification.patch_position_contact_analysis_nls_classes`).
+  button reads *Classify & save all CSVs* and batch-classifies every selected
+  position with its own auto threshold, writing each position's sidecar CSV
+  (:func:`~cellflow.aggregate_quantification.classify_position_nls_to_csv`).
 
 The marker-image field accepts a path **relative to each position directory**
 (e.g. ``0_input/NLS_zavg.tif``), so one entry resolves per-position across a
@@ -48,10 +49,10 @@ from cellflow.aggregate_quantification import (
     NLSClassificationError,
     auto_threshold,
     classify_by_threshold,
+    classify_position_nls_to_csv,
     measure_track_nls_intensity,
-    patch_position_contact_analysis_nls_classes,
-    read_position_cell_ids,
-    write_nls_classification,
+    nls_classification_csv_path,
+    write_nls_classification_csv,
 )
 from cellflow.aggregate_quantification.contacts.nls_classification import POSITIVE, _read_image_stack
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext, AnalysisPlugin
@@ -137,8 +138,8 @@ class NLSClassificationPlugin(AnalysisPlugin):
         labels_row.addWidget(self._negative_edit, 1)
         top_layout.addLayout(labels_row)
 
-        # One stateful button: *Classify* → *Apply to H5* (single position) or
-        # *Classify & apply to all H5* (batch). Label + action set in _update_enabled.
+        # One stateful button: *Classify* → *Save CSV* (single position) or
+        # *Classify & save all CSVs* (batch). Label + action set in _update_enabled.
         self._action_btn = QPushButton("Classify")
         action_button(self._action_btn, expand=True)
         self._action_btn.clicked.connect(self._on_action)
@@ -309,16 +310,19 @@ class NLSClassificationPlugin(AnalysisPlugin):
         return len(self._records) > 1
 
     def _batch_records(self) -> list[dict]:
-        """Selected positions that have every input needed to classify headlessly."""
+        """Selected positions that have every input needed to classify headlessly.
+
+        Only the NLS image + nucleus labels are read; the sidecar CSV is written
+        under the position folder, so each record must also carry a
+        ``position_path``. No ``.h5`` is required."""
         out: list[dict] = []
         for record in self._records:
             nls = self._resolve_nls_path(record)
             labels = self._labels_path_for(record)
-            h5 = record.get("contact_analysis_path")
             if (
                 nls is not None and nls.is_file()
                 and labels is not None and labels.is_file()
-                and h5 and Path(h5).is_file()
+                and record.get("position_path")
             ):
                 out.append(record)
         return out
@@ -326,18 +330,18 @@ class NLSClassificationPlugin(AnalysisPlugin):
     def _update_enabled(self) -> None:
         """Drive the single action button's label + enabled-ness per state.
 
-        Batch → *Classify & apply to all H5*. Single position: *Apply to H5* once a
+        Batch → *Classify & save all CSVs*. Single position: *Save CSV* once a
         classification exists (the *Classified* state), else *Classify* (the *Needs
         classify* state), enabled only when the inputs resolve.
         """
         running = self._measure_worker is not None
         if self._is_batch():
-            self._action_btn.setText("Classify & apply to all H5")
+            self._action_btn.setText("Classify & save all CSVs")
             self._action_btn.setEnabled(bool(self._batch_records()) and not running)
             self._threshold_spin.setEnabled(False)
             return
         if self._assignments:  # Classified
-            self._action_btn.setText("Apply to H5")
+            self._action_btn.setText("Save CSV")
             self._action_btn.setEnabled(not running)
         else:  # Needs classify
             labels_path = self._nucleus_labels_path()
@@ -583,36 +587,26 @@ class NLSClassificationPlugin(AnalysisPlugin):
             return
         if not self._assignments or self._record is None:
             return
-        h5_path = self._record.get("contact_analysis_path")
-        if not h5_path or not Path(h5_path).is_file():
-            self._status_lbl.setText("Status: contact analysis .h5 not found for this position.")
+        position_path = self._record.get("position_path")
+        if not position_path:
+            self._status_lbl.setText("Status: this position has no folder to write the CSV into.")
             return
+        csv_path = nls_classification_csv_path(position_path)
         try:
-            cell_ids = read_position_cell_ids(h5_path)
-            if not set(int(c) for c in cell_ids).intersection(self._assignments):
-                self._status_lbl.setText(
-                    "Status: H5 cell IDs do not overlap the classified nuclear tracks."
-                )
-                return
-            write_nls_classification(
-                h5_path,
-                cell_ids=cell_ids,
-                measurements=self._measurements,
-                assignments=self._assignments,
-                threshold=self.current_threshold(),
+            write_nls_classification_csv(
+                csv_path,
+                self._assignments,
                 positive_label=self._positive_edit.text().strip() or "positive",
                 negative_label=self._negative_edit.text().strip() or "negative",
-                nls_path=self._nls_path() or "",
-                labels_path=self._nucleus_labels_path() or "",
             )
         except Exception as exc:  # noqa: BLE001 - surface write errors in the UI
-            self._status_lbl.setText(f"Status: apply failed: {exc}")
+            self._status_lbl.setText(f"Status: save failed: {exc}")
             return
         positive = sum(s == POSITIVE for s in self._assignments.values())
         negative = len(self._assignments) - positive
         self._status_lbl.setText(
             f"Status: wrote {positive} positive / {negative} negative to "
-            f"{Path(h5_path).name}."
+            f"{csv_path.name}."
         )
 
     # --------------------------------------------------------------- batch apply
@@ -621,16 +615,16 @@ class NLSClassificationPlugin(AnalysisPlugin):
         records = self._batch_records()
         if not records:
             self._status_lbl.setText(
-                "Status: no selected position has an NLS image, nucleus labels, and an .h5."
+                "Status: no selected position has an NLS image and nucleus labels."
             )
             return
         positive_label = self._positive_edit.text().strip() or "positive"
         negative_label = self._negative_edit.text().strip() or "negative"
-        # (id, h5, nls, labels) snapshots — read off the worker thread.
+        # (id, csv, nls, labels) snapshots — read off the worker thread.
         jobs = [
             (
                 str(record.get("id", "?")),
-                Path(record["contact_analysis_path"]),
+                nls_classification_csv_path(record["position_path"]),
                 self._resolve_nls_path(record),
                 self._labels_path_for(record),
             )
@@ -649,11 +643,11 @@ class NLSClassificationPlugin(AnalysisPlugin):
         )
         def _worker():
             results: list[tuple[str, bool, str]] = []
-            for index, (record_id, h5_path, nls_path, labels_path) in enumerate(jobs, start=1):
+            for index, (record_id, csv_path, nls_path, labels_path) in enumerate(jobs, start=1):
                 yield index, len(jobs), record_id
                 try:
-                    summary = patch_position_contact_analysis_nls_classes(
-                        h5_path,
+                    summary = classify_position_nls_to_csv(
+                        csv_path,
                         nls_path,
                         labels_path,
                         positive_label=positive_label,

@@ -207,24 +207,22 @@ class AggregateQuantificationStudioWidget(QWidget):
         root_row.addWidget(browse_btn)
         col.addLayout(root_row)
 
-        # Names or relative paths (relative to each position folder). All inputs
-        # are optional — a position is any folder with at least one of them. The
-        # contact analysis is the derived output path (built later via a builder
-        # plugin, not on add).
+        # Names or relative paths (relative to each position folder). These are the
+        # discovery **inputs** — a position is any folder with at least one of them.
+        # Contact analysis (like every shape / NLS quantity) is a derived Aggregate
+        # Quantification output, built later via a builder plugin — never an input
+        # here.
         self._cell_name_edit = self._make_field_row(
             col, "Cell labels (optional):", placeholder="e.g. 3_cell/tracked_labels.tif"
         )
         self._nucleus_name_edit = self._make_field_row(
             col, "Nucleus labels (optional):", placeholder="e.g. 2_nucleus/tracked_labels.tif"
         )
-        self._contact_name_edit = self._make_field_row(
-            col, "Contact analysis (output):", default="contact_analysis.h5"
-        )
 
         discover_btn = QPushButton("Discover")
         discover_btn.setToolTip(
             "Find every folder under the root that contains at least one of the "
-            "named inputs; derive the contact-analysis output path."
+            "named inputs (cell and/or nucleus labels)."
         )
         action_button(discover_btn, expand=True)
         discover_btn.clicked.connect(self._on_discover)
@@ -351,7 +349,6 @@ class AggregateQuantificationStudioWidget(QWidget):
             entries = discover_catalog_entries(
                 root,
                 cell_name=cell or None,
-                contact_name=self._contact_name_edit.text().strip() or "contact_analysis.h5",
                 nucleus_name=nucleus or None,
             )
         except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI

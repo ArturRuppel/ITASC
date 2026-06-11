@@ -115,24 +115,25 @@ def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
     p1 = tmp_path / "expA" / "pos01"
     p2 = tmp_path / "expA" / "pos02"
     for p in (p1, p2):
-        (p / "4_contact_analysis").mkdir(parents=True)
-        (p / "3_cell").mkdir()
-        (p / "4_contact_analysis" / "contact_analysis.h5").touch()
+        (p / "3_cell").mkdir(parents=True)
         (p / "3_cell" / "tracked_labels.tif").touch()
     (p1 / "2_nucleus").mkdir()
     (p1 / "2_nucleus" / "tracked_labels.tif").touch()
 
+    # Contact analysis is a derived output, not a discovery input — no contact_name.
     entries = discover_catalog_entries(
         tmp_path,
         cell_name="3_cell/tracked_labels.tif",
-        contact_name="4_contact_analysis/contact_analysis.h5",
         nucleus_name="2_nucleus/tracked_labels.tif",
     )
 
     assert [e["id"] for e in entries] == ["pos01", "pos02"]
     assert all(e["position_path"].name.startswith("pos") for e in entries)
     assert entries[0]["cell_tracked_labels_path"] == p1 / "3_cell" / "tracked_labels.tif"
-    assert entries[0]["contact_analysis_path"] == p1 / "4_contact_analysis" / "contact_analysis.h5"
+    # The contact path is always the fixed default output location.
+    assert entries[0]["contact_analysis_path"] == (
+        p1 / "aggregate_quantification" / "contact_analysis.h5"
+    )
     assert entries[0]["nucleus_tracked_labels_path"] == p1 / "2_nucleus" / "tracked_labels.tif"
     # pos02 has no nucleus labels -> not associated.
     assert entries[1]["nucleus_tracked_labels_path"] is None
@@ -153,7 +154,7 @@ def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
 
     assert len(entries) == 1
     contact = entries[0]["contact_analysis_path"]
-    assert contact == pos / "contact_analysis.h5"
+    assert contact == pos / "aggregate_quantification" / "contact_analysis.h5"
     assert not contact.exists()
     assert entries[0]["cell_tracked_labels_path"] == pos / "cell_labels.tif"
 
@@ -173,7 +174,7 @@ def test_discover_catalog_entries_by_nucleus_only(tmp_path):
     assert entries[0]["nucleus_tracked_labels_path"] == pos / "nucleus_labels.tif"
     assert entries[0]["cell_tracked_labels_path"] is None
     # The contact-analysis output path is still derived even with no cell labels.
-    assert entries[0]["contact_analysis_path"] == pos / "contact_analysis.h5"
+    assert entries[0]["contact_analysis_path"] == pos / "aggregate_quantification" / "contact_analysis.h5"
 
 
 def test_discover_catalog_entries_groups_inputs_from_different_subfolders(tmp_path):

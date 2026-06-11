@@ -283,7 +283,6 @@ def _extract_cell_columns(label_stack: np.ndarray) -> dict[str, np.ndarray]:
                 {
                     "frame": frame_idx,
                     "cell_id": int(prop.label),
-                    "class_label": "",
                     "area": float(prop.area),
                     "centroid_y": float(prop.centroid[0]),
                     "centroid_x": float(prop.centroid[1]),
@@ -299,7 +298,6 @@ def _extract_cell_columns(label_stack: np.ndarray) -> dict[str, np.ndarray]:
         [
             "frame",
             "cell_id",
-            "class_label",
             "area",
             "centroid_y",
             "centroid_x",
@@ -758,7 +756,7 @@ def _columns_from_rows(rows: list[dict], names: list[str]) -> dict[str, np.ndarr
     columns = {}
     for name in names:
         values = [row[name] for row in rows]
-        if name in {"kind", "edge_label", "class_label"}:
+        if name in {"kind", "edge_label"}:
             columns[name] = np.asarray(values, dtype=object)
         elif name == "is_t1_frame":
             columns[name] = np.asarray(values, dtype=bool)

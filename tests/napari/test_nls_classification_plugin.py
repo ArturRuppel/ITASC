@@ -5,11 +5,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import inspect
 from pathlib import Path
 
-import h5py
 import numpy as np
 import tifffile
 from qtpy.QtWidgets import QApplication
 
+from cellflow.aggregate_quantification.contacts.nls_classification import (
+    nls_classification_csv_path,
+    read_nls_classification_csv,
+)
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext, available_analysis_plugins
 from cellflow.napari.aggregate_quantification.plugins import nls_classification as nls_mod
 from cellflow.napari.aggregate_quantification.plugins.nls_classification import (
@@ -86,33 +89,17 @@ class _FakeViewer:
         return layer
 
 
-def _write_minimal_position_h5(path, cell_ids):
-    string_dtype = h5py.string_dtype(encoding="utf-8")
-    with h5py.File(path, "w") as h5:
-        cells = h5.create_group("cells/table")
-        cells.create_dataset("cell_id", data=np.asarray(cell_ids, dtype=np.int64))
-        cells.create_dataset(
-            "class_label",
-            data=np.asarray(["old"] * len(cell_ids), dtype=object),
-            dtype=string_dtype,
-        )
-        h5.create_group("cells/measurements")
-
-
 def _make_position(tmp_path: Path) -> dict:
     labels = np.asarray([[[1, 1, 2, 2]]], dtype=np.uint16)
     nls = np.asarray([[[10.0, 11.0, 100.0, 110.0]]], dtype=np.float32)
     labels_path = tmp_path / "tracked_labels.tif"
     nls_path = tmp_path / "NLS_zavg.tif"
-    h5_path = tmp_path / "contact_analysis.h5"
     tifffile.imwrite(labels_path, labels)
     tifffile.imwrite(nls_path, nls)
-    _write_minimal_position_h5(h5_path, [1, 2])
     return {
         "id": "p1",
         "position_path": tmp_path,
         "nucleus_tracked_labels_path": labels_path,
-        "contact_analysis_path": h5_path,
         "nls_path": nls_path,
     }
 
@@ -143,8 +130,8 @@ def test_single_position_measures_and_auto_thresholds(tmp_path):
     plugin._on_measure_done((labels[np.newaxis, ...] if labels.ndim == 2 else labels, measurements))
     app.processEvents()
 
-    # Classified → button flips to *Apply to H5* and the results pane is revealed.
-    assert plugin._action_btn.text() == "Apply to H5"
+    # Classified → button flips to *Save CSV* and the results pane is revealed.
+    assert plugin._action_btn.text() == "Save CSV"
     assert plugin._action_btn.isEnabled()
     assert not plugin._results_pane.isHidden()
     # Auto threshold lands between the two clusters → track 2 positive.
@@ -198,7 +185,7 @@ def test_dragging_threshold_reclassifies_and_updates_overlay(tmp_path):
     app.processEvents()
 
 
-def test_apply_writes_classification_to_h5(tmp_path):
+def test_apply_writes_classification_to_csv(tmp_path):
     app = _app()
     viewer = _FakeViewer()
     record = _make_position(tmp_path)
@@ -215,16 +202,13 @@ def test_apply_writes_classification_to_h5(tmp_path):
     measurements = measure_track_nls_intensity(tifffile.imread(record["nls_path"]), labels)
     plugin._on_measure_done((labels, measurements))
 
-    assert plugin._action_btn.text() == "Apply to H5"
+    assert plugin._action_btn.text() == "Save CSV"
     assert plugin._action_btn.isEnabled()
     plugin._on_action()
 
-    with h5py.File(record["contact_analysis_path"], "r") as h5:
-        cells = h5["cells/table"]
-        assert cells["nls_status"].asstr()[:].tolist() == ["negative", "positive"]
-        assert cells["class_label"].asstr()[:].tolist() == ["GFP-", "GFP+"]
-        meta = h5["cells/measurements/nls_classification"].attrs
-        assert meta["positive_label"] == "GFP+"
+    csv_path = nls_classification_csv_path(record["position_path"])
+    assert csv_path.is_file()
+    assert read_nls_classification_csv(csv_path) == {1: "GFP-", 2: "GFP+"}
 
     plugin.deleteLater()
     app.processEvents()
@@ -237,15 +221,12 @@ def _make_position_relative(parent: Path, name: str) -> dict:
     labels = np.asarray([[[1, 1, 2, 2]]], dtype=np.uint16)
     nls = np.asarray([[[10.0, 11.0, 100.0, 110.0]]], dtype=np.float32)
     labels_path = position / "tracked_labels.tif"
-    h5_path = position / "contact_analysis.h5"
     tifffile.imwrite(labels_path, labels)
     tifffile.imwrite(position / "0_input" / "NLS_zavg.tif", nls)
-    _write_minimal_position_h5(h5_path, [1, 2])
     return {
         "id": name,
         "position_path": position,
         "nucleus_tracked_labels_path": labels_path,
-        "contact_analysis_path": h5_path,
     }
 
 
@@ -261,7 +242,7 @@ def test_multiple_positions_disable_measure(tmp_path):
     assert "2 positions selected" in plugin._scope_lbl.text()
     # The action button switches to the batch label and stays disabled until
     # every selected position's inputs resolve.
-    assert plugin._action_btn.text() == "Classify & apply to all H5"
+    assert plugin._action_btn.text() == "Classify & save all CSVs"
     assert not plugin._action_btn.isEnabled()
 
     plugin.deleteLater()
@@ -313,10 +294,8 @@ def test_batch_apply_classifies_all_selected_positions(tmp_path, monkeypatch):
     app.processEvents()
 
     for record in (rec_a, rec_b):
-        with h5py.File(record["contact_analysis_path"], "r") as h5:
-            cells = h5["cells/table"]
-            assert cells["nls_status"].asstr()[:].tolist() == ["negative", "positive"]
-            assert cells["class_label"].asstr()[:].tolist() == ["GFP-", "GFP+"]
+        csv_path = nls_classification_csv_path(record["position_path"])
+        assert read_nls_classification_csv(csv_path) == {1: "GFP-", 2: "GFP+"}
     assert "2/2" in plugin._status_lbl.text()
 
     plugin.deleteLater()
@@ -340,8 +319,10 @@ def test_batch_apply_reports_per_position_failures(tmp_path, monkeypatch):
     app.processEvents()
 
     # The good position is still written; the bad one is surfaced, not fatal.
-    with h5py.File(good["contact_analysis_path"], "r") as h5:
-        assert h5["cells/table"]["nls_status"].asstr()[:].tolist() == ["negative", "positive"]
+    good_csv = nls_classification_csv_path(good["position_path"])
+    assert read_nls_classification_csv(good_csv) == {1: "negative", 2: "positive"}
+    bad_csv = nls_classification_csv_path(bad["position_path"])
+    assert not bad_csv.is_file()
     text = plugin._status_lbl.text()
     assert "1/2" in text and "bad" in text
 

@@ -22,10 +22,11 @@ from .contacts.nls_classification import (
     TrackNLSMeasurement,
     auto_threshold,
     classify_by_threshold,
+    classify_position_nls_to_csv,
     measure_track_nls_intensity,
-    patch_position_contact_analysis_nls_classes,
-    read_position_cell_ids,
-    write_nls_classification,
+    nls_classification_csv_path,
+    read_nls_classification_csv,
+    write_nls_classification_csv,
 )
 
 __all__ = [
@@ -41,8 +42,9 @@ __all__ = [
     "TrackNLSMeasurement",
     "auto_threshold",
     "classify_by_threshold",
+    "classify_position_nls_to_csv",
     "measure_track_nls_intensity",
-    "patch_position_contact_analysis_nls_classes",
-    "read_position_cell_ids",
-    "write_nls_classification",
+    "nls_classification_csv_path",
+    "read_nls_classification_csv",
+    "write_nls_classification_csv",
 ]

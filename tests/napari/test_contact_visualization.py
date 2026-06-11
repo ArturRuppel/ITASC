@@ -212,7 +212,9 @@ def test_build_cell_centroid_points_returns_frame_prefixed_points_and_features(m
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis()
 
-    points, features = mod.build_cell_centroid_points(contact_analysis)
+    # The subpopulation label is supplied by the NLS sidecar map (cell_id ->
+    # label); cell 12 is absent, so it falls to the unclassified empty string.
+    points, features = mod.build_cell_centroid_points(contact_analysis, class_labels={11: "A"})
 
     assert points.shape == (2, 3)
     np.testing.assert_allclose(points[:, 0], [0.0, 1.0])
@@ -290,10 +292,14 @@ def test_build_edge_shapes_can_color_by_edge_label(monkeypatch):
 def test_add_contact_analysis_layers_can_color_cells_by_class_label(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
-    contact_analysis["cells"]["class_label"] = np.asarray(["epithelial", "epithelial"], dtype=object)
     viewer = _FakeViewer()
 
-    mod.add_contact_analysis_layers(viewer, contact_analysis, color_cells_by_label=True)
+    mod.add_contact_analysis_layers(
+        viewer,
+        contact_analysis,
+        color_cells_by_label=True,
+        class_labels={11: "epithelial", 12: "epithelial"},
+    )
 
     cell_call = viewer.calls[0]
     color_map = cell_call[3]["colormap"].color_dict
@@ -351,7 +357,6 @@ def test_build_nucleus_track_shapes_fades_more_distant_past_segments(monkeypatch
 def test_build_nucleus_track_shapes_uses_cell_class_colors_when_requested(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
-    contact_analysis["cells"]["class_label"] = np.asarray(["same"] * 6, dtype=object)
     nucleus_labels = mod._read_label_image(Path(contact_analysis["nucleus_tracked_labels_path"]))
 
     _lines, colors, _features = mod.build_nucleus_track_shapes(
@@ -359,6 +364,7 @@ def test_build_nucleus_track_shapes_uses_cell_class_colors_when_requested(monkey
         nucleus_labels,
         current_frame=1,
         color_cells_by_label=True,
+        class_labels={11: "same", 12: "same"},
     )
 
     np.testing.assert_allclose(colors[0], colors[1])

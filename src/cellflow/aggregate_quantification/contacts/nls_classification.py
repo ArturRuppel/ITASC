@@ -16,30 +16,35 @@ This module is the headless core: it measures per-track intensities
 (:func:`measure_track_nls_intensity`), proposes a starting threshold
 (:func:`auto_threshold`, built on the deterministic two-cluster / Otsu splitters),
 classifies against a (possibly hand-tuned) threshold
-(:func:`classify_by_threshold`), and patches the columns into a contact-analysis
-``.h5`` (:func:`write_nls_classification`). The interactive tuning lives in the
-``NLS Classification`` analysis plugin
+(:func:`classify_by_threshold`), and writes the result as a two-column
+``id,label`` **sidecar CSV** (:func:`write_nls_classification_csv`) — it never
+touches the contact-analysis ``.h5``, which stays a pure, regenerable build
+artifact. The CSV is the single source of truth for the subpopulation label;
+consumers join it by ``cell_id`` via :func:`read_nls_classification_csv`. The
+interactive tuning lives in the ``NLS Classification`` analysis plugin
 (:mod:`cellflow.napari.aggregate_quantification.plugins.nls_classification`).
 """
 from __future__ import annotations
 
+import csv
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
-import h5py
 import numpy as np
 import tifffile
 from skimage.filters import threshold_otsu
 
-#: Default audit method recorded in the H5 when a threshold is applied.
-METHOD = "threshold_track_intensity_p90_frame_median"
+from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
+
 #: Percentile (over per-frame median intensities) used to summarise each track.
 INTENSITY_PERCENTILE = 90.0
-#: Status strings written to ``cells/table/nls_status``.
+#: Internal status strings produced by :func:`classify_by_threshold`; mapped to
+#: the caller's positive/negative label strings when the sidecar CSV is written.
 POSITIVE = "positive"
 NEGATIVE = "negative"
+#: Sidecar CSV file name, written into each position's :data:`OUTPUT_SUBDIR`.
+CSV_NAME = "nls_classification.csv"
 
 
 class NLSClassificationError(ValueError):
@@ -56,7 +61,7 @@ class TrackNLSMeasurement:
 
 @dataclass(frozen=True)
 class NLSClassificationSummary:
-    h5_path: Path
+    csv_path: Path
     threshold: float
     track_count: int
     positive_track_count: int
@@ -257,8 +262,18 @@ def _fit_high_intensity_gaussian_cluster(ordered_ids: list[int], values: np.ndar
     }
 
 
-def patch_position_contact_analysis_nls_classes(
-    h5_path: str | Path,
+def nls_classification_csv_path(position_path: str | Path) -> Path:
+    """The position's NLS sidecar CSV path.
+
+    ``<position_path>/<OUTPUT_SUBDIR>/nls_classification.csv`` — the single home
+    used by the plugin (write), the shape plugin (join), and the contact
+    visualizer (colour-by-label).
+    """
+    return Path(position_path) / OUTPUT_SUBDIR / CSV_NAME
+
+
+def classify_position_nls_to_csv(
+    csv_path: str | Path,
     nls_zavg_path: str | Path,
     nucleus_labels_path: str | Path,
     *,
@@ -266,44 +281,31 @@ def patch_position_contact_analysis_nls_classes(
     positive_label: str = POSITIVE,
     negative_label: str = NEGATIVE,
 ) -> NLSClassificationSummary:
-    """Measure, classify, and patch NLS subpopulation columns into a position H5.
+    """Measure, classify, and write the NLS sidecar CSV for one position.
 
-    *threshold* defaults to :func:`auto_threshold`; pass a value (e.g. the
-    hand-tuned threshold from the plugin) to override it.
+    Reads only the NLS image + nucleus labels — never an ``.h5``. *threshold*
+    defaults to :func:`auto_threshold`; pass a value (e.g. the hand-tuned
+    threshold from the plugin) to override it.
     """
-    h5_path = Path(h5_path)
-    nls_path = Path(nls_zavg_path)
-    labels_path = Path(nucleus_labels_path)
-
-    nls = _read_image_stack(nls_path)
-    labels = _read_image_stack(labels_path)
+    csv_path = Path(csv_path)
+    nls = _read_image_stack(Path(nls_zavg_path))
+    labels = _read_image_stack(Path(nucleus_labels_path))
     measurements = measure_track_nls_intensity(nls, labels)
     intensities = {track_id: item.intensity for track_id, item in measurements.items()}
     resolved_threshold = float(threshold) if threshold is not None else auto_threshold(intensities)
     assignments = classify_by_threshold(measurements, resolved_threshold)
 
-    cell_ids = _read_cell_ids(h5_path)
-    if not set(int(cid) for cid in cell_ids).intersection(assignments):
-        raise NLSClassificationError(
-            "H5 cells/table/cell_id values do not overlap any classified nuclear track IDs"
-        )
-
-    write_nls_classification(
-        h5_path,
-        cell_ids=cell_ids,
-        measurements=measurements,
-        assignments=assignments,
-        threshold=resolved_threshold,
+    write_nls_classification_csv(
+        csv_path,
+        assignments,
         positive_label=positive_label,
         negative_label=negative_label,
-        nls_path=nls_path,
-        labels_path=labels_path,
     )
 
     positive = sum(status == POSITIVE for status in assignments.values())
     negative = sum(status == NEGATIVE for status in assignments.values())
     return NLSClassificationSummary(
-        h5_path=h5_path,
+        csv_path=csv_path,
         threshold=resolved_threshold,
         track_count=len(assignments),
         positive_track_count=positive,
@@ -311,78 +313,38 @@ def patch_position_contact_analysis_nls_classes(
     )
 
 
-def write_nls_classification(
+def write_nls_classification_csv(
     path: str | Path,
-    *,
-    cell_ids: np.ndarray,
-    measurements: Mapping[int, TrackNLSMeasurement],
     assignments: Mapping[int, str],
-    threshold: float,
+    *,
     positive_label: str = POSITIVE,
     negative_label: str = NEGATIVE,
-    nls_path: str | Path,
-    labels_path: str | Path,
 ) -> None:
-    """Write NLS subpopulation columns + audit metadata into ``cells`` of an H5.
+    """Write the two-column ``id,label`` sidecar CSV — one row per classified track.
 
-    Validates inputs before mutating: shapes and the ``cells/table`` group must be
-    present, so a failure leaves the file untouched.
+    *assignments* maps each track id to a :data:`POSITIVE` / :data:`NEGATIVE`
+    status; the row's ``label`` is the caller's *positive_label* / *negative_label*
+    string. The parent folder is created if missing.
     """
     path = Path(path)
-    cell_ids = np.asarray(cell_ids, dtype=np.int64)
-
-    class_labels: list[str] = []
-    statuses: list[str] = []
-    intensities = np.full(len(cell_ids), np.nan, dtype=float)
-    pixel_counts = np.zeros(len(cell_ids), dtype=np.int64)
-    frame_counts = np.zeros(len(cell_ids), dtype=np.int64)
-
-    for idx, cell_id_value in enumerate(cell_ids):
-        cell_id = int(cell_id_value)
-        status = assignments.get(cell_id, "")
-        statuses.append(status)
-        class_labels.append(
-            positive_label if status == POSITIVE else negative_label if status == NEGATIVE else ""
-        )
-        measurement = measurements.get(cell_id)
-        if measurement is not None:
-            intensities[idx] = measurement.intensity
-            pixel_counts[idx] = measurement.pixel_count
-            frame_counts[idx] = measurement.frame_count
-
-    string_dtype = h5py.string_dtype(encoding="utf-8")
-    with h5py.File(path, "r+") as h5:
-        if "cells/table" not in h5:
-            raise NLSClassificationError("H5 artifact is missing cells/table")
-        cells = h5["cells/table"]
-        _replace_dataset(cells, "class_label", np.asarray(class_labels, dtype=object), dtype=string_dtype)
-        _replace_dataset(cells, "nls_status", np.asarray(statuses, dtype=object), dtype=string_dtype)
-        _replace_dataset(cells, "nls_track_intensity", intensities)
-        _replace_dataset(cells, "nls_track_pixel_count", pixel_counts)
-        _replace_dataset(cells, "nls_track_frame_count", frame_counts)
-
-        measurements_root = h5.require_group("cells/measurements")
-        if "nls_classification" in measurements_root:
-            del measurements_root["nls_classification"]
-        meta = measurements_root.create_group("nls_classification")
-        positive_count = sum(status == POSITIVE for status in assignments.values())
-        negative_count = sum(status == NEGATIVE for status in assignments.values())
-        meta.attrs["method"] = METHOD
-        meta.attrs["intensity_percentile"] = float(INTENSITY_PERCENTILE)
-        meta.attrs["threshold"] = float(threshold)
-        meta.attrs["positive_label"] = positive_label
-        meta.attrs["negative_label"] = negative_label
-        meta.attrs["nls_zavg_path"] = str(nls_path)
-        meta.attrs["nucleus_tracked_labels_path"] = str(labels_path)
-        meta.attrs["classified_track_count"] = len(assignments)
-        meta.attrs["positive_track_count"] = positive_count
-        meta.attrs["negative_track_count"] = negative_count
-        meta.attrs["created_at"] = datetime.now(timezone.utc).isoformat()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["id", "label"])
+        for track_id in sorted(assignments, key=int):
+            label = positive_label if assignments[track_id] == POSITIVE else negative_label
+            writer.writerow([int(track_id), label])
 
 
-def read_position_cell_ids(h5_path: str | Path) -> np.ndarray:
-    """Public accessor for ``cells/table/cell_id`` (used by the plugin on Apply)."""
-    return _read_cell_ids(Path(h5_path))
+def read_nls_classification_csv(path: str | Path) -> dict[int, str]:
+    """Read an ``id,label`` sidecar CSV back into a ``cell_id -> label`` map."""
+    path = Path(path)
+    labels: dict[int, str] = {}
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            labels[int(row["id"])] = str(row["label"])
+    return labels
 
 
 def _as_time_yx(arr: np.ndarray, name: str) -> np.ndarray:
@@ -397,16 +359,3 @@ def _read_image_stack(path: Path) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(path)
     return _as_time_yx(np.asarray(tifffile.imread(path)), str(path))
-
-
-def _read_cell_ids(path: Path) -> np.ndarray:
-    with h5py.File(path, "r") as h5:
-        if "cells/table/cell_id" not in h5:
-            raise NLSClassificationError("H5 artifact is missing cells/table/cell_id")
-        return np.asarray(h5["cells/table/cell_id"][:], dtype=np.int64)
-
-
-def _replace_dataset(group: h5py.Group, name: str, data: np.ndarray, **kwargs) -> None:
-    if name in group:
-        del group[name]
-    group.create_dataset(name, data=data, **kwargs)

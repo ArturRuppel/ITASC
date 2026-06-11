@@ -153,7 +153,7 @@ class AggregateQuantificationWidget(QWidget):
                     ("3_cell/tracked_labels.tif", "Cell tracked labels"),
                 ]),
                 ("Output", [
-                    ("4_contact_analysis/contact_analysis.h5", "Contact analysis"),
+                    ("aggregate_quantification/contact_analysis.h5", "Contact analysis"),
                 ]),
             ],
             viewer=self.viewer,
@@ -859,6 +859,7 @@ class AggregateQuantificationWidget(QWidget):
 
         show_kwargs: dict[str, Any] = {
             "prefix": self._contact_analysis_layer_prefix,
+            "class_labels": self._read_nls_class_labels(contact_analysis_path),
             **options,
         }
         if self._cached_cell_labels is not None:
@@ -895,6 +896,26 @@ class AggregateQuantificationWidget(QWidget):
         timer.timeout.connect(_deferred_add)
         timer.start(0)
         self._pending_show_timer = timer
+
+    def _read_nls_class_labels(self, contact_analysis_path: Path) -> dict[int, str]:
+        """Best-effort ``cell_id -> label`` map from the NLS sidecar CSV.
+
+        The CSV sits beside the contacts ``.h5`` in the shared
+        ``aggregate_quantification/`` folder. Imported lazily so this public
+        widget never couples to the NLS module at import time (the
+        public/private boundary). A missing CSV → no labels (all unclassified).
+        """
+        csv_path = contact_analysis_path.parent / "nls_classification.csv"
+        if not csv_path.is_file():
+            return {}
+        try:
+            from cellflow.aggregate_quantification.contacts.nls_classification import (
+                read_nls_classification_csv,
+            )
+
+            return read_nls_classification_csv(csv_path)
+        except Exception:  # noqa: BLE001 - colouring is best-effort
+            return {}
 
     def _contact_analysis_layer_names(self) -> list[str]:
         if self.viewer is None:

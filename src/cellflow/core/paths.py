@@ -9,7 +9,7 @@ STAGE_DIRS: dict[str, str] = {
     "cellpose": "1_cellpose",
     "nucleus": "2_nucleus",
     "cell": "3_cell",
-    "contact_analysis": "4_contact_analysis",
+    "contact_analysis": "aggregate_quantification",
 }
 
 

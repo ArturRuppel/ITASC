@@ -229,7 +229,6 @@ def test_discover_annotate_add_then_csv_roundtrip(tmp_path):
 
     widget = mod.AggregateQuantificationStudioWidget()
     widget._root_edit.setText(str(study))
-    widget._contact_name_edit.setText("4_contact_analysis/contact_analysis.h5")
     widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
     widget._nucleus_name_edit.setText("2_nucleus/tracked_labels.tif")
 
@@ -275,7 +274,9 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     for p in (p1, p2):
         p.mkdir(parents=True)
         (p / "cell_labels.tif").touch()
-    (p1 / "contact_analysis.h5").touch()  # pos01 already built; pos02 missing
+    # pos01 already built (in the shared aggregate_quantification/ folder); pos02 missing.
+    (p1 / "aggregate_quantification").mkdir()
+    (p1 / "aggregate_quantification" / "contact_analysis.h5").touch()
 
     widget = mod.AggregateQuantificationStudioWidget()
     began: list = []

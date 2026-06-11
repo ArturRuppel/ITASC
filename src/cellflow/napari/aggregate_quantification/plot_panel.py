@@ -203,13 +203,27 @@ class PlotPanel(QWidget):
         toggles.addWidget(self._legend_loc_combo, 1)
         col.addLayout(toggles)
 
+        # Box-plot knobs — they only bite when Plot=box, but stay visible (like
+        # Bins for hist) rather than appearing and disappearing on plot change.
+        self._box_whis_spin = _double_spin(0.0, 100.0, 1.5, step=0.5)
+        self._box_fliers_cb = QCheckBox("Outliers")
+        self._box_fliers_cb.setChecked(True)
+        self._box_notch_cb = QCheckBox("Notch (CI)")
+        box_row = QHBoxLayout()
+        box_row.setContentsMargins(0, 0, 0, 0)
+        box_row.addWidget(QLabel("Box whis ×IQR:"))
+        box_row.addWidget(self._box_whis_spin, 1)
+        box_row.addWidget(self._box_fliers_cb)
+        box_row.addWidget(self._box_notch_cb)
+        col.addLayout(box_row)
+
         for combo in (self._palette_combo, self._style_combo, self._legend_loc_combo):
             combo.currentIndexChanged.connect(self._render)
         for edit in (self._title_edit, self._xlabel_edit, self._ylabel_edit):
             edit.editingFinished.connect(self._render)
-        for spin in (self._width_spin, self._height_spin, self._font_spin):
+        for spin in (self._width_spin, self._height_spin, self._font_spin, self._box_whis_spin):
             spin.valueChanged.connect(self._render)
-        for check in (self._grid_cb, self._legend_cb):
+        for check in (self._grid_cb, self._legend_cb, self._box_fliers_cb, self._box_notch_cb):
             check.toggled.connect(self._render)
         return body
 
@@ -253,6 +267,9 @@ class PlotPanel(QWidget):
             legend=self._legend_cb.isChecked(),
             legend_loc=self._legend_loc_combo.currentData(),
             font_size=self._font_spin.value(),
+            box_whis=self._box_whis_spin.value(),
+            box_showfliers=self._box_fliers_cb.isChecked(),
+            box_notch=self._box_notch_cb.isChecked(),
         )
 
     # ---------------------------------------------------------------- render

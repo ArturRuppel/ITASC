@@ -7,7 +7,7 @@ via :func:`discover_catalog_entries`.
 Each row anchors on a ``position_path`` — the **absolute** path to the position
 folder — and stores every file (the contact-analysis ``.h5``, cell labels,
 nucleus labels) as a path **relative to that folder** (e.g.
-``4_contact_analysis/contact_analysis.h5``). Persisting the position folder lets
+``aggregate_quantification/contact_analysis.h5``). Persisting the position folder lets
 downstream tools (notably the NLS classifier) resolve their own per-position
 relative paths against it. Older catalogs that lack ``position_path`` still load:
 their file paths are resolved relative to the CSV file's directory.
@@ -20,8 +20,15 @@ import os
 from pathlib import Path
 from collections.abc import Iterable
 
+from .quantifier import OUTPUT_SUBDIR
+
 STATUS_READY = "ready"
 STATUS_INCOMPLETE = "incomplete"
+
+#: The contacts ``.h5`` is a *derived* Aggregate Quantification output, not a
+#: discovery input — every position's path is the fixed default location under
+#: the shared :data:`OUTPUT_SUBDIR` folder.
+CONTACT_ANALYSIS_RELPATH = f"{OUTPUT_SUBDIR}/contact_analysis.h5"
 
 # Columns that identify a catalog row; validated on load. ``position_path``, the
 # label-path and notes columns are optional so older catalogs (and hand-written
@@ -172,7 +179,6 @@ def discover_catalog_entries(
     root: Path | str,
     *,
     cell_name: str | None = None,
-    contact_name: str = "contact_analysis.h5",
     nucleus_name: str | None = None,
 ) -> list[dict]:
     """Find catalog entries under *root* by file name / relative path.
@@ -181,17 +187,18 @@ def discover_catalog_entries(
     cell labels and/or nucleus labels, each optional (*cell_name* / *nucleus_name*
     are a bare file name or a path relative to the position folder). A folder is
     registered once and carries whichever inputs it has; the others are ``None``.
-    The contact-analysis ``.h5`` is a derived **output**, not an anchor: its path
-    is computed from *contact_name* relative to the position folder and need not
-    exist yet (it is built later). The returned dicts carry the discovered paths
-    but no metadata (date / condition / notes) — that is assigned before adding to
-    the catalog.
+    The contact-analysis ``.h5`` is a derived Aggregate Quantification **output**,
+    not a discovery input: every position's contact path is the fixed default
+    location (:data:`CONTACT_ANALYSIS_RELPATH`) and need not exist yet (it is built
+    later by the contacts quantifier). The returned dicts carry the discovered
+    paths but no metadata (date / condition / notes) — that is assigned before
+    adding to the catalog.
     """
     root = Path(root)
     if not root.is_dir():
         return []
 
-    contact_rel = Path(contact_name or "contact_analysis.h5")
+    contact_rel = Path(CONTACT_ANALYSIS_RELPATH)
     # position_dir -> {input_key: resolved_path}, grouped so a folder with several
     # inputs becomes one entry.
     by_position: dict[Path, dict] = {}

@@ -501,7 +501,7 @@ class CellFlowMainWidget(QWidget):
             self.contact_analysis_widget.set_context(
                 cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
                 nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
-                out_path=pos_dir / "4_contact_analysis" / "contact_analysis.h5",
+                out_path=pos_dir / "aggregate_quantification" / "contact_analysis.h5",
                 status_root=pos_dir,
             )
         else:

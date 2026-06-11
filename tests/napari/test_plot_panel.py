@@ -91,9 +91,15 @@ def test_specs_reflect_controls():
 
     panel._palette_combo.setCurrentText("Dark2")
     panel._grid_cb.setChecked(True)
+    panel._box_whis_spin.setValue(3.0)
+    panel._box_fliers_cb.setChecked(False)
+    panel._box_notch_cb.setChecked(True)
     style = panel.current_style()
     assert style.palette == "Dark2"
     assert style.grid is True
+    assert style.box_whis == 3.0
+    assert style.box_showfliers is False
+    assert style.box_notch is True
     panel.deleteLater()
     app.processEvents()
 

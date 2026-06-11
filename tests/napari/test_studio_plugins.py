@@ -27,9 +27,12 @@ def test_available_studio_plugins_has_contacts_builder_and_analysis_plugins():
 def test_group_plugin_suppresses_its_quantitys_auto_builder():
     entries = sp.available_studio_plugins(build_callback=lambda *a: None)
     ids = {e.plugin_id for e in entries}
-    # The Cell Shape group plugin owns cell_shape's build, so no auto-builder.
-    assert "cell_shape" in ids
+    # The Shape group plugin owns all three shape quantities, so none get a
+    # generic auto-builder.
+    assert "shape" in ids
     assert "build:cell_shape" not in ids
+    assert "build:nucleus_shape" not in ids
+    assert "build:shape_relational" not in ids
     # Quantities without a dedicated plugin keep their free auto-builder.
     assert "build:contacts" in ids
 
@@ -64,7 +67,7 @@ def test_output_for_record_routes_each_quantifier_to_its_own_artifact():
     )
     # The second quantifier derives its own path — never the contacts artifact.
     assert sp.output_for_record(CellShapeQuantifier(), record) == Path(
-        "/study/p1/cell_shape.h5"
+        "/study/p1/aggregate_quantification/cell_shape.csv"
     )
 
 

@@ -9,6 +9,12 @@ from cellflow.aggregate_quantification.quantifier import (
 )
 from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
 from cellflow.aggregate_quantification.quantifiers.cell_shape import CellShapeQuantifier
+from cellflow.aggregate_quantification.quantifiers.nucleus_shape import (
+    NucleusShapeQuantifier,
+)
+from cellflow.aggregate_quantification.quantifiers.shape_relational import (
+    ShapeRelationalQuantifier,
+)
 
 
 def test_available_quantifiers_discovers_contacts():
@@ -18,14 +24,67 @@ def test_available_quantifiers_discovers_contacts():
     assert "contacts" in ids
 
 
-def test_available_quantifiers_discovers_cell_shape():
+def test_available_quantifiers_discovers_shape_trio():
     ids = {cls.quantity_id for cls in available_quantifiers()}
-    assert "cell_shape" in ids
+    assert {"cell_shape", "nucleus_shape", "shape_relational"} <= ids
+
+
+def test_shape_quantifiers_nest_outputs_under_aggregate_quantification(tmp_path):
+    inputs = PositionInputs(position_dir=tmp_path)
+    assert CellShapeQuantifier().default_output(inputs) == (
+        tmp_path / "aggregate_quantification" / "cell_shape.csv"
+    )
+    assert NucleusShapeQuantifier().default_output(inputs) == (
+        tmp_path / "aggregate_quantification" / "nucleus_shape.csv"
+    )
+    assert ShapeRelationalQuantifier().default_output(inputs) == (
+        tmp_path / "aggregate_quantification" / "shape_relational.csv"
+    )
+
+
+def test_nucleus_shape_quantifier_requires_and_reads_nucleus_labels(tmp_path):
+    frame = np.zeros((6, 8), dtype=np.uint16)
+    frame[:, :4] = 1
+    frame[:, 4:] = 2
+    nuc_path = tmp_path / "nuclei.tif"
+    tifffile.imwrite(nuc_path, np.stack([frame, frame]))
+
+    q = NucleusShapeQuantifier()
+    assert q.requires == ("nucleus_labels_path", "pixel_size_um")
+    # Cell labels alone do not satisfy a nucleus-shape build.
+    assert q.can_build(
+        PositionInputs(position_dir=tmp_path, cell_labels_path=nuc_path, pixel_size_um=1.0)
+    ) is False
+    inputs = PositionInputs(
+        position_dir=tmp_path, nucleus_labels_path=nuc_path, pixel_size_um=1.0
+    )
+    out = q.default_output(inputs)
+    assert q.can_build(inputs) is True
+
+    written = q.build(inputs, out)
+    assert written == out and out.name == "nucleus_shape.csv" and q.is_built(out)
+    assert q.object_table(out)["cell_id"].tolist() == [1, 2, 1, 2]
+
+
+def test_shape_relational_quantifier_requires_both_labels_and_pixel_size(tmp_path):
+    q = ShapeRelationalQuantifier()
+    assert q.requires == ("cell_labels_path", "nucleus_labels_path", "pixel_size_um")
+    only_cell = PositionInputs(
+        position_dir=tmp_path, cell_labels_path=tmp_path / "c.tif", pixel_size_um=1.0
+    )
+    assert q.can_build(only_cell) is False
+    both = PositionInputs(
+        position_dir=tmp_path,
+        cell_labels_path=tmp_path / "c.tif",
+        nucleus_labels_path=tmp_path / "n.tif",
+        pixel_size_um=1.0,
+    )
+    assert q.can_build(both) is True
 
 
 def test_cell_shape_quantifier_default_output_name(tmp_path):
     q = CellShapeQuantifier()
-    assert q.default_output(PositionInputs(position_dir=tmp_path)).name == "cell_shape.h5"
+    assert q.default_output(PositionInputs(position_dir=tmp_path)).name == "cell_shape.csv"
 
 
 def test_cell_shape_quantifier_build_read_and_object_table(tmp_path):

@@ -122,7 +122,6 @@ def test_build_position_contact_analysis_writes_schema_and_references_label_path
         assert list(cells.keys()) == [
             "frame",
             "cell_id",
-            "class_label",
             "area",
             "centroid_y",
             "centroid_x",
@@ -134,7 +133,8 @@ def test_build_position_contact_analysis_writes_schema_and_references_label_path
         ]
         assert cells["frame"][:].tolist() == [0, 0, 1, 1]
         assert cells["cell_id"][:].tolist() == [1, 2, 1, 2]
-        assert cells["class_label"].asstr()[:].tolist() == ["", "", "", ""]
+        # The subpopulation label is no longer carried in the H5 (sidecar CSV now).
+        assert "class_label" not in cells
 
         edges = h5["edges/table"]
         assert set(edges.keys()) == {

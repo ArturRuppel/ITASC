@@ -65,9 +65,11 @@ class PositionSource:
 
     ``metadata`` (condition, date, position_id, …) is broadcast onto every row.
     ``table`` is the quantity's :meth:`Quantifier.object_table`. ``join_table``
-    (optional) is another quantity's object_table — e.g. the contacts ``cells``
-    table — from which ``join_columns`` are left-joined on ``(frame, cell_id)``
-    *within this position*, so cell ids never collide across positions.
+    (optional) supplies ``join_columns`` to left-join *within this position* (so
+    cell ids never collide across positions) on whichever key columns it carries:
+    a per-frame source joins on ``(frame, cell_id)``; a per-track source — e.g.
+    the NLS sidecar CSV's ``{cell_id, class_label}`` — joins on ``cell_id`` alone
+    and broadcasts its label across every frame of that cell.
     """
 
     metadata: Mapping[str, Any]
@@ -127,6 +129,16 @@ class StyleSpec:
     #: Base font size; titles/labels/ticks scale off it.
     font_size: float = 10.0
 
+    # -- Box-plot knobs (ignored by every other plot type) -------------------
+    #: Whisker reach as a multiple of the IQR (matplotlib/seaborn ``whis``):
+    #: 1.5 is the Tukey default; larger values push the whiskers toward the
+    #: full data range, leaving fewer points flagged as outliers.
+    box_whis: float = 1.5
+    #: Draw points beyond the whiskers as individual outlier markers.
+    box_showfliers: bool = True
+    #: Notch the box around the median to show its ~95% confidence interval.
+    box_notch: bool = False
+
 
 def pool_object_tables(sources: Iterable[PositionSource]) -> pd.DataFrame:
     """Concatenate per-position tables into one annotated, tidy DataFrame.
@@ -164,13 +176,19 @@ def _join_position(
     join_columns: tuple[str, ...],
 ) -> pd.DataFrame:
     join_df = pd.DataFrame({k: np.asarray(v) for k, v in join_table.items()})
-    # A position without the join source (no contacts artifact) yields no usable
-    # join keys; leave its rows unjoined (filled to UNCLASSIFIED after the concat).
-    if not all(key in join_df.columns for key in KEY_COLUMNS):
+    # Join on whichever key columns the join table carries — but it must at least
+    # key on ``cell_id``. A per-frame source keys on ``(frame, cell_id)``; a
+    # per-track source (e.g. the NLS sidecar CSV, one row per cell) keys on
+    # ``cell_id`` alone and broadcasts its label across every frame of that cell.
+    keys = [key for key in KEY_COLUMNS if key in join_df.columns]
+    # A position without a usable join source (no artifact / CSV) yields no
+    # ``cell_id`` key; leave its rows unjoined (filled to UNCLASSIFIED after the
+    # concat).
+    if "cell_id" not in keys:
         return frame
-    keep = [c for c in (*KEY_COLUMNS, *join_columns) if c in join_df.columns]
-    join_df = join_df[keep].drop_duplicates(subset=list(KEY_COLUMNS))
-    return frame.merge(join_df, on=list(KEY_COLUMNS), how="left")
+    keep = [c for c in (*keys, *join_columns) if c in join_df.columns]
+    join_df = join_df[keep].drop_duplicates(subset=keys)
+    return frame.merge(join_df, on=keys, how="left")
 
 
 def aggregate(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
@@ -345,7 +363,11 @@ def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSp
         )
         ax.set_ylabel("count")
     elif spec.plot == "box":
-        sns.boxplot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
+        sns.boxplot(
+            data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False,
+            whis=style_spec.box_whis, showfliers=style_spec.box_showfliers,
+            notch=style_spec.box_notch,
+        )
     elif spec.plot == "violin":
         sns.violinplot(
             data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False,

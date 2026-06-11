@@ -12,7 +12,7 @@ Canonical file layout under ``<pos_dir>/``:
     3_cell/               — filtered_dp.tif, foreground_masks.tif,
                             contours.tif, foreground_scores.tif,
                             tracked_labels.tif
-    4_contact_analysis/   — contact_analysis.h5
+    aggregate_quantification/  — contact_analysis.h5 (+ shape CSVs, NLS CSV)
 """
 from __future__ import annotations
 
