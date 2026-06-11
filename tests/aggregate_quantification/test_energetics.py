@@ -20,21 +20,15 @@ def _analysis(edges, t1_events) -> PositionContactAnalysis:
     )
 
 
-def _edges(rows, labels=None):
-    """Column-major edges table from (frame, cell_a, cell_b, length) rows.
-
-    *labels* (optional) is a parallel list of ``edge_label`` strings.
-    """
+def _edges(rows):
+    """Column-major edges table from (frame, cell_a, cell_b, length) rows."""
     frame, a, b, length = zip(*rows)
-    table = {
+    return {
         "frame": np.asarray(frame, dtype=np.int64),
         "cell_a": np.asarray(a, dtype=np.int64),
         "cell_b": np.asarray(b, dtype=np.int64),
         "length": np.asarray(length, dtype=float),
     }
-    if labels is not None:
-        table["edge_label"] = np.asarray(labels, dtype=object)
-    return table
 
 
 def _one_event(losing=(1, 2), gaining=(3, 4)):
@@ -126,29 +120,39 @@ def test_fragments_joined_before_pixel_scaling():
     assert table["signed_length"].tolist() == [-3.5]  # (3+4) summed, then ×0.5
 
 
-def test_contact_type_carries_edge_label_per_pair():
-    # Losing pair (1,2) tagged "AB", gaining pair (3,4) tagged "CD".
-    edges = _edges(
-        [(0, 1, 2, 5.0), (1, 3, 4, 5.0)],
-        labels=["AB", "CD"],
+def test_contact_type_is_the_nls_transition_pair():
+    # Losing pair (1,2) both "A"; gaining pair (3,4) is "A","B" → "A-A→A-B" on
+    # BOTH lobes of the event so a grouped curve stays two-sided.
+    edges = _edges([(0, 1, 2, 5.0), (1, 1, 2, 2.0), (2, 3, 4, 2.0), (3, 3, 4, 5.0)])
+    labels = {1: "A", 2: "A", 3: "A", 4: "B"}
+    table = signed_central_junction_lengths(_analysis(edges, _one_event()), labels=labels)
+    role = table["role"]
+    contact_type = table["contact_type"]
+    # One transition label, shared across the negative (losing) and positive
+    # (gaining) sides of the event.
+    assert set(contact_type[role == "losing"]) == {"A-A→A-B"}
+    assert set(contact_type[role == "gaining"]) == {"A-A→A-B"}
+
+
+def test_contact_type_pair_is_orientation_independent():
+    # Edge stored as (2,1) and labels B,A → still sorted "A-B".
+    edges = _edges([(0, 2, 1, 5.0)])
+    table = signed_central_junction_lengths(
+        _analysis(edges, _one_event(losing=(1, 2))), labels={1: "B", 2: "A"}
     )
-    table = signed_central_junction_lengths(_analysis(edges, _one_event()))
-    by_role = dict(zip(table["role"].tolist(), table["contact_type"].tolist()))
-    assert by_role == {"losing": "AB", "gaining": "CD"}
+    assert table["contact_type"].tolist()[0].startswith("A-B→")
 
 
-def test_contact_type_is_first_nonempty_label_across_fragments():
-    # Two fragments of the losing pair in frame 0: one blank, one "AB" → "AB".
-    edges = _edges(
-        [(0, 1, 2, 3.0), (0, 1, 2, 4.0)],
-        labels=["", "AB"],
+def test_contact_type_missing_cell_is_unclassified():
+    edges = _edges([(0, 1, 2, 5.0)])
+    table = signed_central_junction_lengths(
+        _analysis(edges, _one_event()), labels={1: "A"}  # cell 2 absent
     )
-    table = signed_central_junction_lengths(_analysis(edges, _one_event()))
-    assert table["contact_type"].tolist() == ["AB"]
+    assert table["contact_type"].tolist()[0].startswith("A-unclassified→")
 
 
-def test_contact_type_empty_when_unlabelled():
-    edges = _edges([(0, 1, 2, 5.0)])  # no labels column
+def test_contact_type_empty_without_labels():
+    edges = _edges([(0, 1, 2, 5.0)])  # no labels map passed
     table = signed_central_junction_lengths(_analysis(edges, _one_event()))
     assert table["contact_type"].tolist() == [""]
 

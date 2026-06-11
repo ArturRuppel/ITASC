@@ -36,7 +36,7 @@ class _FakeViewer:
         self.layers: list = []
 
 
-def _write_contacts_h5(path, edges_rows, *, losing=(1, 2), gaining=(3, 4), labels=None) -> None:
+def _write_contacts_h5(path, edges_rows, *, losing=(1, 2), gaining=(3, 4)) -> None:
     """A minimal contact_analysis.h5 matching the reader schema."""
     frame, a, b, length = zip(*edges_rows) if edges_rows else ((), (), (), ())
     with h5py.File(path, "w") as h5:
@@ -49,11 +49,6 @@ def _write_contacts_h5(path, edges_rows, *, losing=(1, 2), gaining=(3, 4), label
         edges.create_dataset("cell_a", data=np.asarray(a, dtype=np.int64))
         edges.create_dataset("cell_b", data=np.asarray(b, dtype=np.int64))
         edges.create_dataset("length", data=np.asarray(length, dtype=float))
-        if labels is not None:
-            edges.create_dataset(
-                "edge_label", data=np.asarray(labels, dtype=object),
-                dtype=h5py.string_dtype(),
-            )
         events = h5.create_group("t1_events/table")
         events.create_dataset("t1_event_id", data=np.array([7], dtype=np.int64))
         events.create_dataset("losing_cell_a", data=np.array([losing[0]], dtype=np.int64))
@@ -138,45 +133,50 @@ def test_on_pool_done_opens_potential_panel(tmp_path):
     app.processEvents()
 
 
-def _labelled_record(tmp_path, name, condition, labels):
-    pos = tmp_path / name
-    pos.mkdir()
-    h5_path = pos / "contact_analysis.h5"
-    # Losing edge (1,2) frames 0-1, gaining edge (3,4) frames 2-3, each tagged.
-    _write_contacts_h5(
-        h5_path,
-        [(0, 1, 2, 5.0), (1, 1, 2, 2.0), (2, 3, 4, 2.0), (3, 3, 4, 5.0)],
-        labels=labels,
+def _write_nls_csv(position_path, labels):
+    """Write the ``id,label`` NLS sidecar CSV the energetics labels contacts from."""
+    from cellflow.aggregate_quantification.contacts.nls_classification import (
+        nls_classification_csv_path,
     )
-    return {
-        "position_path": pos,
-        "contact_analysis_path": h5_path,
-        "condition": condition,
-        "date": "d1",
-        "id": name,
-    }
+
+    csv_path = nls_classification_csv_path(position_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["id,label", *(f"{cid},{lab}" for cid, lab in labels.items())]
+    csv_path.write_text("\n".join(lines) + "\n")
 
 
-def test_contact_type_group_offered_when_edges_labelled(tmp_path):
+def test_pool_labels_contacts_from_nls_csv(tmp_path):
+    record = _record(tmp_path, "p1", "A")
+    # Losing pair (1,2)=A-A, gaining pair (3,4)=A-B → transition "A-A→A-B".
+    _write_nls_csv(record["position_path"], {1: "A", 2: "A", 3: "A", 4: "B"})
+    pooled = _pool_energetics([record], None)
+    assert set(pooled["contact_type"]) == {"A-A→A-B"}
+
+
+def test_contact_type_group_offered_when_multiple_types(tmp_path):
     app = _app()
     viewer = _FakeViewer()
     plugin = ContactEnergeticsPlugin()
-    # Losing edges tagged "AB", gaining edges tagged "CD" → two contact types.
-    records = [_labelled_record(tmp_path, "p1", "A", ["AB", "AB", "CD", "CD"])]
+    # Two positions whose NLS labels give different transitions → 2 contact types.
+    r1 = _record(tmp_path, "p1", "A")
+    _write_nls_csv(r1["position_path"], {1: "A", 2: "A", 3: "A", 4: "B"})  # A-A→A-B
+    r2 = _record(tmp_path, "p2", "B")
+    _write_nls_csv(r2["position_path"], {1: "B", 2: "B", 3: "A", 4: "B"})  # B-B→A-B
+    records = [r1, r2]
     plugin.set_context(AnalysisContext(records=records, viewer=viewer))
     plugin._on_pool_done(_pool_energetics(records, None))
     panel = plugin._panel
     assert "contact_type" in panel._group_columns
-    assert set(panel._df["contact_type"]) == {"AB", "CD"}
+    assert set(panel._df["contact_type"]) == {"A-A→A-B", "B-B→A-B"}
     plugin.deleteLater()
     app.processEvents()
 
 
-def test_contact_type_group_hidden_when_unlabelled(tmp_path):
+def test_contact_type_group_hidden_when_unclassified(tmp_path):
     app = _app()
     viewer = _FakeViewer()
     plugin = ContactEnergeticsPlugin()
-    records = [_record(tmp_path, "p1", "A")]  # no edge_label → all unlabelled
+    records = [_record(tmp_path, "p1", "A")]  # no NLS csv → contact_type all ""
     plugin.set_context(AnalysisContext(records=records, viewer=viewer))
     plugin._on_pool_done(_pool_energetics(records, None))
     assert "contact_type" not in plugin._panel._group_columns

@@ -212,9 +212,9 @@ def _pool_energetics(records: list[dict], pixel_override: float | None) -> pd.Da
     """Pool the signed central junction-length table across built positions.
 
     Reads each built ``contact_analysis.h5``, derives its signed coordinate (µm
-    when a pixel size resolves, else px), and concatenates. A position whose
-    artifact is missing or yields no T1 edges contributes nothing. Runs off the
-    GUI thread.
+    when a pixel size resolves, else px) labelled by the position's NLS contact
+    types, and concatenates. A position whose artifact is missing or yields no T1
+    edges contributes nothing. Runs off the GUI thread.
     """
     from cellflow.aggregate_quantification.contacts.energetics import (
         signed_central_junction_lengths,
@@ -234,11 +234,33 @@ def _pool_energetics(records: list[dict], pixel_override: float | None) -> pd.Da
             pixel = resolve_pixel_size_um(
                 record.get("position_path"), analysis.cell_tracked_labels_path
             )
-        table = signed_central_junction_lengths(analysis, pixel_size_um=pixel)
+        table = signed_central_junction_lengths(
+            analysis, pixel_size_um=pixel, labels=_nls_labels(record)
+        )
         if table["signed_length"].size == 0:
             continue
         sources.append(PositionSource(metadata=_metadata(record), table=table))
     return pool_object_tables(sources)
+
+
+def _nls_labels(record: dict) -> dict[int, str] | None:
+    """The position's ``cell_id -> NLS label`` map, or None when not classified.
+
+    The contact type each T1 is grouped by is the NLS-subpopulation transition of
+    its junctions, so the landscape reuses the same sidecar CSV the shape and
+    track-dynamics plugins join their ``class_label`` from."""
+    from cellflow.aggregate_quantification.contacts.nls_classification import (
+        nls_classification_csv_path,
+        read_nls_classification_csv,
+    )
+
+    position_path = record.get("position_path")
+    if not position_path:
+        return None
+    csv_path = nls_classification_csv_path(position_path)
+    if not csv_path.is_file():
+        return None
+    return read_nls_classification_csv(csv_path)
 
 
 def _metadata(record: dict) -> dict[str, Any]:

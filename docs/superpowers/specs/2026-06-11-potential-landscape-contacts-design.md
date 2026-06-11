@@ -61,6 +61,15 @@ curated "quad" JSONs; CellFlow derives the same sign directly from the
 7. **Physical units.** `signed_length` is in µm when `pixel_size_um` resolves
    (via `resolve_pixel_size_um`, as Track Dynamics does), else pixels with a
    labeled fallback.
+8. **Contact type = NLS transition pair, per event.** "Contact type" is the
+   just-added NLS-subpopulation contact label (`label_contacts` /
+   `contact_label_for`), **not** the build's `edge_label` (which is blank for
+   cell-cell edges). A T1's losing and gaining junctions are different cell pairs
+   with possibly different labels, so each **event** gets one
+   `"<losing>→<gaining>"` transition label stamped on both lobes — chosen with the
+   user over per-side or losing-only — so a per-type curve still spans `L=0` and
+   `ΔE_eff` stays defined. The plugin sources the `cell_id → label` map from the
+   position's `nls_classification.csv`.
 
 ## Layer 1 — the `potential` plot mode (`plotting.py`)
 
@@ -128,9 +137,10 @@ def signed_central_junction_lengths(
     """Signed central-junction length per T1 event per frame.
 
     Columns: t1_event_id, frame, signed_length, role ("losing"|"gaining"),
-    contact_type (the edge's edge_label tag, "" when unlabelled).
-    signed_length is +length for the gaining edge, −length for the losing edge,
-    in µm when pixel_size_um is given, else pixels.
+    contact_type. signed_length is +length for the gaining edge, −length for the
+    losing edge, in µm when pixel_size_um is given, else pixels. contact_type is
+    the event's NLS transition pair "<losing>→<gaining>" (e.g. "A-A→A-B") from the
+    optional `labels` map (cell_id → NLS label), "" when no labels are given.
     """
 ```
 
@@ -145,10 +155,14 @@ Algorithm:
   without it a fragmented contact would enter the landscape as several short
   samples.
 - Build a lookup from the joined edges: `(frame, frozenset{cell_a, cell_b}) →
-  total_length` (plus the contact type — the first non-empty `edge_label` among
-  the joined fragments).
+  total_length`.
 - For each row of `t1_events` (`t1_event_id`, `losing_cell_a/b`,
   `gaining_cell_a/b`):
+  - Compute **one** `contact_type` for the event: the transition pair
+    `f"{losing}→{gaining}"`, where each side is `contact_label_for(labels, …)` —
+    the sorted NLS-subpopulation pair label of that junction's two cells (shared
+    with `label_contacts`). `""` when no `labels` map. **The same label is
+    stamped on both lobes** (see decision 8) so a grouped curve stays two-sided.
   - For **every** frame where the losing pair `{lA,lB}` has an edge: emit a row
     `role="losing"`, `signed_length = −length` (× `pixel_size_um` if given).
   - For **every** frame where the gaining pair `{gA,gB}` has an edge: emit a row
@@ -181,15 +195,19 @@ A thin `AnalysisPlugin`, same shape as Track Dynamics' pool-and-launch path
 - On click, a `thread_worker` pools every in-scope record:
   - `analysis = ctx.load(record)` (cached loader → `PositionContactAnalysis`).
   - `pixel = resolve_pixel_size_um(record_position_dir)` (best-effort; None ok).
-  - `table = signed_central_junction_lengths(analysis, pixel_size_um=pixel)`.
+  - `table = signed_central_junction_lengths(analysis, pixel_size_um=pixel,
+    labels=read_nls_classification_csv(...))`.
   - Wrap as `PositionSource(metadata={condition,date,position_id}, table=table)`.
   - `pool_object_tables(sources)` → pooled DataFrame.
 - Opens `PlotPanel` (via `PlotDockTabs`, exactly like Track Dynamics) with:
   - `value_columns = ("signed_length",)`,
   - `group_columns = ("condition", "date", "position_id")` (metadata only — the
     table has no `class_label`/`cell_id`), **plus `"contact_type"` when the
-    pooled edges carry >1 label** (so a "group by contact type" checkbox appears
-    only when the edges are tagged; blanks read as `"unlabelled"`),
+    pooled samples carry >1 transition type** (so a "group by contact type"
+    checkbox appears only when the position is NLS-classified; blanks read as
+    `"unlabelled"`). The plugin reads each position's `nls_classification.csv`
+    (via `read_nls_classification_csv`, as shape / track-dynamics do) and passes
+    the `cell_id → label` map into the energetics.
   - the plot type **defaulted to `potential`**.
 - Matplotlib-Qt availability probe + disabled-button fallback, copied from
   Track Dynamics.
@@ -205,7 +223,8 @@ energetics table is plugin-pooled, never the default object table.
 | File | Change |
 |---|---|
 | `aggregate_quantification/plotting.py` | `potential_landscape`, `effective_barrier`, `potential_table`, `adaptive_bin_edges` helpers; `PlotSpec.bin_mode`; `_CURVE_PLOTS`, `_plot_potential`; `build_figure`/`pickable_points` routing; exports. |
-| `aggregate_quantification/contacts/energetics.py` | **new** — `signed_central_junction_lengths`. |
+| `aggregate_quantification/contacts/energetics.py` | **new** — `signed_central_junction_lengths` (`labels` map → `contact_type` transition pair). |
+| `aggregate_quantification/contacts/contact_labels.py` | factor out shared `contact_label_for(labels, a, b)` (used by `label_contacts` + energetics). |
 | `aggregate_quantification/contacts/__init__.py` | export the new function. |
 | `napari/aggregate_quantification/plugins/contact_energetics.py` | **new** — "Potential landscape" plugin. |
 | `napari/aggregate_quantification/plot_panel.py` | surface `potential` in the plot-type combo; "Tighter bins near 0" checkbox → `bin_mode`; `default_plot` / `default_adaptive_bins` params. |
@@ -233,11 +252,13 @@ energetics table is plugin-pooled, never the default object table.
   contact (several rows sharing a `(frame, pair)`) sums to one total-length
   sample, not one per fragment**; pixel-size scales magnitude (after the join);
   an event whose edges are absent is skipped; empty input → empty typed table;
-  **`contact_type` carries the pair's `edge_label` (first non-empty across joined
-  fragments; `""` when unlabelled or column absent)**.
-- **`contact_energetics` contact-type grouping**: the plugin adds `contact_type`
-  to the panel's group columns only when the pooled edges carry >1 label, and
-  maps blanks to `"unlabelled"`.
+  **`contact_type` is the NLS transition pair `"<losing>→<gaining>"` shared by
+  both lobes of an event (sorted/orientation-independent; `unclassified` for a
+  cell absent from `labels`; `""` when no `labels`)**.
+- **`contact_energetics` contact-type grouping**: the plugin reads the NLS
+  sidecar CSV per position and passes the map in; it adds `contact_type` to the
+  panel's group columns only when the pooled samples carry >1 transition type,
+  and maps blanks to `"unlabelled"`.
 - **`contact_energetics` plugin**: pools a fake two-position context and launches
   the panel headlessly (existing matplotlib-Qt-guarded launch pattern); disabled
   state when the backend is unavailable.
