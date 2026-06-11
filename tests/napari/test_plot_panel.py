@@ -157,3 +157,44 @@ def test_axis_range_fields_feed_style_and_render():
     panel._render()
     assert panel._canvas.figure.axes[0].get_ylim() == (0.0, 100.0)
     panel.deleteLater(); app.processEvents()
+
+
+def test_pick_resolves_identity_and_enables_load():
+    from pathlib import Path
+    from cellflow.napari.aggregate_quantification.plot_panel import LoadTarget, PlotPanel
+    from cellflow.aggregate_quantification.plotting import pickable_points
+    app = _app()
+    seen = {}
+
+    def resolver(identity):
+        seen.update(identity)
+        return LoadTarget(path=Path("/tmp/labels.tif"), kind="labels",
+                          frame=identity.get("frame"), cell_id=identity.get("cell_id"),
+                          identity=identity)
+
+    panel = PlotPanel(_df(), value_columns=("area",),
+                      group_columns=("condition", "date", "position_id", "class_label", "frame"),
+                      target_resolver=resolver)
+    panel._plot_combo.setCurrentText("strip")
+    panel._render()
+    pts = pickable_points(panel._df, panel.current_spec(), panel.current_style())
+    p0 = pts[0]
+    cat_x = panel._category_x().get(p0.category, 0)
+    row = panel._nearest_row_index(cat_x, p0.value)
+    assert row == p0.row_index
+    panel._select_row(row)
+    assert panel._load_btn.isEnabled()
+    assert "/tmp/labels.tif" in panel._path_label.text()
+    assert seen["cell_id"] == int(panel._df.iloc[row]["cell_id"])
+    emitted = []
+    panel.load_requested.connect(emitted.append)
+    panel._load_btn.click()
+    assert emitted and emitted[0].path == Path("/tmp/labels.tif")
+    panel.deleteLater(); app.processEvents()
+
+
+def test_no_resolver_means_no_load_ui():
+    app = _app()
+    panel = _panel()                       # no target_resolver
+    assert not panel._load_btn.isEnabled()
+    panel.deleteLater(); app.processEvents()

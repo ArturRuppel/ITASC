@@ -19,6 +19,8 @@ hands it a different DataFrame + column roles.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib as mpl
@@ -44,14 +46,31 @@ from cellflow.aggregate_quantification.plotting import (
     StyleSpec,
     aggregate,
     build_figure,
+    pickable_points,
     write_csv,
 )
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
 
-#: Identity columns carried by a pooled table; the (future) selection payload is
-#: these for the picked rows. Only the ones present in the snapshot are used.
-_IDENTITY_COLUMNS = ("position_id", "frame", "cell_id")
+#: Identity columns carried by a pooled table; the selection payload is these for
+#: the picked rows (``frame_start`` lets per-track points report their start
+#: frame). Only the ones present in the snapshot are used.
+_IDENTITY_COLUMNS = ("position_id", "frame", "frame_start", "cell_id")
+
+
+@dataclass(frozen=True)
+class LoadTarget:
+    """A picked point's input data + where to look in it (napari-free).
+
+    Produced by a plugin-supplied resolver, carried out of the panel via
+    ``load_requested``; the plugin's loader turns it into viewer layers.
+    """
+
+    path: Path
+    kind: str  # "labels"
+    frame: int | None
+    cell_id: int | None
+    identity: dict
 
 _PLOT_TYPES = ("hist", "box", "violin", "strip", "swarm", "bar", "line")
 #: Named qualitative palettes offered for the group colors (seaborn names).
@@ -67,16 +86,18 @@ _STYLE_CANDIDATES = (
 class PlotPanel(QWidget):
     """A self-contained plotting dock bound to one snapshot DataFrame."""
 
-    #: Dormant seam for the future napari highlight: emits the identity rows
-    #: (list of plain dicts) of picked points. Nothing connects it today; see the
-    #: design's "Future" section.
+    #: Emits the identity dict of a picked point (plain Python scalars). Wired to
+    #: the napari highlight via a plugin-supplied resolver; harmless when unwired.
     selection_changed = Signal(object)
+    #: Emits a :class:`LoadTarget` when the user clicks the Load button.
+    load_requested = Signal(object)
 
     def __init__(
         self,
         dataframe: pd.DataFrame,
         value_columns: tuple[str, ...],
         group_columns: tuple[str, ...],
+        target_resolver: Callable[[dict], LoadTarget | None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -84,6 +105,8 @@ class PlotPanel(QWidget):
         self._value_columns = tuple(value_columns)
         self._group_columns = tuple(group_columns)
         self._identity_columns = tuple(c for c in _IDENTITY_COLUMNS if c in dataframe.columns)
+        self._target_resolver = target_resolver
+        self._selected_target: LoadTarget | None = None
         self._canvas: FigureCanvasQTAgg | None = None
         self._toolbar: NavigationToolbar2QT | None = None
 
@@ -95,6 +118,16 @@ class PlotPanel(QWidget):
 
         self._canvas_holder = QVBoxLayout()
         layout.addLayout(self._canvas_holder, 1)
+
+        self._path_label = QLabel("Click a point to select its input data.")
+        status_label(self._path_label, muted=True)
+        self._path_label.setWordWrap(True)
+        layout.addWidget(self._path_label)
+        self._load_btn = QPushButton("Load in viewer")
+        action_button(self._load_btn)
+        self._load_btn.setEnabled(False)
+        self._load_btn.clicked.connect(self._on_load_clicked)
+        layout.addWidget(self._load_btn)
 
         layout.addLayout(self._build_exports())
         self._status = QLabel(f"{len(self._df)} row(s) in snapshot.")
@@ -313,6 +346,64 @@ class PlotPanel(QWidget):
         self._canvas_holder.addWidget(toolbar)
         self._canvas_holder.addWidget(canvas, 1)
         self._canvas, self._toolbar = canvas, toolbar
+        canvas.mpl_connect("button_press_event", self._on_pick)
+        self._clear_selection()
+
+    # -------------------------------------------------------------- click-to-load
+    def _category_x(self) -> dict[str, float]:
+        """Map each drawn x-axis category label to its x position."""
+        if self._canvas is None:
+            return {}
+        ax = self._canvas.figure.axes[0]
+        ticks = ax.get_xticks()
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        return {lab: float(x) for x, lab in zip(ticks, labels) if lab}
+
+    def _nearest_row_index(self, xdata: float, ydata: float) -> int | None:
+        """Row whose plotted point is nearest the click: snap to the x-category,
+        then the closest value within it. Returns None when nothing is pickable."""
+        pts = pickable_points(self._df, self.current_spec(), self.current_style())
+        if not pts:
+            return None
+        cat_x = self._category_x()
+        if cat_x:
+            cat = min(cat_x, key=lambda c: abs(cat_x[c] - xdata))  # snap to category
+            candidates = [p for p in pts if p.category == cat]
+        else:
+            candidates = list(pts)  # single, ungrouped bucket
+        if not candidates:
+            return None
+        return min(candidates, key=lambda p: abs(p.value - ydata)).row_index
+
+    def _on_pick(self, event) -> None:
+        if self._target_resolver is None or event.inaxes is None or event.ydata is None:
+            return
+        row = self._nearest_row_index(event.xdata, event.ydata)
+        if row is not None:
+            self._select_row(row)
+
+    def _select_row(self, row: int) -> None:
+        record = self._df.iloc[row]
+        identity = {c: _py(record[c]) for c in self._identity_columns}
+        self.selection_changed.emit(identity)
+        target = self._target_resolver(identity) if self._target_resolver else None
+        self._selected_target = target
+        if target is None:
+            self._path_label.setText("No input data found for this point.")
+            self._load_btn.setEnabled(False)
+        else:
+            self._path_label.setText(str(target.path))
+            self._load_btn.setEnabled(True)
+
+    def _clear_selection(self) -> None:
+        self._selected_target = None
+        if hasattr(self, "_load_btn"):
+            self._load_btn.setEnabled(False)
+            self._path_label.setText("Click a point to select its input data.")
+
+    def _on_load_clicked(self) -> None:
+        if self._selected_target is not None:
+            self.load_requested.emit(self._selected_target)
 
     # ---------------------------------------------------------------- exports
     def _save_path(self, caption: str, filt: str) -> Path | None:
@@ -386,3 +477,10 @@ def _parse_float(text: str) -> float | None:
         return float(text)
     except ValueError:
         return None
+
+
+def _py(value):
+    try:
+        return value.item()  # numpy scalar -> Python scalar
+    except AttributeError:
+        return value
