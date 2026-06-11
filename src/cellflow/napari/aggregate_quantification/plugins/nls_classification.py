@@ -5,7 +5,7 @@ aggregating a nucleus-localised marker image (e.g. an NLS reporter) over each
 nuclear track. It runs in two modes, driven by the catalogue selection:
 
 * **single position** — a single stateful action button first reads *Classify*:
-  it measures one median intensity per nuclear track
+  it measures one intensity scalar (90th pct of per-frame medians) per nuclear track
   (:func:`cellflow.aggregate_quantification.measure_track_nls_intensity`),
   auto-places a threshold (:func:`~cellflow.aggregate_quantification.auto_threshold`),
   and reveals a results pane with a per-track scatter the user can drag to
@@ -91,7 +91,7 @@ class NLSClassificationPlugin(AnalysisPlugin):
         #: Measurement state for the current position.
         self._measurements: dict[int, Any] = {}
         self._track_ids: np.ndarray = np.empty(0, dtype=int)
-        self._medians: np.ndarray = np.empty(0, dtype=float)
+        self._intensities: np.ndarray = np.empty(0, dtype=float)
         self._scatter_x: np.ndarray = np.empty(0, dtype=float)
         self._nucleus_labels: np.ndarray | None = None
         self._assignments: dict[int, str] = {}
@@ -104,13 +104,9 @@ class NLSClassificationPlugin(AnalysisPlugin):
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(6)
 
-        # The panel body is a vertical splitter: a top pane of always-visible
-        # controls and a bottom "results" pane that only appears once a position
-        # has been classified, so its scatter never wastes space when empty.
-        self._splitter = QSplitter(Qt.Vertical)
-        layout.addWidget(self._splitter, 1)
-
-        # ----------------------------------------------------------- top pane
+        # --------------------------------------------------------- top controls
+        # Always-visible controls, docked at the top at their natural height so
+        # the results window below can sit tightly beneath them.
         top = QWidget()
         top_layout = QVBoxLayout(top)
         top_layout.setContentsMargins(0, 0, 0, 0)
@@ -153,12 +149,19 @@ class NLSClassificationPlugin(AnalysisPlugin):
         status_label(self._status_lbl)
         top_layout.addWidget(self._status_lbl)
 
-        top_layout.addStretch()
-        self._splitter.addWidget(top)
+        layout.addWidget(top)
 
-        # ------------------------------------------------------- results pane
-        # Threshold spinbox + scatter + counts: all only meaningful after a
-        # classification, so they share one pane that is hidden until then.
+        # ----------------------------------------------------- results window
+        # Threshold spinbox + scatter + counts: meaningful only after a
+        # classification, so they live in a pane hidden until then. To dock that
+        # pane tightly under the controls yet keep it resizable from its *bottom*
+        # edge, it is the top child of a vertical splitter whose bottom child is
+        # an empty spacer the scatter grows into — so the handle is the scatter's
+        # own bottom edge.
+        self._splitter = QSplitter(Qt.Vertical)
+        self._splitter.setChildrenCollapsible(False)
+        layout.addWidget(self._splitter, 1)
+
         self._results_pane = QWidget()
         results_layout = QVBoxLayout(self._results_pane)
         results_layout.setContentsMargins(0, 0, 0, 0)
@@ -185,6 +188,10 @@ class NLSClassificationPlugin(AnalysisPlugin):
         self._splitter.addWidget(self._results_pane)
         self._results_pane.setVisible(False)
 
+        # Empty bottom pane: dragging the handle above it (the scatter's bottom
+        # edge) resizes the scatter; this spacer absorbs the freed space.
+        self._splitter.addWidget(QWidget())
+
         self._update_enabled()
 
     # ----------------------------------------------------------------- UI helpers
@@ -206,9 +213,15 @@ class NLSClassificationPlugin(AnalysisPlugin):
             status_label(placeholder, muted=True)
             return placeholder
         self._plot = pg.PlotWidget()
-        self._plot.setLabel("left", "Median NLS intensity")
-        self._plot.getAxis("bottom").setStyle(showValues=False)
+        self._plot.setMinimumHeight(140)
+        self._plot.setLabel("left", "Track NLS intensity (90th pct of per-frame median)")
+        # The x position is meaningless jitter, so the bottom axis carries no
+        # information — hide it entirely rather than leave a clipped strip of
+        # ticks/label, and give the scatter that vertical room back.
+        self._plot.hideAxis("bottom")
         self._plot.setMouseEnabled(x=False, y=True)
+        # Pin a padded x range so edge markers are never clipped against the border.
+        self._plot.setXRange(-0.6, 0.6, padding=0)
         self._scatter = pg.ScatterPlotItem(size=8, pen=pg.mkPen(None))
         self._plot.addItem(self._scatter)
         self._threshold_line = pg.InfiniteLine(
@@ -337,7 +350,7 @@ class NLSClassificationPlugin(AnalysisPlugin):
             )
             self._action_btn.setText("Classify")
             self._action_btn.setEnabled(bool(can_measure))
-        self._threshold_spin.setEnabled(self._medians.size > 0)
+        self._threshold_spin.setEnabled(self._intensities.size > 0)
 
     def _on_action(self) -> None:
         """Route the one button to measure / write / batch by current state."""
@@ -356,18 +369,21 @@ class NLSClassificationPlugin(AnalysisPlugin):
         self._update_enabled()
 
     def _show_results_pane(self) -> None:
-        """Reveal the results pane, giving the scatter usable initial height."""
+        """Reveal the results window docked under the controls, sized for the scatter."""
         if not self._results_pane.isHidden():
             return
         self._results_pane.setVisible(True)
-        total = self._splitter.height() or 480
-        self._splitter.setSizes([total // 2, total - total // 2])
+        total = self._splitter.height() or 360
+        # Scatter takes the bulk; a thin spacer below keeps the bottom handle
+        # grabbable and leaves the scatter room to grow downward.
+        spacer = max(total // 6, 48)
+        self._splitter.setSizes([max(total - spacer, 1), spacer])
 
     # ------------------------------------------------------------------ measuring
     def _reset_measurement(self) -> None:
         self._measurements = {}
         self._track_ids = np.empty(0, dtype=int)
-        self._medians = np.empty(0, dtype=float)
+        self._intensities = np.empty(0, dtype=float)
         self._scatter_x = np.empty(0, dtype=float)
         self._nucleus_labels = None
         self._assignments = {}
@@ -425,24 +441,24 @@ class NLSClassificationPlugin(AnalysisPlugin):
         self._nucleus_labels = labels
         self._measurements = measurements
         self._track_ids = np.asarray(sorted(measurements), dtype=int)
-        self._medians = np.asarray(
-            [measurements[int(t)].median_intensity for t in self._track_ids], dtype=float
+        self._intensities = np.asarray(
+            [measurements[int(t)].intensity for t in self._track_ids], dtype=float
         )
         rng = np.random.default_rng(0)
         self._scatter_x = rng.uniform(-0.35, 0.35, size=self._track_ids.size)
 
-        medians_map = {int(t): float(m) for t, m in zip(self._track_ids, self._medians)}
+        intensity_map = {int(t): float(v) for t, v in zip(self._track_ids, self._intensities)}
         try:
-            threshold = auto_threshold(medians_map)
+            threshold = auto_threshold(intensity_map)
         except NLSClassificationError as exc:
             self._status_lbl.setText(f"Status: cannot auto-threshold: {exc}")
-            threshold = float(np.median(self._medians))
+            threshold = float(np.median(self._intensities))
 
         self._ensure_image_layer()
         # First successful classification → reveal the results pane (scatter + counts).
         self._show_results_pane()
         if _HAS_PYQTGRAPH:
-            lo, hi = float(self._medians.min()), float(self._medians.max())
+            lo, hi = float(self._intensities.min()), float(self._intensities.max())
             pad = max((hi - lo) * 0.05, 1e-6)
             self._plot.setYRange(lo - pad, hi + pad)
             self._threshold_line.setBounds((lo - pad, hi + pad))
@@ -511,7 +527,7 @@ class NLSClassificationPlugin(AnalysisPlugin):
             pg.mkBrush(*(_POSITIVE_RGB if self._assignments.get(int(t)) == POSITIVE else _NEGATIVE_RGB))
             for t in self._track_ids
         ]
-        self._scatter.setData(x=self._scatter_x, y=self._medians, brush=brushes)
+        self._scatter.setData(x=self._scatter_x, y=self._intensities, brush=brushes)
 
     # ------------------------------------------------------------- napari overlays
     def _positive_track_ids(self) -> list[int]:

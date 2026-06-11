@@ -32,7 +32,7 @@ def _write_minimal_position_h5(path, cell_ids):
 # ------------------------------------------------------------------- measurement
 
 
-def test_measure_track_nls_intensity_aggregates_all_pixels_across_frames():
+def test_measure_track_nls_intensity_is_p90_of_per_frame_medians():
     labels = np.asarray(
         [
             [[1, 1, 0], [2, 0, 0]],
@@ -51,10 +51,38 @@ def test_measure_track_nls_intensity_aggregates_all_pixels_across_frames():
     measurements = measure_track_nls_intensity(nls, labels)
 
     assert set(measurements) == {1, 2}
-    assert measurements[1].median_intensity == 30.0
+    # Track 1 per-frame medians: median(10, 30)=20, median(50)=50 → 90th pct = 47.0.
+    assert measurements[1].intensity == 47.0
     assert measurements[1].pixel_count == 3
     assert measurements[1].frame_count == 2
-    assert measurements[2].median_intensity == 200.0
+    # Track 2 per-frame medians: median(100)=100, median(200, 300)=250 → 90th pct = 235.0.
+    assert measurements[2].intensity == 235.0
+
+
+def test_measure_track_nls_intensity_ignores_partial_frame_contamination():
+    # A negative track (intrinsically dim) whose mask catches a few bright pixels
+    # in one frame — e.g. brushing past a positive neighbour. The per-frame median
+    # ignores that minority, so the track stays dim and won't trip the threshold.
+    labels = np.asarray(
+        [
+            [[1, 1, 1, 0]],
+            [[1, 1, 1, 0]],
+        ],
+        dtype=np.uint16,
+    )
+    nls = np.asarray(
+        [
+            [[10.0, 10.0, 10.0, 0.0]],
+            [[10.0, 10.0, 1000.0, 0.0]],  # one contaminated pixel
+        ],
+        dtype=float,
+    )
+
+    measurements = measure_track_nls_intensity(nls, labels)
+
+    # Per-frame medians: median(10,10,10)=10, median(10,10,1000)=10 → p90 = 10.0.
+    # (A per-frame *mean* would have spiked the second frame to ~340.)
+    assert measurements[1].intensity == 10.0
 
 
 def test_measure_track_nls_intensity_rejects_mismatched_shapes():
@@ -138,8 +166,8 @@ def test_write_nls_classification_round_trips_custom_labels(tmp_path):
         cells = h5["cells/table"]
         assert cells["class_label"].asstr()[:].tolist() == ["GFP-", "GFP+", ""]
         assert cells["nls_status"].asstr()[:].tolist() == ["negative", "positive", ""]
-        np.testing.assert_allclose(cells["nls_track_median_intensity"][:2], [10.5, 105.0])
-        assert np.isnan(cells["nls_track_median_intensity"][2])
+        np.testing.assert_allclose(cells["nls_track_intensity"][:2], [10.5, 105.0])
+        assert np.isnan(cells["nls_track_intensity"][2])
         meta = h5["cells/measurements/nls_classification"].attrs
         assert meta["positive_label"] == "GFP+"
         assert meta["negative_label"] == "GFP-"
@@ -172,7 +200,7 @@ def test_patch_position_contact_analysis_honours_explicit_threshold(tmp_path):
     tifffile.imwrite(labels_path, np.asarray([[[1, 2]]], dtype=np.uint16))
     tifffile.imwrite(nls_path, np.asarray([[[10.0, 100.0]]], dtype=np.float32))
 
-    # A threshold above both medians forces everything negative.
+    # A threshold above both track intensities forces everything negative.
     summary = patch_position_contact_analysis_nls_classes(
         h5_path, nls_path, labels_path, threshold=200.0
     )

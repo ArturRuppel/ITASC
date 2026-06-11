@@ -5,9 +5,11 @@ import pandas as pd
 import pytest
 
 from cellflow.aggregate_quantification.plotting import (
+    DISTRIBUTION_PLOTS,
     UNCLASSIFIED,
     PlotSpec,
     PositionSource,
+    StyleSpec,
     aggregate,
     build_figure,
     pool_object_tables,
@@ -104,7 +106,7 @@ def test_aggregate_empty_returns_schema():
     assert out.empty
 
 
-@pytest.mark.parametrize("plot", ["hist", "box", "violin", "bar", "line"])
+@pytest.mark.parametrize("plot", ["hist", "box", "violin", "strip", "swarm", "bar", "line"])
 def test_build_figure_renders_each_plot_type_headless(tmp_path, plot):
     df = pool_object_tables(_sources())
     spec = PlotSpec(value="area", group_by=("condition",), plot=plot)
@@ -118,6 +120,74 @@ def test_build_figure_renders_each_plot_type_headless(tmp_path, plot):
 def test_build_figure_empty_is_safe():
     fig = build_figure(pd.DataFrame(), PlotSpec(value="area"))
     assert fig is not None
+
+
+def test_distribution_plots_are_the_seaborn_family():
+    # strip/swarm are the new scatter members; bar/line stay custom matplotlib.
+    assert DISTRIBUTION_PLOTS == ("hist", "box", "violin", "strip", "swarm")
+
+
+def test_style_defaults_reproduce_auto_title_and_size():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", plot="hist")
+    fig = build_figure(df, spec)  # default StyleSpec
+    ax = fig.axes[0]
+    assert ax.get_title() == "area"  # auto title = value column
+    assert fig.get_size_inches().tolist() == [6.0, 4.0]
+
+
+def test_each_style_field_measurably_changes_the_figure():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), plot="bar")
+
+    base = build_figure(df, spec, StyleSpec())
+    base_ax = base.axes[0]
+
+    # Title override.
+    titled = build_figure(df, spec, StyleSpec(title="Custom"))
+    assert titled.axes[0].get_title() == "Custom"
+
+    # Figure dimensions.
+    sized = build_figure(df, spec, StyleSpec(width=9.0, height=3.0))
+    assert sized.get_size_inches().tolist() == [9.0, 3.0]
+
+    # Font size drives the title font.
+    big = build_figure(df, spec, StyleSpec(font_size=24.0))
+    assert big.axes[0].title.get_fontsize() > base_ax.title.get_fontsize()
+
+    # Palette changes the bar colors.
+    other = build_figure(df, spec, StyleSpec(palette="Set1"))
+    base_color = base_ax.patches[0].get_facecolor()
+    other_color = other.axes[0].patches[0].get_facecolor()
+    assert base_color != other_color
+
+    # Axis label overrides.
+    labelled = build_figure(df, spec, StyleSpec(xlabel="XX", ylabel="YY"))
+    assert labelled.axes[0].get_xlabel() == "XX"
+    assert labelled.axes[0].get_ylabel() == "YY"
+
+
+def test_legend_can_be_turned_off():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), plot="line")
+    with_legend = build_figure(df, spec, StyleSpec(legend=True))
+    without = build_figure(df, spec, StyleSpec(legend=False))
+    assert with_legend.axes[0].get_legend() is not None
+    assert without.axes[0].get_legend() is None
+
+
+def test_bar_still_honors_position_level_aggregation():
+    # The pseudoreplication guard must survive: per-position count for condition A
+    # is mean cells/tissue (2.5), not the pooled 5 cells.
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(
+        value="area", group_by=("condition",), plot="bar", level="position", stat="count"
+    )
+    fig = build_figure(df, spec)
+    summary = aggregate(df, spec).set_index("condition")
+    heights = [p.get_height() for p in fig.axes[0].patches]
+    assert pytest.approx(summary.loc["A", "value"]) == 2.5
+    assert any(h == pytest.approx(2.5) for h in heights)
 
 
 def test_plotspec_rejects_bad_enums():

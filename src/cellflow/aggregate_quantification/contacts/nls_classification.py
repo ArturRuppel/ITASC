@@ -2,10 +2,17 @@
 
 Some experiments image a nucleus-localised marker (e.g. an NLS reporter) for only
 a subpopulation of cells. Aggregating that marker per nuclear *track* yields one
-median-intensity scalar per track; thresholding those scalars splits the tracks
+intensity scalar per track; thresholding those scalars splits the tracks
 into a **positive** subpopulation (above the threshold) and the **negative** rest.
 
-This module is the headless core: it measures per-track medians
+The per-track scalar is the **90th percentile of the per-frame median intensities**
+(one median over each frame's nucleus pixels). The per-frame median ignores
+brightness on only part of a nucleus, so a negative cell brushing past a positive
+one is not misread as positive; the cross-frame 90th percentile keeps the dim
+frames where a nucleus is dividing/dispersed from dragging a genuinely positive
+track down.
+
+This module is the headless core: it measures per-track intensities
 (:func:`measure_track_nls_intensity`), proposes a starting threshold
 (:func:`auto_threshold`, built on the deterministic two-cluster / Otsu splitters),
 classifies against a (possibly hand-tuned) threshold
@@ -27,7 +34,9 @@ import tifffile
 from skimage.filters import threshold_otsu
 
 #: Default audit method recorded in the H5 when a threshold is applied.
-METHOD = "threshold_track_median"
+METHOD = "threshold_track_intensity_p90_frame_median"
+#: Percentile (over per-frame median intensities) used to summarise each track.
+INTENSITY_PERCENTILE = 90.0
 #: Status strings written to ``cells/table/nls_status``.
 POSITIVE = "positive"
 NEGATIVE = "negative"
@@ -39,7 +48,8 @@ class NLSClassificationError(ValueError):
 
 @dataclass(frozen=True)
 class TrackNLSMeasurement:
-    median_intensity: float
+    #: 90th percentile of the track's per-frame median nucleus intensities.
+    intensity: float
     pixel_count: int
     frame_count: int
 
@@ -56,8 +66,21 @@ class NLSClassificationSummary:
 def measure_track_nls_intensity(
     nls_zavg: np.ndarray,
     nucleus_labels: np.ndarray,
+    *,
+    percentile: float = INTENSITY_PERCENTILE,
 ) -> dict[int, TrackNLSMeasurement]:
-    """Measure one median marker-intensity scalar per nonzero nuclear track ID."""
+    """Measure one marker-intensity scalar per nonzero nuclear track ID.
+
+    For each track the scalar is the *percentile* (default the 90th) of its
+    per-frame **median** nucleus intensities — one median over the nucleus pixels
+    in each frame the track appears in. Two robustness properties, one per axis:
+
+    * the **per-frame median** ignores brightness on only part of a nucleus, so a
+      negative cell that brushes past a positive one (PSF bleed / a few of the
+      neighbour's pixels caught in the mask) does not register as positive;
+    * the **cross-frame 90th percentile** keeps the dim frames where a nucleus is
+      dividing/dispersed from pulling a genuinely positive track down.
+    """
     nls = _as_time_yx(np.asarray(nls_zavg), "NLS image")
     labels = _as_time_yx(np.asarray(nucleus_labels), "nucleus tracked labels")
     if nls.shape != labels.shape:
@@ -70,19 +93,22 @@ def measure_track_nls_intensity(
         if track_id == 0:
             continue
         mask = labels == track_id
-        if not np.any(mask):
+        frames_present = np.nonzero(np.any(mask, axis=(1, 2)))[0]
+        if frames_present.size == 0:
             continue
-        values = nls[mask]
-        frame_count = int(np.count_nonzero(np.any(mask, axis=(1, 2))))
+        per_frame_medians = np.asarray(
+            [float(np.median(nls[frame][mask[frame]])) for frame in frames_present],
+            dtype=float,
+        )
         measurements[track_id] = TrackNLSMeasurement(
-            median_intensity=float(np.median(values)),
-            pixel_count=int(values.size),
-            frame_count=frame_count,
+            intensity=float(np.percentile(per_frame_medians, percentile)),
+            pixel_count=int(mask.sum()),
+            frame_count=int(frames_present.size),
         )
     return measurements
 
 
-def auto_threshold(track_medians: Mapping[int, float]) -> float:
+def auto_threshold(track_intensities: Mapping[int, float]) -> float:
     """Propose a starting threshold separating low- from high-intensity tracks.
 
     Prefers the two-Gaussian boundary (:func:`split_tracks_two_clusters`); falls
@@ -90,10 +116,10 @@ def auto_threshold(track_medians: Mapping[int, float]) -> float:
     :class:`NLSClassificationError` when no split is possible.
     """
     try:
-        threshold, _ = split_tracks_two_clusters(track_medians)
+        threshold, _ = split_tracks_two_clusters(track_intensities)
         return threshold
     except NLSClassificationError:
-        threshold, _ = split_tracks_otsu(track_medians)
+        threshold, _ = split_tracks_otsu(track_intensities)
         return threshold
 
 
@@ -103,18 +129,18 @@ def classify_by_threshold(
 ) -> dict[int, str]:
     """Split tracks at *threshold*: ``positive`` if ``median > threshold``."""
     return {
-        int(track_id): (POSITIVE if item.median_intensity > threshold else NEGATIVE)
+        int(track_id): (POSITIVE if item.intensity > threshold else NEGATIVE)
         for track_id, item in measurements.items()
     }
 
 
-def split_tracks_otsu(track_medians: Mapping[int, float]) -> tuple[float, dict[int, str]]:
-    """Split per-track median intensities into deterministic high/low statuses."""
-    if len(track_medians) < 2:
+def split_tracks_otsu(track_intensities: Mapping[int, float]) -> tuple[float, dict[int, str]]:
+    """Split per-track intensities into deterministic high/low statuses."""
+    if len(track_intensities) < 2:
         raise NLSClassificationError("Cannot classify fewer than two nonzero tracks with sampled pixels")
 
-    ordered_ids = sorted(int(track_id) for track_id in track_medians)
-    values = np.asarray([float(track_medians[track_id]) for track_id in ordered_ids], dtype=float)
+    ordered_ids = sorted(int(track_id) for track_id in track_intensities)
+    values = np.asarray([float(track_intensities[track_id]) for track_id in ordered_ids], dtype=float)
     if np.any(~np.isfinite(values)):
         raise NLSClassificationError("Track median intensities must be finite for Otsu classification")
     if np.all(values == values[0]):
@@ -122,7 +148,7 @@ def split_tracks_otsu(track_medians: Mapping[int, float]) -> tuple[float, dict[i
 
     threshold = float(threshold_otsu(values))
     assignments = {
-        track_id: ("high" if float(track_medians[track_id]) > threshold else "low")
+        track_id: ("high" if float(track_intensities[track_id]) > threshold else "low")
         for track_id in ordered_ids
     }
     high_count = sum(status == "high" for status in assignments.values())
@@ -134,17 +160,17 @@ def split_tracks_otsu(track_medians: Mapping[int, float]) -> tuple[float, dict[i
     return threshold, assignments
 
 
-def split_tracks_two_clusters(track_medians: Mapping[int, float]) -> tuple[float, dict[int, str]]:
-    """Split per-track median intensities into deterministic two-Gaussian classes."""
-    if len(track_medians) < 2:
+def split_tracks_two_clusters(track_intensities: Mapping[int, float]) -> tuple[float, dict[int, str]]:
+    """Split per-track intensities into deterministic two-Gaussian classes."""
+    if len(track_intensities) < 2:
         raise NLSClassificationError("Cannot classify fewer than two nonzero tracks with sampled pixels")
 
     ordered_items = sorted(
-        ((int(track_id), float(median)) for track_id, median in track_medians.items()),
+        ((int(track_id), float(intensity)) for track_id, intensity in track_intensities.items()),
         key=lambda item: (item[1], item[0]),
     )
     ordered_ids = [track_id for track_id, _ in ordered_items]
-    values = np.asarray([median for _, median in ordered_items], dtype=float)
+    values = np.asarray([intensity for _, intensity in ordered_items], dtype=float)
     if np.any(~np.isfinite(values)):
         raise NLSClassificationError("Track median intensities must be finite for two-cluster classification")
     if np.all(values == values[0]):
@@ -252,8 +278,8 @@ def patch_position_contact_analysis_nls_classes(
     nls = _read_image_stack(nls_path)
     labels = _read_image_stack(labels_path)
     measurements = measure_track_nls_intensity(nls, labels)
-    medians = {track_id: item.median_intensity for track_id, item in measurements.items()}
-    resolved_threshold = float(threshold) if threshold is not None else auto_threshold(medians)
+    intensities = {track_id: item.intensity for track_id, item in measurements.items()}
+    resolved_threshold = float(threshold) if threshold is not None else auto_threshold(intensities)
     assignments = classify_by_threshold(measurements, resolved_threshold)
 
     cell_ids = _read_cell_ids(h5_path)
@@ -307,7 +333,7 @@ def write_nls_classification(
 
     class_labels: list[str] = []
     statuses: list[str] = []
-    medians = np.full(len(cell_ids), np.nan, dtype=float)
+    intensities = np.full(len(cell_ids), np.nan, dtype=float)
     pixel_counts = np.zeros(len(cell_ids), dtype=np.int64)
     frame_counts = np.zeros(len(cell_ids), dtype=np.int64)
 
@@ -320,7 +346,7 @@ def write_nls_classification(
         )
         measurement = measurements.get(cell_id)
         if measurement is not None:
-            medians[idx] = measurement.median_intensity
+            intensities[idx] = measurement.intensity
             pixel_counts[idx] = measurement.pixel_count
             frame_counts[idx] = measurement.frame_count
 
@@ -331,7 +357,7 @@ def write_nls_classification(
         cells = h5["cells/table"]
         _replace_dataset(cells, "class_label", np.asarray(class_labels, dtype=object), dtype=string_dtype)
         _replace_dataset(cells, "nls_status", np.asarray(statuses, dtype=object), dtype=string_dtype)
-        _replace_dataset(cells, "nls_track_median_intensity", medians)
+        _replace_dataset(cells, "nls_track_intensity", intensities)
         _replace_dataset(cells, "nls_track_pixel_count", pixel_counts)
         _replace_dataset(cells, "nls_track_frame_count", frame_counts)
 
@@ -342,6 +368,7 @@ def write_nls_classification(
         positive_count = sum(status == POSITIVE for status in assignments.values())
         negative_count = sum(status == NEGATIVE for status in assignments.values())
         meta.attrs["method"] = METHOD
+        meta.attrs["intensity_percentile"] = float(INTENSITY_PERCENTILE)
         meta.attrs["threshold"] = float(threshold)
         meta.attrs["positive_label"] = positive_label
         meta.attrs["negative_label"] = negative_label

@@ -24,18 +24,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import matplotlib as mpl
 import numpy as np
 import pandas as pd
+import seaborn as sns
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
 __all__ = [
     "PlotSpec",
+    "StyleSpec",
     "PositionSource",
     "pool_object_tables",
     "aggregate",
     "build_figure",
     "write_csv",
+    "DISTRIBUTION_PLOTS",
 ]
 
 #: The tidy keys every per-object table carries; joins and per-position grouping
@@ -46,7 +50,11 @@ KEY_COLUMNS = ("frame", "cell_id")
 UNCLASSIFIED = "unclassified"
 
 _LEVELS = ("cell", "position")
-_PLOTS = ("hist", "box", "violin", "bar", "line")
+#: Distribution-family plots — rendered through seaborn, with the group-by /
+#: ``class_label`` model mapped onto its ``hue=``. ``strip``/``swarm`` are the
+#: new per-cell scatter members.
+DISTRIBUTION_PLOTS = ("hist", "box", "violin", "strip", "swarm")
+_PLOTS = (*DISTRIBUTION_PLOTS, "bar", "line")
 _STATS = ("mean", "median", "count")
 _ERRORS = ("sd", "sem", "none")
 
@@ -89,6 +97,35 @@ class PlotSpec:
         ):
             if value not in allowed:
                 raise ValueError(f"{name} must be one of {allowed}, got {value!r}")
+
+
+@dataclass(frozen=True)
+class StyleSpec:
+    """Presentation knobs threaded through :func:`build_figure`.
+
+    Every field defaults to today's look, so ``build_figure(df, spec)`` (no
+    ``style_spec``) reproduces the previous output; touching a field is the only
+    way to change it. The dataclass is plain data — Qt-free and unit-testable —
+    so the panel builds it from its styling controls and hands it down.
+    """
+
+    #: Named qualitative palette applied across groups (any seaborn/matplotlib
+    #: palette name, e.g. ``tab10``, ``Set2``, ``colorblind``).
+    palette: str = "tab10"
+    #: Optional text overrides; blank keeps the auto label.
+    title: str = ""
+    xlabel: str = ""
+    ylabel: str = ""
+    #: Matplotlib style sheet (``default``, ``ggplot``, ``seaborn-v0_8`` …).
+    style: str = "default"
+    #: Figure dimensions in inches.
+    width: float = 6.0
+    height: float = 4.0
+    grid: bool = False
+    legend: bool = True
+    legend_loc: str = "best"
+    #: Base font size; titles/labels/ticks scale off it.
+    font_size: float = 10.0
 
 
 def pool_object_tables(sources: Iterable[PositionSource]) -> pd.DataFrame:
@@ -213,65 +250,112 @@ def _group_key_to_dict(group: list[str], key: Any) -> dict[str, Any]:
     return dict(zip(group, key))
 
 
-def build_figure(df: pd.DataFrame, spec: PlotSpec) -> Figure:
-    """Render *spec* over *df*; return a `Figure` with an Agg canvas attached so
-    ``fig.savefig(...)`` works headlessly (the Qt frontend reattaches its own)."""
-    fig = Figure(figsize=(6, 4), tight_layout=True)
-    FigureCanvasAgg(fig)
-    ax = fig.add_subplot(111)
-    if df.empty:
-        ax.set_title("No data in scope")
-        return fig
+def build_figure(
+    df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec | None = None
+) -> Figure:
+    """Render *spec* over *df* with *style_spec*; return a `Figure` with an Agg
+    canvas attached so ``fig.savefig(...)`` works headlessly (the Qt frontend
+    reattaches its own).
 
-    if spec.plot in ("hist", "box", "violin"):
-        _plot_distribution(ax, df, spec)
-    elif spec.plot == "bar":
-        _plot_bar(ax, df, spec)
-    else:  # line
-        _plot_line(ax, df, spec)
-    ax.set_title(spec.value)
-    if ax.get_legend_handles_labels()[0]:
-        ax.legend(fontsize="small")
+    Distribution-family plots (``DISTRIBUTION_PLOTS``) route through seaborn,
+    whose ``hue=`` maps onto the group-by / ``class_label`` model. ``bar``/``line``
+    stay custom matplotlib driven by :func:`aggregate`, preserving the
+    position-level pseudoreplication guard (seaborn must not silently re-aggregate
+    raw cells there)."""
+    style_spec = style_spec or StyleSpec()
+    with mpl.style.context([style_spec.style, _rc_overrides(style_spec)]):
+        fig = Figure(figsize=(style_spec.width, style_spec.height), tight_layout=True)
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+        if df.empty:
+            ax.set_title(style_spec.title or "No data in scope")
+            return fig
+
+        if spec.plot in DISTRIBUTION_PLOTS:
+            _plot_distribution(ax, df, spec, style_spec)
+        elif spec.plot == "bar":
+            _plot_bar(ax, df, spec, style_spec)
+        else:  # line
+            _plot_line(ax, df, spec, style_spec)
+        _apply_style(ax, spec, style_spec)
     return fig
 
 
-def _group_series(df: pd.DataFrame, group: list[str]):
-    """Yield ``(label, sub_df)`` per group combination (one group when none)."""
-    if not group:
-        yield "all", df
+def _rc_overrides(style_spec: StyleSpec) -> dict[str, Any]:
+    """rcParams derived from the base font size, applied within the style sheet
+    context so every text artist created inside picks them up."""
+    base = style_spec.font_size
+    return {
+        "font.size": base,
+        "axes.titlesize": base * 1.2,
+        "axes.labelsize": base,
+        "xtick.labelsize": base * 0.9,
+        "ytick.labelsize": base * 0.9,
+        "legend.fontsize": base * 0.9,
+    }
+
+
+def _apply_style(ax, spec: PlotSpec, style_spec: StyleSpec) -> None:
+    """Apply text overrides, grid, and legend after the plot is drawn. A blank
+    text override keeps the auto label (title defaults to the value column)."""
+    ax.set_title(style_spec.title or spec.value)
+    if style_spec.xlabel:
+        ax.set_xlabel(style_spec.xlabel)
+    if style_spec.ylabel:
+        ax.set_ylabel(style_spec.ylabel)
+    ax.grid(style_spec.grid)
+
+    existing = ax.get_legend()
+    if not style_spec.legend:
+        if existing is not None:
+            existing.remove()
         return
-    for key, chunk in df.groupby(group, dropna=False):
-        parts = key if isinstance(key, tuple) else (key,)
-        yield " · ".join(str(p) for p in parts), chunk
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, loc=style_spec.legend_loc, fontsize="small")
+    elif existing is not None:  # seaborn-managed legend (e.g. histplot)
+        existing.set_loc(style_spec.legend_loc)
 
 
-def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec) -> None:
+def _group_label_column(df: pd.DataFrame, group: list[str]) -> tuple[pd.DataFrame, str | None]:
+    """Add a single combined group-label column (``" · "``-joined) when there is
+    a group-by, so seaborn's single-column ``hue=``/``x=`` can carry a multi-axis
+    grouping. Returns the (copied) frame and the hue column name (None when no
+    group-by)."""
+    if not group:
+        return df, None
+    data = df.copy()
+    data["_group"] = data[group].astype(str).agg(" · ".join, axis=1)
+    return data, "_group"
+
+
+def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
     group = list(spec.group_by)
-    labels, arrays = [], []
-    for label, chunk in _group_series(df, group):
-        values = pd.to_numeric(chunk[spec.value], errors="coerce").dropna().to_numpy()
-        if values.size:
-            labels.append(label)
-            arrays.append(values)
-    if not arrays:
+    data, hue = _group_label_column(df, group)
+    data = data.assign(**{spec.value: pd.to_numeric(data[spec.value], errors="coerce")})
+    data = data.dropna(subset=[spec.value])
+    if data.empty:
         ax.set_title("No data in scope")
         return
+    palette = style_spec.palette if hue is not None else None
     if spec.plot == "hist":
-        for label, values in zip(labels, arrays):
-            ax.hist(values, bins=spec.bins, alpha=0.5, label=label)
-        ax.set_xlabel(spec.value)
+        sns.histplot(
+            data=data, x=spec.value, hue=hue, bins=spec.bins,
+            alpha=0.5, palette=palette, ax=ax,
+        )
         ax.set_ylabel("count")
     elif spec.plot == "box":
-        ax.boxplot(arrays, tick_labels=labels)
-        ax.set_ylabel(spec.value)
-    else:  # violin
-        ax.violinplot(arrays, showmedians=True)
-        ax.set_xticks(range(1, len(labels) + 1))
-        ax.set_xticklabels(labels)
-        ax.set_ylabel(spec.value)
+        sns.boxplot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
+    elif spec.plot == "violin":
+        sns.violinplot(
+            data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False,
+        )
+    else:  # strip | swarm
+        plot = sns.stripplot if spec.plot == "strip" else sns.swarmplot
+        plot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
 
 
-def _plot_bar(ax, df: pd.DataFrame, spec: PlotSpec) -> None:
+def _plot_bar(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
     summary = aggregate(df, spec)
     group = list(spec.group_by)
     labels = [
@@ -280,7 +364,8 @@ def _plot_bar(ax, df: pd.DataFrame, spec: PlotSpec) -> None:
     ]
     x = np.arange(len(summary))
     errors = summary["error"].fillna(0.0).to_numpy()
-    ax.bar(x, summary["value"].to_numpy(), yerr=errors, capsize=4)
+    colors = sns.color_palette(style_spec.palette, n_colors=max(len(summary), 1))
+    ax.bar(x, summary["value"].to_numpy(), yerr=errors, capsize=4, color=colors)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=30, ha="right")
     ax.set_ylabel(_bar_ylabel(spec))
@@ -292,18 +377,30 @@ def _bar_ylabel(spec: PlotSpec) -> str:
     return f"{spec.stat} {spec.value}"
 
 
-def _plot_line(ax, df: pd.DataFrame, spec: PlotSpec) -> None:
+def _plot_line(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
     group = list(spec.group_by)
-    for label, chunk in _group_series(df, group):
+    series_list = list(_group_series(df, group))
+    colors = sns.color_palette(style_spec.palette, n_colors=max(len(series_list), 1))
+    for color, (label, chunk) in zip(colors, series_list):
         if spec.stat == "count":
             series = chunk.groupby("frame", dropna=False).size()
         else:
             agg = "mean" if spec.stat == "mean" else "median"
             series = chunk.groupby("frame", dropna=False)[spec.value].agg(agg)
         series = series.sort_index()
-        ax.plot(series.index.to_numpy(), series.to_numpy(), marker="o", label=label)
+        ax.plot(series.index.to_numpy(), series.to_numpy(), marker="o", label=label, color=color)
     ax.set_xlabel("frame")
     ax.set_ylabel("count" if spec.stat == "count" else f"{spec.stat} {spec.value}")
+
+
+def _group_series(df: pd.DataFrame, group: list[str]):
+    """Yield ``(label, sub_df)`` per group combination (one group when none)."""
+    if not group:
+        yield "all", df
+        return
+    for key, chunk in df.groupby(group, dropna=False):
+        parts = key if isinstance(key, tuple) else (key,)
+        yield " · ".join(str(p) for p in parts), chunk
 
 
 def write_csv(df: pd.DataFrame, path: str | Path) -> Path:

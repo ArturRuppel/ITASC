@@ -182,7 +182,7 @@ def test_dragging_threshold_reclassifies_and_updates_overlay(tmp_path):
     measurements = measure_track_nls_intensity(tifffile.imread(record["nls_path"]), labels)
     plugin._on_measure_done((labels, measurements))
 
-    # Raise the threshold above both medians → everyone negative.
+    # Raise the threshold above both track intensities → everyone negative.
     plugin._on_spin_changed(500.0)
     app.processEvents()
     assert all(status != POSITIVE for status in plugin._assignments.values())
