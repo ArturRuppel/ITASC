@@ -111,3 +111,46 @@ def test_nucleus_dynamics_reads_nucleus_labels(tmp_path):
     q.build(inputs, out)
     dyn = read_track_dynamics(out)
     assert dyn.instantaneous["frame"].size == 8
+
+
+def test_build_adds_per_track_msd_and_corr_length(tmp_path):
+    # One straight, ballistic track: per-track MSD columns land in the tracks
+    # table and the pooled correlation length attr round-trips.
+    centers = [(40, 10 + 2 * i) for i in range(16)]
+    labels = tmp_path / "cells.tif"
+    tifffile.imwrite(labels, _moving_disk_stack(centers))
+    out = tmp_path / "aggregate_quantification" / "cell_dynamics.h5"
+
+    q = CellDynamicsQuantifier()
+    inputs = PositionInputs(
+        position_dir=tmp_path, cell_labels_path=labels, pixel_size_um=0.5, time_interval_s=2.0
+    )
+    q.build(inputs, out)
+
+    dyn = read_track_dynamics(out)
+    assert {"msd_D_um2_per_s", "msd_alpha", "msd_r2"} <= set(dyn.tracks)
+    # Straight single track is ballistic per-track too: α ≈ 2.
+    np.testing.assert_allclose(dyn.tracks["msd_alpha"], [2.0], atol=0.05)
+    # A single isolated track has no pair correlation -> NaN ξ; the attr exists.
+    assert hasattr(dyn, "corr_length_um")
+    assert np.isnan(dyn.corr_length_um) or dyn.corr_length_um >= 0.0
+
+
+def test_read_track_dynamics_backward_compatible_without_corr_length(tmp_path):
+    # An .h5 built before this change lacks the corr_length_um attr -> loads as NaN.
+    import h5py
+
+    centers = [(40, 10 + 2 * i) for i in range(16)]
+    labels = tmp_path / "cells.tif"
+    tifffile.imwrite(labels, _moving_disk_stack(centers))
+    out = tmp_path / "cell_dynamics.h5"
+    q = CellDynamicsQuantifier()
+    inputs = PositionInputs(
+        position_dir=tmp_path, cell_labels_path=labels, pixel_size_um=0.5, time_interval_s=2.0
+    )
+    q.build(inputs, out)
+    with h5py.File(out, "a") as h5:
+        del h5["corr_curve/table"].attrs["corr_length_um"]
+
+    dyn = read_track_dynamics(out)
+    assert np.isnan(dyn.corr_length_um)

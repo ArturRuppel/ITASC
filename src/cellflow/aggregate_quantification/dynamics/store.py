@@ -28,15 +28,16 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from .collective import collective_tables
+from .collective import collective_tables, pooled_corr_length
 from .kinematics import ensemble_dac, instantaneous_table, track_summary_table
-from .msd import ensemble_msd, fit_msd_power_law
+from .msd import MSD_TRACK_COLUMNS, ensemble_msd, fit_msd_power_law, per_track_msd_fit
 from .trajectories import extract_trajectories
 
 #: Build params and their defaults (a position with no override uses these).
 DEFAULT_PARAMS = {
     "min_track_frames": 3,   # drop shorter tracks from the per-track summary
     "min_msd_samples": 10,   # lags with fewer samples are excluded from the fit
+    "msd_track_window_frames": 8,  # fixed lag window for the per-track MSD fit
     "corr_bin_um": None,     # None → global median nearest-neighbour distance
     "min_corr_cells": 5,     # frames with fewer velocity-bearing cells → NaN
 }
@@ -56,6 +57,7 @@ class TrackDynamics:
     msd_alpha: float
     msd_r2: float
     dac_persistence_time_s: float
+    corr_length_um: float
 
 
 def build_track_dynamics(
@@ -93,6 +95,12 @@ def build_track_dynamics(
         time_interval_s=time_interval_s,
         min_track_frames=int(p["min_track_frames"]),
     )
+    track_msd = per_track_msd_fit(
+        trajectories,
+        time_interval_s=time_interval_s,
+        window_frames=int(p["msd_track_window_frames"]),
+    )
+    tracks = _merge_track_msd(tracks, track_msd)
     step(2, 5, "kinematics")
 
     msd = ensemble_msd(trajectories, time_interval_s=time_interval_s)
@@ -110,6 +118,7 @@ def build_track_dynamics(
         corr_bin_um=p["corr_bin_um"],
         min_cells=int(p["min_corr_cells"]),
     )
+    corr_length = pooled_corr_length(corr_curve)
     step(5, 5, "collective")
 
     _write_h5(
@@ -124,6 +133,7 @@ def build_track_dynamics(
         },
         msd_fit=msd_fit,
         dac_persistence_time_s=dac_persistence,
+        corr_length_um=corr_length,
         provenance={
             "quantity_id": quantity_id,
             "source_position_path": str(source_path) if source_path else "",
@@ -147,6 +157,7 @@ def read_track_dynamics(path: str | Path) -> TrackDynamics:
         )}
         msd_attrs = h5["msd/table"].attrs
         dac_attrs = h5["dac/table"].attrs
+        corr_attrs = h5["corr_curve/table"].attrs
         return TrackDynamics(
             instantaneous=tables["instantaneous"],
             tracks=tables["tracks"],
@@ -158,6 +169,8 @@ def read_track_dynamics(path: str | Path) -> TrackDynamics:
             msd_alpha=float(msd_attrs["alpha"]),
             msd_r2=float(msd_attrs["r2"]),
             dac_persistence_time_s=float(dac_attrs["persistence_time_s"]),
+            # Absent in .h5 files built before per-tissue ξ → NaN (backward compat).
+            corr_length_um=float(corr_attrs.get("corr_length_um", float("nan"))),
         )
 
 
@@ -169,7 +182,9 @@ def read_instantaneous_table(path: str | Path) -> dict[str, np.ndarray]:
 
 
 # --------------------------------------------------------------------- h5 I/O
-def _write_h5(output_path, *, tables, msd_fit, dac_persistence_time_s, provenance) -> None:
+def _write_h5(
+    output_path, *, tables, msd_fit, dac_persistence_time_s, corr_length_um, provenance
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(output_path, "w") as h5:
         for name, table in tables.items():
@@ -181,8 +196,31 @@ def _write_h5(output_path, *, tables, msd_fit, dac_persistence_time_s, provenanc
         msd_table.attrs["alpha"] = float(msd_fit.alpha)
         msd_table.attrs["r2"] = float(msd_fit.r2)
         h5["dac/table"].attrs["persistence_time_s"] = float(dac_persistence_time_s)
+        # Symmetric with the msd fit attrs and the dac persistence attr.
+        h5["corr_curve/table"].attrs["corr_length_um"] = float(corr_length_um)
         prov = h5.create_group("provenance")
         _write_provenance_attrs(prov, provenance)
+
+
+def _merge_track_msd(
+    tracks: dict[str, np.ndarray], track_msd: dict[int, "object"]
+) -> dict[str, np.ndarray]:
+    """Add the per-track MSD-fit columns to the per-track table, aligned to
+    ``tracks["cell_id"]`` (NaN for any track absent from the fit map).
+
+    Lives here rather than in kinematics or msd: it bridges the two tables, and
+    neither of those modules should import the other.
+    """
+    cell_ids = tracks["cell_id"]
+    columns = {name: np.full(cell_ids.size, np.nan, dtype=float) for name in MSD_TRACK_COLUMNS}
+    for i, cid in enumerate(cell_ids.tolist()):
+        fit = track_msd.get(int(cid))
+        if fit is None:
+            continue
+        columns["msd_D_um2_per_s"][i] = fit.D_um2_per_s
+        columns["msd_alpha"][i] = fit.alpha
+        columns["msd_r2"][i] = fit.r2
+    return {**tracks, **columns}
 
 
 def _write_provenance_attrs(group: h5py.Group, provenance: dict) -> None:
