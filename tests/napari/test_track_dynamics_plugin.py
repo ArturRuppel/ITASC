@@ -195,3 +195,21 @@ def test_plots_share_one_dock_as_tabs(tmp_path):
     assert [widget.tabText(i) for i in range(widget.count())] == ["Plot 1", "Plot 2", "Plot 3"]
     plugin.deleteLater()
     app.processEvents()
+
+
+def test_dynamics_distribution_panel_gets_resolver(tmp_path):
+    app = _app()
+    records = [_built_cell_position(tmp_path, "p1", "A")]
+    viewer = _FakeViewer()
+    plugin = TrackDynamicsPlugin()
+    plugin.set_context(AnalysisContext(records=records, viewer=viewer))
+
+    # Per-track view: identity has frame_start (no frame) -> target.frame == frame_start.
+    plugin._on_pool_done(("track", _pool_records(CellDynamicsQuantifier(), records, "track")))
+    panel = plugin._panel
+    assert panel._target_resolver is not None
+    target = panel._target_resolver({"position_id": "p1", "frame_start": 5, "cell_id": 1})
+    assert target is not None
+    assert target.frame == 5
+    plugin.deleteLater()
+    app.processEvents()

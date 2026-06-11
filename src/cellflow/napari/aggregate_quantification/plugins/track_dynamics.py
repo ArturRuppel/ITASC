@@ -368,11 +368,22 @@ class TrackDynamicsPlugin(AnalysisPlugin):
             self._plot_status.setText("No built dynamics tables in scope.")
             return
         from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
+        from cellflow.napari.aggregate_quantification.plugins._click_to_load import ClickToLoad
 
         values, groups = (
             (_FRAME_VALUES, _FRAME_GROUPS) if view == "frame" else (_TRACK_VALUES, _TRACK_GROUPS)
         )
-        panel = PlotPanel(pooled, value_columns=values, group_columns=groups)
+        # Per-track points carry no ``frame`` axis (see ``_TRACK_GROUPS``); the
+        # resolver falls back to their ``frame_start`` to pick a jump frame.
+        controller = ClickToLoad(self.viewer)
+        panel = PlotPanel(
+            pooled,
+            value_columns=values,
+            group_columns=groups,
+            target_resolver=controller.resolver(self._records, self._label_field()),
+        )
+        panel.load_requested.connect(controller.load)
+        self._panel = panel
         name = self._dock_name()
         self._add_dock(panel, name)
         self._plot_status.setText(f"Opened {name} ({len(pooled)} rows).")
