@@ -394,14 +394,16 @@ class TrackDynamicsPlugin(AnalysisPlugin):
         }[view]
         # Per-track points carry no ``frame`` axis (see ``_TRACK_GROUPS``); the
         # resolver falls back to their ``frame_start`` to pick a jump frame.
+        # Passed as ``loader`` (not connected to ``load_requested``) so the
+        # panel keeps the controller alive — see PlotPanel.
         controller = ClickToLoad(self.viewer)
         panel = PlotPanel(
             pooled,
             value_columns=values,
             group_columns=groups,
             target_resolver=controller.resolver(self._records, self._label_field()),
+            loader=controller.load,
         )
-        panel.load_requested.connect(controller.load)
         self._panel = panel
         name = self._dock_name()
         self._add_dock(panel, name)

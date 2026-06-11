@@ -32,10 +32,12 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -62,8 +64,9 @@ _IDENTITY_COLUMNS = ("position_id", "frame", "frame_start", "cell_id")
 class LoadTarget:
     """A picked point's input data + where to look in it (napari-free).
 
-    Produced by a plugin-supplied resolver, carried out of the panel via
-    ``load_requested``; the plugin's loader turns it into viewer layers.
+    Produced by a plugin-supplied resolver, handed to the plugin-supplied
+    ``loader`` (and echoed on ``load_requested``) when the user clicks Load;
+    the loader turns it into viewer layers.
     """
 
     path: Path
@@ -98,6 +101,7 @@ class PlotPanel(QWidget):
         value_columns: tuple[str, ...],
         group_columns: tuple[str, ...],
         target_resolver: Callable[[dict], LoadTarget | None] | None = None,
+        loader: Callable[[LoadTarget], None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -106,6 +110,10 @@ class PlotPanel(QWidget):
         self._group_columns = tuple(group_columns)
         self._identity_columns = tuple(c for c in _IDENTITY_COLUMNS if c in dataframe.columns)
         self._target_resolver = target_resolver
+        # Held strongly on purpose: a Qt signal connection to a bound method
+        # keeps only a weak reference, so a loader owned by nothing but the
+        # connection would be GC'd and the Load click would silently no-op.
+        self._loader = loader
         self._selected_target: LoadTarget | None = None
         self._canvas: FigureCanvasQTAgg | None = None
         self._toolbar: NavigationToolbar2QT | None = None
@@ -124,7 +132,8 @@ class PlotPanel(QWidget):
         self._path_label.setWordWrap(True)
         layout.addWidget(self._path_label)
         self._load_btn = QPushButton("Load in viewer")
-        action_button(self._load_btn)
+        action_button(self._load_btn, expand=True)
+        _shrinkable(self._load_btn)
         self._load_btn.setEnabled(False)
         self._load_btn.clicked.connect(self._on_load_clicked)
         layout.addWidget(self._load_btn)
@@ -146,9 +155,13 @@ class PlotPanel(QWidget):
         self._value_combo = _combo(self._value_columns)
         col.addLayout(_labelled("Value:", self._value_combo))
 
-        self._level_combo = QComboBox()
-        self._level_combo.addItem("Per cell (pooled)", "cell")
+        self._level_combo = _shrinkable(QComboBox())
+        # The independent unit for error bars / comparisons. "Per cell" collapses
+        # each track's frames to one value first (no frame is its own datapoint);
+        # the coarser levels climb to the field of view and the biological replicate.
+        self._level_combo.addItem("Per cell (track)", "cell")
         self._level_combo.addItem("Per position", "position")
+        self._level_combo.addItem("Per date (replicate)", "date")
         col.addLayout(_labelled("Level:", self._level_combo))
 
         self._plot_combo = _combo(_PLOT_TYPES)
@@ -164,22 +177,25 @@ class PlotPanel(QWidget):
         stat_row.addWidget(self._error_combo, 1)
         col.addLayout(stat_row)
 
-        self._bins_spin = QSpinBox()
+        self._bins_spin = _shrinkable(QSpinBox())
         self._bins_spin.setRange(2, 200)
         self._bins_spin.setValue(30)
         col.addLayout(_labelled("Bins:", self._bins_spin))
 
         # One group-by checkbox per supplied group column (class_label included).
+        # "Group by:" sits on its own line and the checkboxes wrap across a
+        # two-column grid, so a long column name never sets the panel's min width.
         self._group_checks: dict[str, QCheckBox] = {}
-        group_row = QHBoxLayout()
-        group_row.setContentsMargins(0, 0, 0, 0)
-        group_row.addWidget(QLabel("Group by:"))
-        for name in self._group_columns:
+        col.addWidget(QLabel("Group by:"))
+        group_grid = QGridLayout()
+        group_grid.setContentsMargins(0, 0, 0, 0)
+        group_grid.setSpacing(4)
+        for i, name in enumerate(self._group_columns):
             check = QCheckBox(name)
             self._group_checks[name] = check
-            group_row.addWidget(check)
-        group_row.addStretch(1)
-        col.addLayout(group_row)
+            group_grid.addWidget(check, i // 2, i % 2)
+        group_grid.setColumnStretch(2, 1)
+        col.addLayout(group_grid)
 
         for combo in (self._value_combo, self._level_combo, self._plot_combo,
                       self._stat_combo, self._error_combo):
@@ -203,13 +219,13 @@ class PlotPanel(QWidget):
         self._style_combo = _combo(styles)
         col.addLayout(_labelled("Style:", self._style_combo))
 
-        self._title_edit = QLineEdit()
+        self._title_edit = _shrinkable(QLineEdit())
         self._title_edit.setPlaceholderText("auto")
         col.addLayout(_labelled("Title:", self._title_edit))
-        self._xlabel_edit = QLineEdit()
+        self._xlabel_edit = _shrinkable(QLineEdit())
         self._xlabel_edit.setPlaceholderText("auto")
         col.addLayout(_labelled("X label:", self._xlabel_edit))
-        self._ylabel_edit = QLineEdit()
+        self._ylabel_edit = _shrinkable(QLineEdit())
         self._ylabel_edit.setPlaceholderText("auto")
         col.addLayout(_labelled("Y label:", self._ylabel_edit))
 
@@ -229,12 +245,7 @@ class PlotPanel(QWidget):
         self._legend_cb = QCheckBox("Legend")
         self._legend_cb.setChecked(True)
         self._legend_loc_combo = _combo(_LEGEND_LOCS)
-        toggles = QHBoxLayout()
-        toggles.setContentsMargins(0, 0, 0, 0)
-        toggles.addWidget(self._grid_cb)
-        toggles.addWidget(self._legend_cb)
-        toggles.addWidget(self._legend_loc_combo, 1)
-        col.addLayout(toggles)
+        col.addLayout(_labelled("Legend loc:", self._legend_loc_combo))
 
         # Box-plot knobs — they only bite when Plot=box, but stay visible (like
         # Bins for hist) rather than appearing and disappearing on plot change.
@@ -242,13 +253,23 @@ class PlotPanel(QWidget):
         self._box_fliers_cb = QCheckBox("Outliers")
         self._box_fliers_cb.setChecked(True)
         self._box_notch_cb = QCheckBox("Notch (CI)")
-        box_row = QHBoxLayout()
-        box_row.setContentsMargins(0, 0, 0, 0)
-        box_row.addWidget(QLabel("Box whis ×IQR:"))
-        box_row.addWidget(self._box_whis_spin, 1)
-        box_row.addWidget(self._box_fliers_cb)
-        box_row.addWidget(self._box_notch_cb)
-        col.addLayout(box_row)
+        whis_row = QHBoxLayout()
+        whis_row.setContentsMargins(0, 0, 0, 0)
+        whis_row.addWidget(QLabel("Box whis ×IQR:"))
+        whis_row.addWidget(self._box_whis_spin, 1)
+        col.addLayout(whis_row)
+
+        # The four toggles share a 2×2 grid so no single checkbox row sets the
+        # panel's minimum width — it can shrink to roughly one toggle wide.
+        checks = QGridLayout()
+        checks.setContentsMargins(0, 0, 0, 0)
+        checks.setSpacing(4)
+        checks.addWidget(self._grid_cb, 0, 0)
+        checks.addWidget(self._legend_cb, 0, 1)
+        checks.addWidget(self._box_fliers_cb, 1, 0)
+        checks.addWidget(self._box_notch_cb, 1, 1)
+        checks.setColumnStretch(2, 1)
+        col.addLayout(checks)
 
         # Axis-range overrides; blank ("auto") keeps matplotlib's autoscale.
         self._xmin_edit = _range_edit()
@@ -281,18 +302,22 @@ class PlotPanel(QWidget):
         return body
 
     # --------------------------------------------------------------- export UI
-    def _build_exports(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
+    def _build_exports(self) -> QGridLayout:
+        # Equal-width export buttons on a "Export:" row: tidy columns that share
+        # the width evenly and collapse together as the panel narrows.
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(4)
+        grid.addWidget(QLabel("Export:"), 0, 0)
         self._export_pooled_btn = _export_button("Pooled CSV", self._export_pooled)
         self._export_agg_btn = _export_button("Aggregated CSV", self._export_aggregated)
         self._export_fig_btn = _export_button("Figure", self._export_figure)
-        for btn in (self._export_pooled_btn, self._export_agg_btn, self._export_fig_btn):
-            row.addWidget(btn)
-        enabled = not self._df.empty
-        for btn in (self._export_pooled_btn, self._export_agg_btn, self._export_fig_btn):
-            btn.setEnabled(enabled)
-        return row
+        buttons = (self._export_pooled_btn, self._export_agg_btn, self._export_fig_btn)
+        for col, btn in enumerate(buttons, start=1):
+            grid.addWidget(btn, 0, col)
+            grid.setColumnStretch(col, 1)
+            btn.setEnabled(not self._df.empty)
+        return grid
 
     # ----------------------------------------------------------------- specs
     def current_spec(self) -> PlotSpec:
@@ -334,7 +359,11 @@ class PlotPanel(QWidget):
         """Pure re-render from the held snapshot — never re-pools."""
         fig = build_figure(self._df, self.current_spec(), self.current_style())
         canvas = FigureCanvasQTAgg(fig)
+        _shrinkable(canvas)
         toolbar = NavigationToolbar2QT(canvas, self)
+        # As a QToolBar it spills overflow tools into a "»" menu when squeezed,
+        # so it stops being the panel's hard minimum width.
+        _shrinkable(toolbar)
         if self._canvas is not None:
             self._canvas_holder.removeWidget(self._canvas)
             self._canvas.setParent(None)
@@ -402,8 +431,11 @@ class PlotPanel(QWidget):
             self._path_label.setText("Click a point to select its input data.")
 
     def _on_load_clicked(self) -> None:
-        if self._selected_target is not None:
-            self.load_requested.emit(self._selected_target)
+        if self._selected_target is None:
+            return
+        self.load_requested.emit(self._selected_target)
+        if self._loader is not None:
+            self._loader(self._selected_target)
 
     # ---------------------------------------------------------------- exports
     def _save_path(self, caption: str, filt: str) -> Path | None:
@@ -431,11 +463,24 @@ class PlotPanel(QWidget):
 
 
 # --------------------------------------------------------------- UI factories
+def _shrinkable(widget: QWidget) -> QWidget:
+    """Let *widget* shrink below its content width so the panel can narrow.
+
+    ``Ignored`` drops the widget's width hint as a floor, so a field fills its
+    row but also collapses when the dock is dragged narrow — the panel shrinks
+    in place instead of forcing a scrollbar or a hard minimum."""
+    widget.setMinimumWidth(0)
+    policy = widget.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Ignored)
+    widget.setSizePolicy(policy)
+    return widget
+
+
 def _combo(items) -> QComboBox:
     combo = QComboBox()
     for item in items:
         combo.addItem(item, item)
-    return combo
+    return _shrinkable(combo)
 
 
 def _double_spin(lo: float, hi: float, value: float, step: float) -> QDoubleSpinBox:
@@ -443,7 +488,7 @@ def _double_spin(lo: float, hi: float, value: float, step: float) -> QDoubleSpin
     spin.setRange(lo, hi)
     spin.setSingleStep(step)
     spin.setValue(value)
-    return spin
+    return _shrinkable(spin)
 
 
 def _labelled(label: str, widget: QWidget) -> QHBoxLayout:
@@ -458,7 +503,8 @@ def _labelled(label: str, widget: QWidget) -> QHBoxLayout:
 
 def _export_button(text: str, slot) -> QPushButton:
     btn = QPushButton(text)
-    action_button(btn)
+    action_button(btn, expand=True)
+    _shrinkable(btn)  # Ignored policy: collapse with the panel, don't floor it
     btn.clicked.connect(slot)
     return btn
 
@@ -466,7 +512,7 @@ def _export_button(text: str, slot) -> QPushButton:
 def _range_edit() -> QLineEdit:
     edit = QLineEdit()
     edit.setPlaceholderText("auto")
-    return edit
+    return _shrinkable(edit)
 
 
 def _parse_float(text: str) -> float | None:

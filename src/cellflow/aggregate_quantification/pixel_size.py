@@ -86,7 +86,10 @@ def pixel_size_from_tiff(cell_labels_path: Path | str | None) -> float | None:
             if from_imagej is not None:
                 return from_imagej
             return _pixel_size_from_baseline(tf)
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, tifffile.TiffFileError):
+        # An unreadable/empty/corrupt TIFF means "pixel size unknown", not a
+        # crash. tifffile raises TiffFileError (not a KeyError/OSError subclass)
+        # for a malformed file, so it must be named explicitly.
         return None
 
 

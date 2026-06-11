@@ -8,6 +8,14 @@ creates the dock (split off as its own column beside the controls); every later
 plot is just a new closable tab. The pane is constant, so every plot keeps the
 same size, and closing a tab frees it.
 
+When that dock is first created we **widen the whole window** by the plot's
+width rather than letting napari steal it from the controls: ``splitDockWidget``
+keeps the main window's total width constant, which crushes the control panel.
+We grow the window and then ``resizeDocks`` so the controls keep their width and
+the plot gets the new space. The plot panel's own fields are built to shrink
+(see :class:`PlotPanel`), so the pane can be dragged narrower than the plot's
+nominal width without a scrollbar.
+
 A plugin keeps one :class:`PlotDockTabs` and calls :meth:`add` with each panel.
 The underscore filename keeps this out of the plugin auto-discovery in
 ``plugins/__init__.py``.
@@ -16,6 +24,10 @@ from __future__ import annotations
 
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QDockWidget, QMainWindow, QTabWidget, QWidget
+
+#: Fallback width (px) for a freshly opened plot pane when the panel can't yet
+#: report a sensible size hint.
+_DEFAULT_PLOT_WIDTH = 460
 
 
 class PlotDockTabs:
@@ -36,7 +48,7 @@ class PlotDockTabs:
         if viewer is None:
             return
         if not self._is_live():
-            self._create_dock(viewer)
+            self._create_dock(viewer, panel)
         index = self._tabs.addTab(panel, title)
         self._tabs.setCurrentIndex(index)
 
@@ -52,11 +64,14 @@ class PlotDockTabs:
         except RuntimeError:
             return False
 
-    def _create_dock(self, viewer) -> None:
+    def _create_dock(self, viewer, panel: QWidget) -> None:
         self._tabs = QTabWidget()
         self._tabs.setTabsClosable(True)
         self._tabs.setMovable(True)
         self._tabs.tabCloseRequested.connect(self._close_tab)
+        # Let the dock be dragged narrower than the tab bar's hint; the panel's
+        # own fields shrink to follow (see PlotPanel).
+        self._tabs.setMinimumWidth(0)
         self._dock = viewer.window.add_dock_widget(
             self._tabs, area="right", name=self._dock_name
         )
@@ -66,6 +81,20 @@ class PlotDockTabs:
         host = _host_dock(self._plugin)
         if main is not None and host is not None and isinstance(self._dock, QDockWidget):
             main.splitDockWidget(host, self._dock, Qt.Horizontal)
+            self._grow_window_for_plot(main, host, panel)
+
+    def _grow_window_for_plot(self, main: QMainWindow, host: QDockWidget, panel: QWidget) -> None:
+        """Widen the window by the plot's width so the controls keep theirs.
+
+        ``splitDockWidget`` divides the host's existing width between the two
+        docks; instead we add the plot's width to the whole window and then pin
+        the dock sizes so the controls stay put and the plot fills the new
+        space."""
+        host_w = host.width() or host.sizeHint().width()
+        plot_w = max(panel.sizeHint().width(), _DEFAULT_PLOT_WIDTH)
+        if not (main.isMaximized() or main.isFullScreen()):
+            main.resize(main.width() + plot_w, main.height())
+        main.resizeDocks([host, self._dock], [host_w, plot_w], Qt.Horizontal)
 
     def _close_tab(self, index: int) -> None:
         widget = self._tabs.widget(index)

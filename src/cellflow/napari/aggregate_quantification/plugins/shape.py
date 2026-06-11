@@ -364,15 +364,16 @@ class ShapePlugin(AnalysisPlugin):
 
         # A fresh controller per plot always targets the current viewer; it owns
         # every Load from this panel, so its "replace previous layer" guarantee
-        # holds for the panel's lifetime.
+        # holds for the panel's lifetime. Passed as ``loader`` (not connected to
+        # ``load_requested``) so the panel keeps it alive — see PlotPanel.
         controller = ClickToLoad(self.viewer)
         panel = PlotPanel(
             pooled,
             value_columns=self._value_columns(),
             group_columns=_GROUP_COLUMNS,
             target_resolver=controller.resolver(self._records, self._label_field()),
+            loader=controller.load,
         )
-        panel.load_requested.connect(controller.load)
         self._panel = panel
         self._plot_count += 1
         name = f"Plot {self._plot_count}"

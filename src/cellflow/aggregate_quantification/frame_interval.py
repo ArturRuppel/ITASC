@@ -68,7 +68,10 @@ def time_interval_from_tiff(label_path: Path | str | None) -> float | None:
         with tifffile.TiffFile(str(path)) as tf:
             metadata = tf.imagej_metadata or {}
             return _positive_float(metadata.get("finterval"))
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, tifffile.TiffFileError):
+        # An unreadable/empty/corrupt TIFF means "frame interval unknown", not a
+        # crash. tifffile raises TiffFileError (not a KeyError/OSError subclass)
+        # for a malformed file, so it must be named explicitly.
         return None
 
 

@@ -51,7 +51,20 @@ KEY_COLUMNS = ("frame", "cell_id")
 #: position was never classified).
 UNCLASSIFIED = "unclassified"
 
-_LEVELS = ("cell", "position")
+#: The independent unit a comparison aggregates over, coarse→fine. ``cell`` now
+#: means the cell *track* (one value per cell, frames collapsed), not the cell
+#: *frame*; ``position`` and ``date`` climb to the field-of-view and the
+#: biological replicate.
+_LEVELS = ("cell", "position", "date")
+#: Biological nesting that sits below the comparison groups, coarse→fine. The
+#: per-frame ``frame`` axis is always collapsed first (it is never a unit key);
+#: ``level`` then chooses how far down this chain the independent unit sits, and
+#: the reduction equal-weights each parent's children at every step (a long-lived
+#: cell counts once, a crowded position counts once). A column absent from the
+#: pooled table is simply skipped.
+_NESTING = ("date", "position_id", "cell_id")
+#: level -> the nesting column whose distinct values are the independent unit.
+_LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
 #: Distribution-family plots — rendered through seaborn, with the group-by /
 #: ``class_label`` model mapped onto its ``hue=``. ``strip``/``swarm`` are the
 #: new per-cell scatter members.
@@ -86,7 +99,10 @@ class PlotSpec:
 
     value: str
     group_by: tuple[str, ...] = ()
-    level: str = "cell"  # "cell" (pooled) | "position" (per-position summary)
+    # The independent unit: "cell" (per track) | "position" | "date" (replicate).
+    # Frames are always collapsed to one value per track first, so no level ever
+    # treats a frame as an independent datapoint.
+    level: str = "cell"
     plot: str = "hist"  # hist | box | violin | bar | line
     stat: str = "mean"  # mean | median | count
     error: str = "sd"  # sd | sem | none
@@ -202,11 +218,20 @@ def _join_position(
 def aggregate(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     """Tidy summary keyed by ``spec.group_by`` with ``n``, ``value``, ``error``.
 
-    The *unit* of aggregation is the cell (``level="cell"``) or the position
-    (``level="position"``). At position level each position is first reduced to
-    one number — its per-position cell ``count``, ``mean``, or ``median`` — and
-    the cohort is summarised *across positions* (always a mean ± spread), so a
-    comparison aggregates tissues, not cells (pseudoreplication guard).
+    The *unit* of aggregation is the cell track (``level="cell"``), the position
+    (``level="position"``), or the biological replicate (``level="date"``).
+    Whatever the level, frames are first collapsed to one value per track — no
+    level ever treats a frame as an independent datapoint — and each step up the
+    nesting (track→position→date) equal-weights its children, so a comparison
+    aggregates the chosen unit and not its (correlated) sub-samples. ``value``
+    and ``error`` are the central tendency and spread *across the units* at
+    ``level``; ``n`` is how many of them there are.
+
+    The within-unit collapse follows ``spec.stat`` end to end: ``mean`` averages,
+    ``median`` takes medians, at every level. ``count`` is special — it counts
+    *cells* (distinct tracks), never cell-frames: at cell level a pooled tally
+    per group (no spread); at position/date level the per-unit cell count becomes
+    a datapoint and the cohort is summarised across units (e.g. cells/position).
 
     Columns: the group keys, ``n`` (units aggregated), ``value`` (the central
     number), ``error`` (sd/sem across units; NaN/0 when undefined).
@@ -215,25 +240,15 @@ def aggregate(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=[*group, "n", "value", "error"])
 
-    # Pooled cell count: one tally per group, no spread.
-    if spec.level == "cell" and spec.stat == "count":
-        counts = (
-            df.groupby(group, dropna=False).size().reset_index(name="value")
-            if group
-            else pd.DataFrame([{"value": len(df)}])
-        )
-        counts["n"] = counts["value"].astype(int)
-        counts["error"] = float("nan")
-        return counts[[*group, "n", "value", "error"]]
+    if spec.stat == "count":
+        return _aggregate_count(df, spec)
 
-    units, value_col = _reduction_units(df, spec)
-    # Across-unit reduction: median only when the unit is the cell and the chosen
-    # stat is median; otherwise (and always across positions) a mean.
-    central = "median" if (spec.level == "cell" and spec.stat == "median") else "mean"
+    units = reduce_to_units(df, spec)
+    central = "median" if spec.stat == "median" else "mean"
     rows: list[dict[str, Any]] = []
     grouped = units.groupby(group, dropna=False) if group else [(None, units)]
     for key, chunk in grouped:
-        values = pd.to_numeric(chunk[value_col], errors="coerce").dropna()
+        values = pd.to_numeric(chunk[spec.value], errors="coerce").dropna()
         rows.append({
             **_group_key_to_dict(group, key),
             "n": int(len(values)),
@@ -243,21 +258,83 @@ def aggregate(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=[*group, "n", "value", "error"])
 
 
-def _reduction_units(df: pd.DataFrame, spec: PlotSpec) -> tuple[pd.DataFrame, str]:
-    """Per-unit values to reduce over a group: per-position summaries (position
-    level) or the pooled per-cell values themselves (cell level)."""
+def _nesting_keys(df: pd.DataFrame) -> list[str]:
+    """The :data:`_NESTING` columns actually present in *df*, coarse→fine."""
+    return [k for k in _NESTING if k in df.columns]
+
+
+def _unit_keys(df: pd.DataFrame, spec: PlotSpec) -> list[str]:
+    """Nesting columns retained at ``spec.level`` — the prefix of the present
+    nesting down to (and including) the level's entity. When that entity column
+    is missing, fall back to the finest nesting available."""
+    present = _nesting_keys(df)
+    target = _LEVEL_ENTITY[spec.level]
+    if target in present:
+        return present[: present.index(target) + 1]
+    return present
+
+
+def reduce_to_units(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """Collapse the pooled per-frame table to one row per independent unit.
+
+    Reduces frames → track → … → ``spec.level`` along :data:`_NESTING`, applying
+    ``spec.stat`` (``median``, else ``mean``) at every collapse so each parent
+    equal-weights its children. Returns the group keys, the retained nesting
+    keys, and ``spec.value`` — one row per unit. When the table carries none of
+    the nesting columns (no cell_id/position_id/date), each row is already its
+    own unit and the frame is returned unchanged.
+    """
+    present = _nesting_keys(df)
+    if not present:
+        return df
     group = list(spec.group_by)
-    if spec.level == "position":
-        keys = list(dict.fromkeys([*group, "position_id"]))
-        if spec.stat == "count":
-            units = df.groupby(keys, dropna=False).size().reset_index(name="_unit")
-        else:
-            agg = "mean" if spec.stat == "mean" else "median"
-            units = (
-                df.groupby(keys, dropna=False)[spec.value].agg(agg).reset_index(name="_unit")
-            )
-        return units, "_unit"
-    return df, spec.value
+    unit = _unit_keys(df, spec)
+    agg = "median" if spec.stat == "median" else "mean"
+    work = df
+    levels = present
+    # First pass collapses the frame axis (``frame`` is never a key, so grouping
+    # on group+nesting averages a track's frames to one value); each later pass
+    # drops the finest nesting key and climbs one level toward ``unit``.
+    while True:
+        work = work.groupby(group + levels, dropna=False)[spec.value].agg(agg).reset_index()
+        if len(levels) <= len(unit):
+            return work
+        levels = levels[:-1]
+
+
+def _aggregate_count(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """Count distinct cells (tracks), never cell-frames. See :func:`aggregate`."""
+    group = list(spec.group_by)
+    present = _nesting_keys(df)
+    # One row per distinct cell within each group; without nesting keys every row
+    # already stands for a distinct unit.
+    cells = df[group + present].drop_duplicates() if present else df
+
+    if spec.level == "cell" or not present:
+        # Pooled distinct-cell tally per group; no spread.
+        counts = (
+            cells.groupby(group, dropna=False).size().reset_index(name="value")
+            if group
+            else pd.DataFrame([{"value": len(cells)}])
+        )
+        counts["n"] = counts["value"].astype(int)
+        counts["error"] = float("nan")
+        return counts[[*group, "n", "value", "error"]]
+
+    # Per-unit cell counts, then summarise across units (mean ± spread).
+    unit = _unit_keys(df, spec)
+    per_unit = cells.groupby(group + unit, dropna=False).size().reset_index(name="_count")
+    rows: list[dict[str, Any]] = []
+    grouped = per_unit.groupby(group, dropna=False) if group else [(None, per_unit)]
+    for key, chunk in grouped:
+        values = chunk["_count"].astype(float)
+        rows.append({
+            **_group_key_to_dict(group, key),
+            "n": int(len(values)),
+            "value": float(values.mean()) if len(values) else float("nan"),
+            "error": _spread(values, spec.error),
+        })
+    return pd.DataFrame(rows, columns=[*group, "n", "value", "error"])
 
 
 def _spread(values: pd.Series, error: str) -> float:
@@ -284,10 +361,10 @@ def build_figure(
     reattaches its own).
 
     Distribution-family plots (``DISTRIBUTION_PLOTS``) route through seaborn,
-    whose ``hue=`` maps onto the group-by / ``class_label`` model. ``bar``/``line``
-    stay custom matplotlib driven by :func:`aggregate`, preserving the
-    position-level pseudoreplication guard (seaborn must not silently re-aggregate
-    raw cells there)."""
+    whose ``hue=`` maps onto the group-by / ``class_label`` model — but over the
+    per-unit table from :func:`reduce_to_units`, not raw frames, so they carry the
+    same pseudoreplication guard as the others. ``bar``/``line`` stay custom
+    matplotlib driven by :func:`aggregate`."""
     style_spec = style_spec or StyleSpec()
     with mpl.style.context([style_spec.style, _rc_overrides(style_spec)]):
         fig = Figure(figsize=(style_spec.width, style_spec.height), tight_layout=True)
@@ -375,19 +452,25 @@ class PickPoint:
 
 
 def pickable_points(df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> list[PickPoint]:
-    """Plotted points that map 1:1 to a source row, for click-to-select.
+    """Plotted points mapped back to a representative source row, for click-to-select.
 
-    ``strip``/``swarm`` expose every finite-value row; ``box`` exposes only the
-    Tukey outliers (``whis`` from *style_spec*); all other plots expose none. The
-    category string matches the x-axis tick label seaborn draws (see
-    :func:`_group_label_column`), so the UI can scope a click to one category.
+    Each drawn point is one independent unit (per ``spec.level``), matching what
+    :func:`_plot_distribution` renders. ``strip``/``swarm`` expose every
+    finite-value unit; ``box`` exposes only the Tukey outliers (``whis`` from
+    *style_spec*); all other plots expose none. The category string matches the
+    x-axis tick label seaborn draws (see :func:`_group_label_column`), so the UI
+    can scope a click to one category.
 
-    ``row_index`` is positional (``.iloc``): the pooled tables from
+    ``row_index`` is positional (``.iloc``) into the **original pooled** *df*: a
+    coarse unit (e.g. a position) resolves to one representative source row, whose
+    identity columns load that unit. The pooled tables from
     ``pool_object_tables`` carry a default ``RangeIndex``.
     """
     if spec.plot not in ("strip", "swarm", "box") or df.empty:
         return []
-    data, hue = _group_label_column(df, list(spec.group_by))
+    units = reduce_to_units(df, spec)
+    row_for = _representative_row(df, spec)
+    data, hue = _group_label_column(units, list(spec.group_by))
     values = pd.to_numeric(data[spec.value], errors="coerce")
     cats = (
         data[hue].astype(str)
@@ -396,23 +479,52 @@ def pickable_points(df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> 
     )
     finite = values.notna()
     if spec.plot in ("strip", "swarm"):
-        idx = values.index[finite]
-        return [PickPoint(str(cats[i]), float(values[i]), int(i)) for i in idx]
+        return [
+            PickPoint(str(cats[i]), float(values[i]), row_for(data.loc[i]))
+            for i in values.index[finite]
+        ]
     # box: outliers only, per category (matplotlib's Tukey flier rule).
     out: list[PickPoint] = []
-    for cat, group in values[finite].groupby(cats[finite]):
-        q1, q3 = group.quantile(0.25), group.quantile(0.75)
+    for cat, members in values[finite].groupby(cats[finite]):
+        q1, q3 = members.quantile(0.25), members.quantile(0.75)
         iqr = q3 - q1
         lo, hi = q1 - style_spec.box_whis * iqr, q3 + style_spec.box_whis * iqr
-        for i, v in group.items():
+        for i, v in members.items():
             if v < lo or v > hi:
-                out.append(PickPoint(str(cat), float(v), int(i)))
+                out.append(PickPoint(str(cat), float(v), row_for(data.loc[i])))
     return out
+
+
+def _representative_row(df: pd.DataFrame, spec: PlotSpec):
+    """A callable mapping a reduced unit row to a positional index into *df*.
+
+    With nesting keys, each unit maps to the first original row carrying its
+    (group + unit) key tuple. Without them, the reduction is the identity, so a
+    unit row *is* an original row and its own index (positional on a default
+    ``RangeIndex``) is used.
+    """
+    present = _nesting_keys(df)
+    if not present:
+        return lambda row: int(row.name)
+    keys = list(spec.group_by) + _unit_keys(df, spec)
+    first = (
+        df.reset_index(drop=True).reset_index().groupby(keys, dropna=False)["index"].first()
+    )
+
+    def row_for(row: pd.Series) -> int:
+        key = tuple(row[k] for k in keys)
+        return int(first.loc[key[0] if len(keys) == 1 else key])
+
+    return row_for
 
 
 def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
     group = list(spec.group_by)
-    data, hue = _group_label_column(df, group)
+    # Distributions show one point per independent unit (per ``spec.level``), not
+    # per frame: a histogram of cell areas has one observation per track, so a
+    # long-lived cell can't dominate the shape it draws.
+    units = reduce_to_units(df, spec)
+    data, hue = _group_label_column(units, group)
     data = data.assign(**{spec.value: pd.to_numeric(data[spec.value], errors="coerce")})
     data = data.dropna(subset=[spec.value])
     if data.empty:
@@ -458,7 +570,11 @@ def _plot_bar(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> No
 
 def _bar_ylabel(spec: PlotSpec) -> str:
     if spec.stat == "count":
-        return "cells per position" if spec.level == "position" else "cell count"
+        if spec.level == "position":
+            return "cells per position"
+        if spec.level == "date":
+            return "cells per date"
+        return "cell count"
     return f"{spec.stat} {spec.value}"
 
 

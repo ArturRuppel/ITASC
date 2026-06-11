@@ -35,9 +35,33 @@ class _FakeWindow:
         return object()
 
 
+class _FakeLabelsLayer:
+    def __init__(self, data, name) -> None:
+        self.data, self.name = data, name
+        self.selected_label = None
+        self.show_selected_label = False
+
+
+class _FakeDims:
+    def set_current_step(self, axis, value) -> None:
+        pass
+
+
+class _FakeCamera:
+    center = None
+
+
 class _FakeViewer:
     def __init__(self) -> None:
         self.window = _FakeWindow()
+        self.layers: list = []
+        self.dims = _FakeDims()
+        self.camera = _FakeCamera()
+
+    def add_labels(self, data, name=None):
+        layer = _FakeLabelsLayer(data, name)
+        self.layers.append(layer)
+        return layer
 
 
 def _moving_disk_stack(centers, shape=(80, 80), radius=6, label=1):
@@ -241,5 +265,15 @@ def test_dynamics_distribution_panel_gets_resolver(tmp_path):
     target = panel._target_resolver({"position_id": "p1", "frame_start": 5, "cell_id": 1})
     assert target is not None
     assert target.frame == 5
+
+    # Load must work even after GC: the loader's lifetime is tied to the panel
+    # (a bare bound-method signal connection would have been collected).
+    import gc
+
+    gc.collect()
+    panel._select_row(0)
+    assert panel._load_btn.isEnabled()
+    panel._load_btn.click()
+    assert len(viewer.layers) == 1
     plugin.deleteLater()
     app.processEvents()

@@ -12,6 +12,7 @@ from cellflow.aggregate_quantification.plotting import (
     StyleSpec,
     aggregate,
     build_figure,
+    pickable_points,
     pool_object_tables,
     write_csv,
 )
@@ -119,6 +120,121 @@ def test_aggregate_pooled_cell_mean_and_count():
     ).set_index("condition")
     assert counts.loc["A", "value"] == 5
     assert counts.loc["B", "value"] == 2
+
+
+def _multiframe_sources():
+    """Genuine tracks: each cell spans several frames, so frame-pooling and
+    track-reduction give *different* answers. Two dates, two positions each.
+
+    date d1 / position p1 (condition A):
+        cell 1 over 3 frames: [10, 14, 12]  -> track mean 12
+        cell 2 over 1 frame:  [30]          -> track mean 30
+    date d1 / position p2 (condition A):
+        cell 1 over 2 frames: [40, 60]      -> track mean 50
+    date d2 / position p3 (condition A):
+        cell 1 over 4 frames: [100,100,100,100] -> track mean 100
+    """
+    def tbl(frames, cells, areas):
+        return {
+            "frame": np.asarray(frames, dtype=np.int64),
+            "cell_id": np.asarray(cells, dtype=np.int64),
+            "area": np.asarray(areas, dtype=float),
+        }
+
+    return [
+        PositionSource(
+            metadata={"condition": "A", "date": "d1", "position_id": "p1"},
+            table=tbl([0, 1, 2, 0], [1, 1, 1, 2], [10.0, 14.0, 12.0, 30.0]),
+        ),
+        PositionSource(
+            metadata={"condition": "A", "date": "d1", "position_id": "p2"},
+            table=tbl([0, 1], [1, 1], [40.0, 60.0]),
+        ),
+        PositionSource(
+            metadata={"condition": "A", "date": "d2", "position_id": "p3"},
+            table=tbl([0, 1, 2, 3], [1, 1, 1, 1], [100.0, 100.0, 100.0, 100.0]),
+        ),
+    ]
+
+
+def test_cell_level_reduces_frames_to_one_value_per_track():
+    """``level="cell"`` is per *track*: a cell over N frames is one datapoint, its
+    own per-frame mean — never N independent points."""
+    df = pool_object_tables(_multiframe_sources())
+    out = aggregate(
+        df, PlotSpec(value="area", group_by=("condition",), level="cell", stat="mean")
+    ).set_index("condition")
+    # 4 tracks: means [12, 30, 50, 100]. n counts tracks (4), not the 10 frames.
+    assert out.loc["A", "n"] == 4
+    assert out.loc["A", "value"] == pytest.approx(np.mean([12.0, 30.0, 50.0, 100.0]))
+    assert out.loc["A", "error"] == pytest.approx(np.std([12, 30, 50, 100], ddof=1))
+
+
+def test_position_level_equal_weights_tracks_then_positions():
+    """Each track collapses to one value, each position to the mean of its tracks,
+    then positions are the units — a crowded position is not up-weighted."""
+    df = pool_object_tables(_multiframe_sources())
+    out = aggregate(
+        df, PlotSpec(value="area", group_by=("condition",), level="position", stat="mean")
+    ).set_index("condition")
+    # p1 tracks [12, 30] -> 21 ; p2 [50] -> 50 ; p3 [100] -> 100. n = 3 positions.
+    assert out.loc["A", "n"] == 3
+    assert out.loc["A", "value"] == pytest.approx(np.mean([21.0, 50.0, 100.0]))
+    assert out.loc["A", "error"] == pytest.approx(np.std([21, 50, 100], ddof=1))
+
+
+def test_date_level_is_the_biological_replicate_unit():
+    """``level="date"`` climbs frame→track→position→date: n is the number of
+    independent replicates, the most conservative comparison unit."""
+    df = pool_object_tables(_multiframe_sources())
+    out = aggregate(
+        df, PlotSpec(value="area", group_by=("condition",), level="date", stat="mean")
+    ).set_index("condition")
+    # d1: positions [21, 50] -> 35.5 ; d2: [100] -> 100. n = 2 dates.
+    assert out.loc["A", "n"] == 2
+    assert out.loc["A", "value"] == pytest.approx(np.mean([35.5, 100.0]))
+
+
+def test_count_counts_cells_not_cell_frames():
+    """A cell tracked over many frames is one cell. Pooled cell count and
+    cells-per-position both count distinct tracks, never rows."""
+    df = pool_object_tables(_multiframe_sources())
+    pooled = aggregate(
+        df, PlotSpec(value="area", group_by=("condition",), level="cell", stat="count")
+    ).set_index("condition")
+    # 4 distinct tracks across A (not the 10 frame rows).
+    assert pooled.loc["A", "value"] == 4
+
+    per_pos = aggregate(
+        df, PlotSpec(value="area", group_by=("condition",), level="position", stat="count")
+    ).set_index("condition")
+    # cells/position: p1=2, p2=1, p3=1 -> mean 4/3 over 3 positions.
+    assert per_pos.loc["A", "n"] == 3
+    assert per_pos.loc["A", "value"] == pytest.approx(np.mean([2, 1, 1]))
+
+
+def test_median_stat_follows_through_both_collapses():
+    """``stat="median"`` takes medians at every step, including the within-track
+    collapse, not just the final cross-unit summary."""
+    df = pool_object_tables(_multiframe_sources())
+    out = aggregate(
+        df, PlotSpec(value="area", group_by=("condition",), level="cell", stat="median")
+    ).set_index("condition")
+    # Track medians: cell1@p1 median(10,14,12)=12 ; 30 ; median(40,60)=50 ; 100.
+    # Cross-track median of [12,30,50,100] = 40.
+    assert out.loc["A", "value"] == pytest.approx(np.median([12.0, 30.0, 50.0, 100.0]))
+
+
+def test_distribution_points_are_per_unit_not_per_frame():
+    """Strip plot exposes one pickable point per track, and each maps back to a
+    representative source row whose identity columns load that cell."""
+    df = pool_object_tables(_multiframe_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="strip")
+    pts = pickable_points(df, spec, StyleSpec())
+    assert len(pts) == 4  # 4 tracks, not 10 frames
+    # Each row_index addresses a real pooled row (identity resolves for loading).
+    for p in pts:
+        assert 0 <= p.row_index < len(df)
 
 
 def test_aggregate_empty_returns_schema():

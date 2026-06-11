@@ -34,9 +34,33 @@ class _FakeWindow:
         return object()
 
 
+class _FakeLabelsLayer:
+    def __init__(self, data, name) -> None:
+        self.data, self.name = data, name
+        self.selected_label = None
+        self.show_selected_label = False
+
+
+class _FakeDims:
+    def set_current_step(self, axis, value) -> None:
+        pass
+
+
+class _FakeCamera:
+    center = None
+
+
 class _FakeViewer:
     def __init__(self) -> None:
         self.window = _FakeWindow()
+        self.layers: list = []
+        self.dims = _FakeDims()
+        self.camera = _FakeCamera()
+
+    def add_labels(self, data, name=None):
+        layer = _FakeLabelsLayer(data, name)
+        self.layers.append(layer)
+        return layer
 
 
 def _split_frame() -> np.ndarray:
@@ -311,5 +335,31 @@ def test_shape_panel_gets_resolver_and_load_is_wired(tmp_path):
     target = panel._target_resolver({"position_id": "p1", "frame": 0, "cell_id": 1})
     assert target is not None
     assert target.path == Path(records[0]["cell_tracked_labels_path"])
+    plugin.deleteLater()
+    app.processEvents()
+
+
+def test_load_button_loads_labels_into_viewer(tmp_path):
+    """Clicking a point then "Load in viewer" must add the labels layer — even
+    after a GC pass. Regression: the ClickToLoad controller was a local in
+    _open_panel and PyQt's bound-method connections hold the receiver weakly,
+    so it was collected and the Load click silently did nothing."""
+    import gc
+
+    app = _app()
+    records = [_built_cell_position(tmp_path, "p1", "A")]
+    viewer = _FakeViewer()
+    plugin = ShapePlugin()
+    plugin.set_context(AnalysisContext(records=records, viewer=viewer))
+
+    plugin._on_pool_done(_pool_records(CellShapeQuantifier(), records))
+    panel = plugin._panel
+    gc.collect()
+
+    panel._select_row(0)
+    assert panel._load_btn.isEnabled()
+    panel._load_btn.click()
+    assert len(viewer.layers) == 1
+    assert np.asarray(viewer.layers[0].data).max() == 2  # the labels, not a blank
     plugin.deleteLater()
     app.processEvents()
