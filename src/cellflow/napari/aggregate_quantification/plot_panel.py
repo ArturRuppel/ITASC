@@ -49,6 +49,7 @@ from cellflow.aggregate_quantification.plotting import (
     aggregate,
     build_figure,
     pickable_points,
+    potential_table,
     write_csv,
 )
 from cellflow.napari.ui_style import action_button, status_label
@@ -75,7 +76,7 @@ class LoadTarget:
     cell_id: int | None
     identity: dict
 
-_PLOT_TYPES = ("hist", "box", "violin", "strip", "swarm", "bar", "line")
+_PLOT_TYPES = ("hist", "box", "violin", "strip", "swarm", "bar", "line", "potential")
 #: Named qualitative palettes offered for the group colors (seaborn names).
 _PALETTES = ("tab10", "Set1", "Set2", "Dark2", "Paired", "colorblind", "muted", "deep")
 _LEGEND_LOCS = ("best", "upper right", "upper left", "lower right", "lower left", "center")
@@ -102,6 +103,7 @@ class PlotPanel(QWidget):
         group_columns: tuple[str, ...],
         target_resolver: Callable[[dict], LoadTarget | None] | None = None,
         loader: Callable[[LoadTarget], None] | None = None,
+        default_plot: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -146,6 +148,16 @@ class PlotPanel(QWidget):
         self._status = QLabel(f"{len(self._df)} row(s) in snapshot.")
         status_label(self._status, muted=True)
         layout.addWidget(self._status)
+
+        # Open on a caller-chosen plot type (e.g. the Potential landscape plugin
+        # launches straight into "potential"); signals stay blocked so the single
+        # explicit render below does the one draw.
+        if default_plot:
+            index = self._plot_combo.findData(default_plot)
+            if index >= 0:
+                blocked = self._plot_combo.blockSignals(True)
+                self._plot_combo.setCurrentIndex(index)
+                self._plot_combo.blockSignals(blocked)
 
         self._render()
 
@@ -454,7 +466,15 @@ class PlotPanel(QWidget):
     def _export_aggregated(self) -> None:
         path = self._save_path("Export aggregated table", "CSV files (*.csv)")
         if path:
-            summary = aggregate(self._df, self.current_spec())
+            spec = self.current_spec()
+            # For the potential view the "aggregated" table is the plotted curve
+            # (group · center · U · counts · ΔE_eff), not a per-unit summary, so
+            # the exported numbers match what is drawn.
+            summary = (
+                potential_table(self._df, spec)
+                if spec.plot == "potential"
+                else aggregate(self._df, spec)
+            )
             self._status.setText(f"Wrote {write_csv(summary, path).name}.")
 
     def _export_figure(self) -> None:

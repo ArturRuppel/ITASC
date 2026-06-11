@@ -41,7 +41,11 @@ __all__ = [
     "build_figure",
     "pickable_points",
     "write_csv",
+    "potential_landscape",
+    "effective_barrier",
+    "potential_table",
     "DISTRIBUTION_PLOTS",
+    "CURVE_PLOTS",
 ]
 
 #: The tidy keys every per-object table carries; joins and per-position grouping
@@ -69,7 +73,11 @@ _LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
 #: ``class_label`` model mapped onto its ``hue=``. ``strip``/``swarm`` are the
 #: new per-cell scatter members.
 DISTRIBUTION_PLOTS = ("hist", "box", "violin", "strip", "swarm")
-_PLOTS = (*DISTRIBUTION_PLOTS, "bar", "line")
+#: Curve-family plots — a distribution Boltzmann-inverted into a ``U(x) = −ln P``
+#: curve. Unlike the distribution family these pool **raw** samples (no
+#: ``reduce_to_units``); see :func:`_plot_potential`.
+CURVE_PLOTS = ("potential",)
+_PLOTS = (*DISTRIBUTION_PLOTS, "bar", "line", *CURVE_PLOTS)
 _STATS = ("mean", "median", "count")
 _ERRORS = ("sd", "sem", "none")
 
@@ -353,6 +361,91 @@ def _group_key_to_dict(group: list[str], key: Any) -> dict[str, Any]:
     return dict(zip(group, key))
 
 
+def potential_landscape(
+    values: np.ndarray,
+    *,
+    bins: int,
+    value_range: tuple[float, float] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Boltzmann-invert a 1-D sample into an effective potential ``U = −ln P``.
+
+    Bins *values* into ``P(x) = counts / N`` and returns ``(centers, U, counts)``
+    over the **occupied** bins only — an empty bin has ``P = 0`` ⇒ ``U = ∞`` and
+    is dropped (the reference's ``probabilities > 0`` mask). ``U`` is in units of
+    kT: with the natural log, ``P ∝ exp(−U/kT)`` ⇒ ``U/kT = −ln P + const``.
+    *value_range* pins the histogram extent so several groups share one binning;
+    ``None`` uses the sample's own min/max. Returns three empty arrays when no
+    finite sample survives.
+    """
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        empty = np.empty(0, dtype=float)
+        return empty, empty, np.empty(0, dtype=np.int64)
+    counts, edges = np.histogram(finite, bins=bins, range=value_range)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    occupied = counts > 0
+    u = -np.log(counts[occupied] / finite.size)
+    return centers[occupied], u, counts[occupied]
+
+
+def effective_barrier(centers: np.ndarray, u: np.ndarray) -> float:
+    """``ΔE_eff`` [kT] = ``U`` at the bin nearest ``x = 0`` minus ``min(U)``.
+
+    Operates on the occupied ``(centers, U)`` from :func:`potential_landscape`.
+    The transition state is ``x = 0`` (a junction length → 0, the four-fold
+    vertex); the well is the curve minimum (the most-probable value). Returns NaN
+    when there are fewer than two occupied bins or ``0`` is not bracketed by the
+    occupied range — i.e. the data never reached the transition state.
+    """
+    centers = np.asarray(centers, dtype=float)
+    u = np.asarray(u, dtype=float)
+    if u.size < 2 or centers.min() > 0.0 or centers.max() < 0.0:
+        return float("nan")
+    transition = float(u[int(np.argmin(np.abs(centers)))])
+    return transition - float(u.min())
+
+
+def _shared_range(df: pd.DataFrame, spec: PlotSpec) -> tuple[float, float] | None:
+    """Common ``(min, max)`` over ``spec.value`` so every group bins identically;
+    ``None`` (let numpy pick per call) when there is no finite spread."""
+    values = pd.to_numeric(df[spec.value], errors="coerce").to_numpy()
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+    lo, hi = float(values.min()), float(values.max())
+    return (lo, hi) if lo < hi else None
+
+
+def potential_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The plotted potential curve(s) as a tidy table, for CSV export.
+
+    One block of rows per group (``group`` is the ``" · "``-joined group-by, or
+    ``"all"`` when none): ``group, center, U, counts, delta_e_eff``. The barrier
+    ``delta_e_eff`` is repeated down a group's rows and matches the per-curve
+    legend annotation in :func:`build_figure`. Empty when *df* lacks
+    ``spec.value`` or has no finite samples.
+    """
+    columns = ["group", "center", "U", "counts", "delta_e_eff"]
+    if df.empty or spec.value not in df.columns:
+        return pd.DataFrame(columns=columns)
+    value_range = _shared_range(df, spec)
+    blocks: list[pd.DataFrame] = []
+    for label, chunk in _group_series(df, list(spec.group_by)):
+        values = pd.to_numeric(chunk[spec.value], errors="coerce").to_numpy()
+        centers, u, counts = potential_landscape(values, bins=spec.bins, value_range=value_range)
+        if centers.size == 0:
+            continue
+        blocks.append(pd.DataFrame({
+            "group": label,
+            "center": centers,
+            "U": u,
+            "counts": counts,
+            "delta_e_eff": effective_barrier(centers, u),
+        }))
+    return pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=columns)
+
+
 def build_figure(
     df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec | None = None
 ) -> Figure:
@@ -381,6 +474,8 @@ def build_figure(
 
         if spec.plot in DISTRIBUTION_PLOTS:
             _plot_distribution(ax, df, spec, style_spec)
+        elif spec.plot == "potential":
+            _plot_potential(ax, df, spec, style_spec)
         elif spec.plot == "bar":
             _plot_bar(ax, df, spec, style_spec)
         else:  # line
@@ -555,6 +650,43 @@ def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSp
     else:  # strip | swarm
         plot = sns.stripplot if spec.plot == "strip" else sns.swarmplot
         plot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
+
+
+def _plot_potential(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
+    """Render the effective potential ``U(x) = −ln P(x)`` curve per group.
+
+    Unlike the distribution plots this pools **raw** samples (no
+    :func:`reduce_to_units`): the landscape is the shape of the within-sample
+    fluctuation distribution, not a per-unit comparison, so collapsing to one
+    value per track would be wrong — and degenerate for a table that carries no
+    ``cell_id`` nesting (e.g. the contacts signed-junction-length table). Every
+    group shares one binning (``_shared_range``) so curves are comparable, and
+    each curve's effective barrier ``ΔE_eff`` rides in its legend label."""
+    group = list(spec.group_by)
+    value_range = _shared_range(df, spec)
+    series_list = list(_group_series(df, group))
+    colors = sns.color_palette(style_spec.palette, n_colors=max(len(series_list), 1))
+    spans_zero = value_range is not None and value_range[0] <= 0.0 <= value_range[1]
+    drew = False
+    for color, (label, chunk) in zip(colors, series_list):
+        values = pd.to_numeric(chunk[spec.value], errors="coerce").to_numpy()
+        centers, u, _ = potential_landscape(values, bins=spec.bins, value_range=value_range)
+        if centers.size == 0:
+            continue
+        barrier = effective_barrier(centers, u)
+        barrier_txt = f"{barrier:.2f} kT" if np.isfinite(barrier) else "n/a"
+        ax.plot(
+            centers, u, marker="o", linestyle="-", markersize=4, color=color,
+            label=f"{label} (ΔE_eff={barrier_txt})",
+        )
+        drew = True
+    if not drew:
+        ax.set_title("No data in scope")
+        return
+    if spans_zero:
+        ax.axvline(0.0, color="red", linestyle="--", linewidth=1.2, alpha=0.7)
+    ax.set_xlabel(spec.value)
+    ax.set_ylabel("U = −ln P  [kT]")
 
 
 def _plot_bar(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:

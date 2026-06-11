@@ -18,9 +18,11 @@ the four-fold vertex (the T1 transition state).
 
 Modeled on `morphogenesis-on-chip_analysis/fig5.py`
 (`plot_signed_lengths_neg_log_p_histogram` → `−ln P(L)` curve) and `fig6.py`
-(barrier `ΔE_eff` correlated with intercalation rate). The reference signs the
-central junction length upstream in curated "quad" JSONs; CellFlow derives the
-same sign directly from the `t1_events` table (`losing_pair` ↔ `gaining_pair`).
+(barrier `ΔE_eff` correlated with intercalation rate), in the reference repo
+`~/Projects/inter-s-cale/morphogenesis-on-chip_analysis/` (context only — not a
+CellFlow dependency). The reference signs the central junction length upstream in
+curated "quad" JSONs; CellFlow derives the same sign directly from the
+`t1_events` table (`losing_pair` ↔ `gaining_pair`).
 
 ## Decisions (locked with the user)
 

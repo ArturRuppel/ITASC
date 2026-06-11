@@ -12,8 +12,11 @@ from cellflow.aggregate_quantification.plotting import (
     StyleSpec,
     aggregate,
     build_figure,
+    effective_barrier,
     pickable_points,
     pool_object_tables,
+    potential_landscape,
+    potential_table,
     write_csv,
 )
 
@@ -466,4 +469,107 @@ def test_pickable_points_hist_is_empty():
     import pandas as pd
     df = pd.DataFrame({"area": [1.0, 2.0]})
     spec = PlotSpec(value="area", group_by=(), level="cell", plot="hist")
+    assert pickable_points(df, spec, StyleSpec()) == []
+
+
+# --------------------------------------------------------------- potential mode
+
+
+def test_potential_landscape_is_neg_log_p_over_occupied_bins():
+    # Three samples in one bin, one in another: P = 3/4 and 1/4 → U = −ln P.
+    values = np.array([0.1, 0.1, 0.1, 0.9])
+    centers, u, counts = potential_landscape(values, bins=2, value_range=(0.0, 1.0))
+    assert counts.tolist() == [3, 1]
+    assert u[0] == pytest.approx(-math.log(0.75))
+    assert u[1] == pytest.approx(-math.log(0.25))
+    assert centers.tolist() == [0.25, 0.75]
+
+
+def test_potential_landscape_drops_empty_bins():
+    # Middle bin is empty → dropped (U → ∞), so only two occupied bins remain.
+    values = np.array([0.0, 0.0, 1.0])
+    centers, u, counts = potential_landscape(values, bins=3, value_range=(0.0, 1.0))
+    assert counts.tolist() == [2, 1]
+    assert len(centers) == 2 and np.isfinite(u).all()
+
+
+def test_potential_landscape_empty_input_returns_empty():
+    centers, u, counts = potential_landscape(np.array([np.nan, np.nan]), bins=10)
+    assert centers.size == 0 and u.size == 0 and counts.size == 0
+
+
+def test_effective_barrier_bimodal_is_positive_and_finite():
+    rng = np.random.RandomState(0)
+    values = np.concatenate([rng.normal(-3, 0.4, 4000), rng.normal(3, 0.4, 4000)])
+    centers, u, _ = potential_landscape(values, bins=41, value_range=(-5, 5))
+    barrier = effective_barrier(centers, u)
+    # The well minima sit near ±3; the rarely-visited centre (x=0) is the barrier.
+    assert np.isfinite(barrier) and barrier > 1.0
+
+
+def test_effective_barrier_nan_when_zero_not_bracketed():
+    # All samples positive → 0 is left of the occupied range → undefined barrier.
+    values = np.array([3.0, 3.1, 3.2, 3.3, 3.4, 3.5])
+    centers, u, _ = potential_landscape(values, bins=6)
+    assert math.isnan(effective_barrier(centers, u))
+
+
+def test_potential_pools_raw_samples_not_units():
+    # A table whose nesting keys (position_id) would collapse a distribution plot
+    # to one value per position. The potential mode must ignore that and bin every
+    # raw sample, so its curve has many occupied bins, not one point per position.
+    rng = np.random.RandomState(1)
+    df = pd.DataFrame({
+        "position_id": ["p1"] * 500 + ["p2"] * 500,
+        "signed_length": np.concatenate([rng.normal(-2, 0.5, 500), rng.normal(2, 0.5, 500)]),
+    })
+    spec = PlotSpec(value="signed_length", plot="potential", bins=30)
+    table = potential_table(df, spec)
+    assert table["group"].nunique() == 1  # ungrouped → "all"
+    assert len(table) > 10  # a full curve, not 2 per-position points
+
+
+def test_potential_table_one_block_per_group_with_barrier():
+    rng = np.random.RandomState(2)
+    both = np.concatenate([rng.normal(-2, 0.4, 1500), rng.normal(2, 0.4, 1500)])
+    df = pd.DataFrame({
+        "condition": ["A"] * 3000 + ["B"] * 3000,
+        "signed_length": np.concatenate([both, both]),
+    })
+    spec = PlotSpec(value="signed_length", plot="potential", group_by=("condition",), bins=31)
+    table = potential_table(df, spec)
+    assert set(table.columns) == {"group", "center", "U", "counts", "delta_e_eff"}
+    assert set(table["group"]) == {"A", "B"}
+    # Each group spans both wells → a finite, repeated-down-the-block barrier.
+    for _, block in table.groupby("group"):
+        assert block["delta_e_eff"].nunique() == 1
+        assert np.isfinite(block["delta_e_eff"].iloc[0])
+
+
+def test_build_figure_potential_draws_one_curve_per_group_with_barrier_label():
+    rng = np.random.RandomState(3)
+    both = np.concatenate([rng.normal(-2, 0.4, 1500), rng.normal(2, 0.4, 1500)])
+    df = pd.DataFrame({
+        "condition": ["A"] * 3000 + ["B"] * 3000,
+        "signed_length": np.concatenate([both, both]),
+    })
+    spec = PlotSpec(value="signed_length", plot="potential", group_by=("condition",), bins=31)
+    fig = build_figure(df, spec, StyleSpec())
+    ax = fig.axes[0]
+    assert len(ax.lines) >= 2  # one curve per group (+ the x=0 marker line)
+    labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert any(label.startswith("A (ΔE_eff=") for label in labels)
+    assert ax.get_ylabel() == "U = −ln P  [kT]"
+
+
+def test_build_figure_potential_missing_value_is_placeholder():
+    df = pd.DataFrame({"condition": ["A", "B"]})
+    spec = PlotSpec(value="signed_length", plot="potential", bins=10)
+    fig = build_figure(df, spec, StyleSpec())
+    assert fig.axes[0].get_title() == "No data in scope"
+
+
+def test_pickable_points_potential_is_empty():
+    df = pd.DataFrame({"signed_length": [1.0, -1.0]})
+    spec = PlotSpec(value="signed_length", plot="potential")
     assert pickable_points(df, spec, StyleSpec()) == []
