@@ -33,12 +33,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from napari.qt.threading import thread_worker
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDockWidget,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMainWindow,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -104,6 +107,9 @@ class ShapePlugin(AnalysisPlugin):
         self._scope_user_set = False
         #: Increments per launched dock so each gets a distinct name.
         self._plot_count = 0
+        #: The first/anchor plot dock; new plots tabify onto it so they share one
+        #: column to the right of the controls instead of stacking below them.
+        self._plot_dock: QDockWidget | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -358,8 +364,58 @@ class ShapePlugin(AnalysisPlugin):
         self._plot_count += 1
         name = f"Shape plot {self._plot_count}"
         if self.viewer is not None:
-            self.viewer.window.add_dock_widget(panel, area="right", name=name)
+            dock = self.viewer.window.add_dock_widget(panel, area="right", name=name)
+            self._place_plot_dock(dock)
         self._plot_status.setText(f"Opened {name} ({len(pooled)} object-rows).")
+
+    def _place_plot_dock(self, dock: object) -> None:
+        """Lay the new plot dock out as a column to the *right* of the controls.
+
+        napari adds a second right-area dock *below* the studio controls; instead
+        we split it off as a horizontal neighbour (its own column), mirroring the
+        nucleus correction workspace. Additional plots tabify onto that first
+        column so they share it rather than each stacking below. Degrades to a
+        no-op when the host isn't a real Qt main window (e.g. unit-test fakes)."""
+        main = self._main_window(dock)
+        host = self._host_dock()
+        if main is None or not isinstance(dock, QDockWidget):
+            return
+        anchor = self._plot_dock if self._is_live_dock(self._plot_dock, main) else None
+        if anchor is not None:
+            main.tabifyDockWidget(anchor, dock)
+        elif host is not None:
+            main.splitDockWidget(host, dock, Qt.Horizontal)
+        self._plot_dock = dock
+
+    def _host_dock(self) -> QDockWidget | None:
+        """The QDockWidget wrapping this plugin (the studio controls dock)."""
+        widget = self.parentWidget()
+        while widget is not None:
+            if isinstance(widget, QDockWidget):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    @staticmethod
+    def _main_window(dock: object) -> QMainWindow | None:
+        """The QMainWindow *dock* lives in, walking up its parent chain."""
+        widget = dock.parentWidget() if isinstance(dock, QDockWidget) else None
+        while widget is not None:
+            if isinstance(widget, QMainWindow):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    @staticmethod
+    def _is_live_dock(dock: QDockWidget | None, main: QMainWindow) -> bool:
+        """True when *dock* is still an undeleted dock of *main* (a prior plot the
+        user hasn't closed), so new plots can tabify onto it."""
+        if dock is None:
+            return False
+        try:
+            return dock in main.findChildren(QDockWidget)
+        except RuntimeError:  # dock's C++ object was deleted (closed)
+            return False
 
     # ----------------------------------------------------------- path resolution
     def _is_built(self, quantifier, record: dict) -> bool:

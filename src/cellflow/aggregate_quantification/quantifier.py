@@ -45,6 +45,9 @@ class PositionInputs:
     #: Physical pixel size (µm/px); ``None`` when unknown. Quantifiers that emit
     #: values in physical units (cell shape) require it.
     pixel_size_um: float | None = None
+    #: Frame interval (seconds/frame); ``None`` when unknown. Quantifiers that
+    #: emit time-derived values (track dynamics) require it.
+    time_interval_s: float | None = None
 
 
 #: quantity_id -> quantifier class, populated by ``__init_subclass__``.

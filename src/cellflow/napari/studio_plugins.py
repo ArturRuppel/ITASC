@@ -22,6 +22,7 @@ from typing import Any
 
 from qtpy.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from cellflow.aggregate_quantification.frame_interval import resolve_time_interval_s
 from cellflow.aggregate_quantification.pixel_size import resolve_pixel_size_um
 from cellflow.aggregate_quantification.quantifier import (
     PositionInputs,
@@ -52,20 +53,24 @@ class PluginEntry:
 def position_inputs_from_record(record: dict) -> PositionInputs:
     """Build :class:`PositionInputs` from a normalized catalogue record.
 
-    ``pixel_size_um`` prefers an explicit value on the record (the Cell Shape
-    plugin stamps a manual override there) and otherwise auto-resolves from the
-    position's ``cellflow_config.json`` or the label TIFF's resolution tags.
+    ``pixel_size_um`` / ``time_interval_s`` prefer an explicit value on the
+    record (a plugin may stamp a manual override there) and otherwise auto-resolve
+    from the position's ``cellflow_config.json`` or the label TIFF's tags.
     """
     out = record.get("contact_analysis_path")
     cell = record.get("cell_tracked_labels_path")
     nucleus = record.get("nucleus_tracked_labels_path")
     position_dir = record.get("position_path") or (Path(out).parent if out else Path("."))
     cell_path = Path(cell) if cell else None
+    nucleus_path = Path(nucleus) if nucleus else None
     return PositionInputs(
         position_dir=Path(position_dir),
         cell_labels_path=cell_path,
-        nucleus_labels_path=Path(nucleus) if nucleus else None,
+        nucleus_labels_path=nucleus_path,
         pixel_size_um=_resolve_pixel_size(record, position_dir, cell_path),
+        time_interval_s=_resolve_time_interval(
+            record, position_dir, cell_path or nucleus_path
+        ),
     )
 
 
@@ -76,6 +81,15 @@ def _resolve_pixel_size(
     if explicit is not None:
         return explicit
     return resolve_pixel_size_um(position_dir, cell_path)
+
+
+def _resolve_time_interval(
+    record: dict, position_dir: Path | str, label_path: Path | None
+) -> float | None:
+    explicit = _positive_float(record.get("time_interval_s"))
+    if explicit is not None:
+        return explicit
+    return resolve_time_interval_s(position_dir, label_path)
 
 
 def _positive_float(value: object) -> float | None:
