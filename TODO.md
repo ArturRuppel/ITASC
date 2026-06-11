@@ -32,6 +32,31 @@
 - [ ] Broaden scope beyond contacts: nucleus track analysis, nucleus-vs-cell centroid offset, cell shape analysis, tissue dynamics, etc. (Each a new `quantifiers/*.py` module + napari visualizer; the seam above is what makes them additive.)
   - [x] **Cell shape** — first real new quantity. `quantifiers/cell_shape.py` over a headless `cell_shape/{build,reader}.py` core (regionprops: area, circularity, aspect ratio, eccentricity, solidity, … per cell per frame → `cell_shape.h5`). Added a generic headless plotting backend (`aggregate_quantification/plotting.py`: pool / aggregate / figure / CSV) and a unified **Cell Shape** group plugin (Compute + Plot, with CSV/figure export). Framework deltas: `Quantifier.default_output` + `object_table` on the base; studio build path now routes through `default_output` (was hardcoded to the contacts artifact); `owns_quantities` lets a group plugin suppress the generic auto-builder. See `notes/2026-06-10-cell-shape-quantifier-and-table-explorer-design.md`. Follow-ons: per-position shape overlay, physical units, contacts/NLS plot sections.
 
+## TIFF Calibration (pixel size / Z step / frame interval)
+
+Background: the project's TIFF writers (all via `core/tiff.py::imwrite_grayscale`)
+never embedded physical calibration — files had `XResolution` 1/1, `ResolutionUnit`
+none. The calibration exists in `0_input/run_params.json` (`pixel_size_um`,
+`time_interval_s`) and per-position `cellflow_config.json` (often blank). Chosen
+format: **OME-TIFF** (`PhysicalSizeX/Y/Z`, `TimeIncrement`) — works for all dtypes
+incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
+
+- [x] Migration tool for existing files: `scripts/embed_calibration.py` (dry-run
+  by default, atomic temp-swap writes). Most stacks → OME-TIFF; `atoms.tif` keeps
+  its description verbatim (load-bearing `cellflow_atom_params`) and gets baseline
+  pixel-size tags only. Relabels the `QYX` (unlabeled-leading-dim) stacks → `TYX`.
+- [x] Patched `aggregate_quantification/pixel_size.py::pixel_size_from_tiff` to read
+  OME `PhysicalSizeX` (tried before ImageJ/baseline).
+- [x] Converted **pos00** of `2026-04-01_U251-WT-NLS-mCherry_U251-VimentinKO_circle300um_live_spinning-disk`
+  (0.65 µm/px, 1.0 µm Z, 900 s/frame) — verified data/labels intact, atoms params
+  survived, reader returns 0.65. (Folder is a risk-mitigation copy.)
+- [ ] **Convert remaining positions** pos01–pos13 (same command per folder; each
+  reads its own `run_params.json` — verify each `pixel_size_um` before batching).
+- [ ] **Wire calibration into the writers** so *fresh* pipeline runs emit calibrated
+  TIFFs (extend `imwrite_grayscale` to accept/embed pixel size + Z + frame interval;
+  decide how calibration reaches the deep writers — ambient/context vs explicit
+  threading). This was the original request; only the migration is done so far.
+
 # 
 
 - [x] Pipeline Files loading: `atoms.tif` should load as a **labels** layer,

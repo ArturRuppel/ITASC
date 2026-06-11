@@ -564,6 +564,7 @@ dependencies = [
     { name = "scikit-image", version = "0.26.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "seaborn" },
     { name = "sqlalchemy" },
     { name = "tifffile", version = "2025.5.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "tifffile", version = "2026.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
@@ -616,6 +617,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
     { name = "scikit-image" },
     { name = "scipy" },
+    { name = "seaborn", specifier = ">=0.13" },
     { name = "sqlalchemy" },
     { name = "tifffile" },
     { name = "tomli", marker = "python_full_version < '3.11' and extra == 'dev'", specifier = ">=2.0" },
@@ -6353,7 +6355,7 @@ version = "20250106"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' and python_full_version < '3.14'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/55/44/c5b03ff3d806ea05f58e072919c1b002513fab3db17125e14ad70687edd9/triangle-20250106-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:5eb99ec1002f164b7a40bec47c9915818231c3563f3900d973b6a2cb2befef9d", size = 1438057, upload-time = "2025-01-07T04:53:58.112Z" },

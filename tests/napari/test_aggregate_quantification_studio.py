@@ -57,37 +57,38 @@ def test_single_contact_analysis_entry_no_meta_or_plugins_in_manifest():
 # ---------------------------------------------------------------- plugin hosting
 
 
-def test_registry_lists_a_checkbox_per_plugin():
+def test_every_plugin_is_its_own_collapsible_collapsed():
     app = _app()
     widget = mod.AggregateQuantificationStudioWidget()
-    # A builder per quantifier (contacts) + the meta plugins, all as checkboxes,
-    # and none mounted until checked.
-    assert "build:contacts" in widget._plugin_checks
-    assert "catalog_summary" in widget._plugin_checks
-    assert widget._mounted == {}
+    # A builder per quantifier (contacts) + the meta plugins, each as its own
+    # collapsible section, all collapsed (off) until expanded.
+    assert "build:contacts" in widget._plugin_sections
+    assert "catalog_summary" in widget._plugin_sections
+    assert all(
+        not plugin.section.is_expanded for plugin in widget._plugin_sections.values()
+    )
     widget.deleteLater()
     app.processEvents()
 
 
-def test_checking_a_plugin_mounts_it_as_a_collapsible():
+def test_collapsible_header_toggles_a_plugin():
     app = _app()
     widget = mod.AggregateQuantificationStudioWidget()
 
-    widget._plugin_checks["catalog_summary"].setChecked(True)
-    assert "catalog_summary" in widget._mounted
-    assert isinstance(widget._mounted["catalog_summary"].body, CatalogSummaryPlugin)
-
-    # Unchecking removes the mounted collapsible; multiple may coexist.
-    widget._plugin_checks["build:contacts"].setChecked(True)
-    assert set(widget._mounted) == {"catalog_summary", "build:contacts"}
-    widget._plugin_checks["catalog_summary"].setChecked(False)
-    assert set(widget._mounted) == {"build:contacts"}
+    plugin = widget._plugin_sections["catalog_summary"]
+    assert isinstance(plugin.body, CatalogSummaryPlugin)
+    # The section's own collapse header is the on/off control (no checkbox).
+    assert not plugin.section.is_expanded
+    plugin.section.expand()
+    assert plugin.section.is_expanded
+    plugin.section.collapse()
+    assert not plugin.section.is_expanded
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_selection_scope_forwarded_to_mounted_plugins(monkeypatch):
+def test_selection_scope_forwarded_to_plugins(monkeypatch):
     app = _app()
 
     received: list[list[dict]] = []
@@ -108,7 +109,7 @@ def test_selection_scope_forwarded_to_mounted_plugins(monkeypatch):
     monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [entry])
 
     widget = mod.AggregateQuantificationStudioWidget()
-    widget._plugin_checks["recording_test"].setChecked(True)  # mount it
+    # Plugins are always present and fed the scope; no checkbox to mount first.
     widget._records = [
         {"condition": "ctrl", "date": "d1", "id": "p1", "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
         {"condition": "drug", "date": "d1", "id": "p2", "contact_analysis_path": Path("/b.h5"), "contact_analysis_status": "incomplete"},
@@ -125,7 +126,7 @@ def test_selection_scope_forwarded_to_mounted_plugins(monkeypatch):
     app.processEvents()
 
 
-def test_plugin_checkbox_greyed_when_inputs_missing(monkeypatch):
+def test_plugin_header_greyed_when_inputs_missing(monkeypatch):
     app = _app()
 
     entry = mod.PluginEntry(
@@ -142,11 +143,12 @@ def test_plugin_checkbox_greyed_when_inputs_missing(monkeypatch):
          "cell_tracked_labels_path": Path("/cells.tif"), "contact_analysis_status": "ready"},
     ]
     widget._refresh_table()
-    assert widget._plugin_checks["needs_nucleus"].isEnabled() is False
+    toggle = widget._plugin_sections["needs_nucleus"].section._toggle
+    assert toggle.isEnabled() is False
 
     widget._records[0]["nucleus_tracked_labels_path"] = Path("/nuc.tif")
     widget._refresh_table()
-    assert widget._plugin_checks["needs_nucleus"].isEnabled() is True
+    assert toggle.isEnabled() is True
 
     widget.deleteLater()
     app.processEvents()
@@ -156,25 +158,23 @@ def test_no_plugins_shows_placeholder(monkeypatch):
     app = _app()
     monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
     widget = mod.AggregateQuantificationStudioWidget()
-    assert widget._plugin_checks == {}
-    assert widget._mounted == {}
+    assert widget._plugin_sections == {}
     widget.deleteLater()
     app.processEvents()
 
 
-# ---------------------------------------------------------------- contact view
+# ----------------------------------------------- contact view (now a plugin)
 
 
-def test_single_selection_drives_contact_view(monkeypatch):
+def test_single_selection_drives_visualize_contacts_plugin(monkeypatch):
     app = _app()
-    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
-
     widget = mod.AggregateQuantificationStudioWidget()
 
+    # The per-position visualizer is the Visualize Contacts plugin now; drive
+    # its embedded view by intercepting the widget-level set_context.
+    plugin = widget._plugin_sections["visualize_contacts"].body
     calls: list[dict] = []
-    monkeypatch.setattr(
-        widget._contact_widget, "set_context", lambda **kw: calls.append(kw)
-    )
+    monkeypatch.setattr(plugin._view, "set_context", lambda **kw: calls.append(kw))
 
     widget._records = [
         {

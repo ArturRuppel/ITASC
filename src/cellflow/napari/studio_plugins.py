@@ -1,6 +1,6 @@
 """The Aggregate Quantification studio's flat plugin list.
 
-One checkbox list hosts three plugin *roles* uniformly:
+One flat plugin list hosts three plugin *roles* uniformly:
 
 * **builder** — a Build button over a :class:`Quantifier`; computes that quantity
   for the in-scope positions. One builder per registered quantifier.
@@ -10,8 +10,8 @@ One checkbox list hosts three plugin *roles* uniformly:
 
 Each :class:`PluginEntry` exposes ``display_name`` + ``requires`` (input gating)
 + a ``factory`` that builds the collapsible body widget. The studio renders one
-checkbox per entry; checking mounts the body as its own collapsible and feeds it
-the catalogue context.
+collapsible per entry; its header is the on/off control (expand to use it) and
+the body is fed the catalogue context.
 """
 from __future__ import annotations
 

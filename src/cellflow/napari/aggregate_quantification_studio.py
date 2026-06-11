@@ -1,14 +1,14 @@
 """Aggregate Quantification studio: a position catalog + per-position view + analysis plugins.
 
-This is the merged standalone Aggregate Quantification tool. It is built from three parts:
+This is the merged standalone Aggregate Quantification tool. It is built from two parts:
 
 * a **catalog** of positions (autodiscover a study tree, add loose ``.h5`` files,
   load/save a CSV catalog);
-* a **per-position quantity view** — an embedded :class:`AggregateQuantificationWidget`
-  driven by the single selected position (visualize + compute-if-missing);
-* an **analysis** section that hosts an analysis *plugin* fed with the
-  currently-selected catalog rows. All cross-position aggregation lives in
-  plugins (see :mod:`cellflow.napari.aggregate_quantification.plugins`).
+* a **plugins** section that hosts every analysis *plugin* fed with the
+  currently-selected catalog rows — each plugin is one collapsible whose header
+  is its on/off control. The per-position visualizer is itself a plugin
+  (``visualize_contacts``), as is all cross-position aggregation (see
+  :mod:`cellflow.napari.aggregate_quantification.plugins`).
 
 This module is full-install only (it depends on the napari analysis-plugin
 package, which the standalone ``cellflow-aggregate`` wheel does not ship); the
@@ -24,7 +24,6 @@ from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -51,7 +50,7 @@ from cellflow.aggregate_quantification.catalog import (
     save_catalog,
 )
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
-from cellflow.napari.aggregate_quantification_widget import AggregateQuantificationWidget, _ProgressEmitter
+from cellflow.napari.aggregate_quantification_widget import _ProgressEmitter
 from cellflow.napari.studio_plugins import (
     PluginEntry,
     available_studio_plugins,
@@ -75,9 +74,15 @@ class _BuildResult(NamedTuple):
     status: str  # "built" | "failed"
 
 
-class _Mounted(NamedTuple):
-    """A checked plugin's collapsible section + its body widget."""
+class _PluginSection(NamedTuple):
+    """One plugin's collapsible section + its body widget.
 
+    Every available plugin gets a section up front; the section's own collapse
+    header is the on/off control (there is no separate checkbox), and expanding
+    it reveals the body.
+    """
+
+    entry: "PluginEntry"
     section: QWidget
     body: QWidget
 
@@ -124,10 +129,9 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._analysis_cache: dict[Path, Any] = {}
         #: Reader feeding analysis-plugin contexts (contacts is the only quantity today).
         self._read_quantity = _contacts_reader()
-        #: Flat plugin list: all entries, their checkboxes, and what's mounted.
+        #: Flat plugin list: every available plugin as its own collapsible.
         self._plugin_entries: list[PluginEntry] = []
-        self._plugin_checks: dict[str, Any] = {}
-        self._mounted: dict[str, _Mounted] = {}
+        self._plugin_sections: dict[str, _PluginSection] = {}
         #: Background build triggered by a builder plugin.
         self._build_worker = None
         self._build_emitter = _ProgressEmitter(self)
@@ -159,7 +163,6 @@ class AggregateQuantificationStudioWidget(QWidget):
         cat_col.setSpacing(4)
         self._build_discover_section(cat_col)
         self._build_catalog_section(cat_col)
-        self._build_contact_view_section(cat_col)
         layout.addWidget(CollapsibleSection("Catalogue", catalogue, expanded=True))
 
         self._build_plugins_section(layout)
@@ -291,17 +294,6 @@ class AggregateQuantificationStudioWidget(QWidget):
         # The positions table is the always-visible core of the Catalogue region.
         layout.addWidget(container)
 
-    def _build_contact_view_section(self, layout) -> None:
-        """Embed the per-position visualizer, driven by single selection."""
-        self._contact_widget = AggregateQuantificationWidget(viewer=self.viewer, standalone=False)
-        # The embedded widget's own "Pipeline Files" panel is an orchestrator
-        # concept; here the catalog table is the position source instead.
-        self._contact_widget.pipeline_files_header.setVisible(False)
-        self._contact_widget._pipeline_files_section.setVisible(False)
-        layout.addWidget(
-            CollapsibleSection("Visualize position", self._contact_widget, expanded=True)
-        )
-
     def _build_plugins_section(self, layout) -> None:
         container = QWidget()
         col = QVBoxLayout(container)
@@ -311,7 +303,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(2)
-        header.addWidget(QLabel("Check a plugin to add it:"))
+        header.addWidget(QLabel("Expand a plugin to use it:"))
         header.addStretch(1)
         reload_btn = QPushButton("↻")
         reload_btn.setToolTip("Re-scan for plugins.")
@@ -320,19 +312,16 @@ class AggregateQuantificationStudioWidget(QWidget):
         header.addWidget(reload_btn)
         col.addLayout(header)
 
-        # The checkbox registry: one row per available plugin.
-        self._plugin_checks_host = QWidget()
-        self._plugin_checks_layout = QVBoxLayout(self._plugin_checks_host)
-        self._plugin_checks_layout.setContentsMargins(0, 0, 0, 0)
-        self._plugin_checks_layout.setSpacing(0)
-        col.addWidget(self._plugin_checks_host)
-
-        # The mounted collapsibles for checked plugins.
+        # One collapsible per available plugin; its header is the on/off control.
+        # Pin them to the top (like the main app's stage list) so an expanded
+        # plugin grows to its content instead of the sections sharing — and
+        # spreading into — the leftover vertical space.
         self._plugin_host = QWidget()
         self._plugin_host_layout = QVBoxLayout(self._plugin_host)
         self._plugin_host_layout.setContentsMargins(0, 0, 0, 0)
         self._plugin_host_layout.setSpacing(0)
-        col.addWidget(self._plugin_host, 1)
+        self._plugin_host_layout.setAlignment(Qt.AlignTop)
+        col.addWidget(self._plugin_host)
 
         layout.addWidget(CollapsibleSection("Plugins", container, expanded=True))
 
@@ -570,49 +559,26 @@ class AggregateQuantificationStudioWidget(QWidget):
             return list(self._records)
         return [self._records[row] for row in selected_rows if 0 <= row < len(self._records)]
 
-    def _focused_record(self) -> dict | None:
-        """The single position the contact view targets (the first selected row)."""
-        rows = self._selected_rows()
-        if len(rows) != 1:
-            return None
-        row = rows[0]
-        return self._records[row] if 0 <= row < len(self._records) else None
-
     def _on_selection_changed(self) -> None:
-        self._update_contact_view()
+        # The single-position visualizer is now the Visualize Contacts plugin; it
+        # reads the in-scope rows from the context like every other plugin.
         self._push_context()
-
-    def _update_contact_view(self) -> None:
-        """Point the embedded contact view at the single selected position.
-
-        The catalog rows from a study scan carry the cell/nucleus label paths;
-        rows from a loose ``.h5`` add or a reloaded CSV carry only the ``.h5``,
-        so those support showing an existing result but not compute-on-demand.
-        """
-        record = self._focused_record()
-        if record is None:
-            self._contact_widget.set_context(
-                cell_labels=None, nucleus_labels=None, out_path=None
-            )
-            return
-        self._contact_widget.set_context(
-            cell_labels=record.get("cell_tracked_labels_path"),
-            nucleus_labels=record.get("nucleus_tracked_labels_path"),
-            out_path=record.get("contact_analysis_path"),
-            status_root=record.get("position_path"),
-        )
 
     # -------------------------------------------------------------- plugin hosting
     def _reload_plugins(self) -> None:
-        """Rebuild the checkbox registry from the available plugins."""
-        for plugin_id in list(self._mounted):
-            self._unmount_plugin(plugin_id)
-        while self._plugin_checks_layout.count():
-            item = self._plugin_checks_layout.takeAt(0)
+        """Rebuild the plugin collapsibles from the available plugins.
+
+        Each plugin gets one collapsed :class:`CollapsibleSection`; its header is
+        the on/off control (no separate checkbox), and expanding it reveals the
+        body. Bodies are fed the catalogue scope whether expanded or not, so the
+        view is always current the moment it is opened.
+        """
+        while self._plugin_host_layout.count():
+            item = self._plugin_host_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        self._plugin_checks = {}
+        self._plugin_sections = {}
 
         self._plugin_entries = available_studio_plugins(
             build_callback=self._run_quantity_build
@@ -620,43 +586,38 @@ class AggregateQuantificationStudioWidget(QWidget):
         if not self._plugin_entries:
             placeholder = QLabel("No plugins found.")
             status_label(placeholder, muted=True)
-            self._plugin_checks_layout.addWidget(placeholder)
+            self._plugin_host_layout.addWidget(placeholder)
+            self._plugin_host_layout.addStretch()
             return
         for entry in self._plugin_entries:
-            check = QCheckBox(entry.display_name)
-            check.toggled.connect(
+            body = entry.factory(self.viewer)
+            # A group plugin that owns a quantity's build delegates execution to
+            # the studio's centralized (threaded, status-refreshed) build path.
+            set_build_callback = getattr(body, "set_build_callback", None)
+            if callable(set_build_callback):
+                set_build_callback(self._run_quantity_build)
+            section = CollapsibleSection(entry.display_name, body, expanded=False)
+            section._toggle.toggled.connect(
                 lambda checked, e=entry: self._on_plugin_toggled(e, checked)
             )
-            self._plugin_checks[entry.plugin_id] = check
-            self._plugin_checks_layout.addWidget(check)
+            self._plugin_host_layout.addWidget(section)
+            self._plugin_sections[entry.plugin_id] = _PluginSection(
+                entry=entry, section=section, body=body
+            )
+            self._push_context_to(body)
+        # Trailing stretch keeps the collapsibles tight at the top; the clear
+        # loop above takes it back out on the next reload.
+        self._plugin_host_layout.addStretch()
         self._update_plugin_availability()
 
     def _on_plugin_toggled(self, entry: PluginEntry, checked: bool) -> None:
-        if checked:
-            self._mount_plugin(entry)
-        else:
-            self._unmount_plugin(entry.plugin_id)
-
-    def _mount_plugin(self, entry: PluginEntry) -> None:
-        if entry.plugin_id in self._mounted:
+        # Expanding is the "activate" gesture: refresh the body with the current
+        # scope so it is up to date even if the scope changed while collapsed.
+        if not checked:
             return
-        body = entry.factory(self.viewer)
-        # A group plugin that owns a quantity's build delegates execution to the
-        # studio's centralized (threaded, status-refreshed) build path.
-        set_build_callback = getattr(body, "set_build_callback", None)
-        if callable(set_build_callback):
-            set_build_callback(self._run_quantity_build)
-        section = CollapsibleSection(entry.display_name, body, expanded=True)
-        self._plugin_host_layout.addWidget(section)
-        self._mounted[entry.plugin_id] = _Mounted(section=section, body=body)
-        self._push_context_to(body)
-
-    def _unmount_plugin(self, plugin_id: str) -> None:
-        mounted = self._mounted.pop(plugin_id, None)
-        if mounted is None:
-            return
-        self._plugin_host_layout.removeWidget(mounted.section)
-        mounted.section.deleteLater()
+        plugin = self._plugin_sections.get(entry.plugin_id)
+        if plugin is not None:
+            self._push_context_to(plugin.body)
 
     def _load_analysis(self, path: Path) -> Any:
         path = Path(path)
@@ -667,9 +628,9 @@ class AggregateQuantificationStudioWidget(QWidget):
         return cached
 
     def _push_context(self) -> None:
-        """Feed every mounted plugin the current scope and refresh availability."""
-        for mounted in self._mounted.values():
-            self._push_context_to(mounted.body)
+        """Feed every plugin the current scope and refresh availability."""
+        for plugin in self._plugin_sections.values():
+            self._push_context_to(plugin.body)
         self._update_plugin_availability()
 
     def _push_context_to(self, body: QWidget) -> None:
@@ -685,16 +646,18 @@ class AggregateQuantificationStudioWidget(QWidget):
         )
 
     def _update_plugin_availability(self) -> None:
-        """Grey a plugin's checkbox when no in-scope position has its inputs."""
+        """Disable a plugin's header when no in-scope position has its inputs."""
         scope = self._records_in_scope()
         for entry in self._plugin_entries:
-            check = self._plugin_checks.get(entry.plugin_id)
-            if check is None:
+            plugin = self._plugin_sections.get(entry.plugin_id)
+            if plugin is None:
                 continue
             satisfied = bool(records_satisfying(entry.requires, scope))
-            # Keep a checked plugin toggleable even if it falls out of scope.
-            check.setEnabled(satisfied or check.isChecked())
-            check.setToolTip(
+            toggle = plugin.section._toggle
+            # Keep an already-expanded plugin collapsible even if it falls out of
+            # scope (so it is never trapped open).
+            toggle.setEnabled(satisfied or plugin.section.is_expanded)
+            toggle.setToolTip(
                 ""
                 if satisfied
                 else f"No in-scope position has: {', '.join(entry.requires)}"
