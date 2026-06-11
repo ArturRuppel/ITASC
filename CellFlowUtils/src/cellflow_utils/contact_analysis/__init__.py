@@ -1,2 +1,0 @@
-"""Personal contact-analysis utilities."""
-
