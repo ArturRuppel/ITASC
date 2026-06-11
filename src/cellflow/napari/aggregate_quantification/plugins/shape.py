@@ -251,6 +251,12 @@ class ShapePlugin(AnalysisPlugin):
             return bool(record.get(_NUCLEUS_FIELD))
         return bool(record.get(_CELL_FIELD) and record.get(_NUCLEUS_FIELD))
 
+    def _label_field(self) -> str:
+        """The record field holding the scope's tracked-labels TIFF used as the
+        click-to-load input (cell labels for ``cell``/``both``; nucleus for
+        ``nucleus``)."""
+        return _NUCLEUS_FIELD if self._scope == "nucleus" else _CELL_FIELD
+
     def _label_path_for(self, record: dict, scope: str) -> Any:
         """The label TIFF used to auto-resolve pixel size for *scope* (cell
         preferred; nucleus when cell-less)."""
@@ -354,10 +360,20 @@ class ShapePlugin(AnalysisPlugin):
         # Lazy import: keeps the Qt matplotlib backend off the plugin-discovery
         # path (guarded by _HAS_MPL_QT above).
         from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
+        from cellflow.napari.aggregate_quantification.plugins._click_to_load import ClickToLoad
 
+        # A fresh controller per plot always targets the current viewer; it owns
+        # every Load from this panel, so its "replace previous layer" guarantee
+        # holds for the panel's lifetime.
+        controller = ClickToLoad(self.viewer)
         panel = PlotPanel(
-            pooled, value_columns=self._value_columns(), group_columns=_GROUP_COLUMNS
+            pooled,
+            value_columns=self._value_columns(),
+            group_columns=_GROUP_COLUMNS,
+            target_resolver=controller.resolver(self._records, self._label_field()),
         )
+        panel.load_requested.connect(controller.load)
+        self._panel = panel
         self._plot_count += 1
         name = f"Plot {self._plot_count}"
         self._plot_tabs.add(panel, name)

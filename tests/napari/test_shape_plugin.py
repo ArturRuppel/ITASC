@@ -291,3 +291,25 @@ def test_plot_empty_pool_reports_and_opens_no_dock(tmp_path):
     assert "No built" in plugin._plot_status.text()
     plugin.deleteLater()
     app.processEvents()
+
+
+def test_shape_panel_gets_resolver_and_load_is_wired(tmp_path):
+    from pathlib import Path
+
+    app = _app()
+    records = [_built_cell_position(tmp_path, "p1", "A")]
+    viewer = _FakeViewer()
+    plugin = ShapePlugin()
+    plugin.set_context(AnalysisContext(records=records, viewer=viewer))
+
+    pooled = _pool_records(CellShapeQuantifier(), records)
+    plugin._on_pool_done(pooled)
+
+    panel = plugin._panel
+    assert panel._target_resolver is not None
+    # The resolver maps a {position_id, cell_id} identity to the cell labels TIFF.
+    target = panel._target_resolver({"position_id": "p1", "frame": 0, "cell_id": 1})
+    assert target is not None
+    assert target.path == Path(records[0]["cell_tracked_labels_path"])
+    plugin.deleteLater()
+    app.processEvents()
