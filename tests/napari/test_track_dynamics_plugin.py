@@ -18,6 +18,7 @@ from cellflow.napari.aggregate_quantification.plugins.track_dynamics import (
     TrackDynamicsPlugin,
     _curve_records,
     _pool_records,
+    _tissue_records,
 )
 
 
@@ -142,11 +143,40 @@ def test_pool_per_frame_and_per_track(tmp_path):
     assert set(frame_df["class_label"]) == {"unclassified"}
 
     track_df = _pool_records(CellDynamicsQuantifier(), records, "track")
-    assert {"directionality_ratio", "persistence_time_s", "cell_id", "position_id"} <= set(
-        track_df.columns
-    )
+    assert {
+        "directionality_ratio", "persistence_time_s", "cell_id", "position_id",
+        "msd_D_um2_per_s", "msd_alpha",
+    } <= set(track_df.columns)
     # One track per position (a single moving cell), straight -> ratio ≈ 1.
     np.testing.assert_allclose(track_df["directionality_ratio"], 1.0, atol=1e-6)
+    # Straight ballistic single track -> per-track MSD exponent ≈ 2.
+    np.testing.assert_allclose(track_df["msd_alpha"], 2.0, atol=0.05)
+
+
+def test_tissue_records_one_row_per_built_position(tmp_path):
+    records = [
+        _built_cell_position(tmp_path, "p1", "A"),
+        _built_cell_position(tmp_path, "p2", "B"),
+    ]
+    tissue = _tissue_records(CellDynamicsQuantifier(), records)
+    assert len(tissue) == 2
+    assert {
+        "msd_D_um2_per_s", "msd_alpha", "persistence_time_s", "corr_length_um", "order_param",
+        "condition", "date", "position_id",
+    } <= set(tissue.columns)
+    assert set(tissue["condition"]) == {"A", "B"}
+
+
+def test_tissue_view_opens_a_dock(tmp_path):
+    app = _app()
+    records = [_built_cell_position(tmp_path, "p1", "A")]
+    viewer = _FakeViewer()
+    plugin = TrackDynamicsPlugin()
+    plugin.set_context(AnalysisContext(records=records, viewer=viewer))
+    plugin._on_pool_done(("tissue", _tissue_records(CellDynamicsQuantifier(), records)))
+    assert len(viewer.window.docks) == 1
+    plugin.deleteLater()
+    app.processEvents()
 
 
 def test_curve_records_carries_fits(tmp_path):

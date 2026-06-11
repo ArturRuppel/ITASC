@@ -78,6 +78,8 @@ _CLASS_COLUMN = "class_label"
 _FRAME_VALUES = ("speed_um_per_s", "vx_um_per_s", "vy_um_per_s", "net_disp_um")
 _FRAME_GROUPS = (*_METADATA_GROUPS, _CLASS_COLUMN, "frame")
 #: Per-track (summary) plottable value columns + group axes (no frame axis).
+#: ``msd_*`` are the per-track MSD fit (``msd_r2`` rides in the table for
+#: reference but is not offered as a plotting value).
 _TRACK_VALUES = (
     "curvilinear_speed_um_per_s",
     "net_speed_um_per_s",
@@ -86,8 +88,20 @@ _TRACK_VALUES = (
     "path_length_um",
     "net_displacement_um",
     "duration_s",
+    "msd_D_um2_per_s",
+    "msd_alpha",
 )
 _TRACK_GROUPS = (*_METADATA_GROUPS, _CLASS_COLUMN)
+#: Per-tissue (one row per position) ensemble scalars + group axes. Position-level
+#: quantities, so no ``class_label`` / ``frame`` axis.
+_TISSUE_VALUES = (
+    "msd_D_um2_per_s",
+    "msd_alpha",
+    "persistence_time_s",
+    "corr_length_um",
+    "order_param",
+)
+_TISSUE_GROUPS = _METADATA_GROUPS
 
 
 class TrackDynamicsPlugin(AnalysisPlugin):
@@ -205,6 +219,7 @@ class TrackDynamicsPlugin(AnalysisPlugin):
         self._view_combo = QComboBox()
         self._view_combo.addItem("Per-frame (speed, velocity…)", "frame")
         self._view_combo.addItem("Per-track (persistence, directionality…)", "track")
+        self._view_combo.addItem("Per-tissue (ensemble D, α, ξ…)", "tissue")
         self._view_combo.addItem("Curves (MSD / DAC / C(r))", "curves")
         col.addWidget(self._view_combo)
 
@@ -345,6 +360,8 @@ class TrackDynamicsPlugin(AnalysisPlugin):
         def _worker():
             if view == "curves":
                 return ("curves", _curve_records(quantifier, records))
+            if view == "tissue":
+                return ("tissue", _tissue_records(quantifier, records))
             return (view, _pool_records(quantifier, records, view))
 
         self._pool_worker = _worker()
@@ -370,9 +387,11 @@ class TrackDynamicsPlugin(AnalysisPlugin):
         from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
         from cellflow.napari.aggregate_quantification.plugins._click_to_load import ClickToLoad
 
-        values, groups = (
-            (_FRAME_VALUES, _FRAME_GROUPS) if view == "frame" else (_TRACK_VALUES, _TRACK_GROUPS)
-        )
+        values, groups = {
+            "frame": (_FRAME_VALUES, _FRAME_GROUPS),
+            "track": (_TRACK_VALUES, _TRACK_GROUPS),
+            "tissue": (_TISSUE_VALUES, _TISSUE_GROUPS),
+        }[view]
         # Per-track points carry no ``frame`` axis (see ``_TRACK_GROUPS``); the
         # resolver falls back to their ``frame_start`` to pick a jump frame.
         controller = ClickToLoad(self.viewer)
@@ -472,6 +491,38 @@ def _curve_records(quantifier, records) -> list:
             )
         )
     return curves
+
+
+def _tissue_records(quantifier, records) -> pd.DataFrame:
+    """One row per *built* position: the ensemble scalars (per-tissue ``D``, ``α``,
+    persistence time, correlation length ``ξ``, median order parameter). Returns an
+    empty DataFrame when nothing is built (handled by the ``pooled.empty`` guard).
+    Runs off the GUI thread."""
+    from cellflow.napari.studio_plugins import output_for_record
+
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        path = output_for_record(quantifier, record)
+        if not quantifier.is_built(path):
+            continue
+        dyn = read_track_dynamics(path)
+        rows.append({
+            **_metadata(record),
+            "msd_D_um2_per_s": dyn.msd_D_um2_per_s,
+            "msd_alpha": dyn.msd_alpha,
+            "persistence_time_s": dyn.dac_persistence_time_s,
+            "corr_length_um": dyn.corr_length_um,
+            "order_param": _nan_safe_median(dyn.collective["order_param"]),
+        })
+    return pd.DataFrame(rows)
+
+
+def _nan_safe_median(values) -> float:
+    """Median over the finite entries; NaN when none are finite (avoids the
+    all-NaN ``np.nanmedian`` warning)."""
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    return float(np.median(arr)) if arr.size else float("nan")
 
 
 def _nls_join_table(record) -> dict[str, np.ndarray] | None:
