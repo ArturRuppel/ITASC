@@ -34,10 +34,12 @@ from matplotlib.figure import Figure
 __all__ = [
     "PlotSpec",
     "StyleSpec",
+    "PickPoint",
     "PositionSource",
     "pool_object_tables",
     "aggregate",
     "build_figure",
+    "pickable_points",
     "write_csv",
     "DISTRIBUTION_PLOTS",
 ]
@@ -356,6 +358,56 @@ def _group_label_column(df: pd.DataFrame, group: list[str]) -> tuple[pd.DataFram
     data = df.copy()
     data["_group"] = data[group].astype(str).agg(" · ".join, axis=1)
     return data, "_group"
+
+
+@dataclass(frozen=True)
+class PickPoint:
+    """One clickable plotted point mapped back to its source row.
+
+    ``category`` is the hue label the point sits under ("" when there is no
+    group-by); ``value`` is the plotted measurement; ``row_index`` is the index
+    into the DataFrame ``build_figure`` was given.
+    """
+
+    category: str
+    value: float
+    row_index: int
+
+
+def pickable_points(df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> list[PickPoint]:
+    """Plotted points that map 1:1 to a source row, for click-to-select.
+
+    ``strip``/``swarm`` expose every finite-value row; ``box`` exposes only the
+    Tukey outliers (``whis`` from *style_spec*); all other plots expose none. The
+    category string matches the x-axis tick label seaborn draws (see
+    :func:`_group_label_column`), so the UI can scope a click to one category.
+
+    ``row_index`` is positional (``.iloc``): the pooled tables from
+    ``pool_object_tables`` carry a default ``RangeIndex``.
+    """
+    if spec.plot not in ("strip", "swarm", "box") or df.empty:
+        return []
+    data, hue = _group_label_column(df, list(spec.group_by))
+    values = pd.to_numeric(data[spec.value], errors="coerce")
+    cats = (
+        data[hue].astype(str)
+        if hue is not None
+        else pd.Series([""] * len(data), index=data.index)
+    )
+    finite = values.notna()
+    if spec.plot in ("strip", "swarm"):
+        idx = values.index[finite]
+        return [PickPoint(str(cats[i]), float(values[i]), int(i)) for i in idx]
+    # box: outliers only, per category (matplotlib's Tukey flier rule).
+    out: list[PickPoint] = []
+    for cat, group in values[finite].groupby(cats[finite]):
+        q1, q3 = group.quantile(0.25), group.quantile(0.75)
+        iqr = q3 - q1
+        lo, hi = q1 - style_spec.box_whis * iqr, q3 + style_spec.box_whis * iqr
+        for i, v in group.items():
+            if v < lo or v > hi:
+                out.append(PickPoint(str(cat), float(v), int(i)))
+    return out
 
 
 def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:

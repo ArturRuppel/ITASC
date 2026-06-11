@@ -297,3 +297,38 @@ def test_axis_limits_default_to_auto():
     from cellflow.aggregate_quantification.plotting import StyleSpec
     s = StyleSpec()
     assert s.xmin is None and s.xmax is None and s.ymin is None and s.ymax is None
+
+
+def test_pickable_points_strip_is_one_per_finite_row():
+    from cellflow.aggregate_quantification.plotting import (
+        PlotSpec, StyleSpec, pickable_points,
+    )
+    import numpy as np, pandas as pd
+    df = pd.DataFrame({"condition": ["A", "A", "B"], "area": [1.0, np.nan, 3.0]})
+    spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="strip")
+    pts = pickable_points(df, spec, StyleSpec())
+    assert {p.row_index for p in pts} == {0, 2}            # NaN row dropped
+    assert {p.category for p in pts} == {"A", "B"}
+    assert next(p for p in pts if p.row_index == 0).value == 1.0
+
+
+def test_pickable_points_box_is_outliers_only():
+    from cellflow.aggregate_quantification.plotting import (
+        PlotSpec, StyleSpec, pickable_points,
+    )
+    import pandas as pd
+    vals = [10, 11, 12, 13, 12, 11, 10, 12, 11, 200]      # 200 is the flier
+    df = pd.DataFrame({"condition": ["A"] * len(vals), "area": [float(v) for v in vals]})
+    spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="box")
+    pts = pickable_points(df, spec, StyleSpec(box_whis=1.5))
+    assert [p.row_index for p in pts] == [9]
+
+
+def test_pickable_points_hist_is_empty():
+    from cellflow.aggregate_quantification.plotting import (
+        PlotSpec, StyleSpec, pickable_points,
+    )
+    import pandas as pd
+    df = pd.DataFrame({"area": [1.0, 2.0]})
+    spec = PlotSpec(value="area", group_by=(), level="cell", plot="hist")
+    assert pickable_points(df, spec, StyleSpec()) == []
