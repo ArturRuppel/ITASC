@@ -10,9 +10,9 @@ multi-table ``.h5``; :func:`read_track_dynamics` loads it back. No Qt / napari
 import, so scripts and the standalone wheel can use it.
 """
 
-from .collective import COLLECTIVE_COLUMNS, CORR_CURVE_COLUMNS
+from .collective import COLLECTIVE_COLUMNS, CORR_CURVE_COLUMNS, pooled_corr_length
 from .kinematics import DAC_COLUMNS, INSTANTANEOUS_COLUMNS, TRACK_COLUMNS
-from .msd import MSD_COLUMNS
+from .msd import MSD_COLUMNS, MSD_TRACK_COLUMNS, per_track_msd_fit
 from .store import (
     DEFAULT_PARAMS,
     TrackDynamics,
@@ -29,11 +29,14 @@ __all__ = [
     "DEFAULT_PARAMS",
     "INSTANTANEOUS_COLUMNS",
     "MSD_COLUMNS",
+    "MSD_TRACK_COLUMNS",
     "TRACK_COLUMNS",
     "TrackDynamics",
     "Trajectory",
     "build_track_dynamics",
     "extract_trajectories",
+    "per_track_msd_fit",
+    "pooled_corr_length",
     "read_instantaneous_table",
     "read_track_dynamics",
     "trajectories_from_stack",
