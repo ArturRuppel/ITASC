@@ -145,3 +145,15 @@ def test_empty_snapshot_disables_exports():
     assert panel._export_pooled_btn.isEnabled() is False
     panel.deleteLater()
     app.processEvents()
+
+
+def test_axis_range_fields_feed_style_and_render():
+    app = _app()
+    panel = _panel()
+    panel._ymin_edit.setText("0")
+    panel._ymax_edit.setText("100")
+    style = panel.current_style()
+    assert style.ymin == 0.0 and style.ymax == 100.0
+    panel._render()
+    assert panel._canvas.figure.axes[0].get_ylim() == (0.0, 100.0)
+    panel.deleteLater(); app.processEvents()

@@ -217,6 +217,26 @@ class PlotPanel(QWidget):
         box_row.addWidget(self._box_notch_cb)
         col.addLayout(box_row)
 
+        # Axis-range overrides; blank ("auto") keeps matplotlib's autoscale.
+        self._xmin_edit = _range_edit()
+        self._xmax_edit = _range_edit()
+        self._ymin_edit = _range_edit()
+        self._ymax_edit = _range_edit()
+        xr = QHBoxLayout()
+        xr.setContentsMargins(0, 0, 0, 0)
+        xr.addWidget(QLabel("X range:"))
+        xr.addWidget(self._xmin_edit, 1)
+        xr.addWidget(self._xmax_edit, 1)
+        col.addLayout(xr)
+        yr = QHBoxLayout()
+        yr.setContentsMargins(0, 0, 0, 0)
+        yr.addWidget(QLabel("Y range:"))
+        yr.addWidget(self._ymin_edit, 1)
+        yr.addWidget(self._ymax_edit, 1)
+        col.addLayout(yr)
+        for edit in (self._xmin_edit, self._xmax_edit, self._ymin_edit, self._ymax_edit):
+            edit.editingFinished.connect(self._render)
+
         for combo in (self._palette_combo, self._style_combo, self._legend_loc_combo):
             combo.currentIndexChanged.connect(self._render)
         for edit in (self._title_edit, self._xlabel_edit, self._ylabel_edit):
@@ -270,6 +290,10 @@ class PlotPanel(QWidget):
             box_whis=self._box_whis_spin.value(),
             box_showfliers=self._box_fliers_cb.isChecked(),
             box_notch=self._box_notch_cb.isChecked(),
+            xmin=_parse_float(self._xmin_edit.text()),
+            xmax=_parse_float(self._xmax_edit.text()),
+            ymin=_parse_float(self._ymin_edit.text()),
+            ymax=_parse_float(self._ymax_edit.text()),
         )
 
     # ---------------------------------------------------------------- render
@@ -346,3 +370,19 @@ def _export_button(text: str, slot) -> QPushButton:
     action_button(btn)
     btn.clicked.connect(slot)
     return btn
+
+
+def _range_edit() -> QLineEdit:
+    edit = QLineEdit()
+    edit.setPlaceholderText("auto")
+    return edit
+
+
+def _parse_float(text: str) -> float | None:
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
