@@ -172,7 +172,9 @@ def test_plot_enabled_only_when_built_and_viewer(tmp_path):
     app.processEvents()
 
 
-def test_plot_opens_dock_for_each_view(tmp_path):
+def test_plots_share_one_dock_as_tabs(tmp_path):
+    from qtpy.QtWidgets import QTabWidget
+
     app = _app()
     records = [_built_cell_position(tmp_path, "p1", "A")]
     viewer = _FakeViewer()
@@ -183,8 +185,13 @@ def test_plot_opens_dock_for_each_view(tmp_path):
     plugin._on_pool_done(("track", _pool_records(CellDynamicsQuantifier(), records, "track")))
     plugin._on_pool_done(("curves", _curve_records(CellDynamicsQuantifier(), records)))
 
-    names = [name for _, _, name in viewer.window.docks]
-    assert names == ["Dynamics plot 1", "Dynamics plot 2", "Dynamics plot 3"]
-    assert {area for _, area, _ in viewer.window.docks} == {"right"}
+    # One dock holding a tab widget — every view is a tab, not its own dock
+    # (which made napari split the area and shrink every plot).
+    assert len(viewer.window.docks) == 1
+    widget, area, name = viewer.window.docks[0]
+    assert area == "right"
+    assert name == "Dynamics plots"
+    assert isinstance(widget, QTabWidget)
+    assert [widget.tabText(i) for i in range(widget.count())] == ["Plot 1", "Plot 2", "Plot 3"]
     plugin.deleteLater()
     app.processEvents()

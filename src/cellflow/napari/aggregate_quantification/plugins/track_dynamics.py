@@ -53,6 +53,7 @@ from cellflow.aggregate_quantification.quantifiers.nucleus_dynamics import (
     NucleusDynamicsQuantifier,
 )
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext, AnalysisPlugin
+from cellflow.napari.aggregate_quantification.plugins._plot_dock import PlotDockTabs
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
 
@@ -110,6 +111,8 @@ class TrackDynamicsPlugin(AnalysisPlugin):
         self._pool_worker = None
         self._scope_user_set = False
         self._plot_count = 0
+        #: All plots share one dock as tabs (constant size) — see ``_plot_dock.py``.
+        self._plot_tabs = PlotDockTabs(self, dock_name="Dynamics plots")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -389,11 +392,10 @@ class TrackDynamicsPlugin(AnalysisPlugin):
 
     def _dock_name(self) -> str:
         self._plot_count += 1
-        return f"Dynamics plot {self._plot_count}"
+        return f"Plot {self._plot_count}"
 
     def _add_dock(self, panel: QWidget, name: str) -> None:
-        if self.viewer is not None:
-            self.viewer.window.add_dock_widget(panel, area="right", name=name)
+        self._plot_tabs.add(panel, name)
 
     # ----------------------------------------------------------- path resolution
     def _is_built(self, quantifier, record: dict) -> bool:

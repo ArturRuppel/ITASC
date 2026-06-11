@@ -221,7 +221,9 @@ def test_plot_button_enabled_only_when_built_and_viewer(tmp_path):
     app.processEvents()
 
 
-def test_plot_opens_a_new_dock_per_click(tmp_path):
+def test_plots_share_one_dock_as_tabs(tmp_path):
+    from qtpy.QtWidgets import QTabWidget
+
     app = _app()
     records = [_built_cell_position(tmp_path, "p1", "A")]
     viewer = _FakeViewer()
@@ -232,10 +234,14 @@ def test_plot_opens_a_new_dock_per_click(tmp_path):
     plugin._on_pool_done(pooled)
     plugin._on_pool_done(pooled)
 
-    assert len(viewer.window.docks) == 2
-    names = [name for _, _, name in viewer.window.docks]
-    assert names == ["Shape plot 1", "Shape plot 2"]
-    assert {area for _, area, _ in viewer.window.docks} == {"right"}
+    # One dock holding a tab widget — each plot is a tab, not its own dock (which
+    # made napari split the area and shrink every plot).
+    assert len(viewer.window.docks) == 1
+    widget, area, name = viewer.window.docks[0]
+    assert area == "right"
+    assert name == "Shape plots"
+    assert isinstance(widget, QTabWidget)
+    assert [widget.tabText(i) for i in range(widget.count())] == ["Plot 1", "Plot 2"]
     plugin.deleteLater()
     app.processEvents()
 
