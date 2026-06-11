@@ -233,6 +233,7 @@ def test_visualize_builds_when_missing_then_shows(monkeypatch, tmp_path):
     widget = mod.AggregateQuantificationWidget(viewer)
     _set_pos(widget, pos_dir)
     widget._on_visualize(overwrite=False)
+    app.processEvents()  # overlay add is deferred to the next event-loop tick
 
     # Built (missing -> compute) then showed.
     assert progress_events == [(2, 5, "Indexing records")]
@@ -270,9 +271,58 @@ def test_visualize_uses_existing_h5_without_rebuild(monkeypatch, tmp_path):
     widget = mod.AggregateQuantificationWidget(viewer)
     _set_pos(widget, pos_dir)
     widget.visualize_btn.click()
+    app.processEvents()  # overlay add is deferred to the next event-loop tick
 
     # Fast path: no rebuild, straight to show.
     assert len(add_calls) == 1
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_revisualize_same_position_skips_layer_rebuild(monkeypatch, tmp_path):
+    """Re-Visualize of the same position + options must not remove/re-add layers.
+
+    The remove/re-add churn both flickers and can leave phantom empty rows in
+    napari's layer list, so an unchanged re-Show is a no-op; only a changed
+    position or display option rebuilds.
+    """
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+
+    pos_dir = _staged_pos(tmp_path, "pos05b", cell=True, nucleus=True, h5=True)
+
+    add_calls = []
+    cleared = {"n": 0}
+
+    def fake_add(viewer_arg, contact_analysis_arg, **kwargs):
+        add_calls.append(kwargs)
+        viewer_arg.layers[f"{kwargs['prefix']}Cells"] = types.SimpleNamespace(
+            name=f"{kwargs['prefix']}Cells"
+        )
+
+    monkeypatch.setattr(mod, "ensure_contact_analysis", lambda **k: (k["output_path"], True))
+    monkeypatch.setattr(mod, "read_position_contact_analysis", lambda _p: {"cells": [1]})
+    monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
+
+    viewer = _FakeViewer()
+    widget = mod.AggregateQuantificationWidget(viewer)
+    _set_pos(widget, pos_dir)
+
+    widget.visualize_btn.click()
+    app.processEvents()
+    assert len(add_calls) == 1
+
+    # Same position, same options, layers still present -> skipped entirely.
+    widget.visualize_btn.click()
+    app.processEvents()
+    assert len(add_calls) == 1, "unchanged re-Visualize must not re-add layers"
+
+    # Changing a display option breaks the fast path and rebuilds.
+    widget.color_cells_by_label_cb.setChecked(True)
+    widget.visualize_btn.click()
+    app.processEvents()
+    assert len(add_calls) == 2
 
     widget.deleteLater()
     app.processEvents()
@@ -342,14 +392,17 @@ def test_recompute_rereads_h5_instead_of_serving_stale_cache(monkeypatch, tmp_pa
     widget = mod.AggregateQuantificationWidget(viewer)
     _set_pos(widget, pos_dir)
 
-    # First Visualize: existing .h5 is read once and shown.
+    # First Visualize: existing .h5 is read once and shown. The overlay add is
+    # deferred to the next event-loop tick, so flush before asserting it ran.
     widget.visualize_btn.click()
+    app.processEvents()
     assert reads["n"] == 1
     assert shown[-1] == {"cells": [1]}
 
     # Recompute rewrites the same path → the cache must be dropped and re-read,
     # so the freshly built analysis is shown rather than the stale {"cells": [1]}.
     widget.recompute_btn.click()
+    app.processEvents()
     assert reads["n"] == 2
     assert shown[-1] == {"cells": [2]}
 
@@ -392,6 +445,7 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
     widget.visualize_btn.click()
+    app.processEvents()  # overlay add is deferred to the next event-loop tick
 
     assert read_calls == [contact_analysis_path]
     assert add_calls == [
@@ -448,6 +502,7 @@ def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_pa
     widget.color_edges_by_label_cb.setChecked(True)
     widget.hide_border_edges_cb.setChecked(True)
     widget.visualize_btn.click()
+    app.processEvents()  # overlay add is deferred to the next event-loop tick
 
     assert add_calls == [
         (
@@ -491,6 +546,7 @@ def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(mon
 
     # First Visualize with default settings
     widget.visualize_btn.click()
+    app.processEvents()  # overlay add is deferred to the next event-loop tick
     # Changing a checkbox must NOT trigger a reload on its own
     widget.color_cells_by_label_cb.setChecked(True)
     assert len(add_calls) == 1, "checkbox change must not auto-reload"
@@ -498,6 +554,7 @@ def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(mon
 
     # Clicking Visualize again picks up the updated checkbox state
     widget.visualize_btn.click()
+    app.processEvents()  # overlay add is deferred to the next event-loop tick
     assert len(add_calls) == 2
     assert add_calls[1]["color_cells_by_label"] is True
 
@@ -531,6 +588,7 @@ def test_contact_analysis_widget_show_uses_real_reader_and_visualizer(monkeypatc
     _set_pos(widget, pos_dir)
 
     widget._show_from_disk()
+    app.processEvents()  # overlay add is deferred to the next event-loop tick
 
     assert "[Contact Analysis] Cell labels" in viewer.layers
     assert "[Contact Analysis] Nucleus labels" in viewer.layers
@@ -633,6 +691,7 @@ def test_double_click_visualizes_and_computes_when_missing(monkeypatch, tmp_path
 
     item = widget._discovery_list.item(0)
     widget._on_job_activated(item)
+    app.processEvents()  # overlay add is deferred to the next event-loop tick
 
     assert captured["output_path"] == tmp_path / "posB" / "contact_analysis.h5"
     assert captured["overwrite"] is False

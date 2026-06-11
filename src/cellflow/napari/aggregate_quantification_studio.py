@@ -55,6 +55,7 @@ from cellflow.napari.aggregate_quantification_widget import AggregateQuantificat
 from cellflow.napari.studio_plugins import (
     PluginEntry,
     available_studio_plugins,
+    output_for_record,
     position_inputs_from_record,
     records_satisfying,
 )
@@ -418,15 +419,13 @@ class AggregateQuantificationStudioWidget(QWidget):
             return
         jobs: list[_BuildPlan] = []
         for record in records:
-            out = record.get("contact_analysis_path")
-            if not out:
-                continue
             inputs = position_inputs_from_record(record)
             if not quantifier.can_build(inputs):
                 continue
-            if not overwrite and quantifier.is_built(Path(out)):
+            out = output_for_record(quantifier, record)
+            if not overwrite and quantifier.is_built(out):
                 continue
-            jobs.append(_BuildPlan(inputs=inputs, output=Path(out)))
+            jobs.append(_BuildPlan(inputs=inputs, output=out))
         if not jobs:
             self._set_catalog_status(
                 "Nothing to build — inputs missing or already built (try Recompute)."
@@ -642,6 +641,11 @@ class AggregateQuantificationStudioWidget(QWidget):
         if entry.plugin_id in self._mounted:
             return
         body = entry.factory(self.viewer)
+        # A group plugin that owns a quantity's build delegates execution to the
+        # studio's centralized (threaded, status-refreshed) build path.
+        set_build_callback = getattr(body, "set_build_callback", None)
+        if callable(set_build_callback):
+            set_build_callback(self._run_quantity_build)
         section = CollapsibleSection(entry.display_name, body, expanded=True)
         self._plugin_host_layout.addWidget(section)
         self._mounted[entry.plugin_id] = _Mounted(section=section, body=body)

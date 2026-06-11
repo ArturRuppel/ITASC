@@ -7,9 +7,11 @@ rename.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from cellflow.aggregate_quantification.contacts.build import build_contact_analysis
 from cellflow.aggregate_quantification.contacts.reader import (
@@ -30,9 +32,6 @@ class ContactsQuantifier(Quantifier):
     #: Default artifact name when a position does not dictate one.
     default_output_name = "contact_analysis.h5"
 
-    def default_output(self, inputs: PositionInputs) -> Path:
-        return inputs.position_dir / self.default_output_name
-
     def build(
         self,
         inputs: PositionInputs,
@@ -52,3 +51,9 @@ class ContactsQuantifier(Quantifier):
 
     def read(self, output_path: Path) -> Any:
         return read_position_contact_analysis(output_path)
+
+    def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
+        """The per-cell ``cells`` table — carries the NLS classification columns
+        (``class_label`` / ``nls_status``) the plotting backend joins by
+        ``(frame, cell_id)``."""
+        return read_position_contact_analysis(output_path).cells

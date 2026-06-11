@@ -8,6 +8,7 @@ from cellflow.aggregate_quantification.quantifier import (
     available_quantifiers,
 )
 from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
+from cellflow.aggregate_quantification.quantifiers.cell_shape import CellShapeQuantifier
 
 
 def test_available_quantifiers_discovers_contacts():
@@ -15,6 +16,42 @@ def test_available_quantifiers_discovers_contacts():
     assert ContactsQuantifier in classes
     ids = {cls.quantity_id for cls in classes}
     assert "contacts" in ids
+
+
+def test_available_quantifiers_discovers_cell_shape():
+    ids = {cls.quantity_id for cls in available_quantifiers()}
+    assert "cell_shape" in ids
+
+
+def test_cell_shape_quantifier_default_output_name(tmp_path):
+    q = CellShapeQuantifier()
+    assert q.default_output(PositionInputs(position_dir=tmp_path)).name == "cell_shape.h5"
+
+
+def test_cell_shape_quantifier_build_read_and_object_table(tmp_path):
+    frame = np.zeros((6, 8), dtype=np.uint16)
+    frame[:, :4] = 1
+    frame[:, 4:] = 2
+    cell_path = tmp_path / "cells.tif"
+    tifffile.imwrite(cell_path, np.stack([frame, frame]))
+
+    q = CellShapeQuantifier()
+    inputs = PositionInputs(position_dir=tmp_path, cell_labels_path=cell_path)
+    out = q.default_output(inputs)
+
+    assert q.can_build(inputs) is True
+    assert q.can_build(PositionInputs(position_dir=tmp_path)) is False
+    assert q.is_built(out) is False
+
+    written = q.build(inputs, out)
+    assert written == out and q.is_built(out) is True
+
+    table = q.read(out)
+    assert table["cell_id"].tolist() == [1, 2, 1, 2]
+    # object_table exposes the same tidy table to the plotting backend.
+    object_table = q.object_table(out)
+    assert object_table.keys() == table.keys()
+    assert "circularity" in object_table
 
 
 def test_subclassing_registers_quantifier():

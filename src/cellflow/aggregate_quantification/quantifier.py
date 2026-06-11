@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -57,6 +57,9 @@ class Quantifier:
     display_name: ClassVar[str] = ""
     #: ``PositionInputs`` field names this quantifier needs to build.
     requires: ClassVar[tuple[str, ...]] = ()
+    #: Default artifact file name (relative to a position); empty for an
+    #: intermediate base that does not persist.
+    default_output_name: ClassVar[str] = ""
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -67,9 +70,31 @@ class Quantifier:
         """True when *inputs* supplies every field named in :attr:`requires`."""
         return all(getattr(inputs, name, None) is not None for name in self.requires)
 
+    def default_output(self, inputs: PositionInputs) -> Path:
+        """Where this quantifier's artifact lives for *inputs*, by default.
+
+        ``position_dir / default_output_name``. The studio uses this to decide a
+        build's destination, so a second quantifier no longer inherits the
+        contacts artifact path. Subclasses may override for richer layouts.
+        """
+        if not self.default_output_name:
+            raise NotImplementedError(
+                f"{type(self).__name__} sets no default_output_name"
+            )
+        return inputs.position_dir / self.default_output_name
+
     def is_built(self, output_path: Path) -> bool:
         """True when the artifact at *output_path* already exists."""
         return Path(output_path).is_file()
+
+    def object_table(self, output_path: Path) -> Mapping[str, Any] | None:
+        """A tidy, column-major per-object table for the plotting backend.
+
+        At least a ``frame`` key plus a per-object key (e.g. ``cell_id``).
+        Returns ``None`` when this quantifier produces no per-object table; the
+        plotting backend then skips it.
+        """
+        return None
 
     def build(
         self,

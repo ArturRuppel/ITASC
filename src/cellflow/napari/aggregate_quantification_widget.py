@@ -9,7 +9,7 @@ import tifffile
 
 import napari
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import QObject, QSettings, Signal
+from qtpy.QtCore import QObject, QSettings, QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -133,6 +133,12 @@ class AggregateQuantificationWidget(QWidget):
         self._cached_cell_labels: np.ndarray | None = None
         self._cached_nucleus_labels: np.ndarray | None = None
         self._cached_track_centroids: dict | None = None
+        #: (path, *display-option flags) of the contact-analysis overlay currently
+        #: on screen, so a re-Show of the same position+options can skip the
+        #: remove/re-add churn (see ``_show_from_disk``). ``None`` when nothing shown.
+        self._displayed_contact_analysis_signature: tuple | None = None
+        #: Pending deferred overlay-add timer, cancelled if a new Show supersedes it.
+        self._pending_show_timer: QTimer | None = None
         #: Positions discovered under the standalone top folder (row index ↔ job).
         self._discovered_jobs: list = []
 
@@ -831,13 +837,29 @@ class AggregateQuantificationWidget(QWidget):
             except Exception:
                 pass
 
-        self._clear_contact_analysis_layers(set_status=False)
-        show_kwargs: dict[str, Any] = {
-            "prefix": self._contact_analysis_layer_prefix,
+        options: dict[str, Any] = {
             "color_cells_by_label": self.color_cells_by_label_cb.isChecked(),
             "color_edges_by_id": self.color_edges_by_id_cb.isChecked(),
             "color_edges_by_label": self.color_edges_by_label_cb.isChecked(),
             "hide_border_edges": self.hide_border_edges_cb.isChecked(),
+        }
+        signature = (contact_analysis_path, *options.values())
+
+        # Skip the remove/re-add when the same position is already shown with the
+        # same display options and its layers are still present. Re-adding is pure
+        # churn here: it flickers and, via napari's QtLayerList repaint race, can
+        # leave phantom (empty, unnamed) rows in the layer list.
+        if (
+            signature == self._displayed_contact_analysis_signature
+            and self._contact_analysis_layer_names()
+        ):
+            self._set_contact_analysis_status(f"Status: showing {contact_analysis_path.name}")
+            self._update_action_states()
+            return
+
+        show_kwargs: dict[str, Any] = {
+            "prefix": self._contact_analysis_layer_prefix,
+            **options,
         }
         if self._cached_cell_labels is not None:
             show_kwargs["cell_labels"] = self._cached_cell_labels
@@ -845,9 +867,34 @@ class AggregateQuantificationWidget(QWidget):
             show_kwargs["nucleus_labels"] = self._cached_nucleus_labels
         if self._cached_track_centroids is not None:
             show_kwargs["nucleus_track_centroids"] = self._cached_track_centroids
-        add_contact_analysis_layers(self.viewer, self._cached_contact_analysis, **show_kwargs)
-        self._set_contact_analysis_status(f"Status: loaded {contact_analysis_path.name}")
-        self._update_action_states()
+
+        # Clear now, but defer the re-add to the next event-loop tick. Removing the
+        # old layers and inserting the new ones in one synchronous slot races
+        # napari's QtLayerList repaint and can leave phantom (empty, unnamed) rows
+        # in the layer list; letting Qt process the removals first avoids it.
+        self._clear_contact_analysis_layers(set_status=False)
+        contact_analysis = self._cached_contact_analysis
+
+        def _deferred_add() -> None:
+            self._pending_show_timer = None
+            if self.viewer is None or contact_analysis is None:
+                return
+            add_contact_analysis_layers(self.viewer, contact_analysis, **show_kwargs)
+            self._displayed_contact_analysis_signature = signature
+            self._set_contact_analysis_status(f"Status: loaded {contact_analysis_path.name}")
+            self._update_action_states()
+
+        # Supersede any still-pending deferred add (e.g. rapid re-clicks) so a
+        # later Show can't stack a second set of overlays on top of an earlier one.
+        if self._pending_show_timer is not None:
+            self._pending_show_timer.stop()
+        # Parent the timer to ``self`` so it is destroyed with the widget and never
+        # fires its callback against an already-deleted viewer/widget.
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(_deferred_add)
+        timer.start(0)
+        self._pending_show_timer = timer
 
     def _contact_analysis_layer_names(self) -> list[str]:
         if self.viewer is None:
@@ -860,6 +907,8 @@ class AggregateQuantificationWidget(QWidget):
         return names
 
     def _clear_contact_analysis_layers(self, *, set_status: bool) -> int:
+        # Any clear invalidates the "already shown" fast-path in _show_from_disk.
+        self._displayed_contact_analysis_signature = None
         if self.viewer is None:
             return 0
 

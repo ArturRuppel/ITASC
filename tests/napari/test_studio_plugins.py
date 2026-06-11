@@ -24,6 +24,16 @@ def test_available_studio_plugins_has_contacts_builder_and_analysis_plugins():
     assert builder.requires == ("cell_labels_path",)
 
 
+def test_group_plugin_suppresses_its_quantitys_auto_builder():
+    entries = sp.available_studio_plugins(build_callback=lambda *a: None)
+    ids = {e.plugin_id for e in entries}
+    # The Cell Shape group plugin owns cell_shape's build, so no auto-builder.
+    assert "cell_shape" in ids
+    assert "build:cell_shape" not in ids
+    # Quantities without a dedicated plugin keep their free auto-builder.
+    assert "build:contacts" in ids
+
+
 def test_position_inputs_from_record_maps_catalogue_keys():
     inputs = sp.position_inputs_from_record(
         {
@@ -35,6 +45,27 @@ def test_position_inputs_from_record_maps_catalogue_keys():
     assert inputs.position_dir == Path("/study/p1")
     assert inputs.cell_labels_path == Path("/study/p1/cells.tif")
     assert inputs.nucleus_labels_path is None
+
+
+def test_output_for_record_routes_each_quantifier_to_its_own_artifact():
+    from cellflow.aggregate_quantification.quantifiers.cell_shape import CellShapeQuantifier
+    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
+
+    # A record whose explicit (possibly nested) contacts path differs from the
+    # bare default; contacts must honour the column, cell_shape must not.
+    record = {
+        "position_path": Path("/study/p1"),
+        "contact_analysis_path": Path("/study/p1/4_contact_analysis/contact_analysis.h5"),
+        "cell_tracked_labels_path": Path("/study/p1/cells.tif"),
+    }
+
+    assert sp.output_for_record(ContactsQuantifier(), record) == Path(
+        "/study/p1/4_contact_analysis/contact_analysis.h5"
+    )
+    # The second quantifier derives its own path — never the contacts artifact.
+    assert sp.output_for_record(CellShapeQuantifier(), record) == Path(
+        "/study/p1/cell_shape.h5"
+    )
 
 
 def test_records_satisfying_filters_by_requires():
