@@ -22,6 +22,7 @@ from typing import Any
 
 from qtpy.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from cellflow.aggregate_quantification.pixel_size import resolve_pixel_size_um
 from cellflow.aggregate_quantification.quantifier import (
     PositionInputs,
     Quantifier,
@@ -49,16 +50,40 @@ class PluginEntry:
 
 
 def position_inputs_from_record(record: dict) -> PositionInputs:
-    """Build :class:`PositionInputs` from a normalized catalogue record."""
+    """Build :class:`PositionInputs` from a normalized catalogue record.
+
+    ``pixel_size_um`` prefers an explicit value on the record (the Cell Shape
+    plugin stamps a manual override there) and otherwise auto-resolves from the
+    position's ``cellflow_config.json`` or the label TIFF's resolution tags.
+    """
     out = record.get("contact_analysis_path")
     cell = record.get("cell_tracked_labels_path")
     nucleus = record.get("nucleus_tracked_labels_path")
     position_dir = record.get("position_path") or (Path(out).parent if out else Path("."))
+    cell_path = Path(cell) if cell else None
     return PositionInputs(
         position_dir=Path(position_dir),
-        cell_labels_path=Path(cell) if cell else None,
+        cell_labels_path=cell_path,
         nucleus_labels_path=Path(nucleus) if nucleus else None,
+        pixel_size_um=_resolve_pixel_size(record, position_dir, cell_path),
     )
+
+
+def _resolve_pixel_size(
+    record: dict, position_dir: Path | str, cell_path: Path | None
+) -> float | None:
+    explicit = _positive_float(record.get("pixel_size_um"))
+    if explicit is not None:
+        return explicit
+    return resolve_pixel_size_um(position_dir, cell_path)
+
+
+def _positive_float(value: object) -> float | None:
+    try:
+        result = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
 
 
 def output_for_record(quantifier: Quantifier, record: dict) -> Path:

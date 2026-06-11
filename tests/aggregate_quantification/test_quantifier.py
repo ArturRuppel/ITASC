@@ -36,11 +36,18 @@ def test_cell_shape_quantifier_build_read_and_object_table(tmp_path):
     tifffile.imwrite(cell_path, np.stack([frame, frame]))
 
     q = CellShapeQuantifier()
-    inputs = PositionInputs(position_dir=tmp_path, cell_labels_path=cell_path)
+    inputs = PositionInputs(
+        position_dir=tmp_path, cell_labels_path=cell_path, pixel_size_um=0.25
+    )
     out = q.default_output(inputs)
 
     assert q.can_build(inputs) is True
+    # Cell labels alone are not enough — a pixel size is required to build.
     assert q.can_build(PositionInputs(position_dir=tmp_path)) is False
+    assert (
+        q.can_build(PositionInputs(position_dir=tmp_path, cell_labels_path=cell_path))
+        is False
+    )
     assert q.is_built(out) is False
 
     written = q.build(inputs, out)
@@ -52,6 +59,7 @@ def test_cell_shape_quantifier_build_read_and_object_table(tmp_path):
     object_table = q.object_table(out)
     assert object_table.keys() == table.keys()
     assert "circularity" in object_table
+    assert "area_um2" in object_table
 
 
 def test_subclassing_registers_quantifier():

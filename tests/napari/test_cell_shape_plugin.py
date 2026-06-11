@@ -47,7 +47,9 @@ def _built_position(tmp_path, name, condition):
     tifffile.imwrite(cell_path, np.stack([frame, frame]))
 
     q = CellShapeQuantifier()
-    inputs = PositionInputs(position_dir=pos, cell_labels_path=cell_path)
+    inputs = PositionInputs(
+        position_dir=pos, cell_labels_path=cell_path, pixel_size_um=1.0
+    )
     q.build(inputs, q.default_output(inputs))
     return {
         "position_path": pos,
@@ -66,6 +68,9 @@ def test_build_button_forwards_to_studio_callback(tmp_path):
 
     record = {"id": "p1", "cell_tracked_labels_path": tmp_path / "c.tif", "position_path": tmp_path}
     plugin.set_context(AnalysisContext(records=[record]))
+    # No pixel size resolvable (no config / TIFF tags) -> blocked until set.
+    assert plugin._build_btn.isEnabled() is False
+    plugin._pixel_size_edit.setText("0.5")
     assert plugin._build_btn.isEnabled() is True
 
     plugin._overwrite_cb.setChecked(True)
@@ -74,6 +79,8 @@ def test_build_button_forwards_to_studio_callback(tmp_path):
     quantifier, recs, overwrite = captured[0]
     assert quantifier.quantity_id == "cell_shape"
     assert [r["id"] for r in recs] == ["p1"]
+    # The typed override is stamped onto the records handed to the build callback.
+    assert recs[0]["pixel_size_um"] == 0.5
     assert overwrite is True
 
     plugin.deleteLater()
@@ -108,7 +115,7 @@ def test_pool_records_always_joins_class_label(tmp_path):
 
     assert len(pooled) == 8  # 2 cells x 2 frames x 2 positions
     assert set(pooled["condition"]) == {"A", "B"}
-    assert {"area", "circularity", "position_id", "frame", "cell_id", "class_label"} <= set(
+    assert {"area_um2", "circularity", "position_id", "frame", "cell_id", "class_label"} <= set(
         pooled.columns
     )
     assert set(pooled["class_label"]) == {"unclassified"}

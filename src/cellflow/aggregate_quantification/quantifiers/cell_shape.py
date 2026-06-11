@@ -25,8 +25,10 @@ class CellShapeQuantifier(Quantifier):
 
     quantity_id = "cell_shape"
     display_name = "Cell shape"
-    # Cell labels are all that is needed; no nucleus / contacts dependency.
-    requires = ("cell_labels_path",)
+    # Cell labels plus a pixel size (to emit physical µm / µm²); no nucleus /
+    # contacts dependency. A position with no resolvable pixel size is not
+    # buildable until one is supplied.
+    requires = ("cell_labels_path", "pixel_size_um")
 
     #: Default artifact name when a position does not dictate one.
     default_output_name = "cell_shape.h5"
@@ -42,6 +44,7 @@ class CellShapeQuantifier(Quantifier):
         return build_cell_shape(
             cell_labels_path=inputs.cell_labels_path,
             output_path=output_path,
+            pixel_size_um=inputs.pixel_size_um,
             source_path=inputs.position_dir,
             params=params,
             progress_cb=progress_cb,

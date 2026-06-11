@@ -29,7 +29,10 @@ def test_build_cell_shape_writes_tidy_table_per_frame(tmp_path):
     out = tmp_path / "sub" / "cell_shape.h5"
 
     result = build_cell_shape(
-        cell_labels_path=cell_path, output_path=out, source_path=tmp_path
+        cell_labels_path=cell_path,
+        output_path=out,
+        pixel_size_um=0.5,
+        source_path=tmp_path,
     )
 
     assert result == out and out.exists()
@@ -42,6 +45,7 @@ def test_build_cell_shape_writes_tidy_table_per_frame(tmp_path):
         prov = h5["provenance"].attrs
         assert prov["cell_tracked_labels_path"] == str(cell_path)
         assert prov["source_position_path"] == str(tmp_path)
+        assert prov["pixel_size_um"] == 0.5
         assert "created_at" in prov and "cellflow_version" in prov
 
 
@@ -50,7 +54,7 @@ def test_build_cell_shape_descriptor_values(tmp_path):
     tifffile.imwrite(cell_path, _disk_and_bar_frame())
     out = tmp_path / "cell_shape.h5"
 
-    build_cell_shape(cell_labels_path=cell_path, output_path=out)
+    build_cell_shape(cell_labels_path=cell_path, output_path=out, pixel_size_um=1.0)
     table = read_cell_shape(out)
 
     # Row 0 is the disk, row 1 the elongated bar.
@@ -63,8 +67,52 @@ def test_build_cell_shape_descriptor_values(tmp_path):
     assert bar_aspect > 3.0  # clearly elongated
     # circularity is clamped to a physical maximum of 1.
     assert np.all(table["circularity"][~np.isnan(table["circularity"])] <= 1.0)
-    # area sanity: the disk's pixel area is ~ pi r^2.
-    assert abs(table["area"][0] - math.pi * 14 ** 2) / (math.pi * 14 ** 2) < 0.1
+    # area sanity: at 1 µm/px the disk's µm² area is ~ pi r^2.
+    assert abs(table["area_um2"][0] - math.pi * 14 ** 2) / (math.pi * 14 ** 2) < 0.1
+
+
+def test_build_cell_shape_scales_to_physical_units(tmp_path):
+    cell_path = tmp_path / "cells.tif"
+    tifffile.imwrite(cell_path, _disk_and_bar_frame())
+
+    unit = read_cell_shape(
+        build_cell_shape(
+            cell_labels_path=cell_path,
+            output_path=tmp_path / "unit.h5",
+            pixel_size_um=1.0,
+        )
+    )
+    scaled = read_cell_shape(
+        build_cell_shape(
+            cell_labels_path=cell_path,
+            output_path=tmp_path / "scaled.h5",
+            pixel_size_um=0.5,
+        )
+    )
+
+    # Lengths scale by s, area by s^2; dimensionless ratios are invariant.
+    assert np.allclose(scaled["perimeter_um"], unit["perimeter_um"] * 0.5)
+    assert np.allclose(scaled["major_axis_length_um"], unit["major_axis_length_um"] * 0.5)
+    assert np.allclose(scaled["centroid_x_um"], unit["centroid_x_um"] * 0.5)
+    assert np.allclose(scaled["area_um2"], unit["area_um2"] * 0.25)
+    assert np.allclose(scaled["aspect_ratio"], unit["aspect_ratio"], equal_nan=True)
+    assert np.allclose(scaled["circularity"], unit["circularity"], equal_nan=True)
+
+
+def test_build_cell_shape_rejects_nonpositive_pixel_size(tmp_path):
+    cell_path = tmp_path / "cells.tif"
+    tifffile.imwrite(cell_path, _disk_and_bar_frame())
+
+    for bad in (0.0, -1.0):
+        try:
+            build_cell_shape(
+                cell_labels_path=cell_path,
+                output_path=tmp_path / "out.h5",
+                pixel_size_um=bad,
+            )
+        except ValueError:
+            continue
+        raise AssertionError(f"expected ValueError for pixel_size_um={bad}")
 
 
 def test_build_cell_shape_guards_degenerate_region(tmp_path):
@@ -74,13 +122,13 @@ def test_build_cell_shape_guards_degenerate_region(tmp_path):
     tifffile.imwrite(cell_path, frame)
     out = tmp_path / "cell_shape.h5"
 
-    build_cell_shape(cell_labels_path=cell_path, output_path=out)
+    build_cell_shape(cell_labels_path=cell_path, output_path=out, pixel_size_um=1.0)
     table = read_cell_shape(out)
 
     assert table["cell_id"].tolist() == [1]
     assert math.isnan(table["aspect_ratio"][0])
     assert math.isnan(table["circularity"][0])
-    assert table["area"][0] == 1.0
+    assert table["area_um2"][0] == 1.0
 
 
 def test_build_cell_shape_reports_progress_in_order(tmp_path):
@@ -91,6 +139,7 @@ def test_build_cell_shape_reports_progress_in_order(tmp_path):
     build_cell_shape(
         cell_labels_path=cell_path,
         output_path=tmp_path / "cell_shape.h5",
+        pixel_size_um=1.0,
         progress_cb=lambda *a: progress.append(a),
     )
 

@@ -36,6 +36,9 @@ class PositionInputs:
     position_dir: Path
     cell_labels_path: Path | None = None
     nucleus_labels_path: Path | None = None
+    #: Physical pixel size (µm/px); ``None`` when unknown. Quantifiers that emit
+    #: values in physical units (cell shape) require it.
+    pixel_size_um: float | None = None
 
 
 #: quantity_id -> quantifier class, populated by ``__init_subclass__``.

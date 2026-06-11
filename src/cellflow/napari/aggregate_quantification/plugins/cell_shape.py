@@ -28,13 +28,16 @@ import pandas as pd
 from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
     QCheckBox,
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from cellflow.aggregate_quantification.cell_shape import DESCRIPTOR_COLUMNS
+from cellflow.aggregate_quantification.pixel_size import resolve_pixel_size_um
 from cellflow.aggregate_quantification.plotting import PositionSource, pool_object_tables
 from cellflow.aggregate_quantification.quantifiers.cell_shape import CellShapeQuantifier
 from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
@@ -98,6 +101,21 @@ class CellShapePlugin(AnalysisPlugin):
         status_label(self._compute_status)
         col.addWidget(self._compute_status)
 
+        px_row = QHBoxLayout()
+        px_row.setContentsMargins(0, 0, 0, 0)
+        px_label = QLabel("Pixel size (µm/px):")
+        px_row.addWidget(px_label)
+        self._pixel_size_edit = QLineEdit()
+        self._pixel_size_edit.setPlaceholderText("auto")
+        self._pixel_size_edit.setToolTip(
+            "µm per pixel. Leave blank to auto-resolve per position from its "
+            "cellflow_config.json or the label TIFF; a value here applies to all "
+            "in-scope positions."
+        )
+        self._pixel_size_edit.textChanged.connect(lambda _=None: self._update_enabled())
+        px_row.addWidget(self._pixel_size_edit, 1)
+        col.addLayout(px_row)
+
         self._overwrite_cb = QCheckBox("Recompute (overwrite existing)")
         col.addWidget(self._overwrite_cb)
 
@@ -141,25 +159,60 @@ class CellShapePlugin(AnalysisPlugin):
 
     def _update_enabled(self) -> None:
         records = self._records
-        buildable = [r for r in records if r.get("cell_tracked_labels_path")]
+        has_labels = [r for r in records if r.get("cell_tracked_labels_path")]
+        buildable = [r for r in has_labels if self._pixel_size_for(r) is not None]
+        missing_px = len(has_labels) - len(buildable)
         built = [r for r in records if self._is_built(self._quantifier, r)]
         if not records:
             self._compute_status.setText("No positions in scope.")
         else:
-            self._compute_status.setText(
-                f"{len(buildable)} of {len(records)} in-scope position(s) have cell "
+            status = (
+                f"{len(has_labels)} of {len(records)} in-scope position(s) have cell "
                 f"labels; {len(built)} already built."
             )
+            if missing_px:
+                status += (
+                    f" {missing_px} need a pixel size — enter one above to enable them."
+                )
+            self._compute_status.setText(status)
         self._build_btn.setEnabled(bool(buildable) and self._build_callback is not None)
         self._plot_btn.setEnabled(
             bool(built) and _HAS_MPL_QT and self.viewer is not None and self._pool_worker is None
         )
 
     # ----------------------------------------------------------------- building
+    def _manual_pixel_size(self) -> float | None:
+        """The typed override (µm/px), or ``None`` when blank/invalid."""
+        text = self._pixel_size_edit.text().strip()
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+        return value if value > 0 else None
+
+    def _pixel_size_for(self, record: dict) -> float | None:
+        """Effective µm/px for *record*: the manual override else auto-resolved."""
+        manual = self._manual_pixel_size()
+        if manual is not None:
+            return manual
+        return resolve_pixel_size_um(
+            record.get("position_path"), record.get("cell_tracked_labels_path")
+        )
+
+    def _stamped(self, record: dict) -> dict:
+        """A record copy carrying the manual pixel-size override when set."""
+        manual = self._manual_pixel_size()
+        if manual is None:
+            return dict(record)
+        return {**record, "pixel_size_um": manual}
+
     def _on_build(self) -> None:
         if self._build_callback is None:
             return
-        self._build_callback(self._quantifier, list(self._records), self._overwrite_cb.isChecked())
+        records = [self._stamped(r) for r in self._records]
+        self._build_callback(self._quantifier, records, self._overwrite_cb.isChecked())
 
     # ------------------------------------------------------- pooling + launching
     def _on_plot(self) -> None:
