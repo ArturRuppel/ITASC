@@ -10,6 +10,7 @@ from cellflow.aggregate_quantification.plotting import (
     PlotSpec,
     PositionSource,
     StyleSpec,
+    adaptive_bin_edges,
     aggregate,
     build_figure,
     effective_barrier,
@@ -573,3 +574,60 @@ def test_pickable_points_potential_is_empty():
     df = pd.DataFrame({"signed_length": [1.0, -1.0]})
     spec = PlotSpec(value="signed_length", plot="potential")
     assert pickable_points(df, spec, StyleSpec()) == []
+
+
+# ----------------------------------------------------------- adaptive binning
+
+
+def test_adaptive_bin_edges_are_tighter_near_zero():
+    edges = adaptive_bin_edges(-10.0, 10.0, 20)
+    assert len(edges) == 21
+    # Endpoints preserved, strictly increasing.
+    assert edges[0] == -10.0 and edges[-1] == 10.0
+    assert np.all(np.diff(edges) > 0)
+    widths = np.diff(edges)
+    # The central bins (straddling 0) are the narrowest; the outermost the widest.
+    central = widths[len(widths) // 2 - 1]
+    assert central == widths.min()
+    assert widths[0] > central and widths[-1] > central
+
+
+def test_adaptive_bin_edges_symmetric_about_zero_for_symmetric_range():
+    edges = adaptive_bin_edges(-5.0, 5.0, 10)
+    np.testing.assert_allclose(edges, -edges[::-1], atol=1e-9)
+
+
+def test_adaptive_bin_edges_low_sharpness_approaches_uniform():
+    adaptive = adaptive_bin_edges(-4.0, 4.0, 16, sharpness=1e-6)
+    uniform = np.linspace(-4.0, 4.0, 17)
+    np.testing.assert_allclose(adaptive, uniform, atol=1e-3)
+
+
+def test_adaptive_bin_edges_degenerate_range_is_safe():
+    edges = adaptive_bin_edges(2.0, 2.0, 5)  # zero-width range
+    assert len(edges) == 6 and np.all(np.diff(edges) > 0)
+
+
+def test_potential_adaptive_mode_resolves_more_bins_near_zero():
+    # A coordinate concentrated near 0 with sparse tails: adaptive binning puts
+    # more occupied bins in |x|<1 than uniform binning at the same bin count.
+    rng = np.random.RandomState(7)
+    values = np.concatenate([rng.normal(0, 0.3, 4000), rng.uniform(-8, 8, 400)])
+    df = pd.DataFrame({"signed_length": values})
+    near = lambda tbl: int((tbl["center"].abs() < 1.0).sum())
+    uni = potential_table(df, PlotSpec(value="signed_length", plot="potential", bins=30, bin_mode="uniform"))
+    ada = potential_table(df, PlotSpec(value="signed_length", plot="potential", bins=30, bin_mode="adaptive"))
+    assert near(ada) > near(uni)
+
+
+def test_build_figure_potential_adaptive_renders():
+    rng = np.random.RandomState(8)
+    df = pd.DataFrame({"signed_length": np.concatenate([rng.normal(-2, 0.5, 2000), rng.normal(2, 0.5, 2000)])})
+    spec = PlotSpec(value="signed_length", plot="potential", bins=31, bin_mode="adaptive")
+    fig = build_figure(df, spec, StyleSpec())
+    assert len(fig.axes[0].lines) >= 1
+
+
+def test_plotspec_rejects_unknown_bin_mode():
+    with pytest.raises(ValueError):
+        PlotSpec(value="x", plot="potential", bin_mode="logarithmic")

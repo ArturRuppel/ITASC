@@ -44,6 +44,7 @@ __all__ = [
     "potential_landscape",
     "effective_barrier",
     "potential_table",
+    "adaptive_bin_edges",
     "DISTRIBUTION_PLOTS",
     "CURVE_PLOTS",
 ]
@@ -80,6 +81,10 @@ CURVE_PLOTS = ("potential",)
 _PLOTS = (*DISTRIBUTION_PLOTS, "bar", "line", *CURVE_PLOTS)
 _STATS = ("mean", "median", "count")
 _ERRORS = ("sd", "sem", "none")
+#: How the ``potential`` mode lays out its histogram bins.
+_BIN_MODES = ("uniform", "adaptive")
+#: Default concentration of ``adaptive`` bins toward ``x = 0`` (higher ⇒ tighter).
+_ADAPTIVE_SHARPNESS = 3.0
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,9 @@ class PlotSpec:
     stat: str = "mean"  # mean | median | count
     error: str = "sd"  # sd | sem | none
     bins: int = 30
+    # How the ``potential`` mode bins: "uniform", or "adaptive" for sinh-spaced
+    # bins tighter near x=0 (the transition state). Ignored by every other plot.
+    bin_mode: str = "uniform"
 
     def __post_init__(self) -> None:
         for name, value, allowed in (
@@ -122,6 +130,7 @@ class PlotSpec:
             ("plot", self.plot, _PLOTS),
             ("stat", self.stat, _STATS),
             ("error", self.error, _ERRORS),
+            ("bin_mode", self.bin_mode, _BIN_MODES),
         ):
             if value not in allowed:
                 raise ValueError(f"{name} must be one of {allowed}, got {value!r}")
@@ -364,7 +373,7 @@ def _group_key_to_dict(group: list[str], key: Any) -> dict[str, Any]:
 def potential_landscape(
     values: np.ndarray,
     *,
-    bins: int,
+    bins: int | np.ndarray,
     value_range: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Boltzmann-invert a 1-D sample into an effective potential ``U = −ln P``.
@@ -373,9 +382,10 @@ def potential_landscape(
     over the **occupied** bins only — an empty bin has ``P = 0`` ⇒ ``U = ∞`` and
     is dropped (the reference's ``probabilities > 0`` mask). ``U`` is in units of
     kT: with the natural log, ``P ∝ exp(−U/kT)`` ⇒ ``U/kT = −ln P + const``.
-    *value_range* pins the histogram extent so several groups share one binning;
-    ``None`` uses the sample's own min/max. Returns three empty arrays when no
-    finite sample survives.
+    *bins* is an integer count or an explicit array of edges (e.g. from
+    :func:`adaptive_bin_edges`); *value_range* pins the extent for the integer
+    case so several groups share one binning (ignored when *bins* is an edge
+    array). Returns three empty arrays when no finite sample survives.
     """
     finite = np.asarray(values, dtype=float)
     finite = finite[np.isfinite(finite)]
@@ -389,20 +399,65 @@ def potential_landscape(
     return centers[occupied], u, counts[occupied]
 
 
+def adaptive_bin_edges(
+    lo: float, hi: float, bins: int, *, sharpness: float = _ADAPTIVE_SHARPNESS
+) -> np.ndarray:
+    """``bins + 1`` histogram edges over ``[lo, hi]`` spaced tighter near ``x = 0``.
+
+    Edges are placed uniformly in ``asinh(k · x)`` space and mapped back through
+    ``sinh`` (the reference / v1 sinh-binning trick), with ``k = sharpness /
+    max(|lo|, |hi|)``. Because ``d/dx asinh(k·x)`` is largest at ``x = 0``, equal
+    steps in that warped space become the **narrowest** value-bins at zero and
+    widen toward the extremes — concentrating resolution at the transition state
+    of a potential landscape. *sharpness* sets the concentration (higher ⇒
+    tighter near 0); ``sharpness → 0`` reduces to uniform. The real range
+    ``[lo, hi]`` is preserved, so an asymmetric span wastes no bins; a degenerate
+    or non-bracketing range falls back to uniform edges.
+    """
+    bins = max(int(bins), 1)
+    if not (hi > lo):
+        return np.linspace(lo, lo + 1.0, bins + 1)
+    scale = max(abs(lo), abs(hi))
+    k = (sharpness / scale) if (scale > 0 and sharpness > 0) else 0.0
+    if k <= 0.0:
+        return np.linspace(lo, hi, bins + 1)
+    edges = np.sinh(np.linspace(np.arcsinh(k * lo), np.arcsinh(k * hi), bins + 1)) / k
+    # Pin the ends exactly (the asinh/sinh round-trip can drift by a float ulp),
+    # so np.histogram never drops a sample sitting on the boundary.
+    edges[0], edges[-1] = lo, hi
+    return edges
+
+
+def _potential_bins(spec: PlotSpec, value_range: tuple[float, float] | None):
+    """The ``bins`` argument for :func:`potential_landscape` under *spec*.
+
+    An ``adaptive`` ``bin_mode`` with a finite shared range returns sinh-spaced
+    **edges** (one binning shared across groups so curves stay comparable);
+    otherwise the integer count, with uniform binning left to ``np.histogram``.
+    """
+    if spec.bin_mode == "adaptive" and value_range is not None:
+        return adaptive_bin_edges(value_range[0], value_range[1], spec.bins)
+    return spec.bins
+
+
 def effective_barrier(centers: np.ndarray, u: np.ndarray) -> float:
-    """``ΔE_eff`` [kT] = ``U`` at the bin nearest ``x = 0`` minus ``min(U)``.
+    """``ΔE_eff`` [kT] = ``U`` interpolated at ``x = 0`` minus ``min(U)``.
 
     Operates on the occupied ``(centers, U)`` from :func:`potential_landscape`.
     The transition state is ``x = 0`` (a junction length → 0, the four-fold
-    vertex); the well is the curve minimum (the most-probable value). Returns NaN
-    when there are fewer than two occupied bins or ``0`` is not bracketed by the
-    occupied range — i.e. the data never reached the transition state.
+    vertex); the well is the curve minimum (the most-probable value). ``U(0)`` is
+    linearly interpolated between the occupied bins straddling zero (the v1
+    ``_compute_energy_barrier`` approach) so a sparse zero-bin does not bias it.
+    Returns NaN when there are fewer than two occupied bins or ``0`` is not
+    bracketed by the occupied range — i.e. the data never reached the transition
+    state.
     """
     centers = np.asarray(centers, dtype=float)
     u = np.asarray(u, dtype=float)
     if u.size < 2 or centers.min() > 0.0 or centers.max() < 0.0:
         return float("nan")
-    transition = float(u[int(np.argmin(np.abs(centers)))])
+    order = np.argsort(centers)
+    transition = float(np.interp(0.0, centers[order], u[order]))
     return transition - float(u.min())
 
 
@@ -430,10 +485,11 @@ def potential_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     if df.empty or spec.value not in df.columns:
         return pd.DataFrame(columns=columns)
     value_range = _shared_range(df, spec)
+    bins = _potential_bins(spec, value_range)
     blocks: list[pd.DataFrame] = []
     for label, chunk in _group_series(df, list(spec.group_by)):
         values = pd.to_numeric(chunk[spec.value], errors="coerce").to_numpy()
-        centers, u, counts = potential_landscape(values, bins=spec.bins, value_range=value_range)
+        centers, u, counts = potential_landscape(values, bins=bins, value_range=value_range)
         if centers.size == 0:
             continue
         blocks.append(pd.DataFrame({
@@ -664,13 +720,14 @@ def _plot_potential(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec)
     each curve's effective barrier ``ΔE_eff`` rides in its legend label."""
     group = list(spec.group_by)
     value_range = _shared_range(df, spec)
+    bins = _potential_bins(spec, value_range)
     series_list = list(_group_series(df, group))
     colors = sns.color_palette(style_spec.palette, n_colors=max(len(series_list), 1))
     spans_zero = value_range is not None and value_range[0] <= 0.0 <= value_range[1]
     drew = False
     for color, (label, chunk) in zip(colors, series_list):
         values = pd.to_numeric(chunk[spec.value], errors="coerce").to_numpy()
-        centers, u, _ = potential_landscape(values, bins=spec.bins, value_range=value_range)
+        centers, u, _ = potential_landscape(values, bins=bins, value_range=value_range)
         if centers.size == 0:
             continue
         barrier = effective_barrier(centers, u)

@@ -104,6 +104,7 @@ class PlotPanel(QWidget):
         target_resolver: Callable[[dict], LoadTarget | None] | None = None,
         loader: Callable[[LoadTarget], None] | None = None,
         default_plot: str = "",
+        default_adaptive_bins: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -158,6 +159,10 @@ class PlotPanel(QWidget):
                 blocked = self._plot_combo.blockSignals(True)
                 self._plot_combo.setCurrentIndex(index)
                 self._plot_combo.blockSignals(blocked)
+        if default_adaptive_bins:
+            blocked = self._adaptive_bins_cb.blockSignals(True)
+            self._adaptive_bins_cb.setChecked(True)
+            self._adaptive_bins_cb.blockSignals(blocked)
 
         self._render()
 
@@ -198,6 +203,15 @@ class PlotPanel(QWidget):
         self._bins_spin.setValue(30)
         col.addLayout(_labelled("Bins:", self._bins_spin))
 
+        # Potential view only: sinh-spaced bins, narrowest at x=0 (like Bins, it
+        # stays visible but only bites when Plot=potential).
+        self._adaptive_bins_cb = QCheckBox("Tighter bins near 0")
+        self._adaptive_bins_cb.setToolTip(
+            "Potential view only: sinh-spaced bins, narrowest at x=0, to resolve "
+            "the barrier at the transition state (junction length → 0)."
+        )
+        col.addWidget(self._adaptive_bins_cb)
+
         # One group-by checkbox per supplied group column (class_label included).
         # "Group by:" sits on its own line and the checkboxes wrap across a
         # two-column grid, so a long column name never sets the panel's min width.
@@ -217,6 +231,7 @@ class PlotPanel(QWidget):
                       self._stat_combo, self._error_combo):
             combo.currentIndexChanged.connect(self._render)
         self._bins_spin.valueChanged.connect(self._render)
+        self._adaptive_bins_cb.toggled.connect(self._render)
         for check in self._group_checks.values():
             check.toggled.connect(self._render)
         return body
@@ -346,6 +361,7 @@ class PlotPanel(QWidget):
             stat=self._stat_combo.currentData(),
             error=self._error_combo.currentData(),
             bins=self._bins_spin.value(),
+            bin_mode="adaptive" if self._adaptive_bins_cb.isChecked() else "uniform",
         )
 
     def current_style(self) -> StyleSpec:

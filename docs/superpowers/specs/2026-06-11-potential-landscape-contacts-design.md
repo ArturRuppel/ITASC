@@ -37,20 +37,28 @@ curated "quad" JSONs; CellFlow derives the same sign directly from the
 2. **Naming.** UI section / plot view: **Potential landscape**. Plot mode key:
    **`potential`**. Y axis: **`U(x) = −ln P(x)` [kT]**. Scalar readout:
    **effective barrier `ΔE_eff` [kT]**.
-3. **Barrier estimator: `U(0) − U_min`.** `ΔE_eff` = the `U` value in the bin
-   containing `x = 0` (the transition state, junction length → 0) minus the
-   curve's minimum. Documented as a bin-based estimate (no well fitting).
+3. **Barrier estimator: `U(0) − U_min`.** `ΔE_eff` = `U` **linearly
+   interpolated at `x = 0`** (the transition state, junction length → 0) minus
+   the curve's minimum. Interpolation between the occupied bins straddling zero
+   (the v1 `_compute_energy_barrier` approach) keeps a sparse zero-bin from
+   biasing it. No well fitting; NaN when 0 is not bracketed by the data.
 4. **Frame window: all frames the edge exists.** Every frame where an event's
    losing/gaining edge is present contributes a sample — matching the reference,
    which histograms the whole curated-quad movie. No ± window parameter.
-5. **Raw-sample pooling for `potential`.** Unlike `hist`/`box`/…, the `potential`
+5. **Adaptive (sinh) binning, tighter near 0.** `bin_mode="adaptive"` lays the
+   `potential` histogram on sinh-spaced edges (`adaptive_bin_edges`), narrowest at
+   `x = 0` and widening toward the extremes — the reference / v1 sinh trick — to
+   resolve the barrier at the transition state. A UI checkbox ("Tighter bins near
+   0") drives it, defaulted **on** for the contact-energetics launch. `"uniform"`
+   stays the default everywhere else.
+6. **Raw-sample pooling for `potential`.** Unlike `hist`/`box`/…, the `potential`
    mode does **not** run `reduce_to_units`; it histograms raw frame-level
    samples. The landscape is the *shape of the fluctuation distribution*, not a
    per-track comparison, so unit reduction would be wrong (and, for the
    cell_id-less energetics table, degenerate). Documented in the function and the
    panel. This is a deliberate pseudoreplication tradeoff that mirrors the
    reference.
-6. **Physical units.** `signed_length` is in µm when `pixel_size_um` resolves
+7. **Physical units.** `signed_length` is in µm when `pixel_size_um` resolves
    (via `resolve_pixel_size_um`, as Track Dynamics does), else pixels with a
    labeled fallback.
 
@@ -69,17 +77,18 @@ def potential_landscape(
     """
 
 def effective_barrier(centers: np.ndarray, U: np.ndarray) -> float:
-    """ΔE_eff = U at the bin containing x = 0  minus  min(U).
+    """ΔE_eff = U linearly interpolated at x = 0  minus  min(U).
 
-    NaN when the sample has no bin spanning 0 or fewer than 2 occupied bins.
+    NaN when 0 is not bracketed by the occupied range or there are
+    fewer than 2 occupied bins.
     """
 ```
 
 - `N = len(values)` after dropping NaN. `np.histogram(values, bins, range)`.
 - `centers = (edges[:-1] + edges[1:]) / 2`; keep `counts > 0`.
 - `U = -np.log(counts / N)`.
-- `effective_barrier`: locate the occupied bin whose center is nearest 0 **and**
-  whose original bin spans 0 (i.e. `edges[i] <= 0 < edges[i+1]`); `ΔE = U_there −
+- `effective_barrier`: require 0 bracketed by the occupied range, then `U(0) =
+  np.interp(0, sorted centers, U)`; `ΔE = U(0) −
   U.min()`.
 
 ### `PlotSpec` / `build_figure` integration
@@ -118,7 +127,8 @@ def signed_central_junction_lengths(
 ) -> dict[str, np.ndarray]:
     """Signed central-junction length per T1 event per frame.
 
-    Columns: t1_event_id, frame, signed_length, role ("losing"|"gaining").
+    Columns: t1_event_id, frame, signed_length, role ("losing"|"gaining"),
+    contact_type (the edge's edge_label tag, "" when unlabelled).
     signed_length is +length for the gaining edge, −length for the losing edge,
     in µm when pixel_size_um is given, else pixels.
     """
@@ -126,7 +136,17 @@ def signed_central_junction_lengths(
 
 Algorithm:
 
-- Build a lookup from `edges`: `(frame, frozenset{cell_a, cell_b}) → length`.
+- **Join fragments first.** The build splits one cell-cell boundary into several
+  `edges` rows (one per disconnected segment from `_coordinate_segments`), so the
+  lengths of all rows sharing a `(frame, frozenset{cell_a, cell_b})` are
+  **summed** into one total junction length. This is the headless analogue of the
+  archived v1 `find_shared_boundary` / `order_boundary_pixels` join
+  (`napariTissueGraph/core/labels.py`) that produced one length per junction;
+  without it a fragmented contact would enter the landscape as several short
+  samples.
+- Build a lookup from the joined edges: `(frame, frozenset{cell_a, cell_b}) →
+  total_length` (plus the contact type — the first non-empty `edge_label` among
+  the joined fragments).
 - For each row of `t1_events` (`t1_event_id`, `losing_cell_a/b`,
   `gaining_cell_a/b`):
   - For **every** frame where the losing pair `{lA,lB}` has an edge: emit a row
@@ -167,7 +187,9 @@ A thin `AnalysisPlugin`, same shape as Track Dynamics' pool-and-launch path
 - Opens `PlotPanel` (via `PlotDockTabs`, exactly like Track Dynamics) with:
   - `value_columns = ("signed_length",)`,
   - `group_columns = ("condition", "date", "position_id")` (metadata only — the
-    table has no `class_label`/`cell_id`),
+    table has no `class_label`/`cell_id`), **plus `"contact_type"` when the
+    pooled edges carry >1 label** (so a "group by contact type" checkbox appears
+    only when the edges are tagged; blanks read as `"unlabelled"`),
   - the plot type **defaulted to `potential`**.
 - Matplotlib-Qt availability probe + disabled-button fallback, copied from
   Track Dynamics.
@@ -182,11 +204,11 @@ energetics table is plugin-pooled, never the default object table.
 
 | File | Change |
 |---|---|
-| `aggregate_quantification/plotting.py` | `potential_landscape`, `effective_barrier`, `potential_table` helpers; `_CURVE_PLOTS`, `_plot_potential`; `build_figure`/`pickable_points` routing; exports. |
+| `aggregate_quantification/plotting.py` | `potential_landscape`, `effective_barrier`, `potential_table`, `adaptive_bin_edges` helpers; `PlotSpec.bin_mode`; `_CURVE_PLOTS`, `_plot_potential`; `build_figure`/`pickable_points` routing; exports. |
 | `aggregate_quantification/contacts/energetics.py` | **new** — `signed_central_junction_lengths`. |
 | `aggregate_quantification/contacts/__init__.py` | export the new function. |
 | `napari/aggregate_quantification/plugins/contact_energetics.py` | **new** — "Potential landscape" plugin. |
-| `napari/aggregate_quantification/plot_panel.py` | surface `potential` in the plot-type combo. |
+| `napari/aggregate_quantification/plot_panel.py` | surface `potential` in the plot-type combo; "Tighter bins near 0" checkbox → `bin_mode`; `default_plot` / `default_adaptive_bins` params. |
 | `tests/aggregate_quantification/test_plotting.py` | `potential` math + raw-pooling + barrier + curve CSV. |
 | `tests/aggregate_quantification/test_energetics.py` | **new** — sign convention, pixel-size, missing-edge. |
 | `tests/napari/test_contact_energetics.py` | **new** — pool + headless launch. |
@@ -195,6 +217,11 @@ energetics table is plugin-pooled, never the default object table.
 
 - **`potential_landscape`**: known sample → expected `U`; empty bins dropped;
   `N`-normalization; single-bin / all-equal edge cases.
+- **`adaptive_bin_edges`**: `bins+1` edges, endpoints preserved, strictly
+  increasing, central bin narrowest / outer widest, symmetric for a symmetric
+  range, `sharpness → 0` ≈ uniform, degenerate range safe. `bin_mode="adaptive"`
+  resolves more occupied bins near 0 than uniform at the same count;
+  `PlotSpec` rejects an unknown `bin_mode`.
 - **`effective_barrier`**: synthetic bimodal (two Gaussians at ±L) → positive
   finite barrier; unimodal away from 0 → barrier from `U(0)`; no-zero-span → NaN.
 - **`build_figure(plot="potential")`**: one curve per group; raw pooling
@@ -202,9 +229,15 @@ energetics table is plugin-pooled, never the default object table.
   `reduce_to_units` still yields a full-resolution curve); legend carries
   `ΔE_eff`.
 - **`signed_central_junction_lengths`**: hand-built `t1_events` + `edges` fixture
-  — losing edge → negative across its frames, gaining → positive; pixel-size
-  scales magnitude; an event whose edges are absent is skipped; empty input →
-  empty typed table.
+  — losing edge → negative across its frames, gaining → positive; **fragmented
+  contact (several rows sharing a `(frame, pair)`) sums to one total-length
+  sample, not one per fragment**; pixel-size scales magnitude (after the join);
+  an event whose edges are absent is skipped; empty input → empty typed table;
+  **`contact_type` carries the pair's `edge_label` (first non-empty across joined
+  fragments; `""` when unlabelled or column absent)**.
+- **`contact_energetics` contact-type grouping**: the plugin adds `contact_type`
+  to the panel's group columns only when the pooled edges carry >1 label, and
+  maps blanks to `"unlabelled"`.
 - **`contact_energetics` plugin**: pools a fake two-position context and launches
   the panel headlessly (existing matplotlib-Qt-guarded launch pattern); disabled
   state when the backend is unavailable.
@@ -215,7 +248,5 @@ energetics table is plugin-pooled, never the default object table.
   covariate CellFlow does not carry yet.
 - Well/double-well curve fitting; `ΔE_eff` stays the documented bin-based
   estimate.
-- Non-uniform (denser-around-zero) binning from the reference — uniform bins with
-  a user-set count are enough for v1.
 - Other contact reaction coordinates (rosette order, neighbor number) — additive
   later via the same `potential` engine.

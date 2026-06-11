@@ -36,7 +36,7 @@ class _FakeViewer:
         self.layers: list = []
 
 
-def _write_contacts_h5(path, edges_rows, *, losing=(1, 2), gaining=(3, 4)) -> None:
+def _write_contacts_h5(path, edges_rows, *, losing=(1, 2), gaining=(3, 4), labels=None) -> None:
     """A minimal contact_analysis.h5 matching the reader schema."""
     frame, a, b, length = zip(*edges_rows) if edges_rows else ((), (), (), ())
     with h5py.File(path, "w") as h5:
@@ -49,6 +49,11 @@ def _write_contacts_h5(path, edges_rows, *, losing=(1, 2), gaining=(3, 4)) -> No
         edges.create_dataset("cell_a", data=np.asarray(a, dtype=np.int64))
         edges.create_dataset("cell_b", data=np.asarray(b, dtype=np.int64))
         edges.create_dataset("length", data=np.asarray(length, dtype=float))
+        if labels is not None:
+            edges.create_dataset(
+                "edge_label", data=np.asarray(labels, dtype=object),
+                dtype=h5py.string_dtype(),
+            )
         events = h5.create_group("t1_events/table")
         events.create_dataset("t1_event_id", data=np.array([7], dtype=np.int64))
         events.create_dataset("losing_cell_a", data=np.array([losing[0]], dtype=np.int64))
@@ -129,6 +134,52 @@ def test_on_pool_done_opens_potential_panel(tmp_path):
     # The panel opens straight into the potential view over the signed coordinate.
     assert panel._plot_combo.currentData() == "potential"
     assert "signed_length" in panel._value_columns
+    plugin.deleteLater()
+    app.processEvents()
+
+
+def _labelled_record(tmp_path, name, condition, labels):
+    pos = tmp_path / name
+    pos.mkdir()
+    h5_path = pos / "contact_analysis.h5"
+    # Losing edge (1,2) frames 0-1, gaining edge (3,4) frames 2-3, each tagged.
+    _write_contacts_h5(
+        h5_path,
+        [(0, 1, 2, 5.0), (1, 1, 2, 2.0), (2, 3, 4, 2.0), (3, 3, 4, 5.0)],
+        labels=labels,
+    )
+    return {
+        "position_path": pos,
+        "contact_analysis_path": h5_path,
+        "condition": condition,
+        "date": "d1",
+        "id": name,
+    }
+
+
+def test_contact_type_group_offered_when_edges_labelled(tmp_path):
+    app = _app()
+    viewer = _FakeViewer()
+    plugin = ContactEnergeticsPlugin()
+    # Losing edges tagged "AB", gaining edges tagged "CD" → two contact types.
+    records = [_labelled_record(tmp_path, "p1", "A", ["AB", "AB", "CD", "CD"])]
+    plugin.set_context(AnalysisContext(records=records, viewer=viewer))
+    plugin._on_pool_done(_pool_energetics(records, None))
+    panel = plugin._panel
+    assert "contact_type" in panel._group_columns
+    assert set(panel._df["contact_type"]) == {"AB", "CD"}
+    plugin.deleteLater()
+    app.processEvents()
+
+
+def test_contact_type_group_hidden_when_unlabelled(tmp_path):
+    app = _app()
+    viewer = _FakeViewer()
+    plugin = ContactEnergeticsPlugin()
+    records = [_record(tmp_path, "p1", "A")]  # no edge_label → all unlabelled
+    plugin.set_context(AnalysisContext(records=records, viewer=viewer))
+    plugin._on_pool_done(_pool_energetics(records, None))
+    assert "contact_type" not in plugin._panel._group_columns
     plugin.deleteLater()
     app.processEvents()
 

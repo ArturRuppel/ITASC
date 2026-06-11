@@ -20,15 +20,21 @@ def _analysis(edges, t1_events) -> PositionContactAnalysis:
     )
 
 
-def _edges(rows):
-    """Column-major edges table from (frame, cell_a, cell_b, length) rows."""
+def _edges(rows, labels=None):
+    """Column-major edges table from (frame, cell_a, cell_b, length) rows.
+
+    *labels* (optional) is a parallel list of ``edge_label`` strings.
+    """
     frame, a, b, length = zip(*rows)
-    return {
+    table = {
         "frame": np.asarray(frame, dtype=np.int64),
         "cell_a": np.asarray(a, dtype=np.int64),
         "cell_b": np.asarray(b, dtype=np.int64),
         "length": np.asarray(length, dtype=float),
     }
+    if labels is not None:
+        table["edge_label"] = np.asarray(labels, dtype=object)
+    return table
 
 
 def _one_event(losing=(1, 2), gaining=(3, 4)):
@@ -86,7 +92,7 @@ def test_no_events_returns_empty_typed_table():
         "gaining_cell_b": np.empty(0, dtype=np.int64),
     }
     table = signed_central_junction_lengths(_analysis(edges, empty_events))
-    assert set(table) == {"t1_event_id", "frame", "signed_length", "role"}
+    assert set(table) == {"t1_event_id", "frame", "signed_length", "role", "contact_type"}
     assert all(v.size == 0 for v in table.values())
 
 
@@ -95,6 +101,56 @@ def test_cell_pair_order_is_ignored():
     edges = _edges([(0, 2, 1, 5.0)])
     table = signed_central_junction_lengths(_analysis(edges, _one_event(losing=(1, 2))))
     assert table["signed_length"].tolist() == [-5.0]
+
+
+def test_fragmented_contact_lengths_are_summed_per_frame():
+    # The losing pair (1,2) is split into two boundary fragments in frame 0
+    # (3.0 + 4.0) and one in frame 1 (2.0). Each frame must yield ONE sample at
+    # the total length, not one per fragment.
+    edges = _edges([
+        (0, 1, 2, 3.0),
+        (0, 1, 2, 4.0),
+        (1, 1, 2, 2.0),
+    ])
+    table = signed_central_junction_lengths(_analysis(edges, _one_event()))
+    by_frame = dict(zip(table["frame"].tolist(), table["signed_length"].tolist()))
+    assert by_frame == {0: -7.0, 1: -2.0}
+    assert table["signed_length"].size == 2  # not 3
+
+
+def test_fragments_joined_before_pixel_scaling():
+    edges = _edges([(0, 1, 2, 3.0), (0, 1, 2, 4.0)])
+    table = signed_central_junction_lengths(
+        _analysis(edges, _one_event()), pixel_size_um=0.5
+    )
+    assert table["signed_length"].tolist() == [-3.5]  # (3+4) summed, then ×0.5
+
+
+def test_contact_type_carries_edge_label_per_pair():
+    # Losing pair (1,2) tagged "AB", gaining pair (3,4) tagged "CD".
+    edges = _edges(
+        [(0, 1, 2, 5.0), (1, 3, 4, 5.0)],
+        labels=["AB", "CD"],
+    )
+    table = signed_central_junction_lengths(_analysis(edges, _one_event()))
+    by_role = dict(zip(table["role"].tolist(), table["contact_type"].tolist()))
+    assert by_role == {"losing": "AB", "gaining": "CD"}
+
+
+def test_contact_type_is_first_nonempty_label_across_fragments():
+    # Two fragments of the losing pair in frame 0: one blank, one "AB" → "AB".
+    edges = _edges(
+        [(0, 1, 2, 3.0), (0, 1, 2, 4.0)],
+        labels=["", "AB"],
+    )
+    table = signed_central_junction_lengths(_analysis(edges, _one_event()))
+    assert table["contact_type"].tolist() == ["AB"]
+
+
+def test_contact_type_empty_when_unlabelled():
+    edges = _edges([(0, 1, 2, 5.0)])  # no labels column
+    table = signed_central_junction_lengths(_analysis(edges, _one_event()))
+    assert table["contact_type"].tolist() == [""]
 
 
 def test_all_frames_an_edge_exists_are_pooled():

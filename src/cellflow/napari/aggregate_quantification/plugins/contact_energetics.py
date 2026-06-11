@@ -177,11 +177,22 @@ class ContactEnergeticsPlugin(AnalysisPlugin):
             return
         from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
 
+        # Offer "group by contact type" only when the edges actually carry more
+        # than one label (the build leaves cell-cell edges unlabelled unless a
+        # tagging step populated ``edge_label``); blanks read as "unlabelled".
+        group_columns = _GROUP_COLUMNS
+        if "contact_type" in pooled.columns:
+            pooled = pooled.copy()
+            pooled["contact_type"] = pooled["contact_type"].replace("", "unlabelled")
+            if pooled["contact_type"].nunique() > 1:
+                group_columns = (*_GROUP_COLUMNS, "contact_type")
+
         panel = PlotPanel(
             pooled,
             value_columns=_VALUE_COLUMNS,
-            group_columns=_GROUP_COLUMNS,
+            group_columns=group_columns,
             default_plot="potential",
+            default_adaptive_bins=True,
         )
         self._panel = panel
         self._plot_count += 1
