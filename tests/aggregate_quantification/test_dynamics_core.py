@@ -13,9 +13,12 @@ from cellflow.aggregate_quantification.dynamics.kinematics import (
     instantaneous_table,
     track_summary_table,
 )
+from cellflow.aggregate_quantification.dynamics.collective import pooled_corr_length
 from cellflow.aggregate_quantification.dynamics.msd import (
+    DEFAULT_MSD_TRACK_WINDOW,
     ensemble_msd,
     fit_msd_power_law,
+    per_track_msd_fit,
 )
 from cellflow.aggregate_quantification.dynamics.trajectories import Trajectory
 
@@ -103,6 +106,34 @@ def test_fit_msd_power_law_recovers_D_and_alpha():
     assert abs(fit.D_um2_per_s - 0.25) < 1e-9
 
 
+def test_per_track_msd_fit_ballistic_alpha_two():
+    # A long straight, constant-velocity track is ballistic per-track too: α ≈ 2.
+    traj = _straight_track(track_id=4, n=21, step=(0.7, 0.0))
+    fits = per_track_msd_fit([traj], time_interval_s=1.0)
+    assert set(fits) == {4}
+    assert abs(fits[4].alpha - 2.0) < 1e-6
+    assert fits[4].r2 > 0.999
+
+
+def test_per_track_msd_fit_nan_when_below_two_lags():
+    # A 2-frame track fills only lag 1 within the window -> <2 distinct lags -> NaN.
+    traj = _straight_track(track_id=7, n=2, step=(1.0, 0.0))
+    fits = per_track_msd_fit([traj], time_interval_s=1.0)
+    assert math.isnan(fits[7].D_um2_per_s)
+    assert math.isnan(fits[7].alpha)
+
+
+def test_per_track_msd_fit_window_truncates_lags():
+    # A track longer than the window must fit identically to one truncated to the
+    # window: only lags <= window_frames contribute.
+    long_track = _straight_track(track_id=2, n=40, step=(0.5, 0.3))
+    short_track = _straight_track(track_id=2, n=DEFAULT_MSD_TRACK_WINDOW + 1, step=(0.5, 0.3))
+    long_fit = per_track_msd_fit([long_track], time_interval_s=2.0)[2]
+    short_fit = per_track_msd_fit([short_track], time_interval_s=2.0)[2]
+    assert abs(long_fit.alpha - short_fit.alpha) < 1e-9
+    assert abs(long_fit.D_um2_per_s - short_fit.D_um2_per_s) < 1e-9
+
+
 # ------------------------------------------------------------------- collective
 def test_order_parameter_aligned_vs_opposed():
     aligned = np.array([(1.0, 0.0), (2.0, 0.0), (0.5, 0.0)])
@@ -121,6 +152,21 @@ def test_one_over_e_length_interpolates():
 def test_one_over_e_length_nan_when_no_decay():
     centers = np.array([0.5, 1.5, 2.5])
     assert math.isnan(_one_over_e_length(centers, np.array([1.0, 0.9, 0.8])))
+
+
+def test_pooled_corr_length_matches_one_over_e_crossing():
+    curve = {
+        "separation_um": np.array([0.5, 1.5, 2.5]),
+        "corr": np.array([1.0, math.exp(-1.0) - 0.05, 0.1]),
+    }
+    xi = pooled_corr_length(curve)
+    assert 0.5 < xi <= 1.5
+
+
+def test_pooled_corr_length_nan_when_empty_or_no_decay():
+    assert math.isnan(pooled_corr_length({"separation_um": np.array([]), "corr": np.array([])}))
+    never = {"separation_um": np.array([0.5, 1.5]), "corr": np.array([1.0, 0.9])}
+    assert math.isnan(pooled_corr_length(never))
 
 
 def test_collective_tables_uniform_drift_is_aligned():

@@ -28,6 +28,12 @@ _DIMS = 2
 #: MSD curve columns (the store prepends nothing; these are the full set).
 MSD_COLUMNS = ("lag_s", "msd_um2", "n_samples", "sem")
 
+#: Per-track MSD-fit value columns, merged into the per-track summary table.
+MSD_TRACK_COLUMNS = ("msd_D_um2_per_s", "msd_alpha", "msd_r2")
+#: Default fixed lag window (frames) for the per-track MSD fit. A fixed window
+#: makes every track's ``D``/``α`` comparable and excludes the noisy long-lag tail.
+DEFAULT_MSD_TRACK_WINDOW = 8
+
 
 @dataclass(frozen=True)
 class MsdFit:
@@ -92,6 +98,35 @@ def fit_msd_power_law(
     D = float(np.exp(intercept) / (2.0 * _DIMS))
     r2 = _r_squared(x, y, slope, intercept)
     return MsdFit(D_um2_per_s=D, alpha=alpha, r2=r2)
+
+
+def per_track_msd_fit(
+    trajectories: list[Trajectory],
+    *,
+    time_interval_s: float,
+    window_frames: int = DEFAULT_MSD_TRACK_WINDOW,
+) -> dict[int, MsdFit]:
+    """Fit each track's own MSD over a shared fixed lag window → ``track_id → MsdFit``.
+
+    For each track the MSD is averaged over its present ``(k, k+n)`` origin pairs
+    for lags ``1 … window_frames`` (the same rule as :func:`ensemble_msd`, capped
+    at the window), then fit in log-log. A track that cannot fill at least two
+    distinct lags within the window yields ``MsdFit(nan, nan, nan)``, so its
+    ``D``/``α``/``r2`` are NaN rather than a spurious single-point slope.
+    """
+    dt = float(time_interval_s)
+    window = int(window_frames)
+    fits: dict[int, MsdFit] = {}
+    for traj in trajectories:
+        sq_by_lag: dict[int, list[float]] = {}
+        _accumulate_track_sq(traj, window, sq_by_lag)
+        if len(sq_by_lag) < 2:
+            fits[traj.track_id] = MsdFit(float("nan"), float("nan"), float("nan"))
+            continue
+        lags = np.asarray(sorted(sq_by_lag), dtype=np.int64)
+        msd = np.asarray([float(np.mean(sq_by_lag[int(n)])) for n in lags], dtype=float)
+        fits[traj.track_id] = fit_msd_power_law(lags.astype(float) * dt, msd)
+    return fits
 
 
 def _accumulate_track_sq(

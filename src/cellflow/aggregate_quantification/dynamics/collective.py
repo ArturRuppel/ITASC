@@ -147,6 +147,20 @@ def _velocity_correlation(pos: np.ndarray, dV: np.ndarray, bin_width: float, var
     return centers, C, counts, dot_by_bin
 
 
+def pooled_corr_length(corr_curve: dict[str, np.ndarray]) -> float:
+    """Single per-tissue correlation length ``ξ`` from the pooled ``C(r)`` curve.
+
+    Applies the same ``1/e`` crossing rule as the per-frame ``corr_length_um``
+    column to the dataset-level pooled curve; returns ``NaN`` when the curve is
+    empty or never decays to ``1/e``.
+    """
+    centers = np.asarray(corr_curve.get("separation_um", []), dtype=float)
+    C = np.asarray(corr_curve.get("corr", []), dtype=float)
+    if centers.size == 0:
+        return float("nan")
+    return _one_over_e_length(centers, C)
+
+
 def _one_over_e_length(centers: np.ndarray, C: np.ndarray) -> float:
     """Separation where *C* first decays to ``1/e``, by linear interpolation."""
     if centers.size == 0:
