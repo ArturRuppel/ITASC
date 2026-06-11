@@ -395,6 +395,7 @@ class NucleusPipelineWidget(QWidget):
                         cfg,
                         _progress_cb,
                         contour_maps_path=contour_path,
+                        cancel=cancel_event.is_set,
                     )
                     if cancel_event.is_set():
                         raise CancelledError("Operation cancelled.")
@@ -562,7 +563,7 @@ class NucleusPipelineWidget(QWidget):
             if self._db_gen_cancel is not None:
                 self._db_gen_cancel.set()
                 self._status(
-                    "Cancelling DB generation after the current database step..."
+                    "Cancelling DB generation after the current frame..."
                 )
                 return
             db_worker.quit()

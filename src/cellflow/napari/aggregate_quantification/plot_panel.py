@@ -106,7 +106,11 @@ class PlotPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._df = dataframe
-        self._value_columns = tuple(value_columns)
+        # Only offer values the snapshot actually carries (symmetric with the
+        # identity-column filter below). A stale ``.h5`` built before a column
+        # existed — e.g. the per-track ``msd_*`` fit — would otherwise advertise
+        # it and crash the render with a cryptic KeyError deep in the backend.
+        self._value_columns = tuple(c for c in value_columns if c in dataframe.columns)
         self._group_columns = tuple(group_columns)
         self._identity_columns = tuple(c for c in _IDENTITY_COLUMNS if c in dataframe.columns)
         self._target_resolver = target_resolver

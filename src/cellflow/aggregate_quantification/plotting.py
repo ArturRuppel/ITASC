@@ -370,7 +370,12 @@ def build_figure(
         fig = Figure(figsize=(style_spec.width, style_spec.height), tight_layout=True)
         FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
-        if df.empty:
+        # A count bar/line tallies tracks and needs no value column; every other
+        # path reads ``spec.value``. Guard a column the table doesn't carry (e.g.
+        # a stale build missing a newer quantity) with a legible placeholder
+        # rather than a KeyError from deep in the aggregation.
+        needs_value = not (spec.stat == "count" and spec.plot not in DISTRIBUTION_PLOTS)
+        if df.empty or (needs_value and spec.value not in df.columns):
             ax.set_title(style_spec.title or "No data in scope")
             return fig
 

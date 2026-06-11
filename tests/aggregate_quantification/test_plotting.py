@@ -259,6 +259,25 @@ def test_build_figure_empty_is_safe():
     assert fig is not None
 
 
+@pytest.mark.parametrize("plot", ["hist", "box", "violin", "strip", "swarm", "bar", "line"])
+def test_build_figure_missing_value_column_is_safe(plot):
+    # A stale build can advertise a column it doesn't carry (e.g. a per-track
+    # ``msd_*`` fit added after the .h5 was written). It must render a "No data"
+    # placeholder, not KeyError deep in the aggregation.
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="msd_D_um2_per_s", group_by=("condition",), plot=plot)
+    fig = build_figure(df, spec)
+    assert fig.axes[0].get_title() == "No data in scope"
+
+
+def test_build_figure_count_needs_no_value_column():
+    # ``count`` tallies tracks, so a missing value column is fine for bar/line.
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="msd_D_um2_per_s", group_by=("condition",), plot="bar", stat="count")
+    fig = build_figure(df, spec)
+    assert fig.axes[0].get_title() != "No data in scope"
+
+
 def test_distribution_plots_are_the_seaborn_family():
     # strip/swarm are the new scatter members; bar/line stay custom matplotlib.
     assert DISTRIBUTION_PLOTS == ("hist", "box", "violin", "strip", "swarm")

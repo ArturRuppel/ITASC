@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+from cellflow.core.cancellation import CancelledError
 from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.corrections import (
     Correction,
@@ -221,6 +222,11 @@ def _notify(progress_cb: Callable[[str], None] | None, message: str) -> None:
         progress_cb(message)
 
 
+def _check_cancel(cancel: Callable[[], bool] | None) -> None:
+    if cancel is not None and cancel():
+        raise CancelledError("Operation cancelled.")
+
+
 # Rows are streamed to the DB in fixed-size chunks (committed per chunk) so peak
 # memory stays flat regardless of how many candidates/overlaps a frame produces.
 _INSERT_CHUNK = 50_000
@@ -241,6 +247,7 @@ def build_atom_union_database(
     progress_cb: Callable[[str], None] | None = None,
     *,
     contour_maps_path: str | Path | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> AtomUnionDatabaseBuildReport:
     """Build candidate ``data.db`` from ``atoms.tif`` via a merge tree + branching.
 
@@ -314,6 +321,11 @@ def build_atom_union_database(
     total_nodes = total_overlaps = 0
 
     for t in range(n_frames):
+        # Cancellation is cooperative and per-frame: a build over many frames is
+        # the bulk of the work, so polling here lets a Cancel click take effect
+        # within one frame instead of after the whole build. ``engine.dispose()``
+        # below has already committed/closed each completed frame's rows.
+        _check_cancel(cancel)
         _notify(progress_cb, f"Building candidates frame {t + 1}/{n_frames}...")
         frame_atoms = atoms_stack[t]
         n_atoms = int(frame_atoms.max())
@@ -400,8 +412,10 @@ def build_atom_union_database(
         progress_cb,
         f"Wrote {total_nodes} candidate nodes, {total_overlaps} overlap rows.",
     )
+    _check_cancel(cancel)
     _notify(progress_cb, "Linking candidates...")
     for step, total, label in run_linking(working_dir, cfg):
+        _check_cancel(cancel)
         _notify(progress_cb, f"[link {step}/{total}] {label}")
 
     return AtomUnionDatabaseBuildReport(

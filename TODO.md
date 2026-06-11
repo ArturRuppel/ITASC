@@ -13,8 +13,19 @@
   callable it holds strongly (symmetric with `target_resolver`), tying the
   controller's lifetime to the panel; both plugins pass `loader=controller.load`.
   Regression-tested with post-GC load clicks in both plugin test files.)
-- [ ] Database building: cancelling doesn't work.
-- [ ] Plotter: every consecutive plot gets smaller and smaller.
+- [x] Database building: cancelling doesn't work. (The Cancel button set a
+  `threading.Event`, but `build_atom_union_database` never observed it — the
+  event was only checked *between* whole steps in the worker, so a click during
+  the heavy per-frame build did nothing until the entire build finished.
+  `build_atom_union_database` now takes a cooperative `cancel: Callable[[], bool]`
+  and polls it at the top of each frame and each linking step (via the shared
+  `_check_cancel` → `CancelledError` idiom used by the cellpose/divergence
+  workers); the pipeline widget passes `cancel=cancel_event.is_set`, so Cancel
+  now takes effect within one frame. Already-built frames stay committed
+  (`engine.dispose()` per frame). Status text updated to "…after the current
+  frame…". Regression tests in `test_db_build.py` cover immediate and mid-build
+  cancel.)
+- [x] Plotter: every consecutive plot gets smaller and smaller.
 - [x] Horizontal space can't be made smaller than way-too-large. When docked for
   the first time, the control dock should not shrink — the napari canvas should
   shrink instead. (Opening a plot used to `splitDockWidget` the controls column,
@@ -29,153 +40,19 @@
   floor is the styling section's labelled checkbox rows). See
   `plugins/_plot_dock.py` + `plot_panel.py`.)
 
-  ---------------------------------------------------------------------------
-KeyError                                  Traceback (most recent call last)
-File ~/Projects/CellFlow/src/cellflow/napari/aggregate_quantification/plot_panel.py:346, in _render(self=<cellflow.napari.aggregate_quantification.plot_panel.PlotPanel object>)
-    332 def current_style(self) -> StyleSpec:
-    333     return StyleSpec(
-    334         palette=self._palette_combo.currentData(),
-    335         title=self._title_edit.text().strip(),
-    336         xlabel=self._xlabel_edit.text().strip(),
-    337         ylabel=self._ylabel_edit.text().strip(),
-    338         style=self._style_combo.currentData(),
-    339         width=self._width_spin.value(),
-    340         height=self._height_spin.value(),
-    341         grid=self._grid_cb.isChecked(),
-    342         legend=self._legend_cb.isChecked(),
-    343         legend_loc=self._legend_loc_combo.currentData(),
-    344         font_size=self._font_spin.value(),
-    345         box_whis=self._box_whis_spin.value(),
---> 346         box_showfliers=self._box_fliers_cb.isChecked(),
-        self._palette_combo = <PyQt6.QtWidgets.QComboBox object at 0x7ee622fed480>
-        self = <cellflow.napari.aggregate_quantification.plot_panel.PlotPanel object at 0x7ee622e29510>
-        self._title_edit = <PyQt6.QtWidgets.QLineEdit object at 0x7ee622feecb0>
-        self._xlabel_edit = <PyQt6.QtWidgets.QLineEdit object at 0x7ee622fef880>
-        self._ylabel_edit = <PyQt6.QtWidgets.QLineEdit object at 0x7ee622fec820>
-        self._style_combo = <PyQt6.QtWidgets.QComboBox object at 0x7ee622fee0e0>
-        self._width_spin = <PyQt6.QtWidgets.QDoubleSpinBox object at 0x7ee622fed090>
-        self._height_spin = <PyQt6.QtWidgets.QDoubleSpinBox object at 0x7ee622fedea0>
-        self._grid_cb = <PyQt6.QtWidgets.QCheckBox object at 0x7ee622feea70>
-        self._legend_cb = <PyQt6.QtWidgets.QCheckBox object at 0x7ee622fee9e0>
-        self._legend_loc_combo = <PyQt6.QtWidgets.QComboBox object at 0x7ee622feee60>
-        self._font_spin = <PyQt6.QtWidgets.QDoubleSpinBox object at 0x7ee622fee200>
-        self._box_whis_spin = <PyQt6.QtWidgets.QDoubleSpinBox object at 0x7ee622fef250>
-        self._box_fliers_cb = <PyQt6.QtWidgets.QCheckBox object at 0x7ee622fef1c0>
-        self._box_notch_cb = <PyQt6.QtWidgets.QCheckBox object at 0x7ee622fef640>
-        self._xmin_edit = <PyQt6.QtWidgets.QLineEdit object at 0x7ee622fef9a0>
-        self._xmax_edit = <PyQt6.QtWidgets.QLineEdit object at 0x7ee622fefe20>
-        self._ymin_edit = <PyQt6.QtWidgets.QLineEdit object at 0x7ee622fefd90>
-        self._ymax_edit = <PyQt6.QtWidgets.QLineEdit object at 0x7ee622fecd30>
-    347         box_notch=self._box_notch_cb.isChecked(),
-    348         xmin=_parse_float(self._xmin_edit.text()),
-    349         xmax=_parse_float(self._xmax_edit.text()),
-    350         ymin=_parse_float(self._ymin_edit.text()),
-    351         ymax=_parse_float(self._ymax_edit.text()),
-    352     )
-
-File ~/Projects/CellFlow/src/cellflow/aggregate_quantification/plotting.py:378, in build_figure(df=     position_id        date  ... persistence_ti...       NaN        VimKO
-
-[1723 rows x 16 columns], spec=PlotSpec(value='msd_D_um2_per_s', group_by=('cla...l', plot='box', stat='mean', error='sd', bins=30), style_spec=StyleSpec(palette='tab10', title='', xlabel='', ...x_whis=1.5, box_showfliers=False, box_notch=True))
-    375     return fig
-    377 if spec.plot in DISTRIBUTION_PLOTS:
---> 378     _plot_distribution(ax, df, spec, style_spec)
-        style_spec = StyleSpec(palette='tab10', title='', xlabel='', ylabel='', style='default', width=6.0, height=4.0, grid=False, legend=True, legend_loc='best', font_size=10.0, xmin=None, xmax=None, ymin=None, ymax=None, box_whis=1.5, box_showfliers=False, box_notch=True)
-        ax = <Axes: >
-        df =      position_id        date  ... persistence_time_s  class_label
-0          pos00  2026/04/01  ...        1878.306647        VimKO
-1          pos00  2026/04/01  ...        2488.958594        VimKO
-2          pos00  2026/04/01  ...                NaN         Ctrl
-3          pos00  2026/04/01  ...        7171.345435         Ctrl
-4          pos00  2026/04/01  ...        3418.528582        VimKO
-...          ...         ...  ...                ...          ...
-1718       pos08  2026/04/30  ...        1554.025569        VimKO
-1719       pos08  2026/04/30  ...                NaN         Ctrl
-1720       pos08  2026/04/30  ...                NaN         Ctrl
-1721       pos08  2026/04/30  ...         556.024017         Ctrl
-1722       pos08  2026/04/30  ...                NaN        VimKO
-
-[1723 rows x 16 columns]
-        spec = PlotSpec(value='msd_D_um2_per_s', group_by=('class_label',), level='cell', plot='box', stat='mean', error='sd', bins=30)
-    379 elif spec.plot == "bar":
-    380     _plot_bar(ax, df, spec, style_spec)
-
-File ~/Projects/CellFlow/src/cellflow/aggregate_quantification/plotting.py:526, in _plot_distribution(ax=<Axes: >, df=     position_id        date  ... persistence_ti...       NaN        VimKO
-
-[1723 rows x 16 columns], spec=PlotSpec(value='msd_D_um2_per_s', group_by=('cla...l', plot='box', stat='mean', error='sd', bins=30), style_spec=StyleSpec(palette='tab10', title='', xlabel='', ...x_whis=1.5, box_showfliers=False, box_notch=True))
-    522 group = list(spec.group_by)
-    523 # Distributions show one point per independent unit (per ``spec.level``), not
-    524 # per frame: a histogram of cell areas has one observation per track, so a
-    525 # long-lived cell can't dominate the shape it draws.
---> 526 units = reduce_to_units(df, spec)
-        df =      position_id        date  ... persistence_time_s  class_label
-0          pos00  2026/04/01  ...        1878.306647        VimKO
-1          pos00  2026/04/01  ...        2488.958594        VimKO
-2          pos00  2026/04/01  ...                NaN         Ctrl
-3          pos00  2026/04/01  ...        7171.345435         Ctrl
-4          pos00  2026/04/01  ...        3418.528582        VimKO
-...          ...         ...  ...                ...          ...
-1718       pos08  2026/04/30  ...        1554.025569        VimKO
-1719       pos08  2026/04/30  ...                NaN         Ctrl
-1720       pos08  2026/04/30  ...                NaN         Ctrl
-1721       pos08  2026/04/30  ...         556.024017         Ctrl
-1722       pos08  2026/04/30  ...                NaN        VimKO
-
-[1723 rows x 16 columns]
-        spec = PlotSpec(value='msd_D_um2_per_s', group_by=('class_label',), level='cell', plot='box', stat='mean', error='sd', bins=30)
-    527 data, hue = _group_label_column(units, group)
-    528 data = data.assign(**{spec.value: pd.to_numeric(data[spec.value], errors="coerce")})
-
-File ~/Projects/CellFlow/src/cellflow/aggregate_quantification/plotting.py:299, in reduce_to_units(df=     position_id        date  ... persistence_ti...       NaN        VimKO
-
-[1723 rows x 16 columns], spec=PlotSpec(value='msd_D_um2_per_s', group_by=('cla...l', plot='box', stat='mean', error='sd', bins=30))
-    295 # First pass collapses the frame axis (``frame`` is never a key, so grouping
-    296 # on group+nesting averages a track's frames to one value); each later pass
-    297 # drops the finest nesting key and climbs one level toward ``unit``.
-    298 while True:
---> 299     work = work.groupby(group + levels, dropna=False)[spec.value].agg(agg).reset_index()
-        group = ['class_label']
-        agg = 'mean'
-        work =      position_id        date  ... persistence_time_s  class_label
-0          pos00  2026/04/01  ...        1878.306647        VimKO
-1          pos00  2026/04/01  ...        2488.958594        VimKO
-2          pos00  2026/04/01  ...                NaN         Ctrl
-3          pos00  2026/04/01  ...        7171.345435         Ctrl
-4          pos00  2026/04/01  ...        3418.528582        VimKO
-...          ...         ...  ...                ...          ...
-1718       pos08  2026/04/30  ...        1554.025569        VimKO
-1719       pos08  2026/04/30  ...                NaN         Ctrl
-1720       pos08  2026/04/30  ...                NaN         Ctrl
-1721       pos08  2026/04/30  ...         556.024017         Ctrl
-1722       pos08  2026/04/30  ...                NaN        VimKO
-
-[1723 rows x 16 columns]
-        levels = ['date', 'position_id', 'cell_id']
-        spec = PlotSpec(value='msd_D_um2_per_s', group_by=('class_label',), level='cell', plot='box', stat='mean', error='sd', bins=30)
-        spec.value = 'msd_D_um2_per_s'
-        group + levels = ['class_label', 'date', 'position_id', 'cell_id']
-    300     if len(levels) <= len(unit):
-    301         return work
-
-File ~/miniconda3/envs/cellflow/lib/python3.10/site-packages/pandas/core/groupby/generic.py:1951, in DataFrameGroupBy.__getitem__(self=<pandas.core.groupby.generic.DataFrameGroupBy object>, key='msd_D_um2_per_s')
-   1944 if isinstance(key, tuple) and len(key) > 1:
-   1945     # if len == 1, then it becomes a SeriesGroupBy and this is actually
-   1946     # valid syntax, so don't raise
-   1947     raise ValueError(
-   1948         "Cannot subset columns with a tuple with more than one element. "
-   1949         "Use a list instead."
-   1950     )
--> 1951 return super().__getitem__(key)
-        key = 'msd_D_um2_per_s'
-
-File ~/miniconda3/envs/cellflow/lib/python3.10/site-packages/pandas/core/base.py:245, in SelectionMixin.__getitem__(self=<pandas.core.groupby.generic.DataFrameGroupBy object>, key='msd_D_um2_per_s')
-    243 else:
-    244     if key not in self.obj:
---> 245         raise KeyError(f"Column not found: {key}")
-        key = 'msd_D_um2_per_s'
-    246     ndim = self.obj[key].ndim
-    247     return self._gotitem(key, ndim=ndim)
-
-KeyError: 'Column not found: msd_D_um2_per_s'
+- [x] Plotter: `KeyError: 'Column not found: msd_D_um2_per_s'` when plotting a
+  per-track MSD value (`msd_D_um2_per_s` / `msd_alpha`) at *Per-track* view.
+  Root cause: a **stale** `*_dynamics.h5` built before the per-track MSD fit
+  columns existed (`_merge_track_msd`) — the pooled tracks table had 16 cols
+  (12 track + 3 metadata + class_label) and no `msd_*`. The track-dynamics
+  plugin still advertised them in `_TRACK_VALUES`, so selecting one fell
+  through `reduce_to_units`' groupby on a missing column. Fix: `PlotPanel` now
+  filters `value_columns` to those present in the snapshot (symmetric with its
+  identity-column filter) so absent quantities aren't offered; and the headless
+  `build_figure` renders a "No data in scope" placeholder instead of a KeyError
+  when a needed value column is missing. Rebuild (Recompute/overwrite) to get
+  MSD back on old data. Regression-tested in `test_plotting.py` +
+  `test_plot_panel.py`.)
 
 ## Dimensionality Support
 

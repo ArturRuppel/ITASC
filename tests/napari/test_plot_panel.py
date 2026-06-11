@@ -147,6 +147,22 @@ def test_empty_snapshot_disables_exports():
     app.processEvents()
 
 
+def test_absent_value_columns_are_not_offered():
+    app = _app()
+    # ``msd_D_um2_per_s`` isn't in the snapshot (a stale build lacking the
+    # per-track fit); it must be dropped so it can't be selected and crash render.
+    panel = PlotPanel(
+        _df(),
+        value_columns=("area", "msd_D_um2_per_s"),
+        group_columns=("condition",),
+    )
+    assert panel._value_columns == ("area",)
+    offered = [panel._value_combo.itemData(i) for i in range(panel._value_combo.count())]
+    assert "msd_D_um2_per_s" not in offered
+    panel.deleteLater()
+    app.processEvents()
+
+
 def test_axis_range_fields_feed_style_and_render():
     app = _app()
     panel = _panel()

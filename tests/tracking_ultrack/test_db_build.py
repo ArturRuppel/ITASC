@@ -4,7 +4,9 @@ import sys
 import types
 
 import numpy as np
+import pytest
 
+from cellflow.core.cancellation import CancelledError
 from cellflow.tracking_ultrack.config import TrackingConfig
 
 
@@ -170,6 +172,109 @@ def test_build_atom_union_database_segments_then_links(monkeypatch, tmp_path):
     assert isinstance(report, db_build.AtomUnionDatabaseBuildReport)
     assert report.n_frames == 2
     assert report.total_nodes > 0
+
+
+def _stub_build_env(monkeypatch, tmp_path, db_build, atoms):
+    """Install the minimal stubs ``build_atom_union_database`` needs and return the
+    ordered ``calls`` log (shared by the cancellation tests)."""
+    import tifffile
+
+    _install_ultrack_stubs(monkeypatch)
+    calls: list[str] = []
+
+    monkeypatch.setattr(tifffile, "imread", lambda *_a, **_k: atoms)
+
+    class _FakeDataConfig:
+        database_path = f"sqlite:///{tmp_path / 'data.db'}"
+
+        def metadata_add(self, _meta):
+            pass
+
+    class _FakeUltrackConfig:
+        data_config = _FakeDataConfig()
+
+    monkeypatch.setattr(db_build, "_build_ultrack_config", lambda *_a: _FakeUltrackConfig())
+
+    import sqlalchemy
+    import sqlalchemy.orm
+
+    class _FakeEngine:
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *_a, **_kw: _FakeEngine())
+
+    class _FakeSession:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def add_all(self, rows):
+            calls.append("frame")
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(sqlalchemy.orm, "Session", _FakeSession)
+    monkeypatch.setattr(
+        db_build, "run_linking",
+        lambda *_a, **_k: calls.append("link") or iter([(1, 1, "linked")]),
+    )
+    return calls
+
+
+def test_build_atom_union_database_cancels_before_any_work(monkeypatch, tmp_path):
+    """A cancel signal already set when the build starts aborts on the first frame —
+    no frames are inserted and linking never runs."""
+    from cellflow.tracking_ultrack import db_build
+
+    atoms = np.zeros((2, 4, 6), dtype=np.int32)
+    atoms[:, :, :3] = 1
+    atoms[:, :, 3:] = 2
+    calls = _stub_build_env(monkeypatch, tmp_path, db_build, atoms)
+
+    with pytest.raises(CancelledError):
+        db_build.build_atom_union_database(
+            tmp_path / "atoms.tif", tmp_path / "work", TrackingConfig(),
+            cancel=lambda: True,
+        )
+
+    assert "link" not in calls  # aborted before the linking step
+
+
+def test_build_atom_union_database_cancels_mid_build(monkeypatch, tmp_path):
+    """Cancelling after the first frame stops the per-frame loop before the second
+    frame and before linking — the bug was that the loop ignored the signal."""
+    from cellflow.tracking_ultrack import db_build
+
+    atoms = np.zeros((3, 4, 6), dtype=np.int32)
+    atoms[:, :, :3] = 1
+    atoms[:, :, 3:] = 2
+    calls = _stub_build_env(monkeypatch, tmp_path, db_build, atoms)
+
+    # ``cancel`` is polled once per frame at the top of the loop: let the first
+    # frame through, then signal cancel so the second frame never builds.
+    polls = {"n": 0}
+
+    def _cancel() -> bool:
+        polls["n"] += 1
+        return polls["n"] > 1
+
+    with pytest.raises(CancelledError):
+        db_build.build_atom_union_database(
+            tmp_path / "atoms.tif", tmp_path / "work", TrackingConfig(),
+            cancel=_cancel,
+        )
+
+    # Exactly one frame's rows were inserted (nodes + overlaps) before the abort;
+    # linking never ran.
+    assert "link" not in calls
+    assert calls.count("frame") <= 2  # one frame: nodes insert (+ overlaps if any)
 
 
 def test_build_atom_union_database_uses_contour_for_ridge_weights(monkeypatch, tmp_path):
