@@ -277,3 +277,23 @@ def test_write_csv_round_trips_and_forces_suffix(tmp_path):
     reloaded = pd.read_csv(written)
     assert len(reloaded) == len(df)
     assert "area" in reloaded.columns
+
+
+def test_axis_limits_applied_when_set():
+    from cellflow.aggregate_quantification.plotting import (
+        PlotSpec, StyleSpec, build_figure,
+    )
+    import pandas as pd
+    df = pd.DataFrame({"condition": ["A", "A", "B"], "frame": [0, 1, 0],
+                       "cell_id": [1, 2, 1], "position_id": ["p", "p", "p"],
+                       "area": [10.0, 20.0, 30.0]})
+    spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="strip")
+    style = StyleSpec(xmin=None, xmax=None, ymin=5.0, ymax=40.0)
+    ax = build_figure(df, spec, style).axes[0]
+    assert ax.get_ylim() == (5.0, 40.0)
+
+
+def test_axis_limits_default_to_auto():
+    from cellflow.aggregate_quantification.plotting import StyleSpec
+    s = StyleSpec()
+    assert s.xmin is None and s.xmax is None and s.ymin is None and s.ymax is None

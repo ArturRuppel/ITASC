@@ -128,6 +128,12 @@ class StyleSpec:
     legend_loc: str = "best"
     #: Base font size; titles/labels/ticks scale off it.
     font_size: float = 10.0
+    #: Optional axis limits; ``None`` keeps matplotlib's autoscaled bound. Each
+    #: side is independent, so e.g. only ``ymin`` may be pinned.
+    xmin: float | None = None
+    xmax: float | None = None
+    ymin: float | None = None
+    ymax: float | None = None
 
     # -- Box-plot knobs (ignored by every other plot type) -------------------
     #: Whisker reach as a multiple of the IQR (matplotlib/seaborn ``whis``):
@@ -322,6 +328,11 @@ def _apply_style(ax, spec: PlotSpec, style_spec: StyleSpec) -> None:
     if style_spec.ylabel:
         ax.set_ylabel(style_spec.ylabel)
     ax.grid(style_spec.grid)
+    # Axis limits before the legend branch's early return so they always apply.
+    if style_spec.xmin is not None or style_spec.xmax is not None:
+        ax.set_xlim(left=style_spec.xmin, right=style_spec.xmax)
+    if style_spec.ymin is not None or style_spec.ymax is not None:
+        ax.set_ylim(bottom=style_spec.ymin, top=style_spec.ymax)
 
     existing = ax.get_legend()
     if not style_spec.legend:
