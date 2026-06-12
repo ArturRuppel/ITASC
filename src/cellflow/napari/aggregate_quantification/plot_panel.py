@@ -37,11 +37,13 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QTabWidget,
@@ -242,7 +244,21 @@ class PlotPanel(QWidget):
         #: so no point is dropped. Reset on any control change (each re-render).
         self._swarm_overflowed = False
 
-        layout = QVBoxLayout(self)
+        # Everything lives inside a vertical scroll area so a tall plot or a long
+        # stats table scrolls instead of clipping off the bottom of the dock.
+        # ``widgetResizable`` keeps the content the viewport's width (the controls
+        # already shrink via ``_shrinkable``), so only the vertical bar appears.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
         layout.addWidget(CollapsibleSection("Plot", self._build_analytical(), expanded=True))
@@ -730,9 +746,9 @@ class PlotPanel(QWidget):
         col.addLayout(_labelled("Style:", self._style_combo))
         self._title_edit = _line_edit("auto")
         col.addLayout(_labelled("Title:", self._title_edit))
-        self._width_spin = _double_spin(2.0, 30.0, 6.0, step=0.5)
-        self._height_spin = _double_spin(2.0, 30.0, 4.0, step=0.5)
-        col.addLayout(_pair_row("W×H (in):", self._width_spin, self._height_spin))
+        # No width/height field: the plot fills the dock and is exported exactly as
+        # shown (see ``_export_figure``), so an inches field that the layout always
+        # overrode would only mislead.
         self._dpi_spin = _shrinkable(QSpinBox())
         self._dpi_spin.setRange(50, 600)
         self._dpi_spin.setValue(100)
@@ -746,7 +762,7 @@ class PlotPanel(QWidget):
 
         self._style_combo.currentIndexChanged.connect(self._render)
         self._font_family_combo.currentIndexChanged.connect(self._render)
-        for spin in (self._width_spin, self._height_spin, self._font_spin, self._dpi_spin):
+        for spin in (self._font_spin, self._dpi_spin):
             spin.valueChanged.connect(self._render)
         for edit in (self._title_edit, self._facecolor_edit):
             edit.editingFinished.connect(self._render)
@@ -978,8 +994,6 @@ class PlotPanel(QWidget):
             xlabel=self._xlabel_edit.text().strip(),
             ylabel=self._ylabel_edit.text().strip(),
             style=self._style_combo.currentData(),
-            width=self._width_spin.value(),
-            height=self._height_spin.value(),
             grid=self._grid_cb.isChecked(),
             legend=self._legend_cb.isChecked(),
             legend_loc=self._legend_loc_combo.currentData(),
@@ -1059,8 +1073,6 @@ class PlotPanel(QWidget):
             self._title_edit.setText(style.title)
             self._xlabel_edit.setText(style.xlabel)
             self._ylabel_edit.setText(style.ylabel)
-            self._width_spin.setValue(style.width)
-            self._height_spin.setValue(style.height)
             self._dpi_spin.setValue(style.dpi)
             _set_combo(self._font_family_combo, style.font_family or "default")
             self._font_spin.setValue(style.font_size)
@@ -1138,6 +1150,10 @@ class PlotPanel(QWidget):
         self._render_stats(spec)
         canvas = FigureCanvasQTAgg(fig)
         _shrinkable(canvas)
+        # Floor the plot height so it stays legible once the scroll area is active:
+        # without it a long stats table could squeeze the canvas to nothing as the
+        # content widget grows past the viewport.
+        canvas.setMinimumHeight(240)
         toolbar = NavigationToolbar2QT(canvas, self)
         # As a QToolBar it spills overflow tools into a "»" menu when squeezed,
         # so it stops being the panel's hard minimum width.

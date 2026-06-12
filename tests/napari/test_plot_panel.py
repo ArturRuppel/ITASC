@@ -274,10 +274,6 @@ def test_each_control_rerenders_without_error():
     panel._title_edit.setText("My title")
     panel._render()
     assert panel._canvas.figure.axes[0].get_title() == "My title"
-    panel._width_spin.setValue(8.0)
-    panel._height_spin.setValue(5.0)
-    panel._render()
-    assert panel._canvas.figure.get_size_inches().tolist() == [8.0, 5.0]
     panel._font_spin.setValue(16.0)
     panel._grid_cb.setChecked(True)
     panel._legend_cb.setChecked(False)

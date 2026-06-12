@@ -24,7 +24,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from cellflow.napari._spotlight import SPOTLIGHT_OPACITY as _SPOTLIGHT_OPACITY
 from cellflow.napari._spotlight import spotlight_rgba as _spotlight_rgba
 from cellflow.correction.labels import (
     _label_at,

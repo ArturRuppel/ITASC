@@ -687,7 +687,7 @@ def test_pickable_points_hist_is_empty():
 
 
 # -------------------------------------------- pickable points (nearest-in-pixels)
-from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
+from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR  # noqa: E402
 
 
 def _tagged(ax):
