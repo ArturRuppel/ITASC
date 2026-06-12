@@ -20,13 +20,18 @@ product by a thin cell / nucleus subclass.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from cellflow.aggregate_quantification.dynamics import read_track_dynamics
+from cellflow.aggregate_quantification.dynamics import (
+    TrackDynamics,
+    read_track_dynamics,
+)
 from cellflow.aggregate_quantification.quantifier import Quantifier
 from cellflow.napari.aggregate_quantification.plots import Plot, PlotContext, PlotParams
 from cellflow.napari.aggregate_quantification.plots._pool_plot import PoolPlot
@@ -36,6 +41,41 @@ from cellflow.napari.aggregate_quantification.plots._pooling import (
     iter_built,
     position_metadata,
 )
+
+#: Per-launch read cache. A single Plot-area button pools several dynamics views
+#: (per-frame / per-track / per-tissue / curves) and each used to re-read the same
+#: ``.h5`` — and ``read_track_dynamics`` always loads the large ``instantaneous``
+#: table — so one click read each position's file ~6×. ``dynamics_read_cache``
+#: scopes a ``path -> TrackDynamics`` map for the duration of one launch; the reads
+#: below consult it so each file is parsed once. The contextvar is set *inside* the
+#: Plot area's worker thread (contextvars don't cross threads), so concurrent reads
+#: never share a stale map.
+_READ_CACHE: contextvars.ContextVar[dict[Path, TrackDynamics] | None] = (
+    contextvars.ContextVar("dynamics_read_cache", default=None)
+)
+
+
+@contextlib.contextmanager
+def dynamics_read_cache():
+    """Scope a per-launch dynamics read cache around a block of pooling."""
+    token = _READ_CACHE.set({})
+    try:
+        yield
+    finally:
+        _READ_CACHE.reset(token)
+
+
+def _read_dynamics(path: Path | str) -> TrackDynamics:
+    """``read_track_dynamics`` memoized within an active :func:`dynamics_read_cache`."""
+    cache = _READ_CACHE.get()
+    if cache is None:
+        return read_track_dynamics(path)
+    key = Path(path)
+    dyn = cache.get(key)
+    if dyn is None:
+        dyn = read_track_dynamics(path)
+        cache[key] = dyn
+    return dyn
 
 _FAMILY = "Dynamics"
 _CELL_FIELD = "cell_tracked_labels_path"
@@ -78,6 +118,11 @@ class _FrameDynamicsPlot(PoolPlot):
     value_columns = _FRAME_VALUES
     group_columns = _FRAME_GROUPS
 
+    def _read_table(self, quantifier: Quantifier, path: Path) -> Any:
+        # Pull the instantaneous table from the (cached) full read so a single
+        # launch parses each position's .h5 once across all four dynamics views.
+        return _read_dynamics(path).instantaneous
+
 
 class CellFrameDynamicsPlot(_FrameDynamicsPlot):
     plot_id = "cell_dynamics_frame"
@@ -102,7 +147,7 @@ class _TrackDynamicsPlot(PoolPlot):
     group_columns = _TRACK_GROUPS
 
     def _read_table(self, quantifier: Quantifier, path: Path) -> Any:
-        return read_track_dynamics(path).tracks
+        return _read_dynamics(path).tracks
 
 
 class CellTrackDynamicsPlot(_TrackDynamicsPlot):
@@ -131,7 +176,7 @@ class _TissueDynamicsPlot(PoolPlot):
     def pool(self, records: list[dict]) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
         for record, path in iter_built(self.quantity_id, records):
-            dyn = read_track_dynamics(path)
+            dyn = _read_dynamics(path)
             rows.append(
                 {
                     **position_metadata(record),
@@ -169,7 +214,7 @@ class _CurvesDynamicsPlot(Plot):
 
         curves: list[CurveSet] = []
         for record, path in iter_built(self.consumes[0], records):
-            dyn = read_track_dynamics(path)
+            dyn = _read_dynamics(path)
             curves.append(
                 CurveSet(
                     group=str(record.get("condition", "") or record.get("id", "")),

@@ -71,6 +71,7 @@ def position_inputs_from_record(record: dict) -> PositionInputs:
         time_interval_s=_resolve_time_interval(
             record, position_dir, cell_path or nucleus_path
         ),
+        contact_analysis_path=Path(out) if out else None,
     )
 
 

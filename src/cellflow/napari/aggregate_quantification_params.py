@@ -105,6 +105,21 @@ class SharedParamsWidget(QWidget):
         )
 
     # ---------------------------------------------------------------- build side
+    def build_params(self) -> dict:
+        """The shared knobs a quantifier may consume at build time.
+
+        Pixel size / frame interval reach a build through :meth:`stamp` (they are
+        ``PositionInputs`` fields); these two are quantifier ``params`` instead —
+        the contact-type z-score's shuffle count and the density's field-of-view
+        area. Blank → the quantifier's own default. Only quantifiers that opt in
+        (``wants_build_params``) are handed this.
+        """
+        shuffles = _parse_int(self._shuffles_edit.text())
+        return {
+            "shuffles": shuffles if shuffles and shuffles > 0 else PlotParams().shuffles,
+            "fov_area_mm2": _parse_positive(self._fov_edit.text()),
+        }
+
     def stamp(self, records: list[dict]) -> list[dict]:
         """Return *records* with build overrides applied, when any are set.
 

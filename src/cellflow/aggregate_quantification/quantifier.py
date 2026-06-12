@@ -48,6 +48,11 @@ class PositionInputs:
     #: Frame interval (seconds/frame); ``None`` when unknown. Quantifiers that
     #: emit time-derived values (track dynamics) require it.
     time_interval_s: float | None = None
+    #: The position's built ``contact_analysis.h5``; ``None`` when contacts is not
+    #: in the catalogue. The contacts-derived quantifiers (neighbor count /
+    #: enrichment / z-score / density / energetics) read it as their input instead
+    #: of re-running contact extraction.
+    contact_analysis_path: Path | None = None
 
 
 #: quantity_id -> quantifier class, populated by ``__init_subclass__``.
@@ -72,6 +77,11 @@ class Quantifier:
     #: Default artifact file name (relative to a position); empty for an
     #: intermediate base that does not persist.
     default_output_name: ClassVar[str] = ""
+    #: Whether the studio threads the shared plot/build params (z-score shuffle
+    #: count, density field-of-view) into :meth:`build` via ``params``. Off by
+    #: default so a quantifier with its own ``params`` schema (contacts edge
+    #: extraction, shape, dynamics) is never handed the shared bar's keys.
+    wants_build_params: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

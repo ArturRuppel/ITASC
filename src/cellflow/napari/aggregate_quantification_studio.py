@@ -437,9 +437,19 @@ class AggregateQuantificationStudioWidget(QWidget):
                 "Nothing to build — inputs missing or already built (try Recompute)."
             )
             return
-        self._begin_build(quantifier, jobs)
+        # Only quantifiers that opt in get the shared bar's build knobs (z-score
+        # shuffles, density FOV); the rest keep their own ``params`` schema clean.
+        shared = getattr(self, "_shared_params", None)
+        params = (
+            shared.build_params()
+            if shared is not None and quantifier.wants_build_params
+            else None
+        )
+        self._begin_build(quantifier, jobs, params)
 
-    def _begin_build(self, quantifier: Quantifier, jobs: list[_BuildPlan]) -> None:
+    def _begin_build(
+        self, quantifier: Quantifier, jobs: list[_BuildPlan], params: dict | None = None
+    ) -> None:
         self._set_catalog_status(
             f"Computing {quantifier.display_name} for {len(jobs)} position(s)…"
         )
@@ -455,7 +465,7 @@ class AggregateQuantificationStudioWidget(QWidget):
                 name = plan.inputs.position_dir.name
                 emit(index, total, name)
                 try:
-                    quantifier.build(plan.inputs, plan.output)
+                    quantifier.build(plan.inputs, plan.output, params=params)
                     results.append(_BuildResult(name, "built"))
                 except Exception:  # noqa: BLE001 - reported per-position, not fatal
                     results.append(_BuildResult(name, "failed"))

@@ -97,7 +97,7 @@ class ValueSource:
     #: Resolves a picked point's identity dict to its input ``LoadTarget`` for
     #: click-to-load — per source, since products carry different label fields.
     #: ``None`` disables loading for this source.
-    target_resolver: Callable[[dict], "LoadTarget | None"] | None = None
+    target_resolver: Callable[[dict], LoadTarget | None] | None = None
 
 
 _PLOT_TYPES = ("hist", "box", "violin", "strip", "swarm", "bar", "line", "potential")

@@ -29,7 +29,6 @@ from qtpy.QtWidgets import (
 from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel, ValueSource
 from cellflow.napari.aggregate_quantification.plots import (
     Plot,
-    PlotContext,
     PlotParams,
     available_plots,
 )
@@ -182,7 +181,15 @@ class PlotAreaWidget(QWidget):
 
         @thread_worker(connect={"returned": self._on_prepared, "errored": self._on_error})
         def _worker():
-            prepared = [(plot, plot.prepare(records, params)) for plot in plots]
+            # Scope the dynamics read cache here (on the worker thread, where the
+            # reads run) so the four dynamics views pooled by one button share a
+            # single read per position instead of re-parsing each .h5 ~6×.
+            from cellflow.napari.aggregate_quantification.plots.dynamics import (
+                dynamics_read_cache,
+            )
+
+            with dynamics_read_cache():
+                prepared = [(plot, plot.prepare(records, params)) for plot in plots]
             return render_type, prepared, records
 
         self._pool_worker = _worker()

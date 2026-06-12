@@ -91,6 +91,29 @@ def test_frame_view_pools_per_frame_table(tmp_path):
     assert (df["class_label"] == "unclassified").all()
 
 
+def test_launch_cache_reads_each_h5_once(tmp_path, monkeypatch):
+    """All four dynamics views share one read per position inside a launch cache."""
+    from cellflow.napari.aggregate_quantification.plots import dynamics as dyn
+
+    record = _built_cell_dynamics(tmp_path)
+    calls: list[str] = []
+    real = dyn.read_track_dynamics
+    monkeypatch.setattr(
+        dyn, "read_track_dynamics", lambda path: (calls.append(str(path)), real(path))[1]
+    )
+    views = [
+        CellFrameDynamicsPlot(),
+        CellTrackDynamicsPlot(),
+        CellTissueDynamicsPlot(),
+        CellCurvesDynamicsPlot(),
+    ]
+    with dyn.dynamics_read_cache():
+        for view in views:
+            view.prepare([record])
+    # Without the cache each view re-reads; with it, one parse for the position.
+    assert len(calls) == 1
+
+
 def test_track_view_pools_per_track_summary(tmp_path):
     record = _built_cell_dynamics(tmp_path)
     df = CellTrackDynamicsPlot().prepare([record])
