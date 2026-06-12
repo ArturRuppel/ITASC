@@ -54,8 +54,9 @@ from cellflow.napari.aggregate_quantification_params import SharedParamsWidget
 from cellflow.napari.aggregate_quantification_plot_area import PlotAreaWidget
 from cellflow.napari.aggregate_quantification_widget import _ProgressEmitter
 from cellflow.napari.studio_plugins import (
+    BuildArea,
     PluginEntry,
-    available_studio_plugins,
+    available_tool_plugins,
     output_for_record,
     position_inputs_from_record,
     records_satisfying,
@@ -65,10 +66,17 @@ from cellflow.napari.widgets import CollapsibleSection
 
 
 class _BuildPlan(NamedTuple):
-    """One position queued for a build: its inputs + chosen artifact path."""
+    """One (quantifier, position) queued for a build.
 
+    A single Run can mix metrics, so each job carries its own quantifier and the
+    resolved build params (only quantifiers that opt in get the shared bar's
+    knobs).
+    """
+
+    quantifier: Quantifier
     inputs: PositionInputs
     output: Path
+    params: dict | None
 
 
 class _BuildResult(NamedTuple):
@@ -175,7 +183,9 @@ class AggregateQuantificationStudioWidget(QWidget):
             CollapsibleSection("Parameters", self._shared_params, expanded=False)
         )
 
-        self._build_plugins_section(layout)
+        # Tools on top, then the pure Build area, then the Plot area.
+        self._build_tools_section(layout)
+        self._build_build_section(layout)
         self._build_plot_section(layout)
 
         self._reload_plugins()
@@ -303,7 +313,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         # The positions table is the always-visible core of the Catalogue region.
         layout.addWidget(container)
 
-    def _build_plugins_section(self, layout) -> None:
+    def _build_tools_section(self, layout) -> None:
         container = QWidget()
         col = QVBoxLayout(container)
         col.setContentsMargins(0, 0, 0, 0)
@@ -312,18 +322,18 @@ class AggregateQuantificationStudioWidget(QWidget):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(2)
-        header.addWidget(QLabel("Build a quantity, or use a tool:"))
+        header.addWidget(QLabel("Use a tool:"))
         header.addStretch(1)
         reload_btn = QPushButton("↻")
-        reload_btn.setToolTip("Re-scan for builders and tools.")
+        reload_btn.setToolTip("Re-scan for tools and metrics.")
         action_button(reload_btn)
         reload_btn.clicked.connect(self._reload_plugins)
         header.addWidget(reload_btn)
         col.addLayout(header)
 
-        # One collapsible per available plugin; its header is the on/off control.
+        # One collapsible per available tool; its header is the on/off control.
         # Pin them to the top (like the main app's stage list) so an expanded
-        # plugin grows to its content instead of the sections sharing — and
+        # tool grows to its content instead of the sections sharing — and
         # spreading into — the leftover vertical space.
         self._plugin_host = QWidget()
         self._plugin_host_layout = QVBoxLayout(self._plugin_host)
@@ -332,7 +342,19 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._plugin_host_layout.setAlignment(Qt.AlignTop)
         col.addWidget(self._plugin_host)
 
-        layout.addWidget(CollapsibleSection("Build & tools", container, expanded=True))
+        layout.addWidget(CollapsibleSection("Tools", container, expanded=True))
+
+    def _build_build_section(self, layout) -> None:
+        """The pure Build area: one checkbox + availability dot per metric and a
+        single Run button that (re)builds every checked metric for the in-scope
+        positions. The :class:`BuildArea` body is (re)created in
+        :meth:`_reload_plugins` so a metric registered at runtime shows up."""
+        self._build_host = QWidget()
+        self._build_host_layout = QVBoxLayout(self._build_host)
+        self._build_host_layout.setContentsMargins(0, 0, 0, 0)
+        self._build_host_layout.setSpacing(0)
+        self._build_area: BuildArea | None = None
+        layout.addWidget(CollapsibleSection("Build", self._build_host, expanded=True))
 
     def _build_plot_section(self, layout) -> None:
         """The Plot area: every registered plot, grouped by family and gated by
@@ -416,43 +438,49 @@ class AggregateQuantificationStudioWidget(QWidget):
         )
 
     # ----------------------------------------------------------------- building
-    def _run_quantity_build(
-        self, quantifier: Quantifier, records: list[dict], overwrite: bool
+    def _run_quantity_builds(
+        self, quantifiers: list[Quantifier], records: list[dict], overwrite: bool
     ) -> None:
-        """Build *quantifier* for the in-scope *records* (invoked by a builder plugin)."""
+        """Build every *quantifier* for the in-scope *records* (Build area Run).
+
+        Queues one job per (quantifier, position): skip positions lacking the
+        inputs, and — unless *overwrite* — positions already built. A single
+        worker runs the mixed queue so several metrics build in one pass.
+        """
         if self._build_worker is not None:
             self._set_catalog_status("A build is already running.")
-            return
-        jobs: list[_BuildPlan] = []
-        for record in records:
-            inputs = position_inputs_from_record(record)
-            if not quantifier.can_build(inputs):
-                continue
-            out = output_for_record(quantifier, record)
-            if not overwrite and quantifier.is_built(out):
-                continue
-            jobs.append(_BuildPlan(inputs=inputs, output=out))
-        if not jobs:
-            self._set_catalog_status(
-                "Nothing to build — inputs missing or already built (try Recompute)."
-            )
             return
         # Only quantifiers that opt in get the shared bar's build knobs (z-score
         # shuffles, density FOV); the rest keep their own ``params`` schema clean.
         shared = getattr(self, "_shared_params", None)
-        params = (
-            shared.build_params()
-            if shared is not None and quantifier.wants_build_params
-            else None
-        )
-        self._begin_build(quantifier, jobs, params)
+        jobs: list[_BuildPlan] = []
+        for quantifier in quantifiers:
+            params = (
+                shared.build_params()
+                if shared is not None and quantifier.wants_build_params
+                else None
+            )
+            for record in records:
+                inputs = position_inputs_from_record(record)
+                if not quantifier.can_build(inputs):
+                    continue
+                out = output_for_record(quantifier, record)
+                if not overwrite and quantifier.is_built(out):
+                    continue
+                jobs.append(
+                    _BuildPlan(
+                        quantifier=quantifier, inputs=inputs, output=out, params=params
+                    )
+                )
+        if not jobs:
+            self._set_catalog_status(
+                "Nothing to build — inputs missing or already built."
+            )
+            return
+        self._begin_build(jobs)
 
-    def _begin_build(
-        self, quantifier: Quantifier, jobs: list[_BuildPlan], params: dict | None = None
-    ) -> None:
-        self._set_catalog_status(
-            f"Computing {quantifier.display_name} for {len(jobs)} position(s)…"
-        )
+    def _begin_build(self, jobs: list[_BuildPlan]) -> None:
+        self._set_catalog_status(f"Computing {len(jobs)} build job(s)…")
         emit = self._build_emitter.progress.emit
 
         @thread_worker(
@@ -465,7 +493,7 @@ class AggregateQuantificationStudioWidget(QWidget):
                 name = plan.inputs.position_dir.name
                 emit(index, total, name)
                 try:
-                    quantifier.build(plan.inputs, plan.output, params=params)
+                    plan.quantifier.build(plan.inputs, plan.output, params=plan.params)
                     results.append(_BuildResult(name, "built"))
                 except Exception:  # noqa: BLE001 - reported per-position, not fatal
                     results.append(_BuildResult(name, "failed"))
@@ -600,13 +628,16 @@ class AggregateQuantificationStudioWidget(QWidget):
 
     # -------------------------------------------------------------- plugin hosting
     def _reload_plugins(self) -> None:
-        """Rebuild the plugin collapsibles from the available plugins.
+        """Rebuild the tool collapsibles and the Build area from the registries.
 
-        Each plugin gets one collapsed :class:`CollapsibleSection`; its header is
+        Each tool gets one collapsed :class:`CollapsibleSection`; its header is
         the on/off control (no separate checkbox), and expanding it reveals the
-        body. Bodies are fed the catalogue scope whether expanded or not, so the
-        view is always current the moment it is opened.
+        body. The Build area is a single body with one metric row per quantifier.
+        Both are fed the catalogue scope whether expanded or not, so the view is
+        always current the moment it is opened.
         """
+        self._reload_build_area()
+
         while self._plugin_host_layout.count():
             item = self._plugin_host_layout.takeAt(0)
             widget = item.widget()
@@ -614,11 +645,9 @@ class AggregateQuantificationStudioWidget(QWidget):
                 widget.deleteLater()
         self._plugin_sections = {}
 
-        self._plugin_entries = available_studio_plugins(
-            build_callback=self._run_quantity_build
-        )
+        self._plugin_entries = available_tool_plugins()
         if not self._plugin_entries:
-            placeholder = QLabel("No plugins found.")
+            placeholder = QLabel("No tools found.")
             status_label(placeholder, muted=True)
             self._plugin_host_layout.addWidget(placeholder)
             self._plugin_host_layout.addStretch()
@@ -639,6 +668,20 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._plugin_host_layout.addStretch()
         self._update_plugin_availability()
 
+    def _reload_build_area(self) -> None:
+        """(Re)create the Build area body — one metric row per quantifier."""
+        while self._build_host_layout.count():
+            item = self._build_host_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        quantifiers = [q_cls() for q_cls in available_quantifiers()]
+        self._build_area = BuildArea(
+            quantifiers, self._run_quantity_builds, viewer=self.viewer
+        )
+        self._build_host_layout.addWidget(self._build_area)
+        self._push_context_to(self._build_area)
+
     def _on_plugin_toggled(self, entry: PluginEntry, checked: bool) -> None:
         # Expanding is the "activate" gesture: refresh the body with the current
         # scope so it is up to date even if the scope changed while collapsed.
@@ -657,9 +700,12 @@ class AggregateQuantificationStudioWidget(QWidget):
         return cached
 
     def _push_context(self) -> None:
-        """Feed every plugin + the Plot area the current scope, refresh availability."""
+        """Feed every tool + the Build & Plot areas the current scope, refresh gating."""
         for plugin in self._plugin_sections.values():
             self._push_context_to(plugin.body)
+        build_area = getattr(self, "_build_area", None)
+        if build_area is not None:
+            self._push_context_to(build_area)
         plot_area = getattr(self, "_plot_area", None)
         if plot_area is not None:
             self._push_context_to(plot_area)

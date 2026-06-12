@@ -35,9 +35,10 @@ from cellflow.napari.aggregate_quantification.plugins import (
 )
 from cellflow.napari.ui_style import action_button, status_label
 
-#: Signature of the studio callback a builder plugin invokes to run a build:
-#: ``(quantifier, in_scope_records, overwrite)``.
-BuildCallback = Callable[[Quantifier, list[dict], bool], None]
+#: Signature of the studio callback the Build area invokes to run a build:
+#: ``(quantifiers, in_scope_records, overwrite)`` — one job per (quantifier,
+#: position), so a single Run can rebuild several metrics at once.
+BuildsCallback = Callable[[list[Quantifier], list[dict], bool], None]
 
 
 @dataclass(frozen=True)
@@ -151,31 +152,16 @@ def records_satisfying(requires: Iterable[str], records: Iterable[dict]) -> list
     return out
 
 
-def available_studio_plugins(*, build_callback: BuildCallback) -> list[PluginEntry]:
-    """All plugin entries: builders (one per quantifier) then the remaining tools.
+def available_tool_plugins() -> list[PluginEntry]:
+    """The non-build *tools*: the surviving analysis plugins.
 
-    Every registered quantifier gets a generic builder — plotting is no longer a
-    plugin concern (it lives in the Plot area over the
-    :class:`~cellflow.napari.aggregate_quantification.plots.Plot` registry), so a
-    quantity is built here and plotted there. The surviving analysis plugins are
-    the non-plot tools (NLS classification, contacts visualizer, catalogue
-    summary).
+    Building is no longer a per-tool plugin — every registered quantifier is a
+    *metric* row in the studio's compact :class:`BuildArea` (built here, plotted
+    in the Plot area). The tools are the remaining analysis plugins (NLS
+    classification, contacts visualizer, catalogue summary).
     """
-    plugin_classes = available_analysis_plugins()
     entries: list[PluginEntry] = []
-    for q_cls in available_quantifiers():
-        quantifier = q_cls()
-        entries.append(
-            PluginEntry(
-                plugin_id=f"build:{quantifier.quantity_id}",
-                display_name=f"Build: {quantifier.display_name}",
-                requires=tuple(quantifier.requires),
-                factory=lambda viewer, q=quantifier: BuilderPlugin(
-                    q, build_callback, viewer=viewer
-                ),
-            )
-        )
-    for p_cls in plugin_classes:
+    for p_cls in available_analysis_plugins():
         entries.append(
             PluginEntry(
                 plugin_id=p_cls.plugin_id,
@@ -187,57 +173,119 @@ def available_studio_plugins(*, build_callback: BuildCallback) -> list[PluginEnt
     return entries
 
 
-class BuilderPlugin(QWidget):
-    """A Build button over a :class:`Quantifier`.
+#: Status-dot colours for a metric's availability across the in-scope positions.
+_DOT_ALL = "#3fb950"  # green — built for every applicable position
+_DOT_MISSING = "#f85149"  # red — built for some / none
+_DOT_NONE = "#6e7681"  # grey — no in-scope position has the inputs
 
-    Builds the in-scope positions whose inputs satisfy the quantifier. Reads the
-    catalogue scope via :meth:`set_context`; delegates execution to the studio's
-    *build_callback* so building stays centralized (threaded, status-refreshed).
+
+@dataclass
+class _MetricRow:
+    """One metric's controls in the :class:`BuildArea`."""
+
+    quantifier: Quantifier
+    checkbox: QCheckBox
+    dot: QLabel
+
+
+class BuildArea(QWidget):
+    """Compact multi-metric build panel.
+
+    One row per quantifier — a checkbox plus a status dot showing whether the
+    metric's artifact exists for *every* in-scope position that has the inputs
+    (green = all built, red = some missing, grey = no in-scope position has the
+    inputs). A single Run button (re)builds every checked metric, overwriting
+    existing artifacts; execution is delegated to the studio's *build_callback*
+    so building stays centralized (threaded, status-refreshed).
     """
 
     def __init__(
         self,
-        quantifier: Quantifier,
-        build_callback: BuildCallback,
+        quantifiers: Iterable[Quantifier],
+        build_callback: BuildsCallback,
         *,
         viewer: object | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
-        self._quantifier = quantifier
         self._build_callback = build_callback
         self._records: list[dict] = []
+        self._rows: dict[str, _MetricRow] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
 
-        self._overwrite_cb = QCheckBox("Recompute (overwrite existing)")
-        layout.addWidget(self._overwrite_cb)
+        for quantifier in quantifiers:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            dot = QLabel("●")
+            dot.setToolTip("")
+            row.addWidget(dot)
+            checkbox = QCheckBox(quantifier.display_name)
+            row.addWidget(checkbox, 1)
+            layout.addLayout(row)
+            self._rows[quantifier.quantity_id] = _MetricRow(quantifier, checkbox, dot)
 
-        row = QHBoxLayout()
-        self._build_btn = QPushButton(f"Build {quantifier.display_name}")
-        action_button(self._build_btn)
-        self._build_btn.clicked.connect(self._on_build)
-        row.addWidget(self._build_btn)
-        layout.addLayout(row)
+        run_row = QHBoxLayout()
+        run_row.setContentsMargins(0, 0, 0, 0)
+        run_row.addStretch(1)
+        self._run_btn = QPushButton("Run checked builds")
+        self._run_btn.setToolTip("Compute (and overwrite) every checked metric.")
+        action_button(self._run_btn)
+        self._run_btn.clicked.connect(self._on_run)
+        run_row.addWidget(self._run_btn)
+        layout.addLayout(run_row)
 
         self._status = QLabel("")
         status_label(self._status, muted=True)
+        self._status.setWordWrap(True)
         layout.addWidget(self._status)
 
-    @property
-    def overwrite(self) -> bool:
-        return self._overwrite_cb.isChecked()
+        self._refresh()
 
     def set_context(self, ctx: AnalysisContext) -> None:
         self._records = list(ctx.records)
-        buildable = records_satisfying(self._quantifier.requires, self._records)
-        self._build_btn.setEnabled(bool(buildable))
-        self._status.setText(
-            f"{len(buildable)} of {len(self._records)} in-scope position(s) "
-            f"have the inputs for {self._quantifier.display_name}."
-        )
+        self._refresh()
 
-    def _on_build(self) -> None:
-        self._build_callback(self._quantifier, list(self._records), self.overwrite)
+    def _refresh(self) -> None:
+        any_buildable = False
+        for row in self._rows.values():
+            applicable = records_satisfying(row.quantifier.requires, self._records)
+            total = len(applicable)
+            built = sum(
+                1
+                for record in applicable
+                if row.quantifier.is_built(output_for_record(row.quantifier, record))
+            )
+            if total == 0:
+                color, tip = _DOT_NONE, "No in-scope position has the inputs."
+            elif built == total:
+                color, tip = _DOT_ALL, f"Built for all {total} in-scope position(s)."
+            else:
+                color, tip = (
+                    _DOT_MISSING,
+                    f"Built for {built} of {total} in-scope position(s).",
+                )
+            row.dot.setStyleSheet(f"color: {color};")
+            row.dot.setToolTip(tip)
+            row.checkbox.setEnabled(total > 0)
+            row.checkbox.setToolTip(tip)
+            any_buildable = any_buildable or total > 0
+        self._run_btn.setEnabled(any_buildable)
+
+    def _checked_quantifiers(self) -> list[Quantifier]:
+        return [
+            row.quantifier
+            for row in self._rows.values()
+            if row.checkbox.isChecked() and row.checkbox.isEnabled()
+        ]
+
+    def _on_run(self) -> None:
+        chosen = self._checked_quantifiers()
+        if not chosen:
+            self._status.setText("Tick at least one metric to build.")
+            return
+        self._status.setText("")
+        self._build_callback(chosen, list(self._records), True)

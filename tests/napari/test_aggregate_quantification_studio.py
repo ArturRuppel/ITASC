@@ -57,16 +57,18 @@ def test_single_contact_analysis_entry_no_meta_or_plugins_in_manifest():
 # ---------------------------------------------------------------- plugin hosting
 
 
-def test_every_plugin_is_its_own_collapsible_collapsed():
+def test_every_tool_is_its_own_collapsible_collapsed():
     app = _app()
     widget = mod.AggregateQuantificationStudioWidget()
-    # A builder per quantifier (contacts) + the meta plugins, each as its own
-    # collapsible section, all collapsed (off) until expanded.
-    assert "build:contacts" in widget._plugin_sections
+    # Tools are the analysis plugins (building moved to the Build area), each its
+    # own collapsible section, all collapsed (off) until expanded.
     assert "catalog_summary" in widget._plugin_sections
+    assert not any(pid.startswith("build:") for pid in widget._plugin_sections)
     assert all(
         not plugin.section.is_expanded for plugin in widget._plugin_sections.values()
     )
+    # The Build area carries a metric row per quantifier instead.
+    assert "contacts" in widget._build_area._rows
     widget.deleteLater()
     app.processEvents()
 
@@ -106,7 +108,7 @@ def test_selection_scope_forwarded_to_plugins(monkeypatch):
         requires=(),
         factory=lambda viewer: _RecordingPlugin(viewer),
     )
-    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [entry])
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [entry])
 
     widget = mod.AggregateQuantificationStudioWidget()
     # Plugins are always present and fed the scope; no checkbox to mount first.
@@ -135,7 +137,7 @@ def test_plugin_header_greyed_when_inputs_missing(monkeypatch):
         requires=("nucleus_labels_path",),  # a PositionInputs field name
         factory=lambda viewer: QLabel("x"),
     )
-    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [entry])
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [entry])
 
     widget = mod.AggregateQuantificationStudioWidget()
     widget._records = [
@@ -156,7 +158,7 @@ def test_plugin_header_greyed_when_inputs_missing(monkeypatch):
 
 def test_no_plugins_shows_placeholder(monkeypatch):
     app = _app()
-    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
     widget = mod.AggregateQuantificationStudioWidget()
     assert widget._plugin_sections == {}
     widget.deleteLater()
@@ -266,7 +268,7 @@ def test_discover_annotate_add_then_csv_roundtrip(tmp_path):
 def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     """Add registers positions synchronously and never builds (that's a plugin)."""
     app = _app()
-    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
 
     study = tmp_path / "study"
     p1 = study / "pos01"
@@ -300,11 +302,11 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     app.processEvents()
 
 
-def test_builder_build_targets_only_buildable_missing_positions(tmp_path, monkeypatch):
-    """The builder-plugin build path builds missing positions that have inputs,
+def test_build_area_run_targets_only_buildable_missing_positions(tmp_path, monkeypatch):
+    """The Build area Run path builds missing positions that have inputs,
     skips already-built ones, and (with overwrite) rebuilds everything."""
     app = _app()
-    monkeypatch.setattr(mod, "available_studio_plugins", lambda **_k: [])
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
 
     widget = mod.AggregateQuantificationStudioWidget()
     quantifier = ContactsQuantifier()
@@ -326,16 +328,18 @@ def test_builder_build_targets_only_buildable_missing_positions(tmp_path, monkey
     ]
 
     captured: list = []
-    monkeypatch.setattr(widget, "_begin_build", lambda q, jobs: captured.append(jobs))
+    monkeypatch.setattr(widget, "_begin_build", lambda jobs: captured.append(jobs))
 
     # Default: only p2 (missing + buildable).
-    widget._run_quantity_build(quantifier, records, overwrite=False)
+    widget._run_quantity_builds([quantifier], records, overwrite=False)
     assert [j.inputs.position_dir.name for j in captured[-1]] == ["p2"]
 
     # Overwrite: p1 and p2 (both have cell labels); p3 still skipped (no inputs).
     captured.clear()
-    widget._run_quantity_build(quantifier, records, overwrite=True)
+    widget._run_quantity_builds([quantifier], records, overwrite=True)
     assert sorted(j.inputs.position_dir.name for j in captured[-1]) == ["p1", "p2"]
+    # Every queued job carries its quantifier so a mixed Run builds correctly.
+    assert {j.quantifier.quantity_id for j in captured[-1]} == {"contacts"}
 
     widget.deleteLater()
     app.processEvents()

@@ -14,24 +14,13 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-def test_available_studio_plugins_has_contacts_builder_and_analysis_plugins():
-    entries = sp.available_studio_plugins(build_callback=lambda *a: None)
+def test_available_tool_plugins_are_analysis_tools_not_builders():
+    entries = sp.available_tool_plugins()
     ids = {e.plugin_id for e in entries}
-    assert "build:contacts" in ids  # one builder per quantifier
-    assert "catalog_summary" in ids  # meta plugins folded into the same list
-    builder = next(e for e in entries if e.plugin_id == "build:contacts")
-    assert builder.display_name == "Build: Cell–cell contacts"
-    assert builder.requires == ("cell_labels_path",)
-
-
-def test_every_quantifier_gets_a_generic_builder():
-    entries = sp.available_studio_plugins(build_callback=lambda *a: None)
-    ids = {e.plugin_id for e in entries}
-    # Plotting is no longer a plugin concern, so no quantity is suppressed — every
-    # registered quantifier gets a generic builder (it is plotted in the Plot area).
-    for quantity_id in ("cell_shape", "nucleus_shape", "shape_relational", "contacts"):
-        assert f"build:{quantity_id}" in ids
-    # The retired plot plugins are gone from the tool list.
+    assert "catalog_summary" in ids  # analysis tools surface here
+    # Building is no longer a per-tool plugin — metrics live in the Build area.
+    assert not any(pid.startswith("build:") for pid in ids)
+    # The retired plot plugins are gone from the tool list too.
     assert "shape" not in ids
     assert "track_dynamics" not in ids
 
@@ -80,29 +69,49 @@ def test_records_satisfying_filters_by_requires():
     assert len(sp.records_satisfying((), records)) == 2
 
 
-def test_builder_plugin_build_button_gating_and_callback():
+def test_build_area_status_dots_and_run_callback(tmp_path):
     app = _app()
     from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
     from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
 
     captured: list = []
-    plugin = sp.BuilderPlugin(ContactsQuantifier(), lambda q, recs, ow: captured.append((q, recs, ow)))
+    quantifier = ContactsQuantifier()
+    area = sp.BuildArea([quantifier], lambda qs, recs, ow: captured.append((qs, recs, ow)))
+    row = area._rows["contacts"]
 
-    # No buildable records -> button disabled.
-    plugin.set_context(AnalysisContext(records=[{"id": "x", "contact_analysis_path": Path("/x.h5")}]))
-    assert plugin._build_btn.isEnabled() is False
+    # No in-scope position has the inputs -> grey dot, checkbox disabled.
+    area.set_context(AnalysisContext(records=[{"id": "x", "contact_analysis_path": Path("/x.h5")}]))
+    assert sp._DOT_NONE in row.dot.styleSheet()
+    assert row.checkbox.isEnabled() is False
 
-    # A record with cell labels -> enabled; clicking forwards (quantifier, records, overwrite).
-    records = [{"id": "y", "contact_analysis_path": Path("/y.h5"), "cell_tracked_labels_path": Path("/y/c.tif")}]
-    plugin.set_context(AnalysisContext(records=records))
-    assert plugin._build_btn.isEnabled() is True
-    plugin._overwrite_cb.setChecked(True)
-    plugin._on_build()
+    # One built + one missing among applicable positions -> red (not all built).
+    p1, p2 = tmp_path / "p1", tmp_path / "p2"
+    p1.mkdir()
+    p2.mkdir()
+    (p1 / "contact_analysis.h5").touch()
+    records = [
+        {"id": "p1", "position_path": p1, "contact_analysis_path": p1 / "contact_analysis.h5",
+         "cell_tracked_labels_path": p1 / "c.tif"},
+        {"id": "p2", "position_path": p2, "contact_analysis_path": p2 / "contact_analysis.h5",
+         "cell_tracked_labels_path": p2 / "c.tif"},
+    ]
+    area.set_context(AnalysisContext(records=records))
+    assert sp._DOT_MISSING in row.dot.styleSheet()
+    assert row.checkbox.isEnabled() is True
+
+    # All applicable positions built -> green.
+    (p2 / "contact_analysis.h5").touch()
+    area.set_context(AnalysisContext(records=records))
+    assert sp._DOT_ALL in row.dot.styleSheet()
+
+    # Run forwards the checked metrics, the scope, and overwrite=True.
+    row.checkbox.setChecked(True)
+    area._on_run()
     assert len(captured) == 1
-    quantifier, recs, overwrite = captured[0]
-    assert quantifier.quantity_id == "contacts"
-    assert [r["id"] for r in recs] == ["y"]
+    quantifiers, recs, overwrite = captured[0]
+    assert [q.quantity_id for q in quantifiers] == ["contacts"]
+    assert [r["id"] for r in recs] == ["p1", "p2"]
     assert overwrite is True
 
-    plugin.deleteLater()
+    area.deleteLater()
     app.processEvents()
