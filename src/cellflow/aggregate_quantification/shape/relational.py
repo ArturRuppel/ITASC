@@ -9,7 +9,7 @@ surfaced via *progress_cb* so silent loss is visible.
 The emitted columns are *relational* quantities — ratios and offsets between the
 paired nucleus and cell — listed in :data:`RELATIONAL_COLUMNS`. Persistence is a
 flat tidy CSV plus a ``<name>.provenance.json`` sidecar, the same format the
-per-object shape tables use (see :mod:`.core`). Backend-only (no Qt / napari).
+per-object shape tables use (see :mod:`cellflow.aggregate_quantification.shape.core`). Backend-only (no Qt / napari).
 """
 from __future__ import annotations
 

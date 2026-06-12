@@ -3,16 +3,16 @@
 One **HDF5** per substrate (``cell_dynamics.h5`` / ``nucleus_dynamics.h5``) — the
 quantity is several heterogeneous tables, so a single flat CSV (as the shape
 family uses) does not fit; this mirrors how contacts stores ``cells/`` /
-``edges/`` / ``t1_events/``. Groups:
+``edges/`` / ``t1_events/``. Groups::
 
-``instantaneous/table``  per ``(frame, cell_id)`` positions + velocities (the
-                         ``object_table`` for the generic plotting layer)
-``tracks/table``         per-track motility summary
-``msd/table``            ensemble MSD curve (+ ``D_um2_per_s`` / ``alpha`` / ``r2`` attrs)
-``dac/table``            ensemble directional autocorrelation (+ ``persistence_time_s`` attr)
-``collective/table``     per-frame order parameter / correlation length / NN distance
-``corr_curve/table``     pooled velocity-correlation curve
-``provenance``           run metadata as group attrs
+    instantaneous/table  per (frame, cell_id) positions + velocities (the
+                         object_table for the generic plotting layer)
+    tracks/table         per-track motility summary
+    msd/table            ensemble MSD curve (+ D_um2_per_s / alpha / r2 attrs)
+    dac/table            ensemble directional autocorrelation (+ persistence_time_s attr)
+    collective/table     per-frame order parameter / correlation length / NN distance
+    corr_curve/table     pooled velocity-correlation curve
+    provenance           run metadata as group attrs
 
 :func:`build_track_dynamics` runs the headless core and writes the file;
 :func:`read_track_dynamics` loads it back; :func:`read_instantaneous_table`

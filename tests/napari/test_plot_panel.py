@@ -139,11 +139,17 @@ def test_level_combo_constrained_to_supported_levels():
     panel.deleteLater(); app.processEvents()
 
 
-def test_value_picker_tags_native_level():
+def test_value_picker_omits_level_tag():
+    # The aggregation level lives only in the Level selector now, not baked into
+    # every value name (which duplicated the qualifier).
     app = _app()
-    panel = _panel()  # carries frame + cell_id → frame-level
+    panel = _panel()  # carries frame + cell_id
     texts = [panel._value_combo.itemText(i) for i in range(panel._value_combo.count())]
-    assert any("per frame" in t for t in texts)
+    assert texts == ["area"]
+    assert "·" not in texts[0] and "per " not in texts[0]
+    # The level qualifier is still offered — just in the dedicated selector.
+    levels = [panel._level_combo.itemData(i) for i in range(panel._level_combo.count())]
+    assert "cell" in levels and "position" in levels
     panel.deleteLater(); app.processEvents()
 
 
@@ -191,6 +197,48 @@ def test_construct_renders_a_canvas():
     panel = _panel()
     assert panel._canvas is not None
     assert panel._toolbar is not None
+    panel.deleteLater()
+    app.processEvents()
+
+
+def test_detach_pops_plot_into_window_and_reattach_docks_it():
+    app = _app()
+    panel = _panel()
+    # Docked: the container sits in the panel layout, the placeholder is hidden.
+    assert panel._main_layout.indexOf(panel._plot_container) == panel._plot_index
+    assert panel._detached_window is None
+
+    panel._toggle_detach()
+    app.processEvents()
+    # Detached: container reparented into the float window, placeholder takes its
+    # docked slot, and a re-render still targets the (now floating) canvas holder.
+    assert panel._detached_window is not None
+    assert panel._plot_container.window() is panel._detached_window
+    assert panel._main_layout.indexOf(panel._detach_placeholder) == panel._plot_index
+    panel._render()
+    assert panel._canvas is not None
+
+    panel._toggle_detach()
+    app.processEvents()
+    # Re-attached: container back in the panel, window gone.
+    assert panel._detached_window is None
+    assert panel._main_layout.indexOf(panel._plot_container) == panel._plot_index
+    panel.deleteLater()
+    app.processEvents()
+
+
+def test_closing_detached_window_redocks_plot():
+    app = _app()
+    panel = _panel()
+    panel._toggle_detach()
+    app.processEvents()
+    window = panel._detached_window
+    assert window is not None
+    # Closing the float window directly (not via the button) re-docks the plot.
+    window.close()
+    app.processEvents()
+    assert panel._detached_window is None
+    assert panel._main_layout.indexOf(panel._plot_container) == panel._plot_index
     panel.deleteLater()
     app.processEvents()
 

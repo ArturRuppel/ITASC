@@ -24,6 +24,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
 from qtpy.QtWidgets import QComboBox, QLabel, QVBoxLayout, QWidget
 
+from cellflow.napari.aggregate_quantification._mpl_toolbar import theme_toolbar_icons
 from cellflow.napari.ui_style import status_label
 from cellflow.napari.widgets import CollapsibleSection
 
@@ -72,6 +73,8 @@ class DynamicsCurvesPanel(QWidget):
 
         self._canvas = FigureCanvasQTAgg(Figure(figsize=(5, 4), tight_layout=True))
         self._toolbar = NavigationToolbar2QT(self._canvas, self)
+        # Lighten the glyphs on napari's dark themes (no-op on light ones).
+        theme_toolbar_icons(self._toolbar)
         layout.addWidget(self._toolbar)
         layout.addWidget(self._canvas, 1)
 

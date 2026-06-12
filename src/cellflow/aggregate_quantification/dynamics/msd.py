@@ -3,7 +3,7 @@
 For each integer frame lag ``n``, the MSD is averaged over **all tracks** and
 **all present overlapping origin pairs** ``(k, k+n)`` whose frames are separated
 by exactly ``n`` (a gap inside a pair breaks it, so only genuine ``n``-frame
-displacements count):
+displacements count)::
 
     MSD(n) = mean over tracks, origins of |r(f+n) − r(f)|²        (µm²)
 

@@ -72,7 +72,13 @@ def position_inputs_from_record(record: dict) -> PositionInputs:
         time_interval_s=_resolve_time_interval(
             record, position_dir, cell_path or nucleus_path
         ),
-        contact_analysis_path=Path(out) if out else None,
+        # The contacts artifact is a *produced* input — the contacts quantifier
+        # writes it. The catalogue stamps its expected path on every position
+        # whether or not it has been built yet, so gate on the file actually
+        # existing: an unbuilt contacts product is not an available input, and a
+        # position lacking it is not applicable to the contacts-derived metrics
+        # (else their status dots read red for positions that can never build).
+        contact_analysis_path=Path(out) if out and Path(out).is_file() else None,
     )
 
 

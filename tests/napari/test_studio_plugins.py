@@ -109,6 +109,25 @@ def test_output_for_record_routes_each_quantifier_to_its_own_artifact():
     )
 
 
+def test_contact_analysis_path_input_requires_the_file_to_exist(tmp_path):
+    # The catalogue stamps a contacts artifact path on every position whether or
+    # not it has been built, so a derived metric must gate on the file actually
+    # existing — otherwise its status dot reads red for positions that can never
+    # build (no contacts product). See position_inputs_from_record.
+    built, unbuilt = tmp_path / "built.h5", tmp_path / "unbuilt.h5"
+    built.touch()
+    records = [
+        {"id": "has", "contact_analysis_path": built},
+        {"id": "missing", "contact_analysis_path": unbuilt},
+    ]
+    assert sp.position_inputs_from_record(records[0]).contact_analysis_path == built
+    assert sp.position_inputs_from_record(records[1]).contact_analysis_path is None
+    # Only the position whose contacts artifact exists is applicable to a
+    # contacts-derived metric (which ``requires`` the produced input).
+    satisfied = sp.records_satisfying(("contact_analysis_path",), records)
+    assert [r["id"] for r in satisfied] == ["has"]
+
+
 def test_records_satisfying_filters_by_requires():
     records = [
         {"id": "a", "contact_analysis_path": Path("/a.h5"), "cell_tracked_labels_path": Path("/a/c.tif")},

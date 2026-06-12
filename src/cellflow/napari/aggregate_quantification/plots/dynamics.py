@@ -99,11 +99,12 @@ _TRACK_VALUES = (
 )
 _TRACK_GROUPS = (*METADATA_GROUPS, CLASS_COLUMN)
 #: Per-tissue (one row per position) ensemble scalars + group axes. Position-level,
-#: so no ``class_label`` / ``frame`` axis.
+#: so no ``class_label`` / ``frame`` axis. Only the genuinely tissue-only scalars
+#: are offered here: the per-track summaries (``msd_*``, ``persistence_time_s``)
+#: are reached from the per-track view's Level → "Per position", so listing them
+#: again here would duplicate the same number under two plots. ``pool`` still
+#: computes them (they ride free off the same read) but they are not advertised.
 _TISSUE_VALUES = (
-    "msd_D_um2_per_s",
-    "msd_alpha",
-    "persistence_time_s",
     "corr_length_um",
     "order_param",
 )

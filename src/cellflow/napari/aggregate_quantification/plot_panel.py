@@ -61,6 +61,7 @@ from cellflow.aggregate_quantification.plotting import (
     summary_table,
     write_csv,
 )
+from cellflow.napari.aggregate_quantification._mpl_toolbar import theme_toolbar_icons
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
 
@@ -135,10 +136,11 @@ class ValueSource:
 
 #: level key → the pooled column whose presence makes that level meaningful, and
 #: a short human tag. A level is offered only when its entity column exists (you
-#: cannot aggregate "per cell" a table that carries no ``cell_id``); the finest
-#: present entity is the data's native granularity, shown beside each value.
+#: cannot aggregate "per cell" a table that carries no ``cell_id``). The tags label
+#: the Level selector and the stats read-out — the *only* place the level appears
+#: now (it used to also be baked into every value name, which duplicated it).
 _LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
-_LEVEL_LABELS = {"frame": "per frame", "cell": "per cell", "position": "per position"}
+_LEVEL_LABELS = {"cell": "per cell", "position": "per position"}
 #: Skip building filter checkboxes for a column with more distinct values than
 #: this — a long checkbox wall (e.g. hundreds of position ids) helps no one.
 _FILTER_MAX_VALUES = 40
@@ -242,8 +244,45 @@ class PlotPanel(QWidget):
         layout.addWidget(CollapsibleSection("Filter", self._build_filters(), expanded=False))
         layout.addWidget(CollapsibleSection("Styling", self._build_styling(), expanded=False))
 
+        # The canvas + its toolbar live in their own container so the whole plot
+        # can pop out into a floating window — once every styling tab is open the
+        # controls crowd the plot. ``_canvas_holder`` is the container's layout, so
+        # a re-render targets it whether the container is docked here or floating.
+        self._main_layout = layout
         self._canvas_holder = QVBoxLayout()
-        layout.addLayout(self._canvas_holder, 1)
+        self._canvas_holder.setContentsMargins(0, 0, 0, 0)
+        self._plot_container = QWidget()
+        container_col = QVBoxLayout(self._plot_container)
+        container_col.setContentsMargins(0, 0, 0, 0)
+        container_col.setSpacing(2)
+        self._detach_btn = QPushButton("⧉ Detach plot")
+        self._detach_btn.setToolTip(
+            "Pop the plot out into its own window to free up room for the controls."
+        )
+        # Keep its natural width (no ``_shrinkable`` here): it is narrow, so it
+        # never floors the panel width, and an Ignored policy next to the row's
+        # stretch would collapse it to nothing.
+        self._detach_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._detach_btn.clicked.connect(self._toggle_detach)
+        detach_row = QHBoxLayout()
+        detach_row.setContentsMargins(0, 0, 0, 0)
+        detach_row.addStretch(1)
+        detach_row.addWidget(self._detach_btn)
+        container_col.addLayout(detach_row)
+        container_col.addLayout(self._canvas_holder, 1)
+        layout.addWidget(self._plot_container, 1)
+        self._plot_index = layout.indexOf(self._plot_container)
+        # State for the popped-out window; the placeholder fills the docked slot
+        # while the plot floats so the controls don't jump.
+        self._detached_window: QWidget | None = None
+        self._detach_placeholder = QLabel(
+            "Plot detached into its own window. Close that window or click "
+            "“⧉ Re-attach plot” to dock it again."
+        )
+        self._detach_placeholder.setWordWrap(True)
+        self._detach_placeholder.setAlignment(Qt.AlignCenter)
+        status_label(self._detach_placeholder, muted=True)
+        self._detach_placeholder.hide()
 
         # Numeric summary of exactly what the figure draws (n / mean / median / sd /
         # sem / min / max per group), so the headline numbers are legible without
@@ -437,9 +476,8 @@ class PlotPanel(QWidget):
         combo.clear()
         self._source_by_index = {}
         if self._catalog is None:
-            tag = _native_level_tag(self._df)
             for name in self._value_columns:
-                combo.addItem(f"{name}  ·  {tag}" if tag else name, name)
+                combo.addItem(name, name)
         else:
             last_source = None
             for src in self._catalog:
@@ -448,8 +486,7 @@ class PlotPanel(QWidget):
                     item = combo.model().item(combo.count() - 1)
                     item.setEnabled(False)
                     last_source = src.source
-                tag = _native_level_tag(src.df)
-                combo.addItem(f"  {src.label}  ·  {tag}" if tag else f"  {src.label}", src.value)
+                combo.addItem(f"  {src.label}", src.value)
                 self._source_by_index[combo.count() - 1] = src
             # Start on the first real (non-header) value.
             for index in range(combo.count()):
@@ -1091,6 +1128,9 @@ class PlotPanel(QWidget):
         # As a QToolBar it spills overflow tools into a "»" menu when squeezed,
         # so it stops being the panel's hard minimum width.
         _shrinkable(toolbar)
+        # Lighten the glyphs on napari's dark themes (matplotlib leaves them black,
+        # which all but vanishes on the dark toolbar). No-op on light themes.
+        theme_toolbar_icons(toolbar)
         if self._canvas is not None:
             self._canvas_holder.removeWidget(self._canvas)
             self._canvas.setParent(None)
@@ -1132,6 +1172,49 @@ class PlotPanel(QWidget):
         if any("cannot be placed" in str(w.message) for w in caught):
             self._swarm_overflowed = True
             self._render(_retry_after_overflow=True)
+
+    # --------------------------------------------------------------- detach plot
+    def _toggle_detach(self) -> None:
+        if self._detached_window is None:
+            self._detach_plot()
+        else:
+            self._attach_plot()
+
+    def _detach_plot(self) -> None:
+        """Move the plot container into a floating top-level window, leaving the
+        placeholder in its docked slot so the controls keep their layout."""
+        window = _DetachedPlotWindow(self._on_detached_closed, self)
+        window.setWindowTitle(f"Plot — {self._value_combo.currentText().strip()}")
+        col = QVBoxLayout(window)
+        col.setContentsMargins(6, 6, 6, 6)
+        self._main_layout.removeWidget(self._plot_container)
+        col.addWidget(self._plot_container)
+        self._main_layout.insertWidget(self._plot_index, self._detach_placeholder)
+        self._detach_placeholder.show()
+        self._detach_btn.setText("⧉ Re-attach plot")
+        self._detached_window = window
+        window.resize(680, 560)
+        window.show()
+
+    def _attach_plot(self) -> None:
+        """Dock the plot container back in place and dispose of the float window."""
+        window = self._detached_window
+        if window is None:
+            return
+        # Clear the handle first so the window's own closeEvent doesn't re-enter.
+        self._detached_window = None
+        self._main_layout.removeWidget(self._detach_placeholder)
+        self._detach_placeholder.hide()
+        self._detach_placeholder.setParent(self)
+        self._main_layout.insertWidget(self._plot_index, self._plot_container, 1)
+        self._detach_btn.setText("⧉ Detach plot")
+        window.close()
+        window.deleteLater()
+
+    def _on_detached_closed(self) -> None:
+        """The user closed the floating plot window directly — re-dock the plot."""
+        if self._detached_window is not None:
+            self._attach_plot()
 
     # ----------------------------------------------------------------- stats
     def _render_stats(self, spec: PlotSpec) -> None:
@@ -1469,6 +1552,22 @@ class _ColorButton(QPushButton):
             self.setStyleSheet("")
 
 
+class _DetachedPlotWindow(QWidget):
+    """Top-level window holding the popped-out plot. Tells the panel to re-dock
+    when the user closes it directly (rather than via the Re-attach button)."""
+
+    def __init__(self, on_close: Callable[[], None], parent: QWidget | None = None) -> None:
+        # Parented so closing the panel's tab destroys this window too, but flagged
+        # as its own window so it floats free of the dock.
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Window)
+        self._on_close = on_close
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._on_close()
+        super().closeEvent(event)
+
+
 def _labelled(label: str, widget: QWidget) -> QHBoxLayout:
     row = QHBoxLayout()
     row.setContentsMargins(0, 0, 0, 0)
@@ -1508,19 +1607,6 @@ def _py(value):
         return value.item()  # numpy scalar -> Python scalar
     except AttributeError:
         return value
-
-
-def _native_level_tag(df: pd.DataFrame) -> str:
-    """Short tag for a table's finest independent unit, shown beside each value so
-    the picker reveals which data is per-frame vs per-cell vs per-position."""
-    columns = df.columns
-    if "frame" in columns and "cell_id" in columns:
-        return _LEVEL_LABELS["frame"]
-    if "cell_id" in columns:
-        return _LEVEL_LABELS["cell"]
-    if "position_id" in columns:
-        return _LEVEL_LABELS["position"]
-    return ""
 
 
 def _fmt(value: float) -> str:
