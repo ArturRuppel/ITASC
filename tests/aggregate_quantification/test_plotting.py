@@ -6,6 +6,7 @@ import pytest
 
 from cellflow.aggregate_quantification.plotting import (
     DISTRIBUTION_PLOTS,
+    PLOT_OPTIONS,
     UNCLASSIFIED,
     PlotSpec,
     PositionSource,
@@ -15,9 +16,12 @@ from cellflow.aggregate_quantification.plotting import (
     build_figure,
     effective_barrier,
     pickable_points,
+    plot_options,
     pool_object_tables,
     potential_landscape,
     potential_table,
+    style_from_dict,
+    style_to_dict,
     write_csv,
 )
 
@@ -365,6 +369,125 @@ def test_each_style_field_measurably_changes_the_figure():
     assert labelled.axes[0].get_ylabel() == "YY"
 
 
+# ----------------------------------------------------- expanded style fields
+
+
+def test_spines_and_border_width():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), plot="box")
+    ax = build_figure(df, spec, StyleSpec(spines=("left", "bottom"), spine_width=2.5)).axes[0]
+    assert ax.spines["top"].get_visible() is False
+    assert ax.spines["right"].get_visible() is False
+    assert ax.spines["left"].get_visible() is True
+    assert ax.spines["left"].get_linewidth() == 2.5
+
+
+def test_log_scale_per_axis():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", plot="hist")
+    assert build_figure(df, spec, StyleSpec(xlog=True)).axes[0].get_xscale() == "log"
+    assert build_figure(df, spec, StyleSpec(ylog=True)).axes[0].get_yscale() == "log"
+
+
+def test_tick_controls():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), plot="box")
+    ax = build_figure(df, spec, StyleSpec(tick_label_size=18.0, tick_length=9.0)).axes[0]
+    assert ax.get_xticklabels()[0].get_fontsize() == 18.0
+    # The major x ticks were drawn at the requested length.
+    assert any(t.tick1line.get_markersize() == 9.0 for t in ax.xaxis.get_major_ticks())
+
+
+def test_dpi_and_facecolor():
+    df = pool_object_tables(_sources())
+    fig = build_figure(df, PlotSpec(value="area", plot="hist"),
+                       StyleSpec(dpi=200, facecolor="#eeeeee"))
+    assert fig.get_dpi() == 200
+    assert fig.axes[0].get_facecolor()[:3] == pytest.approx((0.933, 0.933, 0.933), abs=1e-2)
+
+
+def test_color_override_recolours_one_group():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), plot="bar")
+    ax = build_figure(df, spec, StyleSpec(color_overrides=(("A", "#123456"),))).axes[0]
+    # #123456 → (0.071, 0.204, 0.337); the A bar takes the override exactly.
+    assert ax.patches[0].get_facecolor()[:3] == pytest.approx((0.0706, 0.2039, 0.3373), abs=1e-3)
+
+
+def test_alpha_applies_to_histogram():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), plot="hist")
+    ax = build_figure(df, spec, StyleSpec(alpha=0.2)).axes[0]
+    assert ax.patches[0].get_facecolor()[3] == pytest.approx(0.2)
+
+
+def test_markers_toggle_and_line_width_on_line():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), plot="line")
+    on = build_figure(df, spec, StyleSpec(markers=True)).axes[0]
+    off = build_figure(df, spec, StyleSpec(markers=False)).axes[0]
+    assert on.lines[0].get_marker() == "o"
+    assert off.lines[0].get_marker() in ("", "none", None)
+    wide = build_figure(df, spec, StyleSpec(line_width=4.0)).axes[0]
+    assert wide.lines[0].get_linewidth() == 4.0
+
+
+def test_grid_and_legend_extras():
+    df = pool_object_tables(_sources())
+    spec = PlotSpec(value="area", group_by=("condition",), plot="line")
+    gridded = build_figure(df, spec, StyleSpec(grid=True, grid_axis="y", grid_linestyle=":"))
+    assert gridded.axes[0].yaxis.get_gridlines()[0].get_visible()
+    legend = build_figure(
+        df, spec, StyleSpec(legend=True, legend_title="Cond", legend_ncol=2),
+    ).axes[0].get_legend()
+    assert legend.get_title().get_text() == "Cond"
+    assert legend._ncols == 2
+
+
+# --------------------------------------------------------- capability map
+
+
+def test_plot_options_covers_every_plot_type():
+    from cellflow.aggregate_quantification.plotting import _PLOTS
+    assert set(PLOT_OPTIONS) == set(_PLOTS)
+
+
+@pytest.mark.parametrize("plot,expected", [
+    ("box", {"box_whis", "box_showfliers", "box_notch"}),
+    ("hist", {"bins", "hist_element", "hist_cumulative"}),
+    ("potential", {"bins", "adaptive_bins", "markers", "marker_size"}),
+    ("swarm", set()),
+])
+def test_plot_options_per_type(plot, expected):
+    assert set(plot_options(plot)) == expected
+
+
+def test_plot_options_unknown_is_empty():
+    assert plot_options("does-not-exist") == ()
+
+
+# ----------------------------------------------------------- style themes
+
+
+def test_style_theme_round_trips_through_json():
+    import json
+    style = StyleSpec(
+        dpi=150, alpha=0.3, xlog=True, spines=("left", "bottom"), font_family="serif",
+        color_overrides=(("A", "#ff0000"), ("B", "#00ff00")), tick_label_size=14.0,
+    )
+    restored = style_from_dict(json.loads(json.dumps(style_to_dict(style))))
+    assert restored == style
+    # tuple-typed fields survive the list round-trip JSON imposes
+    assert isinstance(restored.spines, tuple)
+    assert isinstance(restored.color_overrides, tuple)
+
+
+def test_style_from_dict_tolerates_unknown_and_missing_keys():
+    style = style_from_dict({"dpi": 222, "totally_unknown_key": 9})
+    assert style.dpi == 222  # known key honoured
+    assert style.palette == "tab10"  # missing key falls back to default
+
+
 def _box_df():
     """A two-group frame whose group A carries a single high outlier, so the
     box-plot knobs have something to act on."""
@@ -589,50 +712,6 @@ def test_hidden_fliers_arm_no_box_overlay():
     spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="box")
     fig = build_figure(df, spec, StyleSpec(box_showfliers=False))
     assert _tagged(fig.axes[0]) == []
-
-
-# ------------------------------------------------- interactive (Plotly) export
-
-
-def _interactive_df():
-    return pd.DataFrame({
-        "position_id": [1, 1, 2, 2, 3, 3],
-        "frame": [0, 1, 0, 1, 0, 1],
-        "cell_id": [10, 10, 20, 20, 30, 30],
-        "condition": ["A", "A", "B", "B", "A", "A"],
-        "area": [5.0, 6.0, 7.0, 8.0, 100.0, 9.0],
-    })
-
-
-@pytest.mark.parametrize("plot", ["hist", "box", "violin", "strip", "swarm", "bar", "line", "potential"])
-def test_build_interactive_figure_renders_each_plot_type(plot):
-    from cellflow.aggregate_quantification.plotting import build_interactive_figure
-    import plotly.graph_objects as go
-    spec = PlotSpec(value="area", group_by=("condition",), plot=plot)
-    fig = build_interactive_figure(_interactive_df(), spec, StyleSpec())
-    assert isinstance(fig, go.Figure)
-    assert fig.data  # at least one trace drawn
-    fig.to_html()    # serialises without error
-
-
-def test_build_interactive_figure_carries_provenance_hover():
-    # Every distribution point's hover text names its provenance, so the HTML is
-    # self-describing without the viewer.
-    from cellflow.aggregate_quantification.plotting import build_interactive_figure
-    spec = PlotSpec(value="area", group_by=("condition",), plot="strip")
-    fig = build_interactive_figure(_interactive_df(), spec, StyleSpec())
-    template = "".join(t.hovertemplate or "" for t in fig.data)
-    assert "position_id" in template
-    assert "cell_id" in template
-
-
-def test_build_interactive_figure_missing_value_is_placeholder():
-    from cellflow.aggregate_quantification.plotting import build_interactive_figure
-    import plotly.graph_objects as go
-    spec = PlotSpec(value="absent", group_by=(), plot="box")
-    fig = build_interactive_figure(_interactive_df(), spec, StyleSpec(title="T"))
-    assert isinstance(fig, go.Figure)
-    assert fig.layout.title.text == "T" or "No data" in (fig.layout.title.text or "")
 
 
 # --------------------------------------------------------------- potential mode

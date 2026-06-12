@@ -43,11 +43,26 @@ class ClickToLoad:
         self, records: list[dict], label_field: str
     ) -> Callable[[dict], LoadTarget | None]:
         """Closure: identity dict -> LoadTarget for *label_field*'s TIFF, or None
-        when the position is unknown or has no labels of that scope."""
+        when the position is unknown or has no labels of that scope.
+
+        ``position_id`` (the catalogue ``id``) is reused across experiments —
+        ``pos00`` exists on every date — so it cannot key records on its own: a
+        plain ``{id: record}`` dict silently keeps only the last same-named
+        position, so a picked point would resolve to the wrong experiment's movie.
+        The pooled identity carries ``date`` and ``(date, position_id)`` is unique,
+        so key on the pair; fall back to ``id`` alone only for date-less identities
+        (older snapshots), where no better key exists."""
+        by_key = {(str(r.get("date")), str(r.get("id"))): r for r in records}
         by_id = {str(r.get("id")): r for r in records}
 
         def resolve(identity: dict) -> LoadTarget | None:
-            record = by_id.get(str(identity.get("position_id")))
+            position_id = str(identity.get("position_id"))
+            date = identity.get("date")
+            record = (
+                by_key.get((str(date), position_id)) if date is not None else None
+            )
+            if record is None:
+                record = by_id.get(position_id)
             if record is None:
                 return None
             path = record.get(label_field)

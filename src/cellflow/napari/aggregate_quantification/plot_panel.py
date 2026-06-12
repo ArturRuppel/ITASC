@@ -4,8 +4,7 @@
 build a :class:`~cellflow.aggregate_quantification.plotting.PlotSpec`, styling
 controls that build a
 :class:`~cellflow.aggregate_quantification.plotting.StyleSpec`, an embedded
-matplotlib canvas with its native navigation toolbar, and CSV / figure /
-interactive-HTML export.
+matplotlib canvas with its native navigation toolbar, and CSV / figure export.
 
 It is constructed from a *snapshot* — ``(dataframe, value_columns,
 group_columns)`` — the only quantity-specific knowledge, supplied by the caller.
@@ -20,6 +19,7 @@ hands it a different DataFrame + column roles.
 """
 from __future__ import annotations
 
+import json
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -30,8 +30,10 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from qtpy.QtCore import QTimer, Signal
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -42,6 +44,7 @@ from qtpy.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -51,8 +54,10 @@ from cellflow.aggregate_quantification.plotting import (
     PlotSpec,
     StyleSpec,
     build_figure,
-    build_interactive_figure,
+    plot_options,
     plotted_table,
+    style_from_dict,
+    style_to_dict,
     write_csv,
 )
 from cellflow.napari.ui_style import action_button, status_label
@@ -61,7 +66,14 @@ from cellflow.napari.widgets import CollapsibleSection
 #: Identity columns carried by a pooled table; the selection payload is these for
 #: the picked rows (``frame_start`` lets per-track points report their start
 #: frame). Only the ones present in the snapshot are used.
-_IDENTITY_COLUMNS = ("position_id", "frame", "frame_start", "cell_id")
+#:
+#: ``date`` is part of the payload because ``position_id`` (the catalogue ``id``)
+#: is reused across experiments — ``pos00`` exists on every date — so it is *not*
+#: a unique record key. ``(date, position_id)`` is, and click-to-load keys on the
+#: pair (see ``ClickToLoad.resolver``); without ``date`` a picked point resolves
+#: to whatever same-named position landed last in the resolver's dict, loading the
+#: wrong experiment's movie.
+_IDENTITY_COLUMNS = ("date", "position_id", "frame", "frame_start", "cell_id")
 
 #: Press→release pixel travel under which a click counts as a *selection* rather
 #: than a navigation drag (the toolbar's zoom/pan rubber-band moves much further),
@@ -122,6 +134,15 @@ _STYLE_CANDIDATES = (
     "default", "ggplot", "bmh", "fivethirtyeight", "grayscale",
     "seaborn-v0_8", "seaborn-v0_8-darkgrid", "seaborn-v0_8-whitegrid",
 )
+#: Font families offered; ``default`` keeps the style sheet's own (→ ``""``).
+_FONT_FAMILIES = ("default", "sans-serif", "serif", "monospace")
+_TICK_DIRECTIONS = ("out", "in", "inout")
+_GRID_AXES = ("both", "x", "y")
+_LINESTYLES = ("-", "--", ":", "-.")
+_VIOLIN_INNERS = ("box", "quartile", "point", "stick", "none")
+_HIST_ELEMENTS = ("bars", "step", "poly")
+#: The four axis spines, in (checkbox label, matplotlib side) order.
+_SPINE_SIDES = ("left", "bottom", "top", "right")
 
 
 class PlotPanel(QWidget):
@@ -226,6 +247,8 @@ class PlotPanel(QWidget):
             self._adaptive_bins_cb.setChecked(True)
             self._adaptive_bins_cb.blockSignals(blocked)
 
+        # Show the option set for the (possibly caller-chosen) plot type, then draw.
+        self._sync_plot_options()
         self._render()
 
     # ----------------------------------------------------------- analytical UI
@@ -252,28 +275,7 @@ class PlotPanel(QWidget):
         col.addLayout(_labelled("Plot:", self._plot_combo))
 
         self._stat_combo = _combo(("mean", "median", "count"))
-        self._error_combo = _combo(("sd", "sem", "none"))
-        stat_row = QHBoxLayout()
-        stat_row.setContentsMargins(0, 0, 0, 0)
-        stat_row.addWidget(QLabel("Stat:"))
-        stat_row.addWidget(self._stat_combo, 1)
-        stat_row.addWidget(QLabel("Error:"))
-        stat_row.addWidget(self._error_combo, 1)
-        col.addLayout(stat_row)
-
-        self._bins_spin = _shrinkable(QSpinBox())
-        self._bins_spin.setRange(2, 200)
-        self._bins_spin.setValue(30)
-        col.addLayout(_labelled("Bins:", self._bins_spin))
-
-        # Potential view only: sinh-spaced bins, narrowest at x=0 (like Bins, it
-        # stays visible but only bites when Plot=potential).
-        self._adaptive_bins_cb = QCheckBox("Tighter bins near 0")
-        self._adaptive_bins_cb.setToolTip(
-            "Potential view only: sinh-spaced bins, narrowest at x=0, to resolve "
-            "the barrier at the transition state (junction length → 0)."
-        )
-        col.addWidget(self._adaptive_bins_cb)
+        col.addLayout(_labelled("Stat:", self._stat_combo))
 
         # One group-by checkbox per supplied group column (class_label included).
         # "Group by:" sits on its own line and the checkboxes wrap across a
@@ -289,15 +291,102 @@ class PlotPanel(QWidget):
         col.addLayout(self._group_grid)
         self._rebuild_group_checks()
 
-        # The value combo may swap the active product (catalog mode), so it routes
-        # through a dedicated handler; the rest are pure re-renders.
+        # Plot-specific controls (bins, box knobs, markers …) live in one box that
+        # shows only the options the chosen plot supports — see the capability map
+        # ``plot_options`` and ``_sync_plot_options``.
+        col.addWidget(self._build_plot_options())
+
+        # The value combo may swap the active product (catalog mode), and the plot
+        # combo re-syncs which options show; the rest are pure re-renders.
         self._value_combo.currentIndexChanged.connect(self._on_value_changed)
-        for combo in (self._level_combo, self._plot_combo,
-                      self._stat_combo, self._error_combo):
+        self._plot_combo.currentIndexChanged.connect(self._on_plot_changed)
+        for combo in (self._level_combo, self._stat_combo):
             combo.currentIndexChanged.connect(self._render)
-        self._bins_spin.valueChanged.connect(self._render)
-        self._adaptive_bins_cb.toggled.connect(self._render)
         return body
+
+    # ------------------------------------------------------------ plot options
+    def _build_plot_options(self) -> QWidget:
+        """Every plot-specific control, built once; ``_sync_plot_options`` shows
+        exactly those the current plot type supports and hides the rest."""
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+        #: option key → its row widget, toggled visible per plot type.
+        self._opt_rows: dict[str, QWidget] = {}
+
+        self._bins_spin = _shrinkable(QSpinBox())
+        self._bins_spin.setRange(2, 200)
+        self._bins_spin.setValue(30)
+        self._add_opt(col, "bins", _labelled("Bins:", self._bins_spin))
+
+        self._adaptive_bins_cb = QCheckBox("Tighter bins near 0")
+        self._adaptive_bins_cb.setToolTip(
+            "Potential view only: sinh-spaced bins, narrowest at x=0, to resolve "
+            "the barrier at the transition state (junction length → 0)."
+        )
+        self._add_opt(col, "adaptive_bins", self._adaptive_bins_cb)
+
+        self._error_combo = _combo(("sd", "sem", "none"))
+        self._add_opt(col, "error", _labelled("Error:", self._error_combo))
+
+        self._box_whis_spin = _double_spin(0.0, 100.0, 1.5, step=0.5)
+        self._add_opt(col, "box_whis", _labelled("Box whis ×IQR:", self._box_whis_spin))
+        self._box_fliers_cb = QCheckBox("Outliers")
+        self._box_fliers_cb.setChecked(True)
+        self._add_opt(col, "box_showfliers", self._box_fliers_cb)
+        self._box_notch_cb = QCheckBox("Notch (CI)")
+        self._add_opt(col, "box_notch", self._box_notch_cb)
+
+        self._violin_inner_combo = _combo(_VIOLIN_INNERS)
+        self._add_opt(col, "violin_inner", _labelled("Violin inner:", self._violin_inner_combo))
+
+        self._hist_element_combo = _combo(_HIST_ELEMENTS)
+        self._add_opt(col, "hist_element", _labelled("Hist element:", self._hist_element_combo))
+        self._hist_cumulative_cb = QCheckBox("Cumulative")
+        self._add_opt(col, "hist_cumulative", self._hist_cumulative_cb)
+
+        self._markers_cb = QCheckBox("Markers")
+        self._markers_cb.setChecked(True)
+        self._add_opt(col, "markers", self._markers_cb)
+        self._marker_size_spin = _auto_double_spin(0.0, 30.0, step=1.0)
+        self._add_opt(col, "marker_size", _labelled("Marker size:", self._marker_size_spin))
+
+        self._bins_spin.valueChanged.connect(self._render)
+        self._error_combo.currentIndexChanged.connect(self._render)
+        self._box_whis_spin.valueChanged.connect(self._render)
+        self._marker_size_spin.valueChanged.connect(self._render)
+        for cb in (self._adaptive_bins_cb, self._box_fliers_cb, self._box_notch_cb,
+                   self._hist_cumulative_cb, self._markers_cb):
+            cb.toggled.connect(self._render)
+        for combo in (self._violin_inner_combo, self._hist_element_combo):
+            combo.currentIndexChanged.connect(self._render)
+        self._plot_opts_box = box
+        return box
+
+    def _add_opt(self, parent: QVBoxLayout, key: str, item) -> None:
+        """Wrap *item* (a widget or a layout) in a holder, register it under *key*
+        for show/hide, and add it to *parent*."""
+        holder = QWidget()
+        if isinstance(item, QWidget):
+            inner = QVBoxLayout(holder)
+            inner.setContentsMargins(0, 0, 0, 0)
+            inner.addWidget(item)
+        else:
+            holder.setLayout(item)
+        parent.addWidget(holder)
+        self._opt_rows[key] = holder
+
+    def _sync_plot_options(self) -> None:
+        """Show the options the current plot supports; hide the box when none."""
+        active = set(plot_options(self._plot_combo.currentData()))
+        for key, row in self._opt_rows.items():
+            row.setVisible(key in active)
+        self._plot_opts_box.setVisible(bool(active))
+
+    def _on_plot_changed(self) -> None:
+        self._sync_plot_options()
+        self._render()
 
     # ---------------------------------------------------------- value catalog
     def _populate_value_combo(self) -> None:
@@ -348,8 +437,14 @@ class PlotPanel(QWidget):
             if name in previously_checked:
                 check.setChecked(True)
             self._group_checks[name] = check
-            check.toggled.connect(self._render)
+            check.toggled.connect(self._on_group_changed)
             self._group_grid.addWidget(check, i // 2, i % 2)
+
+    def _on_group_changed(self) -> None:
+        """A group-by toggle changes which series exist — refresh the per-group
+        colour swatches before re-rendering."""
+        self._rebuild_color_overrides()
+        self._render()
 
     def _on_value_changed(self) -> None:
         """Render; in catalog mode first swap onto the selected value's product."""
@@ -366,103 +461,254 @@ class PlotPanel(QWidget):
                     c for c in _IDENTITY_COLUMNS if c in self._df.columns
                 )
                 self._rebuild_group_checks()
+        self._rebuild_color_overrides()
         self._render()
 
     # -------------------------------------------------------------- styling UI
     def _build_styling(self) -> QWidget:
+        """The Style editor: a tab per concern (Figure / Axes / Colors / Legend /
+        Grid) over the one :class:`StyleSpec`. Every general style knob applies to
+        every plot type, so these tabs never gate on the plot (unlike the
+        plot-specific options in the Plot section)."""
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+        tabs = QTabWidget()
+        _shrinkable(tabs)
+        tabs.addTab(self._build_figure_tab(), "Figure")
+        tabs.addTab(self._build_axes_tab(), "Axes")
+        tabs.addTab(self._build_colors_tab(), "Colors")
+        tabs.addTab(self._build_legend_tab(), "Legend")
+        tabs.addTab(self._build_grid_tab(), "Grid")
+        outer.addWidget(tabs)
+
+        # Save / load the whole Style as a reusable theme (JSON) — a house style a
+        # lab can share and re-apply to any plot.
+        save_btn = QPushButton("Save style…")
+        save_btn.setToolTip("Save the current styling as a reusable theme (JSON).")
+        save_btn.clicked.connect(self._save_style)
+        load_btn = QPushButton("Load style…")
+        load_btn.setToolTip("Load a styling theme (JSON) and apply it to this plot.")
+        load_btn.clicked.connect(self._load_style)
+        for btn in (save_btn, load_btn):
+            _shrinkable(btn)
+        outer.addLayout(_checkrow(save_btn, load_btn))
+        return container
+
+    @staticmethod
+    def _tab_body() -> tuple[QWidget, QVBoxLayout]:
         body = QWidget()
         col = QVBoxLayout(body)
-        col.setContentsMargins(0, 0, 0, 0)
+        col.setContentsMargins(6, 6, 6, 6)
         col.setSpacing(4)
+        return body, col
 
-        self._palette_combo = _combo(_PALETTES)
-        col.addLayout(_labelled("Colors:", self._palette_combo))
-
+    def _build_figure_tab(self) -> QWidget:
+        body, col = self._tab_body()
         styles = [s for s in _STYLE_CANDIDATES if s == "default" or s in mpl.style.available]
         self._style_combo = _combo(styles)
         col.addLayout(_labelled("Style:", self._style_combo))
-
-        self._title_edit = _shrinkable(QLineEdit())
-        self._title_edit.setPlaceholderText("auto")
+        self._title_edit = _line_edit("auto")
         col.addLayout(_labelled("Title:", self._title_edit))
-        self._xlabel_edit = _shrinkable(QLineEdit())
-        self._xlabel_edit.setPlaceholderText("auto")
-        col.addLayout(_labelled("X label:", self._xlabel_edit))
-        self._ylabel_edit = _shrinkable(QLineEdit())
-        self._ylabel_edit.setPlaceholderText("auto")
-        col.addLayout(_labelled("Y label:", self._ylabel_edit))
-
         self._width_spin = _double_spin(2.0, 30.0, 6.0, step=0.5)
         self._height_spin = _double_spin(2.0, 30.0, 4.0, step=0.5)
-        dim_row = QHBoxLayout()
-        dim_row.setContentsMargins(0, 0, 0, 0)
-        dim_row.addWidget(QLabel("W×H (in):"))
-        dim_row.addWidget(self._width_spin, 1)
-        dim_row.addWidget(self._height_spin, 1)
-        col.addLayout(dim_row)
-
+        col.addLayout(_pair_row("W×H (in):", self._width_spin, self._height_spin))
+        self._dpi_spin = _shrinkable(QSpinBox())
+        self._dpi_spin.setRange(50, 600)
+        self._dpi_spin.setValue(100)
+        col.addLayout(_labelled("DPI:", self._dpi_spin))
+        self._font_family_combo = _combo(_FONT_FAMILIES)
         self._font_spin = _double_spin(4.0, 40.0, 10.0, step=1.0)
-        col.addLayout(_labelled("Font:", self._font_spin))
+        col.addLayout(_pair_row("Font:", self._font_family_combo, self._font_spin))
+        self._facecolor_edit = _line_edit("auto")
+        col.addLayout(_labelled("Background:", self._facecolor_edit))
+        col.addStretch(1)
 
-        self._grid_cb = QCheckBox("Grid")
-        self._legend_cb = QCheckBox("Legend")
-        self._legend_cb.setChecked(True)
-        self._legend_loc_combo = _combo(_LEGEND_LOCS)
-        col.addLayout(_labelled("Legend loc:", self._legend_loc_combo))
+        self._style_combo.currentIndexChanged.connect(self._render)
+        self._font_family_combo.currentIndexChanged.connect(self._render)
+        for spin in (self._width_spin, self._height_spin, self._font_spin, self._dpi_spin):
+            spin.valueChanged.connect(self._render)
+        for edit in (self._title_edit, self._facecolor_edit):
+            edit.editingFinished.connect(self._render)
+        return body
 
-        # Box-plot knobs — they only bite when Plot=box, but stay visible (like
-        # Bins for hist) rather than appearing and disappearing on plot change.
-        self._box_whis_spin = _double_spin(0.0, 100.0, 1.5, step=0.5)
-        self._box_fliers_cb = QCheckBox("Outliers")
-        self._box_fliers_cb.setChecked(True)
-        self._box_notch_cb = QCheckBox("Notch (CI)")
-        whis_row = QHBoxLayout()
-        whis_row.setContentsMargins(0, 0, 0, 0)
-        whis_row.addWidget(QLabel("Box whis ×IQR:"))
-        whis_row.addWidget(self._box_whis_spin, 1)
-        col.addLayout(whis_row)
-
-        # The four toggles share a 2×2 grid so no single checkbox row sets the
-        # panel's minimum width — it can shrink to roughly one toggle wide.
-        checks = QGridLayout()
-        checks.setContentsMargins(0, 0, 0, 0)
-        checks.setSpacing(4)
-        checks.addWidget(self._grid_cb, 0, 0)
-        checks.addWidget(self._legend_cb, 0, 1)
-        checks.addWidget(self._box_fliers_cb, 1, 0)
-        checks.addWidget(self._box_notch_cb, 1, 1)
-        checks.setColumnStretch(2, 1)
-        col.addLayout(checks)
-
+    def _build_axes_tab(self) -> QWidget:
+        body, col = self._tab_body()
+        self._xlabel_edit = _line_edit("auto")
+        col.addLayout(_labelled("X label:", self._xlabel_edit))
+        self._ylabel_edit = _line_edit("auto")
+        col.addLayout(_labelled("Y label:", self._ylabel_edit))
         # Axis-range overrides; blank ("auto") keeps matplotlib's autoscale.
         self._xmin_edit = _range_edit()
         self._xmax_edit = _range_edit()
+        col.addLayout(_pair_row("X range:", self._xmin_edit, self._xmax_edit))
         self._ymin_edit = _range_edit()
         self._ymax_edit = _range_edit()
-        xr = QHBoxLayout()
-        xr.setContentsMargins(0, 0, 0, 0)
-        xr.addWidget(QLabel("X range:"))
-        xr.addWidget(self._xmin_edit, 1)
-        xr.addWidget(self._xmax_edit, 1)
-        col.addLayout(xr)
-        yr = QHBoxLayout()
-        yr.setContentsMargins(0, 0, 0, 0)
-        yr.addWidget(QLabel("Y range:"))
-        yr.addWidget(self._ymin_edit, 1)
-        yr.addWidget(self._ymax_edit, 1)
-        col.addLayout(yr)
-        for edit in (self._xmin_edit, self._xmax_edit, self._ymin_edit, self._ymax_edit):
-            edit.editingFinished.connect(self._render)
+        col.addLayout(_pair_row("Y range:", self._ymin_edit, self._ymax_edit))
+        self._xlog_cb = QCheckBox("Log X")
+        self._ylog_cb = QCheckBox("Log Y")
+        col.addLayout(_checkrow(self._xlog_cb, self._ylog_cb))
+        self._tick_size_spin = _auto_double_spin(0.0, 40.0, step=1.0)
+        col.addLayout(_labelled("Tick size:", self._tick_size_spin))
+        self._tick_length_spin = _double_spin(0.0, 20.0, 3.5, step=0.5)
+        col.addLayout(_labelled("Tick len:", self._tick_length_spin))
+        self._tick_dir_combo = _combo(_TICK_DIRECTIONS)
+        col.addLayout(_labelled("Tick dir:", self._tick_dir_combo))
+        # -1 → "auto" (each plot keeps its own default x-label rotation).
+        self._xrot_spin = _shrinkable(QSpinBox())
+        self._xrot_spin.setRange(-1, 90)
+        self._xrot_spin.setValue(-1)
+        self._xrot_spin.setSpecialValueText("auto")
+        col.addLayout(_labelled("X rotation:", self._xrot_spin))
 
-        for combo in (self._palette_combo, self._style_combo, self._legend_loc_combo):
-            combo.currentIndexChanged.connect(self._render)
-        for edit in (self._title_edit, self._xlabel_edit, self._ylabel_edit):
+        col.addWidget(QLabel("Borders:"))
+        self._spine_checks: dict[str, QCheckBox] = {}
+        spine_grid = QGridLayout()
+        spine_grid.setContentsMargins(0, 0, 0, 0)
+        spine_grid.setSpacing(4)
+        spine_grid.setColumnStretch(2, 1)
+        for i, side in enumerate(_SPINE_SIDES):
+            cb = QCheckBox(side)
+            cb.setChecked(True)
+            cb.toggled.connect(self._render)
+            self._spine_checks[side] = cb
+            spine_grid.addWidget(cb, i // 2, i % 2)
+        col.addLayout(spine_grid)
+        self._spine_width_spin = _double_spin(0.0, 6.0, 0.8, step=0.1)
+        col.addLayout(_labelled("Border w:", self._spine_width_spin))
+        col.addStretch(1)
+
+        self._tick_dir_combo.currentIndexChanged.connect(self._render)
+        for cb in (self._xlog_cb, self._ylog_cb):
+            cb.toggled.connect(self._render)
+        for edit in (self._xlabel_edit, self._ylabel_edit, self._xmin_edit,
+                     self._xmax_edit, self._ymin_edit, self._ymax_edit):
             edit.editingFinished.connect(self._render)
-        for spin in (self._width_spin, self._height_spin, self._font_spin, self._box_whis_spin):
+        for spin in (self._tick_size_spin, self._tick_length_spin,
+                     self._xrot_spin, self._spine_width_spin):
             spin.valueChanged.connect(self._render)
-        for check in (self._grid_cb, self._legend_cb, self._box_fliers_cb, self._box_notch_cb):
-            check.toggled.connect(self._render)
         return body
+
+    def _build_colors_tab(self) -> QWidget:
+        body, col = self._tab_body()
+        self._palette_combo = _combo(_PALETTES)
+        col.addLayout(_labelled("Palette:", self._palette_combo))
+        self._alpha_spin = _auto_double_spin(0.0, 1.0, step=0.05)
+        col.addLayout(_labelled("Opacity:", self._alpha_spin))
+        self._edge_edit = _line_edit("auto")
+        col.addLayout(_labelled("Edge:", self._edge_edit))
+        self._line_width_spin = _auto_double_spin(0.0, 10.0, step=0.5)
+        col.addLayout(_labelled("Line w:", self._line_width_spin))
+
+        col.addWidget(QLabel("Group colours:"))
+        self._overrides_grid = QGridLayout()
+        self._overrides_grid.setContentsMargins(0, 0, 0, 0)
+        self._overrides_grid.setSpacing(4)
+        self._overrides_grid.setColumnStretch(0, 1)
+        self._override_buttons: dict[str, _ColorButton] = {}
+        col.addLayout(self._overrides_grid)
+        reset = QPushButton("Reset group colours")
+        _shrinkable(reset)
+        reset.clicked.connect(self._reset_overrides)
+        col.addWidget(reset)
+        self._rebuild_color_overrides()
+        col.addStretch(1)
+
+        self._palette_combo.currentIndexChanged.connect(self._render)
+        self._alpha_spin.valueChanged.connect(self._render)
+        self._line_width_spin.valueChanged.connect(self._render)
+        self._edge_edit.editingFinished.connect(self._render)
+        return body
+
+    def _build_legend_tab(self) -> QWidget:
+        body, col = self._tab_body()
+        self._legend_cb = QCheckBox("Show legend")
+        self._legend_cb.setChecked(True)
+        col.addWidget(self._legend_cb)
+        self._legend_loc_combo = _combo(_LEGEND_LOCS)
+        col.addLayout(_labelled("Location:", self._legend_loc_combo))
+        self._legend_title_edit = _line_edit("auto")
+        col.addLayout(_labelled("Title:", self._legend_title_edit))
+        self._legend_frame_cb = QCheckBox("Frame")
+        self._legend_frame_cb.setChecked(True)
+        col.addWidget(self._legend_frame_cb)
+        self._legend_ncol_spin = _shrinkable(QSpinBox())
+        self._legend_ncol_spin.setRange(1, 6)
+        col.addLayout(_labelled("Columns:", self._legend_ncol_spin))
+        col.addStretch(1)
+
+        for cb in (self._legend_cb, self._legend_frame_cb):
+            cb.toggled.connect(self._render)
+        self._legend_loc_combo.currentIndexChanged.connect(self._render)
+        self._legend_title_edit.editingFinished.connect(self._render)
+        self._legend_ncol_spin.valueChanged.connect(self._render)
+        return body
+
+    def _build_grid_tab(self) -> QWidget:
+        body, col = self._tab_body()
+        self._grid_cb = QCheckBox("Show grid")
+        col.addWidget(self._grid_cb)
+        self._grid_axis_combo = _combo(_GRID_AXES)
+        col.addLayout(_labelled("Axis:", self._grid_axis_combo))
+        self._grid_alpha_spin = _double_spin(0.0, 1.0, 1.0, step=0.05)
+        col.addLayout(_labelled("Opacity:", self._grid_alpha_spin))
+        self._grid_ls_combo = _combo(_LINESTYLES)
+        col.addLayout(_labelled("Line:", self._grid_ls_combo))
+        col.addStretch(1)
+
+        self._grid_cb.toggled.connect(self._render)
+        self._grid_axis_combo.currentIndexChanged.connect(self._render)
+        self._grid_ls_combo.currentIndexChanged.connect(self._render)
+        self._grid_alpha_spin.valueChanged.connect(self._render)
+        return body
+
+    # ----------------------------------------------------- per-group colours
+    def _current_group_labels(self) -> list[str]:
+        """The group labels the current plot would draw (``" · "``-joined), so the
+        Colours tab offers one swatch per series. Empty with no group-by."""
+        group = [name for name, cb in self._group_checks.items() if cb.isChecked()]
+        present = [g for g in group if g in self._df.columns]
+        if not present or self._df.empty:
+            return []
+        combos = self._df[present].drop_duplicates()
+        return [" · ".join(str(row[g]) for g in present) for _, row in combos.iterrows()]
+
+    def _rebuild_color_overrides(self) -> None:
+        """Repopulate per-group colour swatches for the current grouping, carrying
+        over colours already chosen for labels that still exist."""
+        if not hasattr(self, "_overrides_grid"):
+            return  # styling tab not built yet (first call during construction)
+        kept = {lbl: btn.color() for lbl, btn in self._override_buttons.items()}
+        while self._overrides_grid.count():
+            item = self._overrides_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._override_buttons = {}
+        labels = self._current_group_labels()
+        if not labels:
+            hint = QLabel("Add a Group-by to colour series.")
+            status_label(hint, muted=True)
+            self._overrides_grid.addWidget(hint, 0, 0, 1, 2)
+            return
+        for i, label in enumerate(labels):
+            name = QLabel(label)
+            name.setWordWrap(True)
+            button = _ColorButton()
+            if kept.get(label):
+                button.set_color(kept[label])  # before connect → no spurious render
+            button.changed.connect(self._render)
+            self._override_buttons[label] = button
+            self._overrides_grid.addWidget(name, i, 0)
+            self._overrides_grid.addWidget(button, i, 1)
+
+    def _reset_overrides(self) -> None:
+        for button in self._override_buttons.values():
+            blocked = button.blockSignals(True)
+            button.set_color("")
+            button.blockSignals(blocked)
+        self._render()
 
     # --------------------------------------------------------------- export UI
     def _build_exports(self) -> QGridLayout:
@@ -480,13 +726,12 @@ class PlotPanel(QWidget):
             "curve / bars shown, ready to re-plot elsewhere."
         )
         self._export_fig_btn = _export_button("Figure", self._export_figure)
-        self._export_html_btn = _export_button("Interactive (HTML)", self._export_html)
-        self._export_html_btn.setToolTip(
-            "Write a standalone interactive Plotly HTML of the current plot — "
-            "open it in any browser, hover a point to read its provenance "
-            "(position / frame / cell), zoom and pan with no viewer needed."
+        self._export_fig_btn.setToolTip(
+            "Write the current figure to a raster (PNG) or vector (SVG/PDF) file, "
+            "styled exactly as shown — vector formats stay editable in Illustrator/"
+            "Inkscape for publication."
         )
-        buttons = (self._export_csv_btn, self._export_fig_btn, self._export_html_btn)
+        buttons = (self._export_csv_btn, self._export_fig_btn)
         for col, btn in enumerate(buttons, start=1):
             grid.addWidget(btn, 0, col)
             grid.setColumnStretch(col, 1)
@@ -527,7 +772,124 @@ class PlotPanel(QWidget):
             xmax=_parse_float(self._xmax_edit.text()),
             ymin=_parse_float(self._ymin_edit.text()),
             ymax=_parse_float(self._ymax_edit.text()),
+            dpi=self._dpi_spin.value(),
+            font_family=_combo_opt(self._font_family_combo, "default"),
+            facecolor=self._facecolor_edit.text().strip(),
+            xlog=self._xlog_cb.isChecked(),
+            ylog=self._ylog_cb.isChecked(),
+            tick_label_size=_auto_value(self._tick_size_spin),
+            tick_length=self._tick_length_spin.value(),
+            tick_direction=self._tick_dir_combo.currentData(),
+            xtick_rotation=(None if self._xrot_spin.value() < 0
+                            else float(self._xrot_spin.value())),
+            spines=tuple(s for s in _SPINE_SIDES if self._spine_checks[s].isChecked()),
+            spine_width=self._spine_width_spin.value(),
+            color_overrides=tuple(
+                (lbl, btn.color()) for lbl, btn in self._override_buttons.items() if btn.color()
+            ),
+            alpha=_auto_value(self._alpha_spin),
+            edge_color=self._edge_edit.text().strip(),
+            line_width=_auto_value(self._line_width_spin),
+            legend_title=self._legend_title_edit.text().strip(),
+            legend_frame=self._legend_frame_cb.isChecked(),
+            legend_ncol=self._legend_ncol_spin.value(),
+            grid_axis=self._grid_axis_combo.currentData(),
+            grid_alpha=self._grid_alpha_spin.value(),
+            grid_linestyle=self._grid_ls_combo.currentData(),
+            markers=self._markers_cb.isChecked(),
+            marker_size=_auto_value(self._marker_size_spin),
+            violin_inner=self._violin_inner_combo.currentData(),
+            hist_element=self._hist_element_combo.currentData(),
+            hist_cumulative=self._hist_cumulative_cb.isChecked(),
         )
+
+    # ----------------------------------------------------------- style themes
+    def _save_style(self) -> None:
+        path = self._save_path("Save style theme", "JSON files (*.json)")
+        if not path:
+            return
+        if path.suffix.lower() != ".json":
+            path = path.with_name(path.name + ".json")
+        path.write_text(json.dumps(style_to_dict(self.current_style()), indent=2))
+        self._status.setText(f"Saved style to {path.name}.")
+
+    def _load_style(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load style theme", filter="JSON files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            style = style_from_dict(json.loads(Path(path).read_text()))
+        except (OSError, ValueError) as exc:
+            self._status.setText(f"Could not load style: {exc}")
+            return
+        self._apply_style_to_widgets(style)
+        self._status.setText(f"Loaded style from {Path(path).name}.")
+
+    def _apply_style_to_widgets(self, style: StyleSpec) -> None:
+        """Drive every styling control from *style* (the inverse of
+        :meth:`current_style`), then re-render once.
+
+        Suppresses the per-widget re-render while the batch runs so the dozens of
+        ``setValue``/``setChecked`` calls don't each redraw the canvas."""
+        self._suppress_render = True
+        try:
+            _set_combo(self._palette_combo, style.palette)
+            _set_combo(self._style_combo, style.style)
+            self._title_edit.setText(style.title)
+            self._xlabel_edit.setText(style.xlabel)
+            self._ylabel_edit.setText(style.ylabel)
+            self._width_spin.setValue(style.width)
+            self._height_spin.setValue(style.height)
+            self._dpi_spin.setValue(style.dpi)
+            _set_combo(self._font_family_combo, style.font_family or "default")
+            self._font_spin.setValue(style.font_size)
+            self._facecolor_edit.setText(style.facecolor)
+            _set_range_edit(self._xmin_edit, style.xmin)
+            _set_range_edit(self._xmax_edit, style.xmax)
+            _set_range_edit(self._ymin_edit, style.ymin)
+            _set_range_edit(self._ymax_edit, style.ymax)
+            self._xlog_cb.setChecked(style.xlog)
+            self._ylog_cb.setChecked(style.ylog)
+            _set_auto_spin(self._tick_size_spin, style.tick_label_size)
+            self._tick_length_spin.setValue(style.tick_length)
+            _set_combo(self._tick_dir_combo, style.tick_direction)
+            self._xrot_spin.setValue(-1 if style.xtick_rotation is None
+                                     else int(style.xtick_rotation))
+            for side, check in self._spine_checks.items():
+                check.setChecked(side in style.spines)
+            self._spine_width_spin.setValue(style.spine_width)
+            _set_auto_spin(self._alpha_spin, style.alpha)
+            self._edge_edit.setText(style.edge_color)
+            _set_auto_spin(self._line_width_spin, style.line_width)
+            self._grid_cb.setChecked(style.grid)
+            _set_combo(self._grid_axis_combo, style.grid_axis)
+            self._grid_alpha_spin.setValue(style.grid_alpha)
+            _set_combo(self._grid_ls_combo, style.grid_linestyle)
+            self._legend_cb.setChecked(style.legend)
+            _set_combo(self._legend_loc_combo, style.legend_loc)
+            self._legend_title_edit.setText(style.legend_title)
+            self._legend_frame_cb.setChecked(style.legend_frame)
+            self._legend_ncol_spin.setValue(style.legend_ncol)
+            self._box_whis_spin.setValue(style.box_whis)
+            self._box_fliers_cb.setChecked(style.box_showfliers)
+            self._box_notch_cb.setChecked(style.box_notch)
+            self._markers_cb.setChecked(style.markers)
+            _set_auto_spin(self._marker_size_spin, style.marker_size)
+            _set_combo(self._violin_inner_combo, style.violin_inner)
+            _set_combo(self._hist_element_combo, style.hist_element)
+            self._hist_cumulative_cb.setChecked(style.hist_cumulative)
+            # Colours: rebuild swatches for the current grouping, then apply any
+            # saved colours whose label still exists.
+            self._rebuild_color_overrides()
+            saved = dict(style.color_overrides)
+            for label, button in self._override_buttons.items():
+                if label in saved:
+                    button.set_color(saved[label])
+        finally:
+            self._suppress_render = False
+        self._render()
 
     # ---------------------------------------------------------------- render
     def _render(self, *, _retry_after_overflow: bool = False) -> None:
@@ -536,6 +898,10 @@ class PlotPanel(QWidget):
         Any control change re-enters here and clears the swarm-overflow latch, so
         a fresh configuration gets a fresh swarm attempt; only the internal retry
         after an overflow keeps the latch (and renders the swarm as a strip)."""
+        # Loading a theme drives dozens of widgets in one go; suppress the per-widget
+        # re-render and draw once when the batch finishes (see ``_apply_style``).
+        if getattr(self, "_suppress_render", False):
+            return
         if not _retry_after_overflow:
             self._swarm_overflowed = False
         spec = self.current_spec()
@@ -688,6 +1054,23 @@ class PlotPanel(QWidget):
     def _select_row(self, row: int) -> None:
         record = self._df.iloc[row]
         identity = {c: _py(record[c]) for c in self._identity_columns}
+        level = self._level_combo.currentData()
+        # A per-date point pools whole positions, so no single movie is "it" —
+        # report the pick but offer nothing to load.
+        if level == "date":
+            self.selection_changed.emit(identity)
+            self._selected_target = None
+            self._path_label.setText(
+                "Per-date points pool multiple positions — nothing to load."
+            )
+            self._load_btn.setEnabled(False)
+            return
+        # A position-wide point identifies a position, not a cell: drop the cell
+        # (and its frame) so loading shows the whole position movie with no cell
+        # spotlight, and the status line reads as the position only.
+        if level == "position":
+            for key in ("cell_id", "frame", "frame_start"):
+                identity.pop(key, None)
         self.selection_changed.emit(identity)
         target = self._target_resolver(identity) if self._target_resolver else None
         self._selected_target = target
@@ -695,8 +1078,24 @@ class PlotPanel(QWidget):
             self._path_label.setText("No input data found for this point.")
             self._load_btn.setEnabled(False)
         else:
-            self._path_label.setText(str(target.path))
+            self._path_label.setText(self._describe_target(target))
             self._load_btn.setEnabled(True)
+
+    def _describe_target(self, target: LoadTarget) -> str:
+        """Status-line text for a picked point: its provenance (position / cell /
+        frame, whichever apply at the current level) above the input path."""
+        ident = target.identity or {}
+        bits: list[str] = []
+        position = ident.get("position_id")
+        if position is not None:
+            date = ident.get("date")
+            bits.append(f"{date} · {position}" if date is not None else str(position))
+        if target.cell_id is not None:
+            bits.append(f"cell {target.cell_id}")
+        if target.frame is not None:
+            bits.append(f"frame {target.frame}")
+        header = " · ".join(bits)
+        return f"{header}\n{target.path}" if header else str(target.path)
 
     def _clear_selection(self) -> None:
         self._selected_target = None
@@ -730,23 +1129,10 @@ class PlotPanel(QWidget):
     def _export_figure(self) -> None:
         if self._canvas is None:
             return
-        path = self._save_path("Export figure", "Images (*.png *.svg)")
+        path = self._save_path("Export figure", "Images (*.png *.svg *.pdf)")
         if path:
             self._canvas.figure.savefig(path)
             self._status.setText(f"Wrote {path.name}.")
-
-    def _export_html(self) -> None:
-        """Write a standalone interactive Plotly HTML of the current plot, every
-        point carrying its provenance as hover text (see
-        :func:`build_interactive_figure`)."""
-        path = self._save_path("Export interactive HTML", "HTML files (*.html)")
-        if not path:
-            return
-        if path.suffix.lower() != ".html":
-            path = path.with_name(path.name + ".html")
-        fig = build_interactive_figure(self._df, self.current_spec(), self.current_style())
-        fig.write_html(str(path))
-        self._status.setText(f"Wrote {path.name}.")
 
 
 # --------------------------------------------------------------- UI factories
@@ -776,6 +1162,108 @@ def _double_spin(lo: float, hi: float, value: float, step: float) -> QDoubleSpin
     spin.setSingleStep(step)
     spin.setValue(value)
     return _shrinkable(spin)
+
+
+def _auto_double_spin(lo: float, hi: float, step: float) -> QDoubleSpinBox:
+    """A spin whose minimum reads ``auto`` and maps to ``None`` in the StyleSpec —
+    the way an optional knob (alpha, line width, tick / marker size) opts out."""
+    spin = _double_spin(lo, hi, lo, step)
+    spin.setSpecialValueText("auto")
+    return spin
+
+
+def _auto_value(spin: QDoubleSpinBox) -> float | None:
+    """The spin's value, or ``None`` when it sits at its ``auto`` minimum."""
+    return None if spin.value() <= spin.minimum() else spin.value()
+
+
+def _line_edit(placeholder: str) -> QLineEdit:
+    edit = QLineEdit()
+    edit.setPlaceholderText(placeholder)
+    return _shrinkable(edit)
+
+
+def _set_combo(combo: QComboBox, value) -> None:
+    """Select the entry whose data is *value*; leave the combo as-is if absent."""
+    index = combo.findData(value)
+    if index >= 0:
+        combo.setCurrentIndex(index)
+
+
+def _set_auto_spin(spin: QDoubleSpinBox, value: float | None) -> None:
+    """Set *spin* to *value*, or to its ``auto`` minimum when *value* is None."""
+    spin.setValue(spin.minimum() if value is None else value)
+
+
+def _set_range_edit(edit: QLineEdit, value: float | None) -> None:
+    edit.setText("" if value is None else str(value))
+
+
+def _combo_opt(combo: QComboBox, sentinel: str) -> str:
+    """The combo's value, or ``""`` when it is the *sentinel* (``default``)."""
+    value = combo.currentData()
+    return "" if value == sentinel else value
+
+
+def _pair_row(label: str, left: QWidget, right: QWidget) -> QHBoxLayout:
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
+    lbl = QLabel(label)
+    lbl.setFixedWidth(70)
+    row.addWidget(lbl)
+    row.addWidget(left, 1)
+    row.addWidget(right, 1)
+    return row
+
+
+def _checkrow(*checks: QCheckBox) -> QHBoxLayout:
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
+    for check in checks:
+        row.addWidget(check)
+    row.addStretch(1)
+    return row
+
+
+class _ColorButton(QPushButton):
+    """A colour swatch button: click to pick a colour; blank means ``auto``.
+
+    :meth:`color` is the chosen ``#rrggbb`` or ``""`` when unset; ``changed``
+    fires on any change so the panel re-renders."""
+
+    changed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._hex = ""
+        _shrinkable(self)
+        self.clicked.connect(self._pick)
+        self._refresh()
+
+    def color(self) -> str:
+        return self._hex
+
+    def set_color(self, value: str) -> None:
+        new = value or ""
+        if new == self._hex:
+            return
+        self._hex = new
+        self._refresh()
+        self.changed.emit()
+
+    def _pick(self) -> None:
+        initial = QColor(self._hex) if self._hex else QColor("#888888")
+        chosen = QColorDialog.getColor(initial, self, "Pick group colour")
+        if chosen.isValid():
+            self.set_color(chosen.name())
+
+    def _refresh(self) -> None:
+        if self._hex:
+            self.setText(self._hex)
+            self.setStyleSheet(f"background-color: {self._hex}; color: white;")
+        else:
+            self.setText("auto")
+            self.setStyleSheet("")
 
 
 def _labelled(label: str, widget: QWidget) -> QHBoxLayout:

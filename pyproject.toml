@@ -39,7 +39,6 @@ dependencies = [
     "numba",
     "matplotlib>=3.9.4",
     "seaborn>=0.13",
-    "plotly>=5",
     "pymaxflow>=1.3.2",
     "pydantic",
     "sqlalchemy",

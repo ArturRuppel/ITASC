@@ -188,7 +188,9 @@ def test_selection_changed_signal_exists_and_emits():
     rows = [{"position_id": "p1", "frame": 0, "cell_id": 0}]
     panel.selection_changed.emit(rows)
     assert received == [rows]
-    assert panel._identity_columns == ("position_id", "frame", "cell_id")
+    # ``date`` rides along with ``position_id`` so click-to-load can disambiguate
+    # the same position id reused across experiments (see ClickToLoad.resolver).
+    assert panel._identity_columns == ("date", "position_id", "frame", "cell_id")
     panel.deleteLater()
     app.processEvents()
 
@@ -271,6 +273,55 @@ def test_pick_resolves_identity_and_enables_load():
     panel._render()
     assert panel._pick_marker is None
     panel.deleteLater(); app.processEvents()
+
+
+def test_level_shapes_load_target_and_status():
+    """The picked unit's level controls what loads: a cell (cell+frame, spotlit),
+    a whole position (no cell), or — per date — nothing at all."""
+    from pathlib import Path
+    from cellflow.napari.aggregate_quantification.plot_panel import LoadTarget, PlotPanel
+    from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
+    app = _app()
+
+    def resolver(identity):
+        return LoadTarget(path=Path("/tmp/labels.tif"), kind="labels",
+                          frame=identity.get("frame"), cell_id=identity.get("cell_id"),
+                          identity=identity)
+
+    def pick_top(level):
+        panel = PlotPanel(_df(), value_columns=("area",),
+                          group_columns=("condition", "date", "position_id", "class_label", "frame"),
+                          target_resolver=resolver, default_plot="strip")
+        panel._level_combo.setCurrentIndex(panel._level_combo.findData(level))
+        artist = next(c for c in panel._canvas.figure.axes[0].collections
+                      if hasattr(c, _PICK_ROWS_ATTR))
+        offsets = np.asarray(artist.get_offsets(), dtype=float)
+        top = int(np.argmax(offsets[:, 1]))
+        panel._pick_at(*_pixel_of(artist, top))
+        return panel
+
+    # Cell level: cell + frame on the target and written into the status line.
+    cell = pick_top("cell")
+    assert cell._selected_target.cell_id is not None
+    assert cell._selected_target.frame is not None
+    assert cell._load_btn.isEnabled()
+    assert "cell " in cell._path_label.text() and "frame " in cell._path_label.text()
+    cell.deleteLater()
+
+    # Position level: position only — no cell (and no frame) on the target.
+    pos = pick_top("position")
+    assert pos._selected_target.cell_id is None
+    assert pos._selected_target.frame is None
+    assert pos._load_btn.isEnabled()
+    assert "cell " not in pos._path_label.text()
+    pos.deleteLater()
+
+    # Date level: nothing to load — button greyed out, no target.
+    date = pick_top("date")
+    assert date._selected_target is None
+    assert date._load_btn.isEnabled() is False
+    date.deleteLater()
+    app.processEvents()
 
 
 def test_pick_distinguishes_equal_valued_points():
@@ -439,14 +490,75 @@ def test_no_resolver_means_no_pick_select():
     panel.deleteLater(); app.processEvents()
 
 
-def test_export_html_writes_interactive_file(tmp_path, monkeypatch):
+def _shown_opts(panel) -> set:
+    """Plot-option keys currently shown (``isHidden`` reflects the explicit
+    ``setVisible`` even when the panel was never shown on screen)."""
+    return {key for key, row in panel._opt_rows.items() if not row.isHidden()}
+
+
+def test_plot_options_visibility_follows_plot_type():
     app = _app()
     panel = _panel()
-    out = tmp_path / "plot"   # no suffix — the slot must add ``.html``
+    panel._plot_combo.setCurrentText("box")
+    assert _shown_opts(panel) == {"box_whis", "box_showfliers", "box_notch"}
+    panel._plot_combo.setCurrentText("hist")
+    assert _shown_opts(panel) == {"bins", "hist_element", "hist_cumulative"}
+    panel._plot_combo.setCurrentText("line")
+    assert _shown_opts(panel) == {"markers", "marker_size"}
+    # swarm has no plot-specific options → the whole box collapses.
+    panel._plot_combo.setCurrentText("swarm")
+    assert _shown_opts(panel) == set()
+    assert panel._plot_opts_box.isHidden() is True
+    panel.deleteLater(); app.processEvents()
+
+
+def test_group_colour_swatches_track_grouping_and_feed_style():
+    app = _app()
+    panel = _panel()
+    # No group-by → no swatches.
+    assert panel._override_buttons == {}
+    panel._group_checks["condition"].setChecked(True)
+    assert set(panel._override_buttons) == {"A", "B"}
+    panel._override_buttons["A"].set_color("#ff0000")
+    assert panel.current_style().color_overrides == (("A", "#ff0000"),)
+    # Dropping the group-by clears the swatches again.
+    panel._group_checks["condition"].setChecked(False)
+    assert panel._override_buttons == {}
+    assert panel.current_style().color_overrides == ()
+    panel.deleteLater(); app.processEvents()
+
+
+def test_style_theme_save_then_load_restores_widgets(tmp_path, monkeypatch):
+    app = _app()
+    panel = _panel()
+    panel._group_checks["condition"].setChecked(True)
+    # A distinctive style across several tabs.
+    panel._dpi_spin.setValue(175)
+    panel._alpha_spin.setValue(0.4)
+    panel._xlog_cb.setChecked(True)
+    panel._spine_checks["top"].setChecked(False)
+    panel._xrot_spin.setValue(60)
+    panel._title_edit.setText("My Title")
+    panel._override_buttons["A"].set_color("#abcdef")
+    saved = panel.current_style()
+
+    out = tmp_path / "theme"   # no suffix — the slot must add ``.json``
     monkeypatch.setattr(panel, "_save_path", lambda *a, **k: out)
-    panel._export_html()
-    written = out.with_name(out.name + ".html")
-    assert written.exists() and written.stat().st_size > 0
-    assert "plotly" in written.read_text().lower()
-    assert panel._export_html_btn.isEnabled() is True
+    panel._save_style()
+    written = out.with_name(out.name + ".json")
+    assert written.exists()
+
+    # Perturb every changed control, then load the theme back.
+    panel._dpi_spin.setValue(100)
+    panel._alpha_spin.setValue(panel._alpha_spin.minimum())
+    panel._xlog_cb.setChecked(False)
+    panel._spine_checks["top"].setChecked(True)
+    panel._title_edit.setText("")
+    panel._override_buttons["A"].set_color("")
+    monkeypatch.setattr(
+        "qtpy.QtWidgets.QFileDialog.getOpenFileName",
+        lambda *a, **k: (str(written), ""),
+    )
+    panel._load_style()
+    assert panel.current_style() == saved
     panel.deleteLater(); app.processEvents()

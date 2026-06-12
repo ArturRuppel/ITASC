@@ -20,7 +20,7 @@ Pipeline::
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -34,12 +34,13 @@ from matplotlib.figure import Figure
 __all__ = [
     "PlotSpec",
     "StyleSpec",
+    "style_to_dict",
+    "style_from_dict",
     "PickPoint",
     "PositionSource",
     "pool_object_tables",
     "aggregate",
     "build_figure",
-    "build_interactive_figure",
     "pickable_points",
     "plotted_table",
     "write_csv",
@@ -49,6 +50,8 @@ __all__ = [
     "adaptive_bin_edges",
     "DISTRIBUTION_PLOTS",
     "CURVE_PLOTS",
+    "PLOT_OPTIONS",
+    "plot_options",
 ]
 
 #: The tidy keys every per-object table carries; joins and per-position grouping
@@ -82,9 +85,6 @@ DISTRIBUTION_PLOTS = ("hist", "box", "violin", "strip", "swarm")
 #: and taking the marker nearest the click (see ``PlotPanel._nearest_pickable``),
 #: so picking is exact, never collides equal-valued points, and survives zoom.
 _PICK_ROWS_ATTR = "_cellflow_pick_rows"
-#: Identity columns surfaced as Plotly hover text, so the exported HTML is itself
-#: a provenance artifact (hover a point → its position / frame / cell).
-_HOVER_COLUMNS = ("position_id", "frame", "frame_start", "cell_id")
 #: Curve-family plots — a distribution Boltzmann-inverted into a ``U(x) = −ln P``
 #: curve. Unlike the distribution family these pool **raw** samples (no
 #: ``reduce_to_units``); see :func:`_plot_potential`.
@@ -94,6 +94,30 @@ _STATS = ("mean", "median", "count")
 _ERRORS = ("sd", "sem", "none")
 #: How the ``potential`` mode lays out its histogram bins.
 _BIN_MODES = ("uniform", "adaptive")
+
+#: Plot-specific option keys each plot type supports — the controls that only
+#: make sense for *some* plots, so the panel can show exactly the relevant ones
+#: and hide the rest (everything in the general Style tabs — colours, axes,
+#: ticks, legend, grid, figure — applies to every plot type and is never gated).
+#: Keys name the option, not the widget; the panel maps each to its control.
+PLOT_OPTIONS: dict[str, tuple[str, ...]] = {
+    "hist": ("bins", "hist_element", "hist_cumulative"),
+    "box": ("box_whis", "box_showfliers", "box_notch"),
+    "violin": ("violin_inner",),
+    "strip": ("marker_size",),
+    "swarm": (),
+    "bar": ("error",),
+    "line": ("markers", "marker_size"),
+    "potential": ("bins", "adaptive_bins", "markers", "marker_size"),
+}
+
+
+def plot_options(plot: str) -> tuple[str, ...]:
+    """Plot-specific option keys *plot* supports (see :data:`PLOT_OPTIONS`).
+
+    Unknown plot names return ``()`` so a caller can drive control visibility
+    without special-casing."""
+    return PLOT_OPTIONS.get(plot, ())
 #: Default concentration of ``adaptive`` bins toward ``x = 0`` (higher ⇒ tighter).
 _ADAPTIVE_SHARPNESS = 3.0
 
@@ -190,6 +214,92 @@ class StyleSpec:
     box_showfliers: bool = True
     #: Notch the box around the median to show its ~95% confidence interval.
     box_notch: bool = False
+
+    # -- Figure --------------------------------------------------------------
+    #: Output resolution (dots per inch); raises raster-export sharpness.
+    dpi: int = 100
+    #: Font family applied to every text artist; ``""`` keeps the style sheet's.
+    font_family: str = ""
+    #: Figure / axes background colour (any matplotlib colour); ``""`` keeps the
+    #: style sheet's default.
+    facecolor: str = ""
+
+    # -- Axes ----------------------------------------------------------------
+    #: Log-scale either axis. Non-positive data is clipped by matplotlib.
+    xlog: bool = False
+    ylog: bool = False
+    #: Tick label size; ``None`` keeps the font-size-derived default.
+    tick_label_size: float | None = None
+    #: Tick mark length in points (matplotlib default 3.5).
+    tick_length: float = 3.5
+    #: Tick mark direction: ``out`` | ``in`` | ``inout``.
+    tick_direction: str = "out"
+    #: Rotate x tick labels (degrees); ``None`` keeps each plot's own default
+    #: (the bar chart slants its category labels 30°).
+    xtick_rotation: float | None = None
+    #: Which axis spines (borders) to draw; drop a side to hide that border.
+    spines: tuple[str, ...] = ("left", "bottom", "top", "right")
+    #: Spine (border) line width in points (matplotlib default 0.8).
+    spine_width: float = 0.8
+
+    # -- Colours -------------------------------------------------------------
+    #: Per-group colour overrides as ``(group_label, colour)`` pairs, layered
+    #: over :attr:`palette` — the label is the ``" · "``-joined group key shown
+    #: in the legend. A label with no entry keeps its palette colour.
+    color_overrides: tuple[tuple[str, str], ...] = ()
+    #: Patch / marker opacity; ``None`` keeps each plot's default (histograms
+    #: draw their bars at 0.5 so overlaps read through).
+    alpha: float | None = None
+    #: Edge colour for patches / markers; ``""`` keeps the default.
+    edge_color: str = ""
+    #: Line width for line / potential curves; ``None`` keeps matplotlib's 1.5.
+    line_width: float | None = None
+
+    # -- Legend (extends ``legend`` / ``legend_loc`` above) ------------------
+    legend_title: str = ""
+    legend_frame: bool = True
+    legend_ncol: int = 1
+
+    # -- Grid (extends ``grid`` above) ---------------------------------------
+    #: Which axes the grid spans when ``grid`` is on: ``both`` | ``x`` | ``y``.
+    grid_axis: str = "both"
+    grid_alpha: float = 1.0
+    #: Grid line style: ``-`` | ``--`` | ``:`` | ``-.``.
+    grid_linestyle: str = "-"
+
+    # -- Markers (line / potential / distribution) ---------------------------
+    #: Draw point markers on line / potential curves.
+    markers: bool = True
+    #: Marker size; ``None`` keeps each plot's default (line 6, potential 4).
+    marker_size: float | None = None
+    #: Violin interior: ``box`` | ``quartile`` | ``point`` | ``stick`` | ``none``.
+    violin_inner: str = "box"
+    #: Histogram element: ``bars`` | ``step`` | ``poly``; and a cumulative toggle.
+    hist_element: str = "bars"
+    hist_cumulative: bool = False
+
+
+def style_to_dict(style: StyleSpec) -> dict[str, Any]:
+    """A :class:`StyleSpec` as a JSON-serialisable dict — a saveable style theme.
+
+    Tuples (``spines``, ``color_overrides``) become lists; :func:`style_from_dict`
+    restores them. Carries no plot/value, so a theme applies to any plot."""
+    return asdict(style)
+
+
+def style_from_dict(data: Mapping[str, Any]) -> StyleSpec:
+    """Rebuild a :class:`StyleSpec` from a saved theme dict.
+
+    Unknown keys are ignored and missing ones fall back to defaults, so a theme
+    written by an older or newer build still loads (forward/backward compatible).
+    JSON's lists are coerced back to the tuple-typed fields."""
+    known = {f.name for f in fields(StyleSpec)}
+    kw = {k: v for k, v in data.items() if k in known}
+    if kw.get("spines") is not None:
+        kw["spines"] = tuple(kw["spines"])
+    if kw.get("color_overrides") is not None:
+        kw["color_overrides"] = tuple(tuple(pair) for pair in kw["color_overrides"])
+    return StyleSpec(**kw)
 
 
 def pool_object_tables(sources: Iterable[PositionSource]) -> pd.DataFrame:
@@ -527,9 +637,15 @@ def build_figure(
     matplotlib driven by :func:`aggregate`."""
     style_spec = style_spec or StyleSpec()
     with mpl.style.context([style_spec.style, _rc_overrides(style_spec)]):
-        fig = Figure(figsize=(style_spec.width, style_spec.height), tight_layout=True)
+        fig = Figure(
+            figsize=(style_spec.width, style_spec.height), dpi=style_spec.dpi,
+            tight_layout=True,
+        )
         FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
+        if style_spec.facecolor:
+            fig.set_facecolor(style_spec.facecolor)
+            ax.set_facecolor(style_spec.facecolor)
         # A count bar/line tallies tracks and needs no value column; every other
         # path reads ``spec.value``. Guard a column the table doesn't carry (e.g.
         # a stale build missing a newer quantity) with a legible placeholder
@@ -551,156 +667,22 @@ def build_figure(
     return fig
 
 
-def build_interactive_figure(
-    df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec | None = None
-):
-    """Render *spec* over *df* as a standalone interactive Plotly figure.
-
-    The matplotlib :func:`build_figure` drives the in-napari view (and its native
-    click-to-provenance picking); this is its export twin. Every drawn point
-    carries its provenance columns (:data:`_HOVER_COLUMNS`) as hover text, so the
-    written HTML is itself a provenance artifact — hover a point to read its
-    position / frame / cell, with no viewer round-trip. Returns a
-    ``plotly.graph_objects.Figure``; the caller writes it with
-    ``fig.write_html(path)``.
-
-    Mirrors :func:`build_figure`'s family routing so the HTML shows the same data
-    as the napari canvas: distributions go through the per-unit
-    :func:`reduce_to_units` table (same pseudoreplication guard), ``bar`` through
-    :func:`aggregate`, ``line``/``potential`` through their tidy plotted tables.
-    """
-    import plotly.express as px
-    import plotly.graph_objects as go
-
-    style_spec = style_spec or StyleSpec()
-    title = style_spec.title or spec.value
-    palette = _plotly_palette(style_spec)
-
-    needs_value = not (spec.stat == "count" and spec.plot not in DISTRIBUTION_PLOTS)
-    if df.empty or (needs_value and spec.value not in df.columns):
-        return _interactive_styled(
-            go.Figure(), spec, style_spec, style_spec.title or "No data in scope"
-        )
-
-    if spec.plot in DISTRIBUTION_PLOTS:
-        data, hue, hover = _interactive_points(df, spec)
-        if data.empty:
-            return _interactive_styled(go.Figure(), spec, style_spec, title)
-        common = dict(color=hue, hover_data=hover, color_discrete_sequence=palette)
-        if spec.plot == "hist":
-            fig = px.histogram(data, x=spec.value, nbins=spec.bins, **common)
-        elif spec.plot == "box":
-            fig = px.box(
-                data, x=hue, y=spec.value,
-                points="outliers" if style_spec.box_showfliers else False, **common,
-            )
-        elif spec.plot == "violin":
-            fig = px.violin(data, x=hue, y=spec.value, box=True, **common)
-        else:  # strip / swarm — Plotly has no swarm; a jittered strip draws every point
-            fig = px.strip(data, x=hue, y=spec.value, **common)
-    elif spec.plot == "potential":
-        curve = potential_table(df, spec)
-        fig = px.line(
-            curve, x="center", y="U", color="group", markers=True,
-            color_discrete_sequence=palette,
-            hover_data=[c for c in ("counts", "delta_e_eff") if c in curve.columns],
-            labels={"center": spec.value, "U": "U = −ln P  [kT]"},
-        )
-    elif spec.plot == "bar":
-        summary = aggregate(df, spec)
-        group = list(spec.group_by)
-        summary = summary.assign(
-            _label=[
-                " · ".join(str(summary.iloc[i][g]) for g in group) if group else "all"
-                for i in range(len(summary))
-            ]
-        )
-        fig = px.bar(
-            summary, x="_label", y="value", color="_label",
-            error_y=summary["error"].fillna(0.0), color_discrete_sequence=palette,
-            hover_data=[c for c in ("n",) if c in summary.columns],
-            labels={"_label": "", "value": _bar_ylabel(spec)},
-        )
-    else:  # line
-        series = _line_table(df, spec)
-        fig = px.line(
-            series, x="frame", y="value", color="group", markers=True,
-            color_discrete_sequence=palette,
-            labels={"value": "count" if spec.stat == "count" else f"{spec.stat} {spec.value}"},
-        )
-    return _interactive_styled(fig, spec, style_spec, title)
-
-
-def _plotly_palette(style_spec: StyleSpec) -> list[str]:
-    """The figure palette as hex strings Plotly accepts, sampled from the same
-    named seaborn/matplotlib palette the matplotlib path uses, so the two views
-    share colours."""
-    return [mpl.colors.to_hex(c) for c in sns.color_palette(style_spec.palette, n_colors=10)]
-
-
-def _interactive_styled(fig, spec: PlotSpec, style_spec: StyleSpec, title: str):
-    """Apply the shared StyleSpec presentation (title, axis labels/limits, grid,
-    legend, dimensions) to a Plotly figure — the Plotly analogue of
-    :func:`_apply_style`."""
-    fig.update_layout(
-        title=title,
-        showlegend=style_spec.legend,
-        width=int(style_spec.width * 96),
-        height=int(style_spec.height * 96),
-    )
-    if style_spec.xlabel:
-        fig.update_xaxes(title_text=style_spec.xlabel)
-    if style_spec.ylabel:
-        fig.update_yaxes(title_text=style_spec.ylabel)
-    fig.update_xaxes(showgrid=style_spec.grid)
-    fig.update_yaxes(showgrid=style_spec.grid)
-    if style_spec.xmin is not None or style_spec.xmax is not None:
-        fig.update_xaxes(range=[style_spec.xmin, style_spec.xmax])
-    if style_spec.ymin is not None or style_spec.ymax is not None:
-        fig.update_yaxes(range=[style_spec.ymin, style_spec.ymax])
-    return fig
-
-
-def _interactive_points(
-    df: pd.DataFrame, spec: PlotSpec
-) -> tuple[pd.DataFrame, str | None, list[str]]:
-    """The per-unit distribution table with provenance hover columns attached.
-
-    Reuses the headless reduction (:func:`reduce_to_units`) and the same
-    representative-row mapping the napari picking uses, so each plotted unit's
-    hover text names the exact source row click-to-load would resolve. Returns the
-    frame, the hue column (``None`` with no group-by), and the hover column names.
-    """
-    units = reduce_to_units(df, spec)
-    data, hue = _group_label_column(units, list(spec.group_by))
-    data = data.assign(**{spec.value: pd.to_numeric(data[spec.value], errors="coerce")})
-    data = data.dropna(subset=[spec.value]).reset_index(drop=True)
-    hover = [c for c in _HOVER_COLUMNS if c in df.columns]
-    if data.empty or not hover:
-        return data, hue, hover
-    row_for = _representative_row(df, spec)
-    collected: dict[str, list] = {c: [] for c in hover}
-    for _, row in data.iterrows():
-        src = df.iloc[row_for(row)]
-        for c in hover:
-            collected[c].append(src[c])
-    for c, values in collected.items():
-        data[c] = values
-    return data, hue, hover
-
-
 def _rc_overrides(style_spec: StyleSpec) -> dict[str, Any]:
     """rcParams derived from the base font size, applied within the style sheet
     context so every text artist created inside picks them up."""
     base = style_spec.font_size
-    return {
+    tick = base * 0.9 if style_spec.tick_label_size is None else style_spec.tick_label_size
+    rc = {
         "font.size": base,
         "axes.titlesize": base * 1.2,
         "axes.labelsize": base,
-        "xtick.labelsize": base * 0.9,
-        "ytick.labelsize": base * 0.9,
+        "xtick.labelsize": tick,
+        "ytick.labelsize": tick,
         "legend.fontsize": base * 0.9,
     }
+    if style_spec.font_family:
+        rc["font.family"] = style_spec.font_family
+    return rc
 
 
 def _apply_style(ax, spec: PlotSpec, style_spec: StyleSpec) -> None:
@@ -711,8 +693,33 @@ def _apply_style(ax, spec: PlotSpec, style_spec: StyleSpec) -> None:
         ax.set_xlabel(style_spec.xlabel)
     if style_spec.ylabel:
         ax.set_ylabel(style_spec.ylabel)
-    ax.grid(style_spec.grid)
-    # Axis limits before the legend branch's early return so they always apply.
+
+    # Spines (borders): hide any side not listed; set the width on every spine.
+    for side, spine in ax.spines.items():
+        spine.set_visible(side in style_spec.spines)
+        spine.set_linewidth(style_spec.spine_width)
+
+    # Ticks: length/direction always; rotation only when the user pinned one, so
+    # the bar chart keeps its own 30° slant by default.
+    ax.tick_params(length=style_spec.tick_length, direction=style_spec.tick_direction)
+    if style_spec.xtick_rotation is not None:
+        ha = "right" if style_spec.xtick_rotation else "center"
+        for label in ax.get_xticklabels():
+            label.set_rotation(style_spec.xtick_rotation)
+            label.set_horizontalalignment(ha)
+
+    if style_spec.grid:
+        ax.grid(True, axis=style_spec.grid_axis, alpha=style_spec.grid_alpha,
+                linestyle=style_spec.grid_linestyle)
+    else:
+        ax.grid(False)
+
+    # Log scales before limits so the limits apply in the scaled space; limits sit
+    # before the legend branch's early return so they always apply.
+    if style_spec.xlog:
+        ax.set_xscale("log")
+    if style_spec.ylog:
+        ax.set_yscale("log")
     if style_spec.xmin is not None or style_spec.xmax is not None:
         ax.set_xlim(left=style_spec.xmin, right=style_spec.xmax)
     if style_spec.ymin is not None or style_spec.ymax is not None:
@@ -725,9 +732,16 @@ def _apply_style(ax, spec: PlotSpec, style_spec: StyleSpec) -> None:
         return
     handles, labels = ax.get_legend_handles_labels()
     if handles:
-        ax.legend(handles, labels, loc=style_spec.legend_loc, fontsize="small")
+        ax.legend(
+            handles, labels, loc=style_spec.legend_loc, fontsize="small",
+            title=style_spec.legend_title or None, frameon=style_spec.legend_frame,
+            ncol=max(1, style_spec.legend_ncol),
+        )
     elif existing is not None:  # seaborn-managed legend (e.g. histplot)
         existing.set_loc(style_spec.legend_loc)
+        if style_spec.legend_title:
+            existing.set_title(style_spec.legend_title)
+        existing.set_frame_on(style_spec.legend_frame)
 
 
 def _group_label_column(df: pd.DataFrame, group: list[str]) -> tuple[pd.DataFrame, str | None]:
@@ -841,6 +855,36 @@ def _representative_row(df: pd.DataFrame, spec: PlotSpec):
     return row_for
 
 
+#: UI violin-inner names → seaborn's ``inner=`` values.
+_VIOLIN_INNER = {"box": "box", "quartile": "quart", "point": "point",
+                 "stick": "stick", "none": None}
+
+
+def _group_colors(labels: list, style_spec: StyleSpec) -> tuple[list, dict]:
+    """Palette colours for *labels* with per-group overrides layered on top.
+
+    Samples :attr:`StyleSpec.palette` for one colour per label, then swaps in any
+    :attr:`StyleSpec.color_overrides` keyed by the label string. Returns the
+    colour list (aligned to *labels*) and a ``{label: colour}`` dict for seaborn's
+    ``palette=`` (which keys on the same string labels it draws)."""
+    base = sns.color_palette(style_spec.palette, n_colors=max(len(labels), 1))
+    overrides = dict(style_spec.color_overrides)
+    colors = [overrides.get(str(lab), base[i]) for i, lab in enumerate(labels)]
+    return colors, {str(lab): col for lab, col in zip(labels, colors)}
+
+
+def _alpha_kw(style_spec: StyleSpec) -> dict:
+    return {} if style_spec.alpha is None else {"alpha": style_spec.alpha}
+
+
+def _size_kw(style_spec: StyleSpec) -> dict:
+    return {} if style_spec.marker_size is None else {"size": style_spec.marker_size}
+
+
+def _linewidth_kw(style_spec: StyleSpec) -> dict:
+    return {} if style_spec.line_width is None else {"linewidth": style_spec.line_width}
+
+
 def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
     group = list(spec.group_by)
     # Distributions show one point per independent unit (per ``spec.level``), not
@@ -853,16 +897,21 @@ def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSp
     if data.empty:
         ax.set_title("No data in scope")
         return
-    palette = style_spec.palette if hue is not None else None
     # Pin the category order so each drawn point collection maps positionally to a
     # known slice of ``data`` (verified: seaborn emits one PathCollection per hue
     # level, offsets in input-row order). That exact mapping is what
     # ``_tag_point_collections`` stamps for click-to-select.
     order = list(pd.unique(data[hue])) if hue is not None else None
+    # Palette as a {label: colour} dict so per-group overrides bite; no hue → the
+    # single seaborn default colour.
+    palette = _group_colors(order, style_spec)[1] if hue is not None else None
     if spec.plot == "hist":
+        hist_kw = {} if not style_spec.edge_color else {"edgecolor": style_spec.edge_color}
         sns.histplot(
             data=data, x=spec.value, hue=hue, bins=spec.bins,
-            alpha=0.5, palette=palette, ax=ax,
+            alpha=style_spec.alpha if style_spec.alpha is not None else 0.5,
+            palette=palette, ax=ax, element=style_spec.hist_element,
+            cumulative=style_spec.hist_cumulative, **hist_kw,
         )
         ax.set_ylabel("count")
     elif spec.plot == "box":
@@ -870,18 +919,21 @@ def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSp
             data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
             palette=palette, ax=ax, legend=False,
             whis=style_spec.box_whis, showfliers=style_spec.box_showfliers,
-            notch=style_spec.box_notch,
+            notch=style_spec.box_notch, **_linewidth_kw(style_spec),
         )
         _overlay_box_picks(ax, df, data, hue, spec, style_spec, order)
     elif spec.plot == "violin":
         sns.violinplot(
             data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
             palette=palette, ax=ax, legend=False,
+            inner=_VIOLIN_INNER.get(style_spec.violin_inner, "box"),
+            **_linewidth_kw(style_spec),
         )
     elif spec.plot == "strip":
         sns.stripplot(
             data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
             palette=palette, ax=ax, legend=False,
+            **_alpha_kw(style_spec), **_size_kw(style_spec),
         )
         _tag_point_collections(ax, df, data, hue, spec, order)
     else:  # swarm
@@ -1019,7 +1071,9 @@ def _plot_potential(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec)
     value_range = _shared_range(df, spec)
     bins = _potential_bins(spec, value_range)
     series_list = list(_group_series(df, group))
-    colors = sns.color_palette(style_spec.palette, n_colors=max(len(series_list), 1))
+    colors, _ = _group_colors([lbl for lbl, _ in series_list], style_spec)
+    marker = "o" if style_spec.markers else ""
+    markersize = style_spec.marker_size if style_spec.marker_size is not None else 4
     spans_zero = value_range is not None and value_range[0] <= 0.0 <= value_range[1]
     drew = False
     for color, (label, chunk) in zip(colors, series_list):
@@ -1030,8 +1084,8 @@ def _plot_potential(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec)
         barrier = effective_barrier(centers, u)
         barrier_txt = f"{barrier:.2f} kT" if np.isfinite(barrier) else "n/a"
         ax.plot(
-            centers, u, marker="o", linestyle="-", markersize=4, color=color,
-            label=f"{label} (ΔE_eff={barrier_txt})",
+            centers, u, marker=marker, linestyle="-", markersize=markersize, color=color,
+            label=f"{label} (ΔE_eff={barrier_txt})", **_linewidth_kw(style_spec),
         )
         drew = True
     if not drew:
@@ -1052,9 +1106,18 @@ def _plot_bar(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> No
     ]
     x = np.arange(len(summary))
     errors = summary["error"].fillna(0.0).to_numpy()
-    colors = sns.color_palette(style_spec.palette, n_colors=max(len(summary), 1))
-    ax.bar(x, summary["value"].to_numpy(), yerr=errors, capsize=4, color=colors)
+    colors, _ = _group_colors(labels, style_spec)
+    bar_kw: dict = {}
+    if style_spec.alpha is not None:
+        bar_kw["alpha"] = style_spec.alpha
+    if style_spec.edge_color:
+        bar_kw["edgecolor"] = style_spec.edge_color
+    if style_spec.line_width is not None:
+        bar_kw["linewidth"] = style_spec.line_width
+    ax.bar(x, summary["value"].to_numpy(), yerr=errors, capsize=4, color=colors, **bar_kw)
     ax.set_xticks(x)
+    # Slanted by default for legible multi-word categories; the style's
+    # ``xtick_rotation`` (when set) overrides this in :func:`_apply_style`.
     ax.set_xticklabels(labels, rotation=30, ha="right")
     ax.set_ylabel(_bar_ylabel(spec))
 
@@ -1072,7 +1135,9 @@ def _bar_ylabel(spec: PlotSpec) -> str:
 def _plot_line(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
     group = list(spec.group_by)
     series_list = list(_group_series(df, group))
-    colors = sns.color_palette(style_spec.palette, n_colors=max(len(series_list), 1))
+    colors, _ = _group_colors([lbl for lbl, _ in series_list], style_spec)
+    marker = "o" if style_spec.markers else ""
+    marker_kw = {} if style_spec.marker_size is None else {"markersize": style_spec.marker_size}
     for color, (label, chunk) in zip(colors, series_list):
         if spec.stat == "count":
             series = chunk.groupby("frame", dropna=False).size()
@@ -1080,7 +1145,10 @@ def _plot_line(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> N
             agg = "mean" if spec.stat == "mean" else "median"
             series = chunk.groupby("frame", dropna=False)[spec.value].agg(agg)
         series = series.sort_index()
-        ax.plot(series.index.to_numpy(), series.to_numpy(), marker="o", label=label, color=color)
+        ax.plot(
+            series.index.to_numpy(), series.to_numpy(), marker=marker, label=label,
+            color=color, **_linewidth_kw(style_spec), **marker_kw,
+        )
     ax.set_xlabel("frame")
     ax.set_ylabel("count" if spec.stat == "count" else f"{spec.stat} {spec.value}")
 

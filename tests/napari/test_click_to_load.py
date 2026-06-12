@@ -70,6 +70,24 @@ def test_resolver_uses_frame_start_when_no_frame():
     assert target.frame == 9
 
 
+def test_resolver_disambiguates_position_id_reused_across_dates():
+    # ``pos08`` exists in two experiments; only ``(date, position_id)`` is unique.
+    # A point picked from the 2026/04/01 experiment must load *that* movie, not the
+    # later same-named position that would otherwise win the id-keyed dict.
+    recs = [
+        {"id": "pos08", "date": "2026/04/01",
+         "cell_tracked_labels_path": "/data/2026-04-01/pos08/cells.tif"},
+        {"id": "pos08", "date": "2026/04/30",
+         "cell_tracked_labels_path": "/data/2026-04-30/pos08/cells.tif"},
+    ]
+    resolve = ClickToLoad(_FakeViewer()).resolver(recs, "cell_tracked_labels_path")
+    target = resolve({"date": "2026/04/01", "position_id": "pos08", "frame": 19, "cell_id": 27})
+    assert target.path == Path("/data/2026-04-01/pos08/cells.tif")
+    # A date-less identity (older snapshot) still resolves, falling back to id alone.
+    legacy = resolve({"position_id": "pos08", "frame": 0, "cell_id": 1})
+    assert legacy is not None and legacy.path.name == "cells.tif"
+
+
 def test_resolver_none_when_position_missing_or_no_labels():
     ctl = ClickToLoad(_FakeViewer())
     assert ctl.resolver([], "cell_tracked_labels_path")({"position_id": "x", "cell_id": 1}) is None
