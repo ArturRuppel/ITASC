@@ -4,7 +4,8 @@
 build a :class:`~cellflow.aggregate_quantification.plotting.PlotSpec`, styling
 controls that build a
 :class:`~cellflow.aggregate_quantification.plotting.StyleSpec`, an embedded
-matplotlib canvas with its native navigation toolbar, and CSV/figure export.
+matplotlib canvas with its native navigation toolbar, and CSV / figure /
+interactive-HTML export.
 
 It is constructed from a *snapshot* — ``(dataframe, value_columns,
 group_columns)`` — the only quantity-specific knowledge, supplied by the caller.
@@ -46,10 +47,11 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.aggregate_quantification.plotting import (
+    _PICK_ROWS_ATTR,
     PlotSpec,
     StyleSpec,
     build_figure,
-    pickable_points,
+    build_interactive_figure,
     plotted_table,
     write_csv,
 )
@@ -465,7 +467,13 @@ class PlotPanel(QWidget):
             "curve / bars shown, ready to re-plot elsewhere."
         )
         self._export_fig_btn = _export_button("Figure", self._export_figure)
-        buttons = (self._export_csv_btn, self._export_fig_btn)
+        self._export_html_btn = _export_button("Interactive (HTML)", self._export_html)
+        self._export_html_btn.setToolTip(
+            "Write a standalone interactive Plotly HTML of the current plot — "
+            "open it in any browser, hover a point to read its provenance "
+            "(position / frame / cell), zoom and pan with no viewer needed."
+        )
+        buttons = (self._export_csv_btn, self._export_fig_btn, self._export_html_btn)
         for col, btn in enumerate(buttons, start=1):
             grid.addWidget(btn, 0, col)
             grid.setColumnStretch(col, 1)
@@ -543,7 +551,7 @@ class PlotPanel(QWidget):
         self._canvas_holder.addWidget(toolbar)
         self._canvas_holder.addWidget(canvas, 1)
         self._canvas, self._toolbar = canvas, toolbar
-        canvas.mpl_connect("button_press_event", self._on_pick)
+        canvas.mpl_connect("pick_event", self._on_pick)
         self._clear_selection()
         # seaborn only reports a swarm overflow at draw time, and the Qt canvas
         # resizes the figure to the dock — so detect it once the canvas has its
@@ -566,54 +574,40 @@ class PlotPanel(QWidget):
             self._render(_retry_after_overflow=True)
 
     # -------------------------------------------------------------- click-to-load
-    def _category_x(self) -> dict[str, float]:
-        """Map each drawn x-axis category label to its x position."""
-        if self._canvas is None:
-            return {}
-        ax = self._canvas.figure.axes[0]
-        ticks = ax.get_xticks()
-        labels = [t.get_text() for t in ax.get_xticklabels()]
-        return {lab: float(x) for x, lab in zip(ticks, labels) if lab}
-
-    def _nearest_point(self, xdata: float, ydata: float):
-        """Plotted point nearest the click: snap to the x-category, then the
-        closest value within it. Returns None when nothing is pickable."""
-        pts = pickable_points(self._df, self.current_spec(), self.current_style())
-        if not pts:
-            return None
-        cat_x = self._category_x()
-        if cat_x:
-            cat = min(cat_x, key=lambda c: abs(cat_x[c] - xdata))  # snap to category
-            candidates = [p for p in pts if p.category == cat]
-        else:
-            candidates = list(pts)  # single, ungrouped bucket
-        if not candidates:
-            return None
-        return min(candidates, key=lambda p: abs(p.value - ydata))
-
     def _on_pick(self, event) -> None:
-        if self._target_resolver is None or event.inaxes is None or event.ydata is None:
-            return
-        point = self._nearest_point(event.xdata, event.ydata)
-        if point is not None:
-            self._highlight_point(point, event.xdata)
-            self._select_row(point.row_index)
+        """Resolve a matplotlib pick to the exact source row and select it.
 
-    def _highlight_point(self, point, xdata: float) -> None:
-        """Ring the picked point on the canvas. The point sits at its exact value
-        in y and, for jittered strip/swarm plots, at the actual drawn marker's x
-        (read from the scatter offsets) rather than the category column centre or
-        the click x; the marker is removed and redrawn on each pick."""
+        Each drawn point artist carries its per-marker source row indices
+        (``_PICK_ROWS_ATTR``, stamped by the plotting backend); ``event.ind`` is
+        the picked marker's index into that artist, so the row is read directly —
+        no x-category snap or value-proximity guessing, so two equal-valued points
+        never collide and the ring lands on the actual marker."""
+        if self._target_resolver is None:
+            return
+        artist = getattr(event, "artist", None)
+        rows = getattr(artist, _PICK_ROWS_ATTR, None) if artist is not None else None
+        ind = list(getattr(event, "ind", []) or [])
+        if rows is None or not ind:
+            return
+        i = int(ind[0])
+        if i >= len(rows):
+            return
+        offsets = np.asarray(artist.get_offsets(), dtype=float)
+        if i < len(offsets):
+            self._highlight_at(offsets[i])
+        self._select_row(int(rows[i]))
+
+    def _highlight_at(self, point_xy) -> None:
+        """Ring the picked marker at its exact drawn position. The marker is
+        removed and redrawn on each pick."""
         if self._canvas is None:
             return
         ax = self._canvas.figure.axes[0]
-        cat_x = self._category_x().get(point.category, xdata)
-        x = self._marker_x(ax, cat_x, point.value)
         if self._pick_marker is not None:
             self._pick_marker.remove()
         (self._pick_marker,) = ax.plot(
-            [x],
-            [point.value],
+            [float(point_xy[0])],
+            [float(point_xy[1])],
             marker="o",
             markersize=14,
             markerfacecolor="none",
@@ -622,28 +616,6 @@ class PlotPanel(QWidget):
             zorder=10,
         )
         self._canvas.draw_idle()
-
-    def _marker_x(self, ax, cat_x: float, value: float) -> float:
-        """The x of the actually-drawn marker nearest ``(cat_x, value)``.
-
-        strip/swarm jitter each point along x, so the category column centre is
-        not where the picked marker sits. Scan the scatter offsets seaborn drew
-        and snap to the one whose y best matches the picked value and whose x is
-        closest to the category column, so the ring lands exactly on the point.
-        Falls back to ``cat_x`` when there are no offsets (box/violin/hist)."""
-        best_x: float | None = None
-        best_key = None
-        for collection in ax.collections:
-            offsets = np.asarray(collection.get_offsets(), dtype=float)
-            if offsets.ndim != 2 or offsets.shape[0] == 0:
-                continue
-            for ox, oy in offsets:
-                # Rank exact value match first, then proximity to the column —
-                # so the right point wins even where columns are close together.
-                key = (abs(oy - value), abs(ox - cat_x))
-                if best_key is None or key < best_key:
-                    best_key, best_x = key, float(ox)
-        return best_x if best_x is not None else cat_x
 
     def _select_row(self, row: int) -> None:
         record = self._df.iloc[row]
@@ -694,6 +666,19 @@ class PlotPanel(QWidget):
         if path:
             self._canvas.figure.savefig(path)
             self._status.setText(f"Wrote {path.name}.")
+
+    def _export_html(self) -> None:
+        """Write a standalone interactive Plotly HTML of the current plot, every
+        point carrying its provenance as hover text (see
+        :func:`build_interactive_figure`)."""
+        path = self._save_path("Export interactive HTML", "HTML files (*.html)")
+        if not path:
+            return
+        if path.suffix.lower() != ".html":
+            path = path.with_name(path.name + ".html")
+        fig = build_interactive_figure(self._df, self.current_spec(), self.current_style())
+        fig.write_html(str(path))
+        self._status.setText(f"Wrote {path.name}.")
 
 
 # --------------------------------------------------------------- UI factories

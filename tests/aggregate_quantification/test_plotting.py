@@ -474,6 +474,125 @@ def test_pickable_points_hist_is_empty():
     assert pickable_points(df, spec, StyleSpec()) == []
 
 
+# ----------------------------------------------------- native picking (pick_event)
+from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
+
+
+def _tagged(ax):
+    """The drawn artists armed for picking, with their stamped row arrays."""
+    return [
+        (c, list(getattr(c, _PICK_ROWS_ATTR)))
+        for c in ax.collections
+        if hasattr(c, _PICK_ROWS_ATTR)
+    ]
+
+
+@pytest.mark.parametrize("plot", ["strip", "swarm"])
+def test_point_collections_carry_exact_source_rows(plot):
+    # Each drawn point stamps its positional .iloc row, in input-row order per
+    # category, and is armed for picking — so a pick maps straight to a row.
+    df = pd.DataFrame({
+        "condition": ["A", "A", "B"],
+        "cell_id": [10, 20, 30],
+        "area": [1.0, 2.0, 3.0],
+    })
+    spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot=plot)
+    fig = build_figure(df, spec, StyleSpec())
+    tagged = _tagged(fig.axes[0])
+    assert all(col.get_picker() for col, _ in tagged)
+    assert sorted(r for _, rows in tagged for r in rows) == [0, 1, 2]
+    # offsets line up with rows positionally: same count per collection.
+    for col, rows in tagged:
+        assert len(np.asarray(col.get_offsets())) == len(rows)
+
+
+def test_equal_valued_points_keep_distinct_rows():
+    # Two identical values in one category must not collapse: native tagging
+    # keeps a row per marker (the heuristic this replaces collided them).
+    df = pd.DataFrame({
+        "condition": ["A", "A"],
+        "cell_id": [10, 20],
+        "area": [42.0, 42.0],
+    })
+    spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="strip")
+    fig = build_figure(df, spec, StyleSpec())
+    rows = [r for _, rs in _tagged(fig.axes[0]) for r in rs]
+    assert sorted(rows) == [0, 1]
+
+
+def test_box_outlier_overlay_is_pickable_at_the_flier():
+    # The box plot exposes only its Tukey fliers, via a transparent overlay
+    # scatter sitting on each flier and carrying that row.
+    vals = [10, 11, 12, 13, 12, 11, 10, 12, 11, 200]      # 200 is the flier
+    df = pd.DataFrame({
+        "condition": ["A"] * len(vals),
+        "cell_id": list(range(len(vals))),
+        "area": [float(v) for v in vals],
+    })
+    spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="box")
+    fig = build_figure(df, spec, StyleSpec(box_whis=1.5))
+    tagged = _tagged(fig.axes[0])
+    assert len(tagged) == 1
+    col, rows = tagged[0]
+    assert rows == [9] and col.get_picker()
+    assert float(np.asarray(col.get_offsets())[0][1]) == 200.0
+
+
+def test_hidden_fliers_arm_no_box_overlay():
+    df = pd.DataFrame({
+        "condition": ["A"] * 5,
+        "cell_id": list(range(5)),
+        "area": [10.0, 11.0, 12.0, 13.0, 200.0],
+    })
+    spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="box")
+    fig = build_figure(df, spec, StyleSpec(box_showfliers=False))
+    assert _tagged(fig.axes[0]) == []
+
+
+# ------------------------------------------------- interactive (Plotly) export
+
+
+def _interactive_df():
+    return pd.DataFrame({
+        "position_id": [1, 1, 2, 2, 3, 3],
+        "frame": [0, 1, 0, 1, 0, 1],
+        "cell_id": [10, 10, 20, 20, 30, 30],
+        "condition": ["A", "A", "B", "B", "A", "A"],
+        "area": [5.0, 6.0, 7.0, 8.0, 100.0, 9.0],
+    })
+
+
+@pytest.mark.parametrize("plot", ["hist", "box", "violin", "strip", "swarm", "bar", "line", "potential"])
+def test_build_interactive_figure_renders_each_plot_type(plot):
+    from cellflow.aggregate_quantification.plotting import build_interactive_figure
+    import plotly.graph_objects as go
+    spec = PlotSpec(value="area", group_by=("condition",), plot=plot)
+    fig = build_interactive_figure(_interactive_df(), spec, StyleSpec())
+    assert isinstance(fig, go.Figure)
+    assert fig.data  # at least one trace drawn
+    fig.to_html()    # serialises without error
+
+
+def test_build_interactive_figure_carries_provenance_hover():
+    # Every distribution point's hover text names its provenance, so the HTML is
+    # self-describing without the viewer.
+    from cellflow.aggregate_quantification.plotting import build_interactive_figure
+    spec = PlotSpec(value="area", group_by=("condition",), plot="strip")
+    fig = build_interactive_figure(_interactive_df(), spec, StyleSpec())
+    template = "".join(t.hovertemplate or "" for t in fig.data)
+    assert "position_id" in template
+    assert "cell_id" in template
+
+
+def test_build_interactive_figure_missing_value_is_placeholder():
+    from cellflow.aggregate_quantification.plotting import build_interactive_figure
+    import plotly.graph_objects as go
+    spec = PlotSpec(value="absent", group_by=(), plot="box")
+    fig = build_interactive_figure(_interactive_df(), spec, StyleSpec(title="T"))
+    assert isinstance(fig, go.Figure)
+    assert fig.layout.title.text == "T" or "No data" in (fig.layout.title.text or "")
+
+
 # --------------------------------------------------------------- potential mode
 
 

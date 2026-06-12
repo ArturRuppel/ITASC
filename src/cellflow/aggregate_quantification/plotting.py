@@ -39,6 +39,7 @@ __all__ = [
     "pool_object_tables",
     "aggregate",
     "build_figure",
+    "build_interactive_figure",
     "pickable_points",
     "plotted_table",
     "write_csv",
@@ -75,6 +76,14 @@ _LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
 #: ``class_label`` model mapped onto its ``hue=``. ``strip``/``swarm`` are the
 #: new per-cell scatter members.
 DISTRIBUTION_PLOTS = ("hist", "box", "violin", "strip", "swarm")
+#: Attribute stamped on a drawn point artist holding the positional row index
+#: (``.iloc`` into the figure's source ``df``) for each marker, in marker order.
+#: Click-to-select reads ``artist`<attr>`[event.ind[0]]`` for an exact hit — no
+#: value-proximity guessing — so two equal-valued points never collide.
+_PICK_ROWS_ATTR = "_cellflow_pick_rows"
+#: Identity columns surfaced as Plotly hover text, so the exported HTML is itself
+#: a provenance artifact (hover a point → its position / frame / cell).
+_HOVER_COLUMNS = ("position_id", "frame", "frame_start", "cell_id")
 #: Curve-family plots — a distribution Boltzmann-inverted into a ``U(x) = −ln P``
 #: curve. Unlike the distribution family these pool **raw** samples (no
 #: ``reduce_to_units``); see :func:`_plot_potential`.
@@ -541,6 +550,144 @@ def build_figure(
     return fig
 
 
+def build_interactive_figure(
+    df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec | None = None
+):
+    """Render *spec* over *df* as a standalone interactive Plotly figure.
+
+    The matplotlib :func:`build_figure` drives the in-napari view (and its native
+    click-to-provenance picking); this is its export twin. Every drawn point
+    carries its provenance columns (:data:`_HOVER_COLUMNS`) as hover text, so the
+    written HTML is itself a provenance artifact — hover a point to read its
+    position / frame / cell, with no viewer round-trip. Returns a
+    ``plotly.graph_objects.Figure``; the caller writes it with
+    ``fig.write_html(path)``.
+
+    Mirrors :func:`build_figure`'s family routing so the HTML shows the same data
+    as the napari canvas: distributions go through the per-unit
+    :func:`reduce_to_units` table (same pseudoreplication guard), ``bar`` through
+    :func:`aggregate`, ``line``/``potential`` through their tidy plotted tables.
+    """
+    import plotly.express as px
+    import plotly.graph_objects as go
+
+    style_spec = style_spec or StyleSpec()
+    title = style_spec.title or spec.value
+    palette = _plotly_palette(style_spec)
+
+    needs_value = not (spec.stat == "count" and spec.plot not in DISTRIBUTION_PLOTS)
+    if df.empty or (needs_value and spec.value not in df.columns):
+        return _interactive_styled(
+            go.Figure(), spec, style_spec, style_spec.title or "No data in scope"
+        )
+
+    if spec.plot in DISTRIBUTION_PLOTS:
+        data, hue, hover = _interactive_points(df, spec)
+        if data.empty:
+            return _interactive_styled(go.Figure(), spec, style_spec, title)
+        common = dict(color=hue, hover_data=hover, color_discrete_sequence=palette)
+        if spec.plot == "hist":
+            fig = px.histogram(data, x=spec.value, nbins=spec.bins, **common)
+        elif spec.plot == "box":
+            fig = px.box(
+                data, x=hue, y=spec.value,
+                points="outliers" if style_spec.box_showfliers else False, **common,
+            )
+        elif spec.plot == "violin":
+            fig = px.violin(data, x=hue, y=spec.value, box=True, **common)
+        else:  # strip / swarm — Plotly has no swarm; a jittered strip draws every point
+            fig = px.strip(data, x=hue, y=spec.value, **common)
+    elif spec.plot == "potential":
+        curve = potential_table(df, spec)
+        fig = px.line(
+            curve, x="center", y="U", color="group", markers=True,
+            color_discrete_sequence=palette,
+            hover_data=[c for c in ("counts", "delta_e_eff") if c in curve.columns],
+            labels={"center": spec.value, "U": "U = −ln P  [kT]"},
+        )
+    elif spec.plot == "bar":
+        summary = aggregate(df, spec)
+        group = list(spec.group_by)
+        summary = summary.assign(
+            _label=[
+                " · ".join(str(summary.iloc[i][g]) for g in group) if group else "all"
+                for i in range(len(summary))
+            ]
+        )
+        fig = px.bar(
+            summary, x="_label", y="value", color="_label",
+            error_y=summary["error"].fillna(0.0), color_discrete_sequence=palette,
+            hover_data=[c for c in ("n",) if c in summary.columns],
+            labels={"_label": "", "value": _bar_ylabel(spec)},
+        )
+    else:  # line
+        series = _line_table(df, spec)
+        fig = px.line(
+            series, x="frame", y="value", color="group", markers=True,
+            color_discrete_sequence=palette,
+            labels={"value": "count" if spec.stat == "count" else f"{spec.stat} {spec.value}"},
+        )
+    return _interactive_styled(fig, spec, style_spec, title)
+
+
+def _plotly_palette(style_spec: StyleSpec) -> list[str]:
+    """The figure palette as hex strings Plotly accepts, sampled from the same
+    named seaborn/matplotlib palette the matplotlib path uses, so the two views
+    share colours."""
+    return [mpl.colors.to_hex(c) for c in sns.color_palette(style_spec.palette, n_colors=10)]
+
+
+def _interactive_styled(fig, spec: PlotSpec, style_spec: StyleSpec, title: str):
+    """Apply the shared StyleSpec presentation (title, axis labels/limits, grid,
+    legend, dimensions) to a Plotly figure — the Plotly analogue of
+    :func:`_apply_style`."""
+    fig.update_layout(
+        title=title,
+        showlegend=style_spec.legend,
+        width=int(style_spec.width * 96),
+        height=int(style_spec.height * 96),
+    )
+    if style_spec.xlabel:
+        fig.update_xaxes(title_text=style_spec.xlabel)
+    if style_spec.ylabel:
+        fig.update_yaxes(title_text=style_spec.ylabel)
+    fig.update_xaxes(showgrid=style_spec.grid)
+    fig.update_yaxes(showgrid=style_spec.grid)
+    if style_spec.xmin is not None or style_spec.xmax is not None:
+        fig.update_xaxes(range=[style_spec.xmin, style_spec.xmax])
+    if style_spec.ymin is not None or style_spec.ymax is not None:
+        fig.update_yaxes(range=[style_spec.ymin, style_spec.ymax])
+    return fig
+
+
+def _interactive_points(
+    df: pd.DataFrame, spec: PlotSpec
+) -> tuple[pd.DataFrame, str | None, list[str]]:
+    """The per-unit distribution table with provenance hover columns attached.
+
+    Reuses the headless reduction (:func:`reduce_to_units`) and the same
+    representative-row mapping the napari picking uses, so each plotted unit's
+    hover text names the exact source row click-to-load would resolve. Returns the
+    frame, the hue column (``None`` with no group-by), and the hover column names.
+    """
+    units = reduce_to_units(df, spec)
+    data, hue = _group_label_column(units, list(spec.group_by))
+    data = data.assign(**{spec.value: pd.to_numeric(data[spec.value], errors="coerce")})
+    data = data.dropna(subset=[spec.value]).reset_index(drop=True)
+    hover = [c for c in _HOVER_COLUMNS if c in df.columns]
+    if data.empty or not hover:
+        return data, hue, hover
+    row_for = _representative_row(df, spec)
+    collected: dict[str, list] = {c: [] for c in hover}
+    for _, row in data.iterrows():
+        src = df.iloc[row_for(row)]
+        for c in hover:
+            collected[c].append(src[c])
+    for c, values in collected.items():
+        data[c] = values
+    return data, hue, hover
+
+
 def _rc_overrides(style_spec: StyleSpec) -> dict[str, Any]:
     """rcParams derived from the base font size, applied within the style sheet
     context so every text artist created inside picks them up."""
@@ -688,6 +835,11 @@ def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSp
         ax.set_title("No data in scope")
         return
     palette = style_spec.palette if hue is not None else None
+    # Pin the category order so each drawn point collection maps positionally to a
+    # known slice of ``data`` (verified: seaborn emits one PathCollection per hue
+    # level, offsets in input-row order). That exact mapping is what
+    # ``_tag_point_collections`` stamps for click-to-select.
+    order = list(pd.unique(data[hue])) if hue is not None else None
     if spec.plot == "hist":
         sns.histplot(
             data=data, x=spec.value, hue=hue, bins=spec.bins,
@@ -696,21 +848,113 @@ def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSp
         ax.set_ylabel("count")
     elif spec.plot == "box":
         sns.boxplot(
-            data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False,
+            data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+            palette=palette, ax=ax, legend=False,
             whis=style_spec.box_whis, showfliers=style_spec.box_showfliers,
             notch=style_spec.box_notch,
         )
+        _overlay_box_picks(ax, df, data, hue, spec, style_spec, order)
     elif spec.plot == "violin":
         sns.violinplot(
-            data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False,
+            data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+            palette=palette, ax=ax, legend=False,
         )
     elif spec.plot == "strip":
-        sns.stripplot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
+        sns.stripplot(
+            data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+            palette=palette, ax=ax, legend=False,
+        )
+        _tag_point_collections(ax, df, data, hue, spec, order)
     else:  # swarm
-        _plot_swarm(ax, data, hue, spec, palette)
+        _plot_swarm(ax, data, hue, spec, palette, order)
+        _tag_point_collections(ax, df, data, hue, spec, order)
 
 
-def _plot_swarm(ax, data: pd.DataFrame, hue: str | None, spec: PlotSpec, palette) -> None:
+def _category_groups(
+    data: pd.DataFrame, hue: str | None, order: list | None
+) -> list[pd.DataFrame]:
+    """The per-category row slices of *data*, in the drawn collection order.
+
+    One entry per category in *order* (the whole frame when there is no hue),
+    each preserving *data*'s row order — so slice *k* lines up positionally with
+    the k-th drawn point collection."""
+    if hue is None or not order:
+        return [data]
+    return [data[data[hue].astype(str) == str(cat)] for cat in order]
+
+
+def _tag_point_collections(
+    ax, df: pd.DataFrame, data: pd.DataFrame, hue: str | None, spec: PlotSpec,
+    order: list | None,
+) -> None:
+    """Stamp each drawn strip/swarm point collection with its source row indices
+    and arm it for picking, so a click resolves to an exact row.
+
+    Relies on seaborn drawing one PathCollection per category, offsets in
+    input-row order. If the layout doesn't match that expectation (collection
+    count or per-collection point count off), picking is left disarmed rather
+    than risk a wrong mapping."""
+    point_cols = [c for c in ax.collections if len(c.get_offsets())]
+    groups = _category_groups(data, hue, order)
+    if len(point_cols) != len(groups):
+        return
+    row_for = _representative_row(df, spec)
+    tagged = []
+    for col, sub in zip(point_cols, groups):
+        if len(col.get_offsets()) != len(sub):
+            return
+        rows = np.fromiter(
+            (row_for(r) for _, r in sub.iterrows()), dtype=int, count=len(sub)
+        )
+        tagged.append((col, rows))
+    for col, rows in tagged:
+        setattr(col, _PICK_ROWS_ATTR, rows)
+        col.set_picker(True)
+        col.set_pickradius(6)
+
+
+def _overlay_box_picks(
+    ax, df: pd.DataFrame, data: pd.DataFrame, hue: str | None, spec: PlotSpec,
+    style_spec: StyleSpec, order: list | None,
+) -> None:
+    """Overlay a transparent, pickable scatter on the box-plot outliers.
+
+    seaborn draws fliers at the category centre with no jitter, so an invisible
+    scatter placed at ``(category_centre, value)`` sits exactly on each flier and
+    carries its row index — exact picking without redrawing the visible marker.
+    Skipped when fliers are hidden."""
+    if not style_spec.box_showfliers:
+        return
+    xticks = list(ax.get_xticks())
+    row_for = _representative_row(df, spec)
+    xs: list[float] = []
+    ys: list[float] = []
+    rows: list[int] = []
+    for k, sub in enumerate(_category_groups(data, hue, order)):
+        values = pd.to_numeric(sub[spec.value], errors="coerce")
+        finite = values.dropna()
+        if finite.empty:
+            continue
+        q1, q3 = finite.quantile(0.25), finite.quantile(0.75)
+        iqr = q3 - q1
+        lo, hi = q1 - style_spec.box_whis * iqr, q3 + style_spec.box_whis * iqr
+        cat_x = xticks[k] if k < len(xticks) else float(k)
+        for idx, value in values.items():
+            if pd.notna(value) and (value < lo or value > hi):
+                xs.append(cat_x)
+                ys.append(float(value))
+                rows.append(row_for(sub.loc[idx]))
+    if not rows:
+        return
+    sc = ax.scatter(xs, ys, facecolors="none", edgecolors="none", zorder=5)
+    setattr(sc, _PICK_ROWS_ATTR, np.array(rows, dtype=int))
+    sc.set_picker(True)
+    sc.set_pickradius(6)
+
+
+def _plot_swarm(
+    ax, data: pd.DataFrame, hue: str | None, spec: PlotSpec, palette, order: list | None,
+) -> None:
     """Swarm plot that never silently drops points.
 
     seaborn's swarmplot lays its markers out without overlap and *omits* any it
@@ -725,8 +969,8 @@ def _plot_swarm(ax, data: pd.DataFrame, hue: str | None, spec: PlotSpec, palette
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             sns.swarmplot(
-                data=data, x=hue, y=spec.value, hue=hue, palette=palette,
-                ax=ax, legend=False, size=size,
+                data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+                palette=palette, ax=ax, legend=False, size=size,
             )
             # The overlap check runs in swarmplot's draw callback, so provoke a
             # draw now to learn whether every marker fits at this figure size.
@@ -739,7 +983,10 @@ def _plot_swarm(ax, data: pd.DataFrame, hue: str | None, spec: PlotSpec, palette
         if not _overflows(size):
             return
         ax.clear()
-    sns.stripplot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
+    sns.stripplot(
+        data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+        palette=palette, ax=ax, legend=False,
+    )
 
 
 def _plot_potential(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:

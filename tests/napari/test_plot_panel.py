@@ -225,8 +225,9 @@ def test_axis_range_fields_feed_style_and_render():
 
 def test_pick_resolves_identity_and_enables_load():
     from pathlib import Path
+    from types import SimpleNamespace
     from cellflow.napari.aggregate_quantification.plot_panel import LoadTarget, PlotPanel
-    from cellflow.aggregate_quantification.plotting import pickable_points
+    from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
     app = _app()
     seen = {}
 
@@ -241,19 +242,21 @@ def test_pick_resolves_identity_and_enables_load():
                       target_resolver=resolver)
     panel._plot_combo.setCurrentText("strip")
     panel._render()
-    pts = pickable_points(panel._df, panel.current_spec(), panel.current_style())
-    p0 = pts[0]
-    cat_x = panel._category_x().get(p0.category, 0)
-    point = panel._nearest_point(cat_x, p0.value)
-    assert point.row_index == p0.row_index
-    # Picking rings the point on the canvas at its value.
-    panel._highlight_point(point, cat_x)
+    ax = panel._canvas.figure.axes[0]
+    # A native matplotlib pick: the drawn artist carries its exact source rows, so
+    # ``event.ind`` indexes straight to the row — no value-proximity guessing.
+    artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
+    rows = getattr(artist, _PICK_ROWS_ATTR)
+    offsets = np.asarray(artist.get_offsets(), dtype=float)
+    panel._on_pick(SimpleNamespace(artist=artist, ind=[0]))
+    expected_row = int(rows[0])
+    # The ring lands exactly on the drawn marker (its offset), not a column centre.
     assert panel._pick_marker is not None
-    assert panel._pick_marker.get_ydata()[0] == point.value
-    panel._select_row(point.row_index)
+    assert panel._pick_marker.get_xdata()[0] == offsets[0][0]
+    assert panel._pick_marker.get_ydata()[0] == offsets[0][1]
     assert panel._load_btn.isEnabled()
     assert "/tmp/labels.tif" in panel._path_label.text()
-    assert seen["cell_id"] == int(panel._df.iloc[point.row_index]["cell_id"])
+    assert seen["cell_id"] == int(panel._df.iloc[expected_row]["cell_id"])
     emitted = []
     panel.load_requested.connect(emitted.append)
     panel._load_btn.click()
@@ -261,6 +264,34 @@ def test_pick_resolves_identity_and_enables_load():
     # Re-rendering drops the marker reference (it lived on the replaced canvas).
     panel._render()
     assert panel._pick_marker is None
+    panel.deleteLater(); app.processEvents()
+
+
+def test_pick_distinguishes_equal_valued_points():
+    # The core fix: two points with the *same* value must resolve to their own
+    # rows. The old value-proximity reconstruction collided them; native picking
+    # reads each marker's stamped row, so ``ind`` 0 and 1 stay distinct.
+    from types import SimpleNamespace
+    from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
+    from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
+    app = _app()
+    selected: list[int] = []
+    df = pd.DataFrame({
+        "condition": ["A", "A"],
+        "cell_id": [101, 202],
+        "area": [42.0, 42.0],   # identical value, different cells
+    })
+    panel = PlotPanel(df, value_columns=("area",), group_columns=("condition",),
+                      target_resolver=lambda identity: None)
+    panel.selection_changed.connect(lambda ident: selected.append(int(ident["cell_id"])))
+    panel._plot_combo.setCurrentText("strip")
+    panel._render()
+    ax = panel._canvas.figure.axes[0]
+    artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
+    assert len(getattr(artist, _PICK_ROWS_ATTR)) == 2
+    panel._on_pick(SimpleNamespace(artist=artist, ind=[0]))
+    panel._on_pick(SimpleNamespace(artist=artist, ind=[1]))
+    assert selected == [101, 202]
     panel.deleteLater(); app.processEvents()
 
 
@@ -299,28 +330,33 @@ def test_group_by_survives_value_change_when_column_still_present():
         panel.deleteLater(); app.processEvents()
 
 
-def test_highlight_ring_lands_on_jittered_marker_x():
-    # Bug 50: for strip/swarm the points are jittered along x, so the ring must
-    # snap to the actual drawn marker's x (from the scatter offsets), not the
-    # category column centre or the click x.
+def test_no_resolver_means_no_pick_select():
+    # With no resolver the panel must not act on picks (no selection, no ring),
+    # matching how loading stays disabled.
+    from types import SimpleNamespace
+    from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
     app = _app()
-    panel = PlotPanel(
-        _df(), value_columns=("area",),
-        group_columns=("condition", "date", "position_id", "class_label", "frame"),
-        target_resolver=lambda identity: None,
-    )
-    try:
-        panel._plot_combo.setCurrentText("strip")
-        panel._render()
-        ax = panel._canvas.figure.axes[0]
-        # Take a real drawn offset and ask the panel to ring its value.
-        offsets = np.asarray(ax.collections[0].get_offsets(), dtype=float)
-        ox, oy = offsets[0]
-        from cellflow.aggregate_quantification.plotting import PickPoint
-        point = PickPoint(category="", value=float(oy), row_index=0)
-        # Click x deliberately far from the marker; ring must still land on it.
-        panel._highlight_point(point, ox + 5.0)
-        assert panel._pick_marker.get_xdata()[0] == ox
-        assert panel._pick_marker.get_ydata()[0] == oy
-    finally:
-        panel.deleteLater(); app.processEvents()
+    emitted: list = []
+    panel = _panel()                       # no target_resolver
+    panel.selection_changed.connect(emitted.append)
+    panel._plot_combo.setCurrentText("strip")
+    panel._render()
+    ax = panel._canvas.figure.axes[0]
+    artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
+    panel._on_pick(SimpleNamespace(artist=artist, ind=[0]))
+    assert emitted == []
+    assert panel._pick_marker is None
+    panel.deleteLater(); app.processEvents()
+
+
+def test_export_html_writes_interactive_file(tmp_path, monkeypatch):
+    app = _app()
+    panel = _panel()
+    out = tmp_path / "plot"   # no suffix — the slot must add ``.html``
+    monkeypatch.setattr(panel, "_save_path", lambda *a, **k: out)
+    panel._export_html()
+    written = out.with_name(out.name + ".html")
+    assert written.exists() and written.stat().st_size > 0
+    assert "plotly" in written.read_text().lower()
+    assert panel._export_html_btn.isEnabled() is True
+    panel.deleteLater(); app.processEvents()
