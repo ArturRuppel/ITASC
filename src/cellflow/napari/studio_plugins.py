@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from qtpy.QtWidgets import (
@@ -31,9 +30,13 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.aggregate_quantification.quantifier import (
-    PositionInputs,
     Quantifier,
     available_quantifiers,
+)
+from cellflow.aggregate_quantification.records import (
+    output_for_record,
+    position_inputs_from_record,
+    records_satisfying,
 )
 from cellflow.napari.aggregate_quantification.plugins import (
     AnalysisContext,
@@ -57,61 +60,6 @@ class PluginEntry:
     factory: Callable[[Any], QWidget]  # factory(viewer) -> body widget
 
 
-def position_inputs_from_record(record: dict) -> PositionInputs:
-    """Build :class:`PositionInputs` from a normalized catalogue record.
-
-    ``pixel_size_um`` / ``time_interval_s`` are **global** build params: they are
-    taken only from the value stamped on the record (the Parameters panel's
-    px/Δt, written by ``SharedParamsWidget.stamp``), never auto-resolved from a
-    position's ``cellflow_config.json`` or label TIFF tags. Absent ⇒ ``None``.
-    """
-    out = record.get("contact_analysis_path")
-    cell = record.get("cell_tracked_labels_path")
-    nucleus = record.get("nucleus_tracked_labels_path")
-    position_dir = record.get("position_path") or (Path(out).parent if out else Path("."))
-    cell_path = Path(cell) if cell else None
-    nucleus_path = Path(nucleus) if nucleus else None
-    return PositionInputs(
-        position_dir=Path(position_dir),
-        cell_labels_path=cell_path,
-        nucleus_labels_path=nucleus_path,
-        pixel_size_um=_positive_float(record.get("pixel_size_um")),
-        time_interval_s=_positive_float(record.get("time_interval_s")),
-        # The contacts artifact is a *produced* input — the contacts quantifier
-        # writes it. The catalogue stamps its expected path on every position
-        # whether or not it has been built yet, so gate on the file actually
-        # existing: an unbuilt contacts product is not an available input, and a
-        # position lacking it is not applicable to the contacts-derived metrics.
-        contact_analysis_path=Path(out) if out and Path(out).is_file() else None,
-    )
-
-
-def _positive_float(value: object) -> float | None:
-    try:
-        result = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return result if result > 0 else None
-
-
-def output_for_record(quantifier: Quantifier, record: dict) -> Path:
-    """Where *quantifier*'s artifact lives for a catalogue *record*.
-
-    Contacts keeps using the catalogue's explicit ``contact_analysis_path``
-    column — it predates the quantifier seam and may hold a custom *nested* path
-    that the per-position read/visualize paths also rely on, so building must
-    target the same file. Every other quantifier derives its destination from
-    :meth:`Quantifier.default_output`, so a second quantity no longer inherits
-    the contacts artifact path. (Generalize the catalogue to per-quantity output
-    columns and this fallback goes away.)
-    """
-    if quantifier.quantity_id == "contacts":
-        explicit = record.get("contact_analysis_path")
-        if explicit:
-            return Path(explicit)
-    return quantifier.default_output(position_inputs_from_record(record))
-
-
 def built_quantity_ids(records: Iterable[dict]) -> frozenset[str]:
     """The ``quantity_id``\\s built for at least one of *records*.
 
@@ -129,19 +77,6 @@ def built_quantity_ids(records: Iterable[dict]) -> frozenset[str]:
                 built.add(quantifier.quantity_id)
                 break
     return frozenset(built)
-
-
-def records_satisfying(requires: Iterable[str], records: Iterable[dict]) -> list[dict]:
-    """The records whose inputs supply every field in *requires*."""
-    needed = tuple(requires)
-    if not needed:
-        return list(records)
-    out = []
-    for record in records:
-        inputs = position_inputs_from_record(record)
-        if all(getattr(inputs, name, None) is not None for name in needed):
-            out.append(record)
-    return out
 
 
 def available_tool_plugins() -> list[PluginEntry]:

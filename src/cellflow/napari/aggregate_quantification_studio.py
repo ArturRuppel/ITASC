@@ -49,7 +49,10 @@ from cellflow.aggregate_quantification.catalog import (
     merge_catalog_records,
     save_catalog,
 )
+from cellflow.aggregate_quantification.shape_tables import aggregate as aggregate_tables
+from cellflow.aggregate_quantification.shape_tables import catalogue_root
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
+from cellflow.napari.aggregate_quantification_aggregate_area import AggregateArea
 from cellflow.napari.aggregate_quantification_params import SharedParamsWidget
 from cellflow.napari.aggregate_quantification_plot_area import PlotAreaWidget
 from cellflow.napari.aggregate_quantification_widget import _ProgressEmitter
@@ -146,6 +149,8 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._build_worker = None
         self._build_emitter = _ProgressEmitter(self)
         self._build_emitter.progress.connect(self._on_build_progress)
+        #: Background aggregation (pool built products into the shape tables).
+        self._aggregate_worker = None
 
         # The two regions can grow tall (embedded visualizer + several mounted
         # plugin collapsibles), so the whole studio scrolls vertically.
@@ -183,9 +188,10 @@ class AggregateQuantificationStudioWidget(QWidget):
             CollapsibleSection("Parameters", self._shared_params, expanded=True)
         )
 
-        # Tools on top, then the pure Build area, then the Plot area.
+        # Tools on top, then the pure Build area, the Aggregate area, then Plot.
         self._build_tools_section(layout)
         self._build_build_section(layout)
+        self._build_aggregate_section(layout)
         self._build_plot_section(layout)
 
         self._reload_plugins()
@@ -369,6 +375,15 @@ class AggregateQuantificationStudioWidget(QWidget):
 
         layout.addWidget(CollapsibleSection("Compute", container, expanded=False))
 
+    def _build_aggregate_section(self, layout) -> None:
+        """The Aggregate area: a Run Aggregate button + the shape-table status
+        list. Pools what is built on disk for the in-scope positions into the
+        index-keyed tables the Plot area reads. Auto-fires after each build."""
+        self._aggregate_area = AggregateArea(self._run_aggregate)
+        layout.addWidget(
+            CollapsibleSection("Aggregate", self._aggregate_area, expanded=False)
+        )
+
     def _build_plot_section(self, layout) -> None:
         """The Plot area: every registered plot, grouped by family and gated by
         product availability. Separate from building — it plots whatever the
@@ -532,10 +547,50 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._set_build_status(
             f"Built {built}" + (f", {failed} failed" if failed else "") + "."
         )
+        # Auto-aggregate the affected tables so the Plot area never reads a stale
+        # snapshot after a build (the common path); the button re-aggregates
+        # without rebuilding.
+        if built:
+            self._run_aggregate(self._scoped_records())
 
     def _on_build_error(self, exc: Exception) -> None:
         self._build_worker = None
         self._set_build_status(f"Build error: {exc}")
+
+    # ---------------------------------------------------------------- aggregating
+    def _run_aggregate(self, records: list[dict]) -> None:
+        """Pool every built product for *records* into the shape tables (off the
+        GUI thread). Delegated to by the Aggregate area's Run button and fired
+        automatically after a build."""
+        if self._aggregate_worker is not None:
+            return
+        if not records:
+            self._aggregate_area.set_status("Add positions to the catalogue first.")
+            return
+        out_dir = catalogue_root(records)
+
+        @thread_worker(
+            connect={
+                "returned": self._on_aggregate_done,
+                "errored": self._on_aggregate_error,
+            }
+        )
+        def _worker():
+            return aggregate_tables(records, out_dir)
+
+        self._aggregate_worker = _worker()
+
+    def _on_aggregate_done(self, written: dict) -> None:
+        self._aggregate_worker = None
+        self._aggregate_area.refresh_status()
+        n = len(written)
+        self._aggregate_area.set_status(
+            f"Aggregated {n} table(s)." if n else "Nothing built to aggregate yet."
+        )
+
+    def _on_aggregate_error(self, exc: Exception) -> None:
+        self._aggregate_worker = None
+        self._aggregate_area.set_status(f"Aggregate error: {exc}")
 
     def _on_load_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -730,6 +785,9 @@ class AggregateQuantificationStudioWidget(QWidget):
         plot_area = getattr(self, "_plot_area", None)
         if plot_area is not None:
             self._push_context_to(plot_area)
+        aggregate_area = getattr(self, "_aggregate_area", None)
+        if aggregate_area is not None:
+            self._push_context_to(aggregate_area)
         self._update_plugin_availability()
 
     def _push_context_to(self, body: QWidget) -> None:

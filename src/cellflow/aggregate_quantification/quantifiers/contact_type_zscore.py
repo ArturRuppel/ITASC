@@ -28,6 +28,9 @@ class ContactTypeZScoreQuantifier(Quantifier):
     display_name = "Contact-type z-score"
     requires = ("contact_analysis_path",)
     default_output_name = "contact_type_zscore.csv"
+    # Per (frame, contact_type) z-scores get their own per-contact-type table.
+    shape_table = "contact_types_by_frame"
+    table_keys = ("frame", "contact_type")
     wants_build_params = True
 
     def build(

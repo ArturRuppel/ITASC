@@ -88,6 +88,56 @@ def pool_quantity(
     return pool_object_tables(sources)
 
 
+def pool_from_aggregate(quantity_id: str, records: list[dict]) -> pd.DataFrame:
+    """Read *quantity_id*'s slice of its aggregated shape table for *records*.
+
+    This is the data-source flip: instead of pooling each position's
+    ``object_table`` live, the panel reads the **persisted** aggregated table
+    (``<catalogue>/aggregate_quantification/<table>.csv``) — falling back to an
+    in-memory rebuild when it has not been written yet — and slices out this
+    quantity's columns. The aggregated table stores value columns namespaced by
+    ``quantity_id`` (so cell vs nucleus ``area`` coexist); here they are stripped
+    back to their bare names, leaving the keys, catalogue metadata, and
+    ``class_label`` as the live pool produced them. Rows contributed only by a
+    *co-targeting* quantity (all this quantity's values NaN) are dropped, so the
+    frame matches what live pooling returned for this product alone.
+
+    A quantity with no aggregated table (e.g. a dynamics sub-table view) falls
+    back to :func:`pool_quantity`.
+    """
+    from cellflow.aggregate_quantification.shape_tables import (
+        build_table,
+        catalogue_root,
+        read_table,
+        table_for_quantity,
+        table_path,
+    )
+
+    table_name = table_for_quantity(quantity_id)
+    if table_name is None:
+        return pool_quantity(quantity_id, records)
+
+    csv_path = table_path(catalogue_root(records), table_name)
+    table = read_table(csv_path) if csv_path.is_file() else build_table(table_name, records)
+    if table.empty:
+        return table
+
+    prefix = f"{quantity_id}."
+    value_cols = [c for c in table.columns if c.startswith(prefix)]
+    if not value_cols:
+        return pd.DataFrame()
+    # The bare (un-namespaced) columns are the index keys, catalogue metadata and
+    # the NLS class label — carried through as the live pool produced them.
+    keep = [c for c in table.columns if "." not in c]
+    sliced = table[[*keep, *value_cols]].rename(
+        columns={c: c[len(prefix):] for c in value_cols}
+    )
+    bare_values = [c[len(prefix):] for c in value_cols]
+    # Drop rows present only because a co-targeting quantity had them.
+    mask = ~sliced[bare_values].isna().all(axis=1)
+    return sliced[mask].reset_index(drop=True)
+
+
 def _nls_join_table(record: dict) -> dict[str, np.ndarray] | None:
     """A ``{cell_id, class_label}`` join table from the record's NLS sidecar CSV,
     or ``None`` when the position has no CSV (→ ``unclassified`` at pool time)."""

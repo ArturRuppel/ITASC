@@ -118,6 +118,9 @@ class _FrameDynamicsPlot(PoolPlot):
     family = _FAMILY
     value_columns = _FRAME_VALUES
     group_columns = _FRAME_GROUPS
+    # Reads the instantaneous sub-table from the (cached) full dynamics read, so it
+    # stays on live pooling rather than the persisted cells table.
+    aggregated = False
 
     def _read_table(self, quantifier: Quantifier, path: Path) -> Any:
         # Pull the instantaneous table from the (cached) full read so a single
@@ -146,6 +149,9 @@ class _TrackDynamicsPlot(PoolPlot):
     family = _FAMILY
     value_columns = _TRACK_VALUES
     group_columns = _TRACK_GROUPS
+    # The per-track summary is a sub-table of the dynamics artifact (the future
+    # ``tracks`` aggregated table), not the quantifier's object_table — live pool.
+    aggregated = False
 
     def _read_table(self, quantifier: Quantifier, path: Path) -> Any:
         return _read_dynamics(path).tracks
@@ -173,6 +179,7 @@ class _TissueDynamicsPlot(PoolPlot):
     value_columns = _TISSUE_VALUES
     group_columns = _TISSUE_GROUPS
     join_class = False
+    aggregated = False  # builds its own per-position ensemble rows (see ``pool``)
 
     def pool(self, records: list[dict]) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []

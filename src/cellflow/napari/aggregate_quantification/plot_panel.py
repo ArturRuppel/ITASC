@@ -63,6 +63,7 @@ from cellflow.aggregate_quantification.plotting import (
     summary_table,
     write_csv,
 )
+from cellflow.aggregate_quantification.reduce import Filter, run_pipeline
 from cellflow.napari.aggregate_quantification._mpl_toolbar import theme_toolbar_icons
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
@@ -662,19 +663,23 @@ class PlotPanel(QWidget):
     def _render_df(self) -> pd.DataFrame:
         """The snapshot narrowed to the ticked filter values — what the current
         figure draws. A fully-ticked column does not filter; the result is
-        re-indexed so the positional pick-row stamping stays aligned."""
-        masks = []
+        re-indexed so the positional pick-row stamping stays aligned.
+
+        The narrowing is the reduce layer's ``filter`` primitive: each *un*ticked
+        value becomes a ``Filter(col, "!=", value)`` step, chained (AND-ed) through
+        :func:`~cellflow.aggregate_quantification.reduce.run_pipeline`, so the
+        panel reduces through the same backend the headless path uses. The
+        level/stat collapse stays inside ``build_figure`` as the convenience that
+        expands to a default collapse chain."""
+        steps: list[Filter] = []
         for col, checks in getattr(self, "_filter_checks", {}).items():
-            allowed = {val for val, cb in checks.items() if cb.isChecked()}
-            if len(allowed) == len(checks):
-                continue  # all ticked → no constraint from this column
-            masks.append(self._df[col].astype(str).isin(allowed))
-        if not masks:
+            unticked = [val for val, cb in checks.items() if not cb.isChecked()]
+            # Keep rows whose value is *not* any unticked value (== ticked set);
+            # all ticked → no steps (no constraint), all unticked → drops every row.
+            steps.extend(Filter(col, "!=", val) for val in unticked)
+        if not steps:
             return self._df
-        mask = masks[0]
-        for extra in masks[1:]:
-            mask &= extra
-        return self._df[mask].reset_index(drop=True)
+        return run_pipeline(self._df, steps).reset_index(drop=True)
 
     # ------------------------------------------------------------- data levels
     def _sync_levels(self) -> None:

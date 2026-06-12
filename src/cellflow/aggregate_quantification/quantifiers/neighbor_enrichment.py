@@ -24,6 +24,9 @@ class NeighborEnrichmentQuantifier(Quantifier):
     display_name = "Neighbor enrichment"
     requires = ("contact_analysis_path",)
     default_output_name = "neighbor_enrichment.csv"
+    # Long per (frame, cell_id, focal_label, neighbor_label) enrichment table.
+    shape_table = "cell_neighbors_by_frame"
+    table_keys = ("frame", "cell_id", "focal_label", "neighbor_label")
 
     def build(
         self,

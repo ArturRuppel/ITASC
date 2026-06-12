@@ -26,6 +26,7 @@ from cellflow.aggregate_quantification.quantifier import Quantifier
 from cellflow.napari.aggregate_quantification.plots import Plot, PlotContext, PlotParams
 from cellflow.napari.aggregate_quantification.plots._pooling import (
     GROUP_COLUMNS,
+    pool_from_aggregate,
     pool_quantity,
 )
 
@@ -53,6 +54,12 @@ class PoolPlot(Plot):
     #: Open the panel with adaptive (variable-width) bins — used by the potential
     #: landscape so sparse tails do not read as spurious wells.
     default_adaptive_bins: ClassVar[bool] = False
+    #: Read from the **persisted aggregated shape table** (the data-source flip)
+    #: rather than pooling each position's ``object_table`` live. True for every
+    #: plot whose product is its quantifier's ``object_table``; set False by views
+    #: that pool a *sub-table* of an artifact not yet materialized as its own
+    #: aggregated table (the dynamics per-track / per-tissue / curve views).
+    aggregated: ClassVar[bool] = True
 
     @property
     def quantity_id(self) -> str:
@@ -70,7 +77,14 @@ class PoolPlot(Plot):
         return quantifier.object_table(path)
 
     def pool(self, records: list[dict]) -> pd.DataFrame:
-        """Pool the consumed product across *records* (headless / off-thread)."""
+        """Pool the consumed product across *records* (headless / off-thread).
+
+        Reads the persisted aggregated table when :attr:`aggregated` (the default
+        data-source flip); views over a not-yet-materialized sub-table fall back
+        to live per-position pooling of their chosen ``_read_table``.
+        """
+        if self.aggregated:
+            return pool_from_aggregate(self.quantity_id, records)
         return pool_quantity(
             self.quantity_id,
             records,
