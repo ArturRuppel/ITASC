@@ -57,22 +57,51 @@ def test_group_build_metrics_nests_derived_under_their_producer():
     assert {"contacts", "cell_density"} <= cell_ids
 
 
-def test_metric_input_labels_name_the_producer_for_derived_inputs():
+def test_metric_dependencies_list_files_then_params_in_registry_order():
     from cellflow.aggregate_quantification.quantifier import available_quantifiers
 
     quantifiers = [cls() for cls in available_quantifiers()]
-    producers = sp.producers_by_field(quantifiers)
     by_id = {q.quantity_id: q for q in quantifiers}
 
-    # A raw metric shows its source-file inputs by friendly name.
-    assert sp.metric_input_labels(by_id["cell_shape"], producers) == [
-        "cell labels",
-        "pixel size",
+    # Pixel size is now a global param (required_build_params), not a file input —
+    # cell_shape's dependencies are its file input then its param, registry order.
+    assert sp.metric_dependencies(by_id["cell_shape"]) == [
+        "cell_labels_path",
+        "pixel_size_um",
     ]
-    # A derived metric shows its dependency by the producer's display name.
-    assert sp.metric_input_labels(by_id["neighbor_count"], producers) == [
-        "Cell–cell contacts"
+    # Cell dynamics adds the frame-interval param after pixel size.
+    assert sp.metric_dependencies(by_id["cell_dynamics"]) == [
+        "cell_labels_path",
+        "pixel_size_um",
+        "time_interval_s",
     ]
+    # A derived metric depends on the produced contacts intermediate (CA).
+    assert sp.metric_dependencies(by_id["neighbor_count"]) == ["contact_analysis_path"]
+
+
+def test_referenced_dependencies_dedupes_and_keeps_registry_order():
+    from cellflow.aggregate_quantification.quantifier import available_quantifiers
+
+    quantifiers = [cls() for cls in available_quantifiers()]
+    referenced = sp.referenced_dependencies(quantifiers)
+
+    # Deduped across all metrics, ordered by the registry, and only what's used.
+    assert referenced == [
+        "cell_labels_path",
+        "nucleus_labels_path",
+        "contact_analysis_path",
+        "pixel_size_um",
+        "time_interval_s",
+        "fov_area_mm2",
+    ]
+
+
+def test_coverage_badge_marks_full_coverage_with_a_check():
+    assert sp.coverage_badge(0, 5) == "0/5"
+    assert sp.coverage_badge(2, 5) == "2/5"
+    assert sp.coverage_badge(5, 5) == "5/5 ✓"
+    # An empty applicable set is not "full" — no check.
+    assert sp.coverage_badge(0, 0) == "0/0"
 
 
 def test_position_inputs_from_record_maps_catalogue_keys():
@@ -138,7 +167,7 @@ def test_records_satisfying_filters_by_requires():
     assert len(sp.records_satisfying((), records)) == 2
 
 
-def test_build_area_status_dots_and_run_callback(tmp_path):
+def test_build_area_coverage_badges_and_run_callback(tmp_path):
     app = _app()
     from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
     from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
@@ -148,12 +177,14 @@ def test_build_area_status_dots_and_run_callback(tmp_path):
     area = sp.BuildArea([quantifier], lambda qs, recs, ow: captured.append((qs, recs, ow)))
     row = area._rows["contacts"]
 
-    # No in-scope position has the inputs -> grey dot, checkbox disabled.
+    # No in-scope position has the inputs -> 0/0 badge, checkbox disabled, and the
+    # cell-labels legend entry reads 0/1 (one in-scope position, none with labels).
     area.set_context(AnalysisContext(records=[{"id": "x", "contact_analysis_path": Path("/x.h5")}]))
-    assert sp._DOT_NONE in row.dot.styleSheet()
+    assert row.badge.text() == "0/0"
     assert row.checkbox.isEnabled() is False
+    assert area._legend._entries["cell_labels_path"][2].text() == "0/1"
 
-    # One built + one missing among applicable positions -> red (not all built).
+    # One built + one missing among applicable positions -> partial 1/2, buildable.
     p1, p2 = tmp_path / "p1", tmp_path / "p2"
     p1.mkdir()
     p2.mkdir()
@@ -165,13 +196,15 @@ def test_build_area_status_dots_and_run_callback(tmp_path):
          "cell_tracked_labels_path": p2 / "c.tif"},
     ]
     area.set_context(AnalysisContext(records=records))
-    assert sp._DOT_MISSING in row.dot.styleSheet()
+    assert row.badge.text() == "1/2"
     assert row.checkbox.isEnabled() is True
+    # Both positions carry cell labels -> the legend shows full coverage.
+    assert area._legend._entries["cell_labels_path"][2].text() == "2/2 ✓"
 
-    # All applicable positions built -> green.
+    # All applicable positions built -> full coverage with a check.
     (p2 / "contact_analysis.h5").touch()
     area.set_context(AnalysisContext(records=records))
-    assert sp._DOT_ALL in row.dot.styleSheet()
+    assert row.badge.text() == "2/2 ✓"
 
     # Run forwards the checked metrics, the scope, and overwrite=True.
     row.checkbox.setChecked(True)
@@ -181,6 +214,40 @@ def test_build_area_status_dots_and_run_callback(tmp_path):
     assert [q.quantity_id for q in quantifiers] == ["contacts"]
     assert [r["id"] for r in recs] == ["p1", "p2"]
     assert overwrite is True
+
+    area.deleteLater()
+    app.processEvents()
+
+
+def test_build_area_param_gating_blocks_until_param_set(tmp_path):
+    # A metric with a required global param (pixel size) is not buildable until the
+    # param is set, even when every file input is present. The chip dims when unset.
+    app = _app()
+    from cellflow.aggregate_quantification.quantifiers.cell_shape import CellShapeQuantifier
+    from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
+
+    params: dict = {"pixel_size_um": None}
+    area = sp.BuildArea(
+        [CellShapeQuantifier()], lambda *a: None, params_provider=lambda: dict(params)
+    )
+    row = area._rows["cell_shape"]
+
+    p1 = tmp_path / "p1"
+    p1.mkdir()
+    records = [{"id": "p1", "position_path": p1, "cell_tracked_labels_path": p1 / "c.tif"}]
+
+    # Files present but pixel size unset -> not buildable; the px chip is struck.
+    area.set_context(AnalysisContext(records=records))
+    assert row.checkbox.isEnabled() is False
+    assert "line-through" in row.chips["pixel_size_um"].styleSheet()
+    assert area._legend._entries["pixel_size_um"][2].text() == "unset"
+
+    # Set the param -> buildable; the px chip is no longer struck.
+    params["pixel_size_um"] = 0.5
+    area._refresh()
+    assert row.checkbox.isEnabled() is True
+    assert "line-through" not in row.chips["pixel_size_um"].styleSheet()
+    assert area._legend._entries["pixel_size_um"][2].text() == "set ✓"
 
     area.deleteLater()
     app.processEvents()

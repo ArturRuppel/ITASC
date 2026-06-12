@@ -27,8 +27,10 @@ class ShapeRelationalQuantifier(Quantifier):
 
     quantity_id = "shape_relational"
     display_name = "Nucleus–cell shape"
-    # Both label stacks (to pair) plus a pixel size (to emit physical units).
-    requires = ("cell_labels_path", "nucleus_labels_path", "pixel_size_um")
+    # Both label stacks (to pair); pixel size (to emit physical units) is a
+    # global build param set in the Parameters panel.
+    requires = ("cell_labels_path", "nucleus_labels_path")
+    required_build_params = {"pixel_size_um": "pixel size (µm/px)"}
 
     default_output_name = "shape_relational.csv"
 

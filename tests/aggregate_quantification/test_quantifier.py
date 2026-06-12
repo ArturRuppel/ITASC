@@ -50,10 +50,12 @@ def test_nucleus_shape_quantifier_requires_and_reads_nucleus_labels(tmp_path):
     tifffile.imwrite(nuc_path, np.stack([frame, frame]))
 
     q = NucleusShapeQuantifier()
-    assert q.requires == ("nucleus_labels_path", "pixel_size_um")
+    # Pixel size is now a global build param, not a per-position file requirement.
+    assert q.requires == ("nucleus_labels_path",)
+    assert q.required_build_params == {"pixel_size_um": "pixel size (µm/px)"}
     # Cell labels alone do not satisfy a nucleus-shape build.
     assert q.can_build(
-        PositionInputs(position_dir=tmp_path, cell_labels_path=nuc_path, pixel_size_um=1.0)
+        PositionInputs(position_dir=tmp_path, cell_labels_path=nuc_path)
     ) is False
     inputs = PositionInputs(
         position_dir=tmp_path, nucleus_labels_path=nuc_path, pixel_size_um=1.0
@@ -66,18 +68,19 @@ def test_nucleus_shape_quantifier_requires_and_reads_nucleus_labels(tmp_path):
     assert q.object_table(out)["cell_id"].tolist() == [1, 2, 1, 2]
 
 
-def test_shape_relational_quantifier_requires_both_labels_and_pixel_size(tmp_path):
+def test_shape_relational_quantifier_requires_both_labels(tmp_path):
     q = ShapeRelationalQuantifier()
-    assert q.requires == ("cell_labels_path", "nucleus_labels_path", "pixel_size_um")
+    # Pixel size is a global build param now; the file requirement is both stacks.
+    assert q.requires == ("cell_labels_path", "nucleus_labels_path")
+    assert q.required_build_params == {"pixel_size_um": "pixel size (µm/px)"}
     only_cell = PositionInputs(
-        position_dir=tmp_path, cell_labels_path=tmp_path / "c.tif", pixel_size_um=1.0
+        position_dir=tmp_path, cell_labels_path=tmp_path / "c.tif"
     )
     assert q.can_build(only_cell) is False
     both = PositionInputs(
         position_dir=tmp_path,
         cell_labels_path=tmp_path / "c.tif",
         nucleus_labels_path=tmp_path / "n.tif",
-        pixel_size_um=1.0,
     )
     assert q.can_build(both) is True
 
@@ -101,11 +104,13 @@ def test_cell_shape_quantifier_build_read_and_object_table(tmp_path):
     out = q.default_output(inputs)
 
     assert q.can_build(inputs) is True
-    # Cell labels alone are not enough — a pixel size is required to build.
+    # No cell labels -> not buildable.
     assert q.can_build(PositionInputs(position_dir=tmp_path)) is False
+    # Cell labels alone now satisfy the per-position file gate; pixel size is a
+    # global build param the studio checks via required_build_params, not can_build.
     assert (
         q.can_build(PositionInputs(position_dir=tmp_path, cell_labels_path=cell_path))
-        is False
+        is True
     )
     assert q.is_built(out) is False
 

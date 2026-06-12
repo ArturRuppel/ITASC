@@ -7,15 +7,16 @@ z-score shuffle count are plot-only. Rather than duplicate these across the
 builder and every plot, the studio hosts **one** :class:`SharedParamsWidget`
 above both areas:
 
-* :meth:`SharedParamsWidget.stamp` writes the build overrides
-  (``pixel_size_um`` / ``time_interval_s``) onto catalogue records before a build,
-  so a position whose metadata can't auto-resolve still builds.
+* :meth:`SharedParamsWidget.stamp` writes the global ``pixel_size_um`` /
+  ``time_interval_s`` onto every catalogue record before a build, so the build
+  reads them off ``PositionInputs``. These are global-only — there is no
+  per-position auto-resolution; a metric needing one is unbuildable until it is set.
 * :meth:`SharedParamsWidget.plot_params` packages the plot-time tuning as a
   :class:`~cellflow.napari.aggregate_quantification.plots.PlotParams` for the Plot
   area.
 
-Every field is "auto" by default (blank → per-position resolution); the
-``changed`` signal lets the studio refresh build availability as values change.
+Every field is blank (unset) by default; the ``changed`` signal lets the studio
+refresh build availability as values change.
 """
 from __future__ import annotations
 
@@ -46,17 +47,19 @@ class SharedParamsWidget(QWidget):
         self._pixel_size_edit = self._field(
             col,
             "Pixel size (µm/px):",
-            placeholder="auto",
-            tip="µm per pixel. Used by shape / dynamics builds and physical-unit "
-            "plot axes (potential landscape, density). Blank auto-resolves per "
-            "position from its config / label TIFF.",
+            placeholder="required for shape / dynamics",
+            tip="µm per pixel, applied to all positions. Required to build the "
+            "shape / dynamics metrics and to scale physical-unit plot axes "
+            "(potential landscape, density). No per-position auto-resolution — "
+            "blank leaves those metrics unbuildable.",
         )
         self._frame_interval_edit = self._field(
             col,
             "Frame interval (s):",
-            placeholder="auto",
-            tip="Seconds per frame. Used by dynamics builds. Blank auto-resolves "
-            "per position.",
+            placeholder="required for dynamics",
+            tip="Seconds per frame, applied to all positions. Required to build the "
+            "dynamics metrics. No per-position auto-resolution — blank leaves them "
+            "unbuildable.",
         )
         self._fov_edit = self._field(
             col,
@@ -106,26 +109,32 @@ class SharedParamsWidget(QWidget):
 
     # ---------------------------------------------------------------- build side
     def build_params(self) -> dict:
-        """The shared knobs a quantifier may consume at build time.
+        """The shared knobs the studio reads at build time.
 
-        Pixel size / frame interval reach a build through :meth:`stamp` (they are
-        ``PositionInputs`` fields); these two are quantifier ``params`` instead —
-        the contact-type z-score's shuffle count and the density's field-of-view
-        area. Blank → the quantifier's own default. Only quantifiers that opt in
-        (``wants_build_params``) are handed this.
+        Two roles share this dict. **Gating**: the Build area's
+        ``required_build_params`` check reads ``pixel_size_um`` / ``time_interval_s``
+        / ``fov_area_mm2`` here to tell a metric's param chips set from unset and to
+        enable its checkbox. **Build values**: a quantifier that opts in
+        (``wants_build_params``) is handed this dict as its ``params`` — the
+        contact-type z-score's ``shuffles`` and the density's ``fov_area_mm2``.
+        Pixel size / frame interval values still reach shape/dynamics builds
+        through :meth:`stamp` (they are ``PositionInputs`` fields), so they appear
+        here only to drive gating. Blank → ``None`` (unset) for the positives.
         """
         shuffles = _parse_int(self._shuffles_edit.text())
         return {
             "shuffles": shuffles if shuffles and shuffles > 0 else PlotParams().shuffles,
+            "pixel_size_um": _parse_positive(self._pixel_size_edit.text()),
+            "time_interval_s": _parse_positive(self._frame_interval_edit.text()),
             "fov_area_mm2": _parse_positive(self._fov_edit.text()),
         }
 
     def stamp(self, records: list[dict]) -> list[dict]:
-        """Return *records* with build overrides applied, when any are set.
+        """Return *records* with the global px/Δt applied, when set.
 
         A set pixel size / frame interval is written onto each record (the keys
-        :func:`position_inputs_from_record` reads as explicit overrides), so a
-        build uses the shared value instead of failing to auto-resolve. Records
+        :func:`position_inputs_from_record` carries into ``PositionInputs``), so a
+        build reads the shared value. There is no per-position fallback. Records
         are copied; the originals are untouched.
         """
         pixel = _parse_positive(self._pixel_size_edit.text())

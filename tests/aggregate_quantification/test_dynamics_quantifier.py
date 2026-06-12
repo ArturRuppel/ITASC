@@ -41,23 +41,23 @@ def test_dynamics_outputs_nest_under_aggregate_quantification(tmp_path):
     )
 
 
-def test_dynamics_requires_labels_pixel_size_and_interval(tmp_path):
+def test_dynamics_requires_labels_with_global_pixel_size_and_interval(tmp_path):
     q = CellDynamicsQuantifier()
-    assert q.requires == ("cell_labels_path", "pixel_size_um", "time_interval_s")
+    # Pixel size + frame interval are global build params now; the per-position
+    # file requirement is just the cell labels.
+    assert q.requires == ("cell_labels_path",)
+    assert q.required_build_params == {
+        "pixel_size_um": "pixel size (µm/px)",
+        "time_interval_s": "frame interval (s)",
+    }
     labels = tmp_path / "cells.tif"
     tifffile.imwrite(labels, _moving_disk_stack([(40, 40), (40, 41)]))
-    # Missing the frame interval -> not buildable.
+    # The cell labels alone satisfy the per-position file gate; px/Δt gating is the
+    # studio's required_build_params, checked separately.
     assert q.can_build(
-        PositionInputs(position_dir=tmp_path, cell_labels_path=labels, pixel_size_um=1.0)
-    ) is False
-    assert q.can_build(
-        PositionInputs(
-            position_dir=tmp_path,
-            cell_labels_path=labels,
-            pixel_size_um=1.0,
-            time_interval_s=1.0,
-        )
+        PositionInputs(position_dir=tmp_path, cell_labels_path=labels)
     ) is True
+    assert q.can_build(PositionInputs(position_dir=tmp_path)) is False
 
 
 def test_build_read_roundtrip_ballistic_track(tmp_path):

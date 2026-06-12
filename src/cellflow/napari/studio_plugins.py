@@ -20,10 +20,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from qtpy.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from cellflow.aggregate_quantification.frame_interval import resolve_time_interval_s
-from cellflow.aggregate_quantification.pixel_size import resolve_pixel_size_um
 from cellflow.aggregate_quantification.quantifier import (
     PositionInputs,
     Quantifier,
@@ -54,9 +60,10 @@ class PluginEntry:
 def position_inputs_from_record(record: dict) -> PositionInputs:
     """Build :class:`PositionInputs` from a normalized catalogue record.
 
-    ``pixel_size_um`` / ``time_interval_s`` prefer an explicit value on the
-    record (a plugin may stamp a manual override there) and otherwise auto-resolve
-    from the position's ``cellflow_config.json`` or the label TIFF's tags.
+    ``pixel_size_um`` / ``time_interval_s`` are **global** build params: they are
+    taken only from the value stamped on the record (the Parameters panel's
+    px/Δt, written by ``SharedParamsWidget.stamp``), never auto-resolved from a
+    position's ``cellflow_config.json`` or label TIFF tags. Absent ⇒ ``None``.
     """
     out = record.get("contact_analysis_path")
     cell = record.get("cell_tracked_labels_path")
@@ -68,36 +75,15 @@ def position_inputs_from_record(record: dict) -> PositionInputs:
         position_dir=Path(position_dir),
         cell_labels_path=cell_path,
         nucleus_labels_path=nucleus_path,
-        pixel_size_um=_resolve_pixel_size(record, position_dir, cell_path),
-        time_interval_s=_resolve_time_interval(
-            record, position_dir, cell_path or nucleus_path
-        ),
+        pixel_size_um=_positive_float(record.get("pixel_size_um")),
+        time_interval_s=_positive_float(record.get("time_interval_s")),
         # The contacts artifact is a *produced* input — the contacts quantifier
         # writes it. The catalogue stamps its expected path on every position
         # whether or not it has been built yet, so gate on the file actually
         # existing: an unbuilt contacts product is not an available input, and a
-        # position lacking it is not applicable to the contacts-derived metrics
-        # (else their status dots read red for positions that can never build).
+        # position lacking it is not applicable to the contacts-derived metrics.
         contact_analysis_path=Path(out) if out and Path(out).is_file() else None,
     )
-
-
-def _resolve_pixel_size(
-    record: dict, position_dir: Path | str, cell_path: Path | None
-) -> float | None:
-    explicit = _positive_float(record.get("pixel_size_um"))
-    if explicit is not None:
-        return explicit
-    return resolve_pixel_size_um(position_dir, cell_path)
-
-
-def _resolve_time_interval(
-    record: dict, position_dir: Path | str, label_path: Path | None
-) -> float | None:
-    explicit = _positive_float(record.get("time_interval_s"))
-    if explicit is not None:
-        return explicit
-    return resolve_time_interval_s(position_dir, label_path)
 
 
 def _positive_float(value: object) -> float | None:
@@ -179,28 +165,52 @@ def available_tool_plugins() -> list[PluginEntry]:
     return entries
 
 
-#: Status-dot colours for a metric's availability across the in-scope positions.
-_DOT_ALL = "#3fb950"  # green — built for every applicable position
-_DOT_MISSING = "#f85149"  # red — built for some / none
-_DOT_NONE = "#6e7681"  # grey — no in-scope position has the inputs
+#: Accent colour for full coverage / a set param (the ``✓`` state). Reused for
+#: the legend badges and the output-row coverage badges. No red anywhere: an
+#: unmet dependency reads off *which* chip is dimmed, not a red row.
+_FULL_COLOR = "#3fb950"
+
+
+@dataclass(frozen=True)
+class DependencySpec:
+    """How a build dependency is shown in the legend and the chip strips: a short
+    abbreviation, a full label, and whether it is a per-position ``file`` input or
+    a global ``param``."""
+
+    abbrev: str
+    label: str
+    kind: str  # "file" | "param"
+
+
+#: Ordered registry of build dependencies → display metadata, the single source
+#: of truth for the input legend and the per-output chip strips. ``file`` inputs
+#: are per-position (a quantifier's :attr:`~Quantifier.requires`); ``param``
+#: inputs are global (set in the Parameters panel — a quantifier's
+#: :attr:`~Quantifier.required_build_params`). ``contact_analysis_path`` is a
+#: produced intermediate — the contacts artifact — shown as the ``CA`` file chip
+#: on the contacts-derived metrics; its coverage mirrors the contacts build.
+DEPENDENCIES: dict[str, DependencySpec] = {
+    "cell_labels_path": DependencySpec("C", "cell labels", "file"),
+    "nucleus_labels_path": DependencySpec("N", "nucleus labels", "file"),
+    "contact_analysis_path": DependencySpec("CA", "contacts", "file"),
+    "pixel_size_um": DependencySpec("px", "pixel size", "param"),
+    "time_interval_s": DependencySpec("Δt", "frame interval", "param"),
+    "fov_area_mm2": DependencySpec("A", "FOV area", "param"),
+}
 
 
 @dataclass
 class _MetricRow:
-    """One metric's controls in the :class:`BuildArea`."""
+    """One metric's controls in the :class:`BuildArea`.
+
+    ``chips`` maps each dependency field to its abbreviation label so a row can
+    dim the chip whose input is fully unmet; ``badge`` shows ``built/applicable``.
+    """
 
     quantifier: Quantifier
     checkbox: QCheckBox
-    dot: QLabel
-
-
-#: Friendly names for the raw ``PositionInputs`` fields a metric can require.
-_INPUT_LABELS: dict[str, str] = {
-    "cell_labels_path": "cell labels",
-    "nucleus_labels_path": "nucleus labels",
-    "pixel_size_um": "pixel size",
-    "time_interval_s": "frame interval",
-}
+    chips: dict[str, QLabel]
+    badge: QLabel
 
 
 def producers_by_field(
@@ -215,20 +225,27 @@ def producers_by_field(
     return {q.produces: q for q in quantifiers if q.produces}
 
 
-def input_label(field: str, producers: Mapping[str, Quantifier]) -> str:
-    """Friendly label for a required input — the producer's display name when the
-    input is itself a built quantity, else a static raw-input label."""
-    producer = producers.get(field)
-    if producer is not None:
-        return producer.display_name
-    return _INPUT_LABELS.get(field, field)
+def metric_dependencies(quantifier: Quantifier) -> list[str]:
+    """Ordered (registry order) dependency fields *quantifier* consumes — its file
+    :attr:`~Quantifier.requires` plus its global
+    :attr:`~Quantifier.required_build_params`."""
+    fields = set(quantifier.requires) | set(quantifier.required_build_params)
+    return [field for field in DEPENDENCIES if field in fields]
 
 
-def metric_input_labels(
-    quantifier: Quantifier, producers: Mapping[str, Quantifier]
-) -> list[str]:
-    """Friendly labels for every input *quantifier* needs to build."""
-    return [input_label(field, producers) for field in quantifier.requires]
+def referenced_dependencies(quantifiers: Iterable[Quantifier]) -> list[str]:
+    """The dependency fields any of *quantifiers* consume, in registry order, so
+    the legend lists only what the registered metrics actually use."""
+    referenced: set[str] = set()
+    for quantifier in quantifiers:
+        referenced.update(metric_dependencies(quantifier))
+    return [field for field in DEPENDENCIES if field in referenced]
+
+
+def coverage_badge(built: int, total: int) -> str:
+    """``built/total``, suffixed with ``✓`` at full coverage (non-zero total)."""
+    text = f"{built}/{total}"
+    return f"{text} ✓" if total > 0 and built == total else text
 
 
 @dataclass(frozen=True)
@@ -323,18 +340,136 @@ def group_build_metrics(quantifiers: Iterable[Quantifier]) -> list[BuildGroup]:
     return groups
 
 
+def _param_is_set(value: object) -> bool:
+    """True when *value* is a positive real number (a satisfied global param)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _coverage_level(built: int, total: int) -> str:
+    """``full`` / ``partial`` / ``none`` for a built-of-total coverage count."""
+    if total <= 0 or built == 0:
+        return "none"
+    return "full" if built == total else "partial"
+
+
+def _style_chip(label: QLabel, *, satisfied: bool) -> None:
+    """A dependency abbreviation chip: muted + struck when its input is fully
+    unmet (no in-scope position has the file, or the global param is unset), plain
+    bold otherwise. Dimming is how a row says *which* dependency blocks it."""
+    style = "font-size: 8pt; font-weight: 600;"
+    if not satisfied:
+        style += " color: palette(mid); text-decoration: line-through;"
+    label.setStyleSheet(style)
+
+
+def _style_badge(label: QLabel, *, level: str) -> None:
+    """A coverage badge: accent/green at ``full``, muted at ``none``, plain
+    ``partial``. Never red — partial coverage is a normal, buildable state."""
+    if level == "full":
+        label.setStyleSheet(f"font-size: 8pt; color: {_FULL_COLOR};")
+    elif level == "none":
+        label.setStyleSheet("font-size: 8pt; color: palette(mid);")
+    else:
+        label.setStyleSheet("font-size: 8pt;")
+
+
+class InputLegend(QWidget):
+    """The deduped INPUTS legend rendered above the metric rows.
+
+    A **Params** column (global, set/unset) and a **Files** column (per-position
+    coverage ``X/Y``), listing only the dependencies the registered metrics
+    reference. It is the single source of truth for input coverage; the output
+    rows carry bare abbreviation chips keyed back to these entries.
+    """
+
+    #: Left margin (px) aligning the legend body under its heading.
+    _INDENT = 12
+
+    def __init__(
+        self,
+        param_fields: list[str],
+        file_fields: list[str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        #: field -> (abbrev label, name label, badge label)
+        self._entries: dict[str, tuple[QLabel, QLabel, QLabel]] = {}
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(1)
+        heading = QLabel("INPUTS")
+        parameter_heading(heading)
+        col.addWidget(heading)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(self._INDENT, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(1)
+        grid.setColumnMinimumWidth(3, 18)  # gutter between the Params/Files columns
+        if param_fields:
+            params_hdr = QLabel("Params")
+            status_label(params_hdr, muted=True)
+            grid.addWidget(params_hdr, 0, 0, 1, 3)
+        if file_fields:
+            files_hdr = QLabel("Files")
+            status_label(files_hdr, muted=True)
+            grid.addWidget(files_hdr, 0, 4, 1, 3)
+        for i, field in enumerate(param_fields):
+            self._add_entry(grid, i + 1, 0, field)
+        for i, field in enumerate(file_fields):
+            self._add_entry(grid, i + 1, 4, field)
+        col.addLayout(grid)
+
+    def _add_entry(
+        self, grid: QGridLayout, row: int, base_col: int, field: str
+    ) -> None:
+        spec = DEPENDENCIES[field]
+        abbrev = QLabel(spec.abbrev)
+        abbrev.setToolTip(spec.label)
+        name = QLabel(spec.label)
+        badge = QLabel("")
+        grid.addWidget(abbrev, row, base_col)
+        grid.addWidget(name, row, base_col + 1)
+        grid.addWidget(badge, row, base_col + 2)
+        self._entries[field] = (abbrev, name, badge)
+
+    def update_coverage(
+        self,
+        *,
+        param_set: Mapping[str, bool],
+        file_coverage: Mapping[str, int],
+        total: int,
+    ) -> None:
+        """Refresh every entry's badge + dimming from the latest scope/params."""
+        for field, (abbrev, name, badge) in self._entries.items():
+            spec = DEPENDENCIES[field]
+            if spec.kind == "param":
+                satisfied = bool(param_set.get(field, False))
+                badge.setText("set ✓" if satisfied else "unset")
+                _style_badge(badge, level="full" if satisfied else "none")
+            else:
+                built = int(file_coverage.get(field, 0))
+                satisfied = built > 0
+                badge.setText(coverage_badge(built, total))
+                _style_badge(badge, level=_coverage_level(built, total))
+            _style_chip(abbrev, satisfied=satisfied)
+            status_label(name, muted=not satisfied)
+
+
 class BuildArea(QWidget):
     """Compact multi-metric build panel.
 
-    Metrics are grouped by their input type (Cell / Nucleus / Cell + nucleus),
-    with metrics *derived* from another metric's artifact nested under their
-    producer's group ("Derived from …"). Each row is a checkbox + a status dot
-    showing whether the metric's artifact exists for *every* in-scope position
-    that has the inputs (green = all built, red = some missing, grey = no in-scope
-    position has the inputs) + a muted caption of the inputs it needs. A single
-    Run button (re)builds every checked metric, overwriting existing artifacts;
-    execution is delegated to the studio's *build_callback* so building stays
-    centralized (threaded, status-refreshed).
+    An :class:`InputLegend` at the top deduplicates the dependencies the metrics
+    consume — global params (set/unset) and per-position file inputs (``X/Y``
+    coverage). Below it, metrics are grouped by input type (Cell / Nucleus / Cell
+    + nucleus), with metrics *derived* from another metric's artifact nested under
+    their producer's group ("Derived from …"). Each row is a checkbox + a strip of
+    dependency abbreviation chips (a chip dims + strikes when its input is fully
+    unmet) + a ``built/applicable`` coverage badge (``✓`` accent at full coverage,
+    plain when partial — never red). A single Run button (re)builds every checked
+    metric, overwriting existing artifacts; execution is delegated to the studio's
+    *build_callback* so building stays centralized (threaded, status-refreshed).
     """
 
     #: Left margin (px) applied to a derived group's header + rows.
@@ -363,7 +498,16 @@ class BuildArea(QWidget):
         layout.setSpacing(2)
 
         quantifier_list = list(quantifiers)
-        producers = producers_by_field(quantifier_list)
+        referenced = referenced_dependencies(quantifier_list)
+        param_fields = [f for f in referenced if DEPENDENCIES[f].kind == "param"]
+        file_fields = [f for f in referenced if DEPENDENCIES[f].kind == "file"]
+        self._legend = InputLegend(param_fields, file_fields)
+        layout.addWidget(self._legend)
+
+        outputs_heading = QLabel("OUTPUTS")
+        parameter_heading(outputs_heading)
+        outputs_heading.setContentsMargins(0, 6, 0, 0)
+        layout.addWidget(outputs_heading)
         for group in group_build_metrics(quantifier_list):
             indent = self._DERIVED_INDENT if group.derived else 0
             header = QLabel(("↳ " if group.derived else "") + group.label)
@@ -371,7 +515,7 @@ class BuildArea(QWidget):
             header.setContentsMargins(indent, 4, 0, 0)
             layout.addWidget(header)
             for quantifier in group.members:
-                self._add_metric_row(layout, quantifier, producers, indent)
+                self._add_metric_row(layout, quantifier, indent)
 
         run_row = QHBoxLayout()
         run_row.setContentsMargins(0, 0, 0, 0)
@@ -401,29 +545,40 @@ class BuildArea(QWidget):
         self,
         layout: QVBoxLayout,
         quantifier: Quantifier,
-        producers: Mapping[str, Quantifier],
         indent: int,
     ) -> None:
         row = QHBoxLayout()
         row.setContentsMargins(indent, 0, 0, 0)
-        dot = QLabel("●")
-        dot.setToolTip("")
-        row.addWidget(dot)
+        row.setSpacing(4)
         checkbox = QCheckBox(quantifier.display_name)
         checkbox.toggled.connect(self._sync_check_all_label)
         row.addWidget(checkbox)
         row.addStretch(1)
-        # Source inputs plus any required shared param (e.g. density's FOV area),
-        # so a metric that needs a param is shown to need it rather than silently
-        # failing at build time.
-        needs = [*metric_input_labels(quantifier, producers),
-                 *quantifier.required_build_params.values()]
-        if needs:
-            caption = QLabel("needs: " + " · ".join(needs))
-            status_label(caption, muted=True)
-            row.addWidget(caption)
+        # One abbreviation chip per dependency (files then params, registry order).
+        # The legend carries the coverage; here the chips just name the inputs and
+        # dim when fully unmet, so "why can't I build this" reads off the row.
+        chips: dict[str, QLabel] = {}
+        for field in metric_dependencies(quantifier):
+            spec = DEPENDENCIES[field]
+            chip = QLabel(spec.abbrev)
+            chip.setToolTip(spec.label)
+            _style_chip(chip, satisfied=True)
+            row.addWidget(chip)
+            chips[field] = chip
+        # A producer (contacts) flags the intermediate it emits: "⟶ CA".
+        produced = DEPENDENCIES.get(quantifier.produces)
+        if produced is not None:
+            marker = QLabel(f"⟶ {produced.abbrev}")
+            marker.setToolTip(f"produces {produced.label}")
+            status_label(marker, muted=True)
+            row.addWidget(marker)
+        badge = QLabel("")
+        badge.setMinimumWidth(40)
+        row.addWidget(badge)
         layout.addLayout(row)
-        self._rows[quantifier.quantity_id] = _MetricRow(quantifier, checkbox, dot)
+        self._rows[quantifier.quantity_id] = _MetricRow(
+            quantifier, checkbox, chips, badge
+        )
 
     def set_context(self, ctx: AnalysisContext) -> None:
         self._records = list(ctx.records)
@@ -431,40 +586,63 @@ class BuildArea(QWidget):
 
     def _refresh(self) -> None:
         params = self._params_provider() if self._params_provider else {}
+        inputs = [position_inputs_from_record(record) for record in self._records]
+        total = len(self._records)
+        # Per-input coverage, computed once — the legend's single source of truth.
+        file_coverage = {
+            field: sum(1 for inp in inputs if getattr(inp, field, None) is not None)
+            for field, spec in DEPENDENCIES.items()
+            if spec.kind == "file"
+        }
+        param_set = {
+            field: _param_is_set(params.get(field))
+            for field, spec in DEPENDENCIES.items()
+            if spec.kind == "param"
+        }
+        self._legend.update_coverage(
+            param_set=param_set, file_coverage=file_coverage, total=total
+        )
+
         any_buildable = False
         for row in self._rows.values():
-            applicable = records_satisfying(row.quantifier.requires, self._records)
-            total = len(applicable)
+            quantifier = row.quantifier
+            applicable = records_satisfying(quantifier.requires, self._records)
+            n_app = len(applicable)
             built = sum(
                 1
                 for record in applicable
-                if row.quantifier.is_built(output_for_record(row.quantifier, record))
+                if quantifier.is_built(output_for_record(quantifier, record))
             )
-            missing_params = row.quantifier.missing_build_params(params)
-            if total == 0:
-                color, tip = _DOT_NONE, "No in-scope position has the inputs."
-            elif missing_params:
-                # Inputs are present, but a required shared param is not set, so the
-                # build can't run — grey it out and say what's missing.
-                color = _DOT_NONE
-                tip = "Set " + " · ".join(missing_params) + " in Parameters to build."
-            elif built == total:
-                color, tip = _DOT_ALL, f"Built for all {total} in-scope position(s)."
-            else:
-                color, tip = (
-                    _DOT_MISSING,
-                    f"Built for {built} of {total} in-scope position(s).",
-                )
-            buildable = total > 0 and not missing_params
-            row.dot.setStyleSheet(f"color: {color};")
-            row.dot.setToolTip(tip)
+            missing_params = quantifier.missing_build_params(params)
+            buildable = n_app > 0 and not missing_params
+            # Built/applicable coverage badge — no red; an unmet dependency shows
+            # as a dimmed chip, not a red row.
+            row.badge.setText(coverage_badge(built, n_app))
+            _style_badge(row.badge, level=_coverage_level(built, n_app))
+            for field, chip in row.chips.items():
+                if DEPENDENCIES[field].kind == "param":
+                    satisfied = param_set.get(field, False)
+                else:
+                    satisfied = file_coverage.get(field, 0) > 0
+                _style_chip(chip, satisfied=satisfied)
+            tip = self._row_tip(n_app, built, missing_params)
+            row.badge.setToolTip(tip)
             row.checkbox.setEnabled(buildable)
             row.checkbox.setToolTip(tip)
             any_buildable = any_buildable or buildable
         self._run_btn.setEnabled(any_buildable)
         self._check_all_btn.setEnabled(any_buildable)
         self._sync_check_all_label()
-        self._sync_check_all_label()
+
+    @staticmethod
+    def _row_tip(applicable: int, built: int, missing_params: tuple[str, ...]) -> str:
+        if applicable == 0:
+            return "No in-scope position has the inputs."
+        if missing_params:
+            return "Set " + " · ".join(missing_params) + " in Parameters to build."
+        if built == applicable:
+            return f"Built for all {applicable} in-scope position(s)."
+        return f"Built for {built} of {applicable} in-scope position(s)."
 
     def _buildable_rows(self) -> list[_MetricRow]:
         return [row for row in self._rows.values() if row.checkbox.isEnabled()]

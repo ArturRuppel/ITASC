@@ -25,10 +25,10 @@ class CellShapeQuantifier(Quantifier):
 
     quantity_id = "cell_shape"
     display_name = "Cell shape"
-    # Cell labels plus a pixel size (to emit physical µm / µm²); no nucleus /
-    # contacts dependency. A position with no resolvable pixel size is not
-    # buildable until one is supplied.
-    requires = ("cell_labels_path", "pixel_size_um")
+    # Cell labels only; no nucleus / contacts dependency. Pixel size (to emit
+    # physical µm / µm²) is a global build param set in the Parameters panel.
+    requires = ("cell_labels_path",)
+    required_build_params = {"pixel_size_um": "pixel size (µm/px)"}
 
     #: Default artifact name; ``default_output`` nests it under the shared
     #: ``aggregate_quantification/`` folder. The builder mkdirs the parent.

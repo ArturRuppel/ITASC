@@ -29,7 +29,12 @@ class NucleusDynamicsQuantifier(Quantifier):
 
     quantity_id = "nucleus_dynamics"
     display_name = "Nucleus dynamics"
-    requires = ("nucleus_labels_path", "pixel_size_um", "time_interval_s")
+    requires = ("nucleus_labels_path",)
+    # Pixel size + frame interval are global build params (see CellDynamics).
+    required_build_params = {
+        "pixel_size_um": "pixel size (µm/px)",
+        "time_interval_s": "frame interval (s)",
+    }
 
     default_output_name = "nucleus_dynamics.h5"
 

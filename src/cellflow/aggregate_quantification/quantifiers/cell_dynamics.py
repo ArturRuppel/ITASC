@@ -29,10 +29,15 @@ class CellDynamicsQuantifier(Quantifier):
 
     quantity_id = "cell_dynamics"
     display_name = "Cell dynamics"
-    # Cell labels plus a pixel size (µm/px) and a frame interval (s/frame) so
-    # every output lands in physical units. A position missing either is not
-    # buildable until one is supplied.
-    requires = ("cell_labels_path", "pixel_size_um", "time_interval_s")
+    requires = ("cell_labels_path",)
+    # Pixel size (µm/px) + frame interval (s/frame) are global build params, set
+    # once in the Parameters panel and applied to every position, so each output
+    # lands in physical units. They gate the build (unset ⇒ not buildable) and
+    # reach :meth:`build` via the stamped ``PositionInputs``, not the params dict.
+    required_build_params = {
+        "pixel_size_um": "pixel size (µm/px)",
+        "time_interval_s": "frame interval (s)",
+    }
 
     default_output_name = "cell_dynamics.h5"
 

@@ -25,8 +25,10 @@ class NucleusShapeQuantifier(Quantifier):
 
     quantity_id = "nucleus_shape"
     display_name = "Nucleus shape"
-    # Nucleus labels plus a pixel size (to emit physical µm / µm²).
-    requires = ("nucleus_labels_path", "pixel_size_um")
+    # Nucleus labels only; pixel size (to emit physical µm / µm²) is a global
+    # build param set in the Parameters panel.
+    requires = ("nucleus_labels_path",)
+    required_build_params = {"pixel_size_um": "pixel size (µm/px)"}
 
     default_output_name = "nucleus_shape.csv"
 
