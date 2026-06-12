@@ -28,6 +28,9 @@ class ContactsQuantifier(Quantifier):
     # Cell labels are mandatory; nucleus labels are optional (when present they
     # enable the cell_id == nucleus_id invariant check and NLS classification).
     requires = ("cell_labels_path",)
+    #: The contacts artifact is the input the contacts-derived quantifiers
+    #: (neighbor count / enrichment / z-score / density / energetics) consume.
+    produces = "contact_analysis_path"
 
     #: Default artifact name when a position does not dictate one.
     default_output_name = "contact_analysis.h5"

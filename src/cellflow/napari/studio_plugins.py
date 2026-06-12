@@ -15,7 +15,7 @@ the body is fed the catalogue context.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,7 +33,7 @@ from cellflow.napari.aggregate_quantification.plugins import (
     AnalysisContext,
     available_analysis_plugins,
 )
-from cellflow.napari.ui_style import action_button, status_label
+from cellflow.napari.ui_style import action_button, parameter_heading, status_label
 
 #: Signature of the studio callback the Build area invokes to run a build:
 #: ``(quantifiers, in_scope_records, overwrite)`` — one job per (quantifier,
@@ -188,16 +188,151 @@ class _MetricRow:
     dot: QLabel
 
 
+#: Friendly names for the raw ``PositionInputs`` fields a metric can require.
+_INPUT_LABELS: dict[str, str] = {
+    "cell_labels_path": "cell labels",
+    "nucleus_labels_path": "nucleus labels",
+    "pixel_size_um": "pixel size",
+    "time_interval_s": "frame interval",
+}
+
+
+def producers_by_field(
+    quantifiers: Iterable[Quantifier],
+) -> dict[str, Quantifier]:
+    """Map each produced ``PositionInputs`` field → the quantifier that builds it.
+
+    A metric whose :attr:`~Quantifier.requires` names one of these fields is
+    *derived from* that producer (today: the contacts-derived metrics consume the
+    ``contact_analysis_path`` that the contacts quantifier produces).
+    """
+    return {q.produces: q for q in quantifiers if q.produces}
+
+
+def input_label(field: str, producers: Mapping[str, Quantifier]) -> str:
+    """Friendly label for a required input — the producer's display name when the
+    input is itself a built quantity, else a static raw-input label."""
+    producer = producers.get(field)
+    if producer is not None:
+        return producer.display_name
+    return _INPUT_LABELS.get(field, field)
+
+
+def metric_input_labels(
+    quantifier: Quantifier, producers: Mapping[str, Quantifier]
+) -> list[str]:
+    """Friendly labels for every input *quantifier* needs to build."""
+    return [input_label(field, producers) for field in quantifier.requires]
+
+
+@dataclass(frozen=True)
+class BuildGroup:
+    """A header + the metrics under it in the :class:`BuildArea`.
+
+    ``derived`` groups gather metrics computed from another metric's artifact and
+    are rendered indented under their producer's group, so the build-dependency
+    reads top-to-bottom.
+    """
+
+    key: str
+    label: str
+    derived: bool
+    members: tuple[Quantifier, ...]
+
+
+def _source_group(quantifier: Quantifier) -> tuple[int, str]:
+    """(order, label) for a *raw* metric, keyed by which label sources it reads."""
+    req = set(quantifier.requires)
+    has_cell = "cell_labels_path" in req
+    has_nucleus = "nucleus_labels_path" in req
+    if has_cell and has_nucleus:
+        return (2, "Cell + nucleus")
+    if has_nucleus:
+        return (1, "Nucleus")
+    if has_cell:
+        return (0, "Cell")
+    return (3, "Other")
+
+
+def group_build_metrics(quantifiers: Iterable[Quantifier]) -> list[BuildGroup]:
+    """Order *quantifiers* into input-typed groups with derived metrics nested.
+
+    Raw metrics are grouped by their source layer (Cell / Nucleus / Cell +
+    nucleus); each metric that is derived from a producer is collected into a
+    "Derived from …" group placed immediately after that producer's group.
+    """
+    quantifier_list = list(quantifiers)
+    producers = producers_by_field(quantifier_list)
+    raw: dict[str, list[Quantifier]] = {}
+    raw_order: dict[str, int] = {}
+    derived: dict[str, list[Quantifier]] = {}
+    for quantifier in quantifier_list:
+        producer = next(
+            (
+                producers[field]
+                for field in quantifier.requires
+                if field in producers
+                and producers[field].quantity_id != quantifier.quantity_id
+            ),
+            None,
+        )
+        if producer is not None:
+            derived.setdefault(producer.quantity_id, []).append(quantifier)
+        else:
+            order, label = _source_group(quantifier)
+            raw.setdefault(label, []).append(quantifier)
+            raw_order[label] = order
+
+    def _sorted(items: list[Quantifier]) -> tuple[Quantifier, ...]:
+        return tuple(sorted(items, key=lambda q: q.display_name.lower()))
+
+    groups: list[BuildGroup] = []
+    for label in sorted(raw, key=lambda lbl: raw_order[lbl]):
+        members = _sorted(raw[label])
+        groups.append(BuildGroup(key=label, label=label, derived=False, members=members))
+        # Trail each producer's "Derived from …" group right after its own group.
+        for producer in members:
+            dependents = derived.pop(producer.quantity_id, None)
+            if dependents:
+                groups.append(
+                    BuildGroup(
+                        key=f"derived:{producer.quantity_id}",
+                        label=f"Derived from {producer.display_name}",
+                        derived=True,
+                        members=_sorted(dependents),
+                    )
+                )
+    # Defensive: surface any derived group whose producer was not itself listed.
+    by_id = {q.quantity_id: q for q in quantifier_list}
+    for producer_id, dependents in derived.items():
+        name = by_id[producer_id].display_name if producer_id in by_id else producer_id
+        groups.append(
+            BuildGroup(
+                key=f"derived:{producer_id}",
+                label=f"Derived from {name}",
+                derived=True,
+                members=_sorted(dependents),
+            )
+        )
+    return groups
+
+
 class BuildArea(QWidget):
     """Compact multi-metric build panel.
 
-    One row per quantifier — a checkbox plus a status dot showing whether the
-    metric's artifact exists for *every* in-scope position that has the inputs
-    (green = all built, red = some missing, grey = no in-scope position has the
-    inputs). A single Run button (re)builds every checked metric, overwriting
-    existing artifacts; execution is delegated to the studio's *build_callback*
-    so building stays centralized (threaded, status-refreshed).
+    Metrics are grouped by their input type (Cell / Nucleus / Cell + nucleus),
+    with metrics *derived* from another metric's artifact nested under their
+    producer's group ("Derived from …"). Each row is a checkbox + a status dot
+    showing whether the metric's artifact exists for *every* in-scope position
+    that has the inputs (green = all built, red = some missing, grey = no in-scope
+    position has the inputs) + a muted caption of the inputs it needs. A single
+    Run button (re)builds every checked metric, overwriting existing artifacts;
+    execution is delegated to the studio's *build_callback* so building stays
+    centralized (threaded, status-refreshed).
     """
+
+    #: Left margin (px) applied to a derived group's header + rows.
+    _DERIVED_INDENT = 14
 
     def __init__(
         self,
@@ -217,16 +352,16 @@ class BuildArea(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
-        for quantifier in quantifiers:
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            dot = QLabel("●")
-            dot.setToolTip("")
-            row.addWidget(dot)
-            checkbox = QCheckBox(quantifier.display_name)
-            row.addWidget(checkbox, 1)
-            layout.addLayout(row)
-            self._rows[quantifier.quantity_id] = _MetricRow(quantifier, checkbox, dot)
+        quantifier_list = list(quantifiers)
+        producers = producers_by_field(quantifier_list)
+        for group in group_build_metrics(quantifier_list):
+            indent = self._DERIVED_INDENT if group.derived else 0
+            header = QLabel(("↳ " if group.derived else "") + group.label)
+            parameter_heading(header)
+            header.setContentsMargins(indent, 4, 0, 0)
+            layout.addWidget(header)
+            for quantifier in group.members:
+                self._add_metric_row(layout, quantifier, producers, indent)
 
         run_row = QHBoxLayout()
         run_row.setContentsMargins(0, 0, 0, 0)
@@ -244,6 +379,29 @@ class BuildArea(QWidget):
         layout.addWidget(self._status)
 
         self._refresh()
+
+    def _add_metric_row(
+        self,
+        layout: QVBoxLayout,
+        quantifier: Quantifier,
+        producers: Mapping[str, Quantifier],
+        indent: int,
+    ) -> None:
+        row = QHBoxLayout()
+        row.setContentsMargins(indent, 0, 0, 0)
+        dot = QLabel("●")
+        dot.setToolTip("")
+        row.addWidget(dot)
+        checkbox = QCheckBox(quantifier.display_name)
+        row.addWidget(checkbox)
+        row.addStretch(1)
+        needs = metric_input_labels(quantifier, producers)
+        if needs:
+            caption = QLabel("needs: " + " · ".join(needs))
+            status_label(caption, muted=True)
+            row.addWidget(caption)
+        layout.addLayout(row)
+        self._rows[quantifier.quantity_id] = _MetricRow(quantifier, checkbox, dot)
 
     def set_context(self, ctx: AnalysisContext) -> None:
         self._records = list(ctx.records)

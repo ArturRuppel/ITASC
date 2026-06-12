@@ -29,7 +29,6 @@ _DERIVED = (
     "neighbor_count",
     "neighbor_enrichment",
     "contact_type_zscore",
-    "cell_density",
     "contact_energetics",
 )
 
@@ -107,14 +106,6 @@ def test_zscore_uses_shuffle_build_param(tmp_path):
     table = _build("contact_type_zscore", _inputs(tmp_path), params={"shuffles": 16})
     assert {"contact_type", "z_score"} <= set(table)
     assert table["contact_type"].dtype == object
-
-
-def test_density_honours_fov_param(tmp_path):
-    table = _build("cell_density", _inputs(tmp_path), params={"fov_area_mm2": 2.0})
-    assert {"label", "density"} <= set(table)
-    rows = dict(zip(table["label"].tolist(), table["density"].tolist()))
-    # 4 cells over a 2 mm² field of view → 2 cells/mm².
-    assert rows["all"] == 2.0
 
 
 def test_typed_quantities_empty_without_labels(tmp_path):

@@ -1,5 +1,6 @@
 """Tests for the neighborhood & density derivations."""
 import numpy as np
+import pytest
 
 from cellflow.aggregate_quantification.contacts.neighborhood import (
     cell_density,
@@ -228,9 +229,11 @@ def test_zscore_excludes_unclassified_edges():
 
 # -------------------------------------------------------------------- density
 def test_density_is_cells_over_area():
-    cells = _cells([(0, 1), (0, 2), (0, 3), (0, 4)])
+    # cell_density counts straight off a frame -> cell_ids map (the cell labels),
+    # not the contact graph.
+    frame_cells = {0: [1, 2, 3, 4]}
     labels = {1: "A", 2: "A", 3: "B"}  # cell 4 unclassified
-    table = cell_density(_analysis(cells, _edges([])), labels, fov_area_mm2=2.0)
+    table = cell_density(frame_cells, labels, fov_area_mm2=2.0)
     rows = {
         str(lab): (int(n), float(d))
         for lab, n, d in zip(table["label"], table["n_cells"], table["density"])
@@ -243,14 +246,12 @@ def test_density_is_cells_over_area():
 
 
 def test_density_empty_labels_only_all_row():
-    cells = _cells([(0, 1), (0, 2)])
-    table = cell_density(_analysis(cells, _edges([])), {}, fov_area_mm2=1.0)
+    table = cell_density({0: [1, 2]}, {}, fov_area_mm2=1.0)
     assert table["label"].tolist() == ["all"]
     assert table["n_cells"].tolist() == [2]
 
 
-def test_density_nan_when_area_unavailable():
-    cells = _cells([(0, 1), (0, 2)])
-    table = cell_density(_analysis(cells, _edges([])), {1: "A"}, fov_area_mm2=None)
-    assert np.isnan(table["density"]).all()
-    assert table["n_cells"].tolist() == [2, 1]  # all=2, A=1
+def test_density_requires_a_positive_area():
+    # The field-of-view area is required — no silent fallback.
+    with pytest.raises(ValueError):
+        cell_density({0: [1, 2]}, {1: "A"}, fov_area_mm2=0.0)

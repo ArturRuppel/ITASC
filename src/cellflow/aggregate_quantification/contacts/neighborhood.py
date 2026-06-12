@@ -11,7 +11,9 @@ each returning a tidy column-major table (``dict[str, np.ndarray]``) shaped for
   (do cell types sort or mix, seen from each focal cell).
 * :func:`contact_type_zscores` — observed contact-type counts vs a label-shuffle
   null (the rigorous "more than chance" statistic).
-* :func:`cell_density` — cells per unit field-of-view area.
+* :func:`cell_density` — cells per unit field-of-view area. (Counts straight off
+  a ``frame -> [cell_id, …]`` map, so it needs only the cell labels, not the
+  contact graph.)
 
 The ``cell_cell`` edges of the contacts ``edges`` table *are* the adjacency
 graph; degree is the count of incident ``cell_cell`` edges, deduped per neighbor
@@ -29,7 +31,7 @@ so they run unchanged in scripts, notebooks, and the napari plugin.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 
@@ -334,25 +336,30 @@ def contact_type_zscores(
 
 
 def cell_density(
-    analysis: PositionContactAnalysis,
+    frame_cells: Mapping[int, Sequence[int]],
     labels: Mapping[int, str],
     *,
-    fov_area_mm2: float | None,
+    fov_area_mm2: float,
 ) -> dict[str, np.ndarray]:
     """Per ``(frame, label)`` cell counts and ``density = n_cells / fov_area_mm2``.
 
     Emits one row per label present (among labeled cells) plus a ``label="all"``
     total row that counts **every** cell in the frame, including
-    ``unclassified``. ``density`` is in cells/mm²; ``fov_area_mm2`` is the user's
-    field-of-view area. When it is ``None`` or non-positive, density is ``NaN``
-    (the caller reports "density unavailable" rather than crashing). An empty
-    *labels* map yields only the ``all`` row per frame.
+    ``unclassified``. ``density`` is in cells/mm²; *fov_area_mm2* is the user's
+    field-of-view area and is **required** (a positive number) — there is no
+    silent image-area fallback. An empty *labels* map yields only the ``all`` row
+    per frame.
+
+    *frame_cells* maps ``frame -> [cell_id, …]`` (the cell labels present in that
+    frame), so this counts straight off the cell labels with no contacts
+    dependency.
 
     Columns: ``frame``, ``label`` (str), ``n_cells`` (int), ``density``
     (float, cells/mm²).
     """
-    frame_cells = _frame_cells(analysis)
-    area = float(fov_area_mm2) if fov_area_mm2 and fov_area_mm2 > 0 else None
+    area = float(fov_area_mm2)
+    if not area > 0:
+        raise ValueError("cell_density requires a positive fov_area_mm2")
 
     out_frame: list[int] = []
     out_label: list[str] = []
@@ -363,7 +370,7 @@ def cell_density(
         out_frame.append(fr)
         out_label.append(label)
         out_n.append(n_cells)
-        out_density.append(n_cells / area if area is not None else float("nan"))
+        out_density.append(n_cells / area)
 
     for fr in sorted(frame_cells):
         cells = frame_cells[fr]

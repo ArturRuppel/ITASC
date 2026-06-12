@@ -1,10 +1,11 @@
 """Cell-density quantifier — per-label cell counts per field-of-view area.
 
-A contacts-derived Build product. The field-of-view area comes from the shared
-params bar when set (one value for all positions); otherwise it is the position's
-full image area ``H·W·pixel² / 1e6`` mm², resolved from the contacts artifact's
-cell-label TIFF and the position's pixel size. ``density`` is ``NaN`` when no area
-can be resolved (the plot then simply has nothing to show for that position).
+Counts cells straight off the tracked **cell labels** (unique non-zero labels per
+frame), so it is a cell-labels Build product, not a contacts-derived one. The
+field-of-view area is **required** — it comes from the shared params bar and there
+is no silent image-area fallback; ``density = n_cells / fov_area_mm2`` in
+cells/mm². When an NLS classification sidecar exists the counts are also broken
+down per class; without it only the ``all`` total row is emitted.
 """
 from __future__ import annotations
 
@@ -14,9 +15,15 @@ from pathlib import Path
 import numpy as np
 
 from cellflow.aggregate_quantification.contacts.neighborhood import cell_density
-from cellflow.aggregate_quantification.contacts.reader import PositionContactAnalysis
 from cellflow.aggregate_quantification.quantifier import PositionInputs, Quantifier
-from cellflow.aggregate_quantification.quantifiers import _contacts_derived as derived
+from cellflow.aggregate_quantification.quantifiers._contacts_derived import (
+    nls_labels_for_position,
+)
+from cellflow.aggregate_quantification.quantifiers._tidy_table import (
+    persist,
+    read_derived_table,
+)
+from cellflow.aggregate_quantification.shape.core import read_label_stack
 
 
 class CellDensityQuantifier(Quantifier):
@@ -24,7 +31,10 @@ class CellDensityQuantifier(Quantifier):
 
     quantity_id = "cell_density"
     display_name = "Cell density"
-    requires = ("contact_analysis_path",)
+    # Cell labels are the only hard input — counts come straight off them. The
+    # field-of-view area is a required build *param* (validated in ``build``), not
+    # a PositionInputs field, so it is enforced there rather than gated here.
+    requires = ("cell_labels_path",)
     default_output_name = "cell_density.csv"
     wants_build_params = True
 
@@ -36,44 +46,34 @@ class CellDensityQuantifier(Quantifier):
         params: dict | None = None,
         progress_cb: Callable[[int, int, str], None] | None = None,
     ) -> Path:
-        analysis = derived.load_analysis(inputs)
-        labels = derived.load_labels(inputs) or {}
-        fov = _fov_area_mm2(inputs, analysis, (params or {}).get("fov_area_mm2"))
-        table = cell_density(analysis, labels, fov_area_mm2=fov)
-        return derived.persist(output_path, table)
+        fov = (params or {}).get("fov_area_mm2")
+        if not (isinstance(fov, (int, float)) and fov > 0):
+            raise ValueError(
+                "Cell density requires a field-of-view area — set 'FOV area (mm²)' "
+                "in Parameters before building."
+            )
+        frame_cells = _frame_cells_from_labels(inputs.cell_labels_path)
+        labels = nls_labels_for_position(inputs.position_dir) or {}
+        table = cell_density(frame_cells, labels, fov_area_mm2=float(fov))
+        return persist(output_path, table)
 
     def read(self, output_path: Path) -> dict[str, np.ndarray]:
-        return derived.read_derived_table(output_path)
+        return read_derived_table(output_path)
 
     def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
-        return derived.read_derived_table(output_path)
+        return read_derived_table(output_path)
 
 
-def _fov_area_mm2(
-    inputs: PositionInputs, analysis: PositionContactAnalysis, override: float | None
-) -> float | None:
-    """The field-of-view area in mm² — *override* when given, else the image area."""
-    if override is not None and override > 0:
-        return float(override)
-    pixel = inputs.pixel_size_um
-    if not pixel or pixel <= 0:
-        return None
-    shape = _image_shape_hw(analysis.cell_tracked_labels_path)
-    if shape is None:
-        return None
-    height, width = shape
-    return height * width * pixel * pixel / 1e6
+def _frame_cells_from_labels(labels_path: Path | None) -> dict[int, list[int]]:
+    """``frame -> [cell_id, …]`` from a tracked cell-label TIFF.
 
-
-def _image_shape_hw(path: str) -> tuple[int, int] | None:
-    """``(height, width)`` of a label TIFF without loading pixels; ``None`` on failure."""
-    try:
-        import tifffile
-
-        with tifffile.TiffFile(str(path)) as tf:
-            shape = tf.series[0].shape
-    except Exception:  # pragma: no cover - unreadable/missing TIFF → no default FOV
-        return None
-    if len(shape) >= 2:
-        return int(shape[-2]), int(shape[-1])
-    return None
+    The unique non-zero labels of frame *i* are the cells present in it — the same
+    set the contacts ``cells`` table holds (it is one ``regionprops`` row per
+    label), so this reproduces the old per-frame counts without the artifact.
+    """
+    stack = read_label_stack(Path(labels_path))
+    out: dict[int, list[int]] = {}
+    for frame_idx, frame in enumerate(stack):
+        ids = np.unique(frame)
+        out[frame_idx] = [int(i) for i in ids if i != 0]
+    return out

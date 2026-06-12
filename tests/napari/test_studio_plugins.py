@@ -25,6 +25,56 @@ def test_available_tool_plugins_are_analysis_tools_not_builders():
     assert "track_dynamics" not in ids
 
 
+def test_contacts_declares_it_produces_the_contact_analysis_input():
+    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
+
+    # The contacts-derived metrics consume this field; the producer link is what
+    # lets the Build area draw the dependency generically.
+    assert ContactsQuantifier.produces == "contact_analysis_path"
+
+
+def test_group_build_metrics_nests_derived_under_their_producer():
+    from cellflow.aggregate_quantification.quantifier import available_quantifiers
+
+    quantifiers = [cls() for cls in available_quantifiers()]
+    groups = sp.group_build_metrics(quantifiers)
+    labels = [g.label for g in groups]
+
+    # Raw metrics are grouped by their source layer; a derived group trails its
+    # producer's group.
+    assert "Cell" in labels and "Nucleus" in labels and "Cell + nucleus" in labels
+    derived = next(g for g in groups if g.derived)
+    assert derived.label == "Derived from Cell–cell contacts"
+    member_ids = {q.quantity_id for q in derived.members}
+    assert {"neighbor_count", "neighbor_enrichment", "contact_type_zscore"} <= member_ids
+    # The derived group is placed right after the group that holds its producer.
+    cell_idx = labels.index("Cell")
+    assert labels[cell_idx + 1] == "Derived from Cell–cell contacts"
+    # Contacts itself stays a raw metric (it reads cell labels, not a product);
+    # cell density now counts off the cell labels too, so it is a raw Cell metric.
+    cell_group = next(g for g in groups if g.label == "Cell")
+    cell_ids = {q.quantity_id for q in cell_group.members}
+    assert {"contacts", "cell_density"} <= cell_ids
+
+
+def test_metric_input_labels_name_the_producer_for_derived_inputs():
+    from cellflow.aggregate_quantification.quantifier import available_quantifiers
+
+    quantifiers = [cls() for cls in available_quantifiers()]
+    producers = sp.producers_by_field(quantifiers)
+    by_id = {q.quantity_id: q for q in quantifiers}
+
+    # A raw metric shows its source-file inputs by friendly name.
+    assert sp.metric_input_labels(by_id["cell_shape"], producers) == [
+        "cell labels",
+        "pixel size",
+    ]
+    # A derived metric shows its dependency by the producer's display name.
+    assert sp.metric_input_labels(by_id["neighbor_count"], producers) == [
+        "Cell–cell contacts"
+    ]
+
+
 def test_position_inputs_from_record_maps_catalogue_keys():
     inputs = sp.position_inputs_from_record(
         {

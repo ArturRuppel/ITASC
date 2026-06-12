@@ -61,9 +61,9 @@ class SharedParamsWidget(QWidget):
         self._fov_edit = self._field(
             col,
             "FOV area (mm²):",
-            placeholder="auto",
-            tip="Field-of-view area for the Density plot, applied to all positions. "
-            "Blank uses each position's full image area.",
+            placeholder="required for density",
+            tip="Field-of-view area (mm²), applied to all positions. Required to "
+            "build Cell density — there is no image-area fallback.",
         )
         self._shuffles_edit = self._field(
             col,

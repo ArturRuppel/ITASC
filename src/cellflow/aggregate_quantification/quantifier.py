@@ -74,6 +74,12 @@ class Quantifier:
     display_name: ClassVar[str] = ""
     #: ``PositionInputs`` field names this quantifier needs to build.
     requires: ClassVar[tuple[str, ...]] = ()
+    #: The ``PositionInputs`` field this quantifier's artifact *populates*, if any
+    #: (e.g. contacts populates ``contact_analysis_path``). A quantifier whose
+    #: :attr:`requires` names another's :attr:`produces` is *derived from* it — the
+    #: studio uses this to draw the build-dependency graph. Empty for a leaf
+    #: quantity that only consumes raw source inputs.
+    produces: ClassVar[str] = ""
     #: Default artifact file name (relative to a position); empty for an
     #: intermediate base that does not persist.
     default_output_name: ClassVar[str] = ""

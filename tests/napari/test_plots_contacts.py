@@ -15,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import h5py
 import numpy as np
+import tifffile
 from qtpy.QtWidgets import QApplication
 
 from cellflow.aggregate_quantification.contacts.nls_classification import (
@@ -73,6 +74,16 @@ def _write_contacts_h5(path, cells_rows, edges_rows) -> None:
         h5.create_dataset("edges/coordinates/x", data=np.empty(0))
 
 
+def _cell_labels() -> np.ndarray:
+    """One frame holding the four cell labels (1..4) the fixture references."""
+    frame = np.zeros((10, 10), dtype=np.uint16)
+    frame[0:5, 0:5] = 1
+    frame[0:5, 5:10] = 2
+    frame[5:10, 0:5] = 3
+    frame[5:10, 5:10] = 4
+    return frame[np.newaxis, ...]
+
+
 def _record(tmp_path, name, condition, *, classify=True) -> dict:
     pos = tmp_path / name
     pos.mkdir()
@@ -82,6 +93,10 @@ def _record(tmp_path, name, condition, *, classify=True) -> dict:
         cells_rows=[(0, 1), (0, 2), (0, 3), (0, 4)],
         edges_rows=[(0, 1, 2), (0, 3, 4)],
     )
+    # Cell density counts off the cell labels (not the contacts artifact), so the
+    # position needs a real tracked-label TIFF mirroring the four contact cells.
+    cell_path = pos / "cells.tif"
+    tifffile.imwrite(cell_path, _cell_labels())
     if classify:
         write_nls_classification_csv(
             nls_classification_csv_path(pos),
@@ -92,6 +107,7 @@ def _record(tmp_path, name, condition, *, classify=True) -> dict:
     return {
         "position_path": pos,
         "contact_analysis_path": h5_path,
+        "cell_tracked_labels_path": cell_path,
         "condition": condition,
         "date": "d1",
         "id": name,
@@ -100,6 +116,9 @@ def _record(tmp_path, name, condition, *, classify=True) -> dict:
 
 def _build_products(records, *, params=None, only=_DERIVED) -> None:
     """Run the derived quantifiers for *records*, persisting their products."""
+    # Cell density needs a field-of-view area; default one so bundles that don't
+    # care about density still build (an explicit fov_area_mm2 wins).
+    params = {"fov_area_mm2": 1.0, **(params or {})}
     quantifiers = {c.quantity_id: c for c in available_quantifiers()}
     for record in records:
         inputs = position_inputs_from_record(record)

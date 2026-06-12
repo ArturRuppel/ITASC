@@ -25,7 +25,7 @@ class ContactEnergeticsQuantifier(Quantifier):
     """Per-T1-event signed central junction length (the potential's samples)."""
 
     quantity_id = "contact_energetics"
-    display_name = "Contact energetics (potential)"
+    display_name = "Contact potential"
     requires = ("contact_analysis_path",)
     default_output_name = "contact_energetics.csv"
 
