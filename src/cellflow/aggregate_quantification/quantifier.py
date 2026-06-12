@@ -50,7 +50,7 @@ class PositionInputs:
     time_interval_s: float | None = None
     #: The position's built ``contact_analysis.h5``; ``None`` when contacts is not
     #: in the catalogue. The contacts-derived quantifiers (neighbor count /
-    #: enrichment / z-score / density / energetics) read it as their input instead
+    #: enrichment / z-score / density / signed contact length) read it as their input instead
     #: of re-running contact extraction.
     contact_analysis_path: Path | None = None
 

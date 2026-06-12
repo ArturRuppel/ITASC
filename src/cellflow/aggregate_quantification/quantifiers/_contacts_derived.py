@@ -1,6 +1,6 @@
 """Shared plumbing for the contacts-*derived* quantifiers.
 
-The neighbor count / enrichment / contact-type z-score / density / energetics
+The neighbor count / enrichment / contact-type z-score / density / signed-contact-length
 quantities are all computed from a position's already-built
 ``contact_analysis.h5`` (plus its optional NLS sidecar CSV). They used to be
 derived at *plot* time, which made opening a panel re-run a 1000-shuffle null and

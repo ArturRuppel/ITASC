@@ -1,7 +1,7 @@
 """Tests for the signed central junction-length reaction coordinate."""
 import numpy as np
 
-from cellflow.aggregate_quantification.contacts.energetics import (
+from cellflow.aggregate_quantification.contacts.signed_contact_length import (
     signed_central_junction_lengths,
 )
 from cellflow.aggregate_quantification.contacts.reader import PositionContactAnalysis

@@ -50,7 +50,7 @@ class SharedParamsWidget(QWidget):
             placeholder="required for shape / dynamics",
             tip="µm per pixel, applied to all positions. Required to build the "
             "shape / dynamics metrics and to scale physical-unit plot axes "
-            "(potential landscape, density). No per-position auto-resolution — "
+            "(signed contact length, density). No per-position auto-resolution — "
             "blank leaves those metrics unbuildable.",
         )
         self._frame_interval_edit = self._field(

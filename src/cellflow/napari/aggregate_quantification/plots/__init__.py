@@ -19,8 +19,8 @@ Two flavours register through the same contract and differ only in
 * **generic statistical plots** route the pooled products through the
   quantity-agnostic
   :class:`~cellflow.napari.aggregate_quantification.plot_panel.PlotPanel`;
-* **bespoke plots** (e.g. the contacts potential landscape) build their own
-  figure widget.
+* **bespoke plots** (e.g. the dynamics MSD / DAC / C(r) curve views) build their
+  own figure widget.
 
 The base class is **headless** — ``plot_id`` / ``family`` / ``consumes`` and the
 availability helpers carry no Qt, so the registry and gating are unit-testable

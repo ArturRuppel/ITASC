@@ -53,10 +53,10 @@ except Exception:  # pragma: no cover - exercised only without a Qt matplotlib
 #: The single "Plot" button spans every tidy render type — they all feed one
 #: multi-source ``PlotPanel`` (the panel exposes every plot type itself, so they
 #: need not be separate buttons).
-_TIDY_RENDER_TYPES = ("distribution", "bar", "potential")
+_TIDY_RENDER_TYPES = ("distribution", "bar")
 #: render_type → the plot type a source defaults to when its ``Plot`` declares no
 #: ``default_plot``; lets a value open on its natural rendering inside the panel.
-_RENDER_TYPE_DEFAULT_PLOT = {"distribution": "box", "bar": "bar", "potential": "potential"}
+_RENDER_TYPE_DEFAULT_PLOT = {"distribution": "box", "bar": "bar"}
 
 #: The two buttons, in display order: ``key -> label``. ``plot`` spans the tidy
 #: products; ``curve`` opens the bespoke curves widget.

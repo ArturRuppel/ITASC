@@ -9,7 +9,7 @@ consumer can ask how the subpopulations contact each other — homotypic vs
 heterotypic — without that aggregation living here.
 
 Headless and Qt-free, like
-:mod:`cellflow.aggregate_quantification.contacts.energetics`: it operates on an
+:mod:`cellflow.aggregate_quantification.contacts.signed_contact_length`: it operates on an
 already-read
 :class:`~cellflow.aggregate_quantification.contacts.reader.PositionContactAnalysis`
 plus a ``cell_id -> label`` map, so it never opens HDF5 or the CSV itself and
@@ -53,7 +53,7 @@ def contact_label_for(
     absent from the map takes *unclassified*. The pair is sorted so the contact
     type is orientation-independent (``"A-B" == "B-A"``). This is the single
     definition shared by :func:`label_contacts` (the per-edge table) and the
-    contacts energetics reaction coordinate, so a contact types identically
+    signed-contact-length reaction coordinate, so a contact types identically
     wherever it is seen.
     """
     label_a = labels.get(int(cell_a), unclassified)

@@ -1,4 +1,4 @@
-"""Contact-energetics quantifier — signed T1 junction lengths for the potential.
+"""Signed-contact-length quantifier — signed T1 junction lengths for the potential.
 
 A contacts-derived Build product. Persists the signed central-junction length of
 each T1 event (negative on the losing side, positive on the gaining side); pooled
@@ -14,20 +14,20 @@ from pathlib import Path
 
 import numpy as np
 
-from cellflow.aggregate_quantification.contacts.energetics import (
+from cellflow.aggregate_quantification.contacts.signed_contact_length import (
     signed_central_junction_lengths,
 )
 from cellflow.aggregate_quantification.quantifier import PositionInputs, Quantifier
 from cellflow.aggregate_quantification.quantifiers import _contacts_derived as derived
 
 
-class ContactEnergeticsQuantifier(Quantifier):
+class SignedContactLengthQuantifier(Quantifier):
     """Per-T1-event signed central junction length (the potential's samples)."""
 
-    quantity_id = "contact_energetics"
-    display_name = "Contact potential"
+    quantity_id = "signed_contact_length"
+    display_name = "Signed contact length"
     requires = ("contact_analysis_path",)
-    default_output_name = "contact_energetics.csv"
+    default_output_name = "signed_contact_length.csv"
 
     def build(
         self,

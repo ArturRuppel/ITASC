@@ -24,7 +24,7 @@ types come from the NLS ``class_label`` sidecar CSV
 still counted as a neighbor and a cell, but excluded from the enrichment /
 z-score maths (its edges drop, abundances count labeled cells only).
 
-Like :mod:`...contacts.energetics` and :mod:`...contacts.contact_labels`, these
+Like :mod:`...contacts.signed_contact_length` and :mod:`...contacts.contact_labels`, these
 operate on the in-memory analysis object only: they never open HDF5 or the CSV,
 so they run unchanged in scripts, notebooks, and the napari plugin.
 """

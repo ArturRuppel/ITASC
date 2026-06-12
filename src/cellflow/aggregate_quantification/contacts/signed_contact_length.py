@@ -1,4 +1,4 @@
-"""Contacts energetics — the signed central junction-length reaction coordinate.
+"""Signed contact length — the signed central junction-length reaction coordinate.
 
 Boltzmann-inverted (see
 :func:`cellflow.aggregate_quantification.plotting.potential_landscape`) this

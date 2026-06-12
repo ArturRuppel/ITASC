@@ -25,11 +25,11 @@ from cellflow.aggregate_quantification.contacts.nls_classification import (
 from cellflow.aggregate_quantification.quantifier import available_quantifiers
 from cellflow.napari.aggregate_quantification.plots import PlotContext, available_plots
 from cellflow.napari.aggregate_quantification.plots.contacts import (
-    ContactEnergeticsPlot,
     ContactTypeZScorePlot,
     DensityPlot,
     NeighborCountPlot,
     NeighborEnrichmentPlot,
+    SignedContactLengthPlot,
 )
 from cellflow.napari.studio_plugins import (
     built_quantity_ids,
@@ -42,7 +42,7 @@ _DERIVED = (
     "neighbor_enrichment",
     "contact_type_zscore",
     "cell_density",
-    "contact_energetics",
+    "signed_contact_length",
 )
 
 
@@ -179,10 +179,10 @@ def test_typed_views_empty_for_unclassified_positions(tmp_path):
     assert NeighborEnrichmentPlot().prepare(records).empty
 
 
-def test_energetics_pool_handles_no_t1(tmp_path):
+def test_signed_contact_length_pool_handles_no_t1(tmp_path):
     records = [_record(tmp_path, "p1", "A")]
     _build_products(records)
-    assert ContactEnergeticsPlot().prepare(records).empty
+    assert SignedContactLengthPlot().prepare(records).empty
 
 
 def test_contacts_plots_build_panels(tmp_path):

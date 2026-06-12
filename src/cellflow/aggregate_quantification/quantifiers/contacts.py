@@ -29,7 +29,7 @@ class ContactsQuantifier(Quantifier):
     # enable the cell_id == nucleus_id invariant check and NLS classification).
     requires = ("cell_labels_path",)
     #: The contacts artifact is the input the contacts-derived quantifiers
-    #: (neighbor count / enrichment / z-score / density / energetics) consume.
+    #: (neighbor count / enrichment / z-score / density / signed contact length) consume.
     produces = "contact_analysis_path"
 
     #: Default artifact name when a position does not dictate one.

@@ -8,7 +8,7 @@ package root for stability.
 from __future__ import annotations
 
 from cellflow.aggregate_quantification.contacts.contact_labels import label_contacts
-from cellflow.aggregate_quantification.contacts.energetics import (
+from cellflow.aggregate_quantification.contacts.signed_contact_length import (
     signed_central_junction_lengths,
 )
 from cellflow.aggregate_quantification.contacts.neighborhood import (

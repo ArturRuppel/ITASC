@@ -1,13 +1,15 @@
 """Contacts family plots — plain consumers of the contacts-derived products.
 
-Every neighborhood / density / energetics quantity is now a Build-stage product
+Every neighborhood / density / signed-contact-length quantity is now a Build-stage product
 (its own :class:`~cellflow.aggregate_quantification.quantifier.Quantifier` persists
 a tidy table); see ``quantifiers/neighbor_count.py`` etc. So these plots carry **no
 computation** — each is a plain
 :class:`~cellflow.napari.aggregate_quantification.plots._pool_plot.PoolPlot` that
 pools its product's ``object_table`` across the in-scope positions and hands the
-frame to the generic ``PlotPanel``. The heavy z-score null / Boltzmann inversion /
-graph walk that used to run at plot time now runs once, at Build.
+frame to the generic ``PlotPanel``. The heavy z-score null / graph walk that used
+to run at plot time now runs once, at Build. (The signed-contact-length Boltzmann
+inversion stays at plot time — it is the cheap, interactively-binned ``potential``
+draw mode, not a Build product.)
 
 The plot-time tuning the old plugins exposed (pixel size, FOV, shuffle count) moved
 to Build too: pixel size flows in via ``PositionInputs``; the FOV area and shuffle
@@ -21,15 +23,20 @@ from cellflow.napari.aggregate_quantification.plots._pooling import CLASS_COLUMN
 _FAMILY = "Contacts"
 
 
-# ------------------------------------------------------------- potential landscape
-class ContactEnergeticsPlot(PoolPlot):
-    """Effective potential / barrier of T1 junction lengths."""
+# --------------------------------------------------------------- signed contact length
+class SignedContactLengthPlot(PoolPlot):
+    """Signed central junction length of T1 events.
 
-    plot_id = "contact_energetics"
-    display_name = "Potential landscape"
+    A plain distribution of the signed lengths; its natural rendering is the
+    ``potential`` draw mode, which Boltzmann-inverts the sample into the
+    double-well effective potential — but it stays a distribution, so the panel
+    also offers it as a histogram / box like any other value.
+    """
+
+    plot_id = "signed_contact_length"
+    display_name = "Signed contact length"
     family = _FAMILY
-    render_type = "potential"
-    consumes = ("contact_energetics",)
+    consumes = ("signed_contact_length",)
     value_columns = ("signed_length",)
     # The signed-length table carries no per-cell identity; offer catalogue
     # metadata + the contact type (normalized to "unlabelled" at build time).

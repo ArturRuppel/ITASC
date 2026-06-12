@@ -1,10 +1,10 @@
 """The contacts-derived quantifiers: build → persist → object_table round-trips.
 
 These quantities (neighbor count / enrichment / contact-type z-score / density /
-energetics) moved off the plot path into Build. Each reads a position's
+signed contact length) moved off the plot path into Build. Each reads a position's
 ``contact_analysis.h5`` (+ optional NLS sidecar) and persists a tidy CSV its plot
 later pools. The compute itself is covered by ``test_neighborhood.py`` /
-``test_energetics.py``; here we assert the quantifier wrapper persists and reads
+``test_signed_contact_length.py``; here we assert the quantifier wrapper persists and reads
 back the right columns/dtypes, honours its build params, and degrades cleanly when
 a position is unclassified. Backend-only — no Qt.
 """
@@ -29,7 +29,7 @@ _DERIVED = (
     "neighbor_count",
     "neighbor_enrichment",
     "contact_type_zscore",
-    "contact_energetics",
+    "signed_contact_length",
 )
 
 
@@ -114,9 +114,9 @@ def test_typed_quantities_empty_without_labels(tmp_path):
     assert len(_build("contact_type_zscore", inputs)["z_score"]) == 0
 
 
-def test_energetics_empty_without_t1(tmp_path):
-    # The fixture carries no T1 events → an empty (but valid) landscape table.
-    table = _build("contact_energetics", _inputs(tmp_path))
+def test_signed_contact_length_empty_without_t1(tmp_path):
+    # The fixture carries no T1 events → an empty (but valid) length table.
+    table = _build("signed_contact_length", _inputs(tmp_path))
     assert "signed_length" in table
     assert len(table["signed_length"]) == 0
 
