@@ -67,6 +67,7 @@ class ContactEnergeticsPlot(PoolPlot):
     plot_id = "contact_energetics"
     display_name = "Potential landscape"
     family = _FAMILY
+    render_type = "potential"
     consumes = ("contacts",)
     value_columns = ("signed_length",)
     # The signed-length table carries no per-cell identity; offer catalogue
@@ -195,6 +196,7 @@ class NeighborEnrichmentPlot(_NeighborhoodPlot):
 class ContactTypeZScorePlot(_NeighborhoodPlot):
     plot_id = "contact_type_zscore"
     display_name = "Contact-type z-score"
+    render_type = "bar"
     value_columns = ("z_score",)
     group_columns = ("contact_type", "condition")
     default_plot = "bar"
@@ -214,6 +216,7 @@ class ContactTypeZScorePlot(_NeighborhoodPlot):
 class DensityPlot(_NeighborhoodPlot):
     plot_id = "cell_density"
     display_name = "Density"
+    render_type = "bar"
     value_columns = ("density",)
     group_columns = ("label", "condition")
     default_plot = "bar"

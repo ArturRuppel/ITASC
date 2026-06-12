@@ -1,4 +1,4 @@
-"""The Plot area: family grouping + product-availability gating."""
+"""The Plot area: render-type buttons, availability gating, spanning catalog."""
 from __future__ import annotations
 
 import os
@@ -11,6 +11,10 @@ from qtpy.QtWidgets import QApplication
 
 from cellflow.aggregate_quantification.quantifier import PositionInputs
 from cellflow.aggregate_quantification.quantifiers.cell_shape import CellShapeQuantifier
+from cellflow.aggregate_quantification.quantifiers.nucleus_shape import (
+    NucleusShapeQuantifier,
+)
+from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
 from cellflow.napari.aggregate_quantification.plots import PlotParams
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
 from cellflow.napari.aggregate_quantification_plot_area import PlotAreaWidget
@@ -20,96 +24,122 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-def _button_for(area: PlotAreaWidget, plot_id: str):
-    for button, plot in area._buttons.items():
-        if plot.plot_id == plot_id:
+def _button_for(area: PlotAreaWidget, render_type: str):
+    for button, rtype in area._buttons.items():
+        if rtype == render_type:
             return button
-    raise KeyError(plot_id)
+    raise KeyError(render_type)
 
 
-def _built_cell_shape_record(tmp_path):
-    pos = tmp_path / "p1"
-    pos.mkdir()
+def _split_frame() -> np.ndarray:
     frame = np.zeros((6, 8), dtype=np.uint16)
     frame[:, :4] = 1
     frame[:, 4:] = 2
-    cell_path = pos / "cells.tif"
-    tifffile.imwrite(cell_path, np.stack([frame, frame]))
-    q = CellShapeQuantifier()
-    inputs = PositionInputs(position_dir=pos, cell_labels_path=cell_path, pixel_size_um=1.0)
+    return frame
+
+
+def _built_shape_record(tmp_path, *, nucleus=False):
+    pos = tmp_path / ("nuc" if nucleus else "cell")
+    pos.mkdir()
+    path = pos / "labels.tif"
+    tifffile.imwrite(path, np.stack([_split_frame(), _split_frame()]))
+    q = NucleusShapeQuantifier() if nucleus else CellShapeQuantifier()
+    field = "nucleus_labels_path" if nucleus else "cell_labels_path"
+    inputs = PositionInputs(position_dir=pos, pixel_size_um=1.0, **{field: path})
     q.build(inputs, q.default_output(inputs))
+    record_field = "nucleus_tracked_labels_path" if nucleus else "cell_tracked_labels_path"
     return {
         "position_path": pos,
-        "cell_tracked_labels_path": cell_path,
+        record_field: path,
         "condition": "A",
         "date": "d1",
-        "id": "p1",
+        "id": pos.name,
     }
 
 
-def test_plot_area_lists_every_registered_plot():
+def test_render_type_buttons_present():
     app = _app()
     area = PlotAreaWidget(viewer=object())
     try:
-        from cellflow.napari.aggregate_quantification.plots import available_plots
-
-        assert len(area._buttons) == len(available_plots())
-        # Families used as group headers cover shape / dynamics / contacts.
-        families = {plot.family for plot in area._buttons.values()}
-        assert {"Shape", "Dynamics", "Contacts"} <= families
+        for render_type in ("distribution", "bar", "potential", "curve"):
+            assert _button_for(area, render_type) is not None
     finally:
         area.deleteLater()
         app.processEvents()
 
 
-def test_unbuilt_products_disable_their_plots_with_a_reason():
+def test_no_built_products_disable_all_buttons():
     app = _app()
     area = PlotAreaWidget(viewer=object())
     try:
         area.set_context(AnalysisContext(records=[], viewer=object()))
-        button = _button_for(area, "cell_shape")
-        assert button.isEnabled() is False
-        assert "cell_shape" in button.toolTip()
+        for button in area._buttons:
+            assert button.isEnabled() is False
+            assert "built" in button.toolTip()
     finally:
         area.deleteLater()
         app.processEvents()
 
 
-def test_shared_param_fields_build_plot_params():
+def test_built_shape_enables_distribution_only(tmp_path):
     app = _app()
     area = PlotAreaWidget(viewer=object())
     try:
-        # Blank fields → all auto / default.
-        assert area._current_params() == PlotParams()
-        area._pixel_size_edit.setText("0.25")
-        area._fov_edit.setText("1.5")
-        area._shuffles_edit.setText("200")
-        params = area._current_params()
-        assert params.pixel_size_um == 0.25
-        assert params.fov_area_mm2 == 1.5
-        assert params.shuffles == 200
-        # Invalid entries fall back to auto / default rather than raising.
-        area._pixel_size_edit.setText("nope")
-        area._shuffles_edit.setText("0")
-        params = area._current_params()
-        assert params.pixel_size_um is None
-        assert params.shuffles == PlotParams().shuffles
-    finally:
-        area.deleteLater()
-        app.processEvents()
-
-
-def test_building_a_product_enables_its_plot(tmp_path):
-    app = _app()
-    area = PlotAreaWidget(viewer=object())
-    try:
-        record = _built_cell_shape_record(tmp_path)
+        record = _built_shape_record(tmp_path)
         area.set_context(AnalysisContext(records=[record], viewer=object()))
-        # The cell_shape plot lights up; nucleus_shape (not built) stays disabled.
-        assert _button_for(area, "cell_shape").isEnabled() is True
-        nucleus_btn = _button_for(area, "nucleus_shape")
-        assert nucleus_btn.isEnabled() is False
-        assert "nucleus_shape" in nucleus_btn.toolTip()
+        # Shape feeds the Distribution button; no contacts/dynamics → others off.
+        assert _button_for(area, "distribution").isEnabled() is True
+        assert _button_for(area, "bar").isEnabled() is False
+        assert _button_for(area, "potential").isEnabled() is False
+        assert _button_for(area, "curve").isEnabled() is False
+    finally:
+        area.deleteLater()
+        app.processEvents()
+
+
+def test_catalog_panel_spans_values_grouped_by_source(tmp_path):
+    app = _app()
+    area = PlotAreaWidget(viewer=object())
+    try:
+        cell = _built_shape_record(tmp_path)
+        nucleus = _built_shape_record(tmp_path, nucleus=True)
+        area.set_context(AnalysisContext(records=[cell, nucleus], viewer=object()))
+        plots = area._available_of_type("distribution")
+        prepared = [(p, p.prepare([cell, nucleus])) for p in plots]
+        panel = area._build_catalog_panel("distribution", prepared, [cell, nucleus])
+        assert isinstance(panel, PlotPanel)
+        # The value picker carries entries from both cell and nucleus shape, with
+        # the family header ("Shape") shown as a disabled separator.
+        labels = [
+            panel._value_combo.itemText(i) for i in range(panel._value_combo.count())
+        ]
+        assert any("── Shape ──" in t for t in labels)
+        assert any("Cell shape" in t for t in labels)
+        assert any("Nucleus shape" in t for t in labels)
+        # Click-to-load is wired: the active shape source has a resolver.
+        assert panel._target_resolver is not None
+        panel.deleteLater()
+    finally:
+        area.deleteLater()
+        app.processEvents()
+
+
+def test_plot_area_uses_injected_params_provider():
+    app = _app()
+    sentinel = PlotParams(pixel_size_um=0.5, shuffles=42)
+    area = PlotAreaWidget(viewer=object(), params_provider=lambda: sentinel)
+    try:
+        assert area._params() is sentinel
+    finally:
+        area.deleteLater()
+        app.processEvents()
+
+
+def test_plot_area_defaults_params_without_a_provider():
+    app = _app()
+    area = PlotAreaWidget(viewer=object())
+    try:
+        assert area._params() == PlotParams()
     finally:
         area.deleteLater()
         app.processEvents()

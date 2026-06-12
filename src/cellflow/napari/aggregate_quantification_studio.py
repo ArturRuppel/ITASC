@@ -50,6 +50,7 @@ from cellflow.aggregate_quantification.catalog import (
     save_catalog,
 )
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
+from cellflow.napari.aggregate_quantification_params import SharedParamsWidget
 from cellflow.napari.aggregate_quantification_plot_area import PlotAreaWidget
 from cellflow.napari.aggregate_quantification_widget import _ProgressEmitter
 from cellflow.napari.studio_plugins import (
@@ -165,6 +166,14 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._build_discover_section(cat_col)
         self._build_catalog_section(cat_col)
         layout.addWidget(CollapsibleSection("Catalogue", catalogue, expanded=True))
+
+        # One shared parameter bar above both areas: builds and plots read the
+        # same pixel size / frame interval (plus plot-only FOV / shuffles).
+        self._shared_params = SharedParamsWidget()
+        self._shared_params.changed.connect(self._push_context)
+        layout.addWidget(
+            CollapsibleSection("Parameters", self._shared_params, expanded=False)
+        )
 
         self._build_plugins_section(layout)
         self._build_plot_section(layout)
@@ -329,7 +338,9 @@ class AggregateQuantificationStudioWidget(QWidget):
         """The Plot area: every registered plot, grouped by family and gated by
         product availability. Separate from building — it plots whatever the
         in-scope positions have built."""
-        self._plot_area = PlotAreaWidget(self.viewer)
+        self._plot_area = PlotAreaWidget(
+            self.viewer, params_provider=self._shared_params.plot_params
+        )
         layout.addWidget(CollapsibleSection("Plots", self._plot_area, expanded=True))
 
     # ----------------------------------------------------------- catalog actions
@@ -565,6 +576,13 @@ class AggregateQuantificationStudioWidget(QWidget):
             return list(self._records)
         return [self._records[row] for row in selected_rows if 0 <= row < len(self._records)]
 
+    def _scoped_records(self) -> list[dict]:
+        """In-scope records stamped with the shared build params (pixel size /
+        frame interval), so building and gating both see a manual override."""
+        records = self._records_in_scope()
+        shared = getattr(self, "_shared_params", None)
+        return shared.stamp(records) if shared is not None else records
+
     def _on_selection_changed(self) -> None:
         # The single-position visualizer is now the Visualize Contacts plugin; it
         # reads the in-scope rows from the context like every other plugin.
@@ -643,7 +661,7 @@ class AggregateQuantificationStudioWidget(QWidget):
             return
         set_context(
             AnalysisContext(
-                records=self._records_in_scope(),
+                records=self._scoped_records(),
                 viewer=self.viewer,
                 loader=self._load_analysis,
             )
@@ -651,7 +669,7 @@ class AggregateQuantificationStudioWidget(QWidget):
 
     def _update_plugin_availability(self) -> None:
         """Disable a plugin's header when no in-scope position has its inputs."""
-        scope = self._records_in_scope()
+        scope = self._scoped_records()
         for entry in self._plugin_entries:
             plugin = self._plugin_sections.get(entry.plugin_id)
             if plugin is None:

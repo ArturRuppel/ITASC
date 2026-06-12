@@ -162,6 +162,7 @@ class _CurvesDynamicsPlot(Plot):
     """Bespoke MSD / DAC / velocity-correlation curves (not a ``PlotPanel``)."""
 
     family = _FAMILY
+    render_type = "curve"
 
     def prepare(self, records: list[dict], params: PlotParams = PlotParams()) -> list:
         from cellflow.napari.aggregate_quantification.dynamics_curves_panel import CurveSet

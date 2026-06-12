@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from qtpy.QtWidgets import QApplication
 
-from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
+from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel, ValueSource
 
 
 def _app():
@@ -35,6 +35,56 @@ def _panel():
         value_columns=("area",),
         group_columns=("condition", "date", "position_id", "class_label", "frame"),
     )
+
+
+def test_catalog_mode_spans_sources_and_swaps_on_selection():
+    app = _app()
+    # Two products with different columns AND different group axes.
+    cells = pd.DataFrame({
+        "condition": ["A", "A", "B"],
+        "frame": [0, 1, 0],
+        "cell_id": [1, 1, 2],
+        "area": [10.0, 11.0, 12.0],
+    })
+    tracks = pd.DataFrame({
+        "condition": ["A", "B"],
+        "track_id": [1, 2],
+        "speed": [0.5, 0.7],
+    })
+    cell_resolver = lambda identity: f"cell:{identity}"  # noqa: E731 - test stub
+    catalog = [
+        ValueSource(
+            cells, "area", ("condition", "frame"), "Cell shape: area", "Shape",
+            target_resolver=cell_resolver,
+        ),
+        ValueSource(tracks, "speed", ("condition",), "Dynamics: speed", "Dynamics"),
+    ]
+    panel = PlotPanel(value_catalog=catalog, default_plot="box")
+    try:
+        # Starts on the first source (cells / area) with its group axes + resolver.
+        assert panel.current_spec().value == "area"
+        assert panel._target_resolver is cell_resolver
+        assert "frame" in panel._group_checks
+        # Disabled family headers appear in the picker for grouping.
+        texts = [panel._value_combo.itemText(i) for i in range(panel._value_combo.count())]
+        assert any("── Shape ──" in t for t in texts)
+        assert any("── Dynamics ──" in t for t in texts)
+        # Select the dynamics value → df + group axes swap, no 'frame' axis now.
+        index = next(
+            i
+            for i in range(panel._value_combo.count())
+            if panel._value_combo.itemData(i) == "speed"
+        )
+        panel._value_combo.setCurrentIndex(index)
+        assert panel.current_spec().value == "speed"
+        assert panel._df is tracks
+        assert "frame" not in panel._group_checks
+        assert "condition" in panel._group_checks
+        # Resolver follows the active source (dynamics source has none).
+        assert panel._target_resolver is None
+    finally:
+        panel.deleteLater()
+        app.processEvents()
 
 
 def test_construct_renders_a_canvas():

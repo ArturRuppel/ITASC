@@ -21,11 +21,23 @@
   (`owns_quantities` suppression removed). The old vertical plot plugins (shape,
   track_dynamics, neighborhood, contact_energetics) were deleted; NLS classification,
   contacts visualizer, and catalogue summary survive as tools.
-- **Shared plot parameters** — the old per-plugin plot-time knobs are unified into
-  **one** `PlotParams` (pixel size, FOV area, z-score shuffles) surfaced as a single
-  "Plot parameters" section in the Plot area and threaded into every
-  `Plot.prepare(records, params)`. Each plot reads only the fields it needs; blank =
-  auto (per-position resolution). No per-plot duplication.
+- **One shared parameter bar (build + plot)** — `SharedParamsWidget`
+  (`aggregate_quantification_params.py`) sits at studio level above both areas.
+  Pixel size + frame interval are stamped onto records before a build
+  (`stamp`); pixel size + FOV + shuffles package as `PlotParams` for the Plot area
+  (`plot_params`). One home, read by builds and plots; blank = auto. `Plot.prepare`
+  takes `(records, params)`.
+- **Render-type buttons + spanning value picker** — the Plot area shows **one
+  button per render type** (Distribution, Bar, Potential, Curves), not one per
+  product. A catalog button pools every available product of that type and opens a
+  single `PlotPanel` in **multi-source mode** (`value_catalog=[ValueSource…]`):
+  the value picker spans all those products' quantities, grouped by family header,
+  and **swaps the active df + group-by axes when you pick a value from a different
+  product**. Curves remains bespoke (one combined `DynamicsCurvesPanel`). A
+  `render_type` field on `Plot` drives the grouping. **Click-to-load works in
+  multi-source mode**: `ValueSource` carries a per-source `target_resolver` (built
+  against that product's label field) and the panel re-points it on every value
+  change, backed by one shared `ClickToLoad` controller.
 - NLS interactive tuner unchanged (instrumental, stays in build).
 
 

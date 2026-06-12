@@ -112,6 +112,11 @@ class Plot:
     #: ``quantity_id``\\s this plot needs, all required (AND). A plot is available
     #: only when every one is built for at least one in-scope position.
     consumes: ClassVar[tuple[str, ...]] = ()
+    #: Which render-type button hosts this plot in the Plot area. Plots of the
+    #: same render type share **one** button; their values merge into a single
+    #: source-grouped value picker (``family`` is the visible group header).
+    #: Bespoke renders (``"curve"``) get their own button instead of a picker.
+    render_type: ClassVar[str] = "distribution"
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

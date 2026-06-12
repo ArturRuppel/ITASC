@@ -76,6 +76,30 @@ class LoadTarget:
     cell_id: int | None
     identity: dict
 
+
+@dataclass(frozen=True)
+class ValueSource:
+    """One value option in a multi-source panel's value picker.
+
+    A render-type panel (e.g. "Distribution") spans values from several pooled
+    products; each is a ``ValueSource`` carrying its own pooled ``df``, the
+    ``value`` column to plot from it, the ``group_columns`` that df offers, a
+    picker ``label`` and a ``source`` header for visible grouping. Selecting one
+    swaps the panel onto its df — so products with different rows / group axes
+    coexist in one picker without colliding.
+    """
+
+    df: pd.DataFrame
+    value: str
+    group_columns: tuple[str, ...]
+    label: str
+    source: str  # group header shown in the picker (the product family / view)
+    #: Resolves a picked point's identity dict to its input ``LoadTarget`` for
+    #: click-to-load — per source, since products carry different label fields.
+    #: ``None`` disables loading for this source.
+    target_resolver: Callable[[dict], "LoadTarget | None"] | None = None
+
+
 _PLOT_TYPES = ("hist", "box", "violin", "strip", "swarm", "bar", "line", "potential")
 #: Named qualitative palettes offered for the group colors (seaborn names).
 _PALETTES = ("tab10", "Set1", "Set2", "Dark2", "Paired", "colorblind", "muted", "deep")
@@ -98,16 +122,27 @@ class PlotPanel(QWidget):
 
     def __init__(
         self,
-        dataframe: pd.DataFrame,
-        value_columns: tuple[str, ...],
-        group_columns: tuple[str, ...],
+        dataframe: pd.DataFrame | None = None,
+        value_columns: tuple[str, ...] = (),
+        group_columns: tuple[str, ...] = (),
         target_resolver: Callable[[dict], LoadTarget | None] | None = None,
         loader: Callable[[LoadTarget], None] | None = None,
         default_plot: str = "",
         default_adaptive_bins: bool = False,
+        value_catalog: list[ValueSource] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        #: Multi-source mode: the value picker spans these products, swapping the
+        #: active df on selection. ``None`` → the classic single-snapshot panel.
+        self._catalog = value_catalog
+        #: combo-index → ValueSource, only in catalog mode (headers map to None).
+        self._source_by_index: dict[int, ValueSource] = {}
+        if value_catalog:
+            dataframe = value_catalog[0].df
+            group_columns = value_catalog[0].group_columns
+        if dataframe is None:
+            raise ValueError("PlotPanel needs a dataframe or a non-empty value_catalog")
         self._df = dataframe
         # Only offer values the snapshot actually carries (symmetric with the
         # identity-column filter below). A stale ``.h5`` built before a column
@@ -116,7 +151,11 @@ class PlotPanel(QWidget):
         self._value_columns = tuple(c for c in value_columns if c in dataframe.columns)
         self._group_columns = tuple(group_columns)
         self._identity_columns = tuple(c for c in _IDENTITY_COLUMNS if c in dataframe.columns)
-        self._target_resolver = target_resolver
+        # In catalog mode the resolver follows the active source (each product
+        # has its own label field); it is re-pointed on every value change.
+        self._target_resolver = (
+            value_catalog[0].target_resolver if value_catalog else target_resolver
+        )
         # Held strongly on purpose: a Qt signal connection to a bound method
         # keeps only a weak reference, so a loader owned by nothing but the
         # connection would be GC'd and the Load click would silently no-op.
@@ -173,7 +212,8 @@ class PlotPanel(QWidget):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(4)
 
-        self._value_combo = _combo(self._value_columns)
+        self._value_combo = _shrinkable(QComboBox())
+        self._populate_value_combo()
         col.addLayout(_labelled("Value:", self._value_combo))
 
         self._level_combo = _shrinkable(QComboBox())
@@ -215,26 +255,85 @@ class PlotPanel(QWidget):
         # One group-by checkbox per supplied group column (class_label included).
         # "Group by:" sits on its own line and the checkboxes wrap across a
         # two-column grid, so a long column name never sets the panel's min width.
+        # The grid is rebuilt when a catalog value swaps to a product with
+        # different group axes (see ``_rebuild_group_checks``).
         self._group_checks: dict[str, QCheckBox] = {}
         col.addWidget(QLabel("Group by:"))
-        group_grid = QGridLayout()
-        group_grid.setContentsMargins(0, 0, 0, 0)
-        group_grid.setSpacing(4)
-        for i, name in enumerate(self._group_columns):
-            check = QCheckBox(name)
-            self._group_checks[name] = check
-            group_grid.addWidget(check, i // 2, i % 2)
-        group_grid.setColumnStretch(2, 1)
-        col.addLayout(group_grid)
+        self._group_grid = QGridLayout()
+        self._group_grid.setContentsMargins(0, 0, 0, 0)
+        self._group_grid.setSpacing(4)
+        self._group_grid.setColumnStretch(2, 1)
+        col.addLayout(self._group_grid)
+        self._rebuild_group_checks()
 
-        for combo in (self._value_combo, self._level_combo, self._plot_combo,
+        # The value combo may swap the active product (catalog mode), so it routes
+        # through a dedicated handler; the rest are pure re-renders.
+        self._value_combo.currentIndexChanged.connect(self._on_value_changed)
+        for combo in (self._level_combo, self._plot_combo,
                       self._stat_combo, self._error_combo):
             combo.currentIndexChanged.connect(self._render)
         self._bins_spin.valueChanged.connect(self._render)
         self._adaptive_bins_cb.toggled.connect(self._render)
-        for check in self._group_checks.values():
-            check.toggled.connect(self._render)
         return body
+
+    # ---------------------------------------------------------- value catalog
+    def _populate_value_combo(self) -> None:
+        """Fill the value picker — flat columns (single mode) or source-grouped
+        entries with disabled headers (catalog mode)."""
+        combo = self._value_combo
+        blocked = combo.blockSignals(True)
+        combo.clear()
+        self._source_by_index = {}
+        if self._catalog is None:
+            for name in self._value_columns:
+                combo.addItem(name, name)
+        else:
+            last_source = None
+            for src in self._catalog:
+                if src.source != last_source:
+                    combo.addItem(f"── {src.source} ──", None)
+                    item = combo.model().item(combo.count() - 1)
+                    item.setEnabled(False)
+                    last_source = src.source
+                combo.addItem(f"  {src.label}", src.value)
+                self._source_by_index[combo.count() - 1] = src
+            # Start on the first real (non-header) value.
+            for index in range(combo.count()):
+                if combo.itemData(index) is not None:
+                    combo.setCurrentIndex(index)
+                    break
+        combo.blockSignals(blocked)
+
+    def _rebuild_group_checks(self) -> None:
+        """Repopulate the group-by checkboxes for the current ``group_columns``."""
+        while self._group_grid.count():
+            item = self._group_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._group_checks = {}
+        for i, name in enumerate(self._group_columns):
+            check = QCheckBox(name)
+            self._group_checks[name] = check
+            check.toggled.connect(self._render)
+            self._group_grid.addWidget(check, i // 2, i % 2)
+
+    def _on_value_changed(self) -> None:
+        """Render; in catalog mode first swap onto the selected value's product."""
+        if self._catalog is not None:
+            src = self._source_by_index.get(self._value_combo.currentIndex())
+            if src is None:  # a header row — ignore
+                return
+            # Click-to-load follows the selected value's product.
+            self._target_resolver = src.target_resolver
+            if src.df is not self._df or tuple(src.group_columns) != self._group_columns:
+                self._df = src.df
+                self._group_columns = tuple(src.group_columns)
+                self._identity_columns = tuple(
+                    c for c in _IDENTITY_COLUMNS if c in self._df.columns
+                )
+                self._rebuild_group_checks()
+        self._render()
 
     # -------------------------------------------------------------- styling UI
     def _build_styling(self) -> QWidget:
