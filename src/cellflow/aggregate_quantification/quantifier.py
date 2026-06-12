@@ -88,6 +88,12 @@ class Quantifier:
     #: default so a quantifier with its own ``params`` schema (contacts edge
     #: extraction, shape, dynamics) is never handed the shared bar's keys.
     wants_build_params: ClassVar[bool] = False
+    #: Shared build-param keys that must be present and positive for this
+    #: quantifier to build, mapped to the human label shown in the UI (e.g. cell
+    #: density needs ``{"fov_area_mm2": "FOV area (mm²)"}``). The studio greys the
+    #: metric out — rather than letting the build fail — until they are supplied.
+    #: Empty for a quantifier that needs no shared param.
+    required_build_params: ClassVar[dict[str, str]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -97,6 +103,21 @@ class Quantifier:
     def can_build(self, inputs: PositionInputs) -> bool:
         """True when *inputs* supplies every field named in :attr:`requires`."""
         return all(getattr(inputs, name, None) is not None for name in self.requires)
+
+    def missing_build_params(self, params: Mapping[str, Any] | None) -> tuple[str, ...]:
+        """Labels of :attr:`required_build_params` that *params* doesn't satisfy.
+
+        A required key is satisfied when present and a positive number; anything
+        else (absent, blank, ``None``, non-positive) counts as missing. The studio
+        uses the returned labels to grey the metric out and explain why. Empty
+        tuple ⇒ every required shared param is supplied."""
+        params = params or {}
+        missing: list[str] = []
+        for key, label in self.required_build_params.items():
+            value = params.get(key)
+            if not (isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0):
+                missing.append(label)
+        return tuple(missing)
 
     def default_output(self, inputs: PositionInputs) -> Path:
         """Where this quantifier's artifact lives for *inputs*, by default.

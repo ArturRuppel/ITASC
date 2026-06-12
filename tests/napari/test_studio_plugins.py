@@ -165,3 +165,35 @@ def test_build_area_status_dots_and_run_callback(tmp_path):
 
     area.deleteLater()
     app.processEvents()
+
+
+def test_build_area_check_all_toggles_buildable_metrics(tmp_path):
+    # Bug 22: a single button checks every buildable metric, then flips to
+    # "Uncheck all" and clears them; disabled (no-input) metrics are left alone.
+    app = _app()
+    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
+    from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
+
+    quantifier = ContactsQuantifier()
+    area = sp.BuildArea([quantifier], lambda *a: None)
+    row = area._rows["contacts"]
+
+    p1 = tmp_path / "p1"
+    p1.mkdir()
+    area.set_context(AnalysisContext(records=[
+        {"id": "p1", "position_path": p1, "contact_analysis_path": p1 / "contact_analysis.h5",
+         "cell_tracked_labels_path": p1 / "c.tif"},
+    ]))
+    assert row.checkbox.isEnabled() is True
+    assert area._check_all_btn.text() == "Check all"
+
+    area._check_all_btn.click()
+    assert row.checkbox.isChecked() is True
+    assert area._check_all_btn.text() == "Uncheck all"
+
+    area._check_all_btn.click()
+    assert row.checkbox.isChecked() is False
+    assert area._check_all_btn.text() == "Check all"
+
+    area.deleteLater()
+    app.processEvents()

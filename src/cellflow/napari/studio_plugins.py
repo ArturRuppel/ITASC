@@ -340,11 +340,15 @@ class BuildArea(QWidget):
         build_callback: BuildsCallback,
         *,
         viewer: object | None = None,
+        params_provider: Callable[[], Mapping[str, object]] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self._build_callback = build_callback
+        #: Supplies the shared build params (e.g. density's FOV area) so a metric
+        #: missing a required param is greyed out rather than failing on Run.
+        self._params_provider = params_provider
         self._records: list[dict] = []
         self._rows: dict[str, _MetricRow] = {}
 
@@ -365,6 +369,13 @@ class BuildArea(QWidget):
 
         run_row = QHBoxLayout()
         run_row.setContentsMargins(0, 0, 0, 0)
+        # Check-all toggles to uncheck-all once everything buildable is ticked, so
+        # one button both selects and clears the whole metric list.
+        self._check_all_btn = QPushButton("Check all")
+        self._check_all_btn.setToolTip("Tick (or untick) every buildable metric.")
+        action_button(self._check_all_btn)
+        self._check_all_btn.clicked.connect(self._on_toggle_all)
+        run_row.addWidget(self._check_all_btn)
         run_row.addStretch(1)
         self._run_btn = QPushButton("Run checked builds")
         self._run_btn.setToolTip("Compute (and overwrite) every checked metric.")
@@ -393,9 +404,14 @@ class BuildArea(QWidget):
         dot.setToolTip("")
         row.addWidget(dot)
         checkbox = QCheckBox(quantifier.display_name)
+        checkbox.toggled.connect(self._sync_check_all_label)
         row.addWidget(checkbox)
         row.addStretch(1)
-        needs = metric_input_labels(quantifier, producers)
+        # Source inputs plus any required shared param (e.g. density's FOV area),
+        # so a metric that needs a param is shown to need it rather than silently
+        # failing at build time.
+        needs = [*metric_input_labels(quantifier, producers),
+                 *quantifier.required_build_params.values()]
         if needs:
             caption = QLabel("needs: " + " · ".join(needs))
             status_label(caption, muted=True)
@@ -408,6 +424,7 @@ class BuildArea(QWidget):
         self._refresh()
 
     def _refresh(self) -> None:
+        params = self._params_provider() if self._params_provider else {}
         any_buildable = False
         for row in self._rows.values():
             applicable = records_satisfying(row.quantifier.requires, self._records)
@@ -417,8 +434,14 @@ class BuildArea(QWidget):
                 for record in applicable
                 if row.quantifier.is_built(output_for_record(row.quantifier, record))
             )
+            missing_params = row.quantifier.missing_build_params(params)
             if total == 0:
                 color, tip = _DOT_NONE, "No in-scope position has the inputs."
+            elif missing_params:
+                # Inputs are present, but a required shared param is not set, so the
+                # build can't run — grey it out and say what's missing.
+                color = _DOT_NONE
+                tip = "Set " + " · ".join(missing_params) + " in Parameters to build."
             elif built == total:
                 color, tip = _DOT_ALL, f"Built for all {total} in-scope position(s)."
             else:
@@ -426,12 +449,35 @@ class BuildArea(QWidget):
                     _DOT_MISSING,
                     f"Built for {built} of {total} in-scope position(s).",
                 )
+            buildable = total > 0 and not missing_params
             row.dot.setStyleSheet(f"color: {color};")
             row.dot.setToolTip(tip)
-            row.checkbox.setEnabled(total > 0)
+            row.checkbox.setEnabled(buildable)
             row.checkbox.setToolTip(tip)
-            any_buildable = any_buildable or total > 0
+            any_buildable = any_buildable or buildable
         self._run_btn.setEnabled(any_buildable)
+        self._check_all_btn.setEnabled(any_buildable)
+        self._sync_check_all_label()
+        self._sync_check_all_label()
+
+    def _buildable_rows(self) -> list[_MetricRow]:
+        return [row for row in self._rows.values() if row.checkbox.isEnabled()]
+
+    def _sync_check_all_label(self) -> None:
+        """'Check all' flips to 'Uncheck all' once every buildable metric is ticked."""
+        buildable = self._buildable_rows()
+        all_checked = bool(buildable) and all(r.checkbox.isChecked() for r in buildable)
+        self._check_all_btn.setText("Uncheck all" if all_checked else "Check all")
+
+    def _on_toggle_all(self) -> None:
+        buildable = self._buildable_rows()
+        if not buildable:
+            return
+        # Uncheck when everything is already on; otherwise check the rest.
+        target = not all(r.checkbox.isChecked() for r in buildable)
+        for row in buildable:
+            row.checkbox.setChecked(target)
+        self._sync_check_all_label()
 
     def _checked_quantifiers(self) -> list[Quantifier]:
         return [

@@ -9,16 +9,35 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+from cellflow.napari._spotlight import spotlight_rgba
 from cellflow.napari.aggregate_quantification.plot_panel import LoadTarget
+
+#: Overlay layer painting the picked cell's spotlight + yellow border, mirroring
+#: the correction studio's selection highlight.
+_SPOTLIGHT_LAYER = "picked cell"
 
 
 class ClickToLoad:
     """Resolves picked points to input labels and loads them, replacing the
-    previously loaded layer each time (one position shown at a time)."""
+    previously loaded layer each time (one position shown at a time).
+
+    The whole labels movie is shown; the picked cell is highlighted in place with
+    the correction studio's spotlight (everything else dimmed) plus a yellow
+    border, rather than hiding the rest of the segmentation."""
 
     def __init__(self, viewer) -> None:
         self._viewer = viewer
         self._layer = None
+        self._spotlight = None
+        self._labels = None
+        self._cell_id = None
+        self._dims_connected = False
+        #: True while :meth:`load` is mutating layers. Adding/removing layers and
+        #: changing ``dims.ndim`` re-emits ``current_step``; reacting to it then
+        #: (re)adds the spotlight mid-insert and napari reorders layers that are
+        #: only half-registered → ``KeyError`` in ``_reorder_layers``. The guard
+        #: makes ``_on_dims_change`` a no-op until the load settles.
+        self._loading = False
 
     def resolver(
         self, records: list[dict], label_field: str
@@ -49,19 +68,80 @@ class ClickToLoad:
         return resolve
 
     def load(self, target: LoadTarget) -> None:
-        """Replace the loaded layer with *target*'s labels, jump to its frame, and
-        select + center its cell."""
+        """Replace the loaded layer with *target*'s full labels movie, jump to its
+        frame, and spotlight + outline its cell over the rest of the labels."""
         labels = np.asarray(tifffile.imread(target.path))
-        if self._layer is not None and self._layer in list(self._viewer.layers):
-            self._viewer.layers.remove(self._layer)
-        self._layer = self._viewer.add_labels(labels, name=f"input · {target.path.parent.name}")
+        # Mutating layers below re-emits dims events; ignore them until the load
+        # settles so the spotlight is (re)built exactly once, after the labels
+        # layer is fully registered.
+        self._loading = True
+        try:
+            self._remove(self._spotlight)
+            self._spotlight = None
+            self._remove(self._layer)
+            self._labels = labels
+            self._cell_id = None if target.cell_id is None else int(target.cell_id)
+            self._layer = self._viewer.add_labels(
+                labels, name=f"input · {target.path.parent.name}"
+            )
 
-        if target.frame is not None and labels.ndim >= 3:
-            self._viewer.dims.set_current_step(0, int(target.frame))
-        if target.cell_id is not None:
-            self._layer.selected_label = int(target.cell_id)
-            self._layer.show_selected_label = True
-            self._center_on_cell(labels, target.frame, int(target.cell_id))
+            if target.frame is not None and labels.ndim >= 3:
+                self._viewer.dims.set_current_step(0, int(target.frame))
+            if self._cell_id is not None:
+                self._render_spotlight(target.frame)
+                self._center_on_cell(labels, target.frame, self._cell_id)
+                self._ensure_dims_connection()
+        finally:
+            self._loading = False
+
+    def _remove(self, layer) -> None:
+        if layer is not None and layer in list(self._viewer.layers):
+            self._viewer.layers.remove(layer)
+
+    def _frame_plane(self, frame: int | None) -> np.ndarray:
+        """The 2D label plane the spotlight is drawn on for *frame*."""
+        labels = self._labels
+        if labels.ndim >= 3:
+            idx = 0 if frame is None else max(0, min(int(frame), labels.shape[0] - 1))
+            return labels[idx]
+        return labels
+
+    def _render_spotlight(self, frame: int | None) -> None:
+        """Paint (or refresh) the spotlight overlay for the picked cell at *frame*.
+
+        Reuses the correction studio's renderer: the cell stays bright, the rest
+        of the frame dims, and a yellow border outlines it. The overlay hides
+        itself on frames where the cell is absent."""
+        mask = self._frame_plane(frame) == self._cell_id
+        data = spotlight_rgba(mask, dim=True, border=True)
+        if self._spotlight is None or self._spotlight not in list(self._viewer.layers):
+            self._spotlight = self._viewer.add_image(
+                data, name=_SPOTLIGHT_LAYER, rgb=True, blending="translucent"
+            )
+        else:
+            self._spotlight.data = data
+        self._spotlight.visible = bool(mask.any())
+
+    def _ensure_dims_connection(self) -> None:
+        """Keep the spotlight on the picked cell as the user scrubs frames."""
+        if self._dims_connected:
+            return
+        try:
+            self._viewer.dims.events.current_step.connect(self._on_dims_change)
+            self._dims_connected = True
+        except (AttributeError, TypeError):  # fake/headless viewers expose no events
+            pass
+
+    def _on_dims_change(self, event=None) -> None:
+        if self._loading:
+            return
+        if self._cell_id is None or self._labels is None or self._labels.ndim < 3:
+            return
+        try:
+            frame = int(self._viewer.dims.current_step[0])
+        except (AttributeError, IndexError, TypeError):
+            return
+        self._render_spotlight(frame)
 
     def _center_on_cell(self, labels: np.ndarray, frame: int | None, cell_id: int) -> None:
         plane = labels[frame] if (frame is not None and labels.ndim >= 3) else labels

@@ -40,6 +40,7 @@ __all__ = [
     "aggregate",
     "build_figure",
     "pickable_points",
+    "plotted_table",
     "write_csv",
     "potential_landscape",
     "effective_barrier",
@@ -703,9 +704,42 @@ def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSp
         sns.violinplot(
             data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False,
         )
-    else:  # strip | swarm
-        plot = sns.stripplot if spec.plot == "strip" else sns.swarmplot
-        plot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
+    elif spec.plot == "strip":
+        sns.stripplot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
+    else:  # swarm
+        _plot_swarm(ax, data, hue, spec, palette)
+
+
+def _plot_swarm(ax, data: pd.DataFrame, hue: str | None, spec: PlotSpec, palette) -> None:
+    """Swarm plot that never silently drops points.
+
+    seaborn's swarmplot lays its markers out without overlap and *omits* any it
+    cannot place when the column is crowded — and it emits that "X% of the points
+    cannot be placed" warning at **draw** time, not when ``swarmplot`` is called.
+    So we force a draw to detect the overflow: shrink the markers once to try to
+    fit them all, and if it still overflows fall back to a stripplot (jittered,
+    but it draws every point) so no datapoint disappears."""
+    import warnings
+
+    def _overflows(size: float) -> bool:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sns.swarmplot(
+                data=data, x=hue, y=spec.value, hue=hue, palette=palette,
+                ax=ax, legend=False, size=size,
+            )
+            # The overlap check runs in swarmplot's draw callback, so provoke a
+            # draw now to learn whether every marker fits at this figure size.
+            canvas = ax.figure.canvas
+            if canvas is not None:
+                canvas.draw()
+        return any("cannot be placed" in str(w.message) for w in caught)
+
+    for size in (5.0, 3.0):
+        if not _overflows(size):
+            return
+        ax.clear()
+    sns.stripplot(data=data, x=hue, y=spec.value, hue=hue, palette=palette, ax=ax, legend=False)
 
 
 def _plot_potential(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
@@ -796,6 +830,60 @@ def _group_series(df: pd.DataFrame, group: list[str]):
     for key, chunk in df.groupby(group, dropna=False):
         parts = key if isinstance(key, tuple) else (key,)
         yield " · ".join(str(p) for p in parts), chunk
+
+
+def plotted_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The exact data drawn by :func:`build_figure` for *spec*, as a tidy table.
+
+    One table per plot family, so a single CSV export reproduces the figure
+    elsewhere with no further processing:
+
+    * ``potential`` → the per-group ``U(x)`` curve (:func:`potential_table`).
+    * ``bar`` → the per-group aggregate (value ± error, n) (:func:`aggregate`).
+    * ``line`` → the per-group, per-frame series actually plotted.
+    * distribution (``hist``/``box``/``violin``/``strip``/``swarm``) → the
+      per-unit values that feed the distribution: the group-by columns plus the
+      plotted value, one row per independent unit (:func:`reduce_to_units`).
+    """
+    if spec.plot == "potential":
+        return potential_table(df, spec)
+    if spec.plot == "bar":
+        return aggregate(df, spec)
+    if spec.plot == "line":
+        return _line_table(df, spec)
+    # distribution family: the per-unit samples the plot is built from.
+    group = list(spec.group_by)
+    if df.empty or spec.value not in df.columns:
+        return pd.DataFrame(columns=[*group, spec.value])
+    units = reduce_to_units(df, spec)
+    keep = [c for c in group if c in units.columns] + [spec.value]
+    out = units[keep].copy()
+    out[spec.value] = pd.to_numeric(out[spec.value], errors="coerce")
+    return out.dropna(subset=[spec.value]).reset_index(drop=True)
+
+
+def _line_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The per-group, per-frame series :func:`_plot_line` draws, as a tidy table
+    (``group``, ``frame``, ``value``)."""
+    columns = ["group", "frame", "value"]
+    if df.empty or "frame" not in df.columns:
+        return pd.DataFrame(columns=columns)
+    blocks: list[pd.DataFrame] = []
+    for label, chunk in _group_series(df, list(spec.group_by)):
+        if spec.stat == "count":
+            series = chunk.groupby("frame", dropna=False).size()
+        elif spec.value not in chunk.columns:
+            continue
+        else:
+            agg = "median" if spec.stat == "median" else "mean"
+            series = chunk.groupby("frame", dropna=False)[spec.value].agg(agg)
+        series = series.sort_index()
+        blocks.append(pd.DataFrame({
+            "group": label,
+            "frame": series.index.to_numpy(),
+            "value": series.to_numpy(),
+        }))
+    return pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=columns)
 
 
 def write_csv(df: pd.DataFrame, path: str | Path) -> Path:

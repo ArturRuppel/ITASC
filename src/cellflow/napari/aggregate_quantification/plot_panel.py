@@ -19,14 +19,16 @@ hands it a different DataFrame + column roles.
 """
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import matplotlib as mpl
+import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-from qtpy.QtCore import Signal
+from qtpy.QtCore import QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -46,10 +48,9 @@ from qtpy.QtWidgets import (
 from cellflow.aggregate_quantification.plotting import (
     PlotSpec,
     StyleSpec,
-    aggregate,
     build_figure,
     pickable_points,
-    potential_table,
+    plotted_table,
     write_csv,
 )
 from cellflow.napari.ui_style import action_button, status_label
@@ -163,6 +164,13 @@ class PlotPanel(QWidget):
         self._selected_target: LoadTarget | None = None
         self._canvas: FigureCanvasQTAgg | None = None
         self._toolbar: NavigationToolbar2QT | None = None
+        #: Marker artist ringing the currently picked point, or None when nothing
+        #: is selected. Removed and redrawn on each pick; cleared on re-render.
+        self._pick_marker = None
+        #: Latched True once a swarm plot overflowed at the *displayed* canvas size
+        #: (seaborn can't place every marker); the panel then renders it as a strip
+        #: so no point is dropped. Reset on any control change (each re-render).
+        self._swarm_overflowed = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -305,7 +313,15 @@ class PlotPanel(QWidget):
         combo.blockSignals(blocked)
 
     def _rebuild_group_checks(self) -> None:
-        """Repopulate the group-by checkboxes for the current ``group_columns``."""
+        """Repopulate the group-by checkboxes for the current ``group_columns``.
+
+        Changing the Value picker (catalog mode) swaps the active product and
+        rebuilds these checkboxes; carry over which columns were ticked so the
+        user's grouping isn't reset just because they switched quantity — a
+        column the new product still offers stays checked."""
+        previously_checked = {
+            name for name, check in self._group_checks.items() if check.isChecked()
+        }
         while self._group_grid.count():
             item = self._group_grid.takeAt(0)
             widget = item.widget()
@@ -314,6 +330,8 @@ class PlotPanel(QWidget):
         self._group_checks = {}
         for i, name in enumerate(self._group_columns):
             check = QCheckBox(name)
+            if name in previously_checked:
+                check.setChecked(True)
             self._group_checks[name] = check
             check.toggled.connect(self._render)
             self._group_grid.addWidget(check, i // 2, i % 2)
@@ -433,16 +451,21 @@ class PlotPanel(QWidget):
 
     # --------------------------------------------------------------- export UI
     def _build_exports(self) -> QGridLayout:
-        # Equal-width export buttons on a "Export:" row: tidy columns that share
-        # the width evenly and collapse together as the panel narrows.
+        # One CSV export that writes exactly the data the current plot shows
+        # (so the file reproduces the figure with no further filtering) plus a
+        # figure export. Equal-width buttons on an "Export:" row that collapse
+        # together as the panel narrows.
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(4)
         grid.addWidget(QLabel("Export:"), 0, 0)
-        self._export_pooled_btn = _export_button("Pooled CSV", self._export_pooled)
-        self._export_agg_btn = _export_button("Aggregated CSV", self._export_aggregated)
+        self._export_csv_btn = _export_button("Plot data (CSV)", self._export_csv)
+        self._export_csv_btn.setToolTip(
+            "Write the exact data drawn in the current plot to CSV — the points / "
+            "curve / bars shown, ready to re-plot elsewhere."
+        )
         self._export_fig_btn = _export_button("Figure", self._export_figure)
-        buttons = (self._export_pooled_btn, self._export_agg_btn, self._export_fig_btn)
+        buttons = (self._export_csv_btn, self._export_fig_btn)
         for col, btn in enumerate(buttons, start=1):
             grid.addWidget(btn, 0, col)
             grid.setColumnStretch(col, 1)
@@ -486,9 +509,23 @@ class PlotPanel(QWidget):
         )
 
     # ---------------------------------------------------------------- render
-    def _render(self) -> None:
-        """Pure re-render from the held snapshot — never re-pools."""
-        fig = build_figure(self._df, self.current_spec(), self.current_style())
+    def _render(self, *, _retry_after_overflow: bool = False) -> None:
+        """Pure re-render from the held snapshot — never re-pools.
+
+        Any control change re-enters here and clears the swarm-overflow latch, so
+        a fresh configuration gets a fresh swarm attempt; only the internal retry
+        after an overflow keeps the latch (and renders the swarm as a strip)."""
+        if not _retry_after_overflow:
+            self._swarm_overflowed = False
+        spec = self.current_spec()
+        # A swarm that overflowed at the displayed size is drawn as a strip so no
+        # point is dropped; everything else renders as selected.
+        render_spec = (
+            replace(spec, plot="strip")
+            if spec.plot == "swarm" and self._swarm_overflowed
+            else spec
+        )
+        fig = build_figure(self._df, render_spec, self.current_style())
         canvas = FigureCanvasQTAgg(fig)
         _shrinkable(canvas)
         toolbar = NavigationToolbar2QT(canvas, self)
@@ -508,6 +545,25 @@ class PlotPanel(QWidget):
         self._canvas, self._toolbar = canvas, toolbar
         canvas.mpl_connect("button_press_event", self._on_pick)
         self._clear_selection()
+        # seaborn only reports a swarm overflow at draw time, and the Qt canvas
+        # resizes the figure to the dock — so detect it once the canvas has its
+        # real size (next event-loop tick), then fall back to a strip if needed.
+        if spec.plot == "swarm" and not self._swarm_overflowed:
+            QTimer.singleShot(0, self._check_swarm_overflow)
+
+    def _check_swarm_overflow(self) -> None:
+        """Force a draw at the displayed size; if the swarm couldn't place every
+        marker, latch the overflow and re-render it as a strip."""
+        if self._canvas is None or self._swarm_overflowed:
+            return
+        if self._plot_combo.currentData() != "swarm":
+            return
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self._canvas.draw()
+        if any("cannot be placed" in str(w.message) for w in caught):
+            self._swarm_overflowed = True
+            self._render(_retry_after_overflow=True)
 
     # -------------------------------------------------------------- click-to-load
     def _category_x(self) -> dict[str, float]:
@@ -519,9 +575,9 @@ class PlotPanel(QWidget):
         labels = [t.get_text() for t in ax.get_xticklabels()]
         return {lab: float(x) for x, lab in zip(ticks, labels) if lab}
 
-    def _nearest_row_index(self, xdata: float, ydata: float) -> int | None:
-        """Row whose plotted point is nearest the click: snap to the x-category,
-        then the closest value within it. Returns None when nothing is pickable."""
+    def _nearest_point(self, xdata: float, ydata: float):
+        """Plotted point nearest the click: snap to the x-category, then the
+        closest value within it. Returns None when nothing is pickable."""
         pts = pickable_points(self._df, self.current_spec(), self.current_style())
         if not pts:
             return None
@@ -533,14 +589,61 @@ class PlotPanel(QWidget):
             candidates = list(pts)  # single, ungrouped bucket
         if not candidates:
             return None
-        return min(candidates, key=lambda p: abs(p.value - ydata)).row_index
+        return min(candidates, key=lambda p: abs(p.value - ydata))
 
     def _on_pick(self, event) -> None:
         if self._target_resolver is None or event.inaxes is None or event.ydata is None:
             return
-        row = self._nearest_row_index(event.xdata, event.ydata)
-        if row is not None:
-            self._select_row(row)
+        point = self._nearest_point(event.xdata, event.ydata)
+        if point is not None:
+            self._highlight_point(point, event.xdata)
+            self._select_row(point.row_index)
+
+    def _highlight_point(self, point, xdata: float) -> None:
+        """Ring the picked point on the canvas. The point sits at its exact value
+        in y and, for jittered strip/swarm plots, at the actual drawn marker's x
+        (read from the scatter offsets) rather than the category column centre or
+        the click x; the marker is removed and redrawn on each pick."""
+        if self._canvas is None:
+            return
+        ax = self._canvas.figure.axes[0]
+        cat_x = self._category_x().get(point.category, xdata)
+        x = self._marker_x(ax, cat_x, point.value)
+        if self._pick_marker is not None:
+            self._pick_marker.remove()
+        (self._pick_marker,) = ax.plot(
+            [x],
+            [point.value],
+            marker="o",
+            markersize=14,
+            markerfacecolor="none",
+            markeredgecolor="yellow",
+            markeredgewidth=2.5,
+            zorder=10,
+        )
+        self._canvas.draw_idle()
+
+    def _marker_x(self, ax, cat_x: float, value: float) -> float:
+        """The x of the actually-drawn marker nearest ``(cat_x, value)``.
+
+        strip/swarm jitter each point along x, so the category column centre is
+        not where the picked marker sits. Scan the scatter offsets seaborn drew
+        and snap to the one whose y best matches the picked value and whose x is
+        closest to the category column, so the ring lands exactly on the point.
+        Falls back to ``cat_x`` when there are no offsets (box/violin/hist)."""
+        best_x: float | None = None
+        best_key = None
+        for collection in ax.collections:
+            offsets = np.asarray(collection.get_offsets(), dtype=float)
+            if offsets.ndim != 2 or offsets.shape[0] == 0:
+                continue
+            for ox, oy in offsets:
+                # Rank exact value match first, then proximity to the column —
+                # so the right point wins even where columns are close together.
+                key = (abs(oy - value), abs(ox - cat_x))
+                if best_key is None or key < best_key:
+                    best_key, best_x = key, float(ox)
+        return best_x if best_x is not None else cat_x
 
     def _select_row(self, row: int) -> None:
         record = self._df.iloc[row]
@@ -557,6 +660,9 @@ class PlotPanel(QWidget):
 
     def _clear_selection(self) -> None:
         self._selected_target = None
+        # The marker lives on the old axes; a re-render replaces the canvas, so
+        # just drop our reference (removing it from a stale figure is needless).
+        self._pick_marker = None
         if hasattr(self, "_load_btn"):
             self._load_btn.setEnabled(False)
             self._path_label.setText("Click a point to select its input data.")
@@ -573,24 +679,13 @@ class PlotPanel(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, caption, filter=filt)
         return Path(path) if path else None
 
-    def _export_pooled(self) -> None:
-        path = self._save_path("Export pooled table", "CSV files (*.csv)")
+    def _export_csv(self) -> None:
+        path = self._save_path("Export plot data", "CSV files (*.csv)")
         if path:
-            self._status.setText(f"Wrote {write_csv(self._df, path).name}.")
-
-    def _export_aggregated(self) -> None:
-        path = self._save_path("Export aggregated table", "CSV files (*.csv)")
-        if path:
-            spec = self.current_spec()
-            # For the potential view the "aggregated" table is the plotted curve
-            # (group · center · U · counts · ΔE_eff), not a per-unit summary, so
-            # the exported numbers match what is drawn.
-            summary = (
-                potential_table(self._df, spec)
-                if spec.plot == "potential"
-                else aggregate(self._df, spec)
-            )
-            self._status.setText(f"Wrote {write_csv(summary, path).name}.")
+            # Exactly the data the current plot draws (points / curve / bars), so
+            # the CSV reproduces the figure with no further processing.
+            table = plotted_table(self._df, self.current_spec())
+            self._status.setText(f"Wrote {write_csv(table, path).name}.")
 
     def _export_figure(self) -> None:
         if self._canvas is None:

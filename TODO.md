@@ -2,6 +2,81 @@
 
 ## Bugs
 
+- [x] Plotter: plot params should not reset when the input field is changed.
+  (Changing the **Value** picker in catalog mode rebuilt the group-by checkboxes
+  from scratch, silently clearing the user's grouping. `_rebuild_group_checks`
+  now carries over which columns were ticked and re-checks any the newly-selected
+  product still offers — plot/level/stat/error/bins were already preserved. See
+  `plot_panel.py` + `test_plot_panel.py`.)
+
+- [x] Plotter: the CSV export in the plot field should export a CSV that
+  corresponds exactly to the data shown in the plot. There should be only **one**
+  export button. (The two CSV buttons (Pooled / Aggregated) collapsed into one
+  **Plot data (CSV)** that writes exactly what the current plot draws, via a new
+  headless `plotting.plotted_table(df, spec)`: the per-unit samples for the
+  distribution family (hist/box/violin/strip/swarm), the per-group aggregate for
+  bar, the per-group/per-frame series for line, and the `U(x)` curve for
+  potential. Re-plottable elsewhere with no further filtering. See
+  `plotting.py`, `plot_panel.py`, `test_plotting.py`, `test_plot_panel.py`.)
+
+- [x] Computing/status labels should live in the Compute/Build section, not the
+  catalogue section. (Added a `_build_status_lbl` inside the Compute section;
+  build queue/progress/done/error messages route through a new `_set_build_status`
+  instead of `_set_catalog_status`, so progress reads next to the controls that
+  triggered it. See `aggregate_quantification_studio.py`.)
+
+- [x] The parameters section should be expanded by default. (`expanded=True`.)
+
+- [x] Rename the "Build" section to **Compute**. (Section title + the build
+  area's docstring/host renamed.)
+
+- [x] Tools, Compute, and Plot sections should be collapsed by default.
+  (`expanded=False` for all three.)
+
+- [x] There should be a "check all" button (toggling to "uncheck all") in the
+  Compute section. (`BuildArea` got a **Check all** button that ticks every
+  *buildable* metric (disabled/no-input rows untouched) and flips to **Uncheck
+  all** once all are ticked; the label also follows manual checkbox edits. See
+  `studio_plugins.py` + `test_studio_plugins.py`.)
+
+- [x] The collapsible containers in Aggregate Quantification should shrink to
+  fit when everything is collapsed. (Verified the current structure already
+  reclaims the height — collapsing every section returns the scroll content from
+  its expanded minimum (~1590 px with all plugins open) back to the stacked
+  headers (~163 px). Locked in with a regression test that expands then collapses
+  all sections and asserts the shrink. See `test_aggregate_quantification_studio.py`.)
+
+- [x] napari `IndexError: tuple index out of range` on canvas draw, from
+  `_update_world_units` → `VispyBaseLayer._on_matrix_change`: `dims_displayed`
+  is `[1, 2]` but `self._world_to_layer_units_scale` is only a 2-tuple
+  `(1.0, 1.0)`, so indexing `[2]` overruns. (Root cause is napari's
+  `_recalculate_units_scale` `strict=False` zip yielding a units scale shorter
+  than the layer's displayed dims when physical units — e.g. an OME-TIFF's
+  `(pixel, pixel)` — reach a layer with more dims than the units tuple (a
+  calibrated 2D stack shown in a 3D viewer). Added `patch_vispy_units_scale_guard`
+  in `_napari_compat.py` (installed alongside the existing layer-delegate patch,
+  so it ships everywhere): it pads `_world_to_layer_units_scale` up to the
+  displayed-dim extent with `1.0` — the no-calibration default, so the only
+  behaviour change is the draw no longer crashes. Pure padding logic
+  (`_padded_units_scale`) is unit-tested in `test_napari_compat.py`.)
+
+- [x] Plotter: seaborn swarmplot overflow ("X% of the points cannot be placed").
+  Markers should auto-size / fall back to stripplot so points aren't silently
+  dropped. (`_plot_swarm` draws the swarm inside a warning-capture; on the
+  "cannot be placed" overflow it shrinks the markers once (5 → 3 px) and, if it
+  still overflows, falls back to a stripplot — which jitters but draws **every**
+  point. Regression test builds a 600-point swarm in a tiny figure and asserts
+  all points are drawn with no overflow warning. See `plotting.py` +
+  `test_plotting.py`.)
+
+- [x] Plotter: the click-to-highlight ring matches the data point's y but not its
+  x for jittered strip/swarm plots. Fix: look up the actual drawn marker's x from
+  the scatter offsets. (`_highlight_point` now calls `_marker_x`, which scans the
+  axes' scatter offsets and snaps to the one whose y best matches the picked value
+  and whose x is closest to the category column — so the ring lands exactly on the
+  jittered point; falls back to the category centre for box/violin/hist. See
+  `plot_panel.py` + `test_plot_panel.py`.)
+
 - [x] Interactive data showing feature: the "load in viewer" function isn't
   working — the path is shown but the data doesn't load. (The `ClickToLoad`
   controller was a local in `shape.py::_open_panel` /

@@ -180,7 +180,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._shared_params = SharedParamsWidget()
         self._shared_params.changed.connect(self._push_context)
         layout.addWidget(
-            CollapsibleSection("Parameters", self._shared_params, expanded=False)
+            CollapsibleSection("Parameters", self._shared_params, expanded=True)
         )
 
         # Tools on top, then the pure Build area, then the Plot area.
@@ -342,19 +342,32 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._plugin_host_layout.setAlignment(Qt.AlignTop)
         col.addWidget(self._plugin_host)
 
-        layout.addWidget(CollapsibleSection("Tools", container, expanded=True))
+        layout.addWidget(CollapsibleSection("Tools", container, expanded=False))
 
     def _build_build_section(self, layout) -> None:
-        """The pure Build area: one checkbox + availability dot per metric and a
+        """The pure Compute area: one checkbox + availability dot per metric and a
         single Run button that (re)builds every checked metric for the in-scope
         positions. The :class:`BuildArea` body is (re)created in
-        :meth:`_reload_plugins` so a metric registered at runtime shows up."""
+        :meth:`_reload_plugins` so a metric registered at runtime shows up. The
+        compute/status line lives here (not in the catalogue) so progress reads
+        next to the controls that triggered it."""
+        container = QWidget()
+        col = QVBoxLayout(container)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
         self._build_host = QWidget()
         self._build_host_layout = QVBoxLayout(self._build_host)
         self._build_host_layout.setContentsMargins(0, 0, 0, 0)
         self._build_host_layout.setSpacing(0)
         self._build_area: BuildArea | None = None
-        layout.addWidget(CollapsibleSection("Build", self._build_host, expanded=True))
+        col.addWidget(self._build_host)
+
+        self._build_status_lbl = QLabel("")
+        self._build_status_lbl.setWordWrap(True)
+        status_label(self._build_status_lbl, muted=True)
+        col.addWidget(self._build_status_lbl)
+
+        layout.addWidget(CollapsibleSection("Compute", container, expanded=False))
 
     def _build_plot_section(self, layout) -> None:
         """The Plot area: every registered plot, grouped by family and gated by
@@ -363,7 +376,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._plot_area = PlotAreaWidget(
             self.viewer, params_provider=self._shared_params.plot_params
         )
-        layout.addWidget(CollapsibleSection("Plots", self._plot_area, expanded=True))
+        layout.addWidget(CollapsibleSection("Plots", self._plot_area, expanded=False))
 
     # ----------------------------------------------------------- catalog actions
     def _set_catalog_status(self, message: str) -> None:
@@ -438,6 +451,11 @@ class AggregateQuantificationStudioWidget(QWidget):
         )
 
     # ----------------------------------------------------------------- building
+    def _set_build_status(self, message: str) -> None:
+        """Status for the Compute area (build progress / results), shown beside
+        the build controls rather than in the catalogue."""
+        self._build_status_lbl.setText(message)
+
     def _run_quantity_builds(
         self, quantifiers: list[Quantifier], records: list[dict], overwrite: bool
     ) -> None:
@@ -448,7 +466,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         worker runs the mixed queue so several metrics build in one pass.
         """
         if self._build_worker is not None:
-            self._set_catalog_status("A build is already running.")
+            self._set_build_status("A build is already running.")
             return
         # Only quantifiers that opt in get the shared bar's build knobs (z-score
         # shuffles, density FOV); the rest keep their own ``params`` schema clean.
@@ -473,14 +491,14 @@ class AggregateQuantificationStudioWidget(QWidget):
                     )
                 )
         if not jobs:
-            self._set_catalog_status(
+            self._set_build_status(
                 "Nothing to build — inputs missing or already built."
             )
             return
         self._begin_build(jobs)
 
     def _begin_build(self, jobs: list[_BuildPlan]) -> None:
-        self._set_catalog_status(f"Computing {len(jobs)} build job(s)…")
+        self._set_build_status(f"Computing {len(jobs)} build job(s)…")
         emit = self._build_emitter.progress.emit
 
         @thread_worker(
@@ -502,7 +520,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._build_worker = _worker()
 
     def _on_build_progress(self, done: int, total: int, label: str) -> None:
-        self._set_catalog_status(f"Computing: {done}/{total} {label}")
+        self._set_build_status(f"Computing: {done}/{total} {label}")
 
     def _on_build_done(self, results: list) -> None:
         self._build_worker = None
@@ -511,13 +529,13 @@ class AggregateQuantificationStudioWidget(QWidget):
         # Re-normalize so each position's status reflects freshly built files.
         self._records = merge_catalog_records(self._records, [])
         self._refresh_table()
-        self._set_catalog_status(
+        self._set_build_status(
             f"Built {built}" + (f", {failed} failed" if failed else "") + "."
         )
 
     def _on_build_error(self, exc: Exception) -> None:
         self._build_worker = None
-        self._set_catalog_status(f"Build error: {exc}")
+        self._set_build_status(f"Build error: {exc}")
 
     def _on_load_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -677,7 +695,10 @@ class AggregateQuantificationStudioWidget(QWidget):
                 widget.deleteLater()
         quantifiers = [q_cls() for q_cls in available_quantifiers()]
         self._build_area = BuildArea(
-            quantifiers, self._run_quantity_builds, viewer=self.viewer
+            quantifiers,
+            self._run_quantity_builds,
+            viewer=self.viewer,
+            params_provider=self._shared_params.build_params,
         )
         self._build_host_layout.addWidget(self._build_area)
         self._push_context_to(self._build_area)

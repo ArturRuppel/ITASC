@@ -345,6 +345,83 @@ def test_build_area_run_targets_only_buildable_missing_positions(tmp_path, monke
     app.processEvents()
 
 
+def test_build_status_goes_to_compute_section_not_catalogue(monkeypatch):
+    # Bug 13: computing/status text belongs in the Compute section, beside the
+    # build controls — not in the catalogue status line.
+    app = _app()
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
+    widget = mod.AggregateQuantificationStudioWidget()
+    widget._catalog_status_lbl.setText("catalogue idle")
+
+    # "Nothing to build" is a build outcome -> Compute status, catalogue untouched.
+    widget._run_quantity_builds([ContactsQuantifier()], [], overwrite=False)
+    assert "Nothing to build" in widget._build_status_lbl.text()
+    assert widget._catalog_status_lbl.text() == "catalogue idle"
+
+    # Progress + completion also land on the Compute status.
+    widget._on_build_progress(1, 2, "p1")
+    assert "Computing" in widget._build_status_lbl.text()
+    widget._on_build_done([])
+    assert "Built" in widget._build_status_lbl.text()
+    assert widget._catalog_status_lbl.text() == "catalogue idle"
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_section_defaults_and_compute_rename(monkeypatch):
+    # Bugs 16/18/20: Parameters expanded; Build renamed to Compute; Tools /
+    # Compute / Plots collapsed by default.
+    from cellflow.napari.widgets import CollapsibleSection
+
+    app = _app()
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
+    widget = mod.AggregateQuantificationStudioWidget()
+    by_title = {
+        s.title: s for s in widget.findChildren(CollapsibleSection)
+    }
+    assert "Build" not in by_title and "Compute" in by_title
+    assert by_title["Parameters"].is_expanded is True
+    assert by_title["Tools"].is_expanded is False
+    assert by_title["Compute"].is_expanded is False
+    assert by_title["Plots"].is_expanded is False
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_collapsing_everything_shrinks_the_studio_to_fit(monkeypatch):
+    # Bug 25: once every collapsible is collapsed the studio's content must
+    # shrink back to the stacked headers — not retain the tall expanded height.
+    from qtpy.QtWidgets import QScrollArea
+
+    from cellflow.napari.widgets import CollapsibleSection
+
+    app = _app()
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
+    widget = mod.AggregateQuantificationStudioWidget()
+    widget.resize(360, 900)
+    sections = widget.findChildren(CollapsibleSection)
+
+    for section in sections:
+        section.expand()
+    app.processEvents()
+    content = widget.findChild(QScrollArea).widget()
+    expanded_min = content.minimumSizeHint().height()
+
+    for section in sections:
+        section.collapse()
+    app.processEvents()
+    app.processEvents()
+    collapsed_min = content.minimumSizeHint().height()
+
+    # Collapsing reclaims the height: the content is now a small fraction of its
+    # expanded minimum, roughly the stacked section headers.
+    assert collapsed_min < expanded_min / 3
+    assert collapsed_min <= 40 * len(sections)
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_catalog_summary_plugin_reports_counts():
     app = _app()
     plugin = CatalogSummaryPlugin()

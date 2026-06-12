@@ -632,3 +632,75 @@ def test_build_figure_potential_adaptive_renders():
 def test_plotspec_rejects_unknown_bin_mode():
     with pytest.raises(ValueError):
         PlotSpec(value="x", plot="potential", bin_mode="logarithmic")
+
+
+# --------------------------------------------------------- plotted_table (one CSV export)
+def _drawn_point_count(ax) -> int:
+    """Total scatter points drawn across the axes' collections."""
+    total = 0
+    for coll in ax.collections:
+        offs = np.asarray(coll.get_offsets(), dtype=float)
+        if offs.ndim == 2:
+            total += offs.shape[0]
+    return total
+
+
+def test_plotted_table_distribution_is_per_unit_values():
+    from cellflow.aggregate_quantification.plotting import plotted_table
+
+    df = pool_object_tables(_multiframe_sources())
+    spec = PlotSpec(value="area", plot="strip", level="cell", group_by=("condition",))
+    table = plotted_table(df, spec)
+    # One row per cell track (frames collapsed), carrying the group + value only.
+    assert list(table.columns) == ["condition", "area"]
+    assert len(table) == 4  # four distinct cell tracks
+    assert set(np.round(sorted(table["area"]), 0)) == {12.0, 30.0, 50.0, 100.0}
+
+
+def test_plotted_table_bar_is_the_aggregate():
+    from cellflow.aggregate_quantification.plotting import aggregate, plotted_table
+
+    df = pool_object_tables(_multiframe_sources())
+    spec = PlotSpec(value="area", plot="bar", group_by=("condition",))
+    pd.testing.assert_frame_equal(plotted_table(df, spec), aggregate(df, spec))
+
+
+def test_plotted_table_line_is_per_frame_series():
+    from cellflow.aggregate_quantification.plotting import plotted_table
+
+    df = pool_object_tables(_multiframe_sources())
+    spec = PlotSpec(value="area", plot="line", stat="mean")
+    table = plotted_table(df, spec)
+    assert list(table.columns) == ["group", "frame", "value"]
+    # frames 0..3 are present across the pooled positions.
+    assert sorted(table["frame"].unique()) == [0, 1, 2, 3]
+
+
+def test_plotted_table_potential_is_the_curve():
+    from cellflow.aggregate_quantification.plotting import plotted_table, potential_table
+
+    df = pd.DataFrame({"signed_length": np.linspace(-3, 3, 500)})
+    spec = PlotSpec(value="signed_length", plot="potential", bins=20)
+    pd.testing.assert_frame_equal(plotted_table(df, spec), potential_table(df, spec))
+
+
+# ------------------------------------------------------------- swarm overflow fallback
+def test_swarm_overflow_draws_every_point_without_warning(recwarn):
+    # A column crowded enough that a swarm cannot place all markers: the backend
+    # must fall back (auto-size, then stripplot) so no datapoint is dropped.
+    n = 600
+    df = pd.DataFrame({
+        "condition": ["A"] * n,
+        "position_id": [f"p{i}" for i in range(n)],
+        "cell_id": list(range(n)),
+        "frame": [0] * n,
+        "area": np.linspace(0.0, 1.0, n),
+    })
+    spec = PlotSpec(value="area", plot="swarm", level="cell")
+    style = StyleSpec(width=2.0, height=2.0)
+    fig = build_figure(df, spec, style)
+    ax = fig.axes[0]
+    # Every per-cell point is drawn (no silent omission).
+    assert _drawn_point_count(ax) == n
+    # No "cannot be placed" overflow warning escapes the backend.
+    assert not any("cannot be placed" in str(w.message) for w in recwarn.list)

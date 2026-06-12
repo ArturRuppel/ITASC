@@ -24,7 +24,8 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from scipy.ndimage import binary_dilation as _binary_dilation
+from cellflow.napari._spotlight import SPOTLIGHT_OPACITY as _SPOTLIGHT_OPACITY
+from cellflow.napari._spotlight import spotlight_rgba as _spotlight_rgba
 from cellflow.correction.labels import (
     _label_at,
     add_cell,
@@ -60,7 +61,6 @@ if os.environ.get("CELLFLOW_DEBUG"):
 
 _DRAW_LAYER      = "[Correction] CorrectionDraw"
 _SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
-_SPOTLIGHT_OPACITY = 0.7
 
 
 class CorrectionWidget(QWidget):
@@ -863,14 +863,8 @@ class CorrectionWidget(QWidget):
         #   "border" — a bright opaque ring around the mask, transparent
         #     elsewhere (leaves the rest of the frame untouched).
         spotlight = self._get_spotlight_layer()
-        data = np.zeros(mask.shape + (4,), dtype=np.float32)
-        if self._highlight_style == "border":
-            ring = _binary_dilation(mask, iterations=2) & ~mask
-            data[ring] = (1.0, 1.0, 0.0, 1.0)  # opaque yellow outline
-        else:
-            alpha = np.full(mask.shape, _SPOTLIGHT_OPACITY, dtype=np.float32)
-            alpha[mask] = 0.0
-            data[..., 3] = alpha
+        border = self._highlight_style == "border"
+        data = _spotlight_rgba(mask, dim=not border, border=border)
         spotlight.data = data
         spotlight.visible = True
         if self._layer is not None:

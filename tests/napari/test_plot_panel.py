@@ -158,19 +158,17 @@ def test_export_csv_and_figure(tmp_path):
     app = _app()
     panel = _panel()
 
-    pooled = tmp_path / "pooled.csv"
-    panel._df.to_csv(pooled, index=False)  # sanity: snapshot is tidy
-    from cellflow.aggregate_quantification.plotting import aggregate, write_csv
+    from cellflow.aggregate_quantification.plotting import plotted_table, write_csv
 
-    agg_path = write_csv(aggregate(panel._df, panel.current_spec()), tmp_path / "agg")
-    assert agg_path.exists()
+    # The single CSV export writes exactly the data the current plot draws.
+    csv_path = write_csv(plotted_table(panel._df, panel.current_spec()), tmp_path / "plot")
+    assert csv_path.exists()
 
     fig_path = tmp_path / "fig.png"
     panel._canvas.figure.savefig(fig_path)
     assert fig_path.exists() and fig_path.stat().st_size > 0
 
-    assert panel._export_pooled_btn.isEnabled() is True
-    assert panel._export_agg_btn.isEnabled() is True
+    assert panel._export_csv_btn.isEnabled() is True
     assert panel._export_fig_btn.isEnabled() is True
     panel.deleteLater()
     app.processEvents()
@@ -192,7 +190,7 @@ def test_selection_changed_signal_exists_and_emits():
 def test_empty_snapshot_disables_exports():
     app = _app()
     panel = PlotPanel(pd.DataFrame(), value_columns=("area",), group_columns=("condition",))
-    assert panel._export_pooled_btn.isEnabled() is False
+    assert panel._export_csv_btn.isEnabled() is False
     panel.deleteLater()
     app.processEvents()
 
@@ -246,16 +244,23 @@ def test_pick_resolves_identity_and_enables_load():
     pts = pickable_points(panel._df, panel.current_spec(), panel.current_style())
     p0 = pts[0]
     cat_x = panel._category_x().get(p0.category, 0)
-    row = panel._nearest_row_index(cat_x, p0.value)
-    assert row == p0.row_index
-    panel._select_row(row)
+    point = panel._nearest_point(cat_x, p0.value)
+    assert point.row_index == p0.row_index
+    # Picking rings the point on the canvas at its value.
+    panel._highlight_point(point, cat_x)
+    assert panel._pick_marker is not None
+    assert panel._pick_marker.get_ydata()[0] == point.value
+    panel._select_row(point.row_index)
     assert panel._load_btn.isEnabled()
     assert "/tmp/labels.tif" in panel._path_label.text()
-    assert seen["cell_id"] == int(panel._df.iloc[row]["cell_id"])
+    assert seen["cell_id"] == int(panel._df.iloc[point.row_index]["cell_id"])
     emitted = []
     panel.load_requested.connect(emitted.append)
     panel._load_btn.click()
     assert emitted and emitted[0].path == Path("/tmp/labels.tif")
+    # Re-rendering drops the marker reference (it lived on the replaced canvas).
+    panel._render()
+    assert panel._pick_marker is None
     panel.deleteLater(); app.processEvents()
 
 
@@ -264,3 +269,58 @@ def test_no_resolver_means_no_load_ui():
     panel = _panel()                       # no target_resolver
     assert not panel._load_btn.isEnabled()
     panel.deleteLater(); app.processEvents()
+
+
+def test_group_by_survives_value_change_when_column_still_present():
+    # Bug 5: changing the Value picker must not silently reset the grouping for a
+    # group column the newly-selected product still offers.
+    app = _app()
+    cells = pd.DataFrame({"condition": ["A", "B"], "cell_id": [1, 2], "area": [10.0, 12.0]})
+    tracks = pd.DataFrame({"condition": ["A", "B"], "track_id": [1, 2], "speed": [0.5, 0.7]})
+    catalog = [
+        ValueSource(cells, "area", ("condition",), "Cell shape: area", "Shape"),
+        ValueSource(tracks, "speed", ("condition",), "Dynamics: speed", "Dynamics"),
+    ]
+    panel = PlotPanel(value_catalog=catalog, default_plot="strip")
+    try:
+        panel._group_checks["condition"].setChecked(True)
+        assert panel.current_spec().group_by == ("condition",)
+        # Swap to the other product (also grouped by condition).
+        index = next(
+            i for i in range(panel._value_combo.count())
+            if panel._value_combo.itemData(i) == "speed"
+        )
+        panel._value_combo.setCurrentIndex(index)
+        assert panel.current_spec().value == "speed"
+        # The grouping carried over rather than resetting.
+        assert panel._group_checks["condition"].isChecked()
+        assert panel.current_spec().group_by == ("condition",)
+    finally:
+        panel.deleteLater(); app.processEvents()
+
+
+def test_highlight_ring_lands_on_jittered_marker_x():
+    # Bug 50: for strip/swarm the points are jittered along x, so the ring must
+    # snap to the actual drawn marker's x (from the scatter offsets), not the
+    # category column centre or the click x.
+    app = _app()
+    panel = PlotPanel(
+        _df(), value_columns=("area",),
+        group_columns=("condition", "date", "position_id", "class_label", "frame"),
+        target_resolver=lambda identity: None,
+    )
+    try:
+        panel._plot_combo.setCurrentText("strip")
+        panel._render()
+        ax = panel._canvas.figure.axes[0]
+        # Take a real drawn offset and ask the panel to ring its value.
+        offsets = np.asarray(ax.collections[0].get_offsets(), dtype=float)
+        ox, oy = offsets[0]
+        from cellflow.aggregate_quantification.plotting import PickPoint
+        point = PickPoint(category="", value=float(oy), row_index=0)
+        # Click x deliberately far from the marker; ring must still land on it.
+        panel._highlight_point(point, ox + 5.0)
+        assert panel._pick_marker.get_xdata()[0] == ox
+        assert panel._pick_marker.get_ydata()[0] == oy
+    finally:
+        panel.deleteLater(); app.processEvents()

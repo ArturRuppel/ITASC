@@ -39,3 +39,24 @@ def test_layer_delegate_loading_indicator_tolerates_missing_size_hint():
 
     delegate._paint_loading(None, option, _NoSizeHintIndex(loaded=False))
     app.processEvents()
+
+
+def test_padded_units_scale_extends_to_cover_displayed_dims():
+    # Bug 28: a 2-tuple units scale on a layer whose displayed dims are [1, 2]
+    # would overrun at index 2; pad with the no-calibration default (1.0).
+    from cellflow.napari._napari_compat import _padded_units_scale
+
+    assert _padded_units_scale((1.0, 1.0), [1, 2]) == (1.0, 1.0, 1.0)
+    # Already long enough -> returned unchanged (and as a tuple).
+    assert _padded_units_scale((2.0, 3.0, 4.0), [1, 2]) == (2.0, 3.0, 4.0)
+    assert _padded_units_scale((0.65, 0.65), [0, 1]) == (0.65, 0.65)
+    # No displayed dims -> nothing to cover.
+    assert _padded_units_scale((1.0,), []) == (1.0,)
+
+
+def test_units_scale_guard_is_installed_on_import():
+    sys.modules.pop("cellflow.napari", None)
+    importlib.import_module("cellflow.napari")
+    from napari._vispy.layers.base import VispyBaseLayer
+
+    assert getattr(VispyBaseLayer, "_cellflow_units_scale_guard", False) is True

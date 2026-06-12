@@ -37,6 +37,10 @@ class CellDensityQuantifier(Quantifier):
     requires = ("cell_labels_path",)
     default_output_name = "cell_density.csv"
     wants_build_params = True
+    # The field-of-view area has no image-area fallback, so it is a hard build
+    # requirement: the studio greys Cell density out (and lists it as needed)
+    # until it is set, instead of letting the build raise.
+    required_build_params = {"fov_area_mm2": "FOV area (mm²)"}
 
     def build(
         self,
