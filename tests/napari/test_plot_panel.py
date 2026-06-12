@@ -37,6 +37,12 @@ def _panel():
     )
 
 
+def _pixel_of(coll, i):
+    """Display-pixel (x, y) of marker *i* in *coll* — where a click lands to hit it."""
+    off = np.asarray(coll.get_offsets(), dtype=float)
+    return tuple(coll.get_offset_transform().transform(off)[int(i)])
+
+
 def test_catalog_mode_spans_sources_and_swaps_on_selection():
     app = _app()
     # Two products with different columns AND different group axes.
@@ -225,7 +231,6 @@ def test_axis_range_fields_feed_style_and_render():
 
 def test_pick_resolves_identity_and_enables_load():
     from pathlib import Path
-    from types import SimpleNamespace
     from cellflow.napari.aggregate_quantification.plot_panel import LoadTarget, PlotPanel
     from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
     app = _app()
@@ -243,12 +248,13 @@ def test_pick_resolves_identity_and_enables_load():
     panel._plot_combo.setCurrentText("strip")
     panel._render()
     ax = panel._canvas.figure.axes[0]
-    # A native matplotlib pick: the drawn artist carries its exact source rows, so
-    # ``event.ind`` indexes straight to the row — no value-proximity guessing.
+    # Clicking a marker's pixel selects it: the collection carries its exact source
+    # rows aligned to its offsets, and the panel takes the nearest in pixel space.
     artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
     rows = getattr(artist, _PICK_ROWS_ATTR)
     offsets = np.asarray(artist.get_offsets(), dtype=float)
-    panel._on_pick(SimpleNamespace(artist=artist, ind=[0]))
+    px, py = _pixel_of(artist, 0)
+    assert panel._pick_at(px, py) == int(rows[0])
     expected_row = int(rows[0])
     # The ring lands exactly on the drawn marker (its offset), not a column centre.
     assert panel._pick_marker is not None
@@ -268,10 +274,9 @@ def test_pick_resolves_identity_and_enables_load():
 
 
 def test_pick_distinguishes_equal_valued_points():
-    # The core fix: two points with the *same* value must resolve to their own
-    # rows. The old value-proximity reconstruction collided them; native picking
-    # reads each marker's stamped row, so ``ind`` 0 and 1 stay distinct.
-    from types import SimpleNamespace
+    # Two points with the *same* value must resolve to their own rows. Stripplot
+    # jitters them to distinct x, and nearest-in-pixels reads each marker's own
+    # stamped row, so they never collide.
     from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
     from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
     app = _app()
@@ -288,10 +293,96 @@ def test_pick_distinguishes_equal_valued_points():
     panel._render()
     ax = panel._canvas.figure.axes[0]
     artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
-    assert len(getattr(artist, _PICK_ROWS_ATTR)) == 2
-    panel._on_pick(SimpleNamespace(artist=artist, ind=[0]))
-    panel._on_pick(SimpleNamespace(artist=artist, ind=[1]))
+    rows = getattr(artist, _PICK_ROWS_ATTR)
+    assert len(rows) == 2
+    by_cell = {int(panel._df.iloc[int(r)]["cell_id"]): i for i, r in enumerate(rows)}
+    for cell in (101, 202):
+        panel._pick_at(*_pixel_of(artist, by_cell[cell]))
     assert selected == [101, 202]
+    panel.deleteLater(); app.processEvents()
+
+
+def test_pick_selects_nearest_not_arbitrary_overlap():
+    # The wrong-cell bug: in a dense plot many markers fall within a few pixels of
+    # the cursor. Picking must resolve to the marker *nearest* the click — the tall
+    # point when the tall point is clicked — not an arbitrary one in range.
+    from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
+    from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
+    app = _app()
+    selected: list[int] = []
+    # One conspicuously tall cell among a tight cluster of small ones.
+    df = pd.DataFrame({
+        "condition": ["A"] * 9,
+        "cell_id": list(range(9)),
+        "area": [10.0, 11.0, 9.0, 10.5, 9.5, 10.2, 9.8, 10.1, 90.0],
+    })
+    panel = PlotPanel(df, value_columns=("area",), group_columns=("condition",),
+                      target_resolver=lambda identity: None)
+    panel.selection_changed.connect(lambda ident: selected.append(int(ident["cell_id"])))
+    panel._plot_combo.setCurrentText("strip")
+    panel._render()
+    ax = panel._canvas.figure.axes[0]
+    artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
+    rows = getattr(artist, _PICK_ROWS_ATTR)
+    tall = next(i for i, r in enumerate(rows) if int(panel._df.iloc[int(r)]["cell_id"]) == 8)
+    panel._pick_at(*_pixel_of(artist, tall))
+    assert selected == [8]  # the tall cell, not a clustered neighbour
+    panel.deleteLater(); app.processEvents()
+
+
+def test_pick_survives_zoom():
+    # Zooming changes data→pixel scaling; picking runs in *live* display coords, so
+    # it still resolves the right point (the old pick_event was suppressed by the
+    # toolbar's widget-lock while zoomed — nothing was clickable at all).
+    from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
+    from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
+    app = _app()
+    selected: list[int] = []
+    panel = PlotPanel(_df(), value_columns=("area",), group_columns=("condition",),
+                      target_resolver=lambda identity: None)
+    panel.selection_changed.connect(lambda ident: selected.append(int(ident["cell_id"])))
+    panel._plot_combo.setCurrentText("strip")
+    panel._render()
+    ax = panel._canvas.figure.axes[0]
+    # Zoom into the upper half of the data, then recompute pixel positions.
+    lo, hi = ax.get_ylim()
+    ax.set_ylim((lo + hi) / 2, hi)
+    panel._canvas.draw()
+    artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
+    rows = getattr(artist, _PICK_ROWS_ATTR)
+    # A marker that stayed in view after the zoom.
+    ymid = (lo + hi) / 2
+    offs = np.asarray(artist.get_offsets(), dtype=float)
+    visible = next(i for i in range(len(offs)) if offs[i, 1] > ymid)
+    panel._pick_at(*_pixel_of(artist, visible))
+    assert selected == [int(panel._df.iloc[int(rows[visible])]["cell_id"])]
+    panel.deleteLater(); app.processEvents()
+
+
+def test_drag_does_not_select():
+    # A press→release that travels (the toolbar's zoom/pan rubber-band) is never a
+    # selection, so the user can zoom with the tool active and still click points.
+    from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel
+    from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
+    from types import SimpleNamespace
+    app = _app()
+    selected: list = []
+    panel = PlotPanel(_df(), value_columns=("area",), group_columns=("condition",),
+                      target_resolver=lambda identity: None)
+    panel.selection_changed.connect(selected.append)
+    panel._plot_combo.setCurrentText("strip")
+    panel._render()
+    ax = panel._canvas.figure.axes[0]
+    artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
+    px, py = _pixel_of(artist, 0)
+    panel._on_press(SimpleNamespace(button=1, x=px, y=py))
+    panel._on_release(SimpleNamespace(button=1, x=px + 60, y=py + 40))  # dragged away
+    assert selected == []
+    assert panel._pick_marker is None
+    # A press→release in place at the same marker does select.
+    panel._on_press(SimpleNamespace(button=1, x=px, y=py))
+    panel._on_release(SimpleNamespace(button=1, x=px, y=py))
+    assert len(selected) == 1
     panel.deleteLater(); app.processEvents()
 
 
@@ -331,9 +422,8 @@ def test_group_by_survives_value_change_when_column_still_present():
 
 
 def test_no_resolver_means_no_pick_select():
-    # With no resolver the panel must not act on picks (no selection, no ring),
+    # With no resolver the panel must not act on clicks (no selection, no ring),
     # matching how loading stays disabled.
-    from types import SimpleNamespace
     from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
     app = _app()
     emitted: list = []
@@ -343,7 +433,7 @@ def test_no_resolver_means_no_pick_select():
     panel._render()
     ax = panel._canvas.figure.axes[0]
     artist = next(c for c in ax.collections if hasattr(c, _PICK_ROWS_ATTR))
-    panel._on_pick(SimpleNamespace(artist=artist, ind=[0]))
+    assert panel._pick_at(*_pixel_of(artist, 0)) is None
     assert emitted == []
     assert panel._pick_marker is None
     panel.deleteLater(); app.processEvents()

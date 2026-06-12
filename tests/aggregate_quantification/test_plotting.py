@@ -241,6 +241,44 @@ def test_distribution_points_are_per_unit_not_per_frame():
         assert 0 <= p.row_index < len(df)
 
 
+def test_pick_resolves_to_a_frame_matching_the_plotted_value():
+    """The picked point loads a frame that *looks like* the plotted point: the
+    representative row's own value tracks the unit's plotted (reduced) value, not
+    an arbitrary first frame.
+
+    Regression: a track whose first frame is tiny but whose mean is the largest in
+    the plot used to load that tiny first frame — so clicking the "biggest" point
+    loaded a small cell."""
+    # cell 1's first frame (10) is the smallest moment of its life, but its mean
+    # area (≈340) is the largest unit in the plot.
+    def tbl(frames, cells, areas):
+        return {
+            "frame": np.asarray(frames, dtype=np.int64),
+            "cell_id": np.asarray(cells, dtype=np.int64),
+            "area": np.asarray(areas, dtype=float),
+        }
+
+    sources = [
+        PositionSource(
+            metadata={"condition": "A", "date": "d1", "position_id": "p1"},
+            table=tbl(
+                [0, 1, 2, 3, 4, 0, 1, 2],
+                [1, 1, 1, 1, 1, 2, 2, 2],
+                [10.0, 400.0, 420.0, 430.0, 440.0, 50.0, 55.0, 60.0],
+            ),
+        ),
+    ]
+    df = pool_object_tables(sources)
+    spec = PlotSpec(value="area", group_by=(), level="cell", plot="strip", stat="mean")
+    pts = pickable_points(df, spec, StyleSpec())
+    biggest = max(pts, key=lambda p: p.value)
+    loaded_area = float(df.iloc[biggest.row_index]["area"])
+    # The frame it loads has an area close to the plotted mean — never the tiny
+    # first frame (10) the old "first row" rule resolved to.
+    assert loaded_area == pytest.approx(biggest.value, abs=100.0)
+    assert loaded_area > 300.0
+
+
 def test_aggregate_empty_returns_schema():
     out = aggregate(pd.DataFrame(), PlotSpec(value="area", group_by=("condition",)))
     assert list(out.columns) == ["condition", "n", "value", "error"]
@@ -474,12 +512,16 @@ def test_pickable_points_hist_is_empty():
     assert pickable_points(df, spec, StyleSpec()) == []
 
 
-# ----------------------------------------------------- native picking (pick_event)
+# -------------------------------------------- pickable points (nearest-in-pixels)
 from cellflow.aggregate_quantification.plotting import _PICK_ROWS_ATTR
 
 
 def _tagged(ax):
-    """The drawn artists armed for picking, with their stamped row arrays."""
+    """The drawn point collections carrying source rows, with their row arrays.
+
+    The collections are not armed for matplotlib picking; the panel hit-tests
+    their offsets in pixel space (nearest wins). The contract here is just that
+    each collection carries a row per offset, aligned to it."""
     return [
         (c, list(getattr(c, _PICK_ROWS_ATTR)))
         for c in ax.collections
@@ -490,7 +532,7 @@ def _tagged(ax):
 @pytest.mark.parametrize("plot", ["strip", "swarm"])
 def test_point_collections_carry_exact_source_rows(plot):
     # Each drawn point stamps its positional .iloc row, in input-row order per
-    # category, and is armed for picking — so a pick maps straight to a row.
+    # category, aligned to its offsets — so a click maps straight to a row.
     df = pd.DataFrame({
         "condition": ["A", "A", "B"],
         "cell_id": [10, 20, 30],
@@ -499,7 +541,7 @@ def test_point_collections_carry_exact_source_rows(plot):
     spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot=plot)
     fig = build_figure(df, spec, StyleSpec())
     tagged = _tagged(fig.axes[0])
-    assert all(col.get_picker() for col, _ in tagged)
+    assert tagged  # at least one collection carries rows
     assert sorted(r for _, rows in tagged for r in rows) == [0, 1, 2]
     # offsets line up with rows positionally: same count per collection.
     for col, rows in tagged:
@@ -534,7 +576,7 @@ def test_box_outlier_overlay_is_pickable_at_the_flier():
     tagged = _tagged(fig.axes[0])
     assert len(tagged) == 1
     col, rows = tagged[0]
-    assert rows == [9] and col.get_picker()
+    assert rows == [9]
     assert float(np.asarray(col.get_offsets())[0][1]) == 200.0
 
 

@@ -63,6 +63,16 @@ from cellflow.napari.widgets import CollapsibleSection
 #: frame). Only the ones present in the snapshot are used.
 _IDENTITY_COLUMNS = ("position_id", "frame", "frame_start", "cell_id")
 
+#: Press→release pixel travel under which a click counts as a *selection* rather
+#: than a navigation drag (the toolbar's zoom/pan rubber-band moves much further),
+#: so the user can zoom and still click points without toggling the zoom tool off.
+_CLICK_SLOP_PX = 4
+#: Max pixel distance from the click to the nearest plotted point for it to count
+#: as a hit. Generous on purpose: a click *near* a marker selects the nearest one
+#: (no dead points), and the search runs in live display coordinates so it stays
+#: exact at any zoom.
+_PICK_TOLERANCE_PX = 24
+
 
 @dataclass(frozen=True)
 class LoadTarget:
@@ -166,6 +176,9 @@ class PlotPanel(QWidget):
         self._selected_target: LoadTarget | None = None
         self._canvas: FigureCanvasQTAgg | None = None
         self._toolbar: NavigationToolbar2QT | None = None
+        #: Pixel (x, y) where the current left-press began, or None. Lets the
+        #: release handler tell a select-click from a zoom/pan drag.
+        self._press_xy: tuple[float, float] | None = None
         #: Marker artist ringing the currently picked point, or None when nothing
         #: is selected. Removed and redrawn on each pick; cleared on re-render.
         self._pick_marker = None
@@ -551,7 +564,16 @@ class PlotPanel(QWidget):
         self._canvas_holder.addWidget(toolbar)
         self._canvas_holder.addWidget(canvas, 1)
         self._canvas, self._toolbar = canvas, toolbar
-        canvas.mpl_connect("pick_event", self._on_pick)
+        # Own the click instead of matplotlib's pick_event: pick_event fires only
+        # within a few pixels of a marker (dense plots leave most points dead),
+        # returns an arbitrary marker among those in range (not the nearest, so a
+        # click on the tall point often resolved to a shorter neighbour), and is
+        # suppressed entirely while the toolbar holds the widget-lock to zoom/pan.
+        # A press/release pair with nearest-in-pixels hit-testing sidesteps all
+        # three and stays exact after zooming.
+        canvas.mpl_connect("button_press_event", self._on_press)
+        canvas.mpl_connect("button_release_event", self._on_release)
+        self._press_xy = None
         self._clear_selection()
         # seaborn only reports a swarm overflow at draw time, and the Qt canvas
         # resizes the figure to the dock — so detect it once the canvas has its
@@ -574,28 +596,74 @@ class PlotPanel(QWidget):
             self._render(_retry_after_overflow=True)
 
     # -------------------------------------------------------------- click-to-load
-    def _on_pick(self, event) -> None:
-        """Resolve a matplotlib pick to the exact source row and select it.
+    def _on_press(self, event) -> None:
+        """Remember where a left-press began, so the release can tell a selecting
+        click from a zoom/pan drag."""
+        self._press_xy = (
+            (event.x, event.y)
+            if getattr(event, "button", None) == 1 and event.x is not None
+            else None
+        )
 
-        Each drawn point artist carries its per-marker source row indices
-        (``_PICK_ROWS_ATTR``, stamped by the plotting backend); ``event.ind`` is
-        the picked marker's index into that artist, so the row is read directly —
-        no x-category snap or value-proximity guessing, so two equal-valued points
-        never collide and the ring lands on the actual marker."""
+    def _on_release(self, event) -> None:
+        """On a left-click that didn't drag (a drag is the toolbar zooming or
+        panning), select the plotted point nearest the cursor."""
+        press = self._press_xy
+        self._press_xy = None
+        if (
+            press is None
+            or getattr(event, "button", None) != 1
+            or event.x is None
+            or abs(event.x - press[0]) > _CLICK_SLOP_PX
+            or abs(event.y - press[1]) > _CLICK_SLOP_PX
+        ):
+            return
+        self._pick_at(float(event.x), float(event.y))
+
+    def _pick_at(self, px: float, py: float) -> int | None:
+        """Select the plotted point nearest the pixel ``(px, py)`` and ring it.
+
+        Returns the chosen source row, or None when nothing pickable lies within
+        :data:`_PICK_TOLERANCE_PX`. The whole resolution runs in *live* display
+        coordinates, so it is exact whatever the zoom/pan."""
         if self._target_resolver is None:
-            return
-        artist = getattr(event, "artist", None)
-        rows = getattr(artist, _PICK_ROWS_ATTR, None) if artist is not None else None
-        ind = list(getattr(event, "ind", []) or [])
-        if rows is None or not ind:
-            return
-        i = int(ind[0])
-        if i >= len(rows):
-            return
-        offsets = np.asarray(artist.get_offsets(), dtype=float)
-        if i < len(offsets):
-            self._highlight_at(offsets[i])
-        self._select_row(int(rows[i]))
+            return None
+        hit = self._nearest_pickable(px, py)
+        if hit is None:
+            return None
+        row, point_xy = hit
+        self._highlight_at(point_xy)
+        self._select_row(row)
+        return row
+
+    def _nearest_pickable(self, px: float, py: float):
+        """``(row, data_xy)`` of the plotted point nearest ``(px, py)`` in pixels,
+        or None when none lies within tolerance.
+
+        Each drawn point collection carries its per-marker source rows
+        (``_PICK_ROWS_ATTR``, stamped by the plotting backend) aligned to its
+        offsets; we project every collection's offsets through its *current*
+        offset transform and take the global nearest — no pick radius to miss, no
+        arbitrary tie-break, and correct after the user zooms or pans."""
+        if self._canvas is None:
+            return None
+        best = None
+        best_d2 = float(_PICK_TOLERANCE_PX) ** 2
+        for ax in self._canvas.figure.axes:
+            for coll in ax.collections:
+                rows = getattr(coll, _PICK_ROWS_ATTR, None)
+                if rows is None:
+                    continue
+                offsets = np.asarray(coll.get_offsets(), dtype=float)
+                if not len(offsets):
+                    continue
+                disp = coll.get_offset_transform().transform(offsets)
+                d2 = (disp[:, 0] - px) ** 2 + (disp[:, 1] - py) ** 2
+                i = int(np.argmin(d2))
+                if d2[i] < best_d2 and i < len(rows):
+                    best_d2 = float(d2[i])
+                    best = (int(rows[i]), (float(offsets[i, 0]), float(offsets[i, 1])))
+        return best
 
     def _highlight_at(self, point_xy) -> None:
         """Ring the picked marker at its exact drawn position. The marker is

@@ -76,10 +76,11 @@ _LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
 #: ``class_label`` model mapped onto its ``hue=``. ``strip``/``swarm`` are the
 #: new per-cell scatter members.
 DISTRIBUTION_PLOTS = ("hist", "box", "violin", "strip", "swarm")
-#: Attribute stamped on a drawn point artist holding the positional row index
-#: (``.iloc`` into the figure's source ``df``) for each marker, in marker order.
-#: Click-to-select reads ``artist`<attr>`[event.ind[0]]`` for an exact hit — no
-#: value-proximity guessing — so two equal-valued points never collide.
+#: Attribute stamped on a drawn point collection holding the positional row index
+#: (``.iloc`` into the figure's source ``df``) for each marker, aligned to the
+#: collection's offsets. The panel reads it by projecting the offsets to pixels
+#: and taking the marker nearest the click (see ``PlotPanel._nearest_pickable``),
+#: so picking is exact, never collides equal-valued points, and survives zoom.
 _PICK_ROWS_ATTR = "_cellflow_pick_rows"
 #: Identity columns surfaced as Plotly hover text, so the exported HTML is itself
 #: a provenance artifact (hover a point → its position / frame / cell).
@@ -802,22 +803,40 @@ def pickable_points(df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> 
 def _representative_row(df: pd.DataFrame, spec: PlotSpec):
     """A callable mapping a reduced unit row to a positional index into *df*.
 
-    With nesting keys, each unit maps to the first original row carrying its
-    (group + unit) key tuple. Without them, the reduction is the identity, so a
-    unit row *is* an original row and its own index (positional on a default
-    ``RangeIndex``) is used.
+    With nesting keys, each unit maps to the original row (frame) whose own
+    ``spec.value`` is closest to the unit's plotted value — the same ``spec.stat``
+    central tendency the reduction collapses frames with. Loading that row then
+    shows a frame that actually *looks like* the clicked point: the first frame of
+    a track is routinely unrepresentative (a cell just appearing is tiny even when
+    its mean area is the largest in the plot), so picking by closeness, not by
+    frame order, is what makes "click the biggest point" land on a big cell. Ties
+    (and all-NaN units) fall back to the earliest frame.
+
+    Without nesting keys the reduction is the identity, so a unit row *is* an
+    original row and its own index (positional on a default ``RangeIndex``) is used.
     """
     present = _nesting_keys(df)
     if not present:
         return lambda row: int(row.name)
     keys = list(spec.group_by) + _unit_keys(df, spec)
-    first = (
-        df.reset_index(drop=True).reset_index().groupby(keys, dropna=False)["index"].first()
+    work = df.reset_index(drop=True)
+    central = "median" if spec.stat == "median" else "mean"
+    value = pd.to_numeric(work[spec.value], errors="coerce")
+    target = value.groupby([work[k] for k in keys], dropna=False).transform(central)
+    # Closest frame first; NaN distances (missing values) sort last so a unit with
+    # no finite value still resolves — to its earliest frame, the old behaviour.
+    # The stable sort breaks ties by original (frame) order, so equal-value frames
+    # deterministically pick the earliest.
+    ordered = (
+        pd.DataFrame({"_dist": (value - target).abs()})
+        .assign(**{k: work[k] for k in keys})
+        .sort_values("_dist", kind="stable", na_position="last")
     )
+    rep = ordered.reset_index().groupby(keys, dropna=False)["index"].first()
 
     def row_for(row: pd.Series) -> int:
         key = tuple(row[k] for k in keys)
-        return int(first.loc[key[0] if len(keys) == 1 else key])
+        return int(rep.loc[key[0] if len(keys) == 1 else key])
 
     return row_for
 
@@ -887,13 +906,14 @@ def _tag_point_collections(
     ax, df: pd.DataFrame, data: pd.DataFrame, hue: str | None, spec: PlotSpec,
     order: list | None,
 ) -> None:
-    """Stamp each drawn strip/swarm point collection with its source row indices
-    and arm it for picking, so a click resolves to an exact row.
+    """Stamp each drawn strip/swarm point collection with its source row indices,
+    aligned to its offsets, so a click resolves to an exact row (the panel does
+    the hit-testing — see :data:`_PICK_ROWS_ATTR`).
 
     Relies on seaborn drawing one PathCollection per category, offsets in
     input-row order. If the layout doesn't match that expectation (collection
-    count or per-collection point count off), picking is left disarmed rather
-    than risk a wrong mapping."""
+    count or per-collection point count off), tagging is skipped rather than risk
+    a wrong mapping."""
     point_cols = [c for c in ax.collections if len(c.get_offsets())]
     groups = _category_groups(data, hue, order)
     if len(point_cols) != len(groups):
@@ -909,20 +929,18 @@ def _tag_point_collections(
         tagged.append((col, rows))
     for col, rows in tagged:
         setattr(col, _PICK_ROWS_ATTR, rows)
-        col.set_picker(True)
-        col.set_pickradius(6)
 
 
 def _overlay_box_picks(
     ax, df: pd.DataFrame, data: pd.DataFrame, hue: str | None, spec: PlotSpec,
     style_spec: StyleSpec, order: list | None,
 ) -> None:
-    """Overlay a transparent, pickable scatter on the box-plot outliers.
+    """Overlay a transparent scatter carrying row indices on the box-plot outliers.
 
     seaborn draws fliers at the category centre with no jitter, so an invisible
     scatter placed at ``(category_centre, value)`` sits exactly on each flier and
-    carries its row index — exact picking without redrawing the visible marker.
-    Skipped when fliers are hidden."""
+    carries its row index — the panel hit-tests it like any other point collection
+    (see :data:`_PICK_ROWS_ATTR`). Skipped when fliers are hidden."""
     if not style_spec.box_showfliers:
         return
     xticks = list(ax.get_xticks())
@@ -948,8 +966,6 @@ def _overlay_box_picks(
         return
     sc = ax.scatter(xs, ys, facecolors="none", edgecolors="none", zorder=5)
     setattr(sc, _PICK_ROWS_ATTR, np.array(rows, dtype=int))
-    sc.set_picker(True)
-    sc.set_pickradius(6)
 
 
 def _plot_swarm(
