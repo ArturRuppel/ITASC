@@ -21,7 +21,7 @@ product by a thin cell / nucleus subclass.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import numpy as np
 import pandas as pd

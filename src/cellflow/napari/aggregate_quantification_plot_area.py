@@ -14,6 +14,7 @@ it as a tab in one shared, constant-size dock (:class:`PlotDockTabs`).
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from itertools import groupby
 from typing import Any
 
@@ -21,7 +22,6 @@ from napari.qt.threading import thread_worker
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -51,9 +51,18 @@ except Exception:  # pragma: no cover - exercised only without a Qt matplotlib
 class PlotAreaWidget(QWidget):
     """Family-grouped, availability-gated launcher for every registered plot."""
 
-    def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        viewer: object | None = None,
+        parent: QWidget | None = None,
+        *,
+        params_provider: Callable[[], PlotParams] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        #: Supplies the shared plot-time params at launch; the studio wires this to
+        #: its one SharedParamsWidget. ``None`` → defaults (standalone / tests).
+        self._params_provider = params_provider
         self._records: list[dict] = []
         self._built: frozenset[str] = frozenset()
         self._pool_worker = None

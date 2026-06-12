@@ -126,7 +126,7 @@ class Plot:
         """The consumed products absent from *built*, in declaration order."""
         return tuple(quantity_id for quantity_id in self.consumes if quantity_id not in built)
 
-    def prepare(self, records: list[dict], params: "PlotParams" = PlotParams()) -> Any:
+    def prepare(self, records: list[dict], params: PlotParams = PlotParams()) -> Any:
         """Heavy, **headless** read for *records* — the part the plot area runs
         off the GUI thread before building the panel.
 

@@ -6,7 +6,6 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-import pandas as pd
 import tifffile
 from qtpy.QtWidgets import QApplication
 from skimage.draw import disk

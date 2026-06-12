@@ -19,7 +19,6 @@ from cellflow.napari.aggregate_quantification.plots.shape import (
     NucleusShapePlot,
     ShapeRelationalPlot,
 )
-from cellflow.napari.aggregate_quantification.plots._pool_plot import PoolPlot
 
 
 def _app():

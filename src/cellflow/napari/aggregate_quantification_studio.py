@@ -83,7 +83,7 @@ class _PluginSection(NamedTuple):
     it reveals the body.
     """
 
-    entry: "PluginEntry"
+    entry: PluginEntry
     section: QWidget
     body: QWidget
 

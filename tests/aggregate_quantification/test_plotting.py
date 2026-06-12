@@ -442,7 +442,8 @@ def test_pickable_points_strip_is_one_per_finite_row():
     from cellflow.aggregate_quantification.plotting import (
         PlotSpec, StyleSpec, pickable_points,
     )
-    import numpy as np, pandas as pd
+    import numpy as np
+    import pandas as pd
     df = pd.DataFrame({"condition": ["A", "A", "B"], "area": [1.0, np.nan, 3.0]})
     spec = PlotSpec(value="area", group_by=("condition",), level="cell", plot="strip")
     pts = pickable_points(df, spec, StyleSpec())

@@ -203,7 +203,7 @@ def _write_h5(
 
 
 def _merge_track_msd(
-    tracks: dict[str, np.ndarray], track_msd: dict[int, "object"]
+    tracks: dict[str, np.ndarray], track_msd: dict[int, object]
 ) -> dict[str, np.ndarray]:
     """Add the per-track MSD-fit columns to the per-track table, aligned to
     ``tracks["cell_id"]`` (NaN for any track absent from the fit map).
