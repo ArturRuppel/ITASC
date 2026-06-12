@@ -29,7 +29,7 @@ import matplotlib as mpl
 import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
-from qtpy.QtCore import QTimer, Signal
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -58,6 +58,7 @@ from cellflow.aggregate_quantification.plotting import (
     plotted_table,
     style_from_dict,
     style_to_dict,
+    summary_table,
     write_csv,
 )
 from cellflow.napari.ui_style import action_button, status_label
@@ -123,7 +124,24 @@ class ValueSource:
     #: click-to-load — per source, since products carry different label fields.
     #: ``None`` disables loading for this source.
     target_resolver: Callable[[dict], LoadTarget | None] | None = None
+    #: Plot type this value renders most naturally (``box`` / ``bar`` /
+    #: ``potential`` / …). When the picker swaps to a *different product*, the
+    #: panel jumps to this rendering; ``""`` keeps the current plot type.
+    suggested_plot: str = ""
+    #: Open this source with adaptive (sinh-spaced) bins — the potential
+    #: landscape's default so sparse tails do not read as spurious wells.
+    adaptive: bool = False
 
+
+#: level key → the pooled column whose presence makes that level meaningful, and
+#: a short human tag. A level is offered only when its entity column exists (you
+#: cannot aggregate "per cell" a table that carries no ``cell_id``); the finest
+#: present entity is the data's native granularity, shown beside each value.
+_LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
+_LEVEL_LABELS = {"frame": "per frame", "cell": "per cell", "position": "per position"}
+#: Skip building filter checkboxes for a column with more distinct values than
+#: this — a long checkbox wall (e.g. hundreds of position ids) helps no one.
+_FILTER_MAX_VALUES = 40
 
 _PLOT_TYPES = ("hist", "box", "violin", "strip", "swarm", "bar", "line", "potential")
 #: Named qualitative palettes offered for the group colors (seaborn names).
@@ -173,11 +191,20 @@ class PlotPanel(QWidget):
         #: combo-index → ValueSource, only in catalog mode (headers map to None).
         self._source_by_index: dict[int, ValueSource] = {}
         if value_catalog:
-            dataframe = value_catalog[0].df
-            group_columns = value_catalog[0].group_columns
+            first = value_catalog[0]
+            dataframe = first.df
+            group_columns = first.group_columns
+            # No single button-level default any more: the opening plot type /
+            # adaptive-bins come from the first value's own suggestion.
+            default_plot = default_plot or first.suggested_plot
+            default_adaptive_bins = default_adaptive_bins or first.adaptive
         if dataframe is None:
             raise ValueError("PlotPanel needs a dataframe or a non-empty value_catalog")
         self._df = dataframe
+        #: The (filter-narrowed) DataFrame the *current* figure was drawn from —
+        #: what picking, stats, and CSV export read so they always match the plot.
+        #: Reset on every render; equals ``_df`` when no filter is active.
+        self._plot_df = dataframe
         # Only offer values the snapshot actually carries (symmetric with the
         # identity-column filter below). A stale ``.h5`` built before a column
         # existed — e.g. the per-track ``msd_*`` fit — would otherwise advertise
@@ -212,10 +239,21 @@ class PlotPanel(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
         layout.addWidget(CollapsibleSection("Plot", self._build_analytical(), expanded=True))
+        layout.addWidget(CollapsibleSection("Filter", self._build_filters(), expanded=False))
         layout.addWidget(CollapsibleSection("Styling", self._build_styling(), expanded=False))
 
         self._canvas_holder = QVBoxLayout()
         layout.addLayout(self._canvas_holder, 1)
+
+        # Numeric summary of exactly what the figure draws (n / mean / median / sd /
+        # sem / min / max per group), so the headline numbers are legible without
+        # eyeballing the plot. Rebuilt on every render from the same ``_plot_df``.
+        self._stats_label = QLabel()
+        self._stats_label.setTextFormat(Qt.RichText)
+        self._stats_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._stats_label.setWordWrap(True)
+        status_label(self._stats_label, muted=True)
+        layout.addWidget(self._stats_label)
 
         self._path_label = QLabel("Click a point to select its input data.")
         status_label(self._path_label, muted=True)
@@ -302,6 +340,8 @@ class PlotPanel(QWidget):
         self._plot_combo.currentIndexChanged.connect(self._on_plot_changed)
         for combo in (self._level_combo, self._stat_combo):
             combo.currentIndexChanged.connect(self._render)
+        # Offer only the levels the active table can actually aggregate to.
+        self._sync_levels()
         return body
 
     # ------------------------------------------------------------ plot options
@@ -397,8 +437,9 @@ class PlotPanel(QWidget):
         combo.clear()
         self._source_by_index = {}
         if self._catalog is None:
+            tag = _native_level_tag(self._df)
             for name in self._value_columns:
-                combo.addItem(name, name)
+                combo.addItem(f"{name}  ·  {tag}" if tag else name, name)
         else:
             last_source = None
             for src in self._catalog:
@@ -407,7 +448,8 @@ class PlotPanel(QWidget):
                     item = combo.model().item(combo.count() - 1)
                     item.setEnabled(False)
                     last_source = src.source
-                combo.addItem(f"  {src.label}", src.value)
+                tag = _native_level_tag(src.df)
+                combo.addItem(f"  {src.label}  ·  {tag}" if tag else f"  {src.label}", src.value)
                 self._source_by_index[combo.count() - 1] = src
             # Start on the first real (non-header) value.
             for index in range(combo.count()):
@@ -461,8 +503,134 @@ class PlotPanel(QWidget):
                     c for c in _IDENTITY_COLUMNS if c in self._df.columns
                 )
                 self._rebuild_group_checks()
+                self._rebuild_filters()
+                self._sync_levels()
+                # Jump to the new product's natural rendering (only on a product
+                # switch — flipping between a product's own values keeps your plot).
+                self._apply_suggested_plot(src)
         self._rebuild_color_overrides()
         self._render()
+
+    def _apply_suggested_plot(self, src: ValueSource) -> None:
+        """Set the plot type + adaptive bins to *src*'s suggestion, silently (the
+        single ``_render`` in the caller does the one redraw)."""
+        if src.suggested_plot:
+            index = self._plot_combo.findData(src.suggested_plot)
+            if index >= 0:
+                blocked = self._plot_combo.blockSignals(True)
+                self._plot_combo.setCurrentIndex(index)
+                self._plot_combo.blockSignals(blocked)
+                self._sync_plot_options()
+        blocked = self._adaptive_bins_cb.blockSignals(True)
+        self._adaptive_bins_cb.setChecked(src.adaptive)
+        self._adaptive_bins_cb.blockSignals(blocked)
+
+    # ---------------------------------------------------------------- filtering
+    def _build_filters(self) -> QWidget:
+        """The Filter section: a checkbox per distinct value of each categorical
+        group axis, so the user can restrict the plot to specific catalogue
+        elements (a condition, a date, a position, a subpopulation). All ticked =
+        no filter; unticking a value drops its rows from a pure re-render."""
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+        hint = QLabel("Show only the ticked catalogue elements. All ticked = no filter.")
+        hint.setWordWrap(True)
+        status_label(hint, muted=True)
+        col.addWidget(hint)
+        #: column -> {value(str) -> checkbox}. Rebuilt when the product swaps.
+        self._filter_checks: dict[str, dict[str, QCheckBox]] = {}
+        self._filter_body = QVBoxLayout()
+        self._filter_body.setContentsMargins(0, 0, 0, 0)
+        self._filter_body.setSpacing(4)
+        col.addLayout(self._filter_body)
+        self._rebuild_filters()
+        return body
+
+    def _rebuild_filters(self) -> None:
+        """Repopulate the filter checkboxes for the active table, carrying over
+        which values were *un*ticked for a column the new product still offers."""
+        if not hasattr(self, "_filter_body"):
+            return  # filter section not built yet
+        unticked = {
+            (col, val)
+            for col, checks in self._filter_checks.items()
+            for val, cb in checks.items()
+            if not cb.isChecked()
+        }
+        while self._filter_body.count():
+            item = self._filter_body.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+            elif item.layout() is not None:
+                _clear_layout(item.layout())
+        self._filter_checks = {}
+        for col in self._group_columns:
+            if col == "frame" or col not in self._df.columns:
+                continue  # ``frame`` is a continuous axis, not a categorical filter
+            values = sorted(str(v) for v in pd.unique(self._df[col]))
+            if len(values) < 2 or len(values) > _FILTER_MAX_VALUES:
+                continue  # nothing to filter, or too many to show as checkboxes
+            self._filter_body.addWidget(QLabel(f"{col}:"))
+            grid = QGridLayout()
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setSpacing(4)
+            grid.setColumnStretch(2, 1)
+            checks: dict[str, QCheckBox] = {}
+            for i, val in enumerate(values):
+                cb = QCheckBox(val)
+                cb.setChecked((col, val) not in unticked)
+                cb.toggled.connect(self._render)
+                checks[val] = cb
+                grid.addWidget(cb, i // 2, i % 2)
+            self._filter_body.addLayout(grid)
+            self._filter_checks[col] = checks
+        if not self._filter_checks:
+            none = QLabel("No filterable columns for this quantity.")
+            status_label(none, muted=True)
+            self._filter_body.addWidget(none)
+
+    def _render_df(self) -> pd.DataFrame:
+        """The snapshot narrowed to the ticked filter values — what the current
+        figure draws. A fully-ticked column does not filter; the result is
+        re-indexed so the positional pick-row stamping stays aligned."""
+        masks = []
+        for col, checks in getattr(self, "_filter_checks", {}).items():
+            allowed = {val for val, cb in checks.items() if cb.isChecked()}
+            if len(allowed) == len(checks):
+                continue  # all ticked → no constraint from this column
+            masks.append(self._df[col].astype(str).isin(allowed))
+        if not masks:
+            return self._df
+        mask = masks[0]
+        for extra in masks[1:]:
+            mask &= extra
+        return self._df[mask].reset_index(drop=True)
+
+    # ------------------------------------------------------------- data levels
+    def _sync_levels(self) -> None:
+        """Enable only the Level options the active table supports, and bump the
+        current selection off a now-invalid one.
+
+        A level needs its entity column (``cell`` → ``cell_id`` …): a per-tissue
+        table with no ``cell_id`` can't be aggregated "per cell". The current
+        choice, if disabled, drops to the first enabled (finest) level."""
+        columns = set(self._df.columns)
+        model = self._level_combo.model()
+        first_enabled = -1
+        for i in range(self._level_combo.count()):
+            level = self._level_combo.itemData(i)
+            enabled = _LEVEL_ENTITY[level] in columns
+            model.item(i).setEnabled(enabled)
+            if enabled and first_enabled < 0:
+                first_enabled = i
+        current = self._level_combo.currentIndex()
+        if first_enabled >= 0 and not model.item(current).isEnabled():
+            blocked = self._level_combo.blockSignals(True)
+            self._level_combo.setCurrentIndex(first_enabled)
+            self._level_combo.blockSignals(blocked)
 
     # -------------------------------------------------------------- styling UI
     def _build_styling(self) -> QWidget:
@@ -905,6 +1073,9 @@ class PlotPanel(QWidget):
         if not _retry_after_overflow:
             self._swarm_overflowed = False
         spec = self.current_spec()
+        # Draw (and pick / stat / export) from the filter-narrowed snapshot, so the
+        # figure, the numbers under it, and the CSV all describe the same rows.
+        self._plot_df = self._render_df()
         # A swarm that overflowed at the displayed size is drawn as a strip so no
         # point is dropped; everything else renders as selected.
         render_spec = (
@@ -912,7 +1083,8 @@ class PlotPanel(QWidget):
             if spec.plot == "swarm" and self._swarm_overflowed
             else spec
         )
-        fig = build_figure(self._df, render_spec, self.current_style())
+        fig = build_figure(self._plot_df, render_spec, self.current_style())
+        self._render_stats(spec)
         canvas = FigureCanvasQTAgg(fig)
         _shrinkable(canvas)
         toolbar = NavigationToolbar2QT(canvas, self)
@@ -960,6 +1132,37 @@ class PlotPanel(QWidget):
         if any("cannot be placed" in str(w.message) for w in caught):
             self._swarm_overflowed = True
             self._render(_retry_after_overflow=True)
+
+    # ----------------------------------------------------------------- stats
+    def _render_stats(self, spec: PlotSpec) -> None:
+        """Refresh the numeric summary under the plot from the current draw."""
+        if not hasattr(self, "_stats_label"):
+            return
+        self._stats_label.setText(self._stats_html(summary_table(self._plot_df, spec), spec))
+
+    def _stats_html(self, table: pd.DataFrame, spec: PlotSpec) -> str:
+        """A compact HTML summary table (one row per group) plus a header naming
+        the value, the unit level, and how many rows are in scope after filtering."""
+        level = _LEVEL_LABELS.get(spec.level, spec.level)
+        shown, total = len(self._plot_df), len(self._df)
+        scope = f"{shown} of {total} rows" if shown != total else f"{total} rows"
+        header = f"<b>Summary</b> — {spec.value} · {level} · {scope}"
+        if table.empty:
+            return f"{header}<br><i>no numeric data</i>"
+        group = [c for c in spec.group_by if c in table.columns]
+        stat_cols = ["n", "mean", "median", "sd", "sem", "min", "max"]
+        head_cells = "".join(f"<th align='right'>{c}</th>" for c in (*group, *stat_cols))
+        rows = []
+        for _, r in table.iterrows():
+            cells = "".join(f"<td align='left'>{r[g]}</td>" for g in group)
+            cells += f"<td align='right'>{int(r['n'])}</td>"
+            cells += "".join(f"<td align='right'>{_fmt(r[c])}</td>" for c in stat_cols[1:])
+            rows.append(f"<tr>{cells}</tr>")
+        table_html = (
+            "<table cellspacing='6' cellpadding='0'>"
+            f"<tr>{head_cells}</tr>{''.join(rows)}</table>"
+        )
+        return f"{header}<br>{table_html}"
 
     # -------------------------------------------------------------- click-to-load
     def _on_press(self, event) -> None:
@@ -1052,7 +1255,7 @@ class PlotPanel(QWidget):
         self._canvas.draw_idle()
 
     def _select_row(self, row: int) -> None:
-        record = self._df.iloc[row]
+        record = self._plot_df.iloc[row]
         identity = {c: _py(record[c]) for c in self._identity_columns}
         level = self._level_combo.currentData()
         # A per-date point pools whole positions, so no single movie is "it" —
@@ -1121,9 +1324,9 @@ class PlotPanel(QWidget):
     def _export_csv(self) -> None:
         path = self._save_path("Export plot data", "CSV files (*.csv)")
         if path:
-            # Exactly the data the current plot draws (points / curve / bars), so
-            # the CSV reproduces the figure with no further processing.
-            table = plotted_table(self._df, self.current_spec())
+            # Exactly the data the current plot draws (points / curve / bars) after
+            # filtering, so the CSV reproduces the figure with no further processing.
+            table = plotted_table(self._plot_df, self.current_spec())
             self._status.setText(f"Wrote {write_csv(table, path).name}.")
 
     def _export_figure(self) -> None:
@@ -1305,3 +1508,32 @@ def _py(value):
         return value.item()  # numpy scalar -> Python scalar
     except AttributeError:
         return value
+
+
+def _native_level_tag(df: pd.DataFrame) -> str:
+    """Short tag for a table's finest independent unit, shown beside each value so
+    the picker reveals which data is per-frame vs per-cell vs per-position."""
+    columns = df.columns
+    if "frame" in columns and "cell_id" in columns:
+        return _LEVEL_LABELS["frame"]
+    if "cell_id" in columns:
+        return _LEVEL_LABELS["cell"]
+    if "position_id" in columns:
+        return _LEVEL_LABELS["position"]
+    return ""
+
+
+def _fmt(value: float) -> str:
+    """A statistic for the summary table: 4 significant figures, or ``–`` for NaN."""
+    return "–" if value != value else f"{value:.4g}"  # noqa: PLR0124 - NaN test
+
+
+def _clear_layout(layout) -> None:
+    """Recursively delete every widget / nested layout in *layout*."""
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.deleteLater()
+        elif item.layout() is not None:
+            _clear_layout(item.layout())

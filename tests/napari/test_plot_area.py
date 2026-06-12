@@ -24,11 +24,11 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-def _button_for(area: PlotAreaWidget, render_type: str):
-    for button, rtype in area._buttons.items():
-        if rtype == render_type:
+def _button_for(area: PlotAreaWidget, key: str):
+    for button, button_key in area._buttons.items():
+        if button_key == key:
             return button
-    raise KeyError(render_type)
+    raise KeyError(key)
 
 
 def _split_frame() -> np.ndarray:
@@ -57,12 +57,15 @@ def _built_shape_record(tmp_path, *, nucleus=False):
     }
 
 
-def test_render_type_buttons_present():
+def test_plot_and_curve_buttons_present():
     app = _app()
     area = PlotAreaWidget(viewer=object())
     try:
-        for render_type in ("distribution", "bar", "potential", "curve"):
-            assert _button_for(area, render_type) is not None
+        # Distribution / bar / potential collapsed into one "plot" button; curves
+        # stays its own button.
+        for key in ("plot", "curve"):
+            assert _button_for(area, key) is not None
+        assert len(area._buttons) == 2
     finally:
         area.deleteLater()
         app.processEvents()
@@ -81,16 +84,14 @@ def test_no_built_products_disable_all_buttons():
         app.processEvents()
 
 
-def test_built_shape_enables_distribution_only(tmp_path):
+def test_built_shape_enables_plot_only(tmp_path):
     app = _app()
     area = PlotAreaWidget(viewer=object())
     try:
         record = _built_shape_record(tmp_path)
         area.set_context(AnalysisContext(records=[record], viewer=object()))
-        # Shape feeds the Distribution button; no contacts/dynamics → others off.
-        assert _button_for(area, "distribution").isEnabled() is True
-        assert _button_for(area, "bar").isEnabled() is False
-        assert _button_for(area, "potential").isEnabled() is False
+        # Shape is a tidy product → the Plot button; no dynamics → Curves stays off.
+        assert _button_for(area, "plot").isEnabled() is True
         assert _button_for(area, "curve").isEnabled() is False
     finally:
         area.deleteLater()
@@ -104,9 +105,9 @@ def test_catalog_panel_spans_values_grouped_by_source(tmp_path):
         cell = _built_shape_record(tmp_path)
         nucleus = _built_shape_record(tmp_path, nucleus=True)
         area.set_context(AnalysisContext(records=[cell, nucleus], viewer=object()))
-        plots = area._available_of_type("distribution")
+        plots = area._available_for_button("plot")
         prepared = [(p, p.prepare([cell, nucleus])) for p in plots]
-        panel = area._build_catalog_panel("distribution", prepared, [cell, nucleus])
+        panel = area._build_catalog_panel(prepared, [cell, nucleus])
         assert isinstance(panel, PlotPanel)
         # The value picker carries entries from both cell and nucleus shape, with
         # the family header ("Shape") shown as a disabled separator.

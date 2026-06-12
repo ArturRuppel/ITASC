@@ -40,6 +40,7 @@ __all__ = [
     "PositionSource",
     "pool_object_tables",
     "aggregate",
+    "summary_table",
     "build_figure",
     "pickable_points",
     "plotted_table",
@@ -396,9 +397,51 @@ def aggregate(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=[*group, "n", "value", "error"])
 
 
+def summary_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """Per-group descriptive statistics of ``spec.value`` over the independent
+    units at ``spec.level`` — the numbers behind the figure, as a tidy table.
+
+    Mirrors :func:`aggregate`'s unit model (frames collapsed, each parent
+    equal-weighting its children via :func:`reduce_to_units`), so ``n`` is the
+    count of independent units a distribution actually draws — not raw cell-frames.
+    Columns: the group keys, ``n``, ``mean``, ``median``, ``sd`` (ddof=1),
+    ``sem``, ``min``, ``max``. ``sd``/``sem`` are NaN for a single-unit group.
+    Empty when *df* lacks ``spec.value`` or carries no finite samples.
+    """
+    group = list(spec.group_by)
+    columns = [*group, "n", "mean", "median", "sd", "sem", "min", "max"]
+    if df.empty or spec.value not in df.columns:
+        return pd.DataFrame(columns=columns)
+    units = reduce_to_units(df, spec)
+    rows: list[dict[str, Any]] = []
+    grouped = units.groupby(group, dropna=False) if group else [(None, units)]
+    for key, chunk in grouped:
+        values = pd.to_numeric(chunk[spec.value], errors="coerce").dropna()
+        n = int(len(values))
+        sd = float(values.std(ddof=1)) if n > 1 else float("nan")
+        rows.append({
+            **_group_key_to_dict(group, key),
+            "n": n,
+            "mean": float(values.mean()) if n else float("nan"),
+            "median": float(values.median()) if n else float("nan"),
+            "sd": sd,
+            "sem": sd / float(np.sqrt(n)) if n > 1 else float("nan"),
+            "min": float(values.min()) if n else float("nan"),
+            "max": float(values.max()) if n else float("nan"),
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _nesting_keys(df: pd.DataFrame) -> list[str]:
     """The :data:`_NESTING` columns actually present in *df*, coarse→fine."""
     return [k for k in _NESTING if k in df.columns]
+
+
+def _dedup(keys: Iterable[str]) -> list[str]:
+    """Order-preserving de-duplication — so a group-by column that is *also* a
+    nesting key (``date`` / ``position_id``) appears once in a groupby, instead of
+    raising ``cannot insert <col>, already exists`` on ``reset_index``."""
+    return list(dict.fromkeys(keys))
 
 
 def _unit_keys(df: pd.DataFrame, spec: PlotSpec) -> list[str]:
@@ -434,7 +477,8 @@ def reduce_to_units(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     # on group+nesting averages a track's frames to one value); each later pass
     # drops the finest nesting key and climbs one level toward ``unit``.
     while True:
-        work = work.groupby(group + levels, dropna=False)[spec.value].agg(agg).reset_index()
+        keys = _dedup(group + levels)
+        work = work.groupby(keys, dropna=False)[spec.value].agg(agg).reset_index()
         if len(levels) <= len(unit):
             return work
         levels = levels[:-1]
@@ -446,7 +490,7 @@ def _aggregate_count(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     present = _nesting_keys(df)
     # One row per distinct cell within each group; without nesting keys every row
     # already stands for a distinct unit.
-    cells = df[group + present].drop_duplicates() if present else df
+    cells = df[_dedup(group + present)].drop_duplicates() if present else df
 
     if spec.level == "cell" or not present:
         # Pooled distinct-cell tally per group; no spread.
@@ -461,7 +505,7 @@ def _aggregate_count(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
 
     # Per-unit cell counts, then summarise across units (mean ± spread).
     unit = _unit_keys(df, spec)
-    per_unit = cells.groupby(group + unit, dropna=False).size().reset_index(name="_count")
+    per_unit = cells.groupby(_dedup(group + unit), dropna=False).size().reset_index(name="_count")
     rows: list[dict[str, Any]] = []
     grouped = per_unit.groupby(group, dropna=False) if group else [(None, per_unit)]
     for key, chunk in grouped:
@@ -832,7 +876,7 @@ def _representative_row(df: pd.DataFrame, spec: PlotSpec):
     present = _nesting_keys(df)
     if not present:
         return lambda row: int(row.name)
-    keys = list(spec.group_by) + _unit_keys(df, spec)
+    keys = _dedup(list(spec.group_by) + _unit_keys(df, spec))
     work = df.reset_index(drop=True)
     central = "median" if spec.stat == "median" else "mean"
     value = pd.to_numeric(work[spec.value], errors="coerce")

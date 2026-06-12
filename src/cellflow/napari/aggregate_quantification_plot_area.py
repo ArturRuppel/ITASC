@@ -2,16 +2,21 @@
 
 The counterpart of the Build area: where the Build area runs *producers*
 (:class:`~cellflow.aggregate_quantification.quantifier.Quantifier`) over the
-in-scope positions, the Plot area lets you *consume* whatever they built. It
-offers **one button per render type** — Distribution, Bar, Potential landscape,
-Curves — rather than one per product. Clicking a render-type button pools every
-available product of that type and opens a single panel whose **value picker
-spans them all, grouped by source** (the family header), so e.g. one
-"Distribution" button covers cell/nucleus shape, dynamics, and neighbor counts.
+in-scope positions, the Plot area lets you *consume* whatever they built.
 
-A render-type button is enabled only when at least one product feeding it is
-built for the scope. Reading happens off the GUI thread (:meth:`Plot.prepare`);
-the panel is then docked as a tab in one shared, constant-size dock.
+It offers **two buttons**: **Plot** and **Curves**. *Plot* pools every available
+tidy product — shape, dynamics, neighbor counts, density, contact-type z-scores,
+the signed-length potential — into **one** panel whose value picker spans them
+all, grouped by source (the family header) and tagged by native level. The panel
+already renders every plot type (box / violin / strip / hist / bar / line /
+potential), so picking a value jumps to that value's natural rendering rather
+than forcing a render-type choice up front. *Curves* stays separate because the
+MSD / DAC / C(r) curve sets are a different shape of data (a bespoke widget, not
+a tidy table).
+
+A button is enabled only when at least one product feeding it is built for the
+scope. Reading happens off the GUI thread (:meth:`Plot.prepare`); the panel is
+then docked as a tab in one shared, constant-size dock.
 """
 from __future__ import annotations
 
@@ -45,17 +50,19 @@ try:
 except Exception:  # pragma: no cover - exercised only without a Qt matplotlib
     _HAS_MPL_QT = False
 
-#: Catalog render types → (button label, PlotPanel default plot, adaptive bins).
-#: These open one multi-source PlotPanel whose value picker spans the type's
-#: products. Order here is the button order.
-_CATALOG_TYPES: dict[str, tuple[str, str, bool]] = {
-    "distribution": ("Distribution (box / violin / strip / hist)", "box", False),
-    "bar": ("Bar charts", "bar", False),
-    "potential": ("Potential landscape", "potential", True),
-}
-#: The bespoke curve render type opens its own panel (no value picker).
-_CURVE_TYPE = "curve"
-_CURVE_LABEL = "Curves (MSD / DAC / C(r))"
+#: The single "Plot" button spans every tidy render type — they all feed one
+#: multi-source ``PlotPanel`` (the panel exposes every plot type itself, so they
+#: need not be separate buttons).
+_TIDY_RENDER_TYPES = ("distribution", "bar", "potential")
+#: render_type → the plot type a source defaults to when its ``Plot`` declares no
+#: ``default_plot``; lets a value open on its natural rendering inside the panel.
+_RENDER_TYPE_DEFAULT_PLOT = {"distribution": "box", "bar": "bar", "potential": "potential"}
+
+#: The two buttons, in display order: ``key -> label``. ``plot`` spans the tidy
+#: products; ``curve`` opens the bespoke curves widget.
+_PLOT_KEY = "plot"
+_CURVE_KEY = "curve"
+_BUTTON_LABELS = {_PLOT_KEY: "Plot…", _CURVE_KEY: "Curves (MSD / DAC / C(r))"}
 
 
 class PlotAreaWidget(QWidget):
@@ -80,7 +87,7 @@ class PlotAreaWidget(QWidget):
         self._plot_count = 0
         #: One instance per registered plot, kept for availability + pooling.
         self._plots: list[Plot] = [cls() for cls in available_plots()]
-        #: button -> render_type.
+        #: button -> button key ("plot" | "curve").
         self._buttons: dict[QPushButton, str] = {}
         #: All plots share one dock as tabs (constant size) — see ``_plot_dock.py``.
         self._plot_tabs = PlotDockTabs(self, dock_name="Aggregate plots")
@@ -90,9 +97,10 @@ class PlotAreaWidget(QWidget):
         col.setSpacing(4)
 
         intro = QLabel(
-            "One button per plot type. The value picker inside spans every "
-            "available quantity of that type, grouped by source; a button is "
-            "enabled once a product feeding it is built for an in-scope position."
+            "Plot spans every available quantity in one panel — pick a value "
+            "(grouped by source, tagged by level) and a plot type inside. Curves "
+            "opens the bespoke MSD / DAC / C(r) view. A button lights once a "
+            "product feeding it is built for an in-scope position."
         )
         intro.setWordWrap(True)
         status_label(intro, muted=True)
@@ -105,41 +113,44 @@ class PlotAreaWidget(QWidget):
             self._status.setText("Plotting unavailable (matplotlib Qt backend not usable).")
         col.addWidget(self._status)
 
-        for render_type in self._render_types():
-            label = (
-                _CATALOG_TYPES[render_type][0]
-                if render_type in _CATALOG_TYPES
-                else _CURVE_LABEL
-            )
-            col.addWidget(self._render_button(render_type, label))
+        for key in self._button_keys():
+            col.addWidget(self._render_button(key, _BUTTON_LABELS[key]))
         col.addStretch(1)
         self._refresh_availability()
 
     # ------------------------------------------------------------------ rows
-    def _render_types(self) -> list[str]:
-        """Render types that have at least one registered plot, in button order."""
-        present = {plot.render_type for plot in self._plots}
-        ordered = [t for t in _CATALOG_TYPES if t in present]
-        if _CURVE_TYPE in present:
-            ordered.append(_CURVE_TYPE)
-        return ordered
+    def _button_keys(self) -> list[str]:
+        """The buttons to show, in order: ``plot`` when any tidy plot is
+        registered, ``curve`` when any curve plot is."""
+        keys: list[str] = []
+        if any(p.render_type in _TIDY_RENDER_TYPES for p in self._plots):
+            keys.append(_PLOT_KEY)
+        if any(p.render_type == _CURVE_KEY for p in self._plots):
+            keys.append(_CURVE_KEY)
+        return keys
 
-    def _render_button(self, render_type: str, label: str) -> QWidget:
+    def _render_button(self, key: str, label: str) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         button = QPushButton(label)
         action_button(button, expand=True)
-        button.clicked.connect(lambda _=False, t=render_type: self._launch(t))
-        self._buttons[button] = render_type
+        button.clicked.connect(lambda _=False, k=key: self._launch(k))
+        self._buttons[button] = key
         layout.addWidget(button, 1)
         return row
 
-    def _plots_of_type(self, render_type: str) -> list[Plot]:
-        return [p for p in self._plots if p.render_type == render_type]
+    def _plots_for_button(self, key: str) -> list[Plot]:
+        """The registered plots a button covers — every tidy plot for ``plot``,
+        the curve plots for ``curve`` — sorted so each family is contiguous (one
+        header per family in the spanning value picker)."""
+        if key == _CURVE_KEY:
+            return [p for p in self._plots if p.render_type == _CURVE_KEY]
+        tidy = [p for p in self._plots if p.render_type in _TIDY_RENDER_TYPES]
+        return sorted(tidy, key=lambda p: (p.family.lower(), p.display_name.lower()))
 
-    def _available_of_type(self, render_type: str) -> list[Plot]:
-        return [p for p in self._plots_of_type(render_type) if p.is_available(self._built)]
+    def _available_for_button(self, key: str) -> list[Plot]:
+        return [p for p in self._plots_for_button(key) if p.is_available(self._built)]
 
     # -------------------------------------------------------- studio integration
     def _params(self) -> PlotParams:
@@ -156,8 +167,8 @@ class PlotAreaWidget(QWidget):
 
     def _refresh_availability(self) -> None:
         idle = self._pool_worker is None and _HAS_MPL_QT and self.viewer is not None
-        for button, render_type in self._buttons.items():
-            available = bool(self._available_of_type(render_type))
+        for button, key in self._buttons.items():
+            available = bool(self._available_for_button(key))
             button.setEnabled(available and idle)
             button.setToolTip(
                 ""
@@ -167,10 +178,10 @@ class PlotAreaWidget(QWidget):
             )
 
     # --------------------------------------------------------- launching (threaded)
-    def _launch(self, render_type: str) -> None:
+    def _launch(self, key: str) -> None:
         if self._pool_worker is not None:
             return
-        plots = self._available_of_type(render_type)
+        plots = self._available_for_button(key)
         if not plots:
             return
         records = list(self._records)
@@ -182,15 +193,15 @@ class PlotAreaWidget(QWidget):
         @thread_worker(connect={"returned": self._on_prepared, "errored": self._on_error})
         def _worker():
             # Scope the dynamics read cache here (on the worker thread, where the
-            # reads run) so the four dynamics views pooled by one button share a
-            # single read per position instead of re-parsing each .h5 ~6×.
+            # reads run) so the dynamics views pooled by one button share a single
+            # read per position instead of re-parsing each .h5 ~6×.
             from cellflow.napari.aggregate_quantification.plots.dynamics import (
                 dynamics_read_cache,
             )
 
             with dynamics_read_cache():
                 prepared = [(plot, plot.prepare(records, params)) for plot in plots]
-            return render_type, prepared, records
+            return key, prepared, records
 
         self._pool_worker = _worker()
 
@@ -201,23 +212,23 @@ class PlotAreaWidget(QWidget):
 
     def _on_prepared(self, result: tuple) -> None:
         self._pool_worker = None
-        render_type, prepared, records = result
-        if render_type == _CURVE_TYPE:
+        key, prepared, records = result
+        if key == _CURVE_KEY:
             panel = self._build_curve_panel(prepared, records)
         else:
-            panel = self._build_catalog_panel(render_type, prepared, records)
+            panel = self._build_catalog_panel(prepared, records)
         if panel is None:
             self._status.setText("No data in scope for this plot type.")
             self._refresh_availability()
             return
         self._plot_count += 1
-        name = self._dock_name(render_type)
+        name = self._dock_name(key)
         self._plot_tabs.add(panel, name)
         self._status.setText(f"Opened {name}.")
         self._refresh_availability()
 
     def _build_catalog_panel(
-        self, render_type: str, prepared: list, records: list[dict]
+        self, prepared: list, records: list[dict]
     ) -> QWidget | None:
         """Assemble the spanning value catalog and open one multi-source panel.
 
@@ -239,6 +250,12 @@ class PlotAreaWidget(QWidget):
             resolver = (
                 controller.resolver(records, label_field) if label_field else None
             )
+            # Each value opens on its product's natural rendering: the plot's own
+            # ``default_plot`` (e.g. potential / bar) or the render type's default.
+            suggested = getattr(plot, "default_plot", "") or _RENDER_TYPE_DEFAULT_PLOT.get(
+                plot.render_type, "box"
+            )
+            adaptive = bool(getattr(plot, "default_adaptive_bins", False))
             for value in plot.value_columns:
                 if value in df.columns:
                     catalog.append(
@@ -249,19 +266,16 @@ class PlotAreaWidget(QWidget):
                             label=f"{plot.display_name}: {value}",
                             source=plot.family,
                             target_resolver=resolver,
+                            suggested_plot=suggested,
+                            adaptive=adaptive,
                         )
                     )
         if not catalog:
             return None
-        _label, default_plot, adaptive = _CATALOG_TYPES[render_type]
         # loader is the shared controller's load; held strongly by the panel so
-        # the controller (and thus every source's resolver) stays alive.
-        return PlotPanel(
-            value_catalog=catalog,
-            default_plot=default_plot,
-            default_adaptive_bins=adaptive,
-            loader=controller.load,
-        )
+        # the controller (and thus every source's resolver) stays alive. The panel
+        # opens on the first value's suggested plot (no button-level default).
+        return PlotPanel(value_catalog=catalog, loader=controller.load)
 
     def _build_curve_panel(self, prepared: list, records: list[dict]) -> QWidget | None:
         """Combine every available position's curve sets into one bespoke panel."""
@@ -276,10 +290,6 @@ class PlotAreaWidget(QWidget):
 
         return DynamicsCurvesPanel(curves)
 
-    def _dock_name(self, render_type: str) -> str:
-        base = (
-            _CATALOG_TYPES[render_type][0]
-            if render_type in _CATALOG_TYPES
-            else _CURVE_LABEL
-        )
+    def _dock_name(self, key: str) -> str:
+        base = _BUTTON_LABELS[key].rstrip("…")
         return f"{base.split(' (')[0]} {self._plot_count}"

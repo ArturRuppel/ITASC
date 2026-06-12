@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,7 @@ from cellflow.aggregate_quantification.plotting import (
     potential_table,
     style_from_dict,
     style_to_dict,
+    summary_table,
     write_csv,
 )
 
@@ -163,6 +165,55 @@ def _multiframe_sources():
             table=tbl([0, 1, 2, 3], [1, 1, 1, 1], [100.0, 100.0, 100.0, 100.0]),
         ),
     ]
+
+
+def test_summary_table_describes_per_unit_values():
+    """``summary_table`` reports n/mean/median/sd/sem/min/max over the same
+    independent units a distribution draws — tracks, not cell-frames."""
+    df = pool_object_tables(_multiframe_sources())
+    out = summary_table(
+        df, PlotSpec(value="area", group_by=("condition",), level="cell")
+    ).set_index("condition")
+    units = [12.0, 30.0, 50.0, 100.0]  # the four track means
+    assert out.loc["A", "n"] == 4  # tracks, not the 10 frame rows
+    assert out.loc["A", "mean"] == pytest.approx(np.mean(units))
+    assert out.loc["A", "median"] == pytest.approx(np.median(units))
+    assert out.loc["A", "sd"] == pytest.approx(np.std(units, ddof=1))
+    assert out.loc["A", "sem"] == pytest.approx(np.std(units, ddof=1) / np.sqrt(4))
+    assert out.loc["A", "min"] == 12.0
+    assert out.loc["A", "max"] == 100.0
+
+
+def test_summary_table_single_unit_has_nan_spread():
+    df = pool_object_tables(_multiframe_sources())
+    # Per date: d2 has a single position/track → its sd / sem are undefined.
+    out = summary_table(
+        df, PlotSpec(value="area", group_by=("date",), level="date")
+    ).set_index("date")
+    assert out.loc["d2", "n"] == 1
+    assert math.isnan(out.loc["d2", "sd"])
+    assert math.isnan(out.loc["d2", "sem"])
+
+
+def test_group_by_a_nesting_key_does_not_collide():
+    """Grouping by ``position_id`` (also a nesting key) must not raise — the
+    group axis and the reduction axis are de-duplicated, not inserted twice."""
+    df = pool_object_tables(_multiframe_sources())
+    spec = PlotSpec(value="area", group_by=("position_id",), level="cell", stat="mean")
+    out = aggregate(df, spec).set_index("position_id")
+    # p1 has two tracks (means 12, 30) → n=2; p2/p3 one track each.
+    assert out.loc["p1", "n"] == 2
+    assert out.loc["p2", "n"] == 1
+    # Count and summary over the same grouping also survive.
+    assert not summary_table(df, spec).empty
+    assert not aggregate(df, replace(spec, stat="count")).empty
+
+
+def test_summary_table_missing_value_is_empty_schema():
+    df = pool_object_tables(_multiframe_sources())
+    out = summary_table(df, PlotSpec(value="not_a_column", group_by=("condition",)))
+    assert list(out.columns) == ["condition", "n", "mean", "median", "sd", "sem", "min", "max"]
+    assert out.empty
 
 
 def test_cell_level_reduces_frames_to_one_value_per_track():

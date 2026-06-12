@@ -93,6 +93,99 @@ def test_catalog_mode_spans_sources_and_swaps_on_selection():
         app.processEvents()
 
 
+def test_filter_narrows_the_plotted_data():
+    app = _app()
+    panel = _panel()
+    # Two conditions, A and B; the full snapshot has 12 rows.
+    assert len(panel._render_df()) == 12
+    assert set(panel._filter_checks) >= {"condition", "position_id", "class_label"}
+    # Untick condition B → only the 6 A rows feed the plot, and picking/export use
+    # that same narrowed frame.
+    panel._filter_checks["condition"]["B"].setChecked(False)
+    narrowed = panel._render_df()
+    assert len(narrowed) == 6
+    assert set(narrowed["condition"]) == {"A"}
+    assert panel._plot_df is narrowed or len(panel._plot_df) == 6
+    # Re-ticking restores the full snapshot (all-ticked = no filter).
+    panel._filter_checks["condition"]["B"].setChecked(True)
+    assert panel._render_df() is panel._df
+
+
+def test_filter_skips_single_value_columns():
+    app = _app()
+    panel = _panel()
+    # Every row shares date d1 → nothing to filter, so no date checkboxes.
+    assert "date" not in panel._filter_checks
+    panel.deleteLater(); app.processEvents()
+
+
+def test_level_combo_constrained_to_supported_levels():
+    app = _app()
+    # A per-position table (no cell_id) must not offer "per cell".
+    tissue = pd.DataFrame({
+        "condition": ["A", "B"],
+        "date": ["d1", "d2"],
+        "position_id": ["p1", "p2"],
+        "order_param": [0.4, 0.6],
+    })
+    panel = PlotPanel(tissue, value_columns=("order_param",),
+                      group_columns=("condition", "date", "position_id"))
+    model = panel._level_combo.model()
+    by_level = {panel._level_combo.itemData(i): i for i in range(panel._level_combo.count())}
+    assert model.item(by_level["cell"]).isEnabled() is False
+    assert model.item(by_level["position"]).isEnabled() is True
+    # The selection landed on an enabled level, not the disabled "cell" default.
+    assert panel._level_combo.currentData() != "cell"
+    panel.deleteLater(); app.processEvents()
+
+
+def test_value_picker_tags_native_level():
+    app = _app()
+    panel = _panel()  # carries frame + cell_id → frame-level
+    texts = [panel._value_combo.itemText(i) for i in range(panel._value_combo.count())]
+    assert any("per frame" in t for t in texts)
+    panel.deleteLater(); app.processEvents()
+
+
+def test_stats_readout_reflects_current_value_and_level():
+    app = _app()
+    panel = _panel()
+    panel._group_checks["condition"].setChecked(True)
+    panel._render()
+    html = panel._stats_label.text()
+    assert "Summary" in html and "area" in html
+    # The per-cell unit count (12 distinct cells here) and the stat columns show.
+    for col in ("mean", "median", "sd", "sem"):
+        assert col in html
+    panel.deleteLater(); app.processEvents()
+
+
+def test_value_swap_jumps_to_suggested_plot():
+    app = _app()
+    box_src = ValueSource(
+        pd.DataFrame({"condition": ["A", "B"], "cell_id": [1, 2], "n_neighbors": [3, 5]}),
+        "n_neighbors", ("condition",), "Neighbor count: n_neighbors", "Contacts",
+        suggested_plot="box",
+    )
+    bar_src = ValueSource(
+        pd.DataFrame({"condition": ["A", "B"], "z_score": [1.0, -1.0]}),
+        "z_score", ("condition",), "Contact-type z-score: z_score", "Contacts",
+        suggested_plot="bar",
+    )
+    panel = PlotPanel(value_catalog=[box_src, bar_src])
+    try:
+        assert panel.current_spec().plot == "box"  # first source's suggestion
+        index = next(
+            i for i in range(panel._value_combo.count())
+            if panel._value_combo.itemData(i) == "z_score"
+        )
+        panel._value_combo.setCurrentIndex(index)
+        # Switching to the z-score product jumped to its natural bar rendering.
+        assert panel.current_spec().plot == "bar"
+    finally:
+        panel.deleteLater(); app.processEvents()
+
+
 def test_construct_renders_a_canvas():
     app = _app()
     panel = _panel()
